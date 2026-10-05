@@ -590,9 +590,11 @@ class FactStore:
         path = self._facts_path(name)
         if not os.path.exists(path):
             return 0
+        from utils.file_utils import read_json_tolerating_replace
+
         try:
-            with open(path, encoding='utf-8') as f:
-                data = json.load(f)
+            # 扛过归档 / 去重写入方 os.replace 的 Windows 共享冲突，别把替换窗口当成读不出
+            data = read_json_tolerating_replace(path)
         except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
             raise RuntimeError(f"facts of {name!r} unreadable: {e}") from e
         if not isinstance(data, list):
@@ -611,9 +613,10 @@ class FactStore:
         archive_path = self._facts_archive_path(name)
         if not os.path.exists(archive_path):
             return set()
+        from utils.file_utils import read_json_tolerating_replace
+
         try:
-            with open(archive_path, encoding='utf-8') as f:
-                archived = json.load(f)
+            archived = read_json_tolerating_replace(archive_path)
         except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
             raise RuntimeError(f"facts archive of {name!r} unreadable: {e}") from e
         if not isinstance(archived, list):

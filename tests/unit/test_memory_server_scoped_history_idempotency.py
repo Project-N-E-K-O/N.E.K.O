@@ -1248,20 +1248,17 @@ async def test_forget_of_one_segment_keeps_the_other_segments_for_retry(env, cra
     assert _key_state(env, KEY_SEGMENTS) == "done"
 
 
-async def test_forget_over_a_malformed_tombstone_erases_and_keeps_it(env):
+async def test_forget_over_a_malformed_tombstone_erases_and_rebuilds_it(env):
     env.llm.responses = [SINGLE_FACTS]
     await _post(env, _single_body(key=None, display_name=None))
     assert _facts_of(env, GROUP)
     path = Path(env.idem.tombstones_path(NAME))
     path.write_text(json.dumps({GROUP_KEY: {"forget_epoch": "9"}}), encoding="utf-8")
-    with pytest.raises(HTTPException) as excinfo:
-        await _forget(env, GROUP, forget_epoch=1)
-    # 坏墓碑不挡擦除：照常擦掉；但完成标记记不上，回 503 让调用方重试到墓碑修好
-    assert excinfo.value.status_code == 503 and _facts_of(env, GROUP) == []
-    # 也不被较低的代数覆盖：原样留着（读路径对它 fail closed）
-    assert json.loads(path.read_text(encoding="utf-8")) == {GROUP_KEY: {"forget_epoch": "9"}}
-    with pytest.raises(env.idem.IdempotencyStateError):
-        env.idem.tombstone_epoch(await env.idem.read_tombstones(NAME), [GROUP_KEY])
+    result = await _forget(env, GROUP, forget_epoch=1)
+    # 坏墓碑不挡擦除：照常擦掉；擦完按「本次围栏 + 本次完成标记」重建这一行，而不是永久 503
+    assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
+    row = json.loads(path.read_text(encoding="utf-8"))[GROUP_KEY]
+    assert row["forget_epoch"] == 1 and row["erased_epoch"] == 1
 
 
 @pytest.mark.parametrize("owner_state", ["pending", "done"])
@@ -1651,15 +1648,11 @@ async def test_corrupt_tombstone_file_does_not_block_an_epoch_forget(env):
     await _post(env, _single_body(key=None, display_name=None))
     path = Path(env.idem.tombstones_path(NAME))
     path.write_text("{torn", encoding="utf-8")                 # 整个墓碑文件读不出
-    with pytest.raises(HTTPException) as excinfo:
-        await _forget(env, GROUP, forget_epoch=2)
-    # 辅助文件坏了不挡隐私清除：照常擦除；完成标记记不上，回 503 而不是成功
-    assert excinfo.value.status_code == 503 and _facts_of(env, GROUP) == []
-    # 文件修好之后重试：记上完成标记、回成功
-    path.write_text("{}", encoding="utf-8")
     result = await _forget(env, GROUP, forget_epoch=2)
-    assert result["status"] == "forgotten"
+    # 辅助文件坏了不挡隐私清除：照常擦除；坏文件改名隔离，按本次清除重建，不永久 503
+    assert result["status"] == "forgotten" and _facts_of(env, GROUP) == []
     assert env.idem.erased_epoch(await env.idem.read_tombstones(NAME), GROUP_KEY) == 2
+    assert list(path.parent.glob(path.name + ".corrupt-*"))
 
 
 async def test_keyed_request_without_epochs_is_rejected(env):
@@ -2053,10 +2046,10 @@ async def test_damaged_erased_marker_never_skips_a_forget(env):
     await _post(env, _single_body(key=None, display_name=None))
     path = Path(env.idem.tombstones_path(NAME))
     path.write_text(json.dumps({GROUP_KEY: {"forget_epoch": "bad", "erased_epoch": 999}}), encoding="utf-8")
-    with pytest.raises(HTTPException):
-        await _forget(env, GROUP, forget_epoch=5)
-    # 围栏坏了的行上的完成标记不算数：照常擦除，不当成已擦过回 duplicate
-    assert _facts_of(env, GROUP) == []
+    result = await _forget(env, GROUP, forget_epoch=5)
+    # 围栏坏了的行上的完成标记不算数：照常擦除，不当成已擦过回 duplicate；擦完按本次重建这一行
+    assert result.get("duplicate") is None and _facts_of(env, GROUP) == []
+    assert env.idem.erased_epoch(await env.idem.read_tombstones(NAME), GROUP_KEY) == 5
     assert env.idem.erased_epoch({GROUP_KEY: {"forget_epoch": 3, "erased_epoch": 4}}, GROUP_KEY) is None
 
 
@@ -2128,18 +2121,33 @@ async def test_cleanup_continues_past_a_malformed_key_record(env):
     assert report["staging_removed"] == 1
 
 
-async def test_forget_drops_an_unreadable_orphan_journal(env):
+async def test_forget_scrubs_an_unreadable_orphan_journal(env):
     owned = Path(env.idem.staging_path(NAME, "owned-key"))
-    orphan = Path(env.idem.staging_path(NAME, "orphan-key"))
+    orphan = Path(env.idem.staging_path(NAME, KEY_GROUP))
     orphan.parent.mkdir(parents=True, exist_ok=True)
     await env.idem.update_key(NAME, "owned-key", env.idem.transition("done"))
     for path in (owned, orphan):
         path.write_text('{"key": "x", "facts": ["猫薄荷"', encoding="utf-8")        # 读不出
     await _forget(env, GROUP)
-    # 没有键记录认领、读不出的暂存认不出涉及谁：删掉，不留抽取原文、也不让修好后被认领
-    assert not orphan.exists()
+    # 没有键记录认领、读不出的暂存认不出涉及谁：原地抹成不含原文的占位，不留抽取原文
+    assert "猫薄荷" not in orphan.read_text(encoding="utf-8")
     # 有键记录认领的不归这一步管
-    assert owned.exists()
+    assert "猫薄荷" in owned.read_text(encoding="utf-8")
+    # 同键重试按已取消收尾：不能当成「没有暂存」重新生成、把被清 subject 写回去
+    env.llm.responses = [SINGLE_FACTS]
+    result = await _post(env, _single_body())
+    assert result.get("duplicate") is True and env.llm.calls == 0 and _facts_of(env, GROUP) == []
+    assert _key_state(env, KEY_GROUP) == "cancelled"
+
+
+async def test_unreadable_staging_without_a_key_file_is_left_alone(env):
+    orphan = Path(env.idem.staging_path(NAME, "orphan-key"))
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_text('{"key": "x", "facts": ["猫薄荷"', encoding="utf-8")
+    assert not Path(env.idem.keys_path(NAME)).exists()
+    await _forget(env, GROUP)
+    # 有暂存、没有键文件：归属未知（丢了 / 被还原过），原样保留
+    assert "猫薄荷" in orphan.read_text(encoding="utf-8")
 
 
 async def test_retry_spelling_out_the_default_scope_is_the_same_request(env):
@@ -2715,3 +2723,74 @@ async def test_facts_item_moved_to_another_segment_fails_closed(env):
     # 事实项被挪到另一段：不能把这段的事实写进另一个 subject 的记忆域
     assert excinfo.value.status_code == 503
     assert _facts_of(env, GP) == [] and _facts_of(env, PART) == []
+
+
+async def test_staging_deletes_pass_the_cloudsave_gate(env):
+    calls = []
+
+    def gate(_cm, *, operation, target):
+        calls.append((operation, target))
+
+    env.monkeypatch.setattr(env.idem, "assert_cloudsave_writable", gate)
+    path = Path(env.idem.staging_path(NAME, KEY_GROUP))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}", encoding="utf-8")
+    await env.idem.delete_staging(NAME, KEY_GROUP)
+    # 删暂存与写入同一道闸：cloudsave 只读 / 快照导入期间 memory 目录不能被删改
+    assert ("delete", f"memory/{NAME}/idempotency_staging/{path.name}") in calls
+
+
+async def test_restored_retry_drops_segments_forgotten_during_generation(env):
+    env.llm.responses = [BATCH_FACTS]
+
+    async def _crash(lanlan_name, item, segment, generation):
+        raise RuntimeError("injected crash before applying anything")
+
+    original = env.routes._apply_keyed_item
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _crash)
+    with pytest.raises(HTTPException):
+        await _post(env, _segments_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+
+    def forgotten_meanwhile(old):
+        # 生成期间到达的不带代数清除只在记录上记下了被清的 subject
+        return {**old, "forgotten_keys": [GP_KEY]}
+
+    await env.idem.update_key(NAME, KEY_SEGMENTS, forgotten_meanwhile)
+    await _post(env, _segments_body())
+    # 恢复路径同样按记录上的标记丢弃被清段：不把清除前抽出的事实写回去
+    assert _facts_of(env, GP) == [] and len(_facts_of(env, PART)) == 2
+
+
+async def test_failing_pre_erase_cancellation_does_not_block_the_forget(env):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+    real = env.routes._cancel_staged_writes_for_subjects
+    calls = {"n": 0}
+
+    async def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise env.idem.IdempotencyStateError("staging replaced mid-scan")
+        return await real(*args, **kwargs)
+
+    env.monkeypatch.setattr(env.routes, "_cancel_staged_writes_for_subjects", flaky)
+    result = await _forget(env, GROUP)
+    # 擦除前那遍只是尽力而为：辅助暂存出错不能在删除任何东西之前就让清除 500
+    assert result["status"] == "forgotten" and _facts_of(env, GROUP) == [] and calls["n"] == 2
+
+
+async def test_legacy_integer_fact_ids_in_the_journal_do_not_wedge_the_key(env):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=1)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_GROUP)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    entry = next(e for e in staging["applied"] if e.get("facts_applied"))
+    entry["reconciled"] = [12345]                               # reconcile 命中了一条旧版整数 id 的事实
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    result = await _post(env, _single_body())
+    # 旧版整数 id 是合法的应用结果：不能把这份暂存判成损坏、让键永远 503
+    assert _key_state(env, KEY_GROUP) == "done" and result.get("duplicate") is None

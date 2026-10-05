@@ -3020,7 +3020,10 @@ def _keyed_staging_items_valid(
         # 或回出伪造的 id
         for name in ("fact_ids", "reconciled"):
             if name in entry and not (
-                isinstance(entry[name], list) and all(isinstance(v, str) and v for v in entry[name])
+                isinstance(entry[name], list) and all(
+                    (isinstance(v, str) and v) or (isinstance(v, int) and not isinstance(v, bool))
+                    for v in entry[name]
+                )
             ):
                 return False
         for name in ("created_fact_identities", "reconciled_fact_identities"):
@@ -3491,7 +3494,8 @@ async def _apply_keyed_item(lanlan_name: str, item: dict, segment: dict, generat
             reconciled_facts=reconciled,
             effect_keys=list(item.get("effect_keys") or []),
         )
-        entry["fact_ids"] = [fact.get("id") for fact in created if fact.get("id")]
+        # 与 _keyed_fact_identity 同口径一律记成字符串：FactStore 保留旧版的整数 id
+        entry["fact_ids"] = [str(fact.get("id")) for fact in created if fact.get("id")]
         entry["facts_applied"] = True
         entry["created_fact_identities"] = [
             list(_keyed_fact_identity(fact))
@@ -3501,7 +3505,7 @@ async def _apply_keyed_item(lanlan_name: str, item: dict, segment: dict, generat
             and all(_keyed_fact_identity(fact))
         ]
         entry["reconciled"] = [
-            fact.get("id") for fact in reconciled
+            str(fact.get("id")) for fact in reconciled
             if isinstance(fact, dict) and fact.get("id")
         ]
         entry["reconciled_fact_identities"] = [
@@ -3801,6 +3805,24 @@ async def _process_scoped_history_keyed(
                 status_code=503,
                 detail="idempotency state unreadable; retry later",
             ) from exc
+        if staging is not None and staging.get(idempotency.UNREADABLE_CANCELLED_MARKER) is True:
+            # 清除时读不出、没人认领而被抹掉原文的暂存：按已取消收尾（补记 cancelled），绝不当成
+            # 「没有暂存」重新生成——那会把被清 subject 写回去
+            try:
+                await idempotency.update_key(
+                    lanlan_name, key,
+                    idempotency.transition(idempotency.KEY_STATE_CANCELLED, request=fingerprint),
+                )
+                await idempotency.delete_staging(lanlan_name, key)
+            except MaintenanceModeError:
+                raise
+            except Exception as exc:
+                logger.error(f"[scoped_history] {lanlan_name}: 补记 cancelled 失败: {exc}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="idempotency state unreadable; retry later",
+                ) from exc
+            return _keyed_duplicate_response(shape, contexts)
         if staging is not None and not _keyed_staging_matches(
             staging, shape, contexts, fingerprint["content_hash"],
         ):
@@ -3824,6 +3846,10 @@ async def _process_scoped_history_keyed(
         positions_on_record = record.get("routed_positions") if isinstance(record, dict) else None
         if isinstance(record, dict) and "routed_positions" in record and positions_on_record is None:
             positions_on_record = _MALFORMED
+        if record is None:
+            # 孤儿暂存（键记录丢了 / 键文件被重置）：没有记录可对，按这次请求当下的路由逐段核对
+            # 写入目标（与暂存一致才放行），而不是只认 wire subject、把路由过的段永远 503
+            positions_on_record = routed_positions
         if (
             staging is not None
             # 取消标记只留身份字段（原文已抹），由下面的分支补记 cancelled，不按条目校验
@@ -4004,6 +4030,28 @@ async def _process_scoped_history_keyed(
                     status_code=503,
                     detail="scoped history staging failed; retry with the same key",
                 ) from exc
+        if generations is None:
+            # 从暂存恢复的重试同样按记录上的 forgotten_keys 丢弃被清段：清除在生成期间只记下标记、
+            # 生成落了暂存后应用失败，这时重试走的是恢复路径，不能把被清段写回去
+            try:
+                marked_now = await idempotency.read_key(lanlan_name, key)
+            except idempotency.IdempotencyStateError as exc:
+                raise HTTPException(
+                    status_code=503, detail="idempotency state unreadable; retry later",
+                ) from exc
+            forgotten_now = marked_now.get("forgotten_keys") if isinstance(marked_now, dict) else None
+            forgotten_now = {str(k) for k in forgotten_now if isinstance(k, str)} if isinstance(forgotten_now, list) else set()
+            if forgotten_now & _staged_subject_keys(staging):
+                _drop_segments_for_keys(staging, forgotten_now)
+                try:
+                    await idempotency.write_staging(lanlan_name, key, staging)
+                except MaintenanceModeError:
+                    raise
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="scoped history staging failed; retry with the same key",
+                    ) from exc
         try:
             await _apply_keyed_staging(
                 lanlan_name, key, staging, generations,
@@ -4797,11 +4845,10 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     except MaintenanceModeError:
         raise
     except Exception as exc:
-        logger.error(f"[scoped_forget] {lanlan_name}: 预先取消带键暂存失败: {exc}")
-        raise HTTPException(
-            status_code=500,
-            detail="scoped forget failed; retry is safe and idempotent",
-        ) from exc
+        # 擦除前这一遍只是尽力而为：一份读不出 / 写不进的辅助暂存不能挡住与它无关的隐私清除
+        # （包括从不用带键写入的老调用方）。真正兜底的是擦除后那一遍取消与墓碑 / generation，
+        # 那一遍失败才回错误让调用方重试
+        logger.warning(f"[scoped_forget] {lanlan_name}: 擦除前取消带键暂存未完成（擦除后再取消一遍）: {exc}")
     stats: dict = {}
     fact_forget_started: list = []
     reflection_forget_started: list = []
@@ -4992,11 +5039,13 @@ def _forget_duplicate_response(subject, targets) -> dict:
 
 def _read_json_list_for_listing(path: str) -> list:
     """Write-free read of one JSON list file for the listing endpoint (never creates directories)."""
+    from utils.file_utils import read_json_tolerating_replace
+
     if not os.path.exists(path):
         return []
     try:
-        with open(path, encoding="utf-8") as handle:
-            data = json.load(handle)
+        # 扛过 Windows 上并发 os.replace 的共享冲突：不然 subject 会显示成 0 条或整个消失
+        data = read_json_tolerating_replace(path)
     except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
         logger.warning(f"[scoped_subjects] {os.path.basename(path)} 读取失败，按空处理: {exc}")
         return []
@@ -5006,12 +5055,12 @@ def _read_json_list_for_listing(path: str) -> list:
 def _read_locale_subjects_for_listing(path: str) -> list:
     """Write-free read of the subjects that have a scoped prompt-locale row."""
     from memory.scopes import subject_from_entry
+    from utils.file_utils import read_json_tolerating_replace
 
     if not os.path.exists(path):
         return []
     try:
-        with open(path, encoding="utf-8") as handle:
-            data = json.load(handle)
+        data = read_json_tolerating_replace(path)
     except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
         logger.warning(f"[scoped_subjects] scoped_prompt_locales.json 读取失败，按空处理: {exc}")
         return []
@@ -5043,9 +5092,10 @@ def _read_staged_subjects_for_listing(directory: str) -> list:
     # 按文件名反查键记录：已终结（done / cancelled）的键收尾时删暂存失败留下的文件没有待应用的东西，
     # 不能列成 staged。没有记录的孤儿可能被同键重试认领，照常列；键记录读不出时全部照常列（偏向多列）
     terminal_files: set[str] = set()
+    from utils.file_utils import read_json_tolerating_replace
+
     try:
-        with open(os.path.join(os.path.dirname(directory), IDEMPOTENCY_KEYS_FILENAME), encoding="utf-8") as handle:
-            records = json.load(handle)
+        records = read_json_tolerating_replace(os.path.join(os.path.dirname(directory), IDEMPOTENCY_KEYS_FILENAME))
     except (OSError, ValueError, RecursionError):
         records = {}
     if isinstance(records, dict):
@@ -5077,12 +5127,12 @@ def _read_correction_subjects_for_listing(path: str) -> list:
     or for older unstamped rows the ``@subject/<kind>:<id>`` entity.
     """
     from memory.scopes import SCOPED_PERSONA_PREFIX, MemoryScopeError, MemorySubject, subject_from_entry
+    from utils.file_utils import read_json_tolerating_replace
 
     if not os.path.exists(path):
         return []
     try:
-        with open(path, encoding="utf-8") as handle:
-            data = json.load(handle)
+        data = read_json_tolerating_replace(path)
     except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
         logger.warning(f"[scoped_subjects] persona_corrections.json 读取失败，按空处理: {exc}")
         return []
@@ -5109,11 +5159,12 @@ def _read_correction_subjects_for_listing(path: str) -> list:
 
 def _read_persona_for_listing(path: str) -> dict:
     """Strict, write-free persona read for the listing endpoint."""
+    from utils.file_utils import read_json_tolerating_replace
+
     if not os.path.exists(path):
         return {}
     try:
-        with open(path, encoding="utf-8") as handle:
-            data = json.load(handle)
+        data = read_json_tolerating_replace(path)
     except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
         logger.warning(f"[scoped_subjects] persona 读取失败，按无 persona 处理: {exc}")
         return {}

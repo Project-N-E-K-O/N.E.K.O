@@ -62,6 +62,8 @@ from utils.file_utils import atomic_write_json, read_json_tolerating_replace
 from ._shared import logger
 
 IDEMPOTENCY_KEYS_FILENAME = "idempotency_keys.json"
+# 读不出、无人认领的暂存在清除时被抹成的占位：同键重试按已取消处理
+UNREADABLE_CANCELLED_MARKER = "__unreadable_cancelled__"
 STAGING_DIRNAME = "idempotency_staging"
 TOMBSTONES_FILENAME = "scoped_tombstones.json"
 
@@ -212,7 +214,17 @@ def _write_json_object(path: str, data: dict) -> None:
     atomic_write_json(path, data, ensure_ascii=False, indent=2)
 
 
+def _cloudsave_target(path: str) -> str:
+    try:
+        relative = os.path.relpath(path, str(_config_manager().memory_dir))
+    except ValueError:
+        relative = os.path.basename(path)
+    return "memory/" + relative.replace(os.sep, "/")
+
+
 def _remove_file(path: str) -> bool:
+    # 与写入同一道闸：cloudsave 只读 / 快照导入期间，memory 目录不能被删改
+    assert_cloudsave_writable(_config_manager(), operation="delete", target=_cloudsave_target(path))
     try:
         os.remove(path)
     except FileNotFoundError:
@@ -317,6 +329,9 @@ def _read_staging_sync(path: str, key: str) -> dict | None:
         return None
     except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
         raise IdempotencyStateError(f"staging unreadable: {exc}") from exc
+    if isinstance(data, dict) and data.get(UNREADABLE_CANCELLED_MARKER) is True:
+        # 清除时读不出、没人认领而被抹掉原文的暂存：按这个键已取消处理（见 drop_unreadable_orphan_staging）
+        return {"key": key, UNREADABLE_CANCELLED_MARKER: True}
     if not isinstance(data, dict) or data.get("key") != key:
         # 文件名只是摘要：内容里的原键对不上（截断碰撞 / 手改）时绝不套用
         # 别的键的产物。
@@ -392,23 +407,30 @@ async def scrub_misplaced_staging(
 
 
 async def drop_unreadable_orphan_staging(lanlan_name: str, path: str) -> bool:
-    """Delete a staging file that no longer parses and that no key record owns.
+    """Scrub a staging file that no longer parses and that no key record owns.
 
     Such a file cannot be matched against a forget (its subjects are
     unreadable) nor cancelled through a key record; kept, it would retain
     whatever extracted plaintext it holds, and a later repair would let a
-    same-key retry adopt it. Ownership unknown (key records unreadable) or a
-    transient read error keeps it. Returns whether the file was removed.
+    same-key retry adopt it. It is overwritten in place with a content-free
+    marker: the plaintext is gone, and a same-key retry reads the marker as
+    a cancelled key (never as "no staging", which would regenerate and
+    write the forgotten subject back). Ownership unknown (no or unreadable
+    key records) or a transient read error keeps the file. Returns whether
+    it was scrubbed.
     """
-    try:
-        records = await asyncio.to_thread(_read_json_object, keys_path(lanlan_name))
-    except IdempotencyStateError:
-        return False
-    if any(isinstance(key, str) and key and is_staging_path_of(lanlan_name, key, path) for key in records):
-        # 有键记录认领：pending 的由按记录取消的那一遍处理，终态的不会再被应用
-        return False
 
-    def _drop() -> bool:
+    def _scrub() -> bool:
+        if not os.path.exists(keys_path(lanlan_name)):
+            # 有暂存、没有键文件：归属未知（文件丢了 / 同步或还原过），原样保留
+            return False
+        try:
+            records = _read_json_object(keys_path(lanlan_name))
+        except IdempotencyStateError:
+            return False
+        if any(isinstance(key, str) and key and is_staging_path_of(lanlan_name, key, path) for key in records):
+            # 有键记录认领：pending 的由按记录取消的那一遍处理，终态的不会再被应用
+            return False
         try:
             document = read_json_tolerating_replace(path)
         except FileNotFoundError:
@@ -419,10 +441,12 @@ async def drop_unreadable_orphan_staging(lanlan_name: str, path: str) -> bool:
             return False
         if isinstance(document, dict):
             return False
-        return _remove_file(path)
+        _write_json_object(path, {UNREADABLE_CANCELLED_MARKER: True})
+        return True
 
+    # 读键记录、复读、改写都在同一把锁里：期间不会有 update_key 认领这条路径
     async with idempotency_lock(lanlan_name):
-        return await asyncio.to_thread(_drop)
+        return await asyncio.to_thread(_scrub)
 
 
 async def delete_staging(lanlan_name: str, key: str) -> bool:
@@ -535,9 +559,12 @@ async def mark_tombstone_erased(
         if subject_key in data and (
             not isinstance(fence, int) or isinstance(fence, bool) or fence < 0
         ):
-            # 坏墓碑原样留着（读路径对它 fail closed），完成标记记不上：报错让调用方重试到
-            # 墓碑修好为止，不能回成功——否则修好之后的重放会把修好后合法写入的记忆再擦一遍
-            raise IdempotencyStateError(f"tombstone of {subject_key!r} is malformed")
+            # 这一行坏了：这次清除已把该 subject 擦干净，按「本次围栏 + 本次完成标记」重建这一行
+            # （坏行里原本可能更高的围栏会丢，丢的只是对更早请求的拦截）。不能回 503 让清除永远
+            # 卡住——没有任何东西会把文件修好，撤销流程与这个人的记忆写入会一直暂停
+            logger.warning(f"[Idempotency] {lanlan_name}: 墓碑 {subject_key!r} 损坏，按本次清除重建")
+            data[subject_key] = {"forgotten_at": time.time(), "forget_epoch": epoch, "erased_epoch": epoch}
+            return True
         if not isinstance(row, dict):
             # 墓碑在擦除期间被移走了（比如启动清理把一条早已过期、本次未抬高的旧墓碑清掉）：
             # 不能静默跳过——回成功而没有完成标记，之后同代数的重放会再擦一遍新写入的记忆。
@@ -557,7 +584,29 @@ async def mark_tombstone_erased(
         row["erased_epoch"] = epoch
         return True
 
-    await _update_json_object(lanlan_name, tombstones_path(lanlan_name), _mutate)
+    path = tombstones_path(lanlan_name)
+    try:
+        await _update_json_object(lanlan_name, path, _mutate)
+    except IdempotencyStateError:
+        # 整份墓碑文件读不出：改名隔离（留着排查），以本次清除重建这一行。别的 subject 的围栏随
+        # 之丢失，但永久 503 更糟——撤销流程永远完成不了，也没有任何东西会把文件修好
+        async with idempotency_lock(lanlan_name):
+            await asyncio.to_thread(_quarantine_tombstones_and_rebuild, path, subject_key, epoch)
+
+
+def _quarantine_tombstones_and_rebuild(path: str, subject_key: str, epoch: int) -> None:
+    try:
+        _read_json_object(path)
+        return  # 等锁期间已被别的清除重建：不再动它
+    except IdempotencyStateError:
+        pass
+    quarantine = f"{path}.corrupt-{int(time.time())}"
+    try:
+        os.replace(path, quarantine)
+        logger.error(f"[Idempotency] 墓碑文件不可读，已隔离为 {os.path.basename(quarantine)} 并重建")
+    except FileNotFoundError:
+        pass
+    _write_json_object(path, {subject_key: {"forgotten_at": time.time(), "forget_epoch": epoch, "erased_epoch": epoch}})
 
 
 def _non_negative_int(value) -> bool:
