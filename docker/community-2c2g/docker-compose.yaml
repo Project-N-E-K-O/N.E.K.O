@@ -10,6 +10,8 @@ services:
       - |
         mkdir -p /host-dir/neko-home /host-dir/logs
         chown 1000:1000 /host-dir/neko-home /host-dir/logs
+        # 修复旧版本由 root 创建的日志；不递归用户 home 或 SSL 私钥。
+        chown -R 1000:1000 /host-dir/logs
     volumes:
       - .:/host-dir
 

@@ -72,7 +72,7 @@ NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
 完整契约见 [社区账户与远程实例访问边界](../../docs/design/security/community-remote-access.md)。
 
 启动后会自动完成：
-- **`neko-init`**：一次性初始化，创建 `neko-home/`、`logs/` 并对齐到 UID/GID 1000，失败会阻止主服务启动。
+- **`neko-init`**：一次性初始化，创建 `neko-home/`、`logs/` 并将顶层属主对齐到 UID/GID 1000；仅对 `logs/` 递归修复旧 root 日志权限，不递归 `neko-home/`（数据子树由镜像入口脚本修复，SSL 私钥保留 root 权限）。失败会阻止主服务启动。
 - **`neko-main`**：N.E.K.O 主服务（Compose 将等待 `neko-init` 成功后启动）。
 
 看门狗是可选的宿主修改，普通 `up` 不会安装或恢复已卸载的 cron。核验安装器镜像与两个脚本后，显式安装：
