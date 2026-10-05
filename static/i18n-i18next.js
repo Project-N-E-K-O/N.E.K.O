@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 声纹就绪与上游外部路由八语文案合并，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-10-04-instance-access-authorization';
+    // 新增聊天图片保存文案，刷新客户端语言包缓存。
+    const LOCALE_VERSION = '2026-10-05-chat-image-save';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
