@@ -30,8 +30,6 @@
 
 | 检查项 | 说明 |
 |---|---|
-| **辅助镜像可拉取** | init 和可选安装器使用 Docker Hub 的 `alpine:3.20`，不经过主镜像的 GHCR 代理；内地 ECS 须预先配置可信 Docker Hub 加速/代理或加载经核验的离线镜像，并验证 `docker pull alpine:3.20` 成功。init 拉取失败会阻止主服务启动；不要只验证主镜像 |
-| **Docker Engine 安装方式** | 本指南的固定 cron/脚本 PATH 未含 /snap/bin，不支持 snap 版 Docker；使用官方 apt 安装的 Docker Engine 并核对可执行路径。不要因安装器成功就认为宿主探测可运行 |
 | **Docker Compose V2** | 需要 **2.24.4 及以上**以支持 `!override`，不能用旧版 Python 的 `docker-compose` v1；需要保留仓库中的 `docker/docker-compose.yml`，不能只下载本目录 |
 | **宿主机有 `bash`** | 看门狗脚本 shebang 为 `#!/bin/bash` |
 | **宿主机有 `curl`、`timeout`、`flock`** | `curl` 检查完整 HTTP 响应；`timeout`（coreutils）限制 Docker 命令；`flock`（util-linux）防止并发重启。可运行 `sudo apt install curl coreutils util-linux` |
@@ -45,6 +43,8 @@ docker compose config --quiet   # 语法预检（可选但推荐）
 docker compose up -d            # 启动
 docker compose ps                                            # 查看状态
 ```
+
+> 💡 最省事的方式是 `sudo bash install_docker.sh --start`：它检测/补装 Docker 与依赖，并在启动前**自动测速**选中最快的 Alpine 镜像源写入 `.env`（`NEKO_INIT_IMAGE`），再拉起容器。下面手动 `docker compose up -d` 是等价步骤。
 
 首次连接可打开 `http://<服务器IP>:48911` 配对；页面会提示连接未加密。 HTTP 会以明文传输配对 key 和会话 Cookie，网络路径上的观察者可能获取凭证并访问实例；不要在不可信网络上通过 HTTP 输入凭证，使用 HTTPS 或可信 TLS 网关。HTTP 访问远程 IP 时浏览器不开放麦克风，语音输入不可用。条件允许时推荐 `https://<服务器IP或域名>:48912`；镜像默认生成自签名证书，正式使用建议可信证书或可信 TLS 网关。需强制 HTTPS/WSS 时在同目录 `.env` 设置 `NEKO_REQUIRE_HTTPS=1` 后重新创建服务。实例访问凭证由管理员在服务器显式读取：
 
@@ -196,6 +196,16 @@ docker compose up -d
 ```
 
 `latest-full` 是滚动标签，不保证已发布的镜像包含最新 main。上线前核对镜像版本和实例授权，使用经过验证的 tag/digest 固定 `NEKO_IMAGE`；不在文档中虚构尚未发布的版本。保留加速代理作为默认下载入口，按实际网络选择官方源。
+
+**初始化 / 安装器（`neko-init`、`neko-cron-install`）默认用 Docker Hub 的 `alpine:3.20`。** 若用 `install_docker.sh --start`，它会在 `docker compose up -d` 前自动测速：探测多个国内镜像源、挑“最快可用”者写入 `.env` 的 `NEKO_INIT_IMAGE`（compose 自动读取）。也可手动指定：
+
+```bash
+export NEKO_INIT_IMAGE=docker.m.daocloud.io/library/alpine:3.20   # 示例：换成实测能拉的源
+docker compose up -d
+```
+
+> ⚠️ 注意：`docker.gh-proxy.org/library/alpine:3.20` 与主镜像同前缀，但**实测拉不动（最终 404）**，不要把它当默认镜像源。让 install_docker 自动测速，或手动填 `docker.1ms.run` / `docker.m.daocloud.io` 等实测可用的源。辅助镜像拉取失败会阻止主服务启动。
+
 
 常用端口与目录：
 - 端口：继承官方 `48911→80`（HTTP）、`48912→443`（HTTPS），默认绑定所有接口。不发布预留的 48915。
