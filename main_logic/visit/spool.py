@@ -758,9 +758,11 @@ def _scrub_peer_identity(doc: dict) -> bool:
     """Null the peer identity of a ``state.json`` object in place; return whether it changed.
 
     Besides ``peer_uid / pair_id / peer_char_id`` this drops every
-    ``digest_writes[*].epochs``: its keys are subject keys that embed the pair
-    id and the person id. Once the identity is gone no digest of the visit
-    runs again (``peer_forgotten``), so the recorded epochs have no use left.
+    ``digest_writes[*].epochs`` (its keys are subject keys that embed the pair
+    id and the person id) and every ``digest_writes[*].plan.displays`` (the
+    peer's self-chosen cat and human names). Once the identity is gone no
+    digest of the visit runs again (``peer_forgotten``), so neither has any
+    use left.
     Works on a schema-invalid object too and touches nothing else in it.
     """
     changed = False
@@ -773,6 +775,11 @@ def _scrub_peer_identity(doc: dict) -> bool:
         for record in runs.values():
             if isinstance(record, dict) and "epochs" in record:
                 del record["epochs"]
+                changed = True
+            plan = record.get("plan") if isinstance(record, dict) else None
+            if isinstance(plan, dict) and "displays" in plan:
+                # 对端自报的猫名与人名，与头行的 peer_char_tag 同一类数据
+                del plan["displays"]
                 changed = True
     return changed
 
@@ -1763,9 +1770,15 @@ class VisitSpool:
         deleted: list[Path] = []
         remaining = []
         scanned = _scan(spool_dir)
+        # 上传流水还没封存的场次：封存时要从 state.json 读 finalized 等，推迟待传文件的那一遍
+        # 连它的 state.json 一起留到补传之后，否则正常结束的场次会被封成 crash
+        streams = {visit_id for visit_id, suffix, _p, _st in scanned if suffix == UPLOAD_JSONL_SUFFIX}
         for visit_id, suffix, path, st in scanned:
             is_upload = suffix in _UPLOAD_SUFFIXES
-            if (uploads == "defer" and is_upload) or (uploads == "only" and not is_upload):
+            if (
+                (uploads == "defer" and (is_upload or (suffix == STATE_SUFFIX and visit_id in streams)))
+                or (uploads == "only" and not is_upload)
+            ):
                 remaining.append((visit_id, suffix, path, st))
                 continue
             if now - st.st_mtime <= _RETENTION_S:
@@ -1899,7 +1912,9 @@ class VisitSpool:
 
         ``uploads`` narrows step 1 for the pending uploads: ``"all"`` (the
         default) treats them like every other file, ``"defer"`` leaves them
-        out (the caller expires them after one more upload attempt), and
+        out (the caller expires them after one more upload attempt), together
+        with the ``state.json`` of a visit whose upload stream is not sealed
+        yet (sealing reads its finalized reason), and
         ``"only"`` expires nothing but them and skips step 2.
 
         A file that cannot be deleted (locked, no permission, a directory) is

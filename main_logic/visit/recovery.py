@@ -421,6 +421,7 @@ def _seal_stream_sync(
     stream = visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX)
     sealed = visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX)
     owner, char_uid = _with_header_fallback(spool_dir, visit_id, owner, char_uid)
+    stream_mtime_ns = stream.stat().st_mtime_ns
     doc = build_upload_doc(_read_stream(stream), visit_id=visit_id, finalized_reason=finalized_reason,
                            fallback_own_visit_uid=owner, fallback_own_char_uid=char_uid)
     if doc is None:
@@ -433,6 +434,12 @@ def _seal_stream_sync(
         raise _EnvelopeIncomplete(f"no own_char_uid for the upload stream of {visit_id}")
     # 与 finalize 同一顺序：先原子写 .upload.json，再删流水
     _write_private_json(sealed, doc)
+    try:
+        # 封出来的文件接着流水的年龄算 7 天：按新文件的 mtime 算，已存在多日的转录会再多留 7 天，
+        # 排队的举报一直被挡着
+        os.utime(sealed, ns=(stream_mtime_ns, stream_mtime_ns))
+    except OSError as exc:
+        logger.warning("visit recovery: cannot carry the stream age over to %s: %s", sealed.name, exc)
     try:
         stream.unlink(missing_ok=True)
     except OSError as exc:

@@ -2615,3 +2615,19 @@ async def test_recovery_digest_protects_other_local_cat_names_in_peer_labels(tmp
     segments = server.calls("scoped_history")[1]["segments"]
     # 补录的 digest 同样拿到本机角色名单：对端不能顶替成本机另一只猫
     assert "B" not in {seg["speaker_label"] for seg in segments}
+
+
+async def test_expired_stream_keeps_its_age_and_finalized_reason_through_the_extra_attempt(tmp_path):
+    v = vid(113)
+    spool = await make_visit(tmp_path, v, [], memory_enabled=False, finalized="wrap_up", last_summary_done=True)
+    stream = _write_stream(tmp_path, v, _stream_records(v))
+    old = time.time() - 8 * 86400
+    for path in (stream, spool.state_path):
+        os.utime(path, (old, old))                              # 8 天没开 app：流水和 state 都过期了
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (visit_id, doc), = uploads.calls
+    # 补传之前 state.json 不能先被按龄删掉：正常结束的场次照样按 wrap_up 封存，不变成 crash
+    assert doc["request"]["finalized_reason"] == "wrap_up"
+    # 封出来的文件接着流水的年龄算：再试一次仍失败就在本轮放弃，不再多留 7 天
+    assert not (_spool_dir(tmp_path) / f"{v}.upload.json").exists()

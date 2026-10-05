@@ -1953,13 +1953,16 @@ async def test_wipe_leaves_no_pair_or_person_id_in_the_state(tmp_path, schema_in
     subjects = [group_chat_subject(PAIR1), group_participant_subject(PAIR1, state["peer_char_id"]),
                 participant_subject(person)]
     state["digest_writes"]["0"]["epochs"] = {subject_key(s): 3 for s in subjects}
+    state["digest_writes"]["0"]["plan"] = {"displays": {"peer_cat": "MikaCatName", "peer_human": "BobHumanName"}}
     await sp.write_state(state)
     if schema_invalid:
         _schema_invalid(sp)
     await sp.delete_peer_fields()
     text = sp.state_path.read_text(encoding="utf-8")
-    # digest_writes[*].epochs 的键里带着 pair_id 与 person_id：清除报完成后不能还留在 state.json
+    # digest_writes[*].epochs 的键里带着 pair_id 与 person_id、plan.displays 里是对端自报的名字：
+    # 清除报完成后都不能还留在 state.json
     assert PAIR1 not in text and person not in text and "peer1" not in text
+    assert "MikaCatName" not in text and "BobHumanName" not in text
     if not schema_invalid:
         assert (await sp.read_state())["digest_writes"]["0"]["group"] == {"0": True}
 
