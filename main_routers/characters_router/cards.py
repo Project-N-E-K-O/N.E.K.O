@@ -61,8 +61,9 @@ from ..shared_state import (
     get_init_one_catgirl,
 )
 from utils.config_manager import (
-    assign_new_character_uid,
     delete_reserved,
+    ensure_catgirl_character_id,
+    assign_new_character_uid,
     get_character_uid,
     get_reserved,
     set_reserved,
@@ -87,6 +88,7 @@ def _strip_local_character_identity(character_payload: dict) -> dict:
     Mutates and returns ``character_payload`` (callers pass their own copy).
     """
     delete_reserved(character_payload, 'character_uid')
+    delete_reserved(character_payload, 'character_id')
     return character_payload
 
 
@@ -264,6 +266,16 @@ async def _save_character_card_serialized(data: dict):
                 if v:  # 只保存非空字段
                     catgirl_data[k] = v
 
+        # 更新同名卡时必须保留系统身份；新卡不接受导入包携带的身份。
+        previous_character_id = get_reserved(
+            previous_catgirl_data,
+            "character_id",
+            default="",
+        )
+        if previous_character_id:
+            set_reserved(catgirl_data, "character_id", previous_character_id)
+        else:
+            ensure_catgirl_character_id(catgirl_data)
         # 稳定 id：覆盖已有角色时沿用它原来的 id，新建角色生成新的（卡里不带 id）。
         previous_uid = get_character_uid(previous_catgirl_data)
         if previous_uid:
@@ -1049,6 +1061,8 @@ async def import_character_card(
 
             # 移除档案名键（因为已经用作字典键）
             chara_data_to_save = {k: v for k, v in character_data.items() if k != '档案名'}
+            delete_reserved(chara_data_to_save, "character_id")
+            ensure_catgirl_character_id(chara_data_to_save)
             # 导入的角色是新角色：卡里若带着别处的稳定 id 一律丢弃，重新生成。
             assign_new_character_uid(chara_data_to_save)
             characters['猫娘'][character_name] = chara_data_to_save

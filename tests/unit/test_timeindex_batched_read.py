@@ -39,6 +39,9 @@ def timeindex_module():
 
     llm_client.SQLChatMessageHistory = _History
     llm_client.SystemMessage = object
+    llm_client.message_metadata = lambda _message: {}
+    llm_client.messages_from_dict = lambda _messages: []
+    llm_client.messages_to_dict = lambda messages: list(messages)
     stubs["utils.llm_client"] = llm_client
 
     cloudsave = types.ModuleType("utils.cloudsave_runtime")
@@ -67,6 +70,11 @@ def timeindex_module():
     memory.__path__ = []  # type: ignore[attr-defined]
     memory.ensure_character_dir = lambda *_args, **_kwargs: ""
     stubs["memory"] = memory
+
+    message_sources = types.ModuleType("memory.message_sources")
+    message_sources.THEATER_MEMORY_SOURCE = "theater_numeric_v2"
+    message_sources.is_theater_memory_message = lambda _message: False
+    stubs["memory.message_sources"] = message_sources
 
     stop_names = types.ModuleType("memory.stop_names")
     stop_names.collect_stop_names = lambda *_args, **_kwargs: set()

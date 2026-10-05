@@ -40,6 +40,7 @@ import {
   type AvatarToolItem,
 } from './avatarTools';
 import { useGuideChatButtonLock } from './useGuideChatButtonLock';
+import { claimOrdinaryDraftRestore } from './theaterDraftRestore';
 import {
   playCompactToolWheelDetentSound,
   useCompactToolWheelAudioPreload,
@@ -481,6 +482,7 @@ export default function FullChatSurface({
   onGalgameOptionSelect,
   choicePrompt = null,
   onChoiceSelect,
+  theaterPresentation,
   onCompactChatStateChange,
   rollbackDraft,
   _rollbackKey,
@@ -630,6 +632,14 @@ export default function FullChatSurface({
       }
     }
   }, [rollbackDraft, _rollbackKey, draft]);
+
+  useEffect(() => {
+    const restore = theaterPresentation?.ordinaryDraftRestore;
+    // full 与 compact 是独立组件并各自持有草稿；退出剧场切回 full 时由先挂载的一方消费，
+    // 已消费的 id 在模块级共享，之后的 full↔compact 切换不再重复填回。
+    if (!restore || !claimOrdinaryDraftRestore(restore.id)) return;
+    setDraft(restore.text);
+  }, [theaterPresentation?.ordinaryDraftRestore]);
 
   useEffect(() => {
     const markImage = (img: HTMLImageElement) => {

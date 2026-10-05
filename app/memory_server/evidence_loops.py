@@ -34,6 +34,7 @@ from config import (
 )
 from memory.cursors import CURSOR_REBUTTAL_CHECKED_UNTIL
 from memory.event_log import EVIDENCE_SOURCE_MIGRATION_SEED
+from memory.message_sources import is_theater_memory_message
 
 from . import gates, review, runtime
 from .locale_state import (
@@ -520,16 +521,21 @@ async def _periodic_idle_maintenance_loop():
 
                 try:
                     history = await runtime.recent_history_manager.aget_recent_history(name)
-                    history_len = len(history)
+                    # 剧场胶囊压缩时原样保留，不计入 update_history 的压缩门槛。
+                    ordinary_history_len = sum(
+                        1
+                        for message in history
+                        if not is_theater_memory_message(message)
+                    )
 
                     # ── 子任务1: 历史记录压缩（有需要就跑，不受全局开关控制） ──
-                    # 门槛对齐 update_history 内部的真实触发条件 `len > compress_threshold`
+                    # 门槛对齐 update_history 内部的真实触发条件 `普通消息数 > compress_threshold`
                     # （默认 20）。用 max_history_length（默认 10，压缩后保留条数）会让
                     # 11~20 区间持续触发 IdleMaint 但 update_history 实际不压缩，形成
                     # 每 IDLE_CHECK_INTERVAL 一次的空转日志。
-                    if history_len > runtime.recent_history_manager.compress_threshold:
+                    if ordinary_history_len > runtime.recent_history_manager.compress_threshold:
                         logger.info(
-                            f"[IdleMaint] {name}: 历史记录过长 ({history_len} > "
+                            f"[IdleMaint] {name}: 历史记录过长 ({ordinary_history_len} > "
                             f"{runtime.recent_history_manager.compress_threshold})，触发压缩"
                         )
                         try:

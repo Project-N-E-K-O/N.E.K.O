@@ -67,6 +67,10 @@
         function invalidate(key) {
             epoch += 1;
             accepted = null;
+            if (hooks.enrolling()) {
+                inputChangedDuringEnrollment = true;
+                try { localStorage.setItem('neko_voice_enrollment_input_changed', '1'); } catch (_) {}
+            }
             if (requestAbort) requestAbort.abort();
             if (pollTimer !== null) root.clearTimeout(pollTimer);
             if (pollResolve) pollResolve();

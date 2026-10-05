@@ -2780,15 +2780,27 @@ class TtsRuntimeMixin:
                         }
                         _parsed_code = None
                         _keyword_target = error_msg_text  # 非 JSON 错误时回退使用
+                        # 展示给用户的那句：默认沿用原文，但关闭帧类错误改成只报
+                        # 关闭码——理由文本由 provider 控制，不该进 UI（约定见
+                        # tests/unit/runtime/test_realtime_connection_recovery.py）。
+                        # 关键词分类仍读 data.message，不受影响。
+                        _display_msg = error_msg_text
                         # 免费服务 worker 按关闭帧分类的拒绝会带 data.close_code
                         _from_server_close = False
                         try:
                             _parsed = json.loads(error_msg_text)
                             if isinstance(_parsed, dict):
                                 _close_data = _parsed.get('data')
+                                # 判定要求 close_code 非空：展示串由它拼出来，
+                                # 缺值的载荷会渲染成 "WebSocket close code None"。
                                 _from_server_close = (
-                                    isinstance(_close_data, dict) and 'close_code' in _close_data
+                                    isinstance(_close_data, dict)
+                                    and _close_data.get('close_code') is not None
                                 )
+                                if _from_server_close:
+                                    _display_msg = (
+                                        f"WebSocket close code {_close_data.get('close_code')}"
+                                    )
                                 # 结构化错误：关键词匹配只看 data.message，避免元数据误判
                                 _keyword_target = ""
                                 # 先检查顶层 code
@@ -2811,7 +2823,7 @@ class TtsRuntimeMixin:
                             pass
 
                         if _parsed_code:
-                            user_msg = json.dumps({"code": _parsed_code, "details": {"msg": error_msg_text}})
+                            user_msg = json.dumps({"code": _parsed_code, "details": {"msg": _display_msg}})
                             self._last_tts_error_code = _parsed_code
                         else:
                             # 回退到关键词匹配（仅匹配 message 字段，不匹配 UUID/时间戳等元数据）
@@ -2826,20 +2838,20 @@ class TtsRuntimeMixin:
                                 user_msg = json.dumps({"code": "API_RATE_LIMIT"})
                                 self._last_tts_error_code = 'API_RATE_LIMIT'
                             elif _is_safety_violation_signal(error_msg_lower):
-                                user_msg = json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": error_msg_text}})
+                                user_msg = json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": _display_msg}})
                                 self._last_tts_error_code = 'API_POLICY_VIOLATION'
                             elif '1008' in error_msg_lower:
-                                user_msg = json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": error_msg_text}})
+                                user_msg = json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": _display_msg}})
                                 self._last_tts_error_code = 'API_1008_FALLBACK'
                             elif ('401' in error_msg_lower or 'unauthorized' in error_msg_lower
                                     or 'authentication' in error_msg_lower
                                     or 'incorrect api key' in error_msg_lower
                                     or 'invalid_api_key' in error_msg_lower
                                     or ('invalid' in error_msg_lower and 'key' in error_msg_lower)):
-                                user_msg = json.dumps({"code": "API_KEY_REJECTED", "details": {"msg": error_msg_text}})
+                                user_msg = json.dumps({"code": "API_KEY_REJECTED", "details": {"msg": _display_msg}})
                                 self._last_tts_error_code = 'API_KEY_REJECTED'
                             else:
-                                user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
+                                user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": _display_msg}})
                                 self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
                         # 只有免费服务按关闭帧判定的日配额才停定时重试；付费 / 自定义
                         # provider 的 "429 quota exceeded" 同样归为配额，但常是可恢复的

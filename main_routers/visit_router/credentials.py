@@ -345,11 +345,18 @@ def _reset_for_tests() -> None:
     _pubkeys_requested_by = None
 
 
-def _body_json(resp: httpx.Response) -> Any:
+def _body_json(resp: httpx.Response, **json_kwargs: Any) -> Any:
     try:
-        return resp.json()
+        return resp.json(**json_kwargs)
     except (ValueError, TypeError, RecursionError):  # 深层嵌套的 JSON 同样按坏响应处理
         return None
+
+
+def _json_int_or_inf(text: str) -> int | float:
+    try:
+        return int(text)
+    except ValueError:  # 超过 int 位数上限（默认 4300 位）：按无穷大交给字段校验，别让整个响应作废
+        return -math.inf if text.startswith("-") else math.inf
 
 
 def _body_code(body: Any) -> str | None:
@@ -1090,8 +1097,9 @@ async def _request_pubkeys() -> None:
         _pubkeys_failed_at = time.time()
         return
     try:
-        fetched = parse_pubkeys_response(_body_json(resp), fetched_at=time.time())
-    except (ValueError, TypeError, OverflowError) as exc:  # 含超大整数：一律按刷新失败
+        # 超长整数解析成无穷大：ttl_s 被截到上限，坏的 not_before/not_after 只吊销该 kid，吊销名单照常生效
+        fetched = parse_pubkeys_response(_body_json(resp, parse_int=_json_int_or_inf), fetched_at=time.time())
+    except (ValueError, TypeError) as exc:
         logger.warning("visit servers pubkeys: malformed reply: %s", exc)
         _pubkeys_failed_at = time.time()
         return

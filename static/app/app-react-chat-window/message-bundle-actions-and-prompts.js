@@ -502,6 +502,22 @@
         }
     };
 
+    I.handleTheaterSuggestedInputSelect = function handleTheaterSuggestedInputSelect(text) {
+        if (typeof I.state.onTheaterSuggestedInputSelect === 'function') {
+            I.state.onTheaterSuggestedInputSelect(String(text || ''));
+        }
+    };
+
+    I.handleTheaterSubmit = function handleTheaterSubmit(text) {
+        if (typeof I.state.onTheaterSubmit === 'function') {
+            I.state.onTheaterSubmit(String(text || ''));
+        }
+    };
+
+    I.handleTheaterEnd = function handleTheaterEnd() {
+        if (typeof I.state.onTheaterEnd === 'function') I.state.onTheaterEnd();
+    };
+
     I.handleAvatarInteraction = function handleAvatarInteraction(payload) {
         var detail = payload || {};
 
@@ -1123,10 +1139,20 @@
         }
     }
 
+    function isTheaterPresentationActive(viewProps) {
+        return !!(viewProps && viewProps.theaterPresentation && viewProps.theaterPresentation.active === true);
+    }
+
+    I.isTheaterPresentationActive = function () {
+        return isTheaterPresentationActive(I.state.viewProps);
+    };
+
     I.fetchGalgameOptionsForLatestTurn = function fetchGalgameOptionsForLatestTurn() {
         var requestOptions = arguments[0] && typeof arguments[0] === 'object' ? arguments[0] : {};
         if (isGalgameModeTemporarilyDisabled()) return;
         if (!I.state.galgameModeEnabled) return;
+        // 小剧场演绎期间选项槽由剧场推荐输入占用；普通聊天的 A/B/C 既不显示也不应再花一次 summary 模型调用。
+        if (isTheaterPresentationActive(I.state.viewProps)) return;
         // icebreaker 脚本选项激活期间不抢选项槽——含揭示延迟内 prompt 已就位、按钮尚未
         // 露出（choicePrompt 非 null 但 getRevealedChoicePrompt 返回 null）的那段。否则
         // icebreaker 台词的 turn-end 会触发 galgame A/B/C，在脚本选项露出前挤进同一槽位
@@ -1817,16 +1843,26 @@
                 // the switch is lost on reload (readChatSurfaceModePreference
                 // returns the stale value). persistChatSurfaceModePreference
                 // no-ops for minimized, which still restores via lastRestorable.
-                I.persistChatSurfaceModePreference(normalizedChatSurfaceMode);
+                // A theater presentation forces compact as a temporary override
+                // (entering render included, before viewProps is merged), never
+                // as the user's preference.
+                if (!isTheaterPresentationActive(Object.assign({}, I.state.viewProps, nextProps))) {
+                    I.persistChatSurfaceModePreference(normalizedChatSurfaceMode);
+                }
             }
         }
         if (Object.prototype.hasOwnProperty.call(nextProps, 'compactChatState')) {
             I.state.compactChatState = I.normalizeCompactChatState(nextProps.compactChatState);
         }
+        var theaterWasActive = isTheaterPresentationActive(I.state.viewProps);
         I.state.viewProps = Object.assign({}, I.ensureViewProps(), nextProps, {
             chatSurfaceMode: I.getCurrentChatSurfaceMode(),
             compactChatState: I.getCurrentCompactChatState()
         });
+        if (!theaterWasActive && isTheaterPresentationActive(I.state.viewProps)) {
+            // 进入小剧场时丢弃普通聊天仍在进行的 Galgame 请求，避免迟到的 A/B/C 写进剧场选项槽。
+            I.invalidatePendingGalgameRequest();
+        }
         I.renderWindow();
         // setViewProps can now land a real surface change (e.g. compact -> the
         // revived `full`) because normalizeChatSurfaceMode preserves all three
@@ -2196,7 +2232,10 @@
             composerAttachments: I.state.composerAttachments.slice(),
             composerHidden: I.getEffectiveComposerHidden(),
             composerHiddenRequested: I.state.composerHidden,
-            goodbyeComposerHidden: I.state.goodbyeComposerHidden
+            goodbyeComposerHidden: I.state.goodbyeComposerHidden,
+            // External input locks (home tutorial) the theater must compose with
+            // instead of overwriting composerDisabled.
+            composerExternallyLocked: !!(I.state.homeTutorialInteractionLocked || I.state.homeTutorialInputLocked)
         };
     }
 

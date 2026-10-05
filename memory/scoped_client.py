@@ -31,10 +31,12 @@ locale code, and optional speaker fields are sent only when they carry a
 value, so an absent field keeps its server default instead of being pinned to
 an explicit null.
 
-``idempotency_key`` / ``client_requested_at`` on ``scoped_history`` are sent
-only when not ``None``. The server learns those two fields in a later change;
-until then a ``None`` must leave the request body byte-identical to a caller
-that never heard of them.
+``idempotency_key`` / ``client_requested_at`` / ``subject_epochs`` on
+``scoped_history`` and ``forget_epoch`` on ``scoped_forget`` are sent only
+when not ``None``: a ``None`` leaves the request body byte-identical to a
+caller that never heard of them. A keyed ``scoped_history`` retry the server
+already completed answers ``duplicate: true`` in the same success shape, so
+it reads as a success here.
 
 Bodies are serialized here, not by httpx (``json.dumps`` compact separators,
 ``ensure_ascii=False``, UTF-8), so the bytes on the wire do not depend on the
@@ -50,7 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -105,6 +107,10 @@ class ScopedBatchResult:
         return self.ok
 
 
+# Subject keys per GET /forget_epochs (the server rejects larger requests).
+_FORGET_EPOCHS_BATCH = 64
+
+
 class ScopedMemoryError(RuntimeError):
     """A scoped memory read could not produce a result.
 
@@ -152,6 +158,13 @@ class ScopedMemoryClient:
         self._retry_delays = tuple(float(delay) for delay in retry_delays)
         self._sleep = sleep
 
+    def with_retry_delays(self, retry_delays: Sequence[float]) -> "ScopedMemoryClient":
+        """Return a client for the same server and HTTP client with another 502 back-off."""
+        return ScopedMemoryClient(
+            base_url=self._base_url, http=self._http,
+            retry_delays=retry_delays, sleep=self._sleep,
+        )
+
     # ------------------------------------------------------------------ wire
 
     def _client(self) -> httpx.AsyncClient:
@@ -173,7 +186,7 @@ class ScopedMemoryClient:
         url: str,
         *,
         body: dict[str, Any] | None = None,
-        params: dict[str, str] | None = None,
+        params: dict[str, str] | list[tuple[str, str]] | None = None,
         timeout: float,
         retry: bool,
     ) -> httpx.Response:
@@ -302,6 +315,44 @@ class ScopedMemoryClient:
             raise ScopedMemoryError("scoped_subjects returned no subjects list")
         return [row for row in subjects if isinstance(row, dict)]
 
+    async def get_forget_epochs(
+        self, lanlan: str, subject_keys: Iterable[str],
+    ) -> dict[str, int]:
+        """Current server-side forget fence of each subject key.
+
+        Read-only ``GET .../forget_epochs?subject=...`` answering
+        ``{"epochs": {key: epoch}}``; keys without a tombstone are absent.
+        Anything else (transport error, non-2xx, malformed body) raises
+        ``ScopedMemoryError``: an unknown fence must not read as none.
+        """
+        keys = list(dict.fromkeys(subject_keys))
+        url = self._url(lanlan, "forget_epochs")
+        merged: dict[str, int] = {}
+        # 服务端一次最多认 _FORGET_EPOCHS_BATCH 个 key：分批查、合并结果
+        for start in range(0, len(keys), _FORGET_EPOCHS_BATCH):
+            batch = keys[start:start + _FORGET_EPOCHS_BATCH]
+            try:
+                response = await self._send(
+                    "GET", url, params=[("subject", key) for key in batch],
+                    timeout=_READ_TIMEOUT_S, retry=False,
+                )
+            except httpx.HTTPError as exc:
+                raise ScopedMemoryError(f"forget_epochs failed: {exc}") from exc
+            if not response.is_success:
+                raise ScopedMemoryError(f"forget_epochs failed: HTTP {response.status_code}")
+            try:
+                payload = _response_json(response)
+            except ValueError as exc:
+                raise ScopedMemoryError("forget_epochs returned invalid JSON") from exc
+            epochs = payload.get("epochs") if isinstance(payload, dict) else None
+            if not isinstance(epochs, dict) or not all(
+                isinstance(key, str) and isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                for key, value in epochs.items()
+            ):
+                raise ScopedMemoryError("forget_epochs returned a malformed epochs map")
+            merged.update({key: value for key, value in epochs.items() if key in batch})
+        return merged
+
     # ----------------------------------------------------------------- writes
 
     async def post_mentions(
@@ -337,14 +388,23 @@ class ScopedMemoryClient:
             return False
         return True
 
-    async def post_forget(self, lanlan: str, *, subject: dict) -> bool:
+    async def post_forget(
+        self, lanlan: str, *, subject: dict, forget_epoch: int | None = None,
+    ) -> bool:
         """Erase everything stored for one exact subject. Idempotent.
+
+        ``forget_epoch`` is the client-side erase generation of this subject
+        (sent only when not ``None``); the server keeps it as a tombstone and
+        drops keyed history products stamped with a lower generation.
 
         ``True`` only when the server confirms ``status: "forgotten"``; a
         truncated, non-JSON or wrong-shaped 2xx body is a failed erase.
         """
+        body: dict[str, Any] = {"subject": subject}
+        if forget_epoch is not None:
+            body["forget_epoch"] = forget_epoch
         response = await self._post_write(
-            self._url(lanlan, "scoped_forget"), {"subject": subject},
+            self._url(lanlan, "scoped_forget"), body,
             timeout=_FORGET_TIMEOUT_S, what="scoped_forget",
         )
         if response is None:
@@ -367,6 +427,7 @@ class ScopedMemoryClient:
         messages: list[dict],
         idempotency_key: str | None = None,
         client_requested_at: float | None = None,
+        subject_epochs: dict[str, int] | None = None,
         speaker_label: str | None = None,
         speaker_tier: str | None = None,
         speaker_activity_events: list[dict] | None = None,
@@ -374,11 +435,14 @@ class ScopedMemoryClient:
         speaker_id: str | None = None,
         speaker_is_owner: bool = False,
         display_name: str | None = None,
+        language: str | None = None,
     ) -> bool:
         """Extract scoped facts from one subject's history batch.
 
         The single-subject shape of ``/scoped_history``. The speaker fields
         follow the QQ reference: each is sent only when it carries a value.
+        ``language`` (the language the history was recorded in) is sent only
+        when it is a supported code, like ``scoped_context``.
         """
         body: dict[str, Any] = {
             "input_history": _encode_history(messages),
@@ -398,7 +462,9 @@ class ScopedMemoryClient:
             body["speaker_is_owner"] = True
         if display_name:
             body["display_name"] = display_name
-        _put_retry_identity(body, idempotency_key, client_requested_at)
+        if is_supported_language_code(language):
+            body["language"] = language
+        _put_retry_identity(body, idempotency_key, client_requested_at, subject_epochs)
         response = await self._post_write(
             self._url(lanlan, "scoped_history"), body,
             timeout=_HISTORY_TIMEOUT_S, what="scoped_history",
@@ -427,6 +493,8 @@ class ScopedMemoryClient:
         segments: list[dict],
         idempotency_key: str | None = None,
         client_requested_at: float | None = None,
+        subject_epochs: dict[str, int] | None = None,
+        language: str | None = None,
     ) -> ScopedBatchResult:
         """Extract facts for several single-speaker segments in one call.
 
@@ -439,7 +507,9 @@ class ScopedMemoryClient:
         only when every segment came back ``"ok"``). The server commits the
         successful segments and reports them in request order, so callers
         retry only ``failed_positions`` instead of re-extracting the whole
-        batch. An empty ``segments`` raises ``ValueError`` without a request
+        batch. A keyed batch (``idempotency_key``) succeeds or fails as a
+        whole: any unsettled position marks every position failed, and the
+        caller retries the identical batch under the same key. An empty ``segments`` raises ``ValueError`` without a request
         (the server rejects it and there would be nothing to retry).
         """
         if not segments:
@@ -448,7 +518,10 @@ class ScopedMemoryClient:
             raise ValueError("post_history_batch needs at least one segment")
         wire_segments = [_wire_segment(segment) for segment in segments]
         body: dict[str, Any] = {"segments": wire_segments}
-        _put_retry_identity(body, idempotency_key, client_requested_at)
+        # 同单条形状：只在是受支持的语言码时才上线（批次共用一个 language）
+        if is_supported_language_code(language):
+            body["language"] = language
+        _put_retry_identity(body, idempotency_key, client_requested_at, subject_epochs)
         response = await self._post_write(
             self._url(lanlan, "scoped_history"), body,
             timeout=_HISTORY_TIMEOUT_S, what="scoped_history segments",
@@ -473,6 +546,10 @@ class ScopedMemoryClient:
             isinstance(result, dict) and result.get("status") == "ok" and _trust_settled(result)
             for result in results
         ))
+        if idempotency_key is not None and outcome.failed_positions:
+            # 带键批次在服务端整键成败（信赖池没落盘时整键保留 pending）：只能同键整批重试，
+            # 只重试失败位的子集请求与键记录的请求身份对不上、会被 422。所以整批都算失败
+            outcome = none_ok
         if outcome.failed_positions:
             logger.warning(
                 "scoped_history segments not extracted: positions %s",
@@ -513,13 +590,16 @@ def _put_retry_identity(
     body: dict[str, Any],
     idempotency_key: str | None,
     client_requested_at: float | None,
+    subject_epochs: dict[str, int] | None = None,
 ) -> None:
-    # None 时两个键都不出现：服务端还不认识它们，不带时请求体须与旧调用方
-    # 逐字节一致；非 None 原样带上，不做任何改写。
+    # None 时这几个键都不出现：不带时请求体须与旧调用方逐字节一致；
+    # 非 None 原样带上，不做任何改写。
     if idempotency_key is not None:
         body["idempotency_key"] = idempotency_key
     if client_requested_at is not None:
         body["client_requested_at"] = client_requested_at
+    if subject_epochs is not None:
+        body["subject_epochs"] = dict(subject_epochs)
 
 
 def _wire_segment(segment: dict[str, Any]) -> dict[str, Any]:
