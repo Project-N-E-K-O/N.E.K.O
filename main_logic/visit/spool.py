@@ -1838,9 +1838,10 @@ class VisitSpool:
         for visit_id, files in by_visit.items():
             if visit_id in live_ids:
                 continue
-            if any(suffix == UPLOAD_JSONL_SUFFIX for suffix, _p, _st in files):
-                # 上传流水还没封存：头行缺 own_visit_uid 的旧流水封存时要从 state.json / 记忆 spool
-                # 补账号，这里删了就封成无主文件、再也传不上去。封存之后下一轮再回收
+            if any(suffix in _UPLOAD_SUFFIXES for suffix, _p, _st in files):
+                # 还有待传文件（与第 1 步同一口径）：流水封存时要从 state.json / 记忆 spool 补账号与
+                # 结束原因，只剩上传文件时要拿 state.json 核对角色与账号、给无主旧文件补账号。
+                # 整场留到上传成功或到期放弃、待传文件删掉之后，下一轮再回收
                 continue
             state = _try_read_state(visit_path(spool_dir, visit_id, STATE_SUFFIX))
             if state is None or not transcript_releasable(state):
@@ -1906,9 +1907,10 @@ class VisitSpool:
            committing) are reclaimed, oldest first, until it fits; a
            committing / failed visit keeps its ``state.json``. Unsettled visits, however
            large, and pending ``.upload.json`` / ``.upload.jsonl`` files are
-           never deleted for size (a visit whose ``.upload.jsonl`` is not
-           sealed yet keeps all its files: sealing may need its ``state.json``
-           or memory spool for the owning account); the admission cap
+           never deleted for size (a visit with a pending upload keeps all its
+           files: sealing may need its ``state.json`` or memory spool for the
+           owning account, and a lone sealed upload is checked against its
+           ``state.json``); the admission cap
            ``VISIT_UPLOAD_PENDING_CAP_BYTES`` bounds them instead.
 
         ``uploads`` narrows step 1 for the pending uploads: ``"all"`` (the

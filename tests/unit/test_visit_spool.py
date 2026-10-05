@@ -1824,18 +1824,20 @@ def test_digest_membership_must_match_the_batches(membership, ok):
             validate_state(damaged)
 
 
-async def test_cap_sweep_keeps_a_visit_whose_upload_stream_is_not_sealed(tmp_path, monkeypatch):
+@pytest.mark.parametrize("suffix", [".upload.jsonl", ".upload.json"])
+async def test_cap_sweep_keeps_a_visit_with_a_pending_upload(tmp_path, monkeypatch, suffix):
     from main_logic.visit import spool as spool_mod
 
     monkeypatch.setattr(spool_mod, "VISIT_SPOOL_DIR_CAP_BYTES", 0)
     sp = VisitSpool(tmp_path, vid(64))
     await sp.write_state(dict(settled(state_for()), debrief_choice="forget"))
     sp.jsonl_path.write_bytes(b"x" * 1024)
-    stream = sp.jsonl_path.with_name(f"{vid(64)}.upload.jsonl")
-    stream.write_text(json.dumps({"kind": "header", "visit_id": vid(64)}) + "\n", encoding="utf-8")
+    pending = sp.jsonl_path.with_name(f"{vid(64)}{suffix}")
+    pending.write_text(json.dumps({"kind": "header", "visit_id": vid(64)}) + "\n", encoding="utf-8")
     await VisitSpool.sweep(tmp_path, NOW)
-    # 上传流水还没封存：旧流水封存时要从 state.json / 记忆 spool 补账号，容量回收不能先删掉它们
-    assert sp.state_path.exists() and sp.jsonl_path.exists() and stream.exists()
+    # 还有待传文件：封存要从 state.json / 记忆 spool 补账号，只剩上传文件时要拿 state.json 核对身份，
+    # 容量回收不能先删掉它们
+    assert sp.state_path.exists() and sp.jsonl_path.exists() and pending.exists()
 
 
 # ── 清除这个人：state 读不出 / 不合 schema 的口径（PR #3293 评审）──
