@@ -247,6 +247,7 @@ reset
 if NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=30m run; then exit 1; fi
 grep -q 'Invalid startup grace' "$ROOT/state/watchdog.log"
 
+: > "$ROOT/syslog"
 log_size=$(stat -c %s "$ROOT/state/watchdog.log")
 chmod 755 "$ROOT/state"
 if run; then exit 1; fi

@@ -30,6 +30,7 @@
 | 检查项 | 说明 |
 |---|---|
 | **辅助镜像可拉取** | init 和可选安装器使用 Docker Hub 的 `alpine:3.20`，不经过主镜像的 GHCR 代理；内地 ECS 须预先配置可信 Docker Hub 加速/代理或加载经核验的离线镜像，并验证 `docker pull alpine:3.20` 成功。init 拉取失败会阻止主服务启动；不要只验证主镜像 |
+| **Docker Engine 安装方式** | 本指南的固定 cron/脚本 PATH 未含 /snap/bin，不支持 snap 版 Docker；使用官方 apt 安装的 Docker Engine 并核对可执行路径。不要因安装器成功就认为宿主探测可运行 |
 | **Docker Compose V2** | 需要 **2.24.4 及以上**以支持 `!override`，不能用旧版 Python 的 `docker-compose` v1；需要保留仓库中的 `docker/docker-compose.yml`，不能只下载本目录 |
 | **宿主机有 `bash`** | 看门狗脚本 shebang 为 `#!/bin/bash` |
 | **宿主机有 `curl`、`timeout`、`flock`** | `curl` 检查完整 HTTP 响应；`timeout`（coreutils）限制 Docker 命令；`flock`（util-linux）防止并发重启。可运行 `sudo apt install curl coreutils util-linux` |
@@ -160,7 +161,7 @@ neko-init ──(success)──▶ neko-main ──▶ 48911(HTTP)/48912(HTTPS�
 
 开发者可运行 `sudo bash ./test-watchdog.sh` 验证恢复逻辑。测试将 Docker/HTTP 调用替换为模拟程序，安装路径改为临时目录，使用真实 Linux 权限、文件锁和计数读写；不安装真实 cron，也不重启容器。此 harness 使用宿主 GNU 工具，尚未验证实际 `alpine:3.20` 安装器中的 BusyBox 行为；通过此测试不代表已完成安装器镜像或 ECS 实机部署验收。
 
-维护时先执行 `sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled`，等待正在执行的探测/重启结束并暂停，再停容器或执行 `docker pause`；恢复运行后 `sudo rm -f /opt/neko/disabled`。重新安装不会解除暂停。安装器会写入宿主 root cron，只在信任这两个脚本和安装器镜像的主机上使用；多套部署不要共用 `neko` 容器名及 `/opt/neko`。
+维护时先执行 `sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled`，等待正在执行的探测/重启结束并暂停，再停容器、执行 `docker pause` 或手动 `docker restart` / `docker compose restart`；恢复运行后 `sudo rm -f /opt/neko/disabled`。重新安装不会解除暂停。安装器会写入宿主 root cron，只在信任这两个脚本和安装器镜像的主机上使用；多套部署不要共用 `neko` 容器名及 `/opt/neko`。
 
 ---
 
@@ -196,7 +197,7 @@ docker compose up -d
 
 常用端口与目录：
 - 端口：继承官方 `48911→80`（HTTP）、`48912→443`（HTTPS），默认绑定所有接口。不发布预留的 48915。
-- **浏览器访问**：默认 `http://<你的IP>:48911` 可配对；推荐 `https://<你的域名或IP>:48912`。严格模式设置 `NEKO_REQUIRE_HTTPS=1`；按实际入口设置防火墙，可限制来源 IP。
+- **浏览器访问**：默认 `http://<你的IP>:48911` 可配对；推荐 `https://<你的域名或IP>:48912`。严格模式设置 `NEKO_REQUIRE_HTTPS=1`；优先通过云安全组按实际入口限制来源 IP；Docker 发布端口的宿主规则边界见第 7 节，不能仅凭 ufw/INPUT 规则认为已隔离。
 - 数据卷：`./neko-home → /home/neko`（用户数据、SSL 证书）
 - 日志卷：`./logs → /app/logs`
 - 默认不挂载 Nginx 配置目录。当前入口脚本每次启动都会生成 `neko-proxy.conf`，不读取 `NEKO_KEEP_CUSTOM_NGINX_CONF`；需要自定义 TLS/代理时使用外层网关或经过验证的自定义镜像，不把无效变量当作配置保护。
@@ -264,7 +265,9 @@ echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf   # 永久生效
 
 ## 7. 网络安全与防御（CrowdSec 集团军）
 
-既然把服务暴露到了公网，就必须给它请一个免费的保镖。
+本节用于宿主 SSH 等已配置日志采集/检测的服务；仅安装 CrowdSec 和 bouncer 并不证明能够检测 N.E.K.O. 实例凭证爆破。应用入口检测还需实际日志采集、适用规则与独立验收，不能以此代替凭证和 HTTPS 防护。
+
+限制公网来源优先在阿里云安全组等云侧访问控制配置，并分别验证允许/拒绝来源及实际 IPv4/IPv6 入口。Docker 发布的容器端口可能绕过 ufw/宿主 INPUT 规则；[Docker 官方 iptables 文档](https://docs.docker.com/engine/network/firewall-iptables/)要求在适用的转发路径处理容器流量。不要仅检查宿主规则存在就认为 48911/48912 已受保护。
 
 ### 1. 安装并配置 CrowdSec
 
@@ -273,6 +276,16 @@ curl -s https://install.crowdsec.net | sudo sh
 sudo apt install crowdsec
 sudo apt install crowdsec-firewall-bouncer-iptables   # 防火墙执行器，实现底层拦截
 ```
+
+使用 Docker **iptables 后端**和 iptables bouncer 时，按[官方 CrowdSec 文档](https://docs.crowdsec.net/docs/bouncers/firewall/)在实际 bouncer 配置中合并（不要覆盖其他设置）：
+
+```yaml
+iptables_chains:
+  - INPUT
+  - DOCKER-USER
+```
+
+确认链存在、bouncer 成功加载，并从外部受控来源验证容器端口的封禁效果，同时保留管理通道和回滚方案。Docker nftables 后端不使用同样的 DOCKER-USER 配置，须按对应 Docker/bouncer 文档设置转发规则，不能照搬该示例。本指南未在实际主机执行或验收这些防火墙操作。
 
 ### 2. 核心安全建议
 
