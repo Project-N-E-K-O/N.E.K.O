@@ -1822,3 +1822,17 @@ def test_digest_membership_must_match_the_batches(membership, ok):
     else:
         with pytest.raises(SpoolStateError):
             validate_state(damaged)
+
+
+async def test_cap_sweep_keeps_a_visit_whose_upload_stream_is_not_sealed(tmp_path, monkeypatch):
+    from main_logic.visit import spool as spool_mod
+
+    monkeypatch.setattr(spool_mod, "VISIT_SPOOL_DIR_CAP_BYTES", 0)
+    sp = VisitSpool(tmp_path, vid(64))
+    await sp.write_state(dict(settled(state_for()), debrief_choice="forget"))
+    sp.jsonl_path.write_bytes(b"x" * 1024)
+    stream = sp.jsonl_path.with_name(f"{vid(64)}.upload.jsonl")
+    stream.write_text(json.dumps({"kind": "header", "visit_id": vid(64)}) + "\n", encoding="utf-8")
+    await VisitSpool.sweep(tmp_path, NOW)
+    # 上传流水还没封存：旧流水封存时要从 state.json / 记忆 spool 补账号，容量回收不能先删掉它们
+    assert sp.state_path.exists() and sp.jsonl_path.exists() and stream.exists()

@@ -2159,3 +2159,51 @@ def test_discarded_records_do_not_move_the_upload_end_time():
     # 被丢弃的记录带的时间戳不能挪动结束时间与时长
     assert doc["request"]["ended_at"] == 1002.0
     assert doc["request"]["usage"]["duration_s"] == 2
+
+
+async def test_report_carries_the_unavailable_marker_even_when_the_file_cannot_be_rewritten(tmp_path, monkeypatch):
+    from main_logic.visit import recovery as recovery_mod
+
+    v = vid(107)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    (d / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v, "include_transcript": True}), encoding="utf-8")
+    real_write = recovery_mod._write_private_json
+
+    def disk_full(path, data):
+        if Path(path).parent == reports_dir:
+            raise OSError("no space left on device")
+        return real_write(path, data)
+
+    monkeypatch.setattr(recovery_mod, "_write_private_json", disk_full)
+
+    async def reject(_visit_id, _doc):
+        return "parts_out_of_range"
+
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
+    # 举报文件写不进标记：提交的那份照样带上，Servers 才知道要求附带的转录已经没了
+    (visit_id, doc), = reports.calls
+    assert doc["transcript_unavailable"] == "parts_out_of_range" and doc["include_transcript"] is True
+
+
+async def test_failed_upload_progress_rewrite_does_not_extend_the_retention(tmp_path):
+    v = vid(108)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    sealed = d / f"{v}.upload.json"
+    sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    old = time.time() - 6 * 86400
+    os.utime(sealed, (old, old))
+
+    async def multipart(_visit_id, doc):
+        # 分片上传把进度写回文件再回 False（回调契约允许）
+        sealed.write_text(json.dumps({**doc, "parts_done": 2}), encoding="utf-8")
+        return False
+
+    await _recover(tmp_path, upload_transcript=multipart)
+    # 保留期按 mtime 算：重试不能把 7 天期限往后推，否则失败的上传永远不过期
+    assert abs(sealed.stat().st_mtime - old) < 2 and json.loads(sealed.read_text(encoding="utf-8"))["parts_done"] == 2

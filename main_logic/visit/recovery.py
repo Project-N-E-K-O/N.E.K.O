@@ -131,6 +131,8 @@ class RecoveryReport:
     uploads: dict[str, bool] = field(default_factory=dict)
     reports: dict[str, bool] = field(default_factory=dict)
     swept: int = 0
+    # 本轮判定为不可用的转录及原因：举报文件写不进标记时，提交的那份照样带上
+    transcript_unavailable: dict[str, str] = field(default_factory=dict)
 
 
 # ── 上传流水 → 上传文件 ───────────────────────────────────────────────
@@ -707,7 +709,7 @@ async def _upload_pending(
             pending.add(visit_id)
         else:
             # 流水坏了、也没有有效的封存文件：这场转录再也传不上去，排队的举报记下原因
-            await _mark_report_transcript_unavailable(config_dir, visit_id, "corrupt")
+            await _mark_report_transcript_unavailable(config_dir, visit_id, "corrupt", report)
     for visit_id in sorted(sealed):
         if live(visit_id):
             # 在飞场次的转录还没传：它排队的举报也不能先交
@@ -730,12 +732,16 @@ async def _upload_pending(
             if not await _drop_corrupt_sealed(spool_dir, visit_id):
                 pending.add(visit_id)
             else:
-                await _mark_report_transcript_unavailable(config_dir, visit_id, "corrupt")
+                await _mark_report_transcript_unavailable(config_dir, visit_id, "corrupt", report)
             continue
         if upload_transcript is None:
             pending.add(visit_id)
             continue
         terminal_reason = None
+        try:
+            before = await asyncio.to_thread(path.stat)
+        except OSError:
+            before = None
         try:
             outcome = await upload_transcript(visit_id, doc)
             ok = bool(outcome)
@@ -747,6 +753,10 @@ async def _upload_pending(
             ok = False
         report.uploads[visit_id] = ok
         if not ok:
+            if before is not None:
+                # 分片上传可以把进度写回这份文件再回 False：保留期按 mtime 算，不能让每次重试
+                # 把 7 天的期限往后推，否则失败的上传永远不过期、排队的举报一直等着
+                await asyncio.to_thread(_restore_mtime, path, before)
             pending.add(visit_id)
             continue
         try:
@@ -757,7 +767,7 @@ async def _upload_pending(
             logger.warning("visit recovery: uploaded %s but cannot delete it: %s", path.name, exc)
         if terminal_reason is not None:
             # 先在排队的举报里记下转录为何不可用，再放它提交（设计 §4.7）
-            await _mark_report_transcript_unavailable(config_dir, visit_id, terminal_reason)
+            await _mark_report_transcript_unavailable(config_dir, visit_id, terminal_reason, report)
         # 该场转录上传成功后，接着提交它排队的举报
         await _submit_report(config_dir, visit_id, submit_report, report)
     return pending
@@ -775,6 +785,15 @@ async def _drop_corrupt_sealed(spool_dir: Path, visit_id: str) -> bool:
         logger.warning("visit recovery: cannot delete corrupt upload %s: %s", path.name, exc)
         return False
     return True
+
+
+def _restore_mtime(path: Path, before: os.stat_result) -> None:
+    try:
+        current = path.stat()
+        if current.st_mtime_ns > before.st_mtime_ns:
+            os.utime(path, ns=(current.st_atime_ns, before.st_mtime_ns))
+    except OSError as exc:
+        logger.warning("visit recovery: cannot restore the mtime of %s: %s", path.name, exc)
 
 
 def _load_json(path: Path) -> Any:
@@ -809,6 +828,10 @@ async def _submit_report(
     if transcript_gated and not (isinstance(doc, dict) and doc.get("include_transcript") is False):
         # 转录还没传上去：附转录的举报等它；明确不附转录的举报不受转录上传的闸
         return
+    unavailable = report.transcript_unavailable.get(visit_id)
+    if unavailable and not doc.get("transcript_unavailable"):
+        # 举报文件没写进不可用标记（磁盘满 / 权限）：提交的那份照样带上，Servers 才知道转录已经没了
+        doc = {**doc, "transcript_unavailable": unavailable}
     try:
         ok = bool(await submit_report(visit_id, doc))
     except Exception as exc:  # noqa: BLE001
@@ -833,8 +856,15 @@ def _expired_upload_visits(deleted: Iterable[Path]) -> set[str]:
     return out
 
 
-async def _mark_report_transcript_unavailable(config_dir: Path, visit_id: str, reason: str) -> None:
-    """Record on a queued report why its transcript will never be uploaded (diagnostics)."""
+async def _mark_report_transcript_unavailable(
+    config_dir: Path, visit_id: str, reason: str, report: RecoveryReport,
+) -> None:
+    """Record on a queued report why its transcript will never be uploaded.
+
+    The reason is also kept on ``report`` so the submission of this pass
+    carries it even when the report file cannot be rewritten.
+    """
+    report.transcript_unavailable.setdefault(visit_id, reason)
     path = visit_path(config_dir / VISIT_REPORTS_DIRNAME, visit_id, ".json")
     try:
         doc = await asyncio.to_thread(_load_json, path)
@@ -842,7 +872,7 @@ async def _mark_report_transcript_unavailable(config_dir: Path, visit_id: str, r
             return
         await asyncio.to_thread(_write_private_json, path, {**doc, "transcript_unavailable": reason})
     except (OSError, ValueError) as exc:
-        # 只是诊断字段：记不上也照常提交举报
+        # 文件里记不上：本轮提交时由 report 上的那份补上
         logger.warning("visit recovery: cannot mark report %s transcript_unavailable: %s", path.name, exc)
 
 
@@ -950,7 +980,7 @@ async def visit_spool_recovery(
             remaining = [visit_path(spool_dir, visit_id, suffix) for suffix in (UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX)]
             if await asyncio.to_thread(lambda paths=remaining: any(path.exists() for path in paths)):
                 continue
-            await _mark_report_transcript_unavailable(config_dir, visit_id, "expired")
+            await _mark_report_transcript_unavailable(config_dir, visit_id, "expired", report)
     except Exception as exc:  # noqa: BLE001
         logger.error("visit recovery: sweep failed: %r", exc)
     for visit_id in (await VisitSpool.list_visit_ids(config_dir, (STATE_SUFFIX,)) if names_settled else []):

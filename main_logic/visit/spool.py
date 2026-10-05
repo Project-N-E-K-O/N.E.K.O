@@ -1671,6 +1671,10 @@ class VisitSpool:
         for visit_id, files in by_visit.items():
             if is_live is not None and is_live(visit_id):
                 continue
+            if any(suffix == UPLOAD_JSONL_SUFFIX for suffix, _p, _st in files):
+                # 上传流水还没封存：头行缺 own_visit_uid 的旧流水封存时要从 state.json / 记忆 spool
+                # 补账号，这里删了就封成无主文件、再也传不上去。封存之后下一轮再回收
+                continue
             state = _try_read_state(visit_path(spool_dir, visit_id, STATE_SUFFIX))
             if state is None or not transcript_releasable(state):
                 continue
@@ -1734,7 +1738,9 @@ class VisitSpool:
            committing) are reclaimed, oldest first, until it fits; a
            committing / failed visit keeps its ``state.json``. Unsettled visits, however
            large, and pending ``.upload.json`` / ``.upload.jsonl`` files are
-           never deleted for size; the admission cap
+           never deleted for size (a visit whose ``.upload.jsonl`` is not
+           sealed yet keeps all its files: sealing may need its ``state.json``
+           or memory spool for the owning account); the admission cap
            ``VISIT_UPLOAD_PENDING_CAP_BYTES`` bounds them instead.
 
         A file that cannot be deleted (locked, no permission, a directory) is
