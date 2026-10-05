@@ -796,6 +796,21 @@ def _forget_shutdown_step(task: asyncio.Task[object]) -> None:
     _consume_shutdown_task_result(task)
 
 
+def _log_abandoned_shutdown_step_outcome(what: str):
+    """Report how a step ended after _run_shutdown_step stopped waiting on it."""
+
+    def _report(task: asyncio.Task[object]) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning(
+                "%s failed after shutdown stopped waiting for it: %s", what, exc
+            )
+
+    return _report
+
+
 async def _run_shutdown_step(
     factory,
     *,
@@ -885,12 +900,14 @@ async def _run_shutdown_step(
             "%s still running when shutdown was cancelled; no longer waiting for it",
             what,
         )
+        task.add_done_callback(_log_abandoned_shutdown_step_outcome(what))
     elif not task.done():
         logger.warning(
             "%s did not stop within %.1fs after cancellation; moving on",
             what,
             _SHUTDOWN_STEP_CANCEL_GRACE_SECONDS,
         )
+        task.add_done_callback(_log_abandoned_shutdown_step_outcome(what))
     elif task.cancelled():
         if not timed_out:
             logger.warning("%s cancelled itself during shutdown", what)

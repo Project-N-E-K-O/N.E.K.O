@@ -282,6 +282,46 @@ async def test_caller_cancel_ends_the_wait_on_a_step_without_deadline() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_abandoned_step_failure_is_still_logged(monkeypatch) -> None:
+    """A step shutdown stopped waiting on must not fail silently afterwards."""
+    from app import main_server
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        main_server.logger,
+        "warning",
+        lambda msg, *args: warnings.append(msg % args),
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stuck_then_fails() -> None:
+        entered.set()
+        await release.wait()
+        raise RuntimeError("upload failed late")
+
+    async def shutdown_like() -> asyncio.CancelledError | None:
+        return await main_server._run_shutdown_step(
+            stuck_then_fails, what="late", deadline_monotonic=None
+        )
+
+    task = asyncio.create_task(shutdown_like())
+    await entered.wait()
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=2.0)
+    stuck = [
+        t for t in main_server._SHUTDOWN_STEP_TASKS if t.get_name() == "shutdown:late"
+    ]
+    release.set()
+    await asyncio.gather(task, *stuck, return_exceptions=True)
+    await asyncio.sleep(0)
+    assert done
+    late = [w for w in warnings if "upload failed late" in w]
+    assert late == ["late failed after shutdown stopped waiting for it: upload failed late"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_shutdown_step_skips_a_step_whose_deadline_already_passed() -> None:
     from app.main_server import _run_shutdown_step
 
