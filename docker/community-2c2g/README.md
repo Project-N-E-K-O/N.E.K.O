@@ -159,7 +159,7 @@ neko-init ──(success)──▶ neko-main ──▶ 48911(HTTP)/48912(HTTPS�
 
 安装器拒绝符号链接和非 root 私有目录，原子安装脚本与 cron。状态、锁、日志位于 root:root、0700 的 `/opt/neko/`；计数损坏或读写失败会报错退出，不会静默归零。加锁前的配置、依赖和权限错误写 stderr，并在安全路径下追加 watchdog.log；有 `logger` 时同时写 syslog（可查 `journalctl -t neko-watchdog`，取决于宿主日志配置）。不安全目录或日志文件不会被写入。探测失败的状态变化日志含宿主 HTTP 状态码或宿主 curl/容器内主服务探测退出码，帮助区分入口与后端问题；不记录响应正文或原始错误输出。日志 `/opt/neko/watchdog.log` 无自动轮转，长期运行建议配置 logrotate。
 
-开发者可运行 `sudo bash ./test-watchdog.sh` 验证恢复逻辑。测试将 Docker/HTTP 调用替换为模拟程序，安装路径改为临时目录，使用真实 Linux 权限、文件锁和计数读写；不安装真实 cron，也不重启容器。此 harness 使用宿主 GNU 工具，尚未验证实际 `alpine:3.20` 安装器中的 BusyBox 行为；通过此测试不代表已完成安装器镜像或 ECS 实机部署验收。
+开发者可运行 `sudo bash ./test-watchdog.sh` 验证恢复逻辑。测试将 Docker/HTTP 调用替换为模拟程序，安装路径改为临时目录，使用真实 Linux 权限、文件锁和计数读写；不安装真实 cron，也不重启容器。harness 会在 mktemp 创建的临时目录中执行 mock，通常位于 /tmp（或进程的 TMPDIR）；该目录必须允许执行。若 /tmp 挂载为 noexec，应由管理员为测试指定可信、root 私有且允许执行的 TMPDIR，并确认 sudo 后测试进程仍收到该变量；不要为测试解除整机 /tmp 的 noexec，也不要使用其他用户可写的共享目录。权限错误退出 126 不属于看门狗逻辑验证结果。此 harness 使用宿主 GNU 工具，尚未验证实际 `alpine:3.20` 安装器中的 BusyBox 行为；通过此测试不代表已完成安装器镜像或 ECS 实机部署验收。
 
 维护时先执行 `sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled`，等待正在执行的探测/重启结束并暂停，再停容器、执行 `docker pause` 或手动 `docker restart` / `docker compose restart`；恢复运行后 `sudo rm -f /opt/neko/disabled`。重新安装不会解除暂停。安装器会写入宿主 root cron，只在信任这两个脚本和安装器镜像的主机上使用；多套部署不要共用 `neko` 容器名及 `/opt/neko`。
 
