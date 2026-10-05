@@ -373,6 +373,9 @@ async def test_expand_subjects_reads_the_roster_strictly(tmp_path):
         "chars", {"c_" + "9" * 24: {"char_tag": "f" * 32, "last_seen": 1.0}}),
     lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"]["chars"].__setitem__(
         derive_peer_char_id("peer_x", "f" * 32), {"last_seen": 1.0}),
+    # 超出浮点范围的超大整数时间戳：isfinite 会抛 OverflowError，必须判为损坏而不是让清除 500
+    lambda d: d["accounts"]["own_a"]["peers"]["peer_x"]["by_char"]["A"]["chars"][
+        derive_peer_char_id("peer_x", "f" * 32)].__setitem__("last_seen", 10 ** 400),
 ])
 async def test_strict_reads_reject_a_damaged_roster_structure(tmp_path, damage):
     # JSON 合法但结构坏了：严格读不能把它当成「没有条目」
@@ -749,3 +752,43 @@ def test_recall_subjects_reject_a_char_id_that_disagrees_with_the_tag():
     # 数字 / 布尔之类的畸形 id 按坏输入处理，不静默改用 tag 推出的值
     for bad in (7, True, 0):
         assert resolve_visit_recall_subjects(dict(base, peer_char_id=bad)) == []
+
+
+async def test_rename_merge_keeps_visit_counters(tmp_path):
+    from main_logic.visit.subjects import PeerRoster as _Roster, derive_pair_id as _pair, derive_peer_char_id as _cid
+
+    own, peer, tag = "a" * 24, "1" * 24, "f" * 32
+    roster = _Roster(tmp_path, own_uid=own)
+    common = dict(pair_id=_pair(own, peer), peer_char_id=_cid(peer, tag), char_tag=tag)
+    await roster.upsert(peer, "Old", now=1.0, visit_id="v" * 22, **common)
+    await roster.upsert(peer, "Old", now=2.0, visit_id="w" * 22, **common)
+    await roster.upsert(peer, "New", now=3.0, visit_id="x" * 22, **common)
+    await roster.rename_char("Old", "New")
+    entry = await roster.get_char_entry(peer, "New")
+    assert entry["visits"] == 3 and entry["last_visit_id"] == "x" * 22
+
+
+
+async def test_rename_merge_keeps_the_newer_last_visit_id(tmp_path):
+    from main_logic.visit.subjects import PeerRoster as _Roster, derive_pair_id as _pair, derive_peer_char_id as _cid
+
+    own, peer, tag = "a" * 24, "1" * 24, "f" * 32
+    roster = _Roster(tmp_path, own_uid=own)
+    common = dict(pair_id=_pair(own, peer), peer_char_id=_cid(peer, tag), char_tag=tag)
+    await roster.upsert(peer, "New", now=1.0, visit_id="v" * 22, **common)
+    await roster.upsert(peer, "Old", now=5.0, visit_id="w" * 22, **common)
+    await roster.rename_char("Old", "New")
+    await roster.upsert(peer, "New", now=6.0, visit_id="w" * 22, **common)    # 同一场再次登记
+    entry = await roster.get_char_entry(peer, "New")
+    assert entry["last_visit_id"] == "w" * 22 and entry["visits"] == 2
+
+
+@pytest.mark.parametrize("value, expected", [
+    (1.5, True), (3, True), (10 ** 400, False), (float("nan"), False), (float("inf"), False),
+    (True, False), ("1", False), (None, False),
+])
+def test_is_finite_number_never_raises(value, expected):
+    from main_logic.visit.subjects import is_finite_number
+
+    # 超出浮点范围的超大整数：isfinite 会抛 OverflowError，这里必须按「不是数」回 False
+    assert is_finite_number(value) is expected

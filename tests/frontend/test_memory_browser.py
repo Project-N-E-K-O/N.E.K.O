@@ -5814,3 +5814,57 @@ def test_the_insight_identity_list_does_not_latch_for_the_life_of_the_page(
         "the identity list was latched for the life of the page: "
         f"{len(requests)} request(s) after the TTL elapsed"
     )
+
+
+@pytest.mark.frontend
+def test_memory_browser_keeps_theater_capsule_read_only_on_save(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    """Theater capsules render read-only, survive clear, and post their source index."""
+    seed = json.loads(seed_memory_file.read_text(encoding="utf-8"))
+    seed.insert(2, {
+        "type": "system",
+        "data": {
+            "content": "共同守住了雨夜里的住处。",
+            "metadata": {
+                "source": "theater_numeric_v2",
+                "memory_tier": "episode_summary",
+                "story_id": "story_rain",
+                "session_id": "session_rain_1",
+            },
+        },
+    })
+    atomic_write_json(seed_memory_file, seed, ensure_ascii=False, indent=2)
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    save_requests: list[dict] = []
+    mock_page.on(
+        "request",
+        lambda request: save_requests.append(json.loads(request.post_data or "{}"))
+        if "/api/memory/recent_file/save" in request.url
+        else None,
+    )
+    mock_page.goto(f"{running_server}/memory_browser")
+
+    theater_row = mock_page.locator('#memory-chat-edit .chat-item[data-role="theater"]')
+    expect(theater_row).to_have_count(1, timeout=10000)
+    expect(theater_row).to_contain_text("共同守住了雨夜里的住处。")
+    expect(theater_row.locator("textarea")).to_have_count(0)
+    expect(theater_row.locator(".delete-btn")).to_have_count(0)
+
+    mock_page.locator("#clear-memory-btn").click()
+    expect(mock_page.locator("#memory-chat-edit .chat-item")).to_have_count(2, timeout=3000)
+    expect(theater_row).to_have_count(1)
+    mock_page.locator("#save-memory-btn").click()
+
+    deadline = time.monotonic() + 10.0
+    while not save_requests and time.monotonic() < deadline:
+        mock_page.wait_for_timeout(100)
+    assert save_requests
+    chat = save_requests[0]["chat"]
+    assert [(item["role"], item["source_index"], item["theater"]) for item in chat] == [
+        ("system", 0, False),
+        ("system", 2, True),
+    ]
+    assert chat[1]["text"] == "共同守住了雨夜里的住处。"

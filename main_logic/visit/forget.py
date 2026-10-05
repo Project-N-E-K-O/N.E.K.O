@@ -31,7 +31,8 @@ reuses the same log.
 Step order (each step idempotent, recorded in ``done_steps`` when done)::
 
     clear_last_summary          local roster write, no memory_server needed
-    forget:<kind>:<subject_id>  one /scoped_forget per subject
+    forget:<kind>:<subject_id>  bump the subject's forget epoch, then one
+                                /scoped_forget per subject
     remove_char                 only after every forget step is done
     wipe_spool                  null peer fields in related spool state/headers
     void_pending                drop staged pending work (callback, PR-08)
@@ -49,13 +50,18 @@ import copy
 import hashlib
 import json
 import os
+import secrets
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from config.visit_settings import VISIT_MEMORY_PLATFORM, VISIT_REVOCATIONS_DIRNAME
+from config.visit_settings import (
+    VISIT_FORGET_EPOCHS_FILENAME,
+    VISIT_MEMORY_PLATFORM,
+    VISIT_REVOCATIONS_DIRNAME,
+)
 from main_logic.visit.spool import VisitSpool
 from main_logic.visit.subjects import (
     PeerRoster,
@@ -68,7 +74,7 @@ from main_logic.visit.subjects import (
 )
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
-from utils.visit_wire import REVOCATION_ID_RE, revocation_path
+from utils.visit_wire import CLEARING_ID_RE, REVOCATION_ID_RE, id_path, revocation_path
 
 logger = get_module_logger(__name__, "Main")
 
@@ -382,6 +388,17 @@ class RevocationLog:
             atomic_write_json(path, record)
             return rev_id
 
+    def _pair_open_sync(self, peer_uid: str, own_char_uid: str) -> bool:
+        rev_id = revocation_id(self.own_uid, peer_uid, own_char_uid)
+        try:
+            return self._load_sync(rev_id) is not None
+        except (OSError, ValueError) as exc:
+            # 文件名就是 (own_uid, peer_uid, own_char_uid) 的撤销 id：这份读不出的日志一定属于这一对，
+            # 按「还在清除」处理（fail closed），但只挡这一对
+            logger.error("visit revocation log %s unreadable, treating the pair as being cleared: %s",
+                         rev_id, exc)
+            return True
+
     def _mark_done_sync(self, rev_id: str, step: str, now: float) -> None:
         path = self.path_for(rev_id)
         with path_lock(path):
@@ -417,7 +434,9 @@ class RevocationLog:
                 return False
 
     @staticmethod
-    def _list_dir_sync(directory: Path, own_uid: str | None) -> list[dict]:
+    def _list_dir_sync(
+        directory: Path, own_uid: str | None, unreadable_out: list[str] | None = None,
+    ) -> list[dict]:
         out = []
         unreadable: list[str] = []
         try:
@@ -440,7 +459,9 @@ class RevocationLog:
                 continue
             if own_uid is None or record["own_uid"] == own_uid:
                 out.append(record)
-        if unreadable:
+        if unreadable_out is not None:
+            unreadable_out.extend(unreadable)
+        elif unreadable:
             # 读不出来的日志不能当作「没有未完成的清除」：补录与建房闸都靠这份列表，
             # 跳过它等于放任新记忆写进正在清除的范围。属于哪个账号也读不出，一律上抛
             raise RevocationLogUnreadable(unreadable)
@@ -489,6 +510,17 @@ class RevocationLog:
             own_char=plan.own_char, now=now,
         )
 
+    async def is_pair_open(self, peer_uid: str, own_char_uid: str) -> bool:
+        """Whether this account has an unfinished log for ``(own_char_uid, peer_uid)``.
+
+        Reads only that pair's own log file: the file name is the revocation id
+        of ``(own_uid, peer_uid, own_char_uid)``, so a damaged log is attributed
+        to its pair by name alone, even when its content cannot be parsed. An
+        unreadable log of this pair counts as unfinished (fail closed); an
+        unreadable log of any other pair or account does not affect the answer.
+        """
+        return await asyncio.to_thread(self._pair_open_sync, peer_uid, own_char_uid)
+
     async def load(self, rev_id: str) -> dict | None:
         """Return the log document, or ``None`` once it is closed."""
         record = await asyncio.to_thread(self._load_sync, rev_id)
@@ -530,6 +562,330 @@ class RevocationLog:
         directory = Path(config_dir) / VISIT_REVOCATIONS_DIRNAME
         return await asyncio.to_thread(cls._list_dir_sync, directory, None)
 
+    @classmethod
+    async def list_all_open_with_unreadable(cls, config_dir: str | Path) -> tuple[list[dict], list[str]]:
+        """Return ``(readable unfinished logs of every account, ids of unreadable logs)`` without raising.
+
+        For the startup replay: one damaged log must not keep every other
+        clearing from being replayed. Callers still treat the unreadable ids
+        as unfinished (fail closed).
+        """
+        directory = Path(config_dir) / VISIT_REVOCATIONS_DIRNAME
+        unreadable: list[str] = []
+        logs = await asyncio.to_thread(cls._list_dir_sync, directory, None, unreadable)
+        return logs, unreadable
+
+
+# ── 清除代数（forget epoch）────────────────────────────────────────────
+
+
+def subject_key(subject: Mapping[str, Any]) -> str:
+    """Return ``"<subject_kind>:<subject_id>"`` (``MemorySubject.key``).
+
+    The key of the client forget epochs and of memory_server's tombstones.
+    """
+    clean = _clean_subject(subject)
+    return f"{clean['subject_kind']}:{clean['subject_id']}"
+
+
+class ForgetEpochsUnreadable(RuntimeError):
+    """``visit_forget_epochs.json`` exists but cannot be read; callers fail closed."""
+
+
+class ForgetEpochsUnsynced(RuntimeError):
+    """The server's current forget fences could not be read; callers retry later."""
+
+
+class ForgetEpochs:
+    """Per-subject forget generations ``config_dir/visit_forget_epochs.json``.
+
+    Document: ``{subject_key: int}``. A generation only ever increases and is
+    never deleted: a forget bumps every subject it erases (and persists that)
+    before sending ``/scoped_forget{forget_epoch}``; a digest run records the
+    generations current when it opens and sends them as ``subject_epochs``.
+    memory_server drops keyed history products whose generation is lower than
+    the subject's tombstone, so a digest started before a forget can never
+    write the erased memory back, however late it arrives.
+
+    An unreadable file raises :class:`ForgetEpochsUnreadable` instead of
+    reading as empty: restarting from zero would make every later digest of an
+    already forgotten subject look older than its tombstone and be dropped.
+    """
+
+    def __init__(self, config_dir: str | Path) -> None:
+        self.config_dir = Path(config_dir)
+        self.path = self.config_dir / VISIT_FORGET_EPOCHS_FILENAME
+
+    def _load_sync(self) -> dict[str, int]:
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError, RecursionError) as exc:
+            raise ForgetEpochsUnreadable(f"cannot read {self.path.name}: {exc!r}") from exc
+        if not isinstance(data, dict) or not all(
+            isinstance(k, str) and k and type(v) is int and v >= 0 for k, v in data.items()
+        ):
+            raise ForgetEpochsUnreadable(f"{self.path.name} is not a map of subject keys to ints")
+        return data
+
+    def _get_sync(self, keys: list[str]) -> dict[str, int]:
+        with path_lock(self.path):
+            data = self._load_sync()
+        return {key: data.get(key, 0) for key in keys}
+
+    def _raise_to_sync(self, floors: Mapping[str, int]) -> dict[str, int]:
+        with path_lock(self.path):
+            data = self._load_sync()
+            changed = False
+            for key, floor in floors.items():
+                if floor > data.get(key, 0):
+                    data[key] = floor
+                    changed = True
+            if changed:
+                self.config_dir.mkdir(parents=True, exist_ok=True)
+                atomic_write_json(self.path, data)
+        return {key: data.get(key, 0) for key in floors}
+
+    def _bump_sync(self, keys: list[str]) -> dict[str, int]:
+        with path_lock(self.path):
+            data = self._load_sync()
+            for key in keys:
+                data[key] = data.get(key, 0) + 1
+            self.config_dir.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(self.path, data)
+        return {key: data[key] for key in keys}
+
+    async def get(self, subjects: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+        """Return the current generation of each subject (0 when never forgotten)."""
+        keys = list(dict.fromkeys(subject_key(s) for s in subjects))
+        return await asyncio.to_thread(self._get_sync, keys)
+
+    async def raise_to(self, floors: Mapping[str, int]) -> dict[str, int]:
+        """Raise each subject key's generation to at least its floor (never lowers); return the values."""
+        clean = {str(key): int(value) for key, value in floors.items() if key and int(value) >= 0}
+        return await asyncio.to_thread(self._raise_to_sync, clean)
+
+    async def bump(self, subjects: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+        """Increase each subject's generation by one, persist it, and return the new values."""
+        keys = list(dict.fromkeys(subject_key(s) for s in subjects))
+        return await asyncio.to_thread(self._bump_sync, keys)
+
+
+# ── 清除意图哨兵（clearing sentinel）──────────────────────────────────
+
+
+class ClearingSentinels:
+    """Clearing intents ``config_dir/visit_revocations/clearing-<op_id>.json``.
+
+    Every clearing operation (one person, or every person under some local
+    characters) first persists one sentinel with its whole scope, then expands
+    the roster inside that scope, writes every revocation log, runs them, and
+    only then deletes the sentinel. Startup replay re-expands the scope of a
+    leftover sentinel, so a crash before the logs were written still clears
+    everyone in scope. The admission gates refuse new visits of any character
+    named in an open sentinel.
+
+    Document: ``{v, op_id, own_uid, scope: 'person'|'chars', own_char_uids,
+    peer_uid, requested_at}``; ``peer_uid`` is set only for ``person``.
+    """
+
+    def __init__(self, config_dir: str | Path) -> None:
+        self.config_dir = Path(config_dir)
+        self.dir = self.config_dir / VISIT_REVOCATIONS_DIRNAME
+
+    def path_for(self, op_id: str) -> Path:
+        """Return the sentinel path of ``op_id`` (``clearing-<32 hex>``), format-checked."""
+        return id_path(self.dir, op_id, CLEARING_ID_RE, ".json")
+
+    @staticmethod
+    def _validate(doc: Any, op_id: str) -> dict:
+        if not isinstance(doc, dict) or doc.get("v") != 1 or doc.get("op_id") != op_id:
+            raise ValueError("clearing sentinel is malformed")
+        if not isinstance(doc.get("own_uid"), str) or not doc["own_uid"]:
+            raise ValueError("clearing sentinel own_uid missing")
+        uids = doc.get("own_char_uids")
+        if not isinstance(uids, list) or not uids or not all(isinstance(u, str) and u for u in uids):
+            raise ValueError("clearing sentinel own_char_uids must be non-empty strings")
+        scope = doc.get("scope")
+        peer = doc.get("peer_uid")
+        if scope == "person":
+            if len(uids) != 1 or not isinstance(peer, str) or not peer:
+                raise ValueError("person clearing needs one character and a peer_uid")
+        elif scope == "chars":
+            if peer is not None:
+                raise ValueError("chars clearing carries no peer_uid")
+        else:
+            raise ValueError("clearing sentinel scope must be person or chars")
+        return doc
+
+    def _create_sync(self, doc: dict) -> None:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        path = self.path_for(doc["op_id"])
+        with path_lock(path):
+            atomic_write_json(path, doc)
+
+    async def find_or_create(
+        self,
+        *,
+        own_uid: str,
+        scope: str,
+        own_char_uids: Iterable[str],
+        peer_uid: str | None = None,
+        now: float | None = None,
+    ) -> dict:
+        """Reuse an open sentinel with exactly this scope, else :meth:`create` one.
+
+        A retried clearing must not leave the earlier attempt's sentinel
+        behind: removing only the new one would keep the characters looking
+        "being cleared" (no new visits, no memory block) until a restart.
+        """
+        uids = sorted(dict.fromkeys(own_char_uids))
+        for doc in await self.list_open():
+            if (
+                doc["own_uid"] == own_uid and doc["scope"] == scope
+                and sorted(doc["own_char_uids"]) == uids and doc.get("peer_uid") == peer_uid
+            ):
+                return copy.deepcopy(doc)
+        return await self.create(own_uid=own_uid, scope=scope, own_char_uids=uids,
+                                 peer_uid=peer_uid, now=now)
+
+    async def create(
+        self,
+        *,
+        own_uid: str,
+        scope: str,
+        own_char_uids: Iterable[str],
+        peer_uid: str | None = None,
+        now: float | None = None,
+    ) -> dict:
+        """Persist a new sentinel and return its document (``op_id`` is random)."""
+        op_id = "clearing-" + secrets.token_hex(16)
+        doc = {
+            "v": 1,
+            "op_id": op_id,
+            "own_uid": own_uid,
+            "scope": scope,
+            "own_char_uids": sorted(dict.fromkeys(own_char_uids)),
+            "peer_uid": peer_uid,
+            "requested_at": time.time() if now is None else now,
+        }
+        self._validate(doc, op_id)
+        await asyncio.to_thread(self._create_sync, doc)
+        return copy.deepcopy(doc)
+
+    @staticmethod
+    def _unreadable_hint(path: Path, op_id: str) -> dict:
+        """Scope fields still recoverable from a sentinel that failed validation.
+
+        Each of ``own_uid`` / ``own_char_uids`` / ``peer_uid`` is ``None`` when
+        it cannot be recovered (the scope is then unknown in that dimension,
+        and matching treats it as covering everything). ``peer_uid`` is only
+        taken from an explicit ``person`` scope.
+        """
+        hint: dict[str, Any] = {"op_id": op_id, "own_uid": None, "own_char_uids": None, "peer_uid": None}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, ValueError, RecursionError):
+            return hint
+        if not isinstance(doc, dict):
+            return hint
+        own_uid = doc.get("own_uid")
+        if isinstance(own_uid, str) and own_uid:
+            hint["own_uid"] = own_uid
+        uids = doc.get("own_char_uids")
+        # 空表 / 夹着非字符串的表都不可信：当作不知道是哪些角色，宁可多挡
+        if isinstance(uids, list) and uids and all(isinstance(u, str) and u for u in uids):
+            hint["own_char_uids"] = list(uids)
+        peer = doc.get("peer_uid")
+        if doc.get("scope") == "person" and isinstance(peer, str) and peer:
+            hint["peer_uid"] = peer
+        return hint
+
+    def _list_sync(self, hints: list[dict] | None = None) -> list[dict]:
+        out: list[dict] = []
+        unreadable: list[str] = []
+        try:
+            names = sorted(os.listdir(self.dir))
+        except FileNotFoundError:
+            return out
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            op_id = name[: -len(".json")]
+            if not CLEARING_ID_RE.fullmatch(op_id):
+                continue
+            try:
+                with open(self.dir / name, "r", encoding="utf-8") as f:
+                    doc = json.load(f)
+                out.append(self._validate(doc, op_id))
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError, RecursionError) as exc:
+                logger.error("visit clearing sentinel %s unreadable: %s", name, exc)
+                unreadable.append(op_id)
+                if hints is not None:
+                    hints.append(self._unreadable_hint(self.dir / name, op_id))
+        if unreadable and hints is None:
+            # 读不出来的清除意图不能当作没有：放行会让新串门写进正在清除的范围
+            raise RevocationLogUnreadable(unreadable)
+        return out
+
+    async def list_open(self) -> list[dict]:
+        """Return every open sentinel (all accounts); unreadable ones raise :class:`RevocationLogUnreadable`."""
+        return await asyncio.to_thread(self._list_sync)
+
+    async def list_open_with_unreadable(self) -> tuple[list[dict], list[dict]]:
+        """Return ``(open sentinels, unreadable hints)`` without raising on unreadable ones.
+
+        Each hint carries the scope fields that could still be recovered (see
+        :meth:`_unreadable_hint`), so a caller asking about one pair can keep
+        failing closed for the damaged sentinel's own scope without treating
+        every account and character as being cleared.
+        """
+        hints: list[dict] = []
+        docs = await asyncio.to_thread(self._list_sync, hints)
+        return docs, hints
+
+    @staticmethod
+    def hint_covers(hint: Mapping[str, Any], own_uid: str, own_char_uid: str, peer_uid: str) -> bool:
+        """Whether an unreadable sentinel's recoverable scope may cover ``(own_uid, own_char_uid, peer_uid)``.
+
+        Unknown fields (``None``) match anything, so a sentinel with nothing
+        recoverable covers every pair (fail closed).
+        """
+        if hint.get("own_uid") is not None and hint["own_uid"] != own_uid:
+            return False
+        if hint.get("own_char_uids") is not None and own_char_uid not in hint["own_char_uids"]:
+            return False
+        if hint.get("peer_uid") is not None and hint["peer_uid"] != peer_uid:
+            return False
+        return True
+
+    def _remove_sync(self, op_id: str) -> bool:
+        path = self.path_for(op_id)
+        with path_lock(path):
+            try:
+                path.unlink()
+                return True
+            except FileNotFoundError:
+                return False
+
+    async def remove(self, op_id: str) -> bool:
+        """Delete a finished sentinel; returns whether a file was removed."""
+        return await asyncio.to_thread(self._remove_sync, op_id)
+
+
+def sentinel_covers(doc: Mapping[str, Any], own_char_uid: str, peer_uid: str | None = None) -> bool:
+    """Whether an open clearing sentinel covers ``own_char_uid`` (and ``peer_uid`` when given)."""
+    if own_char_uid not in (doc.get("own_char_uids") or ()):
+        return False
+    if doc.get("scope") == "person" and peer_uid is not None:
+        return doc.get("peer_uid") == peer_uid
+    return True
+
 
 ForgetSubject = Callable[[dict], Awaitable[bool]]
 
@@ -560,6 +916,7 @@ async def run_revocation(
     forget_subject: ForgetSubject,
     void_pending: VoidPending,
     own_char: str,
+    sync_epochs: Callable[[list[dict]], Awaitable[None]] | None = None,
 ) -> bool:
     """Execute (or resume) one revocation log step by step.
 
@@ -620,6 +977,13 @@ async def run_revocation(
             subject = subjects.get(step)
             if subject is None:
                 raise ValueError(f"revocation step {step!r} has no subject")
+            # 先把本地代数抬到服务端墓碑的当前值（云存档恢复 / 换机后本地从 0 重计）：否则加 1 之后
+            # 仍不高于已有墓碑，服务端会当成已擦过的重放直接跳过，这次清除什么都不删
+            if sync_epochs is not None:
+                await sync_epochs([dict(subject)])
+            # 先把这个 subject 的清除代数加 1 并落盘，再发 /scoped_forget：之前开轮的 digest
+            # 带的代数更小，不论多晚到达都会被服务端墓碑挡下（重放时再加一次也无妨，只增不减）
+            await ForgetEpochs(log.config_dir).bump([subject])
             # 只认明确的 True：post_forget 失败返回 False，不检查就会记完成、
             # 随后删名册与日志，残留记忆再也没有重放入口
             if await forget_subject(dict(subject)) is not True:
@@ -627,11 +991,17 @@ async def run_revocation(
         elif step == STEP_REMOVE_CHAR:
             await roster.remove_char(peer_uid, char_name)
         elif step == STEP_WIPE_SPOOL:
+            corrupt_wiped: list[str] = []
             visit_ids = await VisitSpool.find_visits_for_pairs(
-                log.config_dir, record["own_char_uid"], record["pair_ids"]
+                log.config_dir, record["own_char_uid"], record["pair_ids"], corrupt_wiped=corrupt_wiped,
+                own_uid=record["own_uid"],
             )
             for visit_id in visit_ids:
                 await VisitSpool(log.config_dir, visit_id).delete_peer_fields()
+            for visit_id in corrupt_wiped:
+                # 头行身份已抹、state.json 内容损坏（可能崩在抹身份的两步之间）：谁都用不了，
+                # 连同里面可能残留的对端字段一并删掉，清除报完成时本地不留身份
+                await VisitSpool.drop_corrupt_state(log.config_dir, visit_id)
         elif step == STEP_VOID_PENDING:
             # 必填：缺省时静默记完成会让暂存的日记事实 / 预览在清除后照样被提交
             await void_pending(copy.deepcopy(record))

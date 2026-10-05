@@ -29,6 +29,13 @@ These documents preserve design intent and implementation context. They are grou
 - [Live2D idle motion selection and recovery](/live2d_motion_plan)
 - [PNGTubeRemix layered physics compatibility](/pngtuber-remix-physics-plan)
 
+## N.E.K.O 小剧场与剧本工坊
+
+- [小剧场架构](./neko-theater-architecture)：当前唯一的实现合同——模块与权限、Story Package／Session／Ledger／记忆归档数据合同、回合流水线、复核与确定性检查、生命周期事务、胶囊展示合同与可选模块开关。
+- [小剧场设计决策记录](./neko-theater-decisions)：关键取舍、被否决方案及已知风险与未验证范围。
+
+剧本工坊 SDK 的调用、宿主与发布合同见仓库 `theater_workshop/README.md`。
+
 ## Product-flow and interaction records
 
 - [Seven-day floating avatar guide](./avatar-floating-7day-complete-guide-dev)

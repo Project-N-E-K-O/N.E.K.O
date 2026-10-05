@@ -78,6 +78,9 @@ class SQLChatMessageHistory:
             persisted_kwargs = _persisted_additional_kwargs(message)
             if persisted_kwargs:
                 data["additional_kwargs"] = persisted_kwargs
+            # 剧场结构等内部元数据必须进入时间索引，但不会发给模型供应商。
+            if message.metadata:
+                data["metadata"] = dict(message.metadata)
             return _json.dumps({"type": message.type, "data": data}, ensure_ascii=False)
         if isinstance(message, dict):
             return _json.dumps(message, ensure_ascii=False)

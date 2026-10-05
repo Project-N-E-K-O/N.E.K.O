@@ -13,6 +13,7 @@ import hmac
 import html
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
@@ -20,16 +21,24 @@ import tempfile
 import time
 from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from filelock import FileLock, Timeout as FileLockTimeout
 
-from utils.deployment import has_forwarding_metadata, is_behind_proxy, is_remote_backend_deployment
+from utils.deployment import has_forwarding_metadata, is_behind_proxy, is_remote_backend_deployment, requires_https
+
+logger = logging.getLogger(__name__)
 
 COOKIE = "neko_instance_access"
 CHALLENGE_COOKIE = "neko_instance_challenge"
+# Plaintext transports use distinct names: browsers refuse to let an HTTP
+# response overwrite a Secure cookie of the same name (cookies ignore ports),
+# which would otherwise trap a host paired over HTTPS in an HTTP login loop.
+INSECURE_COOKIE = COOKIE + "_http"
+INSECURE_CHALLENGE_COOKIE = CHALLENGE_COOKIE + "_http"
 SESSION_TTL = 30 * 24 * 3600
 LOGIN_PATH = "/instance-access/login"
 
@@ -100,7 +109,7 @@ def _local_native(request: Request) -> bool:
         # accidentally exempt the login page or an explicitly supplied session.
         browser_or_session = (request.headers.get("origin") or request.headers.get("sec-fetch-site")
                               or "text/html" in request.headers.get("accept", "")
-                              or request.headers.get("authorization") or request.cookies.get(COOKIE))
+                              or request.headers.get("authorization") or _session_cookies(request))
         if has_forwarding_metadata(request.headers) or browser_or_session:
             return False
     try:
@@ -130,46 +139,181 @@ def _verified(key: str, purpose: str, host: str, token: str) -> str | None:
         return None
 
 
+def _session_identity(key: str, host: str, token: str, strict: bool) -> str | None:
+    """Verify a session token; plaintext-minted ones carry their own purpose.
+
+    Cookie names are client-controlled, so the signing purpose (not the name)
+    records how a session was issued. Strict HTTPS mode rejects every token
+    minted over plaintext, however it is presented.
+    """
+    identity = _verified(key, "session", host, token)
+    if identity or strict:
+        return identity
+    return _verified(key, "session-http", host, token)
+
+
+def _strict(request: Request) -> bool:
+    """Read NEKO_REQUIRE_HTTPS once per request/connection, not per check.
+
+    Cached on the scope (the middleware copies it onto a WebSocket's original
+    scope too); a WebSocket keeps the value it was admitted under while its
+    frames are revalidated.
+    """
+    scope = request.scope
+    if "neko.require_https" not in scope:
+        scope["neko.require_https"] = requires_https()
+    return scope["neko.require_https"]
+
+
+def _session_cookies(request: Request) -> list[str]:
+    # A cookie minted over plaintext may have been observed in transit; strict
+    # deployments must not keep honouring it after switching to HTTPS-only.
+    names = (COOKIE,) if _strict(request) else (COOKIE, INSECURE_COOKIE)
+    return [value for name in names if (value := request.cookies.get(name, ""))]
+
+
 def remote_instance_identity(request: Request, *, key: str | None = None) -> str | None:
     """Verify explicit remote authorization; locality is not an account grant."""
-    if not _secure_transport(request):
+    if not _transport_allowed(request):
         return None
+    strict = _strict(request)
     bearer = request.headers.get("authorization", "")
-    cookie = request.cookies.get(COOKIE, "")
-    if not bearer and not cookie:
+    cookies = _session_cookies(request)
+    if not bearer and not cookies:
         return None
     key = key or instance_key()
     if bearer.startswith("Bearer ") and _equal(bearer[7:], key):
         return "native:" + hashlib.sha256(key.encode()).hexdigest()
     if bearer.startswith("Bearer "):
-        identity = _verified(key, "session", request.url.hostname or "", bearer[7:])
+        identity = _session_identity(key, request.url.hostname or "", bearer[7:], strict)
         if identity:
             return identity
-    return _verified(key, "session", request.url.hostname or "", cookie)
+    for cookie in cookies:
+        identity = _session_identity(key, request.url.hostname or "", cookie, strict)
+        if identity:
+            return identity
+    return None
 
 
 def _equal(left: str, right: str) -> bool:
     return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
 
 
+def _pinned_origin() -> str:
+    """NEKO_INSTANCE_PUBLIC_ORIGIN as scheme://host[:port]; "" if unset or not a bare origin."""
+    raw = os.environ.get("NEKO_INSTANCE_PUBLIC_ORIGIN", "").strip()
+    try:
+        public = urlsplit(raw)
+        public.port  # noqa: B018 - raises ValueError on a malformed port
+    except ValueError:
+        return ""
+    if (public.scheme not in {"http", "https"} or not public.netloc or public.username or public.password
+            or public.query or public.fragment or public.path not in {"", "/"}):
+        return ""
+    return f"{public.scheme}://{public.netloc}"
+
+
+def _host_is(request: Request, origin: str) -> bool:
+    """Whether the Host header names origin's host and effective port (":443" equals none)."""
+    try:
+        host, target = urlsplit("//" + request.headers.get("host", "")), urlsplit(origin)
+        default = 443 if target.scheme == "https" else 80
+        return bool(host.hostname) and host.hostname == target.hostname and (host.port or default) == (target.port or default)
+    except ValueError:
+        return False
+
+
 def _secure_transport(request: Request) -> bool:
     """Allow TLS or an explicitly pinned TLS gateway with private HTTP upstreams."""
-    if request.url.scheme in {"https", "wss"}:
-        return True
-    public = urlsplit(os.environ.get("NEKO_INSTANCE_PUBLIC_ORIGIN", "").strip())
-    return bool(is_behind_proxy() and public.scheme == "https" and public.netloc
-                and not public.username and not public.query and not public.fragment
-                and public.path in {"", "/"} and request.headers.get("host", "") == public.netloc)
+    scope = request.scope
+    if "neko.secure_transport" not in scope:
+        pinned = _pinned_origin()
+        scope["neko.secure_transport"] = request.url.scheme in {"https", "wss"} or bool(
+            is_behind_proxy() and pinned.startswith("https://") and _host_is(request, pinned))
+    return scope["neko.secure_transport"]
+
+
+class _Transport(NamedTuple):
+    """Pairing policy and cookie names for one request's transport."""
+    secure: bool
+    allowed: bool
+    challenge_cookie: str
+    session_cookie: str
+    session_purpose: str
+
+
+def _transport(request: Request) -> _Transport:
+    """Plaintext remote access is allowed unless NEKO_REQUIRE_HTTPS opts out."""
+    if _secure_transport(request):
+        return _Transport(True, True, CHALLENGE_COOKIE, COOKIE, "session")
+    return _Transport(False, not _strict(request), INSECURE_CHALLENGE_COOKIE, INSECURE_COOKIE, "session-http")
+
+
+def _transport_allowed(request: Request) -> bool:
+    return _transport(request).allowed
+
+
+def _own_origin(request: Request) -> str:
+    return str(request.base_url).rstrip("/").replace("wss://", "https://", 1).replace("ws://", "http://", 1)
+
+
+def request_public_origin(request: Request) -> str:
+    """The origin the browser is on, for callbacks and Market proofs.
+
+    A browser-sent Origin that passes _same_origin is authoritative. Otherwise
+    requests through the pinned TLS gateway resolve to the pinned origin, and
+    a direct entry (LAN IP, second HTTP port) to its own origin, so the
+    host-bound session cookie is present when the browser returns there.
+    """
+    origin = request.headers.get("origin", "").rstrip("/")
+    if origin and _same_origin(request):
+        return origin
+    pinned = _pinned_origin()
+    if pinned and _host_is(request, pinned):
+        return pinned
+    return _own_origin(request)
 
 
 def _same_origin(request: Request) -> bool:
-    """Authenticate cookies without permitting cross-site mutations."""
+    """Authenticate cookies without permitting cross-site mutations.
+
+    Every entry the deployment serves is accepted: the request's own
+    (Host-derived) origin and the pinned public origin. Pinning therefore
+    does not narrow Origin to one value; Host-bound cookies, not Origin,
+    keep a rebinding hostname from reusing an existing session.
+    """
     origin = request.headers.get("origin", "").rstrip("/")
-    expected = os.environ.get("NEKO_INSTANCE_PUBLIC_ORIGIN", "").strip().rstrip("/")
-    expected = expected or str(request.base_url).rstrip("/").replace("wss://", "https://", 1).replace("ws://", "http://", 1)
-    if origin:
-        return origin == expected
-    return request.headers.get("sec-fetch-site", "").lower() not in {"cross-site", "same-site"}
+    if not origin:
+        return request.headers.get("sec-fetch-site", "").lower() not in {"cross-site", "same-site"}
+    page = _origin_key(origin)
+    if page is None:
+        return False
+    own = _origin_key(_own_origin(request))
+    pinned = _origin_key(_pinned_origin())
+    if any(entry and entry[:3] == page[:3] for entry in (own, pinned)):
+        return True
+    # TLS ended at an outer gateway that forwards no trusted X-Forwarded-Proto:
+    # the page is https:// on this very Host, which is not a foreign origin.
+    # A portless Host counts as the gateway's default 443.
+    return bool(is_behind_proxy() and own and own[0] == "http" and page[0] == "https" and page[1] == own[1]
+                and page[2] == (own[3] or 443))
+
+
+def _origin_key(value: str) -> tuple[str, str, int, int | None] | None:
+    """(scheme, host, effective port, explicit port) of a bare origin, else None.
+
+    Browsers omit default ports from Origin while proxies may forward them in
+    Host (":80"/":443"), so origins compare by effective port, not by string.
+    """
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return None
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username
+            or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+        return None
+    return parsed.scheme, parsed.hostname, port or (443 if parsed.scheme == "https" else 80), port
 
 
 @lru_cache(maxsize=8)
@@ -211,7 +355,7 @@ def _market_internal_identity(request: Request, key: str) -> str | None:
     public_origin = request.headers.get("x-neko-market-public-origin", "")
     if public_origin:
         origin = urlsplit(public_origin)
-        if (origin.scheme != "https" or not origin.netloc or origin.username or origin.password
+        if (origin.scheme not in ({"https"} if _strict(request) else {"https", "http"}) or not origin.netloc or origin.username or origin.password
                 or origin.path or origin.query or origin.fragment):
             return None
     return _verified(key, "market-internal-remote", request.method + ":" + path + ":" + public_origin,
@@ -225,15 +369,21 @@ class InstanceAccessMiddleware:
         self.app = app
         self.community_handoff_authorizer = community_handoff_authorizer
         self.attempts: dict[str, tuple[float, int]] = {}
+        self.unlabelled_tls_warned_at: float | None = None
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in {"http", "websocket"}:
             return await self.app(scope, receive, send)
         request_scope = scope if scope["type"] == "http" else {**scope, "type": "http", "method": "GET"}
         request = Request(request_scope, receive=receive)
+        if request_scope is not scope:
+            # Downstream WebSocket handlers see the original scope, not this
+            # copy; share the per-connection transport decisions with them.
+            scope["neko.require_https"] = _strict(request)
+            scope["neko.secure_transport"] = _secure_transport(request)
         if _local_native(request):
             return await self.app(scope, receive, send)
-        if scope["type"] == "http" and self.community_handoff_authorizer and _secure_transport(request):
+        if scope["type"] == "http" and self.community_handoff_authorizer and _transport_allowed(request):
             authorized, replay_body = await self.community_handoff_authorizer(request)
             if scope.get("neko.community_auth_rate_limited"):
                 return await self._deny(scope, receive, send, "identity_verification_rate_limited", 429)
@@ -257,7 +407,7 @@ class InstanceAccessMiddleware:
                 return await self.app(scope, receive, send)
         path = scope.get("path", "")
         login_page = scope["type"] == "http" and (path == LOGIN_PATH or (request.method == "GET" and "text/html" in request.headers.get("accept", "")))
-        if not login_page and not request.headers.get("authorization") and not request.cookies.get(COOKIE) and not request.headers.get("x-neko-market-internal"):
+        if not login_page and not request.headers.get("authorization") and not _session_cookies(request) and not request.headers.get("x-neko-market-internal"):
             return await self._deny(scope, receive, send, "instance_authorization_required", 401)
         try:
             key = await asyncio.to_thread(instance_key)
@@ -374,6 +524,20 @@ class InstanceAccessMiddleware:
             if not revoked:
                 raise
 
+    def _warn_unlabelled_tls(self):
+        # The browser is on https:// but nothing tells this server so: pairing
+        # proceeds conservatively as plaintext (warning, *_http cookie, and
+        # refused under NEKO_REQUIRE_HTTPS). Only the operator can fix that.
+        # Hourly rather than once, so an unauthenticated request that reaches
+        # this first cannot suppress the hint for the life of the process.
+        now = time.monotonic()
+        if self.unlabelled_tls_warned_at is None or now - self.unlabelled_tls_warned_at >= 3600:
+            self.unlabelled_tls_warned_at = now
+            logger.warning(
+                "instance access: browser pairs over https:// but this request arrived as plaintext; "
+                "set NEKO_INSTANCE_PUBLIC_ORIGIN to the public https origin or forward a trusted "
+                "X-Forwarded-Proto so the session is issued as HTTPS (required for NEKO_REQUIRE_HTTPS=1)")
+
     async def _deny(self, scope, receive, send, detail, status):
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 4401 if status == 401 else 4403})
@@ -386,34 +550,45 @@ class InstanceAccessMiddleware:
 
     async def _page(self, request: Request, key: str, *, failed=False):
         strings = await asyncio.to_thread(_strings, request)
-        challenge = request.cookies.get(CHALLENGE_COOKIE, "")
+        transport = _transport(request)
+        secure, allowed = transport.secure, transport.allowed
+        challenge = request.cookies.get(transport.challenge_cookie, "")
         if not _verified(key, "challenge", request.url.hostname or "", challenge):
             challenge = _signed(key, "challenge", request.url.hostname or "", secrets.token_hex(16), int(time.time()) + 600)
-        secure = _secure_transport(request)
         message = strings["failed"] if failed else strings["description"]
-        if not secure:
+        if not allowed:
             message = strings["httpsRequired"]
+        # Plaintext pairing is permitted, but the owner must be told the key
+        # and session cookie travel unencrypted on this connection.
+        warning = "" if secure or not allowed else f'<p role="alert">{html.escape(strings["insecureWarning"])}</p>'
         response = HTMLResponse(
             '<!doctype html><html><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
             f'<title>{html.escape(strings["title"])}</title><main><h1>{html.escape(strings["title"])}</h1>'
-            f'<p>{html.escape(message)}</p><form method="post" action="{LOGIN_PATH}">'
+            f'<p>{html.escape(message)}</p>{warning}<form method="post" action="{LOGIN_PATH}">'
             f'<input type="hidden" name="challenge" value="{challenge}">'
             f'<input type="hidden" name="return_path" value="{html.escape((request.url.path + ("?" + request.url.query if request.url.query else "")) if request.url.path != LOGIN_PATH else "/", quote=True)}">'
             f'<label>{html.escape(strings["key"])} <input type="password" name="key" required autocomplete="current-password"></label>'
-            f'<button {"disabled" if not secure else ""}>{html.escape(strings["connect"])}</button></form></main></html>',
+            f'<button {"disabled" if not allowed else ""}>{html.escape(strings["connect"])}</button></form></main></html>',
             status_code=401,
             # no-referrer makes Chromium's native form POST Origin opaque
             # ("null"). same-origin retains the required own-origin signal
             # while preventing a referrer from being sent to another site.
             headers={"Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; form-action 'self'; frame-ancestors 'none'", "Referrer-Policy": "same-origin"},
         )
-        response.set_cookie(CHALLENGE_COOKIE, challenge, httponly=True, secure=True, samesite="strict", max_age=600)
+        response.set_cookie(transport.challenge_cookie, challenge, httponly=True, secure=secure, samesite="strict", max_age=600)
         return response
 
     async def _login(self, request, key, scope, receive, send):
         if request.method != "POST":
             return await (await self._page(request, key))(scope, receive, send)
-        if not _secure_transport(request) or not _same_origin(request):
+        transport = _transport(request)
+        same_origin = _same_origin(request)
+        # Before the deny: under NEKO_REQUIRE_HTTPS this is exactly the refusal
+        # the operator needs explained. Same-origin only, so a cross-site
+        # https Origin cannot use up the hourly hint.
+        if same_origin and not transport.secure and request.headers.get("origin", "").startswith("https://"):
+            self._warn_unlabelled_tls()
+        if not transport.allowed or not same_origin:
             return await self._deny(scope, receive, send, "secure_same_origin_required", 403)
         peer = request.client.host if request.client else "unknown"
         now = time.time()
@@ -440,7 +615,7 @@ class InstanceAccessMiddleware:
         challenge = fields.get("challenge", [""])[0]
         supplied = fields.get("key", [""])[0]
         valid = _verified(key, "challenge", request.url.hostname or "", challenge)
-        if not valid or not _equal(challenge, request.cookies.get(CHALLENGE_COOKIE, "")) or not _equal(key, supplied):
+        if not valid or not _equal(challenge, request.cookies.get(transport.challenge_cookie, "")) or not _equal(key, supplied):
             # Re-read after awaits so simultaneous failures do not overwrite
             # each other's increments with the same stale admission count.
             started, count = self.attempts.get(peer, (time.time(), 0))
@@ -457,9 +632,13 @@ class InstanceAccessMiddleware:
         if not target.startswith("/") or target.startswith("//") or "\\" in target or "\r" in target or "\n" in target:
             target = "/"
         response = RedirectResponse(target, status_code=303, headers={"Cache-Control": "no-store"})
-        cookie = _signed(key, "session", request.url.hostname or "", secrets.token_hex(16), int(now) + SESSION_TTL)
-        response.set_cookie(COOKIE, cookie, max_age=SESSION_TTL, httponly=True, secure=True, samesite="lax")
-        response.delete_cookie(CHALLENGE_COOKIE, secure=True, httponly=True, samesite="strict")
+        cookie = _signed(key, transport.session_purpose, request.url.hostname or "",
+                         secrets.token_hex(16), int(now) + SESSION_TTL)
+        # Only an encrypted transport may mint the Secure cookie; plaintext
+        # pairing uses its own name so neither can shadow the other.
+        response.set_cookie(transport.session_cookie, cookie, max_age=SESSION_TTL,
+                            httponly=True, secure=transport.secure, samesite="lax")
+        response.delete_cookie(transport.challenge_cookie, secure=transport.secure, httponly=True, samesite="strict")
         await response(scope, receive, send)
 
 

@@ -596,6 +596,9 @@ VISIT_BLOCKLIST_FILENAME = "visit_blocklist.json"
 VISIT_REVOCATIONS_DIRNAME = "visit_revocations"
 """Directory of local "forget this person" revocation logs under ``config_dir``."""
 
+VISIT_FORGET_EPOCHS_FILENAME = "visit_forget_epochs.json"
+"""Per-subject forget generations under ``config_dir`` (only increase, never deleted)."""
+
 VISIT_REPORTS_DIRNAME = "visit_reports"
 """Directory of queued reports under ``config_dir``; never touched by cleanups."""
 

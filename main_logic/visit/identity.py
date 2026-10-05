@@ -330,7 +330,11 @@ def parse_pubkeys_response(payload: Any, *, fetched_at: float) -> FetchedPubkeys
     to ``revoked``, so a same-named built-in key cannot stay usable; a malformed envelope, a missing ``revoked`` list or
     any malformed revocation entry raises ``ValueError`` so the caller
     treats the refresh as failed. A key published under the reserved dev kid
-    is ignored.
+    is ignored. ``ttl_s`` never fails the refresh: a missing, non-numeric,
+    NaN or negative value becomes ``VISIT_PUBKEYS_CACHE_S``, and a positive
+    value (including one beyond float range or infinity) is capped at
+    ``VISIT_PUBKEYS_CACHE_S`` before conversion, so no ``OverflowError``
+    escapes.
     """
     if not isinstance(payload, Mapping):
         raise ValueError("pubkeys response must be an object")
@@ -369,10 +373,14 @@ def parse_pubkeys_response(payload: Any, *, fetched_at: float) -> FetchedPubkeys
             continue
         keys[entry.kid] = entry
     ttl_raw = payload.get("ttl_s", VISIT_PUBKEYS_CACHE_S)
-    if isinstance(ttl_raw, bool) or not isinstance(ttl_raw, (int, float)) or not math.isfinite(ttl_raw) or ttl_raw < 0:
-        ttl_raw = VISIT_PUBKEYS_CACHE_S
+    ttl_ok = (
+        not isinstance(ttl_raw, bool) and isinstance(ttl_raw, (int, float))
+        and not (isinstance(ttl_raw, float) and math.isnan(ttl_raw)) and ttl_raw >= 0
+    )
+    # 先截到上限再转 float：int 与 float 的比较、min 都不经 float 转换，10**400 这类超大整数不会溢出
+    ttl_s = float(min(ttl_raw, VISIT_PUBKEYS_CACHE_S)) if ttl_ok else float(VISIT_PUBKEYS_CACHE_S)
     return FetchedPubkeys(
-        keys=keys, revoked=frozenset(revoked), fetched_at=float(fetched_at), ttl_s=float(ttl_raw),
+        keys=keys, revoked=frozenset(revoked), fetched_at=float(fetched_at), ttl_s=ttl_s,
     )
 
 
