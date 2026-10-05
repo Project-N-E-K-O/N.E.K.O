@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 剧场与实例访问授权八语文案合并，叠加模型管理页保存提示（不再出现"位置"），
+    // 明文 HTTP 配对提示与上游剧场重邀文案合并，叠加模型管理页保存提示（不再出现"位置"），
     // 刷新网页和 Electron 的八语言包缓存。
-    const LOCALE_VERSION = '2026-10-05-model-manager-save-prompt';
+    const LOCALE_VERSION = '2026-10-05-model-manager-save-prompt-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

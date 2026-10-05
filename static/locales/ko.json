@@ -1,5 +1,5 @@
 {
-    "instanceAccess": {"title":"NEKO 연결","description":"서버 소유자가 제공한 인스턴스 접근 키를 입력하세요. 이 기기는 연결을 30일 동안 기억합니다.","key":"인스턴스 접근 키","connect":"연결","failed":"연결이 거부되었습니다. 키를 확인하고 다시 시도하세요.","httpsRequired":"HTTPS 또는 신뢰할 수 있는 HTTPS 터널로 연결하세요."},
+    "instanceAccess": {"title":"NEKO 연결","description":"서버 소유자가 제공한 인스턴스 접근 키를 입력하세요. 이 기기는 연결을 30일 동안 기억합니다.","key":"인스턴스 접근 키","connect":"연결","failed":"연결이 거부되었습니다. 키를 확인하고 다시 시도하세요.","httpsRequired":"HTTPS 또는 신뢰할 수 있는 HTTPS 터널로 연결하세요.","insecureWarning":"이 연결은 암호화되지 않았습니다(HTTP). 같은 네트워크 경로의 다른 사람이 키와 세션을 볼 수 있습니다. 가능하면 HTTPS를 사용하세요."},
     "common": {
         "load": "로드",
         "minimize": "최소화",

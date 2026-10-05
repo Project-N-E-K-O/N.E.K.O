@@ -4,7 +4,7 @@
 
 ### 远程首次连接与社区账户
 
-远程网页/Windows Electron 使用 HTTPS 首次输入实例 key，之后复用连接会话。
+远程网页/Windows Electron 首次输入实例 key，之后复用连接会话。默认允许明文 HTTP（`http://宿主地址:48911`、`DISABLE_SSL=1`、SSH 隧道），配对页会提示 key 与会话未加密；条件允许时优先 HTTPS（`https://宿主地址:48912`）。设置 `NEKO_REQUIRE_HTTPS=1` 可拒绝明文远程配对与凭证。浏览器只在 HTTPS 或 `localhost` 下允许麦克风，`http://IP` 访问时语音输入不可用。
 管理员运行 docker compose exec --user neko -w /app neko-main uv run python -m utils.instance_access
 配置HTTPS public origin即声明外层TLS网关：80端口关闭或仅HTTPS重定向，不可转发同Host明文请求，私有HTTP upstream不能暴露；Host相等不代表请求已加密。
 取得持久化凭证；服务不在日志打印。多服务共享存储或设置同一 NEKO_INSTANCE_ACCESS_KEY。

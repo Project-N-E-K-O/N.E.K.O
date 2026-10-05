@@ -690,7 +690,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     # Browser cookies are signed for the public host, not this private HTTP
     # hop. Replace any caller-supplied proof after the main entry guard passed;
     # retain Market's independent Authorization credential unchanged.
-    from utils.instance_access import instance_key, market_internal_proof, remote_instance_identity
+    from utils.instance_access import instance_key, market_internal_proof, remote_instance_identity, request_public_origin
     from utils.deployment import has_forwarding_metadata
     from filelock import Timeout as FileLockTimeout
 
@@ -703,7 +703,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
         # it using browser-supplied metadata from the preceding public hop.
         headers = {name: value for name, value in headers.items()
                    if not has_forwarding_metadata({name: value})}
-        public_origin = os.environ.get("NEKO_INSTANCE_PUBLIC_ORIGIN", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+        public_origin = request_public_origin(request)
         try:
             signing_key = await asyncio.to_thread(instance_key)
         except (OSError, ValueError, FileLockTimeout):

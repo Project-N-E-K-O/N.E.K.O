@@ -1,5 +1,5 @@
 {
-    "instanceAccess": {"title":"Conectar ao NEKO","description":"Digite a chave de acesso fornecida pelo proprietário do servidor. Este dispositivo lembrará a conexão por 30 dias.","key":"Chave de acesso à instância","connect":"Conectar","failed":"Acesso negado. Verifique a chave e tente novamente.","httpsRequired":"Use HTTPS ou um túnel HTTPS confiável para conectar com segurança."},
+    "instanceAccess": {"title":"Conectar ao NEKO","description":"Digite a chave de acesso fornecida pelo proprietário do servidor. Este dispositivo lembrará a conexão por 30 dias.","key":"Chave de acesso à instância","connect":"Conectar","failed":"Acesso negado. Verifique a chave e tente novamente.","httpsRequired":"Use HTTPS ou um túnel HTTPS confiável para conectar com segurança.","insecureWarning":"Esta conexão não é criptografada (HTTP). Qualquer pessoa no mesmo caminho de rede pode ver a chave e a sessão. Use HTTPS quando possível."},
     "common": {
         "load": "Carregar",
         "minimize": "Minimizar",
