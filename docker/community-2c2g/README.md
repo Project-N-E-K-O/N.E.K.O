@@ -155,7 +155,7 @@ neko-init ──(success)──▶ neko-main ──▶ 48911(HTTP)/48912(HTTPS�
 - **第一层**：核验容器 `neko` 的部署标签、Compose 服务名与 Running/Paused/Restarting 状态。容器消失、手动停止、`docker pause`、正在重启或同名其他部署都不会被重启；进程退出交给 Docker 的 `unless-stopped` 策略。
 - **第二层**：宿主 `curl` 请求本机 48911 首页，完整响应为 200 或新版正常的匿名 401；同时 `docker exec` 在容器内按 `NEKO_MAIN_SERVER_PORT`（默认 48911，校验为 1–65535 整数）直连真正主服务的 `/health`，要求请求成功。当前 Nginx 的 `/health` 会优先匹配正则路由并代理到插件服务，不能代替主服务健康检查。两项探测均有总超时，收到状态码后仍超时也算失败。不再使用只能判断 TCP 连通的降级逻辑。
 
-启动后默认有 **15 分钟宽限期**，按 Docker `State.StartedAt` 计算；期间清空失败计数，不执行恢复。同 ID 重启也重新获得宽限期。若实测启动更慢，在宿主 `/etc/cron.d/neko-watchdog` 中在任务行之前添加 `NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=1800`（秒）并按实际启动耗时调整；0 表示禁用。重装保留这一整数设置（支持一对匹配的单引号或双引号），非法或重复设置会拒绝重装。
+启动后默认有 **15 分钟宽限期**，按 Docker `State.StartedAt` 计算；期间清空失败计数，不执行恢复。同 ID 重启也重新获得宽限期。若实测启动更慢，在宿主 `/etc/cron.d/neko-watchdog` 中在任务行之前添加 `NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=1800`（秒）并按实际启动耗时调整；0 表示禁用。重装保留这一整数设置（支持一对匹配的单引号或双引号），非法或重复设置会拒绝重装。此变量由 cron 传给任务，手动运行不会自动读取 cron 文件；验收及诊断时须显式传入同一值，避免默认 900 与自定义宽限期不一致。
 
 宽限期后，健康即清空失败计数；**连续 2 次不健康 → 自动重启同一个容器 ID**。计数绑定 ID 和启动时间，重建、重启均不继承旧失败；重启前复核运行、暂停、重启状态和启动时间。Docker restart 使用 30 秒停止期限及 120 秒客户端总超时；客户端失败后复查 Docker 状态，仅当同一 ID/标签/服务仍匹配，且已运行并出现新的 StartedAt，或 Docker 明确报告 State.Restarting=true 时清失败计数。手动 restart 处于停止/启动过渡但未报告该标志时，无法确认恢复，保留计数/预算并报错；不把 CLI 超时或暂时停止解释成已成功恢复。客户端超时不代表 daemon 已取消重启。每个容器 ID 最多连续尝试 3 次自动恢复（失败的 CLI 调用也计入）；启动宽限期和启动时间变化不重置预算，健康后清零，重建容器得到新预算。耗尽后每个容器 ID 的同一轮恢复只记录一次错误并停止主动重启，持续相同失败不重复记录；健康恢复或手动清除预算后重新报告，Docker 的 `unless-stopped` 策略仍独立生效。排除故障后可执行 `sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/restart-count` 恢复预算。`flock` 防止 cron 与手动调用同时重启。容器已删除时正常静默退出，Docker 查询故障仍会报错。同一容器 ID 有主动恢复记录但已停止时，会按 ID/启动时间记录一次需人工检查的错误，持续相同停止状态不重复记录；恢复运行后重新允许诊断，保留预算且不自动启动；这也可能是恢复尝试后的手动停止，维护请先持锁设置 `disabled`。
 
@@ -163,7 +163,7 @@ neko-init ──(success)──▶ neko-main ──▶ 48911(HTTP)/48912(HTTPS�
 
 开发者可运行 `sudo bash ./test-watchdog.sh` 验证恢复逻辑。测试将 Docker/HTTP 调用替换为模拟程序，安装路径改为临时目录，使用真实 Linux 权限、文件锁和计数读写；不安装真实 cron，也不重启容器。harness 会在 mktemp 创建的临时目录中执行 mock，通常位于 /tmp（或进程的 TMPDIR）；该目录必须允许执行。若 /tmp 挂载为 noexec，应由管理员为测试指定可信、root 私有且允许执行的 TMPDIR，并确认 sudo 后测试进程仍收到该变量；不要为测试解除整机 /tmp 的 noexec，也不要使用其他用户可写的共享目录。权限错误退出 126 不属于看门狗逻辑验证结果。此 harness 使用宿主 GNU 工具，尚未验证实际 `alpine:3.20` 安装器中的 BusyBox 行为；通过此测试不代表已完成安装器镜像或 ECS 实机部署验收。
 
-维护时先执行 `sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled`，等待正在执行的探测/重启结束并暂停，再停容器、执行 `docker pause` 或手动 `docker restart` / `docker compose restart`；恢复运行后 `sudo rm -f /opt/neko/disabled`。重新安装不会解除暂停。重装前先持锁暂停；安装器先准备好脚本和 cron 临时文件，再逐个 rename 发布。每个文件的替换是原子的，两次替换不是跨目录事务；发布失败时保持暂停，核对两份文件并完成重装后再恢复。安装器会写入宿主 root cron，只在信任这两个脚本和安装器镜像的主机上使用；多套部署不要共用 `neko` 容器名及 `/opt/neko`。
+维护时先执行 `sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled`，等待正在执行的探测/重启结束并暂停，再停容器、执行 `docker pause` 或手动 `docker restart` / `docker compose restart`；恢复运行并完成独立健康核验后，执行 `sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/fail-count /opt/neko/disabled`，在同一维护锁下清除暂停前的失败计数并解除暂停；保留 restart-count，暂停不会重置主动恢复预算。重新安装不会解除暂停。重装前先持锁暂停；安装器先准备好脚本和 cron 临时文件，再逐个 rename 发布。每个文件的替换是原子的，两次替换不是跨目录事务；发布失败时保持暂停，核对两份文件并完成重装后再恢复。安装器会写入宿主 root cron，只在信任这两个脚本和安装器镜像的主机上使用；多套部署不要共用 `neko` 容器名及 `/opt/neko`。
 
 ---
 
@@ -329,7 +329,7 @@ CDT 免费额度有适用条件：按阿里云账号共享，不是每台 ECS �
 - [ ] `neko-init` 一次性退出（`Exit 0`）；可选看门狗显式安装命令成功
 - [ ] 若启用看门狗，宿主机存在 `/opt/neko/watchdog.sh`（首行 `#!/bin/bash`）且 `+x`
 - [ ] 若启用看门狗，宿主机存在 `/etc/cron.d/neko-watchdog`（权限 644、属主 root）
-- [ ] 若启用看门狗，确认 `disabled` 标记已解除，容器标签/服务匹配且 Running、未暂停/重启；等待实际 `StartedAt` 对应宽限期结束后执行 `/opt/neko/watchdog.sh`，退出码为 0 且日志没有新增探测失败。单独的退出码 0 也可能表示跳过，不能作为健康证据
+- [ ] 若启用看门狗，确认 `disabled` 标记已解除，容器标签/服务匹配且 Running、未暂停/重启；等待实际 `StartedAt` 对应宽限期结束后，手动调用须显式传入与 cron 相同的 NEKO_WATCHDOG_STARTUP_GRACE_SECONDS（例如 cron 为 1800 时用 `sudo env NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=1800 /opt/neko/watchdog.sh`；按实际值替换），退出码为 0 且日志没有新增探测失败。单独的退出码 0 也可能表示跳过，不能作为健康证据
 - [ ] 在同一验收时点独立验证实际宿主探测地址的完整匿名 HTTP 响应为 200/401，并在容器内按实际 `NEKO_MAIN_SERVER_PORT` 直连 `/health` 成功，两者均绕过代理且有总超时；不记录响应正文或凭证。缺一项就不勾选健康验收
 - [ ] 镜像包含 #3289/#3299；HTTP 或 HTTPS 首次输入实例凭证，刷新后可复用；HTTP 页面提示未加密且远程 IP 语音输入不可用
 - [ ] 需要严格模式时配置 `NEKO_REQUIRE_HTTPS=1`；HTTPS 证书与白名单正确；使用 public origin 的外置 TLS 网关时，公网 HTTP 只关闭或重定向，私有 upstream 不可公开
