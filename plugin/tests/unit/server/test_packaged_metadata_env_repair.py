@@ -281,6 +281,56 @@ def test_valid_flat_cache_remains_readable_after_installation_scoping(tmp_path):
     assert legacy.exists()
 
 
+@pytest.mark.parametrize("layout", ["scoped", "legacy"])
+def test_replacement_digest_invalidates_cache_even_with_preserved_source_stats(
+    tmp_path,
+    monkeypatch,
+    layout,
+):
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    assert packaged_metadata.write_local_packaged_metadata(
+        plugin_dir,
+        before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
+        **_SCAN_KWARGS,
+    )
+    original_path = _cache_path(plugin_dir)
+    cached = original_path
+    if layout == "legacy":
+        cached = original_path.parent.parent / original_path.name
+        original_path.replace(cached)
+    cached_mtime = cached.stat().st_mtime_ns
+
+    # A correctly rebuilt package updates its digest even when extraction
+    # preserves source names, byte counts and timestamps at the same path.
+    package = _read_json(plugin_dir / _META)
+    old_digest = package["source_sha256"]
+    (plugin_dir / "main.py").write_text("VALUE = 2\n", encoding="utf-8")
+    package["source_sha256"] = packaged_metadata.compute_source_sha256(plugin_dir)
+    assert package["source_sha256"] != old_digest
+    (plugin_dir / _META).write_text(json.dumps(package), encoding="utf-8")
+    preserved = cached_mtime - 10_000_000_000
+    for path in plugin_dir.iterdir():
+        os.utime(path, ns=(preserved, preserved))
+    os.utime(plugin_dir, ns=(preserved, preserved))
+    summary = packaged_metadata.source_stat_summary(plugin_dir)
+    assert summary.names == package["source_files"]
+    assert summary.total_bytes == package["source_bytes"]
+    assert summary.newest_mtime_ns <= cached_mtime
+    assert _cache_path(plugin_dir) != original_path
+
+    def unexpected_source_hash(_path):
+        pytest.fail("A replacement with a new package identity must miss the old cache")
+
+    monkeypatch.setattr(
+        packaged_metadata, "compute_source_sha256", unexpected_source_hash
+    )
+    result = packaged_metadata.read_packaged_metadata(plugin_dir)
+    assert result is not None
+    assert not result.built_in_this_environment
+    assert result.handlers["demo.go"]["name"] == "Old"
+    assert result.source_sha256 == package["source_sha256"]
+
+
 @pytest.mark.parametrize("cache_case", ["same_env", "missing", "valid", "invalid"])
 def test_each_read_parses_shipped_metadata_once(tmp_path, monkeypatch, cache_case):
     plugin_dir = _write_plugin(

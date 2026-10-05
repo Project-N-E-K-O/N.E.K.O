@@ -372,6 +372,8 @@ def _local_packaged_metadata_path(
         environment_key = hashlib.sha256(
             json.dumps(build_environment(), sort_keys=True).encode("utf-8")
         ).hexdigest()
+        # Rebuilt packages update source_sha256 even when extraction preserves
+        # names, sizes and timestamps. Bind that digest and the entry metadata.
         package_key = hashlib.sha256(
             json.dumps(raw, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
