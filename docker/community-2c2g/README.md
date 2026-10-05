@@ -72,7 +72,7 @@ NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
 完整契约见 [社区账户与远程实例访问边界](../../docs/design/security/community-remote-access.md)。
 
 启动后会自动完成：
-- **`neko-init`**：一次性初始化，创建 `neko-home/`、`logs/` 并将顶层属主对齐到 UID/GID 1000；仅对 `logs/` 递归修复旧 root 日志权限，不递归 `neko-home/`（数据子树由镜像入口脚本修复，SSL 私钥保留 root 权限）。失败会阻止主服务启动。
+- **`neko-init`**：一次性初始化，创建 `neko-home/`、`logs/` 拒绝顶层符号链接，并仅将顶层属主对齐到 UID/GID 1000；不递归 `logs/` 或 `neko-home/`，避免修改嵌套挂载等宿主资源。旧日志升级见下方迁移步骤；数据子树由镜像入口脚本修复，SSL 私钥保留 root 权限。失败会阻止主服务启动。
 - **`neko-main`**：N.E.K.O 主服务（Compose 将等待 `neko-init` 成功后启动）。
 
 看门狗是可选的宿主修改，普通 `up` 不会安装或恢复已卸载的 cron。核验安装器镜像与两个脚本后，显式安装：
@@ -85,6 +85,21 @@ docker compose --profile watchdog run --rm neko-cron-install
 
 > 若需重新初始化：`docker compose -f "docker-compose.yaml" down && docker compose -f "docker-compose.yaml" up -d`
 
+---
+
+### 2.3 升级已有 root 日志的权限
+
+已有部署的 `logs/` 中若有 root 创建的文件或子目录，初始化不会自动修改它们。升级前先按第 3 节持锁暂停已安装的看门狗，再 `docker compose stop`。由管理员核验待迁移路径及所有父目录不是符号链接、没有嵌套挂载，并确认目标确实是本应用日志；Docker socket、其他服务数据和受保护资源不得列入迁移。
+
+仅对核验过的目录或日志文件逐项执行非递归属主修复，例如（用实际存在的路径替换示例）：
+
+```bash
+sudo chown --no-dereference 1000:1000 -- ./logs/main.log
+# 若该日志位于子目录，也仅单独修复核验过的目录本身：
+# sudo chown --no-dereference 1000:1000 -- ./logs/main ./logs/main/main.log
+```
+
+不要使用 `chown -R`、通配符或仅依赖 `find -xdev` 批量修复；同一文件系统上的 bind mount 可能不被 `-xdev` 排除。启动服务并确认旧日志可写后，再解除看门狗暂停。新部署没有旧 root 日志时无需迁移。
 ---
 
 ## 3. 服务与自愈机制

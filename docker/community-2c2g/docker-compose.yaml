@@ -8,10 +8,10 @@ services:
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
+        # 不接受顶层符号链接，也不递归修改目录中的宿主资源。
+        test ! -L /host-dir/neko-home && test ! -L /host-dir/logs
         mkdir -p /host-dir/neko-home /host-dir/logs
         chown 1000:1000 /host-dir/neko-home /host-dir/logs
-        # 修复旧版本由 root 创建的日志；不递归用户 home 或 SSL 私钥。
-        chown -R 1000:1000 /host-dir/logs
     volumes:
       - .:/host-dir
 
