@@ -28,7 +28,7 @@ class CosyVoiceAdapter(ImportOnlyAdapter):
     def __init__(self, provider="cosyvoice"):
         self.provider = provider
 
-    def resolve_runtime(self, config_manager):
+    def resolve_runtime(self, config_manager, *, voice_data=None):
         from utils.api_config_loader import get_cosyvoice_clone_model
         from config import TFLINK_UPLOAD_URL
 

@@ -9,9 +9,11 @@ const os = require('node:os');
 (async () => {
     const { server, state } = createVoiceManagerServer();
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-    const browser = await chromium.launch({ headless: true, channel: 'chrome' });
+    const channel = process.env.NEKO_TEST_BROWSER_CHANNEL;
+    let browser;
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'neko-remote-voice-web-'));
     try {
+        browser = await chromium.launch({ headless: true, ...(channel ? { channel } : {}) });
         const context = await browser.newContext({ viewport: { width: 1120, height: 850 } });
         const page = await context.newPage();
         const errors = []; page.on('pageerror', error => errors.push(error.message));
@@ -22,6 +24,14 @@ const os = require('node:os');
         await page.waitForFunction(() => !!window.pageTutorialManager._modalTutorialWaitCleanup);
         assert.equal(await page.evaluate(() => window.pageTutorialManager.isTutorialRunning), false);
         assert.equal(await page.locator('.driver-popover').count(), 0);
+        state.remotePages = [[{ voice_id: 'unrelated', name: 'Unrelated' }], [{ voice_id: 'TargetLater', name: 'Target in later page', status: 'ready' }]];
+        await page.locator('.remote-voice-toolbar input[type=search]').fill('Target');
+        await page.getByText('Target in later page', { exact: true }).waitFor();
+        assert.ok(state.listQueries.some(item => item.query === 'Target' && item.cursor === '1'));
+        assert.equal(state.imports.length, 0);
+        delete state.remotePages;
+        await page.locator('.remote-voice-toolbar input[type=search]').fill('');
+        await page.getByText('ExistingVoice123', { exact: true }).waitFor();
         const listScreenshot = path.join(scratch, 'list.png'); await page.screenshot({ path: listScreenshot });
         await page.locator('.remote-voice-table input[type=radio]').first().check();
         await page.getByRole('button', { name: '导入所选音色', exact: true }).click();
@@ -62,7 +72,7 @@ const os = require('node:os');
         assert.equal(await page.locator('#importExistingVoice').isHidden(), true);
         assert.deepEqual(errors, []);
         console.log(JSON.stringify({ browser: await browser.version(), actualProductAssets: true, controlledApiOnly: true,
-            explicitImport: true, rawIdAndAvailablePreview: true, manualRequiredFields: true, noImplicitBinding: true,
+            explicitImport: true, rawIdAndAvailablePreview: true, paginatedSearch: true, manualRequiredFields: true, noImplicitBinding: true,
             tutorialDeferredAndResumed: true, keyboardFocus: true, narrowViewport: true, unsupportedProviderHidden: true, listScreenshot, manualScreenshot, screenshot }, null, 2));
-    } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
+    } finally { if (browser) await browser.close(); await new Promise(resolve => server.close(resolve)); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

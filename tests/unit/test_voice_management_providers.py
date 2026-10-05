@@ -481,6 +481,22 @@ def test_doubao_project_and_legacy_app_are_independent_ownership_scopes():
     assert "workspace-a" not in project_a.scope_id
 
 
+def test_doubao_imported_endpoint_survives_selection_change_but_not_identity_change():
+    adapter = get_adapter("doubao_tts")
+    raw = {"ttsModelProvider": "doubao_tts", "ttsModelUrl": "https://proxy.test", "ttsModelId": "custom-resource", "doubaoVoiceManagementProjectName": "workspace-a"}
+    cm = ConfigSnapshot(raw)
+    original = adapter.resolve_runtime(cm)
+    metadata = {**adapter.import_metadata(original), "provider": "doubao_tts", "scope_id": original.scope_id}
+    cm.raw = {**raw, "ttsModelProvider": "minimax", "ttsModelUrl": "https://another-provider.test", "ttsModelId": "speech-02"}
+    bound = adapter.resolve_runtime(cm, voice_data=metadata)
+    assert (bound.scope_id, bound.base_url, bound.resource_id) == (original.scope_id, original.base_url, original.resource_id)
+    assert adapter.resolve_runtime(cm).base_url != bound.base_url
+    cm.raw["doubaoVoiceManagementProjectName"] = "workspace-b"
+    assert adapter.resolve_runtime(cm, voice_data=metadata).scope_id != original.scope_id
+    cm.raw = {**raw, "ttsModelUrl": "https://explicit-new-endpoint.test"}
+    assert adapter.resolve_runtime(cm, voice_data=metadata).scope_id != original.scope_id
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload,code", [
     ({"code": "InvalidApiKey", "message": "secret"}, "AUTH_FAILED"),
@@ -589,7 +605,7 @@ def test_tts_provider_explicit_adapter_is_registered_for_storage_lookup(monkeypa
     monkeypatch.setattr(providers, "_ADAPTERS", dict(providers._ADAPTERS))
     monkeypatch.setattr(provider_registry, "_REGISTRY", dict(provider_registry._REGISTRY))
     class CustomAdapter:
-        def resolve_runtime(self, cm):
+        def resolve_runtime(self, cm, *, voice_data=None):
             return runtime_for("custom_remote", "custom-credential", "https://custom.test")
 
     adapter = CustomAdapter()

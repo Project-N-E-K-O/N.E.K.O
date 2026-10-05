@@ -8,7 +8,7 @@ class GlmVoiceAdapter(ImportOnlyAdapter):
     provider = "glm_tts"
     capabilities = ManagementCapabilities(list_voices=True, details=True, overwrite=False)
 
-    def resolve_runtime(self, config_manager):
+    def resolve_runtime(self, config_manager, *, voice_data=None):
         from utils.glm_tts import GLM_TTS_DEFAULT_BASE_URL
 
         return runtime_for(self.provider, config_manager.get_tts_api_key(self.provider), GLM_TTS_DEFAULT_BASE_URL, model="glm-tts")

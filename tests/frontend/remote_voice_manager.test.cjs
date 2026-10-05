@@ -102,6 +102,7 @@ class Element {
     get firstChild() { return this.children[0] || { set textContent(value) {} }; }
     get isConnected() { return this === this.document.body || !!this.parentElement?.isConnected; }
     append(...children) { for (const child of children) { child.parentElement = this; this.children.push(child); } }
+    appendChild(child) { this.append(child); return child; }
     replaceChildren(...children) { this._text = ''; this.children = []; this.append(...children); }
     setAttribute(key, value) { this.attributes[key] = value; }
     addEventListener(key, handler) { (this.listeners[key] ||= []).push(handler); }
@@ -127,7 +128,7 @@ class Element {
     }
 }
 
-function harness() {
+function harness(timers = { setTimeout, clearTimeout }) {
     const document = {
         listeners: {}, createElement: tag => new Element(tag, document),
         addEventListener(key, handler) { (this.listeners[key] ||= []).push(handler); },
@@ -155,7 +156,8 @@ function harness() {
             minimax: { voice_management: { manual_import: true } }, cosyvoice: { voice_management: { manual_import: true } }
         } })
     };
-    const context = vm.createContext({ window, document, AbortController, DOMException, URLSearchParams, FormData, setTimeout, clearTimeout,
+    const context = vm.createContext({ window, document, AbortController, DOMException, URLSearchParams, FormData,
+        setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
         loadVoiceCloneProviderRestrictionState: window.loadVoiceCloneProviderRestrictionState });
     vm.runInContext(source, context, { filename: path.join(__dirname, '../../static/js/remote_voice_manager.js') });
     document.dispatch('DOMContentLoaded');
@@ -166,6 +168,114 @@ function harness() {
     const button = key => panel().querySelectorAll('button').find(item => item.textContent === 'voice.remote.' + key);
     return { window, document, container, provider, entry, requests, resolve, ctx, panel, button, refreshes: () => refreshes };
 }
+
+function searchClock() {
+    const timers = new Map();
+    return {
+        setTimeout(callback, delay) { const id = {}; timers.set(id, { callback, delay }); return id; },
+        clearTimeout(id) { timers.delete(id); },
+        fire(delay) { for (const [id, timer] of [...timers]) if (timer.delay === delay) { timers.delete(id); timer.callback(); } },
+        size: () => timers.size
+    };
+}
+
+test('search queries unseen pages, skips empty pages and retains the query when loading more', async () => {
+    const clock = searchClock(), h = harness(clock);
+    h.window.RemoteVoiceManager.openImport(); h.resolve(0, h.ctx); await tick();
+    h.resolve(1, { success: true, voices: [{ voice_id: 'unrelated', name: 'Unrelated' }], next_cursor: 'page2' }); await tick();
+    const search = h.panel().querySelectorAll('input').find(input => input.type === 'search');
+    search.value = 'Target'; search.dispatch('input'); clock.fire(250);
+    h.resolve(2, h.ctx); await tick();
+    assert.equal(new URL(h.requests[3].url, 'http://test').searchParams.get('query'), 'Target');
+    assert.equal(new URL(h.requests[3].url, 'http://test').searchParams.has('cursor'), false);
+    h.resolve(3, { success: true, voices: [], next_cursor: 'page2' }); await tick();
+    assert.equal(new URL(h.requests[4].url, 'http://test').searchParams.get('cursor'), 'page2');
+    assert.equal(h.panel().querySelector('.remote-voice-status').textContent, 'voice.remote.loading');
+    h.resolve(4, { success: true, voices: [{ voice_id: 'target2', name: 'Target two' }], next_cursor: 'page3' }); await tick();
+    assert.ok(h.panel().textContent.includes('Target two'));
+    h.button('loadMore').dispatch('click');
+    assert.equal(new URL(h.requests[5].url, 'http://test').searchParams.get('query'), 'Target');
+    h.resolve(5, { success: true, voices: [], next_cursor: 'page4' }); await tick();
+    h.resolve(6, { success: true, voices: [{ voice_id: 'target4', name: 'Target four' }] }); await tick();
+    assert.equal(h.panel().querySelectorAll('input').filter(input => input.type === 'radio').length, 2);
+    assert.equal(h.requests.some(request => request.options.method === 'POST'), false);
+    h.window.RemoteVoiceManager.close(); assert.equal(clock.size(), 0);
+});
+
+test('changing a search immediately retires a late result and closing releases the debounce timer', async () => {
+    const clock = searchClock(), h = harness(clock);
+    h.window.RemoteVoiceManager.openImport(); h.resolve(0, h.ctx); await tick();
+    h.resolve(1, { success: true, voices: [] }); await tick();
+    const search = h.panel().querySelectorAll('input').find(input => input.type === 'search');
+    search.value = 'Old'; search.dispatch('input'); clock.fire(250);
+    h.resolve(2, h.ctx); await tick();
+    search.value = 'New'; search.dispatch('input');
+    assert.equal(h.requests[3].options.signal.aborted, true);
+    h.resolve(3, { success: true, voices: [{ voice_id: 'old', name: 'Old' }] }); await tick();
+    assert.ok(!h.panel().textContent.includes('Old'));
+    clock.fire(250); h.resolve(4, h.ctx); await tick();
+    assert.equal(new URL(h.requests[5].url, 'http://test').searchParams.get('query'), 'New');
+    h.resolve(5, { success: true, voices: [{ voice_id: 'new', name: 'New' }] }); await tick();
+    assert.ok(h.panel().textContent.includes('New'));
+    search.value = 'Cancelled'; search.dispatch('input');
+    h.window.RemoteVoiceManager.close(); assert.equal(clock.size(), 0);
+    clock.fire(250); assert.equal(h.requests.length, 6);
+});
+
+test('search rejects a cyclic cursor and its overall deadline aborts further traversal', async () => {
+    const clock = searchClock(), h = harness(clock);
+    h.window.RemoteVoiceManager.openImport(); h.resolve(0, h.ctx); await tick();
+    h.resolve(1, { success: true, voices: [] }); await tick();
+    const search = h.panel().querySelectorAll('input').find(input => input.type === 'search');
+    search.value = 'Target'; search.dispatch('input'); clock.fire(250);
+    h.resolve(2, h.ctx); await tick();
+    h.resolve(3, { success: true, voices: [], next_cursor: 'repeat' }); await tick();
+    h.resolve(4, { success: true, voices: [], next_cursor: 'repeat' }); await tick();
+    assert.ok(h.panel().textContent.includes('voice.remote.requestFailed'));
+    assert.equal(h.requests.length, 5); assert.equal(clock.size(), 0);
+    h.button('refresh').dispatch('click'); h.resolve(5, h.ctx); await tick();
+    clock.fire(35000); assert.equal(h.requests[6].options.signal.aborted, true);
+    h.resolve(6, { success: true, voices: [], next_cursor: 'further' }); await tick();
+    assert.equal(h.requests.length, 7); assert.equal(clock.size(), 0);
+    h.window.RemoteVoiceManager.close();
+});
+
+test('overwrite and status contexts identify their local record while import context stays provider-only', async () => {
+    const h = harness();
+    h.window.RemoteVoiceManager.openImport();
+    assert.equal(new URL(h.requests[0].url, 'http://test').searchParams.has('local_ref'), false);
+    h.resolve(0, h.ctx); await tick(); h.resolve(1, { success: true, voices: [] }); await tick();
+    h.window.RemoteVoiceManager.openOverwrite('voice-target', { provider: 'cosyvoice', remote_voice_id: 'remote' });
+    const audio = h.panel().querySelectorAll('input')[0]; audio.files = [new Blob(['audio'])]; audio.dispatch('change');
+    h.button('overwrite').dispatch('click');
+    assert.equal(new URL(h.requests[2].url, 'http://test').searchParams.get('local_ref'), 'voice-target');
+    h.window.RemoteVoiceManager.close(); h.resolve(2, h.ctx); await tick();
+    h.window.RemoteVoiceManager.openStatus('voice-status', { provider: 'cosyvoice', remote_voice_id: 'remote' });
+    assert.equal(new URL(h.requests[3].url, 'http://test').searchParams.get('local_ref'), 'voice-status');
+    h.window.RemoteVoiceManager.close(); h.resolve(3, h.ctx); await tick();
+});
+
+test('pending deletion displays the translated conflict and restores the local list without clearing preview', async () => {
+    const product = fs.readFileSync(path.join(__dirname, '../../static/js/voice_clone.js'), 'utf8');
+    const start = product.indexOf('async function deleteVoice(');
+    const end = product.indexOf('// 页面加载时自动加载音色列表', start);
+    assert.ok(start >= 0 && end > start, 'Product delete method boundaries must exist');
+    const h = harness(), alerts = [];
+    const list = new Element('div', h.document); list.id = 'voice-list-container';
+    const refresh = new Element('button', h.document); refresh.id = 'refresh-voices-btn';
+    h.container.append(list, refresh);
+    const context = vm.createContext({
+        document: h.document, window: h.window, console, setTimeout, confirm: () => true,
+        fetch: async () => ({ ok: false, status: 409 }),
+        safeReadResponse: async () => ({ data: { success: false, code: 'OPERATION_IN_PROGRESS', error: 'OPERATION_IN_PROGRESS' } }),
+        alert: text => alerts.push(text), loadVoices: h.window.loadVoices,
+        localStorage: { removeItem: () => assert.fail('A denied delete must retain preview cache') }
+    });
+    vm.runInContext(product.slice(start, end), context);
+    await vm.runInContext("deleteVoice('voice-pending', 'Voice')", context);
+    assert.deepEqual(alerts, ['voice.remote.operationInProgress']);
+    assert.equal(h.refreshes(), 1); assert.equal(refresh.disabled, false);
+});
 
 test('superseded transport and late JSON cannot publish into a new operation', async () => {
     const pending = deferred();
@@ -333,7 +443,11 @@ test('list query failure leaves manual import available with a specific permissi
 
 test('tutorial waits for visible modal removal once and releases observer on teardown', () => {
     const tutorial = fs.readFileSync(path.join(__dirname, '../../static/tutorial/core/page-tutorial-manager.js'), 'utf8');
-    const method = tutorial.slice(tutorial.indexOf('        deferUntilModalCloses() {'), tutorial.indexOf('        handleStepHighlighted() {'));
+    const start = tutorial.indexOf('        deferUntilModalCloses() {');
+    const end = tutorial.indexOf('        handleStepHighlighted() {');
+    assert.ok(start >= 0, 'Tutorial modal deferral method must exist');
+    assert.ok(end > start, 'Tutorial method boundary must follow modal deferral');
+    const method = tutorial.slice(start, end);
     let modalVisible = true, resumed = 0, observers = 0, callback;
     const listeners = {};
     const document = { visibilityState: 'visible', body: {}, querySelectorAll: () => modalVisible ? [{ getClientRects: () => [{}] }] : [],

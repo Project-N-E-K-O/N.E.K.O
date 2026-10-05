@@ -61,13 +61,75 @@ class MemoryVoiceManager(VoiceStorageMixin):
         self.characters = deepcopy(value)
 
 
+class DoubaoVoiceManager(MemoryVoiceManager):
+    """Real keybook resolution and imported storage with isolated disk-free config."""
+    def __init__(self):
+        super().__init__()
+        self.raw = {
+            "ttsModelProvider": "doubao_tts", "ttsModelApiKey": "synthesis-key",
+            "assistApiKeyDoubaoTts": "synthesis-key", "ttsModelUrl": "https://doubao-proxy.example",
+            "ttsModelId": "custom-resource", "doubaoVoiceManagementAppId": "workspace-a",
+            "doubaoVoiceManagementAccessKey": "management-ak", "doubaoVoiceManagementSecretKey": "management-sk",
+        }
+
+    def load_json_config(self, name, default=None):
+        assert name == "core_config.json"
+        return deepcopy(self.raw)
+
+    async def aget_core_config(self):
+        return self.get_core_config()
+
+    async def aget_model_api_config(self, tier):
+        return self.get_model_api_config(tier)
+
+    async def aensure_region_resolved(self):
+        return True
+
+
+@pytest.fixture
+def doubao_import(monkeypatch):
+    from utils.voice_management import providers
+    from utils.voice_management.providers.doubao import DoubaoVoiceAdapter
+    cm, adapter = DoubaoVoiceManager(), DoubaoVoiceAdapter()
+    original_adapter = providers.get_adapter
+    monkeypatch.setattr(providers, "get_adapter", lambda provider: adapter if provider == "doubao_tts" else original_adapter(provider))
+    runtime = adapter.resolve_runtime(cm)
+    ref, data, _ = cm.import_remote_voice(runtime.scope_id, runtime.provider, "S_remote123", {
+        **adapter.import_metadata(runtime), "prefix": "Voice", "can_overwrite": True, "remote_revision": "1",
+    })
+    return cm, adapter, ref, data
+
+
+def test_doubao_scopes_follow_record_endpoints_without_merging_accounts(doubao_import):
+    cm, adapter, ref, data = doubao_import
+    cm.raw.update(ttsModelUrl="https://second-proxy.example", ttsModelId="second-resource")
+    second_rt = adapter.resolve_runtime(cm)
+    second_ref, _, _ = cm.import_remote_voice(second_rt.scope_id, second_rt.provider, "S_remote123", adapter.import_metadata(second_rt))
+    cm.raw.update(ttsModelProvider="minimax", ttsModelUrl="https://minimax.example", ttsModelId="speech-02")
+    assert cm.get_imported_voice(ref)["scope_id"] == data["scope_id"]
+    active = cm.get_voices_for_current_api()
+    assert ref in active and second_ref in active
+    assert active[ref]["doubao_base_url"] != active[second_ref]["doubao_base_url"]
+    cm.characters = {"猫娘": {"Test": {"voice_id": ref}}}
+    cm.raw["assistApiKeyDoubaoTts"] = "new-account-key"
+    assert cm.get_imported_voice(ref) is None
+    assert cm.get_imported_voice(ref, include_inactive=True)["availability"] == "unavailable"
+    cm.get_voices_for_current_api(for_listing=True)
+    assert read_legacy_voice_id(cm.characters["猫娘"]["Test"]["voice_id"]) == ref
+    cm.raw["assistApiKeyDoubaoTts"] = "synthesis-key"
+    assert cm.get_imported_voice(ref) is not None
+    cm.raw["doubaoVoiceManagementAppId"] = "workspace-b"
+    assert cm.get_imported_voice(ref) is None
+    assert cm.get_imported_voice(second_ref) is None
+
+
 @pytest.fixture
 def manager(monkeypatch):
     from utils.voice_management import providers
 
     cm = MemoryVoiceManager()
     monkeypatch.setattr(providers, "get_adapter", lambda provider: SimpleNamespace(
-        resolve_runtime=lambda manager: SimpleNamespace(scope_id=manager.scope, api_key="key"),
+        resolve_runtime=lambda manager, voice_data=None: SimpleNamespace(scope_id=manager.scope, api_key="key"),
     ))
     return cm
 

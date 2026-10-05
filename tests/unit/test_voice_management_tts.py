@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import json
+import threading
 from queue import Queue
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ from starlette.requests import Request
 from main_logic import tts_client
 from main_logic.tts_client import remote_voice
 from main_routers.characters_router import voice_preview
+from tests.unit.test_voice_management_storage import doubao_import
 
 LOCAL_REF = "voice_" + "a" * 32
 
@@ -64,7 +66,7 @@ def manager(monkeypatch):
     from utils.voice_management import providers
     cm = VoiceManager("minimax")
     monkeypatch.setattr(providers, "get_adapter", lambda provider: SimpleNamespace(
-        resolve_runtime=lambda manager: SimpleNamespace(
+        resolve_runtime=lambda manager, voice_data=None: SimpleNamespace(
             provider=provider, scope_id="scope", api_key="key", base_url="https://example.com", model="",
         ),
     ))
@@ -155,7 +157,7 @@ def test_actual_minimax_http_payload_uses_remote_id(manager):
 async def test_preview_maps_id_and_uses_captured_credentials(manager, monkeypatch):
     from utils.voice_management import providers
     monkeypatch.setattr(providers, "get_adapter", lambda provider: SimpleNamespace(
-        resolve_runtime=lambda cm: SimpleNamespace(
+        resolve_runtime=lambda cm, voice_data=None: SimpleNamespace(
             scope_id="scope", provider=provider, api_key="captured-key", base_url="https://example.com", model="",
         ),
     ))
@@ -256,3 +258,70 @@ def test_existing_legacy_uuid_shaped_library_id_keeps_original_dispatch(manager,
     worker, _, provider = tts_client.get_tts_worker("qwen", True, LOCAL_REF)
     assert provider == "minimax"
     assert worker.func is tts_client.minimax_tts_worker
+
+
+def test_doubao_actual_worker_keeps_imported_endpoint_after_provider_switch(doubao_import, monkeypatch):
+    from main_logic.tts_client.workers import doubao
+    cm, _, ref, _ = doubao_import
+    cm.raw.update(ttsModelProvider="minimax", ttsModelUrl="https://other-provider.example", ttsModelId="speech-02")
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(remote_voice, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(doubao, "_record_tts_telemetry", lambda *args: None)
+    captured = []
+    real_client = httpx.AsyncClient
+
+    def transport(request):
+        captured.append(request)
+        return httpx.Response(200, json={"code": 0, "data": base64.b64encode(b"\x00\x00" * 24000).decode()})
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: real_client(**{**kwargs, "transport": httpx.MockTransport(transport)}))
+    worker, key, selected = tts_client.get_tts_worker("qwen", True, ref)
+    assert selected == "doubao_tts" and key == "synthesis-key"
+    request_queue, response_queue = Queue(), Queue()
+    thread = threading.Thread(target=worker, args=(request_queue, response_queue, key, ref), daemon=True)
+    thread.start()
+    try:
+        assert response_queue.get(timeout=5) == ("__ready__", True)
+        request_queue.put(("speech-1", "hello."))
+        request_queue.put((None, None))
+        audio = response_queue.get(timeout=5)
+        assert isinstance(audio, bytes) and len(audio) > 0
+    finally:
+        request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+    assert len(captured) == 1
+    request = captured[0]
+    assert request.url.host == "doubao-proxy.example"
+    assert request.headers["X-Api-Key"] == "synthesis-key"
+    assert request.headers["X-Api-Resource-Id"] == "custom-resource"
+    assert json.loads(request.content)["req_params"]["speaker"] == "S_remote123"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", [False, True])
+async def test_doubao_preview_keeps_record_endpoint_and_rejects_late_key_change(doubao_import, monkeypatch, changed):
+    cm, _, ref, _ = doubao_import
+    cm.raw.update(ttsModelProvider="minimax", ttsModelUrl="https://other-provider.example", ttsModelId="speech-02")
+    monkeypatch.setattr(voice_preview, "get_config_manager", lambda: cm)
+    captured = []
+    real_client = httpx.AsyncClient
+
+    def transport(request):
+        captured.append(request)
+        if changed:
+            cm.raw["assistApiKeyDoubaoTts"] = "new-account-key"
+        return httpx.Response(200, json={"code": 0, "data": base64.b64encode(b"audio").decode()})
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: real_client(**{**kwargs, "transport": httpx.MockTransport(transport)}))
+    result = await voice_preview.get_voice_preview(Request({"type": "http", "headers": [], "query_string": b""}), ref)
+    if changed:
+        assert result.status_code == 409 and json.loads(result.body)["code"] == "IMPORTED_VOICE_UNAVAILABLE"
+    else:
+        assert result["success"] and base64.b64decode(result["audio"]) == b"audio"
+    assert len(captured) == 1
+    request = captured[0]
+    assert request.url.host == "doubao-proxy.example"
+    assert request.headers["X-Api-Key"] == "synthesis-key"
+    assert request.headers["X-Api-Resource-Id"] == "custom-resource"
+    assert json.loads(request.content)["req_params"]["speaker"] == "S_remote123"

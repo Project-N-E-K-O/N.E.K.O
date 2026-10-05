@@ -57,8 +57,15 @@ def _overwrite_allowed(adapter: VoiceManagementAdapter, runtime: VoiceRuntime, v
                 and _voice_metadata(voice.metadata).get("remote_revision"))
 
 
-async def management_context(adapter: VoiceManagementAdapter, cm) -> dict:
-    runtime = await asyncio.to_thread(adapter.resolve_runtime, cm)
+async def management_context(adapter: VoiceManagementAdapter, cm, *, local_ref: str | None = None) -> dict:
+    record = None
+    if local_ref is not None:
+        record = await asyncio.to_thread(cm.get_imported_voice, local_ref, include_inactive=True)
+        if not record:
+            raise VoiceManagementError("VOICE_NOT_FOUND", 404)
+    runtime = await asyncio.to_thread(adapter.resolve_runtime, cm, voice_data=record)
+    if record and (record.get("provider") != runtime.provider or record.get("scope_id") != runtime.scope_id):
+        raise VoiceManagementError("CONTEXT_CHANGED", 409)
     capabilities = adapter.capabilities_for(runtime)
     return {
         "success": True, "provider": runtime.provider,
@@ -67,8 +74,8 @@ async def management_context(adapter: VoiceManagementAdapter, cm) -> dict:
     }
 
 
-async def _runtime(adapter: VoiceManagementAdapter, cm, token: str) -> VoiceRuntime:
-    runtime = await asyncio.to_thread(adapter.resolve_runtime, cm)
+async def _runtime(adapter: VoiceManagementAdapter, cm, token: str, *, voice_data: dict | None = None) -> VoiceRuntime:
+    runtime = await asyncio.to_thread(adapter.resolve_runtime, cm, voice_data=voice_data)
     if not isinstance(token, str) or re.fullmatch(r"[0-9a-f]{64}", token) is None or not hmac.compare_digest(context_token(runtime), token):
         raise VoiceManagementError("CONTEXT_CHANGED", 409)
     if not runtime.api_key:
@@ -76,8 +83,8 @@ async def _runtime(adapter: VoiceManagementAdapter, cm, token: str) -> VoiceRunt
     return runtime
 
 
-async def _check_context(adapter: VoiceManagementAdapter, cm, runtime: VoiceRuntime) -> None:
-    current = await asyncio.to_thread(adapter.resolve_runtime, cm)
+async def _check_context(adapter: VoiceManagementAdapter, cm, runtime: VoiceRuntime, *, voice_data: dict | None = None) -> None:
+    current = await asyncio.to_thread(adapter.resolve_runtime, cm, voice_data=voice_data)
     if not hmac.compare_digest(context_token(current), context_token(runtime)):
         raise VoiceManagementError("CONTEXT_CHANGED", 409)
 
@@ -188,8 +195,8 @@ async def overwrite_remote_voice(
 ) -> dict:
     if re.fullmatch(r"voice_[0-9a-f]{32}", local_ref) is None:
         raise VoiceManagementError("VOICE_NOT_FOUND", 404)
-    runtime = await _runtime(adapter, cm, token)
     record = await asyncio.to_thread(cm.get_imported_voice, local_ref, include_inactive=True)
+    runtime = await _runtime(adapter, cm, token, voice_data=record)
     if not record or record.get("scope_id") != runtime.scope_id:
         raise VoiceManagementError("CONTEXT_CHANGED", 409)
     if not adapter.capabilities_for(runtime).overwrite or not record.get("can_overwrite"):
@@ -217,7 +224,7 @@ async def overwrite_remote_voice(
             if current.voice_id != remote_id or not _overwrite_allowed(adapter, runtime, current):
                 raise VoiceManagementError("OVERWRITE_UNSUPPORTED", 400)
             previous_revision = _voice_metadata(current.metadata)["remote_revision"]
-            await _check_context(adapter, cm, runtime)
+            await _check_context(adapter, cm, runtime, voice_data=record)
             latest = await asyncio.to_thread(cm.get_imported_voice, local_ref, include_inactive=True)
             if not latest or any(latest.get(key) != record.get(key) for key in (
                 "scope_id", "remote_voice_id", "provider",
@@ -241,7 +248,7 @@ async def overwrite_remote_voice(
                 claim_owned = True
                 raise
             claim_owned = True
-            await _check_context(adapter, cm, runtime)
+            await _check_context(adapter, cm, runtime, voice_data=record)
             mutation_started = True
 
         try:
@@ -294,26 +301,29 @@ async def overwrite_remote_voice(
 
 
 async def refresh_overwrite_status(adapter: VoiceManagementAdapter, cm, local_ref: str, *, token: str) -> dict:
-    runtime = await _runtime(adapter, cm, token)
-    lock = _OVERWRITE_LOCKS.get(local_ref)
-    if lock is not None and lock.locked():
-        raise VoiceManagementError("OPERATION_IN_PROGRESS", 409)
     record = await asyncio.to_thread(cm.get_imported_voice, local_ref, include_inactive=True)
     if not record:
         raise VoiceManagementError("VOICE_NOT_FOUND", 404)
+    runtime = await _runtime(adapter, cm, token, voice_data=record)
+    lock = _OVERWRITE_LOCKS.get(local_ref)
+    if lock is not None and lock.locked():
+        raise VoiceManagementError("OPERATION_IN_PROGRESS", 409)
     if record.get("scope_id") != runtime.scope_id:
         raise VoiceManagementError("CONTEXT_CHANGED", 409)
     remote = await adapter.get_voice(runtime, record["remote_voice_id"])
-    await _check_context(adapter, cm, runtime)
+    await _check_context(adapter, cm, runtime, voice_data=record)
     if remote is None:
         raise VoiceManagementError("VOICE_NOT_FOUND", 404)
     status = record.get("overwrite_status", "completed")
     previous = record.get("overwrite_previous_revision")
     revision = remote.metadata.get("remote_revision")
-    if remote.status in {"failed", "unavailable"}:
-        status = "failed"
-    elif remote.status in {"ready", "completed", "OK"} and previous is not None and revision is not None and revision != previous:
-        status = "completed"
+    # Reconciliation may settle only an unresolved operation. A later external
+    # revision cannot turn a known rejection into success (or undo completion).
+    if status in {"processing", "unknown"}:
+        if remote.status in {"failed", "unavailable"}:
+            status = "failed"
+        elif remote.status in {"ready", "completed", "OK"} and previous is not None and revision is not None and revision != previous:
+            status = "completed"
     latest = await asyncio.to_thread(cm.get_imported_voice, local_ref, include_inactive=True)
     if not latest or latest.get("overwrite_operation_id") != record.get("overwrite_operation_id"):
         raise VoiceManagementError("CONTEXT_CHANGED", 409)

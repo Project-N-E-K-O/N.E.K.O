@@ -10,7 +10,7 @@ class ElevenLabsVoiceAdapter(ImportOnlyAdapter):
     provider = "elevenlabs"
     capabilities = ManagementCapabilities(list_voices=True, details=True, overwrite=False)
 
-    def resolve_runtime(self, config_manager):
+    def resolve_runtime(self, config_manager, *, voice_data=None):
         return runtime_for(self.provider, config_manager.get_tts_api_key(self.provider), "https://api.elevenlabs.io", model="eleven_v3")
 
     def import_metadata(self, runtime):

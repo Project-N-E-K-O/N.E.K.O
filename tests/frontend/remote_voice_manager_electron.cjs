@@ -38,6 +38,14 @@ app.whenReady().then(async () => {
     assert.equal(await run("window.pageTutorialManager.isTutorialRunning"), false);
     assert.equal(await run("!!document.querySelector('.driver-popover')"), false);
     assert.equal(state.imports.length, 0);
+    state.remotePages = [[{ voice_id: 'unrelated', name: 'Unrelated' }], [{ voice_id: 'TargetLater', name: 'Target in later page', status: 'ready' }]];
+    await run("(()=>{const input=document.querySelector('.remote-voice-toolbar input[type=search]');input.value='Target';input.dispatchEvent(new Event('input'));return true;})()");
+    await waitFor("document.querySelector('.remote-voice-table tbody').textContent.includes('Target in later page')");
+    assert.ok(state.listQueries.some(item => item.query === 'Target' && item.cursor === '1'));
+    assert.equal(state.imports.length, 0);
+    delete state.remotePages;
+    await run("(()=>{const input=document.querySelector('.remote-voice-toolbar input[type=search]');input.value='';input.dispatchEvent(new Event('input'));return true;})()");
+    await waitFor("document.querySelector('.remote-voice-table tbody').textContent.includes('ExistingVoice123')");
     const listScreenshot = await screenshot('list');
     await run("document.querySelector('.remote-voice-table input[type=radio]').click();true;");
     await click('importSelected');

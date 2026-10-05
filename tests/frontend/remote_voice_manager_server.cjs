@@ -6,7 +6,7 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '../..');
 function createVoiceManagerServer() {
     const definition = JSON.parse(fs.readFileSync(path.join(root, 'config/api_providers.json'), 'utf8'));
-    const state = { voices: {}, imports: [], updates: [], settings: [], binding: '', status: 'unknown' };
+    const state = { voices: {}, imports: [], updates: [], settings: [], listQueries: [], binding: '', status: 'unknown' };
     const config = { success: true, coreApi: 'free', assistApi: 'free', api_key: 'free-access',
         enableCustomApi: false, assistApiKeyQwen: '__NEKO_SECRET_MASKED__', assistApiKeyMinimax: '__NEKO_SECRET_MASKED__',
         assistApiKeyDoubaoTts: '__NEKO_SECRET_MASKED__', doubaoVoiceManagementAccessKey: '__NEKO_SECRET_MASKED__',
@@ -38,9 +38,20 @@ function createVoiceManagerServer() {
         if (url.pathname === '/api/characters/voices') return json(response, { success: true, voices: state.voices });
         if (url.pathname === '/api/characters/remote_voices/context') return json(response, { success: true, provider, configured: true,
             context_token: 'controlled-context', capabilities: management(provider), required_fields: provider.startsWith('cosyvoice') ? [{ key: 'clone_model', required: true, label_key: 'voice.remote.model', default_value: 'cosyvoice-v3-plus' }] : [] });
-        if (url.pathname === '/api/characters/remote_voices') return json(response, { success: true, provider, context_token: 'controlled-context',
-            voices: [{ voice_id: 'ExistingVoice123', name: '已有克隆音色', created_at: '2026-07-10T10:00:00Z', status: 'ready', can_overwrite: management(provider).overwrite, imported: Object.values(state.voices).some(voice => voice.provider === provider && voice.remote_voice_id === 'ExistingVoice123') },
-                { voice_id: 'Missing-date', name: '', created_at: null, status: 'unknown' }], next_cursor: null });
+        if (url.pathname === '/api/characters/remote_voices') {
+            const query = url.searchParams.get('query') || '';
+            const cursor = url.searchParams.get('cursor');
+            state.listQueries.push({ query, cursor });
+            const pages = state.remotePages || [[
+                { voice_id: 'ExistingVoice123', name: '已有克隆音色', created_at: '2026-07-10T10:00:00Z', status: 'ready', can_overwrite: management(provider).overwrite, imported: Object.values(state.voices).some(voice => voice.provider === provider && voice.remote_voice_id === 'ExistingVoice123') },
+                { voice_id: 'Missing-date', name: '', created_at: null, status: 'unknown' }
+            ]];
+            const page = cursor === null ? 0 : Number(cursor);
+            if (!Number.isInteger(page) || page < 0 || page >= pages.length) return json(response, { success: false, code: 'INVALID_CURSOR' }, 400);
+            return json(response, { success: true, provider, context_token: 'controlled-context',
+                voices: pages[page].filter(voice => (voice.voice_id + ' ' + (voice.name || '')).toLocaleLowerCase().includes(query.toLocaleLowerCase())),
+                next_cursor: page + 1 < pages.length ? String(page + 1) : null });
+        }
         if (url.pathname === '/api/characters/voices/import') {
             const body = JSON.parse(await read(request)); state.imports.push(body);
             const ref = 'voice_' + state.imports.length.toString(16).padStart(32, '0');

@@ -9,7 +9,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from tests.unit.test_voice_management_storage import MemoryVoiceManager
+from tests.unit.test_voice_management_storage import MemoryVoiceManager, doubao_import
 from utils.voice_management import service
 from utils.voice_management.types import (
     ManagementCapabilities, RemoteVoice, VoiceManagementError, VoicePage, VoiceRuntime,
@@ -31,7 +31,7 @@ class Adapter:
         self.on_mutation = None
         self.mutations = []
 
-    def resolve_runtime(self, cm):
+    def resolve_runtime(self, cm, *, voice_data=None):
         scope, bucket = build_voice_scope("minimax", cm.key, "https://vendor.example")
         return VoiceRuntime("minimax", cm.key, "https://vendor.example", scope, bucket,
                             settings={"management_secret": cm.management_secret})
@@ -310,6 +310,141 @@ async def test_overlapping_updates_are_rejected_without_second_mutation(fixture)
         release.set()
         await first
     assert len(adapter.mutations) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["processing", "unknown"])
+async def test_pending_overwrite_cannot_be_bypassed_by_delete_and_reimport(fixture, state):
+    cm, adapter, ref = await imported(fixture)
+
+    async def pending():
+        if state == "unknown":
+            raise VoiceManagementError("UPDATE_OUTCOME_UNKNOWN", 504)
+        return replace(adapter.remote, status="processing")
+
+    adapter.on_mutation = pending
+    token = payload(adapter, cm)["context_token"]
+    if state == "unknown":
+        with pytest.raises(VoiceManagementError, match="UPDATE_OUTCOME_UNKNOWN"):
+            await service.overwrite_remote_voice(adapter, cm, ref, token=token, audio=b"audio", filename="v.wav")
+    else:
+        await service.overwrite_remote_voice(adapter, cm, ref, token=token, audio=b"audio", filename="v.wav")
+    before = json.dumps(cm.storage, sort_keys=True)
+    with pytest.raises(ValueError, match="VOICE_OPERATION_IN_PROGRESS"):
+        await cm.adelete_imported_voice(ref)
+    assert json.dumps(cm.storage, sort_keys=True) == before
+    repeated = await service.import_remote_voice(adapter, cm, payload(adapter, cm))
+    assert repeated["voice_id"] == ref and not repeated["created"]
+    with pytest.raises(VoiceManagementError, match="UPDATE_OUTCOME_UNKNOWN"):
+        await service.overwrite_remote_voice(adapter, cm, ref, token=token, audio=b"audio", filename="v.wav")
+    assert len(adapter.mutations) == 1
+
+
+@pytest.mark.asyncio
+async def test_rejected_overwrite_stays_failed_after_external_revision_change(fixture):
+    cm, adapter, ref = await imported(fixture)
+
+    async def rejected():
+        raise VoiceManagementError("UPSTREAM_REJECTED", 400)
+
+    adapter.on_mutation = rejected
+    token = payload(adapter, cm)["context_token"]
+    with pytest.raises(VoiceManagementError, match="UPSTREAM_REJECTED"):
+        await service.overwrite_remote_voice(adapter, cm, ref, token=token, audio=b"audio", filename="reference.wav")
+    failed = cm.get_imported_voice(ref)
+    assert failed["overwrite_status"] == "failed"
+    adapter.remote = replace(adapter.remote, metadata={"remote_revision": "external-update"})
+    refreshed = await service.refresh_overwrite_status(adapter, cm, ref, token=token)
+    assert refreshed["status"] == "failed"
+    assert refreshed["voice_data"]["overwrite_operation_id"] == failed["overwrite_operation_id"]
+    assert refreshed["voice_data"]["remote_revision"] == "external-update"
+
+
+@pytest.mark.asyncio
+async def test_doubao_record_context_covers_overwrite_and_status_after_selection_change(doubao_import, monkeypatch):
+    cm, adapter, ref, data = doubao_import
+    cm.raw.update(ttsModelProvider="minimax", ttsModelUrl="https://other-provider.example", ttsModelId="speech-02")
+    actual = RemoteVoice("S_remote123", "Voice", status="ready", metadata={"remote_revision": "1"}, can_overwrite=True)
+    observed = []
+
+    async def details(runtime, remote_id):
+        observed.append(runtime)
+        return actual
+
+    async def overwrite(runtime, remote_id, *, before_mutation, **kwargs):
+        observed.append(runtime)
+        await before_mutation(actual)
+        return replace(actual, status="processing", can_overwrite=False)
+
+    monkeypatch.setattr(adapter, "overwrite", overwrite)
+    monkeypatch.setattr(adapter, "get_voice", details)
+    context = await service.management_context(adapter, cm, local_ref=ref)
+    general = await service.management_context(adapter, cm)
+    assert context["context_token"] != general["context_token"]
+    token = context["context_token"]
+    result = await service.overwrite_remote_voice(adapter, cm, ref, token=token, audio=b"audio", filename="sample.wav")
+    assert result["status"] == "processing"
+    actual = replace(actual, metadata={"remote_revision": "2"})
+    refreshed = await service.refresh_overwrite_status(adapter, cm, ref, token=token)
+    assert refreshed["status"] == "completed"
+    assert all(runtime.base_url == "https://doubao-proxy.example" and runtime.resource_id == "custom-resource" for runtime in observed)
+    assert all(runtime.scope_id == data["scope_id"] and runtime.api_key == "synthesis-key" for runtime in observed)
+    cm.raw["assistApiKeyDoubaoTts"] = "new-account-key"
+    with pytest.raises(VoiceManagementError, match="CONTEXT_CHANGED"):
+        await service.management_context(adapter, cm, local_ref=ref)
+    with pytest.raises(VoiceManagementError, match="CONTEXT_CHANGED"):
+        await service.overwrite_remote_voice(adapter, cm, ref, token=token, audio=b"again", filename="sample.wav")
+    assert len(observed) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claim_first", [False, True])
+async def test_delete_interleaved_with_overwrite_preserves_remote_operation_owner(fixture, monkeypatch, claim_first):
+    cm, adapter, ref = await imported(fixture)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def overwrite(runtime, voice_id, *, before_mutation, **kwargs):
+        if claim_first:
+            await before_mutation(adapter.remote)
+        entered.set()
+        await release.wait()
+        if not claim_first:
+            await before_mutation(adapter.remote)
+        adapter.mutations.append(voice_id)
+        return replace(adapter.remote, metadata={"remote_revision": "2"})
+
+    monkeypatch.setattr(adapter, "overwrite", overwrite)
+    task = asyncio.create_task(service.overwrite_remote_voice(
+        adapter, cm, ref, token=payload(adapter, cm)["context_token"], audio=b"audio", filename="sample.wav",
+    ))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        if claim_first:
+            with pytest.raises(ValueError, match="VOICE_OPERATION_IN_PROGRESS"):
+                await cm.adelete_imported_voice(ref)
+            assert cm.get_imported_voice(ref)["overwrite_status"] == "processing"
+        else:
+            assert await cm.adelete_imported_voice(ref)
+            imported_again = await service.import_remote_voice(adapter, cm, payload(adapter, cm))
+            assert imported_again["voice_id"] != ref
+        release.set()
+        if claim_first:
+            assert (await asyncio.wait_for(task, 5))["status"] == "completed"
+            assert await cm.adelete_imported_voice(ref)
+            assert adapter.mutations == ["remote-original"]
+        else:
+            with pytest.raises(VoiceManagementError, match="CONTEXT_CHANGED"):
+                await asyncio.wait_for(task, 5)
+            assert adapter.mutations == []
+            assert cm.get_imported_voice(imported_again["voice_id"]).get("overwrite_status") is None
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 @pytest.mark.asyncio

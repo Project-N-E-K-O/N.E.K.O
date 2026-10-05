@@ -323,7 +323,7 @@ def get_tts_worker(
             if imported_voice:
                 from utils.voice_management.providers import get_adapter
                 from utils.voice_management.runtime_snapshot import VoiceRuntimeSnapshot
-                imported_runtime = get_adapter(imported_voice['provider']).resolve_runtime(cm)
+                imported_runtime = get_adapter(imported_voice['provider']).resolve_runtime(cm, voice_data=imported_voice)
                 if imported_runtime.scope_id != imported_voice.get('scope_id') or not imported_runtime.api_key:
                     imported_voice = None
                 else:

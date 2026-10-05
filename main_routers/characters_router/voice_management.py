@@ -46,9 +46,9 @@ def _error(exc: Exception):
 
 
 @router.get('/remote_voices/context')
-async def remote_voice_context(provider: str):
+async def remote_voice_context(provider: str, local_ref: str | None = None):
     try:
-        result = await service.management_context(_adapter(provider), get_config_manager())
+        result = await service.management_context(_adapter(provider), get_config_manager(), local_ref=local_ref)
         return _json_no_store_response(result)
     except Exception as exc:
         return _error(exc)

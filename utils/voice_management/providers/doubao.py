@@ -54,13 +54,17 @@ class DoubaoVoiceAdapter(ImportOnlyAdapter):
     provider = "doubao_tts"
     capabilities = ManagementCapabilities(list_voices=True, details=True, overwrite=True)
 
-    def resolve_runtime(self, config_manager):
+    def resolve_runtime(self, config_manager, *, voice_data=None):
         from utils.doubao_tts import DOUBAO_TTS_DEFAULT_BASE_URL, DOUBAO_TTS_DEFAULT_RESOURCE_ID
 
         core = config_manager.load_json_config("core_config.json", {})
         active = str(core.get("ttsModelProvider") or "") == self.provider
-        base_url = (core.get("ttsModelUrl") if active else "") or DOUBAO_TTS_DEFAULT_BASE_URL
-        resource = (core.get("ttsModelId") if active else "") or DOUBAO_TTS_DEFAULT_RESOURCE_ID
+        # Only server-loaded records may supply their previously captured endpoint.
+        # Selecting another provider must not discard it; explicitly changing the
+        # active Doubao settings, effective synthesis key or project still isolates it.
+        saved = voice_data or {}
+        base_url = (core.get("ttsModelUrl") if active else saved.get("doubao_base_url")) or DOUBAO_TTS_DEFAULT_BASE_URL
+        resource = (core.get("ttsModelId") if active else saved.get("doubao_resource_id")) or DOUBAO_TTS_DEFAULT_RESOURCE_ID
         settings = {"access_key": str(core.get("doubaoVoiceManagementAccessKey") or "").strip(), "secret_key": str(core.get("doubaoVoiceManagementSecretKey") or "").strip(), "app_id": str(core.get("doubaoVoiceManagementAppId") or "").strip(), "project_name": str(core.get("doubaoVoiceManagementProjectName") or "").strip()}
         # Management queries explicitly select one ownership namespace. A key
         # rotation within it must not move voices, while selecting another

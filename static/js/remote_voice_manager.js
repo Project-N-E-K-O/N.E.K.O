@@ -62,6 +62,7 @@
         const state = active;
         active = null;
         if (!state) return;
+        clearTimeout(state.searchTimer);
         document.removeEventListener('keydown', state.keyboard, true);
         state.overlay.remove();
         state.background.inert = state.wasInert;
@@ -154,13 +155,16 @@
     }
 
     async function context(state, operation) {
-        const result = await operations.request(operation, '/api/characters/remote_voices/context?' + new URLSearchParams({ provider: state.provider }));
+        const params = new URLSearchParams({ provider: state.provider });
+        if (state.localRef) params.set('local_ref', state.localRef);
+        const result = await operations.request(operation, '/api/characters/remote_voices/context?' + params);
         if (active !== state || !operations.owns(operation)) return null;
         state.context = result;
         return result;
     }
 
     function manual(state) {
+        clearTimeout(state.searchTimer);
         operations.cancel();
         state.mode = 'manual';
         state.selection = null;
@@ -240,7 +244,15 @@
         const toolbar = node('div', 'remote-voice-toolbar');
         state.search = node('input'); state.search.type = 'search'; state.search.placeholder = t('search');
         state.search.setAttribute('aria-label', t('search'));
-        state.search.addEventListener('input', () => renderRows(state));
+        state.search.addEventListener('input', () => {
+            clearTimeout(state.searchTimer);
+            operations.cancel();
+            state.selection = null;
+            state.voices = []; state.nextCursor = null;
+            renderRows(state); busy(state, true);
+            state.status.textContent = t('loading');
+            state.searchTimer = setTimeout(() => refresh(state), 250);
+        });
         toolbar.append(state.search, button('refresh', () => refresh(state)));
         const scroller = node('div', 'remote-voice-table-scroll');
         const table = node('table', 'remote-voice-table');
@@ -258,7 +270,10 @@
 
     async function refresh(state, append = false) {
         if (active !== state || state.mode !== 'list' || (append && state.busy)) return;
+        clearTimeout(state.searchTimer);
         const operation = operations.begin(state.provider);
+        const query = state.search.value.trim();
+        const searchDeadline = query ? setTimeout(() => operation.controller.abort(), operations.timeout) : null;
         state.selection = null; state.status.textContent = t('loading'); state.status.classList.remove('remote-voice-error');
         if (!append) { state.voices = []; state.nextCursor = null; renderRows(state); }
         busy(state, true);
@@ -270,8 +285,23 @@
                 return;
             }
             const params = new URLSearchParams({ provider: state.provider, context_token: ctx.context_token });
+            if (query) params.set('query', query);
             if (append && state.nextCursor) params.set('cursor', state.nextCursor);
-            const result = await operations.request(operation, '/api/characters/remote_voices?' + params);
+            let result;
+            const cursors = new Set();
+            if (params.has('cursor')) cursors.add(params.get('cursor'));
+            // Providers often filter each page locally. Advance empty search
+            // pages until a match or exhaustion; never claim no matches early.
+            do {
+                result = await operations.request(operation, '/api/characters/remote_voices?' + params);
+                if (active !== state || !operations.owns(operation)) return;
+                if (!query || (result.voices || []).length || !result.next_cursor) break;
+                if (cursors.has(result.next_cursor)) {
+                    const error = new Error('INVALID_CURSOR'); error.code = 'INVALID_CURSOR'; throw error;
+                }
+                cursors.add(result.next_cursor);
+                params.set('cursor', result.next_cursor);
+            } while (operations.owns(operation));
             if (active !== state || !operations.owns(operation)) return;
             const ids = new Set(state.voices.map(voice => voice.voice_id));
             for (const voice of result.voices || []) if (!ids.has(voice.voice_id)) { state.voices.push(voice); ids.add(voice.voice_id); }
@@ -280,7 +310,10 @@
             renderRows(state);
         } catch (error) {
             if (active === state && operations.current === operation) showError(state, error);
-        } finally { if (active === state && operations.current === operation) busy(state, false); }
+        } finally {
+            clearTimeout(searchDeadline);
+            if (active === state && operations.current === operation) busy(state, false);
+        }
     }
 
     async function submitImport(state) {
@@ -320,6 +353,7 @@
 
     function openOverwrite(localRef, voice) {
         const state = dialog(voice.provider, 'overwrite');
+        state.localRef = localRef;
         state.mode = 'overwrite';
         state.body.append(node('p', 'remote-voice-warning', t('overwriteWarning')));
         state.body.append(node('p', 'remote-voice-id', voice.remote_voice_id || localRef));
@@ -388,6 +422,7 @@
 
     function openStatus(localRef, voice) {
         const state = dialog(voice.provider, 'refreshStatus');
+        state.localRef = localRef;
         state.mode = 'status';
         state.body.append(node('p', 'remote-voice-id', voice.remote_voice_id || localRef));
         state.refreshStatus = button('refreshStatus', () => fetchOverwriteStatus(state, localRef));

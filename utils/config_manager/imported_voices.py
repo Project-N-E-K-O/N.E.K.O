@@ -42,12 +42,12 @@ class ImportedVoiceStorageMixin:
         return storage
 
     def _imported_voice_scope_is_active(self, metadata):
-        return self._current_imported_scope(metadata.get("provider")) == metadata.get("scope_id")
+        return self._current_imported_scope(metadata.get("provider"), metadata) == metadata.get("scope_id")
 
-    def _current_imported_scope(self, provider):
+    def _current_imported_scope(self, provider, voice_data=None):
         from utils.voice_management.providers import get_adapter
         try:
-            runtime = get_adapter(provider).resolve_runtime(self)
+            runtime = get_adapter(provider).resolve_runtime(self, voice_data=voice_data)
             return runtime.scope_id if runtime.api_key else None
         except Exception:
             return None
@@ -93,9 +93,10 @@ class ImportedVoiceStorageMixin:
                 ):
                     continue
                 provider = metadata.get("provider")
-                if provider not in active_scopes:
-                    active_scopes[provider] = self._current_imported_scope(provider)
-                active = active_scopes[provider] == metadata.get("scope_id")
+                identity = (provider, metadata.get("scope_id"))
+                if identity not in active_scopes:
+                    active_scopes[identity] = self._current_imported_scope(provider, metadata)
+                active = active_scopes[identity] == metadata.get("scope_id")
                 if active or include_inactive:
                     value = deepcopy(metadata)
                     value["availability"] = "available" if active else "unavailable"
@@ -170,6 +171,10 @@ class ImportedVoiceStorageMixin:
         found = self._find_imported_voice(storage, local_ref)
         if not found:
             return False
+        # Retain the operation owner until remote completion/failure is proven.
+        # Otherwise reimport creates a fresh UUID and bypasses the pending guard.
+        if found[1].get("overwrite_status") in {"processing", "unknown"}:
+            raise ValueError("VOICE_OPERATION_IN_PROGRESS")
         del storage[found[0]][local_ref]
         self.save_voice_storage(storage)
         return True

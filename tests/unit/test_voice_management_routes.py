@@ -85,6 +85,37 @@ async def test_context_rejects_invalid_provider(client, params, status):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["processing", "unknown"])
+async def test_pending_voice_delete_returns_conflict_and_retains_binding(client, monkeypatch, state):
+    from main_routers.characters_router import voice_registry
+    session, cm, adapter = client
+    ref = await _import(client)
+    cm.update_imported_voice(ref, adapter.resolve_runtime(cm).scope_id, {"overwrite_status": state})
+    cm.characters = {"猫娘": {"Test": {"voice_id": ref}}}
+    before = json.dumps(cm.storage, sort_keys=True)
+    monkeypatch.setattr(voice_registry, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(voice_registry, "get_session_manager", lambda: pytest.fail("A denied delete must not clean bindings or sessions"))
+    response = await session.delete(f"/api/characters/voices/{ref}")
+    assert response.status_code == 409 and response.json()["code"] == "OPERATION_IN_PROGRESS"
+    assert "no-store" in response.headers["cache-control"]
+    assert json.dumps(cm.storage, sort_keys=True) == before
+    assert cm.characters["猫娘"]["Test"]["voice_id"] == ref
+
+
+@pytest.mark.asyncio
+async def test_record_context_rejects_missing_record_and_provider_mismatch(client, monkeypatch):
+    from dataclasses import replace
+    session, cm, adapter = client
+    response = await session.get("/api/characters/remote_voices/context", params={"provider": "minimax", "local_ref": "voice_" + "f" * 32})
+    assert response.status_code == 404 and response.json()["code"] == "VOICE_NOT_FOUND"
+    ref = await _import(client)
+    original = adapter.resolve_runtime
+    monkeypatch.setattr(adapter, "resolve_runtime", lambda cm, voice_data=None: replace(original(cm), provider="elevenlabs"))
+    response = await session.get("/api/characters/remote_voices/context", params={"provider": "minimax", "local_ref": ref})
+    assert response.status_code == 409 and response.json()["code"] == "CONTEXT_CHANGED"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("patch,code", [
     ({"context_token": "stale"}, "CONTEXT_CHANGED"),
     ({"context_token": "中文"}, "CONTEXT_CHANGED"),

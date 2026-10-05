@@ -3004,7 +3004,9 @@ async function deleteVoice(voiceId, voiceName) {
             }
         } else {
             // 删除失败，重新加载列表以恢复事件处理器
-            const errorMsg = data.error || (window.t ? window.t('voice.deleteFailed') : '删除失败');
+            const errorMsg = data.code === 'OPERATION_IN_PROGRESS'
+                ? (window.t ? window.t('voice.remote.operationInProgress') : '音色操作尚未完成，请先刷新状态')
+                : data.error || (window.t ? window.t('voice.deleteFailed') : '删除失败');
             alert(errorMsg);
             await loadVoices();
         }
