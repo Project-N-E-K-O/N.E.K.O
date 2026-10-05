@@ -47,6 +47,11 @@ OAuth保存前重新检查连接授权；退出/新尝试取消旧pending，迟�
 DNS域名使用既有NEKO_TRUSTED_HOSTS白名单；外置TLS网关必要时用NEKO_TRUSTED_ORIGINS声明该HTTPS origin。
 HTTPS网关到私有HTTP上游应保留Host/协议；必要时设置NEKO_INSTANCE_PUBLIC_ORIGIN
 为外部完整HTTPS origin并启用NEKO_BEHIND_PROXY。不从自报转发头推导认证。
+同源检查接受部署的每个入口：请求自身（Host推导）的origin、NEKO_INSTANCE_PUBLIC_ORIGIN，以及
+NEKO_BEHIND_PROXY下同Host的https://（外层TLS未转发可信协议头）。设置公开origin不再把Origin收窄为单值，
+LAN IP/第二端口直连照常配对；DNS rebinding到实例的域名只能拿到绑定hostname的空cookie，仍需配对。
+社区OAuth state与Market公开origin取浏览器实际所在入口（通过同源检查的Origin，否则按Host匹配公开origin，
+再否则用请求自身origin），回跳落在持有该hostname会话cookie的入口。
 同hostname不同端口共用cookie，须共享key；独立实例用不同hostname/key。
 
 ## OAuth回跳与发布依赖

@@ -4,8 +4,15 @@ import os
 from collections.abc import Mapping
 
 
+def _env_flag(name: str) -> bool:
+    """Shared truthiness rule for the opt-in flags read in this module."""
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def is_behind_proxy() -> bool:
     """Use the same proxy flag semantics at startup and at access boundaries."""
+    # Deliberately not _env_flag: utils/local_ws_guard.py and agent_router parse
+    # this flag without "on", and proxy trust must not differ between guards.
     return os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
 
 
@@ -15,13 +22,12 @@ def requires_https() -> bool:
     Many self-hosted deployments (home broadband, LAN/NAS access by IP, regions
     where a public certificate needs a registered domain) cannot obtain HTTPS.
     """
-    return os.environ.get("NEKO_REQUIRE_HTTPS", "").strip().lower() in ("1", "true", "yes", "on")
+    return _env_flag("NEKO_REQUIRE_HTTPS")
 
 
 def is_remote_backend_deployment() -> bool:
     """Share remote flag semantics between OS features and instance access."""
-    return any(os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
-               for name in ("NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"))
+    return any(_env_flag(name) for name in ("NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"))
 
 
 def uvicorn_proxy_options() -> dict:

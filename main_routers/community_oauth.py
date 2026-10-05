@@ -29,7 +29,7 @@ from main_routers.local_access import is_local_oauth_status_request as _loopback
 import main_routers.card_drop_router as C
 from main_logic import client_registration
 from utils.social_base import auth_public_url as _configured_auth_public_url
-from utils.instance_access import remote_instance_identity, _same_origin
+from utils.instance_access import remote_instance_identity, request_public_origin, _same_origin
 
 logger = logging.getLogger("neko.community_oauth")
 
@@ -670,7 +670,9 @@ async def oauth_start_endpoint(request: Request):
         else:
             state = secrets.token_urlsafe(32)
             if identity != "local":
-                origin = os.environ.get("NEKO_INSTANCE_PUBLIC_ORIGIN", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+                # The relay returns to the entry this browser paired on, where
+                # its host-bound instance session cookie is valid.
+                origin = request_public_origin(request)
                 state = base64.urlsafe_b64encode(json.dumps({"origin": origin, "nonce": state}, separators=(",", ":")).encode()).rstrip(b"=").decode()
             code_verifier = secrets.token_urlsafe(64)
             expires_at = now + _OAUTH_PENDING_TTL_SEC
