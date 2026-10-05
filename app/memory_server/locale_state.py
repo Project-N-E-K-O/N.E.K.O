@@ -826,6 +826,28 @@ def forget_subject_prompt_locale(name: str, subject) -> int:
         return 1
 
 
+def live_subject_locale_keys(name: str, rows) -> set[str]:
+    """Keys of raw ``scoped_prompt_locales.json`` rows that survive the forget cutoffs.
+
+    Same rule as the loader: a row whose order is missing or not above its
+    subject's cutoff was forgotten (a crash between persisting the cutoff and
+    rewriting the sidecar leaves it on disk).
+    """
+    with _subject_locale_forget_cutoffs_guard:
+        _load_subject_locale_forget_cutoffs_unlocked()
+        cutoffs = dict(_subject_locale_forget_cutoffs)
+    live: set[str] = set()
+    for key, row in rows.items():
+        order = row.get("order") if isinstance(row, dict) else None
+        if not isinstance(order, int) or isinstance(order, bool):
+            order = None
+        cutoff = cutoffs.get((name, key))
+        if cutoff is not None and (order is None or order <= cutoff):
+            continue
+        live.add(key)
+    return live
+
+
 def get_subject_prompt_locale(name: str, subject) -> str | None:
     """Load the latest explicit locale for one scoped memory owner."""
     key = _subject_locale_key(subject)

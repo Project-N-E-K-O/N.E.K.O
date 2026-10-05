@@ -454,3 +454,18 @@ async def test_staging_left_by_a_terminal_key_is_not_listed(env):
     staged = {row["subject_id"] for row in result["subjects"] if row["staged"]}
     # 已终结的键收尾时删暂存失败留下的文件没有待应用的东西；pending 与没有记录的孤儿照常列
     assert staged == {"neko_visit:u_pending", "neko_visit:u_orphan"}
+
+
+async def test_forgotten_locale_row_left_on_disk_is_not_listed(env):
+    from app.memory_server import locale_state
+
+    gone = MemorySubject.participant("neko_visit", "u_gone")
+    key = json.dumps([gone.kind, gone.subject_id, gone.scope], ensure_ascii=False, separators=(",", ":"))
+    _write(env.root / NAME / "scoped_prompt_locales.json", {"subjects": {key: {"language": "zh", "order": 5}}})
+    # 清除已写下 cutoff、改写 sidecar 之前崩溃：这一行还在盘上
+    env.monkeypatch.setattr(locale_state, "_subject_locale_forget_cutoffs_loaded", True)
+    env.monkeypatch.setitem(locale_state._subject_locale_forget_cutoffs, (NAME, key), 10)
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    listed = {(row["subject_kind"], row["subject_id"]) for row in result["subjects"]}
+    # 与语言加载器同口径滤掉：被清的 subject 不能一直以 prompt_locale 出现
+    assert ("participant", "neko_visit:u_gone") not in listed
