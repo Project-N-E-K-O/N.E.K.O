@@ -35,7 +35,7 @@ case "$1" in
         [[ "$3 $4 $5 $6" == "curl --noproxy * -fsS" ]] || exit 99
         exit "${BACKEND_EXIT:-0}" ;;
     restart)
-        [[ "$2 $3" == '--time 30' ]] || exit 99
+        [[ "$2 $3" == '-t 30' ]] || exit 99
         echo "$4" >> "$TEST_ROOT/restarts"
         touch "$TEST_ROOT/restart-attempt"
         if [[ ${RESTART_DELAY:-0} == 1 ]]; then
@@ -61,7 +61,7 @@ bash -n "$SOURCE/watchdog.sh"
 sh -n "$SOURCE/install-watchdog.sh"
 run() { bash "$ROOT/watchdog.sh"; }
 no_restart() { [[ ! -e "$ROOT/restarts" ]]; }
-reset() { rm -f "$ROOT/state/fail-count" "$ROOT/state/restart-count" "$ROOT/restarts" "$ROOT/restart-attempt" "$ROOT/restart-begun" "$ROOT/restart-release"; }
+reset() { rm -f "$ROOT/state/fail-count" "$ROOT/state/restart-count" "$ROOT/state/exhaustion-reported" "$ROOT/restarts" "$ROOT/restart-attempt" "$ROOT/restart-begun" "$ROOT/restart-release"; }
 run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 HTTP_CODE=200 run; no_restart
 http_proxy=http://127.0.0.1:1 ALL_PROXY=http://127.0.0.1:1 run
@@ -190,6 +190,9 @@ HTTP_CODE=500 run
 if HTTP_CODE=500 run; then exit 1; fi
 [[ $(wc -l < "$ROOT/restarts") == 3 ]]
 grep -q 'Automatic recovery exhausted' "$ROOT/state/watchdog.log"
+log_size=$(stat -c %s "$ROOT/state/watchdog.log")
+if HTTP_CODE=500 run; then exit 1; fi
+[[ $(stat -c %s "$ROOT/state/watchdog.log") == "$log_size" ]]
 run; [[ ! -e "$ROOT/state/restart-count" ]]
 reset
 printf 'id-old 3\n' > "$ROOT/state/restart-count"
@@ -209,8 +212,14 @@ if run; then exit 1; fi
 [[ $(stat -c %s "$ROOT/state/watchdog.log") == "$log_size" ]]
 grep -q 'State directory must' "$ROOT/syslog"
 chmod 700 "$ROOT/state"
+# This case must never fall back to a real Docker executable in /usr/bin.
+mkdir "$ROOT/missing-tools"
+for tool in stat date timeout flock; do
+    ln -s "$(command -v "$tool")" "$ROOT/missing-tools/$tool"
+done
+sed "s|export PATH=.*|export PATH=$ROOT/bin:$ROOT/missing-tools|" "$ROOT/watchdog.sh" > "$ROOT/missing-docker.sh"
 mv "$ROOT/bin/docker" "$ROOT/bin/docker.hidden"
-if run; then exit 1; fi
+if bash "$ROOT/missing-docker.sh"; then exit 1; fi
 grep -q 'Missing docker' "$ROOT/state/watchdog.log"
 mv "$ROOT/bin/docker.hidden" "$ROOT/bin/docker"
 reset

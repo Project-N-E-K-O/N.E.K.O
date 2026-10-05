@@ -32,7 +32,7 @@
 | **Docker Compose V2** | 需要 **2.24.4 及以上**以支持 `!override`，不能用旧版 Python 的 `docker-compose` v1；需要保留仓库中的 `docker/docker-compose.yml`，不能只下载本目录 |
 | **宿主机有 `bash`** | 看门狗脚本 shebang 为 `#!/bin/bash` |
 | **宿主机有 `curl`、`timeout`、`flock`** | `curl` 检查完整 HTTP 响应；`timeout`（coreutils）限制 Docker 命令；`flock`（util-linux）防止并发重启。可运行 `sudo apt install curl coreutils util-linux` |
-| **root 级 cron + docker 套接字** | 看门狗由宿主 cron 每 5 分钟执行，并调用 `docker restart` |
+| **宿主 cron 服务 + docker 套接字** | 启用可选看门狗前须安装并启动宿主 `cron`（Ubuntu 可用 `sudo apt install cron`、`sudo systemctl enable --now cron`，再核对 `systemctl is-active cron`）；仅存在 `/etc/cron.d` 不代表调度服务已运行。安装器只安装文件，不验证宿主 cron 服务 |
 
 ### 2.2 部署命令
 
@@ -109,7 +109,15 @@ docker compose --profile watchdog run --rm neko-cron-install
 
 ---
 
-### 2.3 升级已有 root 日志的权限
+### 2.3 从官方 Docker 部署迁移
+
+官方方案和本方案共用容器名 `neko`，但本方案挂载 `community-2c2g/neko-home`、`community-2c2g/logs`。不要在官方容器仍运行时直接启动本方案，也不要只删除旧容器就使用空目录；这会产生新的实例 key、角色、记忆及证书，旧数据并未自动迁入。
+
+先核对旧容器的实际挂载源（含自定义 `COMPOSE_FILE`/覆盖文件），备份这些目录并验证备份；如旧部署启用了看门狗，先按第 3 节持锁暂停。然后在原 `docker/` 项目使用其实际文件组合执行 `docker compose down`，不要使用 `-v` 或删除数据目录。确认旧容器已退出，目标目录尚未包含新部署数据，再将实际旧 `neko-home` 和 `logs` 完整复制到本目录同名目录，保留权限及原文件，不与已有新数据合并覆盖。不要仅复制数据库：实例授权、角色、记忆、证书及其他持久化内容都需保留。原目录及备份应保留至验收完成。
+
+复制前核对源、目标及父目录，拒绝顶层符号链接并排除嵌套挂载；已有 root 日志按下一节逐项修复。本方案不会递归修改整个目录树的属主。启动前用 `docker compose config` 核对挂载源确实是迁入数据，再 `docker compose up -d`；确认原实例凭证、角色、记忆、证书和日志仍有效后，按需显式安装/恢复看门狗。迁移失败时停掉新部署，以保留的旧目录及原文件组合回退，不重新生成旧实例数据。
+
+### 2.4 升级已有 root 日志的权限
 
 已有部署的 `logs/` 中若有 root 创建的文件或子目录，初始化不会自动修改它们。升级前先按第 3 节持锁暂停已安装的看门狗，再 `docker compose stop`。由管理员核验待迁移路径及所有父目录不是符号链接、没有嵌套挂载，并确认目标确实是本应用日志；Docker socket、其他服务数据和受保护资源不得列入迁移。
 
@@ -132,7 +140,7 @@ sudo chown --no-dereference 1000:1000 -- ./logs/main.log
 ```
 neko-init ──(success)──▶ neko-main ──▶ 48911(HTTP)/48912(HTTPS，默认全接口)
    │                        │
-   └──(显式安装)──▶ neko-cron-install ──▶ 宿主 /opt/neko/watchdog.sh + /etc/cron.d/neko-watchdog
+   └──(显式安装，无 init 依赖)──▶ neko-cron-install ──▶ 宿主 /opt/neko/watchdog.sh + /etc/cron.d/neko-watchdog
                                     └──▶ 每 5 分钟二层健康检查 + 自动重启
 ```
 
@@ -145,7 +153,7 @@ neko-init ──(success)──▶ neko-main ──▶ 48911(HTTP)/48912(HTTPS�
 
 启动后默认有 **15 分钟宽限期**，按 Docker `State.StartedAt` 计算；期间清空失败计数，不执行恢复。同 ID 重启也重新获得宽限期。若实测启动更慢，在宿主 `/etc/cron.d/neko-watchdog` 中在任务行之前添加 `NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=1800`（秒）并按实际启动耗时调整；0 表示禁用。重装保留这一整数设置（支持一对匹配的单引号或双引号），非法或重复设置会拒绝重装。
 
-宽限期后，健康即清空失败计数；**连续 2 次不健康 → 自动重启同一个容器 ID**。计数绑定 ID 和启动时间，重建、重启均不继承旧失败；重启前复核运行、暂停、重启状态和启动时间。Docker restart 使用 30 秒停止期限及 120 秒客户端总超时；客户端失败后复查 Docker 状态，确认新启动时间或正在重启时清计数，否则保留并报错。客户端超时不代表 daemon 已取消重启。每个容器 ID 最多连续尝试 3 次自动恢复（失败的 CLI 调用也计入）；启动宽限期和启动时间变化不重置预算，健康后清零，重建容器得到新预算。耗尽后记录错误并停止主动重启，Docker 的 `unless-stopped` 策略仍独立生效。排除故障后可执行 `sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/restart-count` 恢复预算。`flock` 防止 cron 与手动调用同时重启。容器已删除时正常静默退出，Docker 查询故障仍会报错。同一容器 ID 有主动恢复记录但已停止时，会明确记录需人工检查的错误，保留预算且不自动启动；这也可能是恢复尝试后的手动停止，维护请先持锁设置 `disabled`。
+宽限期后，健康即清空失败计数；**连续 2 次不健康 → 自动重启同一个容器 ID**。计数绑定 ID 和启动时间，重建、重启均不继承旧失败；重启前复核运行、暂停、重启状态和启动时间。Docker restart 使用 30 秒停止期限及 120 秒客户端总超时；客户端失败后复查 Docker 状态，确认新启动时间或正在重启时清计数，否则保留并报错。客户端超时不代表 daemon 已取消重启。每个容器 ID 最多连续尝试 3 次自动恢复（失败的 CLI 调用也计入）；启动宽限期和启动时间变化不重置预算，健康后清零，重建容器得到新预算。耗尽后每个容器 ID 的同一轮恢复只记录一次错误并停止主动重启，持续相同失败不重复记录；健康恢复或手动清除预算后重新报告，Docker 的 `unless-stopped` 策略仍独立生效。排除故障后可执行 `sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/restart-count` 恢复预算。`flock` 防止 cron 与手动调用同时重启。容器已删除时正常静默退出，Docker 查询故障仍会报错。同一容器 ID 有主动恢复记录但已停止时，会明确记录需人工检查的错误，保留预算且不自动启动；这也可能是恢复尝试后的手动停止，维护请先持锁设置 `disabled`。
 
 安装器拒绝符号链接和非 root 私有目录，原子安装脚本与 cron。状态、锁、日志位于 root:root、0700 的 `/opt/neko/`；计数损坏或读写失败会报错退出，不会静默归零。加锁前的配置、依赖和权限错误写 stderr，并在安全路径下追加 watchdog.log；有 `logger` 时同时写 syslog（可查 `journalctl -t neko-watchdog`，取决于宿主日志配置）。不安全目录或日志文件不会被写入。日志 `/opt/neko/watchdog.log` 无自动轮转，长期运行建议配置 logrotate。
 

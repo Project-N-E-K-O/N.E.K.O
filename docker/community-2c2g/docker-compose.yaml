@@ -45,9 +45,6 @@ services:
     profiles: [watchdog]
     image: alpine:3.20
     restart: "no"
-    depends_on:
-      neko-init:
-        condition: service_completed_successfully
     entrypoint: ["/bin/sh", "/source/install-watchdog.sh"]
     volumes:
       - /etc/cron.d:/host-cron.d

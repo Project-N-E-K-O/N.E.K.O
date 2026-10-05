@@ -31,7 +31,7 @@ STARTUP_GRACE_SECONDS=$((10#$STARTUP_GRACE_SECONDS))
 for dependency in docker curl timeout flock; do
     command -v "$dependency" >/dev/null || early_fail "Missing $dependency"
 done
-for file in watchdog.lock fail-count restart-count watchdog.log; do
+for file in watchdog.lock fail-count restart-count exhaustion-reported watchdog.log; do
     [[ ! -L "$STATE_DIR/$file" ]] || early_fail "Unsafe state file: $file"
 done
 exec 9>"$STATE_DIR/watchdog.lock"
@@ -40,6 +40,7 @@ log() { printf '%s - %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$STATE_DIR/wa
 fail() { log "$*"; exit 1; }
 COUNT_FILE="$STATE_DIR/fail-count"
 RESTART_FILE="$STATE_DIR/restart-count"
+EXHAUSTED_FILE="$STATE_DIR/exhaustion-reported"
 METADATA_FORMAT='{{.Id}} {{index .Config.Labels "org.neko.community-2c2g.watchdog"}} {{index .Config.Labels "com.docker.compose.service"}} {{.State.Running}} {{.State.Paused}} {{.State.Restarting}} {{.State.StartedAt}}'
 
 # Do not transfer recovery authority to an unrelated container with the same name.
@@ -85,7 +86,7 @@ if code=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --connect-timeou
     fi
 fi
 if [[ "$healthy" == true ]]; then
-    rm -f "$COUNT_FILE" "$RESTART_FILE"
+    rm -f "$COUNT_FILE" "$RESTART_FILE" "$EXHAUSTED_FILE"
     exit 0
 fi
 
@@ -99,13 +100,14 @@ if [[ -e "$COUNT_FILE" ]]; then
         count=$previous_count
     fi
 fi
+old_count=$count
 count=$((count + 1))
 (( count <= 2 )) || count=2
 temporary=$(mktemp "$STATE_DIR/.fail-count.XXXXXX") || fail "Cannot create failure counter"
 trap 'rm -f "$temporary"' EXIT
 printf '%s %s %s\n' "$container_id" "$count" "$started_at" > "$temporary" || fail "Cannot write failure counter"
 mv -f "$temporary" "$COUNT_FILE" || fail "Cannot publish failure counter"
-log "Health probe failed ($count/2)"
+if (( count != old_count )); then log "Health probe failed ($count/2)"; fi
 if (( count >= 2 )); then
     # Maintenance must hold this same lock while setting disabled (see README).
     [[ ! -e "$STATE_DIR/disabled" ]] || exit 0
@@ -119,11 +121,22 @@ if (( count >= 2 )); then
         [[ "$restart_count" =~ ^[0-3]$ && -z "$extra" ]] || fail "Invalid restart budget"
         [[ "$restart_id" == "$container_id" ]] || restart_count=0
     fi
-    (( restart_count < 3 )) || fail "Automatic recovery exhausted (3 attempts); inspect service and clear restart-count under maintenance lock"
+    if (( restart_count >= 3 )); then
+        reported=
+        if [[ -e "$EXHAUSTED_FILE" ]]; then
+            reported=$(cat "$EXHAUSTED_FILE") || fail "Cannot read exhaustion notification"
+        fi
+        [[ "$reported" != "$container_id" ]] || exit 1
+        temporary=$(mktemp "$STATE_DIR/.exhaustion-reported.XXXXXX") || fail "Cannot create exhaustion notification"
+        printf '%s\n' "$container_id" > "$temporary" || fail "Cannot write exhaustion notification"
+        mv -f "$temporary" "$EXHAUSTED_FILE" || fail "Cannot publish exhaustion notification"
+        fail "Automatic recovery exhausted (3 attempts); inspect service and clear restart-count under maintenance lock"
+    fi
+    rm -f "$EXHAUSTED_FILE"
     temporary=$(mktemp "$STATE_DIR/.restart-count.XXXXXX") || fail "Cannot create restart budget"
     printf '%s %s\n' "$container_id" "$((restart_count + 1))" > "$temporary" || fail "Cannot write restart budget"
     mv -f "$temporary" "$RESTART_FILE" || fail "Cannot publish restart budget"
-    if timeout 120 docker restart --time 30 "$container_id" >> "$STATE_DIR/watchdog.log" 2>&1; then
+    if timeout 120 docker restart -t 30 "$container_id" >> "$STATE_DIR/watchdog.log" 2>&1; then
         rm -f "$COUNT_FILE"
         log "Restart succeeded"
     else
