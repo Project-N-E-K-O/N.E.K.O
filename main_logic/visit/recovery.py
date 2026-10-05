@@ -831,14 +831,20 @@ async def _upload_pending(
             else:
                 await _mark_report_transcript_unavailable(config_dir, visit_id, "corrupt", report)
             continue
-        if visit_id not in stream_checked and not await _sealed_char_matches_state(config_dir, visit_id, doc):
-            # 只剩上传文件、没有流水可比：角色 id 与本场 state.json 记的不一致（别的角色的文件），
-            # 交上去就是拿错的角色身份上传。按别场文件处理
-            if not await _drop_corrupt_sealed(spool_dir, visit_id):
-                pending.add(visit_id)
-            else:
-                await _mark_report_transcript_unavailable(config_dir, visit_id, "corrupt", report)
-            continue
+        if visit_id not in stream_checked:
+            matches, state_owner = await _sealed_matches_state(config_dir, visit_id, doc)
+            if not matches:
+                # 只剩上传文件、没有流水可比：角色 id 或占房账号与本场 state.json 记的不一致（别的角色 /
+                # 别的账号的文件），交上去就是拿错的身份上传。按别场文件处理
+                if not await _drop_corrupt_sealed(spool_dir, visit_id):
+                    pending.add(visit_id)
+                else:
+                    await _mark_report_transcript_unavailable(config_dir, visit_id, "corrupt", report)
+                continue
+            if doc.get("own_visit_uid") is None and state_owner is not None:
+                # 旧版本封出来的无主文件：用本场 state.json 记的账号补上，否则只认账号的上传回调
+                # 永远选不中登录账号
+                doc = {**doc, "own_visit_uid": state_owner}
         try:
             before = await asyncio.to_thread(path.stat)
         except OSError:
@@ -910,17 +916,29 @@ async def _drop_corrupt_sealed(spool_dir: Path, visit_id: str) -> bool:
     return True
 
 
-async def _sealed_char_matches_state(config_dir: Path, visit_id: str, doc: dict) -> bool:
-    """Whether a sealed upload's ``own_char_uid`` is the one this visit's ``state.json`` records.
+async def _sealed_matches_state(config_dir: Path, visit_id: str, doc: dict) -> tuple[bool, str | None]:
+    """``(matches, state owner)`` for a sealed upload checked against this visit's ``state.json``.
 
-    True when the state is absent or unreadable (nothing to compare with).
+    ``matches`` is False when the document's ``own_char_uid``, or its non-null
+    ``own_visit_uid``, differs from the one the state records (character ids
+    are machine-local and shared across accounts, so both are checked). The
+    state's ``own_uid`` is returned so a legacy document without an owner can
+    take it. ``(True, None)`` when the state is absent or unreadable.
     """
     try:
         state = await VisitSpool(config_dir, visit_id).read_state()
     except (OSError, ValueError):
-        return True
-    expected = _owner_or_none(state.get("own_char_uid")) if state else None
-    return expected is None or doc.get("own_char_uid") == expected
+        return True, None
+    if not state:
+        return True, None
+    char_uid = _owner_or_none(state.get("own_char_uid"))
+    owner = _owner_or_none(state.get("own_uid"))
+    if char_uid is not None and doc.get("own_char_uid") != char_uid:
+        return False, owner
+    sealed_owner = doc.get("own_visit_uid")
+    if owner is not None and sealed_owner is not None and sealed_owner != owner:
+        return False, owner
+    return True, owner
 
 
 def _mark_sealed_rejected(path: Path, reason: str, before: os.stat_result | None) -> None:
@@ -1204,8 +1222,12 @@ async def visit_spool_recovery(
         submit_report=submit_report, report=report,
     )
     try:
-        # 补传试过之后，仍没传上去、已过 7 天的待传转录才放弃
-        swept = await VisitSpool.sweep(config_dir, sweep_now, is_live=live, uploads="only")
+        # 补传试过之后，仍没传上去、已过 7 天的待传转录才放弃。没有上传回调时一份都没试过：
+        # 与其余可选回调同一约定，缺了这一步就留着文件，不能没试就放弃
+        swept = (
+            await VisitSpool.sweep(config_dir, sweep_now, is_live=live, uploads="only")
+            if upload_transcript is not None else []
+        )
         report.swept += len(swept)
         # 放弃的待传转录：它排队的举报随后照常提交（设计 §4.7），先在举报文件里记下
         # transcript_unavailable，不能当作从没有过待传转录

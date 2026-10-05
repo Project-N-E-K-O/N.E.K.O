@@ -2631,3 +2631,43 @@ async def test_expired_stream_keeps_its_age_and_finalized_reason_through_the_ext
     assert doc["request"]["finalized_reason"] == "wrap_up"
     # 封出来的文件接着流水的年龄算：再试一次仍失败就在本轮放弃，不再多留 7 天
     assert not (_spool_dir(tmp_path) / f"{v}.upload.json").exists()
+
+
+async def test_expired_upload_is_kept_when_there_is_no_uploader(tmp_path):
+    v = vid(114)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    sealed = d / f"{v}.upload.json"
+    sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    old = time.time() - 8 * 86400
+    os.utime(sealed, (old, old))
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v, "include_transcript": True}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=None, submit_report=reports)
+    # 没有上传回调：一次都没试过，不能就此放弃转录，举报也继续等它
+    assert sealed.exists() and reports.calls == []
+
+
+async def test_sealed_upload_of_another_account_is_not_uploaded(tmp_path):
+    v = vid(115)
+    await make_visit(tmp_path, v, [], memory_enabled=False, finalized="wrap_up", last_summary_done=True)
+    d = _spool_dir(tmp_path)
+    (d / f"{v}.upload.json").write_text(json.dumps({**_sealed(v), "own_visit_uid": OWN_B}), encoding="utf-8")
+    uploads = Uploads(ok=True)
+    await _recover(tmp_path, upload_transcript=uploads)
+    # 角色 id 一样也不够：账号对不上的文件交上去就是用错的账号上传
+    assert uploads.calls == []
+
+
+async def test_ownerless_sealed_upload_takes_the_visits_account(tmp_path):
+    v = vid(116)
+    await make_visit(tmp_path, v, [], memory_enabled=False, finalized="wrap_up", last_summary_done=True)
+    d = _spool_dir(tmp_path)
+    (d / f"{v}.upload.json").write_text(json.dumps({**_sealed(v), "own_visit_uid": None}), encoding="utf-8")
+    uploads = Uploads(ok=True)
+    await _recover(tmp_path, upload_transcript=uploads)
+    # 旧版本封出来的无主文件：用本场 state.json 的账号补上，上传回调才选得中登录账号
+    (visit_id, doc), = uploads.calls
+    assert doc["own_visit_uid"] == OWN_A
