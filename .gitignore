@@ -21,6 +21,10 @@ tests/test_inputs/
 /docker/ssl/
 /docker/logs/
 /docker/N.E.K.O/
+/docker/community-2c2g/neko-home/
+/docker/community-2c2g/logs/
+# 本机网关覆盖配置；可移植示例保留在 README 中。
+/docker/community-2c2g/compose.gateway.yaml
 
 # 忽略日志文件
 *.log
