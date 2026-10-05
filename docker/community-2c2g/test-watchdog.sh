@@ -79,7 +79,7 @@ reset
 RAW_ERROR=1 HTTP_CODE=502 run 2> "$ROOT/raw-error"
 if RAW_ERROR=1 HTTP_CODE=502 RESTART_EXIT=1 run 2> "$ROOT/raw-error"; then exit 1; fi
 [[ ! -s "$ROOT/raw-error" ]]
-! grep -q 'private-daemon-error\|private-curl-error' "$ROOT/state/watchdog.log"
+if grep -q 'private-daemon-error\|private-curl-error' "$ROOT/state/watchdog.log"; then exit 1; fi
 reset
 run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 HTTP_CODE=200 run; no_restart
