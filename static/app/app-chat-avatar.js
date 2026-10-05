@@ -1550,6 +1550,7 @@
         if (event.key !== 'Escape') return;
         const card = S.dom.chatAvatarPreviewCard;
         if (!card || card.hidden) return;
+        event.preventDefault();
         setPreviewVisible(false);
     }
 

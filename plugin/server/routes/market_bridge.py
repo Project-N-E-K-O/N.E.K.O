@@ -30,6 +30,7 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
+from utils.deployment import has_forwarding_metadata
 
 from plugin.logging_config import get_logger
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
@@ -184,6 +185,9 @@ def _require_local_bridge_token_access(request: Request) -> None:
     Remote Market origins are intentionally excluded here even when CORS trusts
     them; remote pages must pair through /token-exchange instead.
     """
+
+    if request.scope.get("neko.market_remote_authorized") or has_forwarding_metadata(request.headers):
+        raise HTTPException(status_code=403, detail="仅允许本地同源访问")
 
     host_header = request.headers.get("host", "")
     try:
@@ -2216,6 +2220,11 @@ def _oauth_default_redirect_uri() -> str:
 
 
 def _oauth_redirect_uri_for_request(request: Request) -> str:
+    # The main service signs this public origin; the instance middleware sets
+    # the scope only after verifying a loopback method/path/origin proof.
+    public_origin = request.scope.get("neko.market_public_origin")
+    if public_origin:
+        return public_origin + _OAUTH_REDIRECT_PATH
     host = request.url.hostname or "127.0.0.1"
     port = request.url.port
     # OAuth loopback callbacks should stay on loopback even if the Host header

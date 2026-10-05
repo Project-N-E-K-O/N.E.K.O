@@ -1583,7 +1583,7 @@ def test_context_prompt_is_consumed_without_push_during_internal_game(monkeypatc
 
     tracker.set_context_prompt_callback(_push)
     monkeypatch.setattr(
-        'main_logic.activity.tracker.is_game_route_active',
+        'main_logic.activity.tracker.is_external_route_active',
         lambda lanlan_name: lanlan_name == 'test_lanlan' and route_active['value'],
     )
 

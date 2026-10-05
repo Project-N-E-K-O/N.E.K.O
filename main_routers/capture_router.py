@@ -36,11 +36,11 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from main_routers.local_access import is_direct_loopback_request as _is_loopback_request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from utils.logger_config import get_module_logger
@@ -49,17 +49,6 @@ from utils import capture_bridge
 
 router = APIRouter(prefix="/api/capture", tags=["capture"])
 logger = get_module_logger(__name__, "Main")
-
-
-def _is_loopback_request(request: Request) -> bool:
-    client_host = request.client.host if request.client else ""
-    if client_host == "localhost":
-        return True
-    normalized_host = str(client_host or "").removeprefix("::ffff:")
-    try:
-        return ipaddress.ip_address(normalized_host).is_loopback
-    except ValueError:
-        return False
 
 
 class CaptureRequestBody(BaseModel):

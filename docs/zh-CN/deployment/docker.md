@@ -1,5 +1,15 @@
 # Docker 部署
 
+远程实例自带首次连接授权：在HTTPS页面输入key一次，之后正常社区登录。
+外置nginx/NAS鉴权可叠加，本机桌面与真实回环调试代理保持兼容。
+远程响应不含Linux路径/社区令牌；平台默认relay无需每个Docker域名注册。
+认证平台及Electron配套发布后才可解除#3289合并门槛，Linux+Windows实机待社区验收。
+[契约与测试步骤](/design/security/community-remote-access)。
+取得key：docker compose exec --user neko -w /app neko-main uv run python -m utils.instance_access
+声明 HTTPS 的 NEKO_INSTANCE_PUBLIC_ORIGIN 时，外层80端口必须关闭或仅重定向到HTTPS，不得转发同Host明文请求；私有HTTP upstream必须隔离。Host匹配本身不能证明TLS。
+远程使用HTTPS/WSS；外置TLS网关按需设置NEKO_INSTANCE_PUBLIC_ORIGIN。
+NEKO_COMMUNITY_WEB_REDIRECT_URI默认留空使用平台relay。
+
 维护中的 Compose 是 `docker/docker-compose.yml`。Nginx 前置，宿主 48911 为 HTTP、48912 为 HTTPS。
 
 ```bash
@@ -10,7 +20,7 @@ cp env.template .env
 docker compose up -d
 ```
 
-打开 `http://127.0.0.1:48911`。需要可复现时固定 `NEKO_IMAGE` 或 `NEKO_IMAGE_VERSION`。`latest` 为 standard 别名，`latest-full` 为 full。
+打开 `https://127.0.0.1:48912`。需要可复现时固定 `NEKO_IMAGE` 或 `NEKO_IMAGE_VERSION`。`latest` 为 standard 别名，`latest-full` 为 full。
 
 入口脚本只在 `/home/neko/.local/share/N.E.K.O/config/core_config.json` 不存在时生成初始配置。API 环境变量不是实时通用覆盖；设置 `NEKO_FORCE_ENV_UPDATE` 会显式重新生成并覆盖该持久化初始配置，务必先备份。启动后请在 Web UI 确认。
 

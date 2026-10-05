@@ -670,8 +670,8 @@ def test_home_tutorial_input_lock_blocks_compact_capsule_input_state():
     assert "var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();" in input_lock_block
     assert "syncComposerAttachmentsVisibility(previousAttachmentsVisible);" in input_lock_block
     assert "setHomeTutorialInteractionLocked(next" not in input_lock_block
-    assert "disabled={compactCapsuleEntryLocked}" in capsule_block
-    assert "if (compactCapsuleEntryLocked) return;" in capsule_block
+    assert "disabled={compactTextEntryLocked}" in capsule_block
+    assert "if (compactTextEntryLocked) return;" in capsule_block
 
 
 def test_home_tutorial_events_lock_chat_buttons_and_collapse_compact_input():
@@ -710,7 +710,7 @@ def test_home_tutorial_events_lock_chat_buttons_and_collapse_compact_input():
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-completed');" in completed_block
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-skipped');" in skipped_block
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');" in ended_block
-    assert "disabled={composerDisabled}" in history_handle_block
+    assert "disabled={composerDisabled || theaterActive}" in history_handle_block
 
 
 def test_home_tutorial_host_wires_avatar_tool_requests():

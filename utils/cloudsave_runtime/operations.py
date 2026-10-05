@@ -63,6 +63,9 @@ from ._shared import (
     CloudsaveOperationError,
     MANAGED_MEMORY_FILENAMES,
     ROOT_MODE_BOOTSTRAP_IMPORTING,
+    KEYED_WRITE_TOMBSTONES_FILENAME,
+    keyed_tombstones_without_completion,
+    keyed_write_bookkeeping_paths,
     _assert_deadline_not_exceeded,
     _raise_cloudsave_disabled,
     _raise_for_name_audit,
@@ -206,6 +209,34 @@ def _runtime_characters_with_safe_master(config_manager) -> dict[str, Any]:
     if not isinstance(runtime_payload.get("猫娘"), dict):
         runtime_payload["猫娘"] = {}
     return runtime_payload
+
+
+def _preserve_local_character_ids(character_map: dict[str, Any], local_character_map: Any) -> None:
+    """Keep this device's ``_reserved.character_id`` for downloaded characters that already exist locally."""
+    from utils.config_manager import delete_reserved, get_reserved, normalize_character_id, set_reserved
+
+    local_map = local_character_map if isinstance(local_character_map, dict) else {}
+    claimed_ids: set[str] = set()
+    cloud_only_names: list[str] = []
+    for name, payload in character_map.items():
+        if not isinstance(payload, dict):
+            continue
+        # 同名角色沿用本机身份：剧场会话等本地数据按 character_id 绑定，
+        # 云端下载覆盖内容时不能把它们变成孤儿。
+        local_id = normalize_character_id(get_reserved(local_map.get(name), "character_id", default=""))
+        if local_id and local_id not in claimed_ids:
+            set_reserved(payload, "character_id", local_id)
+            claimed_ids.add(local_id)
+        else:
+            cloud_only_names.append(name)
+    for name in cloud_only_names:
+        payload = character_map[name]
+        cloud_id = normalize_character_id(get_reserved(payload, "character_id", default=""))
+        if cloud_id and cloud_id not in claimed_ids:
+            claimed_ids.add(cloud_id)
+            continue
+        # 本机新角色才采用云端身份；与本机其它角色冲突时交给下次 load_characters 重新生成。
+        delete_reserved(payload, "character_id")
 
 
 def _assert_single_character_name_safe(character_name: str, *, context: str) -> None:
@@ -520,6 +551,7 @@ def import_cloudsave_character_unit(
         updated_characters = deepcopy(runtime_characters)
         updated_characters.setdefault("猫娘", {})
         updated_characters["猫娘"][character_name] = deepcopy(cloud_unit["profile"])
+        _preserve_local_character_ids(updated_characters["猫娘"], runtime_characters.get("猫娘"))
         current_character_name = str(updated_characters.get("当前猫娘") or "")
         if not current_character_name:
             updated_characters["当前猫娘"] = character_name
@@ -570,6 +602,17 @@ def import_cloudsave_character_unit(
             candidate = target_memory_dir / filename
             if candidate.exists():
                 delete_file_targets.add(candidate)
+        # 带键写入的本地簿记与被改写的记忆同进退：留着会把被回滚掉的写入当成已完成 / 已暂存
+        delete_file_targets |= keyed_write_bookkeeping_paths(target_memory_dir)
+        # 墓碑保留围栏（清除前发起的旧请求仍要被挡），只去掉「已擦完」标记：恢复回来的数据
+        # 可能又含被清内容，之后重放的清除得真的再擦一遍
+        stripped_tombstones = keyed_tombstones_without_completion(target_memory_dir)
+        if stripped_tombstones is not None:
+            runtime_targets[target_memory_dir / KEYED_WRITE_TOMBSTONES_FILENAME] = _stage_json_file(
+                stage_root,
+                f"__runtime__/memory/{character_name}/{KEYED_WRITE_TOMBSTONES_FILENAME}",
+                stripped_tombstones,
+            )
 
         backup_root = config_manager.cloudsave_backups_dir / f"character-download-{apply_time.replace(':', '').replace('.', '')}" / character_name
         backup_targets = set(runtime_targets) | delete_file_targets
@@ -1595,6 +1638,7 @@ def import_local_cloudsave_snapshot(
             for tombstone_name in tombstone_names:
                 merged_character_map.pop(tombstone_name, None)
             merged_character_map.update(snapshot_character_map)
+            _preserve_local_character_ids(merged_character_map, characters_payload.get("猫娘"))
             characters_payload["猫娘"] = merged_character_map
 
             local_current_name = str(characters_payload.get("当前猫娘") or "").strip()
@@ -1615,6 +1659,11 @@ def import_local_cloudsave_snapshot(
             else:
                 characters_payload["当前猫娘"] = ""
         else:
+            local_characters_payload = config_manager.load_characters()
+            _preserve_local_character_ids(
+                snapshot_character_map,
+                local_characters_payload.get("猫娘") if isinstance(local_characters_payload, dict) else None,
+            )
             characters_payload = deepcopy(cloud_characters_payload)
             characters_payload["猫娘"] = snapshot_character_map
             if not _has_usable_master_profile(characters_payload.get("主人")):
@@ -1698,6 +1747,15 @@ def import_local_cloudsave_snapshot(
                 target_path = character_dir / filename
                 if relative_path not in staged_entries and target_path.exists():
                     delete_file_targets.add(target_path)
+            # 带键写入的本地簿记与被改写的记忆同进退（见 keyed_write_bookkeeping_paths）
+            delete_file_targets |= keyed_write_bookkeeping_paths(character_dir)
+            stripped_tombstones = keyed_tombstones_without_completion(character_dir)
+            if stripped_tombstones is not None:
+                runtime_targets[character_dir / KEYED_WRITE_TOMBSTONES_FILENAME] = _stage_json_file(
+                    stage_root,
+                    f"__runtime__/memory/{character_name}/{KEYED_WRITE_TOMBSTONES_FILENAME}",
+                    stripped_tombstones,
+                )
 
         from utils.config_manager.migrations import (
             _MIGRATION_WORKSPACE_PREFIX,

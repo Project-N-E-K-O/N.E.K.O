@@ -96,6 +96,33 @@ class SessionEvent(Enum):
 Subscriber = Callable[[SessionEvent, dict], Union[None, Awaitable[None]]]
 
 
+def session_reply_in_progress(session: Any) -> bool:
+    """Whether ``session`` has a reply that a proactive turn must not start over.
+
+    The single "a reply is in progress" check behind every proactive gate and
+    behind ``OmniOfflineClient.has_reply_in_progress`` (which is what makes
+    ``prompt_ephemeral`` decline). ``_is_responding`` is all a realtime
+    session has. An offline reply is also in progress while a guard has paused
+    it (between a discarded attempt and its retry or recovered sentence the
+    flag is down, the generation still live) and while it waits on its
+    completion. A gate that let a proactive turn through then would rotate the
+    speech id under that reply, and ``prompt_ephemeral`` would decline anyway.
+
+    Deliberately narrower than ``OmniOfflineClient.is_idle``: a reply call that
+    is only still returning (a cancelled reply finishing its tool handler, or
+    a completion callback) holds no reply here, so a callback queued during a
+    turn is not held back by it. Generation fields count only as ints, so a
+    test double that auto-creates attributes reads as not replying.
+    """
+    if session is None:
+        return False
+    if getattr(session, "_is_responding", False):
+        return True
+    return isinstance(
+        getattr(session, "_active_response_generation", None), int
+    ) or isinstance(getattr(session, "_completion_pending_generation", None), int)
+
+
 @dataclass
 class SessionStateMachine:
     """Event-driven state machine for a single ``(lanlan_name, user)`` session.
@@ -227,14 +254,16 @@ class SessionStateMachine:
 
         Args:
             session: optional, the current session (OmniOfflineClient /
-                OmniRealtimeClient). If provided and ``_is_responding == True``, the
-                AI is currently replying to the user and proactive should be refused.
+                OmniRealtimeClient). If provided and a reply is in progress on it
+                (``session_reply_in_progress``), proactive should be refused.
                 This consolidates the checks that used to read session fields directly
                 in the router into the SM.
 
         Returns False in two cases:
             - phase != IDLE (another proactive round is running / committing)
-            - session._is_responding == True (the AI is replying to the user)
+            - a reply is in progress on ``session`` (``session_reply_in_progress``:
+              ``_is_responding``, or an offline reply guard-paused or waiting on
+              its completion)
 
         Note: we do **not** reject based on ``owner == USER``. After USER_INPUT flips
         owner to USER there is no AI_RESPONSE_END event to reset it (that migration
@@ -244,7 +273,7 @@ class SessionStateMachine:
         """
         if self.phase is not ProactivePhase.IDLE:
             return False
-        if session is not None and getattr(session, "_is_responding", False):
+        if session_reply_in_progress(session):
             return False
         return True
 
@@ -255,14 +284,15 @@ class SessionStateMachine:
 
         Returns True if this call won turn ownership (PHASE1 is set and subscribers
         have received ``PROACTIVE_START``); returns False if another proactive path
-        got there first or the AI is responding, in which case the caller should
+        got there first or a reply is in progress on ``session``
+        (``session_reply_in_progress``), in which case the caller should
         return 409 directly (no need to fire ``PROACTIVE_DONE``, since
         ``PROACTIVE_START`` was never emitted).
         """
         async with self._write_lock:
             if self.phase is not ProactivePhase.IDLE:
                 return False
-            if session is not None and getattr(session, "_is_responding", False):
+            if session_reply_in_progress(session):
                 return False
             self._apply(SessionEvent.PROACTIVE_START, {})
             snap_subs = list(self._subscribers.get(SessionEvent.PROACTIVE_START, ())) + list(

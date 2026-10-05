@@ -29,6 +29,7 @@ from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
+from main_logic.session_state import session_reply_in_progress
 from main_logic.provider_failure_signals import (
     CODES_REQUIRING_MSG_DETAIL,
     classify_provider_failure_text,
@@ -668,10 +669,23 @@ class LifecycleMixin:
             logger.error(f"💥 清理pending_session时出错: {e}")
 
     async def _init_renew_status(self):
+        # A reply this end cut short whose completion is the session-level
+        # callback (an independent-ASR voice reply, a proactive one) never
+        # runs it: the retired connection's output callbacks are dropped
+        # (_bind_owned_output_callbacks). Close its AI turn here, or what it
+        # said rides the next session's first turn end into the tracker as
+        # part of that reply. cross_server needs nothing: the session end
+        # closes its turn. Done before this method's first await.
+        if getattr(self, "_current_ai_turn_text", "") or getattr(
+            self, "_discarded_turn_open", False
+        ):
+            self._flush_ai_turn_text_to_tracker()
         await self._reset_preparation_state(True)
         self.session_start_time = None
         await self._cleanup_pending_session_resources()  # 关闭由 manager 持有，取消也不会丢
         self.is_hot_swap_imminent = False
+        self._turn_wrap_up_owed = False
+        self._voice_turn_wrap_up_hold = None
         # 状态机是 per-manager 的，跨 start_session/end_session 复用同一实例。
         # 若上一轮 proactive 在 PHASE1/PHASE2 中途 WS 断开、PROACTIVE_DONE 来不及
         # fire，phase/_preempted 会泄漏到新会话，堵死 can_start_proactive。
@@ -876,8 +890,15 @@ class LifecycleMixin:
     async def _idle_session_reset_loop(self) -> None:
         """Periodically check the user's silence duration; past the threshold, proactively
         end_session so the next message triggers fresh /new_dialog context injection.
-        Guards: responding / takeover / session starting / no activity timestamp →
-        skip this round, re-evaluate next round.
+        Guards: reply work in progress / takeover / session starting / no activity
+        timestamp → skip this round, re-evaluate next round.
+
+        Reply work is ``session_reply_in_progress`` and, on an offline session,
+        anything ``is_idle`` still counts (the same check the owed wrap-up's
+        settle waits on): a guard-paused reply has ``_is_responding`` down
+        while still live, and a reply call can still be before its begin (a
+        proactive reply's image setup) or finishing a cancelled reply's tool
+        handler. Ending the session there would cut that reply.
         """
         while True:
             try:
@@ -888,7 +909,10 @@ class LifecycleMixin:
                     continue
                 if self._takeover_active:
                     continue
-                if getattr(self.session, '_is_responding', False):
+                session = self.session
+                if session_reply_in_progress(session) or (
+                    isinstance(session, OmniOfflineClient) and not session.is_idle()
+                ):
                     continue
                 last_activity = self.last_user_activity_time
                 if last_activity is None:
@@ -1621,6 +1645,12 @@ class LifecycleMixin:
             enable_long_response_summary=external_tts_enabled,
         )
         session.on_proactive_done = self.handle_proactive_complete
+        # A reply whose completion is skipped is closed by whoever took it
+        # over: a displacing user reply reports it here; the owed wrap-up is
+        # paid once the session goes idle (the interrupted reply's own
+        # completion would have run it).
+        session.on_response_displaced = self._close_displaced_offline_turn
+        session.on_idle = self._on_offline_session_idle
         session.on_thinking_active = self._make_thinking_active_callback(session)
         # 和两个 realtime 构造点同一处理：句柄绑到这个 client 自己，而不是
         # 构造时刻的 self.session。handoff candidate 在被提升前既不是
@@ -1752,13 +1782,13 @@ class LifecycleMixin:
                             ):
                                 return False
                         else:
-                            interrupt = getattr(
-                                current,
-                                'handle_interruption',
-                                None,
-                            )
-                            if callable(interrupt):
-                                await interrupt()
+                            # Close the offline reply this turn interrupted
+                            # before handle_new_message clears its text; its
+                            # wrap-up is owed (see _interrupt_offline_reply)
+                            # and held by this voice turn until it ends (the
+                            # dispatch's _abandon_core_voice_turn).
+                            self._hold_owed_wrap_up_for_voice_turn(turn.turn_id)
+                            await self._interrupt_offline_reply(current)
                         if (
                             not operation_is_current()
                             or self.session is not current
@@ -1847,9 +1877,13 @@ class LifecycleMixin:
                         ):
                             return False
                     else:
-                        interrupt = getattr(current, 'handle_interruption', None)
-                        if callable(interrupt):
-                            await interrupt()
+                        # Through the helper, never a bare handle_interruption():
+                        # an interruption that claims a finished reply's
+                        # completion must also close that reply's turn. No
+                        # wrap-up is scheduled here: this user turn has not
+                        # marked its input yet, and an Offline session never
+                        # reaches this branch (the fast path above returns).
+                        await self._interrupt_offline_reply(current)
                     if (
                         not operation_is_current()
                         or self.session is not current

@@ -135,7 +135,7 @@ async def test_core_consumer_cancelled_prepare_retains_context_for_cancel() -> N
 async def test_game_consumer_uses_token_derived_request_id(monkeypatch) -> None:
     routed = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "main_logic.voice_input.consumers.game.is_game_route_active",
+        "main_logic.voice_input.consumers.game.is_external_route_active",
         lambda name: name == "Lan",
     )
     monkeypatch.setattr(
@@ -200,7 +200,7 @@ async def test_game_consumer_is_fail_closed_when_route_is_unavailable(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "main_logic.voice_input.consumers.game.is_game_route_active",
+        "main_logic.voice_input.consumers.game.is_external_route_active",
         lambda _name: False,
     )
     monkeypatch.setattr(

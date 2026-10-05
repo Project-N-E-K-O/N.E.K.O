@@ -61,7 +61,12 @@ from ..shared_state import (
     get_init_one_catgirl,
 )
 from utils.config_manager import (
+    delete_reserved,
+    ensure_catgirl_character_id,
+    assign_new_character_uid,
+    get_character_uid,
     get_reserved,
+    set_reserved,
 )
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_model_directory, is_user_imported_model
@@ -73,6 +78,18 @@ from utils.character_memory import (
 from config import (
     BUILTIN_LIVE2D_MODEL_NAMES,
 )
+
+
+def _strip_local_character_identity(character_payload: dict) -> dict:
+    """Drop the stable local character id from an exported character payload.
+
+    ``_reserved.character_uid`` identifies this character on this machine only;
+    a card imported elsewhere gets its own id, so exports never carry it.
+    Mutates and returns ``character_payload`` (callers pass their own copy).
+    """
+    delete_reserved(character_payload, 'character_uid')
+    delete_reserved(character_payload, 'character_id')
+    return character_payload
 
 
 def _embed_zip_in_png_chunk(png_data: bytes, zip_data: bytes) -> bytes:
@@ -249,6 +266,23 @@ async def _save_character_card_serialized(data: dict):
                 if v:  # 只保存非空字段
                     catgirl_data[k] = v
 
+        # 更新同名卡时必须保留系统身份；新卡不接受导入包携带的身份。
+        previous_character_id = get_reserved(
+            previous_catgirl_data,
+            "character_id",
+            default="",
+        )
+        if previous_character_id:
+            set_reserved(catgirl_data, "character_id", previous_character_id)
+        else:
+            ensure_catgirl_character_id(catgirl_data)
+        # 稳定 id：覆盖已有角色时沿用它原来的 id，新建角色生成新的（卡里不带 id）。
+        previous_uid = get_character_uid(previous_catgirl_data)
+        if previous_uid:
+            set_reserved(catgirl_data, 'character_uid', previous_uid)
+        else:
+            assign_new_character_uid(catgirl_data)
+
         # 更新或创建猫娘数据
         characters['猫娘'][chara_name] = catgirl_data
 
@@ -367,10 +401,10 @@ async def export_catgirl_card(name: str):
                     else:
                         return data
 
-                chara_json = {
+                chara_json = _strip_local_character_identity({
                     '档案名': name,
                     **filter_excluded_fields(catgirl_data)
-                }
+                })
                 zf.writestr('character.json', json.dumps(chara_json, ensure_ascii=False, indent=2))
 
                 # 2. 检查并添加模型文件
@@ -1027,6 +1061,10 @@ async def import_character_card(
 
             # 移除档案名键（因为已经用作字典键）
             chara_data_to_save = {k: v for k, v in character_data.items() if k != '档案名'}
+            delete_reserved(chara_data_to_save, "character_id")
+            ensure_catgirl_character_id(chara_data_to_save)
+            # 导入的角色是新角色：卡里若带着别处的稳定 id 一律丢弃，重新生成。
+            assign_new_character_uid(chara_data_to_save)
             characters['猫娘'][character_name] = chara_data_to_save
 
             # 保存到文件
@@ -1537,7 +1575,9 @@ async def export_catgirl_with_portrait(
                         result[key] = value
                 return result
 
-            chara_json = _filter_export_fields(export_data, keep_model_paths=include_model)
+            chara_json = _strip_local_character_identity(
+                _filter_export_fields(export_data, keep_model_paths=include_model)
+            )
             zf.writestr('character.json', json.dumps(chara_json, ensure_ascii=False, indent=2))
 
             # 如果需要包含模型，添加模型文件

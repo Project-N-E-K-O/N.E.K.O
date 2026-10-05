@@ -98,6 +98,7 @@ def test_build_plugin_list_reports_source_missing_status(monkeypatch: pytest.Mon
         {
             "id": "missing_plugin",
             "name": "Missing Plugin",
+            "autostart_pending": False,
             "runtime_source_missing": True,
             "status": "source_missing",
             "i18n": {"messages": {}},
@@ -111,6 +112,59 @@ def test_build_plugin_list_reports_source_missing_status(monkeypatch: pytest.Mon
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("approved", [True, False])
+async def test_list_summary_and_detail_expose_autostart_approval_gate(
+    monkeypatch: pytest.MonkeyPatch, approved: bool,
+) -> None:
+    monkeypatch.setattr(query_module.state, "get_plugins_snapshot_cached", lambda timeout=2.0: {
+        "demo": {"id": "demo", "name": "Demo", "runtime_auto_start": True},
+    })
+    monkeypatch.setattr(query_module.state, "get_plugin_hosts_snapshot_cached", lambda timeout=2.0: {})
+    monkeypatch.setattr(query_module.state, "get_event_handlers_snapshot_cached", lambda timeout=2.0: {})
+    monkeypatch.setattr(query_module, "get_autostart_pending_snapshot", lambda: frozenset() if approved else frozenset({"demo"}))
+    service = query_module.PluginQueryService()
+    for summary in (False, True):
+        result = await service.list_plugins(summary=summary)
+        assert result["plugins"][0]["autostart_pending"] is (not approved)
+    detail = await service.get_plugin("demo")
+    assert detail["plugin"]["autostart_pending"] is (not approved)
+
+
+@pytest.mark.parametrize("summary", [True, False])
+def test_projection_reuses_failed_approval_read_and_retries_next_request(
+    monkeypatch: pytest.MonkeyPatch, summary: bool,
+) -> None:
+    from plugin.server.infrastructure import autostart_approvals
+    from utils import config_manager
+
+    reads = 0
+
+    def _unreadable_config():
+        nonlocal reads
+        reads += 1
+        raise OSError("approval store unavailable")
+
+    monkeypatch.setattr(config_manager, "get_config_manager", _unreadable_config)
+    monkeypatch.setattr(query_module.state, "get_plugins_snapshot_cached", lambda timeout=2.0: {
+        plugin_id: {"id": plugin_id, "name": plugin_id}
+        for plugin_id in ("one", "two", "three")
+    })
+    monkeypatch.setattr(query_module.state, "get_plugin_hosts_snapshot_cached", lambda timeout=2.0: {})
+    monkeypatch.setattr(query_module.state, "get_event_handlers_snapshot_cached", lambda timeout=2.0: {})
+    monkeypatch.setattr(query_module, "_install_source_index", lambda: ({}, {}))
+    builder = query_module._build_plugin_summary_sync if summary else query_module._build_plugin_list_sync
+    autostart_approvals._reset_cache_for_testing()
+    try:
+        for expected_reads in (1, 2):
+            result = builder()
+            assert len(result) == 3
+            assert all(plugin["autostart_pending"] is False for plugin in result)
+            assert reads == expected_reads
+    finally:
+        autostart_approvals._reset_cache_for_testing()
 
 
 def test_build_plugin_list_omits_internal_entries_preview(monkeypatch: pytest.MonkeyPatch) -> None:

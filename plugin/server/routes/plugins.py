@@ -4,6 +4,7 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 import asyncio
 from plugin.server.routes.development import router as development_router
 from plugin.server.application.plugins.development import registration_for_plugin_sync, list_registration_records_sync
@@ -196,6 +197,36 @@ async def stop_plugin_endpoint(plugin_id: str, request: Request, _: str = requir
     try:
         with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
             return await _dispatch_lifecycle(request, plugin_id, "stop", registration_id, revision)
+    except PluginOperationBusy:
+        raise _busy_response()
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
+class PluginAutoStartUpdateRequest(BaseModel):
+    auto_start: bool
+
+
+@serialized_plugin_operation
+async def _dispatch_auto_start(plugin_id: str, auto_start: bool) -> dict[str, object]:
+    # Development plugins are never auto-started by the host, so a preference
+    # here would be a silent no-op; refuse instead of persisting it.
+    if await asyncio.to_thread(registration_for_plugin_sync, plugin_id) is not None:
+        raise ServerDomainError(
+            code="DEVELOPMENT_AUTO_START_UNSUPPORTED",
+            message="Development plugins are not auto-started; start them manually",
+            status_code=409,
+        )
+    return await lifecycle_service.set_plugin_auto_start(plugin_id, auto_start)
+
+
+@router.put("/plugin/{plugin_id}/auto-start")
+async def set_plugin_auto_start_endpoint(plugin_id: str, payload: PluginAutoStartUpdateRequest,
+                                         _: str = require_admin,
+                                         __: None = Depends(require_plugin_mutation_access)) -> dict[str, object]:
+    try:
+        with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
+            return await _dispatch_auto_start(plugin_id, payload.auto_start)
     except PluginOperationBusy:
         raise _busy_response()
     except ServerDomainError as error:

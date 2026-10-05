@@ -4,6 +4,7 @@ from ipaddress import ip_address
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
+from utils.deployment import has_forwarding_metadata
 
 
 _DEFAULT_DEV_ORIGIN_PORTS = (48911, 48916, 5173)
@@ -101,6 +102,7 @@ def require_development_access(request: Request) -> None:
         and _is_loopback(request.client.host)
         and _is_loopback(request.url.hostname)
         and request.headers.get("x-neko-development") == "1"
+        and not has_forwarding_metadata(request.headers)
     )
     origin = request.headers.get("origin")
     if origin:

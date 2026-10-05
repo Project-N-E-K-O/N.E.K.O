@@ -178,3 +178,93 @@ async def test_stop_plugin_route_persists_user_intent(
     assert response.status_code == 200
     assert response.json()["plugin_id"] == "demo"
     assert calls == [("demo", True)]
+
+
+@pytest.mark.asyncio
+async def test_auto_start_route_writes_preference_without_lifecycle_calls(
+    plugin_route_test_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, bool]] = []
+
+    async def _set_plugin_auto_start(plugin_id: str, auto_start: bool) -> dict[str, object]:
+        calls.append((plugin_id, auto_start))
+        return {"success": True, "plugin_id": plugin_id, "auto_start": auto_start, "message": "ok"}
+
+    async def _must_not_run(*_args, **_kwargs):
+        raise AssertionError("auto-start route must not start or stop the plugin")
+
+    monkeypatch.setattr(route_module, "registration_for_plugin_sync", lambda _pid: None)
+    monkeypatch.setattr(route_module.lifecycle_service, "set_plugin_auto_start", _set_plugin_auto_start)
+    monkeypatch.setattr(route_module.lifecycle_service, "start_plugin", _must_not_run)
+    monkeypatch.setattr(route_module.lifecycle_service, "stop_plugin", _must_not_run)
+
+    transport = ASGITransport(app=plugin_route_test_app)
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:48916", headers=_mutation_headers()) as client:
+        response = await client.put("/plugin/demo/auto-start", json={"auto_start": False})
+        invalid = await client.put("/plugin/demo/auto-start", json={})
+
+    assert response.status_code == 200
+    assert response.json()["auto_start"] is False
+    assert calls == [("demo", False)]
+    assert invalid.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("headers", [
+    {"Origin": "https://evil.example"},
+    {"Origin": f"http://127.0.0.1:{MAIN_SERVER_PORT}"},
+])
+async def test_auto_start_route_rejects_untrusted_or_tokenless_browser(
+    plugin_route_test_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+    headers: dict[str, str],
+) -> None:
+    async def _must_not_run(*_args, **_kwargs):
+        raise AssertionError("unauthorized request must not mutate auto-start")
+
+    monkeypatch.setattr(route_module.lifecycle_service, "set_plugin_auto_start", _must_not_run)
+    transport = ASGITransport(app=plugin_route_test_app)
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:48916") as client:
+        response = await client.put("/plugin/demo/auto-start", json={"auto_start": True}, headers=headers)
+    assert response.status_code == 403
+    assert response.headers["X-Error-Code"] == "csrf_validation_failed"
+
+
+@pytest.mark.asyncio
+async def test_auto_start_route_rejects_development_plugins(
+    plugin_route_test_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _must_not_run(*_args, **_kwargs):
+        raise AssertionError("development plugins must not get an auto-start preference")
+
+    monkeypatch.setattr(route_module, "registration_for_plugin_sync", lambda _pid: object())
+    monkeypatch.setattr(route_module.lifecycle_service, "set_plugin_auto_start", _must_not_run)
+
+    transport = ASGITransport(app=plugin_route_test_app)
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:48916", headers=_mutation_headers()) as client:
+        response = await client.put("/plugin/demo/auto-start", json={"auto_start": True})
+
+    assert response.status_code == 409
+    assert response.headers["X-Error-Code"] == "DEVELOPMENT_AUTO_START_UNSUPPORTED"
+
+
+@pytest.mark.asyncio
+async def test_auto_start_route_preserves_domain_error_shape(
+    plugin_route_test_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _set_plugin_auto_start(_plugin_id: str, _auto_start: bool) -> dict[str, object]:
+        raise ServerDomainError(code="PLUGIN_NOT_FOUND", message="Plugin 'demo' not found", status_code=404)
+
+    monkeypatch.setattr(route_module, "registration_for_plugin_sync", lambda _pid: None)
+    monkeypatch.setattr(route_module.lifecycle_service, "set_plugin_auto_start", _set_plugin_auto_start)
+
+    transport = ASGITransport(app=plugin_route_test_app)
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:48916", headers=_mutation_headers()) as client:
+        response = await client.put("/plugin/demo/auto-start", json={"auto_start": True})
+
+    assert response.status_code == 404
+    assert response.headers["X-Error-Code"] == "PLUGIN_NOT_FOUND"
+    assert response.json() == {"detail": "Plugin 'demo' not found"}

@@ -25,6 +25,11 @@ from launcher_core.bootstrap import _ensure_utf8_filesystem_encoding, _pin_proje
 
 if __name__ == "__main__":
     _ensure_utf8_filesystem_encoding()
+    if os.environ.get("NEKO_WAKE_WORD_RELEASE_SMOKE") == "1":
+        from multiprocessing import freeze_support as _wake_freeze_support
+        _wake_freeze_support()
+        from main_logic.voice_identity_service.wake_word_release_smoke import main as _wake_release_smoke
+        sys.exit(_wake_release_smoke())
     if os.environ.get("NEKO_MEDIA_RELEASE_SMOKE") == "1":
         from multiprocessing import freeze_support as _media_freeze_support
         _media_freeze_support()

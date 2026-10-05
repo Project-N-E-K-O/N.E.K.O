@@ -29,7 +29,7 @@ from main_logic.omni_realtime_client import (
 )
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
-from main_logic.session_state import SessionEvent, ProactivePhase
+from main_logic.session_state import SessionEvent, ProactivePhase, session_reply_in_progress
 from main_logic.proactive_delivery import (
     PASSIVE_MEDIA_BUDGET_DEFERRED_KEY,
     PASSIVE_MEDIA_MAX_RETRIES,
@@ -2178,16 +2178,26 @@ class ProactiveMixin:
         # A takeover controller that can speak on its own (e.g. a media scene
         # filling gaps) receives respond cues directly; ordinary chat output is
         # muted for the whole takeover, so queuing here would only let them age out.
+        # A callback hold (``hold_callbacks``) parks cues after the takeover was
+        # released, until its owner hands them back for ordinary delivery. The
+        # takeover sink, while installed, is asked first.
+        sinks = []
         sink = getattr(self, "_takeover_callback_sink", None)
         if getattr(self, "_takeover_active", False) and callable(sink):
+            sinks.append(("takeover", sink))
+        hold_sink = getattr(self, "_callback_hold_sink", None)
+        if callable(hold_sink):
+            sinks.append(("hold", hold_sink))
+        for sink_label, candidate_sink in sinks:
             # The sink only sees the dict; carry the caller's priority like the key above.
             callback.setdefault("priority", priority)
             try:
-                consumed = bool(sink(callback))
+                consumed = bool(candidate_sink(callback))
             except Exception as exc:
                 consumed = False
                 logger.warning(
-                    "[%s] takeover callback sink failed: %s", self.lanlan_name, type(exc).__name__,
+                    "[%s] %s callback sink failed: %s",
+                    self.lanlan_name, sink_label, type(exc).__name__,
                 )
             if consumed:
                 return
@@ -3004,11 +3014,12 @@ class ProactiveMixin:
         ``pending_agent_callbacks`` outside the manager (Codex P2).
 
         Returns False while: audio is playing (frontend gate), the SM is not
-        IDLE (another proactive/greeting turn owns it), or the session is still
-        GENERATING a response (_is_responding — covers BOTH the realtime
-        response.created→voice_play_start window the playback gate can't see,
-        AND an active offline/text user response where try_start_proactive
-        would deny the claim)."""
+        IDLE (another proactive/greeting turn owns it), or the session still
+        has a reply in progress (``session_reply_in_progress``: _is_responding,
+        which covers the realtime response.created→voice_play_start window the
+        playback gate can't see, plus an offline/text reply that is live,
+        guard-paused or awaiting its completion — exactly where
+        try_start_proactive would deny the claim)."""
         # Keep plugin respond cues under bounded/coalescing queue ownership for
         # the whole game session, including automatic watch-together transitions.
         if getattr(self, "_takeover_active", False):
@@ -3031,16 +3042,18 @@ class ProactiveMixin:
         sess = self.session
         # Both realtime AND offline sessions expose _is_responding (set while
         # generating a response — user OR proactive); realtime's
-        # is_active_response() is just a read of it. Releasing while True would
-        # have trigger deny/defer the claim (voice: is_active_response gate;
-        # text: try_start_proactive denies during _is_responding) and park the
-        # cue in pending_agent_callbacks outside the manager (Codex P2).
+        # is_active_response() is just a read of it. An offline reply paused
+        # by a guard has it down while still live, so read the same "reply in
+        # progress" check try_start_proactive denies on. Releasing while it
+        # holds would have trigger deny/defer the claim (voice:
+        # is_active_response gate; text: try_start_proactive) and park the cue
+        # in pending_agent_callbacks outside the manager (Codex P2).
         try:
-            if sess is not None and getattr(sess, "_is_responding", False):
+            if session_reply_in_progress(sess):
                 return False
         except Exception:
             # Read hiccup → treat as not-responding rather than wedging the queue.
-            logger.debug("[%s] _can_release_proactive: _is_responding check failed; treating as not-responding", self.lanlan_name)
+            logger.debug("[%s] _can_release_proactive: reply-in-progress check failed; treating as not-responding", self.lanlan_name)
         return True
 
     def _reset_proactive_gate(self) -> None:

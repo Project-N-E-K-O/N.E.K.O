@@ -1,5 +1,13 @@
 @import url("base.css");
 
+.readiness-card { padding: 20px; background: var(--voice-panel); border: 1px solid var(--voice-border); border-radius: 18px; }
+.readiness-card label { display: block; margin: 12px 0 6px; font-weight: 600; }
+.readiness-card select { width: 100%; max-width: 100%; padding: 10px; color: var(--voice-ink); background: var(--voice-panel); border: 1px solid var(--voice-border); border-radius: 8px; }
+.readiness-card meter { display: block; width: 100%; height: 20px; margin: 12px 0; }
+.readiness-card input[type="range"] { width: calc(100% - 70px); }
+.readiness-card .is-error { color: var(--voice-danger); }
+.readiness-card button:focus-visible, .readiness-card select:focus-visible, .readiness-card input:focus-visible { outline: 3px solid var(--voice-focus); outline-offset: 3px; }
+
 :root {
     --voice-page: #eff8ff;
     --voice-page-mid: #f9fdff;
