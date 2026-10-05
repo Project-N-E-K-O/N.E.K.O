@@ -58,7 +58,10 @@ def test_card_http_action_reuses_entry_checks_without_requiring_a_panel(monkeypa
     app.include_router(router)
 
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+            base_url="http://127.0.0.1:48916",
+        ) as client:
             body = {"card_id": "one", "target_lanlan": "Alice", "args": {"track_id": "123", "_ctx": {"lanlan_name": "Wrong", "view_id": "forged"}}}
             if presentation == "agent":
                 body["presentation"] = "agent"
@@ -94,7 +97,10 @@ def test_invalid_action_presentation_is_rejected_before_dispatch():
     app.include_router(router)
 
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+            base_url="http://127.0.0.1:48916",
+        ) as client:
             response = await client.post("/plugin/demo/chat-card/action/play", json={
                 "card_id": "one", "target_lanlan": "Alice", "presentation": "panel",
             })
@@ -106,6 +112,7 @@ def test_invalid_action_presentation_is_rejected_before_dispatch():
 def test_view_action_through_same_origin_proxy_survives_outer_disconnect(monkeypatch):
     from main_routers import plugin_card_router as proxy
     from plugin.sdk.shared.core.context import SdkContext
+    from plugin.server.infrastructure import mutation_auth
 
     plugin_app = FastAPI()
     plugin_app.include_router(router)
@@ -114,7 +121,7 @@ def test_view_action_through_same_origin_proxy_survives_outer_disconnect(monkeyp
     sent = []
     monkeypatch.setattr(queries, "_get_plugin_meta_sync", lambda _: {"entries": [{"id": "finish"}]})
     monkeypatch.setattr(queries, "_resolve_hosted_entry_timeout", lambda *_: 30)
-    monkeypatch.setattr(proxy, "resolve_user_plugin_base", lambda: "http://plugin")
+    monkeypatch.setattr(proxy, "resolve_user_plugin_base", lambda: "http://127.0.0.1:48916")
 
     async def run():
         started = asyncio.Event()
@@ -149,9 +156,16 @@ def test_view_action_through_same_origin_proxy_survives_outer_disconnect(monkeyp
         path = "/api/plugin-cards/demo/action/finish"
         scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
                  "method": "POST", "scheme": "http", "path": path, "raw_path": path.encode(),
-                 "query_string": b"", "headers": [(b"content-type", b"application/json")],
-                 "client": ("127.0.0.1", 12345), "server": ("test", 80)}
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(plugin_app), base_url="http://plugin") as upstream:
+                 "query_string": b"", "headers": [
+                     (b"content-type", b"application/json"),
+                     (b"origin", b"http://127.0.0.1:48911"),
+                     (b"x-csrf-token", mutation_auth.AUTOSTART_CSRF_TOKEN.encode()),
+                 ],
+                 "client": ("127.0.0.1", 12345), "server": ("127.0.0.1", 48911)}
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(plugin_app, client=("127.0.0.1", 1234)),
+            base_url="http://127.0.0.1:48916",
+        ) as upstream:
             monkeypatch.setattr(proxy, "get_internal_http_client", lambda: upstream)
             request = asyncio.create_task(main_app(scope, incoming.get, send))
             try:

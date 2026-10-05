@@ -29,7 +29,7 @@ from main_logic.omni_realtime_client import (
 )
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
-from main_logic.session_state import SessionEvent, ProactivePhase
+from main_logic.session_state import SessionEvent, ProactivePhase, session_reply_in_progress
 from main_logic.proactive_delivery import (
     PASSIVE_MEDIA_BUDGET_DEFERRED_KEY,
     PASSIVE_MEDIA_MAX_RETRIES,
@@ -315,6 +315,11 @@ class ProactiveMixin:
         if not self.session or not hasattr(self.session, '_conversation_history'):
             try:
                 await self.start_session(self.websocket, new=False, input_mode='text')
+            except asyncio.CancelledError as exc:
+                if not self._consume_start_retirement_cancellation(exc):
+                    raise
+                logger.info("[%s] prepare_proactive_delivery: session start cancelled", self.lanlan_name)
+                return False
             except Exception as e:
                 logger.warning("[%s] prepare_proactive_delivery: session start failed: %s", self.lanlan_name, e)
                 return False
@@ -546,6 +551,7 @@ class ProactiveMixin:
                 history_text = full_text
                 additional_kwargs = {
                     "anti_repeat_response_id": str(commit_sid),
+                    "dialog_source": "proactive",
                 }
                 if action_note:
                     note = action_note.strip()
@@ -1548,7 +1554,7 @@ class ProactiveMixin:
                     logger.debug("[%s] trigger_agent_callbacks: no websocket/session, re-queueing for later", self.lanlan_name)
                     self.pending_agent_callbacks.extend(callbacks_snapshot)
                     callbacks_snapshot[:] = []
-        except Exception as e:
+        except (asyncio.CancelledError, Exception) as e:
             logger.warning("[%s] trigger_agent_callbacks error: %s", self.lanlan_name, e)
             # Filter into a local before extending: filter_deliverable_callbacks
             # rebinds self.pending_agent_callbacks, and Python binds ``.extend``
@@ -1556,6 +1562,8 @@ class ProactiveMixin:
             # extending inline would append the survivors to an orphaned list.
             _requeue = self.filter_deliverable_callbacks(callbacks_snapshot)
             self.pending_agent_callbacks.extend(_requeue)
+            if isinstance(e, asyncio.CancelledError) and not self._consume_start_retirement_cancellation(e):
+                raise
         finally:
             # Runs after the except-path restore above, so the deferred tail
             # lands behind the prefix it was split from either way.
@@ -1813,6 +1821,18 @@ class ProactiveMixin:
                 ack_resolved = True
                 for cb in active_callbacks:
                     resolve_callback_delivery_ack(cb, delivered)
+                if delivered:
+                    # Publish the commit before prompt_ephemeral's remaining
+                    # awaits: cancellation must not restore this batch.
+                    delivered_ids = {
+                        cb.get("_callback_delivery_id") for cb in active_callbacks
+                        if cb.get("_callback_delivery_id")
+                    }
+                    self.pending_extra_replies = [
+                        extra for extra in self.pending_extra_replies
+                        if extra.get("_callback_delivery_id") not in delivered_ids
+                    ]
+                    callbacks_snapshot[:] = []
 
             _sid_token = _proactive_expected_sid.set(proactive_sid)
             # Text-mode playback boundary for the pacing manager: no frontend
@@ -2158,16 +2178,26 @@ class ProactiveMixin:
         # A takeover controller that can speak on its own (e.g. a media scene
         # filling gaps) receives respond cues directly; ordinary chat output is
         # muted for the whole takeover, so queuing here would only let them age out.
+        # A callback hold (``hold_callbacks``) parks cues after the takeover was
+        # released, until its owner hands them back for ordinary delivery. The
+        # takeover sink, while installed, is asked first.
+        sinks = []
         sink = getattr(self, "_takeover_callback_sink", None)
         if getattr(self, "_takeover_active", False) and callable(sink):
+            sinks.append(("takeover", sink))
+        hold_sink = getattr(self, "_callback_hold_sink", None)
+        if callable(hold_sink):
+            sinks.append(("hold", hold_sink))
+        for sink_label, candidate_sink in sinks:
             # The sink only sees the dict; carry the caller's priority like the key above.
             callback.setdefault("priority", priority)
             try:
-                consumed = bool(sink(callback))
+                consumed = bool(candidate_sink(callback))
             except Exception as exc:
                 consumed = False
                 logger.warning(
-                    "[%s] takeover callback sink failed: %s", self.lanlan_name, type(exc).__name__,
+                    "[%s] %s callback sink failed: %s",
+                    self.lanlan_name, sink_label, type(exc).__name__,
                 )
             if consumed:
                 return
@@ -2984,11 +3014,12 @@ class ProactiveMixin:
         ``pending_agent_callbacks`` outside the manager (Codex P2).
 
         Returns False while: audio is playing (frontend gate), the SM is not
-        IDLE (another proactive/greeting turn owns it), or the session is still
-        GENERATING a response (_is_responding — covers BOTH the realtime
-        response.created→voice_play_start window the playback gate can't see,
-        AND an active offline/text user response where try_start_proactive
-        would deny the claim)."""
+        IDLE (another proactive/greeting turn owns it), or the session still
+        has a reply in progress (``session_reply_in_progress``: _is_responding,
+        which covers the realtime response.created→voice_play_start window the
+        playback gate can't see, plus an offline/text reply that is live,
+        guard-paused or awaiting its completion — exactly where
+        try_start_proactive would deny the claim)."""
         # Keep plugin respond cues under bounded/coalescing queue ownership for
         # the whole game session, including automatic watch-together transitions.
         if getattr(self, "_takeover_active", False):
@@ -3011,16 +3042,18 @@ class ProactiveMixin:
         sess = self.session
         # Both realtime AND offline sessions expose _is_responding (set while
         # generating a response — user OR proactive); realtime's
-        # is_active_response() is just a read of it. Releasing while True would
-        # have trigger deny/defer the claim (voice: is_active_response gate;
-        # text: try_start_proactive denies during _is_responding) and park the
-        # cue in pending_agent_callbacks outside the manager (Codex P2).
+        # is_active_response() is just a read of it. An offline reply paused
+        # by a guard has it down while still live, so read the same "reply in
+        # progress" check try_start_proactive denies on. Releasing while it
+        # holds would have trigger deny/defer the claim (voice:
+        # is_active_response gate; text: try_start_proactive) and park the cue
+        # in pending_agent_callbacks outside the manager (Codex P2).
         try:
-            if sess is not None and getattr(sess, "_is_responding", False):
+            if session_reply_in_progress(sess):
                 return False
         except Exception:
             # Read hiccup → treat as not-responding rather than wedging the queue.
-            logger.debug("[%s] _can_release_proactive: _is_responding check failed; treating as not-responding", self.lanlan_name)
+            logger.debug("[%s] _can_release_proactive: reply-in-progress check failed; treating as not-responding", self.lanlan_name)
         return True
 
     def _reset_proactive_gate(self) -> None:

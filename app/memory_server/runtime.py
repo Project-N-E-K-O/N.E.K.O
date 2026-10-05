@@ -293,6 +293,8 @@ async def storage_limited_mode_guard(request: Request, call_next):
 # 全局入站 body 体积守门（issue #1586）：与 main_server 对偶，memory_server 的
 # 端点（对话缓存 / reflection 记录等）都是小 JSON，统一加上同一守门保持一致。
 app.add_middleware(InboundBodySizeLimitMiddleware)
+from utils.instance_access import InstanceAccessMiddleware
+app.add_middleware(InstanceAccessMiddleware)
 app.add_middleware(HostOriginGuardMiddleware)
 
 
@@ -1131,6 +1133,10 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(refine_loops._periodic_reflection_synthesis_loop())
             # 群记忆系列 5/7: scoped 轻量 refine cron
             _spawn_background_task(refine_loops._periodic_scoped_refine_loop())
+            # 带键写入的辅助数据：过期暂存残留与墓碑（键记录永久保留）。
+            # 后台跑，不阻塞启动链路。
+            from . import idempotency
+            _spawn_background_task(idempotency.cleanup_expired(list(catgirl_names)))
             _memory_background_tasks_started = True
 
         # memory-enhancements P2: vector embedding warmup + backfill worker.

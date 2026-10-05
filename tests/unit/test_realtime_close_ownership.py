@@ -41,6 +41,12 @@ class _FakeWs:
         self.close_calls += 1
 
 
+class _FailingWs(_FakeWs):
+    async def close(self):
+        self.close_calls += 1
+        raise RuntimeError("close handshake failed")
+
+
 def _make_client():
     return OmniRealtimeClient(
         base_url="wss://example.test/realtime",
@@ -94,6 +100,126 @@ async def test_cancelled_close_still_closes_the_socket_it_detached():
 
     assert ws.close_calls == 1
     assert calls == ["realtime client closed"]
+
+
+@pytest.mark.asyncio
+async def test_close_failure_is_propagated_for_capacity_accounting():
+    client = _make_client()
+    ws = _FailingWs()
+
+    with pytest.raises(RuntimeError, match="close handshake failed"):
+        await client._release_retired_connection(ws)
+
+    assert ws.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_websocket_close_is_retried_by_the_same_client():
+    client = _make_client()
+
+    class _RetryableWs:
+        def __init__(self):
+            self.close_calls = 0
+            self.fail = True
+
+        async def close(self):
+            self.close_calls += 1
+            if self.fail:
+                raise RuntimeError("close handshake failed")
+
+    ws = _RetryableWs()
+    client.ws = ws
+
+    with pytest.raises(RuntimeError, match="close handshake failed"):
+        await client.close()
+    assert ws.close_calls == 1
+    assert client.ws is None
+    assert client._retired_websockets == [ws]
+
+    ws.fail = False
+    await client.close()
+
+    assert ws.close_calls == 2
+    assert client._retired_websockets == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["websocket", "gemini"])
+@pytest.mark.parametrize("entrypoint", ["abort", "failed_close"])
+@pytest.mark.parametrize("replace", [False, True])
+async def test_fatal_close_failure_retains_owner_and_capacity(backend, entrypoint, replace):
+    from main_logic.core.session_lifecycle import SessionOwnershipMixin
+
+    class Socket:
+        def __init__(self, fail=False):
+            self.fail = fail
+            self.close_calls = 0
+
+        async def close(self):
+            self.close_calls += 1
+            if self.fail:
+                raise RuntimeError("unreleased transport")
+
+    class Context:
+        def __init__(self, fail=False):
+            self.fail = fail
+            self.exit_calls = 0
+
+        async def __aexit__(self, *args):
+            self.exit_calls += 1
+            if self.fail:
+                raise RuntimeError("unreleased SDK context")
+
+    client = _make_client()
+    old = Socket(fail=True)
+    old_context = Context(fail=True)
+    client.ws = old
+    if backend == "gemini":
+        client._is_gemini = True
+        client._gemini_session = old
+        client._gemini_context_manager = old_context
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def wait_for_tools(*args):
+        entered.set()
+        await release.wait()
+
+    client._await_retired_tool_tasks = wait_for_tools
+    abort = client._abort_failed_transport if entrypoint == "abort" else client._close_failed_transport
+    failing = asyncio.create_task(abort("preparation failed"))
+    replacement, replacement_context = Socket(), Context()
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert client.ws is None
+        if replace:
+            client.ws = replacement
+            if backend == "gemini":
+                client._gemini_session = replacement
+                client._gemini_context_manager = replacement_context
+            client._on_connection_attached()
+        release.set()
+        await asyncio.wait_for(failing, 2)
+        if backend == "websocket":
+            assert client._retired_websockets == [old]
+        else:
+            assert client._gemini_close_retry_contexts[id(old_context)] == (old_context, old)
+        if replace:
+            assert client.ws is replacement
+            assert replacement.close_calls == 0 and replacement_context.exit_calls == 0
+
+        manager = SessionOwnershipMixin()
+        with pytest.raises(RuntimeError, match="unreleased"):
+            await manager._close_owned_session(client)
+        record = manager._connection_record(client)
+        assert record.retired and not record.closed
+        old.fail = old_context.fail = False
+        await manager._close_owned_session(client)
+        assert record.closed
+        assert old.close_calls == 3
+        assert not client._retired_websockets and not client._gemini_close_retry_contexts
+    finally:
+        release.set()
+        await asyncio.gather(failing, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -458,6 +584,15 @@ async def test_gemini_close_leaves_a_replacement_session_alone():
     assert client.ws is replacement_session
     assert replacement_context.exit_calls == 0
 
+    # The completed retirement task belongs to the old context. A later close
+    # must be allowed to create a new task for the replacement context.
+    replacement_context.release.set()
+    await asyncio.wait_for(client._close_gemini(), timeout=5)
+    assert replacement_context.exit_calls == 1
+    assert client._gemini_context_manager is None
+    assert client._gemini_session is None
+    assert client.ws is None
+
 
 @pytest.mark.asyncio
 async def test_retired_gemini_context_is_exited_even_after_a_reconnect():
@@ -536,19 +671,50 @@ async def test_replacement_attaching_during_the_audio_lock_keeps_its_gemini_sess
 
 @pytest.mark.asyncio
 async def test_failing_gemini_exit_still_drops_the_references():
-    """A raised (non-cancel) exit ran to its own conclusion; the SDK has no
-    second attempt to offer, so the pre-existing behaviour stands."""
+    """A failed SDK exit keeps ownership until a later retry succeeds."""
     client = _make_client()
 
     class _RaisingContext:
+        def __init__(self):
+            self.exit_calls = 0
+            self.fail = True
+
         async def __aexit__(self, *exc_info):
-            raise RuntimeError("sdk exit failed")
+            self.exit_calls += 1
+            if self.fail:
+                raise RuntimeError("sdk exit failed")
 
-    client._gemini_context_manager = _RaisingContext()
-    client._gemini_session = object()
+    class _RetryableSession:
+        def __init__(self):
+            self.close_calls = 0
+            self.fail = True
 
+        async def close(self):
+            self.close_calls += 1
+            if self.fail:
+                raise RuntimeError("transport close failed")
+
+    context = _RaisingContext()
+    session = _RetryableSession()
+    client._gemini_context_manager = context
+    client._gemini_session = session
+    client.ws = session
+
+    with pytest.raises(RuntimeError, match="sdk exit failed"):
+        await client._close_gemini()
+
+    assert context.exit_calls == 1
+    assert session.close_calls == 1
+    assert client._gemini_context_manager is context
+    assert client._gemini_session is session
+    assert client.ws is session
+
+    context.fail = False
+    session.fail = False
     await client._close_gemini()
 
+    assert context.exit_calls == 2
+    assert session.close_calls == 2
     assert client._gemini_context_manager is None
     assert client._gemini_session is None
     assert client.ws is None

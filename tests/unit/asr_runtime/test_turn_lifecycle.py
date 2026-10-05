@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 from main_logic.asr_client.lifecycle import VoiceLifecycleState
+from main_logic.asr_client.runtime import _CandidateRejectionSuppression
 from main_logic.voice_turn.contracts import SpeechActivityEvent, VoiceTranscriptEvent
 
 from tests.unit.asr_runtime._scenarios import (
@@ -35,6 +36,13 @@ async def test_speech_started_interrupts_and_prepares_turn_once() -> None:
     )
 
     runtime.session.handle_interruption.assert_awaited_once_with()
+    # The interrupted offline reply is closed before handle_new_message
+    # clears its text buffer; its skipped wrap-up is owed to the next
+    # finalize instead of running while this voice turn's reply streams.
+    runtime._close_interrupted_offline_turn.assert_called_once_with("response")
+    assert runtime._turn_wrap_up_owed is True
+    # Held by this voice turn until it ends, not paid while the user speaks.
+    assert runtime._voice_turn_wrap_up_hold == f"asr-{epoch}-1"
     runtime.handle_new_message.assert_awaited_once_with()
     assert runtime._asr_turn_prepared is True
 
@@ -147,6 +155,58 @@ async def test_empty_final_completes_turn_without_core_injection() -> None:
     runtime.session.create_response.assert_not_awaited()
     runtime.session.abandon_external_voice_turn.assert_called_once_with(turn_id)
     assert runtime._omni_mic_audio_bytes == 0
+
+
+async def test_rejected_transcript_submission_settles_the_prepared_turn() -> None:
+    """A refused envelope must release the pause through route cancellation."""
+    runtime = _Runtime()
+    runtime.session.prepare_external_voice_turn = AsyncMock()
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    await _start_and_seal_turn(runtime)
+    turn_id = runtime.session.prepare_external_voice_turn.await_args.kwargs["turn_id"]
+
+    runtime._asr_runtime._asr_transcript_dispatcher.submit = MagicMock(
+        side_effect=RuntimeError("ASR_TRANSCRIPT_SLOT_NOT_RESERVED"),
+    )
+
+    await runtime._handle_independent_asr_final(
+        "hello",
+        runtime._asr_session_epoch,
+        "qwen",
+    )
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    runtime.handle_input_transcript.assert_not_awaited()
+    runtime.session.create_response.assert_not_awaited()
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(turn_id)
+
+
+async def test_teardown_settles_a_turn_parked_on_the_rejection_suppression() -> None:
+    """Teardown adopts the rejection path's unsettled prepared turn."""
+    runtime = _Runtime()
+    runtime.session.prepare_external_voice_turn = AsyncMock()
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    await _start_and_seal_turn(runtime)
+    turn_id = runtime.session.prepare_external_voice_turn.await_args.kwargs["turn_id"]
+
+    prepared = runtime._asr_prepared_turn_token
+    assert prepared is not None
+
+    runtime._asr_prepared_turn_token = None
+    runtime._asr_candidate_rejection = _CandidateRejectionSuppression(
+        request=MagicMock(),
+        turn_token=prepared,
+        final_key=MagicMock(),
+        lifecycle=runtime._asr_lifecycle,
+        detector=runtime._asr_detector,
+    )
+
+    runtime._settle_discarded_prepared_turn(runtime._reset_asr_turn_state())
+    settling = tuple(runtime._asr_close_tasks)
+    assert settling, "the reset found nobody to settle"
+    await asyncio.gather(*settling)
+
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(turn_id)
 
 
 async def test_blocked_consumer_callback_does_not_block_next_turn_lifecycle() -> (
@@ -269,7 +329,7 @@ async def test_blocked_core_response_does_not_block_next_asr_turn() -> None:
     await runtime._wait_asr_transcript_dispatch_idle()
 
 
-async def test_accepted_final_dropped_by_generation_bump_abandons_turn(
+async def test_accepted_final_dropped_by_session_epoch_bump_abandons_turn(
     monkeypatch,
 ) -> None:
     runtime, sessions, callbacks, detector = (
@@ -295,15 +355,48 @@ async def test_accepted_final_dropped_by_generation_bump_abandons_turn(
 
     await on_final("hello world")
 
-    # The final was accepted, but the generation moves on before the serial
-    # transcript dispatcher delivers the queued envelope.
-    component._asr_audio_generation += 1
+    # The final was accepted, but the session epoch moves on before the
+    # serial transcript dispatcher delivers the queued envelope.
+    component._asr_session_epoch += 1
     await component.wait_transcript_idle()
 
     runtime.handle_input_transcript.assert_not_awaited()
     runtime.session.abandon_external_voice_turn.assert_called_once_with(
         f"asr-{epoch}-{sealed_turn_id}"
     )
+
+
+async def test_accepted_final_survives_audio_generation_bump(
+    monkeypatch,
+) -> None:
+    runtime, sessions, callbacks, detector = (
+        await _start_runtime_with_callback_candidates(
+            monkeypatch,
+            candidate_count=1,
+        )
+    )
+    component = runtime._asr_runtime
+    lifecycle = component._asr_lifecycle
+    assert lifecycle is not None
+    component._asr_current_ingress_token = runtime._capture_ingress_token()
+    epoch = component._asr_session_epoch
+    on_activity = callbacks[0]["on_speech_activity"]
+    on_final = callbacks[0]["on_input_transcript"]
+
+    await on_activity(SpeechActivityEvent.SPEECH_STARTED)
+    await component._handle_independent_asr_endpoint(epoch)
+    assert lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
+
+    await on_final("hello world")
+
+    # Ingress backpressure retires the interrupted successor audio by bumping
+    # the audio generation; the already accepted final still reaches Core.
+    component._asr_audio_generation += 1
+    await component.wait_transcript_idle()
+
+    runtime.handle_input_transcript.assert_awaited_once()
+    assert runtime.handle_input_transcript.await_args.args[0] == "hello world"
+    runtime.session.create_response.assert_awaited_once_with("hello world")
 
 
 async def test_accepted_final_identity_loss_before_dispatch_abandons_turn() -> None:
@@ -318,7 +411,10 @@ async def test_accepted_final_identity_loss_before_dispatch_abandons_turn() -> N
     assert lease is not None
 
     async def bumping_release() -> None:
+        # A retiring identity barrier purges the dispatcher; a bare audio
+        # generation bump is ingress backpressure, which keeps the final.
         component._asr_audio_generation += 1
+        component._asr_transcript_dispatcher.invalidate_all()
 
     lease.release = bumping_release
 

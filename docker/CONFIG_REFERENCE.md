@@ -47,7 +47,7 @@
 |-------|------------|---------|--------|------|
 | 核心 API Key | `coreApiKey` | `NEKO_CORE_API_KEY` | `""` | 核心（实时语音）API 的密钥；`coreApi` 为 `free` 时自动使用内置的 `free-access`，不用填 |
 | 核心 API 提供商 | `coreApi` | `NEKO_CORE_API` | `"qwen"` | 实时语音模型的提供商。可选：`free`、`qwen`、`qwen_intl`、`openai`、`step`、`gemini`、`glm`、`grok`（`config/api_providers.json` 中 `core_api_providers` 的键） |
-| 辅助 API 提供商 | `assistApi` | `NEKO_ASSIST_API` | `"qwen"` | 对话、摘要、纠错、情感、视觉、Agent 等模型默认使用的提供商。可选：`free`、`qwen`、`qwen_intl`、`openai`、`glm`、`step`、`silicon`、`gemini`、`kimi`、`kimi_code`、`deepseek`、`doubao`、`minimax`、`minimax_intl`、`mimo`、`claude`、`grok`、`openrouter`、`orcarouter`（`assist_api_providers` 的键，不含只提供 TTS 的 `vllm_omni`） |
+| 辅助 API 提供商 | `assistApi` | `NEKO_ASSIST_API` | `"qwen"` | 对话、摘要、纠错、情感、视觉、Agent 等模型默认使用的提供商。可选：`free`、`qwen`、`qwen_intl`、`openai`、`glm`、`step`、`silicon`、`gemini`、`kimi`、`kimi_code`、`deepseek`、`doubao`、`minimax`、`minimax_intl`、`mimo`、`claude`、`grok`、`openrouter`、`orcarouter`、`requesty`（`assist_api_providers` 的键，不含只提供 TTS 的 `vllm_omni`） |
 
 - `assistApi` 没写或为空时，`coreApi` 为 `free` 则取 `free`，否则取 `qwen`；填了未知值会回退到 `qwen`。entrypoint 生成的文件总会写 `assistApi`（没设 `NEKO_ASSIST_API` 时写 `"qwen"`），所以用环境变量选免费版时要同时设 `NEKO_ASSIST_API=free`，否则辅助 API 是 `qwen`，需要为它提供阿里云百炼的 Key（`free-access` 不会被拿来回退）。
 - 小游戏模型默认分别跟随对话、摘要模型；自定义音色 TTS 没有单独配置、也没有 Qwen（含国际版）Key 时，同样回退到辅助 API。
@@ -66,10 +66,11 @@
 | 硅基流动 API Key | `assistApiKeySilicon` | `NEKO_ASSIST_API_KEY_SILICON` | `""` |
 | Grok（xAI）API Key | `assistApiKeyGrok` | `NEKO_ASSIST_API_KEY_GROK` | `""` |
 | 豆包（火山方舟）API Key | `assistApiKeyDoubao` | `NEKO_ASSIST_API_KEY_DOUBAO` | `""` |
-| 其余提供商的 Key | `assistApiKeyQwenIntl`、`assistApiKeyDeepseek`、`assistApiKeyGemini`、`assistApiKeyKimi`、`assistApiKeyKimiCode`、`assistApiKeyMinimax`、`assistApiKeyMinimaxIntl`、`assistApiKeyMimo`、`assistApiKeyMimoTokenPlan`、`assistApiKeyElevenlabs`、`assistApiKeyClaude`、`assistApiKeyOpenrouter`、`assistApiKeyOrcarouter`、`assistApiKeyDoubaoTts` | -（在 Web UI 里设置或直接编辑文件） | `""` |
+| 其余提供商的 Key | `assistApiKeyQwenIntl`、`assistApiKeyDeepseek`、`assistApiKeyGemini`、`assistApiKeyKimi`、`assistApiKeyKimiCode`、`assistApiKeyMinimax`、`assistApiKeyMinimaxIntl`、`assistApiKeyMimo`、`assistApiKeyMimoTokenPlan`、`assistApiKeyElevenlabs`、`assistApiKeyClaude`、`assistApiKeyOpenrouter`、`assistApiKeyOrcarouter`、`assistApiKeyRequesty`、`assistApiKeyDoubaoTts` | -（在 Web UI 里设置或直接编辑文件） | `""` |
 
 - 提供商和字段的对应关系见 `config/api_providers.json` 的 `api_key_registry`；`assistApiKeyMimoTokenPlan` 是 `useMimoTokenPlan` 为 true 时 MiMo 改用的 Key。
-- 当前 `coreApi` / `assistApi` 对应的 Key 字段留空时，运行时改用 `coreApiKey`（值为 `free-access` 时不回退）；其他提供商的 Key 字段不回退。MiniMax（含国际版）、MiMo（含 Token Plan）、ElevenLabs、豆包 TTS 这几个字段本身始终不回退，用这些提供商的语音时要单独填写；不过 MiniMax、MiMo 被选为 `assistApi` 而 Key 留空时，辅助模型的请求仍会用 `coreApiKey` 兜底（`free-access` 除外）。
+- 除 Requesty 外，当前 `coreApi` / `assistApi` 对应的 Key 字段留空时，运行时改用 `coreApiKey`（值为 `free-access` 时不回退）；其他提供商的 Key 字段不回退。MiniMax（含国际版）、MiMo（含 Token Plan）、ElevenLabs、豆包 TTS 这几个字段本身始终不回退，用这些提供商的语音时要单独填写；不过 MiniMax、MiMo 被选为 `assistApi` 而 Key 留空时，辅助模型的请求仍会用 `coreApiKey` 兜底（`free-access` 除外）。
+- Requesty 的文本和 Agent 请求只使用专用字段 `assistApiKeyRequesty`，不会借用主服务商的 `coreApiKey`。Docker 仅设置 `NEKO_CORE_API_KEY` 和 `NEKO_ASSIST_API=requesty` 不足以使用 Requesty；请在 Web UI 的密钥簿中填写 Requesty Key，或在持久化的 `core_config.json` 中设置该字段。当前 entrypoint 不支持 `NEKO_ASSIST_API_KEY_REQUESTY`。Requesty 的文本 Key 不会写入 TTS 使用的 `AUDIO_API_KEY`，音频凭据保留原有默认值和核心 Key 回退逻辑。
 - `mcpToken`（`NEKO_MCP_TOKEN`）：entrypoint 仍会写入这个字段，配置接口也仍会保存它，但当前代码只是把它转存成 `get_core_config()` 返回值里的 `MCP_ROUTER_API_KEY`，没有任何地方读取，填不填都不影响运行。
 
 ### 3. 服务器端口配置
@@ -85,7 +86,19 @@
 | 工具服务器端口 | `TOOL_SERVER_PORT` | `NEKO_TOOL_SERVER_PORT` | `48915` | Agent 服务 |
 | 用户插件服务器端口 | `USER_PLUGIN_SERVER_PORT` | `NEKO_USER_PLUGIN_SERVER_PORT` | `48916` | 用户插件服务，跑在 Agent 服务进程里 |
 
+**可选 Monitor 服务的监听与认证**（定义在 `config/network.py`，读取方式同上：`NEKO_<常量名>` 优先，兼容裸名）：
+
+| 配置项 | 代码常量 | 环境变量 | 默认值 | 说明 |
+|-------|---------|---------|--------|------|
+| Monitor 监听地址 | `MONITOR_HOST` | `NEKO_MONITOR_HOST` | `0.0.0.0` | IPv6 带不带方括号均可；主服务直接连这个地址，通配地址换成同协议族的回环地址 |
+| Monitor 完整权限 token | `MONITOR_TOKEN` | `NEKO_MONITOR_TOKEN` | 空 | 为空时不认证（兼容旧行为）；设置后除静态资源外所有路由都要认证，包括主服务写入的 `/sync*`，主服务会自动携带 |
+| Monitor 只读 token | `MONITOR_VIEWER_TOKEN` | `NEKO_MONITOR_VIEWER_TOKEN` | 空 | 仅在设置了 `NEKO_MONITOR_TOKEN` 时生效；只能看 viewer，不能写 `/sync*`，分享 viewer 链接请用它 |
+
+浏览器首次访问、cookie 会话和反向代理的细节见 `docs/zh-CN/config/environment-vars.md`。
+
 > **Docker 中**：`docker/entrypoint.sh` 只启动记忆、主服务、Agent 三个进程，对外由 Nginx 提供访问。容器内 `NGINX_PORT` 默认 80，`NGINX_SSL_PORT` 默认 443；官方 compose 把宿主机 48911 映射到 80、48912 映射到 443。Nginx 反代配置里只有主服务的上游端口跟随 `NEKO_MAIN_SERVER_PORT`，记忆（48912）、Agent（48915）、插件（48916）的上游端口都写死了，所以在容器里不要改这三个端口。
+
+> **插件安全与 NAS 兼容**：官方 HTTP/HTTPS 代理同时转发插件操作与 `/security/csrf-token`，浏览器自动获取和附加校验 token。**不用官方 Docker、自己写 Nginx/Caddy 规则时，必须把 `/security/csrf-token` 转发到插件服务（48916）**：它不在原有插件代理前缀（`plugins?|plugin/|plugin-cli/|…`）之下，落到主服务会导致插件启停、安装等需要 token 的操作失败，插件管理器会提示无法获取安全令牌。通过 NAS IP 和宿主机映射端口访问不需要额外配置 Origin/token。外层 HTTPS 反代转容器 HTTP 时，非 loopback NAS 地址允许 hostname 兜底，不比较协议与端口；这也意味着同一 NAS hostname 的其他应用端口进入来源信任边界。自定义域名沿用 `NEKO_TRUSTED_HOSTS`；公网访问认证与网络隔离仍由部署层负责。此校验防跨站操作，不提供用户登录认证。Vite `5173` 仅在开发者显式设置 `NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS` 后允许，不应加入普通 NAS 部署配置。插件页面直接调用的路由（`/runs`、`ui-api`、插件配置等）默认只校验来源、不强制 token，以保障市场插件继续可用；公网部署可设置 `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1` 强制 token，代价是尚未适配的插件页面会失效。完整合同见 [`local-mutation-auth.md`](../docs/design/security/local-mutation-auth.md)。
 
 ### 4. 模型配置
 
@@ -123,7 +136,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 
 #### 辅助 API 提供商
 
-`assistApi` 的取值为 `assist_api_providers` 的键：free、qwen、qwen_intl、openai、glm、step、silicon、gemini、kimi、kimi_code、deepseek、doubao、minimax、minimax_intl、mimo、claude、grok、openrouter、orcarouter。另有 `vllm_omni` 只供 TTS 使用，不出现在辅助 API 下拉框里，它的模型槽位全部为空。
+`assistApi` 的取值为 `assist_api_providers` 的键：free、qwen、qwen_intl、openai、glm、step、silicon、gemini、kimi、kimi_code、deepseek、doubao、minimax、minimax_intl、mimo、claude、grok、openrouter、orcarouter、requesty。另有 `vllm_omni` 只供 TTS 使用，不出现在辅助 API 下拉框里，它的模型槽位全部为空。
 
 每个提供商有一个接口地址 `OPENROUTER_URL` 和 6 个模型槽位：
 - `CONVERSATION_MODEL` - 文本对话模型
@@ -149,7 +162,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 
 #### 默认配置（跟随 `assistApi`）
 
-未开启自定义 API 时，Agent 模型取 `assistApi` 对应提供商的 `AGENT_MODEL`（为空时退回该提供商的 `VISION_MODEL`），URL 取该提供商的 `OPENROUTER_URL`，API Key 取该提供商的辅助 Key（`assistApiKey*`，未填时回退到 `coreApiKey`；`free` 用自带的 `free-access`）。各提供商的默认值（`config/api_providers.json`）：
+未开启自定义 API 时，Agent 模型取 `assistApi` 对应提供商的 `AGENT_MODEL`（为空时退回该提供商的 `VISION_MODEL`），URL 取该提供商的 `OPENROUTER_URL`，API Key 取该提供商的辅助 Key（`assistApiKey*`，未填时通常回退到 `coreApiKey`，但 Requesty 必须填写专用 `assistApiKeyRequesty`；`free` 用自带的 `free-access`）。各提供商的默认值（`config/api_providers.json`）：
 
 | 提供商 | Agent 模型 | API URL |
 |-------|-----------|---------|
@@ -172,6 +185,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 | grok | grok-4.3 | https://api.x.ai/v1 |
 | openrouter | google/gemini-3-flash-preview | https://openrouter.ai/api/v1 |
 | orcarouter | anthropic/claude-sonnet-5 | https://api.orcarouter.ai/v1 |
+| requesty | google/gemini-3-flash-preview | https://router.requesty.ai/v1 |
 
 #### 自定义 Agent 模型
 
@@ -186,7 +200,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 
 Agent API Key 的取法：
 - `follow_assist`：与默认配置相同，取辅助 API 的 Key；`follow_core`：取核心 API 的 Key。两者都忽略 `agentModelApiKey`。
-- 具体提供商：依次取该提供商的 `assistApiKey*`、`agentModelApiKey`；两者都为空、且该提供商正是当前的 `coreApi` 或 `assistApi` 时，再回退到 `coreApiKey`（`minimax`、`minimax_intl`、`mimo` 不回退）。前提是 Agent 地址（`agentModelUrl`，留空即默认地址）与该提供商的 `openrouter_url` 或其候选地址一致，否则只用 `agentModelApiKey`。
+- 具体提供商：依次取该提供商的 `assistApiKey*`、`agentModelApiKey`；两者都为空、且该提供商正是当前的 `coreApi` 或 `assistApi` 时，再回退到 `coreApiKey`（`minimax`、`minimax_intl`、`mimo`、`requesty` 不回退）。前提是 Agent 地址（`agentModelUrl`，留空即默认地址）与该提供商的 `openrouter_url` 或其候选地址一致，否则只用 `agentModelApiKey`。
 - `custom`，或没有设置 `agentModelProvider`：只用 `agentModelApiKey`，为空串也照样使用。
 
 #### 配置示例
@@ -281,9 +295,9 @@ Agent API Key 的取法：
 
 1. 用 `config/model_defaults.py` 的 `DEFAULT_*` 常量，初始化 `CORE_URL`、`CORE_MODEL`、`SUMMARY_MODEL` 等大写键。
 2. 以 `DEFAULT_CORE_CONFIG` 为模板，叠加 `core_config.json` 的内容；文件缺失、无法解析或内容不是 JSON 对象时，只用模板。
-3. 填入 Key：`coreApiKey` → `CORE_API_KEY`，`assistApiKey*` → `ASSIST_API_KEY_*`，`mcpToken` → `MCP_ROUTER_API_KEY`。某个提供商没有单独保存 Key、而它正是当前的 `coreApi` 或 `assistApi` 时，改用 `coreApiKey`。`coreApiKey` 是免费线路的占位值 `free-access` 时不做这种回退；MiniMax、MiMo、ElevenLabs、豆包语音的 Key 也从不回退。
+3. 填入 Key：`coreApiKey` → `CORE_API_KEY`，`assistApiKey*` → `ASSIST_API_KEY_*`，`mcpToken` → `MCP_ROUTER_API_KEY`。某个提供商没有单独保存 Key、而它正是当前的 `coreApi` 或 `assistApi` 时，改用 `coreApiKey`。`coreApiKey` 是免费线路的占位值 `free-access` 时不做这种回退；MiniMax、MiMo、ElevenLabs、豆包语音、Requesty 的 Key 也从不回退。
 4. 按 `coreApi` 取核心 profile，按 `assistApi` 取辅助 profile，用 `config.update()` 覆盖前面的地址和模型。`free` 的 profile 还带占位 Key `free-access`：核心为 `free` 时覆盖 `CORE_API_KEY`，辅助为 `free` 时覆盖 `AUDIO_API_KEY` / `OPENROUTER_API_KEY`。文件里没写 `assistApi` 时，`coreApi` 为 `free` 则取 `free`，否则取 `qwen`；未知的 `assistApi` 回退到 `qwen`。`resolvedProviderUrls` 里如果存有连通性测试选定的地址，并且它属于该提供商的候选地址，就用它替换默认地址。
-5. 辅助提供商的 Key 写入 `OPENROUTER_API_KEY` / `AUDIO_API_KEY`；仍为空时改用 `coreApiKey`（`free-access` 除外）。Agent 的模型、地址和 Key 默认跟随辅助 API。
+5. 辅助提供商的 Key 写入 `OPENROUTER_API_KEY` / `AUDIO_API_KEY`；通常仍为空时改用 `coreApiKey`（`free-access` 除外）。Requesty 的 `OPENROUTER_API_KEY` 必须使用专用 Key，空值保持为空；Requesty 的文本 Key 不写入 `AUDIO_API_KEY`，音频凭据保留原有默认值和核心 Key 回退。Agent 的模型、地址和 Key 默认跟随辅助 API。
 6. `enableCustomApi` 为 `true` 时，应用第 7 节的自定义模型字段（GPT-SoVITS 的 TTS 地址不受这个开关限制）。
 7. 改写免费线路地址：只处理域名为 `lanlan.tech` 或其子域（如 `www.lanlan.tech`）的 `*_URL`。直播模式生效时（`config/livestream_config.json` 里，或没有这个文件时 `api_providers.json` 的 `livestream_config` 里，`enabled` 为 `true` 且 `server_prefix` 非空），路径为 `/core`、`/text/v1`、`/tts` 的地址先改用 `server_prefix` 开头的地址；否则在判定为非中国大陆网络时，把域名中的 `lanlan.tech` 换成 `lanlan.app`。`AGENT_MODEL_URL` 不做区域改写。
 

@@ -124,6 +124,7 @@
     }
 
     function isHomeTutorialFeatureSuppressed() {
+        if (window.isNekoClickGuideActive === true) return true;
         try {
             if (_homeTutorialFeatureSuppressedByEvent) {
                 return true;

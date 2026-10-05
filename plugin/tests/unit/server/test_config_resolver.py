@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
 
 from plugin.server.infrastructure import config_resolver as module
+from plugin.server.infrastructure.config_fingerprint import fingerprint_config
 
 
 def _assert_warning_shape(items: object) -> None:
@@ -24,6 +26,7 @@ def test_resolve_plugin_config_returns_base_effective_profiles_and_warnings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = Path("/tmp/demo/plugin.toml")
+    monkeypatch.setattr(module, "plugin_config_file_lock", lambda path: nullcontext())
     base_config = {"plugin": {"id": "demo", "name": "", "entry": "demo:Plugin"}}
 
     monkeypatch.setattr(module, "get_plugin_manifest_path", lambda plugin_id: config_path)
@@ -70,6 +73,7 @@ def test_resolve_plugin_config_returns_base_effective_profiles_and_warnings(
     payload = module.resolve_plugin_config("demo")
 
     assert payload["base_config"] == base_config
+    assert payload["config_fingerprint"] == fingerprint_config(payload["effective_config"])
     assert payload["effective_config"] == {
         "plugin": {"id": "demo", "name": "", "entry": "demo:Plugin"},
         "runtime": {"enabled": True},
@@ -100,6 +104,7 @@ def test_resolve_plugin_config_can_skip_effective_merge_and_schema_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = Path("/tmp/demo/plugin.toml")
+    monkeypatch.setattr(module, "plugin_config_file_lock", lambda path: nullcontext())
     base_config = {"plugin": {"id": "demo", "name": "Demo", "entry": "demo:Plugin"}}
 
     monkeypatch.setattr(module, "get_plugin_manifest_path", lambda plugin_id: config_path)
@@ -154,6 +159,7 @@ def test_resolve_plugin_config_from_path_reuses_preloaded_manifest_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = Path("/tmp/demo/plugin.toml")
+    monkeypatch.setattr(module, "plugin_config_file_lock", lambda path: nullcontext())
     runtime_path = Path("/tmp/runtime/demo/plugin.toml")
     manifest_config = {"plugin": {"id": "demo", "name": "Demo", "entry": "demo:Plugin"}}
     runtime_config = {"runtime": {"enabled": False}}
@@ -222,6 +228,7 @@ def test_resolve_plugin_config_warnings_keep_schema_before_semantic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = Path("/tmp/demo/plugin.toml")
+    monkeypatch.setattr(module, "plugin_config_file_lock", lambda path: nullcontext())
     base_config = {"plugin": {"id": "demo", "name": "", "entry": "demo:Plugin"}}
 
     monkeypatch.setattr(module, "get_plugin_manifest_path", lambda plugin_id: config_path)
@@ -337,3 +344,76 @@ def test_discovery_config_rejects_non_file_runtime_path(
         module.resolve_plugin_config_from_path(
             "demo", config_path=manifest, materialize_runtime_config=False
         )
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("existing_runtime", [False, True])
+def test_discovery_snapshot_finishes_before_profile_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_runtime: bool,
+) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+
+    from plugin.core.plugin_layout import resolve_plugin_layout
+    from plugin.server.infrastructure import config_profiles_write
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "storage"))
+    installed = tmp_path / "demo"
+    installed.mkdir()
+    manifest = installed / "plugin.toml"
+    manifest.write_text(
+        "[plugin]\nid='demo'\nname='Demo'\nentry='demo:Plugin'\n"
+        "[runtime]\nlevel=1\n", encoding="utf-8",
+    )
+    layout = resolve_plugin_layout("demo", installed)
+    if existing_runtime:
+        module.resolve_plugin_config_from_path("demo", config_path=manifest)
+    monkeypatch.setattr(config_profiles_write, "get_plugin_config_path", lambda _: manifest)
+
+    reader_paused = threading.Event()
+    release_reader = threading.Event()
+    writer_attempted = threading.Event()
+    writer_finished = threading.Event()
+    apply_profiles = module.apply_user_config_profiles
+    get_write_lock = config_profiles_write._get_plugin_lock
+
+    def paused_profiles(**kwargs):
+        reader_paused.set()
+        assert release_reader.wait(10)
+        return apply_profiles(**kwargs)
+
+    @contextmanager
+    def writer_lock(plugin_id):
+        writer_attempted.set()
+        with get_write_lock(plugin_id):
+            yield
+
+    def write_profile():
+        try:
+            return config_profiles_write.upsert_profile_config(
+                plugin_id="demo", profile_name="dev",
+                config={"runtime": {"level": 2}}, make_active=True,
+            )
+        finally:
+            writer_finished.set()
+
+    monkeypatch.setattr(module, "apply_user_config_profiles", paused_profiles)
+    monkeypatch.setattr(config_profiles_write, "_get_plugin_lock", writer_lock)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reader = pool.submit(module.read_plugin_config_from_path, "demo", config_path=manifest)
+        try:
+            assert reader_paused.wait(10)
+            writer = pool.submit(write_profile)
+            assert writer_attempted.wait(10)
+            assert not writer_finished.wait(0.1), "profile write overtook the discovery snapshot"
+            assert layout.config_path.exists() == existing_runtime
+        finally:
+            release_reader.set()
+        snapshot = reader.result(timeout=10)
+        writer.result(timeout=10)
+
+    assert snapshot["effective_config"]["runtime"]["level"] == 1
+    assert snapshot["config_fingerprint"] == fingerprint_config(snapshot["effective_config"])
+    updated = module.read_plugin_config_from_path("demo", config_path=manifest)
+    assert updated["effective_config"]["runtime"]["level"] == 2

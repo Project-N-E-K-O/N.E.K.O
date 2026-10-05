@@ -377,6 +377,52 @@ def test_validate_plugin_dir_reports_invalid_toml_without_crashing(tmp_path: Pat
     assert any(level == "error" and "plugin.toml could not be read" in message for level, message in issues)
 
 
+def test_validate_plugin_dir_skips_dependency_sync_work_dirs(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    for name in (".vendor.backup-0a1b2c3d", ".vendor.staging-0a1b2c3d"):
+        work_dir = plugin_dir / name
+        work_dir.mkdir()
+        (work_dir / "unparsable.py").write_text("def broken(:\n", encoding="utf-8")
+    # A look-alike directory the plugin owns is still checked.
+    own = plugin_dir / ".vendor.backup-notes"
+    own.mkdir()
+    (own / "own_broken.py").write_text("def broken(:\n", encoding="utf-8")
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert not any("unparsable.py" in message for _level, message in issues)
+    assert any("own_broken.py" in message for _level, message in issues)
+
+
+def test_validate_does_not_descend_into_skipped_dirs(tmp_path: Path, monkeypatch) -> None:
+    # A retained backup (or a venv) may hold a large tree or a mount: prune
+    # it during the walk instead of enumerating it and filtering afterwards.
+    from plugin.neko_plugin_cli.commands import validate_cmd
+
+    plugin_dir = _make_plugin_dir(tmp_path)
+    for name in (".vendor.backup-0a1b2c3d", "vendor", ".venv"):
+        (plugin_dir / name / "deep").mkdir(parents=True)
+    (plugin_dir / "pkg").mkdir()
+    (plugin_dir / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    visited = []
+    real_walk = validate_cmd.os.walk
+
+    def walk(top, *args, **kwargs):
+        for entry in real_walk(top, *args, **kwargs):
+            visited.append(Path(entry[0]).relative_to(plugin_dir))
+            yield entry
+
+    monkeypatch.setattr(validate_cmd.os, "walk", walk)
+    files = validate_cmd._plugin_python_files(plugin_dir)
+
+    assert plugin_dir / "pkg" / "mod.py" in files
+    assert Path("pkg") in visited
+    assert not any(
+        path.parts and path.parts[0] in {".vendor.backup-0a1b2c3d", "vendor", ".venv"}
+        for path in visited
+    )
+
+
 def test_validate_plugin_dir_accepts_install_declaration_and_i18n_directory(
     tmp_path: Path,
 ) -> None:
@@ -1677,7 +1723,7 @@ def test_init_documents_and_exposes_dependency_sync(tmp_path: Path) -> None:
     readme = (repo_dir / "README.md").read_text(encoding="utf-8")
     tasks = (repo_dir / ".vscode" / "tasks.json").read_text(encoding="utf-8")
 
-    sync_command = "uv run --with pip --project"
+    sync_command = "uv run --project"
     assert sync_command in readme
     assert "neko-plugin sync . --clean" in readme
     assert "`vendor/`" in readme
@@ -1691,7 +1737,7 @@ def test_init_documents_and_exposes_dependency_sync(tmp_path: Path) -> None:
     assert "Use that GitHub Release URL when publishing" not in readme
     assert "N.E.K.O: sync dependency_demo" in tasks
     assert (
-        'uv run --with pip neko-plugin sync \\"${workspaceFolder}\\" --clean'
+        'uv run neko-plugin sync \\"${workspaceFolder}\\" --clean'
         in tasks
     )
 
@@ -1855,3 +1901,23 @@ def test_git_preflight_skips_git_binary_check_inside_existing_repo(
     monkeypatch.setattr(init_cmd.shutil, "which", lambda _: None)
 
     init_cmd._preflight_git_request(target_dir, initialize_git=True)
+
+
+def test_validate_walk_raises_on_an_unreadable_subtree(tmp_path: Path, monkeypatch) -> None:
+    # A check must not pass while skipping files it could not list.
+    import os
+
+    from plugin.neko_plugin_cli.commands import validate_cmd
+
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "broken").mkdir()
+    real_scandir = os.scandir
+
+    def scandir(path="."):
+        if Path(path) == plugin_dir / "broken":
+            raise OSError(5, "I/O error")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    with pytest.raises(OSError):
+        validate_cmd._plugin_python_files(plugin_dir)

@@ -106,6 +106,20 @@ function loadCapture(active, enabled = active) {
     };
 }
 
+test('capture owner rejection unwinds without an AudioWorklet failure notice', async () => {
+    const env = loadCapture(false);
+    env.S.isRecording = false;
+    env.installMicrophone();
+    env.window.appUtils.dbToLinear = () => 1;
+    let registered = 0;
+    env.window.nekoVoiceCaptureReadiness = { blocked: () => false, async register() { registered++; throw new Error('capture_owner_unavailable'); } };
+    assert.equal(await env.window.startMicCapture(), false);
+    assert.equal(registered, 1);
+    assert.equal(env.S.isRecording, false);
+    assert.notEqual(env.S.voiceWorkletSetupFailed, true);
+    assert.equal(env.messages.some(message => String(message).includes('audioWorklet')), false);
+});
+
 for (const entry of ['toggleMicMute', 'setMicMuted']) {
     test(`${entry}: native voice does not await independent ASR, even if next-session setting is enabled`, () => {
         const env = loadCapture(false, true);
@@ -669,6 +683,21 @@ test('a new READY retires a preparing notice left over from an earlier session',
     env.status('ASR_INDEPENDENT_READY', { provider: 'faster_whisper', session_epoch: 13 });
     assert.equal(env.S.localAsrPreparingMessage, null);
     assert.equal(preparing, null);
+});
+
+test('READY clears local ASR state without hiding a still-pending voice start notice', () => {
+    const env = loadCapture(true);
+    let preparing = null;
+    env.window.showVoicePreparingToast = message => { preparing = message; };
+    env.window.hideVoicePreparingToast = () => { preparing = null; };
+    env.loadWebsocket();
+    env.S.voiceSessionEpoch = 12;
+    env.S.voiceStartPending = true;
+    env.S._pendingSessionStartMode = 'audio';
+    env.window.showVoicePreparingToast('Connecting to voice session');
+    env.status('ASR_INDEPENDENT_READY', { provider: 'faster_whisper', session_epoch: 12 });
+    assert.equal(env.S.localAsrPreparingMessage, null);
+    assert.equal(preparing, 'Connecting to voice session');
 });
 
 test('the preparing notice is put away for good when the session ends', () => {

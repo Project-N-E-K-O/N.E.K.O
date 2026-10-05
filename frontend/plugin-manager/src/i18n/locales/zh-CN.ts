@@ -453,6 +453,10 @@ export default {
     disabled: '已禁用',
     autoStart: '自动启动',
     manualStart: '手动启动',
+    autoStartHint: 'N.E.K.O 启动时自动启动此插件。手动启动或停止不会改变此设置。',
+    autoStartDisabledHint: '该插件当前已禁用。开启自动启动会同时启用它，使其下次启动时运行，但不会立即启动。',
+    autoStartBlockedHint: '偏好已开启，但插件被禁用或仍待批准，下次不会自启。关闭再开启可启用并批准自启。',
+    autoStartUnsupportedDevelopment: '开发插件不会自动启动，请手动启动。',
     fetchFailed: '获取插件列表失败',
     pluginType: '类型',
     pluginTypeNormal: '插件',
@@ -810,6 +814,9 @@ export default {
     pluginDeleted: '插件已删除',
     pluginDeletedBuiltinRestartFailed: '插件 {plugin} 已删除，但恢复的内置版本启动失败：{error}',
     startFailed: '启动失败',
+    autoStartEnabled: '已开启自动启动',
+    autoStartDisabled: '已关闭自动启动',
+    autoStartUpdateFailed: '更新自动启动设置失败',
     stopFailed: '停止失败',
     reloadFailed: '重载失败',
     buildFailed: '构建插件失败',
@@ -823,6 +830,7 @@ export default {
     serviceUnavailable: '服务不可用',
     networkError: '网络错误，请检查网络连接',
     requestTimeout: '请求超时，请稍后重试',
+    csrfBootstrapFailed: '无法获取安全令牌。如使用反向代理，请确认已将 /security/csrf-token 转发到插件服务。',
     pluginLifecycleTimeout: '插件启动或重载超时，请查看插件日志'
   },
   welcome: {

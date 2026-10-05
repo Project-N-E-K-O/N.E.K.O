@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .models import BuildResult, PayloadBuildResult, PluginSource
 from .normalize import normalize_relative_posix
-from .build_rules import BuildRuleSet, load_build_rules, should_skip_path
+from .build_rules import BuildRuleSet, load_build_rules, should_skip_path, walk_plugin_tree
 from .dependencies import (
     validate_payload_dependency_layout,
     validate_source_dependency_layout,
@@ -357,7 +357,7 @@ class PluginBuilder:
         rules: BuildRuleSet,
     ) -> list[Path]:
         copied: list[Path] = []
-        for path in sorted(source_dir.rglob("*")):
+        for path in walk_plugin_tree(source_dir):
             relative = path.relative_to(source_dir)
             if self.should_skip(relative, is_dir=path.is_dir(), rules=rules):
                 continue

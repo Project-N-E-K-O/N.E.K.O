@@ -17,6 +17,7 @@ Core text path (``_process_stream_data_internal`` -> ``handle_response_complete`
 on a manager double.
 """
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,6 +25,7 @@ import pytest
 
 import main_logic.core as core_module
 import main_logic.omni_offline_client._streaming as offline_streaming
+from main_logic.omni_offline_client._lifecycle import InterruptedReply
 from main_logic.tool_calling import ToolDefinition, ToolResult
 from tests.unit.test_avatar_interaction_payload_contract import (
     _builtin_runtime,
@@ -34,6 +36,8 @@ from tests.unit.test_chat_context_reinjection import (
     _swap,
 )
 from tests.unit.test_core_game_route_memory_contract import (
+    _assert_discard_left_tts_alone,
+    _spy_discard_tts_clear,
     _FakeAliveThread,
     _FakeConnectedWebSocket,
     _FakeQueue,
@@ -272,6 +276,7 @@ async def test_a_retired_clients_discard_leaves_a_new_voice_turn_alone():
     mgr.session = object()
     await mgr.handle_new_message()
     mgr._clear_tts_pipeline.reset_mock()
+    _spy_discard_tts_clear(mgr)
 
     tool_release.set()
     await asyncio.wait_for(turn_a, 5)
@@ -279,6 +284,7 @@ async def test_a_retired_clients_discard_leaves_a_new_voice_turn_alone():
     assert _ws(mgr, "response_discarded") == [], "the frontend would clear V's bubble"
     assert _sync(mgr, "response_discarded_clear") == [], "cross_server would drop V's text"
     mgr._clear_tts_pipeline.assert_not_awaited()
+    _assert_discard_left_tts_alone(mgr)
     assert _ws(mgr, "turn end") == [] and _sync(mgr, "turn end") == []
 
 
@@ -438,6 +444,86 @@ async def test_a_reply_ends_its_turn_without_a_meta_it_did_not_stage(ending):
 
     assert [("meta" in m, m["request_id"]) for m in _ws(mgr, "turn end")] == [(False, "req-B")]
     assert mgr._pending_turn_meta is avatar_meta
+
+
+@pytest.mark.parametrize("ending", ["interrupted", "claimed", "displaced"])
+async def test_a_taken_over_reply_ends_its_turn_without_a_meta_it_did_not_stage(ending):
+    """The same holds when the reply's close is taken over (an interruption,
+    a claim of its completion window, a displacing begin): the closer gets
+    the reply's own snapshot back (``InterruptedReply.owner``) and closes the
+    turn with that, not with the shared fields."""
+    mgr = _core_manager()
+    mgr._fire_task = asyncio.ensure_future
+    avatar_meta = {"kind": "avatar_interaction", "interaction_id": "i-1"}
+    mgr._pending_turn_meta = avatar_meta
+    reply_turn = mgr._begin_reply_turn(speech_id=mgr.current_speech_id, request_id="req-B")
+    reply_turn.session = mgr.session
+    mgr._active_text_request_id = "req-B"
+    mgr._current_ai_turn_text = "B说到一半"
+    taken_over = InterruptedReply("response", finished=ending == "claimed", owner=reply_turn)
+
+    if ending == "displaced":
+        mgr._close_displaced_offline_turn(taken_over)
+        await asyncio.sleep(0)
+    else:
+        session = SimpleNamespace(handle_interruption=AsyncMock(return_value=taken_over))
+        assert await mgr._interrupt_offline_reply(session)
+
+    assert [("meta" in m, m.get("request_id")) for m in _sync(mgr, "turn end")] == [(False, "req-B")]
+    assert mgr._pending_turn_meta is avatar_meta
+    assert mgr._active_text_request_id is None
+
+
+async def test_a_taken_over_text_turn_never_carries_a_retired_avatar_replys_meta():
+    """An avatar reply parked in a tool on a client end_session retired keeps
+    its meta staged until it unwinds. The user's text turn A on the new client,
+    interrupted by B, is closed from its own snapshot: cross_server must not
+    file A as an avatar interaction (its isolation path drops A's reply from
+    ordinary memory and caches it under the avatar's memory note)."""
+    tool, tool_entered, tool_release = _parked_tool()
+    old = _client([[_text("摸摸头"), _tool_call("c1")]], tool=tool)
+    mgr = _observe(_make_callback_media_manager(old))
+    _wire(mgr, old)
+    meta = {"kind": "avatar_interaction", "interaction_id": "i-1", "memory_note": "poke"}
+    # greeting.handle_avatar_interaction, around prompt_ephemeral
+    mgr._pending_turn_meta = meta
+    avatar_turn = mgr._begin_reply_turn(speech_id=mgr.current_speech_id, meta=meta)
+    avatar_turn.session = old
+
+    async def avatar_done():
+        await mgr.handle_response_complete(reply_turn=avatar_turn)
+
+    avatar = asyncio.create_task(old.prompt_ephemeral(
+        "avatar", completion_mode="response", persist_response=False,
+        response_done_callback=avatar_done,
+    ))
+    await asyncio.wait_for(tool_entered.wait(), 5)
+    await old.close()  # end_session: the avatar reply stays parked, its meta staged
+
+    a_speaking, a_release = asyncio.Event(), asyncio.Event()
+
+    async def park_a():
+        a_speaking.set()
+        await a_release.wait()
+
+    new = _wire(mgr, _client([
+        [_text("A说到一半"), park_a, _text("A后半"), _text("", "stop")],
+        [_text("B的回答"), _text("", "stop")],
+    ]))
+    new.on_response_displaced = mgr._close_displaced_offline_turn
+    mgr.session = new
+    turn_a = asyncio.create_task(_text_turn(mgr, "第一句", "req-A"))
+    await asyncio.wait_for(a_speaking.wait(), 5)
+    turn_b = asyncio.create_task(_text_turn(mgr, "第二句", "req-B"))  # interrupts A
+    a_release.set()
+    await asyncio.wait_for(asyncio.gather(turn_a, turn_b), 5)
+    tool_release.set()
+    await asyncio.wait_for(avatar, 5)  # stands down: the host moved on
+
+    assert [(m.get("request_id"), "meta" in m) for m in _sync(mgr, "turn end")] == [
+        ("req-A", False), ("req-B", False),
+    ]
+    assert mgr._pending_turn_meta is meta  # left to the avatar path to drop
 
 
 @pytest.mark.parametrize("retired", [True, False])
@@ -613,3 +699,382 @@ async def test_a_stale_reply_skips_the_takeover_cleanup(current):
     assert mgr._clear_tts_pipeline.await_count == (1 if current else 0)
     assert mgr._current_ai_turn_text == ("" if current else "镜像台词")
     assert mgr._active_text_request_id == (None if current else "req-mirror")
+
+
+async def test_the_avatar_path_hands_its_own_snapshot_to_the_client(monkeypatch):
+    """The avatar reply's snapshot rides with its generation (reply_owner), so
+    whoever takes its close over closes it with its own meta and its own
+    (absent) request id, never a typed reply's id from the shared field."""
+    runtime = _builtin_runtime(monkeypatch)
+    runtime._takeover_active = False
+    runtime.use_tts = False
+    runtime.tts_thread = None
+    runtime.sync_message_queue = _FakeQueue()
+    runtime._current_ai_turn_text = ""
+    runtime._active_text_request_id = "req-B"  # a typed input still in setup
+    runtime._open_reply_turn = None
+    _observe(runtime)
+    seen = {}
+
+    async def prompt_ephemeral(_instruction, *, reply_owner=None, **_kwargs):
+        seen["owner"] = reply_owner
+        seen["open"] = runtime._open_reply_turn
+        return True
+
+    runtime.session.prompt_ephemeral = prompt_ephemeral
+    await runtime.handle_avatar_interaction(_fist_payload("fist-owner"))
+
+    owner = seen["owner"]
+    assert owner is not None and owner is seen["open"]
+    assert owner.request_id is None
+    assert owner.meta["kind"] == "avatar_interaction"
+
+
+# ── A final discard that already ended the turn ─────────────────────────────
+
+async def test_a_too_long_final_discard_ends_its_turn_once():
+    """The length guard discards a runaway reply for good (repeated text past
+    the user's cap, no rerolls left), and the discard's recovery ends the turn:
+    the placeholder, the turn end, the wrap-up. The stream still runs the
+    reply's completion when it unwinds, and that completion used to end the
+    same turn again: a second turn end on both channels and a second wrap-up."""
+    client = _client([[_text("ahah" * 200), _text("", "stop")]])
+    client.enable_response_guard = True
+    client.max_response_rerolls = 0
+    mgr = _observe(_make_callback_media_manager(client))
+    mgr._get_text_guard_max_length = lambda: 30  # the user's reply cap
+    _wire(mgr, client)
+
+    await asyncio.wait_for(_text_turn(mgr, "说点什么", "req-A"), 5)
+
+    discards = [json.loads(m["message"])["code"] for m in _ws(mgr, "response_discarded")]
+    assert discards == ["RESPONSE_TOO_LONG"], "fixture must reach the too-long final discard"
+    assert [m["request_id"] for m in _ws(mgr, "turn end")] == ["req-A"]
+    assert [m["request_id"] for m in _sync(mgr, "turn end")] == ["req-A"]
+    mgr._finalize_turn_after_emit.assert_awaited_once()
+    placeholder = client._conversation_history[-1].content
+    assert mgr._activity_tracker.ai_messages == [placeholder]
+    assert mgr._active_text_request_id is None
+
+
+@pytest.mark.parametrize("message", [
+    '{"code": "RESPONSE_TOO_LONG"}',
+    '{"code": "RESPONSE_LENGTH_TRUNCATED", "text": "截断到这里。"}',
+], ids=["too_long", "length_truncated"])
+async def test_a_final_discards_recovery_leaves_its_completion_nothing_to_end(message):
+    """Both recoveries end the reply's turn themselves, and the completion that
+    follows them must not end it again."""
+    mgr = _core_manager()
+    mgr.user_language = "zh-CN"  # the too-long placeholder is localized
+    mgr.session = SimpleNamespace(_conversation_history=[])
+    mgr._clear_tts_pipeline = AsyncMock()
+    reply_turn = mgr._begin_reply_turn(speech_id=mgr.current_speech_id, request_id="req-A")
+    reply_turn.session = mgr.session
+    mgr._active_text_request_id = "req-A"
+
+    await mgr.handle_response_discarded(
+        "length>30", 1, 1, False, message, request_id="req-A", reply_turn=reply_turn,
+    )
+    assert len(_ws(mgr, "turn end")) == 1, "fixture must let the recovery end the turn"
+    await mgr.handle_response_complete(reply_turn=reply_turn)
+
+    assert [m["request_id"] for m in _ws(mgr, "turn end")] == ["req-A"]
+    assert [m["request_id"] for m in _sync(mgr, "turn end")] == ["req-A"]
+    mgr._finalize_turn_after_emit.assert_awaited_once()
+
+
+async def test_a_reply_whose_turn_already_ended_leaves_a_later_takeover_alone():
+    """A takeover that starts between the discard and the completion speaks
+    under its own turn; the completion of a reply already ended must not run
+    the takeover cleanup over it."""
+    mgr = _core_manager()
+    mgr.user_language = "zh-CN"
+    mgr.session = SimpleNamespace(_conversation_history=[])
+    mgr._clear_tts_pipeline = AsyncMock()
+    reply_turn = mgr._begin_reply_turn(speech_id=mgr.current_speech_id, request_id="req-A")
+    reply_turn.session = mgr.session
+    mgr._active_text_request_id = "req-A"
+    await mgr.handle_response_discarded(
+        "length>30", 1, 1, False, '{"code": "RESPONSE_TOO_LONG"}',
+        request_id="req-A", reply_turn=reply_turn,
+    )
+    mgr._clear_tts_pipeline.reset_mock()
+    mgr._takeover_active = True  # the takeover starts and speaks meanwhile
+    mgr._current_ai_turn_text = "镜像台词"
+
+    await mgr.handle_response_complete(reply_turn=reply_turn)
+
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    assert mgr._current_ai_turn_text == "镜像台词"
+
+
+async def test_a_final_discard_that_ended_nothing_leaves_its_completion_to_end_the_turn():
+    """Only a turn end the recovery actually sent closes the reply. On a live
+    client a newer request already holds the shared output, so the discard
+    sends nothing, and the reply's completion still ends its own turn, as an
+    interrupted reply does."""
+    mgr = _core_manager()
+    mgr.session = SimpleNamespace(_conversation_history=[])
+    mgr._clear_tts_pipeline = AsyncMock()
+    reply_turn = mgr._begin_reply_turn(speech_id=mgr.current_speech_id, request_id="req-A")
+    reply_turn.session = mgr.session
+    mgr._active_text_request_id = "req-B"  # B was submitted meanwhile
+
+    await mgr.handle_response_discarded(
+        "length>30", 1, 1, False, '{"code": "RESPONSE_TOO_LONG"}',
+        request_id="req-A", reply_turn=reply_turn,
+    )
+    assert _ws(mgr, "turn end") == [] and _sync(mgr, "turn end") == []
+
+    await mgr.handle_response_complete(reply_turn=reply_turn)
+
+    assert [m["request_id"] for m in _ws(mgr, "turn end")] == ["req-A"]
+    assert [m["request_id"] for m in _sync(mgr, "turn end")] == ["req-A"]
+    assert mgr._active_text_request_id == "req-B"
+
+
+# ── Takeover callbacks of a retired client ──────────────────────────────────
+
+async def _guarded_client(monkeypatch, script):
+    """A real client over ``script``, its callbacks bound to a full manager as
+    ``_create_offline_vlm_client`` and ``_bind_session_lifecycle_callbacks``
+    bind them, installed as ``mgr.session``. Returns the manager, the client
+    and the list of sessions each finalize ran under."""
+    from tests.unit.session_handoff_harness import make_full_manager
+
+    client = _client(script)
+    mgr, _, _ = await make_full_manager(monkeypatch)
+    client.on_text_delta = mgr.handle_text_data
+    client.on_response_done = mgr.handle_response_complete
+    client.on_response_discarded = mgr.handle_response_discarded
+    client.on_proactive_done = mgr.handle_proactive_complete
+    client.on_response_displaced = mgr._close_displaced_offline_turn
+    client.on_idle = mgr._on_offline_session_idle
+    mgr.session = client
+    mgr.is_active = True
+    mgr._register_connection(client)
+    mgr._bind_owned_output_callbacks(client)
+
+    finalized = []
+    real_finalize = mgr._finalize_turn_after_emit
+
+    async def finalize():
+        finalized.append(mgr.session)
+        await real_finalize()
+
+    monkeypatch.setattr(mgr, "_finalize_turn_after_emit", finalize)
+    return mgr, client, finalized
+
+
+async def _settle_manager(mgr):
+    for _ in range(5):
+        await asyncio.sleep(0.01)
+    for task in tuple(getattr(mgr, "_bg_tasks", ())):
+        task.cancel()
+
+
+async def _guarded_displacement(monkeypatch, successor):
+    """The client's voice reply parks mid-stream; unless ``successor`` is
+    "live", the client is retired and ``mgr.session`` replaced ("swapped") or
+    cleared ("ended"); then a late reply call begins over the parked reply,
+    displacing it. Returns the manager, the client, the sync and WebSocket
+    messages after the park, and the finalize calls."""
+    parked, release = asyncio.Event(), asyncio.Event()
+
+    async def park():
+        parked.set()
+        await release.wait()
+
+    mgr, client, finalized = await _guarded_client(monkeypatch, [
+        [_text("旧回复"), park, _text("", "stop")],
+        [_text("迟到的回复"), _text("", "stop")],
+    ])
+    reply = asyncio.create_task(client._run_external_voice_stream("你好"))
+    await asyncio.wait_for(parked.wait(), 5)
+
+    if successor != "live":
+        mgr._connection_record(client).retired = True
+        mgr.session = object() if successor == "swapped" else None
+        mgr._current_ai_turn_text = "NEW SESSION REPLY"
+        # The successor's own debt, which only its own idle may pay.
+        mgr._turn_wrap_up_owed = True
+    sync_before = len(mgr.sync_message_queue.queue)
+    ws_before = len(mgr.websocket.messages)
+
+    late = asyncio.create_task(client.stream_text("迟到"))
+    await asyncio.sleep(0.2)
+    release.set()
+    results = await asyncio.wait_for(asyncio.gather(reply, late, return_exceptions=True), 5)
+    assert not any(isinstance(r, BaseException) for r in results), results
+    await _settle_manager(mgr)
+    sync = list(mgr.sync_message_queue.queue)[sync_before:]
+    ws = mgr.websocket.messages[ws_before:]
+    return mgr, client, sync, ws, finalized
+
+
+@pytest.mark.parametrize("successor", ["swapped", "ended"])
+async def test_a_retired_clients_displacement_and_idle_leave_the_host_alone(
+    monkeypatch, successor,
+):
+    """A retired client (hot-swapped out, or ``end_session`` already cleared
+    ``self.session``) whose late reply call displaces its own parked reply
+    must not close the host's current turn: the displacement would flush the
+    successor's in-progress text and queue a turn end for it, and the idle
+    notification would pay the successor's owed wrap-up against whatever
+    session is current (``None`` included), mid-reply."""
+    mgr, _, sync, ws, finalized = await _guarded_displacement(monkeypatch, successor)
+
+    assert mgr._current_ai_turn_text == "NEW SESSION REPLY"
+    assert finalized == []
+    assert mgr._turn_wrap_up_owed is True
+    assert not any(m.get("data") == "turn end" for m in sync), sync
+    assert not any(m.get("data") in ("turn end", "turn abandoned") for m in ws), ws
+
+
+async def test_the_guarded_displacement_still_seals_the_live_clients_bubble(monkeypatch):
+    """On the installed client the guard passes the displacement through
+    unchanged: the follow-up it hands back stays a plain callable, so the
+    displaced reply's frontend turn end goes out before the displacing reply's
+    first chunk."""
+    mgr, client, sync, ws, _ = await _guarded_displacement(monkeypatch, "live")
+    assert mgr.session is client
+
+    turn_ends = [m for m in sync if m.get("data") == "turn end"]
+    assert len(turn_ends) == 2, sync  # the displaced reply's, then the late one's
+    ws_kinds = [
+        "turn end" if m.get("data") == "turn end"
+        else "late" if "迟到的回复" in str(m.get("text", ""))
+        else None
+        for m in ws
+    ]
+    ws_kinds = [k for k in ws_kinds if k]
+    assert ws_kinds[:2] == ["turn end", "late"], ws
+
+
+async def test_the_guarded_idle_still_pays_the_live_clients_owed_wrap_up(monkeypatch):
+    """An interrupted typed reply still finishing its call when the
+    interruption returns: its wrap-up is owed, and the installed client's idle
+    notification passes the guard and pays it once that call returns."""
+    parked, release = asyncio.Event(), asyncio.Event()
+
+    async def park():
+        parked.set()
+        await release.wait()
+
+    mgr, client, finalized = await _guarded_client(monkeypatch, [
+        [_text("旧回复"), park, _text("", "stop")],
+    ])
+    reply = asyncio.create_task(client.stream_text("你好"))
+    await asyncio.wait_for(parked.wait(), 5)
+    assert await mgr._interrupt_offline_reply(client)
+    assert mgr._turn_wrap_up_owed is True and finalized == []
+
+    release.set()
+    await asyncio.wait_for(reply, 5)
+    await _settle_manager(mgr)
+
+    assert finalized == [client]
+    assert mgr._turn_wrap_up_owed is False
+
+
+async def test_lifecycle_bound_takeover_callbacks_act_only_for_the_installed_client(
+    monkeypatch,
+):
+    """As ``_create_offline_vlm_client`` and ``_bind_session_lifecycle_callbacks``
+    bind them, ``on_response_displaced`` and ``on_idle`` stay sync and are
+    guarded at call time. A client bound before it is installed (a handoff
+    candidate, a final swap's pending session) gets None from both and leaves
+    the host's turn alone; once installed, the same callbacks pass through
+    (the displacement hands back its follow-up, idle settles the owed
+    wrap-up); retired while still installed, it gets None again."""
+    import inspect
+
+    from tests.unit.session_handoff_harness import make_full_manager
+
+    mgr, _, _ = await make_full_manager(monkeypatch)
+    config = {"base_url": "http://offline.invalid/v1", "api_key": "k", "model": "m"}
+    client = mgr._create_offline_vlm_client(
+        conversation_config=config, vision_config=dict(config),
+        tool_definitions=[], max_response_length=100, external_tts_enabled=False,
+    )
+    mgr._bind_session_lifecycle_callbacks(client)
+    for name in ("on_response_displaced", "on_idle"):
+        callback = getattr(client, name)
+        assert getattr(callback, "_session_owner", None) is client, name
+        assert not inspect.iscoroutinefunction(callback), name
+
+    settles = []
+    mgr._fire_task = lambda coro: (settles.append(coro), coro.close())
+
+    def host_turn(text):
+        mgr._current_ai_turn_text = text
+        mgr._turn_wrap_up_owed = True
+        return len(mgr.sync_message_queue.queue)
+
+    def assert_left_alone(text, queued):
+        assert client.on_response_displaced(InterruptedReply("response")) is None
+        assert client.on_idle() is None
+        assert mgr._current_ai_turn_text == text
+        assert mgr._turn_wrap_up_owed is True
+        assert len(mgr.sync_message_queue.queue) == queued
+        assert settles == []
+
+    mgr.session = object()  # the session the client is to replace
+    mgr._register_connection(client)
+    assert_left_alone("CURRENT TURN", host_turn("CURRENT TURN"))
+
+    mgr.session = client
+    queued = host_turn("DISPLACED REPLY")
+    followup = client.on_response_displaced(InterruptedReply("response"))
+    assert callable(followup)
+    await followup()
+    assert mgr._current_ai_turn_text == ""
+    assert [m.get("data") for m in list(mgr.sync_message_queue.queue)[queued:]] == ["turn end"]
+    assert mgr.websocket.messages[-1].get("data") == "turn end"
+    client.on_idle()
+    assert len(settles) == 1
+
+    settles.clear()
+    mgr._connection_record(client).retired = True
+    assert_left_alone("SUCCESSOR TURN", host_turn("SUCCESSOR TURN"))
+    await client.close()
+
+
+@pytest.mark.parametrize("displaced", [False, True])
+async def test_a_takeover_dropped_completion_leaves_no_discard_flag_behind(displaced):
+    """A discarded reply's completion dropped by a session takeover clears
+    its open-turn flag with its text: a later reply that said nothing is
+    then closed without a turn end (only 'turn abandoned' if displaced)."""
+    from main_logic.core._shared import _ReplyTurn
+
+    M = core_module.LLMSessionManager
+    mgr = _make_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr._note_ai_turn = lambda text=None, **_kw: None
+    mgr._finalize_turn_after_emit = AsyncMock()
+    mgr._turn_wrap_up_owed = False
+    mgr._discarded_turn_open = False
+
+    a = _ReplyTurn(speech_id=mgr.current_speech_id, request_id="req-A")
+    mgr._active_text_request_id = "req-A"
+    mgr._current_ai_turn_text = "A said half"
+    await M.handle_response_discarded(
+        mgr, "connection", 1, 3, True, None, request_id="req-A", reply_turn=a,
+    )
+    mgr._takeover_active = True
+    await M.handle_response_complete(mgr, reply_turn=a)
+    mgr._takeover_active = False
+    assert mgr._discarded_turn_open is False
+
+    b = _ReplyTurn(speech_id="sid-B", request_id="req-B")
+    mgr._active_text_request_id = "req-B"
+    followup = M._close_taken_over_offline_reply(
+        mgr, InterruptedReply("response", owner=b), displaced=displaced,
+    )
+    if followup is not None:
+        await followup()
+    turn_ends = [
+        m for m in mgr.sync_message_queue.messages
+        if isinstance(m, dict) and str(m.get("data", "")).startswith("turn end")
+    ]
+    assert turn_ends == []

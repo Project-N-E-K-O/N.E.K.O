@@ -37,6 +37,40 @@ def test_non_windows_metadata_keeps_platform_machine(monkeypatch):
     assert metadata_contract.build_environment()["arch"] == "aarch64"
 
 
+def test_configuration_snapshot_loads_web_stack_only_for_http_errors(tmp_path):
+    probe = r'''
+import os, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+os.environ['NEKO_STORAGE_SELECTED_ROOT'] = str(root / 'data')
+os.environ['NEKO_STORAGE_ANCHOR_ROOT'] = str(root / 'anchor')
+Path.home = classmethod(lambda cls: root / 'home')
+manifest = root / 'demo' / 'plugin.toml'
+manifest.parent.mkdir()
+manifest.write_text('[plugin]\nid="demo"\nname="Demo"\nentry="demo:Plugin"\n', encoding='utf-8')
+from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
+assert 'fastapi' not in sys.modules
+snapshot = resolve_plugin_config_from_path('demo', config_path=manifest)
+assert snapshot['effective_config']['plugin']['id'] == 'demo'
+assert snapshot['config_fingerprint']
+assert 'fastapi' not in sys.modules
+try:
+    resolve_plugin_config_from_path('missing', config_path=root / 'missing.toml')
+except Exception as error:
+    from fastapi import HTTPException
+    assert isinstance(error, HTTPException)
+    assert error.status_code == 500
+else:
+    raise AssertionError('missing configuration must retain its HTTP error')
+print('ok')
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", probe, str(tmp_path)], capture_output=True,
+        text=True, timeout=120, check=True,
+    )
+    assert result.stdout.strip().splitlines()[-1] == "ok"
+
+
 def test_first_cli_calls_import_on_worker_and_publish_one_service(tmp_path):
     probe = r'''
 import asyncio, os, sys, threading
@@ -50,6 +84,7 @@ import plugin.server.routes.plugin_cli as cli
 import plugin.server.routes.market_bridge as market
 assert 'plugin.server.application.plugin_cli.service' not in sys.modules
 assert 'plugin.neko_plugin_cli.core.install' not in sys.modules
+assert 'plugin.neko_plugin_cli.core.build_rules' not in sys.modules
 assert cli.get_plugin_cli_service is market.get_plugin_cli_service
 loop_thread = threading.get_ident()
 imports = []

@@ -94,6 +94,8 @@ function applyAvatarSidePanelTransform(panel, motion = 'none') {
 }
 
 function getAvatarSidePanelExitMotion(panel) {
+    if (panel && panel.dataset && panel.dataset.placement === 'above') return 'translateY(6px)';
+    if (panel && panel.dataset && panel.dataset.placement === 'compact') return 'none';
     if (panel && panel.dataset && panel.dataset.goDown === 'true') return 'translateY(-6px)';
     return panel && panel.dataset && panel.dataset.goLeft === 'true'
         ? 'translateX(6px)'
@@ -414,7 +416,8 @@ function createPopup(manager, prefix, buttonId) {
 
     if (buttonId === 'mic') {
         popup.setAttribute('data-legacy-id', `${prefix}-mic-popup`);
-        popup.style.minWidth = '400px';
+        // The audio renderer owns the voice menu's width, including callers
+        // that create the popup without this shared factory.
         popup.style.maxHeight = '420px';
         popup.style.flexDirection = 'row';
         popup.style.gap = '0';
@@ -1057,6 +1060,12 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 }
                 isOpening = true;
                 dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, 'sidepanel-navigate');
+                if (finalUrl.startsWith('/voice_identity') && window.nekoVoiceEnrollment) {
+                    Promise.resolve().then(() => window.nekoVoiceEnrollment.open({ operationId: window.crypto.randomUUID() })).catch(() => {
+                        if (typeof window.showStatusToast === 'function') window.showStatusToast(window.t ? window.t('voiceIdentity.inputReason_capture_owner_unavailable') : 'Unable to contact the microphone window.', 5000);
+                    }).finally(() => { isOpening = false; });
+                    return;
+                }
                 if (typeof window.openOrFocusWindow === 'function') {
                     window.openOrFocusWindow(finalUrl, windowName, features);
                 } else {
@@ -3020,6 +3029,12 @@ const AvatarPopupMixin = {
 
                         isOpening = true;
                         dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, 'settings-navigate');
+                        if (finalUrl.startsWith('/voice_identity') && window.nekoVoiceEnrollment) {
+                            Promise.resolve().then(() => window.nekoVoiceEnrollment.open({ operationId: window.crypto.randomUUID() })).catch(() => {
+                                if (typeof window.showStatusToast === 'function') window.showStatusToast(window.t ? window.t('voiceIdentity.inputReason_capture_owner_unavailable') : 'Unable to contact the microphone window.', 5000);
+                            }).finally(() => { isOpening = false; });
+                            return;
+                        }
                         if (typeof window.openOrFocusWindow === 'function') {
                             window.openOrFocusWindow(finalUrl, windowName, features);
                         } else {

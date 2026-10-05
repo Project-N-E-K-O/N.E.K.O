@@ -6,6 +6,7 @@ import asyncio
 import logging
 import math
 import time
+from array import array
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -38,6 +39,7 @@ from .detector import (
 from .silero_vad import SileroActivityGate, SileroVad
 from .smart_turn_audio_evidence import create_smart_turn_audio_evidence_recorder
 from .smart_turn_diagnostics import create_smart_turn_runtime_diagnostics
+from .smart_turn_reasons import CompletionReason, EvaluationReason
 from .smart_turn_v3 import SmartTurnV3
 from .throttle_policy import (
     ThrottleAction,
@@ -60,6 +62,9 @@ _Identity: TypeAlias = tuple[int, int, int]
 _FallbackReason: TypeAlias = Literal["semantic_incomplete", "semantic_degraded"]
 _COMMIT_DRAIN_ON_CLOSE_SECONDS = 0.5
 _SPEAKER_SHADOW_REPLACEMENT_CLOSE_SECONDS = 2.0
+# Keep the floor below the AGC noise floor: no-VAD must preserve quiet speech,
+# while an all-zero (digital silence) frame still leaves the deadline alone.
+_NO_VAD_SPEECH_RMS = 0.001 * 32_768
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +79,7 @@ class _AudioItem:
     pcm16: bytes
     duration_us: int
     detector_identity: DetectorIngressIdentity | None = None
+    no_vad_activity: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +99,7 @@ class _EvaluationResultItem:
     identity: _Identity
     coordinator_generation: int
     activity_seq: int
-    reason: Literal["candidate_pause", "periodic_no_vad", "strict_retry"]
+    reason: EvaluationReason
     detector_identity: DetectorIngressIdentity | None = None
     evaluation_ms: int = 0
     result: object | None = None
@@ -104,7 +110,7 @@ class _EvaluationResultItem:
 class _PendingCompleteConfirmation:
     identity: _Identity
     detector_identity: DetectorIngressIdentity | None
-    reason: Literal["candidate_pause", "periodic_no_vad", "strict_retry"]
+    reason: EvaluationReason
     probability: float | None
 
 
@@ -130,7 +136,7 @@ class _VoiceTurnAdapter:
         coordinator: TurnCoordinator,
         on_commit: Callable[[int, int, int], Awaitable[None]],
         on_completion_fence: Callable[
-            [int, int, int, DetectorIngressIdentity], _Identity
+            [int, int, int, DetectorIngressIdentity], _Identity | None
         ]
         | None = None,
         on_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
@@ -248,11 +254,10 @@ class _VoiceTurnAdapter:
         self._smart_turn_unload_task: asyncio.Task[None] | None = None
         self._evaluation_task: asyncio.Task[None] | None = None
         self._reevaluation_requested = False
-        self._reevaluation_reason: (
-            Literal["candidate_pause", "periodic_no_vad", "strict_retry"] | None
-        ) = None
+        self._reevaluation_reason: EvaluationReason | None = None
         self._pending_complete_confirmation: _PendingCompleteConfirmation | None = None
         self._strict_endpoint_deadline: float | None = None
+        self._no_vad_deadline_cap: float | None = None
         self._latest_detector_identity: DetectorIngressIdentity | None = None
         self._smart_turn_evaluation_ms = 0
         self._smart_turn_stale_result_count = 0
@@ -264,6 +269,7 @@ class _VoiceTurnAdapter:
         self._vad_degraded = False
         self._fallback_speech_started = False
         self._fallback_audio_bytes = 0
+        self._last_no_vad_audio_at: float | None = None
         self._semantic_degraded = False
         self._failed = False
         self._failure_future: asyncio.Future[_VoiceTurnFailure] | None = None
@@ -387,6 +393,7 @@ class _VoiceTurnAdapter:
         pcm16: bytes,
         sample_rate_hz: int = 16_000,
         detector_identity: DetectorIngressIdentity | None = None,
+        no_vad_activity: bool | None = None,
     ) -> None:
         if len(pcm16) % 2:
             raise ValueError("ASR_INVALID_PCM: Voice Turn requires PCM16LE")
@@ -413,6 +420,7 @@ class _VoiceTurnAdapter:
                 pcm16,
                 duration_us,
                 detector_identity,
+                no_vad_activity,
             ),
             duration_us=duration_us,
         )
@@ -584,6 +592,7 @@ class _VoiceTurnAdapter:
                 pcm16=item.pcm16,
                 duration_us=item.duration_us,
                 detector_identity=item.detector_identity,
+                no_vad_activity=item.no_vad_activity,
             )
         defers_for_evaluation = self._evaluation_task is not None
         if defers_for_evaluation:
@@ -643,6 +652,7 @@ class _VoiceTurnAdapter:
             self._cancel_smart_turn_unload()
             self._cancel_fallback()
             self._strict_endpoint_deadline = None
+            self._no_vad_deadline_cap = None
 
         if (
             SpeechActivityEvent.CANDIDATE_PAUSE not in events
@@ -666,6 +676,42 @@ class _VoiceTurnAdapter:
     async def _process_without_vad(self, item: _AudioItem) -> None:
         """Keep SmartTurn authoritative when Silero cannot provide candidates."""
 
+        has_activity = item.no_vad_activity
+        if has_activity is not True:
+            # Below RNNoise onset is not proof of silence: quiet speech may
+            # still have PCM energy. Keep the bounded RMS fallback available.
+            has_activity = self._pcm_has_no_vad_speech(item.pcm16)
+        if has_activity:
+            now = asyncio.get_running_loop().time()
+            self._last_no_vad_audio_at = now
+            if (
+                self._smart_turn_required
+                and self._strict_endpoint_deadline is not None
+            ):
+                if item.no_vad_activity is not True:
+                    # RMS is only an activity hint without a positive RNNoise
+                    # classification: steady HVAC or microphone self-noise
+                    # can sit above the floor. Keep this fallback bounded so
+                    # noise cannot starve semantic_timeout.
+                    cap = self._no_vad_deadline_cap
+                    if cap is None:
+                        cap = (
+                            self._strict_endpoint_deadline
+                            + self._max_endpoint_wait_seconds
+                        )
+                        self._no_vad_deadline_cap = cap
+                    self._strict_endpoint_deadline = min(
+                        now + self._max_endpoint_wait_seconds, cap
+                    )
+                else:
+                    # RNNoise has already classified this chunk as activity;
+                    # preserve the normal inactivity semantics for long speech.
+                    self._strict_endpoint_deadline = (
+                        now + self._max_endpoint_wait_seconds
+                    )
+                    # Confirmed speech retires the previous RMS-only wait.
+                    # A later fallback starts a fresh bound from this window.
+                    self._no_vad_deadline_cap = None
         started_now = False
         if not self._fallback_speech_started:
             self._fallback_speech_started = True
@@ -693,10 +739,19 @@ class _VoiceTurnAdapter:
             item.detector_identity,
         )
 
+    @staticmethod
+    def _pcm_has_no_vad_speech(pcm16: bytes) -> bool:
+        samples = array("h")
+        samples.frombytes(pcm16)
+        if not samples:
+            return False
+        rms = math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+        return rms >= _NO_VAD_SPEECH_RMS
+
     def _request_evaluation(
         self,
         identity: _Identity,
-        reason: Literal["candidate_pause", "periodic_no_vad", "strict_retry"],
+        reason: EvaluationReason,
         detector_identity: DetectorIngressIdentity | None = None,
     ) -> None:
         if self._closed or self._failed or identity != self._identity:
@@ -704,7 +759,10 @@ class _VoiceTurnAdapter:
         if self._evaluation_task is not None:
             self._smart_turn_coalesced_evaluation_count += 1
             self._reevaluation_requested = True
-            self._reevaluation_reason = reason
+            if reason != "periodic_no_vad" or self._reevaluation_reason is None:
+                # A periodic tick must not erase a pending pause or strict
+                # retry: only those can seal the turn once the wait expires.
+                self._reevaluation_reason = reason
             return
         coordinator_generation = int(getattr(self._coordinator, "generation", 0))
         activity_seq = int(getattr(self._coordinator, "activity_seq", 0))
@@ -863,21 +921,51 @@ class _VoiceTurnAdapter:
             )
             return
         if status is EvaluationStatus.OK and decision is TurnDecision.INCOMPLETE:
+            if (
+                item.reason != "periodic_no_vad"
+                and self._strict_endpoint_wait_expired()
+            ):
+                # An unfinished-sounding pause is still a semantic answer, not
+                # an endpointing failure: seal the turn instead of blocking
+                # the whole ASR session.
+                await self._publish_complete_result(
+                    item.identity,
+                    item.detector_identity,
+                    "semantic_timeout",
+                    probability=probability,
+                    evaluation_tail=evaluation_tail,
+                )
+                return
             self._observe_evaluation_tail(evaluation_tail)
+            if self._smart_turn_required and self._strict_endpoint_deadline is None:
+                # Silero may be unavailable for the whole turn.  The periodic
+                # no-VAD path still needs a strict semantic wait so an
+                # incomplete SmartTurn result cannot leave the session stuck.
+                self._strict_endpoint_deadline = (
+                    asyncio.get_running_loop().time()
+                    + self._max_endpoint_wait_seconds
+                )
+                self._no_vad_deadline_cap = (
+                    self._strict_endpoint_deadline
+                    + self._max_endpoint_wait_seconds
+                )
+            if item.reason != "periodic_no_vad" or (
+                self._smart_turn_required
+                and (
+                    self._fallback_task is None
+                    or self._fallback_task.done()
+                )
+            ):
+                # A periodic tick must not restart an already pending strict
+                # wait; otherwise continuous no-VAD audio can postpone the
+                # retry past the semantic endpoint deadline.
+                self._schedule_fallback(item.identity, "semantic_incomplete")
             if reevaluate:
                 self._request_evaluation(
                     item.identity,
                     reevaluation_reason,
                     self._latest_detector_identity,
                 )
-                return
-            if item.reason != "periodic_no_vad":
-                if self._smart_turn_required and self._strict_endpoint_deadline is None:
-                    self._strict_endpoint_deadline = (
-                        asyncio.get_running_loop().time()
-                        + self._max_endpoint_wait_seconds
-                    )
-                self._schedule_fallback(item.identity, "semantic_incomplete")
             return
         if self._smart_turn_required:
             failure_kind = (
@@ -975,6 +1063,8 @@ class _VoiceTurnAdapter:
         self._reevaluation_requested = False
         self._reevaluation_reason = None
         self._strict_endpoint_deadline = None
+        self._no_vad_deadline_cap = None
+        self._last_no_vad_audio_at = None
         self._latest_detector_identity = None
         self._evaluation_tail.clear()
         self._evaluation_tail_duration_us = 0
@@ -1049,7 +1139,7 @@ class _VoiceTurnAdapter:
         self,
         identity: _Identity,
         detector_identity: DetectorIngressIdentity | None,
-        reason: Literal["candidate_pause", "periodic_no_vad", "strict_retry"],
+        reason: EvaluationReason,
         *,
         probability: float | None,
         delay_seconds: float,
@@ -1139,43 +1229,72 @@ class _VoiceTurnAdapter:
     async def _strict_incomplete_wait(self, identity: _Identity) -> None:
         """Schedule one strict retry through the single SmartTurn lane."""
 
-        await asyncio.sleep(self._continuation_timeout_seconds)
-        if (
-            self._closed
-            or self._failed
-            or identity != self._identity
-            or self._coordinator.state is not CoordinatorState.WAIT_CONTINUATION
-        ):
+        while True:
+            wait_started_at = asyncio.get_running_loop().time()
+            await asyncio.sleep(self._continuation_timeout_seconds)
+            # Without VAD there is no SPEECH_RESUMED event to move the strict
+            # endpoint deadline. Keep the retry asleep while audio is still
+            # arriving while the deadline permits it. The bounded RMS
+            # fallback must retry at its cap even with continuous noise.
+            if (
+                self._last_no_vad_audio_at is not None
+                and self._last_no_vad_audio_at > wait_started_at
+                and not self._strict_endpoint_wait_expired()
+            ):
+                continue
+            break
+        state = self._coordinator.state
+        # A periodic no-VAD inference may be running; the retry then coalesces
+        # behind it instead of silently ending the strict wait.
+        waiting = state is CoordinatorState.WAIT_CONTINUATION or (
+            state is CoordinatorState.EVALUATING
+        )
+        if self._closed or self._failed or identity != self._identity or not waiting:
             return
-        deadline = self._strict_endpoint_deadline
-        if deadline is None or asyncio.get_running_loop().time() >= deadline:
+        if self._strict_endpoint_deadline is None:
             self._report_failure("unavailable", "smart_turn")
             return
+        # Past the deadline this retry is the last one: a still-incomplete
+        # result seals the turn as ``semantic_timeout``.
         self._request_evaluation(
             identity,
             "strict_retry",
             self._latest_detector_identity,
         )
 
+    def _strict_endpoint_wait_expired(self) -> bool:
+        deadline = self._strict_endpoint_deadline
+        return (
+            self._smart_turn_required
+            and deadline is not None
+            and asyncio.get_running_loop().time() >= deadline
+        )
+
     async def _publish_complete_result(
         self,
         identity: _Identity,
         detector_identity: DetectorIngressIdentity | None,
-        reason: Literal["candidate_pause", "periodic_no_vad", "strict_retry"],
+        reason: CompletionReason,
         *,
         probability: float | None,
         evaluation_tail: tuple[_AudioItem, ...],
         wait_for_commit: bool = False,
     ) -> None:
-        self._strict_endpoint_deadline = None
-        self._smart_turn_diagnostics.complete(reason=reason)
-        self._complete_observed_candidate(detector_identity)
         active_identity = identity
         if self._on_completion_fence is not None and detector_identity is not None:
             active_identity = self._on_completion_fence(
                 *identity,
                 detector_identity,
             )
+            if active_identity is None:
+                # The detector retired this result (for example, after an
+                # overflow reset). Do not publish stale observability data or
+                # complete the retired candidate.
+                return
+        self._strict_endpoint_deadline = None
+        self._no_vad_deadline_cap = None
+        self._smart_turn_diagnostics.complete(reason=reason)
+        self._complete_observed_candidate(detector_identity)
         if active_identity == identity:
             self._observe_evaluation_tail(evaluation_tail)
         self._smart_turn_audio_evidence.complete(
@@ -1222,6 +1341,7 @@ class _VoiceTurnAdapter:
                     pcm16=tail_item.pcm16,
                     duration_us=tail_item.duration_us,
                     detector_identity=tail_item.detector_identity,
+                    no_vad_activity=tail_item.no_vad_activity,
                 )
             )
 
@@ -1537,7 +1657,12 @@ class DetectorRuntime:
                 buffer_epoch: int,
                 turn_id: int,
                 identity: DetectorIngressIdentity,
-            ) -> _Identity:
+            ) -> _Identity | None:
+                if identity.detector_epoch != self._detector_epoch:
+                    # A result evaluated before an overflow reset must not
+                    # advance the successor epoch's semantic identity or
+                    # publish stale diagnostics/evidence.
+                    return None
                 successor_present = self._sequence_no > identity.sequence_no
                 fence = SmartTurnCompletionFence(
                     detector_epoch=identity.detector_epoch,
@@ -1567,6 +1692,12 @@ class DetectorRuntime:
                     (generation, buffer_epoch, turn_id),
                     None,
                 )
+                if fence is None and (generation, turn_id) != (
+                    self._semantic_generation,
+                    self._semantic_turn_id,
+                ):
+                    # An overflow or reset already retired this semantic turn.
+                    return
                 if fence is None:
                     self._candidate_open = False
                     self._policy_event_candidate = None
@@ -2583,6 +2714,16 @@ class DetectorRuntime:
                 pcm16=pcm16,
                 sample_rate_hz=sample_rate_hz,
                 detector_identity=identity,
+                no_vad_activity=(
+                    bool(
+                        evidence.available
+                        and evidence.frame_count > 0
+                        and evidence.peak is not None
+                        and evidence.peak >= throttle.onset_threshold
+                    )
+                    if evidence.available and evidence.frame_count > 0
+                    else None
+                ),
             )
         except asyncio.QueueFull:
             self._detector_epoch += 1

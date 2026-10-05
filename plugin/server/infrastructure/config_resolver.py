@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Mapping
 
-from fastapi import HTTPException
+from plugin.server.infrastructure.error_mapping import http_exception
 
 from plugin.config.plugin_toml_semantics import (
     PluginConfigWarning,
@@ -25,6 +26,8 @@ from plugin.server.infrastructure.config_profiles import (
 )
 from plugin.server.infrastructure.config_toml import load_toml_from_file, read_toml_file
 from plugin.utils.path_resolution import PathResolutionCache, canonical_read_path
+from plugin.server.infrastructure.config_fingerprint import fingerprint_config
+from plugin.server.infrastructure.config_locking import plugin_config_file_lock
 
 logger = get_logger("server.infrastructure.config_resolver")
 
@@ -136,39 +139,11 @@ def _resolve_plugin_config_core(
         "last_modified": datetime.fromtimestamp(last_modified).isoformat(),
         "base_config": base_config,
         "effective_config": effective_config,
+        "config_fingerprint": fingerprint_config(effective_config),
         "profiles_state": profiles_state,
         "warnings": [*schema_warnings, *semantic_warnings],
         "schema_validation_errors": schema_validation_errors,
     }
-
-
-def _read_runtime_config_defaults(
-    plugin_id: str,
-    manifest_path: Path,
-    *,
-    read_cache: PathResolutionCache | None = None,
-) -> tuple[Path, dict[str, object], float]:
-    """Read effective defaults without creating a runtime config during discovery.
-
-    Use the same seed as initialization, under the same per-plugin write lock.
-    The returned config path is always the runtime destination; only its first
-    read and timestamp may come from the installed seed.
-    """
-    layout = resolve_plugin_layout(
-        plugin_id, manifest_path.parent, read_cache=read_cache
-    )
-    with get_plugin_update_lock(plugin_id):
-        source = layout.config_path
-        if source.exists():
-            if not source.is_file():
-                raise OSError(
-                    f"Plugin '{plugin_id}' runtime config path is not a file: {source}"
-                )
-        else:
-            source = layout.installed_dir / "config.example.toml"
-            if not source.is_file():
-                source = layout.manifest_path
-        return layout.config_path, read_toml_file(source), source.stat().st_mtime
 
 
 def resolve_plugin_config_from_path(
@@ -190,25 +165,25 @@ def resolve_plugin_config_from_path(
             validate_schema=validate_schema,
             read_cache=read_cache,
         )
-    manifest_path = config_path.resolve(strict=False)
-    manifest_config = (
-        base_config
-        if isinstance(base_config, dict)
-        else load_toml_from_file(manifest_path)
-    )
-    runtime_config_path = ensure_plugin_runtime_config(
-        plugin_id, manifest_path=manifest_path
-    )
-    runtime_config = load_toml_from_file(runtime_config_path)
-    return _resolve_plugin_config_core(
-        plugin_id,
-        config_path=runtime_config_path,
-        manifest_path=manifest_path,
-        manifest_config=manifest_config,
-        base_config=runtime_config,
-        include_effective_config=include_effective_config,
-        validate_schema=validate_schema,
-    )
+    # Profile and runtime writes use the same per-plugin lock. Keeping the
+    # complete synchronous read under that lock prevents an application-state
+    # query from observing one file before an atomic replacement and another
+    # file after it.
+    with get_plugin_update_lock(plugin_id):
+        manifest_path = config_path.resolve(strict=False)
+        manifest_config = base_config if isinstance(base_config, dict) else load_toml_from_file(manifest_path)
+        runtime_config_path = ensure_plugin_runtime_config(plugin_id, manifest_path=manifest_path)
+        with plugin_config_file_lock(runtime_config_path):
+            runtime_config = load_toml_from_file(runtime_config_path)
+            return _resolve_plugin_config_core(
+                plugin_id,
+                config_path=runtime_config_path,
+                manifest_path=manifest_path,
+                manifest_config=manifest_config,
+                base_config=runtime_config,
+                include_effective_config=include_effective_config,
+                validate_schema=validate_schema,
+            )
 
 
 def read_plugin_config_from_path(
@@ -221,32 +196,50 @@ def read_plugin_config_from_path(
     read_cache: PathResolutionCache | None = None,
 ) -> dict[str, object]:
     """Resolve discovery configuration without initializing runtime files."""
-    manifest_path = canonical_read_path(config_path, cache=read_cache)
-    manifest_config = (
-        base_config
-        if isinstance(base_config, dict)
-        else load_toml_from_file(manifest_path)
-    )
-    try:
-        runtime_path, runtime_config, modified = _read_runtime_config_defaults(
-            plugin_id,
-            manifest_path,
-            read_cache=read_cache,
+    with get_plugin_update_lock(plugin_id):
+        manifest_path = canonical_read_path(config_path, cache=read_cache)
+        manifest_config = (
+            base_config
+            if isinstance(base_config, dict)
+            else load_toml_from_file(manifest_path)
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except (OSError, RuntimeError) as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return _resolve_plugin_config_core(
-        plugin_id,
-        config_path=runtime_path,
-        manifest_path=manifest_path,
-        manifest_config=manifest_config,
-        base_config=runtime_config,
-        include_effective_config=include_effective_config,
-        validate_schema=validate_schema,
-        last_modified=modified,
-    )
+        layout = resolve_plugin_layout(
+            plugin_id, manifest_path.parent, read_cache=read_cache
+        )
+        source = layout.config_path
+        if source.exists():
+            if not source.is_file():
+                raise http_exception(
+                    status_code=500,
+                    detail=f"Plugin '{plugin_id}' runtime config path is not a file: {source}",
+                )
+            read_lock = plugin_config_file_lock(source)
+        else:
+            source = layout.installed_dir / "config.example.toml"
+            if not source.is_file():
+                source = layout.manifest_path
+            read_lock = nullcontext()
+
+        # Keep runtime data, profiles and their fingerprint in one snapshot.
+        # Missing runtime files keep using the installed seed without writes.
+        with read_lock:
+            try:
+                runtime_config = read_toml_file(source)
+                modified = source.stat().st_mtime
+            except ValueError as exc:
+                raise http_exception(status_code=400, detail=str(exc)) from exc
+            except (OSError, RuntimeError) as exc:
+                raise http_exception(status_code=500, detail=str(exc)) from exc
+            return _resolve_plugin_config_core(
+                plugin_id,
+                config_path=layout.config_path,
+                manifest_path=manifest_path,
+                manifest_config=manifest_config,
+                base_config=runtime_config,
+                include_effective_config=include_effective_config,
+                validate_schema=validate_schema,
+                last_modified=modified,
+            )
 
 
 def resolve_plugin_config(

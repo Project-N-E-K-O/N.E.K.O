@@ -1,0 +1,4 @@
+<link rel="stylesheet" href="/static/tutorial/click-guide/click-guide.css?v={{ static_asset_version }}">
+{% for module in ['mask', 'highlight', 'target', 'advance', 'opened-window', 'runner', 'native', 'home-steps', 'home'] %}
+<script src="/static/tutorial/click-guide/{{ module }}.js?v={{ static_asset_version }}"></script>
+{% endfor %}

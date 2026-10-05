@@ -104,6 +104,7 @@ print('ok')
             "toml_utils", "unpack",
         )),
         ("plugin.server.infrastructure", ("auth", "error_handler", "exceptions")),
+        ("plugin.config", ("service", "schema")),
     ],
 )
 def test_cold_facade_preserves_existing_submodule_attributes(

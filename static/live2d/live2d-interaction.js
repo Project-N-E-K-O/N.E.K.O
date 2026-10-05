@@ -2574,14 +2574,14 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         if (this._goodbyeClicked) return;
 
         // 引导模式下不隐藏浮动按钮
-        if (window.isInTutorial === true) return;
+        if (window.isInTutorial === true || floatingButtons?.dataset.inTutorial === 'true') return;
 
         // 如果已有定时器，不重复创建
         if (this._hideButtonsTimer) return;
 
         this._hideButtonsTimer = setTimeout(() => {
             // 引导模式下不隐藏
-            if (window.isInTutorial === true) {
+            if (window.isInTutorial === true || floatingButtons?.dataset.inTutorial === 'true') {
                 this._hideButtonsTimer = null;
                 return;
             }

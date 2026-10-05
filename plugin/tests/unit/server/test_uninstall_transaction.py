@@ -1226,3 +1226,136 @@ async def test_delete_plugin_cancellation_finishes_event_boundary(
 
     assert mutation_finished.is_set()
     assert [event["event_type"] for event in events] == ["plugin_deleted"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_revokes_hot_reload_recovery_of_stopped_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    """A stopped plugin never reaches stop_plugin; the restored builtin must not
+    inherit the auto-reload recovery permission of the uninstalled package."""
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    _patch_builtin_restore(monkeypatch, harness)
+    monkeypatch.setattr(lifecycle_module, "_hot_reload_failed", {"demo"})
+
+    result = await uninstall_plugin("demo")
+
+    assert result.restored_builtin is True
+    assert harness.stop_calls == []
+    assert not lifecycle_module.plugin_needs_hot_reload_recovery("demo")
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_rollback_keeps_hot_reload_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    harness.refresh_error = RuntimeError("scan crashed")
+    monkeypatch.setattr(lifecycle_module, "_hot_reload_failed", {"demo"})
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.filesystem_rollback == "completed"
+    assert lifecycle_module.plugin_needs_hot_reload_recovery("demo")
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_incomplete_rollback_revokes_hot_reload_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    """Whatever an incomplete rollback leaves on disk is not the source the
+    recovery permission was granted for."""
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    harness.refresh_error = RuntimeError("scan crashed")
+    monkeypatch.setattr(lifecycle_module, "_hot_reload_failed", {"demo"})
+    original_rollback = uninstall_module._rollback_precommit
+
+    async def incomplete_rollback(**kwargs):
+        outcome = await original_rollback(**kwargs)
+        return replace(outcome, filesystem_rollback="incomplete", source_restored=False)
+
+    monkeypatch.setattr(uninstall_module, "_rollback_precommit", incomplete_rollback)
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.filesystem_rollback == "incomplete"
+    assert not lifecycle_module.plugin_needs_hot_reload_recovery("demo")
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_profile_restore_failure_keeps_hot_reload_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    """Only the plugin's own source decides: a package profile that failed to
+    come back does not change which code is on disk."""
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    profile_dir = harness.profiles_root / "demo_package"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "settings.toml").write_text("value = 1\n", encoding="utf-8")
+    _package_entry_fakes(monkeypatch, harness)
+    harness.refresh_error = RuntimeError("scan crashed")
+    monkeypatch.setattr(lifecycle_module, "_hot_reload_failed", {"demo"})
+
+    def _profile_restore_fails(_staged) -> None:
+        raise PermissionError("profile is in use")
+
+    monkeypatch.setattr(
+        uninstall_module, "_restore_staged_package_profile_sync", _profile_restore_fails
+    )
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.filesystem_rollback == "incomplete"
+    assert harness.plugin_dir.is_dir()
+    assert lifecycle_module.plugin_needs_hot_reload_recovery("demo")
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_missing_staged_code_revokes_hot_reload_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    """Staged code that vanished before rollback never comes back; the rollback
+    must not count the plugin's source as restored."""
+    import shutil
+
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    harness.refresh_error = RuntimeError("scan crashed")
+    monkeypatch.setattr(lifecycle_module, "_hot_reload_failed", {"demo"})
+    original_stage = uninstall_module._stage_plugin_code_sync
+
+    def stage_then_lose(plugin_dir: Path):
+        staged = original_stage(plugin_dir)
+        shutil.rmtree(staged.staged_dir)
+        return staged
+
+    monkeypatch.setattr(uninstall_module, "_stage_plugin_code_sync", stage_then_lose)
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.filesystem_rollback == "incomplete"
+    assert not harness.plugin_dir.exists()
+    assert not lifecycle_module.plugin_needs_hot_reload_recovery("demo")

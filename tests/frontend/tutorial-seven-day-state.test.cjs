@@ -3,9 +3,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
-const stateApi = require('./tutorial/core/seven-day-state.js');
+const stateApi = require('../../static/tutorial/core/seven-day-state.js');
 const stateSource = fs.readFileSync(
-    require.resolve('./tutorial/core/seven-day-state.js'),
+    require.resolve('../../static/tutorial/core/seven-day-state.js'),
     'utf8'
 );
 
@@ -816,8 +816,8 @@ test('a delayed stale window cannot overwrite a newer reset', async () => {
 });
 
 test('avatar model boot waits for the seven-day authoritative readiness barrier', () => {
-    const indexSource = fs.readFileSync(require.resolve('./js/index.js'), 'utf8');
-    const live2dSource = fs.readFileSync(require.resolve('./live2d/live2d-init.js'), 'utf8');
+    const indexSource = fs.readFileSync(require.resolve('../../static/js/index.js'), 'utf8');
+    const live2dSource = fs.readFileSync(require.resolve('../../static/live2d/live2d-init.js'), 'utf8');
 
     assert.match(stateSource, /__nekoSevenDayTutorialStateReady\s*=\s*ready\(\)/);
     assert.match(indexSource, /await window\.__nekoSevenDayTutorialStateReady/);

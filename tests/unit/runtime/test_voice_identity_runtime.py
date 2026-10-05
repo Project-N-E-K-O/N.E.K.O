@@ -44,12 +44,14 @@ class _Factory:
         activation_generation: str,
         enforce: bool,
         noise_reduction_enabled: bool | None = None,
+        wake_resources=None,
     ) -> None:
         self.runtime = runtime
         self.profile = profile
         self.activation_generation = activation_generation
         self.enforce = enforce
         self.noise_reduction_enabled = noise_reduction_enabled
+        self.wake_resources = wake_resources
         self.closed = False
 
     def close(self) -> None:
@@ -860,10 +862,11 @@ async def test_failed_dsp_construction_blocks_pcm_until_successful_retry(
     # Use real Core, Registry and settings sequencing. Only model inference and
     # the pipeline constructor failure are injected.
     def factory_for(_manager, _profile, *, activation_generation, enforce,
-                    noise_reduction_enabled=None):
+                    noise_reduction_enabled=None, wake_resources=None):
         factory = _CoreActivationFactory()
         factory.activation_generation = activation_generation
         factory.noise_reduction_enabled = noise_reduction_enabled
+        factory.wake_resources = wake_resources
         return factory
 
     monkeypatch.setattr(runtime_module, "OwnerVoiceSessionActivationFactory", factory_for)

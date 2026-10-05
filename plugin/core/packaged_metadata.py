@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Mapping
 
 from plugin._types.packaged_metadata import PACKAGED_METADATA_FILENAME
+from plugin.utils.source_paths import is_vendor_sync_path
 
 
 # Host caches live outside installed code. Only the shipped root metadata is a
@@ -191,6 +192,8 @@ def _iter_source_files(
     # 调用方直接把整棵树判成"不可信"。
     # saw_symlink 是"这棵树不可信"的旗子，软链只是最常见的那个来源：读不了的目录、
     # 以及 FIFO/socket/设备节点这类非普通文件也会把它立起来。
+    root = str(plugin_dir)
+    vendor = str(plugin_dir / "vendor")
     files: list[tuple[str, str, os.stat_result]] = []
     dirs: list[str] = [str(plugin_dir)]
     saw_symlink = os.path.islink(str(plugin_dir))
@@ -204,6 +207,11 @@ def _iter_source_files(
             saw_symlink = True
             continue
         for entry in children:
+            # Skip generated work trees before descending or inspecting links.
+            if entry.name.startswith(".vendor.") and current in (root, vendor):
+                relative = Path(entry.name) if current == root else Path("vendor", entry.name)
+                if is_vendor_sync_path(relative):
+                    continue
             try:
                 if entry.is_symlink():
                     saw_symlink = True

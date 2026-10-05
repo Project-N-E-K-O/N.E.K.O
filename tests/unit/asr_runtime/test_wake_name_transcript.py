@@ -9,6 +9,7 @@ import pytest
 from main_logic.voice_input.activation import ActivationDecision, ActivationState
 from main_logic.voice_turn.contracts import (
     AsrFailureEvent,
+    SpeechActivityEvent,
     VoicePartialEvent,
     VoiceTranscriptEvent,
     VoiceTurnToken,
@@ -137,7 +138,7 @@ async def test_non_core_first_consumer_gets_raw_text_and_consumes_opportunity(mo
     registry = runtime._voice_input_registry
     route_transcript = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "main_logic.voice_input.consumers.game.is_game_route_active", lambda _name: True,
+        "main_logic.voice_input.consumers.game.is_external_route_active", lambda _name: True,
     )
     monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.get_active_game_route_identity",
@@ -324,3 +325,63 @@ async def test_asr_failure_clears_unbound_wake_before_recovery():
     assert await runtime._prepare_voice_input_turn(token)
     await _final(runtime, token)
     assert _texts(runtime) == ["呦呦呦。"]
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+async def test_backpressure_preserves_correction_for_draining_or_accepted_final(accepted):
+    runtime = _runtime()
+    runtime._voice_session_activation_runtime = SimpleNamespace(close=AsyncMock())
+    _status(runtime)
+    epoch = runtime._asr_session_epoch
+    await runtime._handle_independent_asr_activity(SpeechActivityEvent.SPEECH_STARTED, epoch)
+    await runtime._handle_independent_asr_endpoint(epoch)
+    sealed = runtime._asr_runtime._asr_sealed_turn_token
+    assert sealed is not None
+    final_task = None
+    release_started, finish_release = asyncio.Event(), asyncio.Event()
+
+    if accepted:
+        class BlockingLease:
+            token = sealed.turn
+
+            async def release(self):
+                release_started.set()
+                await finish_release.wait()
+
+        runtime._asr_runtime._asr_smart_turn_lease = BlockingLease()
+        final_task = asyncio.create_task(
+            runtime._handle_independent_asr_final("呦呦呦。", epoch, "qwen")
+        )
+        await asyncio.wait_for(release_started.wait(), 1)
+
+    await runtime._abort_independent_asr("ingress_backpressure")
+    assert runtime._voice_session_activation_runtime is None
+    if final_task is not None:
+        finish_release.set()
+        await asyncio.wait_for(final_task, 1)
+    else:
+        await runtime._handle_independent_asr_final("呦呦呦。", epoch, "qwen")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    await runtime._voice_input_registry.wait_idle()
+    assert _texts(runtime) == ["悠怡悠怡。"]
+    assert runtime._wake_name_correction is None
+    next_turn = _token(runtime, 2)
+    assert await runtime._prepare_voice_input_turn(next_turn)
+    await _final(runtime, next_turn)
+    assert _texts(runtime) == ["悠怡悠怡。", "呦呦呦。"]
+
+
+@pytest.mark.parametrize("keep", [False, True])
+async def test_preserved_correction_is_cleared_by_cancellation_or_route_replacement(keep):
+    runtime = _runtime()
+    runtime._voice_session_activation_runtime = SimpleNamespace(close=AsyncMock())
+    _status(runtime)
+    token = _token(runtime, 1)
+    assert await runtime._prepare_voice_input_turn(token)
+    runtime._invalidate_voice_pcm_sync("ingress_backpressure", keep_turns={token})
+    if keep:
+        runtime._microphone_route_generation += 1
+    else:
+        runtime._invalidate_voice_pcm_sync("microphone_stopped")
+    assert runtime._wake_name_correction_for_turn(token) is None
+    await runtime._voice_input_registry.wait_idle()

@@ -663,7 +663,7 @@ def test_main_server_limited_mode_middleware_blocks_runtime_routes():
          patch.object(main_server, "_runtime_startup_init_completed", False), \
          patch.object(main_server, "_main_runtime_limited_mode_enabled", True), \
          patch.object(main_server, "_main_runtime_limited_mode_reason", "selection_required"):
-        with TestClient(main_server.app) as client:
+        with TestClient(main_server.app, base_url="http://127.0.0.1:48911", client=("127.0.0.1", 50000)) as client:
             blocked_response = client.get("/api/config/page_config")
             health_response = client.get("/health")
             steam_language_response = client.get("/api/config/steam_language")
@@ -710,7 +710,7 @@ def test_main_server_limited_mode_log_escapes_control_characters(
         ),
         patch.object(main_server.logger, "info") as mock_info,
     ):
-        with TestClient(main_server.app) as client:
+        with TestClient(main_server.app, base_url="http://127.0.0.1:48911", client=("127.0.0.1", 50000)) as client:
             response = client.get(encoded_path)
 
     log_call = next(
@@ -924,7 +924,7 @@ def test_memory_server_limited_mode_middleware_blocks_runtime_routes():
 
     with patch.object(memory_server.runtime, "_config_manager", SimpleNamespace()), \
          patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")):
-        with TestClient(memory_server.app) as client:
+        with TestClient(memory_server.app, base_url="http://127.0.0.1:48912", client=("127.0.0.1", 50000)) as client:
             response = client.get("/get_settings/小满")
 
     assert response.status_code == 409
@@ -941,7 +941,7 @@ def test_memory_server_limited_mode_middleware_blocks_until_runtime_init_complet
     with patch.object(memory_server.runtime, "_config_manager", SimpleNamespace()), \
          patch.object(memory_server.runtime, "_memory_runtime_init_completed", False), \
          patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(side_effect=["selection_required", ""])):
-        with TestClient(memory_server.app) as client:
+        with TestClient(memory_server.app, base_url="http://127.0.0.1:48912", client=("127.0.0.1", 50000)) as client:
             response = client.get("/get_settings/小满")
 
     assert response.status_code == 409
@@ -958,7 +958,7 @@ def test_memory_server_block_startup_endpoint_restores_limited_mode():
     with patch.object(memory_server.runtime, "_memory_runtime_init_completed", True), \
          patch.object(memory_server.runtime, "_memory_storage_blocked_after_init", False), \
          patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(return_value="")):
-        with TestClient(memory_server.app) as client:
+        with TestClient(memory_server.app, base_url="http://127.0.0.1:48912", client=("127.0.0.1", 50000)) as client:
             response = client.post(
                 "/internal/storage/startup/block",
                 json={"reason": "main_failed"},

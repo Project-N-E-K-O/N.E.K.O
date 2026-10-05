@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
 
-from fastapi import HTTPException
+from plugin.server.infrastructure.error_mapping import http_exception
 
 from plugin.logging_config import get_logger
 
@@ -92,7 +92,7 @@ def atomic_write_bytes(
             type(exc).__name__,
             str(exc),
         )
-        raise HTTPException(
+        raise http_exception(
             status_code=500,
             detail=f"Failed to create temporary file for {target}: {type(exc).__name__}: {exc}",
         ) from exc
@@ -141,7 +141,7 @@ def atomic_write_bytes(
                 temp_file_path,
                 str(cleanup_exc),
             )
-        raise HTTPException(
+        raise http_exception(
             status_code=500,
             detail=f"Failed to persist config file {target} while {stage}: {type(exc).__name__}: {exc}",
         ) from exc

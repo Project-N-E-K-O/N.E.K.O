@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from fastapi import HTTPException
+from plugin.server.infrastructure.error_mapping import http_exception
 
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
 from plugin.core.state import state
@@ -69,7 +69,7 @@ def get_plugin_config_path(plugin_id: str) -> Path:
     if snapshot is not None:
         return snapshot.manifest_path
     if not re.match(r"^[a-zA-Z0-9_-]+$", plugin_id):
-        raise HTTPException(
+        raise http_exception(
             status_code=400,
             detail=(
                 f"Invalid plugin_id: '{plugin_id}'. Only alphanumeric characters, "
@@ -87,7 +87,7 @@ def get_plugin_config_path(plugin_id: str) -> Path:
             resolved_path = config_file.resolve()
             root_resolved = root.resolve()
         except (OSError, RuntimeError, ValueError) as exc:
-            raise HTTPException(
+            raise http_exception(
                 status_code=400,
                 detail=f"Invalid plugin_id: '{plugin_id}'. {str(exc)}",
             ) from exc
@@ -110,7 +110,7 @@ def get_plugin_config_path(plugin_id: str) -> Path:
             )
             return config_file
 
-    raise HTTPException(
+    raise http_exception(
         status_code=404,
         detail=f"Plugin '{plugin_id}' configuration not found",
     )
@@ -151,7 +151,7 @@ def ensure_plugin_layout_runtime_config(layout: PluginLayout) -> Path:
         if target.exists():
             if target.is_file():
                 return target
-            raise HTTPException(
+            raise http_exception(
                 status_code=500,
                 detail=f"Plugin '{layout.plugin_id}' runtime config path is not a file: {target}",
             )
@@ -167,10 +167,8 @@ def ensure_plugin_layout_runtime_config(layout: PluginLayout) -> Path:
                 payload=payload,
                 prefix=".plugin_config_init_",
             )
-        except HTTPException:
-            raise
         except OSError as exc:
-            raise HTTPException(
+            raise http_exception(
                 status_code=500,
                 detail=f"Failed to initialize runtime config for plugin '{layout.plugin_id}': {exc}",
             ) from exc

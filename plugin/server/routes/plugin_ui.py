@@ -30,14 +30,20 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+from utils.deployment import has_forwarding_metadata
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins.ui_query_service import PluginUiQueryService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.mutation_auth import PluginPageMutationGuardedRoute
 
 router = APIRouter(tags=["plugin-ui"])
+# Plugin pages (including published market plugins) call these routes; the
+# browser token stays optional so they keep working. See
+# mutation_auth.require_plugin_page_mutation_access before tightening this.
+mutation_router = APIRouter(tags=["plugin-ui"], route_class=PluginPageMutationGuardedRoute)
 logger = get_logger("server.routes.plugin_ui")
 plugin_ui_query_service = PluginUiQueryService()
 
@@ -451,7 +457,7 @@ async def plugin_ui_sse_events(plugin_id: str):
     )
 
 
-@router.post("/plugin/{plugin_id}/ui-api/push")
+@mutation_router.post("/plugin/{plugin_id}/ui-api/push")
 async def plugin_ui_push(plugin_id: str, request: Request):
     """向插件静态 UI 的所有 SSE 客户端广播一条实时消息（后端 → 前端推送）。
 
@@ -461,8 +467,11 @@ async def plugin_ui_push(plugin_id: str, request: Request):
     鉴权：仅本机回环客户端可直接推送（不再要求共享密钥；对端非回环一律拒绝，
     伪造 Origin / 转发头均无法绕过；Origin 校验仍防跨站注入）。
     """
-    # 回环校验：只接受本机回环客户端。用直连对端 request.client.host，不信任
-    # X-Forwarded-For，避免伪造转发头绕过（非回环部署应保留其他鉴权/可信代理）。
+    # Proxy middleware may rewrite client.host to a loopback upstream address.
+    # Push is a native local operation, so reject forwarding metadata before
+    # considering that address, including when an outer proxy is loopback.
+    if has_forwarding_metadata(request.headers):
+        return JSONResponse({"ok": False, "error": "forwarded push rejected"}, status_code=403)
     client_host = request.client.host if request.client else ""
     if not _is_loopback_host(client_host):
         return JSONResponse({"ok": False, "error": "non-loopback push rejected"}, status_code=403)
@@ -642,7 +651,7 @@ async def plugin_hosted_ui_context(plugin_id: str, kind: str = "panel", id: str 
     return JSONResponse(context)
 
 
-@router.post("/plugin/{plugin_id}/hosted-ui/action/{action_id}")
+@mutation_router.post("/plugin/{plugin_id}/hosted-ui/action/{action_id}")
 async def plugin_hosted_ui_action(
     plugin_id: str,
     action_id: str,
@@ -675,7 +684,7 @@ class ChatCardActionRequest(BaseModel):
     presentation: Literal["chat", "agent"] = "chat"
 
 
-@router.post("/plugin/{plugin_id}/chat-card/action/{action_id}")
+@mutation_router.post("/plugin/{plugin_id}/chat-card/action/{action_id}")
 async def plugin_chat_card_action(
     plugin_id: str, action_id: str, http_request: Request, request: ChatCardActionRequest,
 ):
@@ -696,3 +705,6 @@ async def plugin_chat_card_action(
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
     return JSONResponse(result)
+
+
+router.include_router(mutation_router)

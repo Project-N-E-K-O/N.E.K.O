@@ -24,6 +24,7 @@ from unittest.mock import patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from tests.fastapi_routes import iter_routes
 
 from main_routers import storage_location_router as router_module
 from main_routers.shared_state import init_shared_state
@@ -355,7 +356,7 @@ def test_storage_location_read_routes_leave_root_state_untouched(tmp_path, monke
 
     read_paths = sorted(
         route.path
-        for route in router_module.router.routes
+        for route in iter_routes(router_module.router.routes)
         if "GET" in getattr(route, "methods", set()) and "{" not in route.path
     )
     assert read_paths, "一条 GET 路由都没发现，说明发现逻辑坏了，不是真的没有"

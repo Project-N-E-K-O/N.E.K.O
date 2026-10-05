@@ -1,6 +1,7 @@
 import inspect
 
 import pytest
+from tests.fastapi_routes import iter_routes
 
 
 @pytest.mark.unit
@@ -62,7 +63,7 @@ def test_shared_router_helpers_do_not_depend_on_voice_clone_util():
 def test_voice_design_routes_are_registered_once():
     from main_routers.characters_router import router
 
-    paths = [route.path for route in router.routes]
+    paths = [route.path for route in iter_routes(router.routes)]
     assert paths.count('/api/characters/voice_design') == 1
     assert paths.count('/api/characters/voice_design_preview') == 1
     assert paths.count('/api/characters/voice_design_create') == 1

@@ -453,6 +453,10 @@ export default {
     disabled: '已停用',
     autoStart: '自動啟動',
     manualStart: '手動啟動',
+    autoStartHint: 'N.E.K.O 啟動時自動啟動此外掛。手動啟動或停止不會改變此設定。',
+    autoStartDisabledHint: '此外掛目前已停用。開啟自動啟動會同時啟用它，讓它下次啟動時執行，但不會立即啟動。',
+    autoStartBlockedHint: '偏好已開啟，但外掛被停用或仍待核准，下次不會自動啟動。關閉再開啟可啟用並核准自動啟動。',
+    autoStartUnsupportedDevelopment: '開發外掛不會自動啟動，請手動啟動。',
     fetchFailed: '取得外掛列表失敗',
     pluginType: '類型',
     pluginTypeNormal: '外掛',
@@ -810,6 +814,9 @@ export default {
     pluginDeleted: '外掛已刪除',
     pluginDeletedBuiltinRestartFailed: '外掛 {plugin} 已刪除，但還原的內建版本啟動失敗：{error}',
     startFailed: '啟動失敗',
+    autoStartEnabled: '已開啟自動啟動',
+    autoStartDisabled: '已關閉自動啟動',
+    autoStartUpdateFailed: '更新自動啟動設定失敗',
     stopFailed: '停止失敗',
     reloadFailed: '重新載入失敗',
     buildFailed: '構建外掛失敗',
@@ -823,6 +830,7 @@ export default {
     serviceUnavailable: '服務不可用',
     networkError: '網路錯誤，請檢查網路連線',
     requestTimeout: '請求逾時，請稍後重試',
+    csrfBootstrapFailed: '無法取得安全權杖。如使用反向代理，請確認已將 /security/csrf-token 轉發到外掛服務。',
     pluginLifecycleTimeout: '外掛啟動或重載逾時，請查看外掛日誌'
   },
   welcome: {

@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from utils.llm_client import AIMessage, HumanMessage, SystemMessage
+from tests.fastapi_routes import iter_routes
 
 
 def _history(n: int):
@@ -388,6 +389,10 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
         # 只读：读路径由引擎准入检查兜底，围栏住只会白白打断读取。
         ("/query_memory/{lanlan_name}", "POST"),
         ("/internal/memory/{lanlan_name}/scoped_context", "POST"),
+        # 串门记忆浏览器的只读枚举（OD-18）：不写盘，设计稿明确「不进围栏」。
+        ("/internal/memory/{lanlan_name}/scoped_subjects", "GET"),
+        # 带键写入的清除代数只读查询：只读墓碑文件，不写盘
+        ("/internal/memory/{lanlan_name}/forget_epochs", "GET"),
         # 用户主动触发的本机重复表达分析：只读历史 + 纯计算，不写任何角色
         # 文件。角色正在删除/改名时，只读引擎准入检查已经会拒绝，围栏住只会
         # 让一次用户点击白白失败。
@@ -415,7 +420,7 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
     probe_name = "围栏探针角色"
     fenced: set[tuple[str, str]] = set()
     unfenced: set[tuple[str, str]] = set()
-    for route in runtime.app.routes:
+    for route in iter_routes(runtime.app.routes):
         path = getattr(route, "path", "")
         if "{lanlan_name}" not in path:
             continue

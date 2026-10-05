@@ -146,6 +146,9 @@ class _RollbackOutcome:
     filesystem_rollback: FilesystemRollback
     runtime_restart: RuntimeRestart
     preference_restored: bool
+    # Whether the plugin's own source (install record and code) is back,
+    # independent of the package-profile restore in filesystem_rollback.
+    source_restored: bool = True
 
 
 def _get_plugin_meta_sync(plugin_id: str) -> dict[str, object] | None:
@@ -655,7 +658,10 @@ def _stage_plugin_code_sync(plugin_dir: Path) -> _StagedPluginCode:
 
 
 def _restore_staged_plugin_code_sync(staged: _StagedPluginCode) -> None:
-    if staged.staged_dir.exists():
+    # staged 只在挪走成功后才存在，暂存目录没了就是旧代码回不来了，必须报失败，
+    # 否则回滚会被记成"源码已恢复"。清理照做，最后再抛。
+    staged_missing = not staged.staged_dir.exists()
+    if not staged_missing:
         staged.staged_dir.replace(staged.original_dir)
     payload_dir = staged.staged_dir.parent
     transaction_dir = payload_dir.parent
@@ -670,6 +676,8 @@ def _restore_staged_plugin_code_sync(staged: _StagedPluginCode) -> None:
         backup_root.rmdir()
     except OSError:
         pass
+    if staged_missing:
+        raise FileNotFoundError(f"staged plugin code missing: {staged.original_dir.name}")
 
 
 def _commit_staged_plugin_code_sync(
@@ -961,11 +969,13 @@ async def _rollback_precommit(
         source_update_attempted or staged_code is not None or staged_profile is not None
     )
     filesystem_complete = True
+    source_restored = True
     if source_update_attempted:
         try:
             await asyncio.to_thread(manager.restore_entry_for_rollback, source_entry)
         except Exception:
             filesystem_complete = False
+            source_restored = False
             logger.exception(
                 "uninstall rollback failed to restore source entry plugin_id={}",
                 plugin_id,
@@ -975,6 +985,7 @@ async def _rollback_precommit(
             await asyncio.to_thread(_restore_staged_plugin_code_sync, staged_code)
         except Exception:
             filesystem_complete = False
+            source_restored = False
             logger.exception(
                 "uninstall rollback failed to restore code plugin_id={}", plugin_id
             )
@@ -1024,6 +1035,7 @@ async def _rollback_precommit(
         filesystem_rollback=filesystem_rollback,
         runtime_restart=runtime_restart,
         preference_restored=preference_restored,
+        source_restored=source_restored,
     )
 
 
@@ -1195,6 +1207,12 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
             stop_attempted=stop_attempted,
             registry_target=registry_target,
         )
+        if not rollback.source_restored:
+            # 旧源码没能原样恢复，恢复许可不能留给盘上剩下的东西。只看插件
+            # 自己的源码；包配置目录没恢复好不改变盘上是哪份代码。
+            from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
+
+            revoke_hot_reload_recovery(plugin_id)
         if autostart_was_pending and await asyncio.to_thread(plugin_dir.exists):
             # 回滚把插件文件放回去了，那条待批准记录也得跟着回去。少了它，一个
             # 用户从没启动过的插件在一次失败的卸载之后变成"已批准"，下次开机自己
@@ -1263,6 +1281,11 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
     # ---- COMMIT: source record, registry facts and preference contract are
     # consistent and the original user path is no longer valid. Failures from
     # here on are reported, never presented as a rolled-back uninstall. ----
+    from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
+
+    # 没在跑的插件不会走 stop_plugin；恢复许可要在提交后撤销，否则会被恢复的
+    # 同 ID 内置插件或之后重装的包继承。回滚则保留：旧源码原样回来了。
+    revoke_hot_reload_recovery(plugin_id)
     runtime_restart: RuntimeRestart = "not_needed"
     runtime_restart_error: dict[str, str] | None = None
     if was_running and restored_builtin:

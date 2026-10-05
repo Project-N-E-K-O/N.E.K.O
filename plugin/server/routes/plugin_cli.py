@@ -13,8 +13,12 @@ from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.mutation_auth import PluginMutationGuardedRoute
 
 router = APIRouter()
+# Package build/import changes executable plugin code and is only called by the
+# plugin manager and native CLI, so the browser token stays required here.
+mutation_router = APIRouter(route_class=PluginMutationGuardedRoute)
 logger = get_logger("server.routes.plugin_cli")
 
 
@@ -287,7 +291,7 @@ async def list_plugin_cli_packages(_: str = require_admin) -> dict[str, object]:
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/plugin-cli/build", response_model=PluginCliBuildResponse)
+@mutation_router.post("/plugin-cli/build", response_model=PluginCliBuildResponse)
 async def plugin_cli_build(
     payload: PluginCliBuildRequest,
     request: Request,
@@ -360,7 +364,7 @@ async def plugin_cli_verify(
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/plugin-cli/install", response_model=PluginCliInstallResponse)
+@mutation_router.post("/plugin-cli/install", response_model=PluginCliInstallResponse)
 async def plugin_cli_install(
     payload: PluginCliInstallRequest,
     _: str = require_admin,
@@ -416,7 +420,7 @@ async def plugin_cli_analyze(
 # ── Upload & Download ──────────────────────────────────────────────────
 
 
-@router.post("/plugin-cli/upload", response_model=PluginCliUploadResponse)
+@mutation_router.post("/plugin-cli/upload", response_model=PluginCliUploadResponse)
 async def plugin_cli_upload(
     file: UploadFile = File(...),
     _: str = require_admin,
@@ -439,7 +443,7 @@ async def plugin_cli_upload(
         raise HTTPException(status_code=500, detail="Internal server error during upload")
 
 
-@router.delete("/plugin-cli/upload", response_model=PluginCliDiscardUploadResponse)
+@mutation_router.delete("/plugin-cli/upload", response_model=PluginCliDiscardUploadResponse)
 async def plugin_cli_discard_upload(
     package: str = Query(...),
     _: str = require_admin,
@@ -451,7 +455,7 @@ async def plugin_cli_discard_upload(
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/plugin-cli/upload-and-install", response_model=PluginCliUploadAndInstallResponse)
+@mutation_router.post("/plugin-cli/upload-and-install", response_model=PluginCliUploadAndInstallResponse)
 async def plugin_cli_upload_and_install(
     file: UploadFile = File(...),
     on_conflict: str = Query(default="fail", pattern="^fail$"),
@@ -499,7 +503,7 @@ async def plugin_cli_download(
 # ── Legacy route aliases (backward compatibility with existing frontend) ──
 
 
-@router.post("/plugin-cli/pack", include_in_schema=False)
+@mutation_router.post("/plugin-cli/pack", include_in_schema=False)
 async def plugin_cli_pack_legacy(
     payload: PluginCliBuildRequest,
     request: Request,
@@ -518,7 +522,7 @@ async def plugin_cli_pack_legacy(
     return result
 
 
-@router.post("/plugin-cli/unpack", include_in_schema=False)
+@mutation_router.post("/plugin-cli/unpack", include_in_schema=False)
 async def plugin_cli_unpack_legacy(
     payload: PluginCliInstallRequest,
     _: str = require_admin,
@@ -536,7 +540,7 @@ async def plugin_cli_unpack_legacy(
     return result
 
 
-@router.post("/plugin-cli/upload-and-unpack", include_in_schema=False)
+@mutation_router.post("/plugin-cli/upload-and-unpack", include_in_schema=False)
 async def plugin_cli_upload_and_unpack_legacy(
     file: UploadFile = File(...),
     on_conflict: str = Query(default="fail", pattern="^fail$"),
@@ -554,3 +558,6 @@ async def plugin_cli_upload_and_unpack_legacy(
         result = {key: value for key, value in result.items() if key != "install"}
         result["unpack"] = install
     return result
+
+
+router.include_router(mutation_router)

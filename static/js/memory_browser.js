@@ -2153,12 +2153,10 @@
         if (!payload || typeof payload !== 'object') {
             return fallback;
         }
-        return String(
-            payload.error
-            || payload.blocking_error_message
-            || payload.error_code
-            || fallback
-        );
+        if (window.appStorageLocation && typeof window.appStorageLocation.formatError === 'function') {
+            return window.appStorageLocation.formatError(payload, fallback);
+        }
+        return fallback;
     }
 
     function getStorageBlockingReason(bootstrapPayload) {
@@ -2426,6 +2424,14 @@
 
     async function performSelectedTutorialReset() {
         const selection = resolveSelectedTutorialReset();
+        async function syncSevenDayChoice() {
+            try {
+                await window.NekoClickGuideState.refresh();
+                await window.NekoClickGuideState.update('choose', { choice: 'seven-day' });
+            } catch (error) {
+                console.warn('[MemoryBrowser] Seven-day reset committed; mode sync failed:', error);
+            }
+        }
         if (selection.type === 'home-day') {
             if (window.AvatarFloatingGuideReset && typeof window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay === 'function') {
                 await window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay(selection.day, {
@@ -2440,6 +2446,7 @@
                     source: 'memory_browser_reset_select',
                 });
             }
+            await syncSevenDayChoice();
             return;
         }
         if (selection.type === 'home-all') {
@@ -2452,6 +2459,7 @@
                     source: 'memory_browser_reset_home_all',
                 });
             }
+            await syncSevenDayChoice();
             await showTutorialResetNotice(getTutorialHomeAllResetSuccessMessage());
             return;
         }
@@ -2468,6 +2476,43 @@
                 }
             }
             await window.resetTutorialForPage(selection.pageKey);
+            if (selection.pageKey === 'all') await syncSevenDayChoice();
+        }
+    }
+
+    async function resetClickGuide() {
+        const button = document.getElementById('click-guide-reset-btn');
+        if (button) button.disabled = true;
+        try {
+            const choice = await window.NekoTutorialReactivation.open(async choice => {
+                if (choice === 'seven-day') {
+                    const reset = window.AvatarFloatingGuideReset?.resetAllAvatarFloatingGuideDays
+                        || window.resetAllAvatarFloatingGuideDays;
+                    if (!reset) throw new Error('Seven-day reset unavailable');
+                    await reset({ source: 'memory_browser_reactivate' });
+                    // The authoritative seven-day reset has committed. Its newer
+                    // resetHistory supersedes the old click mode even if this
+                    // auxiliary mode write fails; do not offer a misleading cancel.
+                    try {
+                        await window.NekoClickGuideState.refresh();
+                        await window.NekoClickGuideState.update('choose', { choice });
+                    } catch (error) {
+                        console.warn('[MemoryBrowser] Seven-day replay activated; mode sync failed:', error);
+                    }
+                    return;
+                }
+                // Commit the selected mode only after its reset succeeds.
+                await window.NekoClickGuideState.refresh();
+                await window.NekoClickGuideState.update('choose', { choice });
+            });
+            if (choice) await showTutorialResetNotice(choice === 'click'
+                ? translate('clickGuide.resetSuccess', '点击引导已重置，刷新主页即可开始。七天教程进度保持不变。')
+                : getTutorialHomeAllResetSuccessMessage());
+        } catch (error) {
+            console.error('[MemoryBrowser] Click guide reset failed:', error);
+            await showTutorialResetNotice(translate('clickGuide.saveFailed', '保存失败，请重试。'), { variant: 'error' });
+        } finally {
+            if (button) button.disabled = false;
         }
     }
 
@@ -5141,6 +5186,7 @@
     }
 
     window.resetSelectedTutorial = resetSelectedTutorial;
+    window.resetClickGuide = resetClickGuide;
     window.showTutorialResetNotice = showTutorialResetNotice;
 
 })();

@@ -92,6 +92,9 @@ class AsrProviderMeta:
     # with ``importlib.util.find_spec`` (no import) and reports
     # ``MISSING_DEPENDENCY`` instead of starting a worker that cannot run.
     optional_dependency: str | None = None
+    # Qwen provider VAD remains authoritative; local activity only arms its
+    # bounded session.finish recovery path.
+    observes_local_activity: bool = False
 
     @property
     def availability(self) -> AsrProviderAvailability:
@@ -201,6 +204,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"manual", "provider"}),
         implementation_status="implemented",
+        observes_local_activity=True,
     ),
     "openai": AsrProviderMeta(
         provider_key="openai",

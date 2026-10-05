@@ -3,6 +3,8 @@
  */
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import type { AxiosError } from 'axios'
+import { readErrorCode } from '@/utils/request'
 import {
   getPlugins,
   getPlugin,
@@ -13,7 +15,9 @@ import {
   reloadPlugin,
   reloadAllPlugins,
   refreshPluginsRegistry,
+  setPluginAutoStart,
 } from '@/api/plugins'
+import { getPluginConfigApplicationState } from '@/api/config'
 import type { PluginListSummary } from '@/api/plugins'
 import { getLocale, i18n } from '@/i18n'
 import type { PluginMeta, PluginStatusData } from '@/types/api'
@@ -22,7 +26,9 @@ import { reconcilePluginSnapshot } from '@/utils/reconcilePluginSnapshot'
 import {
   pendingReloadPlugins,
   pendingReloadRevision,
+  pendingReloadRevisionSnapshot,
   setPendingReload,
+  hasPendingReload,
 } from '@/utils/pendingReload'
 
 type RegistrySyncResult = {
@@ -63,20 +69,36 @@ export const usePluginStore = defineStore('plugin', () => {
   let fetchStatusSeq = 0
   let fetchSummariesSeq = 0
   const fetchDetailSeq = new Map<string, number>()
+  // Auto-start values confirmed by a PUT, tagged with a save sequence. A summary
+  // request that started before the save still publishes, but with the confirmed
+  // value laid over its stale runtime_auto_start.
+  let autoStartSaveSeq = 0
+  const confirmedAutoStart = new Map<string, { value: boolean, seq: number }>()
+  const applicationStateQuerySeq = new Map<string, number>()
+  const applicationStateAppliedSeq = new Map<string, number>()
 
   // 不再把 `runtime_enabled=false` 提升成 DISABLED 状态：
   // 历史上 stop 写 `runtime_overrides.json[pid]=false`，下次启动 plugin
   // 不被 import，前端拿到 status=stopped 但又被 enabled=false 覆盖成
   // disabled，按钮被 isDisabled 拦截 → 用户"停过就再也开不起来"。
   // 现在直接信任 runtime status（stopped / running / load_failed），
-  // start API 仍会把 override 翻回 true，所以"停过下次还停"的持久化
-  // 行为不变，只是不再用一个独立的灰色 disabled 态遮蔽 start 按钮。
+  // start API 会把 `enabled` override 翻回 true；默认模式下 stop 不再
+  // 写入 enabled=false，临时停止只改变当前进程。`auto_start` 默认不随
+  // 手动启停改写，只由独立的自动启动开关（PUT /plugin/{id}/auto-start）设置。
   function withDisplayState<P extends PluginListSummary>(plugin: P) {
     return {
       ...plugin,
       status: typeof plugin.status === 'string' ? plugin.status : StatusEnum.STOPPED,
       enabled: plugin.runtime_enabled !== false,
       autoStart: plugin.runtime_auto_start !== false,
+    }
+  }
+
+  function withConfirmedAutoStart<P extends PluginListSummary>(plugin: P, value: boolean): P {
+    return {
+      ...plugin,
+      runtime_auto_start: value,
+      ...(value ? { runtime_enabled: true, autostart_pending: false } : {}),
     }
   }
 
@@ -95,6 +117,7 @@ export const usePluginStore = defineStore('plugin', () => {
       return pendingFetchSummaries
     }
     const seq = ++fetchSummariesSeq
+    const savesBefore = autoStartSaveSeq
     pendingFetchSummariesLocale = requestLocale
     pendingFetchSummaries = (async () => {
       try {
@@ -102,7 +125,10 @@ export const usePluginStore = defineStore('plugin', () => {
           ? { preserveMessagesOn404: true }
           : undefined)
         if (seq !== fetchSummariesSeq) return
-        const nextSummaries = response.plugins || []
+        const nextSummaries = (response.plugins || []).map((plugin) => {
+          const saved = confirmedAutoStart.get(plugin.id)
+          return saved && saved.seq > savesBefore ? withConfirmedAutoStart(plugin, saved.value) : plugin
+        })
         pruneDetails(new Set(nextSummaries.map(plugin => plugin.id)))
         pluginSummaries.value = reconcilePluginSnapshot(pluginSummaries.value, nextSummaries)
         pluginSummarySnapshotLoaded.value = true
@@ -131,6 +157,7 @@ export const usePluginStore = defineStore('plugin', () => {
     const existing = pendingFetchDetails.get(pluginId)
     if (existing && !force) return existing
     const requestLocale = getLocale()
+    const savesBefore = autoStartSaveSeq
     const seq = (fetchDetailSeq.get(pluginId) || 0) + 1
     fetchDetailSeq.set(pluginId, seq)
     let request!: Promise<void>
@@ -141,7 +168,9 @@ export const usePluginStore = defineStore('plugin', () => {
       try {
         const detail = await getPlugin(pluginId, requestLocale)
         if (!stillCurrent()) return
-        pluginDetails.value = { ...pluginDetails.value, [pluginId]: detail }
+        const saved = confirmedAutoStart.get(pluginId)
+        pluginDetails.value = { ...pluginDetails.value, [pluginId]: saved && saved.seq > savesBefore
+          ? withConfirmedAutoStart(detail, saved.value) : detail }
       } catch (error: any) {
         const status = error?.response?.status
         if (status !== 404 && status !== 405) throw error
@@ -151,7 +180,9 @@ export const usePluginStore = defineStore('plugin', () => {
         const detail = response.plugins?.find((plugin) => plugin.id === pluginId)
         if (!stillCurrent()) return
         if (detail) {
-          pluginDetails.value = { ...pluginDetails.value, [pluginId]: detail }
+          const saved = confirmedAutoStart.get(pluginId)
+          pluginDetails.value = { ...pluginDetails.value, [pluginId]: saved && saved.seq > savesBefore
+            ? withConfirmedAutoStart(detail, saved.value) : detail }
         } else if (pluginId in pluginDetails.value) {
           const rest = { ...pluginDetails.value }
           delete rest[pluginId]
@@ -337,31 +368,115 @@ export const usePluginStore = defineStore('plugin', () => {
     await fetchPluginStatus()
   }
 
+  /**
+   * Refresh the server-owned config application state. A missing endpoint or
+   * malformed response leaves the window-local hint untouched for compatibility
+   * with older plugin servers. Matched/not-running are the only states that clear
+   * a hint; pending/unknown keep it visible.
+   */
+  async function syncPluginApplicationState(
+    pluginId: string,
+    expectedRevision = pendingReloadRevision(pluginId),
+    legacyLifecycleApplied = false,
+  ): Promise<boolean> {
+    const requestSeq = (applicationStateQuerySeq.get(pluginId) ?? 0) + 1
+    applicationStateQuerySeq.set(pluginId, requestSeq)
+    const canApplyResponse = () => {
+      const appliedSeq = applicationStateAppliedSeq.get(pluginId) ?? 0
+      if (requestSeq < appliedSeq) return false
+      applicationStateAppliedSeq.set(pluginId, requestSeq)
+      return true
+    }
+    let raw: unknown
+    try {
+      raw = await getPluginConfigApplicationState(pluginId)
+    } catch (error) {
+      const status = (error as { response?: { status?: unknown } } | null)?.response?.status
+      // Older plugin servers do not expose application-state. A successful
+      // lifecycle operation is the only compatibility evidence available there;
+      // network errors remain conservative and keep the hint visible.
+      if (
+        legacyLifecycleApplied &&
+        (status === 404 || status === 405) &&
+        !readErrorCode(error as AxiosError)
+      ) {
+        if (!canApplyResponse()) return false
+        return setPendingReload(pluginId, false, expectedRevision)
+      }
+      return false
+    }
+    if (!raw || typeof raw !== 'object') return false
+    const state = raw as { plugin_id?: unknown; config_state?: unknown }
+    if (
+      state.plugin_id !== pluginId ||
+      state.config_state !== 'matched' &&
+        state.config_state !== 'pending' &&
+        state.config_state !== 'not_running' &&
+        state.config_state !== 'unknown'
+    ) {
+      return false
+    }
+    if (!canApplyResponse()) return false
+    const pending = state.config_state === 'pending' || state.config_state === 'unknown'
+    if (pending) {
+      if (!hasPendingReload(pluginId)) setPendingReload(pluginId, true, expectedRevision)
+    } else {
+      // A save that landed while this query was in flight wins over an older
+      // matched response, just like the previous local revision guard.
+      setPendingReload(pluginId, false, expectedRevision)
+    }
+    return true
+  }
+
   async function start(pluginId: string, options: PluginMutationOptions = {}) {
-    // Captured before the request: the process reads the saved configuration while it
-    // starts, so a profile write that lands in the meantime is newer than what that
-    // process can have read and has to keep its reload warning.
     const pendingRevision = pendingReloadRevision(pluginId)
     const result = await startPlugin(pluginId)
-    // Starting an already running plugin returns success without restarting the
-    // process or re-reading the saved profile overlay, so the server reports that
-    // case explicitly; the pending flag may only be cleared for a real start.
-    if (result?.already_running !== true) setPendingReload(pluginId, false, pendingRevision)
+    // The server knows which effective config the host actually loaded. Keep the
+    // in-memory flag only as a compatibility fallback for older servers.
+    await syncPluginApplicationState(
+      pluginId,
+      pendingRevision,
+      result.success === true && result.already_running !== true,
+    )
     if (options.refresh !== false) await refreshAfterMutation(pluginId)
   }
 
   async function stop(pluginId: string, options: PluginMutationOptions = {}) {
+    const pendingRevision = pendingReloadRevision(pluginId)
     await stopPlugin(pluginId)
+    await syncPluginApplicationState(pluginId, pendingRevision)
     if (options.refresh !== false) await refreshAfterMutation(pluginId)
+  }
+
+  async function setAutoStart(pluginId: string, autoStart: boolean, options: PluginMutationOptions = {}) {
+    const result = await setPluginAutoStart(pluginId, autoStart)
+    // Publish the confirmed value right away. refreshAfterMutation swallows a
+    // failed refetch, and the switch reads the cached detail first, so it
+    // would otherwise keep showing the old preference after a success toast.
+    const saved = typeof result?.auto_start === 'boolean' ? result.auto_start : autoStart
+    // Initial detail and summary loads still land with the confirmed preference
+    // overlaid; dropping them could leave the view empty if revalidation fails.
+    confirmedAutoStart.set(pluginId, { value: saved, seq: ++autoStartSaveSeq })
+    const detail = pluginDetails.value[pluginId]
+    if (detail) {
+      pluginDetails.value = { ...pluginDetails.value, [pluginId]: withConfirmedAutoStart(detail, saved) }
+    }
+    pluginSummaries.value = pluginSummaries.value.map(item => (
+      item.id === pluginId ? withConfirmedAutoStart(item, saved) : item
+    ))
+    if (options.refresh !== false) {
+      const tasks: Promise<unknown>[] = [fetchPluginSummaries()]
+      if (detail || pendingFetchDetails.has(pluginId)) tasks.push(fetchPluginDetail(pluginId))
+      // This preference does not change process status or other plugins' details.
+      // Keep the confirmed state even if either revalidation fails.
+      await Promise.allSettled(tasks)
+    }
   }
 
   async function reload(pluginId: string, options: PluginMutationOptions = {}) {
     const pendingRevision = pendingReloadRevision(pluginId)
-    await reloadPlugin(pluginId)
-    // The running host now matches the persisted configuration, whichever entry
-    // point triggered the reload — unless a profile write claimed the flag while
-    // this reload was in flight, which this host may have missed.
-    setPendingReload(pluginId, false, pendingRevision)
+    const result = await reloadPlugin(pluginId)
+    await syncPluginApplicationState(pluginId, pendingRevision, result.success === true)
     if (options.refresh !== false) await refreshAfterMutation(pluginId)
   }
 
@@ -375,14 +490,16 @@ export const usePluginStore = defineStore('plugin', () => {
     const baseline = [
       ...new Set([...pluginSummaries.value.map((p) => p.id), ...pendingReloadPlugins()]),
     ]
-    const revisions = new Map(baseline.map((id) => [id, pendingReloadRevision(id)]))
+    const baselineIds = new Set(baseline)
+    const revisions = pendingReloadRevisionSnapshot()
+    for (const id of baseline) revisions.set(id, pendingReloadRevision(id))
     const result = await reloadAllPlugins()
-    for (const pluginId of result.reloaded) {
-      const revision = revisions.get(pluginId)
-      // Only ids that were neither listed nor flagged are skipped, and for those there is no
-      // flag to clear anyway.
-      if (revision !== undefined) setPendingReload(pluginId, false, revision)
-    }
+    await Promise.all(result.reloaded.map(async (pluginId) => {
+      // Unknown plugins still receive a revision fence. A save during the bulk
+      // request must not be hidden by a matched response based on old config.
+      const revision = revisions.get(pluginId) ?? 0
+      await syncPluginApplicationState(pluginId, revision, baselineIds.has(pluginId))
+    }))
     // The reload already happened; a follow-up refresh that fails or times out must not
     // turn its result into a failure for the caller.
     if (options.refresh !== false) {
@@ -430,5 +547,6 @@ export const usePluginStore = defineStore('plugin', () => {
     stop,
     reload,
     reloadAll,
+    setAutoStart,
   }
 })

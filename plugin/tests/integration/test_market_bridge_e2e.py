@@ -785,6 +785,26 @@ async def test_bridge_token_allows_local_same_origin(
 
 
 @pytest.mark.asyncio
+async def test_market_install_rejects_invalid_bridge_token_before_side_effects(
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    """The Market bridge keeps its token contract independent from CSRF."""
+
+    response = await bridge_e2e_env["client"].post(
+        "/market/install?token=invalid",
+        json={
+            "package_url": "https://market.example/plugin.neko-plugin",
+            "package_sha256": "a" * 64,
+            "plugin_id": "demo",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "无效的 bridge token"}
+    assert not response.headers.get("x-error-code")
+
+
+@pytest.mark.asyncio
 async def test_install_happy_path_writes_v2_lock_entry(
     bridge_e2e_env: dict[str, Any],
 ) -> None:

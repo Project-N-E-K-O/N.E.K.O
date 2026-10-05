@@ -453,6 +453,10 @@ export default {
     disabled: 'Desabilitado',
     autoStart: 'Início automático',
     manualStart: 'Início manual',
+    autoStartHint: 'Iniciar automaticamente quando o N.E.K.O abrir. Iniciar ou parar manualmente não altera esta opção.',
+    autoStartDisabledHint: 'Este plugin está desativado. Ativar o início automático também o habilitará para a próxima abertura, sem iniciá-lo agora.',
+    autoStartBlockedHint: 'A opção está ativada, mas o plugin está desativado ou aguardando aprovação e não iniciará ao abrir o N.E.K.O. Desative e ative novamente para habilitar e aprovar o início automático.',
+    autoStartUnsupportedDevelopment: 'Plugins em desenvolvimento não iniciam automaticamente. Inicie-os manualmente.',
     fetchFailed: 'Falha ao obter os plugins',
     pluginType: 'Tipo',
     pluginTypeNormal: 'Plugin',
@@ -810,6 +814,9 @@ export default {
     pluginDeleted: 'Plugin excluído',
     pluginDeletedBuiltinRestartFailed: 'O plugin {plugin} foi excluído, mas a versão integrada restaurada não pôde ser iniciada: {error}',
     startFailed: 'Falha ao iniciar',
+    autoStartEnabled: 'Início automático ativado',
+    autoStartDisabled: 'Início automático desativado',
+    autoStartUpdateFailed: 'Falha ao atualizar o início automático',
     stopFailed: 'Falha ao parar',
     reloadFailed: 'Falha ao recarregar',
     buildFailed: 'Falha ao empacotar plugin',
@@ -823,6 +830,7 @@ export default {
     serviceUnavailable: 'Serviço indisponível',
     networkError: 'Erro de rede. Verifique sua conexão.',
     requestTimeout: 'A solicitação expirou. Tente novamente.',
+    csrfBootstrapFailed: 'Não foi possível obter o token de segurança. Se você usa um proxy reverso, verifique se ele encaminha /security/csrf-token para o servidor de plugins.',
     pluginLifecycleTimeout: 'O início ou reinício do plugin expirou. Verifique os logs do plugin.'
   },
   welcome: {

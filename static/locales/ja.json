@@ -1,4 +1,5 @@
 {
+    "instanceAccess": {"title":"NEKO に接続","description":"サーバー管理者から受け取ったアクセスキーを入力してください。この端末で30日間接続を記憶します。","key":"インスタンスアクセスキー","connect":"接続","failed":"接続が拒否されました。キーを確認して再試行してください。","httpsRequired":"HTTPS または信頼できる HTTPS トンネルで接続してください。"},
     "common": {
         "load": "読み込み",
         "minimize": "最小化",
@@ -657,6 +658,7 @@
         "GAME_ROUTE_LLM_FAILED": "ゲーム LLM が有効な出力を返しませんでした（{{error}}）",
         "GAME_ROUTE_MEDIA_SKIPPED": "ゲーム中は画面/カメラフレームをスキップしました",
         "GAME_VOICE_STT_GATE_ACTIVE": "ゲーム音声テイクオーバーが有効です",
+        "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE": "別のアクティビティが進行中のため、今はミニゲームを開けません",
         "INTERNAL_IMPORT_ERROR": "内部コンポーネントの読み込みに失敗しました: {{error}}",
         "LOCAL_CONFIG_CLEANUP_FAILED": "ローカルキャラクター設定の構造が無効です",
         "MEMORY_SERVER_RELEASE_FAILED": "キャラクター記憶ハンドルの解放に失敗しました。後ほど再試行してください",
@@ -1334,6 +1336,7 @@
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter（モデルアグリゲーター）",
             "orcarouter": "OrcaRouter（Claude ゲートウェイ）",
+            "requesty": "Requesty（モデルルーター）",
             "vllm_omni": "vLLM-Omni（TTS）",
             "gptsovits": "GPT-SoVITS（セルフホスト）"
         },
@@ -1341,6 +1344,30 @@
         "assistApiSelectLabel": "アシストAPIプロバイダー",
         "assistApiKeyLabel": "アシストAPIキー",
         "assistApiAutoFillHint": "空欄時は管理簿のキーを自動使用、手動入力すると独立して保存されます",
+        "modelIdCurrentPlaceholder": "現在使用中：{{model}}",
+        "modelIdFreePlaceholder": "無料版は固定モデルを使用します",
+        "modelPicker": {
+            "fetch": "モデルを取得",
+            "fetchTooltip": "プロバイダーから利用可能なモデル一覧を取得します",
+            "loading": "モデル一覧を取得中…",
+            "noMatch": "一致するモデルがありません",
+            "more": "ほかに {{count}} 件のモデルがあります。キーワードで絞り込めます",
+            "unavailable": {
+                "noProvider": "先にプロバイダーを選択してください",
+                "fixed": "このプロバイダーは固定モデルを使用するため、選択は不要です",
+                "follow": "このモードではモデルは追従先の設定で決まるため、選択は不要です",
+                "missingUrl": "先に API URL を入力してください"
+            },
+            "error": {
+                "urlHint": "API URL に /v1 などのパスが不足していないか確認してください。",
+                "unsupported": "このエンドポイントはモデル一覧を提供していません。モデルIDを手動で入力してください",
+                "key_required": "保存済みのキーは保存時のアドレスでのみ使用できます。APIキーを再入力してください",
+                "core_key_required": "コアプロバイダーが変更されました。API キーを再入力してください",
+                "rate_limited": "リクエストが多すぎます。しばらくしてから再試行してください",
+                "empty": "プロバイダーからモデルが返されませんでした",
+                "timeout": "取得がタイムアウトしました。ネットワークを確認して再試行してください"
+            }
+        },
         "disableTts": "TTSを無効化",
         "disableTtsHint": "有効にすると音声合成サービスを呼び出しません",
         "keyBookTitle": "API管理簿",
@@ -1385,6 +1412,7 @@
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter",
             "orcarouter": "OrcaRouter",
+            "requesty": "Requesty",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
         "freeVersionNoApiKey": "無料版はAPIキー不要です",
@@ -2460,6 +2488,22 @@
         "selectionIntroImageAlt": "N.E.K.O ストレージ移行のイラスト",
         "statusUnexpected": "ストレージ保守状態 API から認識できない結果が返されました。",
         "storageBootstrapBlocking": "ストレージはまだ復旧または移行が必要なため、このセッションはまだ続行できません。",
+        "storagePolicyRollbackFailed": "保存場所の設定を書き込めず、以前の状態に戻すこともできませんでした。ローカル状態ディレクトリに書き込めるか確認し、それでも解消しない場合は状態ファイルを手動で確認してください。",
+        "storagePolicyWriteFailed": "保存場所の設定を書き込めませんでした。以前の状態に戻しました。ローカル状態ディレクトリに書き込めるか確認してから再試行してください。",
+        "storageOperationFailed": "ストレージ操作を開始できませんでした。ディスクへの変更はありません。しばらくして再試行してください。",
+        "storageStateUnreadable": "保存場所の設定を書き込めませんでした。状態ファイルを現在読み取れません（存在しない、またはそのディレクトリにアクセスできない可能性があります）。ディスクへの変更も行われていません。しばらくして再試行するか、ローカル状態ディレクトリにアクセスできるか確認してください。",
+        "storageStateInvalid": "ストレージ状態ファイルが破損しているか、形式が無効です。ディスクへの変更はありません。状態ファイルを確認または復元してください。",
+        "restartRollbackFailed": "制御された再起動に失敗し、以前の状態への復元を確認できませんでした。状態ファイルを確認または復元してください。",
+        "startupReleaseFailed": "このセッションの起動制限を解除できませんでした。再試行するか、ページを更新してから続行してください。",
+        "startupReleaseRollbackFailed": "起動制限の解除に失敗し、以前の状態への復元を確認できませんでした。状態ファイルを確認または復元してください。",
+        "migrationAlreadyPending": "現在の移行または復旧状態を解決してから保存場所を変更してください。",
+        "selectedRootEmpty": "保存先のパスを入力してください。",
+        "selectedRootNotAbsolute": "保存先は絶対パスで指定してください。",
+        "selectedRootInsideProject": "保存先をプロジェクトディレクトリ内に設定できません。別の場所を選択してください。",
+        "selectedRootNotDirectory": "保存先はファイルではなくフォルダーである必要があります。",
+        "selectedRootParentMissing": "保存先の親ディレクトリが見つかりません。別の場所を選択してください。",
+        "selectedRootParentNotWritable": "保存先の親ディレクトリに書き込めません。別の場所を選択してください。",
+        "selectedRootReserved": "保存先は予約済みの保存領域にあります。別の場所を選択してください。",
         "targetNotEmpty": "保存先にはすでに実行データがあります。移行前に保存先を確認してください。",
         "systemStatusUnavailable": "ローカルサービスの状態を確認できませんでした。もう一度お試しください。",
         "systemStatusUnexpected": "ストレージ起動状態 API から認識できない結果が返されました。",
@@ -3092,6 +3136,7 @@
         }
     },
     "voiceIdentity": {
+        "errorStopMainMicrophone": "メインセッションのマイクが使用中です。メインセッションでマイクをオフにしてから、この操作を再試行してください。",
         "pageTitle": "Owner 声紋",
         "title": "Owner 声紋",
         "profileStatus": "声紋の状態",
@@ -3204,7 +3249,106 @@
         "saveFailed": "声紋プロフィールを保存できませんでした。もう一度お試しください。",
         "qualityCheckFailed": "音声品質が条件を満たしていません。この区間を録り直してください。",
         "errorInconsistentSegments": "録音の差が大きすぎます。最初の区間からやり直してください。",
-        "deleteConfirm": "削除すると、声紋による有効化を使う前に再登録が必要です。"
+        "deleteConfirm": "削除すると、声紋による有効化を使う前に再登録が必要です。",
+        "inputTitle": "マイクとリソースを確認",
+        "inputSelect": "マイク",
+        "inputActual": "使用中の入力：",
+        "inputNotOpened": "マイクは未起動です",
+        "inputGain": "入力ゲイン",
+        "inputVolume": "入力音量",
+        "inputTestHelp": "3秒間の試し録音で処理後の音声を確認します。関連する会話の録音は停止し、自動では再開しません。",
+        "inputTest": "マイクを有効にして試す",
+        "inputTesting": "自然な声で3秒間読み上げてください。",
+        "inputPassed": "入力テストに合格しました。登録を開始できます。",
+        "inputTestRequired": "登録前に入力テストを完了してください。",
+        "inputChanged": "入力設定が変更されました。録音登録中の場合はキャンセルして入力テストをやり直してください。",
+        "inputPreviewBusy": "入力テスト中です。テストを完了またはキャンセルしてからマイクをオンにしてください。",
+        "inputFallback": "選択したマイクが使えないため表示中の機器に切り替えました。再度テストしてください。",
+        "inputDefault": "システム既定",
+        "inputUnnamed": "マイク {{index}}",
+        "resourcePrepare": "リソースを確認して読み込む",
+        "resourceDownload": "ウェイクワードモデルをダウンロード",
+        "resourceCancel": "リソース操作をキャンセル",
+        "resourceRepair": "このリソースを確認または修復してください。",
+        "wakeEnable": "ウェイクワードを有効にする",
+        "activationTitle": "声紋による起動",
+        "activationRetry": "起動を再試行",
+        "activationRetryFailed": "再試行に失敗しました。接続とリソースを確認してください。",
+        "activationRepair": "リソースを確認して声紋による起動を再試行してください。",
+        "resourceState_unchecked": "未確認",
+        "resourceState_ready": "利用可能",
+        "resourceState_missing": "不足",
+        "resourceState_unavailable": "利用不可",
+        "resourceState_preparing": "準備中",
+        "resourceOperation_pending": "待機中",
+        "resourceOperation_running": "実行中",
+        "resourceOperation_succeeded": "成功",
+        "resourceOperation_failed": "失敗",
+        "resourceOperation_cancelled": "キャンセル済み",
+        "resource_campp": "CAM++",
+        "resource_silero": "Silero VAD",
+        "resource_noise_reduction": "ノイズリダクション",
+        "resource_wake_model": "ウェイクワードモデル",
+        "resource_wake_runtime": "Sherpa ONNX",
+        "activation_preparing": "準備中",
+        "activation_waiting": "あなたの声で音声会話が有効になるのを待っています",
+        "activation_verifying": "準備中",
+        "activation_replaying": "準備中",
+        "activation_active": "音声会話は有効です",
+        "activation_unavailable": "声紋による有効化を一時的に利用できません。待機中の音声はアップロードされません",
+        "activation_closed": "利用不可",
+        "activation_disabled": "Owner 声紋は保存されています。声紋による有効化はオフです",
+        "inputReason_volume_too_low": "録音の音量が小さすぎます。この区間を録音し直してください。",
+        "inputReason_speech_too_short": "十分な音声を検出できませんでした。この区間を録音し直してください。",
+        "inputReason_no_speech_detected": "十分な実際の発話を検出できませんでした。この区間を録音し直してください。",
+        "inputReason_severe_clipping": "録音に激しいクリッピングがあります。この区間を録音し直してください。",
+        "inputReason_microphone_unavailable": "マイクが切断されたか使用できません。機器を選び直すか接続してください。",
+        "inputReason_permission_denied": "マイクの許可が拒否されました。アクセスを許可して再試行してください。",
+        "inputReason_capture_owner_unavailable": "録音中のウィンドウに接続できません。マイクを使用しているウィンドウから声紋登録を開き直してください。",
+        "inputReason_capture_cancelled": "入力が変更されました。テストと登録をやり直してください。",
+        "resourceReason_WAKE_WORD_MODEL_MISSING": "ウェイクワードモデルがありません。ダウンロードしてください。",
+        "resourceReason_WAKE_WORD_RUNTIME_MISSING": "ウェイクワード実行環境がありません。アプリを更新または修復してください。",
+        "resourceReason_WAKE_WORD_RUNTIME_FIX_REQUIRED": "ウェイクワード実行環境に互換性がありません。アプリを更新または修復してください。",
+        "resourceReason_WAKE_WORD_WORKER_FAILED": "ウェイクワードの準備に失敗しました。モデルと実行環境を確認してください。",
+        "activationReason_wake_word_prepare_failed": "ウェイクワードの準備に失敗しました。モデルと実行環境を確認してください。",
+        "activationReason_activation_queue_overflow": "音声キューがあふれました。起動を再試行してください。",
+        "activationReason_activation_output_failed": "音声出力に失敗しました。起動を再試行してください。",
+        "resourceReason_WAKE_WORD_TOKEN_UNKNOWN": "ウェイクワード辞書とモデルが一致しません。",
+        "activationReason_WAKE_WORD_TOKEN_UNKNOWN": "ウェイクワード辞書とモデルが一致しません。",
+        "resourceReason_WAKE_WORD_PREFERENCE_UNAVAILABLE": "ウェイクワード設定を読み取れませんでした。",
+        "activationReason_WAKE_WORD_PREFERENCE_UNAVAILABLE": "ウェイクワード設定を読み取れませんでした。",
+        "resourceReason_WAKE_WORD_TIMEOUT": "ウェイクワードの準備がタイムアウトしました。",
+        "activationReason_WAKE_WORD_TIMEOUT": "ウェイクワードの準備がタイムアウトしました。",
+        "resourceReason_WAKE_WORD_CLOSED": "ウェイクワード検出器は終了しました。",
+        "activationReason_WAKE_WORD_CLOSED": "ウェイクワード検出器は終了しました。",
+        "resourceReason_WAKE_WORD_CONCURRENT_CALL": "別のウェイクワード操作を実行中です。",
+        "activationReason_WAKE_WORD_CONCURRENT_CALL": "別のウェイクワード操作を実行中です。",
+        "activationReason_WAKE_WORD_RUNTIME_MISSING": "ウェイクワード実行環境がありません。アプリを更新または修復してください。",
+        "activationReason_WAKE_WORD_RUNTIME_FIX_REQUIRED": "ウェイクワード実行環境に互換性がありません。アプリを更新または修復してください。",
+        "activationReason_WAKE_WORD_MODEL_MISSING": "ウェイクワードモデルがありません。ダウンロードしてください。",
+        "activationReason_WAKE_WORD_WORKER_FAILED": "ウェイクワードの準備に失敗しました。モデルと実行環境を確認してください。",
+        "activationReason_wake_word_runtime_failed": "ウェイクワード検出に失敗しました。リソースを確認して再試行してください。",
+        "activationReason_wake_word_queue_overflow": "音声キューがあふれました。起動を再試行してください。",
+        "activationReason_queue_overflow": "音声キューがあふれました。起動を再試行してください。",
+        "activationReason_output_handoff_failed": "音声出力に失敗しました。起動を再試行してください。",
+        "activationReason_output_delivery_failed": "音声出力に失敗しました。起動を再試行してください。",
+        "resourceRepairButton": "リソースを修復",
+        "resourceLocation": "モデルと実行環境はこのページに接続する N.E.K.O バックエンドの機器にあり、マイクは現在の機器にあります。",
+        "activationRestart": "音声セッションを再開",
+        "activationRestartRequired": "マイクを閉じてから、メインのマイクボタンで新しい音声セッションを開始してください。以前の音声は再送信されません。",
+        "activationReason_voice_session_restart_required": "マイクを閉じて開き直し、新しい音声セッションを開始してください。以前の音声は再送しません。",
+        "resourceReason_WAKE_WORD_MODEL_INVALID": "ウェイクワードモデルが破損しています。完全なモデルを再ダウンロードして検証してください。",
+        "resourceReason_WAKE_WORD_PLATFORM_UNSUPPORTED": "このプラットフォームでは実行環境を利用できません。対応バックエンドを使用してください。",
+        "activationReason_WAKE_WORD_MODEL_INVALID": "ウェイクワードモデルが破損しています。完全なモデルを再ダウンロードして検証してください。",
+        "activationReason_WAKE_WORD_PLATFORM_UNSUPPORTED": "このプラットフォームでは実行環境を利用できません。対応バックエンドを使用してください。",
+        "activationReason_runtime_creation_failed": "音声アクティベーションを開始できません。リソースを確認して再試行してください。",
+        "activationReason_prepare_failed": "音声アクティベーションの準備に失敗しました。リソースを確認して再試行してください。",
+        "activationReason_voice_cleanup_timeout": "前の音声セッションを時間内に停止できませんでした。マイクを閉じて再度開いてください。",
+        "resourceReason_resource_cache_full": "モデルキャッシュが満杯です。バックエンドを停止し、修復ガイドに従ってキャッシュを整理してください。",
+        "resourceReason_resource_prepare_timeout": "リソースの準備がタイムアウトしました。確認して再試行してください。",
+        "resourceReason_resource_storage_unavailable": "モデルの保存先を利用できません。バックエンドの権限と空き容量を確認してください。",
+        "resourceReason_audio_processing_unavailable": "音声処理を利用できません。必要なモデルとランタイムを修復してください。",
+        "resourceReason_model_unavailable": "必要なモデルを利用できません。修復ガイドに従ってください。"
     },
     "settings": {
         "menu": {
@@ -3979,7 +4123,7 @@
             },
             "step6": {
                 "title": "🔑 補助APIキー",
-                "desc": "補助APIとしてAlibabaを選択した場合、ここにAlibabaのAPIキーを入力してください。空のままの場合、コアAPIキーが使用されます。"
+                "desc": "選択した補助APIプロバイダーのAPIキーをここに入力してください。空欄の場合は通常コアAPIキーが使用されますが、専用キーが必要なプロバイダーにはこの代替は適用されません。"
             },
             "step7": {
                 "title": "🔧 カスタムAPI設定",
@@ -5493,6 +5637,79 @@
              "surprisedPrefix": "えっ？！"
          }
     },
+    "airBasketball": {
+        "title": "エアバスケット",
+        "timeLeft": "残り",
+        "seconds": "秒",
+        "you": "あなた",
+        "anglePower": "角度 × パワー",
+        "autoChallenge": "オート対戦",
+        "score": "得点",
+        "stage": "ステージ",
+        "combo": "連続",
+        "time": "時間",
+        "stageTarget": "次のステージ",
+        "power": "パワー",
+        "angle": "角度",
+        "fever": "フィーバー",
+        "gestureHint": "ボールを押さえてドラッグでパワーをためよう。右へ斜めに投げると相手のコートに飛び込める",
+        "playerControl": "プレイヤー操作",
+        "aiControl": "自動操作",
+        "nekoHit": "いたっ！",
+        "intro": "両者は同じ集中力と得点ルール。シュートもいたずらもペース配分が大切！",
+        "ruleAim": "角度と強さ",
+        "ruleStage": "4段階ゴール",
+        "ruleFever": "連続フィーバー",
+        "start": "試合開始",
+        "again": "もう一度",
+        "swish": "スウィッシュ！",
+        "basket": "ゴール！",
+        "miss": "おしい",
+        "stageUp": "ステージ",
+        "feverOn": "フィーバー！+1",
+        "win": "あなたの勝ち！",
+        "draw": "引き分け！",
+        "interference": "集中力",
+        "interfereHint": "ボールやゴールをドラッグ、または猫娘をタップ",
+        "soundOff": "音を消す",
+        "soundOn": "音を出す",
+        "crossScore": "越境ゴール！",
+        "ballClash": "ボール衝突！",
+        "stolenBall": "ボールを奪った！",
+        "chaosBall": "{name}がボールを投げてきた！",
+        "nekoCountering": "{name}が反撃準備中",
+        "chooseMode": "モード選択",
+        "timedMode": "タイム対決",
+        "timedModeHint": "60秒で得点を競う",
+        "endlessMode": "フリープレイ",
+        "endlessModeHint": "時間無制限、いつでも終了可能",
+        "endlessIntro": "時間を気にせず、シュートも妨害も自由。好きな時に終了できます。",
+        "stopMatch": "終了",
+        "elapsed": "プレイ時間",
+        "opponentReady": "{name} 準備中",
+        "opponentAiming": "{name} 照準中",
+        "opponentFever": "{name} フィーバー",
+        "opponentWin": "{name}の勝ち",
+        "mouseStealCaught": "{name}にカーソルを取られた！",
+        "mouseStealEscape": "マウスを素早く振って逃げよう",
+        "mouseStealEscaped": "振りほどいた！",
+        "mouseStealReleased": "{name}が離した",
+        "mouseStealStatus": "{name}がカーソルを横取り中",
+        "voiceOpening": ["準備はいい？手加減しないよ。"],
+        "voiceChaos": ["これも受けて！"],
+        "voiceScore": ["入ったよ。"],
+        "voiceHit": ["こら、人を叩かないの！"],
+        "voiceMouseSteal": ["そのカーソル、ちょっと借りるね！"],
+        "voiceWin": ["この勝負は私の勝ち。"],
+        "voiceLose": ["今回はあなたの勝ちね。"],
+        "arenaLabel": "2人用バスケットコート",
+        "playerArcadeLabel": "プレイヤー側バスケットマシン",
+        "opponentArcadeLabel": "対戦相手側バスケットマシン",
+        "avatarLabel": "ドラッグやタップで妨害できる現在のキャラクター",
+        "avatarUnavailable": "キャラクター素材を利用できません",
+        "sdkUnavailable": "ミニゲームの読み込みに失敗しました。ページを閉じてもう一度お試しください。",
+        "runtimeStartFailed": "試合を開始できませんでした。少し待ってからもう一度お試しください。"
+    },
    "soccer": {
         "settings": {
             "button": "設定",
@@ -5847,6 +6064,186 @@
             "finalTitle": "最終結果",
             "roundLabel": "第 {{round}} ラウンド",
             "noRounds": "完了したラウンドはまだありません。"
+        }
+    },
+    "clickGuide": {
+        "tour": "クリックガイド",
+        "back": "前へ",
+        "next": "次へ",
+        "skip": "ガイドを終了",
+        "unavailable": "このボタンは現在使えません。「次へ」で進んでください。",
+        "nativeFallback": "毛玉をクリックできない場合は「次へ」で進めます。",
+        "skipTools": "ツール紹介をスキップ",
+        "toolContinueHint": "ハイライトされたボタンを押して進みます。機能は実行されません。",
+        "finishButton": "完了",
+        "close": "閉じる",
+        "saveFailed": "保存できませんでした。再試行してください。",
+        "resetButton": "チュートリアルを再開",
+        "resetSuccess": "リセットしました。ホームを再読み込みすると開始します。7日間チュートリアルの進捗は変わりません。",
+        "choice": {
+            "title": "どのチュートリアルをもう一度体験しますか？",
+            "body": "クリックガイドを選ぶか、7日間のストーリーチュートリアルを最初から始めます。クリックガイドでは7日間の進捗は保持されます。",
+            "click": "クリックガイド",
+            "sevenDay": "7日間チュートリアル"
+        },
+        "chatOverview": {
+            "title": "カプセルチャット",
+            "body": "ここに「你好」と入力し、Enter キーで送信しましょう。"
+        },
+        "chatOverviewSend": {
+            "body": "入力できました。Enter キーで送信しましょう。"
+        },
+        "chatOverviewDraft": {
+            "body": "未送信の文章や添付があります。内容はそのまま残します。「次へ」を押して履歴を見ましょう。"
+        },
+        "chatOverviewBack": {
+            "body": "ここがチャットカプセルです。会話や下書きはそのままです。「次へ」で履歴をもう一度見られます。"
+        },
+        "history": {
+            "title": "チャット履歴",
+            "body": "カプセルの上にある青いバーを押して、会話履歴を開きます。"
+        },
+        "historyClose": {
+            "title": "履歴を閉じる",
+            "body": "青いバーをもう一度押して履歴を閉じ、チャットに戻ります。"
+        },
+        "minimize": {
+            "title": "チャットを縮小",
+            "body": "左の毛玉を押すと、チャットがデスクトップ上の小さな毛玉になります。"
+        },
+        "restore": {
+            "title": "チャットを戻す",
+            "body": "毛玉をもう一度クリックすると、カプセルを開いて会話を続けられます。"
+        },
+        "tools": {
+            "title": "ツールメニュー",
+            "body": "右側のボタンにマウスを合わせると、ツールホイールが開きます。"
+        },
+        "toolsDraft": {
+            "body": "文章や添付があると、右端は送信ボタンになります。ツールを試す場合は自分で文章や添付を取り除くか、「ツールをスキップ」で下書きを残して進んでください。"
+        },
+        "screenshot": {
+            "title": "スクリーンショット",
+            "body": "ホイールをスクロールまたはドラッグしてツールを切り替えます。スクリーンショットはメッセージに添付されます。"
+        },
+        "avatar": {
+            "title": "ふれあい道具",
+            "body": "キャラクターと遊びたいときは、ここから道具バーを開きます。よく使う道具を選んで並べ替えられます。"
+        },
+        "avatarTools": {
+            "title": "よく使う道具",
+            "body": "保存した順に表示されます。最後の編集ボタンで変更できます。ここの肉球は道具で、Agentとは別です。"
+        },
+        "translate": {
+            "title": "字幕翻訳",
+            "body": "別の言語を読むときは字幕翻訳をオンに。もう一度クリックするとオフに戻ります。"
+        },
+        "jukebox": {
+            "title": "ジュークボックス",
+            "body": "ジュークボックスでは、おしゃべりしながら音楽を楽しめます。選曲や再生操作もここでできます。"
+        },
+        "import": {
+            "title": "画像の取り込み",
+            "body": "画像の読み込みでは、端末の画像を選んで会話に添付できます。"
+        },
+        "export": {
+            "title": "会話の書き出し",
+            "body": "会話のエクスポートでは、メッセージを選び、プレビューしてから保存できます。"
+        },
+        "galgame": {
+            "title": "Galgame",
+            "body": "会話を選択肢で進めるGalgameモードに切り替えます。もう一度クリックすると通常のチャットに戻ります。"
+        },
+        "floatingOverviewContinueHint": "ハイライトされたボタンのどれかを押して進みます。機能は開きません。",
+        "floatingOverview": {
+            "title": "キャラクター横のショートカット",
+            "body": "キャラクターの横のボタンから、音声、Agent、Neko Universe、設定、おやすみを開けます。"
+        },
+        "mic": {
+            "title": "音声チャット",
+            "body": "マイクのボタンで音声会話を開始・終了できます。小さな矢印から、マイクや音量、画面共有を設定できます。"
+        },
+        "micSettings": {
+            "title": "音声設定",
+            "body": "マイク横の矢印をクリックします。機器や音量もここで調整できます。"
+        },
+        "screen": {
+            "title": "画面共有",
+            "body": "共有する画面やウィンドウを選び、右のスイッチで開始・停止します。共有は任意です。"
+        },
+        "agent": {
+            "title": "Agent",
+            "body": "肉球のボタンはAgentの入口です。パソコンやブラウザ、プラグインを使うお手伝いを設定し、タスク画面で進行状況を確認・停止できます。"
+        },
+        "agentMaster": {
+            "title": "Agentのスイッチ",
+            "body": "Agentを有効にします。タスクパネルで進捗確認や停止ができます。有効化は不要です。"
+        },
+        "social": {
+            "title": "ニャンユニバース",
+            "body": "Neko Universe は新規ユーザーが3暦日利用すると開放されます。開放後はここからコミュニティへ入れます。"
+        },
+        "settings": {
+            "title": "設定",
+            "body": "キャラクター、音声、チャットの好み、記憶は設定で変更できます。"
+        },
+        "proactive": {
+            "title": "自発的な会話",
+            "body": "キャラクターから話しかけてほしいときに設定します。変更は任意です。"
+        },
+        "privacy": {
+            "title": "プライバシーモード",
+            "body": "自発的な視覚アクセスを設定します。お好みの設定を維持できます。"
+        },
+        "memory": {
+            "title": "記憶ブラウザ",
+            "body": "記憶を確認・管理し、各チュートリアルを個別にリセットできます。"
+        },
+        "goodbye": {
+            "title": "おうちへ",
+            "body": "ここからキャラクターを休ませられます。いつでも呼び戻せます。"
+        },
+        "return": {
+            "title": "呼び戻す",
+            "body": "呼び戻すボタンをクリックすると、キャラクターが戻ってきます。"
+        },
+        "lock": {
+            "title": "位置のロック",
+            "body": "鍵をかけると位置を固定できます。解除するとドラッグで移動、ホイールで拡大・縮小できます。"
+        },
+        "finish": {
+            "title": "自由に探索しよう",
+            "body": "ガイドはここまでです。もう一度見るには「設定 → 記憶ブラウザー」でクリックガイドをリセットしてください。"
+        },
+        "connection": {
+            "title": "チャットが応答しません",
+            "body": "チャットウィンドウを開き、ホームを再読み込みしてください。完了にはしていません。"
+        },
+        "closeMenu": "メニューを閉じて次へ",
+        "openedWindow": {
+            "title": "元の場所に戻ろう",
+            "body": "このページは、先ほどの入口からいつでも開けます。今は光っている閉じるボタンを押して戻り、ほかの機能を見ていきましょう。",
+            "close": "ページを閉じて続ける",
+            "pending": "保存や確認を求められたら、先にその操作を完了してください。ページを閉じるとガイドが続きます。",
+            "manualClose": "このページは別のウィンドウで開いています。そちらでページを閉じて戻ると、ガイドが自動で続きます。",
+            "returnToPage": "開いているページへ"
+        },
+        "socialClose": {
+            "title": "コミュニティから戻る",
+            "body": "コミュニティが開きました。×をクリックして閉じ、キャラクターの横のボタンに戻りましょう。"
+        },
+        "micMenu": {
+            "body": "ここでマイク、音量、画面共有を設定できます。見終わったらメニューを閉じて次へ進みましょう。"
+        },
+        "agentMenu": {
+            "body": "スイッチでAgentが使える機能を選べます。タスク画面では進行状況を確認できます。設定はそのままでも大丈夫です。見終わったら閉じましょう。"
+        },
+        "settingsMenu": {
+            "body": "キャラクター、音声、チャットの設定がまとまっています。今は入口を覚えるだけで大丈夫。変更はあとにして、下のボタンでメニューを閉じましょう。"
+        },
+        "sections": {
+            "chat": "カプセルチャット",
+            "floating": "キャラクター横のボタン"
         }
     }
 }

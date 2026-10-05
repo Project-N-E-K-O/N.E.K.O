@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from datetime import datetime, timezone
 import importlib
 import importlib.machinery
 import importlib.util
@@ -1064,17 +1065,52 @@ def _plugin_process_runner(
                 pass
             return
 
+        startup_config_fingerprint: str | None = None
+        effective_cfg: dict[str, object] = {}
+        try:
+            from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
+
+            resolved_config = resolve_plugin_config_from_path(
+                plugin_id,
+                config_path=Path(config_path),
+            )
+            resolved_effective_cfg = resolved_config["effective_config"]
+            if not isinstance(resolved_effective_cfg, dict):
+                raise TypeError("Startup effective config must be a mapping")
+            effective_cfg = resolved_effective_cfg
+            ctx._set_effective_config_cache(effective_cfg)
+            # Keep the applied identity in the child, where the effective
+            # configuration is actually resolved immediately before startup.
+            # The parent must not hash its earlier pre-spawn snapshot.
+            from plugin.server.infrastructure.config_fingerprint import fingerprint_config
+
+            startup_config_fingerprint = fingerprint_config(effective_cfg)
+        except Exception as e:
+            logger.debug("[Plugin Process] Could not resolve startup config: {}", type(e).__name__)
+
         instance = cls(ctx)
 
-        # 获取 freezable 属性列表和持久化模式
+        if startup_config_fingerprint is None:
+            # Retain the SDK read fallback when child-side resolution fails.
+            # Only a successful read can establish the loaded identity.
+            try:
+                fallback_cfg = asyncio.run(instance.config.dump(timeout=3.0))
+                if not isinstance(fallback_cfg, dict):
+                    raise TypeError("Startup effective config must be a mapping")
+                effective_cfg = fallback_cfg
+                ctx._set_effective_config_cache(effective_cfg)
+                from plugin.server.infrastructure.config_fingerprint import fingerprint_config
+
+                startup_config_fingerprint = fingerprint_config(effective_cfg)
+            except Exception as e:
+                logger.debug("[Plugin Process] Could not read startup config through SDK: {}", type(e).__name__)
+
+        # 配置覆盖实例默认值；保留旧 checkpoint 配置的回退顺序。
         freezable_keys = getattr(instance, "__freezable__", []) or []
-        # 优先级：effective config [plugin_state].persist_mode > 类属性 __persist_mode__ > __freeze_mode__(兼容) > 默认 "off"
         persist_mode = getattr(instance, "__persist_mode__", None)
         if persist_mode is None:
-            persist_mode = getattr(instance, "__freeze_mode__", "off")  # 向后兼容
-        # 从 effective config 读取 persist_mode（包含 profile 覆写）
+            persist_mode = getattr(instance, "__freeze_mode__", "off")
         try:
-            effective_cfg = instance.config.dump_effective_sync(timeout=3.0)
             # 新配置项 [plugin_state]
             state_cfg = effective_cfg.get("plugin_state", {})
             if isinstance(state_cfg, dict):
@@ -1092,6 +1128,7 @@ def _plugin_process_runner(
                         logger.debug("[Plugin Process] persist_mode from legacy plugin_checkpoint config: {}", persist_mode)
         except Exception as e:
             logger.debug("[Plugin Process] Could not read plugin_state from effective config: {}", e)
+
         # 标记是否从冻结状态恢复（用于触发 unfreeze 生命周期事件）
         ctx._restored_from_freeze = False
         
@@ -1363,6 +1400,8 @@ def _plugin_process_runner(
                 startup_data: dict[str, Any] = {
                     "status": "ready" if startup_success else "failed",
                 }
+                if startup_config_fingerprint:
+                    startup_data["config_fingerprint"] = startup_config_fingerprint
                 if startup_error is not None:
                     startup_data["startup_error"] = startup_error
                 res_sender.put(
@@ -2127,6 +2166,12 @@ class PluginHost:
         self.plugin_id = plugin_id
         self.entry_point = entry_point
         self.config_path = config_path
+        # Set only after the child reports a successful startup handshake and
+        # the parent confirms that the process is still alive.  Keeping this
+        # on the host makes the applied identity belong to the process owner,
+        # rather than to a caller's best-effort reload result.
+        self.applied_config_fingerprint: str | None = None
+        self.applied_config_loaded_at: str | None = None
         self.logger = logger.bind(plugin_id=plugin_id, host=True)
 
         # ZMQ transport: 4 PUSH/PULL socket channels replace 5 mp.Queues.
@@ -2327,6 +2372,28 @@ class PluginHost:
                         self.plugin_id,
                         startup_result["startup_error"],
                     )
+
+                # The child owns the effective configuration it actually
+                # loaded.  Record it only after the handshake succeeds and a
+                # second liveness check passes. A tolerated startup warning
+                # does not change which configuration the child loaded.
+                # Timeouts and dead processes must not advance this identity.
+                if (
+                    isinstance(startup_result, dict)
+                    and (
+                        startup_result.get("status") == "ready"
+                        or (
+                            startup_failure_policy != "fail"
+                            and startup_result.get("status") == "failed"
+                            and startup_result.get("startup_error")
+                        )
+                    )
+                    and self.process.is_alive()
+                ):
+                    fingerprint = startup_result.get("config_fingerprint")
+                    if isinstance(fingerprint, str) and fingerprint:
+                        self.applied_config_fingerprint = fingerprint
+                        self.applied_config_loaded_at = datetime.now(timezone.utc).isoformat()
                 return startup_result
             except asyncio.CancelledError:
                 await self._abort_startup_after_failure(timeout=PLUGIN_SHUTDOWN_TIMEOUT)

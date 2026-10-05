@@ -294,12 +294,33 @@ class _ReplyTurn:
     ``session`` is the client the reply was handed to, attached right before
     the hand-over. Identity only (``eq=False``): the manager compares its open
     reply by ``is``.
+
+    ``turn_ended`` is set once the reply's turn end has gone out. A final
+    discard (RESPONSE_TOO_LONG, or a RESPONSE_LENGTH_TRUNCATED recovery) ends
+    the turn itself, and the completion that runs after it must not end it a
+    second time. Only a turn end actually sent counts: a recovery that stood
+    down before its turn end leaves the completion to close the turn.
+
+    ``taken_over`` is set once an interrupter or a displacing reply took the
+    reply's close over (``TurnMixin._close_taken_over_offline_reply``),
+    whether or not that close sent a turn end. A discard recovery still
+    running for the reply reads it: it no longer owns the shared output, and
+    its wrap-up is owed rather than run on the spot.
     """
 
     speech_id: str | None
     request_id: str | None = None
     meta: dict | None = None
     session: Any = None
+    turn_ended: bool = False
+    taken_over: bool = False
+
+
+def _taken_over_reply_turn(kind) -> _ReplyTurn | None:
+    """The snapshot a taken-over Offline reply was handed over with
+    (``InterruptedReply.owner``), or None for an unbound reply."""
+    owner = getattr(kind, "owner", None)
+    return owner if isinstance(owner, _ReplyTurn) else None
 
 
 def _purge_closed_tool_calls(history: list, *, start: int = 0) -> int:

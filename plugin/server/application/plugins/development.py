@@ -22,6 +22,9 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin import settings
 
 development_registry_lock = threading.RLock()
+# Directories whose ``.py`` files are not plugin-owned source. Shared by the
+# development preflight and the hot-reload watcher so both judge the same files.
+SOURCE_EXCLUDED_DIR_NAMES = frozenset({"vendor", ".venv", ".git", "__pycache__", "node_modules"})
 
 
 def load_plugin_source(plugin_dir: str | Path):

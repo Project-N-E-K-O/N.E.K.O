@@ -8,6 +8,10 @@ This section collects implementation rationale and dated evidence that are usefu
 - [Runtime benchmarks](/benchmarks/) — dated memory and lifecycle measurements with their test conditions.
 - [Plugin SDK change notes](/changelog/) — migration-oriented notes for significant plugin API additions or changes.
 
+## Incident records
+
+- [2026-09-27: Qwen screen-comment repetition](/records/2026-09-27-qwen-screen-chat-repetition) — Chinese-only investigation snapshot; local scoped fix validated, incident remains open pending deployment and recovery verification.
+
 ## How to read records
 
 The current code, tests, public guides, and API reference take precedence. A record may explain why a behavior exists without guaranteeing that every implementation detail is still current.

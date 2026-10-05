@@ -162,7 +162,7 @@ async def test_remote_all_without_development_sources_keeps_ordinary_builds(work
     monkeypatch.setattr((await route.get_plugin_cli_service()), "build", dispatch)
     app = FastAPI()
     app.include_router(route.router)
-    async with AsyncClient(transport=ASGITransport(app=app, client=("192.168.1.2", 1234)),
+    async with AsyncClient(transport=ASGITransport(app=app, client=("127.0.0.1", 1234)),
                            base_url="http://127.0.0.1") as client:
         response = await client.post("/plugin-cli/build", json={"mode": "all"})
     assert response.status_code == 200, response.text
@@ -216,7 +216,7 @@ async def test_corrupt_store_all_builds_only_managed_sources(workspace, monkeypa
     monkeypatch.setattr((await route.get_plugin_cli_service()), "build", dispatch)
     app = FastAPI()
     app.include_router(route.router)
-    async with AsyncClient(transport=ASGITransport(app=app, client=("192.168.1.2", 1234)),
+    async with AsyncClient(transport=ASGITransport(app=app, client=("127.0.0.1", 1234)),
                            base_url="http://127.0.0.1") as client:
         response = await client.post(endpoint, json={"mode": "all"})
     assert response.status_code == 200, response.text
@@ -489,6 +489,9 @@ async def test_build_route_guards_development_sources(workspace, headers, peer, 
     snapshot = register(workspace)
     app = FastAPI()
     app.include_router(router)
+    if expected == 200:
+        from plugin.server.infrastructure import mutation_auth
+        headers = {**headers, "X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN}
     async with AsyncClient(transport=ASGITransport(app=app, client=(peer, 1234)), base_url="http://127.0.0.1") as client:
         response = await client.post("/plugin-cli/build", headers=headers, json={
             "mode": "single", "development_ref": {

@@ -2710,9 +2710,9 @@
                 this.container.classList.remove('locked-hover-fade');
             }
             if (updateFloatingButtons && this._floatingButtonsContainer) {
-                const shouldHideButtons = this.isLocked
-                    || isYuiGuideFloatingToolbarSuppressed()
-                    || this._pngtuberFloatingControlsVisible === false;
+                const inTutorial = this._floatingButtonsContainer.dataset.inTutorial === 'true';
+                const shouldHideButtons = isYuiGuideFloatingToolbarSuppressed()
+                    || (!inTutorial && (this.isLocked || this._pngtuberFloatingControlsVisible === false));
                 this._floatingButtonsContainer.style.display = shouldHideButtons ? 'none' : 'flex';
             }
             if (typeof this.updateLockIconPosition === 'function') {
@@ -4448,12 +4448,12 @@
                     buttonsContainer.style.display = 'none';
                     return;
                 }
-                if (this.isLocked) {
+                if (this.isLocked && buttonsContainer.dataset.inTutorial !== 'true') {
                     buttonsContainer.style.display = 'none';
                     this.updateLockIconPosition();
                     return;
                 }
-                if (this._pngtuberFloatingControlsVisible === false) {
+                if (this._pngtuberFloatingControlsVisible === false && buttonsContainer.dataset.inTutorial !== 'true') {
                     buttonsContainer.style.display = 'none';
                     this.updateLockIconPosition();
                     return;

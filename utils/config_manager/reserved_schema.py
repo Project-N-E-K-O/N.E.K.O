@@ -19,6 +19,9 @@ Read/write/delete of nested reserved fields, schema validation, the
 legacy-to-`_reserved` migration for a single character and the reverse
 flattening for legacy callers/frontends. Stateless module-level functions.
 """
+import re
+import secrets
+
 from config import RESERVED_FIELD_SCHEMA
 from utils.voice_config import read_legacy_voice_id
 
@@ -119,6 +122,59 @@ def delete_reserved(data: dict, *path) -> bool:
         data.pop("_reserved", None)
 
     return True
+
+
+_CHARACTER_UID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def new_character_uid() -> str:
+    """Return a fresh stable character id (32 lowercase hex chars)."""
+    return secrets.token_hex(16)
+
+
+def is_valid_character_uid(value) -> bool:
+    """True iff ``value`` has the shape produced by ``new_character_uid``."""
+    return isinstance(value, str) and _CHARACTER_UID_RE.fullmatch(value) is not None
+
+
+def get_character_uid(catgirl_data: dict) -> str | None:
+    """Return the character's stable id, or None when missing/malformed."""
+    value = get_reserved(catgirl_data, "character_uid", default=None)
+    return value if is_valid_character_uid(value) else None
+
+
+def assign_new_character_uid(catgirl_data: dict) -> str:
+    """Give a newly created character a fresh id, discarding any id it carried.
+
+    Used for every path that creates a character (new profile, imported card,
+    workshop card): an id copied in from another character or another
+    installation must never be reused.
+    """
+    uid = new_character_uid()
+    set_reserved(catgirl_data, "character_uid", uid)
+    return uid
+
+
+def ensure_character_uids(catgirl_map: dict) -> bool:
+    """Backfill missing/malformed ids and re-issue duplicates; returns whether anything changed.
+
+    The id is the character's identity across renames, so an existing valid
+    id is never replaced. When two characters share one (e.g. a hand-copied
+    config entry), the first keeps it and later ones get fresh ids.
+    """
+    if not isinstance(catgirl_map, dict):
+        return False
+    changed = False
+    seen: set[str] = set()
+    for catgirl_data in catgirl_map.values():
+        if not isinstance(catgirl_data, dict):
+            continue
+        uid = get_character_uid(catgirl_data)
+        if uid is None or uid in seen:
+            uid = assign_new_character_uid(catgirl_data)
+            changed = True
+        seen.add(uid)
+    return changed
 
 
 def _legacy_live2d_to_model_path(legacy_live2d: str) -> str:

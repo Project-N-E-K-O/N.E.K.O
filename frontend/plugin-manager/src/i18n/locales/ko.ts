@@ -453,6 +453,10 @@ export default {
     disabled: '비활성화됨',
     autoStart: '자동 시작',
     manualStart: '수동 시작',
+    autoStartHint: 'N.E.K.O 실행 시 이 플러그인을 자동으로 시작합니다. 수동으로 시작하거나 중지해도 이 설정은 바뀌지 않습니다.',
+    autoStartDisabledHint: '이 플러그인은 비활성화되어 있습니다. 자동 시작을 켜면 다음 실행을 위해 플러그인도 활성화되지만 지금 시작되지는 않습니다.',
+    autoStartBlockedHint: '설정은 켜져 있지만 플러그인이 비활성화되었거나 승인 대기 중이므로 다음 실행 시 자동 시작되지 않습니다. 껐다가 다시 켜면 활성화 및 자동 시작이 승인됩니다.',
+    autoStartUnsupportedDevelopment: '개발 중인 플러그인은 자동으로 시작되지 않습니다. 수동으로 시작하세요.',
     fetchFailed: '플러그인 목록을 불러오지 못했습니다',
     pluginType: '유형',
     pluginTypeNormal: '플러그인',
@@ -810,6 +814,9 @@ export default {
     pluginDeleted: '플러그인이 삭제되었습니다',
     pluginDeletedBuiltinRestartFailed: '플러그인 {plugin}은(는) 삭제되었지만 복원된 내장 버전을 시작하지 못했습니다: {error}',
     startFailed: '시작에 실패했습니다',
+    autoStartEnabled: '자동 시작을 켰습니다',
+    autoStartDisabled: '자동 시작을 껐습니다',
+    autoStartUpdateFailed: '자동 시작 설정을 업데이트하지 못했습니다',
     stopFailed: '정지에 실패했습니다',
     reloadFailed: '리로드에 실패했습니다',
     buildFailed: '플러그인 패키징에 실패했습니다',
@@ -823,6 +830,7 @@ export default {
     serviceUnavailable: '서비스를 사용할 수 없습니다',
     networkError: '네트워크 오류. 연결을 확인하세요.',
     requestTimeout: '요청 시간이 초과되었습니다. 다시 시도하세요.',
+    csrfBootstrapFailed: '보안 토큰을 가져올 수 없습니다. 리버스 프록시를 사용하는 경우 /security/csrf-token이 플러그인 서버로 전달되는지 확인하세요.',
     pluginLifecycleTimeout: '플러그인 시작 또는 재시작 시간이 초과되었습니다. 플러그인 로그를 확인하세요.'
   },
   welcome: {

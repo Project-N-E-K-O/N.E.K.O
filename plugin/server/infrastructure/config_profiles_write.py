@@ -8,12 +8,13 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from plugin.logging_config import get_logger
-from plugin.server.infrastructure.config_paths import get_plugin_config_path
+from plugin.server.infrastructure.config_paths import ensure_plugin_runtime_config, get_plugin_config_path
 from plugin.server.infrastructure.config_profiles import (
     get_profile_config,
     get_profiles_state,
     resolve_profile_path,
 )
+from plugin.server.infrastructure.config_locking import get_plugin_update_lock, plugin_config_file_lock
 
 logger = get_logger("server.infrastructure.config_profiles_write")
 
@@ -31,17 +32,9 @@ except ImportError:
     tomli_w = None
 
 
-_profile_update_locks: dict[str, threading.Lock] = {}
-_profile_update_locks_guard = threading.Lock()
-
-
-def _get_plugin_lock(plugin_id: str) -> threading.Lock:
-    with _profile_update_locks_guard:
-        lock = _profile_update_locks.get(plugin_id)
-        if lock is None:
-            lock = threading.Lock()
-            _profile_update_locks[plugin_id] = lock
-        return lock
+def _get_plugin_lock(plugin_id: str) -> threading.RLock:
+    """Return the shared per-plugin lock used by all config reads and writes."""
+    return get_plugin_update_lock(plugin_id)
 
 
 def _require_toml_read_write() -> None:
@@ -168,8 +161,8 @@ def upsert_profile_config(
         raise HTTPException(status_code=400, detail="profile_name is required")
 
     lock = _get_plugin_lock(plugin_id)
-    with lock:
-        config_path = get_plugin_config_path(plugin_id)
+    config_path = get_plugin_config_path(plugin_id)
+    with lock, plugin_config_file_lock(ensure_plugin_runtime_config(plugin_id, manifest_path=config_path)):
         base_dir = config_path.parent
         profiles_path = base_dir / "profiles.toml"
 
@@ -230,8 +223,8 @@ def delete_profile_config(
         raise HTTPException(status_code=400, detail="profile_name is required")
 
     lock = _get_plugin_lock(plugin_id)
-    with lock:
-        config_path = get_plugin_config_path(plugin_id)
+    config_path = get_plugin_config_path(plugin_id)
+    with lock, plugin_config_file_lock(ensure_plugin_runtime_config(plugin_id, manifest_path=config_path)):
         profiles_path = config_path.parent / "profiles.toml"
         if not profiles_path.exists():
             return {
@@ -280,8 +273,8 @@ def set_active_profile(
         raise HTTPException(status_code=400, detail="profile_name is required")
 
     lock = _get_plugin_lock(plugin_id)
-    with lock:
-        config_path = get_plugin_config_path(plugin_id)
+    config_path = get_plugin_config_path(plugin_id)
+    with lock, plugin_config_file_lock(ensure_plugin_runtime_config(plugin_id, manifest_path=config_path)):
         profiles_path = config_path.parent / "profiles.toml"
         if not profiles_path.exists():
             raise HTTPException(status_code=404, detail="profiles.toml not found")

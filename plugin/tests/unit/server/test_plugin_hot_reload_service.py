@@ -363,21 +363,24 @@ async def test_restart_drain_allows_reload_longer_than_shutdown_wait(monkeypatch
     deadlines = []
     original_wait = asyncio.wait
 
-    async def observe_wait(tasks, *, timeout):
+    async def observe_wait(tasks, *, timeout, **kwargs):
         deadlines.append(timeout)
         # Scale the normal stop budget down for a fast behavioral test.
         await asyncio.sleep(0.03)
         release.set()
-        return await original_wait(tasks, timeout=timeout)
+        return await original_wait(tasks, timeout=timeout, **kwargs)
 
     monkeypatch.setattr(module, "_STOP_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(module.asyncio, "wait", observe_wait)
     try:
         await service.wait_for_stopped()
         assert old_task.done()
-        assert deadlines == [module._RESTART_DRAIN_SECONDS]
-        assert deadlines[0] > module.PLUGIN_STARTUP_TIMEOUT
-        assert deadlines[0] > module._STOP_TIMEOUT_SECONDS
+        # Waited in recheck slices against the restart budget, not the shutdown one.
+        assert deadlines == [module._DRAIN_RECHECK_SECONDS]
+        budget = service._restart_drain_budget(None)
+        assert budget == module._RESTART_DRAIN_SECONDS
+        assert budget > module.PLUGIN_STARTUP_TIMEOUT
+        assert budget > module._STOP_TIMEOUT_SECONDS
     finally:
         release.set()
         await old_task
@@ -500,6 +503,21 @@ def test_signature_tracks_python_and_manifest_only(tmp_path: Path) -> None:
     assert set(signature.keys()) == {"plugin.toml", "__init__.py"}
 
 
+def test_signature_ignores_dependency_sync_work_dirs(tmp_path: Path) -> None:
+    # A running `neko-plugin sync` must not trigger reloads of the plugin.
+    source_dir = tmp_path / "demo"
+    _write_plugin_source(source_dir)
+    for name in (".vendor.staging-0a1b2c3d", ".vendor.backup-0a1b2c3d"):
+        (source_dir / name / "pkg").mkdir(parents=True)
+        (source_dir / name / "pkg" / "mod.py").write_text("x = 1", encoding="utf-8")
+    # A plugin's own look-alike directory is still source.
+    (source_dir / ".vendor.staging-assets").mkdir()
+    (source_dir / ".vendor.staging-assets" / "own.py").write_text("x = 1", encoding="utf-8")
+
+    signature = module._signature_sync(source_dir)
+    assert set(signature.keys()) == {"plugin.toml", "__init__.py", ".vendor.staging-assets/own.py"}
+
+
 def test_preflight_compile_sync(tmp_path: Path) -> None:
     source_dir = tmp_path / "good"
     _write_plugin_source(source_dir)
@@ -620,3 +638,187 @@ async def test_manual_stop_revokes_recovery_even_without_host(monkeypatch) -> No
         await service.stop_plugin("demo")
     assert not lifecycle.plugin_needs_hot_reload_recovery("demo")
     assert (await service.reload_plugin("demo", only_if_running=True))["skipped"]
+
+
+def test_preflight_skips_non_plugin_directories_and_reports_compile_errors(tmp_path: Path) -> None:
+    source = tmp_path / "demo"
+    _write_plugin_source(source)
+    for excluded in ("node_modules", "vendor"):
+        (source / excluded).mkdir()
+        (source / excluded / "tool.py").write_text("print 'py2'\n", encoding="utf-8")
+    assert module._preflight_compile_sync(source) is None
+
+    (source / "bad.py").write_text("def broken(:\n", encoding="utf-8")
+    error = module._preflight_compile_sync(source)
+    assert error is not None and "bad.py" in error
+    # A source error is not a manifest error.
+    assert not error.startswith("plugin.toml")
+
+
+def test_preflight_contains_unexpected_validation_errors(tmp_path: Path, monkeypatch) -> None:
+    from plugin.server.application.plugins import development_service
+
+    source = tmp_path / "demo"
+    _write_plugin_source(source)
+
+    def explode(*_args):
+        raise RuntimeError("validator bug")
+
+    monkeypatch.setattr(development_service, "_preflight_source_sync", explode)
+    assert module._preflight_compile_sync(source) == "RuntimeError: validator bug"
+
+
+async def test_tick_drops_due_entry_when_reload_attempt_raises(tmp_path: Path, monkeypatch) -> None:
+    service = _make_service(tmp_path, _FakeLifecycleService(), monkeypatch)
+    other_root = tmp_path / "other"
+    _write_plugin_source(other_root)
+    targets = [
+        module._WatchTarget("demo", tmp_path / "demo", False),
+        module._WatchTarget("other", other_root, False),
+    ]
+    monkeypatch.setattr(service, "_collect_targets_sync", lambda: targets)
+    attempted = []
+
+    async def reload_target(target):
+        attempted.append(target.plugin_id)
+        if target.plugin_id == "demo":
+            raise RuntimeError("unexpected")
+        service._pending.pop(target.plugin_id, None)
+
+    monkeypatch.setattr(service, "_reload_target", reload_target)
+    await service._tick(asyncio.Event())  # baseline
+    service._pending = {"demo": 0.0, "other": 0.0}
+    await service._tick(asyncio.Event())
+    assert attempted == ["demo", "other"]
+    # Kept pending, the failed entry would be retried at the 50 ms minimum tick.
+    assert service._pending == {}
+    assert service._next_sleep_seconds() == module.PLUGIN_HOT_RELOAD_INTERVAL
+
+
+async def test_start_plugin_records_granted_timeout_only_while_starting(tmp_path: Path, monkeypatch) -> None:
+    from plugin.server.application.plugins import lifecycle_service as lifecycle
+
+    source = tmp_path / "demo"
+    _write_plugin_source(source)
+    manifest = source / "plugin.toml"
+    manifest.write_text(manifest.read_text(encoding="utf-8") + "\n[plugin_runtime]\ntimeout = 120\n", encoding="utf-8")
+    monkeypatch.setattr(lifecycle, "_active_startup_timeouts", {})
+    monkeypatch.setattr(lifecycle, "_operations_shutting_down", False)
+    monkeypatch.setattr(lifecycle, "_get_plugin_host_sync", lambda pid: None)
+    monkeypatch.setattr(lifecycle, "_get_plugin_meta_sync", lambda pid: {"config_path": str(manifest)})
+    monkeypatch.setattr(lifecycle, "_registered_load_failure_error", lambda pid, meta: None)
+    monkeypatch.setattr(
+        lifecycle,
+        "resolve_plugin_config_from_path",
+        lambda pid, **kwargs: {"effective_config": kwargs["base_config"]},
+    )
+    seen = []
+
+    def stop_after_recording(pid):
+        seen.append(lifecycle.active_startup_timeout("demo"))
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(lifecycle, "get_runtime_override", stop_after_recording)
+    with pytest.raises(ServerDomainError):
+        await lifecycle.PluginLifecycleService().start_plugin("demo", refresh_registry=False)
+    # The value the drain budget reads is the one start_plugin granted, and it
+    # does not outlive the start attempt.
+    assert seen == [120.0]
+    assert lifecycle.active_startup_timeout("demo") is None
+
+
+async def test_cancelled_recovery_start_keeps_recovery_permission(monkeypatch) -> None:
+    from plugin.server.application.plugins import lifecycle_service as lifecycle
+
+    monkeypatch.setattr(lifecycle, "_hot_reload_failed", {"demo"})
+    monkeypatch.setattr(lifecycle, "_operations_shutting_down", False)
+    monkeypatch.setattr(lifecycle, "_plugin_is_running_sync", lambda pid: False)
+
+    async def start(self, pid, **kwargs):
+        lifecycle._hot_reload_failed.discard(pid)  # as the real start_plugin does on entry
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(lifecycle.PluginLifecycleService, "start_plugin", start)
+    with pytest.raises(asyncio.CancelledError):
+        await lifecycle.PluginLifecycleService().reload_plugin("demo", only_if_running=True)
+    assert lifecycle.plugin_needs_hot_reload_recovery("demo")
+
+
+def test_restart_drain_uses_default_until_start_records_a_timeout() -> None:
+    """Before start_plugin records its timeout, the default budget applies (the
+    steps before the record take seconds); afterwards the granted value extends
+    it, never below the default."""
+    budget = module.PluginHotReloadService._restart_drain_budget
+    overhead = module._RESTART_DRAIN_OVERHEAD_SECONDS
+    assert budget(None) == module._RESTART_DRAIN_SECONDS
+    assert budget(250.0) == overhead + 250.0
+    assert budget(1.0) == module._RESTART_DRAIN_SECONDS
+
+
+async def test_reload_target_exposes_the_inflight_plugin_to_the_drain(tmp_path: Path, monkeypatch) -> None:
+    seen = []
+
+    class _ObservingLifecycle:
+        async def reload_plugin(self, plugin_id, *, only_if_running=False):
+            seen.append(service._inflight_target.plugin_id)
+            return {"success": True, "plugin_id": plugin_id}
+
+    service = _make_service(tmp_path, _ObservingLifecycle(), monkeypatch)
+    await service._reload_target(module._WatchTarget("demo", tmp_path / "demo", False))
+    assert seen == ["demo"]
+    assert service._inflight_target is None
+
+
+async def test_restart_drain_follows_the_recorded_timeout_while_waiting(tmp_path: Path, monkeypatch) -> None:
+    """The budget is re-derived during the drain: a timeout start_plugin records
+    mid-drain extends the default deadline, and a reload that outlives the
+    recorded one still fails startup at that deadline."""
+    granted: dict[str, float] = {}
+    monkeypatch.setattr(module, "active_startup_timeout", granted.get)
+    monkeypatch.setattr(module, "_RESTART_DRAIN_SECONDS", 0.15)
+    monkeypatch.setattr(module, "_RESTART_DRAIN_OVERHEAD_SECONDS", 0.0)
+    monkeypatch.setattr(module, "_DRAIN_RECHECK_SECONDS", 0.02)
+    release = asyncio.Event()
+    task = asyncio.create_task(release.wait())
+    service = module.PluginHotReloadService(_FakeLifecycleService())
+    service._stop_event = asyncio.Event()
+    service._stop_event.set()
+    service._task = task
+    service._inflight_target = module._WatchTarget("demo", tmp_path / "demo", False)
+    asyncio.get_running_loop().call_later(0.05, lambda: granted.update(demo=0.4))
+    try:
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match="retry server startup"):
+            await asyncio.wait_for(service.wait_for_stopped(), 3)
+        # Past the 0.15s default (extended by the record), bounded by the 0.4s one.
+        assert 0.35 <= time.monotonic() - started < 1.0
+    finally:
+        release.set()
+        assert await task  # the helper task exits cleanly
+
+
+async def test_restart_drain_keeps_the_largest_recorded_timeout(tmp_path: Path, monkeypatch) -> None:
+    """start_plugin drops its record when the start ends, just before the reload
+    finishes; the drain must not fall back to the default under it."""
+    granted: dict[str, float] = {}
+    monkeypatch.setattr(module, "active_startup_timeout", granted.get)
+    monkeypatch.setattr(module, "_RESTART_DRAIN_SECONDS", 0.1)
+    monkeypatch.setattr(module, "_RESTART_DRAIN_OVERHEAD_SECONDS", 0.0)
+    monkeypatch.setattr(module, "_DRAIN_RECHECK_SECONDS", 0.02)
+    release = asyncio.Event()
+    task = asyncio.create_task(release.wait())
+    service = module.PluginHotReloadService(_FakeLifecycleService())
+    service._stop_event = asyncio.Event()
+    service._stop_event.set()
+    service._task = task
+    service._inflight_target = module._WatchTarget("demo", tmp_path / "demo", False)
+    granted["demo"] = 2.0
+    loop = asyncio.get_running_loop()
+    loop.call_later(0.05, granted.clear)  # start ended, reload still finishing
+    loop.call_later(0.3, release.set)  # past the 0.1s default, within 2.0s
+    try:
+        await asyncio.wait_for(service.wait_for_stopped(), 3)
+        assert task.done()
+    finally:
+        release.set()
+        assert await task  # the helper task exits cleanly

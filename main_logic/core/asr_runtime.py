@@ -15,7 +15,7 @@ import os
 import struct
 import time
 from dataclasses import dataclass, replace
-from typing import Any, Awaitable, Callable, ClassVar, Literal
+from typing import Any, Awaitable, Callable, ClassVar, Collection, Literal
 
 from websockets import exceptions as web_exceptions
 
@@ -49,6 +49,8 @@ from main_logic.voice_input.activation import (
     AudioFrame,
     OutputCommit,
 )
+from main_logic.voice_input.preview import preview_isolation_registry
+from .voice_readiness import VoiceReadinessControl
 from main_logic.voice_input.wake_word.transcript import (
     _WakeNameCorrection,
     correct_wake_name_prefix,
@@ -443,6 +445,7 @@ class AsrRuntimeMixin:
             capture_ingress_token=self._capture_ingress_token,
         )
         self._asr_runtime = IndependentAsrRuntime(callbacks)
+        preview_isolation_registry.register(self)
 
     def _init_voice_input_registry(self) -> None:
         """Install the manager-lifetime built-ins exactly once."""
@@ -1469,6 +1472,8 @@ class AsrRuntimeMixin:
         )
 
     def _voice_input_accepts_pcm(self) -> bool:
+        if preview_isolation_registry.is_manager_isolated(self):
+            return False
         owner = self._voice_lease_owner
         active_identity = self._voice_input_registry.active_identity
         owner_has_target = bool(
@@ -1491,6 +1496,10 @@ class AsrRuntimeMixin:
             and not self._voice_input_suppressed
             and not getattr(self, "_voice_input_external_suppressions", set())
         )
+
+    async def _handle_voice_identity_control(self, message: dict, *, connection_id: str) -> dict:
+        self._ensure_asr_runtime_state()
+        return await VoiceReadinessControl.handle(self, message, connection_id=connection_id)
 
     async def set_voice_input_suppressed(
         self,
@@ -2476,6 +2485,10 @@ class AsrRuntimeMixin:
         (Codex P2).
         """
         self._ensure_asr_runtime_state()
+        if input_mode == "audio" and preview_isolation_registry.is_manager_isolated(self):
+            await self._send_voice_control_status(json.dumps({
+                "code": "VOICE_INPUT_PREVIEW_BUSY", "details": {"reason": "preview_busy"}}))
+            return
         operation_generation = self._begin_asr_route_operation()
         await self._close_independent_asr(
             next_route_mode="blocked",
@@ -2878,12 +2891,47 @@ class AsrRuntimeMixin:
             connect_budget_seconds=remaining_deadline_seconds,
         )
 
+    def _hold_owed_wrap_up_for_voice_turn(self, turn_id: str) -> None:
+        """Hold the offline reply's owed wrap-up until voice turn ``turn_id`` ends.
+
+        Set right before the turn interrupts the offline reply: the
+        interrupted reply's task can end inside that interruption's awaits,
+        and its idle notification must not pay the wrap-up while the user is
+        still speaking. One hold at a time: a newer voice turn takes it over.
+        See ``TurnMixin._voice_turn_holds_owed_wrap_up``.
+        """
+        self._voice_turn_wrap_up_hold = turn_id
+
+    def _release_voice_turn_wrap_up_hold(self, turn_id: str | None) -> None:
+        """Voice turn ``turn_id`` ended (None: every turn): release its hold.
+
+        Then settle the owed wrap-up in a task of its own: the turn's reply,
+        if it had one, has returned (its completion paid it), and one that
+        ended without a reply leaves nothing else to pay it. Also when the
+        ending task is being cancelled: the transcript worker is cancelled on
+        ASR errors, detaches and transport aborts too, with the offline
+        session alive and idle (a torn-down one pays nothing, see
+        ``_settle_owed_turn_wrap_up``). A hold another turn has taken over is
+        left alone.
+        """
+        hold = getattr(self, "_voice_turn_wrap_up_hold", None)
+        if hold is None or (turn_id is not None and hold != turn_id):
+            return
+        self._voice_turn_wrap_up_hold = None
+        if not getattr(self, "_turn_wrap_up_owed", False):
+            return
+        settle = getattr(self, "_settle_owed_turn_wrap_up", None)
+        fire_task = getattr(self, "_fire_task", None)
+        if callable(settle) and callable(fire_task):
+            fire_task(settle())
+
     def _abandon_core_voice_turn(
         self,
         turn_id: str | None = None,
         *,
         session_ref: object | None = None,
     ) -> None:
+        self._release_voice_turn_wrap_up_hold(turn_id)
         turns = getattr(self, "_core_multimodal_turns", None)
         if turns is not None:
             if turn_id is None:
@@ -2927,10 +2975,19 @@ class AsrRuntimeMixin:
 
         if still_current is not None and not still_current():
             return
-        await self._asr_runtime.abort(reason)
+        correction = self._current_wake_name_correction()
+        keep_turns = await self._asr_runtime.abort(reason)
         if still_current is not None and not still_current():
             return
-        self._invalidate_voice_pcm_sync(reason)
+        if (
+            correction is not None
+            and self._wake_name_correction is correction
+            and correction.turn_token in keep_turns
+        ):
+            # abort may advance audio generation before Core tears down the
+            # activation. Preserve eligibility captured before that await.
+            correction.preserved_final = True
+        self._invalidate_voice_pcm_sync(reason, keep_turns=keep_turns)
         await self._voice_input_registry.wait_idle()
 
     async def _reset_native_audio_turn(
@@ -4023,6 +4080,8 @@ class AsrRuntimeMixin:
         received_at: float | None = None,
         captured_at: float | None = None,
     ) -> bool:
+        if preview_isolation_registry.is_manager_isolated(self):
+            return True
         if os.environ.get("NEKO_VOICE_REGRESSION_TRACE") == "1":
             self._voice_regression_trace_frames = (
                 getattr(self, "_voice_regression_trace_frames", 0) + 1
@@ -4260,7 +4319,8 @@ class AsrRuntimeMixin:
         generation: ActivationGeneration,
     ) -> OutputCommit:
         if (
-            frame.generation != generation
+            preview_isolation_registry.is_manager_isolated(self)
+            or frame.generation != generation
             or self._capture_voice_session_activation_generation() != generation
             or self._voice_session_activation_degraded
         ):
@@ -4879,9 +4939,22 @@ class AsrRuntimeMixin:
                     "ingress_backpressure"
                 )
 
-    def _invalidate_voice_pcm_sync(self, reason: str) -> None:
-        self._wake_name_correction = None
-        self._voice_input_registry.invalidate_utterance(reason=reason)
+    def _invalidate_voice_pcm_sync(
+        self,
+        reason: str,
+        *,
+        keep_turns: Collection[VoiceTurnToken] = (),
+    ) -> None:
+        correction = self._current_wake_name_correction()
+        if correction is not None and correction.turn_token in keep_turns:
+            # The activation may close, but this pinned final still owns its
+            # one-shot correction. Never transfer it to the next turn.
+            correction.preserved_final = True
+        else:
+            self._wake_name_correction = None
+        self._voice_input_registry.invalidate_utterance(
+            reason=reason, keep=keep_turns,
+        )
         self._clear_audio_stream_queue(reason)
         self.hot_swap_audio_cache.clear()
         self._native_activation_idle_reconnect_identity = None
@@ -5370,6 +5443,16 @@ class AsrRuntimeMixin:
         ticket = self._wake_name_correction
         if ticket is None:
             return None
+        if ticket.preserved_final:
+            if (
+                self._asr_route_mode == "independent"
+                and ticket.turn_token is not None
+                and ticket.turn_token.ingress.session_epoch == self._capture_ingress_token().session_epoch
+                and self._ingress_token_matches(ticket.turn_token.ingress)
+            ):
+                return ticket
+            self._clear_wake_name_correction(ticket)
+            return None
         status = self._voice_session_activation_status
         if (
             self._asr_route_mode != "independent"
@@ -5499,6 +5582,11 @@ class AsrRuntimeMixin:
             return False
         transition_generation = self._voice_input_transition_generation
         external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+        logger.info(
+            "[voice-chain] stage=asr_turn_prepare turn_id=%s session_epoch=%s provider=independent_asr",
+            external_turn_id,
+            token.ingress.session_epoch,
+        )
         self._begin_core_multimodal_turn(external_turn_id, token)
         previous_preview_turn_id = self._core_asr_preview_turn_id
         previous_preview_turn_token = self._core_asr_preview_turn_token
@@ -5520,6 +5608,28 @@ class AsrRuntimeMixin:
             )
 
         prepare = getattr(session_ref, "prepare_external_voice_turn", None)
+        arbiter = getattr(session_ref, "_response_arbiter", None)
+        runtime = getattr(self, "_asr_runtime", None)
+        capture_identity = getattr(runtime, "_capture_runtime_identity", None)
+        identity = capture_identity(ingress_token=token.ingress, turn_token=token) if callable(capture_identity) else None
+        pause_owner_alive = None
+        if arbiter is not None and not getattr(session_ref, "_is_gemini", False):
+            def pause_owner_alive(owner):
+                lifecycle = getattr(runtime, "_asr_lifecycle", None)
+                return bool(
+                    owner == external_turn_id
+                    and operation_is_current()
+                    and runtime is self._asr_runtime
+                    and identity is not None
+                    and runtime._runtime_identity_matches(identity)
+                    and lifecycle is not None
+                    and lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+                    and lifecycle.snapshot.turn_id == token.turn_id
+                    and runtime._asr_turn_prepared
+                )
+
+            pause_owner_alive.pause_owner = external_turn_id
+            arbiter.pause_owner_alive = pause_owner_alive
         preparation_succeeded = False
         try:
             if callable(prepare):
@@ -5536,9 +5646,14 @@ class AsrRuntimeMixin:
                         )
                     return False
             else:
-                interrupt = getattr(session_ref, "handle_interruption", None)
-                if callable(interrupt):
-                    await interrupt()
+                # Offline: close the reply this voice turn interrupted before
+                # handle_new_message clears its text buffer. Its wrap-up is
+                # owed and held by this turn: paid by its reply's completion,
+                # or settled when the turn ends without one
+                # (_abandon_core_voice_turn), never while the user is still
+                # speaking.
+                self._hold_owed_wrap_up_for_voice_turn(external_turn_id)
+                await self._interrupt_offline_reply(session_ref)
             if not operation_is_current():
                 if abandon_on_failure:
                     self._abandon_core_voice_turn(
@@ -5549,6 +5664,11 @@ class AsrRuntimeMixin:
             await self.handle_new_message()
             if operation_is_current():
                 preparation_succeeded = True
+                logger.info(
+                    "[voice-chain] stage=asr_turn_ready turn_id=%s session_epoch=%s",
+                    external_turn_id,
+                    token.ingress.session_epoch,
+                )
                 return True
             if abandon_on_failure:
                 self._abandon_core_voice_turn(
@@ -5575,8 +5695,19 @@ class AsrRuntimeMixin:
                 "[%s] independent ASR turn preparation failed",
                 self.lanlan_name,
             )
+            logger.info(
+                "[voice-chain] stage=asr_turn_prepare_failed turn_id=%s session_epoch=%s",
+                external_turn_id,
+                token.ingress.session_epoch,
+            )
             return False
         finally:
+            if (
+                not preparation_succeeded
+                and arbiter is not None
+                and getattr(arbiter, "pause_owner_alive", None) is pause_owner_alive
+            ):
+                arbiter.pause_owner_alive = None
             if (
                 not preparation_succeeded
                 and self._core_asr_preview_turn_id == external_turn_id
@@ -5630,6 +5761,13 @@ class AsrRuntimeMixin:
     ) -> None:
         token = event.turn_token.ingress
         external_turn_id = f"asr-{token.session_epoch}-{event.turn_token.turn_id}"
+        logger.info(
+            "[voice-chain] stage=asr_transcript_dispatch turn_id=%s session_epoch=%s provider=%s text_len=%d",
+            external_turn_id,
+            token.session_epoch,
+            event.provider,
+            len(event.text.strip()),
+        )
         if session_ref is None:
             session_ref = getattr(self, "session", None)
         prepared_session_ref = session_ref
@@ -5698,6 +5836,11 @@ class AsrRuntimeMixin:
             accepted = await self.handle_input_transcript(
                 event.text,
                 **transcript_kwargs,
+            )
+            logger.info(
+                "[voice-chain] stage=asr_transcript_accepted turn_id=%s accepted=%s",
+                external_turn_id,
+                accepted,
             )
             def route_still_core() -> bool:
                 """The route-identity half, re-checkable across an await.

@@ -69,6 +69,51 @@ def _foreign_env(**overrides) -> dict:
     return env
 
 
+@pytest.mark.parametrize("relative_path", [
+    ".vendor.staging-deadbeef", ".vendor.backup-deadbeef",
+    ".vendor.backup-deadbeef.pending", "vendor/.vendor.staging-deadbeef",
+])
+def test_sync_work_paths_do_not_enter_metadata_fingerprint(tmp_path, monkeypatch, relative_path):
+    from plugin.neko_plugin_cli.core.build_rules import BuildRuleSet, should_skip_path
+
+    plugin_dir = _write_plugin(tmp_path)
+    (plugin_dir / "vendor").mkdir()
+    (plugin_dir / "vendor/dependency.py").write_text("VALUE = 1\n", encoding="utf-8")
+    before = packaged_metadata.compute_source_sha256(plugin_dir)
+    names = packaged_metadata.source_file_names(plugin_dir)[0]
+    work_path = plugin_dir / relative_path
+    if relative_path.endswith(".pending"):
+        work_path.write_text("pending\n", encoding="utf-8")
+    else:
+        work_path.mkdir()
+        (work_path / "large_dependency.py").write_text("VALUE = 2\n", encoding="utf-8")
+    assert should_skip_path(Path(relative_path), is_dir=work_path.is_dir(), rules=BuildRuleSet())
+
+    scandir = packaged_metadata.os.scandir
+
+    def guarded_scandir(path):
+        assert Path(path) != work_path, "fingerprint descended into a dependency work tree"
+        return scandir(path)
+
+    monkeypatch.setattr(packaged_metadata.os, "scandir", guarded_scandir)
+    assert packaged_metadata.source_file_names(plugin_dir)[0] == names
+    assert packaged_metadata.compute_source_sha256(plugin_dir) == before
+
+
+@pytest.mark.parametrize("relative_path", [
+    ".vendor.backup-notes", ".vendor.staging-deadbeef.pending",
+    "data/.vendor.staging-deadbeef",
+])
+def test_similar_plugin_owned_paths_remain_fingerprinted(tmp_path, relative_path):
+    plugin_dir = _write_plugin(tmp_path)
+    before = packaged_metadata.compute_source_sha256(plugin_dir)
+    source = plugin_dir / relative_path / "owned.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    assert f"{relative_path}/owned.py" in packaged_metadata.source_file_names(plugin_dir)[0]
+    assert packaged_metadata.compute_source_sha256(plugin_dir) != before
+
+
 _SCAN_KWARGS = dict(
     entries=[{"id": "go", "name": "Go"}],
     handlers={"demo.go": {"event_type": "plugin_entry", "id": "go", "name": "Scanned", "timeout": 7}},

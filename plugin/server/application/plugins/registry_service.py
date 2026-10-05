@@ -321,7 +321,7 @@ def _declared_id_taken_by_another_plugin(
     Reads the registry rather than the refresh's opening snapshot. That snapshot
     is taken once per round and never updated, so two plugins declaring the same
     id and first seen in the same round both looked unclaimed — the second one's
-    gate move would then take the first one's record and hand a never-started
+    gate move would then take the first one's record and hand an unapproved
     plugin its autostart back (coderabbit).
 
     "Other" is by config path: a plugin re-registering under its own id is not
@@ -1143,9 +1143,9 @@ def _move_autostart_gate_to_runtime_id(
 
     Moving rather than copying: the store is keyed by id, so a copy would leave
     a record under ``demo`` that belongs to nobody — it would hold back whichever
-    plugin owns that id (one it may have earned long ago), and clearing it by
-    starting that plugin would silently approve this one. After the move each
-    record belongs to exactly one runtime plugin.
+    plugin owns that id (one it may have earned long ago), and approving it through
+    that plugin's auto-start switch would silently approve this one. After the
+    move each record belongs to exactly one runtime plugin.
     """
     if not declared_plugin_id or declared_plugin_id == runtime_plugin_id:
         return
@@ -1153,8 +1153,8 @@ def _move_autostart_gate_to_runtime_id(
         return
     if not mark_autostart_pending(runtime_plugin_id):
         # 记不上就不能把这条改名记录发布出去。留在声明 id 上等于没拦住：注册用的
-        # 和自启动筛选看的都是运行时 id，那边没有记录就是"已批准"，这份从没被启动
-        # 过的新代码会在下次开机自己跑起来（coderabbit）。抛出去，让这一个插件这轮
+        # 和自启动筛选看的都是运行时 id，那边没有记录就是"已批准"，这份尚未获自启动批准
+        # 的新代码会在下次开机自己跑起来（coderabbit）。抛出去，让这一个插件这轮
         # 注册失败——刷新循环按记录逐个兜底，其它插件不受影响。
         logger.error(
             "could not move the pending approval from {} to its runtime id {}; "
@@ -1176,13 +1176,13 @@ def _move_autostart_gate_to_runtime_id(
         )
     if declared_id_is_taken:
         # 声明 id 已经是另一个插件的运行时 id，那条记录可能是**它**的——它自己也
-        # 可能是装上了还没被启动过的（codex）。搬走等于顺手批准了它。这种情况下
-        # 只复制：两个插件各有一条记录，都拦着，谁被启动谁的那条被清掉。
+        # 可能是装上了还没获自启动批准的（codex）。搬走等于顺手批准了它。这种情况下
+        # 只复制：两个插件各有一条记录，都拦着，谁的独立自启动开关获批准，才清谁的那条。
         return
     if not clear_autostart_pending(declared_plugin_id):
         logger.error(
             "pending approval moved to {} but the record under {} could not be "
-            "cleared; the plugin holding that id may need one manual start",
+            "cleared; the plugin holding that id may need explicit auto-start approval",
             runtime_plugin_id,
             declared_plugin_id,
         )

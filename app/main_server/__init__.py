@@ -534,6 +534,7 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/soccer_demo",
     "/badminton_demo",
     "/drawing_guess_demo",
+    "/air_basketball",
     "/live2d_emotion_manager",
     "/vrm_emotion_manager",
     "/mmd_emotion_manager",
@@ -641,6 +642,9 @@ app.add_middleware(
 )
 # Registered after the body guard so it is the outermost ASGI middleware and
 # rejects DNS-rebinding Host values before any HTTP or WebSocket route runs.
+from utils.instance_access import InstanceAccessMiddleware
+from main_routers.card_drop_router import authorize_community_handoff
+app.add_middleware(InstanceAccessMiddleware, community_handoff_authorizer=authorize_community_handoff)
 app.add_middleware(HostOriginGuardMiddleware)
 
 
@@ -915,6 +919,17 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                     logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
 
             await initialize_character_data()
+            # 存量角色一次性补发稳定 id（character_uid）：放在 cloudsave 引导 /
+            # 启动导入之后（引导期的 seed 文件不能被改写），也放在
+            # initialize_character_data 之后（全新安装时 characters.json 由它
+            # 写出）；失败只记日志，不挡启动。
+            try:
+                from utils.character_memory import character_config_mutation_lock
+
+                async with character_config_mutation_lock:
+                    await _config_manager.abackfill_character_uids()
+            except Exception as e:
+                logger.warning("角色稳定 id 补发失败，下次启动重试: %s", e)
             await _sync_memory_server_after_startup_import(import_result)
 
             logger.info("正在初始化 Steamworks...")

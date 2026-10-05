@@ -1,4 +1,5 @@
 {
+    "instanceAccess": {"title":"NEKO 연결","description":"서버 소유자가 제공한 인스턴스 접근 키를 입력하세요. 이 기기는 연결을 30일 동안 기억합니다.","key":"인스턴스 접근 키","connect":"연결","failed":"연결이 거부되었습니다. 키를 확인하고 다시 시도하세요.","httpsRequired":"HTTPS 또는 신뢰할 수 있는 HTTPS 터널로 연결하세요."},
     "common": {
         "load": "로드",
         "minimize": "최소화",
@@ -657,6 +658,7 @@
         "GAME_ROUTE_LLM_FAILED": "게임 LLM이 유효한 출력을 반환하지 않았습니다 ({{error}})",
         "GAME_ROUTE_MEDIA_SKIPPED": "게임 중에는 화면/카메라 프레임을 건너뛰었습니다",
         "GAME_VOICE_STT_GATE_ACTIVE": "게임 음성 테이크오버가 활성화되었습니다",
+        "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE": "다른 활동이 진행 중이어서 지금은 미니게임을 열 수 없습니다",
         "INTERNAL_IMPORT_ERROR": "내부 구성 요소 로드 실패: {{error}}",
         "LOCAL_CONFIG_CLEANUP_FAILED": "로컬 캐릭터 설정 구조가 잘못되었습니다",
         "MEMORY_SERVER_RELEASE_FAILED": "캐릭터 메모리 핸들 해제에 실패했습니다. 잠시 후 다시 시도하세요",
@@ -1334,6 +1336,7 @@
             "grok": "Grok(xAI)",
             "openrouter": "OpenRouter(모델 통합 플랫폼)",
             "orcarouter": "OrcaRouter(Claude 게이트웨이)",
+            "requesty": "Requesty(모델 라우터)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (자체 호스팅)"
         },
@@ -1341,6 +1344,30 @@
         "assistApiSelectLabel": "보조 API 제공업체",
         "assistApiKeyLabel": "보조 API 키",
         "assistApiAutoFillHint": "비어 있으면 관리 대장의 키를 자동 사용, 직접 입력하면 독립적으로 저장됩니다",
+        "modelIdCurrentPlaceholder": "현재 사용 중: {{model}}",
+        "modelIdFreePlaceholder": "무료 버전은 고정 모델을 사용합니다",
+        "modelPicker": {
+            "fetch": "모델 가져오기",
+            "fetchTooltip": "제공업체에서 사용 가능한 모델 목록을 가져옵니다",
+            "loading": "모델 목록을 가져오는 중…",
+            "noMatch": "일치하는 모델이 없습니다",
+            "more": "모델이 {{count}}개 더 있습니다. 키워드를 입력해 필터링하세요",
+            "unavailable": {
+                "noProvider": "먼저 제공업체를 선택하세요",
+                "fixed": "이 제공업체는 고정 모델을 사용하므로 선택할 필요가 없습니다",
+                "follow": "이 모드에서는 따르는 구성이 모델을 결정하므로 선택할 필요가 없습니다",
+                "missingUrl": "먼저 API URL을 입력하세요"
+            },
+            "error": {
+                "urlHint": "API URL에 /v1 등의 경로 접두사가 빠졌는지 확인하세요.",
+                "unsupported": "이 엔드포인트는 모델 목록을 제공하지 않습니다. 모델 ID를 직접 입력하세요",
+                "key_required": "저장된 키는 저장할 때의 주소에서만 사용할 수 있습니다. API 키를 다시 입력하세요",
+                "core_key_required": "코어 제공업체가 변경되었습니다. API 키를 다시 입력하세요",
+                "rate_limited": "요청이 너무 많습니다. 잠시 후 다시 시도하세요",
+                "empty": "제공업체가 모델을 반환하지 않았습니다",
+                "timeout": "가져오기 시간이 초과되었습니다. 네트워크를 확인한 후 다시 시도하세요"
+            }
+        },
         "disableTts": "TTS 비활성화",
         "disableTtsHint": "활성화하면 음성 합성 서비스를 호출하지 않습니다",
         "keyBookTitle": "API 관리 대장",
@@ -1385,6 +1412,7 @@
             "grok": "Grok(xAI)",
             "openrouter": "OpenRouter",
             "orcarouter": "OrcaRouter",
+            "requesty": "Requesty",
             "vllm_omni": "vLLM-Omni(TTS)"
         },
         "freeVersionNoApiKey": "무료 버전에는 API 키가 필요하지 않습니다.",
@@ -2460,6 +2488,22 @@
         "selectionIntroImageAlt": "N.E.K.O 저장 위치 이전 안내 이미지",
         "statusUnexpected": "저장소 유지보수 상태 API 가 알 수 없는 결과를 반환했습니다.",
         "storageBootstrapBlocking": "저장소는 아직 복구 또는 이전이 필요하므로 이 세션을 계속할 수 없습니다.",
+        "storagePolicyRollbackFailed": "저장 위치 설정을 기록하지 못했고 이전 상태로 복원하지도 못했습니다. 로컬 상태 디렉터리에 쓸 수 있는지 확인하고, 계속 문제가 있으면 상태 파일을 직접 확인해 주세요.",
+        "storagePolicyWriteFailed": "저장 위치 설정을 기록하지 못했습니다. 이전 상태로 복원했습니다. 로컬 상태 디렉터리에 쓸 수 있는지 확인한 후 다시 시도해 주세요.",
+        "storageOperationFailed": "저장소 작업을 제출하지 못했습니다. 디스크에 변경 사항이 기록되지 않았습니다. 잠시 후 다시 시도해 주세요.",
+        "storageStateUnreadable": "저장 위치 설정을 기록하지 못했습니다. 상태 파일을 현재 읽을 수 없습니다(존재하지 않거나 해당 디렉터리에 접근할 수 없을 수 있습니다). 디스크에 기록된 변경도 없습니다. 잠시 후 다시 시도하거나 로컬 상태 디렉터리에 접근할 수 있는지 확인해 주세요.",
+        "storageStateInvalid": "저장소 상태 파일이 손상되었거나 형식이 올바르지 않습니다. 디스크에 변경 사항이 기록되지 않았습니다. 상태 파일을 확인하거나 복원해 주세요.",
+        "restartRollbackFailed": "제어된 재시작에 실패했으며 이전 상태가 복원되었는지 확인할 수 없습니다. 상태 파일을 확인하거나 복원해 주세요.",
+        "startupReleaseFailed": "현재 세션의 제한된 시작 모드를 해제할 수 없습니다. 다시 시도하거나 페이지를 새로고침한 후 계속해 주세요.",
+        "startupReleaseRollbackFailed": "제한된 시작 모드를 해제하지 못했으며 이전 상태가 복원되었는지 확인할 수 없습니다. 상태 파일을 확인하거나 복원해 주세요.",
+        "migrationAlreadyPending": "저장 위치를 변경하기 전에 현재 마이그레이션 또는 복구 상태를 해결해 주세요.",
+        "selectedRootEmpty": "대상 경로는 비워 둘 수 없습니다.",
+        "selectedRootNotAbsolute": "대상 경로는 절대 경로여야 합니다.",
+        "selectedRootInsideProject": "대상 경로는 프로젝트 디렉터리 안에 있을 수 없습니다. 다른 위치를 선택해 주세요.",
+        "selectedRootNotDirectory": "대상 경로는 파일이 아닌 폴더여야 합니다.",
+        "selectedRootParentMissing": "대상 경로의 상위 디렉터리를 찾을 수 없습니다. 다른 위치를 선택해 주세요.",
+        "selectedRootParentNotWritable": "대상 경로의 상위 디렉터리에 쓸 수 없습니다. 다른 위치를 선택해 주세요.",
+        "selectedRootReserved": "대상 경로가 예약된 저장 영역에 있습니다. 다른 위치를 선택해 주세요.",
         "targetNotEmpty": "대상에 이미 실행 데이터가 있습니다. 이전하기 전에 대상을 확인해 주세요.",
         "systemStatusUnavailable": "로컬 서비스 상태를 확인할 수 없습니다. 다시 시도해 주세요.",
         "systemStatusUnexpected": "저장소 시작 상태 API 가 알 수 없는 결과를 반환했습니다.",
@@ -3092,6 +3136,7 @@
         }
     },
     "voiceIdentity": {
+        "errorStopMainMicrophone": "메인 세션에서 마이크를 사용 중입니다. 메인 세션의 마이크를 끈 후 이 작업을 다시 시도하세요.",
         "pageTitle": "Owner 음성 지문",
         "title": "Owner 음성 지문",
         "profileStatus": "음성 지문 상태",
@@ -3204,7 +3249,106 @@
         "saveFailed": "음성 프로필을 저장하지 못했습니다. 다시 시도해 주세요.",
         "qualityCheckFailed": "음성 품질이 요구 사항을 충족하지 않습니다. 이 구간을 다시 녹음하세요.",
         "errorInconsistentSegments": "녹음 간 차이가 너무 큽니다. 첫 번째 구간부터 다시 시작하세요.",
-        "deleteConfirm": "삭제하면 음성 지문 활성화를 사용하기 전에 다시 등록해야 합니다."
+        "deleteConfirm": "삭제하면 음성 지문 활성화를 사용하기 전에 다시 등록해야 합니다.",
+        "inputTitle": "마이크와 리소스 확인",
+        "inputSelect": "마이크",
+        "inputActual": "실제 입력:",
+        "inputNotOpened": "마이크가 열리지 않음",
+        "inputGain": "입력 게인",
+        "inputVolume": "입력 음량",
+        "inputTestHelp": "3초 시험 녹음으로 처리된 음성을 확인합니다. 연결된 대화의 녹음은 중지되며 자동으로 재개되지 않습니다.",
+        "inputTest": "마이크 활성화 및 시험 녹음",
+        "inputTesting": "자연스러운 목소리로 3초 동안 읽어 주세요.",
+        "inputPassed": "입력 검사를 통과했습니다. 등록을 시작할 수 있습니다.",
+        "inputTestRequired": "등록 전에 입력 검사를 완료해 주세요.",
+        "inputChanged": "입력 설정이 변경되었습니다. 등록 중이라면 취소한 후 입력 테스트를 다시 진행하세요.",
+        "inputPreviewBusy": "입력 테스트가 진행 중입니다. 테스트를 완료하거나 취소한 후 마이크를 켜세요.",
+        "inputFallback": "선택한 마이크를 사용할 수 없어 표시된 장치로 전환했습니다. 다시 검사해 주세요.",
+        "inputDefault": "시스템 기본값",
+        "inputUnnamed": "마이크 {{index}}",
+        "resourcePrepare": "리소스 확인 및 로드",
+        "resourceDownload": "호출어 모델 다운로드",
+        "resourceCancel": "리소스 작업 취소",
+        "resourceRepair": "이 리소스를 확인하거나 복구해 주세요.",
+        "wakeEnable": "호출어 활성화",
+        "activationTitle": "음성 활성화",
+        "activationRetry": "활성화 재시도",
+        "activationRetryFailed": "재시도 실패. 연결과 리소스를 확인해 주세요.",
+        "activationRepair": "리소스를 확인한 뒤 음성 활성화를 다시 시도해 주세요.",
+        "resourceState_unchecked": "미확인",
+        "resourceState_ready": "사용 가능",
+        "resourceState_missing": "누락",
+        "resourceState_unavailable": "사용 불가",
+        "resourceState_preparing": "준비 중",
+        "resourceOperation_pending": "대기 중",
+        "resourceOperation_running": "실행 중",
+        "resourceOperation_succeeded": "성공",
+        "resourceOperation_failed": "실패",
+        "resourceOperation_cancelled": "취소됨",
+        "resource_campp": "CAM++",
+        "resource_silero": "Silero VAD",
+        "resource_noise_reduction": "노이즈 리덕션",
+        "resource_wake_model": "호출어 모델",
+        "resource_wake_runtime": "Sherpa ONNX",
+        "activation_preparing": "준비 중",
+        "activation_waiting": "음성 대화를 활성화할 목소리를 기다리는 중입니다",
+        "activation_verifying": "준비 중",
+        "activation_replaying": "준비 중",
+        "activation_active": "음성 대화가 활성화되었습니다",
+        "activation_unavailable": "음성 지문 활성화를 일시적으로 사용할 수 없습니다. 대기 오디오는 업로드되지 않습니다",
+        "activation_closed": "사용 불가",
+        "activation_disabled": "Owner 음성 지문이 저장되었습니다. 음성 지문 활성화가 꺼져 있습니다",
+        "inputReason_volume_too_low": "녹음 음량이 너무 낮습니다. 이 구간을 다시 녹음하세요.",
+        "inputReason_speech_too_short": "충분한 음성이 감지되지 않았습니다. 이 구간을 다시 녹음하세요.",
+        "inputReason_no_speech_detected": "충분한 실제 음성이 감지되지 않았습니다. 이 구간을 다시 녹음하세요.",
+        "inputReason_severe_clipping": "녹음에 심한 클리핑이 있습니다. 이 구간을 다시 녹음하세요.",
+        "inputReason_microphone_unavailable": "마이크 연결이 끊겼거나 사용할 수 없습니다. 장치를 다시 선택하거나 연결해 주세요.",
+        "inputReason_permission_denied": "마이크 권한이 거부되었습니다. 접근을 허용한 뒤 다시 시도해 주세요.",
+        "inputReason_capture_owner_unavailable": "녹음 창에 연결할 수 없습니다. 마이크를 사용하는 창에서 음성 등록을 다시 열어 주세요.",
+        "inputReason_capture_cancelled": "입력이 변경되었습니다. 검사와 등록을 다시 시작해 주세요.",
+        "resourceReason_WAKE_WORD_MODEL_MISSING": "호출어 모델이 없습니다. 모델을 다운로드해 주세요.",
+        "resourceReason_WAKE_WORD_RUNTIME_MISSING": "호출어 실행 구성 요소가 없습니다. 앱을 업데이트하거나 복구해 주세요.",
+        "resourceReason_WAKE_WORD_RUNTIME_FIX_REQUIRED": "호출어 실행 구성 요소가 호환되지 않습니다. 앱을 업데이트하거나 복구해 주세요.",
+        "resourceReason_WAKE_WORD_WORKER_FAILED": "호출어 준비 실패. 모델과 실행 구성 요소를 확인해 주세요.",
+        "activationReason_wake_word_prepare_failed": "호출어 준비 실패. 모델과 실행 구성 요소를 확인해 주세요.",
+        "activationReason_activation_queue_overflow": "음성 대기열이 넘쳤습니다. 활성화를 다시 시도해 주세요.",
+        "activationReason_activation_output_failed": "음성 출력 실패. 활성화를 다시 시도해 주세요.",
+        "resourceReason_WAKE_WORD_TOKEN_UNKNOWN": "호출어 사전이 모델과 일치하지 않습니다.",
+        "activationReason_WAKE_WORD_TOKEN_UNKNOWN": "호출어 사전이 모델과 일치하지 않습니다.",
+        "resourceReason_WAKE_WORD_PREFERENCE_UNAVAILABLE": "호출어 설정을 읽을 수 없습니다.",
+        "activationReason_WAKE_WORD_PREFERENCE_UNAVAILABLE": "호출어 설정을 읽을 수 없습니다.",
+        "resourceReason_WAKE_WORD_TIMEOUT": "호출어 준비 시간이 초과되었습니다.",
+        "activationReason_WAKE_WORD_TIMEOUT": "호출어 준비 시간이 초과되었습니다.",
+        "resourceReason_WAKE_WORD_CLOSED": "호출어 감지기가 종료되었습니다.",
+        "activationReason_WAKE_WORD_CLOSED": "호출어 감지기가 종료되었습니다.",
+        "resourceReason_WAKE_WORD_CONCURRENT_CALL": "다른 호출어 작업이 실행 중입니다.",
+        "activationReason_WAKE_WORD_CONCURRENT_CALL": "다른 호출어 작업이 실행 중입니다.",
+        "activationReason_WAKE_WORD_RUNTIME_MISSING": "호출어 실행 구성 요소가 없습니다. 앱을 업데이트하거나 복구해 주세요.",
+        "activationReason_WAKE_WORD_RUNTIME_FIX_REQUIRED": "호출어 실행 구성 요소가 호환되지 않습니다. 앱을 업데이트하거나 복구해 주세요.",
+        "activationReason_WAKE_WORD_MODEL_MISSING": "호출어 모델이 없습니다. 모델을 다운로드해 주세요.",
+        "activationReason_WAKE_WORD_WORKER_FAILED": "호출어 준비 실패. 모델과 실행 구성 요소를 확인해 주세요.",
+        "activationReason_wake_word_runtime_failed": "호출어 감지 실패. 리소스를 확인하고 다시 시도해 주세요.",
+        "activationReason_wake_word_queue_overflow": "음성 대기열이 넘쳤습니다. 활성화를 다시 시도해 주세요.",
+        "activationReason_queue_overflow": "음성 대기열이 넘쳤습니다. 활성화를 다시 시도해 주세요.",
+        "activationReason_output_handoff_failed": "음성 출력 실패. 활성화를 다시 시도해 주세요.",
+        "activationReason_output_delivery_failed": "음성 출력 실패. 활성화를 다시 시도해 주세요.",
+        "resourceRepairButton": "리소스 복구",
+        "resourceLocation": "모델과 실행 구성 요소는 이 페이지에 연결된 N.E.K.O 백엔드 장치에 있으며 마이크는 현재 장치에 있습니다.",
+        "activationRestart": "음성 세션 다시 시작",
+        "activationRestartRequired": "마이크를 끈 다음 기본 마이크 버튼으로 새 음성 세션을 시작하세요. 이전 오디오는 다시 전송되지 않습니다.",
+        "activationReason_voice_session_restart_required": "마이크를 닫고 다시 열어 새 음성 세션을 시작해 주세요. 이전 음성은 다시 전송하지 않습니다.",
+        "resourceReason_WAKE_WORD_MODEL_INVALID": "호출어 모델 파일이 손상되었습니다. 전체 모델을 다시 다운로드하고 검증해 주세요.",
+        "resourceReason_WAKE_WORD_PLATFORM_UNSUPPORTED": "이 플랫폼은 호출어 실행 구성 요소를 지원하지 않습니다. 지원되는 백엔드를 사용해 주세요.",
+        "activationReason_WAKE_WORD_MODEL_INVALID": "호출어 모델 파일이 손상되었습니다. 전체 모델을 다시 다운로드하고 검증해 주세요.",
+        "activationReason_WAKE_WORD_PLATFORM_UNSUPPORTED": "이 플랫폼은 호출어 실행 구성 요소를 지원하지 않습니다. 지원되는 백엔드를 사용해 주세요.",
+        "activationReason_runtime_creation_failed": "음성 활성화를 시작할 수 없습니다. 리소스를 확인하고 다시 시도해 주세요.",
+        "activationReason_prepare_failed": "음성 활성화 준비에 실패했습니다. 리소스를 확인하고 다시 시도해 주세요.",
+        "activationReason_voice_cleanup_timeout": "이전 음성 세션을 제시간에 종료하지 못했습니다. 마이크를 끄고 다시 켜 주세요.",
+        "resourceReason_resource_cache_full": "모델 캐시가 가득 찼습니다. 백엔드를 중지하고 복구 안내에 따라 캐시를 정리해 주세요.",
+        "resourceReason_resource_prepare_timeout": "리소스 준비 시간이 초과되었습니다. 확인하고 다시 시도해 주세요.",
+        "resourceReason_resource_storage_unavailable": "모델 저장소를 사용할 수 없습니다. 백엔드 권한과 여유 공간을 확인해 주세요.",
+        "resourceReason_audio_processing_unavailable": "오디오 처리를 사용할 수 없습니다. 필요한 모델과 실행 구성 요소를 복구해 주세요.",
+        "resourceReason_model_unavailable": "필요한 모델을 사용할 수 없습니다. 복구 안내를 따라 주세요."
     },
     "settings": {
         "menu": {
@@ -3979,7 +4123,7 @@
             },
             "step6": {
                 "title": "🔑 보조 API 키",
-                "desc": "Alibaba를 보조 API로 사용하는 경우 여기에 Alibaba의 API 키를 입력하세요. 비어 있으면 핵심 API 키를 사용합니다."
+                "desc": "선택한 보조 API 제공업체의 API 키를 여기에 입력하세요. 비워 두면 일반적으로 핵심 API 키를 사용하지만, 전용 키가 필요한 제공업체에는 이 대체 방식이 적용되지 않습니다."
             },
             "step7": {
                 "title": "🔧 사용자 정의 API 구성",
@@ -5493,6 +5637,79 @@
              "surprisedPrefix": "어?! "
          }
     },
+    "airBasketball": {
+        "title": "에어 농구",
+        "timeLeft": "남은 시간",
+        "seconds": "초",
+        "you": "나",
+        "anglePower": "각도 × 파워",
+        "autoChallenge": "자동 대결",
+        "score": "점수",
+        "stage": "단계",
+        "combo": "연속",
+        "time": "시간",
+        "stageTarget": "다음 단계",
+        "power": "파워",
+        "angle": "각도",
+        "fever": "피버",
+        "gestureHint": "공을 누른 채 드래그해 힘을 모으세요. 오른쪽으로 비스듬히 던지면 상대 코트로 넘어갑니다",
+        "playerControl": "플레이어 조작",
+        "aiControl": "자동 조작",
+        "nekoHit": "아야!",
+        "intro": "양쪽 모두 같은 집중력과 득점 규칙을 사용합니다. 슛과 장난의 리듬을 조절하세요.",
+        "ruleAim": "각도와 파워",
+        "ruleStage": "4단계 골대",
+        "ruleFever": "연속 피버",
+        "start": "경기 시작",
+        "again": "다시 하기",
+        "swish": "스위시!",
+        "basket": "골인!",
+        "miss": "아깝다",
+        "stageUp": "단계",
+        "feverOn": "피버! +1",
+        "win": "승리!",
+        "draw": "무승부!",
+        "interference": "집중력",
+        "interfereHint": "공이나 골대를 드래그하거나 캐릭터를 터치하세요",
+        "soundOff": "소리 끄기",
+        "soundOn": "소리 켜기",
+        "crossScore": "크로스 코트 골!",
+        "ballClash": "공 충돌!",
+        "stolenBall": "공 소유권 변경!",
+        "chaosBall": "{name}이(가) 공을 하나 더 던졌어요!",
+        "nekoCountering": "{name} 반격 준비 중",
+        "chooseMode": "경기 모드 선택",
+        "timedMode": "시간 제한 대결",
+        "timedModeHint": "60초 동안 점수를 겨룹니다",
+        "endlessMode": "자유 플레이",
+        "endlessModeHint": "시간 제한 없이 언제든 끝낼 수 있습니다",
+        "endlessIntro": "시간 제한 없이 슛하고 공을 부딪치며 서로 방해하세요. 원할 때 경기를 끝낼 수 있습니다.",
+        "stopMatch": "경기 종료",
+        "elapsed": "플레이 시간",
+        "opponentReady": "{name} 준비 중",
+        "opponentAiming": "{name} 조준 중",
+        "opponentFever": "{name} 피버",
+        "opponentWin": "{name} 승리",
+        "mouseStealCaught": "{name}이(가) 커서를 훔쳤다!",
+        "mouseStealEscape": "마우스를 빠르게 흔들어 탈출",
+        "mouseStealEscaped": "탈출 성공!",
+        "mouseStealReleased": "{name}이(가) 놓아줬다",
+        "mouseStealStatus": "{name}이(가) 커서를 훔치는 중",
+        "voiceOpening": ["준비됐어? 봐주지 않을 거야."],
+        "voiceChaos": ["이것도 받아!"],
+        "voiceScore": ["가볍게 들어갔네."],
+        "voiceHit": ["잠깐, 공을 쳐야지!"],
+        "voiceMouseSteal": ["커서 좀 빌릴게!"],
+        "voiceWin": ["이번 판은 내 승리야."],
+        "voiceLose": ["좋아, 이번에는 네가 이겼어."],
+        "arenaLabel": "2인용 농구 코트",
+        "playerArcadeLabel": "플레이어 농구 머신",
+        "opponentArcadeLabel": "상대 농구 머신",
+        "avatarLabel": "드래그하거나 터치해 방해할 수 있는 현재 캐릭터",
+        "avatarUnavailable": "캐릭터 리소스를 사용할 수 없습니다",
+        "sdkUnavailable": "미니게임을 불러오지 못했습니다. 페이지를 닫고 다시 시도해 주세요.",
+        "runtimeStartFailed": "경기를 시작하지 못했습니다. 잠시 후 다시 시도해 주세요."
+    },
    "soccer": {
         "settings": {
             "button": "설정",
@@ -5847,6 +6064,186 @@
             "finalTitle": "최종 정산",
             "roundLabel": "{{round}} 라운드",
             "noRounds": "아직 완료된 라운드가 없습니다."
+        }
+    },
+    "clickGuide": {
+        "tour": "클릭 가이드",
+        "back": "이전",
+        "next": "다음",
+        "skip": "가이드 종료",
+        "unavailable": "이 버튼은 지금 사용할 수 없습니다. ‘다음’을 눌러 계속하세요.",
+        "nativeFallback": "털뭉치를 클릭할 수 없다면 다음으로 넘어가세요.",
+        "skipTools": "도구 소개 건너뛰기",
+        "toolContinueHint": "강조된 버튼을 누르면 다음으로 넘어갑니다. 기능은 실행되지 않습니다.",
+        "finishButton": "완료",
+        "close": "닫기",
+        "saveFailed": "저장하지 못했어요. 다시 시도해 주세요.",
+        "resetButton": "튜토리얼 다시 시작",
+        "resetSuccess": "초기화했어요. 홈을 새로고침하면 시작합니다. 7일 튜토리얼 진행 상황은 유지됩니다.",
+        "choice": {
+            "title": "어떤 튜토리얼을 다시 체험할까요?",
+            "body": "클릭 가이드를 선택하거나 7일 스토리 튜토리얼을 처음부터 다시 시작하세요. 클릭 가이드는 7일 튜토리얼 진행 상황을 유지합니다.",
+            "click": "클릭 가이드",
+            "sevenDay": "7일 튜토리얼"
+        },
+        "chatOverview": {
+            "title": "캡슐 채팅창",
+            "body": "여기에 ‘你好’를 입력하고 Enter를 눌러 보내세요."
+        },
+        "chatOverviewSend": {
+            "body": "입력했어요. Enter를 눌러 보내세요."
+        },
+        "chatOverviewDraft": {
+            "body": "이미 보내지 않은 글이나 첨부 파일이 있어요. 그대로 두고 다음을 눌러 기록을 살펴보세요."
+        },
+        "chatOverviewBack": {
+            "body": "여기가 채팅 캡슐이에요. 대화와 초안은 그대로 유지돼요. 다음을 누르면 채팅 기록으로 돌아가요."
+        },
+        "history": {
+            "title": "대화 기록",
+            "body": "캡슐 위의 파란 막대를 눌러 대화 기록을 여세요."
+        },
+        "historyClose": {
+            "title": "기록 닫기",
+            "body": "파란 막대를 다시 눌러 기록을 닫고 채팅으로 돌아오세요."
+        },
+        "minimize": {
+            "title": "채팅 접기",
+            "body": "왼쪽 털뭉치를 누르면 채팅창이 바탕화면의 작은 털뭉치로 바뀝니다."
+        },
+        "restore": {
+            "title": "채팅 복원",
+            "body": "털뭉치를 다시 클릭하면 채팅창이 펼쳐져 대화를 이어갈 수 있어요."
+        },
+        "tools": {
+            "title": "도구 메뉴",
+            "body": "오른쪽 버튼에 마우스를 올리면 도구 휠이 열립니다."
+        },
+        "toolsDraft": {
+            "body": "글이나 첨부 파일이 있으면 오른쪽 버튼이 보내기로 바뀝니다. 도구를 써 보려면 글이나 첨부 파일을 직접 지우거나, 도구 건너뛰기를 눌러 내용을 보관하세요."
+        },
+        "screenshot": {
+            "title": "스크린샷",
+            "body": "휠을 스크롤하거나 끌어서 도구를 바꿀 수 있습니다. 스크린샷은 메시지에 첨부됩니다."
+        },
+        "avatar": {
+            "title": "상호작용 도구",
+            "body": "캐릭터와 놀고 싶을 때 여기서 도구 모음을 열어 보세요. 자주 쓰는 도구를 고르고 배치할 수 있어요."
+        },
+        "avatarTools": {
+            "title": "즐겨찾는 도구",
+            "body": "저장한 순서로 표시됩니다. 끝의 편집 버튼으로 바꿀 수 있어요. 여기의 발바닥은 Agent와 다른 놀이 도구예요."
+        },
+        "translate": {
+            "title": "자막 번역",
+            "body": "다른 언어의 자막을 읽고 싶을 때 번역을 켜세요. 다시 클릭하면 꺼져요."
+        },
+        "jukebox": {
+            "title": "주크박스",
+            "body": "주크박스에서는 대화하면서 음악을 들을 수 있어요. 곡 선택과 재생 조작도 여기에서 해요."
+        },
+        "import": {
+            "title": "이미지 가져오기",
+            "body": "이미지 가져오기로 기기의 이미지를 골라 대화에 첨부할 수 있어요."
+        },
+        "export": {
+            "title": "대화 내보내기",
+            "body": "대화 내보내기로 메시지를 고르고 미리 본 뒤 사본을 저장할 수 있어요."
+        },
+        "galgame": {
+            "title": "Galgame",
+            "body": "대화를 선택지로 이어가는 Galgame 모드로 바꿔요. 다시 클릭하면 일반 채팅으로 돌아와요."
+        },
+        "floatingOverviewContinueHint": "강조된 버튼 중 아무거나 누르면 다음으로 넘어갑니다. 기능은 열리지 않습니다.",
+        "floatingOverview": {
+            "title": "캐릭터 옆 바로가기 버튼",
+            "body": "캐릭터 옆 버튼에서 음성, Agent, Neko Universe, 설정, 휴식을 열 수 있습니다."
+        },
+        "mic": {
+            "title": "음성 대화",
+            "body": "마이크 버튼으로 음성 대화를 시작하거나 끝내요. 작은 화살표를 누르면 마이크, 음량, 화면 공유 설정이 열려요."
+        },
+        "micSettings": {
+            "title": "음성 설정",
+            "body": "마이크 옆 화살표를 클릭하세요. 기기와 음량도 여기서 조절해요."
+        },
+        "screen": {
+            "title": "화면 공유",
+            "body": "공유할 화면이나 창을 고르고 오른쪽 스위치로 시작·중지해요. 공유는 필수가 아니에요."
+        },
+        "agent": {
+            "title": "Agent",
+            "body": "발바닥 버튼은 Agent 도구예요. 컴퓨터, 브라우저, 플러그인 작업을 도와줄 기능을 설정하고 작업 패널에서 진행 상황을 보거나 멈출 수 있어요."
+        },
+        "agentMaster": {
+            "title": "Agent 스위치",
+            "body": "Agent를 켜는 스위치예요. 작업 패널에서 진행 상황을 보고 중지할 수 있어요. 켜지 않아도 돼요."
+        },
+        "social": {
+            "title": "냥 유니버스",
+            "body": "Neko Universe는 신규 사용자가 3일을 사용하면 열립니다. 열리면 여기서 커뮤니티에 들어갈 수 있습니다."
+        },
+        "settings": {
+            "title": "설정",
+            "body": "캐릭터, 음성, 채팅 설정, 기억은 설정에서 찾을 수 있습니다."
+        },
+        "proactive": {
+            "title": "먼저 말 걸기",
+            "body": "캐릭터가 먼저 말을 걸도록 설정해요. 현재 설정을 유지해도 돼요."
+        },
+        "privacy": {
+            "title": "개인정보 보호 모드",
+            "body": "능동적인 시각 접근을 제어해요. 원하는 개인정보 설정을 유지하세요."
+        },
+        "memory": {
+            "title": "기억 브라우저",
+            "body": "기억을 보고 관리하며 두 튜토리얼을 각각 초기화할 수 있어요."
+        },
+        "goodbye": {
+            "title": "집으로",
+            "body": "여기서 캐릭터를 쉬게 할 수 있습니다. 원할 때 다시 부르세요."
+        },
+        "return": {
+            "title": "다시 부르기",
+            "body": "다시 부르기 버튼을 클릭하면 캐릭터가 돌아와요."
+        },
+        "lock": {
+            "title": "위치 잠금",
+            "body": "자물쇠를 잠그면 캐릭터 위치가 고정돼요. 풀면 드래그로 이동하고 휠로 크기를 조절할 수 있어요."
+        },
+        "finish": {
+            "title": "자유롭게 둘러보세요",
+            "body": "안내가 끝났습니다. 다시 보려면 설정 → 기억 브라우저에서 클릭 안내를 초기화하세요."
+        },
+        "connection": {
+            "title": "채팅창 응답 없음",
+            "body": "채팅창을 열고 홈을 새로고침해 다시 시도하세요. 완료로 기록되지 않았어요."
+        },
+        "closeMenu": "메뉴 닫고 계속",
+        "openedWindow": {
+            "title": "원래 있던 곳으로 돌아가기",
+            "body": "필요할 때 방금 사용한 버튼으로 이 페이지를 다시 열 수 있어요. 지금은 강조된 닫기 버튼을 눌러 돌아가서 다른 기능을 살펴봐요.",
+            "close": "페이지 닫고 계속",
+            "pending": "저장이나 확인 안내가 나타나면 먼저 처리해 주세요. 페이지가 닫히면 가이드가 이어져요.",
+            "manualClose": "이 페이지가 다른 창에 이미 열려 있어요. 그 창에서 페이지를 닫고 돌아오면 안내가 자동으로 이어져요.",
+            "returnToPage": "열린 페이지로 이동"
+        },
+        "socialClose": {
+            "title": "커뮤니티에서 돌아가기",
+            "body": "커뮤니티가 열렸어요. × 버튼으로 닫고 캐릭터 옆 버튼 소개로 돌아가요."
+        },
+        "micMenu": {
+            "body": "마이크, 음량, 화면 공유 설정이 있는 메뉴예요. 다 봤다면 메뉴를 닫고 계속하세요."
+        },
+        "agentMenu": {
+            "body": "스위치로 Agent가 사용할 기능을 고를 수 있어요. 작업 패널에서는 진행 상황을 확인해요. 설정을 그대로 두고 메뉴를 닫아도 돼요."
+        },
+        "settingsMenu": {
+            "body": "캐릭터, 음성, 채팅 설정이 모여 있어요. 지금은 위치만 알아두고, 변경은 나중에 해도 돼요. 아래 버튼을 눌러 메뉴를 닫아 주세요."
+        },
+        "sections": {
+            "chat": "캡슐 채팅창",
+            "floating": "캐릭터 옆 버튼"
         }
     }
 }

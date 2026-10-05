@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from plugin.core.state import state
+from plugin.utils.source_paths import is_vendor_sync_path
 from plugin.server.application.plugins import development as store
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
@@ -110,7 +111,14 @@ def _preflight_source_sync(source_dir: Path, plugin_id: str) -> None:
         raise store._error(str(exc)) from exc
 
     for root, directories, files in os.walk(source_dir, onerror=walk_error, followlinks=False):
-        directories[:] = [name for name in directories if name not in {"vendor", ".venv", ".git", "__pycache__"}]
+        directories[:] = [
+            name
+            for name in directories
+            if name not in store.SOURCE_EXCLUDED_DIR_NAMES
+            # `neko-plugin sync` staging/backup trees at the plugin root hold
+            # (possibly half-written) third-party code, like vendor/.
+            and not (Path(root) == source_dir and is_vendor_sync_path(Path(name)))
+        ]
         for name in files:
             if not name.lower().endswith(".py"):
                 continue
@@ -156,6 +164,15 @@ async def _stop_if_present(record: store.DevelopmentSnapshot) -> None:
             raise store._error("Plugin did not stop; association was retained", "DEVELOPMENT_STOP_FAILED", 409)
 
 
+def _revoke_hot_reload_recovery(record: store.DevelopmentSnapshot) -> None:
+    # The association's source has gone away or changed; a stopped plugin never
+    # reaches stop_plugin, so its auto-reload recovery permission is dropped here.
+    # Called only after the store mutation commits: a failed operation keeps the
+    # old source, and with it the permission.
+    from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
+    revoke_hot_reload_recovery(record.plugin_id)
+
+
 def _forget_metadata_sync(record: store.DevelopmentSnapshot) -> None:
     with state.acquire_plugins_write_lock():
         meta = state.plugins.get(record.plugin_id)
@@ -166,11 +183,13 @@ def _forget_metadata_sync(record: store.DevelopmentSnapshot) -> None:
 
 @serialized_plugin_operation
 async def set_development_enabled(enabled: bool) -> dict:
-    if not enabled:
-        for record in await asyncio.to_thread(store.list_registration_records_sync):
-            await _stop_if_present(record)
-            await asyncio.to_thread(store.require_registration_sync, record.registration_id, record.revision)
+    records =await asyncio.to_thread(store.list_registration_records_sync) if not enabled else []
+    for record in records:
+        await _stop_if_present(record)
+        await asyncio.to_thread(store.require_registration_sync, record.registration_id, record.revision)
     await asyncio.to_thread(store.set_enabled_sync, enabled)
+    for record in records:
+        _revoke_hot_reload_recovery(record)
     from plugin.server.application.plugins.registry_service import PluginRegistryService
     await PluginRegistryService().refresh_registry()
     return await asyncio.to_thread(development_view_sync)
@@ -200,6 +219,7 @@ async def remove_development(registration_id: str, revision: int) -> dict:
     record = await asyncio.to_thread(store.require_registration_sync, registration_id, revision)
     await _stop_if_present(record)
     await asyncio.to_thread(store.remove_registration_sync, record)
+    _revoke_hot_reload_recovery(record)
     await asyncio.to_thread(_forget_metadata_sync, record)
     return {"success": True, "registration_id": registration_id}
 
@@ -215,6 +235,7 @@ async def rebind_development(registration_id: str, revision: int, source_dir: st
     await asyncio.to_thread(store.require_registration_sync, record.registration_id, record.revision)
     await _stop_if_present(record)
     updated = await asyncio.to_thread(store.rebind_registration_sync, record, source_dir)
+    _revoke_hot_reload_recovery(record)
     from plugin.server.application.plugins.registry_service import PluginRegistryService
     await PluginRegistryService().refresh_plugin(updated.plugin_id)
     return await asyncio.to_thread(registration_view_sync, updated)

@@ -46,6 +46,7 @@ CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
     'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
     'assistApiKeyOrcarouter',
+    'assistApiKeyRequesty',
 )
 
 CORE_CONFIG_MODEL_API_KEY_FIELDS = tuple(
@@ -263,6 +264,7 @@ async def get_core_config_api():
             "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or _fb('claude'),
             "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter'),
             "assistApiKeyOrcarouter": core_cfg.get('assistApiKeyOrcarouter', '') or _fb('orcarouter'),
+            "assistApiKeyRequesty": core_cfg.get('assistApiKeyRequesty', ''),
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
@@ -769,6 +771,7 @@ async def get_api_providers_config():
             get_config,
             get_core_api_providers_for_frontend,
             get_assist_api_providers_for_frontend,
+            get_assist_api_profiles,
         )
 
         full_config = get_config(force_reload=True)
@@ -798,6 +801,13 @@ async def get_api_providers_config():
             "assist_api_providers": assist_providers,
             "api_key_registry": full_config.get("api_key_registry", {}),
             "assist_api_providers_full": full_config.get("assist_api_providers", {}),
+            "assist_model_defaults": {
+                key: {field: profile.get(field, '') for field in (
+                    'CONVERSATION_MODEL', 'VISION_MODEL', 'SUMMARY_MODEL',
+                    'CORRECTION_MODEL', 'EMOTION_MODEL', 'AGENT_MODEL',
+                )}
+                for key, profile in get_assist_api_profiles().items()
+            },
             "core_api_providers_full": full_config.get("core_api_providers", {}),
             "keybook_api_providers_full": full_config.get("keybook_api_providers", {}),
             "tts_providers": tts_providers,

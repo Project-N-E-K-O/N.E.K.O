@@ -1,5 +1,15 @@
 # Docker デプロイ
 
+リモートinstanceはHTTPSページでkeyを初回入力し、通常のcommunity loginを利用します。
+外部nginx/NAS認証は併用できます。ローカルdesktopとloopbackデバッグproxyは互換です。
+リモート応答にLinuxパス/cloud tokenを含めません。platform relayはDocker domainごとの登録不要です。
+認証基盤とElectron対応版公開が#3289 merge条件で、Linux+Windows実機はcommunityが検証します。
+[契約と検証手順](/design/security/community-remote-access)。
+key取得: docker compose exec --user neko -w /app neko-main uv run python -m utils.instance_access
+NEKO_INSTANCE_PUBLIC_ORIGIN に HTTPS を指定する場合、外部ゲートウェイの80番ポートは閉じるかHTTPSへのリダイレクトのみ許可し、同じHostの平文要求を転送しないでください。内部HTTP upstreamは隔離してください。Host一致だけではTLSを証明できません。
+HTTPS/WSSを使用し、外部TLS gatewayではNEKO_INSTANCE_PUBLIC_ORIGINを設定します。
+NEKO_COMMUNITY_WEB_REDIRECT_URIは既定で空にしてplatform relayを使います。
+
 保守対象 Compose は `docker/docker-compose.yml`。Nginx を前段にして host 48911=HTTP、48912=HTTPS です。
 
 ```bash
@@ -10,7 +20,7 @@ cp env.template .env
 docker compose up -d
 ```
 
-`http://127.0.0.1:48911` を開きます。再現性には `NEKO_IMAGE` / `NEKO_IMAGE_VERSION` を pin。`latest` は standard、`latest-full` は full alias です。
+`https://127.0.0.1:48912` を開きます。再現性には `NEKO_IMAGE` / `NEKO_IMAGE_VERSION` を pin。`latest` は standard、`latest-full` は full alias です。
 
 Entrypoint は `/app/config/core_config.json` がない時、または `NEKO_FORCE_ENV_UPDATE` 指定時だけ初期 config を生成します。API env は live universal override ではありません。
 

@@ -4034,8 +4034,9 @@ class _TransportMixin:
     def _detach_for_failed_transport(self, reason: str):
         generation = self._connection_generation
         ws, self.ws = self.ws, None
+        gemini_context = self._gemini_context_manager if self._is_gemini else None
         tool_tasks = self._advance_tool_scope()
-        return self._close_failed_transport_impl(reason, generation, ws, tool_tasks)
+        return self._close_failed_transport_impl(reason, generation, ws, tool_tasks, gemini_context)
 
     async def _close_failed_transport_impl(
         self,
@@ -4043,6 +4044,7 @@ class _TransportMixin:
         generation,
         ws,
         tool_tasks=(),
+        gemini_context=None,
     ) -> None:
         await self._await_retired_tool_tasks(tool_tasks)
         # The fatal flag is the retired connection's, and the wrapper has
@@ -4056,15 +4058,17 @@ class _TransportMixin:
                 # it for the replacement. Shutting it down now would fail the
                 # new connection's tickets over a socket that is fine.
                 await response_arbiter.shutdown(reason)
-        await self._abort_failed_transport(reason, ws, generation)
+        await self._abort_failed_transport(reason, ws, generation, gemini_context=gemini_context)
 
     async def _abort_failed_transport(
         self,
         reason: str,
         ws=_ATTACHED_TRANSPORT,
         generation=None,
+        *,
+        gemini_context=None,
     ) -> None:
-        """Detach, when needed, and physically close a failed raw WebSocket.
+        """Detach and release a failed transport through its retained owner.
 
         The sentinel ``ws`` marks the arbiter's own entry point: it seizes the
         attached socket itself, where ``_close_failed_transport_impl`` hands
@@ -4078,6 +4082,7 @@ class _TransportMixin:
         if attached_transport:
             generation = getattr(self, "_connection_generation", None)
             ws, self.ws = self.ws, None
+            gemini_context = self._gemini_context_manager if self._is_gemini else None
             self._fatal_error_occurred = True
             # Arm recovery before the first await. The receive loop can wake as
             # soon as the socket is detached and must still be able to report
@@ -4090,9 +4095,12 @@ class _TransportMixin:
             await self._await_retired_tool_tasks(tool_tasks)
         elif generation is None or self._still_owns_connection(generation):
             self._fatal_error_occurred = True
-        if ws is not None:
+        if ws is not None or gemini_context is not None:
             try:
-                await ws.close()
+                # Ordinary and fatal closes share physical-release accounting.
+                # A failed raw close or SDK exit remains owned across a
+                # replacement and must be retried before capacity is released.
+                await self._release_retired_connection(ws, gemini_context)
             except Exception as exc:
                 logger.debug(
                     "failed transport close also failed (%s): %s",
@@ -4110,6 +4118,23 @@ class _TransportMixin:
         # retired session if the bridge recovers -- the offline client is
         # drained the same way, in ``_cancel_bus_copies``.
         await self._cancel_frame_copies()
+        close_task = self._close_task
+        if close_task is not None and close_task.done():
+            try:
+                close_error = close_task.exception()
+            except asyncio.CancelledError:
+                close_error = asyncio.CancelledError()
+            # A failed task owns no retryable await by itself. Recreate the
+            # teardown when its detached transport (or a replacement socket)
+            # is still present; a successful close with no successor remains
+            # idempotent through the completed task.
+            if (
+                close_error is not None
+                or self.ws is not None
+                or self._retired_websockets
+                or self._gemini_close_retry_contexts
+            ):
+                self._close_task = None
         await self._own_teardown("_close_task", self._detach_for_close)
 
     def _detach_for_close(self):
@@ -4133,7 +4158,15 @@ class _TransportMixin:
         self._local_failure_recovery = None
         silence_check_task, self._silence_check_task = self._silence_check_task, None
         gemini_context = self._gemini_context_manager
+        retired_gemini_contexts = tuple(
+            pair for pair in self._gemini_close_retry_contexts.values()
+            if pair[0] is not gemini_context
+        )
         gemini_close_task = self._gemini_close_task
+        if gemini_close_task is not None and gemini_close_task.done():
+            if gemini_close_task.cancelled() or gemini_close_task.exception() is not None:
+                gemini_close_task = None
+                self._gemini_close_task = None
         gemini_proactive_submit_task = getattr(
             self,
             "_gemini_proactive_submit_task",
@@ -4167,6 +4200,7 @@ class _TransportMixin:
             gemini_proactive_submit_task,
             gemini_external_submit_task,
             tool_tasks,
+            retired_gemini_contexts,
         )
 
     async def _close_impl(
@@ -4179,6 +4213,7 @@ class _TransportMixin:
         gemini_proactive_submit_task,
         gemini_external_submit_task,
         tool_tasks=(),
+        retired_gemini_contexts=(),
     ) -> None:
         # 先取消在飞的 Gemini 提交，再等退休的工具调用收尾：前者是可能一直挂着的
         # SDK 写，把它留到后面会让整段拆除跟着它一起等。取消逻辑只有
@@ -4217,6 +4252,7 @@ class _TransportMixin:
                 "Realtime close: a replacement connection attached; releasing only the retired connection"
             )
             await self._release_retired_connection(ws, gemini_context, gemini_close_task)
+            await self._retry_gemini_contexts(retired_gemini_contexts)
             return
 
         # 重置静默超时相关状态
@@ -4245,6 +4281,7 @@ class _TransportMixin:
                 "Realtime close: a replacement connection attached; releasing only the retired connection"
             )
             await self._release_retired_connection(ws, gemini_context, gemini_close_task)
+            await self._retry_gemini_contexts(retired_gemini_contexts)
             return
 
         # Gemini uses different cleanup
@@ -4253,6 +4290,7 @@ class _TransportMixin:
                 await asyncio.shield(gemini_close_task)
             else:
                 await self._close_gemini()
+            await self._retry_gemini_contexts(retired_gemini_contexts)
             return
 
         await self._release_retired_connection(ws, gemini_context, gemini_close_task)
@@ -4280,15 +4318,37 @@ class _TransportMixin:
             elif gemini_context is not None:
                 await self._close_gemini_context(gemini_context, ws)
             return
-        if ws:
-            try:
-                # 连接时已设 close_timeout=2s：远端超时未回 CLOSE 帧时，
-                # websockets 内部会自行 abort transport 强制关闭，
-                # 在兼容慢代理的同时保持清理等待有界。
-                await ws.close()
-            except Exception as e:
-                logger.error(f"Error closing websocket: {e}")
-            finally:
-                logger.info("WebSocket connection closed")
+        if ws is not None:
+            transports = [ws]
+        else:
+            transports = []
+        pending = list(self._retired_websockets)
+        self._retired_websockets.clear()
+        for retired in pending:
+            if not any(existing is retired for existing in transports):
+                transports.append(retired)
+        if transports:
+            # 连接时已设 close_timeout=2s：远端超时未回 CLOSE 帧时，
+            # websockets 内部会自行 abort transport 强制关闭，
+            # 在兼容慢代理的同时保持清理等待有界。
+            for index, retired in enumerate(transports):
+                closed = False
+                try:
+                    await retired.close()
+                    closed = True
+                except Exception as e:
+                    # The retirement registry uses a successful close as
+                    # the physical-release acknowledgement. A failed
+                    # handshake may have left the provider transport live;
+                    # retain this and every later transport for retry.
+                    unresolved = transports[index:]
+                    for item in unresolved:
+                        if not any(existing is item for existing in self._retired_websockets):
+                            self._retired_websockets.append(item)
+                    logger.error(f"Error closing websocket: {e}")
+                    raise
+                finally:
+                    if closed:
+                        logger.info("WebSocket connection closed")
         else:
             logger.warning("WebSocket connection is already closed or None")

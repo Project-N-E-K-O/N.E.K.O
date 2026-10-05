@@ -29,6 +29,7 @@ from .activation_scoring import (
     ActivationScoreStatus,
     CampPlusActivationScorer,
 )
+from main_logic.voice_input.wake_word.errors import safe_wake_word_reason
 
 
 ActivationOutput = Callable[[AudioFrame], Awaitable[OutputCommit]]
@@ -317,7 +318,7 @@ class VoiceSessionActivationRuntime:
         if not self._enabled:
             return self._publish(self._controller.disable())
         status = await self._scorer.prepare()
-        wake_error = False
+        wake_error = None
         if status is ActivationScoreStatus.READY and self._wake_detector is not None:
             async with self._lock:
                 if self._closed:
@@ -326,8 +327,9 @@ class VoiceSessionActivationRuntime:
                 await self._wake_detector.prepare()
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                wake_error = True
+            except Exception as exc:
+                reason = safe_wake_word_reason(exc)
+                wake_error = "wake_word_prepare_failed" if reason == "WAKE_WORD_WORKER_FAILED" else reason
         async with self._lock:
             if self._closed:
                 return self._publish(self._controller.close())
@@ -344,7 +346,7 @@ class VoiceSessionActivationRuntime:
                     return self._publish(
                         self._controller.mark_unavailable(
                             self._generation,
-                            "wake_word_prepare_failed",
+                            wake_error,
                         )
                     )
                 self._wake_ready = self._wake_detector is not None

@@ -417,7 +417,7 @@ class PluginCliService:
                             logger.error(
                                 "could not restore the autostart approval for "
                                 "plugin_id={} while refusing the install; it must "
-                                "be started once by hand",
+                                "have auto-start explicitly approved",
                                 done,
                             )
                     raise ServerDomainError(
@@ -467,11 +467,11 @@ class PluginCliService:
                     ):
                         # 和覆盖回滚同一个判断：这里正在处理另一个异常，改抛会把
                         # 真正的失败原因换掉。记一笔，后果有界——这个 id 上留了一条
-                        # 待批准记录，将来占用它的插件第一次要手动启动一次。
+                        # 待批准记录，将来占用它的插件需要显式批准自启动。
                         logger.error(
                             "install rollback could not restore the autostart "
                             "approval for plugin_id={}; whatever later takes that "
-                            "id must be started once by hand",
+                            "id must have auto-start explicitly approved",
                             gate_plugin_id,
                         )
                 raise
@@ -733,8 +733,8 @@ class PluginCliService:
                 ):
                     logger.error(
                         "manifestless replacement rollback could not restore the "
-                        "autostart approval for plugin_id={}; it must be started "
-                        "once by hand",
+                        "autostart approval for plugin_id={}; it needs explicit "
+                        "auto-start approval",
                         plan.plugin_id,
                     )
             source_restored = True
@@ -992,11 +992,11 @@ class PluginCliService:
                     # 只能记一笔。这里已经在处理另一个异常，改抛"批准还原失败"会
                     # 把真正的失败原因换掉，而那才是用户要看的东西（greptile 建议
                     # 传播，我不采纳这一半）。后果有界且不涉安全：恢复出来的内置
-                    # 插件这一轮不自启，用户手动启动一次就会重试这次写入。
+                    # 插件保持待批准，需要通过独立自启动开关重试批准。
                     logger.error(
                         "override rollback could not restore the autostart "
                         "approval for plugin_id={}; the restored builtin will not "
-                        "autostart until it is started once by hand",
+                        "autostart until its auto-start switch is enabled",
                         plan.plugin_id,
                     )
             raise

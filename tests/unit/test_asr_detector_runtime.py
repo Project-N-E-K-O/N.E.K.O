@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -2571,6 +2571,82 @@ async def test_overflow_epoch_bump_clears_deferred_completion_flags() -> None:
     await detector.release_deferred_turn()
     assert detector._candidate_generation == 0
     assert detector._semantic_generation == semantic_generation
+    await detector.close()
+
+
+async def test_pre_overflow_completion_cannot_advance_successor_epoch() -> None:
+    on_turn_complete = AsyncMock()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_turn_complete=on_turn_complete,
+    )
+    semantic_adapter = detector._semantic_adapter
+    assert semantic_adapter is not None
+    completion_fence = semantic_adapter._on_completion_fence
+    commit = semantic_adapter._on_commit
+    assert completion_fence is not None
+    stale_semantic = (detector._semantic_generation, 0, detector._semantic_turn_id)
+    stale_ingress = DetectorIngressIdentity(
+        ingress_token=_ingress_token(),
+        detector_epoch=detector._detector_epoch,
+        sequence_no=1,
+    )
+    adapter = _OverflowAdapter()
+    adapter.reset_release.set()
+    detector._semantic_adapter = adapter
+    detector._semantic_started = True
+
+    result = await detector.submit_audio(
+        b"\x01\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    assert result.status is DetectorSubmitStatus.BACKPRESSURE
+    overflow_reset = detector._overflow_reset_task
+    assert overflow_reset is not None
+    await asyncio.wait_for(overflow_reset, 1)
+    detector._candidate_open = True
+    successor_state = (
+        detector._semantic_generation,
+        detector._semantic_turn_id,
+        detector._candidate_generation,
+    )
+    adapter.reset = AsyncMock()
+
+    # The adapter was still publishing a completion evaluated before the
+    # overflow; neither callback may rewrite or complete the fresh epoch.
+    assert completion_fence(*stale_semantic, stale_ingress) is None
+    semantic_adapter._identity = stale_semantic
+    diagnostics = MagicMock()
+    evidence = MagicMock()
+    semantic_adapter._smart_turn_diagnostics = diagnostics
+    semantic_adapter._smart_turn_audio_evidence = evidence
+    await semantic_adapter._publish_complete_result(
+        stale_semantic,
+        stale_ingress,
+        "candidate_pause",
+        probability=0.9,
+        evaluation_tail=(),
+    )
+    diagnostics.complete.assert_not_called()
+    evidence.complete.assert_not_called()
+    await commit(*stale_semantic)
+
+    assert (
+        detector._semantic_generation,
+        detector._semantic_turn_id,
+        detector._candidate_generation,
+    ) == successor_state
+    assert detector._candidate_open is True
+    assert detector._completion_fences == {}
+    assert detector._defer_turn_complete is False
+    adapter.reset.assert_not_awaited()
+    on_turn_complete.assert_not_awaited()
     await detector.close()
 
 

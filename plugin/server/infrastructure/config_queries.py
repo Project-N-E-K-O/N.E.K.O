@@ -29,6 +29,7 @@ def _load_plugin_resolved_config(plugin_id: str, *, config_key: str) -> dict[str
         "plugin_id": plugin_id,
         "config_schema": schema,
         "config": resolved[config_key],
+        "config_fingerprint": resolved["config_fingerprint"],
         "last_modified": resolved["last_modified"],
         "config_path": resolved["config_path"],
         "profiles_state": resolved["profiles_state"],
@@ -61,6 +62,7 @@ def load_plugin_config(plugin_id: str, *, validate: bool = True) -> dict[str, ob
     return {
         "plugin_id": plugin_id,
         "config": resolved["effective_config"],
+        "config_fingerprint": resolved["config_fingerprint"],
         "config_schema": schema,
         "base_config": resolved["base_config"],
         "last_modified": resolved["last_modified"],

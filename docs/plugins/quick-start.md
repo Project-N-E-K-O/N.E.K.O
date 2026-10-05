@@ -298,8 +298,8 @@ NEKO_PLUGIN_HOT_RELOAD=true uv run python launcher.py
 
 Details worth knowing:
 
-- Only **running** plugins are reloaded; a plugin you stopped stays stopped.
-- Sources are syntax-checked before the reload. A broken edit keeps the current instance running and logs a warning; the next save retries.
+- Only **running** plugins are reloaded; a plugin you stopped stays stopped. The one exception: if an automatic reload stopped the plugin and then failed to start it (for example a bad import), your next save retries the start. Any manual Start/Stop/Reload, uninstall or reinstall cancels that retry.
+- The manifest, entry point and source syntax are checked before the reload. A broken edit keeps the current instance running and logs a warning; the next save retries.
 - The debounce window (`NEKO_PLUGIN_HOT_RELOAD_DEBOUNCE`, default 1.5s) absorbs multi-file saves; the poll interval is `NEKO_PLUGIN_HOT_RELOAD_INTERVAL` (default 1.0s).
 - Auto reloads take the same lock as the manual button. If you are mid-operation, the auto reload waits up to the debounce window for the lock, then defers by one debounce window and retries instead of interrupting.
 

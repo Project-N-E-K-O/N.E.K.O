@@ -36,14 +36,17 @@ from ._shared import logger, ContextAppendResult, _ReplyTurn
 from .context_append import ContextAppendMixin
 from .focus import FocusMixin
 from .tts_runtime import TtsRuntimeMixin
+from .tts_lifecycle import TtsLifecycleMixin
 from .turn import TurnMixin
 from .tool_calling import ToolCallingMixin
 from .lifecycle import LifecycleMixin
+from .session_lifecycle import SessionOwnershipMixin
 from .proactive import ProactiveMixin
 from .greeting import GreetingMixin
 from .asr_runtime import AsrRuntimeMixin
 from .streaming import StreamingMixin
 from .notify import NotifyMixin
+from .takeover import TakeoverMixin, TakeoverToken, HoldToken
 
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
@@ -51,14 +54,17 @@ class LLMSessionManager(
     ContextAppendMixin,
     FocusMixin,
     TtsRuntimeMixin,
+    TtsLifecycleMixin,
     TurnMixin,
     ToolCallingMixin,
     LifecycleMixin,
+    SessionOwnershipMixin,
     ProactiveMixin,
     GreetingMixin,
     AsrRuntimeMixin,
     StreamingMixin,
     NotifyMixin,
+    TakeoverMixin,
 ):
     # Ceiling for a missing voice_play_end before the playback gate self-heals:
     # above a normal single reply, but recovers a dropped end-signal reasonably
@@ -71,6 +77,8 @@ class LLMSessionManager(
         self.websocket = None
         self.sync_message_queue = sync_message_queue
         self.session = None
+        self._init_session_lifecycle_state()
+        self._init_tts_lifecycle_state()
         self._init_asr_runtime_state()
         self.last_time = None
         self.is_active = False
@@ -188,6 +196,7 @@ class LLMSessionManager(
         self.is_preparing_new_session = False
         self.summary_triggered_time = None
         self.initial_cache_snapshot_len = 0
+        self._primed_context_snapshot = None
         self.initial_next_session_context_snapshot_len = 0
         self.pending_session_warmed_up_event = None
         self.pending_session_final_prime_complete_event = None
@@ -271,9 +280,13 @@ class LLMSessionManager(
         # （text/audio delta、output transcript、response.complete、
         # new-message 通知）都要静音；语音转写也要先丢给外部 dispatcher
         # 处理，处理过的不再走本地 chat 路径。
-        # SessionManager 不知道 takeover 是谁、为什么——只认这两个 flag。
+        # SessionManager 不知道 takeover 是谁、为什么——只认下面三个属性。
+        # 三个属性只由 TakeoverMixin（acquire_takeover / release_takeover /
+        # set_takeover_callback_sink）写；_takeover_token 记录当前持有者，
+        # 不是当前 token 的 release 不生效，接管者之间不会互相解除静音。
         # 当前唯一消费者：main_routers.game_router；未来 plugin/agent 想完
         # 全接管 chat 的场景也走同一套接口。
+        self._takeover_token: Optional[TakeoverToken] = None
         self._takeover_active: bool = False
         self._takeover_input_dispatcher: Optional[
             Callable[..., Awaitable[bool]]
@@ -281,6 +294,10 @@ class LLMSessionManager(
         # 接管期间 respond 类回调的去处：返回 True 表示外部 controller 已收下，
         # 不再进 proactive_manager。None 时保持原样（排队等 takeover 释放）。
         self._takeover_callback_sink: Optional[Callable[[dict], bool]] = None
+        # 与 takeover 独立的回调暂扣（TakeoverMixin.hold_callbacks）：takeover
+        # 释放后仍可让 respond 类回调先进这个 sink，不走普通主动搭话投递。
+        self._callback_hold_sink: Optional[Callable[[dict], bool]] = None
+        self._callback_hold_token: Optional[HoldToken] = None
         # 由前端控制的Agent相关开关
         self.agent_flags = {
             'agent_enabled': False,
@@ -357,6 +374,13 @@ class LLMSessionManager(
         # 防止把该 Voice ID 和自定义凭证误送给 CosyVoice 等无关 provider。
         self._tts_fallback_uses_default_voice: bool = False
         self._active_text_request_id: Optional[str] = None
+        self._turn_wrap_up_owed = False
+        # Typed inputs being handled (StreamingMixin._process_stream_input):
+        # an owed wrap-up waits for their reply rather than running before it.
+        self._reply_setup_depth = 0
+        # The independent-ASR voice turn (its id) holding an owed wrap-up from
+        # its speech onset until it ends (TurnMixin._voice_turn_holds_owed_wrap_up).
+        self._voice_turn_wrap_up_hold: Optional[str] = None
         # 最近一次交给 Offline client 的回复（见 _shared._ReplyTurn）。热切换
         # promote 轮换 speech id 时靠它把仍在途的回复带到新 id 上。
         self._open_reply_turn: Optional[_ReplyTurn] = None
@@ -378,6 +402,7 @@ class LLMSessionManager(
         # Serialize pending-input replay with live input dispatch. The cache
         # lock cannot span awaits because attachment handoff reacquires it.
         self._pending_input_flush_active = False
+        self._pending_input_flush_idle_event = None
         
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
@@ -479,6 +504,9 @@ class LLMSessionManager(
         # 文本判断是否问问号 → 触发 unfinished_thread 机制（5 分钟内允许至多 2
         # 次跟进）；topic sink 独立消费同一 turn，不和 activity tracker 耦合。
         self._current_ai_turn_text: str = ''
+        # A discard emptied that buffer after its text had already reached
+        # cross_server, which stays in that assistant turn until a turn end.
+        self._discarded_turn_open: bool = False
         self._recent_ai_voice_echo_text: str = ''
         self._recent_ai_voice_echo_at: float = 0.0
         self._pending_ai_voice_echo_text: str = ''

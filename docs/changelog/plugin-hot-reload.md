@@ -35,11 +35,17 @@ root) plus every development-mode registration's `source_dir`. Watched files:
   `NEKO_PLUGIN_HOT_RELOAD_INTERVAL` seconds (default 1.0).
 - Only **running** plugins are reloaded. A plugin the user stopped is never
   started by a file change; it picks up new code on its next manual start.
-- Before stopping a healthy process, plugin-owned `.py` files are compiled and
-  `plugin.toml` is parsed. A syntactically broken edit skips the reload and
-  keeps the running instance; the next change retries. Development-mode
-  plugins additionally keep their existing full preflight inside
-  `reload_plugin`.
+  Exception: if an automatic reload stopped the plugin and then failed to
+  start it, the next source change retries the start. Any explicit
+  start/stop/reload, uninstall, package replacement or development-association
+  change revokes that retry.
+- Automatic reloads never change the plugin's persisted enabled / auto-start
+  intent; only the manual **Reload** button does.
+- Before stopping a healthy process, the manifest, entry point and plugin
+  dependencies are validated and plugin-owned `.py` files are compiled
+  (without importing the plugin). A broken edit skips the reload and keeps
+  the running instance; the next change retries. Development-mode plugins
+  additionally keep their existing full preflight inside `reload_plugin`.
 - Lifecycle events `plugin_hot_reload_triggered` / `_skipped` / `_failed` are
   emitted for observability.
 

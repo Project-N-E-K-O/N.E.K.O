@@ -1,4 +1,5 @@
 {
+    "instanceAccess": {"title":"Conectar ao NEKO","description":"Digite a chave de acesso fornecida pelo proprietário do servidor. Este dispositivo lembrará a conexão por 30 dias.","key":"Chave de acesso à instância","connect":"Conectar","failed":"Acesso negado. Verifique a chave e tente novamente.","httpsRequired":"Use HTTPS ou um túnel HTTPS confiável para conectar com segurança."},
     "common": {
         "load": "Carregar",
         "minimize": "Minimizar",
@@ -657,6 +658,7 @@
         "GAME_ROUTE_LLM_FAILED": "O LLM do jogo não retornou uma saída válida ({{error}})",
         "GAME_ROUTE_MEDIA_SKIPPED": "Quadros de tela/câmera ignorados durante o jogo",
         "GAME_VOICE_STT_GATE_ACTIVE": "Tomada de voz do jogo ativa",
+        "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE": "Outra atividade está em andamento; agora não é possível abrir o minijogo",
         "INTERNAL_IMPORT_ERROR": "Falha ao carregar componente interno: {{error}}",
         "LOCAL_CONFIG_CLEANUP_FAILED": "Estrutura inválida da configuração local do personagem",
         "MEMORY_SERVER_RELEASE_FAILED": "Falha ao liberar handle de memória do personagem, tente novamente mais tarde",
@@ -1334,6 +1336,7 @@
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter (agregador de modelo)",
             "orcarouter": "OrcaRouter (gateway do Claude)",
+            "requesty": "Requesty (roteador de modelos)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (auto-hospedado)"
         },
@@ -1341,6 +1344,30 @@
         "assistApiSelectLabel": "Provedor de API de assistência",
         "assistApiKeyLabel": "Chave de API de assistência",
         "assistApiAutoFillHint": "Preenchimento automático do Key Book quando vazio; as chaves inseridas manualmente são salvas de forma independente",
+        "modelIdCurrentPlaceholder": "Em uso: {{model}}",
+        "modelIdFreePlaceholder": "A versão gratuita usa modelos fixos",
+        "modelPicker": {
+            "fetch": "Buscar modelos",
+            "fetchTooltip": "Buscar a lista de modelos disponíveis no provedor",
+            "loading": "Buscando a lista de modelos…",
+            "noMatch": "Nenhum modelo correspondente",
+            "more": "Mais {{count}} modelos; digite uma palavra-chave para filtrar",
+            "unavailable": {
+                "noProvider": "Selecione um provedor primeiro",
+                "fixed": "Este provedor usa modelos fixos, não há o que escolher",
+                "follow": "Neste modo o modelo é definido pela configuração seguida, não há o que escolher",
+                "missingUrl": "Informe a URL da API primeiro"
+            },
+            "error": {
+                "urlHint": "Verifique se falta um prefixo de caminho, como /v1, na URL da API.",
+                "unsupported": "Este endpoint não fornece uma lista de modelos; digite o ID do modelo manualmente",
+                "key_required": "Uma chave salva só funciona com o endereço para o qual foi salva; digite a chave de API novamente",
+                "core_key_required": "O provedor principal mudou; insira novamente a chave de API",
+                "rate_limited": "Solicitações demais; tente novamente mais tarde",
+                "empty": "O provedor não retornou nenhum modelo",
+                "timeout": "A busca expirou; verifique sua rede e tente novamente"
+            }
+        },
         "disableTts": "Desativar TTS",
         "disableTtsHint": "Quando ativado, nenhum serviço de conversão de texto em fala será chamado",
         "keyBookTitle": "Livro de chaves de API",
@@ -1385,6 +1412,7 @@
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter",
             "orcarouter": "OrcaRouter",
+            "requesty": "Requesty",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "A versão gratuita não requer chave API",
@@ -2460,6 +2488,22 @@
         "selectionIntroImageAlt": "Ilustração da migração de armazenamento do N.E.K.O",
         "statusUnexpected": "A API de status de manutenção do armazenamento retornou um resultado não reconhecido.",
         "storageBootstrapBlocking": "O armazenamento ainda precisa de recuperação ou migração, então esta sessão ainda não pode continuar.",
+        "storagePolicyRollbackFailed": "Não foi possível gravar a configuração do local de armazenamento e o estado anterior não pôde ser restaurado. Verifique se o diretório de estado local é gravável; se o problema persistir, confira manualmente os arquivos de estado.",
+        "storagePolicyWriteFailed": "Não foi possível gravar a configuração do local de armazenamento. O estado anterior foi restaurado; verifique se o diretório de estado local é gravável e tente novamente.",
+        "storageOperationFailed": "Não foi possível iniciar a operação de armazenamento. Nada foi gravado no disco; tente novamente mais tarde.",
+        "storageStateUnreadable": "Não foi possível gravar a configuração do local de armazenamento. O arquivo de estado não pode ser lido no momento (pode não existir ou o diretório pode estar inacessível) e nada foi gravado no disco; tente novamente mais tarde ou verifique se o diretório de estado local está acessível.",
+        "storageStateInvalid": "O arquivo de estado de armazenamento está corrompido ou tem um formato inválido. Nada foi gravado no disco; verifique ou restaure o arquivo de estado.",
+        "restartRollbackFailed": "A reinicialização controlada falhou e não foi possível confirmar a restauração do estado anterior. Verifique ou restaure os arquivos de estado.",
+        "startupReleaseFailed": "Esta sessão não conseguiu sair do modo de inicialização restrita. Tente novamente ou atualize a página antes de continuar.",
+        "startupReleaseRollbackFailed": "Não foi possível sair do modo de inicialização restrita nem confirmar a restauração do estado anterior. Verifique ou restaure os arquivos de estado.",
+        "migrationAlreadyPending": "Resolva a migração ou recuperação atual antes de alterar o local de armazenamento.",
+        "selectedRootEmpty": "O caminho de destino não pode estar vazio.",
+        "selectedRootNotAbsolute": "O caminho de destino deve ser absoluto.",
+        "selectedRootInsideProject": "O destino não pode estar dentro do diretório do projeto. Escolha outro local.",
+        "selectedRootNotDirectory": "O destino deve ser uma pasta, não um arquivo.",
+        "selectedRootParentMissing": "O diretório pai do destino não foi encontrado. Escolha outro local.",
+        "selectedRootParentNotWritable": "Não é possível gravar no diretório pai do destino. Escolha outro local.",
+        "selectedRootReserved": "O destino está em uma área de armazenamento reservada. Escolha outro local.",
         "targetNotEmpty": "O destino já contém dados de execução. Confirme o destino antes da migração.",
         "systemStatusUnavailable": "Não foi possível confirmar o status do serviço local. Tente novamente.",
         "systemStatusUnexpected": "A API de status de inicialização do armazenamento retornou um resultado não reconhecido.",
@@ -3092,6 +3136,7 @@
         }
     },
     "voiceIdentity": {
+        "errorStopMainMicrophone": "O microfone da sessão principal ainda está em uso. Desative-o na sessão principal e tente esta operação novamente.",
         "pageTitle": "Perfil de voz do Owner",
         "title": "Perfil de voz do Owner",
         "profileStatus": "Estado do perfil de voz",
@@ -3204,7 +3249,106 @@
         "saveFailed": "O perfil de voz não foi salvo. Tente novamente.",
         "qualityCheckFailed": "A qualidade da voz não atende aos requisitos. Grave este segmento novamente.",
         "errorInconsistentSegments": "As gravações são muito diferentes. Comece novamente pelo primeiro segmento.",
-        "deleteConfirm": "Após excluir, será necessário cadastrar novamente para usar a ativação por voz."
+        "deleteConfirm": "Após excluir, será necessário cadastrar novamente para usar a ativação por voz.",
+        "inputTitle": "Verificar microfone e recursos",
+        "inputSelect": "Microfone",
+        "inputActual": "Entrada real:",
+        "inputNotOpened": "Microfone não aberto",
+        "inputGain": "Ganho de entrada",
+        "inputVolume": "Volume de entrada",
+        "inputTestHelp": "Grave um teste de três segundos para verificar a voz processada. O microfone da conversa associada será interrompido e não reiniciará automaticamente.",
+        "inputTest": "Ativar microfone e testar",
+        "inputTesting": "Leia com voz natural por três segundos.",
+        "inputPassed": "Teste aprovado. Você pode iniciar o cadastro.",
+        "inputTestRequired": "Conclua o teste antes de cadastrar a voz.",
+        "inputChanged": "As configurações de entrada mudaram. Cancele qualquer cadastro ativo e repita o teste de entrada.",
+        "inputPreviewBusy": "Um teste de entrada está em andamento. Conclua ou cancele o teste antes de ligar o microfone.",
+        "inputFallback": "O microfone selecionado está indisponível. Usando o dispositivo exibido; repita o teste.",
+        "inputDefault": "Padrão do sistema",
+        "inputUnnamed": "Microfone {{index}}",
+        "resourcePrepare": "Verificar e carregar recursos",
+        "resourceDownload": "Baixar modelo de palavra de ativação",
+        "resourceCancel": "Cancelar operação de recursos",
+        "resourceRepair": "Verifique ou repare este recurso.",
+        "wakeEnable": "Ativar palavra de ativação",
+        "activationTitle": "Ativação por voz",
+        "activationRetry": "Tentar ativar novamente",
+        "activationRetryFailed": "Falha ao tentar novamente. Verifique a conexão e os recursos.",
+        "activationRepair": "Verifique os recursos e tente ativar a voz novamente.",
+        "resourceState_unchecked": "Não verificado",
+        "resourceState_ready": "Pronto",
+        "resourceState_missing": "Ausente",
+        "resourceState_unavailable": "Indisponível",
+        "resourceState_preparing": "Preparando",
+        "resourceOperation_pending": "Pendente",
+        "resourceOperation_running": "Em execução",
+        "resourceOperation_succeeded": "Concluído",
+        "resourceOperation_failed": "Falhou",
+        "resourceOperation_cancelled": "Cancelado",
+        "resource_campp": "CAM++",
+        "resource_silero": "Silero VAD",
+        "resource_noise_reduction": "Redução de ruído",
+        "resource_wake_model": "Modelo de palavra de ativação",
+        "resource_wake_runtime": "Sherpa ONNX",
+        "activation_preparing": "Preparando",
+        "activation_waiting": "Aguardando você falar para ativar a conversa por voz",
+        "activation_verifying": "Preparando",
+        "activation_replaying": "Preparando",
+        "activation_active": "A conversa por voz está ativa",
+        "activation_unavailable": "A ativação por voz está temporariamente indisponível; o áudio em espera não será enviado",
+        "activation_closed": "Indisponível",
+        "activation_disabled": "O perfil de voz do Owner está salvo; a ativação por voz está desligada",
+        "inputReason_volume_too_low": "O volume está muito baixo. Grave este trecho novamente.",
+        "inputReason_speech_too_short": "Não foi detectada fala suficiente. Grave este trecho novamente.",
+        "inputReason_no_speech_detected": "Não foi detectada fala real suficiente. Grave este trecho novamente.",
+        "inputReason_severe_clipping": "A gravação está muito saturada. Grave este trecho novamente.",
+        "inputReason_microphone_unavailable": "Microfone desconectado ou indisponível. Selecione ou reconecte o dispositivo.",
+        "inputReason_permission_denied": "Permissão de microfone negada. Permita o acesso e tente novamente.",
+        "inputReason_capture_owner_unavailable": "A janela de gravação está indisponível. Reabra o cadastro de voz na janela que usa o microfone.",
+        "inputReason_capture_cancelled": "A entrada mudou. Repita o teste e o cadastro.",
+        "resourceReason_WAKE_WORD_MODEL_MISSING": "Modelo de ativação ausente. Baixe o modelo.",
+        "resourceReason_WAKE_WORD_RUNTIME_MISSING": "Componente de ativação ausente. Atualize ou repare o aplicativo.",
+        "resourceReason_WAKE_WORD_RUNTIME_FIX_REQUIRED": "Componente de ativação incompatível. Atualize ou repare o aplicativo.",
+        "resourceReason_WAKE_WORD_WORKER_FAILED": "Falha ao preparar a ativação. Verifique o modelo e o componente.",
+        "activationReason_wake_word_prepare_failed": "Falha ao preparar a ativação. Verifique o modelo e o componente.",
+        "activationReason_activation_queue_overflow": "A fila de áudio excedeu o limite. Tente ativar novamente.",
+        "activationReason_activation_output_failed": "Falha na saída de voz. Tente ativar novamente.",
+        "resourceReason_WAKE_WORD_TOKEN_UNKNOWN": "O vocabulário de ativação não corresponde ao modelo.",
+        "activationReason_WAKE_WORD_TOKEN_UNKNOWN": "O vocabulário de ativação não corresponde ao modelo.",
+        "resourceReason_WAKE_WORD_PREFERENCE_UNAVAILABLE": "Não foi possível ler a preferência de ativação.",
+        "activationReason_WAKE_WORD_PREFERENCE_UNAVAILABLE": "Não foi possível ler a preferência de ativação.",
+        "resourceReason_WAKE_WORD_TIMEOUT": "A preparação da ativação excedeu o tempo.",
+        "activationReason_WAKE_WORD_TIMEOUT": "A preparação da ativação excedeu o tempo.",
+        "resourceReason_WAKE_WORD_CLOSED": "O detector de ativação foi fechado.",
+        "activationReason_WAKE_WORD_CLOSED": "O detector de ativação foi fechado.",
+        "resourceReason_WAKE_WORD_CONCURRENT_CALL": "Outra operação de ativação está em execução.",
+        "activationReason_WAKE_WORD_CONCURRENT_CALL": "Outra operação de ativação está em execução.",
+        "activationReason_WAKE_WORD_RUNTIME_MISSING": "Componente de ativação ausente. Atualize ou repare o aplicativo.",
+        "activationReason_WAKE_WORD_RUNTIME_FIX_REQUIRED": "Componente de ativação incompatível. Atualize ou repare o aplicativo.",
+        "activationReason_WAKE_WORD_MODEL_MISSING": "Modelo de ativação ausente. Baixe o modelo.",
+        "activationReason_WAKE_WORD_WORKER_FAILED": "Falha ao preparar a ativação. Verifique o modelo e o componente.",
+        "activationReason_wake_word_runtime_failed": "Falha na detecção. Verifique os recursos e tente novamente.",
+        "activationReason_wake_word_queue_overflow": "A fila de áudio excedeu o limite. Tente ativar novamente.",
+        "activationReason_queue_overflow": "A fila de áudio excedeu o limite. Tente ativar novamente.",
+        "activationReason_output_handoff_failed": "Falha na saída de voz. Tente ativar novamente.",
+        "activationReason_output_delivery_failed": "Falha na saída de voz. Tente ativar novamente.",
+        "resourceRepairButton": "Reparar recursos",
+        "resourceLocation": "Os modelos e componentes estão no servidor N.E.K.O desta página; o microfone está no seu dispositivo atual.",
+        "activationRestart": "Reiniciar sessão de voz",
+        "activationRestartRequired": "Desligue o microfone e use o botão principal do microfone para iniciar uma nova sessão de voz. O áudio anterior não será reenviado.",
+        "activationReason_voice_session_restart_required": "Feche e reabra o microfone para iniciar uma nova sessão. O áudio anterior não será reenviado.",
+        "resourceReason_WAKE_WORD_MODEL_INVALID": "Os arquivos do modelo estão corrompidos. Baixe e valide o modelo completo novamente.",
+        "resourceReason_WAKE_WORD_PLATFORM_UNSUPPORTED": "Esta plataforma não suporta o componente de ativação. Use um servidor compatível.",
+        "activationReason_WAKE_WORD_MODEL_INVALID": "Os arquivos do modelo estão corrompidos. Baixe e valide o modelo completo novamente.",
+        "activationReason_WAKE_WORD_PLATFORM_UNSUPPORTED": "Esta plataforma não suporta o componente de ativação. Use um servidor compatível.",
+        "activationReason_runtime_creation_failed": "Não foi possível iniciar a ativação por voz. Verifique os recursos e tente novamente.",
+        "activationReason_prepare_failed": "A preparação da ativação por voz falhou. Verifique os recursos e tente novamente.",
+        "activationReason_voice_cleanup_timeout": "A sessão de voz anterior não parou a tempo. Feche e reabra o microfone.",
+        "resourceReason_resource_cache_full": "O cache de modelos está cheio. Pare o backend e faça a manutenção conforme o guia de reparo.",
+        "resourceReason_resource_prepare_timeout": "A preparação dos recursos excedeu o tempo limite. Verifique e tente novamente.",
+        "resourceReason_resource_storage_unavailable": "O armazenamento de modelos está indisponível. Verifique as permissões do backend e o espaço livre.",
+        "resourceReason_audio_processing_unavailable": "O processamento de áudio está indisponível. Repare os modelos e componentes necessários.",
+        "resourceReason_model_unavailable": "O modelo necessário está indisponível. Siga o guia de reparo."
     },
     "settings": {
         "menu": {
@@ -3979,7 +4123,7 @@
             },
             "step6": {
                 "title": "🔑 Chave API Auxiliar",
-                "desc": "Se estiver usando o Alibaba como API auxiliar, insira a chave da API do Alibaba aqui. Se estiver vazio, usa a chave API principal."
+                "desc": "Insira aqui a chave API do provedor auxiliar selecionado. Se o campo estiver vazio, normalmente será usada a chave da API principal; provedores que exigem uma chave própria não permitem essa alternativa."
             },
             "step7": {
                 "title": "🔧 Configuração de API personalizada",
@@ -5493,6 +5637,79 @@
              "surprisedPrefix": "Hã?! "
          }
     },
+    "airBasketball": {
+        "title": "Basquete aéreo",
+        "timeLeft": "RESTANTE",
+        "seconds": "s",
+        "you": "VOCÊ",
+        "anglePower": "ÂNGULO × FORÇA",
+        "autoChallenge": "DESAFIO AUTO",
+        "score": "PONTOS",
+        "stage": "FASE",
+        "combo": "SEQUÊNCIA",
+        "time": "TEMPO",
+        "stageTarget": "PRÓXIMA FASE",
+        "power": "FORÇA",
+        "angle": "ÂNGULO",
+        "fever": "FEBRE",
+        "gestureHint": "Segure a bola e arraste para carregar; arremesse na diagonal para a direita para invadir a quadra adversária",
+        "playerControl": "CONTROLE DO JOGADOR",
+        "aiControl": "CONTROLE AUTOMÁTICO",
+        "nekoHit": "AI!",
+        "intro": "Os dois lados usam as mesmas regras de foco e pontuação; controle o ritmo dos arremessos e travessuras.",
+        "ruleAim": "ÂNGULO E FORÇA",
+        "ruleStage": "4 FASES DE CESTA",
+        "ruleFever": "FEBRE EM SEQUÊNCIA",
+        "start": "INICIAR PARTIDA",
+        "again": "JOGAR DE NOVO",
+        "swish": "PERFEITO!",
+        "basket": "CESTA!",
+        "miss": "QUASE",
+        "stageUp": "FASE",
+        "feverOn": "FEBRE! +1",
+        "win": "VOCÊ VENCEU!",
+        "draw": "EMPATE!",
+        "interference": "FOCO",
+        "interfereHint": "Arraste a bola ou cesta, ou acerte a personagem",
+        "soundOff": "Desativar som",
+        "soundOn": "Ativar som",
+        "crossScore": "CESTA CRUZADA!",
+        "ballClash": "CHOQUE DE BOLAS!",
+        "stolenBall": "POSSE MUDOU!",
+        "chaosBall": "{name} jogou outra bola!",
+        "nekoCountering": "{name} preparando o contra-ataque",
+        "chooseMode": "Escolha o modo",
+        "timedMode": "Duelo cronometrado",
+        "timedModeHint": "Marque por 60 segundos",
+        "endlessMode": "Jogo livre",
+        "endlessModeHint": "Sem limite; encerre quando quiser",
+        "endlessIntro": "Arremesse, bata bolas e faça bagunça sem cronômetro; encerre quando quiser.",
+        "stopMatch": "Encerrar",
+        "elapsed": "JOGADO",
+        "opponentReady": "{name} PRONTA",
+        "opponentAiming": "{name} MIRANDO",
+        "opponentFever": "{name} EM FEBRE",
+        "opponentWin": "{name} VENCEU",
+        "mouseStealCaught": "{name} roubou o cursor!",
+        "mouseStealEscape": "Sacuda o mouse rápido para escapar",
+        "mouseStealEscaped": "Escapou!",
+        "mouseStealReleased": "{name} soltou",
+        "mouseStealStatus": "{name} está roubando o cursor",
+        "voiceOpening": ["Pronto? Não vou pegar leve."],
+        "voiceChaos": ["Pega essa!"],
+        "voiceScore": ["Essa foi fácil."],
+        "voiceHit": ["Ei, acerte a bola!"],
+        "voiceMouseSteal": ["Me empresta esse cursor!"],
+        "voiceWin": ["Esta rodada é minha."],
+        "voiceLose": ["Tudo bem, desta vez você venceu."],
+        "arenaLabel": "Quadra de basquete para dois",
+        "playerArcadeLabel": "Máquina de basquete do jogador",
+        "opponentArcadeLabel": "Máquina de basquete do adversário",
+        "avatarLabel": "Personagem atual; arraste ou toque para interferir",
+        "avatarUnavailable": "Recurso da personagem indisponível",
+        "sdkUnavailable": "Não foi possível carregar o minijogo. Feche esta página e tente novamente.",
+        "runtimeStartFailed": "Não foi possível iniciar a partida. Tente novamente em instantes."
+    },
    "soccer": {
         "settings": {
             "button": "Configurações",
@@ -5847,6 +6064,186 @@
             "finalTitle": "Resumo final",
             "roundLabel": "Rodada {{round}}",
             "noRounds": "Ainda não há rodadas concluídas."
+        }
+    },
+    "clickGuide": {
+        "tour": "Guia interativo",
+        "back": "Anterior",
+        "next": "Próximo",
+        "skip": "Encerrar guia",
+        "unavailable": "Este botão está indisponível por enquanto. Selecione Próximo para continuar.",
+        "nativeFallback": "Se não conseguir clicar na bolinha, escolha Próximo.",
+        "skipTools": "Pular ferramentas",
+        "toolContinueHint": "Clique no botão destacado para continuar. A ferramenta não será executada.",
+        "finishButton": "Concluir",
+        "close": "Fechar",
+        "saveFailed": "Não foi possível salvar. Tente novamente.",
+        "resetButton": "Reativar tutorial",
+        "resetSuccess": "Guia reiniciado. Recarregue o início para começar. O progresso de sete dias permanece igual.",
+        "choice": {
+            "title": "Qual tutorial você quer repetir?",
+            "body": "Escolha o guia de cliques ou reinicie o tutorial de história de sete dias. O guia de cliques mantém seu progresso de sete dias.",
+            "click": "Guia interativo",
+            "sevenDay": "Tutorial de sete dias"
+        },
+        "chatOverview": {
+            "title": "Chat em cápsula",
+            "body": "Digite “你好” aqui e pressione Enter para enviar."
+        },
+        "chatOverviewSend": {
+            "body": "Pronto? Pressione Enter para enviar a mensagem."
+        },
+        "chatOverviewDraft": {
+            "body": "Você já tem uma mensagem ou anexo não enviado. Vamos mantê-lo; escolha Próximo para ver o histórico."
+        },
+        "chatOverviewBack": {
+            "body": "Esta é a cápsula de conversa. A conversa e o rascunho ficam como estão; escolha Próximo para rever o histórico."
+        },
+        "history": {
+            "title": "Histórico",
+            "body": "Clique na barra azul acima da cápsula para abrir a conversa."
+        },
+        "historyClose": {
+            "title": "Fechar histórico",
+            "body": "Clique na barra azul novamente para fechar o histórico e voltar ao chat."
+        },
+        "minimize": {
+            "title": "Minimizar chat",
+            "body": "Clique na bolinha à esquerda para transformar o chat em uma pequena bolinha na área de trabalho."
+        },
+        "restore": {
+            "title": "Restaurar chat",
+            "body": "Clique de novo na bolinha para abrir a cápsula e continuar conversando."
+        },
+        "tools": {
+            "title": "Ferramentas",
+            "body": "Passe o mouse sobre o botão à direita para abrir a roda de ferramentas."
+        },
+        "toolsDraft": {
+            "body": "Com texto ou anexo, o botão da direita vira Enviar. Apague o texto ou remova o anexo para testar a roda de ferramentas, ou escolha Pular ferramentas e mantenha o rascunho."
+        },
+        "screenshot": {
+            "title": "Captura de tela",
+            "body": "Role ou arraste a roda para trocar de ferramenta. A captura é anexada à mensagem."
+        },
+        "avatar": {
+            "title": "Itens interativos",
+            "body": "Abra estas ferramentas quando quiser brincar com seu personagem. Você pode escolher e organizar suas favoritas."
+        },
+        "avatarTools": {
+            "title": "Seus itens",
+            "body": "A ordem salva é respeitada. O botão final permite editar os favoritos. Esta patinha é um item, diferente do Agent."
+        },
+        "translate": {
+            "title": "Tradução de legendas",
+            "body": "Ative a tradução de legendas para acompanhar outro idioma. Clique de novo para desativar."
+        },
+        "jukebox": {
+            "title": "Música",
+            "body": "A jukebox permite ouvir música enquanto você conversa. A escolha de músicas e os controles de reprodução ficam lá."
+        },
+        "import": {
+            "title": "Importar imagem",
+            "body": "Importar imagem permite escolher uma imagem do dispositivo e anexá-la à conversa."
+        },
+        "export": {
+            "title": "Exportar conversa",
+            "body": "Exportar permite selecionar mensagens, conferir a prévia e salvar uma cópia."
+        },
+        "galgame": {
+            "title": "Galgame",
+            "body": "Muda a conversa para o modo Galgame, com opções de resposta. Clique novamente para voltar ao chat comum."
+        },
+        "floatingOverviewContinueHint": "Clique em qualquer botão destacado para continuar. A função não será aberta.",
+        "floatingOverview": {
+            "title": "Botões ao lado do personagem",
+            "body": "Os botões ao lado da personagem abrem voz, Agent, Neko Universe, configurações e descanso."
+        },
+        "mic": {
+            "title": "Chat de voz",
+            "body": "O microfone inicia ou encerra a conversa por voz. A setinha abre opções de microfone, volume e compartilhamento de tela."
+        },
+        "micSettings": {
+            "title": "Configurações de voz",
+            "body": "Clique na seta ao lado do microfone. Dispositivos e volume também ficam aqui."
+        },
+        "screen": {
+            "title": "Compartilhar tela",
+            "body": "Escolha uma tela ou janela. O botão à direita inicia ou para o compartilhamento. É opcional."
+        },
+        "agent": {
+            "title": "Agent",
+            "body": "A patinha abre as ferramentas Agent para ajudar com o computador, navegador e plugins. O painel de tarefas mostra o andamento e permite interromper tarefas."
+        },
+        "agentMaster": {
+            "title": "Interruptor do Agent",
+            "body": "Ativa o Agent. O painel de tarefas mostra o progresso e permite pará-las. Não é preciso ativar."
+        },
+        "social": {
+            "title": "Universo Miau",
+            "body": "O Neko Universe é liberado para novos usuários após três dias corridos. Depois, entre na comunidade por aqui."
+        },
+        "settings": {
+            "title": "Configurações",
+            "body": "Encontre personagem, voz, preferências de chat e memórias em Configurações."
+        },
+        "proactive": {
+            "title": "Chat proativo",
+            "body": "Permita que seu personagem inicie conversas. Não é necessário mudar."
+        },
+        "privacy": {
+            "title": "Privacidade",
+            "body": "Controle o acesso visual proativo. Mantenha suas preferências de privacidade."
+        },
+        "memory": {
+            "title": "Navegador de memórias",
+            "body": "Veja e gerencie memórias. Aqui também pode reiniciar cada tutorial separadamente."
+        },
+        "goodbye": {
+            "title": "Ir para casa",
+            "body": "Deixe a personagem descansar por aqui. Você pode chamá-la de volta quando quiser."
+        },
+        "return": {
+            "title": "Chamar de volta",
+            "body": "Clique em Chamar para trazer o personagem de volta."
+        },
+        "lock": {
+            "title": "Travar posição",
+            "body": "O cadeado fixa o personagem no lugar. Destrancado, você pode arrastar para mover e usar a roda para redimensionar."
+        },
+        "finish": {
+            "title": "Hora de explorar",
+            "body": "O guia terminou. Para vê-lo de novo, redefina o guia de cliques em Configurações → Navegador de memórias."
+        },
+        "connection": {
+            "title": "Chat indisponível",
+            "body": "A janela de chat não respondeu. Abra-a e recarregue o início para tentar novamente. O guia não foi marcado como concluído."
+        },
+        "closeMenu": "Fechar menu e continuar",
+        "openedWindow": {
+            "title": "Voltar para onde estávamos",
+            "body": "Você pode reabrir esta página pelo mesmo atalho sempre que precisar. Agora clique no botão de fechar destacado para voltar e conhecer as outras funções.",
+            "close": "Fechar página e continuar",
+            "pending": "Se a página pedir para salvar ou confirmar, conclua essa etapa. O guia continua quando ela fechar.",
+            "manualClose": "Esta página já está aberta em outra janela. Feche-a lá e volte aqui; o guia continuará automaticamente.",
+            "returnToPage": "Ir para a página aberta"
+        },
+        "socialClose": {
+            "title": "Voltar da comunidade",
+            "body": "A comunidade está aberta. Clique no × para fechar e voltar aos atalhos do personagem."
+        },
+        "micMenu": {
+            "body": "Aqui ficam opções de microfone, volume e compartilhamento de tela. Feche o menu quando terminar de olhar."
+        },
+        "agentMenu": {
+            "body": "Os interruptores escolhem as ferramentas do Agent. O painel de tarefas mostra o andamento. Pode manter as opções atuais e fechar o menu."
+        },
+        "settingsMenu": {
+            "body": "As configurações do personagem, da voz e do chat estão agrupadas aqui. Por enquanto, basta conhecer os atalhos; os ajustes podem ficar para depois. Feche o menu pelo botão abaixo."
+        },
+        "sections": {
+            "chat": "Cápsula de chat",
+            "floating": "Botões do personagem"
         }
     }
 }

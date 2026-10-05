@@ -941,7 +941,7 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 111469,
+  "source_bytes": 114608,
   "source_files": [
     "__init__.py",
     "config.schema.json",
@@ -958,5 +958,5 @@
     "tests/test_memory_settlement.py",
     "wechat_client.py"
   ],
-  "source_sha256": "b2b69f69a016f3a647c41b78a79063f55b0534fa914bad4171b00bf68c258a39"
+  "source_sha256": "654279657f37de2e3cdb33ae58ab68311d3fc3910bb72f3c36d498802d519067"
 }

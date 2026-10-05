@@ -453,6 +453,10 @@ export default {
     disabled: 'Disabled',
     autoStart: 'Auto Start',
     manualStart: 'Manual Start',
+    autoStartHint: 'Start automatically when N.E.K.O launches. Starting or stopping manually does not change this.',
+    autoStartDisabledHint: 'This plugin is disabled. Turning on auto-start will also enable it for the next launch, without starting it now.',
+    autoStartBlockedHint: 'The preference is on, but this plugin is disabled or awaiting approval and will not start at launch. Turn off and on again to enable and approve auto-start.',
+    autoStartUnsupportedDevelopment: 'Development plugins are not started automatically. Start them manually.',
     fetchFailed: 'Failed to fetch plugins',
     pluginType: 'Type',
     pluginTypeNormal: 'Plugin',
@@ -810,6 +814,9 @@ export default {
     pluginDeleted: 'Plugin deleted',
     pluginDeletedBuiltinRestartFailed: 'Plugin {plugin} was deleted, but the restored built-in version failed to start: {error}',
     startFailed: 'Failed to start',
+    autoStartEnabled: 'Auto start enabled',
+    autoStartDisabled: 'Auto start disabled',
+    autoStartUpdateFailed: 'Failed to update auto start',
     stopFailed: 'Failed to stop',
     reloadFailed: 'Failed to reload',
     buildFailed: 'Failed to build plugin',
@@ -823,6 +830,7 @@ export default {
     serviceUnavailable: 'Service unavailable',
     networkError: 'Network error. Please check your connection.',
     requestTimeout: 'The request timed out. Please try again.',
+    csrfBootstrapFailed: 'Could not obtain the security token. If you use a reverse proxy, make sure it forwards /security/csrf-token to the plugin server.',
     pluginLifecycleTimeout: 'Plugin startup or restart timed out. Please check the plugin logs.'
   },
   welcome: {

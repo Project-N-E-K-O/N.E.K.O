@@ -1220,7 +1220,9 @@ async def test_slow_pregame_start_cannot_publish_after_new_generation_takes_over
         external_states.append(expected_state)
         return True
 
-    class _ActiveAudioManager:
+    from main_logic.core.takeover import TakeoverMixin
+
+    class _ActiveAudioManager(TakeoverMixin):
         is_active = True
         input_mode = "audio"
         session = object()
