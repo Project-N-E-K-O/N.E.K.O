@@ -31,7 +31,9 @@ case "$1" in
         echo "${CONTAINER_ID:-id-1} ${LABEL:-enabled} neko-main $running $paused $restarting $started" ;;
     ps) [[ ${INSPECT_FAIL:-0} == 0 ]] || exit 1
         [[ ${CONTAINER_ABSENT:-0} == 1 ]] || echo id-1 ;;
-    exec) exit "${BACKEND_EXIT:-0}" ;;
+    exec)
+        [[ "$3 $4 $5 $6" == "curl --noproxy * -fsS" ]] || exit 99
+        exit "${BACKEND_EXIT:-0}" ;;
     restart)
         [[ "$2 $3" == '--time 30' ]] || exit 99
         echo "$4" >> "$TEST_ROOT/restarts"
@@ -46,6 +48,7 @@ esac
 EOF
 cat > "$ROOT/bin/curl" <<'EOF'
 #!/bin/bash
+[[ "$1 $2" == '--noproxy *' ]] || exit 99
 printf '%s' "${HTTP_CODE:-401}"
 exit "${CURL_EXIT:-0}"
 EOF
@@ -61,6 +64,8 @@ no_restart() { [[ ! -e "$ROOT/restarts" ]]; }
 reset() { rm -f "$ROOT/state/fail-count" "$ROOT/state/restart-count" "$ROOT/restarts" "$ROOT/restart-attempt" "$ROOT/restart-begun" "$ROOT/restart-release"; }
 run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 HTTP_CODE=200 run; no_restart
+http_proxy=http://127.0.0.1:1 ALL_PROXY=http://127.0.0.1:1 run
+no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 CURL_EXIT=28 run; no_restart; grep -q 'id-1 1' "$ROOT/state/fail-count"
 CURL_EXIT=28 run; [[ $(cat "$ROOT/restarts") == id-1 ]]
 [[ ! -e "$ROOT/state/fail-count" ]]
@@ -254,6 +259,36 @@ sed -i 's/^NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=.*/ NEKO_WATCHDOG_STARTUP_GRACE_S
 if sh "$ROOT/install.sh" 2> "$ROOT/install-error"; then exit 1; fi
 grep -q 'invalid existing startup grace' "$ROOT/install-error"
 cp "$ROOT/cron-before" "$ROOT/cron/neko-watchdog"
+# Normalize one matching quote pair, and reject malformed or nonnumeric values.
+for value in '"1800"' "'300'"; do
+    cp "$ROOT/cron-before" "$ROOT/cron/neko-watchdog"
+    sed -i "s/^NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=.*/NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=$value/" "$ROOT/cron/neko-watchdog"
+    sh "$ROOT/install.sh"
+    expected=${value:1:${#value}-2}
+    grep -qx "NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=$expected" "$ROOT/cron/neko-watchdog"
+done
+for value in '"30m"' '"300' "'300\"" '"'"'300'"'"'; do
+    cp "$ROOT/cron-before" "$ROOT/cron/neko-watchdog"
+    sed -i "s/^NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=.*/NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=$value/" "$ROOT/cron/neko-watchdog"
+    cp "$ROOT/cron/neko-watchdog" "$ROOT/cron-invalid"
+    if sh "$ROOT/install.sh" 2> "$ROOT/install-error"; then exit 1; fi
+    grep -q 'invalid existing startup grace' "$ROOT/install-error"
+    cmp "$ROOT/cron/neko-watchdog" "$ROOT/cron-invalid"
+done
+cp "$ROOT/cron-before" "$ROOT/cron/neko-watchdog"
+# Reject directories and FIFOs before publishing either destination.
+rm "$ROOT/opt/neko/watchdog.sh"
+for kind in directory fifo; do
+    if [[ "$kind" == directory ]]; then mkdir "$ROOT/opt/neko/watchdog.sh"; else mkfifo "$ROOT/opt/neko/watchdog.sh"; fi
+    if sh "$ROOT/install.sh" 2> "$ROOT/install-error"; then exit 1; fi
+    grep -q 'watchdog destination is not a regular file' "$ROOT/install-error"
+    cmp "$ROOT/cron/neko-watchdog" "$ROOT/cron-before"
+    if [[ "$kind" == directory ]]; then
+        [[ -z $(ls -A "$ROOT/opt/neko/watchdog.sh") ]]
+        rmdir "$ROOT/opt/neko/watchdog.sh"
+    else rm "$ROOT/opt/neko/watchdog.sh"; fi
+done
+sh "$ROOT/install.sh"
 # A failed second mktemp and TERM during copying must leave no temporary files.
 rm "$ROOT/opt/neko/watchdog.sh" "$ROOT/cron/neko-watchdog"
 cat > "$ROOT/bin/mktemp" <<'EOF'

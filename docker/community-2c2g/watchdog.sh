@@ -66,9 +66,9 @@ fi
 healthy=false
 # Nginx /health can route to the plugin service; probe root AND real main service.
 # A complete anonymous 401 is normal under #3289; curl failure must never pass.
-if code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 http://127.0.0.1:48911/); then
+if code=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 http://127.0.0.1:48911/); then
     if [[ "$code" == 200 || "$code" == 401 ]]; then
-        if timeout 15 docker exec "$container_id" curl -fsS --connect-timeout 5 --max-time 10 http://127.0.0.1:48911/health >/dev/null; then
+        if timeout 15 docker exec "$container_id" curl --noproxy '*' -fsS --connect-timeout 5 --max-time 10 http://127.0.0.1:48911/health >/dev/null; then
             healthy=true
         fi
     fi

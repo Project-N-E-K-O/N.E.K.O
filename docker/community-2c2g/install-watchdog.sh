@@ -23,6 +23,9 @@ mkdir -p /host-opt/neko
 chmod 700 /host-opt/neko
 [ ! -L /host-cron.d/neko-watchdog ] || fail "symlink at cron destination"
 [ ! -L /host-opt/neko/watchdog.sh ] || fail "symlink at watchdog destination"
+if [ -e /host-opt/neko/watchdog.sh ]; then
+    [ -f /host-opt/neko/watchdog.sh ] || fail "watchdog destination is not a regular file"
+fi
 # Preserve only the documented setting, never arbitrary cron commands.
 grace=
 if [ -e /host-cron.d/neko-watchdog ]; then
@@ -31,6 +34,8 @@ if [ -e /host-cron.d/neko-watchdog ]; then
     assignment_pattern='^[[:blank:]]*NEKO_WATCHDOG_STARTUP_GRACE_SECONDS[[:blank:]]*=[[:blank:]]*'
     [ "$(grep -c "$assignment_pattern" /host-cron.d/neko-watchdog || true)" -le 1 ] || fail "duplicate startup grace settings"
     grace=$(sed -n "/$assignment_pattern/{s/$assignment_pattern//;s/[[:blank:]]*$//;p;}" /host-cron.d/neko-watchdog)
+    # Strip one matching cron quote pair; never evaluate shell expressions.
+    grace=$(printf '%s\n' "$grace" | sed -e 's/^"\(.*\)"$/\1/' -e 't' -e "s/^'\(.*\)'$/\1/")
     case "$grace" in
         '') ;;
         *[!0-9]*) fail "invalid existing startup grace" ;;

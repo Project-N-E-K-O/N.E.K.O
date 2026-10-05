@@ -84,7 +84,7 @@ services:
 docker compose -f docker-compose.yaml -f compose.gateway.yaml up -d
 ```
 
-此示例适用于运行在同一宿主机、可连接本机端口的网关；网关在其他主机或容器时需按实际网络配置隔离上游。
+此示例适用于运行在同一宿主机、可连接本机端口的网关；网关在其他主机或容器时需按实际网络配置隔离上游。若启用看门狗，必须保留宿主 `http://127.0.0.1:48911/` 可达；更换宿主端口、仅绑定内网 IP 或只发布 HTTPS 会使探测失败，并对健康容器触发恢复直至预算耗尽。此类网络配置应先按第 3 节暂停看门狗，调整探测脚本并验证健康分支后再恢复。
 
 完整契约见 [社区账户与远程实例访问边界](../../docs/design/security/community-remote-access.md)。
 
@@ -138,7 +138,7 @@ neko-init ──(success)──▶ neko-main ──▶ 48911(HTTP)/48912(HTTPS�
 - **第一层**：核验容器 `neko` 的部署标签、Compose 服务名与 Running/Paused/Restarting 状态。容器消失、手动停止、`docker pause`、正在重启或同名其他部署都不会被重启；进程退出交给 Docker 的 `unless-stopped` 策略。
 - **第二层**：宿主 `curl` 请求本机 48911 首页，完整响应为 200 或新版正常的匿名 401；同时 `docker exec` 在容器内直连真正主服务的 `/health`，要求请求成功。当前 Nginx 的 `/health` 会优先匹配正则路由并代理到插件服务，不能代替主服务健康检查。两项探测均有总超时，收到状态码后仍超时也算失败。不再使用只能判断 TCP 连通的降级逻辑。
 
-启动后默认有 **15 分钟宽限期**，按 Docker `State.StartedAt` 计算；期间清空失败计数，不执行恢复。同 ID 重启也重新获得宽限期。若实测启动更慢，在宿主 `/etc/cron.d/neko-watchdog` 中在任务行之前添加 `NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=1800`（秒）并按实际启动耗时调整；0 表示禁用。重装保留这一整数设置，非法或重复设置会拒绝重装。
+启动后默认有 **15 分钟宽限期**，按 Docker `State.StartedAt` 计算；期间清空失败计数，不执行恢复。同 ID 重启也重新获得宽限期。若实测启动更慢，在宿主 `/etc/cron.d/neko-watchdog` 中在任务行之前添加 `NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=1800`（秒）并按实际启动耗时调整；0 表示禁用。重装保留这一整数设置（支持一对匹配的单引号或双引号），非法或重复设置会拒绝重装。
 
 宽限期后，健康即清空失败计数；**连续 2 次不健康 → 自动重启同一个容器 ID**。计数绑定 ID 和启动时间，重建、重启均不继承旧失败；重启前复核运行、暂停、重启状态和启动时间。Docker restart 使用 30 秒停止期限及 120 秒客户端总超时；客户端失败后复查 Docker 状态，确认新启动时间或正在重启时清计数，否则保留并报错。客户端超时不代表 daemon 已取消重启。每个容器 ID 最多连续尝试 3 次自动恢复（失败的 CLI 调用也计入）；启动宽限期和启动时间变化不重置预算，健康后清零，重建容器得到新预算。耗尽后记录错误并停止主动重启，Docker 的 `unless-stopped` 策略仍独立生效。排除故障后可执行 `sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/restart-count` 恢复预算。`flock` 防止 cron 与手动调用同时重启。容器已删除时正常静默退出，Docker 查询故障仍会报错。
 
