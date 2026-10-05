@@ -63,6 +63,7 @@ from ._shared import (
     CloudsaveOperationError,
     MANAGED_MEMORY_FILENAMES,
     ROOT_MODE_BOOTSTRAP_IMPORTING,
+    keyed_write_bookkeeping_paths,
     _assert_deadline_not_exceeded,
     _raise_cloudsave_disabled,
     _raise_for_name_audit,
@@ -570,6 +571,8 @@ def import_cloudsave_character_unit(
             candidate = target_memory_dir / filename
             if candidate.exists():
                 delete_file_targets.add(candidate)
+        # 带键写入的本地簿记与被改写的记忆同进退：留着会把被回滚掉的写入当成已完成 / 已暂存
+        delete_file_targets |= keyed_write_bookkeeping_paths(target_memory_dir)
 
         backup_root = config_manager.cloudsave_backups_dir / f"character-download-{apply_time.replace(':', '').replace('.', '')}" / character_name
         backup_targets = set(runtime_targets) | delete_file_targets
@@ -1698,6 +1701,8 @@ def import_local_cloudsave_snapshot(
                 target_path = character_dir / filename
                 if relative_path not in staged_entries and target_path.exists():
                     delete_file_targets.add(target_path)
+            # 带键写入的本地簿记与被改写的记忆同进退（见 keyed_write_bookkeeping_paths）
+            delete_file_targets |= keyed_write_bookkeeping_paths(character_dir)
 
         from utils.config_manager.migrations import (
             _MIGRATION_WORKSPACE_PREFIX,

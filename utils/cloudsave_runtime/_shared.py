@@ -132,6 +132,27 @@ MANAGED_MEMORY_FILENAMES = (
 )
 
 
+# Local bookkeeping of keyed scoped_history writes (app/memory_server/idempotency.py
+# owns the names). It never travels with a cloud snapshot, but whenever a
+# download / snapshot import rewrites a character's memory it is cleared too:
+# kept, it would treat writes the restore rolled back as done / staged and
+# never redo them (decision of 2026-10-05, option A).
+KEYED_WRITE_BOOKKEEPING_FILENAMES = ("idempotency_keys.json", "scoped_tombstones.json")
+KEYED_WRITE_STAGING_DIRNAME = "idempotency_staging"
+
+
+def keyed_write_bookkeeping_paths(character_dir) -> set:
+    """Existing keyed-write bookkeeping files of one character directory (staging files included)."""
+    from pathlib import Path
+
+    character_dir = Path(character_dir)
+    found = {character_dir / name for name in KEYED_WRITE_BOOKKEEPING_FILENAMES if (character_dir / name).is_file()}
+    staging = character_dir / KEYED_WRITE_STAGING_DIRNAME
+    if staging.is_dir():
+        found |= {entry for entry in staging.iterdir() if entry.is_file()}
+    return found
+
+
 MANAGED_CLOUDSAVE_PREFIXES = (
     "characters/",
     "catalog/",

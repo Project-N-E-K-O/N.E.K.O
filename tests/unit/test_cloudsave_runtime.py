@@ -5371,3 +5371,71 @@ def test_a_broken_state_directory_still_skips_the_tombstone(monkeypatch):
     assert state["tombstones"] == []
     cm.load_cloudsave_local_state.assert_not_called()
     cm.load_character_tombstones_state.assert_not_called()
+
+
+def _seed_keyed_bookkeeping(character_dir: Path) -> list[Path]:
+    character_dir.mkdir(parents=True, exist_ok=True)
+    paths = [
+        character_dir / "idempotency_keys.json",
+        character_dir / "scoped_tombstones.json",
+        character_dir / "idempotency_staging" / ("a" * 32 + ".json"),
+    ]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+    return paths
+
+
+@pytest.mark.unit
+def test_character_download_clears_keyed_write_bookkeeping(tmp_path):
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+    )
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    _write_runtime_state(source_cm, character_name="云端角色")
+    export_cloudsave_character_unit(source_cm, "云端角色")
+    _write_runtime_state(target_cm, character_name="本地角色")
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+    downloaded = _seed_keyed_bookkeeping(Path(target_cm.memory_dir) / "云端角色")
+    untouched = _seed_keyed_bookkeeping(Path(target_cm.memory_dir) / "本地角色")
+
+    import_cloudsave_character_unit(target_cm, "云端角色")
+
+    # 被改写记忆的角色：带键写入簿记一并清掉，否则会把被回滚的写入当成已完成 / 已暂存
+    assert not any(path.exists() for path in downloaded)
+    # 别的角色不动
+    assert all(path.exists() for path in untouched)
+
+
+@pytest.mark.unit
+def test_snapshot_import_clears_keyed_write_bookkeeping(tmp_path):
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot, import_local_cloudsave_snapshot
+
+    cm = _make_config_manager(tmp_path)
+    _write_runtime_state(cm)
+    export_local_cloudsave_snapshot(cm)
+    names = [p.name for p in Path(cm.memory_dir).iterdir() if p.is_dir()]
+    assert names
+    seeded = [path for name in names for path in _seed_keyed_bookkeeping(Path(cm.memory_dir) / name)]
+
+    import_local_cloudsave_snapshot(cm)
+
+    assert not any(path.exists() for path in seeded)
+
+
+@pytest.mark.unit
+def test_keyed_write_bookkeeping_names_match_the_memory_server():
+    from app.memory_server import idempotency
+    from utils.cloudsave_runtime._shared import (
+        KEYED_WRITE_BOOKKEEPING_FILENAMES,
+        KEYED_WRITE_STAGING_DIRNAME,
+    )
+
+    # utils 不能 import app（分层）：名字在两边各写一份，这里钉住它们一致
+    assert set(KEYED_WRITE_BOOKKEEPING_FILENAMES) == {
+        idempotency.IDEMPOTENCY_KEYS_FILENAME, idempotency.TOMBSTONES_FILENAME,
+    }
+    assert KEYED_WRITE_STAGING_DIRNAME == idempotency.STAGING_DIRNAME
