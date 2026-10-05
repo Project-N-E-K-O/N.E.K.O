@@ -1,4 +1,4 @@
-"""Every install path withholds autostart until the user starts the plugin.
+"""Every install path withholds autostart until explicit auto-start approval.
 
 The gate exists because ``plugin_runtime.auto_start`` defaults to true and is
 declared by the plugin itself: without it, a freshly installed plugin runs its
@@ -343,14 +343,9 @@ async def test_reload_counts_as_the_user_starting_a_plugin(
     monkeypatch: pytest.MonkeyPatch,
     automatic: bool,
 ) -> None:
-    """Reload is a button the user presses, and it works on a stopped plugin.
+    """Manual reload records runtime intent; automatic reload does not.
 
-    ``reload_plugin`` stops then starts; the frontend offers Reload even while a
-    plugin is stopped. Starting a pending plugin that way is the same act as
-    pressing Start, so it has to clear the pending record — otherwise the plugin
-    can be run by hand forever and still never autostart (codex).
-
-    Mutation: drop ``persist_user_intent=True`` from ``reload_plugin``.
+    Neither path grants auto-start approval.
     """
     from plugin.server.application.plugins import lifecycle_service
     calls = []
@@ -369,39 +364,28 @@ async def test_reload_counts_as_the_user_starting_a_plugin(
     assert calls == [{"persist_user_intent": not automatic}]
 
 
-def test_renaming_clears_the_pending_record_under_the_old_id(
+@pytest.mark.parametrize("sync_auto_start", [False, True])
+@pytest.mark.parametrize("previous_ids", [(), ("demo",)])
+def test_manual_start_keeps_autostart_approval_pending(
     monkeypatch: pytest.MonkeyPatch,
+    sync_auto_start: bool,
+    previous_ids: tuple[str, ...],
 ) -> None:
-    """Approval must follow the plugin across an id-conflict rename.
-
-    Installation records the manifest id, but a plugin can register under a
-    conflict-resolved runtime id. Clearing only the runtime id leaves the old
-    entry behind, and once the conflict goes away that stale record blocks
-    autostart forever (coderabbit).
-
-    Mutation: drop the ``previous_plugin_ids`` loop.
-    """
+    """Start/reload must not approve either runtime or previous plugin IDs."""
     from plugin.server.application.plugins import lifecycle_service
 
     cleared: list[str] = []
-
-    def _clear(plugin_id: str) -> bool:
-        cleared.append(plugin_id)
-        return True
-
-    monkeypatch.setattr(lifecycle_service, "clear_autostart_pending", _clear)
+    monkeypatch.setattr(lifecycle_service, "PLUGIN_SYNC_AUTO_START_ON_TOGGLE", sync_auto_start)
     monkeypatch.setattr(
-        lifecycle_service, "migrate_runtime_override", lambda *a, **k: None
+        lifecycle_service, "clear_autostart_pending", lambda pid: cleared.append(pid) or False
     )
+    monkeypatch.setattr(lifecycle_service, "migrate_runtime_override", lambda *a, **k: None)
     monkeypatch.setattr(lifecycle_service, "set_runtime_override", lambda *a, **k: None)
 
-    lifecycle_service._persist_user_runtime_intent(
-        "demo_1", True, previous_plugin_ids=("demo",)
-    )
-
-    assert cleared == ["demo_1", "demo"], (
-        f"改名前的 id 没被一起清掉，冲突消失后它会继续挡着自启：{cleared}"
-    )
+    assert lifecycle_service._persist_user_runtime_intent(
+        "demo_1", True, previous_plugin_ids=previous_ids
+    ) is True
+    assert cleared == []
 
 
 def test_metadata_is_obtained_before_the_host_process_starts(tmp_path: Path) -> None:
@@ -465,20 +449,7 @@ def test_the_packaged_metadata_file_is_staged_only_once(tmp_path: Path) -> None:
 def test_approval_is_not_granted_when_the_preference_fails_to_persist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A start that could not be recorded must not grant autostart.
-
-    If the runtime override write fails, the call raises and is reported as
-    ``partial_success`` — but that machine now has no user override, so after a
-    restart the registry falls back to the manifest defaults, where both
-    ``enabled`` and ``auto_start`` are true. Clearing the pending record first
-    would hand out a permanent autostart approval on the strength of an intent
-    that never landed (greptile).
-
-    Failing closed here costs nothing a user had: pending records only exist for
-    freshly installed plugins, which never autostarted in the first place.
-
-    Mutation: move the ``clear_autostart_pending`` calls back above the ``try``.
-    """
+    """A failed runtime preference write leaves auto-start approval pending."""
     from plugin.server.application.plugins import lifecycle_service
     from plugin.server.domain.errors import ServerDomainError
     from plugin.server.infrastructure.runtime_overrides import (
@@ -504,40 +475,6 @@ def test_approval_is_not_granted_when_the_preference_fails_to_persist(
 
     assert cleared == [], (
         "偏好没写成却已经把批准位清了，重启后这个插件会凭 manifest 默认值自启"
-    )
-
-
-def test_an_unpersisted_approval_is_reported_not_swallowed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A start whose approval did not reach disk must not look fully persisted.
-
-    The runtime preference half can succeed while the approval file cannot be
-    written. The plugin then stays pending, so the autostart filter holds it
-    back again after a restart — and if this returned quietly the response would
-    still say ``preference_persisted=true``, leaving the user with no
-    explanation (greptile). It goes out through the same channel as a failed
-    preference write, which callers downgrade to ``partial_success`` rather than
-    failing the start.
-
-    Mutation: ignore ``clear_autostart_pending``'s return value.
-    """
-    from plugin.server.application.plugins import lifecycle_service
-    from plugin.server.domain.errors import ServerDomainError
-
-    monkeypatch.setattr(
-        lifecycle_service, "clear_autostart_pending", lambda plugin_id: False
-    )
-    monkeypatch.setattr(lifecycle_service, "set_runtime_override", lambda *a, **k: None)
-    monkeypatch.setattr(
-        lifecycle_service, "migrate_runtime_override", lambda *a, **k: None
-    )
-
-    with pytest.raises(ServerDomainError) as excinfo:
-        lifecycle_service._persist_user_runtime_intent("stuck", True)
-
-    assert excinfo.value.code == "PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED", (
-        f"批准没落地却没有上报，调用方会把这次启动当成完全持久化：{excinfo.value.code}"
     )
 
 
@@ -1947,3 +1884,32 @@ def test_a_probe_that_rewrites_the_tree_yields_no_metadata(
     assert "changed the staged tree" in str(dir_exc.value), (
         "只动目录、不动文件的那种改法躲过了检查：内容摘要覆盖不到目录"
     )
+
+
+@pytest.mark.parametrize("sync_auto_start", [False, True])
+def test_manual_start_keeps_persisted_gate_across_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sync_auto_start: bool
+) -> None:
+    """A pending plugin stays unapproved after manual start and cache reload."""
+    import utils.config_manager as config_manager_module
+    from plugin.server.application.plugins import lifecycle_service
+    from plugin.server.infrastructure import autostart_approvals
+
+    class ConfigManager:
+        def load_json_config(self, filename):
+            return json.loads((tmp_path / filename).read_text(encoding="utf-8"))
+
+        def save_json_config(self, filename, payload):
+            (tmp_path / filename).write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(config_manager_module, "get_config_manager", ConfigManager)
+    monkeypatch.setattr(lifecycle_service, "PLUGIN_SYNC_AUTO_START_ON_TOGGLE", sync_auto_start)
+    monkeypatch.setattr(lifecycle_service, "set_runtime_override", lambda *a, **k: None)
+    autostart_approvals._reset_cache_for_testing()
+    try:
+        assert autostart_approvals.mark_autostart_pending("pending_plugin")
+        assert lifecycle_service._persist_user_runtime_intent("pending_plugin", True)
+        autostart_approvals._reset_cache_for_testing()
+        assert not autostart_approvals.is_autostart_approved("pending_plugin", strict=True)
+    finally:
+        autostart_approvals._reset_cache_for_testing()

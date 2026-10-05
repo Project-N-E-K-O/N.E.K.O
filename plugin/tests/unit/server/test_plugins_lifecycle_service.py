@@ -1023,6 +1023,9 @@ async def test_start_plugin_persists_intent_after_success_and_migrates_resolved_
             }
         return {"success": True, "plugin_id": refreshed_plugin_id}
 
+    # This test covers the legacy opt-in where manual start also persists
+    # auto_start; the default-off behaviour is covered separately.
+    monkeypatch.setattr(module, "PLUGIN_SYNC_AUTO_START_ON_TOGGLE", True)
     monkeypatch.setattr(module.plugin_registry_service, "refresh_plugin", _refresh_plugin)
     monkeypatch.setattr(module, "_get_plugin_config_path", lambda _plugin_id: config_path)
     monkeypatch.setattr(
@@ -3815,6 +3818,8 @@ async def test_stop_plugin_persist_user_intent_writes_runtime_override(
     try:
         _seed_running_plugin("demo_plugin", config_path)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+        # Legacy opt-in (NEKO_PLUGIN_SYNC_AUTO_START_ON_TOGGLE=1).
+        monkeypatch.setattr(module, "PLUGIN_SYNC_AUTO_START_ON_TOGGLE", True)
 
         service = module.PluginLifecycleService()
         await service.stop_plugin("demo_plugin", persist_user_intent=True)
@@ -3908,7 +3913,7 @@ async def test_stop_plugin_can_leave_auto_start_unchanged_when_sync_is_disabled(
         )
 
         assert _isolate_runtime_overrides == {
-            "demo_plugin": {"enabled": False, "auto_start": True},
+            "demo_plugin": {"enabled": True, "auto_start": True},
         }
     finally:
         with module.state.acquire_plugins_write_lock():
@@ -3942,6 +3947,8 @@ async def test_stop_plugin_returns_partial_success_on_preference_write_failure(
     try:
         _seed_running_plugin("demo_plugin", config_path)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+        # Only the legacy sync mode persists anything on a manual stop.
+        monkeypatch.setattr(module, "PLUGIN_SYNC_AUTO_START_ON_TOGGLE", True)
         monkeypatch.setattr(
             module,
             "set_runtime_override",
@@ -4436,3 +4443,395 @@ async def test_a_scan_does_not_write_metadata_it_has_no_business_writing(
         assert meta_path.read_bytes() == before
     else:
         assert meta_path.read_bytes() == before, "当前 schema 的文件被拒是别的原因，重写修不了它"
+
+
+def _backup_lifecycle_state():
+    return (
+        copy.deepcopy(module.state.plugins),
+        dict(module.state.plugin_hosts),
+        dict(module.state.event_handlers),
+        copy.deepcopy(module.state._snapshot_cache),
+    )
+
+
+def _restore_lifecycle_state(plugins_backup, hosts_backup, handlers_backup, cache_backup) -> None:
+    with module.state.acquire_plugins_write_lock():
+        module.state.plugins.clear()
+        module.state.plugins.update(plugins_backup)
+    with module.state.acquire_plugin_hosts_write_lock():
+        module.state.plugin_hosts.clear()
+        module.state.plugin_hosts.update(hosts_backup)
+    with module.state.acquire_event_handlers_write_lock():
+        module.state.event_handlers.clear()
+        module.state.event_handlers.update(handlers_backup)
+    with module.state._snapshot_cache_lock:
+        module.state._snapshot_cache = cache_backup
+
+
+def _demo_config(tmp_path: Path) -> Path:
+    config_path = tmp_path / "demo_plugin" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo_plugin'\n", encoding="utf-8")
+    return config_path
+
+
+@pytest.mark.plugin_unit
+def test_sync_auto_start_on_toggle_defaults_to_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib
+
+    import plugin.settings as settings_module
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.delenv("NEKO_PLUGIN_SYNC_AUTO_START_ON_TOGGLE", raising=False)
+            assert importlib.reload(settings_module).PLUGIN_SYNC_AUTO_START_ON_TOGGLE is False
+            patch.setenv("NEKO_PLUGIN_SYNC_AUTO_START_ON_TOGGLE", "1")
+            assert importlib.reload(settings_module).PLUGIN_SYNC_AUTO_START_ON_TOGGLE is True
+    finally:
+        # Reload only after the context restored the caller's environment.
+        importlib.reload(settings_module)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    ("sync_enabled", "enabled", "expected"),
+    [
+        (False, True, {"enabled": True, "auto_start": False}),
+        # A default manual stop persists nothing: the seed stays as it was.
+        (False, False, {"enabled": True, "auto_start": True}),
+        (True, True, {"enabled": True, "auto_start": True}),
+        (True, False, {"enabled": False, "auto_start": False}),
+    ],
+    ids=("default-start", "default-stop", "env-start", "env-stop"),
+)
+def test_manual_toggle_auto_start_follows_sync_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    _isolate_runtime_overrides: dict,
+    sync_enabled: bool,
+    enabled: bool,
+    expected: dict[str, bool],
+) -> None:
+    # Seed the opposite auto_start so any rewrite is visible.
+    runtime_overrides_module.set_runtime_override(
+        "demo_plugin", not enabled, auto_start=not enabled
+    )
+    monkeypatch.setattr(module, "PLUGIN_SYNC_AUTO_START_ON_TOGGLE", sync_enabled)
+    monkeypatch.setattr(module, "clear_autostart_pending", lambda _plugin_id: True)
+
+    persisted = module._persist_user_runtime_intent("demo_plugin", enabled)
+
+    assert persisted is (enabled or sync_enabled)
+    assert _isolate_runtime_overrides == {"demo_plugin": expected}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_stop_plugin_leaves_auto_start_unchanged_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    config_path = _demo_config(tmp_path)
+    backup = _backup_lifecycle_state()
+    try:
+        _seed_running_plugin("demo_plugin", config_path)
+        runtime_overrides_module.set_runtime_override("demo_plugin", True, auto_start=True)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+        # Pin the default mode so NEKO_PLUGIN_SYNC_AUTO_START_ON_TOGGLE in the
+        # environment cannot flip this test.
+        monkeypatch.setattr(module, "PLUGIN_SYNC_AUTO_START_ON_TOGGLE", False)
+
+        response = await module.PluginLifecycleService().stop_plugin(
+            "demo_plugin", persist_user_intent=True
+        )
+
+        assert response["preference_persisted"] is False
+        # Nothing is persisted, so the next launch still autostarts it.
+        assert _isolate_runtime_overrides == {
+            "demo_plugin": {"enabled": True, "auto_start": True},
+        }
+    finally:
+        _restore_lifecycle_state(*backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auto_start", [True, False])
+@pytest.mark.parametrize("has_enabled_override", [True, False])
+async def test_set_plugin_auto_start_keeps_process_and_unblocks_next_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+    auto_start: bool,
+    has_enabled_override: bool,
+) -> None:
+    config_path = _demo_config(tmp_path)
+    backup = _backup_lifecycle_state()
+    try:
+        _seed_running_plugin("demo_plugin", config_path)
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins["demo_plugin"]["runtime_enabled"] = False
+            module.state.plugins["demo_plugin"]["runtime_auto_start"] = not auto_start
+        if has_enabled_override:
+            runtime_overrides_module.set_runtime_override("demo_plugin", False)
+        with module.state.acquire_plugin_hosts_read_lock():
+            host = module.state.plugin_hosts["demo_plugin"]
+
+        pending_calls: list[str] = []
+
+        def _clear_pending(plugin_id: str) -> bool:
+            pending_calls.append(plugin_id)
+            return True
+
+        monkeypatch.setattr(module, "clear_autostart_pending", _clear_pending)
+        monkeypatch.setattr(module, "is_autostart_approved", lambda _plugin_id, **_kwargs: False)
+
+        async def _must_not_run(*_args, **_kwargs):
+            raise AssertionError("auto-start toggle must not start or stop the plugin")
+
+        service = module.PluginLifecycleService()
+        monkeypatch.setattr(service, "start_plugin", _must_not_run)
+        monkeypatch.setattr(service, "stop_plugin", _must_not_run)
+
+        response = await service.set_plugin_auto_start("demo_plugin", auto_start)
+
+        assert response["success"] is True
+        assert response["auto_start"] is auto_start
+        # Turning auto-start on lifts the enabled=false a stop left behind and
+        # the pending approval, or the next launch would still skip it.
+        assert _isolate_runtime_overrides == {
+            "demo_plugin": {
+                **({"enabled": auto_start} if has_enabled_override or auto_start else {}),
+                "auto_start": auto_start,
+            },
+        }
+        assert pending_calls == (["demo_plugin"] if auto_start else [])
+        with module.state.acquire_plugin_hosts_read_lock():
+            assert module.state.plugin_hosts.get("demo_plugin") is host
+        with module.state.acquire_plugins_read_lock():
+            meta = module.state.plugins["demo_plugin"]
+            assert meta["runtime_auto_start"] is auto_start
+            assert meta["runtime_enabled"] is auto_start
+    finally:
+        _restore_lifecycle_state(*backup)
+
+
+@pytest.mark.plugin_unit
+def test_auto_start_registry_publication_updates_both_fields_before_invalidating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backup = _backup_lifecycle_state()
+    published: list[dict] = []
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins["demo_plugin"] = {
+                "runtime_enabled": False, "runtime_auto_start": False,
+                "runtime_load_state": "failed",
+            }
+        monkeypatch.setattr(module.state, "invalidate_snapshot_cache", lambda _category: published.append(
+            copy.deepcopy(module.state.plugins["demo_plugin"])
+        ))
+        module._set_plugin_runtime_auto_start_sync("demo_plugin", True, restore_enabled=True)
+        assert published == [{
+            "runtime_enabled": True, "runtime_auto_start": True,
+            "runtime_load_state": "failed",
+        }]
+    finally:
+        _restore_lifecycle_state(*backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auto_start", [True, False])
+async def test_auto_start_toggle_with_unreadable_approval_store(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+    auto_start: bool,
+) -> None:
+    from plugin.server.infrastructure import autostart_approvals
+    from utils import config_manager
+
+    def _unreadable_config():
+        raise OSError("approval store unavailable")
+
+    monkeypatch.setattr(config_manager, "get_config_manager", _unreadable_config)
+    autostart_approvals._reset_cache_for_testing()
+    backup = _backup_lifecycle_state()
+    try:
+        _seed_running_plugin("demo_plugin", _demo_config(tmp_path))
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins["demo_plugin"]["runtime_auto_start"] = False
+        # The boot path intentionally falls back to approved on a failed read.
+        assert autostart_approvals.is_autostart_approved("demo_plugin") is True
+        if auto_start:
+            with pytest.raises(ServerDomainError) as exc_info:
+                await module.PluginLifecycleService().set_plugin_auto_start("demo_plugin", True)
+            assert exc_info.value.code == "PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED"
+            assert exc_info.value.status_code == 500
+            assert _isolate_runtime_overrides == {}
+        else:
+            result = await module.PluginLifecycleService().set_plugin_auto_start("demo_plugin", False)
+            assert result["success"] is True
+            assert _isolate_runtime_overrides == {"demo_plugin": {"auto_start": False}}
+        with module.state.acquire_plugins_read_lock():
+            assert module.state.plugins["demo_plugin"]["runtime_auto_start"] is False
+    finally:
+        autostart_approvals._reset_cache_for_testing()
+        _restore_lifecycle_state(*backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_set_plugin_auto_start_without_enabled_override_stores_auto_start_only(
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    config_path = _demo_config(tmp_path)
+    backup = _backup_lifecycle_state()
+    try:
+        _seed_running_plugin("demo_plugin", config_path)
+
+        await module.PluginLifecycleService().set_plugin_auto_start("demo_plugin", False)
+
+        assert _isolate_runtime_overrides == {"demo_plugin": {"auto_start": False}}
+        assert runtime_overrides_module.get_runtime_override("demo_plugin") is None
+        assert runtime_overrides_module.get_runtime_auto_start_override("demo_plugin") is False
+    finally:
+        _restore_lifecycle_state(*backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_set_plugin_auto_start_unknown_plugin_is_404(
+    _isolate_runtime_overrides: dict,
+) -> None:
+    backup = _backup_lifecycle_state()
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().set_plugin_auto_start("missing", True)
+        assert exc_info.value.code == "PLUGIN_NOT_FOUND"
+        assert exc_info.value.status_code == 404
+        assert _isolate_runtime_overrides == {}
+    finally:
+        _restore_lifecycle_state(*backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_set_plugin_auto_start_persist_failure_keeps_registry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = _demo_config(tmp_path)
+    backup = _backup_lifecycle_state()
+    try:
+        _seed_running_plugin("demo_plugin", config_path)
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins["demo_plugin"]["runtime_auto_start"] = True
+
+        def _fail(*_args, **_kwargs):
+            raise runtime_overrides_module.RuntimeOverrideWriteError("disk full")
+
+        monkeypatch.setattr(module, "set_runtime_auto_start_override", _fail)
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().set_plugin_auto_start("demo_plugin", False)
+
+        assert exc_info.value.code == "PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED"
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.details["runtime_state_changed"] is False
+        with module.state.acquire_plugins_read_lock():
+            assert module.state.plugins["demo_plugin"]["runtime_auto_start"] is True
+    finally:
+        _restore_lifecycle_state(*backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_set_plugin_auto_start_rolls_back_preference_when_approval_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    config_path = _demo_config(tmp_path)
+    backup = _backup_lifecycle_state()
+    try:
+        _seed_running_plugin("demo_plugin", config_path)
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins["demo_plugin"]["runtime_auto_start"] = False
+        monkeypatch.setattr(module, "is_autostart_approved", lambda _plugin_id, **_kwargs: False)
+        monkeypatch.setattr(module, "clear_autostart_pending", lambda _plugin_id: False)
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().set_plugin_auto_start("demo_plugin", True)
+
+        assert exc_info.value.code == "PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED"
+        assert exc_info.value.status_code == 500
+        # The written preference is rolled back, so the 500 matches what the user sees.
+        assert runtime_overrides_module.get_runtime_override_entry("demo_plugin") is None
+        with module.state.acquire_plugins_read_lock():
+            assert module.state.plugins["demo_plugin"]["runtime_auto_start"] is False
+    finally:
+        _restore_lifecycle_state(*backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_set_plugin_auto_start_keeps_pending_when_rollback_also_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    config_path = _demo_config(tmp_path)
+    backup = _backup_lifecycle_state()
+    try:
+        _seed_running_plugin("demo_plugin", config_path)
+        monkeypatch.setattr(module, "is_autostart_approved", lambda _plugin_id, **_kwargs: False)
+        monkeypatch.setattr(module, "clear_autostart_pending", lambda _plugin_id: False)
+
+        def _fail_restore(*_args, **_kwargs):
+            raise runtime_overrides_module.RuntimeOverrideWriteError("disk full")
+
+        monkeypatch.setattr(module, "restore_runtime_override", _fail_restore)
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().set_plugin_auto_start("demo_plugin", True)
+
+        # The pending approval was never cleared, so launch still skips the plugin.
+        assert exc_info.value.code == "PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED"
+    finally:
+        _restore_lifecycle_state(*backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_set_plugin_auto_start_leaves_approval_pending_when_preference_write_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    config_path = _demo_config(tmp_path)
+    backup = _backup_lifecycle_state()
+    try:
+        _seed_running_plugin("demo_plugin", config_path)
+        calls: list[str] = []
+        monkeypatch.setattr(module, "is_autostart_approved", lambda _plugin_id, **_kwargs: False)
+        monkeypatch.setattr(
+            module, "clear_autostart_pending", lambda pid: calls.append(f"clear:{pid}") or True
+        )
+
+        def _fail(*_args, **_kwargs):
+            raise runtime_overrides_module.RuntimeOverrideWriteError("disk full")
+
+        monkeypatch.setattr(module, "set_runtime_auto_start_override", _fail)
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().set_plugin_auto_start("demo_plugin", True)
+
+        assert exc_info.value.code == "PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED"
+        assert calls == []
+    finally:
+        _restore_lifecycle_state(*backup)

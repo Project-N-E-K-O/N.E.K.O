@@ -217,6 +217,67 @@ def _strip_nonverbal_directives(text: str) -> str:
     return _NONVERBAL_DIRECTIVE_PATTERN.sub("", text)
 
 
+def _answered_chunk():
+    """The empty chunk a cancelled tool loop hands up once its request was
+    answered, so callers publish what that request carried. It carries no
+    output: callers must not count it as a first token (``llm_ttft_ms``)."""
+    chunk = LLMStreamChunk(content="")
+    setattr(chunk, "_answered_ack", True)
+    return chunk
+
+
+def _generation_check(client, generation):
+    """The "is this turn still live" predicate the tool loops poll.
+
+    ``None`` means the caller threads no generation (direct callers and
+    tests), so nothing can cancel it. Module-level rather than a mixin
+    method so tool-loop doubles that compose only ``_ToolingMixin`` work.
+    """
+    if generation is None:
+        return lambda: True
+    return lambda: client._response_generation_is_active(generation)
+
+
+def _find_by_identity(messages, index: int, message) -> int:
+    """Where ``message`` is in ``messages``: ``index`` if it still holds it,
+    else a scan by identity; -1 when it is gone. Equal-valued copies never
+    match, so a concurrent turn's message cannot be mistaken for it."""
+    if 0 <= index < len(messages) and messages[index] is message:
+        return index
+    return next((i for i, item in enumerate(messages) if item is message), -1)
+
+
+# The generation a ``prompt_ephemeral`` reply streamed under, set on the saved
+# message object itself (like ``_answered_chunk``'s flag): it is neither sent
+# to a provider nor saved anywhere, only read by ``_cancelled_turn_end``.
+_REPLY_GENERATION_ATTR = "_reply_generation"
+
+
+def _cancelled_turn_end(history, start: int, generation: int) -> int:
+    """Where the turn anchored at ``history[start]`` ends: the index of the
+    first message of a later turn after it, ``len(history)`` when none.
+
+    A later turn starts at a user message, or at a proactive reply that began
+    after this turn's ``generation``. Such a reply cannot begin while this
+    turn is in progress, so everything this turn showed came before it. A
+    proactive reply that began earlier (and was displaced by this turn's
+    begin) was shown first and does not end the turn. A proactive reply saved
+    without a generation (``finish_proactive_delivery``) is always later: it
+    is only claimed while no reply is in progress. ``start`` is -1 for a turn
+    that began on an empty history.
+    """
+    for index in range(start + 1, len(history)):
+        message = history[index]
+        if isinstance(message, HumanMessage):
+            return index
+        extra = getattr(message, "additional_kwargs", None)
+        if isinstance(extra, dict) and extra.get("dialog_source") == "proactive":
+            began = getattr(message, _REPLY_GENERATION_ATTR, None)
+            if not isinstance(began, int) or began > generation:
+                return index
+    return len(history)
+
+
 def _same_route(
     base_url_a, api_key_a, provider_type_a,
     base_url_b, api_key_b, provider_type_b,

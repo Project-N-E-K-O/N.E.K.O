@@ -293,6 +293,8 @@ async def storage_limited_mode_guard(request: Request, call_next):
 # 全局入站 body 体积守门（issue #1586）：与 main_server 对偶，memory_server 的
 # 端点（对话缓存 / reflection 记录等）都是小 JSON，统一加上同一守门保持一致。
 app.add_middleware(InboundBodySizeLimitMiddleware)
+from utils.instance_access import InstanceAccessMiddleware
+app.add_middleware(InstanceAccessMiddleware)
 app.add_middleware(HostOriginGuardMiddleware)
 
 

@@ -8,7 +8,8 @@ from main_logic.core.proactive import ProactiveMixin
 from main_logic.core.turn import TurnMixin
 from main_logic.session_state import ProactivePhase
 from main_routers.game_router import runtime
-from .game_route_test_helpers import gr_patch_all
+from main_routers.game_router.route_lifecycle import _TAKEOVER_TOKEN_KEY
+from .game_route_test_helpers import TakeoverManagerDouble, gr_patch_all
 
 
 def test_live_plugin_queue_stays_coalesced_until_takeover_ends():
@@ -69,17 +70,37 @@ async def test_takeover_while_proactive_tts_waits_for_lock_drops_chunk():
 @pytest.mark.asyncio
 @pytest.mark.parametrize('failure', [RuntimeError, asyncio.CancelledError])
 async def test_failed_takeover_rolls_back_activation_before_releasing_route_lock(failure):
-    manager = SimpleNamespace(
-        _takeover_active=True, _takeover_input_dispatcher=object(),
+    manager = TakeoverManagerDouble(
         interrupt_ordinary_speech_for_takeover=AsyncMock(side_effect=failure()),
     )
+    token = manager.acquire_takeover('game', object())
     state = dict.fromkeys([
         'game_route_active', 'game_external_voice_route_active',
         'game_external_text_route_active', 'heartbeat_enabled',
     ], True)
+    state[_TAKEOVER_TOKEN_KEY] = token
     with pytest.raises(failure):
         await runtime._start_watch_speech_takeover(state, manager)
     assert manager._takeover_active is False
     assert manager._takeover_input_dispatcher is None
+    assert manager._takeover_callback_sink is None
+    assert manager.takeover_owner() is None
+    assert _TAKEOVER_TOKEN_KEY not in state
     assert not any(state[key] for key in state if key != 'exit_reason')
     assert state['exit_reason'] == 'speech_takeover_failed'
+
+
+@pytest.mark.asyncio
+async def test_failed_takeover_with_stale_token_still_unmutes(caplog):
+    """A token mismatch in the locked rollback is a bug: release anyway, log an error."""
+    manager = TakeoverManagerDouble(
+        interrupt_ordinary_speech_for_takeover=AsyncMock(side_effect=RuntimeError()),
+    )
+    stale = manager.acquire_takeover('game', object())
+    manager.acquire_takeover('game', object())  # same owner re-acquire retires ``stale``
+    state = {'game_route_active': True, _TAKEOVER_TOKEN_KEY: stale}
+    with caplog.at_level('ERROR'), pytest.raises(RuntimeError):
+        await runtime._start_watch_speech_takeover(state, manager)
+    assert manager._takeover_active is False
+    assert manager.takeover_owner() is None
+    assert any('force-released' in record.getMessage() for record in caplog.records)

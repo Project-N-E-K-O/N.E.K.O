@@ -57,6 +57,10 @@ logger = get_module_logger(__name__, "Main")
 # 涉及屏幕内容采集，必须由用户本人在 UI 决定，任何 API 写入路径都要拒绝。
 _USER_OWNED_FIELDS = frozenset({
     "proactiveVisionEnabled",
+    # 串门开关与串门记忆开关：让她出门、记不记串门内容都由用户本人决定
+    # （visitVoiceEnabled 只管本地出声，不在此列）。
+    "visitEnabled",
+    "visitMemoryEnabled",
 })
 
 # 主动搭话所有可调字段（白名单子集；与 utils/preferences 的

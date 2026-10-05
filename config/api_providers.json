@@ -303,6 +303,18 @@
       "vision_model": "anthropic/claude-sonnet-5",
       "agent_model": "anthropic/claude-sonnet-5"
     },
+    "requesty": {
+      "key": "requesty",
+      "name": "Requesty",
+      "description": "模型聚合路由，OpenAI 兼容接口，支持数百种模型，国内版不支持",
+      "openrouter_url": "https://router.requesty.ai/v1",
+      "conversation_model": "google/gemini-2.5-flash",
+      "summary_model": "google/gemini-2.5-flash",
+      "correction_model": "google/gemini-2.5-flash",
+      "emotion_model": "google/gemini-2.5-flash-lite",
+      "vision_model": "google/gemini-2.5-flash",
+      "agent_model": "google/gemini-3-flash-preview"
+    },
     "vllm_omni": {
       "key": "vllm_omni",
       "name": "vLLM-Omni (TTS)",
@@ -368,7 +380,8 @@
     "claude": "ASSIST_API_KEY_CLAUDE",
     "grok": "ASSIST_API_KEY_GROK",
     "openrouter": "ASSIST_API_KEY_OPENROUTER",
-    "orcarouter": "ASSIST_API_KEY_ORCAROUTER"
+    "orcarouter": "ASSIST_API_KEY_ORCAROUTER",
+    "requesty": "ASSIST_API_KEY_REQUESTY"
   },
   "api_key_registry": {
     "qwen": {
@@ -445,6 +458,10 @@
     },
     "orcarouter": {
       "config_field": "assistApiKeyOrcarouter",
+      "restricted": true
+    },
+    "requesty": {
+      "config_field": "assistApiKeyRequesty",
       "restricted": true
     },
     "vllm_omni": {

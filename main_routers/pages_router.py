@@ -212,6 +212,15 @@ _REACT_CHAT_ASSET_VERSION_PATHS = (
 )
 _REACT_CHAT_ASSET_CACHE_TTL = 30.0
 _react_chat_asset_version_cache: tuple[float, str] = (0.0, "0")
+# Air basketball gets its own version, like React Chat, so editing one of its
+# files (including artwork) does not bump the site-wide static_asset_version.
+# The whole directory counts: modules load siblings via import() and artwork
+# from JS, which the template scan cannot see.
+_AIR_BASKETBALL_ASSET_VERSION_PATHS = tuple(sorted(
+    path for path in (_PROJECT_ROOT / "static/game/games/air_basketball").rglob("*") if path.is_file()
+))
+_AIR_BASKETBALL_ASSET_CACHE_TTL = 30.0
+_air_basketball_asset_version_cache: tuple[float, str] = (0.0, "0")
 
 
 def _vrm_defaults_ctx() -> dict:
@@ -230,16 +239,20 @@ def _static_assets_ctx() -> dict:
     if now - cached_at < _STATIC_ASSET_CACHE_TTL:
         return {"static_asset_version": cached_version}
 
+    latest_mtime = _latest_asset_mtime(_YUI_GUIDE_ASSET_VERSION_PATHS)
+    version = f"{APP_VERSION}-{latest_mtime or 0}"
+    _static_asset_version_cache = (now, version)
+    return {"static_asset_version": version}
+
+
+def _latest_asset_mtime(paths) -> int:
     latest_mtime = 0
-    for path in _YUI_GUIDE_ASSET_VERSION_PATHS:
+    for path in paths:
         try:
             latest_mtime = max(latest_mtime, int(path.stat().st_mtime))
         except OSError:
             continue
-
-    version = f"{APP_VERSION}-{latest_mtime or 0}"
-    _static_asset_version_cache = (now, version)
-    return {"static_asset_version": version}
+    return latest_mtime
 
 
 def _react_chat_assets_ctx() -> dict:
@@ -250,16 +263,22 @@ def _react_chat_assets_ctx() -> dict:
     if now - cached_at < _REACT_CHAT_ASSET_CACHE_TTL:
         return {"react_chat_asset_version": cached_version}
 
-    latest_mtime = 0
-    for path in _REACT_CHAT_ASSET_VERSION_PATHS:
-        try:
-            latest_mtime = max(latest_mtime, int(path.stat().st_mtime))
-        except OSError:
-            continue
-
-    version = str(latest_mtime or 0)
+    version = str(_latest_asset_mtime(_REACT_CHAT_ASSET_VERSION_PATHS) or 0)
     _react_chat_asset_version_cache = (now, version)
     return {"react_chat_asset_version": version}
+
+
+def _air_basketball_assets_ctx() -> dict:
+    """Return the cache version for air basketball's own modules, styles and artwork."""
+    global _air_basketball_asset_version_cache
+    now = time.monotonic()
+    cached_at, cached_version = _air_basketball_asset_version_cache
+    if now - cached_at < _AIR_BASKETBALL_ASSET_CACHE_TTL:
+        return {"air_basketball_asset_version": cached_version}
+
+    version = str(_latest_asset_mtime(_AIR_BASKETBALL_ASSET_VERSION_PATHS) or 0)
+    _air_basketball_asset_version_cache = (now, version)
+    return {"air_basketball_asset_version": version}
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -330,6 +349,17 @@ async def badminton_demo(request: Request):
     return templates.TemplateResponse("templates/badminton_demo.html", {
         "request": request,
         **_static_assets_ctx(),
+    })
+
+
+@router.get("/air_basketball", response_class=HTMLResponse)
+async def air_basketball(request: Request):
+    """Air basketball shooting mini-game."""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/air_basketball.html", {
+        "request": request,
+        **_static_assets_ctx(),
+        **_air_basketball_assets_ctx(),
     })
 
 

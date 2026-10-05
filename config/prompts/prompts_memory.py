@@ -3840,6 +3840,28 @@ SCOPED_PERSONA_SECTION_HEADER = {
         "es": "Memoria del miembro del grupo ({subject_id})",
         "pt": "Memória do membro do grupo ({subject_id})",
     },
+    # 串门（neko_visit 平台）专表：按 f"{kind}@{platform}" 选中，见
+    # get_scoped_persona_section_header。group_participant 沿用通用标题。
+    "group_chat@neko_visit": {
+        "zh": "串门记忆（{subject_id}）",
+        "zh-TW": "串門記憶（{subject_id}）",
+        "en": "Visit memory ({subject_id})",
+        "ja": "訪問の記憶（{subject_id}）",
+        "ko": "방문 기억 ({subject_id})",
+        "ru": "Память о визитах ({subject_id})",
+        "es": "Memoria de visitas ({subject_id})",
+        "pt": "Memória de visitas ({subject_id})",
+    },
+    "participant@neko_visit": {
+        "zh": "串门对象记忆（{subject_id}）",
+        "zh-TW": "串門對象記憶（{subject_id}）",
+        "en": "Visit acquaintance memory ({subject_id})",
+        "ja": "訪問で出会った相手の記憶（{subject_id}）",
+        "ko": "방문에서 만난 상대 기억 ({subject_id})",
+        "ru": "Память о знакомых по визитам ({subject_id})",
+        "es": "Memoria de conocidos de visitas ({subject_id})",
+        "pt": "Memória de conhecidos de visitas ({subject_id})",
+    },
 }
 
 
@@ -3878,7 +3900,46 @@ SCOPED_PERSONA_SECTION_HEADER_NAMED = {
         "es": "Memoria del miembro del grupo ({display_name}, {subject_id})",
         "pt": "Memória do membro do grupo ({display_name}, {subject_id})",
     },
+    "group_chat@neko_visit": {
+        "zh": "串门记忆（{display_name}，{subject_id}）",
+        "zh-TW": "串門記憶（{display_name}，{subject_id}）",
+        "en": "Visit memory ({display_name}, {subject_id})",
+        "ja": "訪問の記憶（{display_name}、{subject_id}）",
+        "ko": "방문 기억 ({display_name}, {subject_id})",
+        "ru": "Память о визитах ({display_name}, {subject_id})",
+        "es": "Memoria de visitas ({display_name}, {subject_id})",
+        "pt": "Memória de visitas ({display_name}, {subject_id})",
+    },
+    "participant@neko_visit": {
+        "zh": "串门对象记忆（{display_name}，{subject_id}）",
+        "zh-TW": "串門對象記憶（{display_name}，{subject_id}）",
+        "en": "Visit acquaintance memory ({display_name}, {subject_id})",
+        "ja": "訪問で出会った相手の記憶（{display_name}、{subject_id}）",
+        "ko": "방문에서 만난 상대 기억 ({display_name}, {subject_id})",
+        "ru": "Память о знакомых по визитам ({display_name}, {subject_id})",
+        "es": "Memoria de conocidos de visitas ({display_name}, {subject_id})",
+        "pt": "Memória de conhecidos de visitas ({display_name}, {subject_id})",
+    },
 }
+
+
+def _scoped_header_table_key(
+    tables: dict[str, dict[str, str]], subject_kind: str, subject_id: str,
+) -> str:
+    """Pick the header table key by ``(subject_kind, platform)``.
+
+    ``platform`` is the part of ``subject_id`` before the first ``':'``. A
+    ``f"{subject_kind}@{platform}"`` key wins when the table has one;
+    otherwise the plain ``subject_kind`` key is used. The kind must take part
+    in the choice: a ``participant`` and a ``group_chat`` can share the same
+    ``neko_visit:`` prefix, so a bare prefix lookup would mix them up.
+    """
+    if isinstance(subject_id, str) and ":" in subject_id:
+        platform = subject_id.split(":", 1)[0]
+        specific = f"{subject_kind}@{platform}"
+        if specific in tables:
+            return specific
+    return subject_kind
 
 
 def get_scoped_persona_section_header(
@@ -3886,14 +3947,22 @@ def get_scoped_persona_section_header(
     display_name: str | None = None,
 ) -> str:
     if display_name:
-        named = SCOPED_PERSONA_SECTION_HEADER_NAMED.get(subject_kind)
+        named = SCOPED_PERSONA_SECTION_HEADER_NAMED.get(
+            _scoped_header_table_key(
+                SCOPED_PERSONA_SECTION_HEADER_NAMED, subject_kind, subject_id,
+            )
+        )
         if named is not None:
             # str.format 只展开模板里的槽位，替换值里的花括号不会被二次
             # 解释——display_name 含 "{x}" 也不会变成注入面。
             return _loc(named, lang).format(
                 display_name=display_name, subject_id=subject_id,
             )
-    table = SCOPED_PERSONA_SECTION_HEADER.get(subject_kind)
+    table = SCOPED_PERSONA_SECTION_HEADER.get(
+        _scoped_header_table_key(
+            SCOPED_PERSONA_SECTION_HEADER, subject_kind, subject_id,
+        )
+    )
     if table is None:
         return subject_id
     return _loc(table, lang).format(subject_id=subject_id)

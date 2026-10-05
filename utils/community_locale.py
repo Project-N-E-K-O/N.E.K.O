@@ -1,4 +1,4 @@
-"""Device locale hints for community login and anonymous recommendations."""
+"""Device hints for community login; interface language for anonymous recommendations."""
 
 from __future__ import annotations
 
@@ -8,12 +8,26 @@ import re
 
 
 def community_locale_hints() -> dict[str, str]:
+    """Use the interface language for anonymous recommendations."""
+    from utils.language_utils import get_global_language_full
+
+    return _community_locale_hints(get_global_language_full())
+
+
+def community_bootstrap_locale_hints() -> dict[str, str]:
+    """Initialize account preferences from the device, independent of UI/Steam settings."""
+    from utils.language_utils import _get_system_language
+
+    return _community_locale_hints(_get_system_language())
+
+
+def _community_locale_hints(language_code: str) -> dict[str, str]:
     # Keep heavyweight language probing off the import/startup path.
     from utils.language_utils import (
-        _get_macos_locale, _get_windows_locale, get_global_language_full, is_china_region,
+        _get_macos_locale, _get_windows_locale, is_china_region,
     )
 
-    raw = get_global_language_full().replace("_", "-").lower()
+    raw = language_code.replace("_", "-").lower()
     if raw.startswith(("zh-tw", "zh-hk", "zh-mo", "zh-hant")):
         language = "zh-TW"
     elif raw.startswith("zh"):

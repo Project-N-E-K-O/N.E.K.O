@@ -631,6 +631,35 @@ def test_tool_result_ends_the_run():
     assert _rewritten(messages) == []
 
 
+@pytest.mark.parametrize("answered", [False, True])
+def test_the_request_view_projects_the_tool_rounds_the_provider_receives(answered):
+    """The request view pairs tool rounds before it projects, so the chain
+    check judges the order the provider receives. A tool reply no call
+    claims is not sent, and the two comments it stood between reach the
+    provider as one run, which is cut; a reply its call claims is sent and
+    still ends the run (``test_tool_result_ends_the_run``)."""
+    from utils.llm_client import AIMessage, HumanMessage
+
+    calls = [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]
+    first = (
+        {"role": "assistant", "content": _COMMENT_A, "tool_calls": calls}
+        if answered else AIMessage(content=_COMMENT_A)
+    )
+    messages = [HumanMessage(content="陪我聊聊。"), first,
+                {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+                AIMessage(content=_COMMENT_B), HumanMessage(content="那你继续说说。")]
+    view = _bare_client()._dialog_messages_for_provider(messages)
+
+    def content(message):
+        return message["content"] if isinstance(message, dict) else message.content
+
+    if answered:
+        assert [content(m) for m in view] == ["陪我聊聊。", _BODY_A, "ok", _BODY_B, "那你继续说说。"]
+        assert view[1]["tool_calls"] == calls
+    else:
+        assert [content(m) for m in view] == ["陪我聊聊。", _BODY_A, "那你继续说说。"]
+
+
 def test_a_single_trailing_comment_is_not_a_chain():
     """One comment in the run is not a chain, so a normal single delivery
     survives even when it answers a user turn."""

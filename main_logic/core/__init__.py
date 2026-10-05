@@ -29,7 +29,7 @@ import path ``main_logic.core`` is unchanged):
   every instance attribute) assembled from the domain mixin modules
   (``context_append``, ``focus``, ``tts_runtime``, ``turn``,
   ``tool_calling``, ``lifecycle``, ``proactive``, ``greeting``,
-  ``streaming``, ``notify``), which hold methods only.
+  ``streaming``, ``notify``, ``takeover``), which hold methods only.
 - ``__init__``: re-exports the supported compatibility surface of the old
   module so retained imports and test monkeypatches
   (``main_logic.core.<attr>``) keep working unchanged. Helpers explicitly
@@ -57,6 +57,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from utils.frontend_utils import contains_chinese, replace_blank, replace_corner_mark, remove_bracket, \
     is_only_punctuation, TtsStreamNormalizer, TtsBracketStripper, TtsMarkdownStripper
 from utils.screenshot_utils import process_screen_data, overlay_avatar_annotation
+from utils.external_route_registry import route_external_start_session
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violation_signal
 from main_logic.tts_client import (
@@ -177,6 +178,7 @@ import httpx
 # form): CROSS_MODE_RESTART_WAIT_SECONDS, HIDE_DIRTY_VOICE_TRANSCRIPTS,
 # _CONTEXT_APPEND_DEFAULT_MAX_TOKENS, load/aload_global_conversation_settings,
 # dispatch_text_user_message, is_livestream_active, process_screen_data,
+# route_external_start_session,
 # get_tts_worker, publish_analyze_request_reliably and
 # publish_voice_transcript_observed_best_effort therefore keeps working
 # through a different mechanism: the mixins do not from-import those symbols

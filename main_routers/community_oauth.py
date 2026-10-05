@@ -22,12 +22,15 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from fastapi.responses import HTMLResponse, JSONResponse
+from main_routers.local_access import is_local_oauth_status_request as _loopback_request_source
 
 import main_routers.card_drop_router as C
 from main_logic import client_registration
 from utils.social_base import auth_public_url as _configured_auth_public_url
-from utils.community_locale import community_locale_hints
+from utils.community_locale import community_bootstrap_locale_hints
+from utils.instance_access import remote_instance_identity, _same_origin
 
 logger = logging.getLogger("neko.community_oauth")
 
@@ -109,7 +112,14 @@ def _pkce_s256_challenge(code_verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
-def _oauth_redirect_uri(request: Request | None = None) -> str:
+def _oauth_redirect_uri(request: Request | None = None, *, remote: bool = False) -> str:
+    if request is not None and (remote or getattr(request, "scope", {}).get("neko.instance_identity")):
+        configured = os.environ.get("NEKO_COMMUNITY_WEB_REDIRECT_URI", "").strip() or f"{_auth_public_url().rstrip('/')}/oauth/callback"
+        from urllib.parse import urlsplit
+        parsed = urlsplit(configured)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.path != _OAUTH_REDIRECT_PATH or parsed.query or parsed.fragment or parsed.username:
+            raise HTTPException(status_code=503, detail="remote_oauth_callback_not_configured")
+        return configured
     port: int | None = None
     if request is not None:
         port = request.url.port
@@ -138,14 +148,24 @@ def _callback_html(title: str, message: str, *, status_code: int = 200) -> HTMLR
     )
 
 
-def _unlink_pending() -> None:
+def _unlink_pending(expected_state: str | None = None) -> None:
     path = _oauth_pending_path()
     if path is None:
         return
+    if expected_state is not None:
+        pending = C._read_json_dict(path) or {}
+        if pending.get("state") != expected_state:
+            return
     try:
         path.unlink(missing_ok=True)
     except OSError as exc:
         logger.debug("community_oauth: pending unlink failed: %s", exc)
+
+
+async def _clear_pending_attempt(state: str) -> None:
+    """Never delete an attempt that replaced the one this callback redeemed."""
+    async with _oauth_start_lock:
+        await asyncio.to_thread(_unlink_pending, state)
 
 
 def _load_oauth_status_records() -> tuple[dict | None, dict]:
@@ -492,6 +512,19 @@ def _load_oauth_pending() -> tuple[Path | None, dict | None]:
     return path, C._read_json_dict(path) if path else None
 
 
+def _desktop_session_paths_for_host() -> tuple[str, list[str]]:
+    """Return the absolute write target and ordered fallback read paths.
+
+    Path discovery is optional metadata and must not interrupt status polling.
+    Deduplicate after absolutizing, since different relative paths can alias.
+    """
+    try:
+        resolved = list(dict.fromkeys(os.path.abspath(p) for p in C._social_session_paths()))
+    except (OSError, RuntimeError, ValueError):
+        return "", []
+    return (resolved[0] if resolved else ""), resolved
+
+
 def _persist_oauth_credentials(
     auth_payload: dict[str, Any],
     *,
@@ -501,6 +534,8 @@ def _persist_oauth_credentials(
     local_user_id: str,
     auth_public_url: str,
     client_id: str,
+    expected_pending_state: str | None = None,
+    authorized_request: Request | None = None,
 ) -> bool:
     """Persist both OAuth credential files or restore their previous state."""
     auth_path = C._auth_path()
@@ -516,6 +551,17 @@ def _persist_oauth_credentials(
         # inside the same scope, or a refresh committing between the read and
         # the lock would be rolled back onto an already-consumed refresh token.
         with C._social_session_lock(social_path):
+            if authorized_request is not None:
+                try:
+                    if remote_instance_identity(authorized_request) != auth_payload.get("oauth_attempt_identity"):
+                        return False
+                except (OSError, ValueError):
+                    return False
+            if expected_pending_state is not None:
+                pending_path = _oauth_pending_path()
+                pending = C._read_json_dict(pending_path) if pending_path else None
+                if not pending or pending.get("state") != expected_pending_state:
+                    return False
             snapshots: list[tuple[Path, bool, dict[str, Any] | None]] = []
             try:
                 for path in (auth_path, social_path):
@@ -582,15 +628,18 @@ def _persist_oauth_credentials(
 
 @router.post("/oauth/start", summary="启动社区统一账号 OAuth（Desktop PKCE）")
 async def oauth_start_endpoint(request: Request):
-    if not C._local_request_source_allowed(request):
+    identity = await _account_request_identity(request)
+    if identity is None or not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
 
     auth_url_base = _auth_public_url()
     if not auth_url_base:
         raise HTTPException(status_code=400, detail="auth_url_not_configured")
 
-    client_id = _desktop_client_id()
-    redirect_uri = _oauth_redirect_uri(request)
+    client_id = _desktop_client_id() if identity == "local" else (os.environ.get("NEKO_COMMUNITY_WEB_CLIENT_ID", "").strip() or "neko-servers-web-prod")
+    if not client_id:
+        raise HTTPException(status_code=503, detail="remote_oauth_client_not_configured")
+    redirect_uri = _oauth_redirect_uri(request, remote=identity != "local")
     pending_path = await asyncio.to_thread(_oauth_pending_path)
     if pending_path is None:
         raise HTTPException(status_code=503, detail="oauth_pending_unavailable")
@@ -613,6 +662,7 @@ async def oauth_start_endpoint(request: Request):
             and str((pending or {}).get("client_id") or "") == client_id
             and str((pending or {}).get("auth_public_url") or "").rstrip("/")
             == auth_url_base
+            and str((pending or {}).get("instance_identity") or "local") == identity
         ):
             state = pending_state
             code_verifier = pending_verifier
@@ -620,6 +670,9 @@ async def oauth_start_endpoint(request: Request):
             reused_pending = True
         else:
             state = secrets.token_urlsafe(32)
+            if identity != "local":
+                origin = os.environ.get("NEKO_INSTANCE_PUBLIC_ORIGIN", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+                state = base64.urlsafe_b64encode(json.dumps({"origin": origin, "nonce": state}, separators=(",", ":")).encode()).rstrip(b"=").decode()
             code_verifier = secrets.token_urlsafe(64)
             expires_at = now + _OAUTH_PENDING_TTL_SEC
             try:
@@ -634,6 +687,7 @@ async def oauth_start_endpoint(request: Request):
                         "auth_public_url": auth_url_base,
                         "created_at": now,
                         "expires_at": expires_at,
+                        "instance_identity": identity,
                     },
                 )
             except OSError as exc:
@@ -659,6 +713,7 @@ async def oauth_start_endpoint(request: Request):
     return {
         "auth_url": auth_url,
         "state": state,
+        "relay_origin": (_auth_public_url() if identity != "local" and redirect_uri == f"{_auth_public_url().rstrip('/')}/oauth/callback" else None),
         "expires_in": (
             max(1, int(expires_at - time.time()))
             if reused_pending
@@ -668,7 +723,7 @@ async def oauth_start_endpoint(request: Request):
 
 
 def _public_user_profile(user: dict[str, Any] | None, local_user_id: str | None = None) -> dict[str, Any]:
-    """User profile safe to return from local routes; never includes the phone number."""
+    """Authorized account profile; never includes tokens or the phone number."""
     source = user if isinstance(user, dict) else {}
     display_name = source.get("display_name") or source.get("username") or source.get("name")
     profile: dict[str, Any] = {
@@ -712,12 +767,41 @@ def _persisted_user_profile(user: dict[str, Any] | None, local_user_id: str | No
     return profile
 
 
-@router.get("/oauth/status", summary="社区 OAuth 本地登录状态（不含 token）")
+async def _account_request_identity(request: Request) -> str | None:
+    """Use local desktop policy or a verified remote instance credential."""
+    if _loopback_request_source(request):
+        return "local"
+    identity = getattr(request, "scope", {}).get("neko.instance_identity")
+    if identity:
+        return identity if _same_origin(request) else None
+    try:
+        identity = await asyncio.to_thread(remote_instance_identity, request)
+        return identity if identity and _same_origin(request) else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+@router.get("/oauth/status", summary="社区 OAuth 登录状态（远程不含本机路径）")
 async def oauth_status_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
 
-    status = await resolve_saved_oauth_status()
+    identity = await _account_request_identity(request)
+    if identity is None:
+        return JSONResponse({"detail": "loopback_only"}, status_code=403)
+
+    # Remote authorization grants account access, never backend file discovery.
+    if identity == "local":
+        (session_path, session_paths), status = await asyncio.gather(
+            asyncio.to_thread(_desktop_session_paths_for_host), resolve_saved_oauth_status(),
+        )
+        session_fields = {"session_path": session_path, "session_paths": session_paths}
+    else:
+        status = await resolve_saved_oauth_status()
+        # An opaque, non-authorizing revision lets Electron fence/retry streams
+        # after Linux refreshes its cloud token without copying that token.
+        access = str((status.get("snapshot") or {}).get("access_token") or "")
+        session_fields = {"session_generation": int.from_bytes(hashlib.sha256(access.encode()).digest()[:6], "big")}
     snapshot = status["snapshot"]
     auth = status["auth"]
     if not status["logged_in"] or not snapshot:
@@ -726,20 +810,27 @@ async def oauth_status_endpoint(request: Request):
             "auth_source": None,
             "local_user_id": None,
             "user": None,
+            "session_saved": status_session_saved(status),
+            "community_base_url": C._social_base_url(),
+            **session_fields,
         }
     user = auth.get("user") if isinstance(auth.get("user"), dict) else {}
-    # 本路由对无 Origin 的本机进程也放行，不校验调用者身份；手机号只落盘给桌面端读，不经这里外露。
+    # Account authorization has already passed; phone and tokens stay private.
     public_profile = _public_user_profile(user)
     return {
         "logged_in": True,
         "auth_source": snapshot.get("auth_source") or None,
         "local_user_id": snapshot.get("local_user_id") or None,
         "user": public_profile,
+        "community_base_url": C._social_base_url(),
+        **session_fields,
     }
 
 
 @router.post("/oauth/logout", summary="清除社区 OAuth 本地会话（best-effort revoke）")
 async def oauth_logout_endpoint(request: Request):
+    if await _account_request_identity(request) is None:
+        return JSONResponse({"detail": "instance_authorization_required"}, status_code=403)
     if not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
 
@@ -767,10 +858,84 @@ async def oauth_logout_endpoint(request: Request):
     return {"ok": True}
 
 
+@router.get("/oauth/completion")
+async def oauth_completion_endpoint(request: Request, state: str = Query(..., min_length=1, max_length=2048)):
+    """Confirm this client's OAuth attempt, never another saved global login."""
+    identity = await _account_request_identity(request)
+    if identity is None or not C._local_request_source_allowed(request):
+        return JSONResponse({"detail": "instance_authorization_required"}, status_code=403)
+    status = await resolve_saved_oauth_status()
+    auth = status.get("auth") or {}
+    matches = secrets.compare_digest(str(auth.get("oauth_attempt_state") or ""), hashlib.sha256(state.encode()).hexdigest())
+    return JSONResponse({"logged_in": bool(status["logged_in"] and matches and auth.get("oauth_attempt_identity") == identity)}, headers={"Cache-Control": "no-store"})
+
+
+class RemoteOAuthCallback(BaseModel):
+    """One-time code from the fixed IdP relay; no cloud token enters the browser."""
+    code: str | None = Field(None, min_length=1, max_length=4096)
+    state: str = Field(..., min_length=1, max_length=2048)
+    error: str | None = Field(None, min_length=1, max_length=100)
+
+
+@router.post("/oauth/remote-callback")
+async def oauth_remote_callback_endpoint(request: Request, payload: RemoteOAuthCallback):
+    """Redeem only for the authorized browser that initiated this attempt."""
+    identity = await _account_request_identity(request)
+    if identity is None or not C._local_request_source_allowed(request):
+        return JSONResponse({"detail": "instance_authorization_required"}, status_code=403)
+    response = await _handle_oauth_callback(payload.code, payload.state, payload.error, instance_identity=identity,
+                                          authorized_request=request if identity != "local" else None)
+    return JSONResponse({"ok": response.status_code == 200}, status_code=response.status_code,
+                        headers={"Cache-Control": "no-store"})
+
+
+@callback_router.get("/oauth/relay", response_class=HTMLResponse)
+async def oauth_remote_relay_landing(request: Request):
+    """Redeem a fragment-only result in the initiating instance's own origin.
+
+    The popup never receives an opener. Only an authorized host cookie may
+    load this landing page, and the normal callback enforces PKCE/session/state.
+    The same-origin channel coordinates completion/navigation, never tokens.
+    """
+    if not request.scope.get("neko.instance_identity"):
+        return JSONResponse({"detail": "instance_authorization_required"}, status_code=401)
+    community_origin = str(httpx.URL(C._social_base_url()).copy_with(path="", query=None, fragment=None)).rstrip("/")
+    script = """(async()=>{
+      const raw=location.hash.slice(1);history.replaceState(null,'',location.pathname);
+      let data;try{data=JSON.parse(decodeURIComponent(raw));}catch(_){return;}
+      if(!data||typeof data.state!=='string'||!data.state||data.state.length>2048)return;
+      const channel=new BroadcastChannel('neko-oauth:'+data.state);
+      channel.onmessage=(event)=>{
+        const message=event.data;if(!message||message.type!=='navigate'||message.state!==data.state)return;
+        try{const target=new URL(message.url);if(target.origin!==COMMUNITY_ORIGIN)return;
+          channel.close();location.replace(target.href);}catch(_){}
+      };
+      channel.postMessage({type:'redeeming',state:data.state});
+      try{const response=await fetch('/api/card-drop/oauth/remote-callback',{
+        method:'POST',cache:'no-store',credentials:'same-origin',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({state:data.state,code:data.code||null,error:data.error||null})});
+        channel.postMessage({type:'complete',state:data.state,ok:response.ok});
+        if(!response.ok)window.close();
+      }catch(_){channel.postMessage({type:'complete',state:data.state,ok:false});}
+      // Both post-login handoffs can take 120 seconds; keep navigation available.
+      const relayCleanupTimer=setTimeout(()=>channel.close(),180000);
+      window.addEventListener('pagehide',()=>{
+        clearTimeout(relayCleanupTimer);channel.close();
+      },{once:true});
+    })();""".replace("COMMUNITY_ORIGIN", json.dumps(community_origin))
+    digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+    return HTMLResponse("<!doctype html><html><meta charset=utf-8><title>NEKO</title><script>" + script + "</script></html>",
+                        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+                                 "Content-Security-Policy": "default-src 'none'; connect-src 'self'; script-src 'sha256-" + digest + "'; frame-ancestors 'none'; base-uri 'none'"})
+
+
 async def _handle_oauth_callback(
     code: str | None,
     state: str | None,
     error: str | None = None,
+    *,
+    instance_identity: str | None = None,
+    authorized_request: Request | None = None,
 ) -> HTMLResponse:
     _pending_path, pending = await asyncio.to_thread(_load_oauth_pending)
     if not pending:
@@ -780,12 +945,17 @@ async def _handle_oauth_callback(
             status_code=400,
         )
 
+    if instance_identity is not None and (pending.get("instance_identity") or "local") != instance_identity:
+        return _callback_html("登录校验失败", "请回到发起登录的 NEKO 页面重试。", status_code=403)
+
+    expected_state = str(pending.get("state") or "")
+
     try:
         expires_at = float(pending.get("expires_at") or 0)
     except (TypeError, ValueError):
         expires_at = 0.0
     if time.time() > expires_at:
-        await asyncio.to_thread(_unlink_pending)
+        await _clear_pending_attempt(expected_state)
         return _callback_html(
             "登录已过期",
             "请回到 NEKO 重新点击社区登录。",
@@ -793,7 +963,7 @@ async def _handle_oauth_callback(
         )
 
     expected_state = str(pending.get("state") or "")
-    if not expected_state or not state or not secrets.compare_digest(state, expected_state):
+    if not expected_state or not state or not secrets.compare_digest(state.encode(), expected_state.encode()):
         return _callback_html(
             "登录校验失败",
             "OAuth state 不匹配，请回到 NEKO 重试。",
@@ -801,7 +971,7 @@ async def _handle_oauth_callback(
         )
 
     if error:
-        await asyncio.to_thread(_unlink_pending)
+        await _clear_pending_attempt(expected_state)
         if error == "access_denied":
             return _callback_html(
                 "登录已取消",
@@ -815,7 +985,7 @@ async def _handle_oauth_callback(
         )
 
     if not code:
-        await asyncio.to_thread(_unlink_pending)
+        await _clear_pending_attempt(expected_state)
         return _callback_html(
             "登录未完成",
             "Auth 未返回授权码，请回到 NEKO 重试。",
@@ -827,7 +997,7 @@ async def _handle_oauth_callback(
     client_id = str(pending.get("client_id") or _desktop_client_id())
     auth_public_url = str(pending.get("auth_public_url") or _auth_public_url()).rstrip("/")
     if not code_verifier:
-        await asyncio.to_thread(_unlink_pending)
+        await _clear_pending_attempt(expected_state)
         return _callback_html(
             "登录数据不完整",
             "请回到 NEKO 重新点击社区登录。",
@@ -843,14 +1013,14 @@ async def _handle_oauth_callback(
             auth_public_url=auth_public_url,
         )
     except HTTPException as exc:
-        await asyncio.to_thread(_unlink_pending)
+        await _clear_pending_attempt(expected_state)
         detail = str(exc.detail) if exc.detail else "换取登录凭证失败"
         return _callback_html("登录失败", detail, status_code=400)
 
     access_token = str(token_payload.get("access_token") or "").strip()
     refresh_token = str(token_payload.get("refresh_token") or "").strip() or None
     if not access_token:
-        await asyncio.to_thread(_unlink_pending)
+        await _clear_pending_attempt(expected_state)
         return _callback_html(
             "登录失败",
             "Auth 未返回有效 access token。",
@@ -861,14 +1031,14 @@ async def _handle_oauth_callback(
     try:
         bootstrap = await _bootstrap_session(social_base, access_token)
     except HTTPException as exc:
-        await asyncio.to_thread(_unlink_pending)
+        await _clear_pending_attempt(expected_state)
         detail = str(exc.detail) if exc.detail else "无法建立社区会话"
         return _callback_html("登录失败", detail, status_code=400)
 
     user = bootstrap.get("user") if isinstance(bootstrap.get("user"), dict) else {}
     local_user_id = C._normalize_local_user_id(user.get("id"))
     if not local_user_id:
-        await asyncio.to_thread(_unlink_pending)
+        await _clear_pending_attempt(expected_state)
         return _callback_html(
             "登录失败",
             "社区身份响应无效。",
@@ -877,7 +1047,7 @@ async def _handle_oauth_callback(
 
     bind = await _oauth_guest_bind(social_base, access_token)
     if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
-        await asyncio.to_thread(_unlink_pending)
+        await _clear_pending_attempt(expected_state)
         return _callback_html(
             "登录冲突",
             "这台设备已经绑定其他社区账号，本次登录未生效；原登录状态保持不变。",
@@ -894,18 +1064,18 @@ async def _handle_oauth_callback(
         "client_id": client_id,
         "user": _persisted_user_profile(user, local_user_id),
         "bind": bind,
+        "oauth_attempt_state": hashlib.sha256(expected_state.encode()).hexdigest(),
+        "oauth_attempt_identity": pending.get("instance_identity") or "local",
     }
-    credentials_saved = await asyncio.to_thread(
-        _persist_oauth_credentials,
-        auth_payload,
-        social_base=social_base,
-        access_token=access_token,
-        refresh_token=refresh_token,
-        local_user_id=local_user_id,
-        auth_public_url=auth_public_url,
-        client_id=client_id,
-    )
-    await asyncio.to_thread(_unlink_pending)
+    async with _oauth_start_lock:
+        credentials_saved = await asyncio.to_thread(
+            _persist_oauth_credentials, auth_payload, social_base=social_base,
+            access_token=access_token, refresh_token=refresh_token,
+            local_user_id=local_user_id, auth_public_url=auth_public_url,
+            client_id=client_id, expected_pending_state=expected_state,
+            authorized_request=authorized_request,
+        )
+        await asyncio.to_thread(_unlink_pending, expected_state)
     if not credentials_saved:
         return _callback_html(
             "登录未完成",
@@ -922,21 +1092,27 @@ async def _handle_oauth_callback(
 
 @callback_router.get("/oauth/callback", response_class=HTMLResponse)
 async def oauth_callback_endpoint(
+    request: Request,
     code: str | None = Query(None, min_length=1),
     state: str | None = Query(None, min_length=1),
     error: str | None = Query(None, min_length=1, max_length=100),
 ):
-    return await _handle_oauth_callback(code, state, error)
+    identity = request.scope.get("neko.instance_identity") or ("local" if _loopback_request_source(request) else None)
+    if identity is None:
+        return _callback_html("登录校验失败", "请先连接 NEKO 实例。", status_code=403)
+    return await _handle_oauth_callback(code, state, error, instance_identity=identity,
+                                      authorized_request=request if identity != "local" else None)
 
 
 @callback_router.get("/api/card-drop/oauth/callback", response_class=HTMLResponse)
 async def oauth_callback_alias_endpoint(
+    request: Request,
     code: str | None = Query(None, min_length=1),
     state: str | None = Query(None, min_length=1),
     error: str | None = Query(None, min_length=1, max_length=100),
 ):
     """Alias kept for logger redaction parity; primary Hydra URI is ``/oauth/callback``."""
-    return await _handle_oauth_callback(code, state, error)
+    return await oauth_callback_endpoint(request, code, state, error)
 
 
 async def _exchange_oauth_code(
@@ -986,7 +1162,7 @@ async def _bootstrap_session(social_base: str, access_token: str) -> dict[str, A
             response = await client.post(
                 f"{social_base.rstrip('/')}/api/auth/session/bootstrap",
                 headers={"Authorization": f"Bearer {access_token}"},
-                json=await asyncio.to_thread(community_locale_hints),
+                json=await asyncio.to_thread(community_bootstrap_locale_hints),
             )
     except httpx.HTTPError as exc:
         logger.info("community_oauth: bootstrap failed: %s", exc)

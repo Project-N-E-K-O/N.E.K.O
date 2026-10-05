@@ -91,13 +91,13 @@ def _client(tmp_path, monkeypatch, *, allow_mutation: bool):
 
 
 def test_shared_local_access_accepts_ipv4_mapped_loopback():
-    request = SimpleNamespace(client=SimpleNamespace(host="::ffff:127.0.0.1"))
+    request = SimpleNamespace(client=SimpleNamespace(host="::ffff:127.0.0.1"), headers={})
 
     verify_local_access(request)
 
 
 def test_shared_local_access_rejects_ipv4_mapped_public_address():
-    request = SimpleNamespace(client=SimpleNamespace(host="::ffff:8.8.8.8"))
+    request = SimpleNamespace(client=SimpleNamespace(host="::ffff:8.8.8.8"), headers={})
 
     with pytest.raises(HTTPException) as raised:
         verify_local_access(request)

@@ -27,6 +27,10 @@
         const previousFocus = document.activeElement;
         const layer = document.createElement('div');
         layer.className = 'click-guide-layer';
+        // Guide controls and mask panes are not outside actions on the business UI.
+        for (const type of ['pointerdown', 'mousedown', 'touchstart', 'click']) {
+            layer.addEventListener(type, event => event.stopPropagation(), { passive: true });
+        }
         const mask = api.createMask(layer);
         const highlight = api.createHighlight(layer);
         const secondaryHighlight = api.createHighlight(layer);
@@ -72,9 +76,11 @@
         async function finish(reason) {
             if (ended) return;
             ended = true;
+            root.removeEventListener('keydown', rememberEscapeOwner, true);
+            root.removeEventListener('keydown', escape);
+            document.removeEventListener('keydown', trapTab);
             try { await cleanupStep(); }
             finally {
-                document.removeEventListener('keydown', escape);
                 root.removeEventListener('neko:click-guide-window-skip', windowSkip);
                 layer.remove();
                 try { await presentation?.close(); }
@@ -85,17 +91,72 @@
             }
         }
         const windowSkip = () => void finish('skipped');
+        const ownedEscapes = new WeakMap();
+        const avatarPopupSelector = '.live2d-popup, .vrm-popup, .mmd-popup, .pngtuber-popup';
+        const editableSelector = 'input:not([type="checkbox"]):not([type="radio"]):not([type="range"])'
+            + ':not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="image"]):not([type="hidden"]), '
+            + 'textarea, select, [contenteditable]:not([contenteditable="false"])';
+        const escapeOverlaySelector = '[role="dialog"], [role="menu"], [aria-modal="true"], '
+            + '.modal-overlay, .neko-social-embed-backdrop, .composer-icon-popover, '
+            + '[data-compact-input-tool-fan-open="true"], #chat-avatar-preview-popup';
+        const tabOverlaySelector = escapeOverlaySelector + ', ' + avatarPopupSelector
+            + ', .neko-mic-subwindow, [data-neko-sidepanel-owner]';
+        function hasEditableOwner(event) {
+            return !!(event.target?.closest?.(editableSelector)
+                || document.activeElement?.closest?.(editableSelector));
+        }
+        function hasKeyboardOwner(event) {
+            // Avatar popups and sidepanels have no Escape handler. They only
+            // participate in Tab ownership. Editable focus conservatively reserves
+            // Escape even without a dedicated handler; explicit Skip remains available.
+            return hasEditableOwner(event) || hasOverlayOwner(null, escapeOverlaySelector);
+        }
+        function hasOverlayOwner(guideTarget, selector = tabOverlaySelector) {
+            return [...document.querySelectorAll(selector)].some(element => {
+                // The persistent chat surface is a host, not a dismissible overlay.
+                if (element.id === 'react-chat-window-shell' || layer.contains(element)
+                    || element.closest('[hidden], [aria-hidden="true"]')) return false;
+                // Owned sidepanels are siblings under body, not popup descendants.
+                if (guideTarget && (element.contains(guideTarget)
+                    || (guideTarget.id && element.getAttribute('data-neko-sidepanel-owner') === guideTarget.id))) return false;
+                return api.isElementVisible(element);
+            });
+        }
+        function rememberEscapeOwner(event) {
+            // Observe before an owner removes its UI; never consume the event here.
+            if (!ended && event.key === 'Escape') ownedEscapes.set(event, hasKeyboardOwner(event));
+        }
         function escape(event) {
-            // Escape belongs to the composer and open menus; skipping is explicit.
-            if (event.isComposing || event.key === 'Escape') return;
+            if (ended || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
+            if (event.key === 'Escape') {
+                if (ownedEscapes.get(event) || hasKeyboardOwner(event)) return;
+                event.preventDefault();
+                windowSkip();
+            }
+        }
+        function trapTab(event) {
+            if (ended || presentation || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
             if (event.key === 'Tab') {
                 const target = api.resolveTarget(view()?.target);
+                const sidepanels = target?.id ? [...document.querySelectorAll('[data-neko-sidepanel-owner]')]
+                    .filter(panel => panel.getAttribute('data-neko-sidepanel-owner') === target.id) : [];
+                // The lesson's own editable target participates in its focus loop.
+                // External editors and business overlays retain their own Tab handling.
+                if (hasOverlayOwner(target) || (!layer.contains(document.activeElement)
+                    && hasEditableOwner(event) && !target?.contains(document.activeElement)
+                    && !sidepanels.some(panel => panel.contains(document.activeElement)))) return;
                 const selector = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"], a[href]';
-                const controls = [...card.querySelectorAll(selector)];
-                if (target?.matches(selector)) controls.unshift(target);
-                if (target) controls.unshift(...target.querySelectorAll(selector));
+                let controls = [];
+                if (target?.matches(selector)) controls.push(target);
+                if (target) controls.push(...target.querySelectorAll(selector));
+                for (const panel of sidepanels) controls.push(...panel.querySelectorAll(selector));
+                controls.push(...card.querySelectorAll(selector));
+                controls = controls.filter(element => element.tabIndex >= 0
+                    && !element.closest('[hidden], [aria-hidden="true"]') && api.isElementVisible(element));
+                if (!controls.length) return;
                 const current = controls.indexOf(document.activeElement);
-                const nextIndex = (current + (event.shiftKey ? -1 : 1) + controls.length) % controls.length;
+                const nextIndex = current < 0 ? (event.shiftKey ? controls.length - 1 : 0)
+                    : (current + (event.shiftKey ? -1 : 1) + controls.length) % controls.length;
                 event.preventDefault();
                 controls[nextIndex]?.focus({ preventScroll: true });
             }
@@ -371,7 +432,9 @@
                         returned: () => void advance(),
                         skip: () => void finish('skipped'), failed: () => void finish('failed') });
                 }
-                document.addEventListener('keydown', escape);
+                root.addEventListener('keydown', rememberEscapeOwner, true);
+                root.addEventListener('keydown', escape);
+                document.addEventListener('keydown', trapTab);
                 root.addEventListener('neko:click-guide-window-skip', windowSkip);
                 return show(startIndex, startIndex !== 0);
             },

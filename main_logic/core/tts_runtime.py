@@ -1190,25 +1190,58 @@ class TtsRuntimeMixin:
 
         The two TTS-done flags are NOT reset together, because they are not
         paired with the same thing — see the comments at each reset.
+
+        Three steps, for a caller that must tell the frontend in between (a
+        final discard: no audio of the discarded reply may arrive after its
+        notice): ``_interrupt_tts_now`` (synchronous),
+        ``_let_tts_interrupt_land`` (audio a handler already held goes out,
+        what leaked meanwhile is dropped) and ``_finish_tts_clear``.
+        """
+        interrupt = self._interrupt_tts_now()
+        await self._let_tts_interrupt_land(interrupt)
+        await self._finish_tts_clear(interrupt)
+
+    @staticmethod
+    def _drain_tts_responses(response_queue) -> None:
+        # A cancelled handler still owns its executor's blocking get().
+        # Discard audio, but return its wakeups after draining the queue.
+        wakeups = []
+        while not response_queue.empty():
+            try:
+                item = response_queue.get_nowait()
+            except Exception:
+                break
+            if isinstance(item, tuple) and len(item) == 2 and item[0] == "__handler_exit__":
+                wakeups.append(item)
+        for item in wakeups:
+            response_queue.put_nowait(item)
+
+    def _interrupt_tts_now(self):
+        """The synchronous first half of ``_clear_tts_pipeline``: interrupt
+        the worker and drop the audio already queued for the frontend.
+
+        Returns what ``_finish_tts_clear`` needs, or None when this output is
+        not current (nothing to clear).
         """
         # ``_tts_done_queued_for_turn`` 的对偶是下面的 ``__interrupt__``：一入队
         # 就把上一轮那个 done sentinel 作废，而这个 flag 是"本轮 sentinel 已排队"
-        # 的唯一记账。所以清零属于 interrupt 的同一步，必须落在函数的第一个
-        # await（下面的 sleep）之前：从函数入口到 put("__interrupt__") 全是同步
-        # 语句，取消无从投递，两者因此原子。放在 await 之后（历史写法：由各调用方
-        # 在 await 返回后各自清）取消落在 sleep 上就会留下"worker 已被中断、记账
-        # 还说已排队"的残留态，下一轮 ``_request_tts_done_locked`` 因此
+        # 的唯一记账。所以清零属于 interrupt 的同一步，必须落在第一个 await
+        # （_finish_tts_clear 里的 sleep）之前：本函数全是同步语句，取消无从
+        # 投递，两者因此原子。放在 await 之后（历史写法：由各调用方在 await
+        # 返回后各自清）取消落在 sleep 上就会留下"worker 已被中断、记账还说
+        # 已排队"的残留态，下一轮 ``_request_tts_done_locked`` 因此
         # early-return "already"，flush sentinel 永远进不了队 —— 正是
         # handle_new_message 那两行清零本来要防的后果。
         #
         # ``_tts_done_pending_until_ready`` 不能跟着挪上来：它的对偶是
         # ``tts_pending_chunks``（"这批文本还没刷出去，done 要等它们之后再补发"），
-        # 两者一起在函数末尾的 tts_cache_lock 段里清。单把 flag 提前、chunks 留在
-        # 原地，取消落在 sleep 上就撕成另一个方向的半套态：worker 就绪后
-        # ``_flush_tts_pending_chunks`` 会把陈旧 chunks 重新入队，却因为 flag 已是
-        # False 而跳过它们的 done 补发，合成器一直不 flush。所以它留在下面不动。
-        # 调用方在本函数返回后的重复清零保留不动：那是给 sleep 窗口内被并发
-        # 置回 True 的情况兜底，与这里要修的取消残留是两件事。
+        # 两者一起在 _finish_tts_clear 末尾的 tts_cache_lock 段里清。单把 flag
+        # 提前、chunks 留在原地，取消落在 sleep 上就撕成另一个方向的半套态：
+        # worker 就绪后 ``_flush_tts_pending_chunks`` 会把陈旧 chunks 重新入队，
+        # 却因为 flag 已是 False 而跳过它们的 done 补发，合成器一直不 flush。
+        # 所以它留在后半段不动。调用方在 _clear_tts_pipeline 返回后的重复清零
+        # 保留不动：那是给 sleep 窗口内被并发置回 True 的情况兜底，与这里要修的
+        # 取消残留是两件事。
         runtime = self._snapshot_tts_runtime()
         request_queue = self.tts_request_queue
         response_queue = self.tts_response_queue
@@ -1218,21 +1251,7 @@ class TtsRuntimeMixin:
         # A retired installed runtime can still own fallback replay. Clear
         # that conversation output, but never accept a stale worker callback.
         if not self._tts_output_is_current():
-            return
-
-        def clear_responses():
-            # A cancelled handler still owns its executor's blocking get().
-            # Discard audio, but return its wakeups after draining the queue.
-            wakeups = []
-            while not response_queue.empty():
-                try:
-                    item = response_queue.get_nowait()
-                except Exception:
-                    break
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__handler_exit__":
-                    wakeups.append(item)
-            for item in wakeups:
-                response_queue.put_nowait(item)
+            return None
 
         self._tts_done_queued_for_turn = False
         # 打断作废的是这一轮的一切，包括还没到点的空闲软 flush；同样在第一个
@@ -1241,17 +1260,41 @@ class TtsRuntimeMixin:
         self._cancel_game_speech_completion_wait()
         self._clear_game_speech_correlation()
         GAME_SPEECH_AUDIO_CACHE.discard_owner(self)
+        interrupted = False
         if self._tts_runtime_is_current(runtime) and self.tts_thread and self.tts_thread.is_alive():
-            clear_responses()
+            self._drain_tts_responses(response_queue)
             try:
                 request_queue.put(("__interrupt__", None))
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS中断信号失败: {e}")
             self._reset_tts_stream_normalizer()
-            # 等待 TTS worker 处理 __interrupt__ 并 mute 回调（worker 轮询间隔 ~10ms）
-            # 然后再次清空响应队列，确保旧 synthesizer 泄漏的音频全部丢弃
-            await asyncio.sleep(0.02)
-            clear_responses()
+            interrupted = True
+        return runtime, response_queue, pending_chunks, session, speech_id, interrupted
+
+    async def _let_tts_interrupt_land(self, interrupt, still_owned=None) -> None:
+        """Wait for an interrupt from ``_interrupt_tts_now`` to land, then drop
+        the audio the old synthesizer leaked meanwhile.
+
+        A response handler that had already taken an audio item off the queue
+        sends it in this wait, so it reaches the frontend ahead of anything
+        sent after this returns. ``still_owned``, when given, is rechecked
+        before the drop: a caller taken over in the wait leaves the queue to
+        its taker.
+        """
+        if interrupt is None or not interrupt[-1]:
+            return
+        # 等待 TTS worker 处理 __interrupt__ 并 mute 回调（worker 轮询间隔 ~10ms）
+        # 然后再次清空响应队列，确保旧 synthesizer 泄漏的音频全部丢弃
+        await asyncio.sleep(0.02)
+        if still_owned is None or still_owned():
+            self._drain_tts_responses(interrupt[1])
+
+    async def _finish_tts_clear(self, interrupt) -> None:
+        """The last step of ``_clear_tts_pipeline``, given what
+        ``_interrupt_tts_now`` returned: the pending caches."""
+        if interrupt is None:
+            return
+        runtime, response_queue, pending_chunks, session, speech_id, _interrupted = interrupt
         async with self.tts_cache_lock:
             owns_queues = (runtime is getattr(self, "_tts_runtime", None)
                            and response_queue is self.tts_response_queue)
@@ -2737,15 +2780,27 @@ class TtsRuntimeMixin:
                         }
                         _parsed_code = None
                         _keyword_target = error_msg_text  # 非 JSON 错误时回退使用
+                        # 展示给用户的那句：默认沿用原文，但关闭帧类错误改成只报
+                        # 关闭码——理由文本由 provider 控制，不该进 UI（约定见
+                        # tests/unit/runtime/test_realtime_connection_recovery.py）。
+                        # 关键词分类仍读 data.message，不受影响。
+                        _display_msg = error_msg_text
                         # 免费服务 worker 按关闭帧分类的拒绝会带 data.close_code
                         _from_server_close = False
                         try:
                             _parsed = json.loads(error_msg_text)
                             if isinstance(_parsed, dict):
                                 _close_data = _parsed.get('data')
+                                # 判定要求 close_code 非空：展示串由它拼出来，
+                                # 缺值的载荷会渲染成 "WebSocket close code None"。
                                 _from_server_close = (
-                                    isinstance(_close_data, dict) and 'close_code' in _close_data
+                                    isinstance(_close_data, dict)
+                                    and _close_data.get('close_code') is not None
                                 )
+                                if _from_server_close:
+                                    _display_msg = (
+                                        f"WebSocket close code {_close_data.get('close_code')}"
+                                    )
                                 # 结构化错误：关键词匹配只看 data.message，避免元数据误判
                                 _keyword_target = ""
                                 # 先检查顶层 code
@@ -2768,7 +2823,7 @@ class TtsRuntimeMixin:
                             pass
 
                         if _parsed_code:
-                            user_msg = json.dumps({"code": _parsed_code, "details": {"msg": error_msg_text}})
+                            user_msg = json.dumps({"code": _parsed_code, "details": {"msg": _display_msg}})
                             self._last_tts_error_code = _parsed_code
                         else:
                             # 回退到关键词匹配（仅匹配 message 字段，不匹配 UUID/时间戳等元数据）
@@ -2783,20 +2838,20 @@ class TtsRuntimeMixin:
                                 user_msg = json.dumps({"code": "API_RATE_LIMIT"})
                                 self._last_tts_error_code = 'API_RATE_LIMIT'
                             elif _is_safety_violation_signal(error_msg_lower):
-                                user_msg = json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": error_msg_text}})
+                                user_msg = json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": _display_msg}})
                                 self._last_tts_error_code = 'API_POLICY_VIOLATION'
                             elif '1008' in error_msg_lower:
-                                user_msg = json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": error_msg_text}})
+                                user_msg = json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": _display_msg}})
                                 self._last_tts_error_code = 'API_1008_FALLBACK'
                             elif ('401' in error_msg_lower or 'unauthorized' in error_msg_lower
                                     or 'authentication' in error_msg_lower
                                     or 'incorrect api key' in error_msg_lower
                                     or 'invalid_api_key' in error_msg_lower
                                     or ('invalid' in error_msg_lower and 'key' in error_msg_lower)):
-                                user_msg = json.dumps({"code": "API_KEY_REJECTED", "details": {"msg": error_msg_text}})
+                                user_msg = json.dumps({"code": "API_KEY_REJECTED", "details": {"msg": _display_msg}})
                                 self._last_tts_error_code = 'API_KEY_REJECTED'
                             else:
-                                user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
+                                user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": _display_msg}})
                                 self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
                         # 只有免费服务按关闭帧判定的日配额才停定时重试；付费 / 自定义
                         # provider 的 "429 quota exceeded" 同样归为配额，但常是可恢复的

@@ -16,6 +16,9 @@
 from utils.screen_comment_guard import project_screen_history, strip_screen_labels
 
 from ._shared import (
+    _answered_chunk,
+    _generation_check,
+    _find_by_identity,
     _same_route,
     LLMStreamChunk,
     List,
@@ -69,9 +72,17 @@ class _ToolingMixin:
     def _dialog_messages_for_provider(self, messages):
         """Build the request view of ``messages``; the saved history is untouched.
 
-        Screen-comment chains in assistant history are cut back to their first
-        comment, without source labels (``utils.screen_comment_guard``). No
-        user wording restores the removed comments.
+        First, tool-call bookkeeping the provider would reject is dropped, on
+        a copy: a round that is still executing (or was cancelled mid-batch)
+        sits in the shared history while another turn builds its request, and
+        an ``assistant(tool_calls)`` without its tool replies is a 400. This
+        comes first so the screen projection below judges the message order
+        the provider receives: a dropped tool reply no longer separates the
+        assistant messages around it.
+
+        Then screen-comment chains in assistant history are cut back to their
+        first comment, without source labels (``utils.screen_comment_guard``).
+        No user wording restores the removed comments.
 
         Only history up to the current turn's user message is projected. What
         this turn added after it (text already streamed to the user with its
@@ -79,28 +90,31 @@ class _ToolingMixin:
         every comment it really said and does not repeat one; only the source
         labels are removed from it. A retry re-sends those messages too.
         """
+        paired = self._paired_tool_rounds(messages)
         turn_start = next(
-            (index + 1 for index in range(len(messages) - 1, -1, -1)
-             if getattr(messages[index], "type", None) == "human"),
-            len(messages),
+            (index + 1 for index in range(len(paired) - 1, -1, -1)
+             if getattr(paired[index], "type", None) == "human"),
+            len(paired),
         )
         hits: dict = {}
-        if turn_start < len(messages):
-            head = messages[:turn_start]
+        if turn_start < len(paired):
+            head = paired[:turn_start]
             projected_head = project_screen_history(head, hits=hits)
-            tail = messages[turn_start:]
+            tail = paired[turn_start:]
             projected_tail = strip_screen_labels(tail)
             if projected_tail is not tail:
                 hits["label"] = hits.get("label", 0) + 1
             projected = (
-                messages if projected_head is head and projected_tail is tail
+                paired if projected_head is head and projected_tail is tail
                 else list(projected_head) + list(projected_tail)
             )
         else:
-            projected = project_screen_history(messages, hits=hits)
-        if projected is not messages:
+            projected = project_screen_history(paired, hits=hits)
+        if projected is not paired:
             # The history is re-projected on every provider call; log a
-            # rewrite once, not on every later request that repeats it.
+            # rewrite once, not on every later request that repeats it. The
+            # signature is taken over the saved messages, whose identities
+            # hold across calls (the pairing above builds fresh copies).
             kept = {id(message) for message in projected}
             signature = tuple(id(message) for message in messages if id(message) not in kept)
             log = (
@@ -118,6 +132,64 @@ class _ToolingMixin:
                 hits.get("label", 0),
             )
         return projected
+
+    @staticmethod
+    def _paired_tool_rounds(messages):
+        """Keep only tool calls that have replies, and replies that have calls.
+
+        A call is answered when a ``role=tool`` message with its id follows
+        in the run of tool messages right after its assistant turn. An
+        assistant turn left with no answered call keeps its text as a plain
+        assistant message, or goes if it has none. Returns ``messages`` itself
+        when nothing needs repair.
+        """
+        repaired = []
+        changed = False
+        index = 0
+        while index < len(messages):
+            message = messages[index]
+            if isinstance(message, dict) and message.get("role") == "tool":
+                # A reply no preceding assistant turn claims.
+                changed = True
+                index += 1
+                continue
+            calls = message.get("tool_calls") if isinstance(message, dict) else None
+            is_call_turn = (
+                isinstance(message, dict)
+                and message.get("role") == "assistant"
+                and bool(calls)
+            )
+            if not is_call_turn:
+                repaired.append(message)
+                index += 1
+                continue
+            end = index + 1
+            while (
+                end < len(messages)
+                and isinstance(messages[end], dict)
+                and messages[end].get("role") == "tool"
+            ):
+                end += 1
+            call_ids = [call.get("id") for call in calls if isinstance(call, dict)]
+            replies = [
+                reply for reply in messages[index + 1:end]
+                if reply.get("tool_call_id") in call_ids
+            ]
+            answered = {reply.get("tool_call_id") for reply in replies}
+            kept_calls = [call for call in calls if isinstance(call, dict) and call.get("id") in answered]
+            if len(kept_calls) == len(calls) and len(replies) == end - index - 1:
+                repaired.extend(messages[index:end])
+            else:
+                changed = True
+                if kept_calls:
+                    repaired.append({**message, "tool_calls": kept_calls})
+                    repaired.extend(replies)
+                else:
+                    plain = {k: v for k, v in message.items() if k != "tool_calls"}
+                    if str(plain.get("content") or "").strip():
+                        repaired.append(plain)
+            index = end
+        return repaired if changed else messages
 
     def set_tools(self, tool_definitions: Optional[List[ToolDefinition]]) -> None:
         """Replace the active tool list. Takes effect on the next
@@ -214,7 +286,12 @@ class _ToolingMixin:
             return "model"
         return "request"
 
-    async def _astream_declining_tools(self, messages, overrides: dict):
+    async def _astream_declining_tools(
+        self,
+        messages,
+        overrides: dict,
+        response_generation: Optional[int] = None,
+    ):
         """``self.llm.astream`` that survives an endpoint rejecting ``tools``.
 
         If the request fails before the first chunk because the endpoint
@@ -226,10 +303,16 @@ class _ToolingMixin:
         other failure, or one after a chunk was already received, propagates
         unchanged.
         """
+        generation_is_active = _generation_check(self, response_generation)
+
+        if not generation_is_active():
+            return
         received_any = False
         try:
             async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
                 received_any = True
+                # No cancellation check here: the caller publishes what this
+                # request delivered on its first chunk, then checks.
                 yield chunk
             return
         except Exception as exc:
@@ -252,8 +335,39 @@ class _ToolingMixin:
             self._openai_tools_unsupported_with_images = True
         overrides.pop("tools", None)
         overrides.pop("tool_choice", None)
+        if not generation_is_active():
+            return
         async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+            # Same rule as the first attempt: the caller publishes what this
+            # request delivered on its first chunk, then checks.
             yield chunk
+
+    @staticmethod
+    def _settle_unfinished_tool_round(messages, assistant_turn, tool_results) -> int:
+        """Keep the calls that already ran; drop the round only if none did.
+
+        A handler that returned has already had its side effects (a sent
+        message, a written file). Deleting its record would let the next
+        turn ask for it again, so the assistant turn is trimmed to the calls
+        that have results and stays paired with them. With no result at all
+        the whole round goes. Owned messages are matched by identity and put
+        back contiguously at the assistant turn's position, so a message
+        another turn appended meanwhile is neither lost nor left between a
+        ``tool_calls`` turn and its replies. An assistant turn that is no
+        longer in ``messages`` was removed with its turn by whoever trimmed
+        the history in place; put back at the end, the round would follow
+        the newer turns, so it goes with its turn. Returns the calls kept.
+        """
+        owned_ids = {id(assistant_turn)} | {id(message) for message in tool_results}
+        position = _find_by_identity(messages, -1, assistant_turn)
+        rebuilt = [message for message in messages if id(message) not in owned_ids]
+        kept = len(tool_results) if position >= 0 else 0
+        if kept:
+            # Calls run in order, so the results are a prefix of tool_calls.
+            assistant_turn["tool_calls"] = assistant_turn["tool_calls"][:kept]
+            rebuilt[position:position] = [assistant_turn, *tool_results]
+        messages[:] = rebuilt
+        return kept
 
     async def _execute_and_append_openai_tool_calls(
         self,
@@ -263,6 +377,8 @@ class _ToolingMixin:
         assistant_reasoning: str = "",
         tool_image_slots=None,
         tool_bus_frames=None,
+        generation_is_active=lambda: True,
+        tool_rounds=None,
     ) -> int:
         """Run each tool call through ``on_tool_call`` and mutate
         ``messages`` in place: append one assistant turn announcing all
@@ -299,7 +415,7 @@ class _ToolingMixin:
         # tool_calls 历史中混入空 name 会被下一轮 server schema reject，
         # 整条会话连带挂掉。
         calls = [c for c in calls if (getattr(c, "name", "") or "").strip()]
-        if not calls:
+        if not calls or not generation_is_active():
             return 0
         tool_calls_dict = []
         for i, c in enumerate(calls):
@@ -327,59 +443,136 @@ class _ToolingMixin:
         }
         if assistant_reasoning:
             assistant_turn["reasoning_content"] = assistant_reasoning
-        messages.append(assistant_turn)
-        # Image turns must wait until every ``tool`` reply is written —
-        # OpenAI-compat providers reject assistant(tool_calls) → tool →
-        # user(image) → tool sequences.
-        image_results: list = []
-        for i, c in enumerate(calls):
-            tool_call = ToolCall(
+        # Built before the round: a call that cannot even be constructed
+        # stops the turn before any tool has had a side effect.
+        tool_calls = [
+            ToolCall(
                 name=c.name,
                 arguments=parse_arguments_json(c.arguments),
                 call_id=c.id or f"call_{i}",
                 raw_arguments=c.arguments or "",
             )
-            handler = self.on_tool_call
-            if handler is None:
-                # No handler — surface a structured error back so the
-                # model can apologize / abort gracefully.
-                result = ToolResult(
-                    call_id=tool_call.call_id, name=tool_call.name,
-                    output={"error": "no on_tool_call handler bound"},
-                    is_error=True, error_message="no on_tool_call handler bound",
-                )
-            else:
-                try:
-                    with _suspend_dialog_slop():
-                        result = await handler(tool_call)
-                except Exception as e:
-                    logger.exception("OmniOfflineClient: on_tool_call '%s' raised", c.name)
+            for i, c in enumerate(calls)
+        ]
+        executed, _live = await self._run_tool_round(
+            messages,
+            assistant_turn,
+            tool_calls,
+            tool_image_slots=tool_image_slots,
+            tool_bus_frames=tool_bus_frames,
+            generation_is_active=generation_is_active,
+            log_prefix="OmniOfflineClient",
+            tool_rounds=tool_rounds,
+        )
+        return executed
+
+    async def _run_tool_round(
+        self,
+        messages,
+        assistant_turn,
+        tool_calls,
+        *,
+        tool_image_slots,
+        tool_bus_frames,
+        generation_is_active,
+        log_prefix: str,
+        tool_rounds=None,
+    ):
+        """Execute one tool round for either provider path.
+
+        Appends ``assistant_turn``, then runs each of ``tool_calls`` (built
+        by the caller, each provider path with its own ``ToolCall``) and
+        appends its ``tool`` reply. Cancellation is
+        checked before each call, never between a handler and its record:
+        once a handler returned, its side effects happened. An unfinished
+        round (cancelled or raising) is settled by
+        ``_settle_unfinished_tool_round``. Image turns are appended only for a
+        round that finished while its turn was still live, after every reply,
+        because OpenAI-compat providers reject assistant(tool_calls) -> tool
+        -> user(image) -> tool.
+
+        Returns ``(calls executed, finished while live)``. A round keeps
+        those calls in history unless its assistant turn left the history
+        meanwhile (``_settle_unfinished_tool_round``); then it is not live
+        either, though its calls still count: its text went with its turn.
+
+        ``tool_rounds``, when the caller passes one, gets ``assistant_turn``
+        as it is appended: the caller's own rounds, found by identity.
+        """
+        messages.append(assistant_turn)
+        if tool_rounds is not None:
+            tool_rounds.append(assistant_turn)
+        tool_results: list = []
+        image_results: list = []
+        round_complete = False
+        try:
+            for tool_call in tool_calls:
+                if not generation_is_active():
+                    break
+                handler = self.on_tool_call
+                if handler is None:
+                    # No handler — surface a structured error back so the
+                    # model can apologize / abort gracefully.
                     result = ToolResult(
                         call_id=tool_call.call_id, name=tool_call.name,
-                        output={"error": f"{type(e).__name__}: {e}"},
-                        is_error=True, error_message=str(e),
+                        output={"error": "no on_tool_call handler bound"},
+                        is_error=True, error_message="no on_tool_call handler bound",
                     )
-            tool_result_message = {
-                "role": "tool",
-                "tool_call_id": tool_call.call_id,
-                # 写入 ``name`` 让 Gemini 路径能直接用（FunctionResponse.name
-                # 必须与原 function_call name 完全一致）。OpenAI-compat 不需要
-                # 这个字段也不会因此报错——它只用 tool_call_id 关联。
-                "name": tool_call.name,
-                "content": result.output_as_json_string(),
-            }
-            messages.append(tool_result_message)
-            if getattr(result, "images", None):
-                image_results.append((result, tool_result_message))
-        for result, tool_result_message in image_results:
-            self._append_tool_result_images(
-                messages,
-                result,
-                slots=tool_image_slots,
-                tool_result_message=tool_result_message,
-                bus_frames=tool_bus_frames,
-            )
-        return len(calls)
+                else:
+                    try:
+                        with _suspend_dialog_slop():
+                            result = await handler(tool_call)
+                    except Exception as e:
+                        logger.exception("%s: on_tool_call '%s' raised", log_prefix, tool_call.name)
+                        result = ToolResult(
+                            call_id=tool_call.call_id, name=tool_call.name,
+                            output={"error": f"{type(e).__name__}: {e}"},
+                            is_error=True, error_message=str(e),
+                        )
+                tool_result_message = {
+                    "role": "tool",
+                    "tool_call_id": tool_call.call_id,
+                    # 写入 ``name`` 让 Gemini 路径能直接用（FunctionResponse.name
+                    # 必须与原 function_call name 完全一致）。OpenAI-compat 不需要
+                    # 这个字段也不会因此报错——它只用 tool_call_id 关联。
+                    "name": tool_call.name,
+                    "content": result.output_as_json_string(),
+                }
+                messages.append(tool_result_message)
+                tool_results.append(tool_result_message)
+                if getattr(result, "images", None):
+                    image_results.append((result, tool_result_message))
+            else:
+                round_complete = True
+        finally:
+            # A round that completed while its reply was live is settled too:
+            # its results may have landed after a message another turn added
+            # meanwhile, and the request view would otherwise drop the call
+            # and its result for good. Already contiguous, it stays as is.
+            kept = len(tool_results)
+            if not round_complete or not generation_is_active() or tool_results:
+                kept = self._settle_unfinished_tool_round(messages, assistant_turn, tool_results)
+        # A round that left history with its turn (kept nothing) is not live:
+        # its images would be orphaned at the end of history.
+        live = round_complete and generation_is_active() and (kept or not tool_results)
+        if live:
+            # Right after the round's last reply, not at the end: a user
+            # message another turn saved meanwhile must not come between the
+            # round and its images. Never between two replies either, which
+            # OpenAI-compat providers reject.
+            after = tool_results[-1] if tool_results else None
+            for result, tool_result_message in image_results:
+                added = self._append_tool_result_images(
+                    messages,
+                    result,
+                    slots=tool_image_slots,
+                    tool_result_message=tool_result_message,
+                    bus_frames=tool_bus_frames,
+                    insert_after=after,
+                )
+                if added is not None:
+                    after = added
+        return len(tool_results), live
 
     # ------------------------------------------------------------------
     # Tool image channel
@@ -495,15 +688,19 @@ class _ToolingMixin:
         slots=None,
         bus_frames=None,
         tool_result_message=None,
-    ) -> None:
+        insert_after=None,
+    ):
         """Append one multimodal user turn carrying every image in ``result``.
 
         No-op when the tool returned none, which is the overwhelmingly common
-        case — nothing is allocated and no slot is recorded.
+        case — nothing is allocated and no slot is recorded. With
+        ``insert_after`` (a message in ``messages``, found by identity) the
+        turn goes right after it instead of at the end. Returns the turn, or
+        None when nothing was added.
         """
         images = getattr(result, "images", None)
         if not images:
-            return
+            return None
 
         # Once per turn: every string below has to come out in one language,
         # and the provider is a live callable that could answer differently
@@ -589,10 +786,15 @@ class _ToolingMixin:
                 tool_result_message["content"] = result.output_as_json_string()
 
         if not content:
-            return
+            return None
 
         message = {"role": "user", "content": content}
-        messages.append(message)
+        index = len(messages)
+        if insert_after is not None:
+            after = _find_by_identity(messages, -1, insert_after)
+            if after >= 0:
+                index = after + 1
+        messages.insert(index, message)
 
         # Remember the list too: ``prompt_ephemeral`` runs the tool loop over
         # a scratch list rather than ``_conversation_history``, so an index
@@ -611,13 +813,14 @@ class _ToolingMixin:
                 )
         slots.append((
             messages,
-            len(messages) - 1,
+            index,
             message,
             _loc(TOOL_IMAGE_HISTORY_PLACEHOLDER, lang).format(
                 tool_name=result.name,
                 recall_suffix=recall_suffix,
             ),
         ))
+        return message
 
     def _release_tool_image_slots(self, slots=None) -> None:
         """Swap every injected image turn for its text placeholder.
@@ -633,7 +836,10 @@ class _ToolingMixin:
             return
         for messages, index, message, placeholder in slots:
             try:
-                if 0 <= index < len(messages) and messages[index] is message:
+                # A settled concurrent tool round or a cancelled reply commit
+                # may have shifted the turn; identity finds it again.
+                index = _find_by_identity(messages, index, message)
+                if index >= 0:
                     messages[index] = {"role": "user", "content": placeholder}
             except Exception as e:
                 logger.warning("Releasing a tool image slot failed (ignored): %s", e)
@@ -722,6 +928,8 @@ class _ToolingMixin:
         tool_image_slots = overrides.pop("_tool_image_slots", None)
         tool_bus_frames = overrides.pop("_tool_bus_frames", None)
         tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
+        tool_rounds = overrides.pop("_tool_rounds", None)
+        response_generation = overrides.pop("_response_generation", None)
         if self._use_genai_sdk and not self._genai_tools_unsupported:
             # 跟踪本轮 Gemini 路径是否已经把 text chunk yield 给上游。如果
             # 已经吐过文本，再 fallback 到 OpenAI-compat 会让用户在同一轮
@@ -737,6 +945,8 @@ class _ToolingMixin:
                     _tool_image_slots=tool_image_slots,
                     _tool_bus_frames=tool_bus_frames,
                     _tool_frames_turn_id=tool_frames_turn_id,
+                    _tool_rounds=tool_rounds,
+                    _response_generation=response_generation,
                     **overrides,
                 ):
                     if getattr(chunk, "content", None):
@@ -776,6 +986,8 @@ class _ToolingMixin:
             _tool_image_slots=tool_image_slots,
             _tool_bus_frames=tool_bus_frames,
             _tool_frames_turn_id=tool_frames_turn_id,
+            _tool_rounds=tool_rounds,
+            _response_generation=response_generation,
             **overrides,
         ):
             yield chunk
@@ -886,6 +1098,13 @@ class _ToolingMixin:
         tool_image_slots = overrides.pop("_tool_image_slots", None)
         tool_bus_frames = overrides.pop("_tool_bus_frames", None)
         tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
+        tool_rounds = overrides.pop("_tool_rounds", None)
+        response_generation = overrides.pop("_response_generation", None)
+
+        generation_is_active = _generation_check(self, response_generation)
+
+        if not generation_is_active():
+            return
         tools_payload = self._openai_tools_payload()
         if (
             tools_payload
@@ -907,6 +1126,8 @@ class _ToolingMixin:
         # 封顶日志据此别谎称迭代被耗尽。
         zero_exec_break = False
         for tool_iter in range(self.max_tool_iterations):
+            if not generation_is_active():
+                return
             deltas_per_chunk: list = []
             finish_reason: Optional[str] = None
             # 累积本轮已 yield 给上游的 text，下面 finish_reason=tool_calls
@@ -921,11 +1142,12 @@ class _ToolingMixin:
             # 上一轮注入的工具图，本轮才谈得上"送到了"。
             tool_frames_published = False
             async for chunk in self._astream_declining_tools(
-                # Projected here rather than inside the helper so both the
-                # first attempt and the retry-after-tools-refusal get the same
-                # rewritten view.
+                # Built here rather than inside the helper so both the first
+                # attempt and the retry-after-tools-refusal get the same view
+                # (screen-projected, tool rounds repaired).
                 self._dialog_messages_for_provider(messages),
                 overrides,
+                response_generation=response_generation,
             ):
                 if not tool_frames_published:
                     # 任何一个 chunk 都算数，不必等有内容的那个：astream 是惰性
@@ -935,6 +1157,13 @@ class _ToolingMixin:
                     self._publish_pending_tool_frames(
                         tool_bus_frames, turn_id=tool_frames_turn_id
                     )
+                if not generation_is_active():
+                    # The provider answered the request, so what it carried
+                    # was delivered even though the turn is cancelled: the
+                    # frames are published above, and callers get one empty
+                    # chunk so they publish their own pending bus copies.
+                    yield _answered_chunk()
+                    return
                 if getattr(chunk, "content", None):
                     if tool_leak_filter is not None:
                         chunk.content = self._filter_tool_leak_content(
@@ -951,6 +1180,12 @@ class _ToolingMixin:
                     # them in one LLMStreamChunk), and a reasoning tool-call turn
                     # has no visible token to show feedback otherwise (Codex P2).
                     await self._notify_reasoning_active()
+                    if not generation_is_active():
+                        # Reasoning chunks are never yielded, so callers may
+                        # not have seen this answered request yet: hand them
+                        # the empty chunk they publish on (see above).
+                        yield _answered_chunk()
+                        return
                 if chunk.tool_call_deltas:
                     deltas_per_chunk.append(chunk.tool_call_deltas)
                 if chunk.finish_reason:
@@ -979,6 +1214,8 @@ class _ToolingMixin:
                 # 永远 yield 文本 chunk —— 即便是 tool-only turn 也可能在
                 # finish_reason=tool_calls 之前 emit usage chunk 和空 content。
                 yield chunk
+            if not generation_is_active():
+                return
             # 记录本次 attempt 的最终 finish_reason，供上层 empty-completion
             # 兜底警告引用（"safety" / "length" / "content_filter" / "stop" 都
             # 可能在 content 为空时出现，是诊断 Gemini-via-OpenAI-compat 静默
@@ -1041,7 +1278,16 @@ class _ToolingMixin:
                     assistant_reasoning=streamed_reasoning_buffer,
                     tool_image_slots=tool_image_slots,
                     tool_bus_frames=tool_bus_frames,
+                    generation_is_active=generation_is_active,
+                    tool_rounds=tool_rounds,
                 )
+                if not generation_is_active():
+                    # Calls that ran before the cancellation stay in history
+                    # with their results; tell the caller the pre-tool text
+                    # is persisted so it is not committed a second time.
+                    if executed_this_round:
+                        yield _LLMStreamChunk(content="", tool_round_persisted=True)
+                    return
                 executed_tool_calls += executed_this_round
                 if executed_this_round:
                     # 通知上游 ``stream_text``：本轮的 pre-tool text + tool_calls
@@ -1072,6 +1318,8 @@ class _ToolingMixin:
                     zero_exec_break = True
                     break
                 continue
+            return
+        if not generation_is_active():
             return
         if executed_tool_calls == 0:
             # 进过 tool 分支却一次都没执行成（provider 流出的 tool_call 分片
@@ -1110,6 +1358,7 @@ class _ToolingMixin:
         # 积累的 tool 结果给出最终文本。否则弱模型在 finish_reason=tool_calls
         # 上死循环到封顶后整轮静默，上游只能报"未产生文本回复"，用户那边就
         # 表现为不回话。去掉 tools 后模型无法再发起调用，必须输出文本。
+        # 取消已由循环出口那一处检查挡住：从那里到这里只有同步的日志。
         final_overrides = {
             k: v for k, v in overrides.items() if k not in ("tools", "tool_choice")
         }
@@ -1125,6 +1374,11 @@ class _ToolingMixin:
                 self._publish_pending_tool_frames(
                     tool_bus_frames, turn_id=tool_frames_turn_id
                 )
+            if not generation_is_active():
+                # Answered, then cancelled: publish (above), then let callers
+                # publish their pending bus copies on one empty chunk.
+                yield _answered_chunk()
+                return
             if chunk.finish_reason:
                 final_finish_reason = chunk.finish_reason
             if chunk.usage_metadata:
@@ -1136,6 +1390,10 @@ class _ToolingMixin:
             # below — same fix as the main loop (Codex P2).
             if getattr(chunk, "reasoning_content", None):
                 await self._notify_reasoning_active()
+                if not generation_is_active():
+                    # Reasoning is never yielded: see the tool-loop stream.
+                    yield _answered_chunk()
+                    return
             # 与常规 tool-loop 路径一致：不向下游转发 thinking 模型的纯
             # reasoning chunk（有 reasoning_content、无 content / tool delta /
             # finish / usage）。stream_text 在首个 yield 的 chunk 上记 TTFT，

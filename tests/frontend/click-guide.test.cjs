@@ -42,6 +42,134 @@ function setup() {
     return { dom, api: dom.window.NekoClickGuide, target, doc: dom.window.document };
 }
 
+for (const selector of ['.click-guide-next', '.click-guide-card p', '.click-guide-mask']) {
+    test(`guide presses on ${selector} keep its target open until the next click advances`, async t => {
+        const { dom, api, target, doc } = setup();
+        t.after(() => dom.window.close());
+        const closed = { pointerdown: 0, mousedown: 0, touchstart: 0, click: 0 };
+        for (const type of Object.keys(closed)) {
+            doc.addEventListener(type, event => {
+                if (!target.contains(event.target)) {
+                    closed[type]++;
+                    target.style.display = 'none';
+                }
+            });
+        }
+        const guide = api.createRunner({ labels, steps: [
+            { title: 'First tool', target: '#target' },
+            { title: 'Next tool', target: '#target' },
+        ] });
+        await guide.start();
+        const next = doc.querySelector('.click-guide-next');
+        const pressed = doc.querySelector(selector);
+        pressed.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
+        pressed.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true }));
+        const touch = new dom.window.Event('touchstart', { bubbles: true, cancelable: true });
+        assert.equal(pressed.dispatchEvent(touch), true, 'touch default behavior remains available');
+        // Allow geometry tracking to run between press and release, as with a real mouse.
+        await delay(40);
+        assert.deepEqual(closed, { pointerdown: 0, mousedown: 0, touchstart: 0, click: 0 });
+        assert.notEqual(target.style.display, 'none');
+        assert.equal(doc.querySelector('.click-guide-card').style.display, '');
+        pressed.click();
+        await delay(40);
+        assert.deepEqual(closed, { pointerdown: 0, mousedown: 0, touchstart: 0, click: 0 });
+        if (pressed !== next) {
+            assert.equal(guide.index, 0, 'mask and card text clicks do not advance');
+            next.click();
+        }
+        await delay(40);
+        assert.equal(guide.index, 1);
+        await guide.stop();
+        doc.querySelector('#outside').dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true }));
+        doc.querySelector('#outside').dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true }));
+        doc.querySelector('#outside').dispatchEvent(new dom.window.Event('touchstart', { bubbles: true }));
+        doc.querySelector('#outside').click();
+        assert.deepEqual(closed, { pointerdown: 1, mousedown: 1, touchstart: 1, click: 1 }, 'normal outside presses still reach the business listeners');
+});
+}
+
+test('choice controls and background preserve outside menus while saving either flow', async t => {
+    const { dom, doc } = setup();
+    t.after(() => dom.window.close());
+    dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/reactivation.js'), 'utf8'));
+    const events = ['pointerdown', 'mousedown', 'touchstart', 'click'];
+    let outside = 0;
+    for (const type of events) doc.addEventListener(type, () => outside++);
+    for (const choice of ['click', 'seven-day']) {
+        let release;
+        const saved = [];
+        const pending = dom.window.NekoTutorialReactivation.open(value => {
+            saved.push(value);
+            return new Promise(resolve => { release = resolve; });
+        });
+        const wrapper = doc.querySelector('.click-guide-choice');
+        const button = wrapper.querySelectorAll('button')[choice === 'click' ? 0 : 1];
+        for (const target of [wrapper, wrapper.querySelector('p'), button]) {
+            for (const type of events.slice(0, -1)) {
+                assert.equal(target.dispatchEvent(new dom.window.Event(type, { bubbles: true, cancelable: true })), true);
+            }
+            if (target !== button) target.click();
+        }
+        button.click();
+        assert.deepEqual(saved, [choice]);
+        assert.equal(outside, 0);
+        assert.equal(button.disabled, true);
+        release();
+        assert.equal(await pending, choice);
+        assert.equal(doc.querySelector('.click-guide-choice'), null);
+    }
+    for (const type of events) doc.querySelector('#outside').dispatchEvent(new dom.window.Event(type, { bubbles: true }));
+    assert.equal(outside, events.length);
+});
+
+test('child guide controls and masks preserve menus while real close and skip still work', async t => {
+    const { dom, api, target } = setup();
+    const popup = new JSDOM('<button id="close">Close</button><button id="outside">Outside</button>', { url: 'http://localhost/settings' });
+    t.after(() => { dom.window.close(); popup.window.close(); });
+    const child = popup.window;
+    child.closed = false;
+    const close = child.document.querySelector('#close');
+    close.getBoundingClientRect = target.getBoundingClientRect;
+    let closes = 0;
+    close.onclick = () => { closes++; };
+    dom.window.open = () => child;
+    const controller = new dom.window.AbortController();
+    api.watchOpenedWindow({ signal: controller.signal, labels, onReturn() {}, copy: {
+        title: 'Return', body: 'Close this page', nextLabel: 'Close', closeSelector: '#close',
+    } });
+    t.after(() => controller.abort());
+    dom.window.open('/settings');
+    await delay(125);
+    const events = ['pointerdown', 'mousedown', 'touchstart', 'click'];
+    let outside = 0;
+    let businessClicks = 0;
+    let skips = 0;
+    dom.window.addEventListener('neko:click-guide-window-skip', () => skips++);
+    child.document.addEventListener('click', event => { if (event.target === close) businessClicks++; });
+    for (const type of events) child.document.addEventListener(type, event => {
+        if (event.target !== close) outside++;
+    });
+    for (const selector of ['.click-guide-card p', '.click-guide-mask', '.click-guide-actions button', '.click-guide-next']) {
+        const control = child.document.querySelector(selector);
+        for (const type of events.slice(0, -1)) {
+            assert.equal(control.dispatchEvent(new child.Event(type, { bubbles: true, cancelable: true })), true);
+        }
+        control.click();
+        assert.equal(outside, 0);
+    }
+    assert.equal(closes, 1, 'return control still invokes the real close action');
+    assert.equal(skips, 1, 'skip control still dispatches to the parent');
+    assert.equal(businessClicks, 1);
+    close.click();
+    assert.equal(closes, 2);
+    assert.equal(businessClicks, 2, 'real business click still bubbles');
+    controller.abort();
+    assert.equal(child.document.querySelector('.click-guide-layer'), null);
+    for (const type of events) child.document.querySelector('#outside').dispatchEvent(new child.Event(type, { bubbles: true }));
+    assert.equal(outside, events.length);
+});
+
 test('opened inline panels guide the real close action before advancing', async () => {
     const { dom, api, target, doc } = setup();
     const close = doc.createElement('button'); close.id = 'close';
@@ -1189,21 +1317,564 @@ test('remote preparation heartbeats extend the lease but retain a total deadline
     } finally { root.close(); }
 });
 
-test('Escape and IME Escape preserve the guide and reach menu handlers', async () => {
-    const { dom, api, doc } = setup();
+test('unclaimed Escape from a focused child ends the guide while IME Escape keeps composing', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
     let reason;
     let escapes = 0;
     doc.addEventListener('keydown', event => { if (event.key === 'Escape') escapes++; });
     const runner = api.createRunner({ labels, steps: [{ title: 'Menu' }], onEnd: value => { reason = value; } });
     await runner.start();
-    for (const isComposing of [false, true]) {
-        doc.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', isComposing, bubbles: true }));
-    }
-    await delay(20);
-    assert.equal(reason, undefined);
-    assert.equal(escapes, 2);
+    target.focus();
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }));
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', keyCode: 229, bubbles: true }));
     assert.ok(doc.querySelector('.click-guide-layer'));
-    await runner.stop(); dom.window.close();
+    assert.equal(reason, undefined);
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await delay(20);
+    assert.equal(reason, 'skipped');
+    assert.equal(escapes, 3, 'business handlers run before the guide');
+    assert.equal(doc.querySelector('.click-guide-layer'), null);
+});
+
+for (const tag of ['input', 'textarea', 'select', 'div']) {
+    test(`Escape from focused ${tag} belongs to editing, including IME`, async t => {
+        const { dom, api, doc } = setup();
+        t.after(() => dom.window.close());
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Input' }], onEnd: value => { reason = value; } });
+        await runner.start();
+        const input = doc.createElement(tag);
+        if (tag === 'div') { input.contentEditable = 'true'; input.setAttribute('contenteditable', 'true'); input.tabIndex = 0; }
+        doc.body.append(input);
+        input.focus();
+        let received = 0;
+        input.addEventListener('keydown', () => received++);
+        for (const options of [{}, { isComposing: true }, { keyCode: 229 }]) {
+            input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, ...options }));
+        }
+        await delay(0);
+        assert.equal(received, 3);
+        assert.equal(reason, undefined);
+        assert.ok(doc.querySelector('.click-guide-layer'));
+        await runner.stop('stopped');
+    });
+}
+
+for (const consume of ['preventDefault', 'stopPropagation']) {
+    test(`Escape consumed by a child via ${consume} does not end the guide`, async t => {
+        const { dom, api, doc, target } = setup();
+        t.after(() => dom.window.close());
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Menu' }], onEnd: value => { reason = value; } });
+        await runner.start();
+        target.addEventListener('keydown', event => event[consume]());
+        target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        await delay(0);
+        assert.equal(reason, undefined);
+        assert.ok(doc.querySelector('.click-guide-layer'));
+        await runner.stop('stopped');
+    });
+}
+
+for (const markup of ['<section role="dialog"><button>Close</button></section>',
+    '<div class="composer-icon-popover"><button>Close</button></div>',
+    '<div data-compact-input-tool-fan-open="true"><button>Close</button></div>',
+    '<div class="neko-social-embed-backdrop"><button>Close</button></div>']) {
+    test(`Escape closes its owner without skipping the tutorial: ${markup}`, async t => {
+        const { dom, api, doc } = setup();
+        t.after(() => dom.window.close());
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Menu' }], onEnd: value => { reason = value; } });
+        await runner.start();
+        const container = doc.createElement('div');
+        container.innerHTML = markup;
+        doc.body.append(container);
+        const button = container.querySelector('button');
+        button.focus();
+        // Like common_dialogs: removes the UI synchronously without preventDefault.
+        const close = () => container.remove();
+        doc.addEventListener('keydown', close);
+        button.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        await delay(0);
+        assert.equal(container.isConnected, false);
+        assert.equal(reason, undefined);
+        assert.ok(doc.querySelector('.click-guide-layer'));
+        doc.removeEventListener('keydown', close);
+        await runner.stop('stopped');
+    });
+}
+
+test('late social embed capture handler still receives Escape', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    let reason;
+    const runner = api.createRunner({ labels, steps: [{ title: 'Social' }], onEnd: value => { reason = value; } });
+    await runner.start();
+    dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/social-embed.js'), 'utf8'));
+    dom.window.openSocialEmbed('https://example.com');
+    assert.ok(doc.querySelector('.neko-social-embed-backdrop'));
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await delay(0);
+    assert.equal(doc.querySelector('.neko-social-embed-backdrop'), null);
+    assert.equal(reason, undefined);
+    await runner.stop('stopped');
+});
+
+test('hidden menus do not own Escape and native presentation closes once', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    const hidden = doc.createElement('div');
+    hidden.style.display = 'none';
+    hidden.innerHTML = '<section role="dialog"><button>Hidden</button></section>';
+    doc.body.append(hidden);
+    let closes = 0;
+    const reasons = [];
+    const runner = api.createRunner({ labels, steps: [{ title: 'Native' }],
+        presentation: { bind() {}, update() {}, async close() { closes++; } },
+        onEnd: reason => reasons.push(reason) });
+    await runner.start();
+    target.focus();
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await delay(0);
+    assert.deepEqual(reasons, ['skipped']);
+    assert.equal(closes, 1);
+    assert.equal(doc.querySelector('.click-guide-layer'), null);
+});
+
+for (const nested of [false, true]) {
+    test(`guided composer participates in Tab and Shift+Tab focus order: nested=${nested}`, async t => {
+        const { dom, api, doc, target } = setup();
+        t.after(() => dom.window.close());
+        const input = doc.createElement('textarea');
+        input.className = 'composer-input';
+        input.getBoundingClientRect = target.getBoundingClientRect;
+        const group = doc.createElement('div');
+        group.id = 'composer-group';
+        group.getBoundingClientRect = target.getBoundingClientRect;
+        group.append(input);
+        doc.body.append(group);
+        const runner = api.createRunner({ labels, steps: [{ title: 'Chat',
+            target: nested ? '#composer-group' : '.composer-input',
+            keyTarget: '.composer-input', requireInput: true }] });
+        await runner.start();
+        const press = shiftKey => {
+            const event = new dom.window.KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+            doc.activeElement.dispatchEvent(event);
+            return event.defaultPrevented;
+        };
+        assert.equal(doc.activeElement, input);
+        assert.equal(press(false), true);
+        assert.equal(doc.activeElement, doc.querySelector('.click-guide-actions button'));
+        assert.equal(press(true), true);
+        assert.equal(doc.activeElement, input);
+        // An open business dialog still takes priority over the guided input.
+        const dialog = doc.createElement('section');
+        dialog.setAttribute('role', 'dialog');
+        doc.body.append(dialog);
+        assert.equal(press(false), false);
+        assert.equal(doc.activeElement, input);
+        dialog.remove();
+        const external = doc.createElement('textarea');
+        doc.body.append(external);
+        external.focus();
+        assert.equal(press(false), false);
+        assert.equal(doc.activeElement, external);
+        await runner.stop('stopped');
+    });
+}
+
+test('real tool lesson keeps Tab in its wheel target and guide controls, but yields to other dialogs', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    const root = dom.window;
+    root.t = key => key;
+    const fan = doc.createElement('div');
+    fan.className = 'compact-input-tool-fan';
+    fan.innerHTML = '<button class="compact-input-tool-item-screenshot">Screenshot</button>';
+    const tool = fan.querySelector('button');
+    tool.getBoundingClientRect = target.getBoundingClientRect;
+    doc.body.append(fan);
+    root.reactChatWindowHost = {
+        getChatSurfaceMode: () => 'compact', setAvatarToolMenuOpen() {}, deactivateAvatarTool() {},
+        setCompactToolFanOpen: open => { fan.dataset.compactInputToolFanOpen = String(open); },
+        setCompactToolWheelIndex() {},
+    };
+    root.eval(fs.readFileSync(path.join(__dirname, '../../static/tutorial/click-guide/home-steps.js'), 'utf8'));
+    const runner = api.createRunner({ labels, steps: [api.chatSteps().find(step => step.id === 'screenshot')] });
+    await runner.start();
+    assert.equal(fan.dataset.compactInputToolFanOpen, 'true');
+    const skip = doc.querySelector('.click-guide-actions button');
+    const last = doc.querySelector('.click-guide-next');
+    const press = shiftKey => {
+        const event = new root.KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+        doc.activeElement.dispatchEvent(event);
+        return event.defaultPrevented;
+    };
+    last.focus();
+    assert.equal(press(false), true);
+    assert.equal(doc.activeElement, tool);
+    doc.body.tabIndex = -1;
+    doc.body.focus();
+    assert.equal(press(false), true, 'body focus can re-enter the guided wheel loop');
+    assert.equal(doc.activeElement, tool);
+    assert.equal(press(false), true);
+    assert.equal(doc.activeElement, skip);
+    assert.equal(press(true), true);
+    assert.equal(doc.activeElement, tool);
+    const dialog = doc.createElement('section');
+    dialog.setAttribute('role', 'dialog');
+    doc.body.append(dialog);
+    last.focus();
+    assert.equal(press(false), false, 'an unrelated dialog still owns Tab');
+    assert.equal(doc.activeElement, last);
+    await runner.stop('stopped');
+});
+
+test('visible business dialog releases Tab even while focus remains on the guide card', async t => {
+    const { dom, api, doc } = setup();
+    t.after(() => dom.window.close());
+    const runner = api.createRunner({ labels, steps: [{ title: 'Card' }] });
+    await runner.start();
+    const last = doc.querySelector('.click-guide-next');
+    last.focus();
+    const press = () => {
+        const event = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+        doc.activeElement.dispatchEvent(event);
+        return event.defaultPrevented;
+    };
+    const dialog = doc.createElement('section');
+    dialog.setAttribute('role', 'dialog');
+    dialog.innerHTML = '<button>Business action</button>';
+    doc.body.append(dialog);
+    assert.equal(press(), false, 'allow browser or dialog handler to move focus out of the card');
+    assert.equal(doc.activeElement, last, 'runner must not move focus');
+    dialog.remove();
+    assert.equal(press(), true, 'ordinary guide focus loop resumes when dialog closes');
+    assert.equal(doc.activeElement, doc.querySelector('.click-guide-actions button'));
+    await runner.stop('stopped');
+});
+
+test('real preview Escape is consumed during its transparent entrance', async t => {
+    const { dom, api, doc } = setup();
+    t.after(() => dom.window.close());
+    doc.body.insertAdjacentHTML('beforeend', '<div id="chat-avatar-preview-popup" style="opacity:0"><button id="chatAvatarPreviewRefreshButton">Refresh</button><button id="chatAvatarPreviewCloseButton">Close</button></div>');
+    dom.window.appState = { dom: {} };
+    dom.window.fetch = async () => ({ ok: true, json: async () => ({}) });
+    dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/app/app-chat-avatar.js'), 'utf8'));
+    dom.window.appChatAvatar.init();
+    let reason;
+    const runner = api.createRunner({ labels, steps: [{ title: 'Card' }], onEnd: value => { reason = value; } });
+    await runner.start();
+    const event = new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    doc.querySelector('.click-guide-card').dispatchEvent(event);
+    await delay(0);
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(reason, undefined);
+    await runner.stop('stopped');
+});
+
+test('real subtitle panel consumes its clean Escape without skipping the guide', async t => {
+    const { dom, api, doc } = setup();
+    t.after(() => dom.window.close());
+    doc.body.insertAdjacentHTML('beforeend', '<div id="subtitle-display" tabindex="0"><div id="subtitle-scroll"><span id="subtitle-text"></span></div></div>');
+    dom.window.eval(fs.readFileSync(path.join(__dirname, '../../static/subtitle/subtitle-shared.js'), 'utf8'));
+    const ui = dom.window.nekoSubtitleShared.initSubtitleUI({ host: 'web' });
+    let reason;
+    const runner = api.createRunner({ labels, steps: [{ title: 'Card' }], onEnd: value => { reason = value; } });
+    await runner.start();
+    const display = doc.querySelector('#subtitle-display');
+    display.focus();
+    const event = new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    display.dispatchEvent(event);
+    await delay(0);
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(display.dataset.subtitlePanelState, 'clean');
+    assert.equal(reason, undefined);
+    display.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await delay(0);
+    assert.equal(reason, 'skipped', 'a clean subtitle panel releases the next Escape');
+    ui.destroy();
+});
+
+for (const page of ['index', 'chat']) {
+    test(`persistent ${page} chat shell does not claim guide Escape or Tab`, async t => {
+        const { dom, api, doc } = setup();
+        t.after(() => dom.window.close());
+        dom.reconfigure({ url: 'http://localhost/' + (page === 'chat' ? 'chat' : '') });
+        const template = fs.readFileSync(path.join(__dirname, '../../templates', page + '.html'), 'utf8');
+        const shellMarkup = template.match(/<div id="react-chat-window-shell"[^>]*>/)[0];
+        doc.body.insertAdjacentHTML('beforeend', shellMarkup + '</div>');
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Card' }], onEnd: value => { reason = value; } });
+        await runner.start();
+        const last = doc.querySelector('.click-guide-next');
+        last.focus();
+        const tab = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+        last.dispatchEvent(tab);
+        assert.equal(tab.defaultPrevented, true);
+        assert.equal(doc.activeElement, doc.querySelector('.click-guide-actions button'));
+        doc.activeElement.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        await delay(0);
+        assert.equal(reason, 'skipped');
+    });
+}
+
+for (const type of ['checkbox', 'radio', 'range', 'button', 'submit', 'reset', 'image']) {
+    test(`non-editing input type ${type} does not claim Escape`, async t => {
+        const { dom, api, doc } = setup();
+        t.after(() => dom.window.close());
+        const input = doc.createElement('input');
+        input.type = type;
+        doc.body.append(input);
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Card' }], onEnd: value => { reason = value; } });
+        await runner.start();
+        input.focus();
+        input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        await delay(0);
+        assert.equal(reason, 'skipped');
+    });
+}
+
+for (const markup of ['<section role="dialog" style="opacity:0"><button>Hidden</button></section>',
+    '<div style="opacity:0"><section role="dialog"><button>Hidden</button></section></div>',
+    '<div id="chat-avatar-preview-popup" style="opacity:0"></div>',
+    '<div id="chat-avatar-preview-popup-title">Title</div>',
+    '<div id="neko-mic-popup-screen-sources">Sources</div>']) {
+    test(`invisible overlays and popup-like child IDs do not claim Escape: ${markup}`, async t => {
+        const { dom, api, doc } = setup();
+        t.after(() => dom.window.close());
+        doc.body.insertAdjacentHTML('beforeend', markup);
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Card' }], onEnd: value => { reason = value; } });
+        await runner.start();
+        doc.querySelector('.click-guide-card').dispatchEvent(new dom.window.KeyboardEvent('keydown', {
+            key: 'Escape', bubbles: true, cancelable: true,
+        }));
+        await delay(0);
+        assert.equal(reason, 'skipped');
+    });
+}
+
+test('Tab enters at the first control and Shift+Tab at the last from outside the loop', async t => {
+    const { dom, api, doc } = setup();
+    t.after(() => dom.window.close());
+    const runner = api.createRunner({ labels, steps: [{ title: 'Card' }] });
+    await runner.start();
+    const card = doc.querySelector('.click-guide-card');
+    const skip = doc.querySelector('.click-guide-actions button');
+    const next = doc.querySelector('.click-guide-next');
+    for (const outside of [card, doc.body]) {
+        outside.tabIndex = -1;
+        for (const shiftKey of [false, true]) {
+            outside.focus();
+            outside.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true }));
+            assert.equal(doc.activeElement, shiftKey ? next : skip);
+        }
+    }
+    await runner.stop('stopped');
+});
+
+test('Tab excludes hidden target controls and releases an empty focus loop', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    const group = doc.createElement('div');
+    group.id = 'focus-group';
+    group.getBoundingClientRect = target.getBoundingClientRect;
+    group.innerHTML = '<button style="display:none">Hidden</button><div style="opacity:0"><button>Transparent</button></div><button id="visible-tool">Visible</button>';
+    doc.body.append(group);
+    const runner = api.createRunner({ labels, steps: [{ title: 'Group', target: '#focus-group' }] });
+    await runner.start();
+    const card = doc.querySelector('.click-guide-card');
+    card.focus();
+    const press = () => {
+        const event = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+        doc.activeElement.dispatchEvent(event);
+        return event.defaultPrevented;
+    };
+    assert.equal(press(), true);
+    assert.equal(doc.activeElement.id, 'visible-tool');
+    card.style.visibility = 'hidden';
+    group.style.display = 'none';
+    doc.body.tabIndex = -1;
+    doc.body.focus();
+    assert.equal(press(), false);
+    await runner.stop('stopped');
+});
+
+test('native presentation never traps Tab on its hidden web card', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    const input = doc.createElement('textarea');
+    input.id = 'native-composer';
+    input.getBoundingClientRect = target.getBoundingClientRect;
+    doc.body.append(input);
+    const runner = api.createRunner({ labels, steps: [{ title: 'Native input', target: '#native-composer',
+        keyTarget: '#native-composer', requireInput: true }],
+        presentation: { bind() {}, update() {}, async close() {} } });
+    await runner.start();
+    for (const shiftKey of [false, true]) {
+        input.focus();
+        const event = new dom.window.KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+        input.dispatchEvent(event);
+        assert.equal(event.defaultPrevented, false);
+        assert.equal(doc.activeElement, input);
+    }
+    await runner.stop('stopped');
+});
+
+test('Escape rechecks an owner created by a document handler after capture', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    let reason;
+    const input = doc.createElement('textarea');
+    doc.body.append(input);
+    const runner = api.createRunner({ labels, steps: [{ title: 'Card' }], onEnd: value => { reason = value; } });
+    await runner.start();
+    const moveFocus = () => input.focus();
+    doc.addEventListener('keydown', moveFocus);
+    target.focus();
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await delay(0);
+    assert.equal(doc.activeElement, input);
+    assert.equal(reason, undefined);
+    doc.removeEventListener('keydown', moveFocus);
+    await runner.stop('stopped');
+});
+
+for (const prefix of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
+    test(`unconsumed Escape can exit the guided ${prefix} avatar popup view`, async t => {
+        const { dom, api, doc, target } = setup();
+        t.after(() => dom.window.close());
+        const popup = doc.createElement('div');
+        popup.className = prefix + '-popup';
+        popup.id = prefix + '-popup-mic';
+        popup.getBoundingClientRect = target.getBoundingClientRect;
+        doc.body.append(popup);
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Popup', target: popup }], onEnd: value => { reason = value; } });
+        await runner.start();
+        const panel = doc.createElement('div');
+        panel.setAttribute('data-neko-sidepanel-owner', popup.id);
+        panel.innerHTML = '<textarea></textarea>';
+        doc.body.append(panel);
+        const card = doc.querySelector('.click-guide-card');
+        doc.querySelector('.click-guide-actions button').focus();
+        doc.activeElement.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
+        assert.equal(doc.activeElement, panel.querySelector('textarea'), 'owned sibling participates in reverse Tab');
+        doc.activeElement.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+        assert.equal(doc.activeElement, doc.querySelector('.click-guide-actions button'));
+        card.focus();
+        doc.querySelector('.click-guide-card').dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        await delay(0);
+        assert.equal(reason, 'skipped');
+    });
+}
+
+for (const marker of ['class="neko-mic-subwindow"', 'data-neko-sidepanel-owner="live2d-popup-mic"']) {
+    test(`independent mic sidepanel keeps Tab but does not claim unhandled Escape: ${marker}`, async t => {
+        const { dom, api, doc, target } = setup();
+        t.after(() => dom.window.close());
+        doc.body.insertAdjacentHTML('beforeend', '<div ' + marker + '><button id="sidepanel-control">Control</button></div>');
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Card', target }], onEnd: value => { reason = value; } });
+        await runner.start();
+        const button = doc.querySelector('#sidepanel-control');
+        button.focus();
+        const tab = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+        button.dispatchEvent(tab);
+        assert.equal(tab.defaultPrevented, false);
+        assert.equal(doc.activeElement, button);
+        button.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        await delay(0);
+        assert.equal(reason, 'skipped');
+    });
+}
+
+for (const prefix of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
+    test(`unrelated inert ${prefix} popup does not claim Escape`, async t => {
+        const { dom, api, doc } = setup();
+        t.after(() => dom.window.close());
+        doc.body.insertAdjacentHTML('beforeend', '<div class="' + prefix + '-popup"></div>');
+        let reason;
+        const runner = api.createRunner({ labels, steps: [{ title: 'Card' }], onEnd: value => { reason = value; } });
+        await runner.start();
+        doc.querySelector('.click-guide-card').dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        await delay(0);
+        assert.equal(reason, 'skipped');
+    });
+}
+
+test('owned settings panel skips presentation-only checkboxes and hidden ancestors in Tab order', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    const popup = doc.createElement('div');
+    popup.id = 'live2d-popup-settings';
+    popup.className = 'live2d-popup';
+    popup.innerHTML = '<button id="popup-control">Popup control</button>';
+    popup.getBoundingClientRect = target.getBoundingClientRect;
+    doc.body.append(popup);
+    const panel = doc.createElement('div');
+    panel.setAttribute('data-neko-sidepanel-owner', popup.id);
+    panel.innerHTML = '<div id="toggle-row" tabindex="0" role="switch"><input type="checkbox" tabindex="-1" aria-hidden="true"></div>'
+        + '<input tabindex="-1"><div aria-hidden="true"><button>Hidden to AT</button></div>'
+        + '<div hidden><button>Hidden</button></div><div id="next-setting" tabindex="0" role="switch">Next setting</div>';
+    doc.body.append(panel);
+    const runner = api.createRunner({ labels, steps: [{ title: 'Settings', target: popup }] });
+    await runner.start();
+    doc.querySelector('#popup-control').focus();
+    const press = shiftKey => doc.activeElement.dispatchEvent(new dom.window.KeyboardEvent('keydown', {
+        key: 'Tab', shiftKey, bubbles: true, cancelable: true,
+    }));
+    press(false);
+    assert.equal(doc.activeElement.id, 'toggle-row');
+    press(false);
+    assert.equal(doc.activeElement.id, 'next-setting');
+    press(true);
+    assert.equal(doc.activeElement.id, 'toggle-row');
+    press(true);
+    assert.equal(doc.activeElement.id, 'popup-control');
+    doc.querySelector('.click-guide-actions button').focus();
+    press(true);
+    assert.equal(doc.activeElement.id, 'next-setting', 'sidepanel precedes tutorial actions');
+    await runner.stop('stopped');
+});
+
+test('inline fade-out opacity releases target visibility before the computed transition finishes', t => {
+    const { dom, api, target } = setup();
+    t.after(() => dom.window.close());
+    target.style.opacity = '0';
+    const computed = dom.window.getComputedStyle.bind(dom.window);
+    dom.window.getComputedStyle = element => element === target
+        ? { display: 'block', visibility: 'visible', opacity: '0.6' } : computed(element);
+    assert.equal(api.isElementVisible(target), false);
+    assert.equal(api.resolveTarget(target), null);
+});
+
+test('Tab respects an inner focus trap and stopped guide releases keys before async cleanup', async t => {
+    const { dom, api, doc, target } = setup();
+    t.after(() => dom.window.close());
+    let release;
+    const cleanup = new Promise(resolve => { release = resolve; });
+    const runner = api.createRunner({ labels, steps: [{ title: 'Menu', enter: () => () => cleanup }] });
+    await runner.start();
+    target.focus();
+    target.addEventListener('keydown', event => {
+        if (event.key === 'Tab') { event.preventDefault(); doc.querySelector('#outside').focus(); }
+    });
+    target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    assert.equal(doc.activeElement.id, 'outside');
+    const stopped = runner.stop('stopped');
+    for (const key of ['Escape', 'Tab']) {
+        const event = new dom.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+        doc.querySelector('#outside').dispatchEvent(event);
+        assert.equal(event.defaultPrevented, false);
+        assert.equal(doc.activeElement.id, 'outside');
+    }
+    release();
+    await stopped;
 });
 
 test('startup state and i18n failures clear pending without releasing greetings before fallback', async () => {

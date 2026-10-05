@@ -8,6 +8,9 @@
             const origin = document.activeElement;
             const wrapper = document.createElement('div');
             wrapper.className = 'click-guide-choice';
+            for (const type of ['pointerdown', 'mousedown', 'touchstart', 'click']) {
+                wrapper.addEventListener(type, event => event.stopPropagation(), { passive: true });
+            }
             const card = document.createElement('section');
             card.className = 'click-guide-card';
             card.setAttribute('role', 'dialog');

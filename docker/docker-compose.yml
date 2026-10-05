@@ -61,6 +61,11 @@ services:
     environment:
       # 统一容器内的本地时间；可在 docker/.env 中改为其他 IANA 时区
       - TZ=${TZ:-Asia/Shanghai}
+      # Optional operator override; otherwise a private key is persisted under neko-home.
+      - NEKO_INSTANCE_ACCESS_KEY=${NEKO_INSTANCE_ACCESS_KEY:-}
+      - NEKO_INSTANCE_PUBLIC_ORIGIN=${NEKO_INSTANCE_PUBLIC_ORIGIN:-}
+      - NEKO_COMMUNITY_WEB_CLIENT_ID=${NEKO_COMMUNITY_WEB_CLIENT_ID:-}
+      - NEKO_COMMUNITY_WEB_REDIRECT_URI=${NEKO_COMMUNITY_WEB_REDIRECT_URI:-}
 
       # 强制所有运行时数据留在上述持久化挂载内，避免存储位置配置指向容器临时层
       - XDG_DATA_HOME=/home/neko/.local/share

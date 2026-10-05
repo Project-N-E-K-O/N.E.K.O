@@ -1623,7 +1623,7 @@ async def test_game_takeover_clears_core_preview_and_empty_final_stays_terminal(
     mgr._set_microphone_route("independent")
     route_transcript = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "main_logic.voice_input.consumers.game.is_game_route_active",
+        "main_logic.voice_input.consumers.game.is_external_route_active",
         lambda _name: True,
     )
     monkeypatch.setattr(

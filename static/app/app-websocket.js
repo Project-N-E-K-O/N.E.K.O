@@ -2818,6 +2818,7 @@
 
         console.log(window.t('console.websocketConnecting'), currentLanlanName, window.t('console.websocketUrl'), wsUrl);
         S.socket = new WebSocket(wsUrl);
+        if (window.nekoVoiceCaptureReadiness) window.nekoVoiceCaptureReadiness.reset();
         attachStartSessionHandshake(S.socket);
         var _thisSocket = S.socket; // 闭包捕获，供 onclose 判断是否已被替换
 
@@ -3831,7 +3832,16 @@
                         return;
                     }
 
+                    if (statusCode === 'VOICE_IDENTITY_CONTROL_RESULT') {
+                        if (window.nekoVoiceCaptureReadiness) window.nekoVoiceCaptureReadiness.controlResult(statusDetails, _thisSocket);
+                        return;
+                    }
+                    if (statusCode === 'VOICE_INPUT_PREVIEW_BUSY') {
+                        if (typeof window.showStatusToast === 'function') window.showStatusToast(window.t('voiceIdentity.inputPreviewBusy'), 5000);
+                        return;
+                    }
                     if (statusCode === 'VOICE_SESSION_ACTIVATION_STATE') {
+                        if (window.nekoVoiceCaptureReadiness && !window.nekoVoiceCaptureReadiness.activationStatus(statusDetails, _thisSocket)) return;
                         var activationState = (statusDetails && statusDetails.state) || '';
                         var allowedActivationStates = [
                             'disabled', 'preparing', 'waiting', 'verifying',
@@ -5140,6 +5150,13 @@
                         }
                     })();
 
+                // -------- system turn abandoned --------
+                // The reply to this request was interrupted: release only what was
+                // held for that request (rollback draft, last-submitted marker).
+                // Never seal a bubble here; the interrupting turn owns the current one.
+                } else if (response.type === 'system' && response.data === 'turn abandoned') {
+                    clearPendingRollbackForRequest(response.request_id);
+
                 // -------- system turn end (agent_callback — no proactive chat) --------
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
                     if (S.suppressAssistantStreamUntilNextSession) {
@@ -5943,6 +5960,7 @@
                 return;
             }
             console.log(window.t('console.websocketClosed'));
+            if (window.nekoVoiceCaptureReadiness) window.nekoVoiceCaptureReadiness.disconnected();
             removeExternalAsrPreview();
             // Socket teardown ends the backend ASR route; drop the route flags so
             // the mic settings hint stops reporting independent ASR as active. A

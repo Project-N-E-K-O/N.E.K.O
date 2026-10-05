@@ -139,6 +139,7 @@
 
     // 正式录音和设置页试麦共用：试麦要预判正式录音实际能听到什么，两边必须同一套处理。
     function micCaptureAudioConstraints() {
+        if (window.nekoMicrophoneInput) return { ...window.nekoMicrophoneInput.constraints };
         return {
             noiseSuppression: false,
             echoCancellation: true,
@@ -257,6 +258,7 @@
     }
 
     function canUploadOrdinaryMicFrame() {
+        if (window.nekoVoiceCaptureReadiness && window.nekoVoiceCaptureReadiness.blocked()) return false;
         if (refreshMicLease() !== MIC_LEASE.CORE) return false;
         const state = currentVoiceInputControlState();
         return !state.hard_muted && !state.focus_suppressed
@@ -1783,6 +1785,11 @@
             // 连接节点：gainNode → workletNode（音频经过增益处理后发送）
             ownGainNode.connect(ownWorkletNode);
 
+            if (window.nekoVoiceCaptureReadiness) {
+                if (window.nekoVoiceCaptureReadiness.blocked()) { discardOwnPipeline(); return false; }
+                try { await window.nekoVoiceCaptureReadiness.register(true); }
+                catch (_) { discardOwnPipeline(); return false; }
+            }
             // Last gate before the commit. Everything above only awaited; this
             // is where the microphone actually becomes live and where
             // refreshMicLease() would re-claim the lease. A text takeover (or
@@ -1796,6 +1803,7 @@
                 || S.voiceInputRouteBlocked === true
                 || S.selectedMicrophoneId !== selectedMicrophoneIdAtStart
                 || microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart
+                || (window.nekoVoiceCaptureReadiness && window.nekoVoiceCaptureReadiness.blocked())
             ) {
                 console.log('[App] microphone start was superseded while opening; unwinding');
                 // Nothing above was published, so this tears down ONLY what
@@ -1985,6 +1993,10 @@
 
     async function requestUsableMicrophoneStream(constraints) {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        if (window.nekoMicrophoneInput && !window.nekoMicrophoneInput.liveTrack(stream)) {
+            window.nekoMicrophoneInput.stop(stream);
+            const error = new Error('microphone_unavailable'); error.name = 'NotReadableError'; throw error;
+        }
         if (hasLiveMicrophoneTrack(stream)) {
             return stream;
         }
@@ -2467,6 +2479,7 @@
 
     // 停止录音（内部辅助，清理音频管道与后端通信）
     function stopRecording(options) {
+        if (window.nekoVoiceCaptureReadiness) window.nekoVoiceCaptureReadiness.stopped();
         options = options || {};
         const notifyServer = options.notifyServer !== false;
         // Also retire recovery when startup failed before isRecording became
@@ -3019,6 +3032,28 @@
     window.abortVoiceStartForBlockedRoute = abortVoiceStartForBlockedRoute;
     window.invalidatePendingMicStart = invalidatePendingMicStart;
     window.stopRecording = stopRecording;
+    // Only same-origin, same-Session storage events carry device preferences.
+    // Electron partitions retain their separately salted device identifiers.
+    window.addEventListener('storage', function (event) {
+        if (event.key === 'neko_selected_microphone') {
+            invalidatePendingMicStart();
+            setSelectedMicrophoneId(event.newValue || null);
+        } else if (event.key === 'neko_mic_gain_db') {
+            const value = Number(event.newValue);
+            if (Number.isFinite(value) && value >= C.MIN_MIC_GAIN_DB && value <= C.MAX_MIC_GAIN_DB) applyMicrophoneGainDb(value);
+        }
+    });
+    if (typeof window.createVoiceCaptureReadiness === 'function') {
+        window.nekoVoiceCaptureReadiness = window.createVoiceCaptureReadiness(S, async function () {
+            invalidatePendingMicStart();
+            stopRecording({ notifyServer: false });
+            const button = micButton();
+            if (button) { button.classList.remove('recording'); button.classList.remove('active'); button.disabled = false; }
+            if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
+            S.voiceChatActive = false;
+            if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
+        });
+    }
     window.startSilenceDetection = startSilenceDetection;
     window.stopSilenceDetection = stopSilenceDetection;
     window.monitorInputVolume = monitorInputVolume;

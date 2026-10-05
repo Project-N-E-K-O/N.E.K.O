@@ -106,6 +106,20 @@ function loadCapture(active, enabled = active) {
     };
 }
 
+test('capture owner rejection unwinds without an AudioWorklet failure notice', async () => {
+    const env = loadCapture(false);
+    env.S.isRecording = false;
+    env.installMicrophone();
+    env.window.appUtils.dbToLinear = () => 1;
+    let registered = 0;
+    env.window.nekoVoiceCaptureReadiness = { blocked: () => false, async register() { registered++; throw new Error('capture_owner_unavailable'); } };
+    assert.equal(await env.window.startMicCapture(), false);
+    assert.equal(registered, 1);
+    assert.equal(env.S.isRecording, false);
+    assert.notEqual(env.S.voiceWorkletSetupFailed, true);
+    assert.equal(env.messages.some(message => String(message).includes('audioWorklet')), false);
+});
+
 for (const entry of ['toggleMicMute', 'setMicMuted']) {
     test(`${entry}: native voice does not await independent ASR, even if next-session setting is enabled`, () => {
         const env = loadCapture(false, true);

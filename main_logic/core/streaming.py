@@ -28,6 +28,7 @@ from utils.screenshot_utils import overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import SessionEvent
+from utils.external_route_registry import RouteClaim
 from utils.language_utils import get_global_language_full
 from uuid import uuid4
 from ._shared import (
@@ -184,7 +185,7 @@ class StreamingMixin:
                                     dropped_text_for_voice += 1
                                     next_unprocessed = index + 1
                                     continue
-                                result = await self._process_stream_data_internal(
+                                result = await self._process_stream_input(
                                     message,
                                     on_dispatch_attempted=mark_dispatch_attempted,
                                 )
@@ -307,6 +308,28 @@ class StreamingMixin:
             if not self.session or not self.is_active:
                 if input_type in _LIVE_VISION_STREAM_INPUT_TYPES:
                     return
+                # 根据输入类型确定模式
+                mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
+                # 外部路由可以认领语音自动建会话（不经 websocket_router 的
+                # start_session 分支的那条语音入口）；没有路由认领时原样建会话。
+                # 先问路由、再过下面只针对普通会话的冷却 / 熔断：认领了这次启动
+                # 的路由不建普通会话，不该被它们挡住。
+                if mode == 'audio':
+                    # A route replaced while deciding is re-asked inside the
+                    # registry; an owner that keeps changing drops this frame.
+                    claim, _route = await _core_facade.route_external_start_session(
+                        self.lanlan_name, {'input_type': 'audio'},
+                    )
+                    if claim is not RouteClaim.UNCLAIMED:
+                        return
+                    # The claim check may have suspended: another frame can
+                    # have started a session meanwhile. Audio arriving during a
+                    # start is dropped, as above; a session that came up is used.
+                    if self._starting_session_count > 0:
+                        return
+                    if self.session_ready or (self.session and self.is_active):
+                        await self._process_stream_data_internal(message)
+                        return
                 # Memory Server 专属冷却检查
                 if self._emit_cooldown_turn_end_if_needed():
                     return
@@ -315,8 +338,6 @@ class StreamingMixin:
                 if self._session_start_circuit_open:
                     return
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
-                # 根据输入类型确定模式
-                mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
                 try:
                     await self.start_session(self.websocket, new=False, input_mode=mode)
                 except asyncio.CancelledError as exc:
@@ -333,7 +354,7 @@ class StreamingMixin:
                     return
         
         # Session已就绪，直接处理
-        await self._process_stream_data_internal(message)
+        await self._process_stream_input(message)
 
     async def _ensure_offline_session_for_text_input(
         self,
@@ -443,6 +464,31 @@ class StreamingMixin:
             logger.error("💥 文本模式Session重建失败，放弃本次数据流")
             return False
         return True
+
+    async def _process_stream_input(self, message: dict, *, on_dispatch_attempted=None):
+        """Process one ready input; a typed text input holds an owed wrap-up.
+
+        A typed input interrupts the offline reply and then starts its own,
+        with several awaits in between. The interrupted reply's owed wrap-up
+        is not paid in that gap (a final swap would start right before the
+        new reply, even if the interrupted task ends first): the new reply's
+        completion pays it, or, when none ran (a command, an abandoned input,
+        a failure, a reply interrupted in turn), the settle once this input
+        has been handled. An input deferred back to the pending queue
+        (``INPUT_DISPATCH_DEFERRED``) has not been handled: no settle then,
+        its replay settles. Returns what ``_process_stream_data_internal``
+        returned.
+        """
+        if message.get("input_type") != "text" or not isinstance(message.get("data"), str):
+            return await self._process_stream_data_internal(
+                message, on_dispatch_attempted=on_dispatch_attempted,
+            )
+        return await self._with_owed_wrap_up_held(
+            self._process_stream_data_internal(
+                message, on_dispatch_attempted=on_dispatch_attempted,
+            ),
+            skip_settle_if=INPUT_DISPATCH_DEFERRED,
+        )
 
     async def _process_stream_data_internal(
         self,
@@ -639,21 +685,25 @@ class StreamingMixin:
                     # 会继续吐 delta，全部挂到这条新消息的 sid 上；两条流还共用
                     # _is_responding，先收尾的那条把它翻 False，另一条被截断。
                     # 与独立 ASR 准备回合前那次 handle_interruption() 同一判据。
-                    _interrupt = getattr(self.session, "handle_interruption", None)
-                    if callable(_interrupt):
-                        try:
-                            await _interrupt()
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception as _interrupt_error:
-                            # 打断是尽力而为：一个坏掉的会话不该把用户刚打的这句话
-                            # 一起吞掉。失败时旧流可能继续吐 delta（就是这段要修的
-                            # 问题），但比丢消息轻。
-                            logger.warning(
-                                "[%s] text input could not interrupt the session: %s",
-                                self.lanlan_name,
-                                _interrupt_error,
-                            )
+                    try:
+                        await self._interrupt_offline_reply(self.session)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as _interrupt_error:
+                        # 打断是尽力而为：一个坏掉的会话不该把用户刚打的这句话
+                        # 一起吞掉。失败时旧流可能继续吐 delta（就是这段要修的
+                        # 问题），但比丢消息轻。
+                        logger.warning(
+                            "[%s] text input could not interrupt the session: %s",
+                            self.lanlan_name,
+                            _interrupt_error,
+                        )
+                    # 被打断的回复不再走 turn end（取消的 generation 跳过
+                    # on_response_done）：_interrupt_offline_reply 在确实打断了
+                    # 什么时替它收尾（记 AI 轮 + 同步 turn end），它欠下的续期检查
+                    # 与回调投递记为欠账：这条输入处理期间不付（_process_stream_input），
+                    # 由新回复的 _finalize_turn_after_emit 付清；没有新回复时，输入处理完、
+                    # 会话空闲后再付。
 
                     self.audio_resampler.clear()
                     await self._clear_tts_pipeline()
@@ -734,6 +784,10 @@ class StreamingMixin:
                             request_id=message.get("request_id"),
                         )
                         await self._emit_agent_callback_turn_end(message.get("request_id"))
+                        # An owed wrap-up is not settled here: typed input only
+                        # reaches this through _process_stream_input, whose hold
+                        # (_with_owed_wrap_up_held) pays it once this input has
+                        # been handled; a settle here would return at once.
                         self._fire_task(self._publish_openclaw_magic_command(openclaw_magic_command))
                         logger.info("[%s] text input sent explicit openclaw magic command", self.lanlan_name)
                         return
@@ -883,6 +937,7 @@ class StreamingMixin:
                             "thinking_on": _focus_thinking,
                             "response_discarded_callback": response_discarded_callback,
                             "response_done_callback": response_done_callback,
+                            "reply_owner": reply_turn,
                         }
                         def _mark_cb_turn_committed() -> None:
                             nonlocal _cb_turn_committed

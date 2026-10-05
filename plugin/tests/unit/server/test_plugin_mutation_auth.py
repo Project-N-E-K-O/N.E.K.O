@@ -218,6 +218,16 @@ async def test_originless_loopback_native_call_without_browser_metadata_is_suppo
 
 
 @pytest.mark.asyncio
+async def test_forwarded_loopback_host_cannot_mutate_plugins_without_origin(app, monkeypatch):
+    stop = AsyncMock()
+    monkeypatch.setattr(route_module.lifecycle_service, "stop_plugin", stop)
+    async with _client(app, headers={"X-Forwarded-For": "127.0.0.1"}) as client:
+        response = await client.post("/plugin/demo/stop")
+    assert response.status_code == 403
+    stop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_foreign_origin_on_lan_and_untrusted_hostname_are_rejected(app: FastAPI) -> None:
     async with _client(app, host="192.168.1.5:48911", peer="192.168.1.10", headers=_valid_headers()) as client:
         response = await client.post("/plugin/demo/stop")
