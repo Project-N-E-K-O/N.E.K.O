@@ -278,7 +278,7 @@ CDT 免费额度有适用条件：按阿里云账号共享，不是每台 ECS �
 - [ ] 若启用看门狗，宿主机存在 `/etc/cron.d/neko-watchdog`（权限 644、属主 root）
 - [ ] 若启用看门狗，手动执行 `/opt/neko/watchdog.sh` 健康分支退出码为 0
 - [ ] 镜像包含 #3289；HTTPS 首次输入实例凭证，刷新后可复用
-- [ ] 公网 HTTP/私有 upstream 不可达，HTTPS 入口证书与白名单正确
+- [ ] 公网 HTTP 已关闭或仅重定向到 HTTPS；私有 upstream 不可从公网访问，HTTPS 入口证书与白名单正确
 - [ ] 匿名账户/API 返回 401、匿名 WebSocket 被拒；社区 OAuth 与配套发布独立验收
 - [ ] 手动停止、暂停及同名其他部署不会被看门狗启动
 - [ ] 故障时 `/opt/neko/watchdog.log` 正常写入；完成计数读写及两次失败重启验收
