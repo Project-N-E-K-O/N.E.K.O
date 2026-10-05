@@ -37,6 +37,8 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from utils.deployment import is_behind_proxy
+
 TRUSTED_HOSTS_ENV = "NEKO_TRUSTED_HOSTS"
 TRUSTED_ORIGINS_ENV = "NEKO_TRUSTED_ORIGINS"
 
@@ -391,6 +393,18 @@ class HostOriginGuardMiddleware:
             and origin.authority.hostname == host.hostname
             and _effective_port(origin.authority, origin.scheme)
             == _effective_port(host, websocket_scheme)
+        ):
+            return True
+
+        # TLS ended at a declared proxy that forwards no trusted scheme: a
+        # https:// page on this very Host (same explicit port) is not foreign.
+        # Mirrors utils.instance_access._same_origin for HTTP requests.
+        if (
+            websocket_scheme == "ws"
+            and origin.scheme == "https"
+            and is_behind_proxy()
+            and origin.authority.hostname == host.hostname
+            and origin.authority.port == host.port
         ):
             return True
 

@@ -639,6 +639,9 @@ async def oauth_start_endpoint(request: Request):
     if not client_id:
         raise HTTPException(status_code=503, detail="remote_oauth_client_not_configured")
     redirect_uri = _oauth_redirect_uri(request, remote=identity != "local")
+    # The relay returns to the entry this browser paired on, where its
+    # host-bound instance session cookie is valid.
+    public_origin = request_public_origin(request) if identity != "local" else ""
     pending_path = await asyncio.to_thread(_oauth_pending_path)
     if pending_path is None:
         raise HTTPException(status_code=503, detail="oauth_pending_unavailable")
@@ -662,6 +665,9 @@ async def oauth_start_endpoint(request: Request):
             and str((pending or {}).get("auth_public_url") or "").rstrip("/")
             == auth_url_base
             and str((pending or {}).get("instance_identity") or "local") == identity
+            # A retry from another entry (port/scheme) must not reuse a state
+            # that returns the browser to the first one.
+            and str((pending or {}).get("public_origin") or "") == public_origin
         ):
             state = pending_state
             code_verifier = pending_verifier
@@ -670,10 +676,7 @@ async def oauth_start_endpoint(request: Request):
         else:
             state = secrets.token_urlsafe(32)
             if identity != "local":
-                # The relay returns to the entry this browser paired on, where
-                # its host-bound instance session cookie is valid.
-                origin = request_public_origin(request)
-                state = base64.urlsafe_b64encode(json.dumps({"origin": origin, "nonce": state}, separators=(",", ":")).encode()).rstrip(b"=").decode()
+                state = base64.urlsafe_b64encode(json.dumps({"origin": public_origin, "nonce": state}, separators=(",", ":")).encode()).rstrip(b"=").decode()
             code_verifier = secrets.token_urlsafe(64)
             expires_at = now + _OAUTH_PENDING_TTL_SEC
             try:
@@ -689,6 +692,7 @@ async def oauth_start_endpoint(request: Request):
                         "created_at": now,
                         "expires_at": expires_at,
                         "instance_identity": identity,
+                        "public_origin": public_origin,
                     },
                 )
             except OSError as exc:

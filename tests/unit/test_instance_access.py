@@ -935,3 +935,27 @@ def test_public_origin_prefers_verified_browser_origin_then_pinned_gateway(monke
     assert request_public_origin(request("127.0.0.1:48911", "https://neko.example:48912")) == "https://neko.example:48912"
     # A foreign Origin never becomes the callback target.
     assert request_public_origin(request("192.168.1.10:48911", "https://evil.example")) == "http://192.168.1.10:48911"
+
+
+def test_oauth_retry_from_another_entry_does_not_reuse_first_entry_state(remote_app, monkeypatch):
+    import base64
+    import json
+
+    monkeypatch.delenv("NEKO_COMMUNITY_WEB_REDIRECT_URI")
+    monkeypatch.delenv("NEKO_COMMUNITY_WEB_CLIENT_ID")
+
+    def state_origin(result):
+        state = result.json()["state"]
+        return json.loads(base64.urlsafe_b64decode(state + "=" * (-len(state) % 4)))["origin"]
+
+    http_entry = "http://neko.example:48911"
+    _page, response = _http_pair(remote_app, http_entry)
+    assert response.status_code == 303
+    first = remote_app.post(http_entry + "/api/card-drop/oauth/start", headers={"Origin": http_entry})
+    assert state_origin(first) == http_entry
+    # Same browser and identity (host-bound cookie spans ports), other entry.
+    second = remote_app.post("/api/card-drop/oauth/start", headers={"Origin": "https://neko.example"})
+    assert state_origin(second) == "https://neko.example"
+    # Retrying from the same entry still reuses the pending attempt.
+    again = remote_app.post("/api/card-drop/oauth/start", headers={"Origin": "https://neko.example"})
+    assert again.json()["state"] == second.json()["state"]
