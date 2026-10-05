@@ -765,3 +765,24 @@ async def test_forget_epochs_are_read_per_subject_and_fail_loudly():
         # 认不出的代数不能当成「没有墓碑」
         with pytest.raises(ScopedMemoryError):
             await client.get_forget_epochs("Lanlan", ["participant:qq:1"])
+
+
+@pytest.mark.asyncio
+async def test_forget_epoch_lookups_are_chunked_at_the_server_limit():
+    from memory import scoped_client
+
+    # 服务端一次最多认 64 个 key（app/memory_server/routes.py 的 _FORGET_EPOCHS_MAX_SUBJECTS）
+    assert scoped_client._FORGET_EPOCHS_BATCH <= 64
+    seen = []
+
+    def responder(request):
+        keys = request.url.params.get_list("subject")
+        seen.append(len(keys))
+        return httpx.Response(200, json={"epochs": {key: 1 for key in keys}})
+
+    client, http = _client(_Recorder(responder))
+    keys = [f"participant:qq:{i}" for i in range(130)]
+    async with http:
+        result = await client.get_forget_epochs("Lanlan", keys)
+    # 超过服务端一次的上限时分批查、合并结果
+    assert seen == [64, 64, 2] and result == {key: 1 for key in keys}
