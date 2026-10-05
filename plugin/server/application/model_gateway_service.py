@@ -27,7 +27,6 @@ from utils.http_client import ensure_user_agent
 from plugin.utils.http_imports import ensure_httpx, load_httpx
 
 
-
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 MAX_ERROR_USAGE_BYTES = 64 * 1024
 

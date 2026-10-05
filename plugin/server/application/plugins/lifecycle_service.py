@@ -106,31 +106,59 @@ from plugin.utils.asyncio_utils import await_cancellation_safe
 logger = get_logger("server.application.plugins.lifecycle")
 _DEFAULT_METADATA_SCAN_TIMEOUT = env_seconds("NEKO_PLUGIN_METADATA_SCAN_TIMEOUT", 10.0)
 
-def create_plugin_host(*, plugin_id: str, entry_point: str, config_path: Path, source_only: bool = False) -> PluginHostContract:
+
+def create_plugin_host(
+    *, plugin_id: str, entry_point: str, config_path: Path, source_only: bool = False
+) -> PluginHostContract:
     from plugin.core.host import PluginProcessHost
 
-    return PluginProcessHost(plugin_id, entry_point, config_path, source_only=source_only)
+    return PluginProcessHost(
+        plugin_id, entry_point, config_path, source_only=source_only
+    )
 
 
-def scan_plugin_metadata_isolated(*, plugin_id: str, module_path: str, class_name: str,
-                                  config_path: Path, conf: Mapping[str, object],
-                                  pdata: Mapping[str, object], python_requirement_paths: list[Path],
-                                  timeout: float, source_only: bool = False) -> IsolatedPluginMetadata:
-    from plugin.server.application.plugins.metadata_scanner import scan_plugin_metadata_isolated as scan
+def scan_plugin_metadata_isolated(
+    *,
+    plugin_id: str,
+    module_path: str,
+    class_name: str,
+    config_path: Path,
+    conf: Mapping[str, object],
+    pdata: Mapping[str, object],
+    python_requirement_paths: list[Path],
+    timeout: float,
+    source_only: bool = False,
+) -> IsolatedPluginMetadata:
+    from plugin.server.application.plugins.metadata_scanner import (
+        scan_plugin_metadata_isolated as scan,
+    )
 
-    return scan(plugin_id=plugin_id, module_path=module_path, class_name=class_name,
-                config_path=config_path, conf=conf, pdata=pdata,
-                python_requirement_paths=python_requirement_paths, timeout=timeout,
-                source_only=source_only)
+    return scan(
+        plugin_id=plugin_id,
+        module_path=module_path,
+        class_name=class_name,
+        config_path=config_path,
+        conf=conf,
+        pdata=pdata,
+        python_requirement_paths=python_requirement_paths,
+        timeout=timeout,
+        source_only=source_only,
+    )
 
 
-def install_isolated_plugin_metadata(plugin_id: str, metadata: IsolatedPluginMetadata) -> None:
-    from plugin.server.application.plugins.metadata_scanner import install_isolated_plugin_metadata as install
+def install_isolated_plugin_metadata(
+    plugin_id: str, metadata: IsolatedPluginMetadata
+) -> None:
+    from plugin.server.application.plugins.metadata_scanner import (
+        install_isolated_plugin_metadata as install,
+    )
 
     install(plugin_id, metadata)
 
 
-async def clear_plugin_llm_tools(plugin_id: str, *, timeout: float | None = None) -> dict[str, object]:
+async def clear_plugin_llm_tools(
+    plugin_id: str, *, timeout: float | None = None
+) -> dict[str, object]:
     from plugin.server.messaging.llm_tool_registry import clear_plugin_tools
 
     return await clear_plugin_tools(plugin_id, timeout=timeout)
@@ -303,10 +331,14 @@ def _metadata_rebuild_manifest(
         manifest = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    manifest_pdata = manifest.get("plugin") if isinstance(manifest.get("plugin"), dict) else {}
+    manifest_pdata = (
+        manifest.get("plugin") if isinstance(manifest.get("plugin"), dict) else {}
+    )
     if plugin_id is not None and str(manifest_pdata.get("id") or "") != plugin_id:
         return None
-    if conf is not None and entries_config_digest(conf, pdata) != entries_config_digest(manifest, manifest_pdata):
+    if conf is not None and entries_config_digest(conf, pdata) != entries_config_digest(
+        manifest, manifest_pdata
+    ):
         return None
     return manifest
 
@@ -1558,12 +1590,16 @@ class PluginLifecycleService:
         tasks use the undecorated implementation inside that scope. Serial
         starts use the public entry point's cancellation-safe per-plugin lock.
         """
-        limit = PLUGIN_AUTOSTART_CONCURRENCY if concurrency is None else int(concurrency)
+        limit = (
+            PLUGIN_AUTOSTART_CONCURRENCY if concurrency is None else int(concurrency)
+        )
         limit = max(1, limit)
         started: list[str] = []
         failed: list[str] = []
 
-        async def _start_one(plugin_id: str, *, operation_scope: _HeldPluginOperationLock | None = None) -> None:
+        async def _start_one(
+            plugin_id: str, *, operation_scope: _HeldPluginOperationLock | None = None
+        ) -> None:
             try:
                 if operation_scope is not None:
                     # Drain every active start before releasing the wave lock.
@@ -1579,7 +1615,9 @@ class PluginLifecycleService:
                 else:
                     # This primitive also cancels an unstarted lock waiter.
                     # Shielding it again would prevent that cancellation.
-                    await self.start_plugin(plugin_id, refresh_registry=refresh_registry)
+                    await self.start_plugin(
+                        plugin_id, refresh_registry=refresh_registry
+                    )
             except Exception as error:
                 failed.append(plugin_id)
                 logger.error(
@@ -1592,7 +1630,9 @@ class PluginLifecycleService:
                 started.append(plugin_id)
                 logger.debug("autostart plugin started: plugin_id={}", plugin_id)
 
-        independent = [str(plugin_id) for plugin_id in independent_plugin_ids if plugin_id]
+        independent = [
+            str(plugin_id) for plugin_id in independent_plugin_ids if plugin_id
+        ]
         ordered = [str(plugin_id) for plugin_id in ordered_plugin_ids if plugin_id]
 
         if limit <= 1 or len(independent) <= 1:
@@ -1608,7 +1648,10 @@ class PluginLifecycleService:
                     # Collect unexpected task errors only after every sibling
                     # has finished; otherwise the wave lock releases too early.
                     outcomes = await asyncio.gather(
-                        *(_start_one(plugin_id, operation_scope=operation_scope) for plugin_id in wave),
+                        *(
+                            _start_one(plugin_id, operation_scope=operation_scope)
+                            for plugin_id in wave
+                        ),
                         return_exceptions=True,
                     )
                     for plugin_id, outcome in zip(wave, outcomes):

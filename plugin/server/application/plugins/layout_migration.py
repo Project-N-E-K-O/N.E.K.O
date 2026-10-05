@@ -577,8 +577,14 @@ def _migrate_configured_layout_sync(
 ) -> LayoutMigrationResult:
     """Resolve one coherent root set, then migrate with fresh ownership checks."""
 
-    default_state = get_plugin_state_root() if (state_root is None or
-        (exec_root is None and not os.getenv("PLUGIN_CONFIG_ROOT"))) else None
+    default_state = (
+        get_plugin_state_root()
+        if (
+            state_root is None
+            or (exec_root is None and not os.getenv("PLUGIN_CONFIG_ROOT"))
+        )
+        else None
+    )
     resolved_state = state_root if state_root is not None else default_state
     resolved_exec = exec_root or get_user_plugin_exec_root(state_root=default_state)
     resolved_ledger = ledger_path or (resolved_state.parent / LAYOUT_LEDGER_FILENAME)

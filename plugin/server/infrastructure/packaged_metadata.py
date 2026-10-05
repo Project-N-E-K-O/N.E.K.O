@@ -110,29 +110,11 @@ def _stamp_metadata_verified(meta_path: Path, newest_source_ns: int) -> None:
         )
 
 
-
-
 def _environment_matches(raw: object) -> bool:
     if not isinstance(raw, Mapping):
         return False
     current = build_environment()
     return all(str(raw.get(key) or "") == value for key, value in current.items())
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _major_of(version: str) -> str:
@@ -164,8 +146,6 @@ def _coerce_entry_methods(raw: object) -> dict[str, str]:
         for key, value in raw.items()
         if isinstance(key, str) and isinstance(value, str)
     }
-
-
 
 
 def _tables_are_well_formed(raw: Mapping[str, object]) -> bool:
@@ -214,14 +194,23 @@ def _read_metadata_json(
     """
     try:
         meta_stat = meta_path.stat()
-        if not stat.S_ISREG(meta_stat.st_mode) or meta_stat.st_size > MAX_PACKAGED_METADATA_BYTES:
+        if (
+            not stat.S_ISREG(meta_stat.st_mode)
+            or meta_stat.st_size > MAX_PACKAGED_METADATA_BYTES
+        ):
             if warn:
-                logger.warning("packaged metadata is not a size-capped regular file: path={}", meta_path)
+                logger.warning(
+                    "packaged metadata is not a size-capped regular file: path={}",
+                    meta_path,
+                )
             return None
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
         with os.fdopen(os.open(meta_path, flags), "rb") as handle:
             meta_stat = os.fstat(handle.fileno())
-            if not stat.S_ISREG(meta_stat.st_mode) or meta_stat.st_size > MAX_PACKAGED_METADATA_BYTES:
+            if (
+                not stat.S_ISREG(meta_stat.st_mode)
+                or meta_stat.st_size > MAX_PACKAGED_METADATA_BYTES
+            ):
                 return None
             encoded = handle.read(MAX_PACKAGED_METADATA_BYTES + 1)
         if len(encoded) > MAX_PACKAGED_METADATA_BYTES:
@@ -235,12 +224,16 @@ def _read_metadata_json(
             logger.warning(
                 "packaged plugin metadata unreadable, falling back to manifest: "
                 "path={}, err_type={}, err={}",
-                meta_path, type(exc).__name__, str(exc),
+                meta_path,
+                type(exc).__name__,
+                str(exc),
             )
         return None
     if not isinstance(raw, Mapping):
         if warn:
-            logger.warning("packaged plugin metadata is not an object: path={}", meta_path)
+            logger.warning(
+                "packaged plugin metadata is not an object: path={}", meta_path
+            )
         return None
     return raw, meta_stat
 
@@ -263,8 +256,6 @@ def stale_packaged_schema_version(plugin_dir: Path) -> int | None:
     if isinstance(version, bool) or not isinstance(version, int):
         return None
     return version if version < PACKAGED_METADATA_SCHEMA_VERSION else None
-
-
 
 
 def snapshot_source_tree(plugin_dir: Path) -> SourceTreeSnapshot | None:
@@ -302,7 +293,8 @@ def packaged_metadata_needs_rebuild(plugin_dir: Path) -> bool:
     if isinstance(version, bool) or not isinstance(version, int):
         return False
     return version < PACKAGED_METADATA_SCHEMA_VERSION or (
-        version == PACKAGED_METADATA_SCHEMA_VERSION and not _environment_matches(raw.get("build_env"))
+        version == PACKAGED_METADATA_SCHEMA_VERSION
+        and not _environment_matches(raw.get("build_env"))
     )
 
 
@@ -320,7 +312,9 @@ def local_packaged_metadata_path(plugin_dir: Path) -> Path | None:
         from plugin.sdk.shared.core.base_runtime import resolve_runtime_data_root
 
         installed = os.path.normcase(str(plugin_dir.resolve()))
-        installation_key = hashlib.sha256(installed.encode("utf-8", errors="surrogatepass")).hexdigest()
+        installation_key = hashlib.sha256(
+            installed.encode("utf-8", errors="surrogatepass")
+        ).hexdigest()
         environment_key = hashlib.sha256(
             json.dumps(build_environment(), sort_keys=True).encode("utf-8")
         ).hexdigest()
@@ -330,10 +324,22 @@ def local_packaged_metadata_path(plugin_dir: Path) -> Path | None:
         cache_key = hashlib.sha256(
             f"{installation_key}:{environment_key}:{package_key}".encode("ascii")
         ).hexdigest()
-        cache_path = resolve_runtime_data_root() / PACKAGED_METADATA_CACHE_DIRECTORY / f"{cache_key}.json"
+        cache_path = (
+            resolve_runtime_data_root()
+            / PACKAGED_METADATA_CACHE_DIRECTORY
+            / f"{cache_key}.json"
+        )
         spelling = str(cache_path)
-        if os.name == "nt" and len(spelling) >= 240 and not spelling.startswith("\\\\?\\"):
-            spelling = "\\\\?\\UNC\\" + spelling[2:] if spelling.startswith("\\\\") else "\\\\?\\" + spelling
+        if (
+            os.name == "nt"
+            and len(spelling) >= 240
+            and not spelling.startswith("\\\\?\\")
+        ):
+            spelling = (
+                "\\\\?\\UNC\\" + spelling[2:]
+                if spelling.startswith("\\\\")
+                else "\\\\?\\" + spelling
+            )
             cache_path = Path(spelling)
         return cache_path
     except (OSError, ValueError, RecursionError):
@@ -352,14 +358,25 @@ def _rebuild_identity(target: Path, summary: SourceStatSummary) -> tuple[object,
             result = path.stat()
         except OSError:
             return None
-        identity = (result.st_ino, result.st_mode, getattr(result, "st_file_attributes", 0))
+        identity = (
+            result.st_ino,
+            result.st_mode,
+            getattr(result, "st_file_attributes", 0),
+        )
         # Other plugins write into the same cache directory. Their writes must
         # not clear a failed target's short backoff.
-        return identity if directory else (*identity, result.st_mtime_ns, result.st_ctime_ns)
+        return (
+            identity
+            if directory
+            else (*identity, result.st_mtime_ns, result.st_ctime_ns)
+        )
 
     return (
-        stamp(target), stamp(target.parent, directory=True), summary.newest_mtime_ns,
-        summary.total_bytes, hash(tuple(summary.names)),
+        stamp(target),
+        stamp(target.parent, directory=True),
+        summary.newest_mtime_ns,
+        summary.total_bytes,
+        hash(tuple(summary.names)),
     )
 
 
@@ -369,7 +386,10 @@ def _recent_rebuild_failure(target: Path, summary: SourceStatSummary) -> bool:
         previous = _rebuild_failures.get(target)
         if previous is None:
             return False
-        if previous[0] == identity and time.monotonic() - previous[1] < _REBUILD_FAILURE_RETRY_SECONDS:
+        if (
+            previous[0] == identity
+            and time.monotonic() - previous[1] < _REBUILD_FAILURE_RETRY_SECONDS
+        ):
             return True
         _rebuild_failures.pop(target, None)
     return False
@@ -378,7 +398,10 @@ def _recent_rebuild_failure(target: Path, summary: SourceStatSummary) -> bool:
 def _record_rebuild_failure(target: Path, summary: SourceStatSummary) -> None:
     identity = _rebuild_identity(target, summary)
     with _rebuild_failures_lock:
-        if target not in _rebuild_failures and len(_rebuild_failures) >= _REBUILD_FAILURE_LIMIT:
+        if (
+            target not in _rebuild_failures
+            and len(_rebuild_failures) >= _REBUILD_FAILURE_LIMIT
+        ):
             _rebuild_failures.pop(next(iter(_rebuild_failures)))
         _rebuild_failures[target] = (identity, time.monotonic())
 
@@ -389,7 +412,9 @@ def _probe_metadata_target(target: Path) -> bool:
     replacement: Path | None = None
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, name = tempfile.mkstemp(prefix=".metadata_probe_", dir=target.parent)
+        descriptor, name = tempfile.mkstemp(
+            prefix=".metadata_probe_", dir=target.parent
+        )
         probe = Path(name)
         replacement = probe.with_suffix(".ready")
         with os.fdopen(descriptor, "wb") as handle:
@@ -407,7 +432,9 @@ def _probe_metadata_target(target: Path) -> bool:
                     pass
 
 
-def snapshot_packaged_metadata_rebuild_tree(plugin_dir: Path) -> SourceTreeSnapshot | None:
+def snapshot_packaged_metadata_rebuild_tree(
+    plugin_dir: Path,
+) -> SourceTreeSnapshot | None:
     """Snapshot only trees that have a usable destination and can be cached."""
     target = (
         plugin_dir / PACKAGED_METADATA_FILENAME
@@ -522,7 +549,9 @@ def _write_scanned_packaged_metadata(
     summary: SourceStatSummary | None = None
     try:
         summary = source_stat_summary(plugin_dir)
-        if _recent_rebuild_failure(target, summary) or not _probe_metadata_target(target):
+        if _recent_rebuild_failure(target, summary) or not _probe_metadata_target(
+            target
+        ):
             return False
         if (
             summary.untrustworthy
@@ -644,7 +673,9 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
     Files named plugin.meta.local.json inside installed code are plugin data.
     """
     target = local_packaged_metadata_path(plugin_dir)
-    local = _read_packaged_metadata_from(target, plugin_dir) if target is not None else None
+    local = (
+        _read_packaged_metadata_from(target, plugin_dir) if target is not None else None
+    )
     if local is not None and local.built_in_this_environment:
         return local
     return _read_packaged_metadata_from(

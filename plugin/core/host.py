@@ -2151,7 +2151,6 @@ if hasattr(os, "register_at_fork"):
     _HOST_CREDENTIAL_FORK_HOOK_REGISTERED = True
 
 
-
 class PluginHost:
     """
     插件进程宿主

@@ -45,7 +45,6 @@ from plugin.utils.http_imports import ensure_httpx, load_httpx
 logger = get_logger("server.messaging.llm_tool_registry")
 
 
-
 # ---------------------------------------------------------------------------
 # Process-global state
 # ---------------------------------------------------------------------------

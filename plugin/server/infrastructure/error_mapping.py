@@ -6,7 +6,10 @@ from plugin.server.domain.errors import ServerDomainError
 
 
 def http_exception(
-    *, status_code: int, detail: object = None, headers: dict[str, str] | None = None,
+    *,
+    status_code: int,
+    detail: object = None,
+    headers: dict[str, str] | None = None,
 ) -> Exception:
     """Construct an HTTP error without loading the web stack for successful I/O."""
     from fastapi import HTTPException

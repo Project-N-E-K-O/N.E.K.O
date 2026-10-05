@@ -1677,7 +1677,11 @@ async def test_market_backup_failure_reports_incomplete_when_old_plugin_cannot_r
     )
     monkeypatch.setattr(market_bridge, "_verify_sha256_file", lambda *args, **kwargs: "passed")
     monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
-    monkeypatch.setattr(market_bridge.os, "rename", lambda source, target: _raise_permission_error())
+    monkeypatch.setattr(
+        replacement_transaction.os,
+        "rename",
+        lambda source, target: _raise_permission_error(),
+    )
 
     with pytest.raises(market_bridge._TaskError) as exc_info:
         await market_bridge._do_upgrade({}, _payload(), {})

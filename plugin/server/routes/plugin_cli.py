@@ -348,7 +348,7 @@ async def plugin_cli_inspect(
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await (await get_plugin_cli_service()).inspect( package=payload.package)
+        return await (await get_plugin_cli_service()).inspect(package=payload.package)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -359,7 +359,7 @@ async def plugin_cli_verify(
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await (await get_plugin_cli_service()).verify( package=payload.package)
+        return await (await get_plugin_cli_service()).verify(package=payload.package)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -450,7 +450,9 @@ async def plugin_cli_discard_upload(
 ) -> dict[str, object]:
     """Discard one package uploaded by an abandoned local import workflow."""
     try:
-        return await (await get_plugin_cli_service()).discard_uploaded_package( package=package)
+        return await (await get_plugin_cli_service()).discard_uploaded_package(
+            package=package
+        )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -490,7 +492,9 @@ async def plugin_cli_download(
 ) -> FileResponse:
     """Download a plugin package file from the server."""
     try:
-        resolved = await asyncio.to_thread((await get_plugin_cli_service()).resolve_download_path, package)
+        resolved = await asyncio.to_thread(
+            (await get_plugin_cli_service()).resolve_download_path, package
+        )
         return FileResponse(
             str(resolved),
             filename=resolved.name,

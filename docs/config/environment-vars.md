@@ -76,6 +76,33 @@ Keep multi-process mode for development, independent service supervision, or
 agent-failure isolation. `NEKO_MERGED=0` is the immediate rollback for packaged
 deployments.
 
+## Plugin autostart concurrency
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `NEKO_PLUGIN_AUTOSTART_CONCURRENCY` | `min(8, max(2, (os.cpu_count() or 4) // 2))` | Maximum number of plugins without declared dependencies started concurrently in one autostart batch. Accepts integers from `1` to `64`; `1` restores serial startup with a separate operation lock per plugin. |
+
+The default is between 2 and 8; if the logical CPU count is unavailable, it uses
+4 logical CPUs to calculate the default, giving a limit of 2. Plugins with declared
+dependencies start serially in their existing topological order after the
+independent plugins finish. Each concurrent batch releases the operation lock
+before the next batch, allowing queued plugin-management requests to proceed.
+This setting applies to server autostart; it does not enable autostart for a
+disabled or unapproved plugin or change manual start/stop preferences.
+
+Set the variable before launching N.E.K.O and restart the runtime after changing
+it. Unparseable values fall back to the default; parsed integers outside `1`–`64`
+fail configuration validation. To restore serial autostart:
+
+```powershell
+$env:NEKO_PLUGIN_AUTOSTART_CONCURRENCY = "1"
+uv run python launcher.py
+```
+
+```bash
+NEKO_PLUGIN_AUTOSTART_CONCURRENCY=1 uv run python launcher.py
+```
+
 ## Realtime voice escape hatches
 
 | Variable | Default | Description |

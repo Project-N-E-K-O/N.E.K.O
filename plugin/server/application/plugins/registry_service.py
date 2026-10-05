@@ -176,7 +176,9 @@ def _find_plugin_config_path(
     # Roots are declared in effective-source priority order (user, builtin).
     for root in roots:
         resolved_root = canonical_read_path(root, cache=read_cache)
-        config_file = canonical_read_path(resolved_root / normalized_plugin_id / "plugin.toml", cache=read_cache)
+        config_file = canonical_read_path(
+            resolved_root / normalized_plugin_id / "plugin.toml", cache=read_cache
+        )
         if resolved_root not in config_file.parents:
             continue
         if config_file.exists():
@@ -187,7 +189,9 @@ def _find_plugin_config_path(
 def _source_for_config_path(
     config_path: Path, *, read_cache: PathResolutionCache | None = None
 ) -> str:
-    builtin_root = _resolve_config_path(BUILTIN_PLUGIN_CONFIG_ROOT, read_cache=read_cache)
+    builtin_root = _resolve_config_path(
+        BUILTIN_PLUGIN_CONFIG_ROOT, read_cache=read_cache
+    )
     return "builtin" if config_path.parent.parent == builtin_root else "user"
 
 
@@ -215,15 +219,23 @@ def _select_effective_records(
     shadowed: list[PluginDiscoveryRecord] = []
     for plugin_id in order:
         group = grouped[plugin_id]
-        canonical = [record for record in group if record.config_path.parent.name == plugin_id]
-        sources = {_source_for_config_path(record.config_path, read_cache=read_cache) for record in canonical}
+        canonical = [
+            record for record in group if record.config_path.parent.name == plugin_id
+        ]
+        sources = {
+            _source_for_config_path(record.config_path, read_cache=read_cache)
+            for record in canonical
+        }
         if not {"builtin", "user"}.issubset(sources):
             # This is a real legacy ID conflict, not a supported source
             # override. Preserve the historical builtin-first winner even
             # though discovery roots are now ordered user-first.
             winners = sorted(
                 group,
-                key=lambda record: _source_for_config_path(record.config_path, read_cache=read_cache) != "builtin",
+                key=lambda record: (
+                    _source_for_config_path(record.config_path, read_cache=read_cache)
+                    != "builtin"
+                ),
             )
             hidden: list[PluginDiscoveryRecord] = []
         else:
@@ -232,14 +244,22 @@ def _select_effective_records(
                     record
                     for record in group
                     if record not in canonical
-                    or _source_for_config_path(record.config_path, read_cache=read_cache) == "user"
+                    or _source_for_config_path(
+                        record.config_path, read_cache=read_cache
+                    )
+                    == "user"
                 ),
                 key=lambda record: record not in canonical,
             )
             hidden = [record for record in canonical if record not in winners]
 
         builtin_hidden = next(
-            (record for record in hidden if _source_for_config_path(record.config_path, read_cache=read_cache) == "builtin"),
+            (
+                record
+                for record in hidden
+                if _source_for_config_path(record.config_path, read_cache=read_cache)
+                == "builtin"
+            ),
             None,
         )
         for record in winners:
@@ -430,7 +450,9 @@ def _build_ordered_plugin_ids_sync(
     if candidate_plugin_ids is not None and not candidate_plugin_ids:
         return []
     roots = tuple(PLUGIN_CONFIG_ROOTS)
-    plugin_contexts, pid_to_context = _collect_plugin_contexts_from_roots_sync(roots, read_cache=read_cache)
+    plugin_contexts, pid_to_context = _collect_plugin_contexts_from_roots_sync(
+        roots, read_cache=read_cache
+    )
     registered_snapshot = _get_registered_plugin_snapshot_sync()
     if not registered_snapshot:
         return []
@@ -599,7 +621,9 @@ def _discover_registry_snapshot_sync(
         elif failure is not None:
             failures.append(failure)
 
-    effective_records, shadowed = _select_effective_records(records, roots, read_cache=read_cache)
+    effective_records, shadowed = _select_effective_records(
+        records, roots, read_cache=read_cache
+    )
     installed_ids = {item.plugin_id for item in effective_records}
     try:
         registrations = list_registration_records_sync()
@@ -614,11 +638,16 @@ def _discover_registry_snapshot_sync(
             failures.append(PluginDiscoveryFailure(registration.plugin_id,
                 registration.source_dir / "plugin.toml", "Development plugin ID conflicts with an installed source"))
             continue
-        effective_records.append(_development_discovery_record_sync(registration, read_cache=read_cache))
+        effective_records.append(
+            _development_discovery_record_sync(registration, read_cache=read_cache)
+        )
     return PluginDiscoverySnapshot(
         records=effective_records,
         failures=failures,
-        config_paths={_resolve_config_path(record.config_path, read_cache=read_cache) for record in effective_records},
+        config_paths={
+            _resolve_config_path(record.config_path, read_cache=read_cache)
+            for record in effective_records
+        },
         shadowed=shadowed,
     )
 
@@ -880,7 +909,9 @@ def _validate_plugin_runtime_source_sync(
     )
 
     resolved_config_path = _resolve_config_path(config_path, read_cache=read_cache)
-    ctx = _parse_single_plugin_config(resolved_config_path, set(), logger, read_cache=read_cache)
+    ctx = _parse_single_plugin_config(
+        resolved_config_path, set(), logger, read_cache=read_cache
+    )
     if ctx is None or ctx.pid != plugin_id:
         raise RuntimeError("promoted plugin configuration could not be validated")
 
@@ -939,11 +970,14 @@ def _apply_discovery_record_sync(
         target_plugin_id = record.plugin_id
 
     existing_target_meta = (existing_snapshot or {}).get(target_plugin_id)
-    existing_target_path = _resolve_meta_config_path(existing_target_meta, read_cache=read_cache)
+    existing_target_path = _resolve_meta_config_path(
+        existing_target_meta, read_cache=read_cache
+    )
     source_replacement = (
         target_plugin_id == record.plugin_id
         and existing_target_path is not None
-        and existing_target_path != _resolve_config_path(record.config_path, read_cache=read_cache)
+        and existing_target_path
+        != _resolve_config_path(record.config_path, read_cache=read_cache)
         and (
             bool(record.meta_payload.get("shadowed_builtin_path"))
             or not existing_target_path.exists()
@@ -951,9 +985,23 @@ def _apply_discovery_record_sync(
     )
 
     if record.meta_payload.get("source") == "development":
-        if existing_target_path is not None and existing_target_path != _resolve_config_path(record.config_path, read_cache=read_cache):
-            if not isinstance(existing_target_meta, dict) or existing_target_meta.get("development_ref", {}).get("registration_id") != record.meta_payload["development_ref"]["registration_id"]:
-                raise ServerDomainError(code="DEVELOPMENT_CONFLICT", message="Plugin ID belongs to another source", status_code=409)
+        if (
+            existing_target_path is not None
+            and existing_target_path
+            != _resolve_config_path(record.config_path, read_cache=read_cache)
+        ):
+            if (
+                not isinstance(existing_target_meta, dict)
+                or existing_target_meta.get("development_ref", {}).get(
+                    "registration_id"
+                )
+                != record.meta_payload["development_ref"]["registration_id"]
+            ):
+                raise ServerDomainError(
+                    code="DEVELOPMENT_CONFLICT",
+                    message="Plugin ID belongs to another source",
+                    status_code=409,
+                )
             source_replacement = True
     runtime_plugin_id = (
         target_plugin_id
@@ -1073,7 +1121,10 @@ def _remove_config_path_aliases_sync(
         for plugin_id, raw_meta in list(state.plugins.items()):
             if plugin_id == keep_plugin_id or not isinstance(raw_meta, dict):
                 continue
-            if _resolve_meta_config_path(raw_meta, read_cache=read_cache) != resolved_path:
+            if (
+                _resolve_meta_config_path(raw_meta, read_cache=read_cache)
+                != resolved_path
+            ):
                 continue
             if plugin_id in running_ids:
                 preserved = dict(raw_meta)
@@ -1349,7 +1400,11 @@ class PluginRegistryService:
                         read_cache=read_cache,
                     )
                     if record.meta_payload.get("shadowed_builtin_path"):
-                        _remove_config_path_aliases_sync(record.config_path, keep_plugin_id=resolved_id, read_cache=read_cache)
+                        _remove_config_path_aliases_sync(
+                            record.config_path,
+                            keep_plugin_id=resolved_id,
+                            read_cache=read_cache,
+                        )
                     refreshed_ids.add(resolved_id)
                     current_managed = _select_managed_fields(payload)
                     if resolved_id not in existing_snapshot:
@@ -1395,7 +1450,9 @@ class PluginRegistryService:
                     {
                         "plugin_id": record.plugin_id,
                         "config_path": str(record.config_path),
-                        "source": _source_for_config_path(record.config_path, read_cache=read_cache),
+                        "source": _source_for_config_path(
+                            record.config_path, read_cache=read_cache
+                        ),
                     }
                     for record in snapshot.shadowed
                 ],
@@ -1423,15 +1480,21 @@ class PluginRegistryService:
             roots = tuple(PLUGIN_CONFIG_ROOTS)
             existing_snapshot = _get_registered_plugin_snapshot_sync()
             _prepare_plugin_import_roots(roots, logger)
-            existing_config_path = _resolve_meta_config_path(existing_snapshot.get(normalized_plugin_id), read_cache=read_cache)
+            existing_config_path = _resolve_meta_config_path(
+                existing_snapshot.get(normalized_plugin_id), read_cache=read_cache
+            )
             record: PluginDiscoveryRecord | None = None
             registration = registration_for_plugin_sync(normalized_plugin_id)
             if registration is not None:
-                record = _development_discovery_record_sync(registration, read_cache=read_cache)
+                record = _development_discovery_record_sync(
+                    registration, read_cache=read_cache
+                )
             elif (
                 existing_config_path is not None
                 and existing_config_path.exists()
-                and not _config_path_belongs_to_roots(existing_config_path, roots, read_cache=read_cache)
+                and not _config_path_belongs_to_roots(
+                    existing_config_path, roots, read_cache=read_cache
+                )
             ):
                 ctx = _parse_single_plugin_config(
                     existing_config_path,
@@ -1443,13 +1506,18 @@ class PluginRegistryService:
                 if ctx is not None:
                     record = _build_discovery_record_from_context(ctx)
             else:
-                discovery = _discover_registry_snapshot_sync(roots, read_cache=read_cache)
+                discovery = _discover_registry_snapshot_sync(
+                    roots, read_cache=read_cache
+                )
                 record = next(
                     (
                         item
                         for item in discovery.records
                         if existing_config_path is not None
-                        and _resolve_config_path(item.config_path, read_cache=read_cache) == existing_config_path
+                        and _resolve_config_path(
+                            item.config_path, read_cache=read_cache
+                        )
+                        == existing_config_path
                     ),
                     None,
                 )
@@ -1485,7 +1553,9 @@ class PluginRegistryService:
                 read_cache=read_cache,
             )
             if record.meta_payload.get("shadowed_builtin_path"):
-                _remove_config_path_aliases_sync(config_path, keep_plugin_id=resolved_id, read_cache=read_cache)
+                _remove_config_path_aliases_sync(
+                    config_path, keep_plugin_id=resolved_id, read_cache=read_cache
+                )
             current_managed = _select_managed_fields(payload)
             status = "added"
             if previous_plugin_id in existing_snapshot:
@@ -1502,4 +1572,7 @@ class PluginRegistryService:
     def _order_plugin_ids_sync(
         self, plugin_ids: list[str], *, read_cache: PathResolutionCache | None = None
     ) -> list[str]:
-        return _build_ordered_plugin_ids_sync({plugin_id for plugin_id in plugin_ids if isinstance(plugin_id, str)}, read_cache=read_cache)
+        return _build_ordered_plugin_ids_sync(
+            {plugin_id for plugin_id in plugin_ids if isinstance(plugin_id, str)},
+            read_cache=read_cache,
+        )

@@ -16,81 +16,24 @@ from plugin._types.packaged_metadata import PACKAGED_METADATA_FILENAME
 from plugin.utils.source_paths import is_vendor_sync_path
 
 
-# Host caches live outside installed code. Only the shipped root metadata is a
-# generated file; plugin.meta.local.json remains ordinary plugin-owned data.
-# 2：加入了必需的 source_files。留在 1 而对缺字段的元数据"跳过检查"是错的——
-# schema 变了就该换号，否则一份没有 source_files 的元数据仍会被当成合法的第 1 版
-# 接受，增删源文件时那道确定性的判据整个静默失效（coderabbit）。旧包因此回落到
-# manifest 声明的 entries，重新打包即可恢复。
-# 4: handlers retain the complete entry contract, including slotted SDK fields.
-# 3 serialized slotted SDK metadata through a ten-field fallback and lost
-# timeout / result fields, so a v3 handler table describes an entry the host
-# would call with the wrong budget and read the wrong result from. Schema 3 was
-# only ever on nightly, so it is refused like any other stale schema and the
-# plugin takes the worker path until it is repackaged.
-
-# 解析之前先封顶。这份文件来自第三方包，而 json.loads 会把整份内容读进内存再建对象；
-# 一个几百 MB 的 plugin.meta.json 足以在刷新注册表时把进程撑爆，而刷新现在整段持锁
-# （codex）。1 MiB 对元数据是很宽的余量：本机 16 个内置插件里最大的一份 47 KB。
-
-# 用字节码点写，避免这几个常量本身在编辑/移植途中被行尾转换动过。
-
-# 指纹盯插件目录下的**所有**文件，不筛后缀。
-#
-# 原本只看 .py/.toml/.json，但插件的模块级代码经常从同目录的数据文件派生条目
-# （metadata.yaml、csv、模板……）：改了那些文件而指纹不变，宿主就会一直端着按旧
-# 数据推出来的 schema，而注册的元数据和运行时行为对不上是最难查的一类不一致
-# （codex，也是旧扫描缓存键当年选择全量的同一个理由）。
-
-# 下降之前就剪掉。node_modules 不在旧的扫描键忽略集里，带 vendor 树的插件会让
-# 每一次遍历都陪着走一遍。
-# 只有这些后缀会在摘要前做行尾归一化。二进制资源里 CR 是有意义的字节，把它换掉会
-# 让两份不同的文件算出同一个摘要（codex）；而归一化本身是为了让 Windows 打的包到
-# Linux 上还认得出来，那个问题只存在于文本。
-
-# 开发产物，打包规则本来就不会把它们放进包里，所以不进指纹也不影响"元数据和
-# 包内容一致"这个契约。
-
-# 会进包、但大到不该每次刷新都遍历的目录。
-#
-# node_modules 没有被任何一套打包规则默认排除，所以它是**跟着包一起发出去的**。
-# 既跳过它又照常发布元数据，等于契约上开了个洞：插件在注册入口时读了 bundle 里
-# 的某个 JS 或 package.json，改了它这边一点都看不见，宿主继续端着旧 schema
-# （codex）。反过来把它算进指纹，每次刷新都要在持锁状态下 stat 一整棵 npm 树，
-# 那正是这套机制要省掉的开销。
-#
-# 所以两头都不选：看见它就把整棵树判成不可信，这个插件回落到 manifest + 按需
-# 扫描——也就是本 PR 之前的原样，而且只影响真的捆了 node_modules 的插件。
-
-# 未知参数结构时给的占位。
-#
-# ⚠️ 不能带 "properties" 键，哪怕是空对象。前端 EntryList 判"有没有 schema"用的是
-# `!!(schema?.properties && typeof schema.properties === 'object')`，而 JS 里
-# `!!{}` 为真——带一个空 properties 会让它渲染出零字段的表单，提交时参数恒为 {}，
-# 用户连退回去手填 JSON 的入口都没有，比什么都不给更糟。
-#
-# additionalProperties 为真是同一个意思的另一面：这份 schema 只用来描述，任何时候
-# 都不能拿它去拒绝调用。真正的参数校验在插件进程里用真模型做。
-
-
+# Only the shipped root metadata is generated. Host caches live outside
+# installed code; plugin.meta.local.json remains ordinary plugin-owned data.
 _GENERATED_METADATA_NAMES = frozenset({PACKAGED_METADATA_FILENAME})
 
-
+# Schema 4 preserves the complete entry contract, including timeout/result
+# fields lost in schema 3. Older schemas must take the isolated scan path.
 PACKAGED_METADATA_SCHEMA_VERSION = 4
 
-
+# Bound allocation before parsing metadata supplied by third-party packages.
 MAX_PACKAGED_METADATA_BYTES = 1024 * 1024
 
-
+# Construct newline bytes explicitly so source line-ending conversion cannot
+# alter the normalization rules used by the source fingerprint.
 _CR = bytes([13])
-
-
 _LF = bytes([10])
-
-
 _CRLF = _CR + _LF
 
-
+# Normalize CRLF only for text files; CR bytes are significant in binary data.
 TEXT_SUFFIXES_FOR_HASHING = frozenset(
     {
         ".py",
@@ -113,15 +56,17 @@ TEXT_SUFFIXES_FOR_HASHING = frozenset(
     }
 )
 
-
+# Prune development artifacts before descending into their directory trees.
 SOURCE_IGNORED_DIRS = frozenset(
     {"__pycache__", ".git", ".mypy_cache", ".ruff_cache", ".venv"}
 )
 
-
+# node_modules can ship with a package and affect entry registration. Reject
+# the metadata fast path instead of silently excluding those source files.
 SOURCE_UNFINGERPRINTABLE_DIRS = frozenset({"node_modules"})
 
-
+# Omit properties: even an empty object makes the UI show a zero-field form
+# instead of accepting raw JSON. Actual validation runs in the plugin process.
 PLACEHOLDER_INPUT_SCHEMA: dict[str, object] = {
     "type": "object",
     "additionalProperties": True,
@@ -184,6 +129,8 @@ def build_environment() -> dict[str, str]:
 def _iter_source_files(
     plugin_dir: Path,
 ) -> tuple[list[tuple[str, str, os.stat_result]], bool, list[str]]:
+    # Include data files as well as code: module-level plugin registration may
+    # derive entries from YAML, CSV, templates or other packaged resources.
     # 手写 scandir 下降而不是 rglob：忽略目录必须在下降**之前**剪掉，否则一个带
     # 大 object database 的开发目录每次都要先枚举完才轮到忽略判断。
     #
@@ -209,7 +156,9 @@ def _iter_source_files(
         for entry in children:
             # Skip generated work trees before descending or inspecting links.
             if entry.name.startswith(".vendor.") and current in (root, vendor):
-                relative = Path(entry.name) if current == root else Path("vendor", entry.name)
+                relative = (
+                    Path(entry.name) if current == root else Path("vendor", entry.name)
+                )
                 if is_vendor_sync_path(relative):
                     continue
             try:

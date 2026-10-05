@@ -16,7 +16,6 @@ import dataclasses
 import hashlib
 import hmac
 import json
-import os
 import secrets
 import time
 import tomllib
@@ -37,7 +36,9 @@ from plugin.logging_config import get_logger
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
 from plugin.utils.http_imports import ensure_httpx, load_httpx
 from plugin.server.infrastructure.package_download import (
-    PackageSizeExceeded, cleanup_download_file as _cleanup_download_file, download_package_file,
+    PackageSizeExceeded,
+    cleanup_download_file as _cleanup_download_file,
+    download_package_file,
 )
 from plugin.server.application.install_source import (
     InstallSourceError,
@@ -4463,7 +4464,9 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
     _raise_if_task_cancel_requested(task)
     httpx = await ensure_httpx()
     started_at = time.monotonic()
-    directory = PluginCliPathPolicy.from_settings().package_artifacts_root / ".downloads"
+    directory = (
+        PluginCliPathPolicy.from_settings().package_artifacts_root / ".downloads"
+    )
 
     def progress(received: int, total: int | None) -> None:
         task["downloaded_bytes"] = received
@@ -4472,16 +4475,22 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             return
         if total:
             task["progress"] = 0.1 + received / total * 0.6
-            task["message"] = f"正在下载: {_format_bytes(received)} / {_format_bytes(total)}"
+            task["message"] = (
+                f"正在下载: {_format_bytes(received)} / {_format_bytes(total)}"
+            )
         else:
             task["progress"] = min(0.65, task.get("progress", 0.1) + 0.01)
             task["message"] = f"正在下载: {_format_bytes(received)}"
 
     try:
         return await download_package_file(
-            url, directory, maximum_bytes=_DOWNLOAD_MAX_BYTES,
-            phase_timeout=_DOWNLOAD_TIMEOUT, total_timeout=_DOWNLOAD_TOTAL_TIMEOUT,
-            flush_bytes=_DOWNLOAD_FLUSH_BYTES, report_progress=progress,
+            url,
+            directory,
+            maximum_bytes=_DOWNLOAD_MAX_BYTES,
+            phase_timeout=_DOWNLOAD_TIMEOUT,
+            total_timeout=_DOWNLOAD_TOTAL_TIMEOUT,
+            flush_bytes=_DOWNLOAD_FLUSH_BYTES,
+            report_progress=progress,
             check_cancelled=lambda: _raise_if_task_cancel_requested(task),
         )
     except httpx.HTTPStatusError as exc:
@@ -4532,7 +4541,9 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
         )
         raise _DownloadAttemptError("下载超时") from exc
     except PackageSizeExceeded as exc:
-        raise _DownloadAttemptError(f"包文件过大: {exc.actual} bytes (最大 {exc.maximum} bytes)") from exc
+        raise _DownloadAttemptError(
+            f"包文件过大: {exc.actual} bytes (最大 {exc.maximum} bytes)"
+        ) from exc
     except ValueError as exc:
         raise _DownloadAttemptError(str(exc)) from exc
 

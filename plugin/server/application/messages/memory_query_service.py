@@ -5,9 +5,7 @@ from urllib.parse import quote
 
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
-from plugin.utils.http_imports import ensure_httpx, load_httpx
-
-
+from plugin.utils.http_imports import ensure_httpx
 
 logger = get_logger("server.application.messages.memory_query")
 
