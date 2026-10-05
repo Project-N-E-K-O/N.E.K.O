@@ -769,10 +769,10 @@ async def test_forget_epochs_are_read_per_subject_and_fail_loudly():
 
 @pytest.mark.asyncio
 async def test_forget_epoch_lookups_are_chunked_at_the_server_limit():
-    from app.memory_server import routes as memory_routes
     from memory import scoped_client
 
-    assert scoped_client._FORGET_EPOCHS_BATCH <= memory_routes._FORGET_EPOCHS_MAX_SUBJECTS
+    # 服务端一次最多认 64 个 key（app/memory_server/routes.py 的 _FORGET_EPOCHS_MAX_SUBJECTS）
+    assert scoped_client._FORGET_EPOCHS_BATCH <= 64
     seen = []
 
     def responder(request):
