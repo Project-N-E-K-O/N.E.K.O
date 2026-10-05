@@ -48,7 +48,7 @@ METADATA_FORMAT='{{.Id}} {{index .Config.Labels "org.neko.community-2c2g.watchdo
 # Docker's unless-stopped policy handles exits; preserve intentional stops/removal.
 if ! metadata=$(timeout 10 docker inspect -f "$METADATA_FORMAT" "$CONTAINER" 2>/dev/null); then
     # Distinguish intentional removal from an unavailable daemon/failed inspect.
-    containers=$(timeout 10 docker ps -a --filter "name=^/${CONTAINER}$" --format '{{.ID}}') || fail "Cannot query containers; no restart attempted"
+    containers=$(timeout 10 docker ps -a --filter "name=^/${CONTAINER}$" --format '{{.ID}}' 2>/dev/null) || fail "Cannot query containers; no restart attempted"
     [[ -z "$containers" ]] || fail "Container inspect failed; no restart attempted"
     rm -f "$COUNT_FILE"
     exit 0
@@ -89,7 +89,7 @@ fi
 healthy=false
 probe_failure='host HTTP status unavailable'
 # Log only phase/status/exit code; never response bodies or raw error output.
-if code=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 http://127.0.0.1:48911/); then
+if code=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 http://127.0.0.1:48911/ 2>/dev/null); then
     if [[ "$code" == 200 || "$code" == 401 ]]; then
         # Expand the configured backend port in the container, not on the host.
         if timeout 15 docker exec "$container_id" sh -c '
@@ -97,7 +97,7 @@ if code=$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --connect-timeou
             case "$port" in ""|*[!0-9]*) exit 64 ;; esac
             [ "${#port}" -le 5 ] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || exit 64
             exec curl --noproxy "*" -fsS --connect-timeout 5 --max-time 10 "http://127.0.0.1:$port/health"
-        ' >/dev/null; then
+        ' >/dev/null 2>&1; then
             healthy=true
         else
             probe_failure="main-service probe exit $? (64=invalid port, 124=timeout)"
@@ -134,7 +134,7 @@ if (( count != old_count )); then log "Health probe failed ($count/2): $probe_fa
 if (( count >= 2 )); then
     # Maintenance must hold this same lock while setting disabled (see README).
     [[ ! -e "$STATE_DIR/disabled" ]] || exit 0
-    current=$(timeout 10 docker inspect -f "$METADATA_FORMAT" "$container_id") || fail "Cannot recheck container"
+    current=$(timeout 10 docker inspect -f "$METADATA_FORMAT" "$container_id" 2>/dev/null) || fail "Cannot recheck container"
     [[ "$current" == "$metadata" ]] || { rm -f "$COUNT_FILE"; exit 0; }
     # Persist attempts across startup grace and StartedAt changes.
     restart_count=0
@@ -159,12 +159,12 @@ if (( count >= 2 )); then
     temporary=$(mktemp "$STATE_DIR/.restart-count.XXXXXX") || fail "Cannot create restart budget"
     printf '%s %s\n' "$container_id" "$((restart_count + 1))" > "$temporary" || fail "Cannot write restart budget"
     mv -f "$temporary" "$RESTART_FILE" || fail "Cannot publish restart budget"
-    if timeout 120 docker restart -t 30 "$container_id" >> "$STATE_DIR/watchdog.log" 2>&1; then
+    if timeout 120 docker restart -t 30 "$container_id" >/dev/null 2>&1; then
         rm -f "$COUNT_FILE"
         log "Restart succeeded"
     else
         # CLI timeout does not cancel a daemon restart. Confirm the new lifecycle.
-        current=$(timeout 10 docker inspect -f "$METADATA_FORMAT" "$container_id") || fail "Cannot confirm restart; counter retained"
+        current=$(timeout 10 docker inspect -f "$METADATA_FORMAT" "$container_id" 2>/dev/null) || fail "Cannot confirm restart; counter retained"
         read -r current_id current_enabled current_service current_running current_paused current_restarting current_start <<< "$current" || fail "Invalid restart metadata"
         if [[ "$current_id" == "$container_id" && "$current_enabled" == enabled && "$current_service" == neko-main ]] &&
            [[ "$current_restarting" == true || ( "$current_running" == true && "$current_start" != "$started_at" ) ]]; then

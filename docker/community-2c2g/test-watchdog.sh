@@ -12,6 +12,7 @@ export TEST_ROOT="$ROOT"
 cat > "$ROOT/bin/docker" <<'EOF'
 #!/bin/bash
 set -eu
+[[ ${RAW_ERROR:-0} == 0 ]] || echo private-daemon-error >&2
 case "$1" in
     inspect)
         [[ ${INSPECT_FAIL:-0} == 0 && ${CONTAINER_ABSENT:-0} == 0 ]] || exit 1
@@ -33,7 +34,8 @@ case "$1" in
         [[ ${CONTAINER_ABSENT:-0} == 1 ]] || echo id-1 ;;
     exec)
         [[ "$3 $4" == 'sh -c' ]] || exit 99
-        BACKEND_PROBE=1 /bin/sh -c "$5" ;;
+        env -i PATH="$TEST_ROOT/bin:/usr/bin:/bin" TEST_ROOT="$TEST_ROOT" BACKEND_PROBE=1 \
+            RAW_ERROR="${RAW_ERROR:-0}" BACKEND_EXIT="${BACKEND_EXIT:-0}" NEKO_MAIN_SERVER_PORT="${MOCK_CONTAINER_PORT:-48911}" /bin/sh -c "$5" ;;
     restart)
         [[ "$2 $3" == '-t 30' ]] || exit 99
         echo "$4" >> "$TEST_ROOT/restarts"
@@ -49,6 +51,7 @@ EOF
 cat > "$ROOT/bin/curl" <<'EOF'
 #!/bin/bash
 [[ "$1 $2" == '--noproxy *' ]] || exit 99
+[[ ${RAW_ERROR:-0} == 0 ]] || echo private-curl-error >&2
 if [[ ${BACKEND_PROBE:-0} == 1 ]]; then
     printf '%s\n' "${@: -1}" > "$TEST_ROOT/backend-url"
     exit "${BACKEND_EXIT:-0}"
@@ -66,14 +69,26 @@ sh -n "$SOURCE/install-watchdog.sh"
 run() { bash "$ROOT/watchdog.sh"; }
 no_restart() { [[ ! -e "$ROOT/restarts" ]]; }
 reset() { rm -f "$ROOT/state/fail-count" "$ROOT/state/restart-count" "$ROOT/state/exhaustion-reported" "$ROOT/state/stopped-reported" "$ROOT/restarts" "$ROOT/restart-attempt" "$ROOT/restart-begun" "$ROOT/restart-release"; }
+reset
+RAW_ERROR=1 CURL_EXIT=28 run 2> "$ROOT/raw-error"; no_restart
+[[ ! -s "$ROOT/raw-error" ]]
+reset
+RAW_ERROR=1 BACKEND_EXIT=22 run 2> "$ROOT/raw-error"; no_restart
+[[ ! -s "$ROOT/raw-error" ]]
+reset
+RAW_ERROR=1 HTTP_CODE=502 run 2> "$ROOT/raw-error"
+if RAW_ERROR=1 HTTP_CODE=502 RESTART_EXIT=1 run 2> "$ROOT/raw-error"; then exit 1; fi
+[[ ! -s "$ROOT/raw-error" ]]
+! grep -q 'private-daemon-error\|private-curl-error' "$ROOT/state/watchdog.log"
+reset
 run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 HTTP_CODE=200 run; no_restart
-NEKO_MAIN_SERVER_PORT=50001 run; no_restart
+NEKO_MAIN_SERVER_PORT=59999 MOCK_CONTAINER_PORT=50001 run; no_restart
 [[ $(cat "$ROOT/backend-url") == http://127.0.0.1:50001/health ]]
 for port in invalid 0 65536 '48911/path'; do
     reset
     rm -f "$ROOT/backend-url"
-    NEKO_MAIN_SERVER_PORT="$port" run; no_restart
+    MOCK_CONTAINER_PORT="$port" run; no_restart
     [[ ! -e "$ROOT/backend-url" ]]
     grep -q 'main-service probe exit 64' "$ROOT/state/watchdog.log"
 done
@@ -99,7 +114,19 @@ reset
 HTTP_CODE=500 run
 CONTAINER_ID=id-2 HTTP_CODE=500 run; no_restart
 grep -q 'id-2 1' "$ROOT/state/fail-count"
-RUNNING=false run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
+RUNNING=false reset
+RAW_ERROR=1 CURL_EXIT=28 run 2> "$ROOT/raw-error"; no_restart
+[[ ! -s "$ROOT/raw-error" ]]
+reset
+RAW_ERROR=1 BACKEND_EXIT=22 run 2> "$ROOT/raw-error"; no_restart
+[[ ! -s "$ROOT/raw-error" ]]
+reset
+RAW_ERROR=1 HTTP_CODE=502 run 2> "$ROOT/raw-error"
+if RAW_ERROR=1 HTTP_CODE=502 RESTART_EXIT=1 run 2> "$ROOT/raw-error"; then exit 1; fi
+[[ ! -s "$ROOT/raw-error" ]]
+! grep -q 'private-daemon-error\|private-curl-error' "$ROOT/state/watchdog.log"
+reset
+run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 LABEL=other HTTP_CODE=500 run; no_restart
 touch "$ROOT/state/disabled"
 HTTP_CODE=500 run; no_restart
@@ -159,9 +186,33 @@ reset
 HTTP_CODE=500 run
 STARTED_AT=2001-01-01T00:00:00Z HTTP_CODE=500 run
 no_restart; grep -q 'id-1 1 2001-' "$ROOT/state/fail-count"
-PAUSED=true HTTP_CODE=500 run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
+PAUSED=true HTTP_CODE=500 reset
+RAW_ERROR=1 CURL_EXIT=28 run 2> "$ROOT/raw-error"; no_restart
+[[ ! -s "$ROOT/raw-error" ]]
+reset
+RAW_ERROR=1 BACKEND_EXIT=22 run 2> "$ROOT/raw-error"; no_restart
+[[ ! -s "$ROOT/raw-error" ]]
+reset
+RAW_ERROR=1 HTTP_CODE=502 run 2> "$ROOT/raw-error"
+if RAW_ERROR=1 HTTP_CODE=502 RESTART_EXIT=1 run 2> "$ROOT/raw-error"; then exit 1; fi
+[[ ! -s "$ROOT/raw-error" ]]
+! grep -q 'private-daemon-error\|private-curl-error' "$ROOT/state/watchdog.log"
+reset
+run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 HTTP_CODE=500 run
-RECHECK_PAUSED=true HTTP_CODE=500 run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
+RECHECK_PAUSED=true HTTP_CODE=500 reset
+RAW_ERROR=1 CURL_EXIT=28 run 2> "$ROOT/raw-error"; no_restart
+[[ ! -s "$ROOT/raw-error" ]]
+reset
+RAW_ERROR=1 BACKEND_EXIT=22 run 2> "$ROOT/raw-error"; no_restart
+[[ ! -s "$ROOT/raw-error" ]]
+reset
+RAW_ERROR=1 HTTP_CODE=502 run 2> "$ROOT/raw-error"
+if RAW_ERROR=1 HTTP_CODE=502 RESTART_EXIT=1 run 2> "$ROOT/raw-error"; then exit 1; fi
+[[ ! -s "$ROOT/raw-error" ]]
+! grep -q 'private-daemon-error\|private-curl-error' "$ROOT/state/watchdog.log"
+reset
+run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 HTTP_CODE=500 run
 RECHECK_STARTED_AT=2001-01-01T00:00:00Z HTTP_CODE=500 run
 no_restart; [[ ! -e "$ROOT/state/fail-count" ]]

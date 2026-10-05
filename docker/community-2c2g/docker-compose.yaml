@@ -3,6 +3,7 @@
 # Compose >= 2.24.4；继承同一仓库的官方服务配置。
 services:
   neko-init:
+    network_mode: none
     image: alpine:3.20
     restart: "no"
     entrypoint: ["/bin/sh", "-ec"]
@@ -42,6 +43,7 @@ services:
         max-file: "3"
 
   neko-cron-install:
+    network_mode: none
     profiles: [watchdog]
     image: alpine:3.20
     restart: "no"
