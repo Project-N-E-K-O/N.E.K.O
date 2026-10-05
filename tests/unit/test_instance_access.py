@@ -971,3 +971,55 @@ def test_oauth_retry_from_another_entry_does_not_reuse_first_entry_state(remote_
     # Retrying from the same entry still reuses the pending attempt.
     again = remote_app.post("/api/card-drop/oauth/start", headers={"Origin": "https://neko.example"})
     assert again.json()["state"] == second.json()["state"]
+
+
+def test_pinned_gateway_host_with_explicit_default_port_is_secure_and_public(monkeypatch):
+    from starlette.requests import Request
+    from utils.instance_access import _pinned_origin, _secure_transport, request_public_origin
+
+    def request(host):
+        return Request({"type": "http", "scheme": "http", "method": "GET", "path": "/", "query_string": b"",
+                        "server": (host.split(":")[0], 80), "headers": [(b"host", host.encode())]})
+
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.setenv("NEKO_INSTANCE_PUBLIC_ORIGIN", "https://neko.example/")
+    assert _pinned_origin() == "https://neko.example"
+    for host in ("neko.example", "neko.example:443"):
+        assert _secure_transport(request(host)) is True
+        assert request_public_origin(request(host)) == "https://neko.example"
+    assert _secure_transport(request("neko.example:80")) is False
+    assert request_public_origin(request("neko.example:80")) == "http://neko.example:80"
+    for invalid in ("neko.example", "https://user@neko.example", "https://neko.example/path", "https://neko.example:x"):
+        monkeypatch.setenv("NEKO_INSTANCE_PUBLIC_ORIGIN", invalid)
+        assert _pinned_origin() == ""
+
+
+def test_websocket_handler_sees_transport_decisions_on_its_own_scope(monkeypatch):
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    app = FastAPI()
+
+    @app.websocket("/socket")
+    async def websocket(socket: WebSocket):
+        await socket.accept()
+        await socket.send_json({key: socket.scope.get(key) for key in ("neko.require_https", "neko.secure_transport")})
+        await socket.close()
+
+    app.add_middleware(InstanceAccessMiddleware)
+    client = TestClient(app, base_url="https://neko.example", client=("203.0.113.1", 1234))
+    with client.websocket_connect("wss://neko.example/socket", headers={"Authorization": f"Bearer {KEY}"}) as socket:
+        assert socket.receive_json() == {"neko.require_https": False, "neko.secure_transport": True}
+
+
+def test_outer_tls_pairing_logs_configuration_hint_once(remote_app, caplog):
+    for _ in range(2):
+        remote_app.cookies.clear()
+        page = remote_app.get("http://neko.example/", headers={"Accept": "text/html"})
+        challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+        with caplog.at_level("WARNING", logger="utils.instance_access"):
+            response = remote_app.post("http://neko.example/instance-access/login",
+                                       data={"key": KEY, "challenge": challenge},
+                                       headers={"Origin": "https://neko.example"}, follow_redirects=False)
+        assert response.status_code == 303
+    hints = [r for r in caplog.records if "NEKO_INSTANCE_PUBLIC_ORIGIN" in r.getMessage()]
+    assert len(hints) == 1

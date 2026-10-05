@@ -54,6 +54,11 @@ LAN IP/第二端口直连照常配对；DNS rebinding到实例的域名只能拿
 社区OAuth state与Market公开origin取浏览器实际所在入口（通过同源检查的Origin，否则按Host匹配公开origin，
 再否则用请求自身origin），回跳落在持有该hostname会话cookie的入口；pending复用也比较该origin，
 换入口重试会生成新state。
+该同Host https://回退只解决同源，不证明加密：配对页导航不带Origin，服务端无从得知浏览器侧是否HTTPS，
+故按明文保守处理（显示警告、签发*_http会话、NEKO_REQUIRE_HTTPS=1下拒绝），首次配对时日志提示一次。
+要被识别为HTTPS（含开启严格模式），部署方须设置NEKO_INSTANCE_PUBLIC_ORIGIN或转发可信X-Forwarded-Proto；
+不以浏览器Origin判定加密，否则明文客户端可自报Origin换取HTTPS用途的会话。Host与公开origin按主机名加
+有效端口比较（:443与省略等价）；网关须保留原Host，改写为上游地址的部署不受支持。
 同hostname不同端口共用cookie，须共享key；独立实例用不同hostname/key。
 
 ## OAuth回跳与发布依赖
@@ -119,6 +124,10 @@ NEKO_INSTANCE_PUBLIC_ORIGIN=https://… 是部署者对外层 TLS 网关的明�
 明文配对仍远强于无锁；残余风险是同一网络路径可嗅探key与cookie，配对页会明确警告。
 需要严格传输的部署设置 NEKO_REQUIRE_HTTPS=1。浏览器仅在HTTPS或localhost下开放麦克风，
 明文IP访问时语音输入不可用。
+宽松模式下原始实例key仍可作为Bearer走明文：配对表单本身就要明文提交一次key，拒绝Bearer并不能让key免于
+暴露，却会打断经HTTP直连的原生客户端；泄露后的补救是轮换key，严格模式统一拒绝明文Bearer。
+Market OAuth回调地址取浏览器所在入口，宽松模式下可能是http://；Market认证平台是否接受非loopback的http回调
+由平台侧决定（当前main即#3289只允许HTTPS配对，HTTP远程原本无法使用，因此不是回退），平台拒绝时配对与其他功能不受影响。
 
 配对页复用仍有效的签名 challenge，其他标签页/预取不会覆盖首个表单；登录后保留原 return_path 的 query。
 已存在密钥无锁读取，跨进程 FileLock 仅用于缺失/空文件的原子创建修复；轮换仍在读取时生效。

@@ -13,6 +13,7 @@ import hmac
 import html
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
@@ -28,6 +29,8 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from filelock import FileLock, Timeout as FileLockTimeout
 
 from utils.deployment import has_forwarding_metadata, is_behind_proxy, is_remote_backend_deployment, requires_https
+
+logger = logging.getLogger(__name__)
 
 COOKIE = "neko_instance_access"
 CHALLENGE_COOKIE = "neko_instance_challenge"
@@ -152,8 +155,9 @@ def _session_identity(key: str, host: str, token: str, strict: bool) -> str | No
 def _strict(request: Request) -> bool:
     """Read NEKO_REQUIRE_HTTPS once per request/connection, not per check.
 
-    Cached on the scope shared with downstream routes; a WebSocket keeps the
-    value it was admitted under while its frames are revalidated.
+    Cached on the scope (the middleware copies it onto a WebSocket's original
+    scope too); a WebSocket keeps the value it was admitted under while its
+    frames are revalidated.
     """
     scope = request.scope
     if "neko.require_https" not in scope:
@@ -195,14 +199,38 @@ def _equal(left: str, right: str) -> bool:
     return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
 
 
+def _pinned_origin() -> str:
+    """NEKO_INSTANCE_PUBLIC_ORIGIN as scheme://host[:port]; "" if unset or not a bare origin."""
+    raw = os.environ.get("NEKO_INSTANCE_PUBLIC_ORIGIN", "").strip()
+    try:
+        public = urlsplit(raw)
+        public.port  # noqa: B018 - raises ValueError on a malformed port
+    except ValueError:
+        return ""
+    if (public.scheme not in {"http", "https"} or not public.netloc or public.username or public.password
+            or public.query or public.fragment or public.path not in {"", "/"}):
+        return ""
+    return f"{public.scheme}://{public.netloc}"
+
+
+def _host_is(request: Request, origin: str) -> bool:
+    """Whether the Host header names origin's host and effective port (":443" equals none)."""
+    try:
+        host, target = urlsplit("//" + request.headers.get("host", "")), urlsplit(origin)
+        default = 443 if target.scheme == "https" else 80
+        return bool(host.hostname) and host.hostname == target.hostname and (host.port or default) == (target.port or default)
+    except ValueError:
+        return False
+
+
 def _secure_transport(request: Request) -> bool:
     """Allow TLS or an explicitly pinned TLS gateway with private HTTP upstreams."""
-    if request.url.scheme in {"https", "wss"}:
-        return True
-    public = urlsplit(os.environ.get("NEKO_INSTANCE_PUBLIC_ORIGIN", "").strip())
-    return bool(is_behind_proxy() and public.scheme == "https" and public.netloc
-                and not public.username and not public.query and not public.fragment
-                and public.path in {"", "/"} and request.headers.get("host", "") == public.netloc)
+    scope = request.scope
+    if "neko.secure_transport" not in scope:
+        pinned = _pinned_origin()
+        scope["neko.secure_transport"] = request.url.scheme in {"https", "wss"} or bool(
+            is_behind_proxy() and pinned.startswith("https://") and _host_is(request, pinned))
+    return scope["neko.secure_transport"]
 
 
 class _Transport(NamedTuple):
@@ -240,8 +268,8 @@ def request_public_origin(request: Request) -> str:
     origin = request.headers.get("origin", "").rstrip("/")
     if origin and _same_origin(request):
         return origin
-    pinned = os.environ.get("NEKO_INSTANCE_PUBLIC_ORIGIN", "").strip().rstrip("/")
-    if pinned and request.headers.get("host", "") == urlsplit(pinned).netloc:
+    pinned = _pinned_origin()
+    if pinned and _host_is(request, pinned):
         return pinned
     return _own_origin(request)
 
@@ -258,7 +286,7 @@ def _same_origin(request: Request) -> bool:
     if not origin:
         return request.headers.get("sec-fetch-site", "").lower() not in {"cross-site", "same-site"}
     own = _own_origin(request)
-    pinned = os.environ.get("NEKO_INSTANCE_PUBLIC_ORIGIN", "").strip().rstrip("/")
+    pinned = _pinned_origin()
     if origin == own or (pinned and origin == pinned):
         return True
     # TLS ended at an outer gateway that forwards no trusted X-Forwarded-Proto:
@@ -327,12 +355,18 @@ class InstanceAccessMiddleware:
         self.app = app
         self.community_handoff_authorizer = community_handoff_authorizer
         self.attempts: dict[str, tuple[float, int]] = {}
+        self.warned_unlabelled_tls = False
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in {"http", "websocket"}:
             return await self.app(scope, receive, send)
         request_scope = scope if scope["type"] == "http" else {**scope, "type": "http", "method": "GET"}
         request = Request(request_scope, receive=receive)
+        if request_scope is not scope:
+            # Downstream WebSocket handlers see the original scope, not this
+            # copy; share the per-connection transport decisions with them.
+            scope["neko.require_https"] = _strict(request)
+            scope["neko.secure_transport"] = _secure_transport(request)
         if _local_native(request):
             return await self.app(scope, receive, send)
         if scope["type"] == "http" and self.community_handoff_authorizer and _transport_allowed(request):
@@ -476,6 +510,17 @@ class InstanceAccessMiddleware:
             if not revoked:
                 raise
 
+    def _warn_unlabelled_tls(self):
+        # The browser is on https:// but nothing tells this server so: pairing
+        # proceeds conservatively as plaintext (warning, *_http cookie, and
+        # refused under NEKO_REQUIRE_HTTPS). Only the operator can fix that.
+        if not self.warned_unlabelled_tls:
+            self.warned_unlabelled_tls = True
+            logger.warning(
+                "instance access: browser pairs over https:// but this request arrived as plaintext; "
+                "set NEKO_INSTANCE_PUBLIC_ORIGIN to the public https origin or forward a trusted "
+                "X-Forwarded-Proto so the session is issued as HTTPS (required for NEKO_REQUIRE_HTTPS=1)")
+
     async def _deny(self, scope, receive, send, detail, status):
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 4401 if status == 401 else 4403})
@@ -522,6 +567,8 @@ class InstanceAccessMiddleware:
         transport = _transport(request)
         if not transport.allowed or not _same_origin(request):
             return await self._deny(scope, receive, send, "secure_same_origin_required", 403)
+        if not transport.secure and request.headers.get("origin", "").startswith("https://"):
+            self._warn_unlabelled_tls()
         peer = request.client.host if request.client else "unknown"
         now = time.time()
         self.attempts = {ip: item for ip, item in self.attempts.items() if item[0] > now - 60}
