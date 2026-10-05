@@ -34,6 +34,7 @@ MODEL_MANAGER_PART_NAMES = (
     "path-request-fullscreen.js",
     "page-controller.js",
     "background-model-drag.js",
+    "safety-zone-guard.js",
     "window-lifecycle.js",
 )
 

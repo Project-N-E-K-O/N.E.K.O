@@ -1431,6 +1431,16 @@ class VRMCore {
      */
     async saveUserPreferences(modelPath, position, scale, rotation, display, viewport, cameraPosition) {
         try {
+            // 模型管理页不写位置：把本次要写的 position/display/viewport 换回后端已存的值，
+            // 使管理页的临时摆位不影响主页面。该模块只在模型管理页加载，其他页面此分支不执行。
+            // 注意必须在下面的 displaySnapshot 之前改写，否则改写后的 display 不会被用到。
+            const positionScope = window.ModelManagerSafetyZone;
+            if (positionScope && typeof positionScope.rewritePositionWrite === 'function') {
+                const scoped = await positionScope.rewritePositionWrite(modelPath, position, display, viewport);
+                position = scoped.position;
+                display = scoped.display;
+                viewport = scoped.viewport;
+            }
             const displaySnapshot = display && typeof display.then === 'function'
                 ? display : display && { screenX: display.screenX, screenY: display.screenY };
             const displayRequest = Promise.resolve(displaySnapshot).catch(error => {

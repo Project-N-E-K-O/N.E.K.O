@@ -307,9 +307,18 @@
             try { session.adapter.surface.releasePointerCapture(session.pointerId); } catch (_) {}
         }
         setDraggingUi(false);
-        Promise.resolve(session.adapter.finish(session.moved)).catch((error) => {
-            console.warn('[ModelManager] 背景拖动结束处理失败:', error);
-        });
+        Promise.resolve(session.adapter.finish(session.moved))
+            .catch((error) => {
+                console.warn('[ModelManager] 背景拖动结束处理失败:', error);
+            })
+            .then(() => {
+                // 吸附/结算完成后再做安全区约束，避免与各类型自身的回弹逻辑打架。
+                if (!session.moved) return;
+                const guard = window.ModelManagerSafetyZone;
+                if (guard && typeof guard.clampAfterDrag === 'function') {
+                    guard.clampAfterDrag();
+                }
+            });
     }
 
     function install() {
@@ -326,6 +335,7 @@
         createBackgroundAdapter,
         finishDrag,
         getActiveModelType,
+        getLive3DSubType,
         install,
         isPointOnLive2DModel,
         onPointerDown,

@@ -1659,10 +1659,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (currentModelType !== 'pngtuber' || !runtimeConfig || !currentModelInfo) {
             return false;
         }
+        // 管理页的位置与主页面位置互相独立：位置字段不落库。这里把运行时配置里的偏移量
+        // 摘掉再合并，于是合并结果会保留 currentModelInfo.pngtuber 里原本存的偏移，
+        // 等于本次摆位不写位置；缩放等其它字段照常暂存。
+        const placementForSave = Object.assign({}, runtimeConfig);
+        ['offset_x', 'offset_y', 'mobile_offset_x', 'mobile_offset_y'].forEach((key) => {
+            delete placementForSave[key];
+        });
         currentModelInfo.pngtuber = mergePNGTuberConfigForSave(
             null,
             currentModelInfo.pngtuber,
-            runtimeConfig
+            placementForSave
         );
         window.hasUnsavedChanges = true;
         if (savePositionBtn) savePositionBtn.disabled = false;
@@ -7292,8 +7299,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             const partialMessage = modelStatus === 'partial'
                 ? modelMessage
                 : t('live2d.partialSaveWarning', '已保存模型设置，但部分设置保存失败');
-            const positionSaveFailedSuffix = t('live2d.positionSaveFailedSuffix', '位置保存失败');
-            const modelPartialAndPositionFailedMessage = `${partialMessage}；${positionSaveFailedSuffix}`;
             const modelSavedAtLeastPartially = modelStatus === 'ok' || modelStatus === 'partial';
 
             const saveContextStillCurrent = isModelManagerSaveContextCurrent(saveContext, {
@@ -7306,7 +7311,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // PNGTuber stores its lightweight model config and transform together.
                 // Keep the user-facing success text aligned with Live2D's save button.
                 if (modelStatus === 'ok') {
-                    const message = t('live2d.settingsSaved', '位置和模型设置保存成功!');
+                    const message = t('live2d.settingsSaved', '模型设置保存成功!');
                     showStatus(message, 2000);
                     showModelManagerToast(message, 2600, 'success');
                     if (saveContextStillCurrent) {
@@ -7344,9 +7349,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showModelManagerToast(message, 3200, 'error');
                 }
             } else {
-                // Live2D 模式：显示位置和模型保存结果
+                // Live2D 模式：只显示模型保存结果（管理页不写位置，位置结果不再提示）
                 if (positionSuccess && modelStatus === 'ok') {
-                    const message = t('live2d.settingsSaved', '位置和模型设置保存成功!');
+                    const message = t('live2d.settingsSaved', '模型设置保存成功!');
                     showStatus(message, 2000);
                     showModelManagerToast(message, 2600, 'success');
                     if (saveContextStillCurrent) {
@@ -7361,19 +7366,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showModelManagerToast(partialMessage, 3200, 'warning');
                     window._modelManagerHasSaved = true;
                 } else if (positionSuccess) {
-                    const message = t('live2d.positionSavedModelFailed', '位置保存成功，模型设置保存失败!');
+                    const message = t('live2d.positionSavedModelFailed', '模型设置保存失败!');
                     showStatus(message, 2000);
                     showModelManagerToast(message, 3200, 'warning');
-                    // 位置偏好已保存，主界面如触发重载可恢复位置；但仅在用户退出时才通知
                     window._modelManagerHasSaved = true;
                 } else if (modelStatus === 'partial') {
-                    showStatus(modelPartialAndPositionFailedMessage, 3000);
-                    showModelManagerToast(modelPartialAndPositionFailedMessage, 3600, 'warning');
+                    showStatus(partialMessage, 3000);
+                    showModelManagerToast(partialMessage, 3600, 'warning');
                     window._modelManagerHasSaved = true;
                 } else if (modelSavedAtLeastPartially) {
-                    const message = t('live2d.modelSavedPositionFailed', '模型设置保存成功，位置保存失败!');
+                    const message = t('live2d.modelSavedPositionFailed', '模型设置保存成功!');
                     showStatus(message, 2000);
-                    showModelManagerToast(message, 3200, 'warning');
+                    showModelManagerToast(message, 3200, 'success');
                     if (modelStatus === 'ok') {
                         if (saveContextStillCurrent) {
                             window._savedModelSnapshot = captureSettingsSnapshot();

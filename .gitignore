@@ -117,6 +117,7 @@ data/embedding_models/
 plans/
 CLAUDE.md
 /.workbuddy/
+/.codebuddy/
 
 # Rust: ignore target and cargo artifacts
 /launcher/target/
