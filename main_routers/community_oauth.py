@@ -29,6 +29,7 @@ from main_routers.local_access import is_local_oauth_status_request as _loopback
 import main_routers.card_drop_router as C
 from main_logic import client_registration
 from utils.social_base import auth_public_url as _configured_auth_public_url
+from utils.community_locale import community_bootstrap_locale_hints
 from utils.instance_access import remote_instance_identity, _same_origin
 
 logger = logging.getLogger("neko.community_oauth")
@@ -1161,6 +1162,7 @@ async def _bootstrap_session(social_base: str, access_token: str) -> dict[str, A
             response = await client.post(
                 f"{social_base.rstrip('/')}/api/auth/session/bootstrap",
                 headers={"Authorization": f"Bearer {access_token}"},
+                json=await asyncio.to_thread(community_bootstrap_locale_hints),
             )
     except httpx.HTTPError as exc:
         logger.info("community_oauth: bootstrap failed: %s", exc)

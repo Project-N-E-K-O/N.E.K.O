@@ -8,6 +8,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from utils.web_scraper import trending_content
+
+
+@pytest.fixture(autouse=True)
+def community_language_hint(monkeypatch):
+    monkeypatch.setattr(trending_content, "community_locale_hints", lambda: {"locale": "en", "region": "US"})
 from utils.web_scraper.trending_content import (
     fetch_news_content,
     fetch_neko_community_feed,
@@ -707,7 +712,7 @@ async def test_neko_community_feed_response_size_is_bounded():
         await trending_content._fetch_neko_community_payload(
             OversizedClient(),
             "https://community.example.test/api/feed",
-            params={"offset": 0, "limit": 60},
+            payload={"cursor": None, "limit": 60},
             headers={},
         )
 
@@ -722,6 +727,7 @@ async def test_fetch_neko_community_feed_uses_configured_social_base_url():
 
     class CommunityClient(_FakeClient):
         def stream(self, method, url, **kwargs):
+            assert method == "POST"
             self.call = (url, kwargs)
             return _FakeCommunityStream(CommunityResponse())
 
@@ -741,14 +747,14 @@ async def test_fetch_neko_community_feed_uses_configured_social_base_url():
     assert result["success"] is True
     assert result["posts"][0]["title"] == "猫娘们正在讨论的新点子"
     url, kwargs = client.call
-    assert url == "https://community.example.test/api/feed"
-    assert kwargs["params"] == {"offset": 0, "limit": 60}
+    assert url == "https://community.example.test/api/feed/recommendations"
+    assert kwargs["json"] == {"cursor": None, "limit": 60, "locale": "en"}
     assert kwargs["headers"]["Referer"] == "https://community.example.test/discover"
     assert result["authenticated"] is False
 
 
 @pytest.mark.asyncio
-async def test_fetch_neko_community_feed_shuffles_card_order(monkeypatch):
+async def test_fetch_neko_community_feed_preserves_server_personalized_order(monkeypatch):
     payload = {
         "data": {
             "items": [
@@ -767,7 +773,7 @@ async def test_fetch_neko_community_feed_shuffles_card_order(monkeypatch):
         def stream(self, method, url, **kwargs):
             return _FakeCommunityStream(CommunityResponse())
 
-    # reverse 补丁让洗牌效果可断言：实现若不洗牌，返回序仍是载荷原序，测试失败。
+    # Client-side shuffling would destroy the server's interest ranking.
     monkeypatch.setattr(
         trending_content.random, "shuffle", lambda seq: seq.reverse()
     )
@@ -785,7 +791,7 @@ async def test_fetch_neko_community_feed_shuffles_card_order(monkeypatch):
 
     assert result["success"] is True
     assert [post["id"] for post in result["posts"]] == [
-        f"post-{n}" for n in range(5, 0, -1)
+        f"post-{n}" for n in range(1, 6)
     ]
 
 
@@ -894,7 +900,7 @@ async def test_fetch_neko_community_feed_uses_oauth_for_loopback_http():
     ):
         result = await fetch_neko_community_feed(limit=1)
 
-    access_token.assert_awaited_once_with("http://127.0.0.1:8000/api/feed")
+    access_token.assert_awaited_once_with("http://127.0.0.1:8000/api/feed/recommendations")
     assert result["authenticated"] is True
     assert auth_client.call[1]["headers"]["Authorization"] == "Bearer desktop-access-token"
 @pytest.mark.asyncio
@@ -1066,8 +1072,52 @@ async def test_fetch_neko_community_feed_uses_isolated_oauth_client():
     assert client_options["follow_redirects"] is False
     assert client_options["trust_env"] is True
     url, kwargs = auth_client.call
-    assert url == "https://community.project-neko.cn/api/feed"
+    assert url == "https://community.project-neko.cn/api/feed/recommendations"
     assert kwargs["headers"]["Authorization"] == "Bearer desktop-access-token"
+    assert kwargs["json"] == {"cursor": None, "limit": 60}
+
+
+@pytest.mark.asyncio
+async def test_expired_oauth_retries_anonymous_recommendations_with_language():
+    from contextlib import asynccontextmanager
+
+    calls = []
+
+    async def fetch_payload(client, url, *, payload, headers):
+        calls.append((url, dict(payload), dict(headers)))
+        if "Authorization" in headers:
+            return 401, None
+        return 200, {"items": [{"id": "fresh", "title": "new card"}]}
+
+    @asynccontextmanager
+    async def isolated_client(**kwargs):
+        yield object()
+
+    with patch.object(trending_content, "_fetch_neko_community_payload", fetch_payload), patch.object(
+        trending_content, "_neko_community_access_token", AsyncMock(return_value="expired")
+    ), patch.object(trending_content.httpx, "AsyncClient", isolated_client), patch.object(
+        trending_content, "get_external_http_client", return_value=object()
+    ):
+        result = await fetch_neko_community_feed()
+    assert result["success"] and not result["authenticated"]
+    assert len(calls) == 2
+    assert calls[0][1] == {"cursor": None, "limit": 60}
+    assert calls[1][1] == {"cursor": None, "limit": 60, "locale": "en"}
+    assert "Authorization" not in calls[1][2]
+    assert all(url.endswith("/api/feed/recommendations") for url, _, _ in calls)
+
+
+@pytest.mark.asyncio
+async def test_exhausted_recommendations_are_empty_without_hot_feed_fallback():
+    fetch = AsyncMock(return_value=(200, {"items": [], "next_cursor": None}))
+    with patch.object(trending_content, "_fetch_neko_community_payload", fetch), patch.object(
+        trending_content, "_neko_community_access_token", AsyncMock(return_value="")
+    ), patch.object(
+        trending_content, "get_external_http_client", return_value=object()
+    ):
+        result = await fetch_neko_community_feed()
+    assert result["success"] and result["posts"] == []
+    assert fetch.await_count == 1
 
 @pytest.mark.asyncio
 async def test_community_mode_fetches_only_neko_community_cards():
