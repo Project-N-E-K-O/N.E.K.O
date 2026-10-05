@@ -432,6 +432,169 @@ async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_sna
     )
 
 
+_SHUTDOWN_CLEANUP_ORDER = [
+    "voice",
+    "cleanup",
+    "connectors",
+    "integration_workers",
+    "translation",
+    "token",
+    "music",
+    "cloudsave",
+    "internal_http",
+    "external_http",
+]
+
+
+@contextlib.contextmanager
+def _patched_shutdown_steps(cleanup_order: list[str], step_factory):
+    """Patch every on_shutdown cleanup with a recorder built by ``step_factory``."""
+    from app import main_server
+
+    fake_tracker = SimpleNamespace(
+        save=Mock(side_effect=lambda: cleanup_order.append("token"))
+    )
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
+        stack.enter_context(patch.object(main_server, "_preload_task", None))
+        stack.enter_context(patch.object(main_server, "_game_cleanup_task", None))
+        stack.enter_context(patch.object(main_server, "agent_event_bridge", None))
+        stack.enter_context(patch.object(main_server, "steamworks", None))
+        stack.enter_context(
+            patch.object(
+                main_server.character_runtime,
+                "role_state",
+                _role_state_from_session_managers({}),
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                main_server,
+                "cleanup",
+                Mock(side_effect=lambda: cleanup_order.append("cleanup")),
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                main_server,
+                "get_start_config",
+                Mock(return_value={"shutdown_memory_server_on_exit": False}),
+            )
+        )
+        for target, name in (
+            ("join_sync_connector_threads", "connectors"),
+            ("_stop_neko_servers_integration_workers", "integration_workers"),
+            ("_run_cloudsave_manager_action", "cloudsave"),
+        ):
+            stack.enter_context(
+                patch.object(
+                    main_server, target, AsyncMock(side_effect=step_factory(name))
+                )
+            )
+        for target, name in (
+            ("app.main_server.voice_identity_runtime.close_voice_identity_runtime", "voice"),
+            ("utils.language_utils.aclose_translation_service", "translation"),
+            ("utils.music_crawlers.close_all_crawlers", "music"),
+            ("utils.internal_http_client.aclose_internal_http_client", "internal_http"),
+            ("utils.external_http_client.aclose_external_http_client", "external_http"),
+        ):
+            stack.enter_context(
+                patch(
+                    target,
+                    AsyncMock(side_effect=step_factory(name)),
+                    create=target.startswith("utils.language_utils"),
+                )
+            )
+        stack.enter_context(
+            patch(
+                "utils.token_tracker.TokenTracker.get_instance",
+                return_value=fake_tracker,
+            )
+        )
+        yield
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled_step", ("voice", "connectors", "cloudsave"))
+async def test_main_server_shutdown_defers_cancellation_until_every_cleanup_ran(
+    cancelled_step,
+):
+    """A cancel delivered while one cleanup is awaited must not skip the rest.
+
+    ``except Exception`` does not catch ``CancelledError`` (a ``BaseException``),
+    so a bare await let it escape ``on_shutdown`` and skip every later cleanup.
+    The cancellation must still reach the caller once all cleanups have run.
+    """
+    from app import main_server
+
+    cleanup_order: list[str] = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    def _record(name):
+        async def _step(*_args, **_kwargs):
+            cleanup_order.append(name)
+            if name == cancelled_step:
+                entered.set()
+                await release.wait()
+
+        return _step
+
+    with _patched_shutdown_steps(cleanup_order, _record):
+        shutdown_task = asyncio.create_task(main_server.on_shutdown())
+        await entered.wait()
+        shutdown_task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await shutdown_task
+
+    assert cleanup_order == _SHUTDOWN_CLEANUP_ORDER
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_server_shutdown_step_failure_does_not_skip_later_cleanups():
+    from app import main_server
+
+    cleanup_order: list[str] = []
+
+    def _record(name):
+        async def _step(*_args, **_kwargs):
+            cleanup_order.append(name)
+            if name in ("connectors", "integration_workers"):
+                raise RuntimeError(f"{name} failed")
+
+        return _step
+
+    with _patched_shutdown_steps(cleanup_order, _record):
+        await main_server.on_shutdown()
+
+    assert cleanup_order == _SHUTDOWN_CLEANUP_ORDER
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_server_shutdown_logs_cloudsave_result_only_after_upload_succeeded():
+    from app import main_server
+
+    def _record(name):
+        async def _step(*_args, **_kwargs):
+            if name == "cloudsave":
+                raise RuntimeError("upload failed")
+
+        return _step
+
+    with _patched_shutdown_steps([], _record), \
+         patch.object(main_server.logger, "info") as info_log:
+        await main_server.on_shutdown()
+
+    assert not any(
+        "staged snapshot upload:" in str(c.args[0]) for c in info_log.call_args_list
+    )
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_startup_does_not_mark_normal_when_character_init_fails():
