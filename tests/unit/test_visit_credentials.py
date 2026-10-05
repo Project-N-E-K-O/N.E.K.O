@@ -865,7 +865,7 @@ async def test_ticket_with_an_unpaired_surrogate_is_a_bad_response(servers):
 
 
 @pytest.mark.asyncio
-async def test_pubkey_ttl_overflow_is_a_failed_refresh(servers, monkeypatch):
+async def test_pubkey_ttl_overflow_falls_back_to_default_ttl(servers, monkeypatch):
     original = servers.handler
 
     def _handler(request):
@@ -877,7 +877,9 @@ async def test_pubkey_ttl_overflow_is_a_failed_refresh(servers, monkeypatch):
     client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
     monkeypatch.setattr(cr, "get_external_http_client", lambda: client)
     keys = await cr.fetch_pubkeys(force_refresh=True)
-    assert keys.stale
+    # 只有 ttl_s 坏：整次刷新照常生效，TTL 回落默认值
+    assert not keys.stale
+    assert cr._pubkeys_fetched.ttl_s == float(vs.VISIT_PUBKEYS_CACHE_S)
 
 
 @pytest.mark.asyncio

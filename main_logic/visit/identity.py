@@ -369,10 +369,16 @@ def parse_pubkeys_response(payload: Any, *, fetched_at: float) -> FetchedPubkeys
             continue
         keys[entry.kid] = entry
     ttl_raw = payload.get("ttl_s", VISIT_PUBKEYS_CACHE_S)
-    if isinstance(ttl_raw, bool) or not isinstance(ttl_raw, (int, float)) or not math.isfinite(ttl_raw) or ttl_raw < 0:
-        ttl_raw = VISIT_PUBKEYS_CACHE_S
+    ttl_s = math.nan
+    if not isinstance(ttl_raw, bool) and isinstance(ttl_raw, (int, float)):
+        try:
+            ttl_s = float(ttl_raw)
+        except OverflowError:  # 超出 float 范围的 JSON 整数（如 10**400）：与其它坏值一样回落默认
+            pass
+    if not math.isfinite(ttl_s) or ttl_s < 0:
+        ttl_s = float(VISIT_PUBKEYS_CACHE_S)
     return FetchedPubkeys(
-        keys=keys, revoked=frozenset(revoked), fetched_at=float(fetched_at), ttl_s=float(ttl_raw),
+        keys=keys, revoked=frozenset(revoked), fetched_at=float(fetched_at), ttl_s=ttl_s,
     )
 
 

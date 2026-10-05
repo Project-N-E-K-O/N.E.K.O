@@ -23,7 +23,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from config.visit_settings import VISIT_DEV_KID, VISIT_HOST_CREDENTIAL_TTL_S
+from config.visit_settings import VISIT_DEV_KID, VISIT_HOST_CREDENTIAL_TTL_S, VISIT_PUBKEYS_CACHE_S
 from main_logic.visit import identity as idm
 from main_logic.visit.identity import (
     BadSignature,
@@ -407,6 +407,14 @@ def test_fetched_key_without_window_is_skipped_and_revoked(priv):
     payload = {"keys": [{"kid": "k2", "alg": "Ed25519", "pub": _pub_b64(priv)}], "revoked": ["x"], "ttl_s": 60}
     fetched = parse_pubkeys_response(payload, fetched_at=NOW)
     assert fetched.keys == {} and fetched.revoked == frozenset({"x", "k2"})
+
+
+@pytest.mark.parametrize("ttl", [10 ** 400, -(10 ** 400)])
+def test_fetched_ttl_beyond_float_range_falls_back_to_default(ttl):
+    # 超出 float 范围的整数不能让整次拉取作废：与负数、NaN 等坏值一样回落默认 TTL
+    fetched = parse_pubkeys_response({"keys": [], "revoked": ["x"], "ttl_s": ttl}, fetched_at=NOW)
+    assert fetched.ttl_s == float(VISIT_PUBKEYS_CACHE_S)
+    assert fetched.revoked == frozenset({"x"})
 
 
 def test_malformed_pubkeys_envelope_raises():
