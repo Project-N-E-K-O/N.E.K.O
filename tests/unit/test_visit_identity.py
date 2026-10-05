@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -409,11 +410,21 @@ def test_fetched_key_without_window_is_skipped_and_revoked(priv):
     assert fetched.keys == {} and fetched.revoked == frozenset({"x", "k2"})
 
 
-@pytest.mark.parametrize("ttl", [10 ** 400, -(10 ** 400)])
-def test_fetched_ttl_beyond_float_range_falls_back_to_default(ttl):
-    # 超出 float 范围的整数不能让整次拉取作废：与负数、NaN 等坏值一样回落默认 TTL
+@pytest.mark.parametrize(("ttl", "expected"), [
+    (60, 60.0),
+    (10 ** 300, float(VISIT_PUBKEYS_CACHE_S)),  # 合法但偏大：截到上限
+    (10 ** 400, float(VISIT_PUBKEYS_CACHE_S)),  # 超出 float 范围：同样截到上限，不溢出
+    (math.inf, float(VISIT_PUBKEYS_CACHE_S)),
+    (-(10 ** 400), float(VISIT_PUBKEYS_CACHE_S)),  # 负数 / NaN / 非数字：回落默认
+    (-math.inf, float(VISIT_PUBKEYS_CACHE_S)),
+    (math.nan, float(VISIT_PUBKEYS_CACHE_S)),
+    ("60", float(VISIT_PUBKEYS_CACHE_S)),
+    (True, float(VISIT_PUBKEYS_CACHE_S)),
+], ids=["normal", "1e300", "1e400", "inf", "neg-1e400", "neg-inf", "nan", "str", "bool"])
+def test_fetched_ttl_is_capped_or_defaulted_without_failing(ttl, expected):
+    # ttl_s 坏不能让整次拉取作废：吊销名单照常生效
     fetched = parse_pubkeys_response({"keys": [], "revoked": ["x"], "ttl_s": ttl}, fetched_at=NOW)
-    assert fetched.ttl_s == float(VISIT_PUBKEYS_CACHE_S)
+    assert fetched.ttl_s == expected
     assert fetched.revoked == frozenset({"x"})
 
 
