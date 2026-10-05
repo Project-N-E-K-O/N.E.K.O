@@ -1038,3 +1038,17 @@ def test_outer_tls_hint_is_logged_when_strict_mode_refuses_pairing(remote_app, m
                                    headers={"Origin": "https://neko.example"})
     assert response.status_code == 403
     assert [r for r in caplog.records if "NEKO_INSTANCE_PUBLIC_ORIGIN" in r.getMessage()]
+
+
+def test_outer_tls_hint_repeats_after_an_hour(monkeypatch, caplog):
+    import utils.instance_access as access
+    from tests.fake_clock import patch_module_clock
+
+    middleware = InstanceAccessMiddleware(app=None)
+    clock = iter([1000.0, 1000.0 + 1800, 1000.0 + 3600])
+    patch_module_clock(monkeypatch, access, monotonic=lambda: next(clock))
+    with caplog.at_level("WARNING", logger="utils.instance_access"):
+        for _ in range(3):
+            middleware._warn_unlabelled_tls()
+    # An early (even unauthenticated) trigger cannot silence it for good.
+    assert len([r for r in caplog.records if "NEKO_INSTANCE_PUBLIC_ORIGIN" in r.getMessage()]) == 2

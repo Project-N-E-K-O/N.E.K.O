@@ -355,7 +355,7 @@ class InstanceAccessMiddleware:
         self.app = app
         self.community_handoff_authorizer = community_handoff_authorizer
         self.attempts: dict[str, tuple[float, int]] = {}
-        self.warned_unlabelled_tls = False
+        self.unlabelled_tls_warned_at: float | None = None
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in {"http", "websocket"}:
@@ -514,8 +514,11 @@ class InstanceAccessMiddleware:
         # The browser is on https:// but nothing tells this server so: pairing
         # proceeds conservatively as plaintext (warning, *_http cookie, and
         # refused under NEKO_REQUIRE_HTTPS). Only the operator can fix that.
-        if not self.warned_unlabelled_tls:
-            self.warned_unlabelled_tls = True
+        # Hourly rather than once, so an unauthenticated request that reaches
+        # this first cannot suppress the hint for the life of the process.
+        now = time.monotonic()
+        if self.unlabelled_tls_warned_at is None or now - self.unlabelled_tls_warned_at >= 3600:
+            self.unlabelled_tls_warned_at = now
             logger.warning(
                 "instance access: browser pairs over https:// but this request arrived as plaintext; "
                 "set NEKO_INSTANCE_PUBLIC_ORIGIN to the public https origin or forward a trusted "
@@ -568,7 +571,7 @@ class InstanceAccessMiddleware:
         same_origin = _same_origin(request)
         # Before the deny: under NEKO_REQUIRE_HTTPS this is exactly the refusal
         # the operator needs explained. Same-origin only, so a cross-site
-        # https Origin cannot use up the one-time hint.
+        # https Origin cannot use up the hourly hint.
         if same_origin and not transport.secure and request.headers.get("origin", "").startswith("https://"):
             self._warn_unlabelled_tls()
         if not transport.allowed or not same_origin:

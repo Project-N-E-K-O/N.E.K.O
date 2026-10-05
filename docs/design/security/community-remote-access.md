@@ -55,7 +55,7 @@ LAN IP/第二端口直连照常配对；DNS rebinding到实例的域名只能拿
 再否则用请求自身origin），回跳落在持有该hostname会话cookie的入口；pending复用也比较该origin，
 换入口重试会生成新state。
 该同Host https://回退只解决同源，不证明加密：配对页导航不带Origin，服务端无从得知浏览器侧是否HTTPS，
-故按明文保守处理（显示警告、签发*_http会话、NEKO_REQUIRE_HTTPS=1下拒绝），首次配对时日志提示一次。
+故按明文保守处理（显示警告、签发*_http会话、NEKO_REQUIRE_HTTPS=1下拒绝），并在日志中提示配置方法（每小时最多一次）。
 要被识别为HTTPS（含开启严格模式），部署方须设置NEKO_INSTANCE_PUBLIC_ORIGIN或转发可信X-Forwarded-Proto；
 不以浏览器Origin判定加密，否则明文客户端可自报Origin换取HTTPS用途的会话。Host与公开origin按主机名加
 有效端口比较（:443与省略等价）；网关须保留原Host，改写为上游地址的部署不受支持。
