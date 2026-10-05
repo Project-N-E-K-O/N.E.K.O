@@ -9,7 +9,7 @@ services:
     command:
       - |
         mkdir -p /host-dir/neko-home /host-dir/logs
-        chown -R 1000:1000 /host-dir/neko-home /host-dir/logs
+        chown 1000:1000 /host-dir/neko-home /host-dir/logs
     volumes:
       - .:/host-dir
 
@@ -32,7 +32,8 @@ services:
       - NEKO_INSTANCE_PUBLIC_ORIGIN=${NEKO_INSTANCE_PUBLIC_ORIGIN:-}
       - NEKO_COMMUNITY_WEB_CLIENT_ID=${NEKO_COMMUNITY_WEB_CLIENT_ID:-}
       - NEKO_COMMUNITY_WEB_REDIRECT_URI=${NEKO_COMMUNITY_WEB_REDIRECT_URI:-}
-      - NEKO_TRUSTED_HOSTS=${NEKO_TRUSTED_HOSTS:-project-neko.online}
+      - SSL_DOMAIN=${SSL_DOMAIN:-localhost}
+      - NEKO_TRUSTED_HOSTS=${NEKO_TRUSTED_HOSTS:-}
       - NEKO_TRUSTED_ORIGINS=${NEKO_TRUSTED_ORIGINS:-}
     ports:
       # HTTP 仅供本机探测/私有 TLS 网关。不得直接开放到公网。
@@ -50,8 +51,9 @@ services:
     networks:
       - neko-network
 
-  # 一次性安装宿主 root cron；脚本独立于 Compose 生命周期，卸载见 README。
+  # 显式启用 watchdog profile 才安装宿主 root cron；卸载见 README。
   neko-cron-install:
+    profiles: [watchdog]
     image: alpine:3.20
     restart: "no"
     depends_on:

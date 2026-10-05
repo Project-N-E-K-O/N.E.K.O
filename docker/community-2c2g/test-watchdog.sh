@@ -14,14 +14,33 @@ cat > "$ROOT/bin/docker" <<'EOF'
 set -eu
 case "$1" in
     inspect)
-        [[ ${INSPECT_FAIL:-0} == 0 ]] || exit 1
-        if [[ "$3" == '{{.State.Running}}' ]]; then
-            echo "${RECHECK_RUNNING:-true}"
-        else
-            echo "${CONTAINER_ID:-id-1} ${LABEL:-enabled} neko-main ${RUNNING:-true}"
-        fi ;;
+        [[ ${INSPECT_FAIL:-0} == 0 && ${CONTAINER_ABSENT:-0} == 0 ]] || exit 1
+        running=${RUNNING:-true}
+        paused=${PAUSED:-false}
+        restarting=${RESTARTING:-false}
+        started=${STARTED_AT:-2000-01-01T00:00:00Z}
+        if [[ "$4" != neko ]]; then
+            running=${RECHECK_RUNNING:-$running}
+            paused=${RECHECK_PAUSED:-$paused}
+            started=${RECHECK_STARTED_AT:-$started}
+            if [[ -e "$TEST_ROOT/restart-attempt" ]]; then
+                started=${POST_RESTART_STARTED_AT:-$started}
+                restarting=${POST_RESTART_RESTARTING:-$restarting}
+            fi
+        fi
+        echo "${CONTAINER_ID:-id-1} ${LABEL:-enabled} neko-main $running $paused $restarting $started" ;;
+    ps) [[ ${INSPECT_FAIL:-0} == 0 ]] || exit 1
+        [[ ${CONTAINER_ABSENT:-0} == 1 ]] || echo id-1 ;;
     exec) exit "${BACKEND_EXIT:-0}" ;;
-    restart) echo "$2" >> "$TEST_ROOT/restarts"; exit "${RESTART_EXIT:-0}" ;;
+    restart)
+        [[ "$2 $3" == '--time 30' ]] || exit 99
+        echo "$4" >> "$TEST_ROOT/restarts"
+        touch "$TEST_ROOT/restart-attempt"
+        if [[ ${RESTART_DELAY:-0} == 1 ]]; then
+            touch "$TEST_ROOT/restart-begun"
+            while [[ ! -e "$TEST_ROOT/restart-release" ]]; do sleep 0.05; done
+        fi
+        exit "${RESTART_EXIT:-0}" ;;
     *) exit 99 ;;
 esac
 EOF
@@ -39,7 +58,7 @@ bash -n "$SOURCE/watchdog.sh"
 sh -n "$SOURCE/install-watchdog.sh"
 run() { bash "$ROOT/watchdog.sh"; }
 no_restart() { [[ ! -e "$ROOT/restarts" ]]; }
-reset() { rm -f "$ROOT/state/fail-count" "$ROOT/restarts"; }
+reset() { rm -f "$ROOT/state/fail-count" "$ROOT/restarts" "$ROOT/restart-attempt" "$ROOT/restart-begun" "$ROOT/restart-release"; }
 run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 HTTP_CODE=200 run; no_restart
 CURL_EXIT=28 run; no_restart; grep -q 'id-1 1' "$ROOT/state/fail-count"
@@ -96,6 +115,63 @@ chmod 777 "$ROOT/state"
 if run; then exit 1; fi
 chmod 700 "$ROOT/state"
 
+# Startup grace applies to initial boot and restarts of the same ID.
+reset
+HTTP_CODE=500 run
+STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ) HTTP_CODE=500 run
+no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
+STARTED_AT=$(date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%SZ) HTTP_CODE=500 run
+no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
+STARTED_AT=$(date -u -d '16 minutes ago' +%Y-%m-%dT%H:%M:%SZ) HTTP_CODE=500 run
+no_restart; grep -q 'id-1 1' "$ROOT/state/fail-count"
+NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=0 STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ) HTTP_CODE=500 run
+no_restart; grep -q 'id-1 1' "$ROOT/state/fail-count"
+if NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=invalid run; then exit 1; fi
+reset
+HTTP_CODE=500 run
+STARTED_AT=2001-01-01T00:00:00Z HTTP_CODE=500 run
+no_restart; grep -q 'id-1 1 2001-' "$ROOT/state/fail-count"
+PAUSED=true HTTP_CODE=500 run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
+HTTP_CODE=500 run
+RECHECK_PAUSED=true HTTP_CODE=500 run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
+HTTP_CODE=500 run
+RECHECK_STARTED_AT=2001-01-01T00:00:00Z HTTP_CODE=500 run
+no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
+RESTARTING=true HTTP_CODE=500 run; no_restart
+HTTP_CODE=500 run
+log_size=$(stat -c %s "$ROOT/state/watchdog.log")
+CONTAINER_ABSENT=1 run; CONTAINER_ABSENT=1 run
+no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
+[[ $(stat -c %s "$ROOT/state/watchdog.log") == "$log_size" ]]
+# CLI failure can still mean the daemon completed/accepted the restart.
+for result in started restarting; do
+    reset
+    HTTP_CODE=500 run
+    if [[ "$result" == started ]]; then
+        RESTART_EXIT=124 POST_RESTART_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ) HTTP_CODE=500 run
+    else
+        RESTART_EXIT=124 POST_RESTART_RESTARTING=true HTTP_CODE=500 run
+    fi
+    [[ $(cat "$ROOT/restarts") == id-1 && ! -e "$ROOT/state/fail-count" ]]
+done
+reset
+# The documented maintenance lock waits for an in-flight restart before pausing.
+HTTP_CODE=500 run
+RESTART_DELAY=1 HTTP_CODE=500 run & watchdog_pid=$!
+for ((attempt=0; attempt<100; attempt++)); do
+    [[ ! -e "$ROOT/restart-begun" ]] || break
+    sleep 0.05
+done
+[[ -e "$ROOT/restart-begun" ]]
+flock "$ROOT/state/watchdog.lock" touch "$ROOT/state/disabled" & maintenance_pid=$!
+sleep 0.1
+[[ ! -e "$ROOT/state/disabled" ]]
+touch "$ROOT/restart-release"
+wait "$watchdog_pid"; wait "$maintenance_pid"
+[[ -e "$ROOT/state/disabled" ]]
+HTTP_CODE=500 run; [[ $(wc -l < "$ROOT/restarts") == 1 ]]
+rm "$ROOT/state/disabled"
+reset
 # Run the actual installer against disposable host directories.
 sed -e "s|/host-opt|$ROOT/opt|g" -e "s|/host-cron.d|$ROOT/cron|g" \
     -e "s|/source/watchdog.sh|$SOURCE/watchdog.sh|g" \
@@ -108,10 +184,31 @@ cmp "$SOURCE/watchdog.sh" "$ROOT/opt/neko/watchdog.sh"
 touch "$ROOT/opt/neko/disabled"
 sh "$ROOT/install.sh"
 [[ -e "$ROOT/opt/neko/disabled" ]]
+# A failed second mktemp and TERM during copying must leave no temporary files.
+rm "$ROOT/opt/neko/watchdog.sh" "$ROOT/cron/neko-watchdog"
+cat > "$ROOT/bin/mktemp" <<'EOF'
+#!/bin/bash
+[[ "$1" != "$TEST_ROOT/cron/"* ]] || exit 1
+exec /usr/bin/mktemp "$@"
+EOF
+chmod 700 "$ROOT/bin/mktemp"
+if PATH="$ROOT/bin:$PATH" sh "$ROOT/install.sh"; then exit 1; fi
+[[ -z $(find "$ROOT/opt/neko" "$ROOT/cron" -name '.*watchdog.*' -print) ]]
+rm "$ROOT/bin/mktemp"
+cat > "$ROOT/bin/cp" <<'EOF'
+#!/bin/bash
+kill -TERM "$PPID"
+EOF
+chmod 700 "$ROOT/bin/cp"
+if PATH="$ROOT/bin:$PATH" sh "$ROOT/install.sh"; then exit 1; fi
+[[ ! -e "$ROOT/opt/neko/watchdog.sh" && ! -e "$ROOT/cron/neko-watchdog" ]]
+[[ -z $(find "$ROOT/opt/neko" "$ROOT/cron" -name '.*watchdog.*' -print) ]]
+rm "$ROOT/bin/cp"
+sh "$ROOT/install.sh"
 rm "$ROOT/opt/neko/watchdog.sh"
 ln -s "$ROOT/victim" "$ROOT/opt/neko/watchdog.sh"
 if sh "$ROOT/install.sh"; then exit 1; fi
 [[ ! -e "$ROOT/victim" ]]
 chmod 777 "$ROOT/opt/neko"
 if sh "$ROOT/install.sh"; then exit 1; fi
-echo 'PASS: authorization 401, timeouts, backend failure, restart, lifecycle, identity, counter, lock and installer permissions'
+echo 'PASS: probes, startup grace, pause/removal, restart confirmation, maintenance lock, counters, installer cleanup and permissions'

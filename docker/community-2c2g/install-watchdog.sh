@@ -23,9 +23,12 @@ mkdir -p /host-opt/neko
 chmod 700 /host-opt/neko
 [ ! -L /host-cron.d/neko-watchdog ] || fail "symlink at cron destination"
 [ ! -L /host-opt/neko/watchdog.sh ] || fail "symlink at watchdog destination"
+script=
+cron=
+trap 'rm -f "$script" "$cron"' EXIT
+trap 'exit 1' HUP INT TERM
 script=$(mktemp /host-opt/neko/.watchdog.XXXXXX)
 cron=$(mktemp /host-cron.d/.neko-watchdog.XXXXXX)
-trap 'rm -f "$script" "$cron"' EXIT HUP INT TERM
 cp /source/watchdog.sh "$script"
 chown 0:0 "$script"
 chmod 700 "$script"

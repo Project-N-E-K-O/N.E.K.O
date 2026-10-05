@@ -30,7 +30,7 @@
 | 检查项 | 说明 |
 |---|---|
 | **Docker Compose V2** | 必须用新版 `docker compose`（**不能用**旧版 Python 的 `docker-compose` v1） |
-| **宿主机有 `bash`** | 看门狗脚本 shebang 为 `#!/bin/bash`，且 `/dev/tcp` 是 bash 专属特性 |
+| **宿主机有 `bash`** | 看门狗脚本 shebang 为 `#!/bin/bash` |
 | **宿主机有 `curl`、`timeout`、`flock`** | `curl` 检查完整 HTTP 响应；`timeout`（coreutils）限制 Docker 命令；`flock`（util-linux）防止并发重启。可运行 `sudo apt install curl coreutils util-linux` |
 | **root 级 cron + docker 套接字** | 看门狗由宿主 cron 每 5 分钟执行，并调用 `docker restart` |
 
@@ -61,19 +61,27 @@ docker compose exec --user neko -w /app neko-main uv run python -m utils.instanc
 
 ```dotenv
 NEKO_HTTPS_BIND_IP=0.0.0.0
+SSL_DOMAIN=your-domain.example
 NEKO_TRUSTED_HOSTS=your-domain.example
 NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
 # NEKO_IMAGE=ghcr.io/project-n-e-k-o/n.e.k.o@sha256:<经核验且包含实例授权的完整摘要>
 ```
 
-使用 IP 字面量无需域名白名单，但仍需要 HTTPS、证书与实例凭证。外置 TLS 网关终止 HTTPS 时，设置 `NEKO_INSTANCE_PUBLIC_ORIGIN=https://your-domain.example`，保留 Host 和正确的客户端 XFF 链，代理 WebSocket；上游 HTTP 必须私有隔离。网关公网 HTTP 只能关闭或重定向到 HTTPS，不能把同 Host 明文流量代理进应用。仅使用容器自身 HTTPS 时留空 public origin。`NEKO_COMMUNITY_WEB_CLIENT_ID` / `NEKO_COMMUNITY_WEB_REDIRECT_URI` 通常留空，使用平台固定 relay；社区 OAuth 仍需核对认证平台、PC/社区配套发布及真实环境验收，不能以此模板或单测代替。
+默认 `SSL_DOMAIN=localhost`，`NEKO_TRUSTED_HOSTS` 留空并由入口脚本回退到该值；使用自有域名时整体填写自己的域名，不追加不受自己控制的域名。使用 IP 字面量无需域名白名单，但仍需要 HTTPS、证书与实例凭证。外置 TLS 网关终止 HTTPS 时，设置 `NEKO_INSTANCE_PUBLIC_ORIGIN=https://your-domain.example`，保留 Host 和正确的客户端 XFF 链，代理 WebSocket；上游 HTTP 必须私有隔离。网关公网 HTTP 只能关闭或重定向到 HTTPS，不能把同 Host 明文流量代理进应用。仅使用容器自身 HTTPS 时留空 public origin。`NEKO_COMMUNITY_WEB_CLIENT_ID` / `NEKO_COMMUNITY_WEB_REDIRECT_URI` 通常留空，使用平台固定 relay；社区 OAuth 仍需核对认证平台、PC/社区配套发布及真实环境验收，不能以此模板或单测代替。
 
 完整契约见 [社区账户与远程实例访问边界](../../docs/design/security/community-remote-access.md)。
 
 启动后会自动完成：
 - **`neko-init`**：一次性初始化，创建 `neko-home/`、`logs/` 并对齐到 UID/GID 1000，失败会阻止主服务启动。
 - **`neko-main`**：N.E.K.O 主服务（Compose 将等待 `neko-init` 成功后启动）。
-- **`neko-cron-install`**：一次性把**自愈看门狗**装到宿主机 `/opt/neko/watchdog.sh`，并注册 `/etc/cron.d/neko-watchdog`，跑完即退出。
+
+看门狗是可选的宿主修改，普通 `up` 不会安装或恢复已卸载的 cron。核验安装器镜像与两个脚本后，显式安装：
+
+```bash
+docker compose --profile watchdog run --rm neko-cron-install
+```
+
+该一次性服务把看门狗装到 `/opt/neko/watchdog.sh`，注册 `/etc/cron.d/neko-watchdog`，随后退出。不要持久设置 `COMPOSE_PROFILES=watchdog`；重新安装也需显式执行此命令。
 
 > 若需重新初始化：`docker compose -f "docker-compose.yaml" down && docker compose -f "docker-compose.yaml" up -d`
 
@@ -86,7 +94,7 @@ NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
 ```
 neko-init ──(success)──▶ neko-main ──▶ 本机 48911(HTTP)/48912(HTTPS，可显式开放)
    │                        │
-   └──(success)──▶ neko-cron-install ──▶ 宿主 /opt/neko/watchdog.sh + /etc/cron.d/neko-watchdog
+   └──(显式安装)──▶ neko-cron-install ──▶ 宿主 /opt/neko/watchdog.sh + /etc/cron.d/neko-watchdog
                                     └──▶ 每 5 分钟二层健康检查 + 自动重启
 ```
 
@@ -94,16 +102,18 @@ neko-init ──(success)──▶ neko-main ──▶ 本机 48911(HTTP)/48912(
 
 由宿主 cron 每 5 分钟执行 `/opt/neko/watchdog.sh`，**双层健康判据**：
 
-- **第一层**：核验容器 `neko` 的部署标签、Compose 服务名与 Running 状态。容器消失、手动停止或同名其他部署都不会被重启；进程退出交给 Docker 的 `unless-stopped` 策略。
-- **第二层**：宿主 `curl` 请求本机 48911 首页，完整响应为 200 或新版正常的匿名 401；同时 `docker exec` 在容器内直连真正主服务的 `/health`，要求请求成功。Nginx 的 `/health` 是静态 200，不能单独证明后端存活。两项探测均有总超时，收到状态码后仍超时也算失败。不再使用只能判断 TCP 连通的降级逻辑。
+- **第一层**：核验容器 `neko` 的部署标签、Compose 服务名与 Running/Paused/Restarting 状态。容器消失、手动停止、`docker pause`、正在重启或同名其他部署都不会被重启；进程退出交给 Docker 的 `unless-stopped` 策略。
+- **第二层**：宿主 `curl` 请求本机 48911 首页，完整响应为 200 或新版正常的匿名 401；同时 `docker exec` 在容器内直连真正主服务的 `/health`，要求请求成功。当前 Nginx 的 `/health` 会优先匹配正则路由并代理到插件服务，不能代替主服务健康检查。两项探测均有总超时，收到状态码后仍超时也算失败。不再使用只能判断 TCP 连通的降级逻辑。
 
-健康即清空失败计数；**连续 2 次不健康 → 自动重启同一个容器 ID**。计数绑定容器 ID，重建后不继承旧失败；重启前再次检查运行状态和暂停标记，成功清计数，失败保留计数并记录日志。`flock` 防止 cron 与手动调用同时重启。
+启动后默认有 **15 分钟宽限期**，按 Docker `State.StartedAt` 计算；期间清空失败计数，不执行恢复。同 ID 重启也重新获得宽限期。若实测启动更慢，在宿主 `/etc/cron.d/neko-watchdog` 中添加 `NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=1800`（秒）并按实际启动耗时调整；0 表示禁用。
+
+宽限期后，健康即清空失败计数；**连续 2 次不健康 → 自动重启同一个容器 ID**。计数绑定 ID 和启动时间，重建、重启均不继承旧失败；重启前复核运行、暂停、重启状态和启动时间。Docker restart 使用 30 秒停止期限及 120 秒客户端总超时；客户端失败后复查 Docker 状态，确认新启动时间或正在重启时清计数，否则保留并报错。客户端超时不代表 daemon 已取消重启。`flock` 防止 cron 与手动调用同时重启。容器已删除时正常静默退出，Docker 查询故障仍会报错。
 
 安装器拒绝符号链接和非 root 私有目录，原子安装脚本与 cron。状态、锁、日志位于 root:root、0700 的 `/opt/neko/`；计数损坏或读写失败会报错退出，不会静默归零。日志 `/opt/neko/watchdog.log` 无自动轮转，长期运行建议配置 logrotate。
 
 开发者可运行 `sudo bash ./test-watchdog.sh` 验证恢复逻辑。测试将 Docker/HTTP 调用替换为模拟程序，安装路径改为临时目录，使用真实 Linux 权限、文件锁和计数读写；不安装真实 cron，也不重启容器。通过此测试不代表已完成 ECS 实机部署验收。
 
-维护时先执行 `sudo touch /opt/neko/disabled` 暂停，再停容器；恢复运行后 `sudo rm -f /opt/neko/disabled`。重新安装不会解除暂停。安装器会写入宿主 root cron，只在信任这两个脚本和安装器镜像的主机上使用；多套部署不要共用 `neko` 容器名及 `/opt/neko`。
+维护时先执行 `sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled`，等待正在执行的探测/重启结束并暂停，再停容器或执行 `docker pause`；恢复运行后 `sudo rm -f /opt/neko/disabled`。重新安装不会解除暂停。安装器会写入宿主 root cron，只在信任这两个脚本和安装器镜像的主机上使用；多套部署不要共用 `neko` 容器名及 `/opt/neko`。
 
 ---
 
@@ -239,10 +249,10 @@ CDT 免费额度有适用条件：按阿里云账号共享，不是每台 ECS �
 - [ ] 宿主机有 `bash`、`curl`、`timeout`、`flock`（`command -v bash curl timeout flock`）
 - [ ] `docker compose config --quiet` 无报错
 - [ ] `docker compose up -d` 后 `docker compose ps` 显示 `neko-main` Running
-- [ ] `neko-init`、`neko-cron-install` 一次性退出（`Exit 0`）
-- [ ] 宿主机存在 `/opt/neko/watchdog.sh`（首行 `#!/bin/bash`）且 `+x`
-- [ ] 宿主机存在 `/etc/cron.d/neko-watchdog`（权限 644、属主 root）
-- [ ] 手动执行 `/opt/neko/watchdog.sh` 健康分支退出码为 0
+- [ ] `neko-init` 一次性退出（`Exit 0`）；可选看门狗显式安装命令成功
+- [ ] 若启用看门狗，宿主机存在 `/opt/neko/watchdog.sh`（首行 `#!/bin/bash`）且 `+x`
+- [ ] 若启用看门狗，宿主机存在 `/etc/cron.d/neko-watchdog`（权限 644、属主 root）
+- [ ] 若启用看门狗，手动执行 `/opt/neko/watchdog.sh` 健康分支退出码为 0
 - [ ] 镜像包含 #3289；HTTPS 首次输入实例凭证，刷新后可复用
 - [ ] 公网 HTTP/私有 upstream 不可达，HTTPS 入口证书与白名单正确
 - [ ] 匿名账户/API 返回 401、匿名 WebSocket 被拒；社区 OAuth 与配套发布独立验收
@@ -259,7 +269,7 @@ CDT 免费额度有适用条件：按阿里云账号共享，不是每台 ECS �
 ### 卸载与清理
 看门狗独立于 Compose 生命周期；`docker compose down` 不卸载 root cron。彻底移除时先撤销恢复权限，再停止服务（保留用户数据）：
 ```bash
-sudo touch /opt/neko/disabled
+sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled
 sudo rm -f /etc/cron.d/neko-watchdog
 # 等待正在执行的探测/重启退出，再持锁移除脚本。
 sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/watchdog.sh
