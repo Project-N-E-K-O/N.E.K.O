@@ -212,7 +212,7 @@ def test_limited_mode_answers_409_like_every_other_endpoint(env):
     env.monkeypatch.setattr(
         runtime, "get_storage_startup_blocking_reason", lambda _cm: "selection_required",
     )
-    client = TestClient(runtime.app, base_url="http://127.0.0.1:48912")
+    client = TestClient(runtime.app, base_url="http://127.0.0.1:48912", client=("127.0.0.1", 50000))
     response = client.get(f"/internal/memory/{NAME}/scoped_subjects", params={"platform": "neko_visit"})
     assert response.status_code == 409
     assert response.json()["error_code"] == "storage_startup_blocked"
@@ -223,7 +223,7 @@ def test_http_route_serves_the_listing_and_is_outside_the_write_fence(env):
     runtime = env.runtime
     env.monkeypatch.setattr(runtime, "_memory_runtime_init_completed", True)
     env.monkeypatch.setattr(runtime, "_memory_storage_blocked_after_init", False)
-    client = TestClient(runtime.app, base_url="http://127.0.0.1:48912")
+    client = TestClient(runtime.app, base_url="http://127.0.0.1:48912", client=("127.0.0.1", 50000))
     response = client.get(f"/internal/memory/{NAME}/scoped_subjects", params={"platform": "neko_visit"})
     assert response.status_code == 200
     assert len(response.json()["subjects"]) == 4
