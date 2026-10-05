@@ -778,6 +778,8 @@ async def _stop_neko_servers_integration_workers() -> None:
 # observes it (caller cancellation is absorbed, a deadline only cancels it), so
 # the event loop's weak task set alone could let it be collected mid-cleanup.
 _SHUTDOWN_STEP_TASKS: set[asyncio.Task[object]] = set()
+# How long a step that missed its deadline gets to finish handling the cancel.
+_SHUTDOWN_STEP_CANCEL_GRACE_SECONDS = 1.0
 
 
 def _consume_shutdown_task_result(task: asyncio.Task[object]) -> None:
@@ -796,10 +798,10 @@ async def _run_shutdown_step(
     factory,
     *,
     what: str,
-    deadline_monotonic: float,
+    deadline_monotonic: float | None,
     pending_cancellation: asyncio.CancelledError | None = None,
 ) -> asyncio.CancelledError | None:
-    """Run one bounded cleanup and defer caller cancellation to the end.
+    """Run one cleanup and defer caller cancellation to the end.
 
     Shutdown is a sequence of independent cleanups (connector threads, game
     tasks, integration workers, ZMQ bridge, Cloud Save, HTTP pools). A
@@ -813,11 +815,14 @@ async def _run_shutdown_step(
     it is currently waiting on. Each delivered caller cancellation is consumed
     exactly once (``uncancel`` keeps ``cancelling()`` at zero for later steps)
     and the first instance is returned for the caller to re-raise. A step that
-    misses its deadline is cancelled, like ``asyncio.wait_for`` did before, and
-    a step that fails is logged; neither is raised, because raising would drop
-    a cancellation this helper already absorbed.
+    misses its deadline is cancelled and, like ``asyncio.wait_for`` did before,
+    given a short grace period to actually stop before the next step runs; a
+    step that fails is logged. Neither is raised, because raising would drop a
+    cancellation this helper already absorbed. ``deadline_monotonic=None`` waits
+    for the step's own terminal state, for work that cancelling the await
+    cannot stop (a worker thread).
     """
-    if deadline_monotonic - time.monotonic() <= 0:
+    if deadline_monotonic is not None and deadline_monotonic - time.monotonic() <= 0:
         logger.warning("%s skipped: shutdown deadline already passed", what)
         return pending_cancellation
     try:
@@ -827,15 +832,29 @@ async def _run_shutdown_step(
         return pending_cancellation
     _SHUTDOWN_STEP_TASKS.add(task)
     task.add_done_callback(_forget_shutdown_step)
+    timed_out = False
     while not task.done():
-        remaining = deadline_monotonic - time.monotonic()
-        if remaining <= 0:
-            break
+        remaining = None
+        if deadline_monotonic is not None:
+            remaining = deadline_monotonic - time.monotonic()
+            if remaining <= 0:
+                if timed_out:
+                    break
+                timed_out = True
+                logger.warning(
+                    "%s exceeded its shutdown deadline; cancelling it", what
+                )
+                task.cancel()
+                deadline_monotonic = (
+                    time.monotonic() + _SHUTDOWN_STEP_CANCEL_GRACE_SECONDS
+                )
+                continue
         try:
             async with asyncio.timeout(remaining):
                 await asyncio.shield(task)
         except TimeoutError:
-            break
+            # The loop head decides between cancelling and giving up.
+            pass
         except asyncio.CancelledError as exc:
             current = asyncio.current_task()
             if current is not None and current.cancelling():
@@ -846,16 +865,20 @@ async def _run_shutdown_step(
                     "%s observed caller cancellation; waiting for it to finish",
                     what,
                 )
-            # Otherwise the step cancelled itself; the task is done and the
-            # loop exits to report it below.
+            # Otherwise the step was cancelled (by itself or by the deadline);
+            # the task is done and the loop exits to report it below.
         except Exception:
             # The step itself failed; the task is done and is reported below.
             pass
     if not task.done():
-        logger.warning("%s exceeded its shutdown deadline; cancelling it", what)
-        task.cancel()
+        logger.warning(
+            "%s did not stop within %.1fs after cancellation; moving on",
+            what,
+            _SHUTDOWN_STEP_CANCEL_GRACE_SECONDS,
+        )
     elif task.cancelled():
-        logger.warning("%s cancelled itself during shutdown", what)
+        if not timed_out:
+            logger.warning("%s cancelled itself during shutdown", what)
     elif (step_exc := task.exception()) is not None:
         logger.warning("%s failed during shutdown: %s", what, step_exc)
     return pending_cancellation
@@ -1572,10 +1595,12 @@ async def on_shutdown():
                     remote_upload_result,
                 )
 
+            # 不设截止时间：上传在 to_thread 里同步写 Steam，5s 预算由线程内部自己检查；
+            # 取消 await 停不了线程，只会让关闭在远端快照写到一半时就往下走。
             shutdown_cancellation = await _run_shutdown_step(
                 _upload_cloudsave,
                 what="Steam Auto-Cloud shutdown staged snapshot upload",
-                deadline_monotonic=time.monotonic() + 5.5,
+                deadline_monotonic=None,
                 pending_cancellation=shutdown_cancellation,
             )
 

@@ -154,20 +154,23 @@ async def test_shutdown_step_does_not_treat_child_cancel_as_caller_cancel() -> N
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_shutdown_step_cancels_the_child_at_its_deadline() -> None:
-    """A step that overruns is cancelled, as the old ``asyncio.wait_for`` did.
+    """A step that overruns is cancelled and has STOPPED before the helper returns.
 
-    Leaving it running would let e.g. the character release keep using the
-    internal HTTP pool that the next steps close.
+    Like the old ``asyncio.wait_for``: only sending the cancel would let e.g. the
+    character release still be unwinding on the internal HTTP pool that the
+    next steps close.
     """
     from app.main_server import _run_shutdown_step
 
-    child_cancelled = asyncio.Event()
+    stopped: list[str] = []
 
     async def stuck_step() -> None:
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
-            child_cancelled.set()
+            # Unwinding takes a few loop turns, as a real HTTP request does.
+            await asyncio.sleep(0.05)
+            stopped.append("stuck")
             raise
 
     started = time.monotonic()
@@ -179,8 +182,54 @@ async def test_shutdown_step_cancels_the_child_at_its_deadline() -> None:
         )
         is None
     )
+    assert stopped == ["stuck"]
     assert time.monotonic() - started < 1.0
-    await asyncio.wait_for(child_cancelled.wait(), timeout=1.0)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_shutdown_step_grace_after_deadline_cancel_is_bounded(monkeypatch) -> None:
+    from app import main_server
+
+    monkeypatch.setattr(main_server, "_SHUTDOWN_STEP_CANCEL_GRACE_SECONDS", 0.05)
+    release = asyncio.Event()
+
+    async def refuses_to_stop() -> None:
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    started = time.monotonic()
+    await main_server._run_shutdown_step(
+        refuses_to_stop,
+        what="stubborn",
+        deadline_monotonic=time.monotonic() + 0.05,
+    )
+    assert time.monotonic() - started < 1.0
+    stubborn = [t for t in main_server._SHUTDOWN_STEP_TASKS if not t.done()]
+    assert stubborn, "the abandoned step must stay strongly referenced"
+    release.set()
+    await asyncio.gather(*stubborn, return_exceptions=True)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_shutdown_step_without_deadline_waits_for_the_step() -> None:
+    from app.main_server import _run_shutdown_step
+
+    done: list[str] = []
+
+    async def slow_step() -> None:
+        await asyncio.sleep(0.1)
+        done.append("slow")
+
+    assert (
+        await _run_shutdown_step(slow_step, what="slow", deadline_monotonic=None)
+        is None
+    )
+    assert done == ["slow"]
 
 
 @pytest.mark.unit

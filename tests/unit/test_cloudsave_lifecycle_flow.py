@@ -597,6 +597,43 @@ async def test_main_server_shutdown_logs_cloudsave_result_only_after_upload_succ
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_main_server_shutdown_waits_for_cloudsave_upload_without_deadline():
+    """The upload writes Steam from a worker thread a cancel cannot stop.
+
+    A step deadline would only let shutdown move on while the remote snapshot
+    is still being written, so the step waits for the thread as it did before.
+    """
+    from app import main_server
+
+    real_run_step = main_server._run_shutdown_step
+    deadlines: dict[str, float | None] = {}
+
+    async def spy_run_step(factory, *, what, deadline_monotonic, **kwargs):
+        deadlines[what] = deadline_monotonic
+        return await real_run_step(
+            factory, what=what, deadline_monotonic=deadline_monotonic, **kwargs
+        )
+
+    def _record(name):
+        async def _step(*_args, **_kwargs):
+            return None
+
+        return _step
+
+    with _patched_shutdown_steps([], _record), \
+         patch.object(main_server, "_run_shutdown_step", spy_run_step):
+        await main_server.on_shutdown()
+
+    assert deadlines["Steam Auto-Cloud shutdown staged snapshot upload"] is None
+    assert all(
+        deadline is not None
+        for what, deadline in deadlines.items()
+        if what != "Steam Auto-Cloud shutdown staged snapshot upload"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_main_server_startup_does_not_mark_normal_when_character_init_fails():
     from app import main_server
 
