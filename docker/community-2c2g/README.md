@@ -188,7 +188,7 @@ docker compose down
 image: ${NEKO_IMAGE:-docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest-full}
 ```
 
-可通过环境变量覆盖，或取消注释切换：
+可通过本目录 .env 或环境变量中的 NEKO_IMAGE 覆盖：
 
 ```bash
 export NEKO_IMAGE=ghcr.io/project-n-e-k-o/n.e.k.o:latest-full   # 海外/已配代理主机用官方源
