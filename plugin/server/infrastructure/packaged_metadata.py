@@ -728,12 +728,24 @@ def write_local_packaged_metadata(
 
 
 def _metadata_snapshot_is_current(meta_path: Path, expected: os.stat_result) -> bool:
-    """Reject a snapshot whose shipped metadata was atomically replaced or removed."""
+    """Reject metadata replaced, removed or modified since the bounded read."""
     try:
         current = meta_path.stat()
     except OSError:
         return False
-    return (current.st_dev, current.st_ino) == (expected.st_dev, expected.st_ino)
+    return (
+        current.st_dev,
+        current.st_ino,
+        current.st_size,
+        current.st_mtime_ns,
+        current.st_ctime_ns,
+    ) == (
+        expected.st_dev,
+        expected.st_ino,
+        expected.st_size,
+        expected.st_mtime_ns,
+        expected.st_ctime_ns,
+    )
 
 
 def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
@@ -748,8 +760,7 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
         return None
     raw, meta_stat = loaded
     if _environment_matches(raw.get("build_env")):
-        result = _validate_packaged_metadata(meta_path, plugin_dir, raw, meta_stat)
-        return result if _metadata_snapshot_is_current(meta_path, meta_stat) else None
+        return _validate_metadata_snapshot(meta_path, plugin_dir, raw, meta_stat)
     target = _local_packaged_metadata_path(plugin_dir, raw)
     local = (
         _read_packaged_metadata_from(target, plugin_dir) if target is not None else None
@@ -768,8 +779,7 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
                     if _metadata_snapshot_is_current(meta_path, meta_stat)
                     else None
                 )
-    result = _validate_packaged_metadata(meta_path, plugin_dir, raw, meta_stat)
-    return result if _metadata_snapshot_is_current(meta_path, meta_stat) else None
+    return _validate_metadata_snapshot(meta_path, plugin_dir, raw, meta_stat)
 
 
 def _read_packaged_metadata_from(
@@ -781,7 +791,25 @@ def _read_packaged_metadata_from(
     if loaded is None:
         return None
     raw, meta_stat = loaded
-    return _validate_packaged_metadata(meta_path, plugin_dir, raw, meta_stat)
+    return _validate_metadata_snapshot(meta_path, plugin_dir, raw, meta_stat)
+
+
+def _validate_metadata_snapshot(
+    meta_path: Path,
+    plugin_dir: Path,
+    raw: Mapping[str, object],
+    meta_stat: os.stat_result,
+) -> PackagedPluginMetadata | None:
+    """Check snapshot stability before stamping a successful source verification."""
+    validated = _validate_packaged_metadata(meta_path, plugin_dir, raw, meta_stat)
+    if validated is None or not _metadata_snapshot_is_current(meta_path, meta_stat):
+        return None
+    result, verified_source_mtime = validated
+    # Updating mtime/ctime during validation would invalidate our own snapshot,
+    # and could hide an in-place rewrite that happened before the update.
+    if verified_source_mtime is not None:
+        _stamp_metadata_verified(meta_path, verified_source_mtime)
+    return result
 
 
 def _validate_packaged_metadata(
@@ -789,8 +817,8 @@ def _validate_packaged_metadata(
     plugin_dir: Path,
     raw: Mapping[str, object],
     meta_stat: os.stat_result,
-) -> PackagedPluginMetadata | None:
-    """Apply the same validation to shipped and host-cached metadata snapshots."""
+) -> tuple[PackagedPluginMetadata, int | None] | None:
+    """Validate metadata and return the source timestamp if its hash was checked."""
 
     schema_version = raw.get("schema_version")
     if schema_version != PACKAGED_METADATA_SCHEMA_VERSION:
@@ -896,6 +924,7 @@ def _validate_packaged_metadata(
             summary.total_bytes,
         )
         return None
+    verified_source_mtime = None
     if newest_source_ns > meta_stat.st_mtime_ns:
         # 时间戳只是快路径，不是判据。git 不保留 mtime，所以一份全新 clone 里源码
         # 和生成物的时间戳关系是任意的——只看 mtime 的话，内置插件会在每台新机器上
@@ -917,13 +946,11 @@ def _validate_packaged_metadata(
                 plugin_dir,
             )
             return None
-        # 哈希刚刚证明这棵树就是打包时那棵，把这个结论盖在 meta.json 的时间戳上。
-        # 不盖的话，解包顺序留下的"源码比生成物新"会一直成立，于是**每一次**刷新
-        # 都要在持锁状态下重算整棵树的哈希（codex）。盖完之后源码再变照样会变新，
-        # 慢路径该走还是走。
-        _stamp_metadata_verified(meta_path, newest_source_ns)
+        # The snapshot coordinator stamps this result only after confirming
+        # the metadata itself did not change during validation.
+        verified_source_mtime = newest_source_ns
 
-    return PackagedPluginMetadata(
+    metadata = PackagedPluginMetadata(
         built_in_this_environment=_environment_matches(raw.get("build_env")),
         entries=_coerce_entries(raw.get("entries")),
         entries_config_sha256=str(raw.get("entries_config_sha256") or ""),
@@ -932,3 +959,4 @@ def _validate_packaged_metadata(
         sdk_version=packaged_sdk,
         source_sha256=packaged_sha,
     )
+    return metadata, verified_source_mtime

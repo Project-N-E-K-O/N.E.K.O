@@ -428,6 +428,135 @@ def test_shipped_metadata_removed_during_cache_validation_rejects_snapshot(
     assert packaged_metadata.read_packaged_metadata(plugin_dir) is None
 
 
+@pytest.mark.parametrize("cache_case", ["same_env", "missing", "scoped", "legacy"])
+def test_inplace_shipped_metadata_rewrite_rejects_the_old_snapshot(
+    tmp_path,
+    monkeypatch,
+    cache_case,
+):
+    environment = None if cache_case == "same_env" else _foreign_env(python="3.9")
+    plugin_dir = _write_plugin(tmp_path, build_env=environment)
+    if cache_case in {"scoped", "legacy"}:
+        assert packaged_metadata.write_local_packaged_metadata(
+            plugin_dir,
+            before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
+            **_SCAN_KWARGS,
+        )
+        if cache_case == "legacy":
+            current = _cache_path(plugin_dir)
+            current.replace(current.parent.parent / current.name)
+    shipped = plugin_dir / _META
+    before = shipped.stat()
+    original = packaged_metadata._validate_packaged_metadata
+    rewrites = []
+
+    def rewrite_after_validation(meta_path, source_dir, raw, meta_stat):
+        result = original(meta_path, source_dir, raw, meta_stat)
+        if not rewrites:
+            updated = _read_json(shipped)
+            updated["handlers"]["demo.go"]["name"] = "New"
+            encoded = json.dumps(updated).encode("utf-8")
+            assert len(encoded) == before.st_size
+            shipped.write_bytes(encoded)
+            os.utime(
+                shipped, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000)
+            )
+            rewrites.append(True)
+        return result
+
+    monkeypatch.setattr(
+        packaged_metadata, "_validate_packaged_metadata", rewrite_after_validation
+    )
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is None
+    after = shipped.stat()
+    assert (after.st_dev, after.st_ino, after.st_size) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+    )
+
+
+@pytest.mark.parametrize("layout", ["scoped", "legacy"])
+def test_inplace_host_cache_rewrite_falls_back_to_the_package(
+    tmp_path, monkeypatch, layout
+):
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    assert packaged_metadata.write_local_packaged_metadata(
+        plugin_dir,
+        before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
+        **_SCAN_KWARGS,
+    )
+    cached = _cache_path(plugin_dir)
+    if layout == "legacy":
+        old = cached
+        cached = old.parent.parent / old.name
+        old.replace(cached)
+    before = cached.stat()
+    original = packaged_metadata._validate_packaged_metadata
+
+    def rewrite_after_validation(meta_path, source_dir, raw, meta_stat):
+        result = original(meta_path, source_dir, raw, meta_stat)
+        if meta_path == cached:
+            changed = _read_json(cached)
+            changed["handlers"]["demo.go"]["name"] = "Changed"
+            encoded = json.dumps(changed, ensure_ascii=False, indent=2).encode("utf-8")
+            assert len(encoded) == before.st_size
+            cached.write_bytes(encoded)
+            os.utime(
+                cached, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000)
+            )
+        return result
+
+    monkeypatch.setattr(
+        packaged_metadata, "_validate_packaged_metadata", rewrite_after_validation
+    )
+    result = packaged_metadata.read_packaged_metadata(plugin_dir)
+    assert not result.built_in_this_environment
+    assert result.handlers["demo.go"]["name"] == "Old"
+
+
+@pytest.mark.parametrize("cache_case", ["same_env", "scoped", "legacy"])
+def test_verified_timestamp_update_keeps_the_snapshot_and_avoids_rehashing(
+    tmp_path,
+    monkeypatch,
+    cache_case,
+):
+    plugin_dir = _write_plugin(
+        tmp_path,
+        build_env=None if cache_case == "same_env" else _foreign_env(python="3.9"),
+    )
+    target = plugin_dir / _META
+    if cache_case != "same_env":
+        assert packaged_metadata.write_local_packaged_metadata(
+            plugin_dir,
+            before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
+            **_SCAN_KWARGS,
+        )
+        target = _cache_path(plugin_dir)
+        if cache_case == "legacy":
+            current = target
+            target = current.parent.parent / current.name
+            current.replace(target)
+    older = target.stat().st_mtime_ns - 10_000_000_000
+    os.utime(target, ns=(older, older))
+    original = packaged_metadata.compute_source_sha256
+    hashed = []
+
+    def record(path):
+        hashed.append(path)
+        return original(path)
+
+    monkeypatch.setattr(packaged_metadata, "compute_source_sha256", record)
+    assert packaged_metadata.read_packaged_metadata(
+        plugin_dir
+    ).built_in_this_environment
+    assert hashed == [plugin_dir]
+    assert packaged_metadata.read_packaged_metadata(
+        plugin_dir
+    ).built_in_this_environment
+    assert hashed == [plugin_dir]
+
+
 # ── 1. 核心：写 sidecar，发行产物不动 ────────────────────────────────────
 
 
