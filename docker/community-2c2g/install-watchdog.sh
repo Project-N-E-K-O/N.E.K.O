@@ -55,12 +55,12 @@ cron=$(mktemp /host-cron.d/.neko-watchdog.XXXXXX)
 cp /source/watchdog.sh "$script"
 chown 0:0 "$script"
 chmod 700 "$script"
-mv -f "$script" /host-opt/neko/watchdog.sh
 printf '%s\n' 'SHELL=/bin/bash' 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
     '*/5 * * * * root /opt/neko/watchdog.sh' > "$cron"
 [ -z "$grace" ] || sed -i "3iNEKO_WATCHDOG_STARTUP_GRACE_SECONDS=$grace" "$cron"
 chown 0:0 "$cron"
 chmod 644 "$cron"
+mv -f "$script" /host-opt/neko/watchdog.sh
 mv -f "$cron" /host-cron.d/neko-watchdog
 if [ -e /host-opt/neko/disabled ]; then
     echo "Watchdog installed, but recovery remains PAUSED. After maintenance, manually remove /opt/neko/disabled to resume."

@@ -124,6 +124,11 @@ grep -q 'id-2 1' "$ROOT/state/fail-count"
 RUNNING=false run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 LABEL=other HTTP_CODE=500 run; no_restart
 touch "$ROOT/state/disabled"
+log_size=$(stat -c %s "$ROOT/state/watchdog.log")
+syslog_size=$(stat -c %s "$ROOT/syslog" 2>/dev/null || echo 0)
+NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=1800s HTTP_CODE=500 run; no_restart
+[[ $(stat -c %s "$ROOT/state/watchdog.log") == "$log_size" ]]
+[[ $(stat -c %s "$ROOT/syslog" 2>/dev/null || echo 0) == "$syslog_size" ]]
 HTTP_CODE=500 run; no_restart
 rm "$ROOT/state/disabled"
 HTTP_CODE=500 run
@@ -338,6 +343,20 @@ chmod 700 "$ROOT/bin/grep"
 if PATH="$ROOT/bin:$PATH" sh "$ROOT/install.sh" 2> "$ROOT/install-error"; then exit 1; fi
 rm "$ROOT/bin/grep"
 grep -q 'cannot read existing cron settings' "$ROOT/install-error"
+cmp "$ROOT/cron/neko-watchdog" "$ROOT/cron-read-before"
+cmp "$ROOT/opt/neko/watchdog.sh" "$ROOT/script-read-before"
+# Fail during cron preparation after script copy; neither published file changes.
+# Make the installed script differ from the source so premature publication fails.
+printf '# previous installed version\n' > "$ROOT/opt/neko/watchdog.sh"
+cp "$ROOT/opt/neko/watchdog.sh" "$ROOT/script-read-before"
+cat > "$ROOT/bin/sed" <<'EOF'
+#!/bin/sh
+if [ "$1" = -i ]; then exit 2; fi
+exec /usr/bin/sed "$@"
+EOF
+chmod 700 "$ROOT/bin/sed"
+if PATH="$ROOT/bin:$PATH" sh "$ROOT/install.sh" 2> "$ROOT/install-error"; then exit 1; fi
+rm "$ROOT/bin/sed"
 cmp "$ROOT/cron/neko-watchdog" "$ROOT/cron-read-before"
 cmp "$ROOT/opt/neko/watchdog.sh" "$ROOT/script-read-before"
 # Normalize one matching quote pair, and reject malformed or nonnumeric values.

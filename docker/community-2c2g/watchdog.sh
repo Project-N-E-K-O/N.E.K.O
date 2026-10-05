@@ -22,12 +22,12 @@ early_fail() {
     fi
     exit 1
 }
-STARTUP_GRACE_SECONDS=${NEKO_WATCHDOG_STARTUP_GRACE_SECONDS:-900}
-[[ "$STARTUP_GRACE_SECONDS" =~ ^[0-9]{1,6}$ ]] || early_fail "Invalid startup grace: use integer seconds"
-STARTUP_GRACE_SECONDS=$((10#$STARTUP_GRACE_SECONDS))
 [[ ! -L "$STATE_DIR" && -d "$STATE_DIR" ]] || early_fail "Unsafe state directory"
 [[ $(stat -c '%u:%g:%a' "$STATE_DIR") == 0:0:700 ]] || early_fail "State directory must be root:root 0700"
 [[ ! -e "$STATE_DIR/disabled" ]] || exit 0
+STARTUP_GRACE_SECONDS=${NEKO_WATCHDOG_STARTUP_GRACE_SECONDS:-900}
+[[ "$STARTUP_GRACE_SECONDS" =~ ^[0-9]{1,6}$ ]] || early_fail "Invalid startup grace: use integer seconds"
+STARTUP_GRACE_SECONDS=$((10#$STARTUP_GRACE_SECONDS))
 for dependency in docker curl timeout flock; do
     command -v "$dependency" >/dev/null || early_fail "Missing $dependency"
 done
