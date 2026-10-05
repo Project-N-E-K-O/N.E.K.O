@@ -20,11 +20,16 @@ from __future__ import annotations
 import os
 import sys
 
-from launcher_core.bootstrap import _ensure_utf8_filesystem_encoding, _pin_project_root_first
+from launcher_core.bootstrap import (
+    _ensure_utf8_filesystem_encoding,
+    _pin_project_root_first,
+    _warn_if_windows7,
+)
 
 
 if __name__ == "__main__":
     _ensure_utf8_filesystem_encoding()
+    _warn_if_windows7()
     if os.environ.get("NEKO_WAKE_WORD_RELEASE_SMOKE") == "1":
         from multiprocessing import freeze_support as _wake_freeze_support
         _wake_freeze_support()

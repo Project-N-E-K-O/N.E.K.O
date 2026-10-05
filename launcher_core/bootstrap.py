@@ -107,6 +107,43 @@ def _ensure_utf8_filesystem_encoding() -> None:
         pass
 
 
+def _is_windows7() -> bool:
+    """Return True on Windows 7 / Server 2008 R2 (NT 6.1)."""
+    if sys.platform != 'win32':
+        return False
+    try:
+        return sys.getwindowsversion()[:2] == (6, 1)
+    except Exception:
+        return False
+
+
+def _warn_if_windows7() -> None:
+    """Print a one-time Windows 7 guidance banner from the launcher entry.
+
+    Upstream only supports Windows 8.1+; on this branch Windows 7 is
+    best-effort, so point the user at the runtime requirements doc instead of
+    blocking startup. The banner prints at most once per process tree: the
+    marker env var set here is inherited by server child processes spawned
+    later. Set ``NEKO_WIN7_SILENT=1`` to suppress it entirely.
+    """
+    if not _is_windows7():
+        return
+    if os.environ.get('NEKO_WIN7_SILENT') == '1':
+        return
+    if os.environ.get('_NEKO_WIN7_BANNER') == '1':
+        return
+    os.environ['_NEKO_WIN7_BANNER'] = '1'
+    print(
+        "[Launcher] 检测到 Windows 7 —— 本分支为实验性适配，运行说明见 "
+        "docs/zh-CN/guide/windows-7.md\n"
+        "[Launcher]   · 需要非官方的 Python 3.11 Win7 构建（官方 3.11 仅支持 8.1+）\n"
+        "[Launcher]   · 不要用 uv / Node（均不支持 Win7），依赖安装请跑 setup_win7.bat\n"
+        "[Launcher]   · Electron 桌面端与 Playwright 自动化不可用，请用浏览器访问 Web 端\n"
+        "[Launcher]   · 设置 NEKO_WIN7_SILENT=1 可关闭本提示",
+        flush=True,
+    )
+
+
 # 仅在作为入口运行时才可能 re-exec：被 tests 当模块 import 时（__name__ !=
 # '__main__'）跳过，否则 ascii-fs 环境下的一次 import 会用 execv 把 pytest
 # 进程顶替掉。__name__ 在模块体执行前即确定，放这里能赶在任何中文路径操作之前。
