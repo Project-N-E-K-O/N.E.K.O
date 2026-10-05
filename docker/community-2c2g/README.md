@@ -43,7 +43,7 @@ docker compose -f "docker-compose.yaml" up -d            # 启动
 docker compose ps                                            # 查看状态
 ```
 
-首次连接可打开 `http://<服务器IP>:48911` 配对；页面会提示连接未加密。HTTP 访问远程 IP 时浏览器不开放麦克风，语音输入不可用。条件允许时推荐 `https://<服务器IP或域名>:48912`；镜像默认生成自签名证书，正式使用建议可信证书或可信 TLS 网关。需强制 HTTPS/WSS 时在同目录 `.env` 设置 `NEKO_REQUIRE_HTTPS=1` 后重新创建服务。实例访问凭证由管理员在服务器显式读取：
+首次连接可打开 `http://<服务器IP>:48911` 配对；页面会提示连接未加密。 HTTP 会以明文传输配对 key 和会话 Cookie，网络路径上的观察者可能获取凭证并访问实例；不要在不可信网络上通过 HTTP 输入凭证，使用 HTTPS 或可信 TLS 网关。HTTP 访问远程 IP 时浏览器不开放麦克风，语音输入不可用。条件允许时推荐 `https://<服务器IP或域名>:48912`；镜像默认生成自签名证书，正式使用建议可信证书或可信 TLS 网关。需强制 HTTPS/WSS 时在同目录 `.env` 设置 `NEKO_REQUIRE_HTTPS=1` 后重新创建服务。实例访问凭证由管理员在服务器显式读取：
 
 ```bash
 docker compose exec --user neko -w /app neko-main uv run python -m utils.instance_access
