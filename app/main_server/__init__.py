@@ -642,6 +642,9 @@ app.add_middleware(
 )
 # Registered after the body guard so it is the outermost ASGI middleware and
 # rejects DNS-rebinding Host values before any HTTP or WebSocket route runs.
+from utils.instance_access import InstanceAccessMiddleware
+from main_routers.card_drop_router import authorize_community_handoff
+app.add_middleware(InstanceAccessMiddleware, community_handoff_authorizer=authorize_community_handoff)
 app.add_middleware(HostOriginGuardMiddleware)
 
 

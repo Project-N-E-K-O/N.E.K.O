@@ -31,7 +31,17 @@ and polls ``tick(now)``, which returns the first verdict reached (sticky) or
   VISIT_READY_DELIVERY_MARGIN_S`` (85 s).
 * ``relay_lost``: own connection down past ``min(disconnect + 25 s, last
   successful send + 30 s - VISIT_RECONNECT_MARGIN_S)``.
-* ``local_page_lost``: transport WS down for 20 s.
+* ``local_page_lost``: a page reload missed its deadline. Two stages
+  (design §4.8): while the transport WS is down, ``min(this drop + 20 s,
+  absolute)``; once a new socket is back, the absolute deadline
+  ``min(left + VISIT_PEER_REJOIN_GRACE_S - VISIT_PAGE_REJOIN_SAFETY_S, last
+  successful send + 30 s - VISIT_RECONNECT_MARGIN_S)`` for the SDK reload
+  and room re-entry. A deadline that already passed is never moved. The
+  last-send term (also in ``relay_lost``) applies only once the peer acked
+  our ``hello`` (``on_hello_acked``, both sides): only then does its
+  heartbeat clock run on our messages. Before that a host bounds it by the
+  guest's own 30 s wait (latest room entry + 27 s) while that wait was still
+  running when the drop happened.
 * ``peer_left``: authenticated ``leave`` (after the ``seq`` gap is filled or
   ``VISIT_LEAVE_GAP_GRACE_S`` expires), or a vendor-level leave not undone
   within ``VISIT_PEER_REJOIN_GRACE_S``.
@@ -52,6 +62,7 @@ from config.visit_settings import (
     VISIT_JOIN_ALLOWANCE_S,
     VISIT_LEAVE_GAP_GRACE_S,
     VISIT_LOCAL_PAGE_GRACE_S,
+    VISIT_PAGE_REJOIN_SAFETY_S,
     VISIT_PEER_LOST_S,
     VISIT_PEER_REJOIN_GRACE_S,
     VISIT_READY_DELIVERY_MARGIN_S,
@@ -86,6 +97,7 @@ class VisitLiveness:
         leave_gap_grace_s: float = VISIT_LEAVE_GAP_GRACE_S,
         rejoin_grace_s: float = VISIT_PEER_REJOIN_GRACE_S,
         heartbeat_s: float = VISIT_HEARTBEAT_S,
+        page_rejoin_safety_s: float = VISIT_PAGE_REJOIN_SAFETY_S,
     ) -> None:
         """Start in the "waiting for the peer" state.
 
@@ -95,6 +107,11 @@ class VisitLiveness:
         """
         if side not in ("host", "guest"):
             raise ValueError(f"invalid side: {side!r}")
+        # 与 config 的不变量同一组关系：注入的时长也要满足
+        if not page_rejoin_safety_s > 0:
+            raise ValueError("page_rejoin_safety_s must be positive")
+        if not rejoin_grace_s - page_rejoin_safety_s > page_grace_s:
+            raise ValueError("the absolute page reload deadline must outlast the socket grace")
         self.side: Side = side
         self._peer_lost_s = float(peer_lost_s)
         self._join_allowance_s = float(join_allowance_s)
@@ -105,6 +122,7 @@ class VisitLiveness:
         self._leave_gap_grace_s = float(leave_gap_grace_s)
         self._rejoin_grace_s = float(rejoin_grace_s)
         self._heartbeat_s = float(heartbeat_s)
+        self._page_rejoin_safety_s = float(page_rejoin_safety_s)
 
         self.waiting = True
         wait = float(invite_wait_s) if side == "host" else self._peer_lost_s
@@ -112,9 +130,14 @@ class VisitLiveness:
         self.peer_last_seen: Optional[float] = None
         self.ready_deadline: Optional[float] = None
         self.ready_received = False
+        self.hello_acked = False
+        self.peer_entered_at: Optional[float] = None
         self.last_sent_at: Optional[float] = None
         self.self_disconnected_at: Optional[float] = None
-        self.page_lost_at: Optional[float] = None
+        self.page_departed_at: Optional[float] = None
+        self.page_deadline: Optional[float] = None
+        self.page_socket_back = False
+        self.page_socket_lost_at: Optional[float] = None
         self.leave_received_at: Optional[float] = None
         self.peer_departed_at: Optional[float] = None
         self.vendor_timeout_events = 0
@@ -128,10 +151,17 @@ class VisitLiveness:
         """Host observed the peer entering the vendor room: extend the wait deadline.
 
         New deadline = ``max(deadline, now + VISIT_JOIN_ALLOWANCE_S)``; no
-        effect once the peer is verified or on the guest side.
+        effect once the peer is verified. Host only, also recorded as the
+        start of the guest's own 30 s wait for our ``hello`` (latest entry;
+        cleared by a vendor leave): until the guest acks our ``hello`` it
+        bounds the own-reconnect and page reload deadlines. No effect on the
+        guest side.
         """
-        if self.side == "host" and self.waiting:
+        if self.side != "host":
+            return
+        if self.waiting:
             self.wait_deadline = max(self.wait_deadline, now + self._join_allowance_s)
+        self.peer_entered_at = now
 
     def on_peer_verified(self, now: float) -> None:
         """The peer ``hello`` verified: leave the waiting state.
@@ -154,12 +184,20 @@ class VisitLiveness:
             self.peer_last_seen = now
 
     def on_hello_acked(self, now: float) -> None:
-        """Guest: the host acked our ``hello``; start the 85 s wait for ``ready``.
+        """The peer acked our ``hello`` (both sides; the runtime calls it for each).
 
-        Ignored once ``ready`` already arrived: the first ack may be lost and
-        a later cumulative ack (triggered by a retransmitted ``hello``) must
-        not re-arm the wait of an already active visit.
+        From here the peer verified us and its heartbeat clock runs on our
+        messages, so the last-send term of the own-reconnect and page reload
+        deadlines applies (a reload already running is recomputed for its
+        stage: the room-entry bound a host used until now may have been
+        stricter or looser than the real clock). Guest: also starts the 85 s wait for ``ready`` -- ignored
+        once ``ready`` already arrived: the first ack may be lost and a later
+        cumulative ack (triggered by a retransmitted ``hello``) must not re-arm
+        the wait of an already active visit.
         """
+        self.hello_acked = True
+        if self.page_deadline is not None and not self.page_expired(now):
+            self.page_deadline = self._page_stage_deadline()
         if self.side == "guest" and self.ready_deadline is None and not self.ready_received:
             self.ready_deadline = now + self._ready_wait_s
 
@@ -195,19 +233,127 @@ class VisitLiveness:
         if self.self_disconnected_at is None:
             return None
         deadline = self.self_disconnected_at + self._self_reconnect_s
-        if self.last_sent_at is not None:
-            deadline = min(deadline,
-                           self.last_sent_at + self._peer_lost_s - self._reconnect_margin_s)
-        return deadline
+        death = self._peer_death_deadline(self.self_disconnected_at)
+        return deadline if death is None else min(deadline, death)
+
+    def _peer_death_deadline(self, since: float) -> Optional[float]:
+        """When the peer's heartbeat clock gives up on us: last successful send + 30 s - margin.
+
+        Shared by the own-reconnect deadline and the page reload deadline
+        (design §4.8 calls them "the same formula"). Until the peer acked our
+        ``hello`` it keeps no heartbeat clock on our messages (whether we
+        already verified the peer says nothing about that): a guest's host is
+        not counting yet (``None``); a host's guest waits 30 s from its own
+        room join for our ``hello``, approximated by the latest time we saw it
+        enter (cleared by its vendor leave). That entry bound applies only
+        while the guest is still waiting at the drop (``entry + 30 s`` not yet
+        passed, no margin); inside the last 3 s it already lies in the past,
+        which ends the visit at once -- the conservative side. A guest that
+        re-enters under a new vendor identity keeps its original wait, which
+        room events cannot see; carrying the wait start in its ``hello`` is
+        left to the PR-09a protocol.
+        The ack lags the peer's clock: it is in flight, or (before the peer
+        verified our ``hello`` it drops everything else) waits for the next
+        ``hello`` retransmission. For up to one retransmission backoff the
+        guest side runs without this term, i.e. without the 3 s margin; the
+        host side keeps the room-entry bound meanwhile.
+        """
+        if not self.hello_acked:
+            if self.peer_entered_at is not None:  # 只有 host 记录
+                # 掉线 / 掉页（since）那一刻访客的 30 s 等待已经过了（不带余量判断）：它已不在等，不再套这一项。
+                # 最后 3 s 内掉线时这一项落在过去、当场判死，是保守的一侧
+                if self.peer_entered_at + self._peer_lost_s <= since:
+                    return None
+                return self.peer_entered_at + self._peer_lost_s - self._reconnect_margin_s
+            return None
+        if self.last_sent_at is None:
+            return None
+        return self.last_sent_at + self._peer_lost_s - self._reconnect_margin_s
+
+    # —— 页面重载（transport WS 断开到重新入房）——
+
+    def page_reload_deadline(self) -> Optional[float]:
+        """Absolute deadline of the current page reload, or ``None`` when no reload is running.
+
+        ``min(left + VISIT_PEER_REJOIN_GRACE_S - VISIT_PAGE_REJOIN_SAFETY_S,
+        peer death deadline)`` (design §4.8, rejoin grace row): the peer gives
+        a departed ``vid`` 35 s, or judges us dead 30 s after our last message
+        when the vendor reported no explicit leave.
+        """
+        if self.page_departed_at is None:
+            return None
+        deadline = self.page_departed_at + self._rejoin_grace_s - self._page_rejoin_safety_s
+        death = self._peer_death_deadline(self.page_departed_at)
+        return deadline if death is None else min(deadline, death)
+
+    def _page_stage_deadline(self) -> Optional[float]:
+        """Deadline of the running reload's current stage (socket: this drop + 20 s; SDK: absolute)."""
+        absolute = self.page_reload_deadline()
+        if self.page_socket_back or self.page_socket_lost_at is None or absolute is None:
+            return absolute
+        return min(self.page_socket_lost_at + self._page_grace_s, absolute)
+
+    def page_reload_state(self) -> tuple:
+        """Opaque copy of the page reload fields, for :meth:`restore_page_reload_state`."""
+        return (self.page_departed_at, self.page_deadline, self.page_socket_back, self.page_socket_lost_at)
+
+    def restore_page_reload_state(self, state: tuple) -> None:
+        """Put back a :meth:`page_reload_state` copy (a re-entry that failed after clearing it)."""
+        self.page_departed_at, self.page_deadline, self.page_socket_back, self.page_socket_lost_at = state
+
+    def page_expired(self, now: float) -> bool:
+        """True once the running page reload missed its deadline (whether or not ``tick`` ran yet)."""
+        return self.page_deadline is not None and now >= self.page_deadline
 
     def on_page_lost(self, now: float) -> None:
-        """The transport WS (page / iframe) dropped; start the 20 s grace (idempotent)."""
-        if self.page_lost_at is None:
-            self.page_lost_at = now
+        """The transport WS (page / iframe) dropped.
+
+        The first drop of a reload records its start (the iframe leaves the
+        vendor room when its socket closes). This socket stage ends at
+        ``min(now + 20 s, absolute)`` -- counted from THIS drop, so a page
+        that came back and dropped again still gets its socket budget, capped
+        by the absolute deadline. A deadline that already passed is kept,
+        and so is a socket-stage deadline that no new socket ended yet (a
+        repeated call does not extend it).
+        """
+        if self.page_expired(now):
+            return
+        if self.page_deadline is not None and not self.page_socket_back:
+            return
+        if self.page_departed_at is None:
+            self.page_departed_at = now
+        self.page_socket_back = False
+        self.page_socket_lost_at = now
+        self.page_deadline = self._page_stage_deadline()
+
+    def on_page_socket_back(self, now: float) -> None:
+        """A new transport socket authenticated: the SDK reload and re-entry get the absolute deadline.
+
+        A socket that replaced a live one starts the reload now. A deadline
+        that already passed is kept (a late socket cannot revive the page).
+        ``VISIT_CAPS_SDK_TIMEOUT_S`` is the capability gate's own timer
+        (``caps{stage:'sdk'}``), run by the runtime as ``min(20 s, absolute
+        remaining)``; it is not part of this deadline.
+        """
+        if self.page_expired(now):
+            return
+        if self.page_departed_at is None:
+            self.page_departed_at = now
+        self.page_socket_back = True
+        self.page_deadline = self._page_stage_deadline()
 
     def on_page_back(self, now: float) -> None:
-        """A new page reattached the transport WS within the grace."""
-        self.page_lost_at = None
+        """The reloaded page is back in the vendor room: the reload is over.
+
+        No effect once the deadline passed: the verdict stays
+        ``local_page_lost`` even if ``tick`` has not observed it yet.
+        """
+        if self.page_expired(now):
+            return
+        self.page_departed_at = None
+        self.page_deadline = None
+        self.page_socket_back = False
+        self.page_socket_lost_at = None
 
     # ------------------------------------------------------------------
     # 对端离开
@@ -243,6 +389,8 @@ class VisitLiveness:
         """
         if self.peer_departed_at is None:
             self.peer_departed_at = now
+        # 离开的访客不再等本侧 hello：入房时刻那一项不再适用（再来会有新的 on_peer_entered）
+        self.peer_entered_at = None
 
     def on_peer_vendor_rejoined(self, now: float) -> None:
         """The same peer ``vid`` reappeared: clear any grace, restart the heartbeat clock.
@@ -283,7 +431,7 @@ class VisitLiveness:
         if self.leave_received_at is not None \
                 and now - self.leave_received_at >= self._leave_gap_grace_s:
             return self._set_verdict("peer_left")
-        if self.page_lost_at is not None and now - self.page_lost_at >= self._page_grace_s:
+        if self.page_deadline is not None and now >= self.page_deadline:
             return self._set_verdict("local_page_lost")
         deadline = self.self_deadline()
         if deadline is not None and now >= deadline:

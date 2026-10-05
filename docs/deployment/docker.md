@@ -1,5 +1,16 @@
 # Docker Deployment
 
+Remote instances use built-in connection authorization: enter the instance key once over HTTPS,
+then use community login normally. External nginx/NAS auth can be layered on top. Local desktop
+and loopback debugging proxies remain compatible. Remote replies omit Linux paths/cloud tokens.
+The default platform relay needs no per-Docker-domain registration. Auth relay and Electron
+companion releases must ship before #3289 is ready; real Linux + Windows acceptance needs community testing.
+See [contract and tests](/design/security/community-remote-access).
+Get the key: docker compose exec --user neko -w /app neko-main uv run python -m utils.instance_access
+When NEKO_INSTANCE_PUBLIC_ORIGIN uses HTTPS, the external gateway must close port 80 or redirect it to HTTPS; never forward plaintext requests with that Host. Keep the private HTTP upstream isolated. Host matching itself does not prove TLS.
+Use HTTPS/WSS; external TLS gateways may set NEKO_INSTANCE_PUBLIC_ORIGIN.
+Leave NEKO_COMMUNITY_WEB_REDIRECT_URI empty for the default relay.
+
 The maintained Compose file is `docker/docker-compose.yml`. It runs N.E.K.O. behind Nginx and publishes HTTP on host port 48911 and HTTPS on 48912.
 
 ## Start a published image
@@ -12,7 +23,7 @@ cp env.template .env
 docker compose up -d
 ```
 
-Open `http://127.0.0.1:48911`. The checked-out Compose file defines the registry/proxy default. Pin `NEKO_IMAGE` or `NEKO_IMAGE_VERSION` for reproducibility. `latest` is the standard-image alias; `latest-full` is the full-image alias.
+Open `https://127.0.0.1:48912`. The checked-out Compose file defines the registry/proxy default. Pin `NEKO_IMAGE` or `NEKO_IMAGE_VERSION` for reproducibility. `latest` is the standard-image alias; `latest-full` is the full-image alias.
 
 ::: warning Initial configuration
 The entrypoint generates `/home/neko/.local/share/N.E.K.O/config/core_config.json` only when absent. API environment variables are initialization inputs, not a live universal override. Setting `NEKO_FORCE_ENV_UPDATE` explicitly regenerates and replaces that persisted bootstrap configuration; back it up first. Confirm effective values in the Web UI.

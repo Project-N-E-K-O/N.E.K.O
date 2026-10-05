@@ -1,4 +1,5 @@
 {
+    "instanceAccess": {"title":"連接 NEKO 實例","description":"輸入伺服器擁有者提供的實例存取憑證，此裝置將記住連接 30 天。","key":"實例存取憑證","connect":"連接","failed":"連接未獲授權，請檢查憑證後重試。","httpsRequired":"請使用 HTTPS 或可信的 HTTPS 通道安全連接。"},
     "common": {
         "load": "加載",
         "minimize": "最小化",

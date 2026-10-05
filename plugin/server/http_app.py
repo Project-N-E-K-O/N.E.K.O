@@ -347,5 +347,7 @@ def build_plugin_server_app(
     app.include_router(market_bridge_router)
     # Keep the Host/Origin guard outside CORS and the cache-header middleware;
     # untrusted requests must not be short-circuited before the guard runs.
+    from utils.instance_access import InstanceAccessMiddleware
+    app.add_middleware(InstanceAccessMiddleware)
     app.add_middleware(HostOriginGuardMiddleware)
     return app

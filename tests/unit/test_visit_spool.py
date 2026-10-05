@@ -1231,6 +1231,17 @@ async def test_open_requires_the_callers_clock(tmp_path):
     mono = _time.monotonic()
     await sp.open(header(vid(27)), now=mono)
     await sp.append(line(1))
+    # 恰好到点也要到期：(mono + 30) - mono 在浮点下可能是 29.999…，比较必须写成 now >= last + 30
+    assert sp.fsync_due(mono + visit_settings.VISIT_SPOOL_FSYNC_S)
+    await sp.close()
+
+
+async def test_fsync_is_due_exactly_at_the_interval_despite_float_rounding(tmp_path):
+    # Windows CI 上实测的单调钟读数：(1015.187 + 30) - 1015.187 == 29.999999999999886
+    mono = 1015.187
+    sp = VisitSpool(tmp_path, vid(28))
+    await sp.open(header(vid(28)), now=mono)
+    await sp.append(line(1))
     assert sp.fsync_due(mono + visit_settings.VISIT_SPOOL_FSYNC_S)
     await sp.close()
 

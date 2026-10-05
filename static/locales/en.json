@@ -1,4 +1,5 @@
 {
+    "instanceAccess": {"title":"Connect to NEKO","description":"Enter the instance access key supplied by the server owner. This device will remember the connection for 30 days.","key":"Instance access key","connect":"Connect","failed":"Connection denied. Check the key and try again.","httpsRequired":"Use HTTPS or a trusted HTTPS tunnel to connect securely."},
     "common": {
         "load": "Load",
         "minimize": "Minimize",
