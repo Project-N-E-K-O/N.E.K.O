@@ -1023,3 +1023,18 @@ def test_outer_tls_pairing_logs_configuration_hint_once(remote_app, caplog):
         assert response.status_code == 303
     hints = [r for r in caplog.records if "NEKO_INSTANCE_PUBLIC_ORIGIN" in r.getMessage()]
     assert len(hints) == 1
+
+
+def test_outer_tls_hint_is_logged_when_strict_mode_refuses_pairing(remote_app, monkeypatch, caplog):
+    monkeypatch.setenv("NEKO_REQUIRE_HTTPS", "1")
+    page = remote_app.get("http://neko.example/", headers={"Accept": "text/html"})
+    challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+    with caplog.at_level("WARNING", logger="utils.instance_access"):
+        # A cross-site https Origin is refused without spending the hint.
+        assert remote_app.post("http://neko.example/instance-access/login", data={"key": KEY, "challenge": challenge},
+                               headers={"Origin": "https://evil.example"}).status_code == 403
+        assert not [r for r in caplog.records if "NEKO_INSTANCE_PUBLIC_ORIGIN" in r.getMessage()]
+        response = remote_app.post("http://neko.example/instance-access/login", data={"key": KEY, "challenge": challenge},
+                                   headers={"Origin": "https://neko.example"})
+    assert response.status_code == 403
+    assert [r for r in caplog.records if "NEKO_INSTANCE_PUBLIC_ORIGIN" in r.getMessage()]

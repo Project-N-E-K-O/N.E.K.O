@@ -565,10 +565,14 @@ class InstanceAccessMiddleware:
         if request.method != "POST":
             return await (await self._page(request, key))(scope, receive, send)
         transport = _transport(request)
-        if not transport.allowed or not _same_origin(request):
-            return await self._deny(scope, receive, send, "secure_same_origin_required", 403)
-        if not transport.secure and request.headers.get("origin", "").startswith("https://"):
+        same_origin = _same_origin(request)
+        # Before the deny: under NEKO_REQUIRE_HTTPS this is exactly the refusal
+        # the operator needs explained. Same-origin only, so a cross-site
+        # https Origin cannot use up the one-time hint.
+        if same_origin and not transport.secure and request.headers.get("origin", "").startswith("https://"):
             self._warn_unlabelled_tls()
+        if not transport.allowed or not same_origin:
+            return await self._deny(scope, receive, send, "secure_same_origin_required", 403)
         peer = request.client.host if request.client else "unknown"
         now = time.time()
         self.attempts = {ip: item for ip, item in self.attempts.items() if item[0] > now - 60}
