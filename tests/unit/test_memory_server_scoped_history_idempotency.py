@@ -3284,3 +3284,31 @@ async def test_cleanup_skips_a_staging_whose_key_lock_is_held(env):
         lock.release()
     # 清理持着角色请求租约：不排在键锁后面等，这一份留到下次启动再扫
     assert report["staging_removed"] == 0 and _staging_file(env, KEY_GROUP).exists()
+
+
+async def test_damaged_staging_identity_does_not_overwrite_the_records_own(env):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_GROUP)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    staging.pop("shape")                                       # 暂存的身份字段坏了，键记录里的身份完好
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    await _forget(env, GROUP)
+    result = await _post(env, _single_body())
+    # 记录里正确的身份不能被占位身份盖掉：同键重试照常拿到 duplicate，不是一直 422
+    assert result["duplicate"] is True and _key_state(env, KEY_GROUP) == "cancelled"
+
+
+async def test_duplicate_reply_removes_a_terminal_keys_leftover_staging(env):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition("done"))   # 收尾时没删掉的残留暂存
+    result = await _post(env, _single_body())
+    # 持着键锁回 duplicate 时顺手删掉：不必等下次启动清理（它遇到被占的键锁会跳过）
+    assert result["duplicate"] is True and not _staging_file(env, KEY_GROUP).exists()

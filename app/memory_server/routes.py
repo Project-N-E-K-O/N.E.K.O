@@ -3840,6 +3840,9 @@ async def _process_scoped_history_keyed(
                     # 终态记录却没有请求身份：核对不了是不是同一个请求，不能把任意复用这个键的
                     # 新请求当成 duplicate 吞掉
                     raise idempotency.IdempotencyStateError("terminal key record has no request identity")
+                # 终态键收尾时没删掉的残留暂存：已经没用了，持着键锁顺手删掉，不必等下次启动清理
+                # （启动清理遇到被占的键锁会跳过它）
+                await _drop_leftover_staging(lanlan_name, key)
                 return _keyed_duplicate_response(shape, contexts)
             staging = await idempotency.read_staging(lanlan_name, key)
         except idempotency.IdempotencyStateError as exc:
@@ -4260,6 +4263,15 @@ def _fingerprint_of_staging(document: dict) -> dict | None:
     }
 
 
+async def _drop_leftover_staging(lanlan_name: str, key: str) -> None:
+    from . import idempotency
+
+    try:
+        await idempotency.delete_staging(lanlan_name, key)
+    except Exception as exc:  # noqa: BLE001 - 只是回收空间：删不掉留给启动清理，不影响 duplicate 应答
+        logger.warning(f"[scoped_history] {lanlan_name}: 终态键的残留暂存删不掉，留给启动清理: {exc}")
+
+
 def _staging_identity(document: dict) -> dict:
     """The request identity a cancelled record of this staging gets (never empty).
 
@@ -4587,17 +4599,18 @@ async def _cancel_staged_writes_for_subjects(
                 await idempotency.write_staging(lanlan_name, key, current)
                 cancelled += 1
                 return
+            identity = _staging_identity(document)
+
+            def _cancel(old, identity=identity):
+                # 记录缺失时用暂存里的请求身份补上：取消后暂存就删了，没有身份的 cancelled 记录会让
+                # 别的请求借这个键拿到 duplicate。记录本身已有身份就沿用它——暂存的身份字段坏了时
+                # 补的是占位身份，盖掉正确的那份会让本该拿到 duplicate 的同键重试一直 422
+                stored = old.get("request") if isinstance(old, dict) else None
+                request = stored if isinstance(stored, dict) else identity
+                return idempotency.transition(idempotency.KEY_STATE_CANCELLED, request=request)(old)
+
             try:
-                await idempotency.update_key(
-                    lanlan_name,
-                    key,
-                    # 记录缺失时用暂存里的请求身份补上：取消后暂存就删了，没有身份的
-                    # cancelled 记录会让别的请求借这个键拿到 duplicate
-                    idempotency.transition(
-                        idempotency.KEY_STATE_CANCELLED,
-                        request=_staging_identity(document),
-                    ),
-                )
+                await idempotency.update_key(lanlan_name, key, _cancel)
             except idempotency.IdempotencyStateError as exc:
                 # 键文件读不出：辅助文件坏了不能挡住隐私清除，但取消也记不进键文件。
                 # 删掉暂存的话，键文件修好后同键重试看到的是「pending、没暂存」，会按
