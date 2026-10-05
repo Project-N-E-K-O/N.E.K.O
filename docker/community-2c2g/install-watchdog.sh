@@ -32,8 +32,12 @@ if [ -e /host-cron.d/neko-watchdog ]; then
     [ -f /host-cron.d/neko-watchdog ] || fail "cron destination is not a regular file"
     [ "$(stat -c '%u:%g:%a' /host-cron.d/neko-watchdog)" = 0:0:644 ] || fail "unsafe existing cron permissions"
     assignment_pattern='^[[:blank:]]*NEKO_WATCHDOG_STARTUP_GRACE_SECONDS[[:blank:]]*=[[:blank:]]*'
-    [ "$(grep -c "$assignment_pattern" /host-cron.d/neko-watchdog || true)" -le 1 ] || fail "duplicate startup grace settings"
-    grace=$(sed -n "/$assignment_pattern/{s/$assignment_pattern//;s/[[:blank:]]*$//;p;}" /host-cron.d/neko-watchdog)
+    assignment_count=$(grep -c "$assignment_pattern" /host-cron.d/neko-watchdog) || {
+        status=$?
+        [ "$status" -eq 1 ] || fail "cannot read existing cron settings"
+    }
+    [ "$assignment_count" -le 1 ] || fail "duplicate startup grace settings"
+    grace=$(sed -n "/$assignment_pattern/{s/$assignment_pattern//;s/[[:blank:]]*$//;p;}" /host-cron.d/neko-watchdog) || fail "cannot read existing startup grace"
     # Strip one matching cron quote pair; never evaluate shell expressions.
     grace=$(printf '%s\n' "$grace" | sed -e 's/^"\(.*\)"$/\1/' -e 't' -e "s/^'\(.*\)'$/\1/")
     case "$grace" in
@@ -58,4 +62,8 @@ printf '%s\n' 'SHELL=/bin/bash' 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/
 chown 0:0 "$cron"
 chmod 644 "$cron"
 mv -f "$cron" /host-cron.d/neko-watchdog
-echo "Watchdog installed. /opt/neko/disabled pauses recovery; installation does not remove it."
+if [ -e /host-opt/neko/disabled ]; then
+    echo "Watchdog installed, but recovery remains PAUSED. After maintenance, manually remove /opt/neko/disabled to resume."
+else
+    echo "Watchdog installed. /opt/neko/disabled pauses recovery; installation does not remove it."
+fi

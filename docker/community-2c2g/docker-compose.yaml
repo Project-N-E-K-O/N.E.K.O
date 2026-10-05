@@ -1,35 +1,18 @@
 # Project N.E.K.O. - 社区 2C2G 部署方案
 # Author: 烨儿不会飞 (GitHub: @csy-11)
-# Compose V2 only. 使用包含 #3289 的镜像后才可开放远程入口。
-#
-# 设计说明（不再复制官方配置，避免官方后续更新导致副本失步）：
-#   neko-main 通过 `extends` 继承 ../docker-compose.yml 的同名服务（environment、
-#   container_name、restart、logging 等），仅在本文件覆盖与 2C2G 安全/自愈/限资源
-#   相关的差异。官方后续改动会自动带给本方案。
-#   依赖：运行目录上一级必须存在官方 docker/docker-compose.yml。
+# Compose >= 2.24.4；继承同一仓库的官方服务配置。
 services:
-  # 一次性初始化数据目录；智能权限检测：仅当属主不匹配时才递归 chown，
-  # 兼容新迁移数据，又避免日常重启时的全量递归写（2G 机器 IOPS 宝贵）。
   neko-init:
     image: alpine:3.20
     restart: "no"
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
-        echo "开始初始化 N.E.K.O. 运行环境..."
-        mkdir -p /host-dir/neko-home /host-dir/logs /host-dir/nginx
-
-        # 智能权限检测：如果 neko-home 的属主不是 UID 1000，才执行 chown
-        # 这样既能兼容新迁移过来的数据，又避免了日常重启时的 IOPS 消耗
-        OWNER=$(stat -c %u /host-dir/neko-home 2>/dev/null || echo "0")
-        if [ "$OWNER" != "1000" ]; then
-            echo "检测到权限漂移（当前属主：$OWNER），正在修复目录权限..."
-            chown -R 1000:1000 /host-dir/neko-home /host-dir/logs /host-dir/nginx
-        else
-            echo "权限已正确 (UID 1000)，跳过 chown，节省 IOPS。"
-        fi
-
-        echo "初始化完成！环境已就绪。"
+        # 每条检查独立失败退出；不递归修改目录中的宿主资源。
+        test ! -L /host-dir/neko-home
+        test ! -L /host-dir/logs
+        mkdir -p /host-dir/neko-home /host-dir/logs
+        chown -h 1000:1000 /host-dir/neko-home /host-dir/logs
     volumes:
       - .:/host-dir
 
@@ -37,27 +20,29 @@ services:
     extends:
       file: ../docker-compose.yml
       service: neko-main
-    # 保留本方案默认：国内加速源 + 完整版镜像（免首次启动下载 Chromium 卡死）。
+    # 对外使用前核验镜像包含 #3289/#3299，并固定经验证的 tag/digest。
     image: ${NEKO_IMAGE:-docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest-full}
     labels:
       org.neko.community-2c2g.watchdog: enabled
     depends_on:
       neko-init:
         condition: service_completed_successfully
-    # 覆盖：默认仅绑定本机入口，防止公网暴露；HTTPS 需显式 NEKO_HTTPS_BIND_IP。
-    # 注意：继承自官方配置的 NETKO_TRUSTED_HOSTS 不再设置任何默认公网域名，
-    # 关闭默认 DNS-rebinding 暴露面；访问请用 IP 字面量或显式配置自有域名。
-    ports:
-      - "127.0.0.1:48911:80"
-      - "${NEKO_HTTPS_BIND_IP:-127.0.0.1}:48912:443"
-    # 覆盖：extends 的相对路径以父文件所在目录（docker/）解析，这里显式把
-    # 数据/日志重新绑回本目录，保证 2C2G 方案数据独立、便于整体迁移。
-    volumes:
+    environment:
+      - SSL_DOMAIN=${SSL_DOMAIN:-localhost}
+      - NEKO_TRUSTED_HOSTS=${NEKO_TRUSTED_HOSTS:-}
+      - NEKO_TRUSTED_ORIGINS=${NEKO_TRUSTED_ORIGINS:-}
+    # 覆盖继承服务的相对路径，数据留在 community-2c2g/。
+    volumes: !override
       - ./neko-home:/home/neko
       - ./logs:/app/logs
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  # 一次性安装宿主 root cron；脚本独立于 Compose 生命周期，卸载见 README。
   neko-cron-install:
+    profiles: [watchdog]
     image: alpine:3.20
     restart: "no"
     depends_on:
@@ -69,8 +54,6 @@ services:
       - /opt:/host-opt
       - ./install-watchdog.sh:/source/install-watchdog.sh:ro
       - ./watchdog.sh:/source/watchdog.sh:ro
-    networks:
-      - neko-network
 
 networks:
   neko-network:
