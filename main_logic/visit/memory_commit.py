@@ -66,7 +66,7 @@ from config.visit_settings import (
     VISIT_PEER_NGRAM_N,
 )
 from main_logic.visit import memory_bridge
-from main_logic.visit.forget import ForgetEpochs, ForgetEpochsUnreadable
+from main_logic.visit.forget import ForgetEpochs, ForgetEpochsUnreadable, ForgetEpochsUnsynced
 from main_logic.visit.sanitize import (
     PeerNgramHit,
     assert_no_peer_ngram,
@@ -377,7 +377,13 @@ async def _commit_locked(
             return CommitResult(ok=False, skipped="batches_mismatch", run=run)
     else:
         try:
+            # 开轮前先把本地清除代数抬到服务端墓碑的当前值：云存档恢复 / 换机后本地从 0 重计，
+            # 低于已有墓碑的整轮写入会被服务端静默丢弃
+            await memory_bridge.sync_forget_epochs(name, subjects, config_dir=spool.config_dir, client=client)
             epochs = await ForgetEpochs(spool.config_dir).get(subjects)
+        except ForgetEpochsUnsynced as exc:
+            memory_bridge.diag("forget_epochs_unsynced", error=str(exc))
+            return CommitResult(ok=False, skipped="epochs_unsynced")
         except ForgetEpochsUnreadable as exc:
             memory_bridge.diag("forget_epochs_unreadable", error=str(exc))
             return CommitResult(ok=False, skipped="epochs_unreadable")

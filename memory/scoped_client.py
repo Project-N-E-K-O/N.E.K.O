@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -182,7 +182,7 @@ class ScopedMemoryClient:
         url: str,
         *,
         body: dict[str, Any] | None = None,
-        params: dict[str, str] | None = None,
+        params: dict[str, str] | list[tuple[str, str]] | None = None,
         timeout: float,
         retry: bool,
     ) -> httpx.Response:
@@ -310,6 +310,41 @@ class ScopedMemoryClient:
         if not isinstance(subjects, list):
             raise ScopedMemoryError("scoped_subjects returned no subjects list")
         return [row for row in subjects if isinstance(row, dict)]
+
+    async def get_forget_epochs(
+        self, lanlan: str, subject_keys: Iterable[str],
+    ) -> dict[str, int]:
+        """Current server-side forget fence of each subject key.
+
+        Read-only ``GET .../forget_epochs?subject=...`` answering
+        ``{"epochs": {key: epoch}}``; keys without a tombstone are absent.
+        Anything else (transport error, non-2xx, malformed body) raises
+        ``ScopedMemoryError``: an unknown fence must not read as none.
+        """
+        keys = list(dict.fromkeys(subject_keys))
+        if not keys:
+            return {}
+        url = self._url(lanlan, "forget_epochs")
+        try:
+            response = await self._send(
+                "GET", url, params=[("subject", key) for key in keys],
+                timeout=_READ_TIMEOUT_S, retry=False,
+            )
+        except httpx.HTTPError as exc:
+            raise ScopedMemoryError(f"forget_epochs failed: {exc}") from exc
+        if not response.is_success:
+            raise ScopedMemoryError(f"forget_epochs failed: HTTP {response.status_code}")
+        try:
+            payload = _response_json(response)
+        except ValueError as exc:
+            raise ScopedMemoryError("forget_epochs returned invalid JSON") from exc
+        epochs = payload.get("epochs") if isinstance(payload, dict) else None
+        if not isinstance(epochs, dict) or not all(
+            isinstance(key, str) and isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            for key, value in epochs.items()
+        ):
+            raise ScopedMemoryError("forget_epochs returned a malformed epochs map")
+        return {key: value for key, value in epochs.items() if key in keys}
 
     # ----------------------------------------------------------------- writes
 

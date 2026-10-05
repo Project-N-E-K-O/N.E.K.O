@@ -64,6 +64,7 @@ from config.visit_settings import (
 from main_logic.visit.forget import (
     ClearingSentinels,
     ForgetEpochs,
+    ForgetEpochsUnsynced,
     RevocationLog,
     RevocationLogUnreadable,
     sentinel_covers,
@@ -408,6 +409,31 @@ async def post_visit_segments(
     )
     # 同一个幂等键下整批成败：服务端按键记录整批，部分成功也只能同键整批重试
     return bool(result)
+
+
+async def sync_forget_epochs(
+    name: str,
+    subjects: Sequence[Mapping[str, Any]],
+    *,
+    config_dir: str | Path,
+    client: ScopedMemoryClient | None = None,
+) -> dict[str, int]:
+    """Raise the local forget generations of ``subjects`` to the server's tombstone fences.
+
+    ``visit_forget_epochs.json`` is local-only, so a cloud restore or a new
+    installation restarts it at zero while the server keeps its tombstones.
+    Called before a digest run opens and before a forget bumps a subject:
+    without it a digest is stamped below the tombstone (silently dropped)
+    and a forget's bumped epoch reads as an already-erased replay. Raises
+    :class:`ForgetEpochsUnsynced` when the server cannot answer.
+    """
+    client = client or default_client()
+    keys = list(dict.fromkeys(subject_key(subject) for subject in subjects))
+    try:
+        fences = await client.get_forget_epochs(name, keys)
+    except ScopedMemoryError as exc:
+        raise ForgetEpochsUnsynced(str(exc)) from exc
+    return await ForgetEpochs(config_dir).raise_to(fences)
 
 
 async def post_visit_forget(

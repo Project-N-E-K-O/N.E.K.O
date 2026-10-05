@@ -703,3 +703,31 @@ async def test_resumed_run_detects_changed_line_content(tmp_path, monkeypatch):
     # 待发批次的内容变了：不能拿旧键发出不同的内容
     assert again.ok is False and again.skipped == "batches_mismatch"
     assert len(server.requests) == sent
+
+
+async def test_digest_raises_local_epochs_to_the_server_fence_before_opening(tmp_path):
+    from main_logic.visit.forget import ForgetEpochs, subject_key
+
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, _conversation(8))
+    subjects = memory_commit._visit_subjects(await spool.read_state())
+    keys = [subject_key(s) for s in subjects]
+    server = FakeMemoryServer()
+    server.tombstones = {keys[0]: 5}                    # 云存档恢复带回了服务端墓碑，本地代数文件从 0 重计
+    assert (await _commit(spool, server)).ok
+    group = server.calls("scoped_history")[0]
+    # 开轮前先向服务端取当前围栏：不然整轮都低于墓碑、被静默丢弃
+    assert group["subject_epochs"][keys[0]] == 5
+    assert (await ForgetEpochs(tmp_path).get(subjects[:1]))[keys[0]] == 5
+
+
+async def test_digest_waits_when_server_fences_cannot_be_read(tmp_path):
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, _conversation(8))
+    server = FakeMemoryServer()
+    server.epoch_reads_fail = True
+    result = await _commit(spool, server)
+    # 认不出服务端围栏：不开轮、不发任何写入，留给下次
+    assert result.ok is False and result.skipped == "epochs_unsynced"
+    assert server.calls("scoped_history") == []
+    assert (await spool.read_state())["digest_writes"] == {}

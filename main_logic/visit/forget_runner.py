@@ -44,6 +44,7 @@ from main_logic.visit import memory_bridge
 from main_logic.visit.forget import (
     ClearingSentinels,
     ForgetEpochsUnreadable,
+    ForgetEpochsUnsynced,
     ForgetStepFailed,
     RevocationLog,
     RevocationLogUnreadable,
@@ -104,7 +105,7 @@ async def _refuse_pending_rename(config_dir: str | Path, names: Iterable[str]) -
 # 否则用户之后点「记成日记」会把刚要求清除的这个人写进私聊记忆
 _VOIDABLE_CHOICES = (None, "ask_later", "generating:diary", "preview:diary")
 _STEP_ERRORS = (
-    ForgetStepFailed, ForgetEpochsUnreadable, SpoolBusy, SpoolStateUnreadable,
+    ForgetStepFailed, ForgetEpochsUnreadable, ForgetEpochsUnsynced, SpoolBusy, SpoolStateUnreadable,
     RosterCorruptError, OSError, ValueError,
 )
 
@@ -205,12 +206,15 @@ async def execute_log(
             own_char, [subject], config_dir=config_dir, client=client,
         )
 
+    async def sync_epochs(subjects: list[dict]) -> None:
+        await memory_bridge.sync_forget_epochs(own_char, subjects, config_dir=config_dir, client=client)
+
     async with peer_lock(own_char_uid, peer_uid):
         try:
             await run_revocation(
                 log, rev_id, roster=roster, forget_subject=forget_subject,
                 void_pending=void_pending or default_void_pending(config_dir),
-                own_char=own_char,
+                own_char=own_char, sync_epochs=sync_epochs,
             )
         except _STEP_ERRORS as exc:
             logger.warning("visit forget %s not finished, kept for replay: %r", rev_id, exc)

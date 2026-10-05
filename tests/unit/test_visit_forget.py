@@ -824,3 +824,21 @@ async def test_clearing_sentinels_roundtrip_and_fail_closed(tmp_path):
         await store.list_open()
     with pytest.raises(ValueError):
         await store.create(own_uid=OWN_A, scope="person", own_char_uids=[CHAR_UID_A])
+
+
+async def test_forget_after_a_local_epoch_reset_goes_above_the_server_fence(tmp_path):
+    from main_logic.visit.forget import subject_key
+    from main_logic.visit.forget_runner import forget_person
+    from tests.unit.visit_memory_test_helpers import FakeMemoryServer, OWN_A, PEER_X, CHAR_UID_A, seed_roster
+
+    await seed_roster(tmp_path)
+    roster_subjects = await PeerRoster(tmp_path, own_uid=OWN_A).expand_subjects(PEER_X, "A")
+    person = next(s for s in roster_subjects if s["subject_kind"] == "participant")
+    server = FakeMemoryServer()
+    server.tombstones = {subject_key(person): 5}         # 本地代数被重置，服务端墓碑还在 5
+    outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X, client=server.client())
+    assert outcome.done
+    sent = [body for body in server.calls("scoped_forget") if body["subject"]["subject_kind"] == "participant"]
+    # 先抬到服务端围栏再加 1：发出的代数高于已有墓碑，不会被当成已擦过的重放跳过
+    assert sent and sent[0]["forget_epoch"] == 6

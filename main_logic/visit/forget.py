@@ -553,6 +553,10 @@ class ForgetEpochsUnreadable(RuntimeError):
     """``visit_forget_epochs.json`` exists but cannot be read; callers fail closed."""
 
 
+class ForgetEpochsUnsynced(RuntimeError):
+    """The server's current forget fences could not be read; callers retry later."""
+
+
 class ForgetEpochs:
     """Per-subject forget generations ``config_dir/visit_forget_epochs.json``.
 
@@ -592,6 +596,19 @@ class ForgetEpochs:
             data = self._load_sync()
         return {key: data.get(key, 0) for key in keys}
 
+    def _raise_to_sync(self, floors: Mapping[str, int]) -> dict[str, int]:
+        with path_lock(self.path):
+            data = self._load_sync()
+            changed = False
+            for key, floor in floors.items():
+                if floor > data.get(key, 0):
+                    data[key] = floor
+                    changed = True
+            if changed:
+                self.config_dir.mkdir(parents=True, exist_ok=True)
+                atomic_write_json(self.path, data)
+        return {key: data.get(key, 0) for key in floors}
+
     def _bump_sync(self, keys: list[str]) -> dict[str, int]:
         with path_lock(self.path):
             data = self._load_sync()
@@ -605,6 +622,11 @@ class ForgetEpochs:
         """Return the current generation of each subject (0 when never forgotten)."""
         keys = list(dict.fromkeys(subject_key(s) for s in subjects))
         return await asyncio.to_thread(self._get_sync, keys)
+
+    async def raise_to(self, floors: Mapping[str, int]) -> dict[str, int]:
+        """Raise each subject key's generation to at least its floor (never lowers); return the values."""
+        clean = {str(key): int(value) for key, value in floors.items() if key and int(value) >= 0}
+        return await asyncio.to_thread(self._raise_to_sync, clean)
 
     async def bump(self, subjects: Iterable[Mapping[str, Any]]) -> dict[str, int]:
         """Increase each subject's generation by one, persist it, and return the new values."""
@@ -797,6 +819,7 @@ async def run_revocation(
     forget_subject: ForgetSubject,
     void_pending: VoidPending,
     own_char: str,
+    sync_epochs: Callable[[list[dict]], Awaitable[None]] | None = None,
 ) -> bool:
     """Execute (or resume) one revocation log step by step.
 
@@ -857,6 +880,10 @@ async def run_revocation(
             subject = subjects.get(step)
             if subject is None:
                 raise ValueError(f"revocation step {step!r} has no subject")
+            # 先把本地代数抬到服务端墓碑的当前值（云存档恢复 / 换机后本地从 0 重计）：否则加 1 之后
+            # 仍不高于已有墓碑，服务端会当成已擦过的重放直接跳过，这次清除什么都不删
+            if sync_epochs is not None:
+                await sync_epochs([dict(subject)])
             # 先把这个 subject 的清除代数加 1 并落盘，再发 /scoped_forget：之前开轮的 digest
             # 带的代数更小，不论多晚到达都会被服务端墓碑挡下（重放时再加一次也无妨，只增不减）
             await ForgetEpochs(log.config_dir).bump([subject])

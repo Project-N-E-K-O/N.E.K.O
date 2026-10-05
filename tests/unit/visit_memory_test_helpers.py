@@ -147,12 +147,23 @@ class FakeMemoryServer:
         self.context_text = "SCOPED CONTEXT"
         self.subjects: list[dict] = []
         self.completed_at: dict[str, float] = {}
+        # 服务端墓碑代数（subject key -> forget_epoch），由带代数的 scoped_forget 抬高
+        self.tombstones: dict[str, int] = {}
+        # 开轮 / 清除前的只读代数查询单独记，不混进 requests（各测试按 requests 数写入请求）
+        self.epoch_reads: list[list[str]] = []
+        self.epoch_reads_fail = False
 
     def calls(self, endpoint: str) -> list[dict]:
         return [body for name, body in self.requests if name == endpoint]
 
     async def handler(self, request: httpx.Request) -> httpx.Response:
         endpoint = request.url.path.rsplit("/", 1)[-1]
+        if endpoint == "forget_epochs":
+            keys = request.url.params.get_list("subject")
+            self.epoch_reads.append(keys)
+            if self.epoch_reads_fail:
+                return httpx.Response(503, json={"detail": "down"})
+            return httpx.Response(200, json={"epochs": {k: self.tombstones[k] for k in keys if k in self.tombstones}})
         body = json.loads(request.content) if request.content else {}
         self.requests.append((endpoint, body))
         key = body.get("idempotency_key") or endpoint
@@ -173,7 +184,13 @@ class FakeMemoryServer:
         if endpoint == "scoped_subjects":
             return httpx.Response(200, json={"subjects": self.subjects})
         if endpoint == "scoped_forget":
+            subject = body.get("subject") or {}
+            epoch = body.get("forget_epoch")
+            if isinstance(epoch, int) and subject.get("subject_kind"):
+                key = f"{subject['subject_kind']}:{subject['subject_id']}"
+                self.tombstones[key] = max(self.tombstones.get(key, 0), epoch)
             return httpx.Response(200, json={"status": "forgotten"})
+
         if endpoint == "scoped_history":
             duplicate = key in self.done_keys
             if not duplicate:
