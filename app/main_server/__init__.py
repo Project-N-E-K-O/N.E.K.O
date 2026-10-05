@@ -783,6 +783,8 @@ _SHUTDOWN_STEP_CANCEL_GRACE_SECONDS = 1.0
 
 
 def _consume_shutdown_task_result(task: asyncio.Task[object]) -> None:
+    # Retrieve the outcome so asyncio does not log "exception was never
+    # retrieved" for a step whose failure _run_shutdown_step already reported.
     try:
         task.exception()
     except (asyncio.CancelledError, Exception):
