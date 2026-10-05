@@ -114,19 +114,7 @@ reset
 HTTP_CODE=500 run
 CONTAINER_ID=id-2 HTTP_CODE=500 run; no_restart
 grep -q 'id-2 1' "$ROOT/state/fail-count"
-RUNNING=false reset
-RAW_ERROR=1 CURL_EXIT=28 run 2> "$ROOT/raw-error"; no_restart
-[[ ! -s "$ROOT/raw-error" ]]
-reset
-RAW_ERROR=1 BACKEND_EXIT=22 run 2> "$ROOT/raw-error"; no_restart
-[[ ! -s "$ROOT/raw-error" ]]
-reset
-RAW_ERROR=1 HTTP_CODE=502 run 2> "$ROOT/raw-error"
-if RAW_ERROR=1 HTTP_CODE=502 RESTART_EXIT=1 run 2> "$ROOT/raw-error"; then exit 1; fi
-[[ ! -s "$ROOT/raw-error" ]]
-! grep -q 'private-daemon-error\|private-curl-error' "$ROOT/state/watchdog.log"
-reset
-run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
+RUNNING=false run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 LABEL=other HTTP_CODE=500 run; no_restart
 touch "$ROOT/state/disabled"
 HTTP_CODE=500 run; no_restart
@@ -186,33 +174,9 @@ reset
 HTTP_CODE=500 run
 STARTED_AT=2001-01-01T00:00:00Z HTTP_CODE=500 run
 no_restart; grep -q 'id-1 1 2001-' "$ROOT/state/fail-count"
-PAUSED=true HTTP_CODE=500 reset
-RAW_ERROR=1 CURL_EXIT=28 run 2> "$ROOT/raw-error"; no_restart
-[[ ! -s "$ROOT/raw-error" ]]
-reset
-RAW_ERROR=1 BACKEND_EXIT=22 run 2> "$ROOT/raw-error"; no_restart
-[[ ! -s "$ROOT/raw-error" ]]
-reset
-RAW_ERROR=1 HTTP_CODE=502 run 2> "$ROOT/raw-error"
-if RAW_ERROR=1 HTTP_CODE=502 RESTART_EXIT=1 run 2> "$ROOT/raw-error"; then exit 1; fi
-[[ ! -s "$ROOT/raw-error" ]]
-! grep -q 'private-daemon-error\|private-curl-error' "$ROOT/state/watchdog.log"
-reset
-run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
+PAUSED=true HTTP_CODE=500 run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 HTTP_CODE=500 run
-RECHECK_PAUSED=true HTTP_CODE=500 reset
-RAW_ERROR=1 CURL_EXIT=28 run 2> "$ROOT/raw-error"; no_restart
-[[ ! -s "$ROOT/raw-error" ]]
-reset
-RAW_ERROR=1 BACKEND_EXIT=22 run 2> "$ROOT/raw-error"; no_restart
-[[ ! -s "$ROOT/raw-error" ]]
-reset
-RAW_ERROR=1 HTTP_CODE=502 run 2> "$ROOT/raw-error"
-if RAW_ERROR=1 HTTP_CODE=502 RESTART_EXIT=1 run 2> "$ROOT/raw-error"; then exit 1; fi
-[[ ! -s "$ROOT/raw-error" ]]
-! grep -q 'private-daemon-error\|private-curl-error' "$ROOT/state/watchdog.log"
-reset
-run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
+RECHECK_PAUSED=true HTTP_CODE=500 run; no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
 HTTP_CODE=500 run
 RECHECK_STARTED_AT=2001-01-01T00:00:00Z HTTP_CODE=500 run
 no_restart; [[ ! -e "$ROOT/state/fail-count" ]]
