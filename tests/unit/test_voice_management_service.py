@@ -64,7 +64,7 @@ class Adapter:
 
     async def overwrite(self, runtime, voice_id, *, audio, filename, before_mutation=None):
         if before_mutation:
-            await before_mutation()
+            await before_mutation(self.remote)
         self.mutations.append((runtime.api_key, voice_id, audio, filename))
         if self.on_mutation:
             return await self.on_mutation()
@@ -122,6 +122,22 @@ async def test_query_is_read_only_and_import_is_idempotent(fixture):
     listing = await service.list_remote_voices(adapter, cm, token=token)
     assert listing["voices"][0]["local_ref"] == first["voice_id"]
     assert adapter.mutations == []
+
+
+@pytest.mark.asyncio
+async def test_remote_list_tolerates_legacy_library_values(fixture, monkeypatch):
+    cm, adapter, ref = await imported(fixture)
+    original = cm.get_voices_for_current_api
+
+    def mixed_library(*args, **kwargs):
+        return {**original(*args, **kwargs), "legacy-name": "Old voice", "legacy-null": None}
+
+    monkeypatch.setattr(cm, "get_voices_for_current_api", mixed_library)
+    before = json.dumps(cm.storage, sort_keys=True)
+    result = await service.list_remote_voices(adapter, cm, token=payload(adapter, cm)["context_token"])
+    assert result["voices"][0]["local_ref"] == ref
+    assert result["voices"][0]["imported"]
+    assert json.dumps(cm.storage, sort_keys=True) == before
 
 
 @pytest.mark.asyncio
@@ -209,6 +225,51 @@ async def test_overwrite_keeps_local_and_remote_identity(fixture):
     assert result["voice_id"] == ref and result["status"] == "completed"
     assert adapter.mutations[0][1] == "remote-original"
     assert cm.get_imported_voice(ref)["remote_voice_id"] == "remote-original"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("returned_status", ["processing", "ready"])
+async def test_refresh_does_not_credit_a_revision_that_existed_before_overwrite(fixture, returned_status):
+    cm, adapter, ref = await imported(fixture)
+    # Another client has already updated the remote voice since local import.
+    adapter.remote = replace(adapter.remote, metadata={"remote_revision": "2"})
+
+    async def acknowledged_but_not_visible():
+        return replace(adapter.remote, status=returned_status)
+
+    adapter.on_mutation = acknowledged_but_not_visible
+    token = payload(adapter, cm)["context_token"]
+    result = await service.overwrite_remote_voice(adapter, cm, ref, token=token, audio=b"audio", filename="v.wav")
+    assert result["status"] == "processing"
+    refreshed = await service.refresh_overwrite_status(adapter, cm, ref, token=token)
+    assert refreshed["status"] == "processing"
+    adapter.remote = replace(adapter.remote, metadata={"remote_revision": "3"})
+    assert (await service.refresh_overwrite_status(adapter, cm, ref, token=token))["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_missing_initial_revision_disables_overwrite_without_remote_mutation(fixture):
+    cm, adapter = fixture
+    adapter.remote = replace(adapter.remote, metadata={})
+    token = payload(adapter, cm)["context_token"]
+    listing = await service.list_remote_voices(adapter, cm, token=token)
+    result = await service.import_remote_voice(adapter, cm, payload(adapter, cm))
+    assert not listing["voices"][0]["can_overwrite"]
+    assert not result["voice_data"]["can_overwrite"]
+    with pytest.raises(VoiceManagementError, match="OVERWRITE_UNSUPPORTED"):
+        await service.overwrite_remote_voice(adapter, cm, result["voice_id"], token=token, audio=b"audio", filename="v.wav")
+    assert adapter.mutations == []
+
+
+@pytest.mark.asyncio
+async def test_revision_disappearing_before_mutation_does_not_leave_pending_record(fixture):
+    cm, adapter, ref = await imported(fixture)
+    adapter.remote = replace(adapter.remote, metadata={})
+    token = payload(adapter, cm)["context_token"]
+    with pytest.raises(VoiceManagementError, match="OVERWRITE_UNSUPPORTED"):
+        await service.overwrite_remote_voice(adapter, cm, ref, token=token, audio=b"audio", filename="v.wav")
+    assert not cm.get_imported_voice(ref).get("overwrite_status")
+    assert adapter.mutations == []
 
 
 @pytest.mark.asyncio

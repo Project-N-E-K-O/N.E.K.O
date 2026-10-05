@@ -149,6 +149,7 @@
         state.panel.setAttribute('aria-busy', String(value));
         if (state.submit) state.submit.disabled = value || (state.mode === 'list' && !state.selection) || (state.mode === 'manual' && !state.id.value.trim());
         if (state.more) state.more.disabled = value;
+        if (state.refreshStatus) state.refreshStatus.disabled = value;
         if (state.mode === 'list' && state.empty) state.empty.hidden = value || state.rows.children.length > 0;
     }
 
@@ -349,6 +350,7 @@
                     if (uncertain || error.code === 'OPERATION_IN_PROGRESS') {
                         state.submit.hidden = true;
                         state.refreshStatus.hidden = false;
+                        if (typeof root.loadVoices === 'function') await root.loadVoices();
                     }
                 }
             } finally { if (active === state && operations.current === operation) busy(state, false); }

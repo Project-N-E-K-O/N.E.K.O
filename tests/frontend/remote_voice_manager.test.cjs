@@ -13,6 +13,80 @@ const deferred = () => {
     return { promise, resolve, reject };
 };
 
+function previewHarness(storage = new Map()) {
+    const previewSource = fs.readFileSync(path.join(__dirname, '../../static/js/voice_clone.js'), 'utf8');
+    const method = previewSource.slice(previewSource.indexOf('function voicePreviewCacheIdentity('), previewSource.indexOf('// 加载音色列表', previewSource.indexOf('async function playPreview(')));
+    const sessions = new Map(), requests = [], audios = [], deadlines = [], errors = [];
+    const context = vm.createContext({
+        activeVoicePreviewSessions: sessions,
+        attachVoicePreviewButton() {},
+        finishVoicePreviewSession(session) { if (sessions.get(session.voiceId) === session) sessions.delete(session.voiceId); },
+        updateVoicePreviewSessionState() {},
+        getVoicePreviewLanguage: () => 'zh-CN',
+        localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) },
+        AbortController, setTimeout: (_callback, ms) => { deadlines.push(ms); return ms; }, clearTimeout() {},
+        fetch: () => { const request = deferred(); requests.push(request); return request.promise; },
+        safeReadResponse: async response => ({ data: response.data }),
+        sleepVoiceCloneLoaderRetry: async () => {}, VOICE_CLONE_LOADER_FETCH_BACKOFF_MS: 1,
+        window: {}, console: { warn() {}, error() {} },
+        showVoicePreviewErrorNotice: value => errors.push(value),
+        Audio: class { constructor(src) { audios.push(src); } addEventListener() {} async play() {} },
+        encodeURIComponent, Map, Set, JSON
+    });
+    vm.runInContext(method, context);
+    return { context, sessions, requests, audios, deadlines, errors, storage,
+        play: options => context.playPreview('voice_1234567890abcdef1234567890abcdef', { disabled: false }, options),
+        finish: () => sessions.clear(),
+        resolve: (index, audio = 'NEW') => requests[index].resolve({ ok: true, status: 200, data: { success: true, audio } }) };
+}
+
+const importedPreview = { source: 'clone', origin: 'import', provider: 'cosyvoice' };
+
+test('imported preview ignores legacy audio and uses the clone synthesis deadline', async () => {
+    const key = 'voice_preview_voice_1234567890abcdef1234567890abcdef';
+    const h = previewHarness(new Map([[key, JSON.stringify({ version: 2, language: 'zh-CN', audioSrc: 'OLD' })]]));
+    const pending = h.play(importedPreview); await tick();
+    assert.equal(h.requests.length, 1); assert.equal(h.deadlines[0], 30000);
+    h.resolve(0); await pending;
+    assert.deepEqual(h.audios, ['data:audio/mpeg;base64,NEW']);
+});
+
+test('overwrite operations and completion invalidate cached imported preview', async () => {
+    const h = previewHarness();
+    const first = h.play(importedPreview); h.resolve(0, 'BEFORE'); await first; h.finish();
+    const reused = h.play(importedPreview); await reused; h.finish();
+    assert.equal(h.requests.length, 1);
+    const processing = { ...importedPreview, overwrite_operation_id: 'operation-A', overwrite_status: 'processing' };
+    const updating = h.play(processing); await tick(); assert.equal(h.requests.length, 2);
+    h.resolve(1, 'PROCESSING'); await updating; h.finish();
+    const completed = h.play({ ...processing, overwrite_status: 'completed' }); await tick();
+    assert.equal(h.requests.length, 3); h.resolve(2, 'AFTER'); await completed;
+    assert.equal(h.audios.at(-1), 'data:audio/mpeg;base64,AFTER');
+});
+
+test('late preview from before overwrite cannot play or replace the current preview', async () => {
+    const h = previewHarness(); const before = h.play(importedPreview);
+    const after = h.play({ ...importedPreview, overwrite_operation_id: 'new-operation', overwrite_status: 'completed' });
+    await tick(); assert.equal(h.requests.length, 2);
+    h.resolve(1, 'AFTER'); await after; h.resolve(0, 'BEFORE'); await before;
+    assert.deepEqual(h.audios, ['data:audio/mpeg;base64,AFTER']);
+    assert.match([...h.storage.values()][0], /AFTER/);
+});
+
+test('blocked browser storage does not prevent preview synthesis', async () => {
+    const storage = { get() { throw new Error('SecurityError'); }, set() { throw new Error('SecurityError'); } };
+    const h = previewHarness(storage); const pending = h.play(importedPreview);
+    await tick(); assert.equal(h.requests.length, 1); h.resolve(0); await pending;
+    assert.equal(h.audios.length, 1); assert.deepEqual(h.errors, []);
+});
+
+test('legacy preset preview retains its language cache', async () => {
+    const key = 'voice_preview_voice_1234567890abcdef1234567890abcdef';
+    const h = previewHarness(new Map([[key, JSON.stringify({ version: 2, language: 'zh-CN', audioSrc: 'PRESET' })]]));
+    await h.play({ source: 'preset' });
+    assert.equal(h.requests.length, 0); assert.deepEqual(h.audios, ['PRESET']);
+});
+
 class Element {
     constructor(tag, document) {
         this.tagName = tag; this.document = document; this.children = []; this.listeners = {};
@@ -187,12 +261,26 @@ test('uncertain overwrite disables resubmission and offers explicit status refre
     h.resolve(1, { success: false, code: 'UPDATE_OUTCOME_UNKNOWN' }, 504); await tick();
     assert.equal(h.button('overwrite').hidden, true);
     assert.equal(h.button('refreshStatus').hidden, false);
+    assert.equal(h.refreshes(), 1);
     h.button('refreshStatus').dispatch('click');
     assert.ok(h.requests[2].url.includes('/overwrite_status?'));
     h.resolve(2, { success: true, status: 'completed' }); await tick();
-    assert.equal(h.refreshes(), 1);
+    assert.equal(h.refreshes(), 2);
     assert.ok(h.panel().textContent.includes('voice.remote.completed'));
     assert.equal(h.requests.filter(request => request.options.method === 'POST').length, 1);
+});
+
+test('uncertain overwrite keeps status refresh disabled until library refresh finishes', async () => {
+    const h = harness(), library = deferred();
+    h.window.loadVoices = () => library.promise;
+    h.window.RemoteVoiceManager.openOverwrite('voice-local', { provider: 'cosyvoice', remote_voice_id: 'remote' });
+    const file = h.panel().querySelectorAll('input')[0]; file.files = [new Blob(['audio'])]; file.dispatch('change');
+    h.button('overwrite').dispatch('click');
+    h.resolve(0, { ...h.ctx, provider: 'cosyvoice', capabilities: { ...h.ctx.capabilities, overwrite: true } }); await tick();
+    h.resolve(1, { success: false, code: 'UPDATE_OUTCOME_UNKNOWN' }, 504); await tick();
+    assert.equal(h.button('refreshStatus').disabled, true);
+    library.resolve(); await tick();
+    assert.equal(h.button('refreshStatus').disabled, false);
 });
 
 test('Escape during IME composition keeps modal, regular Escape cleans listeners', async () => {

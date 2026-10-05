@@ -98,7 +98,7 @@ class CosyVoiceAdapter(ImportOnlyAdapter):
             raise VoiceManagementError("UPLOAD_FAILED", 502) from None
         # Upload does not mutate the voice. Recheck ownership immediately before update.
         if before_mutation:
-            await before_mutation()
+            await before_mutation(current)
         await self._call(runtime, "update_voice", mutation=True, voice_id=voice_id, url=url)
         try:
             updated = await self.get_voice(runtime, voice_id)

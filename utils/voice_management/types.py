@@ -113,5 +113,5 @@ class VoiceManagementAdapter(Protocol):
         *,
         audio: bytes,
         filename: str,
-        before_mutation: Callable[[], Awaitable[None]] | None = None,
+        before_mutation: Callable[[RemoteVoice], Awaitable[None]] | None = None,
     ) -> RemoteVoice: ...

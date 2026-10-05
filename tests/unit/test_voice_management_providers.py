@@ -180,7 +180,8 @@ async def test_cosy_overwrite_retains_id_and_checks_after_upload(monkeypatch, tr
             assert guards == []
             return "https://sample.test/audio.wav"
 
-    async def guard():
+    async def guard(current):
+        assert current.voice_id == "raw-cosy" and current.metadata["remote_revision"] == "before"
         guards.append("checked")
 
     monkeypatch.setattr(voice_clone, "QwenVoiceCloneClient", Uploader)
@@ -203,7 +204,7 @@ async def test_cosy_context_changed_after_upload_prevents_update(monkeypatch, tr
         async def upload_file(self, *args):
             return "https://sample.test/audio.wav"
 
-    async def guard():
+    async def guard(current):
         raise VoiceManagementError("CONTEXT_CHANGED", 409)
 
     monkeypatch.setattr(voice_clone, "QwenVoiceCloneClient", Uploader)
@@ -315,7 +316,8 @@ async def test_doubao_overwrite_uses_existing_client_and_never_changes_speaker(t
             return httpx.Response(200, json={"code": 0, "data": {"speaker_id": "S_existing"}})
         return httpx.Response(200, json={"Result": {"Statuses": [{"SpeakerID": "S_existing", "State": "Success", "Version": "v1" if len(calls) == 1 else "v2", "AvailableTrainingTimes": 2}], "NextToken": ""}})
 
-    async def guard():
+    async def guard(current):
+        assert current.voice_id == "S_existing" and current.metadata["remote_revision"] == "v1"
         guards.append(True)
 
     transport(handler)

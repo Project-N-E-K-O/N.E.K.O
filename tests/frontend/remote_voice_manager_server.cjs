@@ -45,9 +45,9 @@ function createVoiceManagerServer() {
             const body = JSON.parse(await read(request)); state.imports.push(body);
             const ref = 'voice_' + state.imports.length.toString(16).padStart(32, '0');
             const data = { local_ref: ref, remote_voice_id: body.remote_voice_id, display_name: body.display_name || '已有克隆音色', prefix: body.display_name || '已有克隆音色',
-                source: 'clone', provider: body.provider, availability: 'available', origin: 'import', clone_model: body.metadata.clone_model || (body.provider.startsWith('cosyvoice') ? 'cosyvoice-v3-plus' : ''), can_overwrite: management(body.provider).overwrite, created_at: new Date().toISOString() };
+                source: 'clone', provider: body.provider, availability: 'available', origin: 'import', verification: 'verified', remote_revision: 'controlled-revision-1', clone_model: body.metadata.clone_model || (body.provider.startsWith('cosyvoice') ? 'cosyvoice-v3-plus' : ''), can_overwrite: management(body.provider).overwrite, created_at: new Date().toISOString() };
             state.voices[ref] = data;
-            return json(response, { success: true, voice_id: ref, voice_data: data, created: true, verification: 'unverified' });
+            return json(response, { success: true, voice_id: ref, voice_data: data, created: true, verification: data.verification });
         }
         if (url.pathname.endsWith('/overwrite')) {
             state.updates.push(await read(request)); const ref = url.pathname.split('/')[4];

@@ -41,7 +41,7 @@ app.whenReady().then(async () => {
     const listScreenshot = await screenshot('list');
     await run("document.querySelector('.remote-voice-table input[type=radio]').click();true;");
     await click('importSelected');
-    await waitFor("document.querySelector('.remote-voice-status').textContent===window.t('voice.remote.importedUnverified') && document.querySelector('[data-voice-id=voice_00000000000000000000000000000001]')");
+    await waitFor("document.querySelector('.remote-voice-status').textContent===window.t('voice.remote.imported') && document.querySelector('[data-voice-id=voice_00000000000000000000000000000001]')");
     assert.equal(state.imports.length, 1); assert.equal(state.binding, '');
     assert.equal(state.imports[0].remote_voice_id, 'ExistingVoice123');
     assert.equal(await run("document.querySelector('[data-voice-id=voice_00000000000000000000000000000001] .voice-id').textContent"), 'ID: ExistingVoice123');
@@ -58,6 +58,7 @@ app.whenReady().then(async () => {
     await waitFor("document.querySelector('.remote-voice-status').textContent===window.t('voice.remote.uncertain')");
     assert.equal(state.updates.length, 1); assert.equal(state.binding, 'voice_00000000000000000000000000000001');
     assert.equal(await run("Array.from(document.querySelectorAll('.remote-voice-dialog button')).find(button=>button.textContent===window.t('voice.remote.overwrite')).hidden"), true);
+    await waitFor("document.querySelector('.remote-voice-dialog').getAttribute('aria-busy')==='false'");
     await click('refreshStatus');
     await waitFor("document.querySelector('.remote-voice-status').textContent===window.t('voice.remote.completed')");
     assert.equal(state.updates.length, 1);

@@ -51,6 +51,12 @@ def _voice_metadata(data: dict) -> dict:
     }
 
 
+def _overwrite_allowed(adapter: VoiceManagementAdapter, runtime: VoiceRuntime, voice: RemoteVoice | None) -> bool:
+    # A ready voice without a revision cannot provide proof that this update completed.
+    return bool(adapter.capabilities_for(runtime).overwrite and voice and voice.can_overwrite
+                and _voice_metadata(voice.metadata).get("remote_revision"))
+
+
 async def management_context(adapter: VoiceManagementAdapter, cm) -> dict:
     runtime = await asyncio.to_thread(adapter.resolve_runtime, cm)
     capabilities = adapter.capabilities_for(runtime)
@@ -100,14 +106,14 @@ async def list_remote_voices(
     local = await asyncio.to_thread(cm.get_voices_for_current_api, for_listing=True)
     registered = {
         data.get("remote_voice_id"): ref for ref, data in local.items()
-        if data.get("origin") == "import" and data.get("scope_id") == runtime.scope_id
+        if isinstance(data, dict) and data.get("origin") == "import" and data.get("scope_id") == runtime.scope_id
     }
     voices = [{
         "voice_id": voice.voice_id, "name": voice.name or voice.voice_id,
         "created_at": voice.created_at, "status": voice.status,
         "metadata": {key: value for key, value in _voice_metadata(voice.metadata).items()
                      if key in _PUBLIC_METADATA_FIELDS},
-        "can_overwrite": bool(adapter.capabilities_for(runtime).overwrite and voice.can_overwrite),
+        "can_overwrite": _overwrite_allowed(adapter, runtime, voice),
         "imported": voice.voice_id in registered, "local_ref": registered.get(voice.voice_id),
     } for voice in page.voices]
     await _check_context(adapter, cm, runtime)
@@ -161,7 +167,7 @@ async def import_remote_voice(adapter: VoiceManagementAdapter, cm, payload: dict
         "remote_created_at": remote.created_at if remote else None,
         "remote_status": remote.status if remote else "unknown",
         "verification": "verified" if remote else "unverified",
-        "can_overwrite": bool(capabilities.overwrite and remote and remote.can_overwrite),
+        "can_overwrite": _overwrite_allowed(adapter, runtime, remote),
     })
 
     def commit():
@@ -204,9 +210,13 @@ async def overwrite_remote_voice(
         operation_id = secrets.token_hex(16)
         mutation_started = False
         claim_owned = False
+        previous_revision = None
 
-        async def before_mutation():
-            nonlocal mutation_started, claim_owned
+        async def before_mutation(current: RemoteVoice):
+            nonlocal mutation_started, claim_owned, previous_revision
+            if current.voice_id != remote_id or not _overwrite_allowed(adapter, runtime, current):
+                raise VoiceManagementError("OVERWRITE_UNSUPPORTED", 400)
+            previous_revision = _voice_metadata(current.metadata)["remote_revision"]
             await _check_context(adapter, cm, runtime)
             latest = await asyncio.to_thread(cm.get_imported_voice, local_ref, include_inactive=True)
             if not latest or any(latest.get(key) != record.get(key) for key in (
@@ -215,7 +225,7 @@ async def overwrite_remote_voice(
                 raise VoiceManagementError("CONTEXT_CHANGED", 409)
             claim = asyncio.create_task(cm.aupdate_imported_voice(local_ref, runtime.scope_id, {
                 "overwrite_status": "processing", "overwrite_operation_id": operation_id,
-                "overwrite_previous_revision": latest.get("remote_revision"),
+                "overwrite_previous_revision": previous_revision,
             }, expected_operation_id=record.get("overwrite_operation_id") or ""))
             try:
                 await asyncio.shield(claim)
@@ -261,13 +271,15 @@ async def overwrite_remote_voice(
             raise VoiceManagementError("UPSTREAM_INVALID_RESPONSE", 502)
         status = (
             "completed" if updated.status in {"ready", "completed", "OK"}
+            and previous_revision is not None and updated.metadata.get("remote_revision")
+            and updated.metadata["remote_revision"] != previous_revision
             else "failed" if updated.status in {"failed", "unavailable"}
             else "processing"
         )
         values = _voice_metadata(updated.metadata)
         values.update({
             "overwrite_status": status, "remote_status": updated.status,
-            "can_overwrite": bool(adapter.capabilities_for(runtime).overwrite and updated.can_overwrite),
+            "can_overwrite": _overwrite_allowed(adapter, runtime, updated),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
         try:
@@ -308,7 +320,7 @@ async def refresh_overwrite_status(adapter: VoiceManagementAdapter, cm, local_re
     values = _voice_metadata(remote.metadata)
     values.update({
         "overwrite_status": status, "remote_status": remote.status,
-        "can_overwrite": bool(adapter.capabilities_for(runtime).overwrite and remote.can_overwrite),
+        "can_overwrite": _overwrite_allowed(adapter, runtime, remote),
     })
     saved = await cm.aupdate_imported_voice(local_ref, runtime.scope_id, values,
                                           expected_operation_id=record.get("overwrite_operation_id") or "")

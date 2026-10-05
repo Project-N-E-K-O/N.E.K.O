@@ -169,7 +169,7 @@ class DoubaoVoiceAdapter(ImportOnlyAdapter):
         if current is None or not current.can_overwrite:
             raise VoiceManagementError("OVERWRITE_UNSUPPORTED")
         if before_mutation:
-            await before_mutation()
+            await before_mutation(current)
         client = DoubaoVoiceCloneClient(runtime.api_key, base_url=runtime.base_url, resource_id=runtime.resource_id)
         try:
             returned = await client.clone_voice(io.BytesIO(audio), speaker_id=voice_id, display_name=current.name, audio_format="wav")

@@ -2330,17 +2330,26 @@ function finishVoicePreviewSession(session) {
     session.buttons.clear();
 }
 
+function voicePreviewCacheIdentity(options) {
+    return options.origin === 'import'
+        ? JSON.stringify([options.overwrite_operation_id || '', options.overwrite_status || '', options.remote_revision || ''])
+        : '';
+}
+
 async function playPreview(voiceId, btn, options = {}) {
     if (btn.disabled) return;
 
     const voiceIdKey = String(voiceId);
+    const cacheIdentity = voicePreviewCacheIdentity(options);
     const existingSession = activeVoicePreviewSessions.get(voiceIdKey);
-    if (existingSession) {
+    if (existingSession && existingSession.cacheIdentity === cacheIdentity) {
         attachVoicePreviewButton(voiceIdKey, btn);
         return;
     }
+    if (existingSession) finishVoicePreviewSession(existingSession);
     const session = {
         voiceId: voiceIdKey,
+        cacheIdentity,
         state: 'loading',
         buttons: new Set(),
     };
@@ -2350,14 +2359,17 @@ async function playPreview(voiceId, btn, options = {}) {
     try {
         const storageKey = `voice_preview_${voiceId}`;
         const previewLanguage = getVoicePreviewLanguage();
-        const cachedPreview = localStorage.getItem(storageKey);
+        let cachedPreview = null;
+        try { cachedPreview = localStorage.getItem(storageKey); }
+        catch (error) { console.warn('Failed to read preview from localStorage:', error); }
         let audioSrc = '';
         if (cachedPreview) {
             try {
                 const cachedData = JSON.parse(cachedPreview);
                 if (
                     cachedData
-                    && cachedData.version === 2
+                    && cachedData.version === (cacheIdentity ? 3 : 2)
+                    && (!cacheIdentity || cachedData.cacheIdentity === cacheIdentity)
                     && cachedData.language === previewLanguage
                     && typeof cachedData.audioSrc === 'string'
                     && cachedData.audioSrc
@@ -2371,10 +2383,10 @@ async function playPreview(voiceId, btn, options = {}) {
 
         if (!audioSrc) {
             // 如果本地没有缓存，则从服务器获取
-            // 保留 Voice Clone 原有的 voice-id 判定；Voice Design 仅通过
-            // source/design id 追加到同一实时合成超时档位。
+            // 导入音色使用本地 UUID，不能只靠远端 ID 的 clone 字样判断。
             const voiceSource = String(options.source || '').trim().toLowerCase();
-            const isCloneVoice = typeof voiceId === 'string' && voiceId.includes('-clone-');
+            const isCloneVoice = voiceSource === 'clone'
+                || (typeof voiceId === 'string' && voiceId.includes('-clone-'));
             const isDesignVoice = voiceSource === 'design'
                 || (typeof voiceId === 'string' && voiceId.includes('-design-'));
             const isRealtimeRegisteredVoice = isCloneVoice || isDesignVoice;
@@ -2383,6 +2395,7 @@ async function playPreview(voiceId, btn, options = {}) {
             let lastTtsError = null;
             let response = null;
             for (let attempt = 1; attempt <= ttsMaxAttempts; attempt += 1) {
+                if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
                 response = null;
                 const ctrl = new AbortController();
                 const tid = setTimeout(() => ctrl.abort(), ttsTimeoutMs);
@@ -2405,6 +2418,7 @@ async function playPreview(voiceId, btn, options = {}) {
             }
             if (!response) throw lastTtsError || new Error('请求失败');
             const { data, nonJson, text } = await safeReadResponse(response);
+            if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
             if (!response.ok) {
                 if (data && (data.error || data.detail)) {
                     throw new Error(data.error || data.detail);
@@ -2420,7 +2434,8 @@ async function playPreview(voiceId, btn, options = {}) {
                 // 保存到 localStorage
                 try {
                     localStorage.setItem(storageKey, JSON.stringify({
-                        version: 2,
+                        version: cacheIdentity ? 3 : 2,
+                        ...(cacheIdentity ? { cacheIdentity } : {}),
                         language: previewLanguage,
                         audioSrc
                     }));
@@ -2434,7 +2449,7 @@ async function playPreview(voiceId, btn, options = {}) {
             }
         }
 
-        if (audioSrc) {
+        if (audioSrc && activeVoicePreviewSessions.get(voiceIdKey) === session) {
             const audio = new Audio(audioSrc);
             let playbackFinished = false;
             const restorePreviewButton = () => {
@@ -2463,6 +2478,7 @@ async function playPreview(voiceId, btn, options = {}) {
             }
         }
     } catch (error) {
+        if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
         console.error('Preview error:', error);
         const errorMsg = error?.message || error?.toString();
         showVoicePreviewErrorNotice(
@@ -2609,7 +2625,7 @@ async function loadVoices() {
         });
 
         // 创建音色列表项
-        voicesArray.forEach(({ voiceId, prefix, display_name, remote_voice_id, created_at, source, provider, can_overwrite, availability, overwrite_status }) => {
+        voicesArray.forEach(({ voiceId, prefix, display_name, remote_voice_id, created_at, source, provider, origin, can_overwrite, availability, overwrite_status, overwrite_operation_id, remote_revision }) => {
             const item = document.createElement('div');
             item.className = 'voice-list-item';
             item.dataset.voiceId = voiceId;
@@ -2650,10 +2666,15 @@ async function loadVoices() {
             previewImg.alt = '';
             previewBtn.appendChild(previewImg);
             previewBtn.appendChild(document.createTextNode(previewText));
+            const previewOptions = { source, provider, origin, overwrite_status, overwrite_operation_id, remote_revision };
+            const previousPreview = activeVoicePreviewSessions.get(String(voiceId));
+            if (previousPreview && previousPreview.cacheIdentity !== voicePreviewCacheIdentity(previewOptions)) {
+                finishVoicePreviewSession(previousPreview);
+            }
             attachVoicePreviewButton(voiceId, previewBtn);
             previewBtn.onclick = (event) => {
                 event.stopPropagation();
-                playPreview(voiceId, previewBtn, { source, provider });
+                playPreview(voiceId, previewBtn, previewOptions);
             };
 
             const deleteBtn = document.createElement('button');
