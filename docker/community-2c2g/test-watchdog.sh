@@ -240,6 +240,20 @@ if sh "$ROOT/install.sh" 2> "$ROOT/install-error"; then exit 1; fi
 grep -q 'duplicate startup grace settings' "$ROOT/install-error"
 grep -qx NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=30m "$ROOT/cron/neko-watchdog"
 cp "$ROOT/cron-before" "$ROOT/cron/neko-watchdog"
+# Cron allows spaces and tabs around assignments; normalize on reinstall.
+sed -i 's/^NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=.*/\t NEKO_WATCHDOG_STARTUP_GRACE_SECONDS \t= \t300 \t/' "$ROOT/cron/neko-watchdog"
+sh "$ROOT/install.sh"
+grep -qx NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=300 "$ROOT/cron/neko-watchdog"
+printf ' NEKO_WATCHDOG_STARTUP_GRACE_SECONDS = 600\n' >> "$ROOT/cron/neko-watchdog"
+cp "$ROOT/cron/neko-watchdog" "$ROOT/cron-duplicate"
+if sh "$ROOT/install.sh" 2> "$ROOT/install-error"; then exit 1; fi
+grep -q 'duplicate startup grace settings' "$ROOT/install-error"
+cmp "$ROOT/cron/neko-watchdog" "$ROOT/cron-duplicate"
+cp "$ROOT/cron-before" "$ROOT/cron/neko-watchdog"
+sed -i 's/^NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=.*/ NEKO_WATCHDOG_STARTUP_GRACE_SECONDS = 30m /' "$ROOT/cron/neko-watchdog"
+if sh "$ROOT/install.sh" 2> "$ROOT/install-error"; then exit 1; fi
+grep -q 'invalid existing startup grace' "$ROOT/install-error"
+cp "$ROOT/cron-before" "$ROOT/cron/neko-watchdog"
 # A failed second mktemp and TERM during copying must leave no temporary files.
 rm "$ROOT/opt/neko/watchdog.sh" "$ROOT/cron/neko-watchdog"
 cat > "$ROOT/bin/mktemp" <<'EOF'

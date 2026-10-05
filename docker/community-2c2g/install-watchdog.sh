@@ -28,8 +28,9 @@ grace=
 if [ -e /host-cron.d/neko-watchdog ]; then
     [ -f /host-cron.d/neko-watchdog ] || fail "cron destination is not a regular file"
     [ "$(stat -c '%u:%g:%a' /host-cron.d/neko-watchdog)" = 0:0:644 ] || fail "unsafe existing cron permissions"
-    [ "$(grep -c '^NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=' /host-cron.d/neko-watchdog || true)" -le 1 ] || fail "duplicate startup grace settings"
-    grace=$(sed -n 's/^NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=//p' /host-cron.d/neko-watchdog)
+    assignment_pattern='^[[:blank:]]*NEKO_WATCHDOG_STARTUP_GRACE_SECONDS[[:blank:]]*=[[:blank:]]*'
+    [ "$(grep -c "$assignment_pattern" /host-cron.d/neko-watchdog || true)" -le 1 ] || fail "duplicate startup grace settings"
+    grace=$(sed -n "/$assignment_pattern/{s/$assignment_pattern//;s/[[:blank:]]*$//;p;}" /host-cron.d/neko-watchdog)
     case "$grace" in
         '') ;;
         *[!0-9]*) fail "invalid existing startup grace" ;;
