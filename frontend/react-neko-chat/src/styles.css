@@ -1339,11 +1339,12 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 }
 
 .message-block-image {
+  position: relative;
   margin: 0;
   max-width: 280px;
   overflow: hidden;
   border-radius: 12px;
-  background: rgba(220, 228, 240, 0.85);
+  background: transparent;
 }
 
 .message-block-image img {
@@ -1357,6 +1358,102 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   height: auto;
   object-fit: contain;
   background: #fff;
+}
+
+.message-block.message-block-image.message-block-image-interactive {
+  min-width: 40px;
+  min-height: 40px;
+}
+
+.message-image-save {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 50%;
+  background: rgba(24, 32, 48, 0.7);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.message-block-image:hover .message-image-save,
+.message-image-save:hover,
+.message-image-save:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.message-image-save svg {
+  flex-shrink: 0;
+}
+
+.message-image-save:hover:not(:disabled) {
+  background: rgba(24, 32, 48, 0.9);
+}
+
+.message-image-save:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: -4px;
+}
+
+.message-image-save:disabled {
+  cursor: default;
+}
+
+.message-image-save-spinner {
+  animation: message-image-save-spin 0.9s linear infinite;
+}
+
+@keyframes message-image-save-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .message-block.message-block-image.message-block-image-interactive {
+    min-width: 48px;
+    min-height: 48px;
+  }
+
+  .message-image-save {
+    top: 6px;
+    right: 6px;
+    width: 36px;
+    height: 36px;
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-image-save {
+    transition: none;
+  }
+
+  .message-image-save-spinner {
+    animation: none;
+  }
+}
+
+.message-image-save-error {
+  margin: 6px 0 0;
+  max-width: 280px;
+  color: #b42318;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+[data-theme="dark"] .message-image-save-error {
+  color: #ffb4ab;
 }
 
 .message-block-link {
@@ -9186,10 +9283,6 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
   color: #6fa8ff;
 }
 
-/* --- 图片块 --- */
-[data-theme="dark"] .message-block-image {
-  background: rgba(40, 44, 60, 0.85);
-}
 
 /* --- 状态块 --- */
 [data-theme="dark"] .message-block-status.tone-info {

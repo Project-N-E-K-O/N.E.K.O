@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from io import BytesIO
+from pathlib import Path
+
 import pytest
-from playwright.sync_api import Page
+from PIL import Image
+from playwright.sync_api import Browser, Page, expect
 
 
 _ONE_PIXEL_PNG = (
@@ -10,11 +14,11 @@ _ONE_PIXEL_PNG = (
 )
 
 
-def _open_chat(page: Page, running_server: str) -> None:
+def _open_chat(page: Page, running_server: str, surface_path: str = "chat") -> None:
     page.add_init_script(
         "window.localStorage.setItem('neko_tutorial_settings', 'seen')"
     )
-    page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
+    page.goto(f"{running_server}/{surface_path}", wait_until="domcontentloaded")
     page.wait_for_function(
         "() => window.reactChatWindowHost"
         " && window.appButtons"
@@ -246,3 +250,98 @@ def test_structured_passthrough_pending_message_receives_its_turn_end(
         {"type": "text", "text": "caption"},
         {"type": "image", "url": _ONE_PIXEL_PNG},
     ]
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("surface_path", ["chat_full", "chat"])
+@pytest.mark.parametrize("touch", [False, True], ids=["mouse", "touch"])
+def test_plugin_image_can_be_saved_without_reencoding(
+    mock_page: Page,
+    browser: Browser,
+    running_server: str,
+    tmp_path: Path,
+    surface_path: str,
+    touch: bool,
+) -> None:
+    if not touch:
+        _check_image_download(mock_page, running_server, tmp_path, surface_path, touch)
+        return
+    context = browser.new_context(has_touch=True, is_mobile=True, viewport={"width": 390, "height": 844})
+    try:
+        _check_image_download(context.new_page(), running_server, tmp_path, surface_path, touch)
+    finally:
+        context.close()
+
+
+def _check_image_download(page: Page, running_server: str, tmp_path: Path, surface_path: str, touch: bool) -> None:
+    _open_chat(page, running_server, surface_path)
+    image_data = BytesIO()
+    Image.new("RGB", (1, 1), "#86b8df").save(image_data, format="PNG")
+    image_bytes = image_data.getvalue()
+    page.route(
+        "**/media/chat-save-test",
+        lambda route: route.fulfill(body=image_bytes, content_type="image/png"),
+    )
+    page.evaluate(
+        """() => window.appendReactChatBlocks({
+            request_id: 'plugin-image-save',
+            blocks: [{ type: 'image', url: '/media/chat-save-test', alt: 'Selfie' }]
+        })"""
+    )
+    if surface_path == "chat":
+        page.evaluate("() => reactChatWindowHost.setCompactHistoryOpen(true)")
+    figure = page.locator(".message-block-image")
+    save_button = page.locator(".message-image-save")
+    save_button.wait_for(state="attached")
+    page.wait_for_function("() => document.querySelector('.message-block-image img')?.naturalWidth > 0")
+    assert save_button.get_attribute("aria-label")
+    assert save_button.inner_text() == ""
+    assert page.locator(".message-image-actions").count() == 0
+    if not touch:
+        page.mouse.move(0, 0)
+        expect(save_button).to_have_css("opacity", "0")
+        save_button.focus()
+        page.keyboard.press("Tab")
+        page.keyboard.press("Shift+Tab")
+        expect(save_button).to_be_focused()
+        expect(save_button).to_have_css("opacity", "1")
+        save_button.evaluate("button => button.blur()")
+        expect(save_button).to_have_css("opacity", "0")
+        page.locator(".system-chip-time, .compact-export-history-time").first.hover()
+        expect(save_button).to_have_css("opacity", "0")
+        image_box = figure.locator("img").bounding_box()
+        assert image_box
+        page.mouse.move(image_box["x"] + 2, image_box["y"] + image_box["height"] / 2)
+    expect(save_button).to_have_css("opacity", "1")
+    page.screenshot(path=str(tmp_path / "image-save.png"))
+    geometry = save_button.evaluate("""button => {
+        const figure = button.closest('figure');
+        return {
+            button: button.getBoundingClientRect().toJSON(),
+            image: figure.getBoundingClientRect().toJSON()
+        };
+    }""")
+    button_box, image_box = geometry["button"], geometry["image"]
+    assert button_box["width"] == pytest.approx(36 if touch else 28), geometry
+    assert button_box["y"] >= image_box["y"], geometry
+    assert button_box["bottom"] <= image_box["bottom"], geometry
+    assert button_box["left"] >= image_box["left"], geometry
+    assert button_box["right"] <= image_box["right"], geometry
+    assert button_box["y"] - image_box["y"] <= 6, geometry
+    with page.expect_download() as download_info:
+        if touch:
+            save_button.tap()
+        else:
+            save_button.click()
+    download = download_info.value
+    assert download.suggested_filename.startswith("neko-image-")
+    assert download.suggested_filename.endswith(".png")
+    saved_path = tmp_path / download.suggested_filename
+    download.save_as(saved_path)
+    assert saved_path.read_bytes() == image_bytes
+    expect(save_button.locator("path")).to_have_attribute("d", "M12 3v12m-5-5 5 5 5-5M5 16v4h14v-4")
+    if not touch:
+        page.mouse.move(0, 0)
+        expect(save_button).to_have_css("opacity", "0")
+    assert page.locator(".message-image-save-error").count() == 0
+    assert page.evaluate("window.reactChatWindowHost.getState().messages.length") == 1
