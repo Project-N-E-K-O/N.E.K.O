@@ -282,6 +282,30 @@ async def test_caller_cancel_ends_the_wait_on_a_step_without_deadline() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_step_without_deadline_is_skipped_once_a_cancel_is_pending() -> None:
+    """A cancel absorbed by an earlier step will not arrive again to end the wait.
+
+    Starting an unbounded step then would block shutdown forever on a stuck
+    worker thread, so it is not started at all.
+    """
+    from app.main_server import _run_shutdown_step
+
+    called = False
+
+    async def step() -> None:
+        nonlocal called
+        called = True
+
+    first = asyncio.CancelledError()
+    pending = await _run_shutdown_step(
+        step, what="unbounded", deadline_monotonic=None, pending_cancellation=first
+    )
+    assert pending is first
+    assert called is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_abandoned_step_failure_is_still_logged(monkeypatch) -> None:
     """A step shutdown stopped waiting on must not fail silently afterwards."""
     from app import main_server

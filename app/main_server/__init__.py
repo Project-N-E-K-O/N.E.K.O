@@ -838,8 +838,15 @@ async def _run_shutdown_step(
     cancellation this helper already absorbed. ``deadline_monotonic=None`` waits
     for the step's own terminal state, for work that cancelling the await
     cannot stop (a worker thread); a caller cancellation then ends the wait
-    instead, since nothing else bounds it.
+    instead, since nothing else bounds it, and such a step is not started at
+    all once a cancellation is already pending (no new one would arrive to
+    end the wait).
     """
+    if deadline_monotonic is None and pending_cancellation is not None:
+        logger.warning(
+            "%s skipped: shutdown was cancelled and this step has no deadline", what
+        )
+        return pending_cancellation
     if deadline_monotonic is not None and deadline_monotonic - time.monotonic() <= 0:
         logger.warning("%s skipped: shutdown deadline already passed", what)
         return pending_cancellation
@@ -1629,7 +1636,8 @@ async def on_shutdown():
 
             # 不设截止时间：上传在 to_thread 里同步写 Steam，5s 预算由线程内部自己检查；
             # 取消 await 停不了线程，只会让关闭在远端快照写到一半时就往下走。
-            # 调用方取消时停止等待（Steam 调用卡死时的唯一出口），后续清理照跑。
+            # 调用方取消时停止等待（Steam 调用卡死时的唯一出口），后续清理照跑；
+            # 取消若在前面的步骤里就已发生，这一步直接跳过。
             shutdown_cancellation = await _run_shutdown_step(
                 _upload_cloudsave,
                 what="Steam Auto-Cloud shutdown staged snapshot upload",

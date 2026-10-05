@@ -550,7 +550,12 @@ async def test_main_server_shutdown_defers_cancellation_until_every_cleanup_ran(
         with pytest.raises(asyncio.CancelledError):
             await shutdown_task
 
-    assert cleanup_order == _SHUTDOWN_CLEANUP_ORDER
+    expected = list(_SHUTDOWN_CLEANUP_ORDER)
+    if _SHUTDOWN_CLEANUP_ORDER.index(cancelled_step) < expected.index("cloudsave"):
+        # The upload has no deadline (a stuck Steam call cannot be cancelled),
+        # so once shutdown is cancelled it is not started; main skipped it too.
+        expected.remove("cloudsave")
+    assert cleanup_order == expected
 
 
 @pytest.mark.unit
