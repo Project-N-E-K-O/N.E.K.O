@@ -2153,6 +2153,7 @@ def test_discarded_records_do_not_move_the_upload_end_time():
     records = _stream_records(v) + [
         {"kind": "line", "lp": 9, "ts": 99999.0},                     # 坏行：会被丢弃
         {"kind": "mystery", "ts": 88888.0},                           # 不认识的记录
+        {"kind": "usage", "ts": 77777.0, "d": {"llm_input_tokens": "bad"}},   # 用量记录里没有一项有效
     ]
     doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
     # 被丢弃的记录带的时间戳不能挪动结束时间与时长

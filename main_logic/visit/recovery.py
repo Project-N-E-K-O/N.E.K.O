@@ -226,7 +226,8 @@ def build_upload_doc(
                     value = delta.get(key)
                     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                         usage[key] += value
-                accepted = True
+                        # 至少有一项被计入才算采纳：全是坏值的用量记录不能拿它的时间戳拉长时长
+                        accepted = True
         elif kind == "anomaly":
             anomalies += 1
             accepted = True
