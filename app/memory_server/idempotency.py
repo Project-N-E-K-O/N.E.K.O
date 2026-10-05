@@ -748,6 +748,10 @@ async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
                 # 孤儿暂存可被同键重试认领（重建 pending 记录后接着应用）。上面的键记录是
                 # 枚举前的快照：删之前拿键级锁、重读最新记录，已被认领成 pending 的不删
                 key = embedded
+            if key_lock(name, key).locked():
+                # 同键请求正持着键锁（多半在调 LLM）：清理持着角色请求租约，不能排在它后面等，
+                # 否则角色删除 / 改名的排空会被拖住。这一份留到下次启动再扫
+                continue
             # 与在飞的同键请求互斥：它可能正要补应用这份暂存。
             async with key_lock(name, key):
                 try:

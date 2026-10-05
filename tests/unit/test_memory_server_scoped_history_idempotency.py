@@ -1424,11 +1424,19 @@ async def test_record_pass_matches_routed_keys_when_staging_is_not_written_yet(e
         "pending", request={"shape": "single", "wire_keys": [GROUP_KEY], "content_hash": "h"},
         routed_keys=["participant:neko_visit:routed-person"],
     ))
-    # 暂存还没写成：只能靠记录里的路由后 subject 认出它
+    # 暂存还没写成：只能靠记录里的路由后 subject 认出它。请求里还有没被清的 subject：只记下被清的，
+    # 不整键取消
     cancelled = await env.routes._cancel_staged_writes_for_subjects(
         NAME, {"participant:neko_visit:routed-person"},
     )
-    assert cancelled == 1 and _key_state(env, KEY_GROUP) == "cancelled"
+    record = json.loads(Path(idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
+    assert cancelled == 1 and record["state"] == "pending"
+    assert record["forgotten_keys"] == ["participant:neko_visit:routed-person"]
+    # 请求涉及的 subject 全被清除：整键取消
+    await env.routes._cancel_staged_writes_for_subjects(
+        NAME, {"participant:neko_visit:routed-person", GROUP_KEY},
+    )
+    assert _key_state(env, KEY_GROUP) == "cancelled"
 
 
 async def test_concurrent_older_forget_waits_for_the_newer_one_to_publish_its_epoch(env):
@@ -3201,3 +3209,78 @@ async def test_scalar_wire_keys_do_not_break_the_conservative_forgotten_merge(en
     # 记录里的列表坏成标量：不能 TypeError 让清除 500，也不能把字符串拆成单个字符
     record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))[KEY_GROUP]
     assert result["status"] == "forgotten" and record["forgotten_keys"] == [GROUP_KEY]
+
+
+async def test_forget_of_one_segment_after_a_failed_generation_keeps_the_other_segment(env):
+    # 被清的段不再送去抽取：重试时只剩第一段
+    env.llm.responses = [RuntimeError("LLM 502"), [BATCH_FACTS[0]]]
+    with pytest.raises(RuntimeError):
+        await _post(env, _segments_body())
+    assert _key_state(env, KEY_SEGMENTS) == "pending"      # 生成失败：pending、没有暂存、键锁已放开
+    await _forget(env, PART)
+    # 只清了一段：不能整键取消，否则另一段的记忆永久写不进去（客户端拿到 duplicate 不会重发）
+    assert _key_state(env, KEY_SEGMENTS) == "pending"
+    result = await _post(env, _segments_body())
+    assert result.get("duplicate") is None and _key_state(env, KEY_SEGMENTS) == "done"
+    assert _facts_of(env, GP) and _facts_of(env, PART) == []
+
+
+async def test_orphan_staging_without_its_identity_is_cancelled_with_a_placeholder(env):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_GROUP)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    staging.pop("shape")                                       # 暂存里的请求身份字段坏了
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    keys = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8"))
+    keys.pop(KEY_GROUP)                                        # 孤儿暂存：没有键记录
+    Path(env.idem.keys_path(NAME)).write_text(json.dumps(keys), encoding="utf-8")
+    await _forget(env, GROUP)
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body())
+    # 取消记录带着一个不会被任何请求匹配的占位身份：重试按「键被别的请求用过」422，不永久 503
+    assert excinfo.value.status_code == 422
+
+
+@pytest.mark.parametrize("failure", ["transient", "corrupt"])
+async def test_keys_file_read_failure_during_forget(env, failure):
+    env.llm.responses = [SINGLE_FACTS]
+    await _post(env, _single_body(key=None, display_name=None))
+    real_read = env.idem._read_json_object
+    keys_path = Path(env.idem.keys_path(NAME))
+
+    def failing(path):
+        if Path(path) == keys_path:
+            if failure == "transient":
+                raise env.idem.IdempotencyStateError("idempotency_keys.json unreadable: sharing violation")
+            raise env.idem.IdempotencyCorruptError("idempotency_keys.json is not an object")
+        return real_read(path)
+
+    env.monkeypatch.setattr(env.idem, "_read_json_object", failing)
+    if failure == "corrupt":
+        # 内容坏了：带键请求本身都 fail closed，跳过认领、清除照常完成
+        assert (await _forget(env, GROUP))["status"] == "forgotten"
+    else:
+        # 一时读不出：下一次同键重试可能读得到，不能静默跳过认领；清除报错重试
+        with pytest.raises(Exception):
+            await _forget(env, GROUP)
+
+
+async def test_cleanup_skips_a_staging_whose_key_lock_is_held(env):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    await env.idem.update_key(NAME, KEY_GROUP, env.idem.transition("done"))   # 收尾时没删掉的残留暂存
+    lock = env.idem.key_lock(NAME, KEY_GROUP)
+    await lock.acquire()                                        # 同键请求正持锁调 LLM
+    try:
+        report = await asyncio.wait_for(env.idem.cleanup_expired([NAME], ttl_s=0, now=time.time() + 10), 5)
+    finally:
+        lock.release()
+    # 清理持着角色请求租约：不排在键锁后面等，这一份留到下次启动再扫
+    assert report["staging_removed"] == 0 and _staging_file(env, KEY_GROUP).exists()
