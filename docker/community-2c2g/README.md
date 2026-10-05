@@ -67,7 +67,15 @@ NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
 # NEKO_IMAGE=ghcr.io/project-n-e-k-o/n.e.k.o@sha256:<经核验且包含实例授权的完整摘要>
 ```
 
-默认 `SSL_DOMAIN=localhost`，`NEKO_TRUSTED_HOSTS` 留空并由入口脚本回退到该值；使用自有域名时整体填写自己的域名，不追加不受自己控制的域名。使用 IP 字面量无需域名白名单，但仍需要 HTTPS、证书与实例凭证。外置 TLS 网关终止 HTTPS 时，设置 `NEKO_INSTANCE_PUBLIC_ORIGIN=https://your-domain.example`，保留 Host 和正确的客户端 XFF 链，代理 WebSocket；上游 HTTP 必须私有隔离。网关公网 HTTP 只能关闭或重定向到 HTTPS，不能把同 Host 明文流量代理进应用。仅使用容器自身 HTTPS 时留空 public origin。`NEKO_COMMUNITY_WEB_CLIENT_ID` / `NEKO_COMMUNITY_WEB_REDIRECT_URI` 通常留空，使用平台固定 relay；社区 OAuth 仍需核对认证平台、PC/社区配套发布及真实环境验收，不能以此模板或单测代替。
+默认 `SSL_DOMAIN=localhost`，`NEKO_TRUSTED_HOSTS` 留空并由入口脚本回退到该值；使用自有域名时整体填写自己的域名，不追加不受自己控制的域名。使用 IP 字面量无需域名白名单，但仍需要 HTTPS、证书与实例凭证。
+外置 TLS 网关终止 HTTPS 时，按浏览器实际访问的公开 Origin 同时配置以下两项，例如网关使用默认 HTTPS 端口 443：
+
+```dotenv
+NEKO_INSTANCE_PUBLIC_ORIGIN=https://your-domain.example
+NEKO_TRUSTED_ORIGINS=https://your-domain.example
+```
+
+这会替换前面直接访问容器 HTTPS 时带 `:48912` 的 Origin 示例。若网关使用其他公开端口，两项均填写实际公开端口；不要填写容器内部端口。`NEKO_INSTANCE_PUBLIC_ORIGIN` 声明公开 TLS 入口，不会配置 `NEKO_TRUSTED_ORIGINS` 白名单。内层 Nginx 的 HTTP 转发可能使 WebSocket guard 看到 `ws`，因此需要显式信任浏览器发送的 HTTPS Origin。网关应保留 Host 和正确的客户端 XFF 链，并代理 WebSocket；上游 HTTP 必须私有隔离。网关公网 HTTP 只能关闭或重定向到 HTTPS，不能把同 Host 明文流量代理进应用。仅使用容器自身 HTTPS 时留空 public origin。`NEKO_COMMUNITY_WEB_CLIENT_ID` / `NEKO_COMMUNITY_WEB_REDIRECT_URI` 通常留空，使用平台固定 relay；社区 OAuth 仍需核对认证平台、PC/社区配套发布及真实环境验收，不能以此模板或单测代替。
 
 完整契约见 [社区账户与远程实例访问边界](../../docs/design/security/community-remote-access.md)。
 
@@ -100,6 +108,7 @@ sudo chown --no-dereference 1000:1000 -- ./logs/main.log
 ```
 
 不要使用 `chown -R`、通配符或仅依赖 `find -xdev` 批量修复；同一文件系统上的 bind mount 可能不被 `-xdev` 排除。启动服务并确认旧日志可写后，再解除看门狗暂停。新部署没有旧 root 日志时无需迁移。
+
 ---
 
 ## 3. 服务与自愈机制
