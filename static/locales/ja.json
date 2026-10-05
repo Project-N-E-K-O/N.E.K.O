@@ -1,5 +1,5 @@
 {
-    "instanceAccess": {"title":"NEKO に接続","description":"サーバー管理者から受け取ったアクセスキーを入力してください。この端末で30日間接続を記憶します。","key":"インスタンスアクセスキー","connect":"接続","failed":"接続が拒否されました。キーを確認して再試行してください。","httpsRequired":"HTTPS または信頼できる HTTPS トンネルで接続してください。"},
+    "instanceAccess": {"title":"NEKO に接続","description":"サーバー管理者から受け取ったアクセスキーを入力してください。この端末で30日間接続を記憶します。","key":"インスタンスアクセスキー","connect":"接続","failed":"接続が拒否されました。キーを確認して再試行してください。","httpsRequired":"HTTPS または信頼できる HTTPS トンネルで接続してください。","insecureWarning":"この接続は暗号化されていません（HTTP）。同じネットワーク経路上の第三者がキーとセッションを見られる可能性があります。可能であれば HTTPS を使用してください。"},
     "common": {
         "load": "読み込み",
         "minimize": "最小化",

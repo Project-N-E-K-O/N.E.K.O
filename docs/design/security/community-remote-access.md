@@ -9,7 +9,7 @@
 | 场景 | 只靠外置鉴权 | 本项目定论：自带保护，兼容网关 |
 | --- | --- | --- |
 | Docker 网页 | 部署者配置登录，覆盖全部 API/WS，禁止后端直连绕过 | 项目生成持久化 key，首次输入，刷新/重启复用会话 |
-| Linux 直连 | 另装 VPN/认证网关 | 同一实例授权，传输使用 HTTPS/WSS |
+| Linux 直连 | 另装 VPN/认证网关 | 同一实例授权；默认允许 HTTP/WS，推荐 HTTPS/WSS |
 | Windows Electron | 各窗口、主进程和 SSE 都接入网关 | 复用目的后端 Chromium session，后台请求经 Linux 固定 relay |
 | 本机桌面/调试代理 | 不应增加步骤 | loopback PKCE、路径发现、真实回环客户端 XFF 兼容 |
 | 未配置 nginx | 账户与其他接口可能直接暴露 | 匿名远程 API/WS 在读取账户、刷新或解析请求体前拒绝 |
@@ -33,7 +33,10 @@ Compose执行 docker compose exec --user neko -w /app neko-main uv run python -m
 （服务名按实际Compose）。多服务共享目录，或设置同一至少32字符的NEKO_INSTANCE_ACCESS_KEY。
 
 首次同源表单验证10分钟challenge并限速，设置30天、绑定hostname的
-HttpOnly/Secure/SameSite=Lax签名cookie。原生Bearer也仅通过HTTPS/WSS。
+HttpOnly/SameSite=Lax签名cookie：HTTPS下带Secure；明文HTTP下改用单独名称
+（neko_instance_access_http / neko_instance_challenge_http）且不带Secure，避免同Host的Secure cookie
+挡住明文配对。原生Bearer在HTTP/WS下同样可用。NEKO_REQUIRE_HTTPS=1 恢复严格模式：
+明文配对、明文cookie与Bearer、社区跨域交接和明文Market公开origin一律拒绝。
 新请求即时重新验证key；现存SSE/WS按至多每秒一次检查文件key，配置key变更即时检查。
 账户流同样至多每秒一次复核，避免语音帧/通知chunk触发逐帧文件读取。撤销延迟上限一秒。
 临时IO错误做短时有限重试后仍失败则关闭，不永久使用旧key。
@@ -101,7 +104,13 @@ facts 和角色读取仍需匹配当前账户的 scoped delegate/bearer。账户
 
 NEKO_INSTANCE_PUBLIC_ORIGIN=https://… 是部署者对外层 TLS 网关的明确声明，Host 本身不能证明加密。
 外层80端口必须关闭或只重定向到HTTPS，绝不能把同Host明文请求转发到私有HTTP upstream；
-私有 upstream 也必须隔离，不能直接公开给未受信任客户端。尚未选择的 HTTP/SSH 兼容策略不因此自动放开。
+私有 upstream 也必须隔离，不能直接公开给未受信任客户端。
+
+维护者定论：远程默认允许明文 HTTP。许多自建环境无法取得证书（家宽封80/443、按IP或DDNS访问、
+公网证书需要域名且国内需备案、自签证书被浏览器或客户端拒绝）。PR 之前远程实例完全无认证，
+明文配对仍远强于无锁；残余风险是同一网络路径可嗅探key与cookie，配对页会明确警告。
+需要严格传输的部署设置 NEKO_REQUIRE_HTTPS=1。浏览器仅在HTTPS或localhost下开放麦克风，
+明文IP访问时语音输入不可用。
 
 配对页复用仍有效的签名 challenge，其他标签页/预取不会覆盖首个表单；登录后保留原 return_path 的 query。
 已存在密钥无锁读取，跨进程 FileLock 仅用于缺失/空文件的原子创建修复；轮换仍在读取时生效。

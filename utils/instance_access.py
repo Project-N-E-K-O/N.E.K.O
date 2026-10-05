@@ -26,10 +26,15 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from filelock import FileLock, Timeout as FileLockTimeout
 
-from utils.deployment import has_forwarding_metadata, is_behind_proxy, is_remote_backend_deployment
+from utils.deployment import has_forwarding_metadata, is_behind_proxy, is_remote_backend_deployment, requires_https
 
 COOKIE = "neko_instance_access"
 CHALLENGE_COOKIE = "neko_instance_challenge"
+# Plaintext transports use distinct names: browsers refuse to let an HTTP
+# response overwrite a Secure cookie of the same name (cookies ignore ports),
+# which would otherwise trap a host paired over HTTPS in an HTTP login loop.
+INSECURE_COOKIE = COOKIE + "_http"
+INSECURE_CHALLENGE_COOKIE = CHALLENGE_COOKIE + "_http"
 SESSION_TTL = 30 * 24 * 3600
 LOGIN_PATH = "/instance-access/login"
 
@@ -100,7 +105,7 @@ def _local_native(request: Request) -> bool:
         # accidentally exempt the login page or an explicitly supplied session.
         browser_or_session = (request.headers.get("origin") or request.headers.get("sec-fetch-site")
                               or "text/html" in request.headers.get("accept", "")
-                              or request.headers.get("authorization") or request.cookies.get(COOKIE))
+                              or request.headers.get("authorization") or _session_cookies(request))
         if has_forwarding_metadata(request.headers) or browser_or_session:
             return False
     try:
@@ -130,13 +135,20 @@ def _verified(key: str, purpose: str, host: str, token: str) -> str | None:
         return None
 
 
+def _session_cookies(request: Request) -> list[str]:
+    # A cookie minted over plaintext may have been observed in transit; strict
+    # deployments must not keep honouring it after switching to HTTPS-only.
+    names = (COOKIE,) if requires_https() else (COOKIE, INSECURE_COOKIE)
+    return [value for name in names if (value := request.cookies.get(name, ""))]
+
+
 def remote_instance_identity(request: Request, *, key: str | None = None) -> str | None:
     """Verify explicit remote authorization; locality is not an account grant."""
-    if not _secure_transport(request):
+    if not _transport_allowed(request):
         return None
     bearer = request.headers.get("authorization", "")
-    cookie = request.cookies.get(COOKIE, "")
-    if not bearer and not cookie:
+    cookies = _session_cookies(request)
+    if not bearer and not cookies:
         return None
     key = key or instance_key()
     if bearer.startswith("Bearer ") and _equal(bearer[7:], key):
@@ -145,7 +157,11 @@ def remote_instance_identity(request: Request, *, key: str | None = None) -> str
         identity = _verified(key, "session", request.url.hostname or "", bearer[7:])
         if identity:
             return identity
-    return _verified(key, "session", request.url.hostname or "", cookie)
+    for cookie in cookies:
+        identity = _verified(key, "session", request.url.hostname or "", cookie)
+        if identity:
+            return identity
+    return None
 
 
 def _equal(left: str, right: str) -> bool:
@@ -160,6 +176,11 @@ def _secure_transport(request: Request) -> bool:
     return bool(is_behind_proxy() and public.scheme == "https" and public.netloc
                 and not public.username and not public.query and not public.fragment
                 and public.path in {"", "/"} and request.headers.get("host", "") == public.netloc)
+
+
+def _transport_allowed(request: Request) -> bool:
+    """Plaintext remote access is allowed unless NEKO_REQUIRE_HTTPS opts out."""
+    return _secure_transport(request) or not requires_https()
 
 
 def _same_origin(request: Request) -> bool:
@@ -211,7 +232,7 @@ def _market_internal_identity(request: Request, key: str) -> str | None:
     public_origin = request.headers.get("x-neko-market-public-origin", "")
     if public_origin:
         origin = urlsplit(public_origin)
-        if (origin.scheme != "https" or not origin.netloc or origin.username or origin.password
+        if (origin.scheme not in ({"https"} if requires_https() else {"https", "http"}) or not origin.netloc or origin.username or origin.password
                 or origin.path or origin.query or origin.fragment):
             return None
     return _verified(key, "market-internal-remote", request.method + ":" + path + ":" + public_origin,
@@ -233,7 +254,7 @@ class InstanceAccessMiddleware:
         request = Request(request_scope, receive=receive)
         if _local_native(request):
             return await self.app(scope, receive, send)
-        if scope["type"] == "http" and self.community_handoff_authorizer and _secure_transport(request):
+        if scope["type"] == "http" and self.community_handoff_authorizer and _transport_allowed(request):
             authorized, replay_body = await self.community_handoff_authorizer(request)
             if scope.get("neko.community_auth_rate_limited"):
                 return await self._deny(scope, receive, send, "identity_verification_rate_limited", 429)
@@ -257,7 +278,7 @@ class InstanceAccessMiddleware:
                 return await self.app(scope, receive, send)
         path = scope.get("path", "")
         login_page = scope["type"] == "http" and (path == LOGIN_PATH or (request.method == "GET" and "text/html" in request.headers.get("accept", "")))
-        if not login_page and not request.headers.get("authorization") and not request.cookies.get(COOKIE) and not request.headers.get("x-neko-market-internal"):
+        if not login_page and not request.headers.get("authorization") and not _session_cookies(request) and not request.headers.get("x-neko-market-internal"):
             return await self._deny(scope, receive, send, "instance_authorization_required", 401)
         try:
             key = await asyncio.to_thread(instance_key)
@@ -386,34 +407,39 @@ class InstanceAccessMiddleware:
 
     async def _page(self, request: Request, key: str, *, failed=False):
         strings = await asyncio.to_thread(_strings, request)
-        challenge = request.cookies.get(CHALLENGE_COOKIE, "")
+        secure = _secure_transport(request)
+        allowed = secure or not requires_https()
+        challenge_cookie = CHALLENGE_COOKIE if secure else INSECURE_CHALLENGE_COOKIE
+        challenge = request.cookies.get(challenge_cookie, "")
         if not _verified(key, "challenge", request.url.hostname or "", challenge):
             challenge = _signed(key, "challenge", request.url.hostname or "", secrets.token_hex(16), int(time.time()) + 600)
-        secure = _secure_transport(request)
         message = strings["failed"] if failed else strings["description"]
-        if not secure:
+        if not allowed:
             message = strings["httpsRequired"]
+        # Plaintext pairing is permitted, but the owner must be told the key
+        # and session cookie travel unencrypted on this connection.
+        warning = "" if secure or not allowed else f'<p role="alert">{html.escape(strings["insecureWarning"])}</p>'
         response = HTMLResponse(
             '<!doctype html><html><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
             f'<title>{html.escape(strings["title"])}</title><main><h1>{html.escape(strings["title"])}</h1>'
-            f'<p>{html.escape(message)}</p><form method="post" action="{LOGIN_PATH}">'
+            f'<p>{html.escape(message)}</p>{warning}<form method="post" action="{LOGIN_PATH}">'
             f'<input type="hidden" name="challenge" value="{challenge}">'
             f'<input type="hidden" name="return_path" value="{html.escape((request.url.path + ("?" + request.url.query if request.url.query else "")) if request.url.path != LOGIN_PATH else "/", quote=True)}">'
             f'<label>{html.escape(strings["key"])} <input type="password" name="key" required autocomplete="current-password"></label>'
-            f'<button {"disabled" if not secure else ""}>{html.escape(strings["connect"])}</button></form></main></html>',
+            f'<button {"disabled" if not allowed else ""}>{html.escape(strings["connect"])}</button></form></main></html>',
             status_code=401,
             # no-referrer makes Chromium's native form POST Origin opaque
             # ("null"). same-origin retains the required own-origin signal
             # while preventing a referrer from being sent to another site.
             headers={"Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; form-action 'self'; frame-ancestors 'none'", "Referrer-Policy": "same-origin"},
         )
-        response.set_cookie(CHALLENGE_COOKIE, challenge, httponly=True, secure=True, samesite="strict", max_age=600)
+        response.set_cookie(challenge_cookie, challenge, httponly=True, secure=secure, samesite="strict", max_age=600)
         return response
 
     async def _login(self, request, key, scope, receive, send):
         if request.method != "POST":
             return await (await self._page(request, key))(scope, receive, send)
-        if not _secure_transport(request) or not _same_origin(request):
+        if not _transport_allowed(request) or not _same_origin(request):
             return await self._deny(scope, receive, send, "secure_same_origin_required", 403)
         peer = request.client.host if request.client else "unknown"
         now = time.time()
@@ -439,8 +465,10 @@ class InstanceAccessMiddleware:
         fields = parse_qs(data.decode("utf-8", errors="replace"))
         challenge = fields.get("challenge", [""])[0]
         supplied = fields.get("key", [""])[0]
+        secure = _secure_transport(request)
+        challenge_cookie = CHALLENGE_COOKIE if secure else INSECURE_CHALLENGE_COOKIE
         valid = _verified(key, "challenge", request.url.hostname or "", challenge)
-        if not valid or not _equal(challenge, request.cookies.get(CHALLENGE_COOKIE, "")) or not _equal(key, supplied):
+        if not valid or not _equal(challenge, request.cookies.get(challenge_cookie, "")) or not _equal(key, supplied):
             # Re-read after awaits so simultaneous failures do not overwrite
             # each other's increments with the same stale admission count.
             started, count = self.attempts.get(peer, (time.time(), 0))
@@ -458,8 +486,11 @@ class InstanceAccessMiddleware:
             target = "/"
         response = RedirectResponse(target, status_code=303, headers={"Cache-Control": "no-store"})
         cookie = _signed(key, "session", request.url.hostname or "", secrets.token_hex(16), int(now) + SESSION_TTL)
-        response.set_cookie(COOKIE, cookie, max_age=SESSION_TTL, httponly=True, secure=True, samesite="lax")
-        response.delete_cookie(CHALLENGE_COOKIE, secure=True, httponly=True, samesite="strict")
+        # Only an encrypted transport may mint the Secure cookie; plaintext
+        # pairing uses its own name so neither can shadow the other.
+        response.set_cookie(COOKIE if secure else INSECURE_COOKIE, cookie, max_age=SESSION_TTL,
+                            httponly=True, secure=secure, samesite="lax")
+        response.delete_cookie(challenge_cookie, secure=secure, httponly=True, samesite="strict")
         await response(scope, receive, send)
 
 

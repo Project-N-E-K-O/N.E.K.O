@@ -9,6 +9,15 @@ def is_behind_proxy() -> bool:
     return os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
 
 
+def requires_https() -> bool:
+    """Opt into refusing plaintext remote pairing; HTTP stays usable by default.
+
+    Many self-hosted deployments (home broadband, LAN/NAS access by IP, regions
+    where a public certificate needs a registered domain) cannot obtain HTTPS.
+    """
+    return os.environ.get("NEKO_REQUIRE_HTTPS", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def is_remote_backend_deployment() -> bool:
     """Share remote flag semantics between OS features and instance access."""
     return any(os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")

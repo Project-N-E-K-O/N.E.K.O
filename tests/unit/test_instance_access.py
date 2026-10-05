@@ -102,11 +102,78 @@ def test_cookie_reuse_and_key_rotation(remote_app, monkeypatch):
     assert remote_app.post("/private").status_code == 401
 
 
-def test_pairing_requires_challenge_origin_and_https(remote_app):
+def test_pairing_requires_challenge_and_origin(remote_app):
     assert remote_app.post("/instance-access/login", data={"key": KEY}).status_code == 401
     assert remote_app.post("/instance-access/login", data={"key": KEY}, headers={"Origin": "https://evil.example"}).status_code == 403
-    response = remote_app.post("http://neko.example/instance-access/login", data={"key": KEY})
+    # Plaintext is allowed by default, but the cross-origin guard still applies.
+    response = remote_app.post("http://neko.example/instance-access/login", data={"key": KEY},
+                               headers={"Origin": "https://neko.example"})
     assert response.status_code == 403
+
+
+def _http_pair(client, origin="http://neko.example"):
+    page = client.get(origin + "/", headers={"Accept": "text/html"})
+    assert page.status_code == 401
+    challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+    return page, client.post(origin + "/instance-access/login", data={"key": KEY, "challenge": challenge},
+                             headers={"Origin": origin}, follow_redirects=False)
+
+
+def test_plain_http_pairing_is_allowed_by_default_with_warning(remote_app):
+    page, response = _http_pair(remote_app)
+    assert 'role="alert"' in page.text and "disabled" not in page.text
+    assert "neko_instance_challenge_http=" in page.headers["set-cookie"]
+    assert "Secure" not in page.headers["set-cookie"]
+    assert response.status_code == 303
+    session_cookie = response.headers["set-cookie"]
+    assert session_cookie.startswith("neko_instance_access_http=")
+    assert "HttpOnly" in session_cookie and "Secure" not in session_cookie
+    assert remote_app.post("http://neko.example/private", headers={"Origin": "http://neko.example"}).status_code == 200
+    with remote_app.websocket_connect("ws://neko.example/socket", headers={"Origin": "http://neko.example"}) as socket:
+        assert socket.receive_json() == {"ok": True}
+
+
+def test_https_pairing_never_shown_insecure_warning(remote_app):
+    page = remote_app.get("/", headers={"Accept": "text/html"})
+    assert 'role="alert"' not in page.text
+    pair(remote_app)
+
+
+def test_http_pairing_is_independent_of_existing_secure_session(remote_app):
+    """A Secure cookie for the same host must not shadow plaintext pairing."""
+    pair(remote_app)
+    secure_session = remote_app.cookies.get(COOKIE)
+    _page, response = _http_pair(remote_app)
+    assert response.status_code == 303
+    assert remote_app.cookies.get(COOKIE) == secure_session
+    assert remote_app.cookies.get(COOKIE + "_http")
+
+
+def test_require_https_restores_strict_pairing(remote_app, monkeypatch):
+    monkeypatch.setenv("NEKO_REQUIRE_HTTPS", "1")
+    page = remote_app.get("http://neko.example/", headers={"Accept": "text/html"})
+    assert "disabled" in page.text and 'role="alert"' not in page.text
+    challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+    response = remote_app.post("http://neko.example/instance-access/login", data={"key": KEY, "challenge": challenge},
+                               headers={"Origin": "http://neko.example"})
+    assert response.status_code == 403
+    # Existing plaintext credentials and bearer keys stop working too.
+    assert remote_app.post("http://neko.example/private", headers={"Authorization": f"Bearer {KEY}"}).status_code == 401
+    with pytest.raises(WebSocketDisconnect):
+        with remote_app.websocket_connect("ws://neko.example/socket", headers={"Authorization": f"Bearer {KEY}"}):
+            pass
+    pair(remote_app)
+
+
+def test_require_https_revokes_plaintext_session_even_over_https(remote_app, monkeypatch):
+    _page, response = _http_pair(remote_app)
+    assert response.status_code == 303
+    plaintext_session = remote_app.cookies.get(COOKIE + "_http")
+    assert remote_app.post("/private").status_code == 200  # Plaintext cookie also reaches HTTPS.
+    monkeypatch.setenv("NEKO_REQUIRE_HTTPS", "1")
+    remote_app.cookies.clear()
+    remote_app.cookies.set(COOKIE + "_http", plaintext_session)
+    assert remote_app.post("/private").status_code == 401
 
 
 def test_websocket_needs_instance_credential(remote_app):
@@ -647,6 +714,32 @@ def test_internal_market_proof_is_bound_to_loopback_route_and_method(monkeypatch
     remote = TestClient(app, base_url="http://127.0.0.1:48916", client=("203.0.113.1", 1234))
     assert remote.get("/market/test", headers=headers).status_code == 401
     assert local.get("/market/test", headers={**headers, "X-Neko-Market-Public-Origin": "https://attacker.example"}).status_code == 401
+
+
+def test_internal_market_proof_accepts_plain_http_public_origin_unless_https_required(monkeypatch):
+    from utils.instance_access import market_internal_proof
+
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    app = FastAPI()
+
+    @app.get("/market/test")
+    async def market():
+        return {"ok": True}
+
+    app.add_middleware(InstanceAccessMiddleware)
+    origin = "http://192.168.1.10:48911"
+    # A browser Origin keeps this out of the headerless native-loopback exemption.
+    headers = {"Origin": origin, "X-Neko-Market-Public-Origin": origin,
+               "X-Neko-Market-Internal": market_internal_proof(KEY, "GET", "/market/test", origin)}
+    local = TestClient(app, base_url="http://127.0.0.1:48916", client=("127.0.0.1", 1234))
+    assert local.get("/market/test", headers=headers).status_code == 200
+    for bad in ("ftp://192.168.1.10", "http://user@192.168.1.10", "http://192.168.1.10/path"):
+        forged = {"Origin": origin, "X-Neko-Market-Public-Origin": bad,
+                  "X-Neko-Market-Internal": market_internal_proof(KEY, "GET", "/market/test", bad)}
+        assert local.get("/market/test", headers=forged).status_code == 401
+    monkeypatch.setenv("NEKO_REQUIRE_HTTPS", "true")
+    assert local.get("/market/test", headers=headers).status_code == 401
 
 
 @pytest.mark.parametrize("header", ["X-Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto", "X-REAL-IP", "Forwarded"])
