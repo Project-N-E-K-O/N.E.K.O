@@ -134,11 +134,15 @@ MANAGED_MEMORY_FILENAMES = (
 
 # Local bookkeeping of keyed scoped_history writes (app/memory_server/idempotency.py
 # owns the names). It never travels with a cloud snapshot, but whenever a
-# download / snapshot import rewrites a character's memory it is cleared too:
+# download / snapshot import rewrites a character's memory it is reset too:
 # kept, it would treat writes the restore rolled back as done / staged and
-# never redo them (decision of 2026-10-05, option A).
-KEYED_WRITE_BOOKKEEPING_FILENAMES = ("idempotency_keys.json", "scoped_tombstones.json")
+# never redo them (decision of 2026-10-05, option A). The key records and
+# staging files are deleted; the forget tombstones keep their fences (a
+# pre-forget request must stay blocked) and lose only their "erased"
+# completion markers, so a replayed forget erases the restored data again.
+KEYED_WRITE_BOOKKEEPING_FILENAMES = ("idempotency_keys.json",)
 KEYED_WRITE_STAGING_DIRNAME = "idempotency_staging"
+KEYED_WRITE_TOMBSTONES_FILENAME = "scoped_tombstones.json"
 
 
 def keyed_write_bookkeeping_paths(character_dir) -> set:
@@ -151,6 +155,34 @@ def keyed_write_bookkeeping_paths(character_dir) -> set:
     if staging.is_dir():
         found |= {entry for entry in staging.iterdir() if entry.is_file()}
     return found
+
+
+def keyed_tombstones_without_completion(character_dir):
+    """The character's forget tombstones with every ``erased_epoch`` dropped, or None to leave the file alone.
+
+    None when there is no tombstone file, it cannot be parsed or it is not an
+    object (left as it is: the memory server reads a damaged file as
+    "fence unknown" and fails closed), or nothing would change.
+    """
+    import json
+    from pathlib import Path
+
+    path = Path(character_dir) / KEYED_WRITE_TOMBSTONES_FILENAME
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError, RecursionError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    changed = False
+    stripped = {}
+    for key, row in data.items():
+        if isinstance(row, dict) and "erased_epoch" in row:
+            row = {name: value for name, value in row.items() if name != "erased_epoch"}
+            changed = True
+        stripped[key] = row
+    return stripped if changed else None
 
 
 MANAGED_CLOUDSAVE_PREFIXES = (

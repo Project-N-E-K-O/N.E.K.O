@@ -2643,3 +2643,52 @@ async def test_forget_epochs_endpoint_reports_the_current_fence(env):
         await env.routes.get_forget_epochs(NAME, subject=[GROUP_KEY])
     # 认不出的围栏不能当成「没有围栏」
     assert excinfo.value.status_code == 503
+
+
+async def test_forget_marked_while_recording_orders_skips_the_reservation(env):
+    import tempfile
+
+    from app.memory_server import locale_state
+
+    sidecar = Path(locale_state._subject_locale_path(NAME))
+    assert str(sidecar).startswith(tempfile.gettempdir())       # 绝不碰真实运行时根目录
+    locale_state.invalidate_prompt_locale_caches()
+    if sidecar.exists():
+        sidecar.unlink()
+    locale_state.invalidate_prompt_locale_caches()
+    real_update = env.idem.update_key
+
+    async def racing_update(name, key, fn):
+        result = await real_update(name, key, fn)
+        record = json.loads(Path(env.idem.keys_path(NAME)).read_text(encoding="utf-8")).get(key) or {}
+        if record.get("locale_orders") and not record.get("forgotten_keys"):
+            # 记下序号的这一刻，一次清除恰好把第一段记进 forgotten_keys
+            await real_update(name, key, lambda old: {**old, "forgotten_keys": [GP_KEY]})
+        return result
+
+    env.monkeypatch.setattr(env.idem, "update_key", racing_update)
+    env.llm.responses = [RuntimeError("LLM failed")]
+    with pytest.raises(RuntimeError):
+        await _post(env, _segments_body(language="zh"))
+    rows = json.loads(sidecar.read_text(encoding="utf-8")).get("subjects", {}) if sidecar.exists() else {}
+    # 落盘预留之前再核一次：刚被清的段不预留，不把它写回语言存储
+    assert not any(GP["subject_id"] in key for key in rows)
+    assert any(PART["subject_id"] in key for key in rows)
+
+
+def test_a_reservation_older_than_a_forget_does_not_recreate_the_locale_row():
+    import tempfile
+
+    from app.memory_server import locale_state
+    from memory.scopes import MemorySubject
+
+    name = "LocaleRaceChar"
+    subject = MemorySubject.participant("neko_visit", "u_race")
+    sidecar = Path(locale_state._subject_locale_path(name))
+    assert str(sidecar).startswith(tempfile.gettempdir())
+    (stale,) = locale_state.allocate_subject_prompt_locale_orders(name, [subject])
+    locale_state.forget_subject_prompt_locale(name, subject)     # 清除在分配之后、预留落盘之前完成
+    locale_state.reserve_subject_prompt_locale_orders(name, [subject], orders=[stale])
+    rows = json.loads(sidecar.read_text(encoding="utf-8")).get("subjects", {}) if sidecar.exists() else {}
+    # 早于清除的预留注定被拒：不能借它把已被清除的 subject 重新写回语言存储
+    assert not any("u_race" in key for key in rows)

@@ -5373,17 +5373,27 @@ def test_a_broken_state_directory_still_skips_the_tombstone(monkeypatch):
     cm.load_character_tombstones_state.assert_not_called()
 
 
+_SEEDED_TOMBSTONES = {"participant:neko_visit:u1": {"forget_epoch": 5, "erased_epoch": 5, "forgotten_at": 1.0}}
+
+
 def _seed_keyed_bookkeeping(character_dir: Path) -> list[Path]:
+    """Seed key records + a staging file (returned: they must go) and a tombstone file (kept, stripped)."""
     character_dir.mkdir(parents=True, exist_ok=True)
     paths = [
         character_dir / "idempotency_keys.json",
-        character_dir / "scoped_tombstones.json",
         character_dir / "idempotency_staging" / ("a" * 32 + ".json"),
     ]
     for path in paths:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{}", encoding="utf-8")
+    (character_dir / "scoped_tombstones.json").write_text(json.dumps(_SEEDED_TOMBSTONES), encoding="utf-8")
     return paths
+
+
+def _assert_tombstones_kept_without_completion(character_dir: Path) -> None:
+    # 围栏留着（清除前的旧请求仍要被挡），只去掉「已擦完」标记（重放的清除要真的再擦）
+    data = json.loads((character_dir / "scoped_tombstones.json").read_text(encoding="utf-8"))
+    assert data == {"participant:neko_visit:u1": {"forget_epoch": 5, "forgotten_at": 1.0}}
 
 
 @pytest.mark.unit
@@ -5406,8 +5416,13 @@ def test_character_download_clears_keyed_write_bookkeeping(tmp_path):
 
     # 被改写记忆的角色：带键写入簿记一并清掉，否则会把被回滚的写入当成已完成 / 已暂存
     assert not any(path.exists() for path in downloaded)
+    _assert_tombstones_kept_without_completion(Path(target_cm.memory_dir) / "云端角色")
     # 别的角色不动
     assert all(path.exists() for path in untouched)
+    untouched_tombstones = json.loads(
+        (Path(target_cm.memory_dir) / "本地角色" / "scoped_tombstones.json").read_text(encoding="utf-8")
+    )
+    assert untouched_tombstones == _SEEDED_TOMBSTONES
 
 
 @pytest.mark.unit
@@ -5424,6 +5439,8 @@ def test_snapshot_import_clears_keyed_write_bookkeeping(tmp_path):
     import_local_cloudsave_snapshot(cm)
 
     assert not any(path.exists() for path in seeded)
+    for name in names:
+        _assert_tombstones_kept_without_completion(Path(cm.memory_dir) / name)
 
 
 @pytest.mark.unit
@@ -5432,10 +5449,10 @@ def test_keyed_write_bookkeeping_names_match_the_memory_server():
     from utils.cloudsave_runtime._shared import (
         KEYED_WRITE_BOOKKEEPING_FILENAMES,
         KEYED_WRITE_STAGING_DIRNAME,
+        KEYED_WRITE_TOMBSTONES_FILENAME,
     )
 
     # utils 不能 import app（分层）：名字在两边各写一份，这里钉住它们一致
-    assert set(KEYED_WRITE_BOOKKEEPING_FILENAMES) == {
-        idempotency.IDEMPOTENCY_KEYS_FILENAME, idempotency.TOMBSTONES_FILENAME,
-    }
+    assert set(KEYED_WRITE_BOOKKEEPING_FILENAMES) == {idempotency.IDEMPOTENCY_KEYS_FILENAME}
+    assert KEYED_WRITE_TOMBSTONES_FILENAME == idempotency.TOMBSTONES_FILENAME
     assert KEYED_WRITE_STAGING_DIRNAME == idempotency.STAGING_DIRNAME

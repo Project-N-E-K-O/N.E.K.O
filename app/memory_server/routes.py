@@ -3350,6 +3350,16 @@ async def _reserve_keyed_locale_orders(
             return {**old, "locale_orders": orders}
 
         await idempotency.update_key(lanlan_name, key, _remember)
+    if key is not None:
+        # 上面的写入期间可能有清除刚把某段记进 forgotten_keys：落盘预留之前再核一次
+        latest = await idempotency.read_key(lanlan_name, key)
+        marked = latest.get("forgotten_keys") if isinstance(latest, dict) else None
+        if isinstance(marked, list):
+            forgotten |= {k for k in marked if isinstance(k, str)}
+            live = [
+                index for index in live
+                if not ({contexts[index]["wire_subject"].key, contexts[index]["subject"].key} & forgotten)
+            ]
     reserve = [index for index in live if admission[index] is not None]
     if reserve:
         await asyncio.to_thread(
