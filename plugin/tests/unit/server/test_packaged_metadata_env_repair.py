@@ -244,6 +244,73 @@ def test_cache_retention_does_not_delete_a_concurrently_refreshed_file(
     assert obsolete.read_text(encoding="utf-8") == "refreshed by another writer"
 
 
+def test_more_than_128_installations_keep_their_current_caches(tmp_path):
+    caches = []
+    for installation in range(129):
+        plugin_dir = _write_plugin(
+            tmp_path / str(installation), build_env=_foreign_env(python="3.9")
+        )
+        assert packaged_metadata.write_local_packaged_metadata(
+            plugin_dir,
+            before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
+            **_SCAN_KWARGS,
+        )
+        caches.append((plugin_dir, _cache_path(plugin_dir)))
+    assert len({path.parent for _plugin, path in caches}) == 129
+    for plugin_dir, path in caches:
+        assert path.is_file()
+        assert packaged_metadata.read_packaged_metadata(
+            plugin_dir
+        ).built_in_this_environment
+
+
+def test_valid_flat_cache_remains_readable_after_installation_scoping(tmp_path):
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    assert packaged_metadata.write_local_packaged_metadata(
+        plugin_dir,
+        before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
+        **_SCAN_KWARGS,
+    )
+    current = _cache_path(plugin_dir)
+    legacy = current.parent.parent / current.name
+    current.replace(legacy)
+    result = packaged_metadata.read_packaged_metadata(plugin_dir)
+    assert result.built_in_this_environment
+    assert result.handlers["demo.go"]["name"] == "Scanned"
+    assert not current.exists()
+    assert legacy.exists()
+
+
+@pytest.mark.parametrize("cache_case", ["same_env", "missing", "valid", "invalid"])
+def test_each_read_parses_shipped_metadata_once(tmp_path, monkeypatch, cache_case):
+    plugin_dir = _write_plugin(
+        tmp_path,
+        build_env=None if cache_case == "same_env" else _foreign_env(python="3.9"),
+    )
+    if cache_case in {"valid", "invalid"}:
+        assert packaged_metadata.write_local_packaged_metadata(
+            plugin_dir,
+            before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
+            **_SCAN_KWARGS,
+        )
+        if cache_case == "invalid":
+            _cache_path(plugin_dir).write_bytes(b"not JSON")
+
+    original = packaged_metadata._read_metadata_json
+    reads = []
+
+    def record(path, **kwargs):
+        reads.append(path)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(packaged_metadata, "_read_metadata_json", record)
+    result = packaged_metadata.read_packaged_metadata(plugin_dir)
+    assert result is not None
+    assert reads.count(plugin_dir / _META) == 1
+    assert len(reads) == (1 if cache_case == "same_env" else 2)
+    assert result.built_in_this_environment == (cache_case in {"same_env", "valid"})
+
+
 # ── 1. 核心：写 sidecar，发行产物不动 ────────────────────────────────────
 
 

@@ -80,12 +80,12 @@ from utils.file_utils import atomic_write_bytes
 
 logger = get_logger("server.infrastructure.packaged_metadata")
 PACKAGED_METADATA_CACHE_DIRECTORY = ".neko-plugin-metadata"
-_LOCAL_METADATA_CACHE_MAX_FILES = 128
+_LOCAL_METADATA_CACHE_MAX_FILES = 2
 _local_metadata_cache_cleanup_lock = threading.Lock()
 
 
 def _prune_local_metadata_cache(target: Path) -> None:
-    """Bound generated host caches without touching installed or business files."""
+    """Bound one installation's generated caches without touching other plugins."""
     with _local_metadata_cache_cleanup_lock:
         try:
             candidates: list[tuple[int, Path, os.stat_result]] = []
@@ -355,6 +355,13 @@ def local_packaged_metadata_path(plugin_dir: Path) -> Path | None:
     if loaded is None:
         return None
     raw, _stat = loaded
+    return _local_packaged_metadata_path(plugin_dir, raw)
+
+
+def _local_packaged_metadata_path(
+    plugin_dir: Path, raw: Mapping[str, object]
+) -> Path | None:
+    """Derive a cache path from an already-read package metadata snapshot."""
     try:
         from plugin.sdk.shared.core.base_runtime import resolve_runtime_data_root
 
@@ -374,6 +381,7 @@ def local_packaged_metadata_path(plugin_dir: Path) -> Path | None:
         cache_path = (
             resolve_runtime_data_root()
             / PACKAGED_METADATA_CACHE_DIRECTORY
+            / installation_key
             / f"{cache_key}.json"
         )
         spelling = str(cache_path)
@@ -681,9 +689,10 @@ def write_local_packaged_metadata(
 
     Installed files are never modified. The caller verifies the manifest id
     and effective entry declarations; the shared writer verifies the source
-    tree stayed unchanged during the scan. After a successful write, keep at
-    most 128 generated cache files, retaining the current file and the newest
-    remaining files. Cleanup failures leave the successful cache usable.
+    tree stayed unchanged during the scan. Each installation has a separate
+    cache directory. After a successful write, keep its current file and one
+    recent file; caches for other installations are never evicted. Cleanup
+    failures leave the successful cache usable.
     """
     if before_scan is None:
         return False
@@ -722,30 +731,49 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
     Both use the same schema, SDK, environment and source freshness checks.
     Files named plugin.meta.local.json inside installed code are plugin data.
     """
-    target = local_packaged_metadata_path(plugin_dir)
+    meta_path = plugin_dir / PACKAGED_METADATA_FILENAME
+    loaded = _read_metadata_json(meta_path, warn=True)
+    if loaded is None:
+        return None
+    raw, meta_stat = loaded
+    if _environment_matches(raw.get("build_env")):
+        return _validate_packaged_metadata(meta_path, plugin_dir, raw, meta_stat)
+    target = _local_packaged_metadata_path(plugin_dir, raw)
     local = (
         _read_packaged_metadata_from(target, plugin_dir) if target is not None else None
     )
     if local is not None and local.built_in_this_environment:
         return local
-    return _read_packaged_metadata_from(
-        plugin_dir / PACKAGED_METADATA_FILENAME, plugin_dir
-    )
+    if target is not None:
+        # Reuse caches written by the former flat layout. New writes and
+        # retention stay scoped to this installation's directory.
+        legacy = target.parent.parent / target.name
+        if legacy.is_file():
+            local = _read_packaged_metadata_from(legacy, plugin_dir)
+            if local is not None and local.built_in_this_environment:
+                return local
+    return _validate_packaged_metadata(meta_path, plugin_dir, raw, meta_stat)
 
 
 def _read_packaged_metadata_from(
     meta_path: Path,
     plugin_dir: Path,
 ) -> PackagedPluginMetadata | None:
-    """Load and validate one metadata file — the package or the host cache.
-
-    与拆分前逐字相同的校验链，只是文件路径变成了参数。``meta_path`` 不存在时安静
-    返回 ``None``（本机缓存是可选的，绝大多数插件没有它，不该为"没有"刷日志）。
-    """
+    """Read a bounded metadata file and validate its snapshot against the package."""
     loaded = _read_metadata_json(meta_path, warn=True)
     if loaded is None:
         return None
     raw, meta_stat = loaded
+    return _validate_packaged_metadata(meta_path, plugin_dir, raw, meta_stat)
+
+
+def _validate_packaged_metadata(
+    meta_path: Path,
+    plugin_dir: Path,
+    raw: Mapping[str, object],
+    meta_stat: os.stat_result,
+) -> PackagedPluginMetadata | None:
+    """Apply the same validation to shipped and host-cached metadata snapshots."""
 
     schema_version = raw.get("schema_version")
     if schema_version != PACKAGED_METADATA_SCHEMA_VERSION:
