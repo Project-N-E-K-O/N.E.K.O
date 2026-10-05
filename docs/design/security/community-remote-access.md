@@ -35,8 +35,9 @@ Compose执行 docker compose exec --user neko -w /app neko-main uv run python -m
 首次同源表单验证10分钟challenge并限速，设置30天、绑定hostname的
 HttpOnly/SameSite=Lax签名cookie：HTTPS下带Secure；明文HTTP下改用单独名称
 （neko_instance_access_http / neko_instance_challenge_http）且不带Secure，避免同Host的Secure cookie
-挡住明文配对。原生Bearer在HTTP/WS下同样可用。NEKO_REQUIRE_HTTPS=1 恢复严格模式：
-明文配对、明文cookie与Bearer、社区跨域交接和明文Market公开origin一律拒绝。
+挡住明文配对。明文签发的会话使用独立签名用途（session-http），cookie名由客户端控制不能作为凭据来源证明。原生Bearer在HTTP/WS下同样可用。NEKO_REQUIRE_HTTPS=1 恢复严格模式：
+明文配对、明文cookie与Bearer、社区跨域交接和明文Market公开origin一律拒绝；
+此前明文签发的会话无论改名为HTTPS cookie还是作为Bearer提交都失效。Compose 通过 NEKO_REQUIRE_HTTPS 传入容器。
 新请求即时重新验证key；现存SSE/WS按至多每秒一次检查文件key，配置key变更即时检查。
 账户流同样至多每秒一次复核，避免语音帧/通知chunk触发逐帧文件读取。撤销延迟上限一秒。
 临时IO错误做短时有限重试后仍失败则关闭，不永久使用旧key。

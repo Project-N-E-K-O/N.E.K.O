@@ -64,6 +64,8 @@ services:
       # Optional operator override; otherwise a private key is persisted under neko-home.
       - NEKO_INSTANCE_ACCESS_KEY=${NEKO_INSTANCE_ACCESS_KEY:-}
       - NEKO_INSTANCE_PUBLIC_ORIGIN=${NEKO_INSTANCE_PUBLIC_ORIGIN:-}
+      # Plain HTTP pairing is allowed by default; set 1 to require HTTPS/WSS.
+      - NEKO_REQUIRE_HTTPS=${NEKO_REQUIRE_HTTPS:-}
       - NEKO_COMMUNITY_WEB_CLIENT_ID=${NEKO_COMMUNITY_WEB_CLIENT_ID:-}
       - NEKO_COMMUNITY_WEB_REDIRECT_URI=${NEKO_COMMUNITY_WEB_REDIRECT_URI:-}
 

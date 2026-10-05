@@ -174,6 +174,16 @@ def test_require_https_revokes_plaintext_session_even_over_https(remote_app, mon
     remote_app.cookies.clear()
     remote_app.cookies.set(COOKIE + "_http", plaintext_session)
     assert remote_app.post("/private").status_code == 401
+    # Cookie names are client-controlled: renaming the captured token or
+    # replaying it as a Bearer credential must not launder it into HTTPS.
+    remote_app.cookies.clear()
+    remote_app.cookies.set(COOKIE, plaintext_session)
+    assert remote_app.post("/private").status_code == 401
+    remote_app.cookies.clear()
+    assert remote_app.post("/private", headers={"Authorization": f"Bearer {plaintext_session}"}).status_code == 401
+    # Sessions minted over HTTPS keep working in strict mode.
+    pair(remote_app)
+    assert remote_app.post("/private").status_code == 200
 
 
 def test_websocket_needs_instance_credential(remote_app):

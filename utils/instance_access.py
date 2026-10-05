@@ -135,6 +135,19 @@ def _verified(key: str, purpose: str, host: str, token: str) -> str | None:
         return None
 
 
+def _session_identity(key: str, host: str, token: str) -> str | None:
+    """Verify a session token; plaintext-minted ones carry their own purpose.
+
+    Cookie names are client-controlled, so the signing purpose (not the name)
+    records how a session was issued. Strict HTTPS mode rejects every token
+    that ever crossed plaintext, however it is presented.
+    """
+    identity = _verified(key, "session", host, token)
+    if identity or requires_https():
+        return identity
+    return _verified(key, "session-http", host, token)
+
+
 def _session_cookies(request: Request) -> list[str]:
     # A cookie minted over plaintext may have been observed in transit; strict
     # deployments must not keep honouring it after switching to HTTPS-only.
@@ -154,11 +167,11 @@ def remote_instance_identity(request: Request, *, key: str | None = None) -> str
     if bearer.startswith("Bearer ") and _equal(bearer[7:], key):
         return "native:" + hashlib.sha256(key.encode()).hexdigest()
     if bearer.startswith("Bearer "):
-        identity = _verified(key, "session", request.url.hostname or "", bearer[7:])
+        identity = _session_identity(key, request.url.hostname or "", bearer[7:])
         if identity:
             return identity
     for cookie in cookies:
-        identity = _verified(key, "session", request.url.hostname or "", cookie)
+        identity = _session_identity(key, request.url.hostname or "", cookie)
         if identity:
             return identity
     return None
@@ -488,7 +501,8 @@ class InstanceAccessMiddleware:
         if not target.startswith("/") or target.startswith("//") or "\\" in target or "\r" in target or "\n" in target:
             target = "/"
         response = RedirectResponse(target, status_code=303, headers={"Cache-Control": "no-store"})
-        cookie = _signed(key, "session", request.url.hostname or "", secrets.token_hex(16), int(now) + SESSION_TTL)
+        cookie = _signed(key, "session" if secure else "session-http", request.url.hostname or "",
+                         secrets.token_hex(16), int(now) + SESSION_TTL)
         # Only an encrypted transport may mint the Secure cookie; plaintext
         # pairing uses its own name so neither can shadow the other.
         response.set_cookie(COOKIE if secure else INSECURE_COOKIE, cookie, max_age=SESSION_TTL,
