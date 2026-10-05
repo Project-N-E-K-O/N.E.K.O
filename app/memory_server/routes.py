@@ -4505,8 +4505,13 @@ async def _cancel_staged_writes_for_subjects(
     *,
     request_subject_key: str | None = None,
     forget_epoch: int | None = None,
+    best_effort: bool = False,
 ) -> int:
     """Cancel every staged keyed write that touches one of ``subject_keys``.
+
+    ``best_effort`` (the pass before the erase) skips a journal or key record
+    whose handling fails and goes on with the rest; the pass after the erase
+    raises instead, so the forget is retried.
 
     A staging started with an epoch at or above ``forget_epoch`` for the
     request subject was issued after this forget and is left alone.
@@ -4521,20 +4526,21 @@ async def _cancel_staged_writes_for_subjects(
     from . import idempotency
 
     cancelled = 0
-    for path, document, _mtime in await idempotency.list_staging(lanlan_name):
+    async def _cancel_one_document(path, document) -> None:
+        nonlocal cancelled
         if not isinstance(document, dict):
             # 读不出的暂存认不出它涉及哪些 subject：没有键记录认领时按记录取消的那一遍也找不到它，
             # 留着就可能带着被清 subject 的抽取原文、修好后还会被同键重试认领。删掉
             if await idempotency.drop_unreadable_orphan_staging(lanlan_name, path):
                 cancelled += 1
-            continue
+            return
         key = document.get("key")
         # 按写入时路由到的 subject 一并匹配：账号绑定关系之后变了，当前的扇出可能已不含
         # 这份暂存的 wire subject，但它应用时写的是暂存里记下的那个 subject。
         # subjects 索引坏了 / 缺了也照样按各段认：不能凭一个坏索引跳过，孤儿暂存之后会被
         # 同键重试认领、把清除之前的事实写回去
         if not subject_keys.intersection(_staged_subject_keys(document)):
-            continue
+            return
         if not isinstance(key, str) or not key or not idempotency.is_staging_path_of(lanlan_name, key, path):
             # 内容里的键与文件名对不上：不能顺着这个不可信的键去开另一个路径的暂存。
             # 就地把这个文件抹成取消标记（保留错位的键，同键重试读它照样 fail closed），
@@ -4543,19 +4549,19 @@ async def _cancel_staged_writes_for_subjects(
                 lanlan_name, path, _cancelled_staging_marker,
             )
             cancelled += 1
-            continue
+            return
         async with idempotency.key_lock(lanlan_name, key):
             current = await idempotency.read_staging(lanlan_name, key)
             if current is None or _staged_after_forget(
                 current, subject_keys, request_subject_key, forget_epoch,
             ):
-                continue
+                return
             if _drop_forgotten_segments(current, subject_keys):
                 # 多段批次只有部分段涉及被清的 subject：只把这些段未应用的项记为丢弃、
                 # 抹掉它们的抽取原文，键保持 pending、暂存留着，重试照常补写其余段
                 await idempotency.write_staging(lanlan_name, key, current)
                 cancelled += 1
-                continue
+                return
             try:
                 await idempotency.update_key(
                     lanlan_name,
@@ -4578,9 +4584,19 @@ async def _cancel_staged_writes_for_subjects(
                 # 只留重试认出「已取消」所需的身份字段，抽取出的事实原文与显示名一并抹掉
                 await idempotency.write_staging(lanlan_name, key, _cancelled_staging_marker(current))
                 cancelled += 1
-                continue
+                return
             await idempotency.delete_staging(lanlan_name, key)
             cancelled += 1
+    for path, document, _mtime in await idempotency.list_staging(lanlan_name):
+        try:
+            await _cancel_one_document(path, document)
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:
+            if not best_effort:
+                raise
+            # 尽力而为的那一遍：这一份暂存出错只跳过它自己，其余照常取消（擦除后那遍再兜底）
+            logger.warning(f"[scoped_forget] {lanlan_name}: 取消暂存 {os.path.basename(path)} 失败，跳过: {exc}")
     # 先记 pending、后写暂存：崩在两步之间的键只有记录、没有暂存，上面的扫描找不到它。
     # 按记录里的请求身份认领，同样标 cancelled，免得之后同键重试用清除之后的
     # generation 重新生成并写回
@@ -4593,9 +4609,10 @@ async def _cancel_staged_writes_for_subjects(
         # 这里只记日志、跳过认领，清除照常进行
         logger.warning(f"[scoped_forget] {lanlan_name}: 幂等键文件不可读，跳过 pending 认领: {exc}")
         records = {}
-    for key, record in records.items():
+    async def _cancel_one_record(key, record) -> None:
+        nonlocal cancelled
         if not isinstance(record, dict) or record.get("state") != idempotency.KEY_STATE_PENDING:
-            continue
+            return
         request = record.get("request")
         wire_keys = request.get("wire_keys") if isinstance(request, dict) else None
         wire_only = [str(k) for k in wire_keys] if isinstance(wire_keys, list) else []
@@ -4613,13 +4630,13 @@ async def _cancel_staged_writes_for_subjects(
             peek_unreadable = True
         peek_touched = _staged_subject_keys(peek) | set(wire_keys) if peek is not None else set(wire_keys)
         if not subject_keys.intersection(peek_touched):
-            continue
+            return
         if peek is None and _staged_after_forget(
             {"wire_keys": wire_only, "epochs": record.get("epochs") or {}},
             subject_keys, request_subject_key, forget_epoch,
         ):
             # 还没有暂存、但记录里的请求代数说明它是知道这次清除之后才发起的：合法的新写入
-            continue
+            return
         if peek is None and not peek_unreadable and idempotency.key_lock(lanlan_name, key).locked():
             # 还没有暂存、键锁被占着：持锁的请求正在调 LLM，不排在它后面。只在记录上持久记下
             # 被清的 subject（字符锁下原子改一条记录）：它生成完落暂存前、或生成失败 / 进程被杀
@@ -4647,7 +4664,7 @@ async def _cancel_staged_writes_for_subjects(
 
             await idempotency.update_key(lanlan_name, key, _mark)
             cancelled += 1
-            continue
+            return
         async with idempotency.key_lock(lanlan_name, key):
             unreadable = None
             try:
@@ -4657,7 +4674,7 @@ async def _cancel_staged_writes_for_subjects(
                 unreadable = exc
             touched = _staged_subject_keys(staged) | set(wire_keys) if staged is not None else set(wire_keys)
             if not subject_keys.intersection(touched):
-                continue
+                return
             if unreadable is not None:
                 # 记录是 pending、暂存读不出：上面按暂存内容的扫描看不到它。不能让它挡住
                 # 清除（每次都 500），也不能留着——同键重试读它只会 fail closed，修好后
@@ -4667,12 +4684,12 @@ async def _cancel_staged_writes_for_subjects(
                 staged, subject_keys, request_subject_key, forget_epoch,
             ):
                 # 带着这次清除之后的代数发起的新请求：它的产物是合法的新记忆，不取消
-                continue
+                return
             if staged is not None and _drop_forgotten_segments(staged, subject_keys):
                 # 同上面的暂存扫描：多段批次只丢涉及被清 subject 的段，其余段留给重试
                 await idempotency.write_staging(lanlan_name, key, staged)
                 cancelled += 1
-                continue
+                return
             # 不论暂存在不在都在键级锁下取消：上面那遍扫描只是快照，扫描之后才写成的
             # 暂存（请求失败、已放开键锁）同样要取消，否则擦除之后、第二遍扫描之前的
             # 同键重试会用清除之后的 generation 把它应用回去
@@ -4681,6 +4698,15 @@ async def _cancel_staged_writes_for_subjects(
             )
             await idempotency.delete_staging(lanlan_name, key)
             cancelled += 1
+    for key, record in records.items():
+        try:
+            await _cancel_one_record(key, record)
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:
+            if not best_effort:
+                raise
+            logger.warning(f"[scoped_forget] {lanlan_name}: 按记录取消键失败，跳过: {exc}")
     return cancelled
 
 
@@ -4903,11 +4929,12 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             await _cancel_staged_writes_for_subjects(
                 lanlan_name, forgotten_subject_keys,
                 request_subject_key=subject.key, forget_epoch=effective_fence,
+                best_effort=True,
             )
     except MaintenanceModeError:
         raise
     except Exception as exc:
-        # 擦除前这一遍只是尽力而为：一份读不出 / 写不进的辅助暂存不能挡住与它无关的隐私清除
+        # 擦除前这一遍只是尽力而为（逐份暂存 / 逐个键各自容错，出错的只跳过它自己）：一份读不出 / 写不进的辅助暂存不能挡住与它无关的隐私清除
         # （包括从不用带键写入的老调用方）。真正兜底的是擦除后那一遍取消与墓碑 / generation，
         # 那一遍失败才回错误让调用方重试
         logger.warning(f"[scoped_forget] {lanlan_name}: 擦除前取消带键暂存未完成（擦除后再取消一遍）: {exc}")
@@ -5202,7 +5229,7 @@ def _read_staged_subjects_for_listing(directory: str) -> list:
 
     from .idempotency import _list_staging_sync
 
-    from .idempotency import IDEMPOTENCY_KEYS_FILENAME, KEY_STATE_PENDING, key_digest
+    from .idempotency import IDEMPOTENCY_KEYS_FILENAME, TERMINAL_KEY_STATES, key_digest
 
     # 按文件名反查键记录：已终结（done / cancelled）的键收尾时删暂存失败留下的文件没有待应用的东西，
     # 不能列成 staged。没有记录的孤儿可能被同键重试认领，照常列；键记录读不出时全部照常列（偏向多列）
@@ -5215,7 +5242,8 @@ def _read_staged_subjects_for_listing(directory: str) -> list:
         records = {}
     if isinstance(records, dict):
         for key, record in records.items():
-            if isinstance(key, str) and key and isinstance(record, dict) and record.get("state") != KEY_STATE_PENDING:
+            # 只认明确的终态：状态缺失 / 坏了的记录写路径会 fail closed，暂存可能是唯一的明文，照常列出
+            if isinstance(key, str) and key and isinstance(record, dict) and record.get("state") in TERMINAL_KEY_STATES:
                 terminal_files.add(f"{key_digest(key)}.json")
     subjects = []
     for path, document, _mtime in _list_staging_sync(directory):

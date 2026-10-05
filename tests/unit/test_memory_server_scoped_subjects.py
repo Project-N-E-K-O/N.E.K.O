@@ -469,3 +469,18 @@ async def test_forgotten_locale_row_left_on_disk_is_not_listed(env):
     listed = {(row["subject_kind"], row["subject_id"]) for row in result["subjects"]}
     # 与语言加载器同口径滤掉：被清的 subject 不能一直以 prompt_locale 出现
     assert ("participant", "neko_visit:u_gone") not in listed
+
+
+async def test_staging_of_a_key_with_an_unknown_state_is_still_listed(env):
+    from app.memory_server.idempotency import key_digest
+
+    subject = MemorySubject.participant("neko_visit", "u_odd")
+    _write(env.root / NAME / "idempotency_staging" / f"{key_digest('k-odd')}.json", {
+        "key": "k-odd", "segments": [{"wire_key": subject.key, "subject": subject.as_entry_fields()}],
+        "items": [], "applied": [],
+    })
+    _write(env.root / NAME / "idempotency_keys.json", {"k-odd": {"request": "x"}})
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    staged = {row["subject_id"] for row in result["subjects"] if row["staged"]}
+    # 只有明确终结（done / cancelled）的键才跳过：状态缺失 / 坏了时暂存可能是唯一的明文，照常列出
+    assert staged == {"neko_visit:u_odd"}

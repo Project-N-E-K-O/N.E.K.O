@@ -2773,6 +2773,7 @@ async def test_failing_pre_erase_cancellation_does_not_block_the_forget(env):
     async def flaky(*args, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
+            calls["first_best_effort"] = kwargs.get("best_effort")
             raise env.idem.IdempotencyStateError("staging replaced mid-scan")
         return await real(*args, **kwargs)
 
@@ -2780,6 +2781,8 @@ async def test_failing_pre_erase_cancellation_does_not_block_the_forget(env):
     result = await _forget(env, GROUP)
     # 擦除前那遍只是尽力而为：辅助暂存出错不能在删除任何东西之前就让清除 500
     assert result["status"] == "forgotten" and _facts_of(env, GROUP) == [] and calls["n"] == 2
+    # 擦除前那遍逐份容错，擦除后那遍不容错
+    assert calls["first_best_effort"] is True
 
 
 async def test_legacy_integer_fact_ids_in_the_journal_do_not_wedge_the_key(env):
@@ -2983,4 +2986,44 @@ async def test_unreadable_tombstones_at_the_trust_step_answer_503(env):
     with pytest.raises(HTTPException) as excinfo:
         await _post(env, _single_body())
     # 认不出哪些段被清除挡下：不能把整批信赖写入丢掉后照常收尾，回 503 等墓碑读得出再重试
+    assert excinfo.value.status_code == 503 and _key_state(env, KEY_GROUP) == "pending"
+
+
+async def test_pre_erase_pass_skips_only_the_failing_journal(env):
+    other = KEY_GROUP.replace("group:0", "group:1")
+    env.llm.responses = [SINGLE_FACTS, SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    for key in (KEY_GROUP, other):
+        with pytest.raises(HTTPException):
+            await _post(env, _single_body(key=key))
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    real_read = env.idem.read_staging
+
+    async def read_fails_for_one(lanlan_name, key):
+        if key == KEY_GROUP:
+            raise OSError("staging locked by another process")
+        return await real_read(lanlan_name, key)
+
+    env.monkeypatch.setattr(env.idem, "read_staging", read_fails_for_one)
+    cancelled = await env.routes._cancel_staged_writes_for_subjects(NAME, {GROUP_KEY}, best_effort=True)
+    # 擦除前那遍逐份容错：一份暂存出错只跳过它自己，其余涉及被清 subject 的暂存照常取消
+    assert cancelled == 1 and _key_state(env, other) == "cancelled" and _key_state(env, KEY_GROUP) == "pending"
+    with pytest.raises(OSError):
+        # 擦除后那遍不容错：出错就上抛，让清除整体重试
+        await env.routes._cancel_staged_writes_for_subjects(NAME, {GROUP_KEY})
+
+
+async def test_cancellation_marker_inside_a_real_journal_fails_closed(env):
+    env.llm.responses = [SINGLE_FACTS]
+    original = _fail_on_item(env, failing_seq=0)
+    with pytest.raises(HTTPException):
+        await _post(env, _single_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_GROUP)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    staging[env.idem.UNREADABLE_CANCELLED_MARKER] = True
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _single_body())
+    # 只认不含别的字段的占位：标记混进一份正常日志是损坏，不能借它把键当成已取消、丢掉未应用的效果
     assert excinfo.value.status_code == 503 and _key_state(env, KEY_GROUP) == "pending"

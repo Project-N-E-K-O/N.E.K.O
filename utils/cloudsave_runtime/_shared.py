@@ -136,7 +136,7 @@ MANAGED_MEMORY_FILENAMES = (
 # owns the names). It never travels with a cloud snapshot, but whenever a
 # download / snapshot import rewrites a character's memory it is reset too:
 # kept, it would treat writes the restore rolled back as done / staged and
-# never redo them (decision of 2026-10-05, option A). The key records and
+# never redo them (maintainer decision of 2026-10-05). The key records and
 # staging files are deleted; the forget tombstones keep their fences (a
 # pre-forget request must stay blocked) and lose only their "erased"
 # completion markers, so a replayed forget erases the restored data again.

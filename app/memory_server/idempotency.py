@@ -329,8 +329,11 @@ def _read_staging_sync(path: str, key: str) -> dict | None:
         return None
     except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
         raise IdempotencyStateError(f"staging unreadable: {exc}") from exc
-    if isinstance(data, dict) and data.get(UNREADABLE_CANCELLED_MARKER) is True:
-        # 清除时读不出、没人认领而被抹掉原文的暂存：按这个键已取消处理（见 drop_unreadable_orphan_staging）
+    if isinstance(data, dict) and UNREADABLE_CANCELLED_MARKER in data:
+        # 清除时读不出、没人认领而被抹掉原文的暂存：按这个键已取消处理（见 drop_unreadable_orphan_staging）。
+        # 只认那份不含任何别的字段的占位：标记混在一份正常日志里是损坏，绝不能借它把未应用的效果丢掉
+        if data != {UNREADABLE_CANCELLED_MARKER: True}:
+            raise IdempotencyStateError("staging carries a stray cancellation marker")
         return {"key": key, UNREADABLE_CANCELLED_MARKER: True}
     if not isinstance(data, dict) or data.get("key") != key:
         # 文件名只是摘要：内容里的原键对不上（截断碰撞 / 手改）时绝不套用
@@ -599,6 +602,7 @@ def _quarantine_tombstones_and_rebuild(path: str, subject_key: str, epoch: int) 
         _read_json_object(path)
         return  # 等锁期间已被别的清除重建：不再动它
     except IdempotencyStateError:
+        # 仍读不出：继续往下隔离并重建
         pass
     quarantine = f"{path}.corrupt-{int(time.time())}"
     try:
