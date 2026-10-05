@@ -46,7 +46,7 @@ METADATA_FORMAT='{{.Id}} {{index .Config.Labels "org.neko.community-2c2g.watchdo
 
 # Do not transfer recovery authority to an unrelated container with the same name.
 # Docker's unless-stopped policy handles exits; preserve intentional stops/removal.
-if ! metadata=$(timeout 10 docker inspect -f "$METADATA_FORMAT" "$CONTAINER" 2>/dev/null); then
+if ! metadata=$(timeout 10 docker inspect --type container -f "$METADATA_FORMAT" "$CONTAINER" 2>/dev/null); then
     # Distinguish intentional removal from an unavailable daemon/failed inspect.
     containers=$(timeout 10 docker ps -a --filter "name=^/${CONTAINER}$" --format '{{.ID}}' 2>/dev/null) || fail "Cannot query containers; no restart attempted"
     [[ -z "$containers" ]] || fail "Container inspect failed; no restart attempted"
@@ -134,7 +134,7 @@ if (( count != old_count )); then log "Health probe failed ($count/2): $probe_fa
 if (( count >= 2 )); then
     # Maintenance must hold this same lock while setting disabled (see README).
     [[ ! -e "$STATE_DIR/disabled" ]] || exit 0
-    current=$(timeout 10 docker inspect -f "$METADATA_FORMAT" "$container_id" 2>/dev/null) || fail "Cannot recheck container"
+    current=$(timeout 10 docker inspect --type container -f "$METADATA_FORMAT" "$container_id" 2>/dev/null) || fail "Cannot recheck container"
     [[ "$current" == "$metadata" ]] || { rm -f "$COUNT_FILE"; exit 0; }
     # Persist attempts across startup grace and StartedAt changes.
     restart_count=0
@@ -164,7 +164,7 @@ if (( count >= 2 )); then
         log "Restart succeeded"
     else
         # CLI timeout does not cancel a daemon restart. Confirm the new lifecycle.
-        current=$(timeout 10 docker inspect -f "$METADATA_FORMAT" "$container_id" 2>/dev/null) || fail "Cannot confirm restart; counter retained"
+        current=$(timeout 10 docker inspect --type container -f "$METADATA_FORMAT" "$container_id" 2>/dev/null) || fail "Cannot confirm restart; counter retained"
         read -r current_id current_enabled current_service current_running current_paused current_restarting current_start <<< "$current" || fail "Invalid restart metadata"
         if [[ "$current_id" == "$container_id" && "$current_enabled" == enabled && "$current_service" == neko-main ]] &&
            [[ "$current_restarting" == true || ( "$current_running" == true && "$current_start" != "$started_at" ) ]]; then

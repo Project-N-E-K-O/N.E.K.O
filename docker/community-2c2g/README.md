@@ -233,6 +233,8 @@ swapon --show
 
 ### 2. 调整系统交换倾向
 
+以下低值示例侧重减少磁盘 swapfile I/O，不是 ZRAM 的通用优化值。以 ZRAM 为优先 swap 时，不应机械套用 10；可在代表性负载下评估 100 附近的候选值，再结合 CPU 压缩开销、延迟、内存压力和磁盘 swap 使用量决定，并保留可回退的原设置。[内核文档](https://www.kernel.org/doc/html/latest/admin-guide/sysctl/vm.html#swappiness) 将该值解释为交换与文件页回收的相对 I/O 成本，内存 swap 可考虑高于 100；具体最优值取决于负载。低值仍可能使用 swap，任何值都不保证避免 OOM。下面命令仅供选择磁盘 I/O 优先策略的管理员使用。
+
 ```bash
 sudo sysctl vm.swappiness=10
 echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf   # 永久生效
@@ -305,7 +307,7 @@ CDT 免费额度有适用条件：按阿里云账号共享，不是每台 ECS �
 
 ## 10. 上线核对清单（Checklist）
 
-- [ ] `docker compose` 为 V2 版本（`docker compose version`）
+- [ ] `docker compose` 为 V2 且 ≥ 2.24.4（`docker compose version`）
 - [ ] 宿主机有 `bash`、`curl`、`timeout`、`flock`（`command -v bash curl timeout flock`）
 - [ ] `docker compose config --quiet` 无报错
 - [ ] `docker compose up -d` 后 `docker compose ps` 显示 `neko-main` Running

@@ -9,12 +9,19 @@ trap 'rm -rf -- "$ROOT"' EXIT
 mkdir "$ROOT/bin" "$ROOT/state" "$ROOT/opt" "$ROOT/cron"
 chmod 700 "$ROOT/state"
 export TEST_ROOT="$ROOT"
+cat > "$ROOT/bin/logger" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$TEST_ROOT/syslog"
+EOF
+chmod 700 "$ROOT/bin/logger"
 cat > "$ROOT/bin/docker" <<'EOF'
 #!/bin/bash
 set -eu
 [[ ${RAW_ERROR:-0} == 0 ]] || echo private-daemon-error >&2
 case "$1" in
     inspect)
+        [[ "$2 $3" == '--type container' ]] || exit 99
+        shift 2
         [[ ${INSPECT_FAIL:-0} == 0 && ${CONTAINER_ABSENT:-0} == 0 ]] || exit 1
         running=${RUNNING:-true}
         paused=${PAUSED:-false}
@@ -239,11 +246,7 @@ HTTP_CODE=500 run; HTTP_CODE=500 run
 reset
 if NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=30m run; then exit 1; fi
 grep -q 'Invalid startup grace' "$ROOT/state/watchdog.log"
-cat > "$ROOT/bin/logger" <<'EOF'
-#!/bin/bash
-printf '%s\n' "$*" >> "$TEST_ROOT/syslog"
-EOF
-chmod 700 "$ROOT/bin/logger"
+
 log_size=$(stat -c %s "$ROOT/state/watchdog.log")
 chmod 755 "$ROOT/state"
 if run; then exit 1; fi
