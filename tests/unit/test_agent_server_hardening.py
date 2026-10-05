@@ -205,7 +205,7 @@ async def test_embedded_plugin_server_ready_after_startup_and_stops(monkeypatch)
 
         async def serve(self):
             await self.startup()
-            await asyncio.to_thread(exit_event.wait, 5.0)
+            await asyncio.to_thread(exit_event.wait)
 
     monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(
         Config=lambda *a, **k: SimpleNamespace(), Server=FakeServer

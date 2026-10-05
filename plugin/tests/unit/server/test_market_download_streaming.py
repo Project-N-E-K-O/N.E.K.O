@@ -114,6 +114,70 @@ def _url(srv) -> str:
     return f"http://{host}:{port}/pkg.neko-plugin"
 
 
+@pytest.mark.parametrize(
+    ("length", "expected"),
+    [
+        (None, None),
+        ("", None),
+        ("abc", None),
+        ("-1", None),
+        ("1.5", None),
+        ("0", 0),
+        ("7", 7),
+    ],
+)
+async def test_download_length_validation_preserves_bytes_and_progress(
+    isolated_download_root,
+    monkeypatch,
+    length,
+    expected,
+):
+    httpx = load_httpx()
+    client = httpx.AsyncClient
+
+    def respond(request):
+        response = httpx.Response(200, content=b"package")
+        if length is None:
+            response.headers.pop("content-length", None)
+        else:
+            response.headers["content-length"] = length
+        return response
+
+    transport = httpx.MockTransport(respond)
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kwargs: client(transport=transport, **kwargs)
+    )
+    task = {"progress": 0.0}
+    path = await module._download_package_once("https://example.test/package", task)
+    assert path.read_bytes() == b"package"
+    assert task["downloaded_bytes"] == 7
+    assert task["total_bytes"] == expected
+
+
+@pytest.mark.parametrize("length", ["abc", "-1"])
+async def test_invalid_download_length_keeps_the_received_byte_limit(
+    isolated_download_root,
+    monkeypatch,
+    length,
+):
+    httpx = load_httpx()
+    client = httpx.AsyncClient
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, headers={"content-length": length}, content=b"package"
+        )
+    )
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kwargs: client(transport=transport, **kwargs)
+    )
+    monkeypatch.setattr(module, "_DOWNLOAD_MAX_BYTES", 2)
+    with pytest.raises(module._DownloadAttemptError, match="过大"):
+        await module._download_package_once(
+            "https://example.test/package", {"progress": 0.0}
+        )
+    assert not list((isolated_download_root / ".downloads").glob("*.neko-plugin"))
+
+
 @pytest.mark.asyncio
 async def test_downloaded_bytes_are_exact_and_progress_is_reported(
     http_server, isolated_download_root

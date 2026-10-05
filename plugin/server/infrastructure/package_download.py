@@ -81,7 +81,12 @@ async def download_package_file(
                 async with client.stream("GET", url) as response:
                     response.raise_for_status()
                     length = response.headers.get("content-length")
-                    total = int(length) if length else None
+                    try:
+                        total = int(length) if length else None
+                    except ValueError:
+                        total = None
+                    if total is not None and total < 0:
+                        total = None
                     if total is not None and total > maximum_bytes:
                         raise PackageSizeExceeded(total, maximum_bytes)
                     received = 0
