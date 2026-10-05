@@ -107,6 +107,10 @@ class ScopedBatchResult:
         return self.ok
 
 
+# Subject keys per GET /forget_epochs (the server rejects larger requests).
+_FORGET_EPOCHS_BATCH = 64
+
+
 class ScopedMemoryError(RuntimeError):
     """A scoped memory read could not produce a result.
 
@@ -322,29 +326,32 @@ class ScopedMemoryClient:
         ``ScopedMemoryError``: an unknown fence must not read as none.
         """
         keys = list(dict.fromkeys(subject_keys))
-        if not keys:
-            return {}
         url = self._url(lanlan, "forget_epochs")
-        try:
-            response = await self._send(
-                "GET", url, params=[("subject", key) for key in keys],
-                timeout=_READ_TIMEOUT_S, retry=False,
-            )
-        except httpx.HTTPError as exc:
-            raise ScopedMemoryError(f"forget_epochs failed: {exc}") from exc
-        if not response.is_success:
-            raise ScopedMemoryError(f"forget_epochs failed: HTTP {response.status_code}")
-        try:
-            payload = _response_json(response)
-        except ValueError as exc:
-            raise ScopedMemoryError("forget_epochs returned invalid JSON") from exc
-        epochs = payload.get("epochs") if isinstance(payload, dict) else None
-        if not isinstance(epochs, dict) or not all(
-            isinstance(key, str) and isinstance(value, int) and not isinstance(value, bool) and value >= 0
-            for key, value in epochs.items()
-        ):
-            raise ScopedMemoryError("forget_epochs returned a malformed epochs map")
-        return {key: value for key, value in epochs.items() if key in keys}
+        merged: dict[str, int] = {}
+        # 服务端一次最多认 _FORGET_EPOCHS_BATCH 个 key：分批查、合并结果
+        for start in range(0, len(keys), _FORGET_EPOCHS_BATCH):
+            batch = keys[start:start + _FORGET_EPOCHS_BATCH]
+            try:
+                response = await self._send(
+                    "GET", url, params=[("subject", key) for key in batch],
+                    timeout=_READ_TIMEOUT_S, retry=False,
+                )
+            except httpx.HTTPError as exc:
+                raise ScopedMemoryError(f"forget_epochs failed: {exc}") from exc
+            if not response.is_success:
+                raise ScopedMemoryError(f"forget_epochs failed: HTTP {response.status_code}")
+            try:
+                payload = _response_json(response)
+            except ValueError as exc:
+                raise ScopedMemoryError("forget_epochs returned invalid JSON") from exc
+            epochs = payload.get("epochs") if isinstance(payload, dict) else None
+            if not isinstance(epochs, dict) or not all(
+                isinstance(key, str) and isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                for key, value in epochs.items()
+            ):
+                raise ScopedMemoryError("forget_epochs returned a malformed epochs map")
+            merged.update({key: value for key, value in epochs.items() if key in batch})
+        return merged
 
     # ----------------------------------------------------------------- writes
 

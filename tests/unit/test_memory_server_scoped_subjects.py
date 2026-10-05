@@ -435,3 +435,22 @@ async def test_staging_only_subject_is_listed(env):
     by_key = {(row["subject_kind"], row["subject_id"]): row for row in result["subjects"]}
     # 生成后、应用前崩溃留下的暂存可能是唯一的数据：同样要能被找到、被清除
     assert by_key[("participant", "neko_visit:u_staged")]["staged"] is True
+
+
+async def test_staging_left_by_a_terminal_key_is_not_listed(env):
+    from app.memory_server.idempotency import key_digest
+
+    done_subject = MemorySubject.participant("neko_visit", "u_done")
+    pending_subject = MemorySubject.participant("neko_visit", "u_pending")
+    orphan_subject = MemorySubject.participant("neko_visit", "u_orphan")
+    staging_dir = env.root / NAME / "idempotency_staging"
+    for key, subject in (("k-done", done_subject), ("k-pending", pending_subject), ("k-orphan", orphan_subject)):
+        _write(staging_dir / f"{key_digest(key)}.json", {
+            "key": key, "segments": [{"wire_key": subject.key, "subject": subject.as_entry_fields()}],
+            "items": [], "applied": [],
+        })
+    _write(env.root / NAME / "idempotency_keys.json", {"k-done": {"state": "done"}, "k-pending": {"state": "pending"}})
+    result = await env.routes.list_scoped_subjects(NAME, platform="neko_visit")
+    staged = {row["subject_id"] for row in result["subjects"] if row["staged"]}
+    # 已终结的键收尾时删暂存失败留下的文件没有待应用的东西；pending 与没有记录的孤儿照常列
+    assert staged == {"neko_visit:u_pending", "neko_visit:u_orphan"}

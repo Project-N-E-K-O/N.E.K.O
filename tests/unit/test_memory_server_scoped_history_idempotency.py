@@ -2692,3 +2692,26 @@ def test_a_reservation_older_than_a_forget_does_not_recreate_the_locale_row():
     rows = json.loads(sidecar.read_text(encoding="utf-8")).get("subjects", {}) if sidecar.exists() else {}
     # 早于清除的预留注定被拒：不能借它把已被清除的 subject 重新写回语言存储
     assert not any("u_race" in key for key in rows)
+
+
+async def test_facts_item_moved_to_another_segment_fails_closed(env):
+    env.llm.responses = [BATCH_FACTS]
+
+    async def _crash(lanlan_name, item, segment, generation):
+        raise RuntimeError("injected crash before applying anything")
+
+    original = env.routes._apply_keyed_item
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", _crash)
+    with pytest.raises(HTTPException):
+        await _post(env, _segments_body())
+    env.monkeypatch.setattr(env.routes, "_apply_keyed_item", original)
+    path = _staging_file(env, KEY_SEGMENTS)
+    staging = json.loads(path.read_text(encoding="utf-8"))
+    gp_facts = next(item for item in staging["items"] if item["kind"] == "facts" and item["segment"] == 0)
+    gp_facts["segment"] = 1                                     # 序号、效果键、各段目标都还合法
+    path.write_text(json.dumps(staging, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        await _post(env, _segments_body())
+    # 事实项被挪到另一段：不能把这段的事实写进另一个 subject 的记忆域
+    assert excinfo.value.status_code == 503
+    assert _facts_of(env, GP) == [] and _facts_of(env, PART) == []

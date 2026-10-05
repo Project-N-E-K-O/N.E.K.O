@@ -3093,13 +3093,16 @@ def _keyed_staging_items_valid(
     # 段数对不上说明有项被整条删掉了，按它收尾会永久漏掉这一段的语言写入
     manifest = staging.get("manifest")
     if not (
-        isinstance(manifest, dict) and set(manifest) == {"facts", "effects", "language"}
+        isinstance(manifest, dict) and set(manifest) == {"facts", "effects", "language", "facts_segments"}
         and all(
             isinstance(manifest[name], int) and not isinstance(manifest[name], bool)
             for name in ("facts", "effects")
         )
         and manifest["facts"] == sum(1 for item in items if item.get("kind") == _KEYED_ITEM_FACTS)
         and manifest["effects"] == ordinal
+        and manifest["facts_segments"] == [
+            item.get("segment") for item in items if item.get("kind") == _KEYED_ITEM_FACTS
+        ]
         and (manifest["language"] is None or is_supported_language_code(manifest["language"]))
     ):
         # 事实项或效果数与生成时不符：某个事实项整条丢了，按剩下的收尾会永久漏掉它
@@ -3464,6 +3467,9 @@ async def _build_keyed_staging(
             "facts": sum(1 for item in items if item["kind"] == _KEYED_ITEM_FACTS),
             "effects": effect_ordinal,
             "language": req.language if is_supported_language_code(req.language) else None,
+            # 各事实项生成时所属的段：改了某一项的段号（序号、效果键、各段目标都还合法）会把
+            # 这段的事实写进另一个 subject 的记忆域
+            "facts_segments": [item["segment"] for item in items if item["kind"] == _KEYED_ITEM_FACTS],
         },
     }
 
@@ -5032,9 +5038,25 @@ def _read_staged_subjects_for_listing(directory: str) -> list:
 
     from .idempotency import _list_staging_sync
 
+    from .idempotency import IDEMPOTENCY_KEYS_FILENAME, KEY_STATE_PENDING, key_digest
+
+    # 按文件名反查键记录：已终结（done / cancelled）的键收尾时删暂存失败留下的文件没有待应用的东西，
+    # 不能列成 staged。没有记录的孤儿可能被同键重试认领，照常列；键记录读不出时全部照常列（偏向多列）
+    terminal_files: set[str] = set()
+    try:
+        with open(os.path.join(os.path.dirname(directory), IDEMPOTENCY_KEYS_FILENAME), encoding="utf-8") as handle:
+            records = json.load(handle)
+    except (OSError, ValueError, RecursionError):
+        records = {}
+    if isinstance(records, dict):
+        for key, record in records.items():
+            if isinstance(key, str) and key and isinstance(record, dict) and record.get("state") != KEY_STATE_PENDING:
+                terminal_files.add(f"{key_digest(key)}.json")
     subjects = []
-    for _path, document, _mtime in _list_staging_sync(directory):
+    for path, document, _mtime in _list_staging_sync(directory):
         if not isinstance(document, dict) or document.get(_KEYED_STAGING_CANCELLED) is True:
+            continue
+        if os.path.basename(path) in terminal_files:
             continue
         segments = document.get("segments")
         for segment in segments if isinstance(segments, list) else []:
