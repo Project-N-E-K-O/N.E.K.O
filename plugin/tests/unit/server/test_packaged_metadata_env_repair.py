@@ -361,6 +361,73 @@ def test_each_read_parses_shipped_metadata_once(tmp_path, monkeypatch, cache_cas
     assert result.built_in_this_environment == (cache_case in {"same_env", "valid"})
 
 
+@pytest.mark.parametrize("cache_case", ["same_env", "missing", "scoped", "legacy"])
+def test_concurrent_directory_replacement_rejects_the_old_metadata_snapshot(
+    tmp_path,
+    monkeypatch,
+    cache_case,
+):
+    environment = None if cache_case == "same_env" else _foreign_env(python="3.9")
+    plugin_dir = _write_plugin(tmp_path, build_env=environment)
+    if cache_case in {"scoped", "legacy"}:
+        assert packaged_metadata.write_local_packaged_metadata(
+            plugin_dir,
+            before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
+            **_SCAN_KWARGS,
+        )
+        if cache_case == "legacy":
+            current = _cache_path(plugin_dir)
+            current.replace(current.parent.parent / current.name)
+    replacement = _write_plugin(tmp_path / "stage", build_env=environment)
+    package = _read_json(replacement / _META)
+    package["handlers"]["demo.go"]["name"] = "Replacement"
+    (replacement / _META).write_text(json.dumps(package), encoding="utf-8")
+    backup = tmp_path / "previous"
+    for path in (plugin_dir, replacement, backup):
+        assert path.resolve().is_relative_to(tmp_path.resolve())
+
+    original = packaged_metadata._validate_packaged_metadata
+    replaced = []
+
+    def replace_after_validation(meta_path, source_dir, raw, meta_stat):
+        result = original(meta_path, source_dir, raw, meta_stat)
+        assert result is not None
+        if not replaced:
+            plugin_dir.rename(backup)
+            replacement.rename(plugin_dir)
+            replaced.append(True)
+        return result
+
+    monkeypatch.setattr(
+        packaged_metadata, "_validate_packaged_metadata", replace_after_validation
+    )
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is None
+    assert replaced == [True]
+
+
+def test_shipped_metadata_removed_during_cache_validation_rejects_snapshot(
+    tmp_path,
+    monkeypatch,
+):
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    assert packaged_metadata.write_local_packaged_metadata(
+        plugin_dir,
+        before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
+        **_SCAN_KWARGS,
+    )
+    original = packaged_metadata._validate_packaged_metadata
+
+    def remove_after_validation(meta_path, source_dir, raw, meta_stat):
+        result = original(meta_path, source_dir, raw, meta_stat)
+        (plugin_dir / _META).unlink()
+        return result
+
+    monkeypatch.setattr(
+        packaged_metadata, "_validate_packaged_metadata", remove_after_validation
+    )
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is None
+
+
 # ── 1. 核心：写 sidecar，发行产物不动 ────────────────────────────────────
 
 

@@ -727,6 +727,15 @@ def write_local_packaged_metadata(
     return True
 
 
+def _metadata_snapshot_is_current(meta_path: Path, expected: os.stat_result) -> bool:
+    """Reject a snapshot whose shipped metadata was atomically replaced or removed."""
+    try:
+        current = meta_path.stat()
+    except OSError:
+        return False
+    return (current.st_dev, current.st_ino) == (expected.st_dev, expected.st_ino)
+
+
 def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
     """Prefer a validated host cache, otherwise read the shipped metadata.
 
@@ -739,13 +748,14 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
         return None
     raw, meta_stat = loaded
     if _environment_matches(raw.get("build_env")):
-        return _validate_packaged_metadata(meta_path, plugin_dir, raw, meta_stat)
+        result = _validate_packaged_metadata(meta_path, plugin_dir, raw, meta_stat)
+        return result if _metadata_snapshot_is_current(meta_path, meta_stat) else None
     target = _local_packaged_metadata_path(plugin_dir, raw)
     local = (
         _read_packaged_metadata_from(target, plugin_dir) if target is not None else None
     )
     if local is not None and local.built_in_this_environment:
-        return local
+        return local if _metadata_snapshot_is_current(meta_path, meta_stat) else None
     if target is not None:
         # Reuse caches written by the former flat layout. New writes and
         # retention stay scoped to this installation's directory.
@@ -753,8 +763,13 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
         if legacy.is_file():
             local = _read_packaged_metadata_from(legacy, plugin_dir)
             if local is not None and local.built_in_this_environment:
-                return local
-    return _validate_packaged_metadata(meta_path, plugin_dir, raw, meta_stat)
+                return (
+                    local
+                    if _metadata_snapshot_is_current(meta_path, meta_stat)
+                    else None
+                )
+    result = _validate_packaged_metadata(meta_path, plugin_dir, raw, meta_stat)
+    return result if _metadata_snapshot_is_current(meta_path, meta_stat) else None
 
 
 def _read_packaged_metadata_from(
