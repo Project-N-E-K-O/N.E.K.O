@@ -4,7 +4,7 @@
 > 适用场景：99元/年 阿里云 ECS (2核2G) / 其他低配云服务器 / 预算极度受限的开发者
 > 核心理念：用最少的钱，榨干每一滴性能，实现"零垃圾、高可用、防爆破"的赛博生存。
 > 配套部署文件：**`docker-compose.yaml`（自适应部署方案：全自动初始化 + 自愈看门狗）**
-> 可以在安全组限制 48911 端口仅对必要 IP 开放（不强制）；Nginx 自定义挂载仅为高级用户预留，普通用户建议注释掉该行。
+> 默认只绑定本机入口。公网使用 HTTPS + 实例访问凭证；部署镜像必须包含 #3289 的实例授权实现。此方案不保证任意负载都能在 2G 内存下稳定运行。
 
 ---
 
@@ -31,7 +31,7 @@
 |---|---|
 | **Docker Compose V2** | 必须用新版 `docker compose`（**不能用**旧版 Python 的 `docker-compose` v1） |
 | **宿主机有 `bash`** | 看门狗脚本 shebang 为 `#!/bin/bash`，且 `/dev/tcp` 是 bash 专属特性 |
-| **宿主机有 `timeout`** | util-linux 自带，用于看门狗 `/dev/tcp` 回退防挂死 |
+| **宿主机有 `curl`、`timeout`、`flock`** | `curl` 检查完整 HTTP 响应；`timeout`（coreutils）限制 Docker 命令；`flock`（util-linux）防止并发重启。可运行 `sudo apt install curl coreutils util-linux` |
 | **root 级 cron + docker 套接字** | 看门狗由宿主 cron 每 5 分钟执行，并调用 `docker restart` |
 
 ### 2.2 部署命令
@@ -43,8 +43,35 @@ docker compose -f "docker-compose.yaml" up -d            # 启动
 docker compose ps                                            # 查看状态
 ```
 
+首次连接使用 `https://127.0.0.1:48912`。远程主机可先通过 SSH 转发 HTTPS：
+
+```bash
+ssh -L 48912:127.0.0.1:48912 <服务器用户>@<服务器地址>
+```
+
+在本机浏览器打开同一 HTTPS 地址。镜像默认生成自签名证书；公网使用前应部署可信证书或可信 TLS 网关。实例访问凭证由管理员在服务器显式读取：
+
+```bash
+docker compose exec --user neko -w /app neko-main uv run python -m utils.instance_access
+```
+
+若命令不存在，说明镜像尚未包含 #3289；先升级或从已合并源码构建，不能直接开放公网。凭证持久化在 `neko-home` 内，首次输入后此设备记住连接 30 天；不要把 key、Cookie 或社区令牌写入 URL、日志或截图。社区账户登录不代替实例授权。
+
+公网部署前在同目录 `.env` 设置域名与 HTTPS 绑定，例如：
+
+```dotenv
+NEKO_HTTPS_BIND_IP=0.0.0.0
+NEKO_TRUSTED_HOSTS=your-domain.example
+NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
+# NEKO_IMAGE=ghcr.io/project-n-e-k-o/n.e.k.o@sha256:<经核验且包含实例授权的完整摘要>
+```
+
+使用 IP 字面量无需域名白名单，但仍需要 HTTPS、证书与实例凭证。外置 TLS 网关终止 HTTPS 时，设置 `NEKO_INSTANCE_PUBLIC_ORIGIN=https://your-domain.example`，保留 Host 和正确的客户端 XFF 链，代理 WebSocket；上游 HTTP 必须私有隔离。网关公网 HTTP 只能关闭或重定向到 HTTPS，不能把同 Host 明文流量代理进应用。仅使用容器自身 HTTPS 时留空 public origin。`NEKO_COMMUNITY_WEB_CLIENT_ID` / `NEKO_COMMUNITY_WEB_REDIRECT_URI` 通常留空，使用平台固定 relay；社区 OAuth 仍需核对认证平台、PC/社区配套发布及真实环境验收，不能以此模板或单测代替。
+
+完整契约见 [社区账户与远程实例访问边界](../../docs/design/security/community-remote-access.md)。
+
 启动后会自动完成：
-- **`neko-init`**：一次性初始化，创建 `neko-home/` `logs/` `nginx/` 目录并对齐属主，跑完即退出。
+- **`neko-init`**：一次性初始化，创建 `neko-home/`、`logs/` 并对齐到 UID/GID 1000，失败会阻止主服务启动。
 - **`neko-main`**：N.E.K.O 主服务（Compose 将等待 `neko-init` 成功后启动）。
 - **`neko-cron-install`**：一次性把**自愈看门狗**装到宿主机 `/opt/neko/watchdog.sh`，并注册 `/etc/cron.d/neko-watchdog`，跑完即退出。
 
@@ -57,7 +84,7 @@ docker compose ps                                            # 查看状态
 ### 3.1 服务拓扑
 
 ```
-neko-init ──(success)──▶ neko-main ──▶ 端口 48911(HTTP)/48912(HTTPS)/48915(预留)
+neko-init ──(success)──▶ neko-main ──▶ 本机 48911(HTTP)/48912(HTTPS，可显式开放)
    │                        │
    └──(success)──▶ neko-cron-install ──▶ 宿主 /opt/neko/watchdog.sh + /etc/cron.d/neko-watchdog
                                     └──▶ 每 5 分钟二层健康检查 + 自动重启
@@ -67,12 +94,16 @@ neko-init ──(success)──▶ neko-main ──▶ 端口 48911(HTTP)/48912(
 
 由宿主 cron 每 5 分钟执行 `/opt/neko/watchdog.sh`，**双层健康判据**：
 
-- **第一层**：`docker inspect` 容器 `neko` 是否 Running。
-- **第二层**：应用端口 48911 是否真正响应 —— 有 `curl` 时查 HTTP 状态码（200/302/403）；无 `curl` 时回退 `bash /dev/tcp` 探测端口。
+- **第一层**：核验容器 `neko` 的部署标签、Compose 服务名与 Running 状态。容器消失、手动停止或同名其他部署都不会被重启；进程退出交给 Docker 的 `unless-stopped` 策略。
+- **第二层**：宿主 `curl` 请求本机 48911 首页，完整响应为 200 或新版正常的匿名 401；同时 `docker exec` 在容器内直连真正主服务的 `/health`，要求请求成功。Nginx 的 `/health` 是静态 200，不能单独证明后端存活。两项探测均有总超时，收到状态码后仍超时也算失败。不再使用只能判断 TCP 连通的降级逻辑。
 
-健康即清空失败计数；**连续 2 次不健康 → 自动 `docker restart neko`**（成功清计数，失败写日志 `/var/log/neko-watchdog.log` 便于排查）。这样既能发现"容器宕机"，也能发现"容器活着但应用挂死"。
+健康即清空失败计数；**连续 2 次不健康 → 自动重启同一个容器 ID**。计数绑定容器 ID，重建后不继承旧失败；重启前再次检查运行状态和暂停标记，成功清计数，失败保留计数并记录日志。`flock` 防止 cron 与手动调用同时重启。
 
-> ⚠️ 提醒：请确认你的应用在 48911 端口真实返回码在 `{200,302,403}` 内，否则需按需调整脚本白名单。日志无自动轮转，长期运行建议自行配置 logrotate。
+安装器拒绝符号链接和非 root 私有目录，原子安装脚本与 cron。状态、锁、日志位于 root:root、0700 的 `/opt/neko/`；计数损坏或读写失败会报错退出，不会静默归零。日志 `/opt/neko/watchdog.log` 无自动轮转，长期运行建议配置 logrotate。
+
+开发者可运行 `sudo bash ./test-watchdog.sh` 验证恢复逻辑。测试将 Docker/HTTP 调用替换为模拟程序，安装路径改为临时目录，使用真实 Linux 权限、文件锁和计数读写；不安装真实 cron，也不重启容器。通过此测试不代表已完成 ECS 实机部署验收。
+
+维护时先执行 `sudo touch /opt/neko/disabled` 暂停，再停容器；恢复运行后 `sudo rm -f /opt/neko/disabled`。重新安装不会解除暂停。安装器会写入宿主 root cron，只在信任这两个脚本和安装器镜像的主机上使用；多套部署不要共用 `neko` 容器名及 `/opt/neko`。
 
 ---
 
@@ -91,12 +122,14 @@ export NEKO_IMAGE=ghcr.io/project-n-e-k-o/n.e.k.o:latest-full   # 海外/已配�
 docker compose up -d
 ```
 
-常用端口与目录（除非需要外网域名，否则保持注释即可）：
-- 端口：`48911→80`（HTTP）、`48912→443`（HTTPS）、`48915→48915`（预留）
-- **浏览器访问**：`http://<你的ECS公网IP>:48911`（若配了域名见第 8.2 节；看门狗在宿主机内部仍用 `127.0.0.1` 做健康探测，属正常，不受影响）
+`latest-full` 是滚动标签，不保证已发布的镜像包含最新 main。上线前核对镜像版本和实例授权，使用经过验证的 tag/digest 固定 `NEKO_IMAGE`；不在文档中虚构尚未发布的版本。保留加速代理作为默认下载入口，按实际网络选择官方源。
+
+常用端口与目录：
+- 端口：`127.0.0.1:48911→80`（私有 HTTP）、`127.0.0.1:48912→443`（HTTPS；通过 `NEKO_HTTPS_BIND_IP` 显式开放）。不发布预留的 48915。
+- **浏览器访问**：`https://<你的域名或IP>:48912`；公网仅放行 HTTPS 入口，可进一步限制来源 IP。默认本机绑定可用 SSH 转发连接。
 - 数据卷：`./neko-home → /home/neko`（用户数据、SSL 证书）
 - 日志卷：`./logs → /app/logs`
-- 配置卷：`./nginx → /etc/nginx/conf.d`（自定义反代，已通过 `NEKO_KEEP_CUSTOM_NGINX_CONF=1` 防止空目录覆盖默认配置）
+- 默认不挂载 Nginx 配置目录。当前入口脚本每次启动都会生成 `neko-proxy.conf`，不读取 `NEKO_KEEP_CUSTOM_NGINX_CONF`；需要自定义 TLS/代理时使用外层网关或经过验证的自定义镜像，不把无效变量当作配置保护。
 
 ---
 
@@ -139,7 +172,7 @@ echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf   # 永久生效
 
 ## 6. Docker"零垃圾"与日志限制
 
-默认情况下 Docker 的 json-file 日志无限增长。创建 `/etc/docker/daemon.json`：
+本 Compose 已限制主服务的 Docker json-file 日志为 10m × 3，无需覆盖宿主全局配置。注意应用写入 `logs/` 或持久化目录的日志不受 Docker logging 限制，应另外观察并轮转。如果要给其他容器配置全局默认值，请合并进现有 `/etc/docker/daemon.json`：
 
 ```json
 {
@@ -184,7 +217,7 @@ sudo apt install crowdsec-firewall-bouncer-iptables   # 防火墙执行器，实
 
 ### 2. DuckDNS 动态域名解析
 
-公网按量付费时 IP 会变化，可用免费 DuckDNS 做动态域名：注册域名拿 Token，写定时脚本每 5 分钟更新解析，确保域名永远指向服务器 IP。（如需域名访问，请同时在 `docker-compose.yaml` 的 `neko-main` 中取消注释并填入 `NEKO_TRUSTED_HOSTS` / `NEKO_TRUSTED_ORIGINS`。）
+若公网 IP 会变化，可用 DuckDNS 做动态域名：注册域名拿 Token，定时更新解析。域名访问同时在 `.env` 设置 `NEKO_TRUSTED_HOSTS` / `NEKO_TRUSTED_ORIGINS`，并配置对应 HTTPS 证书。
 
 ---
 
@@ -201,15 +234,18 @@ sudo apt install crowdsec-firewall-bouncer-iptables   # 防火墙执行器，实
 ## 10. 上线核对清单（Checklist）
 
 - [ ] `docker compose` 为 V2 版本（`docker compose version`）
-- [ ] 宿主机有 `bash` 与 `timeout`（`command -v bash timeout`）
+- [ ] 宿主机有 `bash`、`curl`、`timeout`、`flock`（`command -v bash curl timeout flock`）
 - [ ] `docker compose config --quiet` 无报错
 - [ ] `docker compose up -d` 后 `docker compose ps` 显示 `neko-main` Running
 - [ ] `neko-init`、`neko-cron-install` 一次性退出（`Exit 0`）
 - [ ] 宿主机存在 `/opt/neko/watchdog.sh`（首行 `#!/bin/bash`）且 `+x`
 - [ ] 宿主机存在 `/etc/cron.d/neko-watchdog`（权限 644、属主 root）
 - [ ] 手动执行 `/opt/neko/watchdog.sh` 健康分支退出码为 0
-- [ ] 浏览器访问 `http://<你的ECS公网IP>:48911` 返回码 ∈ {200,302,403}（否则调整脚本白名单；公网需先放行 48911 端口）
-- [ ] `/var/log/neko-watchdog.log` 正常写入
+- [ ] 镜像包含 #3289；HTTPS 首次输入实例凭证，刷新后可复用
+- [ ] 公网 HTTP/私有 upstream 不可达，HTTPS 入口证书与白名单正确
+- [ ] 匿名账户/API 返回 401、匿名 WebSocket 被拒；社区 OAuth 与配套发布独立验收
+- [ ] 手动停止、暂停及同名其他部署不会被看门狗启动
+- [ ] 故障时 `/opt/neko/watchdog.log` 正常写入；完成计数读写及两次失败重启验收
 
 ---
 
@@ -219,10 +255,13 @@ sudo apt install crowdsec-firewall-bouncer-iptables   # 防火墙执行器，实
 
 如果你在使用这份指南时遇到了问题，欢迎在 Issue 区交流。开源的精神就是互相搀扶，希望 YUI 能在更多人的设备里安稳地活下去。
 ### 卸载与清理
-如果你想彻底移除本方案（执行 `docker compose down` 后），请记得手动清理宿主机的看门狗残留：
+看门狗独立于 Compose 生命周期；`docker compose down` 不卸载 root cron。彻底移除时先撤销恢复权限，再停止服务（保留用户数据）：
 ```bash
+sudo touch /opt/neko/disabled
 sudo rm -f /etc/cron.d/neko-watchdog
-sudo rm -f /opt/neko/watchdog.sh
+# 等待正在执行的探测/重启退出，再持锁移除脚本。
+sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/watchdog.sh
+docker compose down
 ```
 ---
 

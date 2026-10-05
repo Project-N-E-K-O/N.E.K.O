@@ -1,129 +1,68 @@
-# ============================================================================
-# Project N.E.K.O. - 自适应部署方案（全自动初始化 + 自愈看门狗）
-# Author: 烨儿不会飞 (GitHub: @csy-11, Bilibili: 烨儿不会飞,爱发电：https://afdian.com/a/chensye)
-# 说明: 必须使用 Compose V2 (docker compose，不能是 docker-compose)
-# ============================================================================
+# Project N.E.K.O. - 社区 2C2G 部署方案
+# Author: 烨儿不会飞 (GitHub: @csy-11)
+# Compose V2 only. 使用包含 #3289 的镜像后才可开放远程入口。
 services:
   neko-init:
     image: alpine:3.20
-    container_name: neko-init
     restart: "no"
-    entrypoint: ["/bin/sh", "-c"]
+    entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
-        echo "开始初始化 N.E.K.O 运行环境..."
-        mkdir -p /host-dir/neko-home /host-dir/logs /host-dir/nginx
-        # 权限对齐到容器内的 neko 用户（通常 UID 为 1000）
-        chown -R 1000:1000 /host-dir/neko-home /host-dir/logs /host-dir/nginx || true
-        echo "初始化完成！环境已就绪。"
+        mkdir -p /host-dir/neko-home /host-dir/logs
+        chown -R 1000:1000 /host-dir/neko-home /host-dir/logs
     volumes:
       - .:/host-dir
-    networks:
-      - neko-network
 
   neko-main:
-    # 默认：加速代理 + 完整版（国内强烈推荐，免去首次启动下载 Chromium 卡死）
+    # 首次部署可以用 latest-full；对外开放前核对版本，并用 NEKO_IMAGE 固定 tag/digest。
     image: ${NEKO_IMAGE:-docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest-full}
-    # 选项1：加速代理 + 标准版
-    # image: docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
-    # 选项2：官方源 + 完整版（海外服务器推荐）
-    # image: ghcr.io/project-n-e-k-o/n.e.k.o:latest-full
     container_name: neko
     restart: unless-stopped
+    labels:
+      org.neko.community-2c2g.watchdog: enabled
     depends_on:
       neko-init:
         condition: service_completed_successfully
     environment:
-      - TZ=Asia/Shanghai
-      # 防止空 nginx 目录覆盖镜像默认配置
-      - NEKO_KEEP_CUSTOM_NGINX_CONF=1
-      # 如果需要外网域名访问，取消下方注释并填入你的域名/IP
-      # - NEKO_TRUSTED_HOSTS=your-domain.duckdns.org
-      # - NEKO_TRUSTED_ORIGINS=https://your-domain.duckdns.org:48912
+      - TZ=${TZ:-Asia/Shanghai}
+      - XDG_DATA_HOME=/home/neko/.local/share
+      - NEKO_STORAGE_SELECTED_ROOT=/home/neko/.local/share/N.E.K.O
+      - NEKO_STORAGE_ANCHOR_ROOT=/home/neko/.local/share/N.E.K.O
+      - NEKO_INSTANCE_ACCESS_KEY=${NEKO_INSTANCE_ACCESS_KEY:-}
+      - NEKO_INSTANCE_PUBLIC_ORIGIN=${NEKO_INSTANCE_PUBLIC_ORIGIN:-}
+      - NEKO_COMMUNITY_WEB_CLIENT_ID=${NEKO_COMMUNITY_WEB_CLIENT_ID:-}
+      - NEKO_COMMUNITY_WEB_REDIRECT_URI=${NEKO_COMMUNITY_WEB_REDIRECT_URI:-}
+      - NEKO_TRUSTED_HOSTS=${NEKO_TRUSTED_HOSTS:-project-neko.online}
+      - NEKO_TRUSTED_ORIGINS=${NEKO_TRUSTED_ORIGINS:-}
     ports:
-      - "48911:80"
-      - "48912:443"
-      - "48915:48915"
+      # HTTP 仅供本机探测/私有 TLS 网关。不得直接开放到公网。
+      - "127.0.0.1:48911:80"
+      # 默认私有；验证镜像与 TLS 后可显式设置 NEKO_HTTPS_BIND_IP=0.0.0.0。
+      - "${NEKO_HTTPS_BIND_IP:-127.0.0.1}:48912:443"
     volumes:
       - ./neko-home:/home/neko
       - ./logs:/app/logs
-      - ./nginx:/etc/nginx/conf.d
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - neko-network
 
-  # cron 安装器（一次性，跑完即退）
+  # 一次性安装宿主 root cron；脚本独立于 Compose 生命周期，卸载见 README。
   neko-cron-install:
     image: alpine:3.20
-    container_name: neko-cron-install
     restart: "no"
     depends_on:
       neko-init:
         condition: service_completed_successfully
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        # 1. 写入真正的高强度自愈看门狗脚本
-        mkdir -p /host-opt/neko
-        cat > /host-opt/neko/watchdog.sh <<'WATCHDOG_EOF'
-        #!/bin/bash
-        LOG_FILE="/var/log/neko-watchdog.log"
-        FAIL_COUNT_FILE="/opt/neko/neko_fail_count"
-        
-        IS_HEALTHY=false
-        
-        # 第一层检查：容器进程是否存活
-        if docker inspect -f '{{.State.Running}}' neko 2>/dev/null | grep -q "true"; then
-            # 第二层检查：应用端口 48911 是否真的响应 HTTP 请求
-            if command -v curl &> /dev/null; then
-                # 修复：加了 || echo "000" 防止 curl 超时后仍返回旧状态码
-                HTTP_CODE=$$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 http://127.0.0.1:48911 || echo "000")
-                if [ "$$HTTP_CODE" = "200" ] || [ "$$HTTP_CODE" = "302" ] || [ "$$HTTP_CODE" = "403" ]; then
-                    IS_HEALTHY=true
-                fi
-            else
-                # 如果没有 curl，退回 Bash 原生的 /dev/tcp 探测端口（不需要任何外部依赖）
-                if timeout 3 bash -c "echo > /dev/tcp/127.0.0.1/48911" 2>/dev/null; then
-                    IS_HEALTHY=true
-                fi
-            fi
-        fi
-        
-        if [ "$$IS_HEALTHY" = true ]; then
-            # 健康，清空失败计数并退出
-            rm -f $$FAIL_COUNT_FILE
-            exit 0
-        fi
-        
-        # 失败处理逻辑
-        FAIL_COUNT=$$(cat $$FAIL_COUNT_FILE 2>/dev/null || echo 0)
-        FAIL_COUNT=$$((FAIL_COUNT + 1))
-        echo $$FAIL_COUNT > $$FAIL_COUNT_FILE
-        echo "$$(date '+%Y-%m-%d %H:%M:%S') - 健康检查失败，连续失败次数: $$FAIL_COUNT" >> $$LOG_FILE
-        
-        if [ "$$FAIL_COUNT" -ge 2 ]; then
-            echo "$$(date '+%Y-%m-%d %H:%M:%S') - 连续2次失败，正在尝试重启容器..." >> $$LOG_FILE
-            if docker restart neko >> $$LOG_FILE 2>&1; then
-                echo "$$(date '+%Y-%m-%d %H:%M:%S') - 重启成功，计数器清零。" >> $$LOG_FILE
-                rm -f $$FAIL_COUNT_FILE
-            else
-                echo "$$(date '+%Y-%m-%d %H:%M:%S') - 重启失败！请检查 Docker socket 权限。" >> $$LOG_FILE
-            fi
-        fi
-        WATCHDOG_EOF
-        chmod +x /host-opt/neko/watchdog.sh
-        
-        # 2. 写入宿主 cron 任务（每5分钟一次）
-        cat > /host-cron.d/neko-watchdog <<'CRON_EOF'
-        */5 * * * * root /opt/neko/watchdog.sh
-        CRON_EOF
-        chown root:root /host-cron.d/neko-watchdog
-        chmod 644 /host-cron.d/neko-watchdog
-        echo "已安装高强度看门狗到 /opt/neko/watchdog.sh"
+    entrypoint: ["/bin/sh", "/source/install-watchdog.sh"]
     volumes:
       - /etc/cron.d:/host-cron.d
       - /opt:/host-opt
-    networks:
-      - neko-network
+      - ./install-watchdog.sh:/source/install-watchdog.sh:ro
+      - ./watchdog.sh:/source/watchdog.sh:ro
 
 networks:
   neko-network:
