@@ -524,7 +524,8 @@ async def test_main_server_shutdown_defers_cancellation_until_every_cleanup_ran(
 
     ``except Exception`` does not catch ``CancelledError`` (a ``BaseException``),
     so a bare await let it escape ``on_shutdown`` and skip every later cleanup.
-    The cancellation must still reach the caller once all cleanups have run.
+    The cancellation must still reach the caller once all cleanups have run --
+    including the Cloud Save upload when the cancel landed before it.
     """
     from app import main_server
 
@@ -550,24 +551,25 @@ async def test_main_server_shutdown_defers_cancellation_until_every_cleanup_ran(
         with pytest.raises(asyncio.CancelledError):
             await shutdown_task
 
-    expected = list(_SHUTDOWN_CLEANUP_ORDER)
-    if _SHUTDOWN_CLEANUP_ORDER.index(cancelled_step) < expected.index("cloudsave"):
-        # The upload has no deadline (a stuck Steam call cannot be cancelled),
-        # so once shutdown is cancelled it is not started; main skipped it too.
-        expected.remove("cloudsave")
-    assert cleanup_order == expected
+    assert cleanup_order == _SHUTDOWN_CLEANUP_ORDER
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_main_server_shutdown_cancel_gets_past_a_stuck_cloudsave_upload():
+async def test_main_server_shutdown_cancel_gets_past_a_stuck_cloudsave_upload(
+    monkeypatch,
+):
     """A stuck Steam call has no deadline; cancelling shutdown must still get out.
 
-    main let the cancel escape (skipping the HTTP pool cleanup); this keeps the
-    escape hatch and still runs every later cleanup before re-raising.
+    main let the cancel escape (skipping the HTTP pool cleanup); here the
+    upload gets its cancelled budget, then every later cleanup still runs
+    before the cancellation is re-raised.
     """
     from app import main_server
 
+    monkeypatch.setattr(
+        main_server, "_CLOUDSAVE_SHUTDOWN_UPLOAD_CANCELLED_BUDGET_SECONDS", 0.05
+    )
     cleanup_order: list[str] = []
     entered = asyncio.Event()
     never = asyncio.Event()

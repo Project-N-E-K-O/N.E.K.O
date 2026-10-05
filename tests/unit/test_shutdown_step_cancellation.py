@@ -234,28 +234,35 @@ async def test_shutdown_step_without_deadline_waits_for_the_step() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_caller_cancel_ends_the_wait_on_a_step_without_deadline() -> None:
-    """Without a deadline the caller's cancel is the only way out of a stuck step.
+async def test_caller_cancel_bounds_the_wait_on_a_step_without_deadline() -> None:
+    """Without a deadline the caller's cancel is the only thing bounding the wait.
 
-    The step (a worker thread in production) cannot be stopped, but shutdown
-    must stop waiting on it and run the remaining steps.
+    After the cancel the step gets its cancelled budget, then is cancelled like
+    any overrunning step, and the remaining steps still run.
     """
-    from app.main_server import _SHUTDOWN_STEP_TASKS, _run_shutdown_step
+    from app.main_server import _run_shutdown_step
 
     entered = asyncio.Event()
-    never = asyncio.Event()
+    stopped: list[str] = []
     ran: list[str] = []
 
     async def stuck_step() -> None:
         entered.set()
-        await never.wait()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            stopped.append("stuck")
+            raise
 
     async def later_step() -> None:
         ran.append("later")
 
     async def shutdown_like() -> asyncio.CancelledError | None:
         pending = await _run_shutdown_step(
-            stuck_step, what="stuck", deadline_monotonic=None
+            stuck_step,
+            what="stuck",
+            deadline_monotonic=None,
+            cancelled_budget_seconds=0.05,
         )
         return await _run_shutdown_step(
             later_step,
@@ -270,23 +277,55 @@ async def test_caller_cancel_ends_the_wait_on_a_step_without_deadline() -> None:
     # asyncio.wait, not wait_for: wait_for would cancel again and then block on
     # the very wait this test is checking for.
     done, _ = await asyncio.wait({task}, timeout=2.0)
-    stuck = [t for t in _SHUTDOWN_STEP_TASKS if t.get_name() == "shutdown:stuck"]
-    stuck_was_running = bool(stuck) and not stuck[0].done()
-    never.set()
-    await asyncio.gather(task, *stuck, return_exceptions=True)
-    assert done, "cancelling the caller must end the wait on a step without deadline"
+    assert done, "cancelling the caller must bound the wait on a step without deadline"
     assert isinstance(task.result(), asyncio.CancelledError)
+    assert stopped == ["stuck"]
     assert ran == ["later"]
-    assert stuck_was_running, "the stuck step is left running, not lost"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_step_without_deadline_is_skipped_once_a_cancel_is_pending() -> None:
+async def test_step_without_deadline_still_finishes_within_its_cancelled_budget() -> None:
+    """A cancel must not throw away work that completes within its budget."""
+    from app.main_server import _run_shutdown_step
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    finished: list[str] = []
+
+    async def slow_step() -> None:
+        entered.set()
+        await release.wait()
+        finished.append("slow")
+
+    async def shutdown_like() -> asyncio.CancelledError | None:
+        return await _run_shutdown_step(
+            slow_step,
+            what="slow",
+            deadline_monotonic=None,
+            cancelled_budget_seconds=1.0,
+        )
+
+    task = asyncio.create_task(shutdown_like())
+    await entered.wait()
+    task.cancel()
+    asyncio.get_running_loop().call_later(0.05, release.set)
+    done, _ = await asyncio.wait({task}, timeout=2.0)
+    assert done
+    assert isinstance(task.result(), asyncio.CancelledError)
+    assert finished == ["slow"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("budget", "expect_called"), ((1.0, True), (0.0, False)))
+async def test_step_without_deadline_after_an_earlier_cancel_gets_its_budget(
+    budget, expect_called
+) -> None:
     """A cancel absorbed by an earlier step will not arrive again to end the wait.
 
-    Starting an unbounded step then would block shutdown forever on a stuck
-    worker thread, so it is not started at all.
+    So an unbounded step entered with a pending cancel is bounded by its
+    cancelled budget right away; with no budget it is not started at all.
     """
     from app.main_server import _run_shutdown_step
 
@@ -298,10 +337,14 @@ async def test_step_without_deadline_is_skipped_once_a_cancel_is_pending() -> No
 
     first = asyncio.CancelledError()
     pending = await _run_shutdown_step(
-        step, what="unbounded", deadline_monotonic=None, pending_cancellation=first
+        step,
+        what="unbounded",
+        deadline_monotonic=None,
+        pending_cancellation=first,
+        cancelled_budget_seconds=budget,
     )
     assert pending is first
-    assert called is False
+    assert called is expect_called
 
 
 @pytest.mark.unit
@@ -310,36 +353,35 @@ async def test_abandoned_step_failure_is_still_logged(monkeypatch) -> None:
     """A step shutdown stopped waiting on must not fail silently afterwards."""
     from app import main_server
 
+    monkeypatch.setattr(main_server, "_SHUTDOWN_STEP_CANCEL_GRACE_SECONDS", 0.05)
     warnings: list[str] = []
     monkeypatch.setattr(
         main_server.logger,
         "warning",
         lambda msg, *args: warnings.append(msg % args),
     )
-    entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def stuck_then_fails() -> None:
-        entered.set()
-        await release.wait()
+    async def refuses_then_fails() -> None:
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
         raise RuntimeError("upload failed late")
 
-    async def shutdown_like() -> asyncio.CancelledError | None:
-        return await main_server._run_shutdown_step(
-            stuck_then_fails, what="late", deadline_monotonic=None
-        )
-
-    task = asyncio.create_task(shutdown_like())
-    await entered.wait()
-    task.cancel()
-    done, _ = await asyncio.wait({task}, timeout=2.0)
+    await main_server._run_shutdown_step(
+        refuses_then_fails,
+        what="late",
+        deadline_monotonic=time.monotonic() + 0.05,
+    )
     stuck = [
         t for t in main_server._SHUTDOWN_STEP_TASKS if t.get_name() == "shutdown:late"
     ]
+    assert stuck, "the abandoned step must stay strongly referenced"
     release.set()
-    await asyncio.gather(task, *stuck, return_exceptions=True)
+    await asyncio.gather(*stuck, return_exceptions=True)
     await asyncio.sleep(0)
-    assert done
     late = [w for w in warnings if "upload failed late" in w]
     assert late == ["late failed after shutdown stopped waiting for it: upload failed late"]
 
