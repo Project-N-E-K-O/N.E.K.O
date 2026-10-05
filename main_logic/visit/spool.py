@@ -137,6 +137,10 @@ _FORGET_SOURCES = {
     "forget": (None, "ask_later", "generating:diary", "preview:diary", "forget"),
     "abandoned": ("commit_failed:diary", "abandoned"),
 }
+# digest 一轮的终态放弃原因（digest_writes[run].abandoned）：region_settled 按已结清
+DIGEST_ABANDON_REASONS = ("batches_mismatch",)
+# digest_writes[run].plan 可带的字段：切批参数 + 开轮时定格的请求渲染
+_PLAN_FIELDS = frozenset({"max_lines", "batch_size", "language", "headers", "displays"})
 STATE_FIELDS = frozenset({
     "visit_id",
     "own_uid",
@@ -195,6 +199,15 @@ def is_spool_open(path: Path) -> bool:
 
 class SpoolStateError(ValueError):
     """Raised when a ``state.json`` document violates the canonical schema."""
+
+
+class SpoolStateCorrupt(SpoolStateError):
+    """``state.json`` content no version can use: not JSON / not UTF-8, nested too deep, or not an object.
+
+    A document that parses into an object but fails :func:`validate_state`
+    (e.g. written by a newer version) raises the plain
+    :class:`SpoolStateError` instead and must never be treated as corrupt.
+    """
 
 
 # ── 编码与校验（纯函数）────────────────────────────────────────────────
@@ -324,13 +337,17 @@ def new_state(
     own_uid: str,
     own_char: str,
     own_char_uid: str,
-    pair_id: str | None,
-    peer_uid: str | None,
-    peer_char_id: str | None,
+    pair_id: str,
+    peer_uid: str,
+    peer_char_id: str,
     memory_enabled: bool,
     visit_id: str | None = None,
 ) -> dict:
     """Return a fresh canonical ``state.json`` document for one visit.
+
+    The peer fields are required: the state is written when the visit
+    activates, once the peer is known. A ``None`` peer field in a state on
+    disk therefore always means "forget this person" erased it.
 
     ``visit_id`` may be left ``None``: :meth:`VisitSpool.write_state` binds
     the document to its own visit when writing it.
@@ -363,6 +380,11 @@ def new_state(
         "memory_enabled": memory_enabled,
         "digest_writes": {},
     }
+    for name in ("pair_id", "peer_uid", "peer_char_id"):
+        # 新建的 state 一律带着对端：盘上对端字段为 None 只可能是「清除这个人」抹掉的，
+        # 清除时作废 debrief 等步骤据此认场次，不能混进「从未绑定对端」的场次
+        if not isinstance(state[name], str) or not state[name]:
+            raise SpoolStateError(f"new state needs a bound peer ({name})")
     return validate_state(state)
 
 
@@ -501,12 +523,16 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
     if state["digest_runs"] not in (len(runs), len(runs) - 1):
         raise SpoolStateError("digest_runs does not match the registered digest_writes runs")
     for run, record in runs.items():
-        if not isinstance(record, Mapping) or set(record) - {"epochs", "plan", "membership"} != {
+        if not isinstance(record, Mapping) or set(record) - {"epochs", "plan", "membership", "abandoned"} != {
             "requested_at", "through_lp", "group", "segments",
         }:
             raise SpoolStateError(
-                f"digest_writes[{run}] must be {{requested_at, through_lp, group, segments[, epochs, plan, membership]}}"
+                f"digest_writes[{run}] must be {{requested_at, through_lp, group, segments"
+                f"[, epochs, plan, membership, abandoned]}}"
             )
+        # 终态放弃：开轮后转录被改动（批次成员对不上），剩下的批次再也不能用旧键发出
+        if "abandoned" in record and record["abandoned"] not in DIGEST_ABANDON_REASONS:
+            raise SpoolStateError(f"digest_writes[{run}].abandoned must be one of {DIGEST_ABANDON_REASONS}")
         membership = record.get("membership")
         # 开轮时每个批次的成员指纹：续跑逐批核对，批数相同而边界挪了（中间某行后来读不出）也认得出
         if membership is not None and not (
@@ -522,11 +548,22 @@ def validate_state(state: Any, *, visit_id: str | None = None) -> dict:
                 f"digest_writes[{run}].membership must be {{group, segments}} lists matching the batch counts"
             )
         plan = record.get("plan", {})
-        # 开轮时的切批参数（句数上限、每批句数）：升级改了常量之后续跑仍按原计划切批
-        if not isinstance(plan, Mapping) or set(plan) - {"max_lines", "batch_size"} or not all(
-            _is_int(value) and value >= 1 for value in plan.values()
+        # 开轮时的切批参数（句数上限、每批句数）：升级改了常量之后续跑仍按原计划切批。
+        # 以及开轮时定格的请求渲染（实际发送的 language、group 每个说话人的前缀、segments 的两个
+        # 对端显示名）：它们都进服务端的请求指纹，续跑现算的话跨版本同键不同体会被永久 422
+        if not isinstance(plan, Mapping) or set(plan) - _PLAN_FIELDS or not all(
+            _is_int(plan[name]) and plan[name] >= 1 for name in ("max_lines", "batch_size") if name in plan
         ):
             raise SpoolStateError(f"digest_writes[{run}].plan must be {{max_lines, batch_size}} ints >= 1")
+        language = plan.get("language")
+        if language is not None and not (isinstance(language, str) and language):
+            raise SpoolStateError(f"digest_writes[{run}].plan.language must be a non-empty string or null")
+        for name in ("headers", "displays"):
+            if name in plan and not (
+                isinstance(plan[name], Mapping)
+                and all(isinstance(k, str) and k and isinstance(v, str) for k, v in plan[name].items())
+            ):
+                raise SpoolStateError(f"digest_writes[{run}].plan.{name} must map speakers to strings")
         epochs = record.get("epochs", {})
         # 开轮时记下的各 subject 清除代数：同键重试沿用，服务端按它丢弃清除之前发起的产物
         if not isinstance(epochs, Mapping) or not all(
@@ -575,7 +612,9 @@ def region_settled(state: Mapping[str, Any]) -> bool:
     registered run must be counted in ``digest_runs`` (a run still in
     progress is not settled), and every run must have at least one group and
     one segments batch, all complete. An empty batch map means the batches
-    are not registered yet, not that they are done.
+    are not registered yet, not that they are done. A run marked
+    ``abandoned`` (its remaining batches can never be sent with their keys)
+    counts as settled.
     """
     if state.get("last_summary_done") is not True:
         return False
@@ -585,6 +624,9 @@ def region_settled(state: Mapping[str, Any]) -> bool:
     if not runs or len(runs) != state.get("digest_runs"):
         return False
     for record in runs.values():
+        if record.get("abandoned"):
+            # 终态放弃的一轮：重试也不会成功，按已结清，转录照常释放，不再每次启动空转
+            continue
         for part in ("group", "segments"):
             batches = record.get(part) or {}
             # 空表 = 批次还没登记，不是「全部完成」：先登记 run 再拆批次的写入顺序下，
@@ -691,21 +733,68 @@ def _scan(spool_dir: Path) -> list[tuple[str, str, Path, os.stat_result]]:
     return out
 
 
+def _load_state_json(path: Path) -> dict:
+    """Parse ``state.json`` into an object without schema validation.
+
+    Raises :class:`SpoolStateCorrupt` when the content is unusable by any
+    version (invalid JSON or UTF-8, too deeply nested, not an object);
+    ``FileNotFoundError`` and other ``OSError`` propagate unchanged.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except RecursionError as exc:
+        # 深层嵌套：解析器本身就读不了，哪个版本都用不了它
+        raise SpoolStateCorrupt(f"{path.name} is too deeply nested") from exc
+    except ValueError as exc:
+        # JSONDecodeError / UnicodeDecodeError（OSError 不是 ValueError，照常上抛）
+        raise SpoolStateCorrupt(f"{path.name} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SpoolStateCorrupt(f"{path.name} is not a JSON object")
+    return data
+
+
+def _scrub_peer_identity(doc: dict) -> bool:
+    """Null the peer identity of a ``state.json`` object in place; return whether it changed.
+
+    Besides ``peer_uid / pair_id / peer_char_id`` this drops every
+    ``digest_writes[*].epochs``: its keys are subject keys that embed the pair
+    id and the person id. Once the identity is gone no digest of the visit
+    runs again (``peer_forgotten``), so the recorded epochs have no use left.
+    Works on a schema-invalid object too and touches nothing else in it.
+    """
+    changed = False
+    for name in _PEER_IDENTITY_FIELDS:
+        if doc.get(name) is not None:
+            doc[name] = None
+            changed = True
+    runs = doc.get("digest_writes")
+    if isinstance(runs, dict):
+        for record in runs.values():
+            if isinstance(record, dict) and "epochs" in record:
+                del record["epochs"]
+                changed = True
+    return changed
+
+
 def _raw_state_may_name(
     path: Path, own_char_uid: str, pair_ids: frozenset[str], own_uid: str | None = None,
 ) -> bool:
     """Whether a parseable but schema-invalid ``state.json`` may belong to this (character, pair).
 
-    False only when its raw fields clearly name another character or another
-    pair; anything unclear counts as "may be ours" (fail closed).
+    False when its raw fields clearly name another character, another pair
+    or another account, or carry no peer identity at all any more (already
+    wiped: nothing of any person is left to clear); anything unclear counts
+    as "may be ours" (fail closed).
     """
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except (OSError, ValueError, RecursionError):
+        raw = _load_state_json(path)
+    except (OSError, ValueError):
         return True
-    if not isinstance(raw, dict):
-        return True
+    if all(name in raw and raw[name] is None for name in _PEER_IDENTITY_FIELDS):
+        # 对端身份已全部抹掉（比如之前的清除按原始字段改写过）：里面没有任何人的身份可清，
+        # 不能让这份当前版本读不了的 state 把这个角色之后的每次清除都挡住
+        return False
     char = raw.get("own_char_uid")
     if isinstance(char, str) and char and char != own_char_uid:
         return False
@@ -722,11 +811,10 @@ def _raw_state_names_pair(
 ) -> bool:
     """Whether a parseable but schema-invalid ``state.json`` explicitly names this (character, pair)."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except (OSError, ValueError, RecursionError):
+        raw = _load_state_json(path)
+    except (OSError, ValueError):
         return False
-    if not isinstance(raw, dict) or not _names_pair(raw, own_char_uid, pair_ids):
+    if not _names_pair(raw, own_char_uid, pair_ids):
         return False
     account = raw.get("own_uid")
     return own_uid is None or not (isinstance(account, str) and account and account != own_uid)
@@ -737,13 +825,11 @@ def _read_state_file(path: Path) -> dict | None:
     # 退役、清除、改名都会按它去动别的场次的文件
     expected = path.name[: -len(STATE_SUFFIX)] if path.name.endswith(STATE_SUFFIX) else None
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        # 内容本身坏了（含深层嵌套、顶层不是对象）抛 SpoolStateCorrupt；能解析的对象再过 schema，
+        # 不合的只抛 SpoolStateError——两者处理口径不同，后者别的版本还读得了，绝不删
+        data = _load_state_json(path)
     except FileNotFoundError:
         return None
-    except RecursionError as exc:
-        # 深层嵌套的 state.json：归入已有的「损坏」处理（ValueError），不能冲断整轮清扫 / 重放
-        raise SpoolStateError(f"{path.name} is too deeply nested") from exc
     if expected is None:
         raise SpoolStateError(f"{path.name} is not a state file name")
     return validate_state(data, visit_id=expected)
@@ -883,6 +969,15 @@ def _sweep_unlink(path: Path) -> bool:
         logger.warning("visit spool: could not delete %s (%s); keeping it for a later sweep",
                        path.name, exc)
         return False
+
+
+def _ask_is_live(is_live: Callable[[str], bool], visit_id: str) -> bool:
+    """Call the sweep's ``is_live`` for one visit; an exception counts as live (keep its files)."""
+    try:
+        return bool(is_live(visit_id))
+    except Exception as exc:  # noqa: BLE001 - 判不了就保守地当在飞，不能让一场的异常中断整轮清扫
+        logger.warning("visit spool: is_live(%s) failed (%r); keeping the visit this sweep", visit_id, exc)
+        return True
 
 
 def _parse_spool_bytes(data: bytes, visit_id: str) -> SpoolContents:
@@ -1205,6 +1300,30 @@ class VisitSpool:
         """Read and validate ``state.json``; ``None`` when it does not exist."""
         return await asyncio.to_thread(_read_state_file, self.state_path)
 
+    async def read_raw_state(self) -> dict | None:
+        """Parse ``state.json`` into its raw object without schema validation; ``None`` when absent.
+
+        Only for ownership checks on a document :meth:`read_state` rejects.
+        Raises :class:`SpoolStateCorrupt` when the content is unusable and
+        ``OSError`` when the file cannot be read.
+        """
+
+        def read() -> dict | None:
+            try:
+                return _load_state_json(self.state_path)
+            except FileNotFoundError:
+                return None
+
+        return await asyncio.to_thread(read)
+
+    async def read_header(self) -> dict | None:
+        """Read and validate the spool header; ``None`` when the ``.jsonl`` does not exist.
+
+        Raises ``ValueError`` for a truncated, unparseable or schema-invalid
+        header and ``OSError`` when the file cannot be read.
+        """
+        return await asyncio.to_thread(_read_header_strict, self.jsonl_path)
+
     def _update_state_sync(self, mutate) -> dict:
         with path_lock(self.state_path):
             state = _read_state_file(self.state_path)
@@ -1298,10 +1417,21 @@ class VisitSpool:
         with path_lock(self.jsonl_path):
             _rewrite_header(self.jsonl_path, clear_header, strict=True)
         with path_lock(self.state_path):
-            state = _read_state_file(self.state_path)
-            if state is not None and any(state[n] is not None for n in _PEER_IDENTITY_FIELDS):
-                for name in _PEER_IDENTITY_FIELDS:
-                    state[name] = None
+            try:
+                state = _read_state_file(self.state_path)
+            except SpoolStateCorrupt:
+                # JSON 本身坏了：谁都用不了它，里面却可能还留着对端字段。直接删（与
+                # drop_corrupt_state 同口径），不能让头行已抹、这一步报错，之后每次重放都卡住
+                self.state_path.unlink(missing_ok=True)
+                return
+            except SpoolStateError:
+                # 能解析、只是不合当前 schema（比如降级后读到新版本写的 state）：按原始对象只抹
+                # 对端身份，不经 validate_state 原样写回，新版本才有的字段一概不动
+                raw = _load_state_json(self.state_path)
+                if _scrub_peer_identity(raw):
+                    atomic_write_json(self.state_path, raw)
+                return
+            if state is not None and _scrub_peer_identity(state):
                 atomic_write_json(self.state_path, validate_state(state))
 
     async def delete_peer_fields(self) -> None:
@@ -1309,7 +1439,12 @@ class VisitSpool:
 
         The local "forget this person" counterpart of removing the roster
         entry. Idempotent. Must not run while this instance holds the writer
-        fd (the header rewrite replaces the file).
+        fd (the header rewrite replaces the file). ``digest_writes[*].epochs``
+        (keyed by subject keys that embed the pair and person ids) is dropped
+        too. A ``state.json`` whose content is corrupt (see
+        :class:`SpoolStateCorrupt`) is deleted; one that parses but fails the
+        current schema is rewritten from its raw object with only those
+        fields cleared, everything else kept as it is.
         """
         if self._fd is not None:
             raise RuntimeError("cannot rewrite the header of an open spool")
@@ -1495,12 +1630,19 @@ class VisitSpool:
             # 会让 wipe_spool 记完成、撤销日志被删，而 peer 字段仍留在文件里
             state_unreadable = False
             state_corrupt = False
+            state_schema = False
             schema_excludes = False
             schema_names = False
             try:
                 state = _read_state_file(visit_path(spool_dir, visit_id, STATE_SUFFIX))
             except FileNotFoundError:
                 state = None
+            except SpoolStateCorrupt:
+                # 内容本身坏了（不是 JSON / 不是对象 / 嵌套过深）：谁都用不了它（与 OSError 的
+                # 一时读不出不同）
+                state = None
+                state_unreadable = True
+                state_corrupt = True
             except SpoolStateError:
                 # 能解析、只是不合当前 schema（比如降级后读到新版本写的 state）：别的版本还读得了，
                 # 不是「谁都用不了」，绝不删。先记下它的原始字段是否明确排除这次清除，
@@ -1513,11 +1655,7 @@ class VisitSpool:
                 )
                 state = None
                 state_unreadable = True
-            except ValueError:
-                # JSON 本身坏了：谁都用不了它（与 OSError 的一时读不出不同）
-                state = None
-                state_unreadable = True
-                state_corrupt = True
+                state_schema = True
             except OSError:
                 # state 读不出时先看头行：头行明确属于别的角色、或指认的是别的一对，就不是
                 # 这次要清的场次——一份无关的坏文件不能把所有清除永远卡住。头行也读不出、
@@ -1534,16 +1672,20 @@ class VisitSpool:
             except (OSError, ValueError):
                 unreadable.append(visit_id)
                 continue
+            header_wiped = header is not None and (
+                header.get("own_char_uid") == own_char_uid and header.get("pair_id") is None
+            )
             if _names_pair(header, own_char_uid, pair_ids):
                 found.append(visit_id)
+            elif schema_names and (header is None or header_wiped):
+                # 不合 schema 的 state 原始字段仍指认这一对，头行不在 / 已抹（比如抹完头行、改写
+                # state 时失败）：抹身份步骤按原始对象改写它，不能每次重放都按读不出卡住
+                found.append(visit_id)
             elif schema_names:
-                # 不合 schema 的 state 原始字段明确指认这一对，头行却指向别处（或缺）：对端字段
-                # 仍在 state 里，不能凭头行把它排除掉，按读不出处理（fail closed）
+                # 不合 schema 的 state 原始字段明确指认这一对，头行却指向别处：两处对不上，不能凭
+                # 头行把它排除掉，也不能照着去抹别人的头行，按读不出处理（fail closed）
                 unreadable.append(visit_id)
-            elif state_unreadable and (
-                header is None
-                or (header.get("own_char_uid") == own_char_uid and header.get("pair_id") is None)
-            ):
+            elif state_unreadable and (header is None or header_wiped):
                 if schema_excludes:
                     # 头行没指认这一对（或不在 / 已抹），而不合 schema 的 state 原始字段明确属于
                     # 别的角色 / 别的一对 / 别的账号：两处都排除，跳过（不挡、不删）
@@ -1563,6 +1705,11 @@ class VisitSpool:
                     # 只报同一账号下的（头行的 own_uid 抹身份时保留）：别的账号的场次与这次清除无关
                     if corrupt_wiped is not None and (own_uid is None or header.get("own_uid") == own_uid):
                         corrupt_wiped.append(visit_id)
+                    continue
+                if state_schema and header is None:
+                    # 只剩一份不合当前 schema 的 state，原始字段既没指认这一对、也没明确排除：
+                    # 认不出是谁的，又不是坏文件（别的版本读得了），跳过——不删也不挡，否则
+                    # 降级后本机每个角色的每次清除都被它卡住
                     continue
                 unreadable.append(visit_id)
         if unreadable and strict:
@@ -1597,26 +1744,30 @@ class VisitSpool:
             # 与 state.json 的其他写入者同一把文件锁：不与并发的 update_state 交错
             with path_lock(path):
                 try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        json.load(f)
+                    _load_state_json(path)
                 except FileNotFoundError:
                     # 已经不在了：没什么可删
                     return
-                except (ValueError, RecursionError):
-                    # 仍是 JSON 本身坏了才删；能解析的（哪怕不合当前 schema）一律不动
+                except SpoolStateCorrupt:
+                    # 仍是内容本身坏了（与查找时同一口径：不是 JSON / 不是对象 / 嵌套过深）才删；
+                    # 能解析成对象的（哪怕不合当前 schema）一律不动
                     path.unlink(missing_ok=True)
 
         await asyncio.to_thread(drop)
 
     @classmethod
     def _sweep_sync(
-        cls, config_dir: Path, now: float, is_live: Callable[[str], bool] | None = None,
+        cls, config_dir: Path, now: float, live_ids: frozenset[str] = frozenset(), uploads: str = "all",
     ) -> list[Path]:
         spool_dir = _spool_dir(config_dir).resolve()
         deleted: list[Path] = []
         remaining = []
         scanned = _scan(spool_dir)
         for visit_id, suffix, path, st in scanned:
+            is_upload = suffix in _UPLOAD_SUFFIXES
+            if (uploads == "defer" and is_upload) or (uploads == "only" and not is_upload):
+                remaining.append((visit_id, suffix, path, st))
+                continue
             if now - st.st_mtime <= _RETENTION_S:
                 remaining.append((visit_id, suffix, path, st))
                 continue
@@ -1646,7 +1797,7 @@ class VisitSpool:
                 # append，删掉后追加写进已删除的 inode、关闭时连同恢复数据一起消失。
                 # 判定与删除在同一把登记锁里，open 不能夹在中间登记
                 # 关了记忆的在飞场次只有上传流水、没有登记的记忆 spool：靠调用方的在飞判断兜住
-                live = is_live is not None and is_live(visit_id)
+                live = visit_id in live_ids
                 with _OPEN_SPOOLS_LOCK:
                     busy = live or _spool_key(visit_path(spool_dir, visit_id, SPOOL_SUFFIX)) in _OPEN_SPOOLS
                     unlinked = False if busy else _sweep_unlink(path)
@@ -1660,6 +1811,8 @@ class VisitSpool:
                             "visit spool: gave up pending upload %s after %d days",
                             path.name, VISIT_SPOOL_RETENTION_DAYS,
                         )
+        if uploads == "only":
+            return deleted
         total = sum(st.st_size for _v, _s, _p, st in remaining)
         if total <= VISIT_SPOOL_DIR_CAP_BYTES:
             return deleted
@@ -1669,7 +1822,7 @@ class VisitSpool:
             by_visit.setdefault(visit_id, []).append((suffix, path, st))
         candidates = []
         for visit_id, files in by_visit.items():
-            if is_live is not None and is_live(visit_id):
+            if visit_id in live_ids:
                 continue
             if any(suffix == UPLOAD_JSONL_SUFFIX for suffix, _p, _st in files):
                 # 上传流水还没封存：头行缺 own_visit_uid 的旧流水封存时要从 state.json / 记忆 spool
@@ -1720,6 +1873,7 @@ class VisitSpool:
     @classmethod
     async def sweep(
         cls, config_dir: str | Path, now: float, *, is_live: Callable[[str], bool] | None = None,
+        uploads: str = "all",
     ) -> list[Path]:
         """Reclaim spool directory space; return the deleted paths.
 
@@ -1743,9 +1897,26 @@ class VisitSpool:
            or memory spool for the owning account); the admission cap
            ``VISIT_UPLOAD_PENDING_CAP_BYTES`` bounds them instead.
 
+        ``uploads`` narrows step 1 for the pending uploads: ``"all"`` (the
+        default) treats them like every other file, ``"defer"`` leaves them
+        out (the caller expires them after one more upload attempt), and
+        ``"only"`` expires nothing but them and skips step 2.
+
         A file that cannot be deleted (locked, no permission, a directory) is
         logged and kept for a later sweep; the rest of the sweep continues.
         Visits for which ``is_live`` answers True (in flight, possibly with
-        only an upload stream) are never touched.
+        only an upload stream) are never touched. ``is_live`` is called on
+        the event loop only (it usually reads loop-owned registries): once
+        per visit id found in the directory, before the worker thread
+        starts; an ``is_live`` that raises counts as live for that visit.
         """
-        return await asyncio.to_thread(cls._sweep_sync, Path(config_dir), now, is_live)
+        live_ids: frozenset[str] = frozenset()
+        if is_live is not None:
+            # 在事件循环上把在飞场次快照下来再进工作线程：is_live 读的是事件循环持有的注册表，
+            # 跨线程读可能撞上「迭代中字典被改」。快照之后才开场的串门文件都是新的，按龄回收
+            # 碰不到；容量回收只动已结清的场次，同样碰不到
+            candidates = await asyncio.to_thread(cls._visit_ids, _spool_dir(config_dir), _KNOWN_SUFFIXES)
+            live_ids = frozenset(visit_id for visit_id in candidates if _ask_is_live(is_live, visit_id))
+        if uploads not in ("all", "defer", "only"):
+            raise ValueError(f"unknown uploads mode {uploads!r}")
+        return await asyncio.to_thread(cls._sweep_sync, Path(config_dir), now, live_ids, uploads)

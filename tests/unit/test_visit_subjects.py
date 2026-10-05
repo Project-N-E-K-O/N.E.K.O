@@ -781,3 +781,14 @@ async def test_rename_merge_keeps_the_newer_last_visit_id(tmp_path):
     await roster.upsert(peer, "New", now=6.0, visit_id="w" * 22, **common)    # 同一场再次登记
     entry = await roster.get_char_entry(peer, "New")
     assert entry["last_visit_id"] == "w" * 22 and entry["visits"] == 2
+
+
+@pytest.mark.parametrize("value, expected", [
+    (1.5, True), (3, True), (10 ** 400, False), (float("nan"), False), (float("inf"), False),
+    (True, False), ("1", False), (None, False),
+])
+def test_is_finite_number_never_raises(value, expected):
+    from main_logic.visit.subjects import is_finite_number
+
+    # 超出浮点范围的超大整数：isfinite 会抛 OverflowError，这里必须按「不是数」回 False
+    assert is_finite_number(value) is expected

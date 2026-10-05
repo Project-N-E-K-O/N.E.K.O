@@ -54,7 +54,9 @@ from main_logic.visit.forget import (
 )
 from main_logic.visit.memory_commit import ResolveCharName, peer_lock
 from main_logic.visit.spool import (
+    DEBRIEF_CHOICES,
     SpoolBusy,
+    SpoolStateCorrupt,
     SpoolStateError,
     SpoolStateUnreadable,
     VisitSpool,
@@ -104,6 +106,8 @@ async def _refuse_pending_rename(config_dir: str | Path, names: Iterable[str]) -
 # 「清除这个人」时这些还没写任何私聊记忆的 debrief 一律作废（改记「不记」）：
 # 否则用户之后点「记成日记」会把刚要求清除的这个人写进私聊记忆
 _VOIDABLE_CHOICES = (None, "ask_later", "generating:diary", "preview:diary")
+# 已开始写 / 已有最终结果的 debrief：作废步骤本来就不碰它们
+_UNVOIDABLE_CHOICES = tuple(choice for choice in DEBRIEF_CHOICES if choice not in _VOIDABLE_CHOICES)
 _STEP_ERRORS = (
     ForgetStepFailed, ForgetEpochsUnreadable, ForgetEpochsUnsynced, SpoolBusy, SpoolStateUnreadable,
     RosterCorruptError, OSError, ValueError,
@@ -119,6 +123,40 @@ class ForgetOutcome:
     pending_logs: list[str] = field(default_factory=list)
 
 
+def _names_other_owner(doc: Mapping[str, Any], record: Mapping[str, Any], pairs: set[str]) -> bool:
+    """Whether raw identity fields clearly put a visit outside this log (another character, account or pair)."""
+    char = doc.get("own_char_uid")
+    if isinstance(char, str) and char and char != record["own_char_uid"]:
+        return True
+    account = doc.get("own_uid")
+    if isinstance(account, str) and account and account != record["own_uid"]:
+        return True
+    pair = doc.get("pair_id")
+    return isinstance(pair, str) and bool(pair) and pair not in pairs
+
+
+async def _unreadable_visit_excluded(
+    spool: VisitSpool, record: Mapping[str, Any], pairs: set[str], *, schema_invalid: bool,
+) -> bool:
+    """Whether a visit whose ``state.json`` cannot be validated is clearly outside this log.
+
+    Same rule as the spool lookup of the wipe step: a schema-invalid state is
+    judged by its raw fields (another character / account / pair, or a
+    debrief that already left the voidable choices); a state that cannot be
+    read at all is judged by the spool header. Anything unclear is not
+    excluded (fail closed).
+    """
+    try:
+        doc = await (spool.read_raw_state() if schema_invalid else spool.read_header())
+    except (OSError, ValueError):
+        return False
+    if doc is None:
+        return False
+    if _names_other_owner(doc, record, pairs):
+        return True
+    return schema_invalid and doc.get("debrief_choice") in _UNVOIDABLE_CHOICES
+
+
 def default_void_pending(config_dir: str | Path) -> VoidPending:
     """Return the ``void_pending`` step used by local forgets.
 
@@ -128,28 +166,47 @@ def default_void_pending(config_dir: str | Path) -> VoidPending:
     and a wiped visit belongs to some forgotten person). Their choice becomes
     ``forget``. Debriefs already committing or failed are left to their own
     retry / abandon flow.
+
+    A ``state.json`` whose content is corrupt (no version can use it) is
+    skipped. One that cannot be read (``OSError``) or parses but fails the
+    current schema is skipped only when its spool header (resp. its raw
+    fields) clearly belongs to another character, account or pair; otherwise
+    :class:`SpoolStateUnreadable` is raised after every other visit is
+    handled, and the step stays pending for a later replay.
     """
 
     async def void(record: dict) -> None:
         own_char_uid = record["own_char_uid"]
         pairs = set(record["pair_ids"])
+        unreadable: list[str] = []
         for visit_id in await VisitSpool.list_visit_ids(config_dir, (STATE_SUFFIX,)):
             spool = VisitSpool(config_dir, visit_id)
             try:
                 state = await spool.read_state()
-            except OSError as exc:
-                # 读不出可能只是一时被占用：先不结清这份日志，下次再试
-                raise SpoolStateUnreadable([visit_id]) from exc
-            except ValueError as exc:
-                # 内容损坏的 state.json：任何流程都用不了它（debrief 读它同样失败），不能让
-                # 一份无关的坏文件把所有清除永远卡住。记下来跳过
+            except SpoolStateCorrupt as exc:
+                # 内容本身坏了（不是 JSON / 不是对象）：任何流程都用不了它（debrief 读它同样失败），
+                # 不能让一份无关的坏文件把所有清除永远卡住。记下来跳过
                 logger.warning("visit forget: skipping corrupt state of %s: %r", visit_id, exc)
+                continue
+            except (OSError, SpoolStateError) as exc:
+                # 一时读不出（被占用）/ 能解析却不合当前 schema（降级后读到新版本写的 state）：
+                # 别的版本、之后的重试还用得上它，不能当坏文件跳过——跳过就让日志关掉，升级回去
+                # 之后用户照样能把刚清除的人「记成日记」。与抹身份步骤的查找同一口径：头行 /
+                # 原始字段明确属于别人才跳过，判断不了的先不结清这份日志，下次再试
+                if await _unreadable_visit_excluded(
+                    spool, record, pairs, schema_invalid=isinstance(exc, SpoolStateError),
+                ):
+                    continue
+                logger.warning("visit forget: state of %s unreadable, void step kept: %r", visit_id, exc)
+                unreadable.append(visit_id)
                 continue
             if state is None or state["own_char_uid"] != own_char_uid:
                 continue
             if state["own_uid"] != record["own_uid"]:
                 # 别的账号下的场次（含已被抹掉身份的）与这次清除无关
                 continue
+            # pair_id 为 None 只可能是之前的清除抹掉的（new_state 不接受未绑定对端的场次），
+            # 这样的场次可能就是这个人的，照常作废
             if state["pair_id"] is not None and state["pair_id"] not in pairs:
                 continue
             # 不看 finalized：启动补录先重放清除、后标崩溃，崩溃场次此时 finalized 仍为空，
@@ -160,6 +217,8 @@ def default_void_pending(config_dir: str | Path) -> VoidPending:
                 await spool.mark_forget()
             except (SpoolStateError, FileNotFoundError):
                 continue
+        if unreadable:
+            raise SpoolStateUnreadable(unreadable)
 
     return void
 

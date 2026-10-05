@@ -134,6 +134,10 @@ class FakeMemoryServer:
     502 for it; ``hang`` maps the same to an ``asyncio.Event`` the request
     waits on. ``done_keys`` emulates the server-side idempotency record: a
     repeated completed key answers ``duplicate: true`` without extracting.
+    ``key_fingerprints`` mirrors the server's keyed request hash: the first
+    request of a key stores a fingerprint of its whole body (everything but
+    the key itself), and any later request reusing the key with a different
+    body answers 422, whatever state the key is in.
     """
 
     def __init__(self) -> None:
@@ -152,6 +156,13 @@ class FakeMemoryServer:
         # 开轮 / 清除前的只读代数查询单独记，不混进 requests（各测试按 requests 数写入请求）
         self.epoch_reads: list[list[str]] = []
         self.epoch_reads_fail = False
+        # 幂等键 -> 首次请求体指纹：同键不同请求体一律 422（与服务端 keyed request hash 同口径）
+        self.key_fingerprints: dict[str, str] = {}
+
+    @staticmethod
+    def _fingerprint(body: dict) -> str:
+        rest = {k: v for k, v in body.items() if k != "idempotency_key"}
+        return json.dumps(rest, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
     def calls(self, endpoint: str) -> list[dict]:
         return [body for name, body in self.requests if name == endpoint]
@@ -167,6 +178,12 @@ class FakeMemoryServer:
         body = json.loads(request.content) if request.content else {}
         self.requests.append((endpoint, body))
         key = body.get("idempotency_key") or endpoint
+        if body.get("idempotency_key"):
+            fingerprint = self._fingerprint(body)
+            if self.key_fingerprints.setdefault(key, fingerprint) != fingerprint:
+                return httpx.Response(422, json={
+                    "detail": "idempotency_key was already used for a different request",
+                })
         for name in (key, endpoint):
             if name in self.entered:
                 self.entered[name].set()

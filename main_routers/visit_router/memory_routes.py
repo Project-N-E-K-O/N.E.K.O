@@ -35,7 +35,6 @@ are wired the account is unknown: the list is empty and changes answer
 from __future__ import annotations
 
 import ipaddress
-import math
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -57,13 +56,17 @@ from main_logic.visit.forget_runner import (
 )
 from main_logic.visit.forget import RevocationLogUnreadable
 from main_logic.visit.limits import Blocklist, BlocklistUnavailable
+from main_logic.visit.sanitize import strip_control_chars
+from main_logic.visit.spool import SpoolStateUnreadable, VisitSpool
 from main_logic.visit.subjects import (
     PeerRoster,
     RosterCorruptError,
+    derive_pair_id,
     derive_person_id,
     derive_short_code,
     group_chat_subject,
     group_participant_subject,
+    is_finite_number,
     participant_subject,
 )
 from main_routers.system_router._shared import _read_json_object, _validate_local_mutation_request
@@ -176,14 +179,15 @@ def _clean_uid(value: Any) -> str | None:
 
 
 def _finite_ts(value: Any) -> float | int | None:
-    # 名册是非严格读：NaN / Infinity 之类的坏时间戳序列化不了，会让整张列表 500；
-    # 超出浮点范围的超大整数会让 isfinite 抛 OverflowError，同样按坏值回 None
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return None
-    try:
-        return value if math.isfinite(value) else None
-    except OverflowError:
-        return None
+    # 名册是非严格读：NaN / Infinity / 超出浮点范围的超大整数之类的坏时间戳序列化不了，
+    # 会让整张列表 500，按坏值回 None（与名册严格读同一个判定）
+    return value if is_finite_number(value) else None
+
+
+def _display(value: Any) -> str:
+    # 名册是非严格读：display_name 里的孤立代理字符（如 U+D800）json.load 读得进来，
+    # 到 JSONResponse 编码 UTF-8 时才抛错，整张列表 500。去掉控制 / 代理字符再回给前端
+    return strip_control_chars(str(value or ""))
 
 
 async def _subject_counts(name: str) -> dict[str, dict]:
@@ -270,7 +274,7 @@ async def list_memory_peers(request: Request, catgirl: str = ""):
                 subjects.append(subject)
                 char_rows.append({
                     "peer_char_id": char_id,
-                    "display_name": str(info.get("display_name") or ""),
+                    "display_name": _display(info.get("display_name")),
                     "pair_id": pair_id,
                     "last_visit_at": _finite_ts(info.get("last_seen")),
                     "fact_count": _count(counts, subject, "facts"),
@@ -279,7 +283,7 @@ async def list_memory_peers(request: Request, catgirl: str = ""):
         out.append({
             "peer_uid": peer_uid,
             "short_id": derive_short_code(peer_uid),
-            "display_name": str(peer.get("display_name") or ""),
+            "display_name": _display(peer.get("display_name")),
             "first_seen": _finite_ts(peer.get("first_seen")),
             "last_seen": _finite_ts(peer.get("last_seen")),
             "visits": visits if isinstance(visits, int) and not isinstance(visits, bool) else 0,
@@ -289,6 +293,36 @@ async def list_memory_peers(request: Request, catgirl: str = ""):
             "chars": char_rows,
         })
     return JSONResponse({"peers": out})
+
+
+async def _nothing_to_forget(
+    config_dir: Path, *, own_uid: str, own_char: str, own_char_uid: str, peer_uid: str,
+) -> bool:
+    """Whether ``peer_uid`` left nothing under ``own_char`` that a "forget this person" could clear.
+
+    True only when this account's roster does not know the person at all
+    (under any local character: a rename may move entries between names
+    until the forget takes the lifecycle guard), no unfinished clearing of
+    the pair is pending, and no visit of this character (matched by its
+    stable uid) still names the pair. The roster is read strictly (a damaged
+    roster raises :class:`RosterCorruptError`); unreadable visit states count
+    as "maybe something", so the regular forget path decides.
+    """
+    roster = PeerRoster(config_dir, own_uid=own_uid)
+    # 严格探一遍这个账号的名册结构：读不出 / 某个人的条目坏了都不能当作「没有这个人」
+    await roster.peers_of_char(own_char)
+    if peer_uid in await roster.list_peers(strict=True):
+        return False
+    if await memory_bridge.forget_in_progress(config_dir, own_char_uid, peer_uid, own_uid=own_uid):
+        # 上一次清除已删掉名册条目、后续步骤还没做完：重试要接着把它跑完，不能回「没什么可清」
+        return False
+    try:
+        visits = await VisitSpool.find_visits_for_pairs(
+            config_dir, own_char_uid, [derive_pair_id(own_uid, peer_uid)], own_uid=own_uid,
+        )
+    except SpoolStateUnreadable:
+        return False
+    return not visits
 
 
 @router.post("/memory/forget")
@@ -302,6 +336,9 @@ async def forget_memory_peer(request: Request):
     peer_uid = _clean_uid(payload.get("peer_uid"))
     if not isinstance(catgirl, str) or not catgirl or peer_uid is None:
         return _error(400, "invalid_request")
+    # 与拉黑同一口径按小写认人：名册与对子 / 个人 id 的推导都区分大小写，传大写变体时会找不到
+    # 这个人、转而去擦一个新推出来的无关 subject，还报「已清除」
+    peer_uid = peer_uid.lower()
     own_uid = await _hooks.own_visit_uid()
     if not own_uid:
         return _error(409, "VISIT_LOGIN_REQUIRED")
@@ -317,9 +354,15 @@ async def forget_memory_peer(request: Request):
     char_uid = await local_chars.resolve_char_uid(catgirl)
     if char_uid is None:
         return _error(404, "unknown_catgirl")
+    config_dir = _hooks.config_dir()
     try:
+        if await _nothing_to_forget(config_dir, own_uid=own_uid, own_char=catgirl, own_char_uid=char_uid,
+                                    peer_uid=peer_uid):
+            # 从没和这个角色串过门（或 uid 拼错）：不写哨兵、不开日志、不发 scoped_forget。
+            # 否则 memory_server 不可用时，一份对应「不存在的人」的哨兵会挡住这个角色开场
+            return JSONResponse({"ok": True, "forgotten": 0})
         outcome = await forget_person(
-            _hooks.config_dir(), own_uid=own_uid, own_char=catgirl, own_char_uid=char_uid,
+            config_dir, own_uid=own_uid, own_char=catgirl, own_char_uid=char_uid,
             peer_uid=peer_uid, client=_hooks.client(), admission_lock=_hooks.admission_lock,
             is_visit_active=_hooks.is_visit_active, lifecycle_guard=_hooks.lifecycle_guard,
             resolve_char_name=local_chars.resolve_char_name,
@@ -403,7 +446,7 @@ async def block_contact(request: Request):
             own_uid = await _hooks.own_visit_uid()
             if own_uid:
                 peer = await PeerRoster(config_dir, own_uid=own_uid).get_peer(peer_uid) or {}
-                display = str(peer.get("display_name") or "")
+                display = _display(peer.get("display_name"))
             changed = await blocklist.ablock(peer_uid, display_name_at_block=display)
         else:
             changed = await blocklist.aunblock(peer_uid)

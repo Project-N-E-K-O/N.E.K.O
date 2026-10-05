@@ -74,7 +74,7 @@ from main_logic.visit.sanitize import (
     redact_outbound,
     strip_emotion_tags,
 )
-from main_logic.visit.spool import VisitSpool, is_digestable
+from main_logic.visit.spool import VisitSpool, is_digestable, is_spool_open
 from main_logic.visit.subjects import (
     PeerRoster,
     RosterCorruptError,
@@ -86,6 +86,7 @@ from main_logic.visit.subjects import (
     read_roster_marker,
 )
 from memory.scoped_client import ScopedMemoryClient
+from utils.language_utils import is_supported_language_code
 from utils.logger_config import get_module_logger
 from utils.tokenize import count_tokens, take_lines_within_token_budget, truncate_to_tokens
 
@@ -219,9 +220,25 @@ def _header_matches_state(header: Mapping[str, Any], state: Mapping[str, Any]) -
     return all(header.get(name) == state[name] for name in _IDENTITY_FIELDS)
 
 
+def _protected_display_names(
+    own_char: str, lang: str | None, family_names: Iterable[str], local_char_names: Iterable[str],
+) -> tuple[str, ...]:
+    """Names a peer-reported display name must never take over (see ``neutralize_display_name``).
+
+    The local character and every other local character, the local family
+    names, the neutral family term, and the speaker labels of all four visit
+    speakers (own cat / own human as well as the two peer labels).
+    """
+    labels = tuple(
+        get_visit_speaker_header(speaker, lang).strip("[] ")
+        for speaker in ("own_cat", "own_human", "peer_cat", "peer_human")
+    )
+    return (own_char, *local_char_names, *labels, get_family_neutral_term(lang), *family_names)
+
+
 async def _peer_displays(
     config_dir: Path, state: Mapping[str, Any], own_char: str, lang: str | None,
-    family_names: Iterable[str] = (),
+    family_names: Iterable[str] = (), local_char_names: Iterable[str] = (),
 ) -> tuple[str, str]:
     cat_label = get_visit_speaker_header("peer_cat", lang).strip("[] ")
     human_label = get_visit_speaker_header("peer_human", lang).strip("[] ")
@@ -234,9 +251,9 @@ async def _peer_displays(
     cat_info = chars.get(state["peer_char_id"]) if isinstance(chars, dict) else None
     peer = peer if isinstance(peer, dict) else {}
     cat_info = cat_info if isinstance(cat_info, dict) else {}
-    # 对端自报的名字冒充本地角色 / 家人 / 通用标签时换成通用标签：否则对端的话会以本地角色的
-    # 名义进 speaker_label 与 display_name，抽出的事实归属就错了
-    protected = (own_char, cat_label, human_label, *family_names)
+    # 对端自报的名字冒充本地角色 / 家人 / 己方或对端的说话人标签时换成通用标签：否则对端的话会以
+    # 本地角色（或「你」「你的家里人」）的名义进 speaker_label 与 display_name，抽出的事实归属就错了
+    protected = _protected_display_names(own_char, lang, family_names, local_char_names)
     cat = neutralize_display_name(cat_info.get("display_name"), protected_names=protected,
                                   generic_label=cat_label, short_code=short)
     human = neutralize_display_name(peer.get("display_name"), protected_names=protected,
@@ -252,6 +269,7 @@ async def commit_visit_region(
     shutdown: bool = False,
     now: float | None = None,
     family_names: Iterable[str] = (),
+    local_char_names: Iterable[str] = (),
 ) -> CommitResult:
     """Digest one finished visit into the visit memory region (finalize or recovery).
 
@@ -265,6 +283,18 @@ async def commit_visit_region(
     run (the rest waits for the next recovery). When every batch of the run
     is done, ``digested_through_lp`` / ``digest_runs`` advance, and the
     ``.jsonl`` is deleted once the visit is settled.
+
+    A run freezes in its plan, besides the batching parameters, everything
+    the requests render that the server fingerprints under a key: the
+    ``language`` actually sent, the group speaker prefixes and the two peer
+    display names; a resumed run sends exactly those. A resumed run whose
+    batches no longer match the transcript (lines changed or lost after it
+    opened) is marked ``abandoned`` and closed (the watermark advances, the
+    visit can settle) instead of resending other lines under its keys.
+
+    ``family_names`` and ``local_char_names`` (the current names of the other
+    local characters) are protected from peer display names: a peer named
+    like one of them is stored under the generic peer label instead.
     """
     state = await spool.read_state()
     if state is None:
@@ -282,7 +312,8 @@ async def commit_visit_region(
         async with lock:
             return await _commit_locked(spool, resolve_char_name=resolve_char_name,
                                         client=client, shutdown=shutdown, now=now,
-                                        family_names=family_names)
+                                        family_names=family_names,
+                                        local_char_names=local_char_names)
 
     if shutdown:
         # 关机预算按整次提交算：等锁（可能有摘要的 LLM 调用正持着它）与先后几个批次
@@ -307,6 +338,7 @@ async def _commit_locked(
     shutdown: bool,
     now: float | None,
     family_names: Iterable[str] = (),
+    local_char_names: Iterable[str] = (),
 ) -> CommitResult:
     # 锁内重读：等锁期间「清除这个人」可能已抹掉对端身份
     state = await spool.read_state()
@@ -372,9 +404,26 @@ async def _commit_locked(
             # 待发的批次也会拿别的句子用旧键重发。逐批核对开轮时的成员指纹
             or (recorded is not None and recorded != membership)
         ):
-            # 切批只由 through_lp 与句序决定；对不上说明转录被改动过，不能拿别的句子用旧键重发
+            # 切批只由 through_lp 与句序决定；对不上说明转录被改动过，不能拿别的句子用旧键重发。
+            # 这是终态：转录里那几行不会自己恢复，重试也不会成功。把这一轮记成放弃并推进水位
+            # （region_settled 按已结清），转录按正常流程释放，不再每次启动重读、重记诊断空转 7 天
             memory_bridge.diag("digest_batches_mismatch", visit_id=spool.visit_id, run=run)
-            return CommitResult(ok=False, skipped="batches_mismatch", run=run)
+            record["abandoned"] = "batches_mismatch"
+            await spool.update_state(digest_writes=runs, digested_through_lp=through, digest_runs=run + 1)
+            return CommitResult(ok=True, skipped="batches_mismatch", run=run, dropped_lines=dropped)
+        # 续跑原样使用开轮时定格的请求渲染：language、group 的说话人前缀、segments 的显示名都进
+        # 服务端的请求指纹，现算的话跨版本（支持语言表 / 标签模板 / 名册显示名变了）同键不同体会被永久 422。
+        # 没有这些字段的旧计划按当前规则现算（与开轮时同一套算法；只有这些字段加入之前开的轮会走到）
+        language = plan["language"] if "language" in plan else _wire_language(lang)
+        headers = plan.get("headers")
+        if headers is None:
+            headers = memory_bridge.group_speaker_headers(selected, lang)
+        displays = plan.get("displays")
+        if language is not None and not is_supported_language_code(language):
+            # 开轮时发出了这个语言码、当前版本已不支持：客户端会把它丢掉，请求体对不上必 422。
+            # 与切批上限变小同一处理：记诊断、留着这一轮（7 天按龄回收）
+            memory_bridge.diag("digest_plan_language_unsupported", visit_id=spool.visit_id, run=run)
+            return CommitResult(ok=False, skipped="plan_language_unsupported", run=run)
     else:
         try:
             # 开轮前先把本地清除代数抬到服务端墓碑的当前值：云存档恢复 / 换机后本地从 0 重计，
@@ -387,13 +436,25 @@ async def _commit_locked(
         except ForgetEpochsUnreadable as exc:
             memory_bridge.diag("forget_epochs_unreadable", error=str(exc))
             return CommitResult(ok=False, skipped="epochs_unreadable")
+        language = _wire_language(lang)
+        headers = memory_bridge.group_speaker_headers(selected, lang)
+        displays = None
+        if segment_batches:
+            cat_display, human_display = await _peer_displays(
+                spool.config_dir, state, name, lang, family_names, local_char_names,
+            )
+            displays = {"peer_cat": cat_display, "peer_human": human_display}
+        plan = {"max_lines": max_lines, "batch_size": batch_size, "language": language, "headers": headers}
+        if displays is not None:
+            plan["displays"] = displays
         record = {
             "requested_at": time.time() if now is None else float(now),
             "through_lp": through,
             "group": {str(b): False for b in range(len(group_batches))},
             "segments": {str(b): False for b in range(len(segment_batches))},
             "epochs": epochs,
-            "plan": {"max_lines": max_lines, "batch_size": batch_size},
+            # 开轮时定格切批参数与实际要发出的请求渲染，续跑原样使用
+            "plan": plan,
             "membership": membership,
         }
         runs[str(run)] = record
@@ -410,29 +471,32 @@ async def _commit_locked(
             continue
         requests += 1
         ok = await memory_bridge.post_visit_digest(
-            name, state["pair_id"], batch, subject=group_subject, lang=lang,
+            name, state["pair_id"], batch, subject=group_subject, lang=language,
             idempotency_key=digest_key(spool.visit_id, run, "group", b),
             client_requested_at=requested_at,
             subject_epochs=_epochs_for(epochs, [group_subject]),
-            shutdown=shutdown, client=client,
+            shutdown=shutdown, client=client, speaker_headers=headers,
         )
         if not ok:
             return CommitResult(ok=False, requests=requests, run=run, dropped_lines=dropped)
         record["group"][str(b)] = True
         await spool.update_state(digest_writes=runs)
-    if segment_batches:
-        cat_display, human_display = await _peer_displays(spool.config_dir, state, name, lang, family_names)
+    if segment_batches and displays is None:
+        # 旧计划没有定格显示名：按当前名册现算
+        cat_display, human_display = await _peer_displays(spool.config_dir, state, name, lang, family_names,
+                                                          local_char_names)
+        displays = {"peer_cat": cat_display, "peer_human": human_display}
     for b, batch in enumerate(segment_batches):
         if record["segments"][str(b)]:
             continue
         requests += 1
         ok = await memory_bridge.post_visit_segments(
             name, pair_id=state["pair_id"], own_uid=state["own_uid"], peer_uid=state["peer_uid"],
-            peer_char_id=state["peer_char_id"], peer_cat_display=cat_display,
-            peer_human_display=human_display, lines=batch,
+            peer_char_id=state["peer_char_id"], peer_cat_display=displays["peer_cat"],
+            peer_human_display=displays["peer_human"], lines=batch,
             idempotency_key=digest_key(spool.visit_id, run, "segments", b),
             client_requested_at=requested_at,
-            subject_epochs=_epochs_for(epochs, subjects[1:]), lang=lang,
+            subject_epochs=_epochs_for(epochs, subjects[1:]), lang=language,
             shutdown=shutdown, client=client,
         )
         if not ok:
@@ -444,6 +508,11 @@ async def _commit_locked(
         digest_writes=runs, digested_through_lp=through, digest_runs=run + 1,
     )
     return CommitResult(ok=True, requests=requests, run=run, dropped_lines=dropped)
+
+
+def _wire_language(lang: Any) -> str | None:
+    """The ``language`` a digest request actually carries: ``lang`` when it is a supported code."""
+    return lang if is_supported_language_code(lang) else None
 
 
 def _epochs_for(epochs: Mapping[str, int], subjects: Iterable[Mapping[str, str]]) -> dict[str, int]:
@@ -494,7 +563,9 @@ async def last_summary_handoff(
 
     For every local visit of ``(own_char_uid, pair)`` whose summary is not
     done and that is no longer running (finalized, or not live: a crash not
-    recovered yet), wait for its registered commit or start one through
+    recovered yet; never while this process still holds its transcript open
+    for appends, the same rule startup recovery applies), wait for its
+    registered commit or start one through
     ``start_summary`` (which goes through the visit background-task entry).
     Then take and release :func:`peer_lock`, so a commit holding it has
     finished. Callers bound the whole wait (``VISIT_LAST_SUMMARY_HANDOFF_S``);
@@ -522,6 +593,10 @@ async def last_summary_handoff(
         if start_summary is None or (is_live is not None and is_live(visit_id)):
             continue
         spool = VisitSpool(config_dir, visit_id)
+        if is_spool_open(spool.jsonl_path):
+            # 与补录同一口径：本进程里这场的 writer 还开着（已从 is_live 注销、追加写与收口还在排队），
+            # 此时标 crash 会拿半截转录生成摘要，随后真正的收口被覆盖或拒绝
+            continue
         try:
             state = await spool.read_state()
         except Exception:  # noqa: BLE001
@@ -683,7 +758,20 @@ async def _summary_locked(
         roster = PeerRoster(spool.config_dir, own_uid=state["own_uid"])
     elif roster.own_uid != state["own_uid"]:
         raise ValueError("roster belongs to another community account than this visit")
-    existing = await roster.get_last_summary(state["peer_uid"], own_char)
+    try:
+        # 调 LLM 之前先按写入时的同一套严格规则读这条名册条目：名册坏着时写入必然抛
+        # RosterCorruptError，先付费调用再写失败的话，每次启动都会为每个保留中的场次重复计费
+        entry = await roster.get_char_entry(state["peer_uid"], own_char, strict=True)
+    except RosterCorruptError as exc:
+        memory_bridge.diag("summary_roster_unreadable", visit_id=spool.visit_id, error=str(exc))
+        return False
+    pairs = entry.get("pairs") if entry is not None else None
+    if not isinstance(pairs, list) or state["pair_id"] not in pairs:
+        # set_last_summary 只写进已有、且 pairs 含这一对的条目（已完成的清除不能被迟到的摘要撤销）：
+        # 现在就写不进去，生成也是白花钱，与写入返回 False 时一样只记 done
+        await _mark_summary_done(spool, own_char_uid)
+        return True
+    existing = entry.get("last_summary")
     if isinstance(existing, dict) and existing.get("visit_id") == spool.visit_id:
         # 上次已把这场的摘要写进名册、只差记 done 就被杀：不再调一次 LLM（会重复计费，
         # 同 ended_at 还会把已提交的摘要换成另一版），只补记 done

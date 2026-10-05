@@ -66,7 +66,6 @@ from main_logic.visit.forget import (
     ForgetEpochs,
     ForgetEpochsUnsynced,
     RevocationLog,
-    RevocationLogUnreadable,
     sentinel_covers,
     subject_key,
 )
@@ -162,20 +161,19 @@ async def forget_in_progress(
 
     Counts that account's open revocation logs and clearing sentinels whose
     scope covers the pair (rosters and memory subjects are partitioned by
-    account, so another account's clearing never touches this pair);
-    unreadable ones count as in progress (fail closed).
+    account, so another account's clearing never touches this pair).
+    Unreadable records count as in progress (fail closed), but only for the
+    scope they can still be attributed to: a revocation log by its file name
+    (the revocation id of exactly one pair), a sentinel by whatever scope
+    fields still parse; one with nothing recoverable blocks every pair.
     """
     config_dir = Path(config_dir)
-    try:
-        logs = await RevocationLog.list_all_open(config_dir)
-        sentinels = await ClearingSentinels(config_dir).list_open()
-    except RevocationLogUnreadable:
-        # 读不出来的清除记录不能当作「没有在清除」
+    if await RevocationLog(config_dir, own_uid=own_uid).is_pair_open(peer_uid, own_char_uid):
         return True
-    if any(
-        log["own_uid"] == own_uid and log["own_char_uid"] == own_char_uid and log["peer_uid"] == peer_uid
-        for log in logs
-    ):
+    sentinels, unreadable = await ClearingSentinels(config_dir).list_open_with_unreadable()
+    # 读不出来的清除意图不能当作「没有在清除」；但只挡还能认出的那部分范围，一份坏文件
+    # 不能让全机所有账号、所有角色的串门记忆永久停用
+    if any(ClearingSentinels.hint_covers(hint, own_uid, own_char_uid, peer_uid) for hint in unreadable):
         return True
     return any(
         doc["own_uid"] == own_uid and sentinel_covers(doc, own_char_uid, peer_uid) for doc in sentinels
@@ -292,12 +290,15 @@ async def post_visit_digest(
     subject_epochs: Mapping[str, int] | None = None,
     shutdown: bool = False,
     client: ScopedMemoryClient | None = None,
+    speaker_headers: Mapping[str, str] | None = None,
 ) -> bool:
     """Send one batch (1..200 lines) of the group digest to ``/scoped_history``.
 
     ``lines`` are spool lines in ``(lp, side_rank)`` order; own-cat lines go as
     the character's own turns, every other line as a user turn prefixed with
-    its speaker tag. ``subject`` must be the visit's ``group_chat`` subject of
+    its speaker tag (from ``speaker_headers`` when given, the prefixes frozen
+    when the run opened, see :func:`group_speaker_headers`; else rendered
+    now). ``subject`` must be the visit's ``group_chat`` subject of
     ``pair_id``. More than ``SCOPED_HISTORY_BATCH_MAX_MESSAGES`` lines raise
     ``ValueError`` (batching belongs to ``commit_visit_region``). Returns
     whether memory_server confirmed the batch (a duplicate of a completed key
@@ -311,7 +312,7 @@ async def post_visit_digest(
         )
     if subject.get("subject_kind") != "group_chat" or pair_id not in str(subject.get("subject_id")):
         raise ValueError("the digest subject must be the group_chat subject of pair_id")
-    messages = [_group_message(line, lang) for line in lines]
+    messages = [_group_message(line, lang, speaker_headers) for line in lines]
     client = client or default_client()
     if shutdown:
         client = _shutdown_client(client)
@@ -327,12 +328,26 @@ async def post_visit_digest(
     )
 
 
-def _group_message(line: Mapping[str, Any], lang: str | None) -> dict:
+def group_speaker_headers(lines: Iterable[Mapping[str, Any]], lang: str | None) -> dict[str, str]:
+    """Return the group-digest prefix of every speaker in ``lines`` that gets one (all but own cat).
+
+    A digest run freezes this map in its plan, so a resumed batch renders
+    the same ``input_history`` under its idempotency key even after an
+    upgrade changed the speaker label templates.
+    """
+    speakers = sorted({line["from"] for line in lines if line["from"] != "own_cat"})
+    return {speaker: get_visit_speaker_header(speaker, lang) for speaker in speakers}
+
+
+def _group_message(
+    line: Mapping[str, Any], lang: str | None, headers: Mapping[str, str] | None = None,
+) -> dict:
     speaker = line["from"]
     text = str(line.get("text") or "")
     if speaker == "own_cat":
         return {"role": "assistant", "content": text}
-    return {"role": "user", "content": f"{get_visit_speaker_header(speaker, lang)} {text}"}
+    header = (headers or {}).get(speaker) or get_visit_speaker_header(speaker, lang)
+    return {"role": "user", "content": f"{header} {text}"}
 
 
 async def post_visit_segments(

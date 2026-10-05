@@ -616,3 +616,62 @@ def test_block_ends_the_live_visit_by_the_canonical_uid(env):
     # 黑名单按小写记；结束在飞串门也要用同一个规范形，否则找不到那场
     assert state["blocked_calls"] == [peer]
     assert Blocklist.load(tmp_path).get(peer).display_name_at_block == "Xiaoming"
+
+
+def test_forget_finds_the_person_by_the_canonical_uid(env):
+    client, server, tmp_path, _state = env
+    peer = "abcdef012345abcdef012345"                          # 带字母的 uid，大小写变体才有区别
+    _seed(tmp_path, peer_uid=peer)
+    resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": peer.upper()}, headers=GOOD)
+    # 与拉黑同一口径按小写认人：大写变体也要找到名册里的这个人并清掉，不能去擦一个无关 subject
+    assert resp.status_code == 200 and resp.json()["forgotten"] == 1
+    assert _run(PeerRoster(tmp_path, own_uid=OWN_A).get_peer(peer)) is None
+    assert server.calls("scoped_forget")
+
+
+def test_forget_of_someone_never_visited_writes_nothing(env):
+    client, server, tmp_path, _state = env
+    _seed(tmp_path)                                   # 名册里只有 PEER_X
+    server.fail_always.add("scoped_forget")           # memory_server 不可用也不会留下哨兵
+    resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_Z}, headers=GOOD)
+    # 拼错 / 从没串过门的人：如实回 0，不写哨兵、不开日志、不发 scoped_forget
+    assert resp.status_code == 200 and resp.json() == {"ok": True, "forgotten": 0}
+    assert server.requests == []
+    assert not list((tmp_path / "visit_revocations").glob("*.json"))
+
+
+def test_forget_of_someone_only_left_in_a_visit_still_runs(env):
+    from tests.unit.visit_memory_test_helpers import ln, make_visit
+
+    client, server, tmp_path, _state = env
+    # 名册条目已不在，但还有一场串门指向这一对：照常清除（抹掉 spool 里的对端身份）
+    _run(make_visit(tmp_path, vid(5), [ln(0, "你好")]))
+    resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_X}, headers=GOOD)
+    assert resp.status_code == 200 and resp.json()["forgotten"] == 1
+    assert server.calls("scoped_forget")
+
+
+def test_forget_of_an_unknown_peer_with_a_damaged_roster_is_retryable(env):
+    client, server, tmp_path, _state = env
+    (tmp_path / "visit_peers.json").write_text('{"accounts": {', encoding="utf-8")
+    resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_Z}, headers=GOOD)
+    # 名册读不出：不能当作「没有这个人」回 0
+    assert resp.status_code == 503 and resp.json()["retry"] is True
+
+
+def test_peers_survive_lone_surrogates_in_display_names(env):
+    client, _server, tmp_path, _state = env
+    _seed(tmp_path)
+    path = tmp_path / "visit_peers.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    peer = data["accounts"][OWN_A]["peers"][PEER_X]
+    lone = chr(0xD800)
+    peer["display_name"] = "Xiao" + lone + "ming"
+    chars = peer["by_char"]["A"]["chars"]
+    chars[next(iter(chars))]["display_name"] = lone + "Mimi"
+    path.write_text(json.dumps(data, ensure_ascii=True), encoding="utf-8")   # 转义形式写出，json.load 读得回孤立代理
+    resp = client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD)
+    # 编码不出的字符去掉，不让整张列表 500
+    assert resp.status_code == 200
+    (row,) = resp.json()["peers"]
+    assert row["display_name"] == "Xiaoming" and row["chars"][0]["display_name"] == "Mimi"

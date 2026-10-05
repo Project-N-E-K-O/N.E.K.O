@@ -842,3 +842,122 @@ async def test_forget_after_a_local_epoch_reset_goes_above_the_server_fence(tmp_
     sent = [body for body in server.calls("scoped_forget") if body["subject"]["subject_kind"] == "participant"]
     # 先抬到服务端围栏再加 1：发出的代数高于已有墓碑，不会被当成已擦过的重放跳过
     assert sent and sent[0]["forget_epoch"] == 6
+
+
+# ── 作废步骤：读不出 / 不合 schema 的 state 与抹身份查找同一口径（PR #3293 评审）──
+
+
+def _void_record(pairs) -> dict:
+    return {"own_uid": OWN_A, "own_char_uid": CHAR_UID_A, "pair_ids": list(pairs)}
+
+
+async def _visit(tmp_path, n: int, *, own_uid=OWN_A, own_char_uid=CHAR_UID_A, peer=PEER_X,
+                 header: bool = False) -> VisitSpool:
+    sp = VisitSpool(tmp_path, f"visit{n:017d}")
+    pair = derive_pair_id(own_uid, peer)
+    cid = derive_peer_char_id(peer, TAG_X)
+    if header:
+        await sp.open({
+            "v": 1, "visit_id": sp.visit_id, "role": "host", "own_uid": own_uid, "own_char": "A",
+            "own_char_uid": own_char_uid, "pair_id": pair, "peer_uid": peer, "peer_char_id": cid,
+            "peer_char_tag": TAG_X, "started_at": 100.0, "lang": "zh-CN",
+        }, now=100.0)
+        await sp.close()
+    state = new_state(own_uid=own_uid, own_char="A", own_char_uid=own_char_uid, pair_id=pair,
+                      peer_uid=peer, peer_char_id=cid, memory_enabled=True)
+    await sp.write_state(dict(state, debrief_choice="ask_later"))
+    return sp
+
+
+def _make_schema_invalid(sp: VisitSpool, **changes) -> None:
+    raw = json.loads(sp.state_path.read_text(encoding="utf-8"))
+    raw["field_from_a_newer_version"] = 1                       # 能解析、只是不合当前 schema
+    raw.update(changes)
+    sp.state_path.write_text(json.dumps(raw), encoding="utf-8")
+
+
+def _lock_state(monkeypatch, sp: VisitSpool) -> None:
+    from main_logic.visit import spool as spool_module
+
+    real_read = spool_module._read_state_file
+
+    def locked(path):
+        if path == sp.state_path:
+            raise PermissionError("locked by another process")
+        return real_read(path)
+
+    monkeypatch.setattr(spool_module, "_read_state_file", locked)
+
+
+async def test_void_skips_a_locked_state_whose_header_belongs_to_another_character(tmp_path, monkeypatch):
+    from main_logic.visit.forget_runner import default_void_pending
+
+    other = await _visit(tmp_path, 1, own_char_uid=CHAR_UID_B, header=True)
+    _lock_state(monkeypatch, other)
+    # 别的角色的一场 state 长期读不出（被杀毒软件占用）：头行明确属于别人，不挡这次清除
+    await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
+
+
+@pytest.mark.parametrize("header", [False, True], ids=["state-only", "header-names-pair"])
+async def test_void_stays_pending_on_a_locked_state_it_cannot_attribute(tmp_path, monkeypatch, header):
+    from main_logic.visit.forget_runner import default_void_pending
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    mine = await _visit(tmp_path, 2, header=header)
+    _lock_state(monkeypatch, mine)
+    with pytest.raises(SpoolStateUnreadable):
+        await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
+
+
+@pytest.mark.parametrize("changes", [
+    {},                                                          # 仍指认这一对
+    {"pair_id": None, "peer_uid": None, "peer_char_id": None},   # 身份已被抹掉
+], ids=["names-pair", "wiped"])
+async def test_void_stays_pending_on_a_schema_invalid_state_that_may_be_this_persons(tmp_path, changes):
+    from main_logic.visit.forget_runner import default_void_pending
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    mine = await _visit(tmp_path, 3)
+    _make_schema_invalid(mine, **changes)
+    before = mine.state_path.read_bytes()
+    # 降级后读到新版本写的 state、debrief 还没写：不能当坏文件跳过（升级回去后仍能「记成日记」），
+    # 作废不了就先不结清这份日志
+    with pytest.raises(SpoolStateUnreadable):
+        await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
+    assert mine.state_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("kw,changes", [
+    ({"own_char_uid": CHAR_UID_B}, {}),
+    ({"own_uid": OWN_B}, {}),
+    ({"peer": PEER_Y}, {}),
+    ({}, {"debrief_choice": "forget"}),                         # 已有最终结果：没什么可作废
+], ids=["other-char", "other-account", "other-pair", "final-choice"])
+async def test_void_skips_a_schema_invalid_state_that_is_clearly_not_voidable(tmp_path, kw, changes):
+    from main_logic.visit.forget_runner import default_void_pending
+
+    sp = await _visit(tmp_path, 4, **kw)
+    _make_schema_invalid(sp, **changes)
+    await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
+
+
+async def test_void_skips_a_corrupt_state(tmp_path):
+    from main_logic.visit.forget_runner import default_void_pending
+
+    sp = await _visit(tmp_path, 5)
+    sp.state_path.write_text("[1, 2]", encoding="utf-8")         # 能解析但不是对象：谁都用不了
+    await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
+
+
+async def test_void_finishes_readable_visits_before_reporting_an_unreadable_one(tmp_path, monkeypatch):
+    from main_logic.visit.forget_runner import default_void_pending
+    from main_logic.visit.spool import SpoolStateUnreadable
+
+    locked = await _visit(tmp_path, 6)
+    readable = await _visit(tmp_path, 7)
+    _lock_state(monkeypatch, locked)
+    with pytest.raises(SpoolStateUnreadable) as ei:
+        await default_void_pending(tmp_path)(_void_record([derive_pair_id(OWN_A, PEER_X)]))
+    assert ei.value.visit_ids == [locked.visit_id]
+    # 读得出的场次照常作废，不因为排在后面而等到下一次重放
+    assert (await readable.read_state())["debrief_choice"] == "forget"

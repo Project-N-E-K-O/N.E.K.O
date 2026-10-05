@@ -618,20 +618,40 @@ def neutralize_display_name(
     return text
 
 
-# 情绪装饰标签：模型偶尔在台词里带 <happy> / </sad> 之类的短标签（TTS 侧另行剥掉）。
-# 只认闭合的短标签，落单的 "<3" / "a < b" 原样保留
-_EMOTION_TAG_RE = re.compile(r"</?[^<>\s]{1,32}>")
+# 情绪装饰标签：模型偶尔在台词里带 <happy> / </sad> / <开心> 之类的短标签（TTS 侧另行剥掉）。
+# 只认闭合、且尖括号里全是字母（任意文字，含下划线）的短标签：落单的 "<3" / "a < b"，以及
+# <https://…>、<a b> 这类正常的尖括号内容原样保留（候选先由正则圈出，再由 _is_emotion_tag 判定）
+_EMOTION_TAG_RE = re.compile(r"</?([^<>]{1,32})>")
+
+
+def _is_emotion_tag(name: str) -> bool:
+    return all(ch.isalpha() or ch == "_" for ch in name)
 
 
 def strip_emotion_tags(text: str) -> str:
     """Remove closed short angle-bracket decoration tags (``<happy>``, ``</sad>``) and tidy spaces.
 
-    A lone ``<`` or ``>`` is kept. Whitespace runs left by a removed tag are
-    collapsed within each line; line breaks are kept.
+    A tag is letters (any script) and underscores only, at most 32 of them;
+    any other angle-bracket content (a lone ``<`` or ``>``, ``<3``,
+    ``<https://...>``) is kept. Only when a tag was removed are the
+    whitespace runs it left collapsed within each line (line breaks are
+    kept); text without a removed tag is returned unchanged.
     """
     if not text or "<" not in text:
         return text or ""
-    stripped = _EMOTION_TAG_RE.sub("", text)
+    removed = 0
+
+    def drop(match: re.Match) -> str:
+        nonlocal removed
+        if not _is_emotion_tag(match.group(1)):
+            return match.group(0)
+        removed += 1
+        return ""
+
+    stripped = _EMOTION_TAG_RE.sub(drop, text)
+    if not removed:
+        # 一个标签都没去掉：原样返回，不能因为文本里有 "<" 就把每一行的空白重排
+        return text
     return "\n".join(" ".join(line.split()) for line in stripped.splitlines()).strip()
 
 

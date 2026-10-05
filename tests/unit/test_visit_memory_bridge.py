@@ -357,3 +357,68 @@ def test_subject_key_matches_memory_subject_key():
     subject = MemorySubject.participant("neko_visit", PERSON)
     assert subject_key(participant_subject(PERSON)) == subject.key
     assert json.dumps(SUBJECTS[0])
+
+
+# ── 坏的清除记录只挡它还认得出的范围 ─────────────────────────────────
+
+
+async def test_unreadable_revocation_log_blocks_only_its_own_pair(tmp_path):
+    from main_logic.visit.forget import RevocationLog, revocation_id
+
+    log = RevocationLog(tmp_path, own_uid=OWN_A)
+    # 截断的日志：内容一个字段都解析不出，但文件名就是 (own_uid, peer_uid, own_char_uid) 的撤销 id
+    other = log.path_for(revocation_id(OWN_A, PEER_Y, CHAR_UID_A))
+    other.parent.mkdir(parents=True, exist_ok=True)
+    other.write_text('{"v": 1, "id": "tru', encoding="utf-8")
+    assert await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_Y, own_uid=OWN_A)
+    # 别的人 / 别的账号不受这份坏文件牵连
+    assert not await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_X, own_uid=OWN_A)
+    assert not await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_Y, own_uid=OWN_B)
+
+
+async def test_unreadable_sentinel_blocks_only_the_scope_that_still_parses(tmp_path):
+    from main_logic.visit.forget import ClearingSentinels
+
+    store = ClearingSentinels(tmp_path)
+    store.dir.mkdir(parents=True, exist_ok=True)
+    # scope 写成不认识的值：own_uid / own_char_uids 仍读得出，只挡这个账号下这个角色
+    bad = store.path_for("clearing-" + "1" * 32)
+    bad.write_text(json.dumps({"v": 1, "op_id": "clearing-" + "1" * 32, "own_uid": OWN_B,
+                               "scope": "everything", "own_char_uids": [CHAR_UID_A], "peer_uid": None}),
+                   encoding="utf-8")
+    assert await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_X, own_uid=OWN_B)
+    assert not await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_X, own_uid=OWN_A)
+    assert not await memory_bridge.forget_in_progress(tmp_path, "d" * 32, PEER_X, own_uid=OWN_B)
+    await seed_roster(tmp_path)
+    block = await _block(tmp_path, FakeMemoryServer())
+    assert block != ""                       # 账号 A 的记忆块照常装配
+
+
+async def test_unreadable_sentinel_without_any_scope_still_fails_closed(tmp_path):
+    from main_logic.visit.forget import ClearingSentinels
+
+    store = ClearingSentinels(tmp_path)
+    store.dir.mkdir(parents=True, exist_ok=True)
+    store.path_for("clearing-" + "2" * 32).write_text('{"v": 1, "op_id": "clea', encoding="utf-8")
+    # 一个字段都认不出：不知道它在清谁，只能对所有账号、所有角色都按「在清除」处理
+    assert await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_X, own_uid=OWN_A)
+    assert await memory_bridge.forget_in_progress(tmp_path, "d" * 32, PEER_Y, own_uid=OWN_B)
+
+
+async def test_fake_server_rejects_a_reused_key_with_a_different_body():
+    # 与服务端 keyed request hash 同口径：同一个幂等键换了请求体（哪怕只差 language）一律 422
+    server = FakeMemoryServer()
+
+    async def post(lines, lang="zh"):
+        return await memory_bridge.post_visit_digest(
+            "A", PAIR, lines, subject=group_chat_subject(PAIR), lang=lang,
+            idempotency_key="visit-digest:k:0:group:0", client_requested_at=1.0,
+            client=server.client(),
+        )
+
+    first = [ln(0, "你好"), ln(1, "嗯", "peer_cat")]
+    assert await post(first) is True
+    assert await post(first) is True                       # 同键同体：按 duplicate 确认
+    assert await post([ln(0, "改过的话")]) is False          # 同键不同体：422
+    assert await post(first, lang="en") is False            # 只差 language 也是不同请求
+    assert server.extractions == 1

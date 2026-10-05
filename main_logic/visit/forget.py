@@ -388,6 +388,17 @@ class RevocationLog:
             atomic_write_json(path, record)
             return rev_id
 
+    def _pair_open_sync(self, peer_uid: str, own_char_uid: str) -> bool:
+        rev_id = revocation_id(self.own_uid, peer_uid, own_char_uid)
+        try:
+            return self._load_sync(rev_id) is not None
+        except (OSError, ValueError) as exc:
+            # 文件名就是 (own_uid, peer_uid, own_char_uid) 的撤销 id：这份读不出的日志一定属于这一对，
+            # 按「还在清除」处理（fail closed），但只挡这一对
+            logger.error("visit revocation log %s unreadable, treating the pair as being cleared: %s",
+                         rev_id, exc)
+            return True
+
     def _mark_done_sync(self, rev_id: str, step: str, now: float) -> None:
         path = self.path_for(rev_id)
         with path_lock(path):
@@ -494,6 +505,17 @@ class RevocationLog:
             plan.peer_uid, plan.own_char_uid, plan.pair_ids, plan.subjects,
             own_char=plan.own_char, now=now,
         )
+
+    async def is_pair_open(self, peer_uid: str, own_char_uid: str) -> bool:
+        """Whether this account has an unfinished log for ``(own_char_uid, peer_uid)``.
+
+        Reads only that pair's own log file: the file name is the revocation id
+        of ``(own_uid, peer_uid, own_char_uid)``, so a damaged log is attributed
+        to its pair by name alone, even when its content cannot be parsed. An
+        unreadable log of this pair counts as unfinished (fail closed); an
+        unreadable log of any other pair or account does not affect the answer.
+        """
+        return await asyncio.to_thread(self._pair_open_sync, peer_uid, own_char_uid)
 
     async def load(self, rev_id: str) -> dict | None:
         """Return the log document, or ``None`` once it is closed."""
@@ -736,7 +758,36 @@ class ClearingSentinels:
         await asyncio.to_thread(self._create_sync, doc)
         return copy.deepcopy(doc)
 
-    def _list_sync(self) -> list[dict]:
+    @staticmethod
+    def _unreadable_hint(path: Path, op_id: str) -> dict:
+        """Scope fields still recoverable from a sentinel that failed validation.
+
+        Each of ``own_uid`` / ``own_char_uids`` / ``peer_uid`` is ``None`` when
+        it cannot be recovered (the scope is then unknown in that dimension,
+        and matching treats it as covering everything). ``peer_uid`` is only
+        taken from an explicit ``person`` scope.
+        """
+        hint: dict[str, Any] = {"op_id": op_id, "own_uid": None, "own_char_uids": None, "peer_uid": None}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, ValueError, RecursionError):
+            return hint
+        if not isinstance(doc, dict):
+            return hint
+        own_uid = doc.get("own_uid")
+        if isinstance(own_uid, str) and own_uid:
+            hint["own_uid"] = own_uid
+        uids = doc.get("own_char_uids")
+        # 空表 / 夹着非字符串的表都不可信：当作不知道是哪些角色，宁可多挡
+        if isinstance(uids, list) and uids and all(isinstance(u, str) and u for u in uids):
+            hint["own_char_uids"] = list(uids)
+        peer = doc.get("peer_uid")
+        if doc.get("scope") == "person" and isinstance(peer, str) and peer:
+            hint["peer_uid"] = peer
+        return hint
+
+    def _list_sync(self, hints: list[dict] | None = None) -> list[dict]:
         out: list[dict] = []
         unreadable: list[str] = []
         try:
@@ -758,7 +809,9 @@ class ClearingSentinels:
             except (OSError, ValueError, RecursionError) as exc:
                 logger.error("visit clearing sentinel %s unreadable: %s", name, exc)
                 unreadable.append(op_id)
-        if unreadable:
+                if hints is not None:
+                    hints.append(self._unreadable_hint(self.dir / name, op_id))
+        if unreadable and hints is None:
             # 读不出来的清除意图不能当作没有：放行会让新串门写进正在清除的范围
             raise RevocationLogUnreadable(unreadable)
         return out
@@ -766,6 +819,33 @@ class ClearingSentinels:
     async def list_open(self) -> list[dict]:
         """Return every open sentinel (all accounts); unreadable ones raise :class:`RevocationLogUnreadable`."""
         return await asyncio.to_thread(self._list_sync)
+
+    async def list_open_with_unreadable(self) -> tuple[list[dict], list[dict]]:
+        """Return ``(open sentinels, unreadable hints)`` without raising on unreadable ones.
+
+        Each hint carries the scope fields that could still be recovered (see
+        :meth:`_unreadable_hint`), so a caller asking about one pair can keep
+        failing closed for the damaged sentinel's own scope without treating
+        every account and character as being cleared.
+        """
+        hints: list[dict] = []
+        docs = await asyncio.to_thread(self._list_sync, hints)
+        return docs, hints
+
+    @staticmethod
+    def hint_covers(hint: Mapping[str, Any], own_uid: str, own_char_uid: str, peer_uid: str) -> bool:
+        """Whether an unreadable sentinel's recoverable scope may cover ``(own_uid, own_char_uid, peer_uid)``.
+
+        Unknown fields (``None``) match anything, so a sentinel with nothing
+        recoverable covers every pair (fail closed).
+        """
+        if hint.get("own_uid") is not None and hint["own_uid"] != own_uid:
+            return False
+        if hint.get("own_char_uids") is not None and own_char_uid not in hint["own_char_uids"]:
+            return False
+        if hint.get("peer_uid") is not None and hint["peer_uid"] != peer_uid:
+            return False
+        return True
 
     def _remove_sync(self, op_id: str) -> bool:
         path = self.path_for(op_id)

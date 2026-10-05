@@ -565,10 +565,10 @@ async def test_one_unsealable_stream_does_not_block_the_others(tmp_path, monkeyp
     _write_stream(tmp_path, good, [_header(good)])
     real_seal = recovery._seal_stream_sync
 
-    def flaky(spool_dir, visit_id, reason, owner=None):
+    def flaky(spool_dir, visit_id, reason, *rest):
         if visit_id == bad:
             raise PermissionError("locked by antivirus")
-        return real_seal(spool_dir, visit_id, reason, owner)
+        return real_seal(spool_dir, visit_id, reason, *rest)
 
     monkeypatch.setattr(recovery, "_seal_stream_sync", flaky)
     uploads = Uploads()
@@ -726,10 +726,10 @@ async def test_seal_validation_errors_only_skip_that_visit(tmp_path, monkeypatch
     _write_stream(tmp_path, good, [_header(good)])
     real_seal = recovery._seal_stream_sync
 
-    def flaky(spool_dir, visit_id, reason, owner=None):
+    def flaky(spool_dir, visit_id, reason, *rest):
         if visit_id == bad:
             raise TypeError("'<' not supported between instances of 'NoneType' and 'int'")
-        return real_seal(spool_dir, visit_id, reason, owner)
+        return real_seal(spool_dir, visit_id, reason, *rest)
 
     monkeypatch.setattr(recovery, "_seal_stream_sync", flaky)
     uploads = Uploads()
@@ -1790,8 +1790,11 @@ async def test_schema_invalid_state_that_may_be_ours_blocks_and_is_kept(tmp_path
     _schema_invalid_state(mine)
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
-    # 可能正是这个人的场次、却改写不了：不记完成，留着等下次（不删）
-    assert outcome.done is False and mine.state_path.exists()
+    # 可能正是这个人的场次：身份按原始对象抹掉（新版本字段原样保留、不删文件）；debrief 还可作废、
+    # 这个版本又作废不了它，清除不记完成，留着等下次
+    raw = json.loads(mine.state_path.read_text(encoding="utf-8"))
+    assert outcome.done is False and raw["pair_id"] is None and raw["peer_uid"] is None
+    assert raw["field_from_a_newer_version"] == 1
 
 
 async def test_rename_marker_swapped_while_reloading_names_retakes_the_guard(tmp_path, monkeypatch):
@@ -1837,8 +1840,10 @@ async def test_schema_invalid_state_does_not_hide_a_header_that_names_this_pair(
     mine.state_path.write_text(json.dumps(data), encoding="utf-8")
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
-    # 头行仍指认这一对：不能只凭 state 的原始字段跳过——它改写不了，清除留着等下次
-    assert outcome.done is False
+    # 头行仍指认这一对：不能只凭 state 的原始字段跳过——身份照样按原始对象抹掉（新版本字段保留），
+    # 但这个版本作废不了它的 debrief，清除留着等下次
+    raw = json.loads(mine.state_path.read_text(encoding="utf-8"))
+    assert outcome.done is False and raw["pair_id"] is None and raw["field_from_a_newer_version"] == 1
 
 
 async def test_schema_invalid_wiped_state_of_another_account_does_not_block(tmp_path):
@@ -2016,9 +2021,9 @@ async def test_unreadable_stream_next_to_a_sealed_upload_keeps_both(tmp_path, mo
     assert uploads.calls == [] and stream.exists() and sealed.exists()
 
 
-@pytest.mark.parametrize("envelope", [{"own_char_uid": None}, {"own_char_uid": {"x": 1}}, {"transport": "other"},
-                                      {"transport": {"x": 1}}, {"transport": ["trtc"]}],
-                         ids=["char_null", "char_object", "transport_unknown", "transport_object", "transport_list"])
+@pytest.mark.parametrize("envelope", [{"own_char_uid": None}, {"own_char_uid": {"x": 1}},
+                                      {"transport": {"x": 1}}, {"transport": ["trtc"]}, {"transport": None}],
+                         ids=["char_null", "char_object", "transport_object", "transport_list", "transport_null"])
 async def test_sealed_upload_with_a_bad_envelope_and_no_stream_is_not_uploaded(tmp_path, envelope):
     v = vid(95)
     d = _spool_dir(tmp_path)
@@ -2043,7 +2048,8 @@ async def test_expired_upload_marks_its_queued_report_transcript_unavailable(tmp
     reports_dir.mkdir()
     (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v, "include_transcript": True}), encoding="utf-8")
     reports = Reports()
-    await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
+    # 放弃前本次启动再补传一次，仍失败
+    await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
     # 转录到期被放弃：举报照常提交，并在举报里记下转录不可用的原因
     (visit_id, doc), = reports.calls
     assert not sealed.exists() and doc["transcript_unavailable"] == "expired"
@@ -2100,16 +2106,27 @@ async def test_corrupt_upload_marks_its_queued_report_transcript_unavailable(tmp
     assert doc["transcript_unavailable"] == "corrupt" and not list(d.glob(f"{v}.upload*"))
 
 
-async def test_queued_report_of_another_visit_is_neither_submitted_nor_deleted(tmp_path):
+async def test_queued_report_of_another_visit_is_moved_aside_not_submitted(tmp_path):
     v, other = vid(101), vid(102)
     reports_dir = tmp_path / "visit_reports"
     reports_dir.mkdir()
     path = reports_dir / f"{v}.json"
-    path.write_text(json.dumps({"visit_id": other, "include_transcript": False}), encoding="utf-8")
+    body = json.dumps({"visit_id": other, "include_transcript": False})
+    path.write_text(body, encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, submit_report=reports)
-    # 内容是别的场次：交上去会举报错的人，受理后还会删掉原本要交的这份
-    assert reports.calls == [] and path.exists()
+    # 内容是别的场次：交上去会举报错的人，受理后还会删掉原本要交的这份。不交也不删，改名隔离，
+    # 让这场的位置空出来（留在原位会一直挡住这场之后的举报）
+    assert reports.calls == [] and not path.exists()
+    assert (reports_dir / f"{v}.json.mismatch").read_text(encoding="utf-8") == body
+    # 位置空出来之后，这场新排队的举报照常提交；更早隔离的那份不被覆盖
+    path.write_text(json.dumps({"visit_id": other}), encoding="utf-8")
+    await _recover(tmp_path, submit_report=reports)
+    assert (reports_dir / f"{v}.json.mismatch").read_text(encoding="utf-8") == body
+    assert (reports_dir / f"{v}.json.1.mismatch").exists()
+    path.write_text(json.dumps({"visit_id": v}), encoding="utf-8")
+    await _recover(tmp_path, submit_report=reports)
+    assert [visit_id for visit_id, _ in reports.calls] == [v] and not path.exists()
 
 
 async def test_terminal_upload_rejection_marks_the_queued_report(tmp_path):
@@ -2207,3 +2224,394 @@ async def test_failed_upload_progress_rewrite_does_not_extend_the_retention(tmp_
     await _recover(tmp_path, upload_transcript=multipart)
     # 保留期按 mtime 算：重试不能把 7 天期限往后推，否则失败的上传永远不过期
     assert abs(sealed.stat().st_mtime - old) < 2 and json.loads(sealed.read_text(encoding="utf-8"))["parts_done"] == 2
+
+
+# ── 评审：在飞口径 / 摘要登记 / 上传信封 / 举报隔离 ──────────────────────────
+
+
+def _queue_report(tmp_path, visit_id, **fields):
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir(exist_ok=True)
+    path = reports_dir / f"{visit_id}.json"
+    path.write_text(json.dumps({"visit_id": visit_id, **fields}), encoding="utf-8")
+    return path
+
+
+async def test_spool_still_open_for_appends_counts_as_in_flight(tmp_path):
+    from main_logic.visit import spool as spool_mod
+
+    v = vid(110)
+    stream = _write_stream(tmp_path, v, _stream_records(v))
+    outbox = _spool_dir(tmp_path) / f"{v}.outbox.jsonl"
+    outbox.write_text("x", encoding="utf-8")
+    report_path = _queue_report(tmp_path, v, include_transcript=True)
+    key = spool_mod._spool_key(_spool_dir(tmp_path) / f"{v}.jsonl")
+    with spool_mod._OPEN_SPOOLS_LOCK:
+        spool_mod._OPEN_SPOOLS.add(key)
+    try:
+        uploads, reports = Uploads(), Reports()
+        # runtime 已从 is_live 注销，但记忆 spool 的 writer 还开着：流水还在追加写
+        await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
+    finally:
+        with spool_mod._OPEN_SPOOLS_LOCK:
+            spool_mod._OPEN_SPOOLS.discard(key)
+    # 与逐场补录同一口径：不封存流水、不删 outbox，排队的举报也等它
+    assert uploads.calls == [] and reports.calls == []
+    assert stream.exists() and outbox.exists() and report_path.exists()
+    assert not (_spool_dir(tmp_path) / f"{v}.upload.json").exists()
+
+
+async def test_recovery_summary_is_registered_for_the_opening_handoff(tmp_path):
+    from main_logic.visit import memory_commit
+
+    await seed_roster(tmp_path)
+    v = vid(111)
+    await make_visit(tmp_path, v, [ln(0, "你好"), ln(1, "嗨", "peer_cat")])
+    seen = []
+
+    async def llm(_prompt):
+        # 摘要生成期间同一对新开场：交接要能在登记表里看到这个任务，等它而不是另起一次
+        seen.append(v in memory_commit._SUMMARY_TASKS)
+        return "上次聊了天气。"
+
+    async def spawn(_own_char_uid, factory):
+        return await factory()
+
+    report = await _recover(tmp_path, summary_llm=llm, spawn_background=spawn)
+    assert report.summaries == {v: True} and seen == [True]
+    assert v not in memory_commit._SUMMARY_TASKS
+
+
+def test_overflowing_upload_duration_is_recorded_as_zero():
+    from main_logic.visit.recovery import build_upload_doc
+
+    v = vid(112)
+    header = {**_header(v), "started_at": -1.7e308}
+    records = [header, {"kind": "line", "lp": 0, "side": "host", "from": "own_cat", "ts": 1.7e308,
+                        "text": "a", "truncated": False}]
+    # 两个时间戳各自有限，差值溢出成 inf：时长记 0，不能抛 OverflowError
+    doc = build_upload_doc(records, visit_id=v, finalized_reason=None)
+    assert doc["request"]["usage"]["duration_s"] == 0
+
+
+@pytest.mark.parametrize("error", [OverflowError, ValueError, TypeError])
+async def test_stream_comparison_errors_only_defer_that_visit(tmp_path, monkeypatch, error):
+    from main_logic.visit import recovery
+    from main_logic.visit.recovery import build_upload_doc
+
+    bad, good = vid(113), vid(114)
+    for v in (bad, good):
+        records = _stream_records(v)
+        _write_stream(tmp_path, v, records)
+        (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(
+            json.dumps(build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")), encoding="utf-8")
+    real = recovery._stream_doc_sync
+
+    def broken(spool_dir, visit_id, *rest):
+        if visit_id == bad:
+            raise error("cannot rebuild")
+        return real(spool_dir, visit_id, *rest)
+
+    monkeypatch.setattr(recovery, "_stream_doc_sync", broken)
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    # 比对出错不能冒出去中断整轮：只推迟这一场（两份都留着），其余场次照常上传
+    assert [visit_id for visit_id, _ in uploads.calls] == [good]
+    assert (_spool_dir(tmp_path) / f"{bad}.upload.jsonl").exists()
+    assert (_spool_dir(tmp_path) / f"{bad}.upload.json").exists()
+
+
+async def test_resealing_a_mismatched_normal_end_keeps_its_reason(tmp_path):
+    from main_logic.visit.recovery import build_upload_doc
+
+    await seed_roster(tmp_path)
+    v = vid(115)
+    await make_visit(tmp_path, v, [ln(0)], finalized=None)      # state 还没写 finalized，补录标成 crash
+    records = _stream_records(v)
+    _write_stream(tmp_path, v, records)
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    doc["request"]["lines"] = doc["request"]["lines"][:1]         # 格式合法，但与流水不一致
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (visit_id, uploaded), = uploads.calls
+    # 从流水重封：转录以流水为准，结束原因沿用文件里正常收口记的，不退回 crash
+    assert [line["text"] for line in uploaded["request"]["lines"]] == ["t0", "t1"]
+    assert uploaded["request"]["finalized_reason"] == "wrap_up"
+
+
+@pytest.mark.parametrize("source", ["state", "spool_header"])
+async def test_stream_header_without_char_uid_takes_the_visits_own(tmp_path, source):
+    v = vid(116)
+    await make_visit(tmp_path, v, [ln(0)], own_char_uid=CHAR_UID_B, last_summary_done=True,
+                     write_jsonl=source == "spool_header")
+    if source == "spool_header":
+        (_spool_dir(tmp_path) / f"{v}.state.json").unlink()
+    header = _header(v)
+    header.pop("own_char_uid")           # 较早的上传头布局没有这个字段
+    _write_stream(tmp_path, v, [header])
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (visit_id, doc), = uploads.calls
+    # 补回角色 id：不能封出一份随即被当成坏文件删掉的上传文件
+    assert visit_id == v and doc["own_char_uid"] == CHAR_UID_B
+    assert (_spool_dir(tmp_path) / f"{v}.upload.json").exists()
+
+
+async def test_stream_header_without_char_uid_anywhere_keeps_the_stream(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+
+    v = vid(117)
+    header = _header(v)
+    header.pop("own_char_uid")
+    stream = _write_stream(tmp_path, v, [header])
+    written = []
+    real_write = recovery._write_private_json
+
+    def record(path, data):
+        written.append(Path(path).name)
+        return real_write(path, data)
+
+    monkeypatch.setattr(recovery, "_write_private_json", record)
+    uploads = Uploads()
+    await _recover(tmp_path, upload_transcript=uploads)
+    # 角色 id 哪儿都补不回来：写文件前就挡下，流水留着下次再封（不是封了再删）
+    assert uploads.calls == [] and written == [] and stream.exists()
+    assert not (_spool_dir(tmp_path) / f"{v}.upload.json").exists()
+
+
+@pytest.mark.parametrize("transport", [None, 7, ""], ids=["null", "number", "empty"])
+async def test_stream_header_with_a_broken_transport_is_corrupt_before_sealing(tmp_path, monkeypatch, transport):
+    from main_logic.visit import recovery
+
+    v = vid(118)
+    stream = _write_stream(tmp_path, v, [{**_header(v), "transport": transport}])
+    report_path = _queue_report(tmp_path, v, include_transcript=True)
+    written = []
+    real_write = recovery._write_private_json
+
+    def record(path, data):
+        written.append(Path(path).name)
+        return real_write(path, data)
+
+    monkeypatch.setattr(recovery, "_write_private_json", record)
+    uploads, reports = Uploads(), Reports()
+    await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
+    # 传输方式没有别处可补：按流水损坏处理，在写上传文件之前判定，不封了再删
+    assert uploads.calls == [] and not stream.exists()
+    assert f"{v}.upload.json" not in written
+    (visit_id, doc), = reports.calls
+    assert doc["transcript_unavailable"] == "corrupt" and not report_path.exists()
+
+
+async def test_sealed_upload_of_another_character_is_not_uploaded(tmp_path):
+    v = vid(119)
+    await make_visit(tmp_path, v, [], memory_enabled=False, last_summary_done=True)   # state 记 CHAR_UID_A
+    d = _spool_dir(tmp_path)
+    (d / f"{v}.upload.json").write_text(json.dumps({**_sealed(v), "own_char_uid": CHAR_UID_B}), encoding="utf-8")
+    uploads = Uploads()
+    await _recover(tmp_path, upload_transcript=uploads)
+    # 只剩上传文件：角色 id 与本场 state.json 不一致，不能拿错的角色身份上传
+    assert uploads.calls == [] and not (d / f"{v}.upload.json").exists()
+
+
+@pytest.mark.parametrize("change", [{"v": 2}, {"transport": "webrtc"}], ids=["newer_version", "new_transport"])
+async def test_sealed_upload_of_another_version_is_kept_not_deleted(tmp_path, change):
+    v = vid(120)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    sealed = d / f"{v}.upload.json"
+    sealed.write_text(json.dumps({**_sealed(v), **change}), encoding="utf-8")
+    report_path = _queue_report(tmp_path, v, include_transcript=True)
+    uploads, reports = Uploads(), Reports()
+    await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
+    # 新版本写的完好文件（降级后）：不当损坏删，留着待处理；附转录的举报继续等它
+    assert uploads.calls == [] and sealed.exists()
+    assert reports.calls == [] and "transcript_unavailable" not in json.loads(report_path.read_text(encoding="utf-8"))
+
+
+async def test_report_marker_is_written_under_the_report_lock(tmp_path):
+    import asyncio
+
+    from main_logic.visit import recovery
+    from main_logic.visit.subjects import path_lock
+
+    v = vid(121)
+    path = _queue_report(tmp_path, v, include_transcript=True)
+    lock = path_lock(path)
+    lock.acquire()
+    try:
+        task = asyncio.create_task(recovery._mark_report_transcript_unavailable(
+            tmp_path, v, "expired", recovery.RecoveryReport()))
+        await asyncio.sleep(0.3)
+        # 运行时的举报处理拿着同一把锁：标记要等它
+        assert not task.done() and "transcript_unavailable" not in json.loads(path.read_text(encoding="utf-8"))
+        path.unlink()                    # 锁内：实时重试受理后删掉 / 用户放弃
+    finally:
+        lock.release()
+    await task
+    # 已受理 / 放弃的举报不能被标记写回来、随后再交一次
+    assert not path.exists()
+
+
+async def test_report_deleted_between_read_and_write_is_not_recreated(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+
+    v = vid(122)
+    path = _queue_report(tmp_path, v, include_transcript=True)
+    real_load = recovery._load_json
+
+    def load_then_deleted(p):
+        doc = real_load(p)
+        if Path(p) == path:
+            path.unlink()                # 不走这把锁的删除方在读完之后删掉了它
+        return doc
+
+    monkeypatch.setattr(recovery, "_load_json", load_then_deleted)
+    await recovery._mark_report_transcript_unavailable(tmp_path, v, "expired", recovery.RecoveryReport())
+    assert not path.exists()
+
+
+async def test_unavailable_marker_is_not_written_onto_another_visits_report(tmp_path):
+    v, other = vid(123), vid(124)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    (d / f"{v}.upload.json").write_text("{torn", encoding="utf-8")       # 这场的转录损坏
+    path = _queue_report(tmp_path, v)
+    body = json.dumps({"visit_id": other, "include_transcript": True})
+    path.write_text(body, encoding="utf-8")                               # 文件里却是别场的举报
+    await _recover(tmp_path, upload_transcript=Uploads(), submit_report=Reports())
+    # 这场转录的不可用原因不能盖到别场的举报上
+    quarantined = tmp_path / "visit_reports" / f"{v}.json.mismatch"
+    assert quarantined.read_text(encoding="utf-8") == body
+
+
+async def test_terminal_rejection_is_not_counted_as_uploaded(tmp_path):
+    v = vid(125)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    (d / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
+
+    async def reject(_visit_id, _doc):
+        return "parts_out_of_range"
+
+    report = await _recover(tmp_path, upload_transcript=reject)
+    # 终态拒收与上传成功分开记：uploads 的 True 只表示转录到了 Servers
+    assert v not in report.uploads and report.rejected == {v: "parts_out_of_range"}
+
+
+async def test_rejected_upload_that_cannot_be_deleted_is_not_uploaded_again(tmp_path, monkeypatch):
+    v = vid(126)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    sealed = d / f"{v}.upload.json"
+    sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    old = time.time() - 3 * 86400
+    os.utime(sealed, (old, old))
+    calls = []
+
+    async def reject(visit_id, _doc):
+        calls.append(visit_id)
+        return "parts_out_of_range"
+
+    real_unlink = Path.unlink
+
+    def stubborn(self, missing_ok=False):
+        if self == sealed:
+            raise PermissionError("locked by antivirus")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", stubborn)
+        await _recover(tmp_path, upload_transcript=reject)
+    # 删不掉：文件里记下拒收，保留期不因此后推
+    assert json.loads(sealed.read_text(encoding="utf-8"))["rejected"] == "parts_out_of_range"
+    assert abs(sealed.stat().st_mtime - old) < 2
+    report_path = _queue_report(tmp_path, v, include_transcript=True)
+    reports = Reports()
+    report = await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
+    # 下次启动不再整份重传、再被拒一次：直接删文件，举报带着拒收原因提交
+    assert calls == [v] and not sealed.exists() and report.rejected == {v: "parts_out_of_range"}
+    (visit_id, doc), = reports.calls
+    assert doc["transcript_unavailable"] == "parts_out_of_range" and not report_path.exists()
+
+
+async def test_terminal_rejection_keeps_the_upload_until_the_report_records_it(tmp_path, monkeypatch):
+    from main_logic.visit import recovery as recovery_mod
+
+    v = vid(109)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    sealed = d / f"{v}.upload.json"
+    sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    report_path = reports_dir / f"{v}.json"
+    report_path.write_text(json.dumps({"visit_id": v, "include_transcript": True}), encoding="utf-8")
+    real_write = recovery_mod._write_private_json
+
+    def report_disk_full(path, data):
+        if Path(path).parent == reports_dir:
+            raise OSError("no space left on device")
+        return real_write(path, data)
+
+    monkeypatch.setattr(recovery_mod, "_write_private_json", report_disk_full)
+    uploads = []
+
+    async def reject(visit_id, _doc):
+        uploads.append(visit_id)
+        return "parts_out_of_range"
+
+    await _recover(tmp_path, upload_transcript=reject, submit_report=Reports(ok=False))
+    # 原因没记进举报、本轮举报也没交出去：上传文件是终态拒收唯一持久的记录，不能先删
+    assert sealed.exists() and json.loads(sealed.read_text(encoding="utf-8"))["rejected"] == "parts_out_of_range"
+    monkeypatch.setattr(recovery_mod, "_write_private_json", real_write)
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
+    # 下次启动：不再重传，先把原因记进举报、删上传文件，举报带着原因交上去
+    (visit_id, doc), = reports.calls
+    assert uploads == [v] and not sealed.exists() and doc["transcript_unavailable"] == "parts_out_of_range"
+
+
+async def test_expired_upload_gets_one_more_attempt_before_it_is_given_up(tmp_path):
+    v = vid(110)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    sealed = d / f"{v}.upload.json"
+    sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    old = time.time() - 8 * 86400
+    os.utime(sealed, (old, old))                                 # 8 天没开 app：本次启动之前一次都没试过
+    uploads = Uploads(ok=True)
+    await _recover(tmp_path, upload_transcript=uploads)
+    # 「自结束起 7 天仍失败才放弃」：放弃之前本次启动先补传一次，传上去了就不丢
+    assert [visit_id for visit_id, _ in uploads.calls] == [v] and not sealed.exists()
+
+
+async def test_expired_upload_that_still_fails_releases_its_report_in_the_same_pass(tmp_path):
+    v = vid(111)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    sealed = d / f"{v}.upload.json"
+    sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    old = time.time() - 8 * 86400
+    os.utime(sealed, (old, old))
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v, "include_transcript": True}), encoding="utf-8")
+    uploads = Uploads(ok=False)
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
+    # 再试一次仍失败：放弃这份转录，排队的举报本轮就带着原因交上去
+    (visit_id, doc), = reports.calls
+    assert len(uploads.calls) == 1 and not sealed.exists() and doc["transcript_unavailable"] == "expired"
+
+
+async def test_recovery_digest_protects_other_local_cat_names_in_peer_labels(tmp_path):
+    await seed_roster(tmp_path, peer_display="B")                # 对端把自己叫成本机另一只猫的名字
+    await make_visit(tmp_path, vid(112), [ln(i, f"line {i}", ("own_cat", "peer_cat", "peer_human", "own_human")[i % 4])
+                                          for i in range(8)])
+    server = FakeMemoryServer()
+    await _recover(tmp_path, server)
+    segments = server.calls("scoped_history")[1]["segments"]
+    # 补录的 digest 同样拿到本机角色名单：对端不能顶替成本机另一只猫
+    assert "B" not in {seg["speaker_label"] for seg in segments}

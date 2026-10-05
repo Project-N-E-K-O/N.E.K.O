@@ -683,8 +683,9 @@ async def test_resumed_run_detects_shifted_batch_boundaries(tmp_path, monkeypatc
     sent = len(server.requests)
     again = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
     # 批数没变也要认出成员变了：不拿别的句子用旧键重发，已确认的批次也不会漏掉挪进来的句子
-    assert again.ok is False and again.skipped == "batches_mismatch"
+    assert again.skipped == "batches_mismatch"
     assert len(server.requests) == sent
+    await _assert_abandoned_and_settled(spool, server)
 
 
 async def test_resumed_run_detects_changed_line_content(tmp_path, monkeypatch):
@@ -701,8 +702,24 @@ async def test_resumed_run_detects_changed_line_content(tmp_path, monkeypatch):
     sent = len(server.requests)
     again = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
     # 待发批次的内容变了：不能拿旧键发出不同的内容
-    assert again.ok is False and again.skipped == "batches_mismatch"
+    assert again.skipped == "batches_mismatch"
     assert len(server.requests) == sent
+    await _assert_abandoned_and_settled(spool, server)
+
+
+async def _assert_abandoned_and_settled(spool, server):
+    from main_logic.visit.spool import region_settled
+
+    # 终态：落「放弃」标记并推进水位，不再是可重试的失败
+    state = await spool.read_state()
+    assert state["digest_writes"]["0"]["abandoned"] == "batches_mismatch"
+    assert state["digest_runs"] == 1 and state["digested_through_lp"] == state["digest_writes"]["0"]["through_lp"]
+    # 结清判定把放弃的一轮当已结清（摘要也做完时转录可以释放）
+    assert region_settled({**state, "last_summary_done": True})
+    # 之后的补录不再重读、不再记诊断空转：没有新句子可抽
+    sent = len(server.requests)
+    again = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
+    assert again.ok is True and again.skipped == "nothing_new" and len(server.requests) == sent
 
 
 async def test_digest_raises_local_epochs_to_the_server_fence_before_opening(tmp_path):
@@ -731,3 +748,168 @@ async def test_digest_waits_when_server_fences_cannot_be_read(tmp_path):
     assert result.ok is False and result.skipped == "epochs_unsynced"
     assert server.calls("scoped_history") == []
     assert (await spool.read_state())["digest_writes"] == {}
+
+
+async def test_handoff_skips_a_visit_whose_transcript_is_still_open_for_appends(tmp_path):
+    from main_logic.visit.memory_commit import last_summary_handoff
+    from main_logic.visit.subjects import derive_peer_char_id
+    from tests.unit.visit_memory_test_helpers import TAG_X
+
+    await seed_roster(tmp_path)
+    v = vid(87)
+    previous = await make_visit(tmp_path, v, [], finalized=None, write_jsonl=False)
+    header = {
+        "v": 1, "visit_id": v, "role": "host", "own_uid": OWN_A, "own_char": "A",
+        "own_char_uid": CHAR_UID_A, "pair_id": PAIR, "peer_uid": PEER_X,
+        "peer_char_id": derive_peer_char_id(PEER_X, TAG_X), "peer_char_tag": TAG_X,
+        "started_at": 1000.0, "lang": "zh",
+    }
+    await previous.open(header, now=0.0)
+    started = []
+
+    async def start(spool):
+        started.append(spool.visit_id)
+        return True
+
+    try:
+        await previous.append(ln(0, "你好"))
+        # 已从 is_live 注销、writer 还开着（追加写与收口还在排队）：与补录同一口径跳过，不标 crash
+        await last_summary_handoff(tmp_path, own_uid=OWN_A, own_char_uid=CHAR_UID_A, peer_uid=PEER_X,
+                                   start_summary=start, is_live=lambda _v: False)
+        assert started == [] and (await previous.read_state())["finalized"] is None
+    finally:
+        await previous.close()
+    # writer 关掉之后才按崩溃场次接手
+    await last_summary_handoff(tmp_path, own_uid=OWN_A, own_char_uid=CHAR_UID_A, peer_uid=PEER_X,
+                               start_summary=start, is_live=lambda _v: False)
+    assert started == [v] and (await previous.read_state())["finalized"] == "crash"
+
+
+@pytest.mark.parametrize("cat_display, peer_display, kwargs, impostors", [
+    ("你", "你的家里人", {}, {"你", "你的家里人"}),                    # 己方说话人标签
+    ("Mimi", "家里人", {}, {"家里人"}),                                # 中性家人称呼
+    ("小黑", "Xiaoming", {"local_char_names": ["小黑"]}, {"小黑"}),     # 同机另一只本地猫
+], ids=["own_speaker_labels", "neutral_family_term", "other_local_character"])
+async def test_peer_names_impersonating_own_labels_or_local_cats_are_replaced(
+    tmp_path, cat_display, peer_display, kwargs, impostors,
+):
+    await seed_roster(tmp_path, cat_display=cat_display, peer_display=peer_display)
+    spool = await make_visit(tmp_path, V1, _conversation(8))
+    server = FakeMemoryServer()
+    assert (await _commit(spool, server, **kwargs)).ok
+    segments = server.calls("scoped_history")[1]["segments"]
+    labels = {seg["speaker_label"] for seg in segments} | {seg.get("display_name") for seg in segments}
+    # 对端把自己命名成「你」「你的家里人」「家里人」或本机另一只猫：换成通用标签，不能让抽出的事实记到己方名下
+    assert not labels & impostors
+    # 没冒充的那个名字照常保留
+    assert ({cat_display, peer_display} - impostors) <= labels
+
+
+async def test_summary_skips_the_llm_while_the_roster_cannot_be_written(tmp_path):
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, _conversation(8))
+    (tmp_path / "visit_peers.json").write_text('{"accounts": {', encoding="utf-8")   # 名册坏了
+    llm = FakeLLM()
+    # 写入必然失败：不付费调 LLM，也不记 done，等名册修好再补
+    assert await _summarize(spool, llm) is False
+    assert llm.prompts == [] and (await spool.read_state())["last_summary_done"] is False
+
+
+async def test_summary_skips_the_llm_when_the_roster_entry_is_gone(tmp_path):
+    spool = await make_visit(tmp_path, V1, _conversation(8))       # 名册里没有这一对（已被清除）
+    llm = FakeLLM()
+    # 写不进任何条目：不必生成，直接记 done（与写入返回 False 时的结果相同）
+    assert await _summarize(spool, llm) is True
+    assert llm.prompts == [] and (await spool.read_state())["last_summary_done"] is True
+
+
+
+# ── 续跑原样使用开轮时定格的请求渲染 ────────────────────────────────
+
+
+async def test_resumed_run_sends_the_language_frozen_at_open(tmp_path, monkeypatch):
+    from memory import scoped_client
+    from utils import language_utils
+
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, _conversation(8), lang="xx")      # 开轮时不支持的语言码
+    server = FakeMemoryServer()
+    server.fail_always.add(digest_key(V1, 0, "segments", 0))
+    assert (await _commit(spool, server)).ok is False                       # group 已确认，segments 没成
+    assert (await spool.read_state())["digest_writes"]["0"]["plan"]["language"] is None
+
+    def supports_xx(raw):
+        return raw == "xx" or language_utils.is_supported_language_code(raw)
+
+    # 升级后支持了 xx：续跑不能现算出 language="xx"，否则同键不同体被服务端永久 422
+    monkeypatch.setattr(memory_commit, "is_supported_language_code", supports_xx)
+    monkeypatch.setattr(scoped_client, "is_supported_language_code", supports_xx)
+    server.fail_always.clear()
+    again = await _commit(spool, server)
+    assert again.ok is True
+    assert "language" not in server.calls("scoped_history")[-1]
+
+
+async def test_resumed_run_sends_the_speaker_prefixes_frozen_at_open(tmp_path, monkeypatch):
+    from main_logic.visit import memory_bridge
+
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, _conversation(8))
+    server = FakeMemoryServer()
+    server.fail_always.add(digest_key(V1, 0, "group", 0))
+    assert (await _commit(spool, server)).ok is False
+    first = server.calls("scoped_history")[0]
+    real = memory_bridge.get_visit_speaker_header
+    # 升级改了说话人标签模板：续跑仍用开轮时定格的前缀，input_history 与第一次逐字相同
+    monkeypatch.setattr(memory_bridge, "get_visit_speaker_header",
+                        lambda speaker, lang: "<<" + real(speaker, lang) + ">>")
+    server.fail_always.clear()
+    assert (await _commit(spool, server)).ok is True
+    assert server.calls("scoped_history")[1]["input_history"] == first["input_history"]
+
+
+async def test_resumed_run_sends_the_display_names_frozen_at_open(tmp_path):
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, _conversation(8))
+    server = FakeMemoryServer()
+    server.fail_always.add(digest_key(V1, 0, "segments", 0))
+    assert (await _commit(spool, server)).ok is False
+    first = server.calls("scoped_history")[-1]
+    # 两次尝试之间对端又来串门、改了自报名字：续跑仍发开轮时的显示名
+    await seed_roster(tmp_path, peer_display="Xiaohong", cat_display="Momo", now=200.0)
+    server.fail_always.clear()
+    assert (await _commit(spool, server)).ok is True
+    assert server.calls("scoped_history")[-1]["segments"] == first["segments"]
+
+
+async def test_resumed_run_without_frozen_rendering_falls_back_to_rendering_now(tmp_path):
+    await seed_roster(tmp_path)
+    spool = await make_visit(tmp_path, V1, _conversation(8))
+    server = FakeMemoryServer()
+    server.fail_always.add(digest_key(V1, 0, "segments", 0))
+    assert (await _commit(spool, server)).ok is False
+    state = await spool.read_state()
+    runs = state["digest_writes"]
+    for name in ("language", "headers", "displays"):
+        runs["0"]["plan"].pop(name)                                  # 这些字段加入之前开的轮
+    await spool.update_state(digest_writes=runs)
+    server.fail_always.clear()
+    # 按当前规则现算（与开轮时同一套算法），照常续跑完
+    assert (await _commit(spool, server)).ok is True
+
+
+def test_state_schema_accepts_frozen_rendering_and_abandoned_runs():
+    from main_logic.visit.spool import SpoolStateError, new_state, validate_state
+
+    state = new_state(own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A, pair_id=PAIR,
+                      peer_uid=PEER_X, peer_char_id="c_" + "1" * 24, memory_enabled=True)
+    record = {"requested_at": 1.0, "through_lp": 3, "group": {"0": True}, "segments": {"0": False},
+              "plan": {"max_lines": 400, "batch_size": 200, "language": None,
+                       "headers": {"peer_cat": "[x]"}, "displays": {"peer_cat": "a", "peer_human": "b"}},
+              "abandoned": "batches_mismatch"}
+    state.update(digest_writes={"0": record}, digest_runs=1, digested_through_lp=3)
+    validate_state(state)
+    for bad in ({"abandoned": "whatever"}, {"plan": {**record["plan"], "language": 5}},
+                {"plan": {**record["plan"], "headers": {"peer_cat": 1}}}):
+        with pytest.raises(SpoolStateError):
+            validate_state({**state, "digest_writes": {"0": {**record, **bad}}})

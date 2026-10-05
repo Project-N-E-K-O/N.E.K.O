@@ -560,3 +560,38 @@ def test_strip_control_chars_printable_fast_path_matches_the_full_scan():
     for _ in range(4000):
         s = "".join(rng.choice(pool) for _ in range(rng.randint(0, 12)))
         assert strip_control_chars(s) == _strip_control_chars_full_scan(s), repr(s)
+
+
+# ── 情绪装饰标签 ──────────────────────────────────────────────────────
+
+NL = chr(10)
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("<happy>你好</happy>", "你好"),
+    ("<开心> 好呀 </开心>", "好呀"),
+    ("<sad_face>嗯", "嗯"),
+])
+def test_emotion_tags_made_of_letters_are_removed(text, expected):
+    from main_logic.visit.sanitize import strip_emotion_tags
+
+    assert strip_emotion_tags(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "see <https://neko.io>",                     # URL 不能被当成标签静默丢掉
+    "I <3 u",
+    "x <a b> y",
+    "a  <  b" + NL + "  indented",               # 没去掉任何标签：空白与缩进原样保留
+    "price <10> ok",
+])
+def test_other_angle_bracket_text_is_returned_unchanged(text):
+    from main_logic.visit.sanitize import strip_emotion_tags
+
+    assert strip_emotion_tags(text) == text
+
+
+def test_whitespace_is_tidied_only_around_removed_tags():
+    from main_logic.visit.sanitize import strip_emotion_tags
+
+    assert strip_emotion_tags("<happy>  hi  there" + NL + "  next") == "hi there" + NL + "next"

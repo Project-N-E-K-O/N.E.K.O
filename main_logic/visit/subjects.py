@@ -322,7 +322,7 @@ def _check_char_entry(entry: Any, where: str, *, pair: str | None = None,
         raise RosterCorruptError(f"{where}: chars ids do not derive from this peer and char_tag")
     # 改名合并按 last_seen / ended_at 取较新的一边：字符串时间戳会按字典序比较，
     # 把较新的记录覆盖掉
-    if any("last_seen" in info and not _is_finite_number(info["last_seen"])
+    if any("last_seen" in info and not is_finite_number(info["last_seen"])
            for info in chars.values()):
         raise RosterCorruptError(f"{where}: chars last_seen is not a number")
     # upsert 总是同时写 pair 与对方猫娘：只剩其一说明条目坏了一半，按它展开的清除计划
@@ -333,12 +333,13 @@ def _check_char_entry(entry: Any, where: str, *, pair: str | None = None,
     if summary is not None and not isinstance(summary, dict):
         raise RosterCorruptError(f"{where}: last_summary is not an object")
     # 缺 ended_at 也算坏：写者总会写上它，没有它就无从判断新旧，迟到的回调会无序覆盖
-    if summary is not None and not _is_finite_number(summary.get("ended_at")):
+    if summary is not None and not is_finite_number(summary.get("ended_at")):
         raise RosterCorruptError(f"{where}: last_summary ended_at is missing or not a number")
     return entry
 
 
-def _is_finite_number(value: Any) -> bool:
+def is_finite_number(value: Any) -> bool:
+    """Whether ``value`` is a real (non-bool) int or float that is finite; never raises."""
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return False
     try:
@@ -361,7 +362,7 @@ def _latest_seen(entry: Mapping[str, Any]) -> float:
     chars = entry.get("chars")
     stamps = [
         info.get("last_seen") for info in (chars.values() if isinstance(chars, dict) else [])
-        if isinstance(info, dict) and _is_finite_number(info.get("last_seen"))
+        if isinstance(info, dict) and is_finite_number(info.get("last_seen"))
     ]
     return max(stamps, default=0.0)
 
@@ -591,7 +592,7 @@ class PeerRoster:
         progress do not inflate it. Callers upsert visits in order and never
         replay an older one, so only the latest id needs remembering.
         """
-        if not _is_finite_number(now):
+        if not is_finite_number(now):
             # 写进 last_seen 的 bool / NaN 会让之后的严格读把整个条目判坏，名册自己把自己写坏
             raise ValueError("now must be a finite number")
         _require_str(peer_uid, "peer_uid")
@@ -908,7 +909,7 @@ class PeerRoster:
         instead of being overwritten. ``ended_at`` must be a finite number
         (``ValueError`` otherwise), the same rule strict reads apply.
         """
-        if not _is_finite_number(ended_at):
+        if not is_finite_number(ended_at):
             # 写进去的 bool / NaN 会让之后的严格读把整个条目判坏，连清除都删不掉它
             raise ValueError("ended_at must be a finite number")
 
