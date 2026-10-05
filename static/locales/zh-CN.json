@@ -1,5 +1,5 @@
 {
-    "instanceAccess": {"title":"连接 NEKO 实例","description":"输入服务器所有者提供的实例访问凭证，此设备将记住连接 30 天。","key":"实例访问凭证","connect":"连接","failed":"连接未获授权，请检查凭证后重试。","httpsRequired":"请使用 HTTPS 或可信的 HTTPS 隧道安全连接。"},
+    "instanceAccess": {"title":"连接 NEKO 实例","description":"输入服务器所有者提供的实例访问凭证，此设备将记住连接 30 天。","key":"实例访问凭证","connect":"连接","failed":"连接未获授权，请检查凭证后重试。","httpsRequired":"请使用 HTTPS 或可信的 HTTPS 隧道安全连接。","insecureWarning":"当前连接未加密（HTTP），同一网络路径上的人可能看到访问凭证和会话。条件允许时请使用 HTTPS。"},
     "common": {
         "load": "加载",
         "minimize": "最小化",

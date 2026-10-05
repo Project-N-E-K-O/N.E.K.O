@@ -65,6 +65,9 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # 递增 LOCALE_VERSION 时，把旧值追加到这里。
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-10-05-chat-image-save-main-merge",
+        "2026-10-05-instance-access-plain-http-main-merge",
+        "2026-10-05-instance-access-plain-http",
         "2026-10-05-chat-image-save",
         "2026-10-05-theater-reinvitation-refresh",
         "2026-10-05-theater-reinvitation",
@@ -344,7 +347,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = "8303370d79db8cde133924b8cfbcb1e5bcdc92e7f0c09636f1d84435b0a60db9"
+LOCALE_KEY_SIGNATURE = "2abdb2a2ef302ff26f7e590c2dbaa50c0e8eb5de91d4ce419d4fd58424beefb4"
 
 
 _BUMP_INSTRUCTIONS = (
