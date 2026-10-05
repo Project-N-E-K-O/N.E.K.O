@@ -2648,6 +2648,12 @@ async def test_expired_upload_is_kept_when_there_is_no_uploader(tmp_path):
     await _recover(tmp_path, upload_transcript=None, submit_report=reports)
     # 没有上传回调：一次都没试过，不能就此放弃转录，举报也继续等它
     assert sealed.exists() and reports.calls == []
+    older = time.time() - 15 * 86400
+    os.utime(sealed, (older, older))
+    await _recover(tmp_path, upload_transcript=None, submit_report=reports)
+    # 但最多再留一个保留期：超过 2 倍保留期照样按到期放弃，附转录的举报带着原因交出去
+    (visit_id, doc), = reports.calls
+    assert not sealed.exists() and doc["transcript_unavailable"] == "expired"
 
 
 async def test_sealed_upload_of_another_account_is_not_uploaded(tmp_path):
@@ -2669,5 +2675,20 @@ async def test_ownerless_sealed_upload_takes_the_visits_account(tmp_path):
     uploads = Uploads(ok=True)
     await _recover(tmp_path, upload_transcript=uploads)
     # 旧版本封出来的无主文件：用本场 state.json 的账号补上，上传回调才选得中登录账号
+    (visit_id, doc), = uploads.calls
+    assert doc["own_visit_uid"] == OWN_A
+
+
+async def test_expired_state_is_kept_for_checking_a_lone_ownerless_upload(tmp_path):
+    v = vid(117)
+    spool = await make_visit(tmp_path, v, [], memory_enabled=False, finalized="wrap_up", last_summary_done=True)
+    sealed = _spool_dir(tmp_path) / f"{v}.upload.json"
+    sealed.write_text(json.dumps({**_sealed(v), "own_visit_uid": None}), encoding="utf-8")
+    old = time.time() - 8 * 86400
+    for path in (sealed, spool.state_path):
+        os.utime(path, (old, old))                              # 无主上传文件与 state.json 都过期了
+    uploads = Uploads(ok=True)
+    await _recover(tmp_path, upload_transcript=uploads)
+    # 第一遍回收不能先删 state.json：只剩上传文件时要拿它核对身份、给无主文件补账号
     (visit_id, doc), = uploads.calls
     assert doc["own_visit_uid"] == OWN_A

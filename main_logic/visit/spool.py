@@ -1770,13 +1770,14 @@ class VisitSpool:
         deleted: list[Path] = []
         remaining = []
         scanned = _scan(spool_dir)
-        # 上传流水还没封存的场次：封存时要从 state.json 读 finalized 等，推迟待传文件的那一遍
-        # 连它的 state.json 一起留到补传之后，否则正常结束的场次会被封成 crash
-        streams = {visit_id for visit_id, suffix, _p, _st in scanned if suffix == UPLOAD_JSONL_SUFFIX}
+        # 还有待传文件的场次：封存要从 state.json 读 finalized，只剩上传文件时要拿它核对角色与
+        # 账号、给旧版无主文件补账号。推迟待传文件的那一遍连它的 state.json 一起留到补传之后
+        # （之后照常按龄回收），否则正常结束的场次会被封成 crash、无主文件永远传不出去
+        pending_uploads = {visit_id for visit_id, suffix, _p, _st in scanned if suffix in _UPLOAD_SUFFIXES}
         for visit_id, suffix, path, st in scanned:
             is_upload = suffix in _UPLOAD_SUFFIXES
             if (
-                (uploads == "defer" and (is_upload or (suffix == STATE_SUFFIX and visit_id in streams)))
+                (uploads == "defer" and (is_upload or (suffix == STATE_SUFFIX and visit_id in pending_uploads)))
                 or (uploads == "only" and not is_upload)
             ):
                 remaining.append((visit_id, suffix, path, st))
@@ -1913,8 +1914,9 @@ class VisitSpool:
         ``uploads`` narrows step 1 for the pending uploads: ``"all"`` (the
         default) treats them like every other file, ``"defer"`` leaves them
         out (the caller expires them after one more upload attempt), together
-        with the ``state.json`` of a visit whose upload stream is not sealed
-        yet (sealing reads its finalized reason), and
+        with the ``state.json`` of a visit that still has a pending upload
+        (sealing reads its finalized reason, a lone sealed upload is checked
+        against it), and
         ``"only"`` expires nothing but them and skips step 2.
 
         A file that cannot be deleted (locked, no permission, a directory) is

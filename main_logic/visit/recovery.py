@@ -50,7 +50,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from config.visit_settings import VISIT_REPORTS_DIRNAME, VISIT_SPOOL_DIRNAME
+from config.visit_settings import VISIT_REPORTS_DIRNAME, VISIT_SPOOL_DIRNAME, VISIT_SPOOL_RETENTION_DAYS
 from main_logic.visit import local_chars, memory_bridge
 from main_logic.visit.forget_runner import LifecycleGuard, VoidPending, replay_forgets
 # 与 identity 票据核验认的传输方式同一个常量：那边加了新传输方式，这里自动认得，不会把
@@ -1223,11 +1223,10 @@ async def visit_spool_recovery(
     )
     try:
         # 补传试过之后，仍没传上去、已过 7 天的待传转录才放弃。没有上传回调时一份都没试过：
-        # 与其余可选回调同一约定，缺了这一步就留着文件，不能没试就放弃
-        swept = (
-            await VisitSpool.sweep(config_dir, sweep_now, is_live=live, uploads="only")
-            if upload_transcript is not None else []
-        )
+        # 不能没试就放弃，但也不能让敏感转录无限期留着、附转录的举报永远等下去——最多再留一个
+        # 保留期（按原来的年龄算，共 2 倍），之后同样按到期放弃
+        expiry_now = sweep_now if upload_transcript is not None else sweep_now - VISIT_SPOOL_RETENTION_DAYS * 86400
+        swept = await VisitSpool.sweep(config_dir, expiry_now, is_live=live, uploads="only")
         report.swept += len(swept)
         # 放弃的待传转录：它排队的举报随后照常提交（设计 §4.7），先在举报文件里记下
         # transcript_unavailable，不能当作从没有过待传转录
