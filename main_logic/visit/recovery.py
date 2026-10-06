@@ -459,6 +459,31 @@ def _seal_stream_sync(
     return doc
 
 
+async def reseal_orphan_stream(config_dir: Path, visit_id: str) -> str:
+    """Seal the upload stream of a finished visit whose sealed file was never written.
+
+    Same rules as startup recovery (state.json gives the end reason and the
+    envelope fallbacks). Returns ``'sealed'``, ``'corrupt'`` (the stream held
+    no usable transcript and is gone) or ``'failed'`` (left as it is; try
+    again later).
+    """
+    spool_dir = config_dir / VISIT_SPOOL_DIRNAME
+    state = None
+    try:
+        state = await VisitSpool(config_dir, visit_id).read_state()
+    except (OSError, ValueError) as exc:
+        logger.warning("visit upload %s: state unreadable, resealing as crash: %s", visit_id, exc)
+    reason = state["finalized"] if state else None
+    owner = state["own_uid"] if state else None
+    char_uid = _owner_or_none(state.get("own_char_uid")) if state else None
+    try:
+        doc = await asyncio.to_thread(_seal_stream_sync, spool_dir, visit_id, reason, owner, char_uid)
+    except (OSError, ValueError, TypeError, OverflowError) as exc:
+        logger.warning("visit upload %s: cannot reseal the stream: %s", visit_id, type(exc).__name__)
+        return "failed"
+    return "sealed" if doc is not None else "corrupt"
+
+
 # ── 主流程 ────────────────────────────────────────────────────────────
 
 

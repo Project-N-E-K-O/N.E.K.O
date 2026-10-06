@@ -70,7 +70,7 @@ from config.visit_settings import (
 )
 from main_logic.visit import memory_bridge
 from main_logic.visit.memory_commit import SIDE_RANK
-from main_logic.visit.recovery import build_upload_doc, sealed_upload_doc_usable
+from main_logic.visit.recovery import build_upload_doc, reseal_orphan_stream, sealed_upload_doc_usable
 from main_logic.visit.spool import UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX
 from main_logic.visit.subjects import path_lock
 from main_routers.visit_router import accounts
@@ -891,6 +891,10 @@ async def submit_queued_report(visit_id: str, report_doc: dict) -> bool:
             return True
         if result.unknown_visit:
             await set_report_rejected(config_dir, visit_id, "unknown_visit", expect=report_doc)
+            return False
+    # 网络 / 5xx / 429 / 登录失效：补录留着文件，本进程里接着由后台重试，不等下次启动
+    schedule_visit_retry(visit_id, config_dir=config_dir,
+                         initial_delay_s=max(VISIT_UPLOAD_RETRY_BACKOFF_S[0], result.retry_after_s or 0))
     return False
 
 
@@ -1030,10 +1034,20 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         return UploadRound(pending=False)
     age = await asyncio.to_thread(_file_age_s, sealed, now)
     if age is None:
-        if await asyncio.to_thread(stream.exists):
+        if not await asyncio.to_thread(stream.exists):
+            # 转录早已结清：若是终态拒收 / 过期，之后才排的举报也要带上原因
+            return UploadRound(pending=False, unavailable=_terminal_reasons.get(visit_id))
+        if is_live(visit_id):
             return UploadRound(pending=True)
-        # 转录早已结清：若是终态拒收 / 过期，之后才排的举报也要带上原因
-        return UploadRound(pending=False, unavailable=_terminal_reasons.get(visit_id))
+        # 场次已结束、只留下流水（封存时写上传文件失败）：按补录同一规则从流水重封，再接着上传
+        status = await reseal_orphan_stream(config_dir, visit_id)
+        if status == "corrupt":
+            remember_terminal_reason(visit_id, "corrupt")
+            marked = await mark_report_transcript_unavailable(config_dir, visit_id, "corrupt")
+            return UploadRound(pending=False, unavailable=None if marked else "corrupt")
+        age = await asyncio.to_thread(_file_age_s, sealed, now) if status == "sealed" else None
+        if age is None:
+            return UploadRound(pending=True, retryable=True)
     if age > VISIT_SPOOL_RETENTION_DAYS * 86400:
         memory_bridge.diag("upload_expired", visit_id=visit_id)
         return await _settled_round(config_dir, visit_id, sealed, UploadResult(terminal="expired"))

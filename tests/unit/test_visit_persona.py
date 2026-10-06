@@ -662,3 +662,17 @@ def test_gate_does_not_regenerate_over_an_edit_saved_while_it_reads_the_card(env
     monkeypatch.setattr(persona._hooks, "load_context", read_while_an_edit_lands)
     gate = _gate(client)
     assert gate.ok is True and gate.text == hand and not persona.is_generating(UID_A)
+
+
+
+def test_the_first_word_after_an_explicit_id_keyword_stands_alone():
+    tokens = persona.extract_sensitive_tokens("line id alicefoo likes cats\nwechat: usually online", [])
+    assert "alicefoo" in tokens and "usually" not in tokens
+
+
+def test_unnumbered_street_names_after_an_address_comma():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens(
+        "address: Apt 4, Main Street\naddress: Apt 4, near the station, enjoys Star Wars", [])]
+    assert "main street" in tokens and not any("star wars" in t or "the station" in t for t in tokens)
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: Apt 4, near the High Street", [])]
+    assert "high street" in tokens and "the high street" not in tokens       # 街名截到虚词为止

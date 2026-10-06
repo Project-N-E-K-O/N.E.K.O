@@ -1029,3 +1029,36 @@ async def test_an_unreadable_file_after_acceptance_keeps_the_round_pending(tmp_p
     monkeypatch.setattr(tu, "delete_report", delete)
     assert (await tu.retry_visit_once(V1)).pending is True
     assert (await tu.retry_visit_once(V1)).pending is False and await tu.load_report(tmp_path, V1) is None
+
+
+
+async def test_an_orphan_stream_is_resealed_and_uploaded_by_a_retry_round(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    journal = await _journal(tmp_path)
+    await _say(journal, 1, "first")
+    real_write = tu._write_private_json
+
+    def failing(path, doc):
+        if Path(path).name.endswith(".upload.json"):
+            raise OSError("disk full")
+        return real_write(path, doc)
+
+    monkeypatch.setattr(tu, "_write_private_json", failing)
+    with pytest.raises(OSError):
+        await journal.seal("wrap_up", ended_at=1002.0)
+    monkeypatch.setattr(tu, "_write_private_json", real_write)
+    stream = _spool(tmp_path) / f"{V1}.upload.jsonl"
+    assert stream.exists() and not (_spool(tmp_path) / f"{V1}.upload.json").exists()
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=True))
+    assert (await tu.retry_visit_once(V1)).pending is False
+    assert fake.count("/api/visit/transcripts") >= 1 and fake.count("/api/visit/reports") == 1
+    assert not stream.exists()
+
+
+async def test_a_recovery_report_failure_re_arms_the_background_worker(tmp_path, servers):
+    fake, _ = servers
+    fake.report_mode = "503"
+    doc = _report_doc(include_transcript=False)
+    await tu.queue_report(tmp_path, doc)
+    assert await tu.submit_queued_report(V1, doc) is False
+    assert V1 in tu._workers

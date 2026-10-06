@@ -203,6 +203,24 @@ _NUMBERED_STREET_RE = re.compile(
 )
 
 
+# 地址关键词那一行里没写门牌号的街名（「Apt 4, Main Street」）：一两个词再接街道类词尾
+_UNNUMBERED_STREET_RE = re.compile(
+    rf"(?<![A-Za-z0-9])((?:[A-Za-z][A-Za-z'\-]*\s+){{1,2}}(?:{_STREET_TYPES}))\b\.?",
+    re.IGNORECASE,
+)
+
+
+def _unnumbered_streets(segment: str) -> list[str]:
+    """Street-type phrases of an address-labelled segment, cut at the first function word."""
+    out = []
+    for m in _UNNUMBERED_STREET_RE.finditer(segment):
+        words = m.group(1).split()
+        kept = _run_until_stopword(list(reversed(words)))
+        if len(kept) >= 2:
+            out.append(" ".join(reversed(kept)))
+    return out
+
+
 def _run_until_stopword(words: list[str]) -> list[str]:
     out = []
     for word in words:
@@ -308,16 +326,20 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
                 words = value.split()
                 if len(words) > 1:
                     found.extend(w.strip(".,!?;:") for w in words if _ACCOUNT_WORD_RE.search(w))
+                    if keyword.endswith("id") or m.groupdict().get("kw5"):
+                        # 明说是账号的关键词（line id / wechat id / 微信号）：后面第一个词就是账号本身
+                        found.append(words[0].strip(".,!?;:"))
             if is_address:
                 end = _LINE_END_RE.search(text, m.start("value"))
                 rest = text[m.end("value"):end.start() if end else len(text)]
                 for segment in _ADDRESS_SEGMENT_SPLIT_RE.split(rest):
                     segment = segment.strip()
                     if segment:
-                        # 只认有地址形态的片段（路名核心、门牌号 + 街名）：同一行后面的爱好等普通
-                        # 大写词组（「enjoys Star Wars」）不收
+                        # 只认有地址形态的片段（路名核心、门牌号 + 街名、以街道类词尾结尾的街名）：同一行
+                        # 后面的爱好等普通大写词组（「enjoys Star Wars」）不收
                         found.extend(_place_cores(segment, _ROAD_CORE_RE))
                         found.extend(_street_names(segment))
+                        found.extend(_unnumbered_streets(segment))
     found.extend(_place_cores(text, _ESTATE_CORE_RE))
     out: list[str] = []
     seen: set[str] = set()
