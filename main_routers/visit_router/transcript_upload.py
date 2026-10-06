@@ -1230,7 +1230,9 @@ async def retry_visit_once(
         # 用户要求重试、但拒收标记没能清掉（磁盘 / 权限）：后台轮次对同一份举报照手动重试处理，别因为
         # 标记还在就跳过。只认那一份：举报没了 / 换了一份就作废
         pending_manual = _manual_retries.get(visit_id)
-        if report is None or not same_report(report, pending_manual):
+        if unreadable:
+            pass                                       # 读不了不等于没了：保留，等能读了再认
+        elif report is None or not same_report(report, pending_manual):
             _manual_retries.pop(visit_id, None)
         elif not manual:
             manual = True

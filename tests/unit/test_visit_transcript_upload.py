@@ -1264,3 +1264,19 @@ async def test_a_pending_manual_retry_does_not_carry_over_to_a_new_report(tmp_pa
     await tu.set_report_rejected(tmp_path, V1, "unknown_visit")
     assert (await tu.retry_visit_once(V1)).pending is False
     assert fake.count("/api/visit/reports") == 0 and V1 not in tu._manual_retries
+
+
+
+async def test_a_pending_manual_retry_survives_an_unreadable_round(tmp_path, servers, monkeypatch):
+    doc = _report_doc(include_transcript=False)
+    await tu.queue_report(tmp_path, doc)
+    tu._manual_retries[V1] = dict(doc)
+    real_read = tu._read_report
+
+    async def unreadable(_config_dir, _visit_id):
+        return None, True
+
+    monkeypatch.setattr(tu, "_read_report", unreadable)
+    assert (await tu.retry_visit_once(V1)).pending is True
+    assert V1 in tu._manual_retries                         # 读不了时不作废
+    monkeypatch.setattr(tu, "_read_report", real_read)
