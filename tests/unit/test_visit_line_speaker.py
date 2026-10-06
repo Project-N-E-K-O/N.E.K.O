@@ -884,3 +884,13 @@ async def test_late_first_enqueue_wakes_the_driver():
     assert voice.fallen_back
     speaker.interrupt("visit_end")
     await asyncio.wait_for(task, 1.0)
+
+
+
+def test_goodbye_cap_never_splits_a_long_combining_sequence():
+    from utils.visit_wire import grapheme_safe_cut
+
+    zalgo = "a" + "́" * 30                       # 一个字形簇、31 个码点
+    text = "好" * 20 + zalgo + "拜拜"
+    cut = grapheme_safe_cut(text, 40)
+    assert cut == 20                                 # 整个簇都不进，而不是切在它中间

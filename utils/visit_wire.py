@@ -374,8 +374,15 @@ def _splits_cluster(s: str, p: int) -> bool:
 
 
 def grapheme_safe_cut(s: str, p: int) -> int:
-    """Largest cut ``<= p`` of ``s`` that does not split a grapheme cluster (emoji, flags, marks)."""
-    return _safe_cut(s, p, floor=0)
+    """Largest cut ``<= p`` of ``s`` that does not split a grapheme cluster (emoji, flags, marks).
+
+    Unlike the budget's bounded backoff, this walks back as far as needed
+    (meant for short texts such as a capped goodbye line).
+    """
+    q = min(max(p, 0), len(s))
+    while q > 0 and _splits_cluster(s, q):
+        q -= 1
+    return q
 
 
 def _safe_cut(s: str, p: int, *, floor: int = 0) -> int:
