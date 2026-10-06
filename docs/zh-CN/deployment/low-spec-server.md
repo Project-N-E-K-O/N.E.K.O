@@ -24,6 +24,10 @@ NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
 
 默认允许通过 `http://<服务器IP>:48911` 配对，页面会提示连接未加密；HTTP 会以明文传输配对 key 和会话 Cookie，不要在不可信网络上这样输入凭证。需要强制 HTTPS/WSS 时设置 `NEKO_REQUIRE_HTTPS=1`。实例凭证的读取方式见 [Docker 部署](./docker)。
 
+已有部署改了 `SSL_DOMAIN` 时，入口脚本会继续复用 `docker/neko-home/ssl/` 下已有的自签名证书，不会按新域名重新签发。需要新证书时，先停容器，把 `N.E.K.O.crt` 和 `N.E.K.O.key` 移出该目录备份，再启动让入口脚本重新生成；使用自有证书时直接替换这两个文件。
+
+`docker/neko-home` 和 `docker/logs` 不要做成指向共享目录的符号链接：Docker 会挂载链接的目标，入口脚本随后把挂载根目录的属主改为 uid 1000。需要把数据放到其他磁盘时，让它指向一个专用的空目录，或在覆盖文件中直接写实际路径。
+
 如需给容器设内存上限，按 [Docker 资源约束文档](https://docs.docker.com/engine/containers/resource_constraints/) 在覆盖文件中设置，并以实测结果确定数值，不要直接套用经验值。
 
 ## 2. 外置 TLS 网关：上游只绑定本机
@@ -84,7 +88,7 @@ swapon --show
 ## 4. 磁盘：日志与镜像
 
 - 官方 Compose 已把主容器的 Docker 日志（`docker logs`）限制为 10m × 3。
-- 应用写入 `docker/logs/` 的文件日志不受此限制，请用 logrotate 等工具轮转。
+- 应用文件日志写在 `docker/neko-home/.local/share/N.E.K.O/logs/`（`docker/logs/` 只是后备目录），不受上面的限制，但应用会自行轮转（单个文件 10MB、保留 5 份，30 天前的日志自动清理）。排查问题时也先看这里。
 - 其他容器需要同样的限制时，把以下内容合并进现有 `/etc/docker/daemon.json`，再执行 `sudo systemctl restart docker`：
 
 ```json
@@ -119,7 +123,7 @@ cron 每 5 分钟执行一次 `/opt/neko/watchdog.sh`：
 - 同一个容器最多连续自动重启 **3 次**，用完后记录错误并停止主动重启，等人工处理；健康一次即清零。
 - 状态、锁和日志位于 root 私有的 `/opt/neko/`，日志为 `/opt/neko/watchdog.log`（不会自动轮转），有 `logger` 时也写入 syslog（`journalctl -t neko-watchdog`）。
 
-看门狗通过宿主机 `127.0.0.1:48911` 探测。第 2 节的本机绑定不影响探测；如果改了宿主端口或只发布 HTTPS，探测会失败，需要先暂停看门狗并修改 `watchdog.sh` 中的探测地址。
+看门狗通过宿主机 `127.0.0.1:48911` 探测。第 2 节的本机绑定不影响探测；如果改了宿主端口或只发布 HTTPS，探测会失败，并对健康的容器白白重启 3 次。这种情况下先暂停看门狗，修改仓库里的源文件 `docker/watchdog/watchdog.sh` 中的探测地址，重新安装并确认探测成功后再恢复。只改已安装的 `/opt/neko/watchdog.sh` 会在下次重装时被覆盖；源文件的改动是本地补丁，每次 `git pull` 后要核对。
 
 ### 安装
 
@@ -158,7 +162,7 @@ sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/watchdog.sh
 
 ### 测试
 
-`sudo bash docker/watchdog/test-watchdog.sh` 会在临时目录中用模拟的 docker/curl 运行真实脚本，覆盖宽限期、维护锁、重启上限和安装器等逻辑，不修改宿主 cron，也不重启容器。它不能代替实机验收。
+在仓库根目录执行 `sudo bash docker/watchdog/test-watchdog.sh`（在 `docker/` 下则是 `sudo bash watchdog/test-watchdog.sh`），它会在临时目录中用模拟的 docker/curl 运行真实脚本，覆盖宽限期、维护锁、重启上限和安装器等逻辑，不修改宿主 cron，也不重启容器。它不能代替实机验收。
 
 ## 6. 网络安全
 
@@ -217,5 +221,5 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
 - [ ] 需要严格模式时已设置 `NEKO_REQUIRE_HTTPS=1`；使用外置网关时上游只绑定本机
 - [ ] 安全组已限制来源，并从外部验证过
 - [ ] ZRAM 已生效（`swapon --show`），保留了磁盘 swapfile
-- [ ] 应用文件日志已配置轮转
+- [ ] 若启用看门狗，`/opt/neko/watchdog.log` 已配置 logrotate（它不会自动轮转）
 - [ ] 若启用看门狗：`/etc/cron.d/neko-watchdog` 为 root、644；宽限期过后手动运行 `sudo /opt/neko/watchdog.sh`，`/opt/neko/watchdog.log` 没有新增探测失败

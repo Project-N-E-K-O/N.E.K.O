@@ -80,7 +80,7 @@ services:
       - NEKO_STORAGE_ANCHOR_ROOT=/home/neko/.local/share/N.E.K.O
 
     # 限制 Docker 容器日志（docker logs）体积，避免长期运行撑满磁盘；
-    # 应用写入 ./logs 的文件日志不受此限制
+    # 应用文件日志在 neko-home 内，由应用自行轮转，不受此限制
     logging:
       driver: json-file
       options:

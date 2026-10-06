@@ -24,6 +24,10 @@ NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
 
 Pairing over `http://<server-ip>:48911` is allowed by default and the page warns that it is unencrypted; the pairing key and session cookie travel in clear text, so do not enter credentials this way on untrusted networks. Set `NEKO_REQUIRE_HTTPS=1` to require HTTPS/WSS.
 
+On an existing deployment, changing `SSL_DOMAIN` does not reissue the certificate: the entrypoint keeps reusing the self-signed pair in `docker/neko-home/ssl/`. To get a new one, stop the container, move `N.E.K.O.crt` and `N.E.K.O.key` out of that directory as a backup, and start again; with your own certificate, replace those two files.
+
+Do not make `docker/neko-home` or `docker/logs` a symlink to a shared directory: Docker mounts the link target and the entrypoint then changes the mount root's owner to uid 1000. To keep data on another disk, point it at a dedicated empty directory or write the real path in an override file.
+
 If you want a container memory limit, set it in an override file following the [Docker resource constraints docs](https://docs.docker.com/engine/containers/resource_constraints/) and size it from measurements.
 
 ## 2. External TLS gateway: bind upstream to loopback
@@ -60,7 +64,7 @@ There is no universal `vm.swappiness`. With ZRAM as the primary swap, evaluate v
 ## 4. Disk: logs and images
 
 - The official Compose file caps the main container's Docker log (`docker logs`) at 10m × 3.
-- Application file logs in `docker/logs/` are not covered; rotate them with logrotate or similar.
+- Application file logs live in `docker/neko-home/.local/share/N.E.K.O/logs/` (`docker/logs/` is only a fallback). They are not covered by the Docker cap, but the application rotates them itself (10 MB per file, 5 backups, files older than 30 days removed). Look there first when diagnosing.
 - To apply the same cap to other containers, merge `"log-driver": "json-file"` and `"log-opts": {"max-size": "10m", "max-file": "3"}` into `/etc/docker/daemon.json`, then restart Docker.
 - After upgrades, check usage with `docker system df` and remove dangling images with `docker image prune`.
 
@@ -70,7 +74,7 @@ Docker's `unless-stopped` restarts a container only when its process exits; a pr
 
 **Prerequisites**: `bash`, `curl`, `timeout`, `flock`, a running `cron` service, Docker Engine from the official apt repository (snap Docker is not supported because cron's PATH excludes `/snap/bin`), and a pullable `alpine:3.20` for the installer.
 
-**Behavior**: cron runs `/opt/neko/watchdog.sh` every 5 minutes. It only acts on the container named `neko` with label `org.neko.watchdog=enabled` and Compose service `neko-main`; stopped, paused, restarting, or removed containers are never started. Health requires a 200/401 response from `http://127.0.0.1:48911/` on the host and a successful in-container `/health` request to the main server. After a 15-minute startup grace period, two consecutive failures trigger `docker restart`. Each container gets at most three consecutive automatic restarts; after that it logs an error and waits for an operator. State, lock, and log (`/opt/neko/watchdog.log`, not rotated) live in root-private `/opt/neko/`. Changing the host port or publishing HTTPS only breaks the probe; pause the watchdog and edit the probe address in `watchdog.sh` first. Loopback binding from section 2 is fine.
+**Behavior**: cron runs `/opt/neko/watchdog.sh` every 5 minutes. It only acts on the container named `neko` with label `org.neko.watchdog=enabled` and Compose service `neko-main`; stopped, paused, restarting, or removed containers are never started. Health requires a 200/401 response from `http://127.0.0.1:48911/` on the host and a successful in-container `/health` request to the main server. After a 15-minute startup grace period, two consecutive failures trigger `docker restart`. Each container gets at most three consecutive automatic restarts; after that it logs an error and waits for an operator. State, lock, and log (`/opt/neko/watchdog.log`, not rotated) live in root-private `/opt/neko/`. Loopback binding from section 2 is fine. Changing the host port or publishing HTTPS only breaks the probe and leads to three needless restarts of a healthy container: pause the watchdog, edit the probe address in the source file `docker/watchdog/watchdog.sh`, reinstall, confirm the probe succeeds, then resume. Editing only the installed `/opt/neko/watchdog.sh` is lost on the next reinstall; keep the source change as a local patch and recheck it after each `git pull`.
 
 **Install** (from `docker/`, after reviewing both scripts):
 
@@ -93,7 +97,7 @@ sudo rm -f /etc/cron.d/neko-watchdog                                            
 sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/watchdog.sh
 ```
 
-`docker compose down` does not remove the cron job, and reinstalling does not clear `disabled`. `sudo bash docker/watchdog/test-watchdog.sh` runs the real scripts against mocked docker/curl in a temporary directory; it does not replace on-host acceptance.
+`docker compose down` does not remove the cron job, and reinstalling does not clear `disabled`. From the repository root, `sudo bash docker/watchdog/test-watchdog.sh` (or `sudo bash watchdog/test-watchdog.sh` from `docker/`) runs the real scripts against mocked docker/curl in a temporary directory; it does not replace on-host acceptance.
 
 ## 6. Network security
 
