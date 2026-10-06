@@ -85,7 +85,7 @@ from main_logic.visit.sanitize import (
 )
 from utils.frontend_utils import TtsBracketStripper, TtsMarkdownStripper, strip_tts_muted_symbols
 from utils.logger_config import get_module_logger
-from utils.visit_wire import Clause, ClauseSplitter, WireBudget, estimate_speech_ms
+from utils.visit_wire import Clause, ClauseSplitter, WireBudget, estimate_speech_ms, grapheme_safe_cut
 
 logger = get_module_logger(__name__, "Main")
 
@@ -308,6 +308,9 @@ class LineSpeaker:
         self._tags = EmotionTagFilter()
         # 估时按 TTS 真正合成的文本：与主聊天朗读路径同一套 markdown / 括号 / 静音符号剥离（跨分句保持状态）
         self._est_bracket = TtsBracketStripper()
+        # 推入侧的可念判定：与 TTS 同一条剥离链、跨推入保持状态
+        self._push_markdown = TtsMarkdownStripper()
+        self._push_bracket = TtsBracketStripper()
         self._splitter = ClauseSplitter(
             redact=redact, holdback_chars=max((len(n) for n in names), default=1) - 1,
             redact_boundary=boundary,
@@ -395,7 +398,8 @@ class LineSpeaker:
         capped = text
         goodbye_cut = False
         if self._goodbye_left is not None:
-            capped = text[: self._goodbye_left]
+            capped = text[: grapheme_safe_cut(text, self._goodbye_left)] if len(text) > self._goodbye_left \
+                else text
             goodbye_cut = len(capped) < len(text)
         accepted = self._budget.take(capped) if capped else ""
         if self._goodbye_left is not None:
@@ -513,6 +517,10 @@ class LineSpeaker:
         if not text:
             return
         if self._stream is None:
+            if self._voice.fallen_back:
+                # 本行建好之后、开流之前，另一行已让本场回退估时：不再开流
+                self._to_estimate(now)
+                return
             if not self._open(now):
                 return
         if self._stream_dead or self._stream is None:
@@ -526,10 +534,21 @@ class LineSpeaker:
             else:
                 self._to_estimate(now)
             return
+        if not self._speakable(text):
+            # 会被 TTS 剥成空（舞台说明、半截 markdown）：不出声，不启动 / 不重启任何计时
+            return
+        if self._first_push_at is None:
+            # 起播计时从第一段能念出声的文本推入起算（TTS 未就绪、文字在待发队列里也算）
+            self._first_push_at = now
         if self._drained:
-            # 播空之后又有新音频入队：停滞计时从这一刻重新起算
+            # 播空之后又有能出声的文本入队：停滞计时从这一刻重新起算
             self._drained = False
             self._last_progress_at = now
+
+    def _speakable(self, text: str) -> bool:
+        """Whether ``text`` (one push) contains anything the TTS chain would actually speak."""
+        spoken = strip_tts_muted_symbols(self._push_bracket.feed(self._push_markdown.feed(text)))
+        return bool(spoken.strip())
 
     def _open(self, now: float) -> bool:
         try:
@@ -548,9 +567,9 @@ class LineSpeaker:
     def _usage_chars(self, n: int) -> None:
         if isinstance(n, int) and n > 0:
             if self._first_push_at is None:
-                # 起播计时从第一段真正进了合成队列的文本算起：被剥成空的舞台说明 / 半截 markdown
-                # 不出声，不能拿它的推入时刻判「4 s 没开播」
+                # 推入时没认出可念内容（半截 markdown 等到收尾才 flush）而 TTS 实际入队了：从此刻起算
                 self._first_push_at = self._now(None)
+                self._cb.on_wake()
             self._cb.on_usage({"tts_chars": n})
 
     def _add_clauses(self, clauses: Sequence[Clause]) -> None:
@@ -624,7 +643,11 @@ class LineSpeaker:
                 # worker 退出 / 流已被关掉：结束标记送不进去，播放终点的 ended 不会来
                 logger.warning("visit line %s: TTS stream did not take the end marker, pacing by estimate",
                                self.header.ln)
-                self._to_estimate(now)
+                if self._last_progress_at is None and self._first_push_at is not None:
+                    # 推过能念的文本却一点没播出来就失败了：同起播失败，本场不再用 TTS
+                    self._fallback(now, start_timeout=True)
+                else:
+                    self._to_estimate(now)
         elif self._mode == PACED_AUDIO and self._stream is None:
             # 一个字都没接纳（空回复 / 首段就被截掉）：没开过流，按估时收口
             self._to_estimate(now)

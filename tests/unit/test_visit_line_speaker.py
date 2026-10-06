@@ -810,3 +810,77 @@ def test_a_line_with_nothing_speakable_closes_by_estimate_without_disabling_voic
     h.speaker.llm_done()
     h.at(4.0)
     assert h.results and not h.voice.fallen_back
+
+
+
+def test_speakable_text_stuck_before_tts_still_times_out():
+    h = Harness()
+    h.open_stream = lambda on_enqueued: h.streams.append(_SilentStream(on_enqueued)) or h.streams[-1]
+    h.speaker = h.new_line("h:2")
+    h.speaker.feed("你好呀。")                       # 能念，但 TTS 未就绪，一直没入队
+    h.at(3.9)
+    assert not h.voice.fallen_back
+    h.at(4.0)
+    assert h.voice.fallen_back and h.speaker.mode == ls.PACED_ESTIMATE
+
+
+def test_unspeakable_text_after_a_drain_does_not_restart_the_stall_clock():
+    h = Harness()
+    h.speaker.feed(CLAUSES[0] + CLAUSES[1][:1])
+    h.progress(0)
+    h.t += 1
+    h.progress(1000, ended=True, final=False)
+    h.speaker.feed("（笑）")
+    assert h.speaker.next_deadline() is None         # 不出声的推入不重启停滞计时
+
+
+def test_end_marker_failing_before_any_playback_falls_back_for_the_visit():
+    h = Harness(finish_result=False)
+    h.speaker.feed(LINE)
+    h.speaker.llm_done()
+    assert h.voice.fallen_back and h.fallbacks == 1
+
+
+def test_a_line_opened_after_the_visit_fell_back_never_opens_a_stream():
+    h = Harness()
+    first = h.speaker
+    second = h.new_line("h:2")
+    h.voice.fallen_back = True                       # 别的行在这之间触发了整场回退
+    second.feed("你好。")
+    assert second.mode == ls.PACED_ESTIMATE and h.streams == []
+    assert first.mode == ls.PACED_AUDIO
+
+
+def test_goodbye_cap_never_splits_an_emoji():
+    h = Harness(wu=True)
+    family = "👨‍👩‍👧"
+    h.speaker.feed("好" * 38 + family + "拜拜")
+    h.speaker.llm_done()
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    text = h.results[0].text
+    assert not text.endswith("‍") and not text.endswith("👨‍👩")
+    assert len(text) <= 40
+
+
+
+async def test_late_first_enqueue_wakes_the_driver():
+    streams = []
+    voice = ls.VoiceState(enabled=True)
+    speaker = ls.LineSpeaker(
+        visit_id=VISIT, header=ls.LineHeader(ln="h:1", lp=1, ad="gc", rt=""), family_names=[],
+        neutral_term=NEUTRAL, voice=voice,
+        open_stream=lambda cb: streams.append(_SilentStream(cb)) or streams[-1],
+        router=ls.SpeechRouter(), clock=time.monotonic, start_timeout_s=0.1,
+    )
+    task = asyncio.ensure_future(ls.drive(speaker, clock=time.monotonic))
+    speaker.feed("（笑）")                            # 不出声：没有任何计时，drive 在等唤醒
+    await asyncio.sleep(0.05)
+    streams[0].on_enqueued(3)                        # TTS 晚些时候真的入队了：起播计时开始，必须叫醒 drive
+    for _ in range(50):
+        if voice.fallen_back:
+            break
+        await asyncio.sleep(0.02)
+    assert voice.fallen_back
+    speaker.interrupt("visit_end")
+    await asyncio.wait_for(task, 1.0)

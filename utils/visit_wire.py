@@ -373,6 +373,11 @@ def _splits_cluster(s: str, p: int) -> bool:
     return False
 
 
+def grapheme_safe_cut(s: str, p: int) -> int:
+    """Largest cut ``<= p`` of ``s`` that does not split a grapheme cluster (emoji, flags, marks)."""
+    return _safe_cut(s, p, floor=0)
+
+
 def _safe_cut(s: str, p: int, *, floor: int = 0) -> int:
     """Move cut ``p`` left (not below ``floor``) until it no longer splits a cluster.
 
