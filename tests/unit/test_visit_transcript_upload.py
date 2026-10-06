@@ -488,6 +488,15 @@ async def test_queued_report_is_resubmitted_at_startup(tmp_path, servers, monkey
     assert report.reports == {V1: True} and not (tmp_path / "visit_reports" / f"{V1}.json").exists()
 
 
+async def test_queued_report_of_an_unknown_visit_is_settled(tmp_path, servers):
+    fake, _ = servers
+    fake.report_mode = "404"
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    assert (await tu.retry_visit_once(V1)).pending is False
+    assert not (tmp_path / "visit_reports" / f"{V1}.json").exists()
+    assert await tu.submit_queued_report(V1, _report_doc()) is True
+
+
 async def test_queued_report_of_another_account_waits(tmp_path, servers):
     fake, state = servers
     await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
@@ -500,9 +509,35 @@ async def test_old_queued_reports_are_flagged_but_never_dropped(tmp_path, server
     fake.report_mode = "503"
     await tu.queue_report(tmp_path, _report_doc(include_transcript=False, queued_at=time.time() - 8 * 86400))
     await tu.retry_visit_once(V1)
-    rows = await tu.list_queued_reports(tmp_path)
+    rows = await tu.list_queued_reports(tmp_path, "u1")
+    assert await tu.list_queued_reports(tmp_path, "u2") == []
     assert rows[0]["visit_id"] == V1 and rows[0]["stale"] is True
     assert (tmp_path / "visit_reports" / f"{V1}.json").exists()
+
+
+async def test_unrecordable_rejection_keeps_the_upload_and_still_reaches_the_report(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    fake.transcript_mode = "parts"
+    sealed = _write_sealed(tmp_path, _big_doc(4, 10))
+    await tu.queue_report(tmp_path, _report_doc())
+    fake.report_mode = "503"
+
+    def broken(*_a, **_k):
+        raise OSError("disk full")
+
+    original = tu._mark_unavailable_sync
+    monkeypatch.setattr(tu, "_mark_unavailable_sync", broken)
+    await tu.retry_visit_once(V1)
+    # 原因写不进举报：上传文件留着并记上 rejected，不能删掉这唯一的持久记录
+    assert sealed.exists() and json.loads(sealed.read_text(encoding="utf-8"))["rejected"] == "parts_out_of_range"
+    uploads = fake.count("/api/visit/transcripts")
+    fake.report_mode = "ok"
+    await tu.retry_visit_once(V1)
+    assert fake.reports[0]["transcript_unavailable"] == "parts_out_of_range"
+    assert fake.count("/api/visit/transcripts") == uploads          # 已拒收的不再整份重传
+    monkeypatch.setattr(tu, "_mark_unavailable_sync", original)
+    await tu.retry_visit_once(V1)
+    assert not sealed.exists()
 
 
 async def test_backlog_counts_pending_upload_bytes(tmp_path, servers, monkeypatch):

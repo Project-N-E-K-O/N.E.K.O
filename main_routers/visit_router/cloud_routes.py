@@ -291,7 +291,8 @@ async def list_report_queue(request: Request):
     denied = http_denied(request)
     if denied is not None:
         return denied
-    return JSONResponse({"items": await tu.list_queued_reports(Path(tu.config_dir_provider()))})
+    account = await accounts.local_account()
+    return JSONResponse({"items": await tu.list_queued_reports(Path(tu.config_dir_provider()), account)})
 
 
 @router.post("/report/queue/{visit_id}")
@@ -307,10 +308,16 @@ async def act_on_queued_report(request: Request, visit_id: str):
     if action not in ("retry", "abandon"):
         return _error(400, "invalid_action")
     config_dir = Path(tu.config_dir_provider())
-    if await tu.load_report(config_dir, visit_id) is None:
+    account = await accounts.local_account()
+    report = await tu.load_report(config_dir, visit_id)
+    if report is None or not await tu.report_belongs_to(report, account):
+        # 别的账号在这台机器上排的举报：不可见、不可删
         return _error(404, "not_queued")
     if action == "abandon":
-        await tu.delete_report(config_dir, visit_id)
+        # 与后台提交共用逐场锁：放弃要么发生在提交之前（不会再提交），要么提交已完成（文件已删 → 404）
+        async with tu.visit_lock(visit_id):
+            if not await tu.delete_report(config_dir, visit_id):
+                return _error(404, "not_queued")
         return JSONResponse({"ok": True, "removed": True})
     outcome = await tu.retry_visit_once(visit_id, config_dir=config_dir)
     delivered = await tu.load_report(config_dir, visit_id) is None

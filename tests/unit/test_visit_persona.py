@@ -382,6 +382,25 @@ def test_sensitive_tokens_cover_contacts_addresses_and_family():
         assert any(expected in t for t in tokens), expected
 
 
+def test_multi_word_addresses_are_caught():
+    card = "She lives with her family. Her address: 12 Main Street."
+    assert persona.sensitive_token_hits(card, "She often walks down Main Street.", ()) == ["Main Street"]
+    assert persona.sensitive_token_hits(card, "She lives on a quiet street.", ()) == []
+
+
+def test_phone_numbers_match_whatever_the_separators():
+    card = "联系电话 138 0013 8000，随时找她。"
+    assert persona.sensitive_token_hits(card, "她的号码是138-0013-8000。", ()) == ["13800138000"]
+    assert persona.sensitive_token_hits(card, "她出生在 2001 年。", ()) == []
+
+
+def test_capped_private_section_list_counts_as_an_incomplete_scan(env, monkeypatch):
+    client, _tmp, state, _llm, scan = env
+    monkeypatch.setattr(persona, "_PRIVATE_SECTIONS_MAX", 2)
+    view = _generate(client)
+    assert len(view["private_sections"]) == 2 and view["scan_complete"] is False
+
+
 def test_generic_road_words_are_not_tokens():
     assert persona.sensitive_token_hits("她喜欢走路，也爱在马路边看车。", "她喜欢走路。", ()) == []
 

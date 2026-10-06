@@ -376,6 +376,55 @@ def test_queued_report_retry_and_abandon(env):
                        json={"action": "abandon"}).status_code == 404
 
 
+def test_queued_reports_are_scoped_to_the_signed_in_account(env):
+    client, fake, tmp_path, state = env
+    fake.report_mode = "503"
+    _report(client)
+    state["account"] = "u2"
+    assert client.get("/api/visit/report/queue", headers=GOOD).json()["items"] == []
+    resp = client.post(f"/api/visit/report/queue/{V1}", headers=GOOD, json={"action": "abandon"})
+    assert resp.status_code == 404 and _queued(tmp_path) is not None
+    state["account"] = "u1"
+    assert [i["visit_id"] for i in client.get("/api/visit/report/queue", headers=GOOD).json()["items"]] == [V1]
+
+
+def test_abandon_waits_for_an_in_flight_submission(env):
+    import threading
+
+    client, fake, tmp_path, _ = env
+    fake.report_mode = "503"
+    _report(client)
+    lock = tu.visit_lock(V1)
+    holding, release = client.portal.call(lambda: _make_events())
+
+    async def submit_in_flight():
+        async with lock:
+            holding.set()
+            await release.wait()
+            # 后台提交在锁内受理并删掉了文件
+            await tu.delete_report(tmp_path, V1)
+
+    client.portal.start_task_soon(submit_in_flight)
+    client.portal.call(holding.wait)
+    result = {}
+    worker = threading.Thread(target=lambda: result.setdefault(
+        "resp", client.post(f"/api/visit/report/queue/{V1}", headers=GOOD, json={"action": "abandon"})))
+    worker.start()
+    try:
+        worker.join(0.3)
+        blocked = worker.is_alive()     # 放弃在等那次提交结束，没有抢先报 removed
+    finally:
+        client.portal.call(release.set)
+        worker.join(5)
+    assert blocked and result["resp"].status_code == 404
+
+
+async def _make_events():
+    import asyncio
+
+    return asyncio.Event(), asyncio.Event()
+
+
 def test_report_survives_clearing_the_person(env):
     client, fake, tmp_path, _ = env
     fake.report_mode = "503"

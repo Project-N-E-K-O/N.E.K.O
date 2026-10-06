@@ -101,7 +101,7 @@ PERSONA_CARD_MAX_TOKENS = 8000
 PERSONA_SCAN_MAX_TOKENS = 2000
 """Output budget of the private-section scan call (a JSON list of copied passages)."""
 
-_PRIVATE_SECTIONS_MAX = 64
+_PRIVATE_SECTIONS_MAX = 256
 _SECTION_MAX_CHARS = 2000
 _TOKEN_MIN_CHARS = 2
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -112,19 +112,25 @@ _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+")
 _URL_RE = re.compile(r"(?:https?://|www\.)[^\s，。、！？；：,;:()（）\[\]【】<>「」『』\"']+", re.IGNORECASE)
 _DIGITS_RE = re.compile(r"[0-9]{5,}")
-# 关键词后面跟的值：到空白或标点为止（「住在桂花路」→「桂花路」，「QQ 123456」→「123456」）
+# 关键词后面跟的值：到标点或行尾为止，中间可以有空格（「住在桂花路」→「桂花路」，
+# 「address: 12 Main Street」→「12 Main Street」）
 _KEYWORD_VALUE_RE = re.compile(
     r"(?:微信号?|微訊號?|wechat|weixin|vx|qq号?|手机号?|手機號?|电话号码?|電話號碼?|手机|手機|电话|電話"
     r"|住址|地址|家住|住在|位于|位於|邮箱|郵箱|e-?mail|phone(?:\s*number)?|address|lives?\s+in|line\s*id)"
-    r"\s*[:：是为為在]?\s*"
-    r"([^\s，。、！？；：,;:!?()（）\[\]【】<>「」『』\"']{2,30})",
+    r"\s*[:：是为為在]?[ \t]*"
+    r"([^\n，。、！？；：,;:!?()（）\[\]【】<>「」『』\"']{2,40})",
     re.IGNORECASE,
 )
+# 带分隔符的电话号码（「138 0013 8000」「+1 (555) 010-0199」）：按纯数字比对
+_PHONE_RE = re.compile(r"\+?[0-9][0-9 \-().]{5,}[0-9]")
+_PHONE_MIN_DIGITS = 7
+# 拉丁值里取「全是大写开头的词或数字」的连续两词以上片段（「Main Street」），小写虚词不算
+_LATIN_WORD_RE = re.compile(r"[0-9]+|[A-Z][A-Za-z'\-]*|[a-z][A-Za-z'\-]*")
 _ROAD_SUFFIXES = "路|街|大道|巷|胡同|弄"
 _ESTATE_SUFFIXES = "小区|小區|公寓|大厦|大廈|新村|社区|社區"
 # 地址样式片段只取后缀前两个字作核心（「我们住在桂花路」→「桂花路」）。「X路 / X街」这类后缀也是
 # 常用词（走路、一路），只在地址关键词后的值里与门牌号前取；「小区 / 公寓」等全卡都取
-_CJK = r"[一-鿿]"
+_CJK = "[" + chr(0x4E00) + "-" + chr(0x9FFF) + "]"
 _ROAD_CORE_RE = re.compile(rf"{_CJK}{{2}}(?:{_ROAD_SUFFIXES}|{_ESTATE_SUFFIXES})")
 _ESTATE_CORE_RE = re.compile(rf"{_CJK}{{2}}(?:{_ESTATE_SUFFIXES})")
 _ROAD_NUMBER_RE = re.compile(rf"{_CJK}{{2,6}}(?:{_ROAD_SUFFIXES})\s*[0-9]+\s*[号號]")
@@ -141,25 +147,54 @@ def _place_cores(value: str, pattern: re.Pattern[str]) -> list[str]:
     return [m.group(0) for m in pattern.finditer(value)]
 
 
+def _latin_phrases(value: str) -> list[str]:
+    """Runs of two or more capitalised words / numbers inside a keyword value (``Main Street``)."""
+    out: list[str] = []
+    run: list[str] = []
+    for word in _LATIN_WORD_RE.findall(value) + [""]:
+        if word and (word[0].isdigit() or word[0].isupper()):
+            run.append(word)
+            continue
+        for i in range(len(run)):
+            for j in range(i + 2, len(run) + 1):
+                out.append(" ".join(run[i:j]))
+        run = []
+    return out
+
+
+def phone_digits(text: str) -> set[str]:
+    """Digit strings of the phone-like numbers in ``text`` (at least seven digits, separators dropped)."""
+    out = set()
+    for m in _PHONE_RE.finditer(_norm(text)):
+        digits = "".join(ch for ch in m.group(0) if ch.isdigit())
+        if len(digits) >= _PHONE_MIN_DIGITS:
+            out.add(digits)
+    return out
+
+
 def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> list[str]:
     """Deterministic sensitive tokens of ``card`` (rule 1 of the privacy check).
 
     Family names (as given), email addresses, URLs, runs of five or more
-    digits, the value after a contact / address keyword, and address-like
-    fragments. Every token is at least two characters; order is first
-    occurrence, duplicates (by matching key) dropped.
+    digits, phone numbers written with separators, the whole value after a
+    contact / address keyword (spaces included) plus its capitalised
+    multi-word runs, and address-like fragments. Every token is at least two
+    characters; order is first occurrence, duplicates (by matching key)
+    dropped. Phone numbers are also matched digit by digit, see
+    :func:`sensitive_token_hits`.
     """
     text = _norm(card or "")
     found: list[str] = [str(n).strip() for n in family_names if isinstance(n, str) and n.strip()]
-    for pattern in (_EMAIL_RE, _URL_RE, _DIGITS_RE, _UNIT_RE):
+    for pattern in (_EMAIL_RE, _URL_RE, _DIGITS_RE, _UNIT_RE, _PHONE_RE):
         found.extend(m.group(0) for m in pattern.finditer(text))
     for m in _ROAD_NUMBER_RE.finditer(text):
         found.append(m.group(0))
         found.extend(_place_cores(m.group(0), _ROAD_CORE_RE))
     for m in _KEYWORD_VALUE_RE.finditer(text):
-        value = m.group(1)
+        value = m.group(1).strip()
         found.append(value)
         found.extend(_place_cores(value, _ROAD_CORE_RE))
+        found.extend(_latin_phrases(value))
     found.extend(_place_cores(text, _ESTATE_CORE_RE))
     out: list[str] = []
     seen: set[str] = set()
@@ -207,7 +242,8 @@ def sensitive_token_hits(card: str | None, text: str, family_names: Iterable[str
 
     Family names are checked by the whole-word redaction itself (``text`` is
     always redacted first), so only the other tokens are matched as plain
-    substrings here.
+    substrings here. A phone number of the card also hits when ``text``
+    writes the same digits with other separators.
     """
     names = [n for n in family_names if isinstance(n, str)]
     name_keys = {fold_text(n.strip()) for n in names}
@@ -219,6 +255,10 @@ def sensitive_token_hits(card: str | None, text: str, family_names: Iterable[str
             continue
         if key in folded:
             hits.append(token)
+    text_phones = phone_digits(text)
+    for digits in sorted(phone_digits(card or "")):
+        if any(digits in other for other in text_phones) and digits not in hits:
+            hits.append(digits)
     return hits
 
 
@@ -353,7 +393,8 @@ def _parse_scan(raw: str) -> list[str]:
     return [str(item).strip()[:_SECTION_MAX_CHARS] for item in items if isinstance(item, str) and item.strip()]
 
 
-def _merge_sections(*groups: Iterable[str]) -> list[str]:
+def _merge_sections(*groups: Iterable[str]) -> tuple[list[str], bool]:
+    """Deduplicated sections, capped at ``_PRIVATE_SECTIONS_MAX``; the flag tells whether some were cut."""
     out: list[str] = []
     seen: set[str] = set()
     for group in groups:
@@ -362,7 +403,7 @@ def _merge_sections(*groups: Iterable[str]) -> list[str]:
             if key and key not in seen:
                 seen.add(key)
                 out.append(section)
-    return out[:_PRIVATE_SECTIONS_MAX]
+    return out[:_PRIVATE_SECTIONS_MAX], len(out) > _PRIVATE_SECTIONS_MAX
 
 
 async def generate_visit_persona(
@@ -408,15 +449,19 @@ async def generate_visit_persona(
         hits = persona_privacy_check(card, text, names, scanned)
         if not hits:
             digest = card_hash(card)
+            sections, cut = _merge_sections(rule_private_sections(card, names), scanned)
+            if cut:
+                # 清单放不下：面板上看不全「不会带出门」的段落，如实标成检查不完整
+                logger.warning("visit persona: private-section list capped at %d", _PRIVATE_SECTIONS_MAX)
             return PersonaResult(doc={
                 "text": text,
                 "source_card_hash": digest,
                 "generated_at": float(time.time() if now is None else now),
                 "edited": False,
                 "reviewed": False,
-                "private_sections": _merge_sections(rule_private_sections(card, names), scanned),
+                "private_sections": sections,
                 "scan_card_hash": digest,
-                "scan_complete": scan_complete,
+                "scan_complete": scan_complete and not cut,
             })
         logger.warning("visit persona: generated text overlaps private card content (%d hits)", len(hits))
     return PersonaResult(error="persona_sensitive_overlap", hits=tuple(hits))
@@ -658,7 +703,7 @@ async def put_persona(request: Request, catgirl: str = ""):
             doc = {
                 "text": cleaned, "source_card_hash": digest, "generated_at": None,
                 "edited": True, "reviewed": True,
-                "private_sections": _merge_sections(rule_private_sections(card, ctx.family_names)),
+                "private_sections": _merge_sections(rule_private_sections(card, ctx.family_names))[0],
                 "scan_card_hash": digest, "scan_complete": False,
             }
         else:

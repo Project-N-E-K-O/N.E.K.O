@@ -634,12 +634,18 @@ def _mark_unavailable_sync(path: Path, visit_id: str, reason: str) -> None:
         _write_private_json(path, {**doc, "transcript_unavailable": reason})
 
 
-async def mark_report_transcript_unavailable(config_dir: Path, visit_id: str, reason: str) -> None:
-    """Record on the queued report why its transcript will never reach Servers."""
+async def mark_report_transcript_unavailable(config_dir: Path, visit_id: str, reason: str) -> bool:
+    """Record on the queued report why its transcript will never reach Servers.
+
+    False only when a queued report exists but could not be rewritten (no
+    report, or one already marked, counts as done).
+    """
     try:
         await asyncio.to_thread(_mark_unavailable_sync, report_path(config_dir, visit_id), visit_id, reason)
     except (OSError, ValueError) as exc:
         logger.warning("visit report queue: cannot mark %s: %s", visit_id, type(exc).__name__)
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -650,6 +656,11 @@ class ReportResult:
     report_id: str | None = None
     unknown_visit: bool = False
     login_required: bool = False
+
+    @property
+    def settled(self) -> bool:
+        """Nothing more to do with the queued file: accepted, or a visit Servers never issued."""
+        return self.accepted or self.unknown_visit
 
 
 def report_request(doc: Mapping[str, Any]) -> dict:
@@ -707,6 +718,7 @@ async def send_report(doc: Mapping[str, Any]) -> ReportResult:
         report_id = body.get("report_id") if isinstance(body, Mapping) else None
         return ReportResult(accepted=True, report_id=report_id if isinstance(report_id, str) else None)
     if resp.status_code == 404 and _code(body) == "unknown_visit":
+        memory_bridge.diag("report_unknown_visit", visit_id=str(doc.get("visit_id")))
         return ReportResult(unknown_visit=True)
     if resp.status_code == 401:
         return ReportResult(login_required=True)
@@ -714,8 +726,12 @@ async def send_report(doc: Mapping[str, Any]) -> ReportResult:
 
 
 async def submit_queued_report(visit_id: str, report_doc: dict) -> bool:
-    """PR-08's ``submit_report`` callback: True once Servers accepted the queued report."""
-    return (await send_report(report_doc)).accepted
+    """PR-08's ``submit_report`` callback: True once the queued file may go.
+
+    That is Servers accepting it, or ``404 unknown_visit`` (a visit Servers
+    never issued or this account was not part of: no retry can change it).
+    """
+    return (await send_report(report_doc)).settled
 
 
 # ── 进程内重试 ─────────────────────────────────────────────────────────
@@ -728,15 +744,43 @@ def _file_age_s(path: Path, now: float) -> float | None:
         return None
 
 
-async def _settle_upload(config_dir: Path, visit_id: str, path: Path, result: UploadResult) -> None:
+def _mark_sealed_rejected_sync(path: Path, reason: str) -> None:
+    with path_lock(path):
+        try:
+            before = path.stat()
+        except FileNotFoundError:
+            return
+        doc = _load_json(path)
+        if not isinstance(doc, dict):
+            return
+        _write_private_json(path, {**doc, "rejected": reason})
+        # 记标记不是一次重试：7 天期限照旧按原来的 mtime 算
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+
+async def _settle_upload(config_dir: Path, visit_id: str, path: Path, result: UploadResult) -> str | None:
+    """Delete a finished sealed upload; return a terminal reason the queued report could not record.
+
+    A terminal rejection (or expiry) is written into the queued report
+    first. The sealed file is the only durable record of it, so when the
+    report cannot be rewritten the file stays, marked ``rejected`` (the next
+    round and PR-08 recovery mark the report, then delete the file), and
+    the reason is returned so the report submitted in this round carries it.
+    """
     if result.terminal is not None:
         memory_bridge.diag("upload_rejected", visit_id=visit_id, reason=result.terminal)
-        # 先在排队的举报里记下原因，再删上传文件（上传文件是终态拒收唯一的持久记录）
-        await mark_report_transcript_unavailable(config_dir, visit_id, result.terminal)
+        if not await mark_report_transcript_unavailable(config_dir, visit_id, result.terminal):
+            try:
+                await asyncio.to_thread(_mark_sealed_rejected_sync, path, result.terminal)
+            except (OSError, ValueError) as exc:
+                logger.warning("visit upload %s: cannot mark %s rejected: %s", visit_id, path.name,
+                               type(exc).__name__)
+            return result.terminal
     try:
         await asyncio.to_thread(path.unlink, True)
     except OSError as exc:
         logger.warning("visit upload %s: done but cannot delete %s: %s", visit_id, path.name, exc)
+    return None
 
 
 @dataclass(frozen=True)
@@ -759,6 +803,8 @@ class UploadRound:
     pending: bool
     retryable: bool = False
     retry_after_s: int | None = None
+    unavailable: str | None = None
+    """Terminal reason the queued report could not record; the caller submits it in memory."""
 
 
 async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None = None) -> UploadRound:
@@ -777,8 +823,8 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         return UploadRound(pending=await asyncio.to_thread(stream.exists))
     if age > VISIT_SPOOL_RETENTION_DAYS * 86400:
         memory_bridge.diag("upload_expired", visit_id=visit_id)
-        await _settle_upload(config_dir, visit_id, sealed, UploadResult(terminal="expired"))
-        return UploadRound(pending=False)
+        unmarked = await _settle_upload(config_dir, visit_id, sealed, UploadResult(terminal="expired"))
+        return UploadRound(pending=False, unavailable=unmarked)
     try:
         doc = await asyncio.to_thread(_load_json, sealed)
     except (OSError, ValueError):
@@ -786,10 +832,15 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
     if not isinstance(doc, dict) or not isinstance(doc.get("request"), dict):
         # 读不出 / 结构不对的封存文件交给启动补录判（它能对照流水与 state.json）
         return UploadRound(pending=True)
-    result = await _upload(visit_id, doc, config_dir)
+    rejected = doc.get("rejected")
+    if isinstance(rejected, str) and rejected:
+        # 上一轮已终态拒收、只是原因没记进举报：不再整份重传，接着记原因、删文件
+        result = UploadResult(terminal=rejected)
+    else:
+        result = await _upload(visit_id, doc, config_dir)
     if result.done or result.terminal is not None:
-        await _settle_upload(config_dir, visit_id, sealed, result)
-        return UploadRound(pending=False)
+        unmarked = await _settle_upload(config_dir, visit_id, sealed, result)
+        return UploadRound(pending=False, unavailable=unmarked)
     return UploadRound(pending=True, retryable=True, retry_after_s=result.retry_after_s)
 
 
@@ -818,7 +869,10 @@ async def retry_visit_once(visit_id: str, *, config_dir: Path | None = None, now
         report = await load_report(config_dir, visit_id)
         report_pending = report is not None
         if report is not None and not (upload.pending and report["include_transcript"]):
-            if (await send_report(report)).accepted:
+            if upload.unavailable and not report.get("transcript_unavailable"):
+                # 原因没写进举报文件（磁盘 / 权限）：提交的这份照样带上
+                report = {**report, "transcript_unavailable": upload.unavailable}
+            if (await send_report(report)).settled:
                 await delete_report(config_dir, visit_id)
                 report_pending = False
     return RetryRound(pending=report_pending or upload.retryable, retry_after_s=upload.retry_after_s)
@@ -936,12 +990,21 @@ def _list_reports_sync(config_dir: Path) -> list[tuple[str, Any]]:
     return out
 
 
-async def list_queued_reports(config_dir: Path, *, now: float | None = None) -> list[dict]:
-    """Queued reports for the UI: ``{visit_id, reason, include_transcript, queued_at, stale}``."""
+async def report_belongs_to(doc: Mapping[str, Any], account: str | None) -> bool:
+    """Whether community ``account`` filed the queued report (see ``_report_owner_signed_in``)."""
+    return bool(account) and await _report_owner_signed_in(doc, str(account))
+
+
+async def list_queued_reports(config_dir: Path, account: str | None, *, now: float | None = None) -> list[dict]:
+    """Queued reports of ``account`` for the UI: ``{visit_id, reason, include_transcript, queued_at, stale}``.
+
+    Reports another account filed on this machine are not listed: every
+    account that signs in here shares the queue directory.
+    """
     now = time.time() if now is None else now
     rows = []
     for visit_id, doc in await asyncio.to_thread(_list_reports_sync, config_dir):
-        if not _valid_report(doc, visit_id):
+        if not _valid_report(doc, visit_id) or not await report_belongs_to(doc, account):
             continue
         queued_at = doc.get("queued_at") if _finite(doc.get("queued_at")) else None
         rows.append({
