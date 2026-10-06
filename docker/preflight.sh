@@ -21,6 +21,8 @@ set -eu
 
 NEKO_UID=1000
 NEKO_GID=1000
+# An exported CDPATH makes cd print the directory, which would leak into $(...).
+unset CDPATH
 
 fail() { echo "preflight: $*" >&2; exit 1; }
 refuse() {
@@ -39,6 +41,9 @@ logs_dir=${2:-$script_dir/logs}
 # Normalizing removes ".." as text, but the kernel and Docker would first follow a
 # symlink before it ("link/../data"), so a ".." could hide a link from the check.
 for arg in "$@"; do
+    # An explicitly empty argument (say, an unset variable) must not fall back to
+    # the default and leave the intended override unchecked.
+    [ -n "$arg" ] || fail "empty path argument; pass a real path or omit it"
     case "/$arg/" in
         */../*) fail "'$arg' contains '..'; pass the path without parent references" ;;
     esac

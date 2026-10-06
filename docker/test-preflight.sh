@@ -218,6 +218,20 @@ done
 ok "refuses '..' components, which normalization would hide a link behind"
 
 new_case
+mkdir "$CASE/logs"
+if run "" "$CASE/logs"; then die 'empty argument accepted'; fi
+grep -q 'empty path argument' "$CASE/out" || die 'empty argument error not reported'
+[[ ! -e $CASE/neko-home ]] || die 'empty argument fell back to the default'
+ok 'refuses an explicitly empty argument instead of using the default'
+
+new_case
+parent=$(dirname -- "$CASE")
+(cd "$parent" && CDPATH=. sh "$(basename -- "$CASE")/preflight.sh" > "$CASE/out" 2>&1) \
+    || die "relative invocation with CDPATH set: $(cat "$CASE/out")"
+[[ -d $CASE/neko-home && -d $CASE/logs ]] || die 'CDPATH broke the default paths'
+ok 'ignores an exported CDPATH'
+
+new_case
 if run a b c; then die 'extra arguments accepted'; fi
 run --help || die '--help failed'
 grep -q 'sudo sh docker/preflight.sh' "$CASE/out" || die '--help shows no usage'

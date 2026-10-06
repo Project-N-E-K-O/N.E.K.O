@@ -6,6 +6,8 @@
 set -eu
 umask 077
 fail() { echo "watchdog install: $*" >&2; exit 1; }
+# An exported CDPATH makes cd print the directory, which would leak into $(...).
+unset CDPATH
 
 opt_dir=/host-opt
 cron_dir=/host-cron.d

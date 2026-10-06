@@ -438,4 +438,7 @@ cp "$SOURCE/watchdog.sh" "$ROOT/hostsrc/watchdog.sh"
 cmp "$SOURCE/watchdog.sh" "$ROOT/hopt/neko/watchdog.sh"
 [[ $(stat -c '%u:%g:%a' "$ROOT/hopt/neko") == 0:0:700 ]]
 [[ $(stat -c '%u:%g:%a' "$ROOT/hcron/neko-watchdog") == 0:0:644 ]]
+# A relative invocation with an exported CDPATH must still find watchdog.sh.
+(cd "$ROOT" && CDPATH=. sh hostsrc/install-watchdog.sh --host)
+cmp "$SOURCE/watchdog.sh" "$ROOT/hopt/neko/watchdog.sh"
 echo 'PASS: probes, startup grace, pause/removal, restart confirmation, maintenance lock, counters, installer cleanup and permissions'
