@@ -228,11 +228,12 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    ```bash
    { docker inspect neko --format 'image={{.Config.Image}}'
      docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
+     docker inspect neko --format '{{printf "memory=%v\n" .HostConfig.Memory}}{{printf "memory_swap=%v\n" .HostConfig.MemorySwap}}{{printf "nano_cpus=%v\n" .HostConfig.NanoCpus}}{{printf "read_only=%v\n" .HostConfig.ReadonlyRootfs}}{{printf "cap_add=%v\n" .HostConfig.CapAdd}}{{printf "cap_drop=%v\n" .HostConfig.CapDrop}}{{printf "security_opt=%v\n" .HostConfig.SecurityOpt}}{{printf "tmpfs=%v\n" .HostConfig.Tmpfs}}{{printf "extra_hosts=%v\n" .HostConfig.ExtraHosts}}{{printf "restart=%v\n" .HostConfig.RestartPolicy.Name}}'
      docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
    } | sudo sh -c 'umask 077; cat > /root/neko-2c2g-effective.txt'
    ```
 
-   快照包含实例密钥等敏感值，不要贴到 issue、聊天或日志里。
+   快照除了环境变量，还记录内存/CPU 限制、只读根文件系统、capabilities、安全选项、tmpfs、extra_hosts 和重启策略。快照包含实例密钥等敏感值，不要贴到 issue、聊天或日志里。
 3. 停止容器，按上面读出的实际来源，以 root 保留属主和权限备份数据目录，以及存在的 `.env` 和网关覆盖文件，然后核验备份：
 
    ```bash
@@ -251,6 +252,8 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    必须看到 `archive-ok`，并且每一项都是 `ok`、没有 `MISSING`。备份含实例凭证和 TLS 私钥，不要复制到仓库目录或公开位置。确认备份完整后再删除容器：`docker rm neko`。
 4. 确认 `docker/neko-home` 和 `docker/logs` 尚不存在（已存在说明另有官方部署的数据，先核对，不要覆盖），再从实际来源以 root 保留属主和权限地复制：`sudo cp -a "$HOME_SRC" docker/neko-home && sudo cp -a "$LOGS_SRC" docker/logs`。TLS 私钥属主为 root、权限 0600，不用 root 复制会遗漏。
 5. 把旧部署的**全部**有效配置迁过来，不只是 `docker/community-2c2g/.env`，还包括启动时用过的 `--env-file`、shell 环境变量、`COMPOSE_FILE` 和 `-f` 覆盖文件。需要的值写入 `docker/.env`；网关覆盖文件改放 `docker/compose.gateway.yaml`，`COMPOSE_FILE` 改为 `docker-compose.yml:compose.gateway.yaml`。之后用不带 `-f` 的 `docker compose` 命令就能得到完整配置，不要依赖临时的 shell 变量。
+
+   旧部署的覆盖文件里如果还有 `mem_limit`、`read_only`、`cap_drop`、`tmpfs`、`extra_hosts`、`devices`、`ulimits` 等非环境变量设置，也一并写进 `docker/compose.local.yaml` 的 `neko-main` 下。快照没有覆盖的选项（如 `devices`、`ulimits`）要对照旧覆盖文件人工核对。
 
    注意：官方 Compose 只透传固定的几个变量（见 `docker/CONFIG_REFERENCE.md`），`DISABLE_SSL` 等其他变量写进 `.env` 也不会进入容器。快照里有这类变量时，把它们写进 `docker/compose.local.yaml`（已被 `.gitignore` 忽略），并加入 `COMPOSE_FILE`：
 
@@ -275,6 +278,7 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    ```bash
    { docker inspect neko --format 'image={{.Config.Image}}'
      docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
+     docker inspect neko --format '{{printf "memory=%v\n" .HostConfig.Memory}}{{printf "memory_swap=%v\n" .HostConfig.MemorySwap}}{{printf "nano_cpus=%v\n" .HostConfig.NanoCpus}}{{printf "read_only=%v\n" .HostConfig.ReadonlyRootfs}}{{printf "cap_add=%v\n" .HostConfig.CapAdd}}{{printf "cap_drop=%v\n" .HostConfig.CapDrop}}{{printf "security_opt=%v\n" .HostConfig.SecurityOpt}}{{printf "tmpfs=%v\n" .HostConfig.Tmpfs}}{{printf "extra_hosts=%v\n" .HostConfig.ExtraHosts}}{{printf "restart=%v\n" .HostConfig.RestartPolicy.Name}}'
      docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
    } | sudo sh -c 'umask 077; cat > /root/neko-official-effective.txt'
    # 只列出有差异的变量名（< 旧容器，> 新容器），不打印任何值

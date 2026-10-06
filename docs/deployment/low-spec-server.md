@@ -151,11 +151,12 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    ```bash
    { docker inspect neko --format 'image={{.Config.Image}}'
      docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
+     docker inspect neko --format '{{printf "memory=%v\n" .HostConfig.Memory}}{{printf "memory_swap=%v\n" .HostConfig.MemorySwap}}{{printf "nano_cpus=%v\n" .HostConfig.NanoCpus}}{{printf "read_only=%v\n" .HostConfig.ReadonlyRootfs}}{{printf "cap_add=%v\n" .HostConfig.CapAdd}}{{printf "cap_drop=%v\n" .HostConfig.CapDrop}}{{printf "security_opt=%v\n" .HostConfig.SecurityOpt}}{{printf "tmpfs=%v\n" .HostConfig.Tmpfs}}{{printf "extra_hosts=%v\n" .HostConfig.ExtraHosts}}{{printf "restart=%v\n" .HostConfig.RestartPolicy.Name}}'
      docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
    } | sudo sh -c 'umask 077; cat > /root/neko-2c2g-effective.txt'
    ```
 
-   The snapshot contains secrets such as the instance key; never paste it into issues, chats, or logs.
+   Besides the environment, the snapshot records memory/CPU limits, read-only root filesystem, capabilities, security options, tmpfs, extra_hosts, and the restart policy. It contains secrets such as the instance key; never paste it into issues, chats, or logs.
 3. Stop the container and, as root with ownership preserved, back up those actual sources plus `.env` and the gateway override if present; then verify the archive:
 
    ```bash
@@ -174,6 +175,8 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    You must see `archive-ok` and only `ok` lines, no `MISSING`. The backup contains instance credentials and TLS keys; never copy it into the repository or anywhere public. Only after confirming it is complete, remove the container: `docker rm neko`.
 4. Make sure `docker/neko-home` and `docker/logs` do not exist yet, then copy from the actual sources as root, preserving ownership: `sudo cp -a "$HOME_SRC" docker/neko-home && sudo cp -a "$LOGS_SRC" docker/logs`.
 5. Carry over **all** effective configuration, not only `docker/community-2c2g/.env` but also any `--env-file`, shell variables, `COMPOSE_FILE`, and `-f` override files used to start it. Put the values in `docker/.env`; a gateway override becomes `docker/compose.gateway.yaml` with `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml`. Plain `docker compose` commands without `-f` should then produce the complete configuration, without relying on ad-hoc shell variables.
+
+   If the old override also set non-environment options such as `mem_limit`, `read_only`, `cap_drop`, `tmpfs`, `extra_hosts`, `devices`, or `ulimits`, carry them into `docker/compose.local.yaml` under `neko-main` as well. Options the snapshot does not record (such as `devices` and `ulimits`) must be checked by hand against the old override file.
 
    Note that the official Compose file passes through only a fixed list of variables (see `docker/CONFIG_REFERENCE.md`); others such as `DISABLE_SSL` do not reach the container from `.env`. If the snapshot has such variables, put them in `docker/compose.local.yaml` (ignored by git) and add it to `COMPOSE_FILE`:
 
@@ -198,6 +201,7 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    ```bash
    { docker inspect neko --format 'image={{.Config.Image}}'
      docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
+     docker inspect neko --format '{{printf "memory=%v\n" .HostConfig.Memory}}{{printf "memory_swap=%v\n" .HostConfig.MemorySwap}}{{printf "nano_cpus=%v\n" .HostConfig.NanoCpus}}{{printf "read_only=%v\n" .HostConfig.ReadonlyRootfs}}{{printf "cap_add=%v\n" .HostConfig.CapAdd}}{{printf "cap_drop=%v\n" .HostConfig.CapDrop}}{{printf "security_opt=%v\n" .HostConfig.SecurityOpt}}{{printf "tmpfs=%v\n" .HostConfig.Tmpfs}}{{printf "extra_hosts=%v\n" .HostConfig.ExtraHosts}}{{printf "restart=%v\n" .HostConfig.RestartPolicy.Name}}'
      docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
    } | sudo sh -c 'umask 077; cat > /root/neko-official-effective.txt'
    # Lists only the names that differ (< old container, > new container), never the values
