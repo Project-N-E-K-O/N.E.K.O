@@ -89,14 +89,20 @@ swapon --show
 
 - 官方 Compose 已把主容器的 Docker 日志（`docker logs`）限制为 10m × 3。
 - 应用文件日志写在 `docker/neko-home/.local/share/N.E.K.O/logs/`（`docker/logs/` 只是后备目录），不受上面的限制，但应用会自行轮转（单个文件 10MB、保留 5 份，30 天前的日志自动清理）。排查问题时也先看这里。
-- 入口脚本只在 `docker/logs` 为空时把它对齐到 uid 1000。如果它是 Docker 早先以 root 创建、之后又已经写入了文件的目录，DEBUG 日志和后备日志可能写不进去。在 `docker/` 下核对并只修目录本身（不递归，是符号链接时不动）：
+- 入口脚本只在日志挂载目录为空时把它对齐到 uid 1000。如果它是 Docker 早先以 root 创建、之后又已经写入了文件的目录，DEBUG 日志和后备日志可能写不进去。先读出容器实际挂载的来源，核对路径和属主：
 
   ```bash
-  stat -c '%u:%g %F' logs
-  [ -d logs ] && [ ! -L logs ] && sudo chown --no-dereference 1000:1000 logs && echo logs-dir-ok
+  LOGS_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/app/logs"}}{{.Source}}{{end}}{{end}}')
+  echo "$LOGS_SRC"; stat -c '%u:%g %F' "$LOGS_SRC"
   ```
 
-  其中由 root 写下的旧文件按第 9 节第 4 步的方法逐个修复。
+  只有确认它是本部署专用的目录（通常是 `docker/logs` 的绝对路径，而不是 `/var/log` 这类其他服务也在用的目录）时，才只修目录本身（不递归，它本身是挂载点时跳过）：
+
+  ```bash
+  [ -n "$LOGS_SRC" ] && [ -d "$LOGS_SRC" ] && ! mountpoint -q "$LOGS_SRC" && sudo chown --no-dereference 1000:1000 "$LOGS_SRC" && echo logs-dir-ok
+  ```
+
+  如果它是共享目录，不要改属主，改为在 `compose.local.yaml` 里把 `/app/logs` 挂到一个专用的空目录。目录里由 root 写下的旧文件按第 9 节第 4 步的方法逐个修复。
 - 其他容器需要同样的限制时，把以下内容合并进现有 `/etc/docker/daemon.json`，再执行 `sudo systemctl restart docker`：
 
 ```json

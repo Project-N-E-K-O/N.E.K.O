@@ -65,14 +65,20 @@ There is no universal `vm.swappiness`. With ZRAM as the primary swap, evaluate v
 
 - The official Compose file caps the main container's Docker log (`docker logs`) at 10m × 3.
 - Application file logs live in `docker/neko-home/.local/share/N.E.K.O/logs/` (`docker/logs/` is only a fallback). They are not covered by the Docker cap, but the application rotates them itself (10 MB per file, 5 backups, files older than 30 days removed). Look there first when diagnosing.
-- The entrypoint aligns `docker/logs` to uid 1000 only while it is empty. If Docker created it as root earlier and files have been written there since, DEBUG and fallback logs may fail to write. From `docker/`, check it and fix only the directory itself (not recursively, and never through a symlink):
+- The entrypoint aligns the logs mount to uid 1000 only while it is empty. If Docker created it as root earlier and files have been written there since, DEBUG and fallback logs may fail to write. First read the container's actual mount source and check its path and owner:
 
   ```bash
-  stat -c '%u:%g %F' logs
-  [ -d logs ] && [ ! -L logs ] && sudo chown --no-dereference 1000:1000 logs && echo logs-dir-ok
+  LOGS_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/app/logs"}}{{.Source}}{{end}}{{end}}')
+  echo "$LOGS_SRC"; stat -c '%u:%g %F' "$LOGS_SRC"
   ```
 
-  Fix old root-owned files inside it one by one as described in section 9, step 4.
+  Only once you have confirmed it is a directory dedicated to this deployment (normally the absolute path of `docker/logs`, not something other services use such as `/var/log`), fix only the directory itself (not recursively, and skipped if it is itself a mount point):
+
+  ```bash
+  [ -n "$LOGS_SRC" ] && [ -d "$LOGS_SRC" ] && ! mountpoint -q "$LOGS_SRC" && sudo chown --no-dereference 1000:1000 "$LOGS_SRC" && echo logs-dir-ok
+  ```
+
+  If it is a shared directory, leave its owner alone and mount a dedicated empty directory at `/app/logs` in `compose.local.yaml` instead. Fix old root-owned files inside it one by one as described in section 9, step 4.
 - To apply the same cap to other containers, merge `"log-driver": "json-file"` and `"log-opts": {"max-size": "10m", "max-file": "3"}` into `/etc/docker/daemon.json`, then restart Docker. This only applies to containers created afterwards; existing containers keep their old logging options, so recreate them (for example `docker compose up -d --force-recreate` in each project) and confirm:
 
   ```bash
