@@ -1432,3 +1432,45 @@ async def test_a_terminal_record_never_drops_another_accounts_transcript(tmp_pat
     await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
     await tu.retry_visit_once(V1)
     assert fake.count("/api/visit/reports") == 1 and sealed.exists()
+
+
+
+async def test_another_accounts_report_is_not_marked_with_this_transcripts_reason(tmp_path, servers):
+    fake, _ = servers
+    fake.transcript_mode = "parts"
+    _write_sealed(tmp_path, _big_doc(4, 10))                       # 本账号（OWN）这一侧的转录
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=True, own_visit_uid="b" * 24, own_account="u2"))
+    await tu.attempt_upload(V1, config_dir=tmp_path)
+    assert "transcript_unavailable" not in (await tu.load_report(tmp_path, V1))
+
+
+async def test_a_recovery_success_still_arms_a_cleanup_check(tmp_path, servers, monkeypatch):
+    sealed = _write_sealed(tmp_path, _big_doc(4, 10))
+    scheduled = []
+    monkeypatch.setattr(tu, "schedule_visit_retry", lambda visit_id, **_k: scheduled.append(visit_id))
+    assert await tu.upload_visit_transcript(V1, json.loads(sealed.read_text(encoding="utf-8"))) is True
+    assert scheduled == [V1]
+
+
+async def test_a_recovered_owner_that_cannot_be_written_is_kept_for_the_worker(tmp_path, servers, monkeypatch):
+    fake, state = servers
+    doc = _big_doc(4, 10)
+    doc.pop("own_visit_uid")
+    sealed = _write_sealed(tmp_path, doc)
+    monkeypatch.setattr(tu, "schedule_visit_retry", lambda *_a, **_k: None)
+    real_persist = tu._persist_owner_sync
+    calls = []
+
+    def flaky(path, owner):
+        calls.append(owner)
+        if len(calls) == 1:
+            raise OSError("disk full")
+        return real_persist(path, owner)
+
+    monkeypatch.setattr(tu, "_persist_owner_sync", flaky)
+    state["account"] = "u2"
+    assert await tu.upload_visit_transcript(V1, {**doc, "own_visit_uid": OWN}) is False
+    assert V1 in tu._pending_owners
+    state["account"] = "u1"
+    assert (await tu.retry_visit_once(V1)).pending is False and not sealed.exists()
+    assert V1 not in tu._pending_owners

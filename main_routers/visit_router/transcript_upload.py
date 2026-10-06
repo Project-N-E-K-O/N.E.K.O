@@ -680,18 +680,31 @@ async def upload_visit_transcript(visit_id: str, upload_doc: dict) -> bool | str
     async with visit_lock(visit_id):
         owner = upload_doc.get("own_visit_uid")
         if isinstance(owner, str) and owner:
-            # 补录为老文件补上的归属只在内存里：先写进文件，后台重试重读文件时才认得原账号
-            try:
-                await asyncio.to_thread(
-                    _persist_owner_sync, visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSON_SUFFIX), owner)
-            except (OSError, ValueError) as exc:
-                logger.warning("visit upload %s: cannot record the owner: %s", visit_id, type(exc).__name__)
+            # 补录为老文件补上的归属只在内存里：先写进文件，后台重试重读文件时才认得原账号；写不成就
+            # 记在进程内，后台轮次接着用它、接着补写
+            await _record_owner(config_dir, visit_id, owner)
         result = await _upload(visit_id, upload_doc, config_dir)
-    if not result.done and result.terminal is None:
-        # 网络 / 5xx / 429 / 未登录或换了账号：补录只跑一轮，本进程里接着由后台重试
-        schedule_visit_retry(visit_id, config_dir=config_dir,
-                             initial_delay_s=max(VISIT_UPLOAD_RETRY_BACKOFF_S[0], result.retry_after_s or 0))
+    # 补录只跑一轮，本进程里接着由后台检查：没传上去的接着传；传上去 / 终态结清的，补录随后删文件若被
+    # 占用而失败，后台下一轮重传得 duplicate 再删（文件已删时这一轮什么也不做就退出）
+    schedule_visit_retry(visit_id, config_dir=config_dir,
+                         initial_delay_s=max(VISIT_UPLOAD_RETRY_BACKOFF_S[0], result.retry_after_s or 0))
     return result.callback_value
+
+
+_pending_owners: dict[str, str] = {}
+"""visit_id -> recovered ``own_visit_uid`` not yet written into its ownerless sealed file."""
+
+
+async def _record_owner(config_dir: Path, visit_id: str, owner: str) -> bool:
+    try:
+        await asyncio.to_thread(
+            _persist_owner_sync, visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSON_SUFFIX), owner)
+    except (OSError, ValueError) as exc:
+        logger.warning("visit upload %s: cannot record the owner: %s", visit_id, type(exc).__name__)
+        _pending_owners[visit_id] = owner
+        return False
+    _pending_owners.pop(visit_id, None)
+    return True
 
 
 # ── 举报队列 ───────────────────────────────────────────────────────────
@@ -772,10 +785,13 @@ async def delete_report(config_dir: Path, visit_id: str) -> bool:
     return await asyncio.to_thread(_delete_report_sync, report_path(config_dir, visit_id))
 
 
-def _mark_unavailable_sync(path: Path, visit_id: str, reason: str) -> None:
+def _mark_unavailable_sync(path: Path, visit_id: str, reason: str, owner: str | None = None) -> None:
     with path_lock(path):
         doc = _load_json(path)
         if not _valid_report(doc, visit_id) or doc.get("transcript_unavailable"):
+            return
+        if owner is not None and doc.get("own_visit_uid") != owner:
+            # 共用电脑上另一账号排的举报：这份转录不是它那一侧的，不替它记原因
             return
         _write_private_json(path, {**doc, "transcript_unavailable": reason})
 
@@ -834,14 +850,17 @@ async def set_report_rejected(
     return True
 
 
-async def mark_report_transcript_unavailable(config_dir: Path, visit_id: str, reason: str) -> bool:
+async def mark_report_transcript_unavailable(
+    config_dir: Path, visit_id: str, reason: str, owner: str | None = None,
+) -> bool:
     """Record on the queued report why its transcript will never reach Servers.
 
     False only when a queued report exists but could not be rewritten (no
-    report, or one already marked, counts as done).
+    report, one already marked, or -- with ``owner`` -- another account's
+    report, counts as done).
     """
     try:
-        await asyncio.to_thread(_mark_unavailable_sync, report_path(config_dir, visit_id), visit_id, reason)
+        await asyncio.to_thread(_mark_unavailable_sync, report_path(config_dir, visit_id), visit_id, reason, owner)
     except (OSError, ValueError) as exc:
         logger.warning("visit report queue: cannot mark %s: %s", visit_id, type(exc).__name__)
         return False
@@ -1045,7 +1064,9 @@ def _mark_sealed_rejected_sync(path: Path, reason: str) -> None:
         os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
 
 
-async def _settle_upload(config_dir: Path, visit_id: str, path: Path, result: UploadResult) -> str | None:
+async def _settle_upload(
+    config_dir: Path, visit_id: str, path: Path, result: UploadResult, owner: str | None = None,
+) -> str | None:
     """Delete a finished sealed upload; return a terminal reason the queued report could not record.
 
     A terminal rejection (or expiry) is written into the queued report
@@ -1056,7 +1077,7 @@ async def _settle_upload(config_dir: Path, visit_id: str, path: Path, result: Up
     """
     if result.terminal is not None:
         memory_bridge.diag("upload_rejected", visit_id=visit_id, reason=result.terminal)
-        if not await mark_report_transcript_unavailable(config_dir, visit_id, result.terminal):
+        if not await mark_report_transcript_unavailable(config_dir, visit_id, result.terminal, owner):
             try:
                 await asyncio.to_thread(_mark_sealed_rejected_sync, path, result.terminal)
             except (OSError, ValueError) as exc:
@@ -1152,6 +1173,11 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         doc = None
     owner = doc.get("own_visit_uid") if isinstance(doc, dict) else None
     owner = owner if isinstance(owner, str) and owner else None
+    if owner is None and isinstance(doc, dict) and visit_id in _pending_owners:
+        # 补录补上的归属还没写进文件：先用内存里的，顺手再补写一次
+        owner = _pending_owners[visit_id]
+        await _record_owner(config_dir, visit_id, owner)
+        doc = {**doc, "own_visit_uid": owner}
     aged = age > VISIT_SPOOL_RETENTION_DAYS * 86400
     if aged and (visit_id in _aged_attempted or not sealed_upload_doc_usable(doc, visit_id)):
         memory_bridge.diag("upload_expired", visit_id=visit_id)
@@ -1184,7 +1210,7 @@ async def _settled_round(
 ) -> UploadRound:
     if result.terminal is not None:
         remember_terminal_reason(visit_id, result.terminal, owner)
-    unmarked = await _settle_upload(config_dir, visit_id, sealed, result)
+    unmarked = await _settle_upload(config_dir, visit_id, sealed, result, owner)
     # 已结清（传上去、过期，或终态原因已记进举报）但封存文件 / 封存时没删掉的流水还在（被占用）：转录不再挡
     # 举报，但这一轮仍要重来清理，否则它们一直占着待上传容量。原因没记进举报而有意留着的那份不算
     # （它带 rejected 标记）
@@ -1339,6 +1365,7 @@ def _reset_for_tests() -> None:
     _recent_anomalies.clear()
     _terminal_reasons.clear()
     _aged_attempted.clear()
+    _pending_owners.clear()
     _open_streams.clear()
     _manual_retries.clear()
     # 上一个测试的事件循环里残留的任务可能还握着锁：换新的锁表，不跨事件循环复用
