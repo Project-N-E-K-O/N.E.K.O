@@ -767,3 +767,46 @@ def test_unspoken_stage_directions_add_no_time():
     h.speaker.llm_done()
     ests = [p.est_ms for p in h.speaker._pieces]
     assert ests[0] == estimate_speech_ms("好呀。")      # 括号里的舞台说明不念，不占时间
+
+
+def test_markdown_open_across_a_clause_is_timed_in_its_own_clause():
+    h = Harness()
+    h.speaker.feed("她说*你好呀朋友。")
+    h.speaker.feed("今天*真好。")
+    h.speaker.llm_done()
+    ests = [p.est_ms for p in h.speaker._pieces]
+    assert ests[0] == estimate_speech_ms("她说你好呀朋友。")      # 未闭合标记里的字照样念、照样计时
+
+
+class _SilentStream(FakeStream):
+    """Takes pushes but never enqueues audio (everything stripped as unspoken)."""
+
+    def push(self, delta):
+        if self.closed:
+            return False
+        self.pushed.append(delta)
+        return True
+
+
+def test_unspoken_first_text_does_not_arm_the_start_timeout():
+    h = Harness()
+    h.open_stream = lambda on_enqueued: h.streams.append(_SilentStream(on_enqueued)) or h.streams[-1]
+    h.speaker = h.new_line("h:2")
+    h.speaker.feed("（微笑）")                       # 被剥成空：不出声
+    h.at(10)                                         # 模型想了很久才吐出能念的字
+    assert h.speaker.mode == ls.PACED_AUDIO and not h.voice.fallen_back
+    h.stream.on_enqueued(3)                          # 第一段真正入队
+    h.at(10 + 3.9)
+    assert h.speaker.mode == ls.PACED_AUDIO
+    h.at(10 + 4.0)
+    assert h.voice.fallen_back                       # 从真正入队起算的 4 s 才是起播超时
+
+
+def test_a_line_with_nothing_speakable_closes_by_estimate_without_disabling_voice():
+    h = Harness()
+    h.open_stream = lambda on_enqueued: h.streams.append(_SilentStream(on_enqueued)) or h.streams[-1]
+    h.speaker = h.new_line("h:2")
+    h.speaker.feed("（点点头）")
+    h.speaker.llm_done()
+    h.at(4.0)
+    assert h.results and not h.voice.fallen_back

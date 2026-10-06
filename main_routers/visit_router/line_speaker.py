@@ -307,7 +307,6 @@ class LineSpeaker:
         )
         self._tags = EmotionTagFilter()
         # 估时按 TTS 真正合成的文本：与主聊天朗读路径同一套 markdown / 括号 / 静音符号剥离（跨分句保持状态）
-        self._est_markdown = TtsMarkdownStripper()
         self._est_bracket = TtsBracketStripper()
         self._splitter = ClauseSplitter(
             redact=redact, holdback_chars=max((len(n) for n in names), default=1) - 1,
@@ -468,7 +467,10 @@ class LineSpeaker:
         if self._stream is None or self._stream_dead:
             return None
         if self._last_progress_at is None:
-            return None if self._first_push_at is None else self._first_push_at + self._start_timeout
+            if self._first_push_at is not None:
+                return self._first_push_at + self._start_timeout
+            # 一个字都还没进合成队列：收尾标记之后再给它同样长的时间（末尾 flush 的文本可能还在路上）
+            return self._finish_at + self._start_timeout if self._finished else None
         if self._finished:
             return max(self._finish_at or 0.0, self._last_progress_at) + self._stall
         if self._drained:
@@ -483,7 +485,10 @@ class LineSpeaker:
         if self._mode == PACED_AUDIO and self._stream is not None and not self._stream_dead:
             deadline = self.next_deadline()
             if deadline is not None and now >= deadline:
-                if self._last_progress_at is None:
+                if self._last_progress_at is None and self._first_push_at is None:
+                    # 整行都被剥成了不出声的内容：不是 TTS 故障，只本行按估时收口
+                    self._to_estimate(now)
+                elif self._last_progress_at is None:
                     self._fallback(now, start_timeout=True)
                 else:
                     logger.info("visit line %s: speech progress stalled, pacing by estimate", self.header.ln)
@@ -512,8 +517,6 @@ class LineSpeaker:
                 return
         if self._stream_dead or self._stream is None:
             return
-        if self._first_push_at is None:
-            self._first_push_at = now
         if not self._stream.push(text):
             # 流被外部关掉了（worker 退出等）：音频不会再来，立刻按估时放字幕，不等停滞兜底。
             # 还没收到过任何进度就被拒（开流后立刻关掉）等同起播超时：本场不再用 TTS
@@ -544,6 +547,10 @@ class LineSpeaker:
 
     def _usage_chars(self, n: int) -> None:
         if isinstance(n, int) and n > 0:
+            if self._first_push_at is None:
+                # 起播计时从第一段真正进了合成队列的文本算起：被剥成空的舞台说明 / 半截 markdown
+                # 不出声，不能拿它的推入时刻判「4 s 没开播」
+                self._first_push_at = self._now(None)
             self._cb.on_usage({"tts_chars": n})
 
     def _add_clauses(self, clauses: Sequence[Clause]) -> None:
@@ -552,8 +559,16 @@ class LineSpeaker:
             self._pieces.append(_Piece(clause=clause, text=text, est_ms=self._spoken_estimate(clause.raw)))
 
     def _spoken_estimate(self, raw: str) -> int:
-        """Estimate of what TTS actually synthesizes from ``raw`` (0 when nothing of it is spoken)."""
-        spoken = strip_tts_muted_symbols(self._est_bracket.feed(self._est_markdown.feed(raw)))
+        """Estimate of what TTS actually synthesizes from ``raw`` (0 when nothing of it is spoken).
+
+        Markdown is stripped per clause and flushed (an unclosed marker's text
+        is still spoken by the TTS end-of-line flush, and must be timed in its
+        own clause); brackets keep their state across the line's clauses (a
+        stage direction can span a sentence end).
+        """
+        markdown = TtsMarkdownStripper()
+        plain = markdown.feed(raw) + markdown.flush(keep_symbol_markers=True)
+        spoken = strip_tts_muted_symbols(self._est_bracket.feed(plain))
         return estimate_speech_ms(spoken) if spoken.strip() else 0
 
     def _threshold(self, index: int) -> int:
