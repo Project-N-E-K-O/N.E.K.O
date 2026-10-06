@@ -338,8 +338,9 @@ async def act_on_queued_report(request: Request, visit_id: str):
         return JSONResponse({"ok": True, "removed": True})
     if not await _owned():
         return _error(404, "not_queued")
-    outcome = await tu.retry_visit_once(visit_id, config_dir=config_dir, manual=True)
-    delivered = await tu.load_report(config_dir, visit_id) is None
+    outcome = await tu.retry_visit_once(visit_id, config_dir=config_dir, manual=True, owner=account)
+    current = await tu.load_report(config_dir, visit_id)
+    delivered = current is None or not await tu.report_belongs_to(current, account)
     if not delivered and outcome.login_required:
         # 原账号的登录已失效：提示重新登录（文件留着，登录后照常补提）
         return _cloud_error(cr.VisitLoginRequired())

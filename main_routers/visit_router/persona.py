@@ -126,14 +126,16 @@ _CJK_KEYWORD_VALUE_RE = re.compile(
     r"\s*[:：是为為在]?[ \t]*" + _KEYWORD_VALUE,
     re.IGNORECASE,
 )
-# 拉丁关键词要整词出现（「smartphone」里的 phone 不算），后面要有真正的分隔：冒号 / 等号，
-# 或值以数字 / # / + 开头（「phone 138 0013 8000」「address is 12 Main Street」）；
-# 「lives in」本身就是分隔
+# 拉丁关键词要整词出现（「smartphone」里的 phone 不算），后面要有真正的分隔：冒号 / 等号；
+# 或值以数字 / # / + 开头（「phone 138 0013 8000」「address is 12 Main Street」）；或空格后的
+# 第一个词像账号（带数字 / 下划线：「wechat mimi_cat」）；「address」后接大写开头的词
+# （「address Maple Grove」）；「lives in」本身就是分隔。「phone games」这种普通名词不算
 _LATIN_KEYWORD_VALUE_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:"
     r"(?P<kw>wechat|weixin|vx|qq|e-?mail|phone(?:\s*number)?|address|line\s*id)(?![A-Za-z0-9])"
-    r"(?:\s*[:：=]\s*|\s+(?:is\s+|at\s+)?(?=[#+0-9]))"
-    r"|(?P<kw2>lives?\s+in)\s+)" + _KEYWORD_VALUE,
+    r"(?:\s*[:：=]\s*|\s+(?:is\s+|at\s+)?(?=[#+0-9])|\s+(?=[A-Za-z0-9.\-]*[0-9_]))"
+    r"|(?P<kw2>lives?\s+in)\s+"
+    r"|(?P<kw3>address)\s+(?=(?-i:[A-Z])))" + _KEYWORD_VALUE,
     re.IGNORECASE,
 )
 # 地址类关键词：值在逗号处停下，同一行逗号后面的片段（「address: Apt 4, 12 Main Street」）也要找街名
@@ -289,14 +291,15 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
             found.extend(_latin_phrases(value))
             found.extend(_street_names(value))
             keyword = (m.group("kw") or "").lower()
-            if keyword in _ADDRESS_KEYWORDS or m.groupdict().get("kw2"):
+            if keyword in _ADDRESS_KEYWORDS or m.groupdict().get("kw2") or m.groupdict().get("kw3"):
                 end = _LINE_END_RE.search(text, m.start("value"))
                 rest = text[m.end("value"):end.start() if end else len(text)]
                 for segment in _ADDRESS_SEGMENT_SPLIT_RE.split(rest):
                     segment = segment.strip()
                     if segment:
+                        # 只认有地址形态的片段（路名核心、门牌号 + 街名）：同一行后面的爱好等普通
+                        # 大写词组（「enjoys Star Wars」）不收
                         found.extend(_place_cores(segment, _ROAD_CORE_RE))
-                        found.extend(_latin_phrases(segment))
                         found.extend(_street_names(segment))
     found.extend(_place_cores(text, _ESTATE_CORE_RE))
     out: list[str] = []

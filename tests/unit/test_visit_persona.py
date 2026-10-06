@@ -570,3 +570,17 @@ def test_latin_keywords_need_a_word_boundary_and_a_separator():
     tokens = [t.lower() for t in persona.extract_sensitive_tokens(
         "phone: 138 0013 8000\nwechat: mimi_cat\naddress is 12 Main Street", [])]
     assert "mimi_cat" in tokens and "main street" in tokens
+
+
+
+def test_unpunctuated_contact_ids_and_capitalised_addresses_are_found():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens(
+        "wechat mimi_cat\nHer address Maple Grove is quiet.\nShe loves phone games.", [])]
+    assert "mimi_cat" in tokens and any(t.startswith("maple grove") for t in tokens)
+    assert not any("games" in t for t in tokens)
+
+
+def test_address_line_hobbies_are_not_sensitive():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens(
+        "address: Apt 4, 12 Main Street, enjoys Star Wars", [])]
+    assert "main street" in tokens and not any("star wars" in t for t in tokens)

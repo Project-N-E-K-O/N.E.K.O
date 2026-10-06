@@ -777,3 +777,12 @@ async def test_the_recovery_upload_waits_for_a_running_round(tmp_path, servers):
     finally:
         lock.release()
     assert await asyncio.wait_for(task, 5) is True
+
+
+
+async def test_a_manual_retry_leaves_another_accounts_report_alone(tmp_path, servers):
+    fake, _ = servers
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False, own_account="u2"))
+    outcome = await tu.retry_visit_once(V1, manual=True, owner="u1")
+    assert fake.count("/api/visit/reports") == 0 and outcome.pending is False
+    assert await tu.load_report(tmp_path, V1) is not None

@@ -1036,19 +1036,25 @@ def visit_lock(visit_id: str) -> asyncio.Lock:
 
 async def retry_visit_once(
     visit_id: str, *, config_dir: Path | None = None, now: float | None = None, manual: bool = False,
+    owner: str | None = None,
 ) -> RetryRound:
     """One round for ``visit_id``: upload its sealed transcript, then submit its queued report.
 
     A report with ``include_transcript:true`` waits for the transcript
     (accepted, or terminally rejected / expired); ``false`` does not. A
     report Servers refused (``rejected``) is only resent when the user asks
-    (``manual``); it no longer keeps the background loop going.
+    (``manual``); it no longer keeps the background loop going. ``owner``
+    (the account that asked for a manual retry) is checked under the lock:
+    a report queued meanwhile by another account is left alone.
     """
     visit_id = require_visit_id(visit_id)
     config_dir = Path(config_dir_provider() if config_dir is None else config_dir)
     async with visit_lock(visit_id):
         upload = await attempt_upload(visit_id, config_dir=config_dir, now=now)
         report = await load_report(config_dir, visit_id)
+        if report is not None and owner is not None and not await report_belongs_to(report, owner):
+            # 等锁期间原举报没了、换成了另一账号排的：不替它提交，也不动它的拒收标记
+            report = None
         if report is not None and report.get("rejected") and not manual:
             report = None
         report_pending = report is not None
