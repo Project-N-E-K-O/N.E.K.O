@@ -982,7 +982,7 @@ async def finish_report(config_dir: Path, visit_id: str, result: ReportResult, d
         await _delete_accepted_report(config_dir, visit_id)
         # 拒收原因没能记进举报而留着的封存文件：举报已受理，它再没有用处，别占待上传容量
         if not await asyncio.to_thread(_drop_rejected_sealed_sync, config_dir, visit_id,
-                                       visit_id in _terminal_reasons):
+                                       _terminal_reasons.get(visit_id)):
             # 删不掉（被占用）：记成「已结清待删」，后续轮次只重删、不重传
             _settled_leftovers.add(visit_id)
             schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=VISIT_UPLOAD_RETRY_BACKOFF_S[0])
@@ -1002,7 +1002,9 @@ def _file_age_s(path: Path, now: float) -> float | None:
         return None
 
 
-def _drop_rejected_sealed_sync(config_dir: Path, visit_id: str, known_terminal: bool = False) -> bool:
+def _drop_rejected_sealed_sync(
+    config_dir: Path, visit_id: str, known_terminal: tuple[str, str | None] | None = None,
+) -> bool:
     """Delete a sealed upload kept only as the record of a rejection; False when it is still there."""
     path = visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSON_SUFFIX)
     with path_lock(path):
@@ -1013,8 +1015,10 @@ def _drop_rejected_sealed_sync(config_dir: Path, visit_id: str, known_terminal: 
         except ValueError:
             return True
         marked = isinstance(doc, dict) and isinstance(doc.get("rejected"), str) and doc["rejected"]
-        if marked or (known_terminal and isinstance(doc, dict)):
-            # 拒收标记没写成、但本进程知道它已终态结清（known_terminal）的同样删。
+        same_owner = isinstance(doc, dict) and known_terminal is not None             and doc.get("own_visit_uid") == known_terminal[1]
+        if marked or same_owner:
+            # 拒收标记没写成、但本进程知道它已终态结清（known_terminal，且归属一致——共用电脑上不碰
+            # 另一账号那一侧的转录）的同样删。
             # 封存时没删掉的流水也是这份已拒收转录的：一并删，免得之后被重封、重传。先删流水，带拒收标记的
             # 封存文件最后删——流水删不掉时标记还在，重启后补录不会把它当成未上传的转录重封
             stream = visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSONL_SUFFIX)

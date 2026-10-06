@@ -1420,3 +1420,15 @@ async def test_an_aged_transcript_that_still_fails_expires(tmp_path, servers):
     os.utime(sealed, (old, old))
     await tu.attempt_upload(V1, config_dir=tmp_path)
     assert fake.count("/api/visit/transcripts") >= 1 and not sealed.exists()   # 试过一次仍失败：按过期结清
+
+
+async def test_a_terminal_record_never_drops_another_accounts_transcript(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    doc = _big_doc(4, 10)
+    doc["own_visit_uid"] = "b" * 24                         # 另一账号那一侧、尚未上传的转录
+    sealed = _write_sealed(tmp_path, doc)
+    tu.remember_terminal_reason(V1, "parts_out_of_range", OWN)  # 本账号那一侧早先终态结清
+    monkeypatch.setattr(tu, "schedule_visit_retry", lambda *_a, **_k: None)
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    await tu.retry_visit_once(V1)
+    assert fake.count("/api/visit/reports") == 1 and sealed.exists()
