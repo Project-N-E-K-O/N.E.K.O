@@ -164,7 +164,7 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    BACKUP=("${HOME_SRC#/}" "${LOGS_SRC#/}")
    for f in .env compose.gateway.yaml; do [ -f "$CFG_DIR/$f" ] && BACKUP+=("${CFG_DIR#/}/$f"); done
    # Write outside the repository, root-only (umask 077), with absolute paths so rollback restores in place
-   sudo sh -c 'umask 077; tar -czpf "$0" -C / "$@"' /root/neko-2c2g-backup.tar.gz "${BACKUP[@]}"
+   sudo sh -c 'umask 077; tar -czpf "$0" -C / "$@"' /root/neko-2c2g-backup.tar.gz "${BACKUP[@]}" && echo tar-ok
    # Read the whole archive first: tar fails on truncation or corruption and archive-ok is not printed
    sudo tar -tzf /root/neko-2c2g-backup.tar.gz > /dev/null && echo archive-ok
    # Then confirm every actual source is in the archive
@@ -172,8 +172,10 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    for p in "${BACKUP[@]}"; do printf '%s\n' "$LIST" | grep -qxF -e "$p" -e "$p/" && echo "ok /$p" || echo "MISSING /$p"; done
    ```
 
-   You must see `archive-ok` and only `ok` lines, no `MISSING`. The backup contains instance credentials and TLS keys; never copy it into the repository or anywhere public. Only after confirming it is complete, remove the container: `docker rm neko`.
+   You must see `tar-ok`, then `archive-ok`, and only `ok` lines, no `MISSING`. The backup contains instance credentials and TLS keys; never copy it into the repository or anywhere public. Only after confirming it is complete, remove the container: `docker rm neko`.
 4. Make sure `docker/neko-home` and `docker/logs` do not exist yet, then copy from the actual sources as root, preserving ownership: `sudo cp -a "$HOME_SRC" docker/neko-home && sudo cp -a "$LOGS_SRC" docker/logs`.
+
+   No manual `chown -R` is needed afterwards: on every start the entrypoint, running as root, aligns the top of `neko-home` and everything under `.local/share/N.E.K.O` (memory, characters, config) to uid/gid 1000, and aligns the `logs` mount point itself to 1000. It does not recurse into `logs`: fix any old root-owned log files one by one if needed, e.g. `sudo chown --no-dereference 1000:1000 -- docker/logs/some.log`; avoid `chown -R` and wildcards so other mounted host paths are not touched.
 5. Carry over **all** effective configuration, not only `docker/community-2c2g/.env` but also any `--env-file`, shell variables, `COMPOSE_FILE`, and `-f` override files used to start it. Put the values in `docker/.env`; a gateway override becomes `docker/compose.gateway.yaml` with `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml`. Plain `docker compose` commands without `-f` should then produce the complete configuration, without relying on ad-hoc shell variables.
 
    If the old override also set non-environment options such as `mem_limit`, `read_only`, `cap_drop`, `tmpfs`, `extra_hosts`, `devices`, or `ulimits`, carry them into `docker/compose.local.yaml` under `neko-main` as well. Options the snapshot does not record (such as `devices` and `ulimits`) must be checked by hand against the old override file.
