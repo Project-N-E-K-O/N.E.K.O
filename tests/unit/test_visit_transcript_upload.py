@@ -1495,3 +1495,46 @@ def test_an_unknown_owner_never_counts_as_the_same_owner(tmp_path):
     sealed.write_text(json.dumps({"v": 1, "request": {}}), encoding="utf-8")     # 老文件：无归属、无拒收标记
     assert tu._drop_rejected_sealed_sync(tmp_path, V1, ("corrupt", None)) is True
     assert sealed.exists()
+
+
+
+async def test_a_manual_retry_does_not_submit_a_replacement_report(tmp_path, servers):
+    fake, _ = servers
+    clicked = _report_doc(include_transcript=False, queued_at=1.0)
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False, queued_at=2.0))    # 已被换成新的一份
+    await tu.retry_visit_once(V1, manual=True, owner="u1", expect=clicked)
+    assert fake.count("/api/visit/reports") == 0
+
+
+async def test_a_corrupt_orphan_stream_keeps_its_owner(tmp_path, servers, monkeypatch):
+    async def corrupt(_config_dir, _visit_id):
+        return "corrupt", OWN
+
+    monkeypatch.setattr(tu, "reseal_orphan_stream", corrupt)
+    stream = _spool(tmp_path) / f"{V1}.upload.jsonl"
+    stream.parent.mkdir(parents=True, exist_ok=True)
+    stream.write_text("garbage", encoding="utf-8")
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=True, own_visit_uid="b" * 24, own_account="u2"))
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    assert outcome.owner == OWN and tu._terminal_reasons[V1] == ("corrupt", OWN)
+    assert "transcript_unavailable" not in (await tu.load_report(tmp_path, V1))   # 另一账号的举报不被记上
+
+
+async def test_an_aged_broken_sealed_file_is_resealed_from_its_stream_first(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    sealed = _spool(tmp_path) / f"{V1}.upload.json"
+    sealed.parent.mkdir(parents=True, exist_ok=True)
+    sealed.write_text("{broken", encoding="utf-8")
+    old = time.time() - 30 * 86400
+    os.utime(sealed, (old, old))
+    (_spool(tmp_path) / f"{V1}.upload.jsonl").write_text("{}", encoding="utf-8")
+    good = _big_doc(4, 10)
+
+    async def reseal(_config_dir, _visit_id):
+        sealed.write_text(json.dumps(good), encoding="utf-8")
+        os.utime(sealed, (old, old))
+        return "sealed", OWN
+
+    monkeypatch.setattr(tu, "reseal_orphan_stream", reseal)
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    assert fake.count("/api/visit/transcripts") >= 1 and outcome.unavailable is None   # 重封后试传，没按过期丢掉

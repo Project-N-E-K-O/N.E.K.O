@@ -1165,11 +1165,12 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
             # 还在写的流水（场次进行中）：等收尾封存，绝不提前重封
             return UploadRound(pending=True)
         # 场次已结束、只留下流水（封存时写上传文件失败）：按补录同一规则从流水重封，再接着上传
-        status = await reseal_orphan_stream(config_dir, visit_id)
+        status, stream_owner = await reseal_orphan_stream(config_dir, visit_id)
         if status == "corrupt":
-            remember_terminal_reason(visit_id, "corrupt")
-            marked = await mark_report_transcript_unavailable(config_dir, visit_id, "corrupt")
-            return UploadRound(pending=False, unavailable=None if marked else "corrupt")
+            # 归属从流水头 / state.json 带出：共用电脑上不把这份转录的失败记到另一账号的举报上
+            remember_terminal_reason(visit_id, "corrupt", stream_owner)
+            marked = await mark_report_transcript_unavailable(config_dir, visit_id, "corrupt", stream_owner)
+            return UploadRound(pending=False, unavailable=None if marked else "corrupt", owner=stream_owner)
         age = await asyncio.to_thread(_file_age_s, sealed, now) if status == "sealed" else None
         if age is None:
             return UploadRound(pending=True, retryable=True)
@@ -1185,6 +1186,19 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         await _record_owner(config_dir, visit_id, owner)
         doc = {**doc, "own_visit_uid": owner}
     aged = age > VISIT_SPOOL_RETENTION_DAYS * 86400
+    if (aged and visit_id not in _aged_attempted and not sealed_upload_doc_usable(doc, visit_id)
+            and not (is_live(visit_id) or visit_id in _open_streams)
+            and await asyncio.to_thread(stream.exists)):
+        # 过期的封存文件坏了、旁边还留着完整的流水（封存后没删掉流水，之后封存文件又坏了）：与启动补录
+        # 一样先从流水重封，再按「先试传一次」处理，别把唯一能恢复的转录直接按过期删掉
+        status, _stream_owner = await reseal_orphan_stream(config_dir, visit_id)
+        if status == "sealed":
+            try:
+                doc = await asyncio.to_thread(_load_json, sealed)
+            except (OSError, ValueError):
+                doc = None
+            owner = doc.get("own_visit_uid") if isinstance(doc, dict) else None
+            owner = owner if isinstance(owner, str) and owner else None
     if aged and (visit_id in _aged_attempted or not sealed_upload_doc_usable(doc, visit_id)):
         memory_bridge.diag("upload_expired", visit_id=visit_id)
         return await _settled_round(config_dir, visit_id, sealed, UploadResult(terminal="expired"), owner=owner)
@@ -1302,6 +1316,9 @@ async def retry_visit_once(
         # 举报文件暂时读不了（同一次读取的结果）：当成还有事没办完，worker 别退出，等能读了再提交 / 补记
         report, unreadable = await _read_report(config_dir, visit_id)
         upload = upload.for_report(report)
+        if report is not None and manual and expect is not None and not same_report(report, expect):
+            # 等锁期间用户点重试的那份被放弃、又排了一份新的：不替新的那份提交（原因 / 附转录选择可能不同）
+            report = None
         if report is not None and owner is not None and not await report_belongs_to(report, owner):
             # 等锁期间原举报没了、换成了另一账号排的：不替它提交，也不动它的拒收标记
             report = None

@@ -354,6 +354,11 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
                         # 明说是账号的关键词（line id / wechat id / 微信号）：后面第一个词就是账号本身
                         found.append(words[0].strip(".,!?;:"))
             if is_address:
+                words = value.split()
+                if len(words) > 1 and words[0][:1].isupper() and words[1][:1].islower() \
+                        and words[0].lower() not in _STREET_STOPWORDS:
+                    # 地址值以单个大写词开头、后面是小写叙述（「Broadway likes cats」）：这个词就是地名
+                    found.append(words[0].strip(".,!?;:"))
                 end = _LINE_END_RE.search(text, m.start("value"))
                 rest = text[m.end("value"):end.start() if end else len(text)]
                 for segment in _ADDRESS_SEGMENT_SPLIT_RE.split(rest):

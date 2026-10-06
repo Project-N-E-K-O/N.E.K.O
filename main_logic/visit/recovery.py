@@ -459,13 +459,14 @@ def _seal_stream_sync(
     return doc
 
 
-async def reseal_orphan_stream(config_dir: Path, visit_id: str) -> str:
+async def reseal_orphan_stream(config_dir: Path, visit_id: str) -> tuple[str, str | None]:
     """Seal the upload stream of a finished visit whose sealed file was never written.
 
     Same rules as startup recovery (state.json gives the end reason and the
-    envelope fallbacks). Returns ``'sealed'``, ``'corrupt'`` (the stream held
-    no usable transcript and is gone) or ``'failed'`` (left as it is; try
-    again later).
+    envelope fallbacks). Returns ``(status, owner)``: ``'sealed'``, ``'corrupt'``
+    (the stream held no usable transcript and is gone) or ``'failed'`` (left
+    as it is; try again later), with the ``own_visit_uid`` the transcript
+    belongs to when known.
     """
     spool_dir = config_dir / VISIT_SPOOL_DIRNAME
     state = None
@@ -477,11 +478,17 @@ async def reseal_orphan_stream(config_dir: Path, visit_id: str) -> str:
     owner = state["own_uid"] if state else None
     char_uid = _owner_or_none(state.get("own_char_uid")) if state else None
     try:
+        header_owner, _char = await asyncio.to_thread(_with_header_fallback, spool_dir, visit_id, owner, char_uid)
+    except (OSError, ValueError):
+        header_owner = owner
+    try:
         doc = await asyncio.to_thread(_seal_stream_sync, spool_dir, visit_id, reason, owner, char_uid)
     except (OSError, ValueError, TypeError, OverflowError) as exc:
         logger.warning("visit upload %s: cannot reseal the stream: %s", visit_id, type(exc).__name__)
-        return "failed"
-    return "sealed" if doc is not None else "corrupt"
+        return "failed", header_owner
+    if doc is None:
+        return "corrupt", header_owner
+    return "sealed", doc.get("own_visit_uid") or header_owner
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────
