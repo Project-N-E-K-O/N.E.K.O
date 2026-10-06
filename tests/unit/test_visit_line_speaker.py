@@ -1011,3 +1011,26 @@ def test_an_open_silent_stream_follows_a_visit_fallback():
     h.speaker.feed("你好呀。")
     assert h.speaker.mode == ls.PACED_ESTIMATE and stream.aborts == 1
     assert "你好呀。" not in stream.pushed
+
+
+
+def test_goodbye_text_far_from_the_cap_is_not_held_back():
+    h = Harness(wu=True)
+    h.speaker.feed("好")
+    assert "".join(h.stream.pushed) == "好"            # 逐段播放，不等下一段
+
+
+def test_a_punctuated_name_hidden_by_zero_width_characters_is_still_held():
+    h = Harness()
+    h.speaker = ls.LineSpeaker(
+        visit_id=VISIT, header=ls.LineHeader(ln="h:1", lp=1, ad="gc", rt=""),
+        family_names=["J. Smith"], neutral_term=NEUTRAL, voice=h.voice, open_stream=h.open_stream,
+        router=h.router, clock=lambda: h.t, on_piece=h.pieces.append, on_done=h.results.append,
+    )
+    for delta in ("I really asked J." + "\u200b" * 30 + " S", "mith to come along. ", "We had fun today!"):
+        h.speaker.feed(delta)
+    h.speaker.llm_done()
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    text = h.results[0].text
+    assert "J." not in text and "mith" not in text and NEUTRAL in text

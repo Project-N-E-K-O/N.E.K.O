@@ -187,3 +187,15 @@ async def test_repeated_replies_never_wipe_an_ordered_history():
     client.repetition_reset_enabled = True
     fired = [await client._check_repetition("喵喵喵") for _ in range(3)]
     assert fired[-1] is True and client._conversation_history == history[:1]   # 默认行为不变
+
+
+
+async def test_an_empty_reply_keeps_the_previous_reply_in_the_input_estimate():
+    from utils.llm_client import AIMessage, HumanMessage
+    from utils.tokenize import count_tokens
+
+    session = await _session()
+    session.history.extend([HumanMessage(content="peer says hi"), AIMessage(content="上一轮的回复内容")])
+    usage = sp.estimate_turn_usage(session, "")
+    expected = sum(count_tokens(m.content) for m in session.history)
+    assert usage == {"llm_input_tokens": expected, "llm_output_tokens": 0}

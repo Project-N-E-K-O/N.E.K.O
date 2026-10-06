@@ -270,7 +270,8 @@ def estimate_turn_usage(session: VisitSession, output_text: str) -> dict:
     from utils.llm_client import AIMessage
 
     history = list(session.history)
-    if history and isinstance(history[-1], AIMessage):
+    if output_text and history and isinstance(history[-1], AIMessage):
+        # 本轮有回复才会追加 AI 消息；空回复时末尾那条是上一轮的、属于这次的输入
         history.pop()
     sent = sum(count_tokens(_content_text(m)) for m in history)
     return {"llm_input_tokens": sent, "llm_output_tokens": count_tokens(output_text or "")}

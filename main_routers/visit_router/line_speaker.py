@@ -122,6 +122,9 @@ class SpeechStream(Protocol):
 OpenStream = Callable[[Callable[[int], None]], SpeechStream]
 """``open_stream(on_enqueued)``: open this line's stream; ``on_enqueued(n)`` reports TTS chars queued."""
 
+_GOODBYE_HOLD_WINDOW = 16
+"""Goodbye lines hold back their trailing grapheme cluster only within this many code points of the cap."""
+
 
 @dataclass
 class VoiceState:
@@ -317,14 +320,15 @@ class LineSpeaker:
             redact_boundary=boundary,
         )
         self._goodbye_left: Optional[int] = int(goodbye_max_chars) if header.wu else None
-        # 告别行每段末尾的字形簇可能在下一段继续变长（国旗的第二个区域指示符、ZWJ 序列、组合符），
-        # 先扣着它，见到下一段（或收尾）再按额度定；截点才能退回到簇的开头
+        # 告别行接近额度时，每段末尾的字形簇可能在下一段继续变长（国旗的第二个区域指示符、ZWJ 序列、
+        # 组合符）：先扣着它，见到下一段（或收尾）再按额度定，截点才能退回到簇的开头。离额度还远时
+        # 不扣，免得逐段播放被拖慢一个字
         self._goodbye_hold = ""
         # 含标点 / 空白的亲人名（"J. Smith"）：分句器在标点处切句时不扣尾巴，名字没到齐前切出去的
         # 前缀认不出来、会原样出门。文本末尾可能是这类名字开头的那段先不进分句器
         self._punct_names = sorted({k for k in (fold_text(n.strip()) for n in names)
                                     if k and not all(ch.isalnum() for ch in k)})
-        self._punct_span = max((len(k) for k in self._punct_names), default=0) * 2 + 8
+        self._punct_max = max((len(k) for k in self._punct_names), default=0)
         self._name_hold = ""
         self._pieces: list[_Piece] = []
         self._released = 0
@@ -416,7 +420,7 @@ class LineSpeaker:
             if len(text) > left:
                 # 截点按整段（含上一段扣着的簇）退到字形簇边界
                 capped = text[: grapheme_safe_cut(text, left)]
-            elif not final:
+            elif not final and left - len(text) < _GOODBYE_HOLD_WINDOW:
                 keep = grapheme_safe_cut(text, len(text) - 1)
                 capped, self._goodbye_hold = text[:keep], text[keep:]
             goodbye_cut = len(capped) + len(self._goodbye_hold) < len(text)
@@ -539,7 +543,12 @@ class LineSpeaker:
 
     def _name_prefix_start(self, text: str) -> int:
         """Start of the longest suffix of ``text`` that is a proper prefix of a punctuated family name."""
-        for start in range(max(0, len(text) - self._punct_span), len(text)):
+        # 往前退到折叠后的长度超过最长名字为止：零宽字符等折叠成空的字符不占名额，退多少都算
+        lo, folded_len = len(text), 0
+        while lo > 0 and folded_len <= self._punct_max:
+            lo -= 1
+            folded_len += len(fold_text(text[lo]))
+        for start in range(lo, len(text)):
             folded = fold_text(text[start:])
             if folded and any(len(folded) < len(k) and k.startswith(folded) for k in self._punct_names):
                 return start
