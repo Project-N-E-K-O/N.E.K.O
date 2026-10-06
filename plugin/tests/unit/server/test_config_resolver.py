@@ -33,7 +33,7 @@ def test_resolve_plugin_config_returns_base_effective_profiles_and_warnings(
     monkeypatch.setattr(
         module,
         "ensure_plugin_runtime_config",
-        lambda plugin_id, *, manifest_path, read_cache=None: config_path,
+        lambda plugin_id, *, manifest_path: config_path,
     )
     monkeypatch.setattr(module, "load_toml_from_file", lambda path: base_config)
     monkeypatch.setattr(
@@ -111,7 +111,7 @@ def test_resolve_plugin_config_can_skip_effective_merge_and_schema_validation(
     monkeypatch.setattr(
         module,
         "ensure_plugin_runtime_config",
-        lambda plugin_id, *, manifest_path, read_cache=None: config_path,
+        lambda plugin_id, *, manifest_path: config_path,
     )
     monkeypatch.setattr(module, "load_toml_from_file", lambda path: base_config)
     monkeypatch.setattr(
@@ -165,7 +165,7 @@ def test_resolve_plugin_config_from_path_reuses_preloaded_manifest_config(
     runtime_config = {"runtime": {"enabled": False}}
     captured: list[Path] = []
 
-    def _ensure_plugin_runtime_config(plugin_id: str, *, manifest_path: Path, read_cache=None) -> Path:
+    def _ensure_plugin_runtime_config(plugin_id: str, *, manifest_path: Path) -> Path:
         assert plugin_id == "demo"
         assert manifest_path == config_path.resolve(strict=False)
         return runtime_path
@@ -235,7 +235,7 @@ def test_resolve_plugin_config_warnings_keep_schema_before_semantic(
     monkeypatch.setattr(
         module,
         "ensure_plugin_runtime_config",
-        lambda plugin_id, *, manifest_path, read_cache=None: config_path,
+        lambda plugin_id, *, manifest_path: config_path,
     )
     monkeypatch.setattr(module, "load_toml_from_file", lambda path: base_config)
     monkeypatch.setattr(
@@ -481,54 +481,23 @@ def test_runtime_paths_use_current_storage_after_migration(tmp_path, monkeypatch
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(new_root))
     new_layout = resolve_plugin_layout("demo", manifest.parent)
     assert config_paths.get_plugin_runtime_config_path(
-        "demo", manifest_path=manifest, read_cache=cache
+        "demo", manifest_path=manifest
     ) == new_layout.config_path
     if operation == "materialize":
         result = module.resolve_plugin_config_from_path(
-            "demo", config_path=manifest, read_cache=cache
+            "demo", config_path=manifest
         )
         assert result["config_path"] == str(new_layout.config_path)
     elif operation == "ensure":
         assert config_paths.ensure_plugin_runtime_config(
-            "demo", manifest_path=manifest, read_cache=cache
+            "demo", manifest_path=manifest
         ) == new_layout.config_path
     else:
         monkeypatch.setattr(config_paths, "get_plugin_manifest_path", lambda _: manifest)
         assert config_paths.get_plugin_runtime_config_path(
-            "demo", read_cache=cache
+            "demo"
         ) == new_layout.config_path
         assert not new_layout.config_path.exists()
     assert not old_layout.config_path.exists()
     if operation != "lookup":
         assert new_layout.config_path.read_bytes() == manifest.read_bytes()
-
-
-@pytest.mark.plugin_unit
-def test_materialization_keeps_cached_installation_with_current_storage(tmp_path, monkeypatch):
-    from plugin.utils.path_resolution import PathResolutionCache
-
-    old_manifest = tmp_path / "old_install" / "plugin.toml"
-    new_manifest = tmp_path / "new_install" / "plugin.toml"
-    for manifest, value in ((old_manifest, "old"), (new_manifest, "new")):
-        manifest.parent.mkdir()
-        manifest.write_text(f'[plugin]\nid="demo"\n[runtime]\nsource="{value}"\n', encoding="utf-8")
-    alias = tmp_path / "selected" / "plugin.toml"
-    target = [old_manifest]
-    real_resolve = Path.resolve
-    def resolve(path, *args, **kwargs):
-        return target[0] if path == alias else real_resolve(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "resolve", resolve)
-    cache = PathResolutionCache()
-    assert cache.resolve(alias) == old_manifest
-    base_config = module.load_toml_from_file(old_manifest)
-    target[0] = new_manifest
-    storage = tmp_path / "current_storage"
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(storage))
-    result = module.resolve_plugin_config_from_path(
-        "demo", config_path=alias, base_config=base_config, read_cache=cache
-    )
-    assert result["manifest_path"] == str(old_manifest)
-    runtime_path = storage / "plugins/demo/config/plugin.toml"
-    assert result["config_path"] == str(runtime_path)
-    assert runtime_path.read_bytes() == old_manifest.read_bytes()
-    assert result["effective_config"]["runtime"]["source"] == "old"

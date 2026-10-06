@@ -1200,7 +1200,7 @@ def _parse_single_plugin_config(
                 base_config=conf,
                 include_effective_config=True,
                 validate_schema=True,
-                read_cache=read_cache,
+                **({} if materialize_runtime_config else {"read_cache": read_cache}),
             )
             effective = resolved_conf.get("effective_config")
             if isinstance(effective, dict):

@@ -6,14 +6,12 @@ from pathlib import Path
 from plugin.server.infrastructure.error_mapping import http_exception
 
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
-from plugin.sdk.shared.core.base_runtime import resolve_runtime_data_root
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.infrastructure.config_access import get_config_access
 from plugin.server.infrastructure.config_locking import get_plugin_update_lock
 from plugin.server.infrastructure.config_storage import atomic_write_bytes
 from plugin.settings import PLUGIN_CONFIG_ROOTS
-from plugin.utils.path_resolution import PathResolutionCache
 
 logger = get_logger("server.infrastructure.config_paths")
 
@@ -131,40 +129,28 @@ def get_plugin_manifest_path(plugin_id: str) -> Path:
 def _runtime_layout(
     plugin_id: str,
     manifest_path: Path | None,
-    read_cache: PathResolutionCache | None,
 ) -> PluginLayout:
-    # Preserve a supplied installation snapshot, but always use current storage.
-    # Without a discovered manifest, resolve installation paths afresh as well.
     if manifest_path is None:
         manifest_path = get_plugin_manifest_path(plugin_id)
-        read_cache = None
-    return resolve_plugin_layout(
-        plugin_id, manifest_path.parent,
-        storage_root=resolve_runtime_data_root(), read_cache=read_cache,
-    )
+    return resolve_plugin_layout(plugin_id, manifest_path.parent)
 
 
 def get_plugin_runtime_config_path(
     plugin_id: str,
     *,
     manifest_path: Path | None = None,
-    read_cache: PathResolutionCache | None = None,
 ) -> Path:
-    """Return the current runtime path, caching only installation paths."""
-    return _runtime_layout(plugin_id, manifest_path, read_cache).config_path
+    """Return the runtime path using current installation and storage paths."""
+    return _runtime_layout(plugin_id, manifest_path).config_path
 
 
 def ensure_plugin_runtime_config(
     plugin_id: str,
     *,
     manifest_path: Path | None = None,
-    read_cache: PathResolutionCache | None = None,
 ) -> Path:
-    """Initialize current runtime storage using the supplied installation snapshot.
-
-    ``read_cache`` preserves installation paths; its cached storage root is ignored.
-    """
-    layout = _runtime_layout(plugin_id, manifest_path, read_cache)
+    """Initialize runtime config using current installation and storage paths."""
+    layout = _runtime_layout(plugin_id, manifest_path)
     return ensure_plugin_layout_runtime_config(layout)
 
 
