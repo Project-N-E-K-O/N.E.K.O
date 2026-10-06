@@ -413,8 +413,11 @@ class LineSpeaker:
         played = max(0, int(played_ms)) if isinstance(played_ms, int) else self._played_ms
         if self._play_start_at is None:
             self._play_start_at = now - played / 1000.0
+        # 看门狗只认真正往前走的进度：播放冻住时页面照样定时上报同一个 played_ms，
+        # 每次都刷新就永远判不了停滞（终结的 ended 另行处理）
+        if self._last_progress_at is None or played > self._played_ms:
+            self._last_progress_at = now
         self._played_ms = max(self._played_ms, played)
-        self._last_progress_at = now
         if ended and final and self._finished:
             # 前端已收到本行结束标记、排程终点已播过：剩余分片一次放出，没有尾巴要等
             self._release_through(len(self._pieces), PACED_AUDIO)
@@ -505,9 +508,13 @@ class LineSpeaker:
         if self._first_push_at is None:
             self._first_push_at = now
         if not self._stream.push(text):
-            # 流被外部关掉了（worker 退出等）：音频不会再来，立刻按估时放字幕，不等停滞兜底
+            # 流被外部关掉了（worker 退出等）：音频不会再来，立刻按估时放字幕，不等停滞兜底。
+            # 还没收到过任何进度就被拒（开流后立刻关掉）等同起播超时：本场不再用 TTS
             logger.warning("visit line %s: speech stream closed on push, pacing by estimate", self.header.ln)
-            self._to_estimate(now)
+            if self._last_progress_at is None:
+                self._fallback(now, start_timeout=True)
+            else:
+                self._to_estimate(now)
             return
         if self._drained:
             # 播空之后又有新音频入队：停滞计时从这一刻重新起算

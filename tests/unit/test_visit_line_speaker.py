@@ -552,6 +552,36 @@ def test_a_wire_cut_inside_a_family_name_still_fits_the_wire():
     assert fit_text_to_wire(payload, visit_id=VISIT) == payload          # 兜底截断未触发
 
 
+def test_a_stream_rejecting_its_first_push_falls_back_for_the_visit():
+    h = Harness()
+    opener = h.open_stream
+
+    def closed_at_once(on_enqueued):
+        stream = opener(on_enqueued)
+        stream.closed = True                    # worker 一开流就退出了
+        return stream
+
+    h.open_stream = closed_at_once
+    h.speaker = h.new_line("h:2")
+    h.speaker.feed(CLAUSES[0])
+    assert h.speaker.mode == ls.PACED_ESTIMATE and h.voice.fallen_back and h.fallbacks == 1
+    h.speaker = h.new_line("h:3")
+    h.speaker.feed(CLAUSES[1])
+    assert len(h.streams) == 1                  # 本场后续各行不再开流
+
+
+def test_frozen_playback_reporting_the_same_position_still_stalls():
+    h = Harness()
+    _feed_all(h)
+    h.progress(0)
+    h.t += 1
+    h.progress(1000)
+    for k in range(1, 7):                       # 播放冻住：页面照报同一个 played_ms
+        h.at(1 + 0.5 * k)
+        h.progress(1000)
+    assert h.stream.aborts == 1 and h.speaker.mode == ls.PACED_ESTIMATE
+
+
 def test_stream_closed_under_us_switches_to_estimate_at_once():
     h = Harness()
     h.speaker.feed(CLAUSES[0])
