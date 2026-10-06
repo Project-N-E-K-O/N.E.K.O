@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -192,6 +193,7 @@ import os,sys,importlib.util
 from pathlib import Path
 os.environ['NEKO_PLUGIN_METADATA_SCAN_TIMEOUT']='invalid'
 logging_was_loaded = 'plugin.logging_config' in sys.modules
+assert importlib.util.find_spec('plugin') is not None
 original = os.getenv
 reads = []
 def record(name, default=None):
@@ -210,7 +212,9 @@ assert ('plugin.logging_config' in sys.modules) == logging_was_loaded
 print('ok')
 """
     module_path = Path(__file__).resolve().parents[4] / "plugin/server/application/plugins/_env_budgets.py"
+    child_env = dict(os.environ)
+    child_env["PYTHONPATH"] = str(Path(__file__).resolve().parents[4])
     result = subprocess.run([sys.executable, "-c", probe, str(module_path)],
-                            cwd=tmp_path, capture_output=True,
+                            cwd=tmp_path, env=child_env, capture_output=True,
                             text=True, timeout=120, check=True)
     assert result.stdout.strip().splitlines()[-1] == "ok"

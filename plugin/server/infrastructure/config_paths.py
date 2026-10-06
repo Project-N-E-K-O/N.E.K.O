@@ -127,16 +127,28 @@ def get_plugin_manifest_path(plugin_id: str) -> Path:
     return get_plugin_config_path(plugin_id)
 
 
+def _runtime_layout(
+    plugin_id: str,
+    manifest_path: Path | None,
+    read_cache: PathResolutionCache | None,
+) -> PluginLayout:
+    # A discovered manifest and its cache belong to one read snapshot. Without
+    # that manifest, resolve both installation and storage roots afresh.
+    if manifest_path is None:
+        manifest_path = get_plugin_manifest_path(plugin_id)
+        read_cache = None
+    return resolve_plugin_layout(
+        plugin_id, manifest_path.parent, read_cache=read_cache
+    )
+
+
 def get_plugin_runtime_config_path(
     plugin_id: str,
     *,
     manifest_path: Path | None = None,
     read_cache: PathResolutionCache | None = None,
 ) -> Path:
-    installed_manifest = manifest_path or get_plugin_manifest_path(plugin_id)
-    return resolve_plugin_layout(
-        plugin_id, installed_manifest.parent, read_cache=read_cache
-    ).config_path
+    return _runtime_layout(plugin_id, manifest_path, read_cache).config_path
 
 
 def ensure_plugin_runtime_config(
@@ -145,10 +157,9 @@ def ensure_plugin_runtime_config(
     manifest_path: Path | None = None,
     read_cache: PathResolutionCache | None = None,
 ) -> Path:
-    installed_manifest = manifest_path or get_plugin_manifest_path(plugin_id)
-    layout = resolve_plugin_layout(
-        plugin_id, installed_manifest.parent, read_cache=read_cache
-    )
+    # Writes must observe the current storage root, even if a caller supplies
+    # a discovery cache captured before a storage migration.
+    layout = _runtime_layout(plugin_id, manifest_path, None)
     return ensure_plugin_layout_runtime_config(layout)
 
 

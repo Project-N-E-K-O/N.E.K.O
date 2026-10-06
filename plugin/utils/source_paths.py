@@ -14,6 +14,7 @@ from pathlib import Path
 # shares the prefix (".vendor.backup-notes") stays plugin source.
 VENDOR_SYNC_STAGING_PREFIX = ".vendor.staging-"
 VENDOR_SYNC_BACKUP_PREFIX = ".vendor.backup-"
+VENDOR_SYNC_PREFIXES = (VENDOR_SYNC_STAGING_PREFIX, VENDOR_SYNC_BACKUP_PREFIX)
 VENDOR_SYNC_PENDING_SUFFIX = ".pending"
 _VENDOR_SYNC_TOKEN_GLOB = "[0-9a-f]" * 8
 # The same names as globs; fnmatch, gitignore, git pathspecs and ruff all

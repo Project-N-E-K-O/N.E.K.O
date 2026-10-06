@@ -158,14 +158,13 @@ def resolve_plugin_config_from_path(
     # Profile and runtime writes use the same per-plugin lock. Keeping the
     # complete synchronous read under that lock prevents an application-state
     # query from observing one file before an atomic replacement and another
-    # file after it. An optional path cache pins canonical paths for one discovery
-    # pass; it does not recheck symlink targets under this lock. Installation
-    # mutations require a fresh discovery cache. The lock protects file content.
+    # file after it. Materialization always resolves current paths; discovery
+    # caches must not direct writes to a former storage root.
     with get_plugin_update_lock(plugin_id):
-        manifest_path = canonical_read_path(config_path, cache=read_cache)
+        manifest_path = canonical_read_path(config_path)
         manifest_config = base_config if isinstance(base_config, dict) else load_toml_from_file(manifest_path)
         runtime_config_path = ensure_plugin_runtime_config(
-            plugin_id, manifest_path=manifest_path, read_cache=read_cache
+            plugin_id, manifest_path=manifest_path
         )
         with plugin_config_file_lock(runtime_config_path):
             runtime_config = load_toml_from_file(runtime_config_path)
@@ -190,6 +189,9 @@ def read_plugin_config_from_path(
     read_cache: PathResolutionCache | None = None,
 ) -> dict[str, object]:
     """Resolve discovery configuration without initializing runtime files."""
+    # The optional cache pins canonical paths for one discovery pass; it does
+    # not recheck symlink targets under this lock. Installation/storage changes
+    # require a fresh discovery cache. The lock protects file content.
     with get_plugin_update_lock(plugin_id):
         manifest_path = canonical_read_path(config_path, cache=read_cache)
         manifest_config = (

@@ -420,16 +420,19 @@ def test_discovery_snapshot_finishes_before_profile_write(
 
 
 @pytest.mark.plugin_unit
-def test_materializing_resolver_uses_discovery_path_cache(tmp_path, monkeypatch):
+def test_readonly_resolver_uses_discovery_path_cache(tmp_path, monkeypatch):
     from plugin.utils.path_resolution import PathResolutionCache
     from plugin.core import plugin_layout
     from plugin.server.infrastructure.config_paths import get_plugin_runtime_config_path
 
     storage = tmp_path / "data"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(storage))
+    real_resolve_root = plugin_layout.resolve_runtime_data_root
     roots = []
     def resolve_root():
-        roots.append(storage)
-        return storage
+        resolved = real_resolve_root()
+        roots.append(resolved)
+        return resolved
     monkeypatch.setattr(plugin_layout, "resolve_runtime_data_root", resolve_root)
     cache = PathResolutionCache()
     configs = []
@@ -451,13 +454,51 @@ def test_materializing_resolver_uses_discovery_path_cache(tmp_path, monkeypatch)
         return original(path, *args, **kwargs)
     monkeypatch.setattr(Path, "resolve", avoid_repeated_resolve)
     for config, layout in zip(configs, layouts):
-        result = module.resolve_plugin_config_from_path(
+        result = module.read_plugin_config_from_path(
             layout.plugin_id, config_path=config, read_cache=cache
         )
         assert result["manifest_path"] == str(layout.manifest_path)
         assert result["config_path"] == str(layout.config_path)
-        assert layout.config_path.read_bytes() == config.read_bytes()
+        assert not layout.config_path.exists()
         assert get_plugin_runtime_config_path(
             layout.plugin_id, manifest_path=config, read_cache=cache
         ) == layout.config_path
     assert roots == [storage]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("operation", ["materialize", "ensure", "lookup"])
+def test_runtime_paths_use_current_storage_after_migration(tmp_path, monkeypatch, operation):
+    from plugin.core.plugin_layout import resolve_plugin_layout
+    from plugin.server.infrastructure import config_paths
+    from plugin.utils.path_resolution import PathResolutionCache
+
+    manifest = tmp_path / "installed" / "plugin.toml"
+    manifest.parent.mkdir()
+    manifest.write_text('[plugin]\nid="demo"\n', encoding="utf-8")
+    old_root = tmp_path / "old"
+    new_root = tmp_path / "new"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(old_root))
+    cache = PathResolutionCache()
+    cache.resolve(manifest)
+    old_layout = resolve_plugin_layout("demo", manifest.parent, read_cache=cache)
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(new_root))
+    new_layout = resolve_plugin_layout("demo", manifest.parent)
+    if operation == "materialize":
+        result = module.resolve_plugin_config_from_path(
+            "demo", config_path=manifest, read_cache=cache
+        )
+        assert result["config_path"] == str(new_layout.config_path)
+    elif operation == "ensure":
+        assert config_paths.ensure_plugin_runtime_config(
+            "demo", manifest_path=manifest, read_cache=cache
+        ) == new_layout.config_path
+    else:
+        monkeypatch.setattr(config_paths, "get_plugin_manifest_path", lambda _: manifest)
+        assert config_paths.get_plugin_runtime_config_path(
+            "demo", read_cache=cache
+        ) == new_layout.config_path
+        assert not new_layout.config_path.exists()
+    assert not old_layout.config_path.exists()
+    if operation != "lookup":
+        assert new_layout.config_path.read_bytes() == manifest.read_bytes()
