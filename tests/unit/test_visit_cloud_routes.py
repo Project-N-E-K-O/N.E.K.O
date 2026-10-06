@@ -482,35 +482,32 @@ def test_manual_retry_with_an_expired_login_asks_to_sign_in(env, monkeypatch):
 
 
 
-def test_a_report_abandoned_while_waiting_for_the_lock_is_not_sent(env):
+def test_a_new_report_is_queued_and_sent_inside_the_visit_lock(env):
     import threading
 
     client, fake, tmp_path, _ = env
     lock = tu.visit_lock(V1)
     holding, release = client.portal.call(_make_events)
 
-    async def submit_in_flight():
+    async def round_in_flight():
         async with lock:
             holding.set()
             await release.wait()
 
-    client.portal.start_task_soon(submit_in_flight)
+    client.portal.start_task_soon(round_in_flight)
     client.portal.call(holding.wait)
     result = {}
     worker = threading.Thread(target=lambda: result.setdefault("resp", _report(client)))
     worker.start()
     try:
-        for _ in range(200):
-            if _queued(tmp_path) is not None:
-                break
-            time.sleep(0.01)
-        assert _queued(tmp_path) is not None and worker.is_alive()     # 已入队、在等锁
-        client.portal.call(tu.delete_report, tmp_path, V1)              # 另一个窗口放弃了它
+        worker.join(0.3)
+        # 另一轮持锁期间：请求在等锁，举报还没落盘——那一轮既看不到也交不掉它
+        assert worker.is_alive() and _queued(tmp_path) is None
     finally:
         client.portal.call(release.set)
         worker.join(5)
-    assert result["resp"].status_code == 404 and result["resp"].json()["code"] == "not_queued"
-    assert fake.count("/api/visit/reports") == 0
+    assert result["resp"].status_code == 200 and result["resp"].json()["ok"] is True
+    assert fake.count("/api/visit/reports") == 1 and _queued(tmp_path) is None
 
 
 

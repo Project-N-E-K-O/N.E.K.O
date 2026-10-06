@@ -1019,9 +1019,9 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         result = await _upload(visit_id, doc, config_dir)
     if result.done or result.terminal is not None:
         unmarked = await _settle_upload(config_dir, visit_id, sealed, result)
-        # 已传上去但封存文件没删掉（被占用）：转录不再挡举报，但这一轮仍要重来清理，
-        # 否则它一直占着待上传容量（下一轮重传得到 duplicate 回执即删）
-        leftover = result.done and await asyncio.to_thread(sealed.exists)
+        # 已结清（传上去，或终态原因已记进举报）但封存文件没删掉（被占用）：转录不再挡举报，但这一轮
+        # 仍要重来清理，否则它一直占着待上传容量。原因没记进举报而有意留着的那份不算（它带 rejected 标记）
+        leftover = unmarked is None and await asyncio.to_thread(sealed.exists)
         return UploadRound(pending=False, retryable=leftover, unavailable=unmarked)
     return UploadRound(pending=True, retryable=True, retry_after_s=result.retry_after_s,
                        login_required=result.login_required)

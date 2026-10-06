@@ -250,17 +250,16 @@ async def report_visit(request: Request):
         "app_version": cr._app_version(),
         "queued_at": time.time(),
     }
-    try:
-        await tu.queue_report(config_dir, doc)
-    except tu.ReportAlreadyQueued:
-        return _error(409, "already_queued")
-    except (OSError, ValueError) as exc:
-        logger.warning("visit report: cannot queue %s: %s", visit_id, type(exc).__name__)
-        return _error(500, "report_persist_failed")
+    # 入队与这一次提交在同一把逐场锁里：后台轮次（会把新排的举报顺手交掉）和另一个窗口的「放弃」
+    # 都插不进两步之间，返回的结果就是这份举报的真实去向
     async with tu.visit_lock(visit_id):
-        if not tu.same_report(await tu.load_report(config_dir, visit_id), doc):
-            # 等锁期间这份举报被放弃了（另一个窗口的「放弃」先拿到锁）：不再提交
-            return _error(404, "not_queued")
+        try:
+            await tu.queue_report(config_dir, doc)
+        except tu.ReportAlreadyQueued:
+            return _error(409, "already_queued")
+        except (OSError, ValueError) as exc:
+            logger.warning("visit report: cannot queue %s: %s", visit_id, type(exc).__name__)
+            return _error(500, "report_persist_failed")
         return await _submit_new_report(config_dir, doc)
 
 

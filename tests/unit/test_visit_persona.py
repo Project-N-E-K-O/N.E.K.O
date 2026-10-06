@@ -635,3 +635,30 @@ def test_a_country_code_is_not_a_token_of_its_own():
 def test_only_account_shaped_words_of_a_contact_value_stand_alone():
     tokens = persona.extract_sensitive_tokens("wechat: usually online as @alicefoo", [])
     assert "@alicefoo" in tokens and "usually" not in tokens
+
+
+
+def test_hyphenated_contact_handles_stand_alone():
+    assert "alice-foo" in persona.extract_sensitive_tokens("wechat: alice-foo likes cats", [])
+
+
+def test_gate_does_not_regenerate_over_an_edit_saved_while_it_reads_the_card(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    client.put("/api/visit/persona?catgirl=A", headers=GOOD, json={"reviewed": True})
+    state["cards"]["A"] = CARD + "\n新加了一句：喜欢看雨。"            # 卡片变了，人设没手改过
+    real = persona._hooks.load_context
+    hand = "你是{LANLAN_NAME}，读卡时刚确认的手写人设。"
+    landed = []
+
+    async def read_while_an_edit_lands():
+        ctx = await real()
+        if not landed:                                   # 另一个窗口的手写确认正好在读卡时落盘
+            landed.append(True)
+            await persona.store().save(UID_A, {**_file(tmp_path), "text": hand, "edited": True, "reviewed": True})
+            persona._note_write(UID_A)
+        return ctx
+
+    monkeypatch.setattr(persona._hooks, "load_context", read_while_an_edit_lands)
+    gate = _gate(client)
+    assert gate.ok is True and gate.text == hand and not persona.is_generating(UID_A)

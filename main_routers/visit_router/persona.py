@@ -146,8 +146,9 @@ _LATIN_KEYWORD_VALUE_RE = re.compile(
 )
 # 地址类关键词：值在逗号处停下，同一行逗号后面的片段（「address: Apt 4, 12 Main Street」）也要找街名
 _ADDRESS_KEYWORDS = frozenset({"住址", "地址", "家住", "住在", "位于", "位於", "address"})
-# 像账号的词：带 @ 或 _、字母与数字混写、或驼峰（「@alicefoo」「mimi_cat」「cat2024」「AliceFoo」）
-_ACCOUNT_WORD_RE = re.compile(r"[@_]|[A-Za-z][0-9]|[0-9][A-Za-z]|[a-z][A-Z]")
+# 像账号的词：带 @ 或 _、字母与数字混写、驼峰、或连字符连着的词（「@alicefoo」「mimi_cat」「cat2024」
+# 「AliceFoo」「alice-foo」）
+_ACCOUNT_WORD_RE = re.compile(r"[@_]|[A-Za-z][0-9]|[0-9][A-Za-z]|[a-z][A-Z]|[A-Za-z0-9]-[A-Za-z0-9]")
 _ADDRESS_SEGMENT_SPLIT_RE = re.compile(r"[,，;；、]")
 _LINE_END_RE = re.compile(r"[\n。！？!?]")
 # 带分隔符的电话号码（「138 0013 8000」「+1 (555) 010-0199」）：按纯数字比对
@@ -774,6 +775,11 @@ async def persona_gate(name: str) -> PersonaGate:
         if not doc["edited"]:
             ctx = await _hooks.load_context()
             if card_hash(ctx.card(name)) != doc["source_card_hash"]:
+                if is_generating(character_uid):
+                    return PersonaGate(ok=False, state="generating", character_uid=character_uid)
+                if _write_versions.get(character_uid, 0) != version:
+                    # 读卡期间人设被写过（手写确认）：手里这份已过时，按新的那份再判，别拿它触发重生成
+                    continue
                 start_regeneration(name, character_uid)
                 return PersonaGate(ok=False, state="generating", character_uid=character_uid)
         if is_generating(character_uid):
