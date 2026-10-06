@@ -53,7 +53,7 @@ import time
 import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -981,7 +981,8 @@ async def finish_report(config_dir: Path, visit_id: str, result: ReportResult, d
     if result.accepted:
         await _delete_accepted_report(config_dir, visit_id)
         # 拒收原因没能记进举报而留着的封存文件：举报已受理，它再没有用处，别占待上传容量
-        if not await asyncio.to_thread(_drop_rejected_sealed_sync, config_dir, visit_id):
+        if not await asyncio.to_thread(_drop_rejected_sealed_sync, config_dir, visit_id,
+                                       visit_id in _terminal_reasons):
             # 删不掉（被占用）：记成「已结清待删」，后续轮次只重删、不重传
             _settled_leftovers.add(visit_id)
             schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=VISIT_UPLOAD_RETRY_BACKOFF_S[0])
@@ -1001,7 +1002,7 @@ def _file_age_s(path: Path, now: float) -> float | None:
         return None
 
 
-def _drop_rejected_sealed_sync(config_dir: Path, visit_id: str) -> bool:
+def _drop_rejected_sealed_sync(config_dir: Path, visit_id: str, known_terminal: bool = False) -> bool:
     """Delete a sealed upload kept only as the record of a rejection; False when it is still there."""
     path = visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSON_SUFFIX)
     with path_lock(path):
@@ -1011,7 +1012,9 @@ def _drop_rejected_sealed_sync(config_dir: Path, visit_id: str) -> bool:
             return False
         except ValueError:
             return True
-        if isinstance(doc, dict) and isinstance(doc.get("rejected"), str) and doc["rejected"]:
+        marked = isinstance(doc, dict) and isinstance(doc.get("rejected"), str) and doc["rejected"]
+        if marked or (known_terminal and isinstance(doc, dict)):
+            # 拒收标记没写成、但本进程知道它已终态结清（known_terminal）的同样删。
             # 封存时没删掉的流水也是这份已拒收转录的：一并删，免得之后被重封、重传。先删流水，带拒收标记的
             # 封存文件最后删——流水删不掉时标记还在，重启后补录不会把它当成未上传的转录重封
             stream = visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSONL_SUFFIX)
@@ -1089,6 +1092,19 @@ class UploadRound:
     """Terminal reason the queued report could not record; the caller submits it in memory."""
     login_required: bool = False
     """The upload could not go out: the owning account's session is gone."""
+    owner: str | None = None
+    """``own_visit_uid`` of the transcript this round looked at (None when unknown)."""
+
+    def for_report(self, report: Mapping[str, Any] | None) -> "UploadRound":
+        """This round as seen by ``report``: another account's transcript neither gates it nor lends it a reason.
+
+        On a computer shared by several community accounts the sealed file of
+        a visit can be the other participant's side; a report only waits for
+        (and carries the unavailability of) its own account's transcript.
+        """
+        if report is None or self.owner is None or self.owner == report.get("own_visit_uid"):
+            return self
+        return replace(self, pending=False, unavailable=None, login_required=False)
 
 
 async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None = None) -> UploadRound:
@@ -1112,7 +1128,8 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
     if age is None:
         if not await asyncio.to_thread(stream.exists):
             # 转录早已结清：若是终态拒收 / 过期，之后才排的举报也要带上原因
-            return UploadRound(pending=False, unavailable=_terminal_reasons.get(visit_id))
+            reason, owner = _terminal_reasons.get(visit_id, (None, None))
+            return UploadRound(pending=False, unavailable=reason, owner=owner)
         if is_live(visit_id) or visit_id in _open_streams:
             # 还在写的流水（场次进行中）：等收尾封存，绝不提前重封
             return UploadRound(pending=True)
@@ -1125,17 +1142,24 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         age = await asyncio.to_thread(_file_age_s, sealed, now) if status == "sealed" else None
         if age is None:
             return UploadRound(pending=True, retryable=True)
-    if age > VISIT_SPOOL_RETENTION_DAYS * 86400:
-        memory_bridge.diag("upload_expired", visit_id=visit_id)
-        return await _settled_round(config_dir, visit_id, sealed, UploadResult(terminal="expired"))
     try:
         doc = await asyncio.to_thread(_load_json, sealed)
     except (OSError, ValueError):
         doc = None
+    owner = doc.get("own_visit_uid") if isinstance(doc, dict) else None
+    owner = owner if isinstance(owner, str) and owner else None
+    aged = age > VISIT_SPOOL_RETENTION_DAYS * 86400
+    if aged and (visit_id in _aged_attempted or not sealed_upload_doc_usable(doc, visit_id)):
+        memory_bridge.diag("upload_expired", visit_id=visit_id)
+        return await _settled_round(config_dir, visit_id, sealed, UploadResult(terminal="expired"), owner=owner)
     if not sealed_upload_doc_usable(doc, visit_id):
         # 读不出 / 结构不对 / 别的场次或别的版本的封存文件：不直接传，交给启动补录判
         # （它能对照流水与 state.json 重封、隔离，或留给新版本）
-        return UploadRound(pending=True)
+        return UploadRound(pending=True, owner=owner)
+    if aged:
+        # 过了保留期的转录先试传一次再判过期（与启动补录同一顺序：应用关得久，刚启动就提交的举报
+        # 不能让唯一一份转录不试就丢）
+        _aged_attempted.add(visit_id)
     rejected = doc.get("rejected")
     if isinstance(rejected, str) and rejected:
         # 上一轮已终态拒收、只是原因没记进举报：不再整份重传，接着记原因、删文件
@@ -1143,14 +1167,19 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
     else:
         result = await _upload(visit_id, doc, config_dir)
     if result.done or result.terminal is not None:
-        return await _settled_round(config_dir, visit_id, sealed, result)
+        return await _settled_round(config_dir, visit_id, sealed, result, owner=owner)
+    if aged:
+        memory_bridge.diag("upload_expired", visit_id=visit_id)
+        return await _settled_round(config_dir, visit_id, sealed, UploadResult(terminal="expired"), owner=owner)
     return UploadRound(pending=True, retryable=True, retry_after_s=result.retry_after_s,
-                       login_required=result.login_required)
+                       login_required=result.login_required, owner=owner)
 
 
-async def _settled_round(config_dir: Path, visit_id: str, sealed: Path, result: UploadResult) -> UploadRound:
+async def _settled_round(
+    config_dir: Path, visit_id: str, sealed: Path, result: UploadResult, *, owner: str | None = None,
+) -> UploadRound:
     if result.terminal is not None:
-        remember_terminal_reason(visit_id, result.terminal)
+        remember_terminal_reason(visit_id, result.terminal, owner)
     unmarked = await _settle_upload(config_dir, visit_id, sealed, result)
     # 已结清（传上去、过期，或终态原因已记进举报）但封存文件 / 封存时没删掉的流水还在（被占用）：转录不再挡
     # 举报，但这一轮仍要重来清理，否则它们一直占着待上传容量。原因没记进举报而有意留着的那份不算
@@ -1162,7 +1191,7 @@ async def _settled_round(config_dir: Path, visit_id: str, sealed: Path, result: 
         leftover = not stream_gone or await asyncio.to_thread(sealed.exists)
     if leftover:
         _settled_leftovers.add(visit_id)
-    return UploadRound(pending=False, retryable=leftover, unavailable=unmarked)
+    return UploadRound(pending=False, retryable=leftover, unavailable=unmarked, owner=owner)
 
 
 async def _drop_settled_files(visit_id: str, *paths: Path | None) -> bool:
@@ -1179,7 +1208,10 @@ async def _drop_settled_files(visit_id: str, *paths: Path | None) -> bool:
     return ok
 
 
-_terminal_reasons: "OrderedDict[str, str]" = OrderedDict()
+_aged_attempted: set[str] = set()
+"""visit_ids whose past-retention transcript was already tried once in this process (next time: expire)."""
+
+_terminal_reasons: "OrderedDict[str, tuple[str, str | None]]" = OrderedDict()
 """Terminal reasons (rejection code / ``expired``) of transcripts settled in this process.
 
 The sealed file is deleted once settled; a report with ``include_transcript``
@@ -1188,8 +1220,8 @@ anomaly counts: after a restart such a report goes without it.
 """
 
 
-def remember_terminal_reason(visit_id: str, reason: str) -> None:
-    _terminal_reasons[visit_id] = reason
+def remember_terminal_reason(visit_id: str, reason: str, owner: str | None = None) -> None:
+    _terminal_reasons[visit_id] = (reason, owner)
     _terminal_reasons.move_to_end(visit_id)
     while len(_terminal_reasons) > _RECENT_ANOMALIES_MAX:
         _terminal_reasons.popitem(last=False)
@@ -1233,6 +1265,7 @@ async def retry_visit_once(
             upload = UploadRound(pending=True, retryable=True)
         # 举报文件暂时读不了（同一次读取的结果）：当成还有事没办完，worker 别退出，等能读了再提交 / 补记
         report, unreadable = await _read_report(config_dir, visit_id)
+        upload = upload.for_report(report)
         if report is not None and owner is not None and not await report_belongs_to(report, owner):
             # 等锁期间原举报没了、换成了另一账号排的：不替它提交，也不动它的拒收标记
             report = None
@@ -1301,6 +1334,7 @@ def _reset_for_tests() -> None:
     _workers.clear()
     _recent_anomalies.clear()
     _terminal_reasons.clear()
+    _aged_attempted.clear()
     _open_streams.clear()
     _manual_retries.clear()
     # 上一个测试的事件循环里残留的任务可能还握着锁：换新的锁表，不跨事件循环复用

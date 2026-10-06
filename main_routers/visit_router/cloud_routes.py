@@ -281,6 +281,8 @@ async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
             logger.warning("visit report %s: upload attempt failed: %s", visit_id, type(exc).__name__)
             tu.schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=_after_attempt(None))
             return JSONResponse({"queued": True}, status_code=202)
+        # 另一账号那一侧的转录不挡这份举报、也不借它的原因（仍可重试的照样排后台）
+        upload = upload.for_report(doc)
         if not upload.pending and upload.retryable:
             # 已传上去、只是封存文件还没删掉：后台稍后清理
             tu.schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=_after_attempt(None))

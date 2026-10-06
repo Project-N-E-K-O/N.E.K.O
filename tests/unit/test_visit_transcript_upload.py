@@ -1374,3 +1374,49 @@ async def test_the_rejected_marker_outlives_a_stream_that_cannot_be_deleted(tmp_
     monkeypatch.setattr(Path, "unlink", busy)
     assert tu._drop_rejected_sealed_sync(tmp_path, V1) is False
     assert sealed.exists() and json.loads(sealed.read_text(encoding="utf-8"))["rejected"]   # 标记还在
+
+
+async def test_an_unmarked_terminal_spool_is_dropped_once_the_report_is_accepted(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    fake.transcript_mode = "parts"
+    sealed = _write_sealed(tmp_path, _big_doc(4, 10))
+    await tu.queue_report(tmp_path, _report_doc())
+
+    def broken(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tu, "_mark_unavailable_sync", broken)      # 原因写不进举报
+    monkeypatch.setattr(tu, "_mark_sealed_rejected_sync", broken)  # 封存文件上的标记也写不成
+    assert (await tu.retry_visit_once(V1)).pending is False
+    assert fake.reports[0]["transcript_unavailable"] == "parts_out_of_range"
+    assert not sealed.exists()                                      # 进程内知道它已终态：照样清掉
+
+
+async def test_another_accounts_transcript_does_not_gate_a_report(tmp_path, servers):
+    fake, _ = servers
+    doc = _big_doc(4, 10)
+    doc["own_visit_uid"] = "b" * 24                                 # 共用电脑：这份转录是另一账号那一侧的
+    _write_sealed(tmp_path, doc)
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=True))
+    await tu.retry_visit_once(V1)
+    assert fake.count("/api/visit/reports") == 1 and "transcript_unavailable" not in fake.reports[0]
+
+
+async def test_an_aged_transcript_is_tried_once_before_it_expires(tmp_path, servers):
+    fake, _ = servers
+    sealed = _write_sealed(tmp_path, _big_doc(4, 10))
+    old = time.time() - 30 * 86400
+    os.utime(sealed, (old, old))
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    assert outcome.pending is False and outcome.unavailable is None    # 试传成功，没有按过期丢掉
+    assert fake.count("/api/visit/transcripts") >= 1 and not sealed.exists()
+
+
+async def test_an_aged_transcript_that_still_fails_expires(tmp_path, servers):
+    fake, _ = servers
+    fake.transcript_mode = "503"
+    sealed = _write_sealed(tmp_path, _big_doc(4, 10))
+    old = time.time() - 30 * 86400
+    os.utime(sealed, (old, old))
+    await tu.attempt_upload(V1, config_dir=tmp_path)
+    assert fake.count("/api/visit/transcripts") >= 1 and not sealed.exists()   # 试过一次仍失败：按过期结清
