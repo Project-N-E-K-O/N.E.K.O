@@ -865,3 +865,65 @@ async def test_a_settled_leftover_is_deleted_without_signing_in_again(tmp_path, 
     monkeypatch.setattr(cr, "_servers_session", signed_out)          # 用户这时登出了
     assert (await tu.retry_visit_once(V1)).pending is False and not sealed.exists()
     assert fake.count("/api/visit/transcripts") == uploads             # 只删文件，不重传
+
+
+
+async def test_an_expired_spool_that_cannot_be_deleted_is_cleaned_up_later(tmp_path, servers, monkeypatch):
+    sealed = _write_sealed(tmp_path, _big_doc(4, 10))
+    old = time.time() - 30 * 86400
+    os.utime(sealed, (old, old))
+    real_unlink = Path.unlink
+    calls = []
+
+    def busy(self, missing_ok=False):
+        if self == sealed and not calls:
+            calls.append(self)
+            raise PermissionError("in use")
+        return real_unlink(self, missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", busy)
+    assert (await tu.retry_visit_once(V1)).pending is True and sealed.exists()
+    assert (await tu.retry_visit_once(V1)).pending is False and not sealed.exists()
+
+
+async def test_a_sealed_file_of_another_version_is_not_uploaded_directly(tmp_path, servers):
+    fake, _ = servers
+    doc = _big_doc(4, 10)
+    doc["v"] = 99
+    sealed = _write_sealed(tmp_path, doc)
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    assert outcome.pending is True and outcome.retryable is False
+    assert fake.count("/api/visit/transcripts") == 0 and sealed.exists()
+
+
+async def test_a_transcript_free_report_goes_out_despite_upload_errors(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    _write_sealed(tmp_path, _big_doc(4, 10))
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+
+    async def disk_full(*_a, **_k):
+        raise OSError("no space left")
+
+    monkeypatch.setattr(tu, "attempt_upload", disk_full)
+    outcome = await tu.retry_visit_once(V1)
+    assert fake.count("/api/visit/reports") == 1 and await tu.load_report(tmp_path, V1) is None
+    assert outcome.pending is True                       # 转录还没传，worker 继续
+
+
+async def test_an_unrecorded_rejection_keeps_the_round_pending(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    fake.report_mode = "404"
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    original = tu._set_rejected_sync
+    calls = []
+
+    def broken_once(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("disk full")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(tu, "_set_rejected_sync", broken_once)
+    assert (await tu.retry_visit_once(V1)).pending is True
+    assert (await tu.retry_visit_once(V1)).pending is False
+    assert (await tu.load_report(tmp_path, V1))["rejected"] == "unknown_visit"

@@ -70,7 +70,7 @@ from config.visit_settings import (
 )
 from main_logic.visit import memory_bridge
 from main_logic.visit.memory_commit import SIDE_RANK
-from main_logic.visit.recovery import build_upload_doc
+from main_logic.visit.recovery import build_upload_doc, sealed_upload_doc_usable
 from main_logic.visit.spool import UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX
 from main_logic.visit.subjects import path_lock
 from main_routers.visit_router import accounts
@@ -731,6 +731,12 @@ def _set_rejected_sync(path: Path, visit_id: str, reason: str | None, expect: Ma
         _write_private_json(path, doc)
 
 
+async def rejection_recorded(config_dir: Path, visit_id: str) -> bool:
+    """Whether the queued report of ``visit_id`` carries its ``rejected`` marker (or is gone)."""
+    report = await load_report(config_dir, visit_id)
+    return report is None or bool(report.get("rejected"))
+
+
 async def set_report_rejected(
     config_dir: Path, visit_id: str, reason: str | None, *, expect: Mapping[str, Any] | None = None,
 ) -> None:
@@ -1011,14 +1017,14 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         return UploadRound(pending=await asyncio.to_thread(stream.exists))
     if age > VISIT_SPOOL_RETENTION_DAYS * 86400:
         memory_bridge.diag("upload_expired", visit_id=visit_id)
-        unmarked = await _settle_upload(config_dir, visit_id, sealed, UploadResult(terminal="expired"))
-        return UploadRound(pending=False, unavailable=unmarked)
+        return await _settled_round(config_dir, visit_id, sealed, UploadResult(terminal="expired"))
     try:
         doc = await asyncio.to_thread(_load_json, sealed)
     except (OSError, ValueError):
         doc = None
-    if not isinstance(doc, dict) or not isinstance(doc.get("request"), dict):
-        # 读不出 / 结构不对的封存文件交给启动补录判（它能对照流水与 state.json）
+    if not sealed_upload_doc_usable(doc, visit_id):
+        # 读不出 / 结构不对 / 别的场次或别的版本的封存文件：不直接传，交给启动补录判
+        # （它能对照流水与 state.json 重封、隔离，或留给新版本）
         return UploadRound(pending=True)
     rejected = doc.get("rejected")
     if isinstance(rejected, str) and rejected:
@@ -1027,15 +1033,19 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
     else:
         result = await _upload(visit_id, doc, config_dir)
     if result.done or result.terminal is not None:
-        unmarked = await _settle_upload(config_dir, visit_id, sealed, result)
-        # 已结清（传上去，或终态原因已记进举报）但封存文件没删掉（被占用）：转录不再挡举报，但这一轮
-        # 仍要重来清理，否则它一直占着待上传容量。原因没记进举报而有意留着的那份不算（它带 rejected 标记）
-        leftover = unmarked is None and await asyncio.to_thread(sealed.exists)
-        if leftover:
-            _settled_leftovers.add(visit_id)
-        return UploadRound(pending=False, retryable=leftover, unavailable=unmarked)
+        return await _settled_round(config_dir, visit_id, sealed, result)
     return UploadRound(pending=True, retryable=True, retry_after_s=result.retry_after_s,
                        login_required=result.login_required)
+
+
+async def _settled_round(config_dir: Path, visit_id: str, sealed: Path, result: UploadResult) -> UploadRound:
+    unmarked = await _settle_upload(config_dir, visit_id, sealed, result)
+    # 已结清（传上去、过期，或终态原因已记进举报）但封存文件没删掉（被占用）：转录不再挡举报，但这一轮
+    # 仍要重来清理，否则它一直占着待上传容量。原因没记进举报而有意留着的那份不算（它带 rejected 标记）
+    leftover = unmarked is None and await asyncio.to_thread(sealed.exists)
+    if leftover:
+        _settled_leftovers.add(visit_id)
+    return UploadRound(pending=False, retryable=leftover, unavailable=unmarked)
 
 
 _VISIT_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
@@ -1066,7 +1076,12 @@ async def retry_visit_once(
     visit_id = require_visit_id(visit_id)
     config_dir = Path(config_dir_provider() if config_dir is None else config_dir)
     async with visit_lock(visit_id):
-        upload = await attempt_upload(visit_id, config_dir=config_dir, now=now)
+        try:
+            upload = await attempt_upload(visit_id, config_dir=config_dir, now=now)
+        except (OSError, ValueError) as exc:
+            # 上传的本地记账出错（磁盘满等）：转录这一轮算没传上去，但不附转录的举报照样提交
+            logger.warning("visit upload %s: attempt failed: %s", visit_id, type(exc).__name__)
+            upload = UploadRound(pending=True, retryable=True)
         report = await load_report(config_dir, visit_id)
         if report is not None and owner is not None and not await report_belongs_to(report, owner):
             # 等锁期间原举报没了、换成了另一账号排的：不替它提交，也不动它的拒收标记
@@ -1084,7 +1099,8 @@ async def retry_visit_once(
             result = await send_report(report)
             login_required = login_required or result.login_required
             report_retry_after = result.retry_after_s
-            if await finish_report(config_dir, visit_id, result, report) or result.unknown_visit:
+            if await finish_report(config_dir, visit_id, result, report) or (
+                    result.unknown_visit and await rejection_recorded(config_dir, visit_id)):
                 # 受理了但本地文件没删掉（被占用）：这一轮的 worker 别退出，下一轮重提拿 duplicate 回执再删
                 report_pending = result.accepted and same_report(await load_report(config_dir, visit_id), report)
             elif manual and report.get("rejected") and result.attempted and not result.login_required:

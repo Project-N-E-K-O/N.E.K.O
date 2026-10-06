@@ -363,6 +363,16 @@ def _sealed_doc_belongs(doc: Any, visit_id: str) -> bool:
     )
 
 
+def sealed_upload_doc_usable(doc: Any, visit_id: str) -> bool:
+    """Whether a loaded ``.upload.json`` may be uploaded directly (outside startup recovery).
+
+    Same check recovery applies: anything else -- another visit's or another
+    version's document, a broken envelope or request -- is left for recovery
+    to reseal, quarantine or keep.
+    """
+    return _sealed_doc_belongs(doc, visit_id)
+
+
 def _sealed_doc_unrecognized(doc: Any, visit_id: str) -> bool:
     """Whether an invalid ``.upload.json`` looks like another version's intact document.
 
