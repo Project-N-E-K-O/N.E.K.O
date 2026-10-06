@@ -790,8 +790,8 @@ def _mark_unavailable_sync(path: Path, visit_id: str, reason: str, owner: str | 
         doc = _load_json(path)
         if not _valid_report(doc, visit_id) or doc.get("transcript_unavailable"):
             return
-        if owner is not None and doc.get("own_visit_uid") != owner:
-            # 共用电脑上另一账号排的举报：这份转录不是它那一侧的，不替它记原因
+        if owner is not None and doc.get("own_visit_uid") and doc["own_visit_uid"] != owner:
+            # 共用电脑上另一账号排的举报：这份转录不是它那一侧的，不替它记原因（举报的归属未知时照记）
             return
         _write_private_json(path, {**doc, "transcript_unavailable": reason})
 
@@ -1127,7 +1127,9 @@ class UploadRound:
         a visit can be the other participant's side; a report only waits for
         (and carries the unavailability of) its own account's transcript.
         """
-        if report is None or self.owner is None or self.owner == report.get("own_visit_uid"):
+        report_owner = report.get("own_visit_uid") if report is not None else None
+        if report is None or self.owner is None or not report_owner or self.owner == report_owner:
+            # 任一边归属未知（举报排队时本机还没有 visit_uid 映射）：按同一侧处理
             return self
         return replace(self, pending=False, unavailable=None, login_required=False)
 

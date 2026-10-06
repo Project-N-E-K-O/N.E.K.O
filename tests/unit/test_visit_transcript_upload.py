@@ -1474,3 +1474,14 @@ async def test_a_recovered_owner_that_cannot_be_written_is_kept_for_the_worker(t
     state["account"] = "u1"
     assert (await tu.retry_visit_once(V1)).pending is False and not sealed.exists()
     assert V1 not in tu._pending_owners
+
+
+async def test_a_report_with_an_unknown_owner_still_gets_the_reason(tmp_path, servers):
+    fake, _ = servers
+    fake.transcript_mode = "parts"
+    _write_sealed(tmp_path, _big_doc(4, 10))
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=True, own_visit_uid=None))
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    report = await tu.load_report(tmp_path, V1)
+    assert report["transcript_unavailable"] == "parts_out_of_range"
+    assert outcome.for_report(report).pending is False and outcome.for_report(report) is outcome
