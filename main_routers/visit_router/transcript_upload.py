@@ -679,12 +679,24 @@ def _valid_report(doc: Any, visit_id: str) -> bool:
 
 async def load_report(config_dir: Path, visit_id: str) -> dict | None:
     """The queued report of ``visit_id`` (None when none, or not this visit's)."""
+    return (await _read_report(config_dir, visit_id))[0]
+
+
+async def _read_report(config_dir: Path, visit_id: str) -> tuple[dict | None, bool]:
+    """``(report, unreadable)``: ``unreadable`` when the file exists but cannot be read right now.
+
+    Damaged content is not "right now": it is reported as no report (the next
+    queueing moves it aside).
+    """
     try:
         doc = await asyncio.to_thread(_load_json, report_path(config_dir, visit_id))
-    except (OSError, ValueError) as exc:
+    except OSError as exc:
         logger.warning("visit report queue: %s unreadable: %s", visit_id, type(exc).__name__)
-        return None
-    return doc if _valid_report(doc, visit_id) else None
+        return None, True
+    except ValueError as exc:
+        logger.warning("visit report queue: %s unreadable: %s", visit_id, type(exc).__name__)
+        return None, False
+    return (doc if _valid_report(doc, visit_id) else None), False
 
 
 def _delete_report_sync(path: Path) -> bool:
@@ -729,18 +741,6 @@ def _set_rejected_sync(path: Path, visit_id: str, reason: str | None, expect: Ma
         if reason is not None:
             doc["rejected"] = reason
         _write_private_json(path, doc)
-
-
-async def _report_unreadable(config_dir: Path, visit_id: str) -> bool:
-    """The queued report file exists but cannot be read right now (sharing violation, permissions)."""
-    try:
-        await asyncio.to_thread(_load_json, report_path(config_dir, visit_id))
-    except OSError:
-        return True
-    except ValueError:
-        # 内容坏了不是暂时的：下次入队时隔离，不让 worker 一直空转
-        return False
-    return False
 
 
 async def rejection_recorded(config_dir: Path, visit_id: str) -> bool:
@@ -1021,19 +1021,19 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
     now = time.time() if now is None else now
     spool_dir = _spool_dir(config_dir)
     sealed = visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX)
+    stream = visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX)
     if visit_id in _settled_leftovers:
         # 已结清、只是上次没删掉：直接再删，不重传（换号 / 登出时重传进不去，文件会一直占着容量）
-        try:
-            await asyncio.to_thread(sealed.unlink, True)
-        except OSError as exc:
-            logger.warning("visit upload %s: still cannot delete %s: %s", visit_id, sealed.name, exc)
+        if not await _drop_settled_files(visit_id, sealed, stream):
             return UploadRound(pending=False, retryable=True)
         _settled_leftovers.discard(visit_id)
         return UploadRound(pending=False)
     age = await asyncio.to_thread(_file_age_s, sealed, now)
     if age is None:
-        stream = visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX)
-        return UploadRound(pending=await asyncio.to_thread(stream.exists))
+        if await asyncio.to_thread(stream.exists):
+            return UploadRound(pending=True)
+        # 转录早已结清：若是终态拒收 / 过期，之后才排的举报也要带上原因
+        return UploadRound(pending=False, unavailable=_terminal_reasons.get(visit_id))
     if age > VISIT_SPOOL_RETENTION_DAYS * 86400:
         memory_bridge.diag("upload_expired", visit_id=visit_id)
         return await _settled_round(config_dir, visit_id, sealed, UploadResult(terminal="expired"))
@@ -1058,13 +1058,50 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
 
 
 async def _settled_round(config_dir: Path, visit_id: str, sealed: Path, result: UploadResult) -> UploadRound:
+    if result.terminal is not None:
+        remember_terminal_reason(visit_id, result.terminal)
     unmarked = await _settle_upload(config_dir, visit_id, sealed, result)
-    # 已结清（传上去、过期，或终态原因已记进举报）但封存文件没删掉（被占用）：转录不再挡举报，但这一轮
-    # 仍要重来清理，否则它一直占着待上传容量。原因没记进举报而有意留着的那份不算（它带 rejected 标记）
-    leftover = unmarked is None and await asyncio.to_thread(sealed.exists)
+    # 已结清（传上去、过期，或终态原因已记进举报）但封存文件 / 封存时没删掉的流水还在（被占用）：转录不再挡
+    # 举报，但这一轮仍要重来清理，否则它们一直占着待上传容量。原因没记进举报而有意留着的那份不算
+    # （它带 rejected 标记）
+    stream = sealed.with_name(sealed.name[: -len(UPLOAD_JSON_SUFFIX)] + UPLOAD_JSONL_SUFFIX)
+    leftover = False
+    if unmarked is None:
+        stream_gone = await _drop_settled_files(visit_id, stream)
+        leftover = not stream_gone or await asyncio.to_thread(sealed.exists)
     if leftover:
         _settled_leftovers.add(visit_id)
     return UploadRound(pending=False, retryable=leftover, unavailable=unmarked)
+
+
+async def _drop_settled_files(visit_id: str, *paths: Path | None) -> bool:
+    """Delete what is left of a settled upload; False when something is still there."""
+    ok = True
+    for path in paths:
+        if path is None:
+            continue
+        try:
+            await asyncio.to_thread(path.unlink, True)
+        except OSError as exc:
+            logger.warning("visit upload %s: still cannot delete %s: %s", visit_id, path.name, exc)
+            ok = False
+    return ok
+
+
+_terminal_reasons: "OrderedDict[str, str]" = OrderedDict()
+"""Terminal reasons (rejection code / ``expired``) of transcripts settled in this process.
+
+The sealed file is deleted once settled; a report with ``include_transcript``
+filed afterwards still carries the reason. Kept in memory only, like the
+anomaly counts: after a restart such a report goes without it.
+"""
+
+
+def remember_terminal_reason(visit_id: str, reason: str) -> None:
+    _terminal_reasons[visit_id] = reason
+    _terminal_reasons.move_to_end(visit_id)
+    while len(_terminal_reasons) > _RECENT_ANOMALIES_MAX:
+        _terminal_reasons.popitem(last=False)
 
 
 _VISIT_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
@@ -1101,9 +1138,8 @@ async def retry_visit_once(
             # 上传的本地记账出错（磁盘满等）：转录这一轮算没传上去，但不附转录的举报照样提交
             logger.warning("visit upload %s: attempt failed: %s", visit_id, type(exc).__name__)
             upload = UploadRound(pending=True, retryable=True)
-        report = await load_report(config_dir, visit_id)
-        # 举报文件暂时读不了：当成还有事没办完，worker 别退出，等能读了再提交 / 补记
-        unreadable = report is None and await _report_unreadable(config_dir, visit_id)
+        # 举报文件暂时读不了（同一次读取的结果）：当成还有事没办完，worker 别退出，等能读了再提交 / 补记
+        report, unreadable = await _read_report(config_dir, visit_id)
         if report is not None and owner is not None and not await report_belongs_to(report, owner):
             # 等锁期间原举报没了、换成了另一账号排的：不替它提交，也不动它的拒收标记
             report = None
@@ -1147,6 +1183,7 @@ def _reset_for_tests() -> None:
         task.cancel()
     _workers.clear()
     _recent_anomalies.clear()
+    _terminal_reasons.clear()
     _not_before.clear()
     _settled_leftovers.clear()
 

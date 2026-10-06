@@ -965,3 +965,41 @@ async def test_a_round_stays_pending_while_the_report_file_cannot_be_read(tmp_pa
     assert (await tu.retry_visit_once(V1)).pending is True and fake.count("/api/visit/reports") == 0
     locked[0] = False
     assert (await tu.retry_visit_once(V1)).pending is False and fake.count("/api/visit/reports") == 1
+
+
+
+async def test_a_report_read_failure_keeps_the_round_pending_even_if_it_clears_at_once(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    original = tu._load_json
+    calls = []
+
+    def flaky(path):
+        if path.name == f"{V1}.json" and not calls:
+            calls.append(path)
+            raise PermissionError("in use")                # 只失败这一次
+        return original(path)
+
+    monkeypatch.setattr(tu, "_load_json", flaky)
+    assert (await tu.retry_visit_once(V1)).pending is True
+    assert (await tu.retry_visit_once(V1)).pending is False and fake.count("/api/visit/reports") == 1
+
+
+async def test_a_residual_stream_goes_when_its_sealed_upload_settles(tmp_path, servers):
+    sealed = _write_sealed(tmp_path, _big_doc(4, 10))
+    stream = sealed.with_name(f"{V1}.upload.jsonl")
+    stream.write_text("{}\n", encoding="utf-8")         # 封存时没删掉的流水
+    tu._settled_leftovers.discard(V1)
+    await tu.attempt_upload(V1, config_dir=tmp_path)
+    assert not sealed.exists() and not stream.exists()
+
+
+async def test_a_later_report_carries_a_terminal_reason_settled_before_it(tmp_path, servers):
+    fake, _ = servers
+    fake.transcript_mode = "parts"
+    sealed = _write_sealed(tmp_path, _big_doc(4, 10))
+    assert (await tu.attempt_upload(V1, config_dir=tmp_path)).pending is False and not sealed.exists()
+    fake.transcript_mode = "ok"
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=True))
+    assert (await tu.retry_visit_once(V1)).pending is False
+    assert fake.reports[0]["transcript_unavailable"] == "parts_out_of_range"
