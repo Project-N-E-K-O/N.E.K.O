@@ -840,3 +840,28 @@ async def test_a_rejected_spool_that_cannot_be_deleted_is_cleaned_up_later(tmp_p
     monkeypatch.setattr(Path, "unlink", busy)
     assert (await tu.retry_visit_once(V1)).pending is True and sealed.exists()
     assert (await tu.retry_visit_once(V1)).pending is False and not sealed.exists()
+
+
+
+async def test_a_settled_leftover_is_deleted_without_signing_in_again(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    sealed = _write_sealed(tmp_path, _big_doc(4, 10))
+    real_unlink = Path.unlink
+    calls = []
+
+    def busy(self, missing_ok=False):
+        if self == sealed and not calls:
+            calls.append(self)
+            raise PermissionError("in use")
+        return real_unlink(self, missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", busy)
+    assert (await tu.retry_visit_once(V1)).pending is True and sealed.exists()
+    uploads = fake.count("/api/visit/transcripts")
+
+    async def signed_out():
+        raise cr.VisitLoginRequired()
+
+    monkeypatch.setattr(cr, "_servers_session", signed_out)          # 用户这时登出了
+    assert (await tu.retry_visit_once(V1)).pending is False and not sealed.exists()
+    assert fake.count("/api/visit/transcripts") == uploads             # 只删文件，不重传

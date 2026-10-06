@@ -996,6 +996,15 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
     now = time.time() if now is None else now
     spool_dir = _spool_dir(config_dir)
     sealed = visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX)
+    if visit_id in _settled_leftovers:
+        # 已结清、只是上次没删掉：直接再删，不重传（换号 / 登出时重传进不去，文件会一直占着容量）
+        try:
+            await asyncio.to_thread(sealed.unlink, True)
+        except OSError as exc:
+            logger.warning("visit upload %s: still cannot delete %s: %s", visit_id, sealed.name, exc)
+            return UploadRound(pending=False, retryable=True)
+        _settled_leftovers.discard(visit_id)
+        return UploadRound(pending=False)
     age = await asyncio.to_thread(_file_age_s, sealed, now)
     if age is None:
         stream = visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX)
@@ -1022,6 +1031,8 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         # 已结清（传上去，或终态原因已记进举报）但封存文件没删掉（被占用）：转录不再挡举报，但这一轮
         # 仍要重来清理，否则它一直占着待上传容量。原因没记进举报而有意留着的那份不算（它带 rejected 标记）
         leftover = unmarked is None and await asyncio.to_thread(sealed.exists)
+        if leftover:
+            _settled_leftovers.add(visit_id)
         return UploadRound(pending=False, retryable=leftover, unavailable=unmarked)
     return UploadRound(pending=True, retryable=True, retry_after_s=result.retry_after_s,
                        login_required=result.login_required)
@@ -1089,6 +1100,9 @@ async def retry_visit_once(
 
 _workers: dict[str, asyncio.Task] = {}
 
+_settled_leftovers: set[str] = set()
+"""visit_ids whose sealed upload is settled but could not be deleted yet (the next round only deletes it)."""
+
 
 def _reset_for_tests() -> None:
     for task in _workers.values():
@@ -1096,6 +1110,7 @@ def _reset_for_tests() -> None:
     _workers.clear()
     _recent_anomalies.clear()
     _not_before.clear()
+    _settled_leftovers.clear()
 
 
 _not_before: dict[str, float] = {}
