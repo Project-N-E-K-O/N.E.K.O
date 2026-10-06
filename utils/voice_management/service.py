@@ -301,42 +301,66 @@ async def overwrite_remote_voice(
 
 
 async def refresh_overwrite_status(adapter: VoiceManagementAdapter, cm, local_ref: str, *, token: str) -> dict:
-    record = await asyncio.to_thread(cm.get_imported_voice, local_ref, include_inactive=True)
-    if not record:
-        raise VoiceManagementError("VOICE_NOT_FOUND", 404)
-    runtime = await _runtime(adapter, cm, token, voice_data=record)
-    lock = _OVERWRITE_LOCKS.get(local_ref)
-    if lock is not None and lock.locked():
-        raise VoiceManagementError("OPERATION_IN_PROGRESS", 409)
-    if record.get("scope_id") != runtime.scope_id:
-        raise VoiceManagementError("CONTEXT_CHANGED", 409)
-    remote = await adapter.get_voice(runtime, record["remote_voice_id"])
-    await _check_context(adapter, cm, runtime, voice_data=record)
-    if remote is None:
-        raise VoiceManagementError("VOICE_NOT_FOUND", 404)
-    status = record.get("overwrite_status", "completed")
-    previous = record.get("overwrite_previous_revision")
-    revision = remote.metadata.get("remote_revision")
-    # Reconciliation may settle only an unresolved operation. A later external
-    # revision cannot turn a known rejection into success (or undo completion).
-    if status in {"processing", "unknown"}:
-        if remote.status in {"failed", "unavailable"}:
-            status = "failed"
-        elif remote.status in {"ready", "completed", "OK"} and previous is not None and revision is not None and revision != previous:
-            status = "completed"
-    latest = await asyncio.to_thread(cm.get_imported_voice, local_ref, include_inactive=True)
-    if not latest or latest.get("overwrite_operation_id") != record.get("overwrite_operation_id"):
-        raise VoiceManagementError("CONTEXT_CHANGED", 409)
-    values = _voice_metadata(remote.metadata)
-    values.update({
-        "overwrite_status": status, "remote_status": remote.status,
-        "can_overwrite": _overwrite_allowed(adapter, runtime, remote),
-    })
-    saved = await cm.aupdate_imported_voice(local_ref, runtime.scope_id, values,
-                                          expected_operation_id=record.get("overwrite_operation_id") or "",
-                                          expected_record_revision=record.get("_record_revision", 0))
-    await _check_context(adapter, cm, runtime, voice_data=saved)
-    # A parallel refresh may already have committed. Report the stored winner,
-    # not the status calculated from this request's rejected observation.
-    return {"success": True, "voice_id": local_ref,
-            "status": saved.get("overwrite_status", "completed"), "voice_data": public_voice_data(saved)}
+    deadline = asyncio.timeout(30)
+    try:
+        # Two upstream queries must fit the frontend's 35-second request limit.
+        async with deadline:
+            return await _reconcile_overwrite_status(adapter, cm, local_ref, token=token)
+    except TimeoutError:
+        if not deadline.expired():
+            raise
+        raise VoiceManagementError("UPSTREAM_TIMEOUT", 504) from None
+
+
+async def _reconcile_overwrite_status(adapter: VoiceManagementAdapter, cm, local_ref: str, *, token: str) -> dict:
+    owner = None
+    for _ in range(2):
+        record = await asyncio.to_thread(cm.get_imported_voice, local_ref, include_inactive=True)
+        if not record:
+            raise VoiceManagementError("VOICE_NOT_FOUND", 404)
+        identity = tuple(record.get(field) for field in (
+            "scope_id", "provider", "remote_voice_id", "overwrite_operation_id",
+        ))
+        if owner is not None and identity != owner:
+            raise VoiceManagementError("CONTEXT_CHANGED", 409)
+        owner = identity
+        runtime = await _runtime(adapter, cm, token, voice_data=record)
+        lock = _OVERWRITE_LOCKS.get(local_ref)
+        if lock is not None and lock.locked():
+            raise VoiceManagementError("OPERATION_IN_PROGRESS", 409)
+        if record.get("scope_id") != runtime.scope_id:
+            raise VoiceManagementError("CONTEXT_CHANGED", 409)
+        remote = await adapter.get_voice(runtime, record["remote_voice_id"])
+        await _check_context(adapter, cm, runtime, voice_data=record)
+        if remote is None:
+            raise VoiceManagementError("VOICE_NOT_FOUND", 404)
+        status = record.get("overwrite_status", "completed")
+        previous = record.get("overwrite_previous_revision")
+        revision = remote.metadata.get("remote_revision")
+        # Reconciliation may settle only an unresolved operation. A later external
+        # revision cannot turn a known rejection into success (or undo completion).
+        if status in {"processing", "unknown"}:
+            if remote.status in {"failed", "unavailable"}:
+                status = "failed"
+            elif remote.status in {"ready", "completed", "OK"} and previous is not None and revision is not None and revision != previous:
+                status = "completed"
+        latest = await asyncio.to_thread(cm.get_imported_voice, local_ref, include_inactive=True)
+        if not latest or latest.get("overwrite_operation_id") != record.get("overwrite_operation_id"):
+            raise VoiceManagementError("CONTEXT_CHANGED", 409)
+        values = _voice_metadata(remote.metadata)
+        values.update({
+            "overwrite_status": status, "remote_status": remote.status,
+            "can_overwrite": _overwrite_allowed(adapter, runtime, remote),
+        })
+        saved = await cm.aupdate_imported_voice(local_ref, runtime.scope_id, values,
+                                              expected_operation_id=record.get("overwrite_operation_id") or "",
+                                              expected_record_revision=record.get("_record_revision", 0))
+        await _check_context(adapter, cm, runtime, voice_data=saved)
+        saved_status = saved.get("overwrite_status", "completed")
+        if status in {"completed", "failed"} and saved_status in {"processing", "unknown"}:
+            # A pending observation won the CAS. Re-read and query once more;
+            # reusing this old response could overwrite a newer remote revision.
+            continue
+        return {"success": True, "voice_id": local_ref,
+                "status": saved_status, "voice_data": public_voice_data(saved)}
+    raise VoiceManagementError("OPERATION_IN_PROGRESS", 409)

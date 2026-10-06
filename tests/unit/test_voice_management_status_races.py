@@ -267,3 +267,272 @@ async def test_cancel_waiter_does_not_rollback_started_storage_commit(remote_rec
         release.set()
         if pending is not None:
             await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote_record", ["doubao_tts", "cosyvoice", "cosyvoice_intl"], indirect=True)
+@pytest.mark.parametrize("checkpoint", ["remote", "commit"])
+@pytest.mark.parametrize("initial_status", ["processing", "unknown"])
+@pytest.mark.parametrize("observed,confirmed", [("completed", "completed"), ("failed", "failed"), ("completed", "pending")])
+async def test_pending_winner_does_not_discard_terminal_observation(
+    remote_record, checkpoint, initial_status, observed, confirmed, monkeypatch,
+):
+    cm, adapter, ref, data, storage = remote_record
+    await cm.aupdate_imported_voice(ref, data["scope_id"], {"overwrite_status": initial_status})
+    provider = adapter.resolve_runtime(cm).provider
+    token = service.context_token(adapter.resolve_runtime(cm))
+    pending_entered, terminal_entered = asyncio.Event(), asyncio.Event()
+    release_pending, release_terminal = asyncio.Event(), asyncio.Event()
+    client = httpx.AsyncClient
+    monkeypatch.setattr(routes, "get_config_manager", lambda: cm)
+    app = FastAPI()
+    app.include_router(routes.router)
+    api = client(transport=httpx.ASGITransport(app=app), base_url="http://isolated.local")
+    calls = 0
+
+    async def upstream(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            pending_entered.set()
+            await release_pending.wait()
+            return response_for(provider, data, "pending", "2")
+        if calls == 2:
+            if checkpoint == "remote":
+                terminal_entered.set()
+                await release_terminal.wait()
+            return response_for(provider, data, observed, "3")
+        assert calls == 3, "Reconciliation must query again once without a mutation or unbounded retry"
+        return response_for(provider, data, confirmed, "3")
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(
+        **{**kwargs, "transport": httpx.MockTransport(upstream)},
+    ))
+    update = cm.aupdate_imported_voice
+    paused = False
+
+    async def delayed_commit(local_ref, scope, values, **kwargs):
+        nonlocal paused
+        if checkpoint == "commit" and values.get("overwrite_status") in {"completed", "failed"} and not paused:
+            paused = True
+            terminal_entered.set()
+            await release_terminal.wait()
+        return await update(local_ref, scope, values, **kwargs)
+
+    monkeypatch.setattr(cm, "aupdate_imported_voice", delayed_commit)
+    path = f"/api/characters/voices/{ref}/overwrite_status"
+    late = None
+    async with api:
+        early = asyncio.create_task(api.get(path, params={"context_token": token}))
+        try:
+            await asyncio.wait_for(pending_entered.wait(), timeout=5)
+            late = asyncio.create_task(api.get(path, params={"context_token": token}))
+            await asyncio.wait_for(terminal_entered.wait(), timeout=5)
+            release_pending.set()
+            first = await asyncio.wait_for(early, timeout=5)
+            assert first.status_code == 200
+            assert first.json()["status"] == initial_status
+            release_terminal.set()
+            final = await asyncio.wait_for(late, timeout=5)
+            assert final.status_code == 200
+            assert calls == 3
+            expected = initial_status if confirmed == "pending" else confirmed
+            assert final.json()["status"] == expected
+            assert final.json()["voice_data"]["remote_revision"] == "3"
+            saved = await asyncio.to_thread(cm.get_imported_voice, ref, include_inactive=True)
+            assert saved["overwrite_status"] == expected
+            assert saved["remote_revision"] == "3"
+            assert saved["overwrite_operation_id"] == "same-operation"
+            if confirmed in {"completed", "failed"}:
+                assert await cm.adelete_imported_voice(ref)
+        finally:
+            release_pending.set()
+            release_terminal.set()
+            tasks = [task for task in (early, late) if task is not None]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote_record", ["doubao_tts"], indirect=True)
+@pytest.mark.parametrize("change", ["busy", "operation", "delete", "config", "timeout", "cancel", "read-failure", "save-failure"])
+async def test_reconciliation_retry_preserves_ownership_and_is_bounded(remote_record, change, monkeypatch):
+    cm, adapter, ref, data, storage = remote_record
+    token = service.context_token(adapter.resolve_runtime(cm))
+    client = httpx.AsyncClient
+    calls = 0
+    mutation_at_retry = None
+    original = cm.aupdate_imported_voice
+
+    async def upstream(request):
+        nonlocal calls, mutation_at_retry
+        calls += 1
+        assert calls <= 2
+        if calls == 2:
+            if change == "operation":
+                await original(ref, data["scope_id"], {"overwrite_operation_id": "replacement"})
+            elif change == "delete":
+                await original(ref, data["scope_id"], {"overwrite_status": "completed"})
+                assert await cm.adelete_imported_voice(ref)
+            elif change == "config":
+                cm.raw["ttsModelApiKey"] = "changed-key"
+                cm.raw["assistApiKeyDoubaoTts"] = "changed-key"
+            elif change == "timeout":
+                raise httpx.ReadTimeout("controlled timeout", request=request)
+            elif change == "cancel":
+                raise asyncio.CancelledError()
+            elif change == "read-failure":
+                await asyncio.to_thread(storage.write_text, "{broken", encoding="utf-8")
+            elif change == "save-failure":
+                def reject_save(value):
+                    raise OSError("controlled save failure")
+                monkeypatch.setattr(cm, "save_voice_storage", reject_save)
+            mutation_at_retry = await asyncio.to_thread(storage.read_bytes)
+        return response_for("doubao_tts", data, "completed", "3")
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(
+        **{**kwargs, "transport": httpx.MockTransport(upstream)},
+    ))
+    commits = 0
+
+    async def compete(local_ref, scope, values, **kwargs):
+        nonlocal commits
+        commits += 1
+        if commits == 1 or change == "busy":
+            # A supported concurrent status commit wins, without changing operation identity.
+            await original(local_ref, scope, {"remote_revision": "2"})
+        return await original(local_ref, scope, values, **kwargs)
+
+    monkeypatch.setattr(cm, "aupdate_imported_voice", compete)
+    error_type = (
+        asyncio.CancelledError if change == "cancel" else OSError if change == "save-failure"
+        else ValueError if change == "read-failure" else service.VoiceManagementError
+    )
+    with pytest.raises(error_type) as error:
+        await service.refresh_overwrite_status(adapter, cm, ref, token=token)
+    assert calls == 2
+    if change in {"operation", "config", "delete"}:
+        assert error.value.code == "CONTEXT_CHANGED"
+    elif change == "busy":
+        assert error.value.code == "OPERATION_IN_PROGRESS" and error.value.status_code == 409
+    elif change == "timeout":
+        assert error.value.code == "UPSTREAM_TIMEOUT" and error.value.status_code == 504
+    if mutation_at_retry is not None and change != "busy":
+        assert await asyncio.to_thread(storage.read_bytes) == mutation_at_retry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote_record", ["doubao_tts"], indirect=True)
+async def test_new_operation_between_attempts_is_not_adopted(remote_record, monkeypatch):
+    cm, adapter, ref, data, storage = remote_record
+    token = service.context_token(adapter.resolve_runtime(cm))
+    client = httpx.AsyncClient
+    calls = 0
+
+    def upstream(request):
+        nonlocal calls
+        calls += 1
+        assert calls == 1
+        return response_for("doubao_tts", data, "completed", "3")
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(
+        **{**kwargs, "transport": httpx.MockTransport(upstream)},
+    ))
+    original = cm.aupdate_imported_voice
+    winner = None
+
+    async def handoff_after_conflict(local_ref, scope, values, **kwargs):
+        nonlocal winner
+        await original(local_ref, scope, {"remote_revision": "2"})
+        incumbent = await original(local_ref, scope, values, **kwargs)
+        winner = await original(local_ref, scope, {"overwrite_operation_id": "replacement"})
+        return incumbent
+
+    monkeypatch.setattr(cm, "aupdate_imported_voice", handoff_after_conflict)
+    with pytest.raises(service.VoiceManagementError) as error:
+        await service.refresh_overwrite_status(adapter, cm, ref, token=token)
+    assert error.value.code == "CONTEXT_CHANGED"
+    persisted = await asyncio.to_thread(cm.get_imported_voice, ref, include_inactive=True)
+    assert persisted["overwrite_operation_id"] == winner["overwrite_operation_id"] == "replacement"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote_record", ["doubao_tts"], indirect=True)
+async def test_reconciliation_deadline_cancels_second_query(remote_record, monkeypatch):
+    cm, adapter, ref, data, storage = remote_record
+    token = service.context_token(adapter.resolve_runtime(cm))
+    client = httpx.AsyncClient
+    calls = 0
+    canceled = False
+    timeouts = []
+    timeout = asyncio.timeout
+
+    def capture_timeout(delay):
+        assert 0 < delay < 35, "The entire reconciliation must fit the frontend request deadline"
+        scope = timeout(delay)
+        timeouts.append(scope)
+        return scope
+
+    monkeypatch.setattr(asyncio, "timeout", capture_timeout)
+
+    async def upstream(request):
+        nonlocal calls, canceled
+        calls += 1
+        if calls == 2:
+            timeouts[0].reschedule(asyncio.get_running_loop().time())
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                canceled = True
+                raise
+        assert calls == 1
+        return response_for("doubao_tts", data, "completed", "3")
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(
+        **{**kwargs, "transport": httpx.MockTransport(upstream)},
+    ))
+    original = cm.aupdate_imported_voice
+    winner = None
+
+    async def conflict(local_ref, scope, values, **kwargs):
+        nonlocal winner
+        winner = await original(local_ref, scope, {"remote_revision": "2"})
+        return await original(local_ref, scope, values, **kwargs)
+
+    monkeypatch.setattr(cm, "aupdate_imported_voice", conflict)
+    with pytest.raises(service.VoiceManagementError) as error:
+        await service.refresh_overwrite_status(adapter, cm, ref, token=token)
+    assert error.value.code == "UPSTREAM_TIMEOUT" and error.value.status_code == 504
+    assert calls == 2 and canceled
+    persisted = await asyncio.to_thread(cm.get_imported_voice, ref, include_inactive=True)
+    assert persisted["_record_revision"] == winner["_record_revision"]
+    assert persisted["overwrite_status"] == "processing"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote_record", ["doubao_tts"], indirect=True)
+async def test_storage_timeout_is_not_reported_as_upstream_deadline(remote_record, monkeypatch):
+    cm, adapter, ref, data, storage = remote_record
+    token = service.context_token(adapter.resolve_runtime(cm))
+    client = httpx.AsyncClient
+    monkeypatch.setattr(routes, "get_config_manager", lambda: cm)
+    app = FastAPI()
+    app.include_router(routes.router)
+    api = client(transport=httpx.ASGITransport(app=app), base_url="http://isolated.local")
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(
+        **{**kwargs, "transport": httpx.MockTransport(lambda request: response_for("doubao_tts", data, "completed", "3"))},
+    ))
+
+    def reject_save(value):
+        raise TimeoutError("controlled filesystem timeout")
+
+    monkeypatch.setattr(cm, "save_voice_storage", reject_save)
+    before = await asyncio.to_thread(storage.read_bytes)
+    async with api:
+        response = await api.get(f"/api/characters/voices/{ref}/overwrite_status", params={"context_token": token})
+    assert response.status_code == 500
+    assert response.json()["code"] == "STORAGE_ERROR"
+    assert await asyncio.to_thread(storage.read_bytes) == before
