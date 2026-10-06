@@ -146,6 +146,8 @@ _LATIN_KEYWORD_VALUE_RE = re.compile(
 )
 # 地址类关键词：值在逗号处停下，同一行逗号后面的片段（「address: Apt 4, 12 Main Street」）也要找街名
 _ADDRESS_KEYWORDS = frozenset({"住址", "地址", "家住", "住在", "位于", "位於", "address"})
+# 像账号的词：带 @ 或 _、字母与数字混写、或驼峰（「@alicefoo」「mimi_cat」「cat2024」「AliceFoo」）
+_ACCOUNT_WORD_RE = re.compile(r"[@_]|[A-Za-z][0-9]|[0-9][A-Za-z]|[a-z][A-Z]")
 _ADDRESS_SEGMENT_SPLIT_RE = re.compile(r"[,，;；、]")
 _LINE_END_RE = re.compile(r"[\n。！？!?]")
 # 带分隔符的电话号码（「138 0013 8000」「+1 (555) 010-0199」）：按纯数字比对
@@ -299,13 +301,12 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
             keyword = (m.group("kw") or "").lower()
             is_address = keyword in _ADDRESS_KEYWORDS or m.groupdict().get("kw2") or m.groupdict().get("kw3")
             if not is_address:
-                # 联系方式的值会把后面的叙述一起吞进来（「wechat @alicefoo likes cats」）：账号本身——
-                # 值的第一个词——另记一个，人设只复述账号也能命中。只认像账号的词（带字母、@ 或 _）：号码与国家码
-                # （「+1」）另有数字 / 电话规则
+                # 联系方式的值会把前后的叙述一起吞进来（「wechat @alicefoo likes cats」「wechat: usually
+                # online as @alicefoo」）：值里像账号的词另记一个，人设只复述账号也能命中。普通词
+                # （usually）与号码片段（「+1」，另有数字 / 电话规则）不单独记
                 words = value.split()
-                head = words[0] if words else ""
-                if head != value and any(ch.isalpha() or ch in "@_" for ch in head):
-                    found.append(head)
+                if len(words) > 1:
+                    found.extend(w.strip(".,!?;:") for w in words if _ACCOUNT_WORD_RE.search(w))
             if is_address:
                 end = _LINE_END_RE.search(text, m.start("value"))
                 rest = text[m.end("value"):end.start() if end else len(text)]

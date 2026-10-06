@@ -629,3 +629,9 @@ def test_a_contact_handle_is_its_own_token_when_more_words_follow():
 def test_a_country_code_is_not_a_token_of_its_own():
     tokens = persona.extract_sensitive_tokens("phone: +1 555-010-0199", [])
     assert "+1" not in tokens
+
+
+
+def test_only_account_shaped_words_of_a_contact_value_stand_alone():
+    tokens = persona.extract_sensitive_tokens("wechat: usually online as @alicefoo", [])
+    assert "@alicefoo" in tokens and "usually" not in tokens
