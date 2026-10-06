@@ -200,12 +200,16 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
      docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
      docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
    } | sudo sh -c 'umask 077; cat > /root/neko-official-effective.txt'
-   # Lists only the names that differ (< old container, > new container), never the values; no output means identical
-   sudo bash -c 'diff <(sort "$0") <(sort "$1") | sed -n "s/^\([<>]\) \([^=]*\)=.*/\1 \2/p"' \
+   # Lists only the names that differ (< old container, > new container), never the values
+   sudo bash -c '[ -s "$0" ] && [ -s "$1" ] || { echo "COMPARE FAILED: snapshot missing or empty"; exit 2; }
+     out=$(diff <(sort "$0") <(sort "$1")); rc=$?
+     [ "$rc" -le 1 ] || { echo "COMPARE FAILED"; exit 2; }
+     [ "$rc" -eq 0 ] && { echo identical; exit 0; }
+     printf "%s\n" "$out" | sed -n "s/^\([<>]\) \([^=]*\)=.*/\1 \2/p"; exit 1' \
      /root/neko-2c2g-effective.txt /root/neko-official-effective.txt
    ```
 
-   Make sure `NEKO_REQUIRE_HTTPS`, `NEKO_INSTANCE_ACCESS_KEY`, `NEKO_INSTANCE_PUBLIC_ORIGIN`, `NEKO_TRUSTED_HOSTS`, `NEKO_TRUSTED_ORIGINS`, `SSL_DOMAIN`, the image, and the ports were not lost or changed. To see a specific value, check it alone with `sudo grep '^NAME=' file` instead of printing the whole file. On an unexpected difference, run `(cd docker && docker compose down)`, fix `docker/.env` or the override, and start again. Delete both snapshot files once the migration is confirmed.
+   Only `identical` means the configurations match; `COMPARE FAILED` means the comparison did not run and must not be treated as a pass. Make sure `NEKO_REQUIRE_HTTPS`, `NEKO_INSTANCE_ACCESS_KEY`, `NEKO_INSTANCE_PUBLIC_ORIGIN`, `NEKO_TRUSTED_HOSTS`, `NEKO_TRUSTED_ORIGINS`, `SSL_DOMAIN`, the image, and the ports were not lost or changed. To see a specific value, check it alone with `sudo grep '^NAME=' file` instead of printing the whole file. On an unexpected difference, run `(cd docker && docker compose down)`, fix `docker/.env` or the override, and start again. Delete both snapshot files once the migration is confirmed.
 
     To roll back to the old deployment if migration fails, run from the repository root:
 
@@ -222,7 +226,7 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
 
    A `COMPOSE_FILE` entry in the restored `.env` loads the gateway override automatically. If the old deployment passed the override with explicit `-f` flags, use the same `-f` flags for both `config` and `up`; do not start it if the bindings or mount sources are wrong.
 
-   The rolled-back container still carries the old watchdog label, so the installed watchdog recognizes it. Once the old service is healthy, lift the step 1 pause and clear the pre-pause failure count: `sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/fail-count /opt/neko/disabled`.
+   The retrieved old Compose file extends the current official one, so the rolled-back container carries both the old and the new label and is recognized by either the old watchdog or one reinstalled in step 7. Once the old service is healthy, lift the step 1 pause and clear the pre-pause failure count: `sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/fail-count /opt/neko/disabled`.
 
    In a shallow clone that lacks the commit, run `git fetch --unshallow` first. The restored `docker-compose.yaml` is untracked; delete it once a later migration succeeds and never commit it.
 7. **Reinstall the watchdog** (section 5): the old script only recognizes the old label. Resume it once the service is healthy.

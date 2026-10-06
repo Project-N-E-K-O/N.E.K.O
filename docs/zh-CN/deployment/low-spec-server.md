@@ -277,12 +277,16 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
      docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
      docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
    } | sudo sh -c 'umask 077; cat > /root/neko-official-effective.txt'
-   # 只列出有差异的变量名（< 旧容器，> 新容器），不打印任何值；没有输出表示完全一致
-   sudo bash -c 'diff <(sort "$0") <(sort "$1") | sed -n "s/^\([<>]\) \([^=]*\)=.*/\1 \2/p"' \
+   # 只列出有差异的变量名（< 旧容器，> 新容器），不打印任何值
+   sudo bash -c '[ -s "$0" ] && [ -s "$1" ] || { echo "COMPARE FAILED: snapshot missing or empty"; exit 2; }
+     out=$(diff <(sort "$0") <(sort "$1")); rc=$?
+     [ "$rc" -le 1 ] || { echo "COMPARE FAILED"; exit 2; }
+     [ "$rc" -eq 0 ] && { echo identical; exit 0; }
+     printf "%s\n" "$out" | sed -n "s/^\([<>]\) \([^=]*\)=.*/\1 \2/p"; exit 1' \
      /root/neko-2c2g-effective.txt /root/neko-official-effective.txt
    ```
 
-   重点确认 `NEKO_REQUIRE_HTTPS`、`NEKO_INSTANCE_ACCESS_KEY`、`NEKO_INSTANCE_PUBLIC_ORIGIN`、`NEKO_TRUSTED_HOSTS`、`NEKO_TRUSTED_ORIGINS`、`SSL_DOMAIN`、镜像和端口没有丢失或变化。需要看具体值时，用 `sudo grep '^变量名=' 文件` 单独查看，不要整份打印。有非预期差异时先 `(cd docker && docker compose down)`，修正 `docker/.env` 或覆盖文件后再启动。迁移确认成功后再删除这两个快照文件。
+   输出 `identical` 才表示完全一致；出现 `COMPARE FAILED` 说明比对没有完成，先查明原因，不能当作通过。重点确认 `NEKO_REQUIRE_HTTPS`、`NEKO_INSTANCE_ACCESS_KEY`、`NEKO_INSTANCE_PUBLIC_ORIGIN`、`NEKO_TRUSTED_HOSTS`、`NEKO_TRUSTED_ORIGINS`、`SSL_DOMAIN`、镜像和端口没有丢失或变化。需要看具体值时，用 `sudo grep '^变量名=' 文件` 单独查看，不要整份打印。有非预期差异时先 `(cd docker && docker compose down)`，修正 `docker/.env` 或覆盖文件后再启动。迁移确认成功后再删除这两个快照文件。
 
    迁移失败需要回退到旧部署时，在仓库根目录执行：
 
@@ -299,7 +303,7 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
 
    恢复的 `.env` 里若有 `COMPOSE_FILE`，上面的命令会自动加载网关覆盖文件。旧部署如果是用 `-f` 显式指定覆盖文件的，`config` 和 `up` 都要带上同样的 `-f` 参数；端口绑定或挂载来源不对时不要启动。
 
-   回退后的旧容器仍带着旧看门狗标签，已安装的看门狗能继续识别它。确认旧服务健康后，解除第 1 步的暂停并清掉暂停前的失败计数：`sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/fail-count /opt/neko/disabled`。
+   取回的旧 Compose 继承当前的官方 Compose，回退后的容器同时带有旧标签和新标签，所以无论已安装的是旧版还是第 7 步重装的新版看门狗，都能识别它。确认旧服务健康后，解除第 1 步的暂停并清掉暂停前的失败计数：`sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/fail-count /opt/neko/disabled`。
 
    浅克隆里找不到该提交时，先执行 `git fetch --unshallow`。取回的 `docker-compose.yaml` 不受版本管理，之后重新迁移成功时删除即可，不要提交。
 7. **重新安装看门狗**（第 5 节）。旧脚本只识别旧标签，不重装就不会再处理新容器。确认健康后解除 `disabled`。
