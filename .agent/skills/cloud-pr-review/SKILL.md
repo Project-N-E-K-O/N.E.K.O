@@ -1,17 +1,18 @@
 ---
 name: cloud-pr-review
-description: 云端（claude.ai/code）自动化 PR review 全流程：用官方 code-review skill 做主 review、把需要作者处理的问题发到 PR 上、订阅 PR 动态在作者每次推送后自动选择增量或全量复审、维护者回来问"现在怎么样了"时汇总状态并为需要拍板的分歧写决策简报。触发："review PR #N"、"帮我盯着 PR #N"、"盯到收敛"、以及在已启用本流程的会话里问"现在怎么样了 / 进度如何 / PR 什么情况 / 收敛了吗 / 能合了吗"。
+description: 云端自动 review 别人的 PR 并盯到收敛：官方 code-review 主审、发问题到 PR、作者推送后自动复审、汇报状态与待拍板分歧。触发："review/盯 PR #N"，或盯 PR 期间问"现在怎么样了""收敛了吗"。
 ---
 
 # 云端自动 PR Review
 
-用户是维护者，把一个**别人提的** PR 交给你盯到收敛。你以 reviewer 身份工作：发 review、跟进作者的修改、在用户回来时汇报。所有模板见 [references/templates.md](references/templates.md)。
+适用于任何仓库。用户是维护者，把一个**别人提的** PR 交给你盯到收敛。你以 reviewer 身份工作：发 review、跟进作者的修改、在用户回来时汇报。所有模板见 [references/templates.md](references/templates.md)。
 
 ## 0. 硬规则
 
 - **只当 reviewer**：不 push 到 PR 分支，不 approve，不 merge，不改 PR 标题和描述，不 resolve 别人开的 thread。review 一律用 `COMMENT` 事件提交。
 - **GitHub 操作只走 `mcp__github__*` 工具**（云端没有 `gh`），先用 ToolSearch 加载。发到 GitHub 的每条内容都以 attribution footer 结尾（见模板）。
-- **PR 上只发需要作者处理的问题**（§2.3 的 🔴 和 ❓）。可选建议只放进总结里的折叠段，其余只告诉用户。
+- **PR 上只发需要作者处理的问题**（§2.4 的 🔴 和 ❓）。可选建议只放进总结里的折叠段，其余只告诉用户。
+- **用 ROI 决定提不提，不用 scope**：一个问题值不值得让作者改，看"修它的收益"和"修它的成本与风险"之比，而不是看它是不是这个 PR 引入的。PR 可以为了修重要 bug 扩大范围；只有改动大到不适合塞进这个 PR 时，才建议用户另开 issue（§2.4）。
 - **状态以 PR 上的记录为准，不靠记忆**：每轮 review 的总结里都带 ledger 标记（模板 §L）。context 被压缩或会话重启后，从 PR 上重新算出状态（§5）。
 - **在 PR 上和作者争论最多两个来回**，之后转为"待用户拍板"（§6）。
 - 对用户说话用中文；PR 上的语言跟随作者（作者用中文就用中文）。
@@ -27,21 +28,21 @@ description: 云端（claude.ai/code）自动化 PR review 全流程：用官方
 
 ## 2. 全量 review（用官方 code-review skill）
 
-1. **先读项目规范**：`.agent/rules/neko-guide.md`（以及仓库里有的 `CLAUDE.md` / `REVIEW.md` / `CONTRIBUTING.md`）。本项目重点：
-   - i18n 改动要同步 8 个 locale；
-   - 后端多语言字符串放在 `config/prompts/prompts_*.py`；
-   - LLM 调用必须有 budget 和 timeout，且不传 `temperature`；
-   - API URL 末尾不带斜杠；
-   - 隐私相关日志只用 `print`；
-   - 改了 `app/`、`main_logic/`、`memory/` 的 PR，描述里要有**真正写了内容**的「回归报告」，CI 只检查这一节非空，写得好不好由 reviewer 把关。
+1. **先读这个仓库的规范**，有哪个读哪个：`CLAUDE.md`、`REVIEW.md`、`CONTRIBUTING.md`、`AGENTS.md`、`.agent/rules/`、`.claude/rules/`、`.github/pull_request_template.md`，以及与改动领域相关的 `.agent/skills/` 或 `.claude/skills/`。把其中的硬性规定（比如 i18n 要同步哪些文件、运行测试用什么命令、PR 描述必须写哪些小节）当作 review 标准。CI 只能检查格式的那部分（比如某一节非空），内容写得是否像样由你把关。
 2. **把代码取到本地**：`git fetch origin pull/<N>/head:pr-<N>` 和 base 分支，再用 `git worktree add` 开一个独立目录。
 3. **调用 skill**：`Skill(code-review, args="<N> high")`。用户指定了级别就用用户的。**不要加 `--comment`**，先筛选再发。
    如果 skill 访问不到 PR（比如它依赖 `gh`），改为在 worktree 里 checkout `pr-<N>`，执行 `git reset --soft $(git merge-base origin/<base> pr-<N>)`，再对"当前 diff"跑 `code-review high`。
-4. **把结果分成三类**：
-   - 🔴 **必须修改**：正确性 bug、数据丢失、安全问题、用户能感知的回归、违反上面的项目硬性规范、缺少关键测试。每条都要能写出**具体怎样触发**。标为 PLAUSIBLE 的先自己读代码确认，确认不了就降级。
+4. **把结果按 ROI 分类**。每个问题先确认是真的：能写出**具体怎样触发**；标为 PLAUSIBLE 的先自己读代码确认，确认不了就降级。然后估三样东西：
+   - **收益**：修了能避免什么（后果有多严重 × 多容易发生 × 影响多少用户）；
+   - **成本**：作者要改多少、要花多久、要牵连哪些地方；
+   - **风险**：这个修改本身会不会引入回归，有没有测试兜底。
+
+   这套评估对 **PR 改动之前就存在的问题同样适用**，不因为"不是这个 PR 引入的"就不提。分类：
+   - 🔴 **必须修改**：收益明显大于成本和风险。典型如正确性 bug、数据丢失、安全问题、用户能感知的回归、违反仓库硬性规范、缺少关键测试。旧问题如果在 PR 碰到的代码附近、修起来不贵、后果严重，也放进这里，在 comment 里写明"这是已有问题，建议顺手修，理由是……"。
    - ❓ **需要作者说明**：意图不清、可能是故意这么写，需要作者回答才能判断。
-   - 🟡 **可选**：nit、风格、小重构。不单独开 thread，放进总结的折叠段，最多 5 条。
-   - 剩下的（没把握的、要产品判断的、PR 改动之前就存在的问题）只记在本地笔记里，汇报时告诉用户。
+   - 🟡 **可选**：ROI 低的，比如 nit、风格、小重构。不单独开 thread，放进总结的折叠段，最多 5 条。
+   - 📋 **建议另开 issue**：值得修，但改动太大，塞进这个 PR 会明显拖慢合并或扩大风险（比如要跨多个模块重构、需要单独设计）。不发到 PR 上，汇报时告诉用户，附上建议的 issue 标题和一段描述。
+   - 剩下的（没把握的、要产品判断的）只记在本地笔记里，汇报时告诉用户。
 5. **去重**：先读已有的 review thread，包括其他 reviewer 和各种 review bot 的。别人提过的问题不重复提；确有新信息时，在原 thread 下补充。
 6. **发出 review**：
    - `pull_request_review_write`（`create`，`commit_id` = 本轮审的 sha）；
@@ -61,7 +62,7 @@ description: 云端（claude.ai/code）自动化 PR review 全流程：用官方
 
    | 条件 | 做法 |
    |---|---|
-   | delta 改动行数超过 PR 总改动的 30%，或超过 400 行 | 全量 |
+   | delta 改动超过 50 行（增加加删除，不算 lock 文件和生成文件） | 全量 |
    | 新碰了之前 PR 没涉及的模块或文件（测试文件除外） | 全量 |
    | 改了公共接口、数据结构、协议、持久化格式或并发模型 | 全量 |
    | 作者为了解决某个阻塞问题重新设计了方案，而不是局部修补 | 全量 |
@@ -70,10 +71,11 @@ description: 云端（claude.ai/code）自动化 PR review 全流程：用官方
    | 其它情况：局部修补、补测试、改名、针对 review 的小改 | 增量 |
 
 4. **增量的做法**：
-   a. 逐个检查仍然打开的 thread：作者的修改是否真的解决了问题，有没有引入新问题。读代码，必要时跑相关测试（`uv run pytest <path>`）。
-   b. 审 delta：在 worktree 里 checkout `HEAD`，执行 `git reset --soft LAST`，这时"当前 diff"正好就是 delta，再跑 `Skill(code-review, args="medium")`。rebase 过的情况，按第 2 步得到的 delta 自己审。
+   a. 逐个检查仍然打开的 thread：作者的修改是否真的解决了问题，有没有引入新问题。读代码，必要时用仓库规定的命令跑相关测试。
+   b. 审 delta：不到 50 行，直接逐行读完，按 §2.4 的标准找新问题。
    c. 新问题按 §2.4–2.6 筛选后发出。已经修好的 thread（只限我方开的）：回复"已确认修复"（模板 §R1），然后 `resolve_review_thread`。
-5. **全量的做法**：跟 §2 一样，但要接上已有的 thread：修好了的按 4c 处理；问题还在的，不重复开新 comment，在原 thread 下跟进。
+5. **全量的做法**：跟 §2 一样调用 code-review skill，但要接上已有的 thread：修好了的按 4c 处理；问题还在的，不重复开新 comment，在原 thread 下跟进。
+   如果作者的改动只集中在 delta 里，可以让 skill 只审 delta：在 worktree 里 checkout `HEAD`，执行 `git reset --soft LAST`，这时"当前 diff"正好就是 delta，再跑 `Skill(code-review, args="high")`。改动牵连到 delta 之外的代码时（比如改了被多处调用的函数），审整个 PR。rebase 过的情况，审整个 PR。
 6. **每轮都要发一条总结**（模板 §B）并更新 ledger，0 个新问题也要发。如果所有阻塞问题都已修复、也没有新问题，总结里要写明，这就是"收敛"的信号，对作者也有用。
 7. **审的过程中 head 又变了**：照常提交本轮（`commit_id` 用本轮的 sha），然后马上对新 head 再走一遍 §3。
 
@@ -134,6 +136,7 @@ description: 云端（claude.ai/code）自动化 PR review 全流程：用官方
    - 概览：第几轮、审到哪个 sha、CI 状态、能否合并、问题数量（共几个，其中已解决、待作者、争议中、待拍板各几个）。
    - **P2**：逐条列出未解决的问题。每条写：用大白话说的一句话问题、级别、作者目前的反应、链接。已经有 🧑‍⚖️ 的，只提数量和一句话标题，说明会在收敛后一起请用户决定。
    - **P3**：检查有没有需要用户拍板的事。每一项按模板 §D 写决策简报。如果没有，就明确说"没有需要你拍板的事项"，附上 CI 和能否合并的状态，再用一句话列出作者没采纳的 🟡 可选建议。
+   - **任何阶段**：有 📋 建议另开 issue 的条目，都列出来，附建议的 issue 标题和描述，问用户要不要开。
 4. **用户做出决定后**：在对应 thread 里用中立的措辞通知作者（模板 §R5），再更新状态。决定是"按作者的来"，就 resolve 我方的 thread；决定是"按 reviewer 的改"，就把它重新标为 ⏳ 等作者处理。
 
 ## 8. 决策简报的要求（§D 的写法原则）
