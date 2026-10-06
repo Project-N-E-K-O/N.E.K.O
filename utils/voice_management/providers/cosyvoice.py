@@ -3,6 +3,7 @@
 import io
 import re
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from utils.dashscope_region import DASHSCOPE_DEFAULT_HTTP_API_URL, dashscope_http_url_from_base
 
@@ -28,6 +29,8 @@ class CosyVoiceAdapter(ImportOnlyAdapter):
         # Persist the effective SDK endpoint so management, synthesis and scope
         # agree even when the Qwen profile contains a custom proxy URL.
         base_url = dashscope_http_url_from_base(config.get("base_url") or "", default)
+        # The allowlisted endpoint must encrypt the initial Bearer request too.
+        base_url = urlsplit(base_url)._replace(scheme="https").geturl()
         return runtime_for(self.provider, config.get("api_key"), base_url, model=model, settings={"upload_url": TFLINK_UPLOAD_URL})
 
     def import_metadata(self, runtime):

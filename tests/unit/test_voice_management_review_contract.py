@@ -23,7 +23,15 @@ pytestmark = pytest.mark.integration_serial
     ("https://dashscope.aliyuncs.com/compatible-mode/v1", "dashscope.aliyuncs.com"),
     ("wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference", "dashscope-intl.aliyuncs.com"),
     ("https://dashscope-us.aliyuncs.com", "dashscope-us.aliyuncs.com"),
+    ("http://dashscope.aliyuncs.com/compatible-mode/v1", "dashscope.aliyuncs.com"),
+    ("http://dashscope-intl.aliyuncs.com", "dashscope-intl.aliyuncs.com"),
+    ("http://dashscope-us.aliyuncs.com", "dashscope-us.aliyuncs.com"),
+    ("ws://dashscope.aliyuncs.com/api-ws/v1/inference", "dashscope.aliyuncs.com"),
+    ("ws://dashscope-intl.aliyuncs.com/api-ws/v1/inference", "dashscope-intl.aliyuncs.com"),
+    ("ws://dashscope-us.aliyuncs.com/api-ws/v1/inference", "dashscope-us.aliyuncs.com"),
     ("https://untrusted-proxy.invalid/compatible-mode/v1", None),
+    ("http://untrusted-proxy.invalid/api/v1", None),
+    ("ws://untrusted-proxy.invalid/api-ws/v1/inference", None),
     ("not-a-url", None),
     ("", None),
 ])
@@ -69,6 +77,7 @@ async def test_cosy_management_and_synthesis_share_effective_endpoint(provider, 
     updated = await adapter.overwrite(runtime, "existing-voice", audio=b"controlled", filename="reference.wav")
     assert updated.voice_id == "existing-voice" and updated.status == "ready"
     assert len(seen) == 5
+    assert all(request.url.scheme == "https" for request in seen)
     assert all(request.url.host == expected_host for request in seen)
     assert all(request.headers["authorization"] == "Bearer configured-secret" for request in seen)
     assert all(request.url.path == "/api/v1/services/audio/tts/customization" for request in seen)
