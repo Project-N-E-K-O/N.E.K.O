@@ -65,6 +65,14 @@ There is no universal `vm.swappiness`. With ZRAM as the primary swap, evaluate v
 
 - The official Compose file caps the main container's Docker log (`docker logs`) at 10m × 3.
 - Application file logs live in `docker/neko-home/.local/share/N.E.K.O/logs/` (`docker/logs/` is only a fallback). They are not covered by the Docker cap, but the application rotates them itself (10 MB per file, 5 backups, files older than 30 days removed). Look there first when diagnosing.
+- The entrypoint aligns `docker/logs` to uid 1000 only while it is empty. If Docker created it as root earlier and files have been written there since, DEBUG and fallback logs may fail to write. From `docker/`, check it and fix only the directory itself (not recursively, and never through a symlink):
+
+  ```bash
+  stat -c '%u:%g %F' logs
+  [ -d logs ] && [ ! -L logs ] && sudo chown --no-dereference 1000:1000 logs && echo logs-dir-ok
+  ```
+
+  Fix old root-owned files inside it one by one as described in section 9, step 4.
 - To apply the same cap to other containers, merge `"log-driver": "json-file"` and `"log-opts": {"max-size": "10m", "max-file": "3"}` into `/etc/docker/daemon.json`, then restart Docker. This only applies to containers created afterwards; existing containers keep their old logging options, so recreate them (for example `docker compose up -d --force-recreate` in each project) and confirm:
 
   ```bash
@@ -175,7 +183,7 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    You must see `stopped-ok`, `tar-ok`, then `archive-ok`, and only `ok` lines, no `MISSING`. The backup contains instance credentials and TLS keys; never copy it into the repository or anywhere public. Only after confirming it is complete, remove the container: `docker rm neko`.
 4. Make sure `docker/neko-home` and `docker/logs` do not exist yet, then copy from the actual sources as root, preserving ownership: `sudo cp -a "$HOME_SRC" docker/neko-home && sudo cp -a "$LOGS_SRC" docker/logs`.
 
-   No manual `chown -R` is needed afterwards: on every start the entrypoint, running as root, aligns the top of `neko-home` and everything under `.local/share/N.E.K.O` (memory, characters, config) to uid/gid 1000, and aligns the `logs` mount point to 1000 only while it is empty (so a `./logs` symlink pointing elsewhere cannot change another host directory's owner); it never recurses into it. A `logs` copied with `cp -a` keeps its original owner, usually already 1000; fix any old root-owned log files one by one if needed, e.g. `sudo chown --no-dereference 1000:1000 -- docker/logs/some.log`; avoid `chown -R` and wildcards so other mounted host paths are not touched.
+   No manual `chown -R` is needed afterwards: on every start the entrypoint, running as root, aligns the top of `neko-home` and everything under `.local/share/N.E.K.O` (memory, characters, config) to uid/gid 1000, and aligns the `logs` mount point to 1000 only while it is empty (so a `./logs` symlink pointing elsewhere cannot change another host directory's owner); it never recurses into it. A `logs` copied with `cp -a` keeps its original owner, usually already 1000; fix any old root-owned log files one by one if needed, e.g. `sudo chown --no-dereference 1000:1000 -- docker/logs/some.log`; avoid `chown -R` and wildcards so other mounted host paths are not touched. If the `docker/logs` directory itself is not owned by 1000, fix only the directory with the commands in section 4.
 5. Carry over **all** effective configuration, not only `docker/community-2c2g/.env` but also any `--env-file`, shell variables, `COMPOSE_FILE`, and `-f` override files used to start it. Put the values in `docker/.env`; a gateway override becomes `docker/compose.gateway.yaml` with `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml`. Plain `docker compose` commands without `-f` should then produce the complete configuration, without relying on ad-hoc shell variables.
 
    If the old override also set non-environment options such as `mem_limit`, `read_only`, `cap_drop`, `tmpfs`, `extra_hosts`, `devices`, or `ulimits`, carry them into `docker/compose.local.yaml` under `neko-main` as well. Options the snapshot does not record (such as `devices` and `ulimits`) must be checked by hand against the old override file.
@@ -198,9 +206,10 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    ```bash
    docker compose config --format json | python3 -c 'import json,sys; print("\n".join(sorted(json.load(sys.stdin)["services"]["neko-main"]["environment"])))'
    ```
-6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. Back at the repository root, compare the new container's effective configuration with the step 2 snapshot:
+6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. Back at the repository root, compare the new container's effective configuration with the step 2 snapshot (the previous new-container snapshot is removed first, so a failed collection makes the comparison print `COMPARE FAILED` instead of `identical` from a stale file):
 
    ```bash
+   sudo rm -f /root/neko-official-effective.txt
    SNAP=$(docker inspect neko --format 'image={{.Config.Image}}' &&
      docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}' &&
      docker inspect neko --format '{{printf "memory=%v\n" .HostConfig.Memory}}{{printf "memory_swap=%v\n" .HostConfig.MemorySwap}}{{printf "nano_cpus=%v\n" .HostConfig.NanoCpus}}{{printf "read_only=%v\n" .HostConfig.ReadonlyRootfs}}{{printf "cap_add=%v\n" .HostConfig.CapAdd}}{{printf "cap_drop=%v\n" .HostConfig.CapDrop}}{{printf "security_opt=%v\n" .HostConfig.SecurityOpt}}{{printf "tmpfs=%v\n" .HostConfig.Tmpfs}}{{printf "extra_hosts=%v\n" .HostConfig.ExtraHosts}}{{printf "restart=%v\n" .HostConfig.RestartPolicy.Name}}' &&
@@ -231,7 +240,7 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    (cd docker/community-2c2g && docker compose up -d)
    ```
 
-   A `COMPOSE_FILE` entry in the restored `.env` loads the gateway override automatically. If the old deployment used `-f` overrides, an `--env-file`, or shell variables, pass them the same way to both `config` and `up`; do not start it if the bindings or mount sources are wrong. After it starts, create `/root/neko-rollback-effective.txt` with the same snapshot commands as step 6 and compare it against `/root/neko-2c2g-effective.txt` with the comparison script; only `identical` means the old configuration was fully restored.
+   A `COMPOSE_FILE` entry in the restored `.env` loads the gateway override automatically. If the old deployment used `-f` overrides, an `--env-file`, or shell variables, pass them the same way to both `config` and `up`; do not start it if the bindings or mount sources are wrong. After it starts, create `/root/neko-rollback-effective.txt` with the same snapshot commands as step 6 (including the leading `rm -f`, with the file name changed) and compare it against `/root/neko-2c2g-effective.txt` with the comparison script; only `identical` means the old configuration was fully restored.
 
    The retrieved old Compose file extends the current official one, so the rolled-back container carries both the old and the new label and is recognized by either the old watchdog or one reinstalled in step 7. Once the old service is healthy, lift the step 1 pause and clear the pre-pause failure count: `sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/fail-count /opt/neko/disabled`.
 

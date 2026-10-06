@@ -89,6 +89,14 @@ swapon --show
 
 - 官方 Compose 已把主容器的 Docker 日志（`docker logs`）限制为 10m × 3。
 - 应用文件日志写在 `docker/neko-home/.local/share/N.E.K.O/logs/`（`docker/logs/` 只是后备目录），不受上面的限制，但应用会自行轮转（单个文件 10MB、保留 5 份，30 天前的日志自动清理）。排查问题时也先看这里。
+- 入口脚本只在 `docker/logs` 为空时把它对齐到 uid 1000。如果它是 Docker 早先以 root 创建、之后又已经写入了文件的目录，DEBUG 日志和后备日志可能写不进去。在 `docker/` 下核对并只修目录本身（不递归，是符号链接时不动）：
+
+  ```bash
+  stat -c '%u:%g %F' logs
+  [ -d logs ] && [ ! -L logs ] && sudo chown --no-dereference 1000:1000 logs && echo logs-dir-ok
+  ```
+
+  其中由 root 写下的旧文件按第 9 节第 4 步的方法逐个修复。
 - 其他容器需要同样的限制时，把以下内容合并进现有 `/etc/docker/daemon.json`，再执行 `sudo systemctl restart docker`：
 
 ```json
@@ -252,7 +260,7 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    必须依次看到 `stopped-ok`、`tar-ok` 和 `archive-ok`，并且每一项都是 `ok`、没有 `MISSING`。备份含实例凭证和 TLS 私钥，不要复制到仓库目录或公开位置。确认备份完整后再删除容器：`docker rm neko`。
 4. 确认 `docker/neko-home` 和 `docker/logs` 尚不存在（已存在说明另有官方部署的数据，先核对，不要覆盖），再从实际来源以 root 保留属主和权限地复制：`sudo cp -a "$HOME_SRC" docker/neko-home && sudo cp -a "$LOGS_SRC" docker/logs`。TLS 私钥属主为 root、权限 0600，不用 root 复制会遗漏。
 
-   复制后不需要手动 `chown -R`：容器每次启动时，入口脚本会以 root 把 `neko-home` 顶层和 `.local/share/N.E.K.O` 下的全部数据（记忆、角色、配置等）对齐到 uid/gid 1000，`logs` 挂载点只在为空时才被对齐到 1000（避免 `./logs` 是指向别处的符号链接时改到其他宿主目录），也不会递归修改其中的旧文件。迁移过来的 `logs` 用 `cp -a` 保留了原属主，通常已是 1000；如果其中有以前以 root 写下的日志，按需逐个修复，例如 `sudo chown --no-dereference 1000:1000 -- docker/logs/某个.log`；不要用 `chown -R` 或通配符，以免改到挂载进来的其他宿主路径。
+   复制后不需要手动 `chown -R`：容器每次启动时，入口脚本会以 root 把 `neko-home` 顶层和 `.local/share/N.E.K.O` 下的全部数据（记忆、角色、配置等）对齐到 uid/gid 1000，`logs` 挂载点只在为空时才被对齐到 1000（避免 `./logs` 是指向别处的符号链接时改到其他宿主目录），也不会递归修改其中的旧文件。迁移过来的 `logs` 用 `cp -a` 保留了原属主，通常已是 1000；如果其中有以前以 root 写下的日志，按需逐个修复，例如 `sudo chown --no-dereference 1000:1000 -- docker/logs/某个.log`；不要用 `chown -R` 或通配符，以免改到挂载进来的其他宿主路径。`docker/logs` 目录本身不属于 1000 时，按第 4 节的命令只修目录。
 5. 把旧部署的**全部**有效配置迁过来，不只是 `docker/community-2c2g/.env`，还包括启动时用过的 `--env-file`、shell 环境变量、`COMPOSE_FILE` 和 `-f` 覆盖文件。需要的值写入 `docker/.env`；网关覆盖文件改放 `docker/compose.gateway.yaml`，`COMPOSE_FILE` 改为 `docker-compose.yml:compose.gateway.yaml`。之后用不带 `-f` 的 `docker compose` 命令就能得到完整配置，不要依赖临时的 shell 变量。
 
    旧部署的覆盖文件里如果还有 `mem_limit`、`read_only`、`cap_drop`、`tmpfs`、`extra_hosts`、`devices`、`ulimits` 等非环境变量设置，也一并写进 `docker/compose.local.yaml` 的 `neko-main` 下。快照没有覆盖的选项（如 `devices`、`ulimits`）要对照旧覆盖文件人工核对。
@@ -275,9 +283,10 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    ```bash
    docker compose config --format json | python3 -c 'import json,sys; print("\n".join(sorted(json.load(sys.stdin)["services"]["neko-main"]["environment"])))'
    ```
-6. 在 `docker/` 执行 `docker compose config` 核对挂载来源和端口后 `docker compose up -d`，确认实例凭证、角色和记忆都在。再回到仓库根目录，把新容器的有效配置和第 2 步的快照比对：
+6. 在 `docker/` 执行 `docker compose config` 核对挂载来源和端口后 `docker compose up -d`，确认实例凭证、角色和记忆都在。再回到仓库根目录，把新容器的有效配置和第 2 步的快照比对（先删掉上一次留下的新快照，采集失败时比对会报 `COMPARE FAILED`，不会拿旧文件得出 `identical`）：
 
    ```bash
+   sudo rm -f /root/neko-official-effective.txt
    SNAP=$(docker inspect neko --format 'image={{.Config.Image}}' &&
      docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}' &&
      docker inspect neko --format '{{printf "memory=%v\n" .HostConfig.Memory}}{{printf "memory_swap=%v\n" .HostConfig.MemorySwap}}{{printf "nano_cpus=%v\n" .HostConfig.NanoCpus}}{{printf "read_only=%v\n" .HostConfig.ReadonlyRootfs}}{{printf "cap_add=%v\n" .HostConfig.CapAdd}}{{printf "cap_drop=%v\n" .HostConfig.CapDrop}}{{printf "security_opt=%v\n" .HostConfig.SecurityOpt}}{{printf "tmpfs=%v\n" .HostConfig.Tmpfs}}{{printf "extra_hosts=%v\n" .HostConfig.ExtraHosts}}{{printf "restart=%v\n" .HostConfig.RestartPolicy.Name}}' &&
@@ -308,7 +317,7 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    (cd docker/community-2c2g && docker compose up -d)
    ```
 
-   恢复的 `.env` 里若有 `COMPOSE_FILE`，上面的命令会自动加载网关覆盖文件。旧部署如果用过 `-f` 覆盖文件、`--env-file` 或 shell 环境变量，`config` 和 `up` 都要以同样方式带上；端口绑定或挂载来源不对时不要启动。启动后用第 6 步同样的快照命令生成 `/root/neko-rollback-effective.txt`，再用比对脚本与 `/root/neko-2c2g-effective.txt` 比对，输出 `identical` 才说明旧配置已完整恢复。
+   恢复的 `.env` 里若有 `COMPOSE_FILE`，上面的命令会自动加载网关覆盖文件。旧部署如果用过 `-f` 覆盖文件、`--env-file` 或 shell 环境变量，`config` 和 `up` 都要以同样方式带上；端口绑定或挂载来源不对时不要启动。启动后用第 6 步同样的快照命令（含开头的 `rm -f`，文件名换掉）生成 `/root/neko-rollback-effective.txt`，再用比对脚本与 `/root/neko-2c2g-effective.txt` 比对，输出 `identical` 才说明旧配置已完整恢复。
 
    取回的旧 Compose 继承当前的官方 Compose，回退后的容器同时带有旧标签和新标签，所以无论已安装的是旧版还是第 7 步重装的新版看门狗，都能识别它。确认旧服务健康后，解除第 1 步的暂停并清掉暂停前的失败计数：`sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/fail-count /opt/neko/disabled`。
 
