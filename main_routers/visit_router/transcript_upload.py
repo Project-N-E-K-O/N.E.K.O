@@ -1034,7 +1034,11 @@ def _drop_rejected_sealed_sync(
         except ValueError:
             return True
         marked = isinstance(doc, dict) and isinstance(doc.get("rejected"), str) and doc["rejected"]
-        same_owner = isinstance(doc, dict) and known_terminal is not None             and doc.get("own_visit_uid") == known_terminal[1]
+        # 归属未知（None）不算一致：没有拒收标记、归属又对不上号的文件不删
+        same_owner = (
+            isinstance(doc, dict) and known_terminal is not None and known_terminal[1] is not None
+            and doc.get("own_visit_uid") == known_terminal[1]
+        )
         if marked or same_owner:
             # 拒收标记没写成、但本进程知道它已终态结清（known_terminal，且归属一致——共用电脑上不碰
             # 另一账号那一侧的转录）的同样删。

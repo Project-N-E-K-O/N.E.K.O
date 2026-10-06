@@ -1485,3 +1485,13 @@ async def test_a_report_with_an_unknown_owner_still_gets_the_reason(tmp_path, se
     report = await tu.load_report(tmp_path, V1)
     assert report["transcript_unavailable"] == "parts_out_of_range"
     assert outcome.for_report(report).pending is False and outcome.for_report(report) is outcome
+
+
+
+def test_an_unknown_owner_never_counts_as_the_same_owner(tmp_path):
+    spool = _spool(tmp_path)
+    spool.mkdir(parents=True, exist_ok=True)
+    sealed = spool / f"{V1}.upload.json"
+    sealed.write_text(json.dumps({"v": 1, "request": {}}), encoding="utf-8")     # 老文件：无归属、无拒收标记
+    assert tu._drop_rejected_sealed_sync(tmp_path, V1, ("corrupt", None)) is True
+    assert sealed.exists()
