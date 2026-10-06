@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import time
 
 import pytest
 
@@ -735,3 +736,18 @@ def test_released_pieces_join_to_the_final_text(voice):
     assert "".join(h.texts()) == h.results[0].text == LINE * 3
     assert [p.index for p in h.pieces] == list(range(len(h.pieces)))
     assert h.pieces[-1].last
+
+
+@pytest.mark.parametrize("voice", [True, False])
+async def test_drive_returns_when_interrupted_without_any_deadline(voice):
+    speaker = ls.LineSpeaker(
+        visit_id=VISIT, header=ls.LineHeader(ln="h:1", lp=1, ad="gc", rt=""), family_names=[],
+        neutral_term=NEUTRAL, voice=ls.VoiceState(enabled=voice), open_stream=FakeStream,
+        router=ls.SpeechRouter(), clock=time.monotonic,
+    )
+    task = asyncio.ensure_future(ls.drive(speaker, clock=time.monotonic))
+    await asyncio.sleep(0.05)                    # LLM 还在想：没有任何计时
+    assert speaker.next_deadline() is None and not task.done()
+    speaker.interrupt("human_interrupt")
+    result = await asyncio.wait_for(task, 1.0)
+    assert result.truncated and result.trunc_reason == "human_interrupt"

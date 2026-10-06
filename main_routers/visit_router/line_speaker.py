@@ -639,6 +639,9 @@ class LineSpeaker:
         self._result = result
         self._router.unregister(self.speech_id)
         self._cb.on_done(result)
+        # 叫醒 drive：打断可能发生在没有任何计时的时候（LLM 还在想、语音关已放完、播空），
+        # 不叫醒它就一直等下去
+        self._cb.on_wake()
 
 
 async def drive(speaker: LineSpeaker, *, clock: Callable[[], float]) -> Optional[LineResult]:
