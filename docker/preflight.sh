@@ -78,6 +78,10 @@ fix_dir() {
 # Validate both before touching either, so a bad second path changes nothing.
 check_dir neko-home "$home_dir"
 check_dir logs "$logs_dir"
+# Act only on the normalized form: no trailing "/" or "/." that would make
+# chown -h dereference the last component.
+home_dir=$(realpath -m -s -- "$home_dir")
+logs_dir=$(realpath -m -s -- "$logs_dir")
 fix_dir neko-home "$home_dir"
 fix_dir logs "$logs_dir"
 echo "preflight: done"

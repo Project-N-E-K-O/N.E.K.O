@@ -66,6 +66,23 @@ grep -q 'goes through a symlink' "$CASE/out" || die 'parent link error not repor
     || die 'parent link target was changed'
 ok 'rejects a symlink in a parent path component'
 
+for suffix in / /. //; do
+    new_case
+    mkdir "$CASE/shared" "$CASE/logs"
+    chown 0:0 "$CASE/shared"
+    ln -s shared "$CASE/neko-home"
+    if run "$CASE/neko-home$suffix" "$CASE/logs"; then die "symlink with '$suffix' accepted"; fi
+    [[ $(owner "$CASE/shared") == 0:0 ]] || die "symlink target with '$suffix' was changed"
+done
+ok 'rejects a symlink named with a trailing / or /.'
+
+new_case
+mkdir -p "$CASE/home" "$CASE/logs"
+run "$CASE/home/" "$CASE/logs/." || die 'trailing separators on real directories'
+[[ $(owner "$CASE/home") == 1000:1000 && $(owner "$CASE/logs") == 1000:1000 ]] \
+    || die 'trailing separators not normalized'
+ok 'normalizes trailing separators on real directories'
+
 new_case
 mkdir "$CASE/real"
 mv "$CASE/preflight.sh" "$CASE/real/preflight.sh"

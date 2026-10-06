@@ -1359,8 +1359,10 @@ main() {
             || echo "⚠️ 无法把 /app/logs 的属主改为 1000:1000，DEBUG 日志可能无法写入"
     elif [ -d /app/logs ] && [ "$(stat -c '%u' /app/logs 2>/dev/null)" != 1000 ]; then
         echo "⚠️ /app/logs 非空且属主不是 1000，DEBUG 日志和后备日志可能无法写入。"
-        echo "   确认宿主机上的 ./logs 不是指向共享目录的符号链接后，在宿主机执行："
+        echo "   在宿主机仓库根目录执行预检（会拒绝符号链接，只改目录本身）："
         echo "       sudo sh docker/preflight.sh"
+        echo "   覆盖文件改过挂载路径时，按覆盖文件里写的原样传入两个路径："
+        echo "       sudo sh docker/preflight.sh <neko-home 路径> <logs 路径>"
     fi
 
     # 放在服务启动前打印：此时前面的初始化日志已经刷完，这条不会被淹掉
