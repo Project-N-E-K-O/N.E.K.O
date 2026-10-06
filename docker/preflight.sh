@@ -94,7 +94,20 @@ check_dir() {
     return 0
 }
 
-is_default() { [ "$2" = "$script_dir/$1" ]; }
+# The default paths may be taken over even when non-empty, unless they are a mount
+# point: a bind-mounted docker/logs could be any shared host directory.
+is_default() { [ "$2" = "$script_dir/$1" ] && ! is_mountpoint "$2"; }
+
+is_mountpoint() {
+    [ -d "$1" ] || return 1
+    if command -v mountpoint > /dev/null 2>&1; then
+        mountpoint -q -- "$1"
+    else
+        # Field 5 of mountinfo is the mount point; bind mounts on the same
+        # filesystem share a device number, so stat cannot tell them apart.
+        awk -v p="$1" '$5 == p { found = 1 } END { exit !found }' /proc/self/mountinfo
+    fi
+}
 
 # True when $1 is an existing, non-empty directory not owned by the container user.
 foreign_nonempty() {
@@ -104,7 +117,8 @@ foreign_nonempty() {
 
 refuse_foreign() {
     fail "$1: $2 already holds data owned by $(stat -c '%u:%g' -- "$2").
-  Only the default docker/neko-home and docker/logs are taken over when non-empty.
+  Only the default docker/neko-home and docker/logs are taken over when non-empty,
+  and only when they are not a mount point.
   If this directory really is dedicated to N.E.K.O, change its owner yourself:
     sudo chown -h $NEKO_UID:$NEKO_GID -- '$2'"
 }

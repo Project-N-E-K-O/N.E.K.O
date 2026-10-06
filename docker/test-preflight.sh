@@ -120,6 +120,21 @@ mkdir -p "$CASE/elsewhere" "$CASE/data"
 [[ ! -e $CASE/elsewhere/data ]] || die 'relative paths resolved against the caller cwd'
 ok 'resolves relative paths against docker/ like Compose'
 
+# A default path that is a mount point (stubbed here) gets the strict rule too.
+new_case
+mkdir "$CASE/neko-home" "$CASE/logs" "$CASE/stub"
+touch "$CASE/logs/shared.log"
+chown 0:0 "$CASE/logs" "$CASE/logs/shared.log"
+printf '#!/bin/sh\n[ "$3" = "%s/logs" ]\n' "$CASE" > "$CASE/stub/mountpoint"
+chmod 700 "$CASE/stub/mountpoint"
+if PATH="$CASE/stub:$PATH" run; then die 'non-empty mounted default accepted'; fi
+grep -q 'not a mount point' "$CASE/out" || die 'mount point error not reported'
+[[ $(owner "$CASE/logs") == 0:0 ]] || die 'mounted default was changed'
+: > "$CASE/logs/shared.log"; rm "$CASE/logs/shared.log"
+PATH="$CASE/stub:$PATH" run || die 'empty mounted default'
+[[ $(owner "$CASE/logs") == 1000:1000 ]] || die 'empty mounted default not fixed'
+ok 'treats a mounted default path like a custom one'
+
 # Outside the defaults, a non-empty directory owned by someone else is never taken
 # over (think /var/lib/docker or ~/.ssh); an empty or already-aligned one is.
 new_case
