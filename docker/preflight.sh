@@ -36,6 +36,13 @@ esac
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
 home_dir=${1:-$script_dir/neko-home}
 logs_dir=${2:-$script_dir/logs}
+# Normalizing removes ".." as text, but the kernel and Docker would first follow a
+# symlink before it ("link/../data"), so a ".." could hide a link from the check.
+for arg in "$@"; do
+    case "/$arg/" in
+        */../*) fail "'$arg' contains '..'; pass the path without parent references" ;;
+    esac
+done
 # Compose resolves relative bind sources against the project directory, which is
 # docker/ (where docker-compose.yml lives), not against the caller's cwd.
 case "$home_dir" in /*) ;; *) home_dir=$script_dir/$home_dir ;; esac

@@ -198,13 +198,24 @@ for tool in chown mkdir; do
     chmod 700 "$CASE/stub/$tool"
 done
 for bad in / /. // /data /root /home /home/someone /var /var/log /mnt/disk /etc/neko \
-           /usr/local/neko /proc/neko "$CASE" "$CASE/.." "$(dirname -- "$CASE")"; do
+           /usr/local/neko /proc/neko "$CASE" "$(dirname -- "$CASE")"; do
     if PATH="$CASE/stub:$PATH" run "$bad" "$CASE/logs"; then die "accepted $bad"; fi
     grep -q 'refusing to take ownership' "$CASE/out" || die "no refusal for $bad"
     if PATH="$CASE/stub:$PATH" run "$CASE/logs" "$bad"; then die "accepted logs $bad"; fi
 done
 [[ ! -e $CASE/called ]] || die "chown/mkdir reached: $(cat "$CASE/called")"
 ok 'refuses the filesystem root, system and top-level directories, and the checkout'
+
+new_case
+mkdir -p "$CASE/real/target" "$CASE/data/home" "$CASE/logs"
+chown 0:0 "$CASE/data/home"
+ln -s real/target "$CASE/link"
+for bad in "$CASE/link/../data/home" ../logs "data/.." ..; do
+    if run "$bad" "$CASE/logs"; then die "accepted $bad"; fi
+    grep -q "contains '..'" "$CASE/out" || die "no '..' refusal for $bad"
+done
+[[ $(owner "$CASE/data/home") == 0:0 ]] || die 'path behind link/.. was changed'
+ok "refuses '..' components, which normalization would hide a link behind"
 
 new_case
 if run a b c; then die 'extra arguments accepted'; fi
