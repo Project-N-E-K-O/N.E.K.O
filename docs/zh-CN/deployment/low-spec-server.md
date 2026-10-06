@@ -217,7 +217,7 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    ```bash
    HOME_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/home/neko"}}{{.Source}}{{end}}{{end}}')
    LOGS_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/app/logs"}}{{.Source}}{{end}}{{end}}')
-   CFG_DIR=$(realpath docker/community-2c2g)    # .env 和网关覆盖文件所在目录
+   CFG_DIR=$(realpath -m docker/community-2c2g)    # .env 和网关覆盖文件所在目录（目录不存在时也能解析）
    echo "home=$HOME_SRC logs=$LOGS_SRC cfg=$CFG_DIR"
    ```
 
@@ -308,7 +308,7 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    (cd docker/community-2c2g && docker compose up -d)
    ```
 
-   恢复的 `.env` 里若有 `COMPOSE_FILE`，上面的命令会自动加载网关覆盖文件。旧部署如果是用 `-f` 显式指定覆盖文件的，`config` 和 `up` 都要带上同样的 `-f` 参数；端口绑定或挂载来源不对时不要启动。
+   恢复的 `.env` 里若有 `COMPOSE_FILE`，上面的命令会自动加载网关覆盖文件。旧部署如果用过 `-f` 覆盖文件、`--env-file` 或 shell 环境变量，`config` 和 `up` 都要以同样方式带上；端口绑定或挂载来源不对时不要启动。启动后用第 6 步同样的快照命令生成 `/root/neko-rollback-effective.txt`，再用比对脚本与 `/root/neko-2c2g-effective.txt` 比对，输出 `identical` 才说明旧配置已完整恢复。
 
    取回的旧 Compose 继承当前的官方 Compose，回退后的容器同时带有旧标签和新标签，所以无论已安装的是旧版还是第 7 步重装的新版看门狗，都能识别它。确认旧服务健康后，解除第 1 步的暂停并清掉暂停前的失败计数：`sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/fail-count /opt/neko/disabled`。
 

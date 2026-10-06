@@ -140,7 +140,7 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    ```bash
    HOME_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/home/neko"}}{{.Source}}{{end}}{{end}}')
    LOGS_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/app/logs"}}{{.Source}}{{end}}{{end}}')
-   CFG_DIR=$(realpath docker/community-2c2g)    # where .env and the gateway override live
+   CFG_DIR=$(realpath -m docker/community-2c2g)    # where .env and the gateway override live (resolves even if absent)
    echo "home=$HOME_SRC logs=$LOGS_SRC cfg=$CFG_DIR"
    ```
 
@@ -231,7 +231,7 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    (cd docker/community-2c2g && docker compose up -d)
    ```
 
-   A `COMPOSE_FILE` entry in the restored `.env` loads the gateway override automatically. If the old deployment passed the override with explicit `-f` flags, use the same `-f` flags for both `config` and `up`; do not start it if the bindings or mount sources are wrong.
+   A `COMPOSE_FILE` entry in the restored `.env` loads the gateway override automatically. If the old deployment used `-f` overrides, an `--env-file`, or shell variables, pass them the same way to both `config` and `up`; do not start it if the bindings or mount sources are wrong. After it starts, create `/root/neko-rollback-effective.txt` with the same snapshot commands as step 6 and compare it against `/root/neko-2c2g-effective.txt` with the comparison script; only `identical` means the old configuration was fully restored.
 
    The retrieved old Compose file extends the current official one, so the rolled-back container carries both the old and the new label and is recognized by either the old watchdog or one reinstalled in step 7. Once the old service is healthy, lift the step 1 pause and clear the pre-pause failure count: `sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/fail-count /opt/neko/disabled`.
 
