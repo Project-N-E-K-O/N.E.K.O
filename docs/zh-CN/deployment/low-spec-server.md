@@ -98,6 +98,12 @@ swapon --show
 }
 ```
 
+  这只对之后**新建**的容器生效，已有容器会保留原来的日志设置。改完后要重建这些容器（例如在各自目录执行 `docker compose up -d --force-recreate`），再确认已生效：
+
+  ```bash
+  docker inspect --format '{{.HostConfig.LogConfig}}' <容器名>
+  ```
+
 - 升级镜像后用 `docker system df` 查看占用，用 `docker image prune` 清理不再使用的悬空镜像。
 
 ## 5. 可选：宿主机自愈看门狗
@@ -245,6 +251,25 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    必须看到 `archive-ok`，并且每一项都是 `ok`、没有 `MISSING`。备份含实例凭证和 TLS 私钥，不要复制到仓库目录或公开位置。确认备份完整后再删除容器：`docker rm neko`。
 4. 确认 `docker/neko-home` 和 `docker/logs` 尚不存在（已存在说明另有官方部署的数据，先核对，不要覆盖），再从实际来源以 root 保留属主和权限地复制：`sudo cp -a "$HOME_SRC" docker/neko-home && sudo cp -a "$LOGS_SRC" docker/logs`。TLS 私钥属主为 root、权限 0600，不用 root 复制会遗漏。
 5. 把旧部署的**全部**有效配置迁过来，不只是 `docker/community-2c2g/.env`，还包括启动时用过的 `--env-file`、shell 环境变量、`COMPOSE_FILE` 和 `-f` 覆盖文件。需要的值写入 `docker/.env`；网关覆盖文件改放 `docker/compose.gateway.yaml`，`COMPOSE_FILE` 改为 `docker-compose.yml:compose.gateway.yaml`。之后用不带 `-f` 的 `docker compose` 命令就能得到完整配置，不要依赖临时的 shell 变量。
+
+   注意：官方 Compose 只透传固定的几个变量（见 `docker/CONFIG_REFERENCE.md`），`DISABLE_SSL` 等其他变量写进 `.env` 也不会进入容器。快照里有这类变量时，把它们写进 `docker/compose.local.yaml`（已被 `.gitignore` 忽略），并加入 `COMPOSE_FILE`：
+
+   ```yaml
+   services:
+     neko-main:
+       environment:
+         - DISABLE_SSL=${DISABLE_SSL:-}
+   ```
+
+   ```dotenv
+   COMPOSE_FILE=docker-compose.yml:compose.local.yaml   # 同时用网关时：docker-compose.yml:compose.gateway.yaml:compose.local.yaml
+   ```
+
+   启动前在 `docker/` 列出将传入容器的变量名（只显示名字，不显示值），确认快照里的应用变量都在其中：
+
+   ```bash
+   docker compose config --format json | python3 -c 'import json,sys; print("\n".join(sorted(json.load(sys.stdin)["services"]["neko-main"]["environment"])))'
+   ```
 6. 在 `docker/` 执行 `docker compose config` 核对挂载来源和端口后 `docker compose up -d`，确认实例凭证、角色和记忆都在。再回到仓库根目录，把新容器的有效配置和第 2 步的快照比对：
 
    ```bash
@@ -273,6 +298,8 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    ```
 
    恢复的 `.env` 里若有 `COMPOSE_FILE`，上面的命令会自动加载网关覆盖文件。旧部署如果是用 `-f` 显式指定覆盖文件的，`config` 和 `up` 都要带上同样的 `-f` 参数；端口绑定或挂载来源不对时不要启动。
+
+   回退后的旧容器仍带着旧看门狗标签，已安装的看门狗能继续识别它。确认旧服务健康后，解除第 1 步的暂停并清掉暂停前的失败计数：`sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/fail-count /opt/neko/disabled`。
 
    浅克隆里找不到该提交时，先执行 `git fetch --unshallow`。取回的 `docker-compose.yaml` 不受版本管理，之后重新迁移成功时删除即可，不要提交。
 7. **重新安装看门狗**（第 5 节）。旧脚本只识别旧标签，不重装就不会再处理新容器。确认健康后解除 `disabled`。

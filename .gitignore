@@ -28,6 +28,7 @@ tests/test_inputs/
 # 旧路径保留忽略，直到用户把文件迁出 community-2c2g。
 /docker/community-2c2g/compose.gateway.yaml
 /docker/compose.gateway.yaml
+/docker/compose.local.yaml
 
 # 忽略日志文件
 *.log

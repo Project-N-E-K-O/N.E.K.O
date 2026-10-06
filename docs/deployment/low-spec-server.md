@@ -65,7 +65,11 @@ There is no universal `vm.swappiness`. With ZRAM as the primary swap, evaluate v
 
 - The official Compose file caps the main container's Docker log (`docker logs`) at 10m × 3.
 - Application file logs live in `docker/neko-home/.local/share/N.E.K.O/logs/` (`docker/logs/` is only a fallback). They are not covered by the Docker cap, but the application rotates them itself (10 MB per file, 5 backups, files older than 30 days removed). Look there first when diagnosing.
-- To apply the same cap to other containers, merge `"log-driver": "json-file"` and `"log-opts": {"max-size": "10m", "max-file": "3"}` into `/etc/docker/daemon.json`, then restart Docker.
+- To apply the same cap to other containers, merge `"log-driver": "json-file"` and `"log-opts": {"max-size": "10m", "max-file": "3"}` into `/etc/docker/daemon.json`, then restart Docker. This only applies to containers created afterwards; existing containers keep their old logging options, so recreate them (for example `docker compose up -d --force-recreate` in each project) and confirm:
+
+  ```bash
+  docker inspect --format '{{.HostConfig.LogConfig}}' <container>
+  ```
 - After upgrades, check usage with `docker system df` and remove dangling images with `docker image prune`.
 
 ## 5. Optional: host self-healing watchdog
@@ -170,6 +174,25 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    You must see `archive-ok` and only `ok` lines, no `MISSING`. The backup contains instance credentials and TLS keys; never copy it into the repository or anywhere public. Only after confirming it is complete, remove the container: `docker rm neko`.
 4. Make sure `docker/neko-home` and `docker/logs` do not exist yet, then copy from the actual sources as root, preserving ownership: `sudo cp -a "$HOME_SRC" docker/neko-home && sudo cp -a "$LOGS_SRC" docker/logs`.
 5. Carry over **all** effective configuration, not only `docker/community-2c2g/.env` but also any `--env-file`, shell variables, `COMPOSE_FILE`, and `-f` override files used to start it. Put the values in `docker/.env`; a gateway override becomes `docker/compose.gateway.yaml` with `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml`. Plain `docker compose` commands without `-f` should then produce the complete configuration, without relying on ad-hoc shell variables.
+
+   Note that the official Compose file passes through only a fixed list of variables (see `docker/CONFIG_REFERENCE.md`); others such as `DISABLE_SSL` do not reach the container from `.env`. If the snapshot has such variables, put them in `docker/compose.local.yaml` (ignored by git) and add it to `COMPOSE_FILE`:
+
+   ```yaml
+   services:
+     neko-main:
+       environment:
+         - DISABLE_SSL=${DISABLE_SSL:-}
+   ```
+
+   ```dotenv
+   COMPOSE_FILE=docker-compose.yml:compose.local.yaml   # with a gateway: docker-compose.yml:compose.gateway.yaml:compose.local.yaml
+   ```
+
+   Before starting, list the variable names that will reach the container from `docker/` (names only, no values) and confirm every application variable from the snapshot is present:
+
+   ```bash
+   docker compose config --format json | python3 -c 'import json,sys; print("\n".join(sorted(json.load(sys.stdin)["services"]["neko-main"]["environment"])))'
+   ```
 6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. Back at the repository root, compare the new container's effective configuration with the step 2 snapshot:
 
    ```bash
@@ -198,6 +221,8 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    ```
 
    A `COMPOSE_FILE` entry in the restored `.env` loads the gateway override automatically. If the old deployment passed the override with explicit `-f` flags, use the same `-f` flags for both `config` and `up`; do not start it if the bindings or mount sources are wrong.
+
+   The rolled-back container still carries the old watchdog label, so the installed watchdog recognizes it. Once the old service is healthy, lift the step 1 pause and clear the pre-pause failure count: `sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/fail-count /opt/neko/disabled`.
 
    In a shallow clone that lacks the commit, run `git fetch --unshallow` first. The restored `docker-compose.yaml` is untracked; delete it once a later migration succeeds and never commit it.
 7. **Reinstall the watchdog** (section 5): the old script only recognizes the old label. Resume it once the service is healthy.
