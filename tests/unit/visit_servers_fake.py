@@ -125,7 +125,7 @@ class FakeServers:
             self.groups[key] = group
         duplicate = part in group["chunks"]
         group["chunks"][part] = body["lines"]
-        done = len(group["chunks"]) == parts
+        done = len(group["chunks"]) == parts and mode != "never_complete"
         if done:
             self.complete[key] = [line for k in range(parts) for line in group["chunks"][k]]
         out = {"ok": True, "accepted_parts": sorted(group["chunks"]), "complete": done}

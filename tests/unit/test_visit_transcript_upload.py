@@ -544,7 +544,6 @@ async def test_recovery_callback_skips_a_report_that_was_replaced(tmp_path, serv
 
 
 async def test_recovery_callback_deletes_under_the_visit_lock(tmp_path, servers):
-    import asyncio
 
     await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
     doc = await tu.load_report(tmp_path, V1)
@@ -739,3 +738,13 @@ async def test_a_longer_delay_pushes_back_a_waiting_worker(tmp_path, servers, mo
     await asyncio.wait_for(task, 5)
     assert slept[0] == 10 and slept[1] >= 590             # 先按旧的等，被推后后再按新的等完才重试
     assert fake.count("/api/visit/reports") == 1
+
+
+
+async def test_all_parts_without_complete_is_not_done(tmp_path, servers):
+    fake, _ = servers
+    fake.transcript_mode = "never_complete"
+    sealed = _write_sealed(tmp_path, _big_doc())
+    assert (await tu.retry_visit_once(V1)).pending is True and sealed.exists()
+    fake.transcript_mode = "ok"
+    assert (await tu.retry_visit_once(V1)).pending is False and not sealed.exists()

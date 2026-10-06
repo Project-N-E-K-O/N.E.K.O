@@ -470,6 +470,7 @@ def test_a_regeneration_never_overwrites_an_edit_made_meanwhile(env):
     assert client.post("/api/visit/persona/regenerate?catgirl=A", headers=GOOD, json={}).status_code == 202
     edited = {**_file(tmp_path), "text": "你是{LANLAN_NAME}，手写的人设。", "edited": True, "reviewed": True}
     client.portal.call(persona.store().save, UID_A, edited)     # 另一个窗口抢在生成结束前确认了手写
+    persona._note_write(UID_A)
     client.portal.call(gate.set)
     _settle(client)
     assert _file(tmp_path)["text"] == "你是{LANLAN_NAME}，手写的人设。"
@@ -477,3 +478,31 @@ def test_a_regeneration_never_overwrites_an_edit_made_meanwhile(env):
 
 async def _make_event():
     return asyncio.Event()
+
+
+def test_a_regeneration_started_while_an_edit_holds_the_lock_does_not_overwrite_it(env, monkeypatch):
+    client, tmp_path, *_ = env
+    _generate(client)
+    gate = client.portal.call(_make_event)
+
+    async def slow(prompt):
+        await gate.wait()
+        return GOOD_PERSONA
+
+    persona.configure_persona(llm=slow)
+    real_save = persona.VisitPersonaStore.save
+    clicked = []
+
+    async def save_with_a_click(self, uid, doc):
+        if not clicked:                                    # PUT 已拿着锁、正在写盘
+            clicked.append(persona.start_regeneration("A", uid))   # 另一个窗口此刻点了重新生成
+        await real_save(self, uid, doc)
+
+    monkeypatch.setattr(persona.VisitPersonaStore, "save", save_with_a_click)
+    hand = "你是{LANLAN_NAME}，抢先手写的人设。"
+    assert client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": hand, "reviewed": True}).status_code == 200
+    assert clicked and persona.is_generating(UID_A)
+    client.portal.call(gate.set)
+    _settle(client)
+    assert _file(tmp_path)["text"] == hand

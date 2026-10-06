@@ -605,6 +605,7 @@ def _reset_for_tests() -> None:
         task.cancel()
     _jobs.clear()
     _errors.clear()
+    _write_versions.clear()
 
 
 def is_generating(character_uid: str) -> bool:
@@ -628,10 +629,16 @@ def persona_lock(character_uid: str) -> asyncio.Lock:
     return lock
 
 
-async def _regenerate(name: str, character_uid: str) -> None:
+_write_versions: dict[str, int] = {}
+"""character_uid -> count of persona writes in this process (hand edits and regeneration commits)."""
+
+
+def _note_write(character_uid: str) -> None:
+    _write_versions[character_uid] = _write_versions.get(character_uid, 0) + 1
+
+
+async def _regenerate(name: str, character_uid: str, started_version: int) -> None:
     try:
-        async with persona_lock(character_uid):
-            before = await store().load(character_uid)
         ctx = await _hooks.load_context()
         card = ctx.card(name)
         if card is None:
@@ -644,11 +651,13 @@ async def _regenerate(name: str, character_uid: str) -> None:
             _errors[character_uid] = result.error or "llm_unavailable"
             return
         async with persona_lock(character_uid):
-            if await store().load(character_uid) != before:
-                # 生成期间人设被别处改过（另一个窗口手写确认）：不拿生成结果覆盖它
+            if _write_versions.get(character_uid, 0) != started_version:
+                # 开始生成之后人设被写过（另一个窗口的手写确认，哪怕它在开始前就已拿着锁）：
+                # 不拿生成结果覆盖它
                 logger.info("visit persona: regeneration superseded by an edit, result dropped")
                 return
             await store().save(character_uid, result.doc)
+            _note_write(character_uid)
         _errors.pop(character_uid, None)
     except asyncio.CancelledError:
         raise
@@ -662,7 +671,10 @@ def start_regeneration(name: str, character_uid: str) -> asyncio.Task | None:
     if is_generating(character_uid):
         return None
     _errors.pop(character_uid, None)
-    task = asyncio.create_task(_regenerate(name, character_uid), name=f"visit-persona-{character_uid[:6]}")
+    # 在启动的同一步（同步、无 await）记下写入版本：之后任何写入都会让这次结果作废
+    started_version = _write_versions.get(character_uid, 0)
+    task = asyncio.create_task(_regenerate(name, character_uid, started_version),
+                               name=f"visit-persona-{character_uid[:6]}")
     _jobs[character_uid] = task
 
     def _done(t: asyncio.Task) -> None:
@@ -823,6 +835,7 @@ async def put_persona(request: Request, catgirl: str = ""):
                 # 手写不动私人段落清单与它依据的卡片哈希
                 doc = {**doc, "text": cleaned, "edited": True, "reviewed": True}
         await persona_store.save(character_uid, doc)
+        _note_write(character_uid)
         _errors.pop(character_uid, None)
     return JSONResponse(await _view(catgirl, character_uid, ctx))
 

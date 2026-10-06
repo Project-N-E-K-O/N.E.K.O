@@ -609,7 +609,9 @@ async def _upload(visit_id: str, doc: dict, config_dir: Path) -> UploadResult:
                 logger.warning("visit upload %s: status=%s code=%s, kept for retry", visit_id, status, cr._diag_code(code))
             return UploadResult()
         if not regrouped and len(accepted) >= parts:
-            return UploadResult(done=True)
+            # 块都收下了却没见到 complete：只有 Servers 拼好整组才算完成。重发最后一块（幂等）
+            # 拿一份带 complete 的回执；几轮都拿不到就留着下次再试
+            accepted.discard(parts - 1)
     return UploadResult()
 
 
@@ -748,9 +750,9 @@ class ReportResult:
     unknown_visit: bool = False
     login_required: bool = False
     attempted: bool = False
+    """The request went out as the owning account (network errors included)."""
     retry_after_s: int | None = None
     """Servers ``429`` delay of the report endpoint."""
-    """The request went out as the owning account (network errors included)."""
 
 
 def report_request(doc: Mapping[str, Any]) -> dict:
