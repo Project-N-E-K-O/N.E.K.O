@@ -57,7 +57,7 @@ from plugin.server.application.plugins.lifecycle_service import (
     plugin_is_running_sync,
     plugin_needs_hot_reload_recovery,
 )
-from plugin.server.application.plugins._env_budgets import (
+from plugin.server.application.plugins._metadata_scan_settings import (
     METADATA_SCAN_TIMEOUT_SECONDS as _DEFAULT_SCAN_TIMEOUT_SECONDS,
 )
 from plugin.server.application.plugins.operation_lock import (

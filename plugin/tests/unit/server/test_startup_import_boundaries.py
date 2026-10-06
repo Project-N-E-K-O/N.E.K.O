@@ -183,3 +183,31 @@ def test_install_manager_root_snapshot_is_fresh_per_factory_call(monkeypatch, tm
     second = build_install_source_manager()
     assert len(roots) == 2
     assert first.lock_path != second.lock_path
+
+
+def test_general_env_parser_does_not_evaluate_scan_settings():
+    probe = r"""
+import os,sys,importlib.util
+from pathlib import Path
+os.environ['NEKO_PLUGIN_METADATA_SCAN_TIMEOUT']='invalid'
+logging_was_loaded = 'plugin.logging_config' in sys.modules
+original = os.getenv
+reads = []
+def record(name, default=None):
+    if name == 'NEKO_PLUGIN_METADATA_SCAN_TIMEOUT':
+        reads.append(name)
+    return original(name, default)
+os.getenv = record
+spec = importlib.util.spec_from_file_location('isolated_env_parser', Path('plugin/server/application/plugins/_env_budgets.py'))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+env_seconds = module.env_seconds
+assert env_seconds('NEKO_BENCH_UNSET_BUDGET',5)==5
+assert reads == [], reads
+assert 'plugin.server.application.plugins._metadata_scan_settings' not in sys.modules
+assert ('plugin.logging_config' in sys.modules) == logging_was_loaded
+print('ok')
+"""
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                            text=True, timeout=120, check=True)
+    assert result.stdout.strip().splitlines()[-1] == "ok"

@@ -77,6 +77,7 @@ from plugin.core.packaged_metadata import (
 )
 from plugin.logging_config import get_logger
 from utils.file_utils import atomic_write_bytes
+from plugin.utils.source_paths import METADATA_PROBE_PREFIX
 
 logger = get_logger("server.infrastructure.packaged_metadata")
 PACKAGED_METADATA_CACHE_DIRECTORY = ".neko-plugin-metadata"
@@ -474,7 +475,7 @@ def _probe_metadata_target(target: Path) -> bool:
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         descriptor, name = tempfile.mkstemp(
-            prefix=".metadata_probe_", dir=target.parent
+            prefix=METADATA_PROBE_PREFIX, dir=target.parent
         )
         probe = Path(name)
         replacement = probe.with_suffix(".ready")

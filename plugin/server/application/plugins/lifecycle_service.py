@@ -61,9 +61,9 @@ from plugin.server.application.plugins.installation_transactions import (
     retry_deferred_profile_cleanup_sync,
     uninstall_plugin,
 )
-from plugin.server.application.plugins._env_budgets import (
+from plugin.server.application.plugins._env_budgets import env_seconds
+from plugin.server.application.plugins._metadata_scan_settings import (
     METADATA_SCAN_TIMEOUT_SECONDS as _DEFAULT_METADATA_SCAN_TIMEOUT,
-    env_seconds,
 )
 from plugin.server.infrastructure.packaged_metadata import (
     SourceTreeSnapshot,
@@ -339,7 +339,7 @@ def _metadata_rebuild_manifest(
     if plugin_id is not None and str(manifest_pdata.get("id") or "") != plugin_id:
         logger.info(
             "packaged metadata rebuild skipped: runtime id differs from manifest id; "
-            "metadata will be rescanned on start: plugin_id={}, path={}",
+            "plugin_id={}, path={}",
             plugin_id, config_path,
         )
         return None
@@ -348,7 +348,7 @@ def _metadata_rebuild_manifest(
     ):
         logger.info(
             "packaged metadata rebuild skipped: effective configuration overrides entries; "
-            "metadata will be rescanned on start: plugin_id={}, path={}",
+            "plugin_id={}, path={}",
             plugin_id, config_path,
         )
         return None

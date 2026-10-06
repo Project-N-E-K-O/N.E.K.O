@@ -160,7 +160,7 @@ def resolve_plugin_config_from_path(
     # query from observing one file before an atomic replacement and another
     # file after it.
     with get_plugin_update_lock(plugin_id):
-        manifest_path = config_path.resolve(strict=False)
+        manifest_path = canonical_read_path(config_path, cache=read_cache)
         manifest_config = base_config if isinstance(base_config, dict) else load_toml_from_file(manifest_path)
         runtime_config_path = ensure_plugin_runtime_config(plugin_id, manifest_path=manifest_path)
         with plugin_config_file_lock(runtime_config_path):

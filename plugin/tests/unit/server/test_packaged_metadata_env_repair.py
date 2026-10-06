@@ -1164,7 +1164,8 @@ def test_metadata_read_is_bounded_even_if_stat_reports_a_smaller_file(tmp_path, 
 
 
 @pytest.mark.parametrize("ineligible", ["runtime_id", "entries_override"])
-def test_ineligible_rebuilds_do_not_hash_the_source_tree(tmp_path, monkeypatch, ineligible, caplog):
+@pytest.mark.parametrize("propagate", [False, True])
+def test_ineligible_rebuilds_do_not_hash_the_source_tree(tmp_path, monkeypatch, ineligible, propagate):
     import tomllib
     from plugin.server.application.plugins import lifecycle_service
 
@@ -1178,14 +1179,30 @@ def test_ineligible_rebuilds_do_not_hash_the_source_tree(tmp_path, monkeypatch, 
         pytest.fail("An ineligible rebuild must not hash the source tree")
 
     monkeypatch.setattr(lifecycle_service, "snapshot_packaged_metadata_rebuild_tree", unexpected_snapshot)
-    assert lifecycle_service._snapshot_package_tree_for_rebuild(
-        plugin_dir / "plugin.toml",
-        plugin_id="renamed" if ineligible == "runtime_id" else "demo",
-        conf=conf,
-        pdata=manifest["plugin"],
-    ) is None
-    reason = "runtime id differs" if ineligible == "runtime_id" else "overrides entries"
-    assert reason in caplog.text
+    import io
+    import logging
+
+    target = lifecycle_service.logger._resolve_logger()
+    output = io.StringIO()
+    handler = logging.StreamHandler(output)
+    previous_level = target.level
+    monkeypatch.setattr(target, "propagate", propagate)
+    target.setLevel(logging.INFO)
+    target.addHandler(handler)
+    try:
+        assert lifecycle_service._snapshot_package_tree_for_rebuild(
+            plugin_dir / "plugin.toml",
+            plugin_id="renamed" if ineligible == "runtime_id" else "demo",
+            conf=conf,
+            pdata=manifest["plugin"],
+        ) is None
+        reason = "runtime id differs" if ineligible == "runtime_id" else "overrides entries"
+        assert reason in output.getvalue()
+        assert "will be rescanned" not in output.getvalue()
+    finally:
+        target.removeHandler(handler)
+        target.setLevel(previous_level)
+
 
 
 @pytest.mark.parametrize("probe_succeeds", [False, True])

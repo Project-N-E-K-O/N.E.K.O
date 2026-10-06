@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Mapping
 
 from plugin._types.packaged_metadata import PACKAGED_METADATA_FILENAME
-from plugin.utils.source_paths import is_metadata_probe_path, is_vendor_sync_path
+from plugin.utils.source_paths import (
+    METADATA_PROBE_PREFIX,
+    is_metadata_probe_path,
+    is_vendor_sync_path,
+)
 
 
 # Only the shipped root metadata is generated. Host caches live outside
@@ -179,13 +183,11 @@ def _iter_source_files(
                     continue
                 if (
                     current == root
-                    and entry.name.startswith(".metadata_probe_")
+                    and entry.name.startswith(METADATA_PROBE_PREFIX)
                     and is_metadata_probe_path(Path(entry.name))
                 ):
                     continue
-                if entry.name in _GENERATED_METADATA_NAMES and current == str(
-                    plugin_dir
-                ):
+                if entry.name in _GENERATED_METADATA_NAMES and current == root:
                     # 生成物不参与它自己的新鲜度判定——但只有根部那一份是生成物。
                     # 按文件名一刀切会把插件自己带的 data/plugin.meta.json 这种运行
                     # 时文件也排除掉，而打包管线照样把它放进包里：改它的内容不会让

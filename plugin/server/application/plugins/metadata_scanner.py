@@ -59,7 +59,7 @@ _WORKER_BOOTSTRAP = (
 # 注意单项上限本身不足以封顶：17 个插件按 5 并发是 4 波，4×10s 仍然超前端预算。
 # 真正封顶的是 registry_service 那边的总预算，这里只负责让单个坏插件早点放手。
 # Env: NEKO_PLUGIN_METADATA_SCAN_TIMEOUT
-from plugin.server.application.plugins._env_budgets import (
+from plugin.server.application.plugins._metadata_scan_settings import (
     METADATA_SCAN_TIMEOUT_SECONDS as _DEFAULT_SCAN_TIMEOUT_SECONDS,
 )
 

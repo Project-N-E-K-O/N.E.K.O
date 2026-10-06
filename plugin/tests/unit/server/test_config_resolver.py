@@ -417,3 +417,29 @@ def test_discovery_snapshot_finishes_before_profile_write(
     assert snapshot["config_fingerprint"] == fingerprint_config(snapshot["effective_config"])
     updated = module.read_plugin_config_from_path("demo", config_path=manifest)
     assert updated["effective_config"]["runtime"]["level"] == 2
+
+
+@pytest.mark.plugin_unit
+def test_materializing_resolver_uses_discovery_path_cache(tmp_path, monkeypatch):
+    from plugin.utils.path_resolution import PathResolutionCache
+
+    config = tmp_path / "demo" / "plugin.toml"
+    config.parent.mkdir()
+    config.write_text('[plugin]\nid="demo"\n', encoding="utf-8")
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "data"))
+    cache = PathResolutionCache()
+    canonical = cache.resolve(config)
+    original = Path.resolve
+
+    def avoid_repeated_resolve(path, *args, **kwargs):
+        if path == config:
+            pytest.fail("preloaded manifest path must use the cache")
+        return original(path, *args, **kwargs)
+
+    # The runtime initializer receives the already canonical manifest path.
+    runtime = tmp_path / "runtime.toml"
+    runtime.write_text('[plugin]\nid="demo"\n', encoding="utf-8")
+    monkeypatch.setattr(module, "ensure_plugin_runtime_config", lambda *args, **kwargs: runtime)
+    monkeypatch.setattr(Path, "resolve", avoid_repeated_resolve)
+    result = module.resolve_plugin_config_from_path("demo", config_path=config, read_cache=cache)
+    assert result["manifest_path"] == str(canonical)

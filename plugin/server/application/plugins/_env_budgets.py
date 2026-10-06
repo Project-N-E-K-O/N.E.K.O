@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import os
 
-__all__ = ["env_int", "env_seconds", "METADATA_SCAN_TIMEOUT_SECONDS"]
+__all__ = ["env_int", "env_seconds"]
 
 
 def env_seconds(name: str, default: float, *, minimum: float = 1.0) -> float:
@@ -70,6 +70,3 @@ def _warn(name: str, raw: str, default: float | int) -> None:
     get_logger("server.application.plugins.env").warning(
         "ignoring unusable {}={!r}; using {}", name, raw, default
     )
-
-
-METADATA_SCAN_TIMEOUT_SECONDS = env_seconds("NEKO_PLUGIN_METADATA_SCAN_TIMEOUT", 10.0)

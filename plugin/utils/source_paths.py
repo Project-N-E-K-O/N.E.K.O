@@ -30,7 +30,10 @@ _VENDOR_SYNC_NAME_RE = re.compile(
     rf"(?:{re.escape(VENDOR_SYNC_PENDING_SUFFIX)})?"
 )
 _VENDOR_SYNC_STAGING_RE = re.compile(rf"{re.escape(VENDOR_SYNC_STAGING_PREFIX)}[0-9a-f]{{8}}")
-_METADATA_PROBE_RE = re.compile(r"\.metadata_probe_[a-z0-9_]{8}(?:\.ready)?")
+METADATA_PROBE_PREFIX = ".metadata_probe_"
+_METADATA_PROBE_RE = re.compile(
+    rf"{re.escape(METADATA_PROBE_PREFIX)}[a-z0-9_]{{8}}(?:\.ready)?"
+)
 
 
 def is_metadata_probe_path(relative_path: Path) -> bool:
