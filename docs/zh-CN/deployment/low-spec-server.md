@@ -219,10 +219,12 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    docker stop neko
    # 归档写到仓库外的 /root，umask 077 使其仅 root 可读；连同存在的 .env 和网关覆盖文件一起打包
    sudo sh -c 'umask 077; cd docker/community-2c2g && tar -czpf /root/neko-2c2g-backup.tar.gz neko-home logs $(ls -d .env compose.gateway.yaml 2>/dev/null)'
+   # 先完整读一遍归档：截断或损坏时 tar 会报错，不会输出 archive-ok
+   sudo tar -tzf /root/neko-2c2g-backup.tar.gz > /dev/null && echo archive-ok
    sudo tar -tzvf /root/neko-2c2g-backup.tar.gz | grep -E ' (\./)?(\.env|compose\.gateway\.yaml|neko-home/|logs/)$'
    ```
 
-   最后一条命令应列出 `neko-home/`、`logs/` 以及你实际使用的 `.env`、`compose.gateway.yaml`。备份含实例凭证和 TLS 私钥，不要复制到仓库目录或公开位置。确认备份完整后再删除容器：`docker rm neko`。
+   必须看到 `archive-ok`，最后一条命令还应列出 `neko-home/`、`logs/` 以及你实际使用的 `.env`、`compose.gateway.yaml`。备份含实例凭证和 TLS 私钥，不要复制到仓库目录或公开位置。确认备份完整后再删除容器：`docker rm neko`。
 4. 确认 `docker/neko-home` 和 `docker/logs` 尚不存在（已存在说明另有官方部署的数据，先核对，不要覆盖），再以 root 保留属主和权限地复制：`sudo cp -a docker/community-2c2g/neko-home docker/community-2c2g/logs docker/`。TLS 私钥属主为 root、权限 0600，不用 root 复制会遗漏。
 5. 把 `docker/community-2c2g/.env` 中需要的设置迁入 `docker/.env`；网关覆盖文件改放 `docker/compose.gateway.yaml`，`COMPOSE_FILE` 改为 `docker-compose.yml:compose.gateway.yaml`。
 6. 在 `docker/` 执行 `docker compose config` 核对挂载来源和端口后 `docker compose up -d`，确认实例凭证、角色和记忆都在。迁移失败需要回退到旧部署时，在仓库根目录执行：

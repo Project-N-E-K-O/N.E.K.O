@@ -144,10 +144,12 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    docker stop neko
    # Write outside the repository, root-only (umask 077), including .env and the gateway override if present
    sudo sh -c 'umask 077; cd docker/community-2c2g && tar -czpf /root/neko-2c2g-backup.tar.gz neko-home logs $(ls -d .env compose.gateway.yaml 2>/dev/null)'
+   # Read the whole archive first: tar fails on truncation or corruption and archive-ok is not printed
+   sudo tar -tzf /root/neko-2c2g-backup.tar.gz > /dev/null && echo archive-ok
    sudo tar -tzvf /root/neko-2c2g-backup.tar.gz | grep -E ' (\./)?(\.env|compose\.gateway\.yaml|neko-home/|logs/)$'
    ```
 
-   The last command should list `neko-home/`, `logs/`, and whichever of `.env` and `compose.gateway.yaml` you use. The backup contains instance credentials and TLS keys; never copy it into the repository or anywhere public. Only after confirming it is complete, remove the container: `docker rm neko`.
+   You must see `archive-ok`, and the last command should list `neko-home/`, `logs/`, and whichever of `.env` and `compose.gateway.yaml` you use. The backup contains instance credentials and TLS keys; never copy it into the repository or anywhere public. Only after confirming it is complete, remove the container: `docker rm neko`.
 4. Make sure `docker/neko-home` and `docker/logs` do not exist yet, then copy as root, preserving ownership: `sudo cp -a docker/community-2c2g/neko-home docker/community-2c2g/logs docker/`.
 5. Move needed settings from `docker/community-2c2g/.env` to `docker/.env`; a gateway override becomes `docker/compose.gateway.yaml` with `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml`.
 6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. To roll back to the old deployment if migration fails, run from the repository root:
