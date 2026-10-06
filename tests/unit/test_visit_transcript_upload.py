@@ -786,3 +786,21 @@ async def test_a_manual_retry_leaves_another_accounts_report_alone(tmp_path, ser
     outcome = await tu.retry_visit_once(V1, manual=True, owner="u1")
     assert fake.count("/api/visit/reports") == 0 and outcome.pending is False
     assert await tu.load_report(tmp_path, V1) is not None
+
+
+
+async def test_a_worker_keeps_going_when_an_accepted_report_cannot_be_deleted(tmp_path, servers, monkeypatch):
+    real_delete = tu.delete_report
+    calls = []
+
+    async def locked(config_dir, visit_id):
+        calls.append(visit_id)
+        if len(calls) == 1:
+            raise PermissionError("file in use")
+        return await real_delete(config_dir, visit_id)
+
+    monkeypatch.setattr(tu, "delete_report", locked)
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    assert (await tu.retry_visit_once(V1)).pending is True       # 受理了但文件还在：不能让 worker 退出
+    assert (await tu.retry_visit_once(V1)).pending is False
+    assert await tu.load_report(tmp_path, V1) is None

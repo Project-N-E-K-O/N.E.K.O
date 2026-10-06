@@ -555,3 +555,18 @@ def test_an_accepted_report_stays_accepted_when_its_file_cannot_be_deleted(env, 
     assert _queued(tmp_path) is not None and V1 in tu._workers        # 留着，后台稍后补删
     client.portal.call(tu.retry_visit_once, V1)                       # 重提得到 duplicate 回执后删掉
     assert _queued(tmp_path) is None
+
+
+
+def test_the_first_report_attempt_carries_an_unrecordable_transcript_reason(env, monkeypatch):
+    client, fake, tmp_path, _ = env
+    fake.transcript_mode = "parts"
+    _write_sealed(tmp_path)
+
+    def broken(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tu, "_mark_unavailable_sync", broken)
+    resp = _report(client, include_transcript=True)
+    assert resp.status_code == 200
+    assert fake.reports[0]["transcript_unavailable"] == "parts_out_of_range"

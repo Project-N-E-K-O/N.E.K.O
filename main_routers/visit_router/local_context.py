@@ -29,8 +29,9 @@ from typing import Any
 from config.prompts.prompts_visit import get_family_neutral_term, get_visit_speaker_header
 from utils.language_utils import get_global_language_full
 
-# 昵称一栏常见的分隔写法：中英文逗号、顿号、斜杠、分号
-_NICKNAME_SPLIT_RE = re.compile(r"[,，、/;；]+")
+# 昵称一栏常见的分隔写法：中英文逗号、顿号、斜杠、分号、空白（与 memory.stop_names 的拆法一致，
+# 另认斜杠）。「Alice Ally」是两个称呼，单独出现的「Alice」也要替换
+_NICKNAME_SPLIT_RE = re.compile(r"[,，、/;；\s]+")
 
 
 @dataclass(frozen=True)

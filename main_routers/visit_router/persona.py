@@ -120,20 +120,24 @@ _DIGITS_RE = re.compile(r"[0-9]{5,}")
 # 关键词后面跟的值：到标点或行尾为止，中间可以有空格（「住在桂花路」→「桂花路」，
 # 「address: 12 Main Street」→「12 Main Street」）
 _KEYWORD_VALUE = r"(?P<value>[^\n，。、！？；：,;:!?()（）\[\]【】<>「」『』\"']{2,40})"
+# 中文地址关键词本来就常不带分隔（「住在桂花路」）；联系方式关键词要有分隔（冒号 / 是 / 为），
+# 或值像号码 / 账号（以数字、字母、+、# 开头）：「手机游戏」「电话会议」不收
 _CJK_KEYWORD_VALUE_RE = re.compile(
-    r"(?P<kw>微信号?|微訊號?|qq号|手机号?|手機號?|电话号码?|電話號碼?|电话|電話"
-    r"|住址|地址|家住|住在|位于|位於|邮箱|郵箱)"
-    r"\s*[:：是为為在]?[ \t]*" + _KEYWORD_VALUE,
+    r"(?:(?P<kw>住址|地址|家住|住在|位于|位於)\s*[:：是为為在]?[ \t]*"
+    r"|(?P<kw4>微信号?|微訊號?|qq号|手机号?|手機號?|电话号码?|電話號碼?|电话|電話|邮箱|郵箱)"
+    r"(?:\s*[:：]\s*|\s*[是为為]\s*|\s*(?=[A-Za-z0-9+#])))" + _KEYWORD_VALUE,
     re.IGNORECASE,
 )
 # 拉丁关键词要整词出现（「smartphone」里的 phone 不算），后面要有真正的分隔：冒号 / 等号；
 # 或值以数字 / # / + 开头（「phone 138 0013 8000」「address is 12 Main Street」）；或空格后的
-# 第一个词像账号（带数字 / 下划线：「wechat mimi_cat」）；「address」后接大写开头的词
+# 第一个词像账号（带数字 / 下划线：「wechat mimi_cat」，或驼峰：「wechat AliceFoo」）；显式带 id 的
+# 关键词（「line id alicefoo」）后接任意词；「address」后接大写开头的词
 # （「address Maple Grove」）；「lives in」本身就是分隔。「phone games」这种普通名词不算
 _LATIN_KEYWORD_VALUE_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:"
-    r"(?P<kw>wechat|weixin|vx|qq|e-?mail|phone(?:\s*number)?|address|line\s*id)(?![A-Za-z0-9])"
-    r"(?:\s*[:：=]\s*|\s+(?:is\s+|at\s+)?(?=[#+0-9])|\s+(?=[A-Za-z0-9.\-]*[0-9_]))"
+    r"(?P<kw>(?:wechat|weixin|vx|qq)(?:\s*id)?|e-?mail|phone(?:\s*number)?|address|line\s*id)(?![A-Za-z0-9])"
+    r"(?:\s*[:：=]\s*|\s+(?:is\s+|at\s+)?(?=[#+0-9])|\s+(?=[A-Za-z0-9.\-]*[0-9_])"
+    r"|(?<=[iI][dD])\s+|\s+(?=(?-i:[A-Za-z]*[a-z][A-Z])))"
     r"|(?P<kw2>lives?\s+in)\s+"
     r"|(?P<kw3>address)\s+(?=(?-i:[A-Z])))" + _KEYWORD_VALUE,
     re.IGNORECASE,

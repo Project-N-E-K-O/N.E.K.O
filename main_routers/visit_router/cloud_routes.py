@@ -284,8 +284,11 @@ async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
                 # 已排队，但转录因登录失效传不上去：提示重新登录
                 return _cloud_error(cr.VisitLoginRequired())
             return JSONResponse({"queued": True}, status_code=202)
-        # 终态拒收 / 过期时 attempt_upload 已在举报文件里记下原因：重读一次带上
+        # 终态拒收 / 过期时 attempt_upload 已在举报文件里记下原因：重读一次带上；
+        # 没能写进文件（磁盘 / 权限）时原因在 upload.unavailable 里，提交的这份照样带上
         doc = await tu.load_report(config_dir, visit_id) or doc
+        if upload.unavailable and not doc.get("transcript_unavailable"):
+            doc = {**doc, "transcript_unavailable": upload.unavailable}
     result = await tu.send_report(doc)
     if await tu.finish_report(config_dir, visit_id, result, doc):
         return JSONResponse({"ok": True, "report_id": result.report_id})

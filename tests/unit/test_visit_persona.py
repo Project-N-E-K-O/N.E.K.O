@@ -584,3 +584,24 @@ def test_address_line_hobbies_are_not_sensitive():
     tokens = [t.lower() for t in persona.extract_sensitive_tokens(
         "address: Apt 4, 12 Main Street, enjoys Star Wars", [])]
     assert "main street" in tokens and not any("star wars" in t for t in tokens)
+
+
+
+def test_chinese_contact_keywords_need_a_separator_or_a_contact_shaped_value():
+    tokens = persona.extract_sensitive_tokens("她喜欢手机游戏，也常开电话会议。", [])
+    assert "游戏" not in "".join(tokens) and "会议" not in "".join(tokens)
+    tokens = persona.extract_sensitive_tokens("微信：mimi猫\n手机13800138000\n家住桂花路", [])
+    assert "mimi猫" in tokens and "桂花路" in tokens
+
+
+def test_alphabetic_contact_ids_after_an_explicit_id_keyword_or_in_camel_case():
+    tokens = persona.extract_sensitive_tokens("wechat AliceFoo\nline id alicefoo\nwechat id bobcat", [])
+    lowered = [t.lower() for t in tokens]
+    assert "alicefoo" in lowered and "bobcat" in lowered
+    assert not persona.extract_sensitive_tokens("I use wechat daily.", [])
+
+
+def test_family_nicknames_split_on_whitespace_too():
+    from main_routers.visit_router.local_context import family_names_of
+
+    assert family_names_of({"档案名": "张三", "昵称": "Alice Ally, 小A/阿A"}) == ("张三", "Alice", "Ally", "小A", "阿A")
