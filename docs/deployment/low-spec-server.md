@@ -128,7 +128,7 @@ Memory data is mostly text, so the local SQLite stores stay small; move long-ter
 
 ## 9. Migrating from the community-2c2g layout
 
-If you deployed with the former `docker/community-2c2g/` files, the Compose file is gone after updating but the data directories remain (git-ignored):
+If you deployed with the former `docker/community-2c2g/` files, the Compose file is gone after updating but the data directories remain (git-ignored). Unless a step says otherwise, run the commands from the **repository root** (`cd` into the N.E.K.O directory that contains `docker/`):
 
 1. Pause the watchdog if installed: `sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled`.
 2. **Before removing the container**, check where its data is actually mounted from:
@@ -150,5 +150,5 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    The last command should list `neko-home/`, `logs/`, and whichever of `.env` and `compose.gateway.yaml` you use. The backup contains instance credentials and TLS keys; never copy it into the repository or anywhere public. Only after confirming it is complete, remove the container: `docker rm neko`.
 4. Make sure `docker/neko-home` and `docker/logs` do not exist yet, then copy as root, preserving ownership: `sudo cp -a docker/community-2c2g/neko-home docker/community-2c2g/logs docker/`.
 5. Move needed settings from `docker/community-2c2g/.env` to `docker/.env`; a gateway override becomes `docker/compose.gateway.yaml` with `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml`.
-6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. If migration fails, stop the new container and restore data and configuration with `sudo tar -xzpf /root/neko-2c2g-backup.tar.gz -C docker/community-2c2g`.
+6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. If migration fails, stop the new container and, from the repository root, restore data and configuration with `sudo tar -xzpf /root/neko-2c2g-backup.tar.gz -C docker/community-2c2g`.
 7. **Reinstall the watchdog** (section 5): the old script only recognizes the old label. Resume it once the service is healthy.

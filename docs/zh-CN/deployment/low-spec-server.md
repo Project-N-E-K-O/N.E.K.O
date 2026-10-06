@@ -203,7 +203,7 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
 
 ## 9. 从 community-2c2g 部署迁移
 
-如果你按此前的 `docker/community-2c2g/` 方案部署过，更新代码后该目录的 Compose 文件已不存在，数据目录仍在原处（已被 `.gitignore` 忽略）：
+如果你按此前的 `docker/community-2c2g/` 方案部署过，更新代码后该目录的 Compose 文件已不存在，数据目录仍在原处（已被 `.gitignore` 忽略）。除特别注明外，以下命令都在**仓库根目录**执行（先 `cd` 到包含 `docker/` 的 N.E.K.O 目录）：
 
 1. 如装了看门狗，先按第 5 节暂停：`sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled`。
 2. **删除容器之前**，核对旧容器实际挂载的数据来源：
@@ -225,7 +225,7 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    最后一条命令应列出 `neko-home/`、`logs/` 以及你实际使用的 `.env`、`compose.gateway.yaml`。备份含实例凭证和 TLS 私钥，不要复制到仓库目录或公开位置。确认备份完整后再删除容器：`docker rm neko`。
 4. 确认 `docker/neko-home` 和 `docker/logs` 尚不存在（已存在说明另有官方部署的数据，先核对，不要覆盖），再以 root 保留属主和权限地复制：`sudo cp -a docker/community-2c2g/neko-home docker/community-2c2g/logs docker/`。TLS 私钥属主为 root、权限 0600，不用 root 复制会遗漏。
 5. 把 `docker/community-2c2g/.env` 中需要的设置迁入 `docker/.env`；网关覆盖文件改放 `docker/compose.gateway.yaml`，`COMPOSE_FILE` 改为 `docker-compose.yml:compose.gateway.yaml`。
-6. 在 `docker/` 执行 `docker compose config` 核对挂载来源和端口后 `docker compose up -d`，确认实例凭证、角色和记忆都在。迁移失败时停掉新容器，用 `sudo tar -xzpf /root/neko-2c2g-backup.tar.gz -C docker/community-2c2g` 恢复数据和配置。
+6. 在 `docker/` 执行 `docker compose config` 核对挂载来源和端口后 `docker compose up -d`，确认实例凭证、角色和记忆都在。迁移失败时停掉新容器，回到仓库根目录用 `sudo tar -xzpf /root/neko-2c2g-backup.tar.gz -C docker/community-2c2g` 恢复数据和配置。
 7. **重新安装看门狗**（第 5 节）。旧脚本只识别旧标签，不重装就不会再处理新容器。确认健康后解除 `disabled`。
 
 ## 10. 上线核对清单
