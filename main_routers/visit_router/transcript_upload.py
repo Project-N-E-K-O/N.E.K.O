@@ -75,7 +75,7 @@ from main_logic.visit.spool import UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX
 from main_logic.visit.subjects import path_lock
 from main_routers.visit_router import accounts
 from main_routers.visit_router import credentials as cr
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, move_aside
 from utils.instrument import counter, histogram
 from utils.logger_config import get_module_logger
 from utils.visit_wire import VISIT_ID_RE, require_visit_id, visit_path
@@ -639,7 +639,17 @@ class ReportAlreadyQueued(Exception):
 def _queue_report_sync(path: Path, doc: dict) -> None:
     with path_lock(path):
         if path.exists():
-            raise ReportAlreadyQueued(path.name)
+            try:
+                queued = _load_json(path)
+            except ValueError:
+                queued = None
+            if _valid_report(queued, doc["visit_id"]):
+                raise ReportAlreadyQueued(path.name)
+            # 内容坏了 / 不是这一场的举报：队列列表看不到它、也无法重试或放弃，不能让它永远挡住
+            # 这场的新举报。改名留底后照常入队（读文件出 OSError 时原样抛出，按落盘失败处理）
+            if move_aside(path, "invalid") is None:
+                raise OSError(f"cannot move {path.name} aside")
+            logger.warning("visit report queue: unreadable %s moved aside", path.name)
         _write_private_json(path, doc)
 
 

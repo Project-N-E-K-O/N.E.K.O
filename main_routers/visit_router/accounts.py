@@ -40,7 +40,7 @@ from pathlib import Path
 
 from config.visit_settings import VISIT_ACCOUNTS_FILENAME
 from main_logic.visit.subjects import path_lock
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, move_aside
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
@@ -67,17 +67,34 @@ def _valid_account(account: object) -> bool:
     return isinstance(account, str) and 0 < len(account) <= _ACCOUNT_MAX_CHARS and account.isprintable()
 
 
-def _read_sync(path: Path) -> dict[str, str]:
+class _MapUnreadable(Exception):
+    """The map exists but cannot be read right now (sharing violation, permissions)."""
+
+
+class _MapCorrupt(Exception):
+    """The map exists but its content is not a map."""
+
+
+def _read_sync(path: Path, *, strict: bool = False) -> dict[str, str]:
     try:
         with open(path, encoding="utf-8") as handle:
             doc = json.load(handle)
     except FileNotFoundError:
         return {}
-    except (OSError, ValueError, RecursionError) as exc:
+    except OSError as exc:
         logger.warning("visit accounts map unreadable: %s", type(exc).__name__)
+        if strict:
+            raise _MapUnreadable from exc
+        return {}
+    except (ValueError, RecursionError) as exc:
+        logger.warning("visit accounts map corrupt: %s", type(exc).__name__)
+        if strict:
+            raise _MapCorrupt from exc
         return {}
     accounts = doc.get("accounts") if isinstance(doc, dict) else None
     if not isinstance(accounts, dict):
+        if strict:
+            raise _MapCorrupt
         return {}
     return {
         k: v for k, v in accounts.items()
@@ -87,7 +104,16 @@ def _read_sync(path: Path) -> dict[str, str]:
 
 def _record_sync(path: Path, account: str, visit_uid: str) -> bool:
     with path_lock(path):
-        accounts = _read_sync(path)
+        try:
+            accounts = _read_sync(path, strict=True)
+        except _MapUnreadable:
+            # 暂时读不了：不拿只有这一个账号的表覆盖它（其余账号的映射会丢），下次拿到凭证再记
+            return False
+        except _MapCorrupt:
+            # 内容坏了、读不出任何映射：原文件改名留底，再从这个账号重新记起
+            if move_aside(path, "corrupt") is None:
+                return False
+            accounts = {}
         if accounts.get(account) == visit_uid:
             return False
         if account in accounts:

@@ -511,3 +511,17 @@ def test_a_report_abandoned_while_waiting_for_the_lock_is_not_sent(env):
         worker.join(5)
     assert result["resp"].status_code == 404 and result["resp"].json()["code"] == "not_queued"
     assert fake.count("/api/visit/reports") == 0
+
+
+
+@pytest.mark.parametrize("content", ["{not json", json.dumps({"visit_id": "x" * 32, "reason": "spam"})])
+def test_an_unreadable_queued_report_does_not_block_a_new_one(env, content):
+    client, fake, tmp_path, _ = env
+    reports = tmp_path / "visit_reports"
+    reports.mkdir(exist_ok=True)
+    (reports / f"{V1}.json").write_text(content, encoding="utf-8")
+    assert client.get("/api/visit/report/queue", headers=GOOD).json()["items"] == []
+    resp = _report(client)
+    assert resp.status_code == 200 and resp.json()["ok"] is True
+    assert (reports / f"{V1}.json.invalid").read_text(encoding="utf-8") == content    # 坏的那份改名留底
+    assert fake.count("/api/visit/reports") == 1

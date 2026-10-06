@@ -229,6 +229,7 @@ def test_card_is_cut_to_its_input_budget(env, monkeypatch):
     state["cards"]["A"] = CARD + "\n" + "很长的设定" * 2000
     _generate(client)
     assert all(len(p) < 4000 for p in llm.prompts)
+    assert _file(_tmp)["scan_complete"] is False          # 截掉的尾巴没被扫描过
 
 
 # ── 闸门 ───────────────────────────────────────────────────────────────

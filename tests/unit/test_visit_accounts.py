@@ -87,3 +87,26 @@ async def test_local_account_reads_the_session_snapshot(monkeypatch):
     assert await accounts.local_account() is None
     monkeypatch.setattr(card_drop_router, "_desktop_session_snapshot", lambda: None)
     assert await accounts.local_account() is None
+
+
+
+async def test_a_corrupt_map_is_kept_aside_before_recording(cfg):
+    path = cfg / "visit_accounts.json"
+    path.write_text("{not json", encoding="utf-8")
+    assert await accounts.record_account_visit_uid("u2", UID_2) is True
+    assert (cfg / "visit_accounts.json.corrupt").read_text(encoding="utf-8") == "{not json"   # 原文件留底
+    assert await accounts.lookup_visit_uid("u2") == UID_2
+
+
+async def test_an_unreadable_map_is_not_replaced(cfg, monkeypatch):
+    assert await accounts.record_account_visit_uid("u1", UID_1) is True
+
+    def busy(*_args, **_kwargs):
+        raise PermissionError("locked by another process")
+
+    monkeypatch.setattr(accounts, "open", busy, raising=False)
+    assert await accounts.record_account_visit_uid("u2", UID_2) is False
+    monkeypatch.undo()
+    monkeypatch.setattr(accounts, "config_dir_provider", lambda: cfg)
+    assert await accounts.lookup_visit_uid("u1") == UID_1                 # u1 的映射没被只含 u2 的表覆盖
+    assert await accounts.record_account_visit_uid("u2", UID_2) is True   # 读得到了再记

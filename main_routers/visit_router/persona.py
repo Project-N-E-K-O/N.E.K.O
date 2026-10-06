@@ -522,7 +522,8 @@ async def generate_visit_persona(
         scanned = _parse_scan(await asyncio.wait_for(
             scan_llm(build_visit_persona_private_scan_prompt(card_in, lang)), VISIT_LLM_TIMEOUT_S,
         ))
-        scan_complete = True
+        # 卡片超出输入预算被截过：截掉的尾巴没被扫描，如实标成检查不完整
+        scan_complete = len(card_in) >= len(card or "")
     except Exception as exc:  # noqa: BLE001 - 扫描失败只退回规则段落，并如实落盘「不完整」
         logger.warning("visit persona: private-section scan failed: %s", type(exc).__name__)
         scanned, scan_complete = [], False
