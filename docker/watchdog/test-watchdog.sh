@@ -416,4 +416,24 @@ if sh "$ROOT/install.sh"; then exit 1; fi
 [[ ! -e "$ROOT/victim" ]]
 chmod 777 "$ROOT/opt/neko"
 if sh "$ROOT/install.sh"; then exit 1; fi
+# An install aborted by a destination check leaves an existing directory's mode alone.
+rm -f "$ROOT/opt/neko/watchdog.sh" "$ROOT/cron/neko-watchdog"
+chmod 755 "$ROOT/opt/neko"
+ln -s "$ROOT/victim" "$ROOT/cron/neko-watchdog"
+if sh "$ROOT/install.sh"; then exit 1; fi
+[[ $(stat -c '%a' "$ROOT/opt/neko") == 755 && ! -e "$ROOT/victim" ]]
+rm "$ROOT/cron/neko-watchdog"
+if sh "$ROOT/install.sh" --bogus 2> "$ROOT/install-error"; then exit 1; fi
+grep -q 'unknown argument' "$ROOT/install-error"
+# --host installs straight onto host paths (redirected here) with no helper image,
+# taking watchdog.sh from the installer's own directory.
+mkdir "$ROOT/hostsrc" "$ROOT/hopt" "$ROOT/hcron"
+chmod 755 "$ROOT/hopt" "$ROOT/hcron"
+sed -e "s|opt_dir=/opt$|opt_dir=$ROOT/hopt|" -e "s|cron_dir=/etc/cron.d$|cron_dir=$ROOT/hcron|" \
+    "$SOURCE/install-watchdog.sh" > "$ROOT/hostsrc/install-watchdog.sh"
+cp "$SOURCE/watchdog.sh" "$ROOT/hostsrc/watchdog.sh"
+(cd / && sh "$ROOT/hostsrc/install-watchdog.sh" --host)
+cmp "$SOURCE/watchdog.sh" "$ROOT/hopt/neko/watchdog.sh"
+[[ $(stat -c '%u:%g:%a' "$ROOT/hopt/neko") == 0:0:700 ]]
+[[ $(stat -c '%u:%g:%a' "$ROOT/hcron/neko-watchdog") == 0:0:644 ]]
 echo 'PASS: probes, startup grace, pause/removal, restart confirmation, maintenance lock, counters, installer cleanup and permissions'

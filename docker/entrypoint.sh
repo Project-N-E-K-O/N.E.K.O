@@ -1351,11 +1351,16 @@ main() {
     # /app/logs 的属主就被盖掉了，DEBUG 级 dev 日志和后备日志目录随之写不进去。
     # 只在它为空时改挂载点本身（不递归）：宿主侧的 ./logs 若是指向别处的符号链接，
     # Docker 挂的是链接目标，容器里的 -L 识别不出来；限定空目录就不会去改一个已有
-    # 内容的宿主目录（比如 /var/log）的属主。已有内容时交给管理员处理。
+    # 内容的宿主目录（比如 /var/log）的属主。已有内容时交给管理员处理：宿主侧的
+    # docker/preflight.sh 看得见符号链接，由它确认之后再改。
     # 主日志在数据目录里，这里失败不影响服务，所以只警告不退出。
     if [ -d /app/logs ] && [ ! -L /app/logs ] && [ -z "$(ls -A /app/logs 2>/dev/null)" ]; then
         chown -h 1000:1000 /app/logs 2>/dev/null \
             || echo "⚠️ 无法把 /app/logs 的属主改为 1000:1000，DEBUG 日志可能无法写入"
+    elif [ -d /app/logs ] && [ "$(stat -c '%u' /app/logs 2>/dev/null)" != 1000 ]; then
+        echo "⚠️ /app/logs 非空且属主不是 1000，DEBUG 日志和后备日志可能无法写入。"
+        echo "   确认宿主机上的 ./logs 不是指向共享目录的符号链接后，在宿主机执行："
+        echo "       sudo sh docker/preflight.sh"
     fi
 
     # 放在服务启动前打印：此时前面的初始化日志已经刷完，这条不会被淹掉

@@ -202,6 +202,15 @@ volumes:
   - ./logs:/app/logs
 ```
 
+首次启动前、以及迁入数据之后，建议在 `docker/` 下执行一次宿主机预检（不拉取任何镜像）：
+
+```bash
+sudo sh preflight.sh                      # 默认检查 ./neko-home 和 ./logs
+sudo sh preflight.sh /实际/neko-home /实际/logs   # 覆盖文件挂载了其他目录时
+```
+
+它拒绝符号链接形式的挂载来源（Docker 会挂载链接目标，容器会接管它的属主），创建缺失的目录，并只把这两个目录本身的属主设为 uid/gid 1000。数据目录内部的属主由入口脚本每次启动时对齐。回归测试：`sudo bash test-preflight.sh`。
+
 ## 🔍 配置优先级
 
 配置加载优先级（从高到低）：

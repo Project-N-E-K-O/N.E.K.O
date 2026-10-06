@@ -26,7 +26,13 @@ NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
 
 已有部署改了 `SSL_DOMAIN` 时，入口脚本会继续复用 `docker/neko-home/ssl/` 下已有的自签名证书，不会按新域名重新签发。需要新证书时，先停容器，把 `N.E.K.O.crt` 和 `N.E.K.O.key` 移出该目录备份，再启动让入口脚本重新生成；使用自有证书时直接替换这两个文件。
 
-`docker/neko-home` 和 `docker/logs` 不要做成指向共享目录的符号链接：Docker 会挂载链接的目标，入口脚本随后把挂载根目录的属主改为 uid 1000。需要把数据放到其他磁盘时，让它指向一个专用的空目录，或在覆盖文件中直接写实际路径。
+首次启动前，在仓库根目录执行一次宿主机预检（迁移数据后、或 Docker 曾以 root 建过这两个目录时也执行）：
+
+```bash
+sudo sh docker/preflight.sh
+```
+
+它在宿主机上直接运行，不拉取任何镜像：`docker/neko-home` 或 `docker/logs` 是符号链接时拒绝并退出；目录不存在时创建；再把两个目录本身（不递归）的属主改为 uid/gid 1000。符号链接只有在宿主机上才看得出来：Docker 挂载的是链接目标，入口脚本在容器里分辨不出，会把挂载根目录的属主改为 1000，所以不要用符号链接把这两个目录指向共享目录。需要把数据放到其他磁盘时，在覆盖文件（例如 `docker/compose.local.yaml`）里直接写实际路径，并把这两个路径传给预检：`sudo sh docker/preflight.sh /实际/neko-home /实际/logs`。
 
 如需给容器设内存上限，按 [Docker 资源约束文档](https://docs.docker.com/engine/containers/resource_constraints/) 在覆盖文件中设置，并以实测结果确定数值，不要直接套用经验值。
 
@@ -89,20 +95,16 @@ swapon --show
 
 - 官方 Compose 已把主容器的 Docker 日志（`docker logs`）限制为 10m × 3。
 - 应用文件日志写在 `docker/neko-home/.local/share/N.E.K.O/logs/`（`docker/logs/` 只是后备目录），不受上面的限制，但应用会自行轮转（单个文件 10MB、保留 5 份，30 天前的日志自动清理）。排查问题时也先看这里。
-- 入口脚本只在日志挂载目录为空时把它对齐到 uid 1000。如果它是 Docker 早先以 root 创建、之后又已经写入了文件的目录，DEBUG 日志和后备日志可能写不进去。先读出容器实际挂载的来源，核对路径和属主：
+- 入口脚本只在日志挂载目录为空时把它对齐到 uid 1000；目录非空且属主不是 1000 时，启动日志里会给出警告。如果 `docker/logs` 是 Docker 早先以 root 创建、之后又已经写入了文件的目录，DEBUG 日志和后备日志可能写不进去，在仓库根目录执行 `sudo sh docker/preflight.sh`（见第 1 节）即可。它只修目录本身，不改其中的文件，并拒绝符号链接。改过日志挂载路径时，先读出容器实际挂载的来源，确认是本部署专用的目录（而不是 `/var/log` 这类其他服务也在用的目录）后显式传入：
 
   ```bash
   LOGS_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/app/logs"}}{{.Source}}{{end}}{{end}}')
-  echo "$LOGS_SRC"; stat -c '%u:%g %F' "$LOGS_SRC"
+  HOME_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/home/neko"}}{{.Source}}{{end}}{{end}}')
+  echo "home=$HOME_SRC logs=$LOGS_SRC"
+  [ -n "$HOME_SRC" ] && [ -n "$LOGS_SRC" ] && sudo sh docker/preflight.sh "$HOME_SRC" "$LOGS_SRC"
   ```
 
-  只有确认它是本部署专用的目录（通常是 `docker/logs` 的绝对路径，而不是 `/var/log` 这类其他服务也在用的目录）时，才只修目录本身（不递归，它本身是挂载点时跳过）：
-
-  ```bash
-  [ -n "$LOGS_SRC" ] && [ -d "$LOGS_SRC" ] && ! mountpoint -q "$LOGS_SRC" && sudo chown --no-dereference 1000:1000 "$LOGS_SRC" && echo logs-dir-ok
-  ```
-
-  如果它是共享目录，不要改属主，改为在 `compose.local.yaml` 里把 `/app/logs` 挂到一个专用的空目录。目录里由 root 写下的旧文件按第 9 节第 4 步的方法逐个修复。
+  `docker inspect` 显示的是解析后的目标路径，所以只有传入你自己配置的路径时，符号链接检查才起作用。如果它是共享目录，不要改属主，改为在 `compose.local.yaml` 里把 `/app/logs` 挂到一个专用的空目录。目录里由 root 写下的旧文件按第 9 节第 4 步的方法逐个修复。
 - 其他容器需要同样的限制时，把以下内容合并进现有 `/etc/docker/daemon.json`，再执行 `sudo systemctl restart docker`：
 
 ```json
@@ -131,7 +133,6 @@ Docker 的 `unless-stopped` 只在进程退出时重启容器；进程还在但�
 | 宿主工具 | `bash`、`curl`、`timeout`（coreutils）、`flock`（util-linux）：`sudo apt install curl coreutils util-linux` |
 | cron 服务 | `sudo apt install cron && sudo systemctl enable --now cron`，用 `systemctl is-active cron` 确认 |
 | Docker | 官方 apt 安装的 Docker Engine；cron 的 PATH 不含 `/snap/bin`，不支持 snap 版 |
-| 安装器镜像 | 安装器在 `alpine:3.20` 中运行，需能从 Docker Hub 拉取，或换成你已核验的镜像 |
 
 ### 工作方式
 
@@ -141,20 +142,20 @@ cron 每 5 分钟执行一次 `/opt/neko/watchdog.sh`：
 - 健康判据有两项：宿主机请求 `http://127.0.0.1:48911/` 得到 200 或 401，并且容器内直连主服务 `/health` 成功。
 - 容器启动后有 **15 分钟宽限期**。宽限期后连续 2 次不健康才执行 `docker restart`。
 - 同一个容器最多连续自动重启 **3 次**，用完后记录错误并停止主动重启，等人工处理；健康一次即清零。
+- 容器反复崩溃时，`unless-stopped` 会不断重置它的启动时间，看门狗一直处在宽限期内，不会记录任何日志。服务不可用而看门狗日志没有动静时，用 `docker inspect -f '{{.RestartCount}}' neko` 或 `docker ps` 的状态列确认是否在崩溃循环。
 - 状态、锁和日志位于 root 私有的 `/opt/neko/`，日志为 `/opt/neko/watchdog.log`（不会自动轮转），有 `logger` 时也写入 syslog（`journalctl -t neko-watchdog`）。
 
 看门狗通过宿主机 `127.0.0.1:48911` 探测。第 2 节的本机绑定不影响探测；如果改了宿主端口或只发布 HTTPS，探测会失败，并对健康的容器白白重启 3 次。这种情况下先暂停看门狗，修改仓库里的源文件 `docker/watchdog/watchdog.sh` 中的探测地址，重新安装并确认探测成功后再恢复。只改已安装的 `/opt/neko/watchdog.sh` 会在下次重装时被覆盖；源文件的改动是本地补丁，每次 `git pull` 后要核对。
 
 ### 安装
 
-核验 `docker/watchdog/` 下的两个脚本后，在 `docker/` 目录执行：
+核验 `docker/watchdog/` 下的两个脚本后，在仓库根目录执行（直接在宿主机运行，不需要拉取辅助镜像）：
 
 ```bash
-docker run --rm --network none \
-  -v /etc/cron.d:/host-cron.d -v /opt:/host-opt \
-  -v "$PWD/watchdog:/source:ro" \
-  alpine:3.20 sh /source/install-watchdog.sh
+sudo sh docker/watchdog/install-watchdog.sh --host
 ```
+
+不想在宿主 shell 中运行安装器时，也可以用你信任的镜像在一次性容器里执行：在 `docker/` 下运行 `docker run --rm --network none -v /etc/cron.d:/host-cron.d -v /opt:/host-opt -v "$PWD/watchdog:/source:ro" <镜像> sh /source/install-watchdog.sh`。
 
 安装器会拒绝符号链接和非 root 私有目录，原子写入 `/opt/neko/watchdog.sh` 和 `/etc/cron.d/neko-watchdog`。重新安装会保留已有的宽限期设置。
 
@@ -266,7 +267,7 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    必须依次看到 `stopped-ok`、`tar-ok` 和 `archive-ok`，并且每一项都是 `ok`、没有 `MISSING`。备份含实例凭证和 TLS 私钥，不要复制到仓库目录或公开位置。确认备份完整后再删除容器：`docker rm neko`。
 4. 确认 `docker/neko-home` 和 `docker/logs` 尚不存在（已存在说明另有官方部署的数据，先核对，不要覆盖），再从实际来源以 root 保留属主和权限地复制：`sudo cp -a "$HOME_SRC" docker/neko-home && sudo cp -a "$LOGS_SRC" docker/logs`。TLS 私钥属主为 root、权限 0600，不用 root 复制会遗漏。
 
-   复制后不需要手动 `chown -R`：容器每次启动时，入口脚本会以 root 把 `neko-home` 顶层和 `.local/share/N.E.K.O` 下的全部数据（记忆、角色、配置等）对齐到 uid/gid 1000，`logs` 挂载点只在为空时才被对齐到 1000（避免 `./logs` 是指向别处的符号链接时改到其他宿主目录），也不会递归修改其中的旧文件。迁移过来的 `logs` 用 `cp -a` 保留了原属主，通常已是 1000；如果其中有以前以 root 写下的日志，按需逐个修复，例如 `sudo chown --no-dereference 1000:1000 -- docker/logs/某个.log`；不要用 `chown -R` 或通配符，以免改到挂载进来的其他宿主路径。`docker/logs` 目录本身不属于 1000 时，按第 4 节的命令只修目录。
+   复制后不需要手动 `chown -R`：容器每次启动时，入口脚本会以 root 把 `neko-home` 顶层和 `.local/share/N.E.K.O` 下的全部数据（记忆、角色、配置等）对齐到 uid/gid 1000，`logs` 挂载点只在为空时才被对齐到 1000（避免 `./logs` 是指向别处的符号链接时改到其他宿主目录），也不会递归修改其中的旧文件。迁移过来的 `logs` 用 `cp -a` 保留了原属主，通常已是 1000；如果其中有以前以 root 写下的日志，按需逐个修复，例如 `sudo chown --no-dereference 1000:1000 -- docker/logs/某个.log`；不要用 `chown -R` 或通配符，以免改到挂载进来的其他宿主路径。之后在仓库根目录执行 `sudo sh docker/preflight.sh`（见第 1 节）：它会确认两份副本都不是符号链接，并修好 `docker/logs` 目录本身的属主（目录非空后入口脚本不再处理它）。
 5. 把旧部署的**全部**有效配置迁过来，不只是 `docker/community-2c2g/.env`，还包括启动时用过的 `--env-file`、shell 环境变量、`COMPOSE_FILE` 和 `-f` 覆盖文件。需要的值写入 `docker/.env`；网关覆盖文件改放 `docker/compose.gateway.yaml`，`COMPOSE_FILE` 改为 `docker-compose.yml:compose.gateway.yaml`。之后用不带 `-f` 的 `docker compose` 命令就能得到完整配置，不要依赖临时的 shell 变量。
 
    旧部署的覆盖文件里如果还有 `mem_limit`、`read_only`、`cap_drop`、`tmpfs`、`extra_hosts`、`devices`、`ulimits` 等非环境变量设置，也一并写进 `docker/compose.local.yaml` 的 `neko-main` 下。快照没有覆盖的选项（如 `devices`、`ulimits`）要对照旧覆盖文件人工核对。
@@ -332,6 +333,7 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
 
 ## 10. 上线核对清单
 
+- [ ] 首次启动前已执行 `sudo sh docker/preflight.sh` 且没有报错
 - [ ] `docker compose ps` 显示 `neko-main` 运行中
 - [ ] 镜像固定到已验证版本，并包含 #3289/#3299
 - [ ] 首次通过 HTTP 或 HTTPS 输入实例凭证后，刷新可复用；匿名 API 返回 401

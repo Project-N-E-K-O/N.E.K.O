@@ -26,7 +26,13 @@ Pairing over `http://<server-ip>:48911` is allowed by default and the page warns
 
 On an existing deployment, changing `SSL_DOMAIN` does not reissue the certificate: the entrypoint keeps reusing the self-signed pair in `docker/neko-home/ssl/`. To get a new one, stop the container, move `N.E.K.O.crt` and `N.E.K.O.key` out of that directory as a backup, and start again; with your own certificate, replace those two files.
 
-Do not make `docker/neko-home` or `docker/logs` a symlink to a shared directory: Docker mounts the link target and the entrypoint then changes the mount root's owner to uid 1000. To keep data on another disk, point it at a dedicated empty directory or write the real path in an override file.
+Before the first start, run the host preflight once from the repository root (also after migrating data, or when Docker created either directory as root):
+
+```bash
+sudo sh docker/preflight.sh
+```
+
+It runs directly on the host and pulls no image: it refuses to continue if `docker/neko-home` or `docker/logs` is a symlink, creates them if missing, and sets the owner of each directory itself (not recursively) to uid/gid 1000. Symlinks are only visible on the host: Docker mounts the link target, the entrypoint cannot tell from inside the container, and it would change the mount root's owner to 1000, so do not point these directories at a shared directory with a symlink. To keep data on another disk, write the real path in an override file (for example `docker/compose.local.yaml`) and pass both paths to the preflight: `sudo sh docker/preflight.sh /real/neko-home /real/logs`.
 
 If you want a container memory limit, set it in an override file following the [Docker resource constraints docs](https://docs.docker.com/engine/containers/resource_constraints/) and size it from measurements.
 
@@ -65,20 +71,16 @@ There is no universal `vm.swappiness`. With ZRAM as the primary swap, evaluate v
 
 - The official Compose file caps the main container's Docker log (`docker logs`) at 10m × 3.
 - Application file logs live in `docker/neko-home/.local/share/N.E.K.O/logs/` (`docker/logs/` is only a fallback). They are not covered by the Docker cap, but the application rotates them itself (10 MB per file, 5 backups, files older than 30 days removed). Look there first when diagnosing.
-- The entrypoint aligns the logs mount to uid 1000 only while it is empty. If Docker created it as root earlier and files have been written there since, DEBUG and fallback logs may fail to write. First read the container's actual mount source and check its path and owner:
+- The entrypoint aligns the logs mount to uid 1000 only while it is empty, and warns at startup when it is non-empty and owned by someone else. If Docker created `docker/logs` as root earlier and files have been written there since, DEBUG and fallback logs may fail to write; run `sudo sh docker/preflight.sh` from the repository root (section 1). It fixes only the directory itself, not the files in it, and refuses symlinks. With a custom logs mount, read the container's actual source first and pass it explicitly, after confirming it is dedicated to this deployment (not something other services use such as `/var/log`):
 
   ```bash
   LOGS_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/app/logs"}}{{.Source}}{{end}}{{end}}')
-  echo "$LOGS_SRC"; stat -c '%u:%g %F' "$LOGS_SRC"
+  HOME_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/home/neko"}}{{.Source}}{{end}}{{end}}')
+  echo "home=$HOME_SRC logs=$LOGS_SRC"
+  [ -n "$HOME_SRC" ] && [ -n "$LOGS_SRC" ] && sudo sh docker/preflight.sh "$HOME_SRC" "$LOGS_SRC"
   ```
 
-  Only once you have confirmed it is a directory dedicated to this deployment (normally the absolute path of `docker/logs`, not something other services use such as `/var/log`), fix only the directory itself (not recursively, and skipped if it is itself a mount point):
-
-  ```bash
-  [ -n "$LOGS_SRC" ] && [ -d "$LOGS_SRC" ] && ! mountpoint -q "$LOGS_SRC" && sudo chown --no-dereference 1000:1000 "$LOGS_SRC" && echo logs-dir-ok
-  ```
-
-  If it is a shared directory, leave its owner alone and mount a dedicated empty directory at `/app/logs` in `compose.local.yaml` instead. Fix old root-owned files inside it one by one as described in section 9, step 4.
+  `docker inspect` reports the resolved target, so the symlink check only helps when you pass the path you configured. If it is a shared directory, leave its owner alone and mount a dedicated empty directory at `/app/logs` in `compose.local.yaml` instead. Fix old root-owned files inside it one by one as described in section 9, step 4.
 - To apply the same cap to other containers, merge `"log-driver": "json-file"` and `"log-opts": {"max-size": "10m", "max-file": "3"}` into `/etc/docker/daemon.json`, then restart Docker. This only applies to containers created afterwards; existing containers keep their old logging options, so recreate them (for example `docker compose up -d --force-recreate` in each project) and confirm:
 
   ```bash
@@ -90,18 +92,17 @@ There is no universal `vm.swappiness`. With ZRAM as the primary swap, evaluate v
 
 Docker's `unless-stopped` restarts a container only when its process exits; a process that is alive but hung (more likely under memory pressure) is not handled. `docker/watchdog/` provides an optional host watchdog for that case. It installs a root cron job, so only use it on Linux hosts where you trust these scripts.
 
-**Prerequisites**: `bash`, `curl`, `timeout`, `flock`, a running `cron` service, Docker Engine from the official apt repository (snap Docker is not supported because cron's PATH excludes `/snap/bin`), and a pullable `alpine:3.20` for the installer.
+**Prerequisites**: `bash`, `curl`, `timeout`, `flock`, a running `cron` service, Docker Engine from the official apt repository (snap Docker is not supported because cron's PATH excludes `/snap/bin`). The installer runs directly on the host; no helper image is needed.
 
-**Behavior**: cron runs `/opt/neko/watchdog.sh` every 5 minutes. It only acts on the container named `neko` with label `org.neko.watchdog=enabled` and Compose service `neko-main`; stopped, paused, restarting, or removed containers are never started. Health requires a 200/401 response from `http://127.0.0.1:48911/` on the host and a successful in-container `/health` request to the main server. After a 15-minute startup grace period, two consecutive failures trigger `docker restart`. Each container gets at most three consecutive automatic restarts; after that it logs an error and waits for an operator. State, lock, and log (`/opt/neko/watchdog.log`, not rotated) live in root-private `/opt/neko/`. Loopback binding from section 2 is fine. Changing the host port or publishing HTTPS only breaks the probe and leads to three needless restarts of a healthy container: pause the watchdog, edit the probe address in the source file `docker/watchdog/watchdog.sh`, reinstall, confirm the probe succeeds, then resume. Editing only the installed `/opt/neko/watchdog.sh` is lost on the next reinstall; keep the source change as a local patch and recheck it after each `git pull`.
+**Behavior**: cron runs `/opt/neko/watchdog.sh` every 5 minutes. It only acts on the container named `neko` with label `org.neko.watchdog=enabled` and Compose service `neko-main`; stopped, paused, restarting, or removed containers are never started. Health requires a 200/401 response from `http://127.0.0.1:48911/` on the host and a successful in-container `/health` request to the main server. After a 15-minute startup grace period, two consecutive failures trigger `docker restart`. Each container gets at most three consecutive automatic restarts; after that it logs an error and waits for an operator. A container in a crash loop keeps resetting its start time under `unless-stopped`, so the watchdog stays inside the grace period and logs nothing; check `docker inspect -f '{{.RestartCount}}' neko` or the `docker ps` status when the service is down but the watchdog log is quiet. State, lock, and log (`/opt/neko/watchdog.log`, not rotated) live in root-private `/opt/neko/`. Loopback binding from section 2 is fine. Changing the host port or publishing HTTPS only breaks the probe and leads to three needless restarts of a healthy container: pause the watchdog, edit the probe address in the source file `docker/watchdog/watchdog.sh`, reinstall, confirm the probe succeeds, then resume. Editing only the installed `/opt/neko/watchdog.sh` is lost on the next reinstall; keep the source change as a local patch and recheck it after each `git pull`.
 
-**Install** (from `docker/`, after reviewing both scripts):
+**Install** (from the repository root, after reviewing both scripts):
 
 ```bash
-docker run --rm --network none \
-  -v /etc/cron.d:/host-cron.d -v /opt:/host-opt \
-  -v "$PWD/watchdog:/source:ro" \
-  alpine:3.20 sh /source/install-watchdog.sh
+sudo sh docker/watchdog/install-watchdog.sh --host
 ```
+
+To keep the installer off the host shell, it can still run in a one-off container of an image you trust: from `docker/`, `docker run --rm --network none -v /etc/cron.d:/host-cron.d -v /opt:/host-opt -v "$PWD/watchdog:/source:ro" <image> sh /source/install-watchdog.sh`.
 
 For slower starts, add `NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=1800` above the job line in `/etc/cron.d/neko-watchdog` (seconds; 0 disables). Reinstalling preserves it.
 
@@ -189,7 +190,7 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    You must see `stopped-ok`, `tar-ok`, then `archive-ok`, and only `ok` lines, no `MISSING`. The backup contains instance credentials and TLS keys; never copy it into the repository or anywhere public. Only after confirming it is complete, remove the container: `docker rm neko`.
 4. Make sure `docker/neko-home` and `docker/logs` do not exist yet, then copy from the actual sources as root, preserving ownership: `sudo cp -a "$HOME_SRC" docker/neko-home && sudo cp -a "$LOGS_SRC" docker/logs`.
 
-   No manual `chown -R` is needed afterwards: on every start the entrypoint, running as root, aligns the top of `neko-home` and everything under `.local/share/N.E.K.O` (memory, characters, config) to uid/gid 1000, and aligns the `logs` mount point to 1000 only while it is empty (so a `./logs` symlink pointing elsewhere cannot change another host directory's owner); it never recurses into it. A `logs` copied with `cp -a` keeps its original owner, usually already 1000; fix any old root-owned log files one by one if needed, e.g. `sudo chown --no-dereference 1000:1000 -- docker/logs/some.log`; avoid `chown -R` and wildcards so other mounted host paths are not touched. If the `docker/logs` directory itself is not owned by 1000, fix only the directory with the commands in section 4.
+   No manual `chown -R` is needed afterwards: on every start the entrypoint, running as root, aligns the top of `neko-home` and everything under `.local/share/N.E.K.O` (memory, characters, config) to uid/gid 1000, and aligns the `logs` mount point to 1000 only while it is empty (so a `./logs` symlink pointing elsewhere cannot change another host directory's owner); it never recurses into it. A `logs` copied with `cp -a` keeps its original owner, usually already 1000; fix any old root-owned log files one by one if needed, e.g. `sudo chown --no-dereference 1000:1000 -- docker/logs/some.log`; avoid `chown -R` and wildcards so other mounted host paths are not touched. Then run `sudo sh docker/preflight.sh` (section 1): it checks that neither copy is a symlink and fixes the owner of the `docker/logs` directory itself, which the entrypoint skips once it has content.
 5. Carry over **all** effective configuration, not only `docker/community-2c2g/.env` but also any `--env-file`, shell variables, `COMPOSE_FILE`, and `-f` override files used to start it. Put the values in `docker/.env`; a gateway override becomes `docker/compose.gateway.yaml` with `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml`. Plain `docker compose` commands without `-f` should then produce the complete configuration, without relying on ad-hoc shell variables.
 
    If the old override also set non-environment options such as `mem_limit`, `read_only`, `cap_drop`, `tmpfs`, `extra_hosts`, `devices`, or `ulimits`, carry them into `docker/compose.local.yaml` under `neko-main` as well. Options the snapshot does not record (such as `devices` and `ulimits`) must be checked by hand against the old override file.
