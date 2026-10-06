@@ -596,3 +596,30 @@ def test_an_upload_bookkeeping_error_after_queueing_still_answers_queued(env, mo
     resp = _report(client, include_transcript=True)
     assert resp.status_code == 202 and resp.json() == {"queued": True}
     assert _queued(tmp_path) is not None and V1 in tu._workers       # 举报留着，已排后台重试
+
+
+
+def test_a_manual_retry_does_not_call_an_unreadable_report_delivered(env, monkeypatch):
+    client, fake, tmp_path, _ = env
+    fake.report_mode = "503"
+    scheduled = []
+    # 不起真的后台 worker：夹具里的等待是空操作，固定返回「待处理」的轮次会让它空转
+    monkeypatch.setattr(tu, "schedule_visit_retry", lambda visit_id, **_k: scheduled.append(visit_id))
+    _report(client)
+    scheduled.clear()
+
+    async def round_left_pending(*_a, **_k):
+        return tu.RetryRound(pending=True)
+
+    async def unreadable(_config_dir, _visit_id):
+        return None, True                                 # 重试后核对去向时恰好读不了
+
+    monkeypatch.setattr(tu, "retry_visit_once", round_left_pending)
+    monkeypatch.setattr(tu, "_read_report", unreadable)
+    monkeypatch.setattr(tu, "load_report", lambda *_a: _queued_async(tmp_path))
+    resp = client.post(f"/api/visit/report/queue/{V1}", headers=GOOD, json={"action": "retry"})
+    assert resp.json() == {"ok": True, "delivered": False} and scheduled == [V1]     # 仍排着后台重试
+
+
+async def _queued_async(tmp_path):
+    return _queued(tmp_path)

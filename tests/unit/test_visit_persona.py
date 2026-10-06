@@ -716,3 +716,11 @@ def test_a_one_word_street_after_a_house_number():
 def test_a_lowercase_single_word_after_a_number_is_not_a_street():
     tokens = [t.lower() for t in persona.extract_sensitive_tokens("She lives in 2 cities at once.", [])]
     assert "cities" not in tokens
+
+
+
+def test_a_single_proper_word_segment_on_an_address_line():
+    tokens = persona.extract_sensitive_tokens("address: Apt 4, Broadway", [])
+    assert "Broadway" in tokens
+    tokens = persona.extract_sensitive_tokens("address: Apt 4, upstairs", [])
+    assert "upstairs" not in tokens

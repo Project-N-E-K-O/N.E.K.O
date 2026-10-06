@@ -210,6 +210,8 @@ _UNNUMBERED_STREET_RE = re.compile(
     rf"(?<![A-Za-z0-9])((?:(?-i:[A-Z])[A-Za-z'\-]*\s+){{1,2}}(?:{_STREET_TYPES}))\b\.?",
     re.IGNORECASE,
 )
+# 地址行逗号后整段只有一个大写开头的词：街名 / 地名本身
+_PROPER_PLACE_RE = re.compile(r"(?-i:[A-Z])[A-Za-z'\-]+")
 _UNAMBIGUOUS_STREET_TYPES = "street|avenue|ave|boulevard|blvd|lane|highway|hwy|parkway|pkwy|rd"
 _LOWERCASE_STREET_RE = re.compile(
     rf"(?<![A-Za-z0-9])((?:[A-Za-z][A-Za-z'\-]*\s+){{1,2}}(?:{_UNAMBIGUOUS_STREET_TYPES}))\b\.?",
@@ -355,6 +357,9 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
                         found.extend(_place_cores(segment, _ROAD_CORE_RE))
                         found.extend(_street_names(segment))
                         found.extend(_unnumbered_streets(segment))
+                        if _PROPER_PLACE_RE.fullmatch(segment):
+                            # 整段只有一个大写开头的词（「Apt 4, Broadway」）：在地址行里就是地名本身
+                            found.append(segment)
     found.extend(_place_cores(text, _ESTATE_CORE_RE))
     out: list[str] = []
     seen: set[str] = set()

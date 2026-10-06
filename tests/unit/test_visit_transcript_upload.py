@@ -1133,7 +1133,7 @@ async def test_a_cancelled_open_cleans_up_after_the_worker(tmp_path, servers, mo
     assert V1 in tu._open_streams                         # 线程还在建文件：登记不能先撤
     release.set()
     with pytest.raises(asyncio.CancelledError):
-        await task
+        await asyncio.wait_for(task, timeout=5)
     assert V1 not in tu._open_streams
     assert not (_spool(tmp_path) / f"{V1}.upload.jsonl").exists()
 
@@ -1160,6 +1160,34 @@ async def test_a_second_cancel_while_waiting_still_cleans_up(tmp_path, servers, 
     assert V1 in tu._open_streams
     release.set()
     with pytest.raises(asyncio.CancelledError):
-        await task
+        await asyncio.wait_for(task, timeout=5)
     assert V1 not in tu._open_streams
     assert not (_spool(tmp_path) / f"{V1}.upload.jsonl").exists()
+
+
+
+async def test_a_rejected_spool_left_after_acceptance_is_cleaned_up_later(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    fake.transcript_mode = "parts"
+    sealed = _write_sealed(tmp_path, _big_doc(4, 10))
+    await tu.queue_report(tmp_path, _report_doc())
+    original_mark = tu._mark_unavailable_sync
+
+    def broken(*_a, **_k):
+        raise OSError("disk full")                    # 原因记不进举报：封存文件带 rejected 留着
+
+    monkeypatch.setattr(tu, "_mark_unavailable_sync", broken)
+    real_unlink = Path.unlink
+    calls = []
+
+    def busy(self, missing_ok=False):
+        if self == sealed and not calls:
+            calls.append(self)
+            raise PermissionError("in use")
+        return real_unlink(self, missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", busy)
+    outcome = await tu.retry_visit_once(V1)
+    assert await tu.load_report(tmp_path, V1) is None and sealed.exists() and outcome.pending is True
+    monkeypatch.setattr(tu, "_mark_unavailable_sync", original_mark)
+    assert (await tu.retry_visit_once(V1)).pending is False and not sealed.exists()

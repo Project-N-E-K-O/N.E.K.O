@@ -951,7 +951,10 @@ async def finish_report(config_dir: Path, visit_id: str, result: ReportResult, d
     if result.accepted:
         await _delete_accepted_report(config_dir, visit_id)
         # 拒收原因没能记进举报而留着的封存文件：举报已受理，它再没有用处，别占待上传容量
-        await asyncio.to_thread(_drop_rejected_sealed_sync, config_dir, visit_id)
+        if not await asyncio.to_thread(_drop_rejected_sealed_sync, config_dir, visit_id):
+            # 删不掉（被占用）：记成「已结清待删」，后续轮次只重删、不重传
+            _settled_leftovers.add(visit_id)
+            schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=VISIT_UPLOAD_RETRY_BACKOFF_S[0])
         return True
     if result.unknown_visit:
         await set_report_rejected(config_dir, visit_id, "unknown_visit", expect=doc)
@@ -968,18 +971,23 @@ def _file_age_s(path: Path, now: float) -> float | None:
         return None
 
 
-def _drop_rejected_sealed_sync(config_dir: Path, visit_id: str) -> None:
+def _drop_rejected_sealed_sync(config_dir: Path, visit_id: str) -> bool:
+    """Delete a sealed upload kept only as the record of a rejection; False when it is still there."""
     path = visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSON_SUFFIX)
     with path_lock(path):
         try:
             doc = _load_json(path)
-        except (OSError, ValueError):
-            return
+        except OSError:
+            return False
+        except ValueError:
+            return True
         if isinstance(doc, dict) and isinstance(doc.get("rejected"), str) and doc["rejected"]:
             try:
                 path.unlink()
             except OSError as exc:
                 logger.warning("visit upload %s: cannot delete rejected %s: %s", visit_id, path.name, exc)
+                return False
+    return True
 
 
 def _mark_sealed_rejected_sync(path: Path, reason: str) -> None:
@@ -1218,7 +1226,7 @@ async def retry_visit_once(
             elif report.get("rejected"):
                 report_pending = False
     delays = [d for d in (upload.retry_after_s, report_retry_after) if d is not None]
-    return RetryRound(pending=report_pending or upload.retryable or unreadable,
+    return RetryRound(pending=report_pending or upload.retryable or unreadable or visit_id in _settled_leftovers,
                       retry_after_s=max(delays) if delays else None,
                       login_required=login_required)
 
@@ -1236,6 +1244,8 @@ def _reset_for_tests() -> None:
     _recent_anomalies.clear()
     _terminal_reasons.clear()
     _open_streams.clear()
+    # 上一个测试的事件循环里残留的任务可能还握着锁：换新的锁表，不跨事件循环复用
+    _VISIT_LOCKS.clear()
     _not_before.clear()
     _settled_leftovers.clear()
 
