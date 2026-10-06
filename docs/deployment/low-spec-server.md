@@ -141,6 +141,17 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    ```
 
    The sources are normally `docker/community-2c2g/neko-home` and `docker/community-2c2g/logs`; customized mounts show their real paths. If either variable is empty or a path is not what you expect, stop and keep the container.
+
+   The old deployment may also have received configuration from `--env-file`, shell variables, `COMPOSE_FILE`, or `-f` override files. Whatever the source, the values in effect can be read from the container. Before removing it, save them as a root-only snapshot for the comparison in step 6:
+
+   ```bash
+   { docker inspect neko --format 'image={{.Config.Image}}'
+     docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
+     docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
+   } | sudo sh -c 'umask 077; cat > /root/neko-2c2g-effective.txt'
+   ```
+
+   The snapshot contains secrets such as the instance key; never paste it into issues, chats, or logs.
 3. Stop the container and, as root with ownership preserved, back up those actual sources plus `.env` and the gateway override if present; then verify the archive:
 
    ```bash
@@ -158,8 +169,20 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
 
    You must see `archive-ok` and only `ok` lines, no `MISSING`. The backup contains instance credentials and TLS keys; never copy it into the repository or anywhere public. Only after confirming it is complete, remove the container: `docker rm neko`.
 4. Make sure `docker/neko-home` and `docker/logs` do not exist yet, then copy from the actual sources as root, preserving ownership: `sudo cp -a "$HOME_SRC" docker/neko-home && sudo cp -a "$LOGS_SRC" docker/logs`.
-5. Move needed settings from `docker/community-2c2g/.env` to `docker/.env`; a gateway override becomes `docker/compose.gateway.yaml` with `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml`.
-6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. To roll back to the old deployment if migration fails, run from the repository root:
+5. Carry over **all** effective configuration, not only `docker/community-2c2g/.env` but also any `--env-file`, shell variables, `COMPOSE_FILE`, and `-f` override files used to start it. Put the values in `docker/.env`; a gateway override becomes `docker/compose.gateway.yaml` with `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml`. Plain `docker compose` commands without `-f` should then produce the complete configuration, without relying on ad-hoc shell variables.
+6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. Back at the repository root, compare the new container's effective configuration with the step 2 snapshot:
+
+   ```bash
+   { docker inspect neko --format 'image={{.Config.Image}}'
+     docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
+     docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
+   } | sudo sh -c 'umask 077; cat > /root/neko-official-effective.txt'
+   sudo diff /root/neko-2c2g-effective.txt /root/neko-official-effective.txt
+   ```
+
+   Make sure `NEKO_REQUIRE_HTTPS`, `NEKO_INSTANCE_ACCESS_KEY`, `NEKO_INSTANCE_PUBLIC_ORIGIN`, `NEKO_TRUSTED_HOSTS`, `NEKO_TRUSTED_ORIGINS`, `SSL_DOMAIN`, the image, and the ports were not lost or changed. On an unexpected difference, run `docker compose down`, fix `docker/.env` or the override, and start again. Delete both snapshot files once the migration is confirmed.
+
+    To roll back to the old deployment if migration fails, run from the repository root:
 
    ```bash
    (cd docker && docker compose down)       # stop and remove the new container; no -v

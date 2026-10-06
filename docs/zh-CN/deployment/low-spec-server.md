@@ -216,6 +216,17 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    ```
 
    通常两个来源分别是 `docker/community-2c2g/neko-home` 和 `docker/community-2c2g/logs`，改过挂载路径时会显示实际路径。任一变量为空，或路径与预期不符时，先停下，不要删容器。
+
+   旧部署可能还通过 `--env-file`、shell 环境变量、`COMPOSE_FILE` 或 `-f` 覆盖文件带入了配置。不管来源是哪里，容器里最终生效的值都可以读出来。删除容器前把它们存成仅 root 可读的快照，第 6 步用来比对：
+
+   ```bash
+   { docker inspect neko --format 'image={{.Config.Image}}'
+     docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
+     docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
+   } | sudo sh -c 'umask 077; cat > /root/neko-2c2g-effective.txt'
+   ```
+
+   快照包含实例密钥等敏感值，不要贴到 issue、聊天或日志里。
 3. 停止容器，按上面读出的实际来源，以 root 保留属主和权限备份数据目录，以及存在的 `.env` 和网关覆盖文件，然后核验备份：
 
    ```bash
@@ -233,8 +244,20 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
 
    必须看到 `archive-ok`，并且每一项都是 `ok`、没有 `MISSING`。备份含实例凭证和 TLS 私钥，不要复制到仓库目录或公开位置。确认备份完整后再删除容器：`docker rm neko`。
 4. 确认 `docker/neko-home` 和 `docker/logs` 尚不存在（已存在说明另有官方部署的数据，先核对，不要覆盖），再从实际来源以 root 保留属主和权限地复制：`sudo cp -a "$HOME_SRC" docker/neko-home && sudo cp -a "$LOGS_SRC" docker/logs`。TLS 私钥属主为 root、权限 0600，不用 root 复制会遗漏。
-5. 把 `docker/community-2c2g/.env` 中需要的设置迁入 `docker/.env`；网关覆盖文件改放 `docker/compose.gateway.yaml`，`COMPOSE_FILE` 改为 `docker-compose.yml:compose.gateway.yaml`。
-6. 在 `docker/` 执行 `docker compose config` 核对挂载来源和端口后 `docker compose up -d`，确认实例凭证、角色和记忆都在。迁移失败需要回退到旧部署时，在仓库根目录执行：
+5. 把旧部署的**全部**有效配置迁过来，不只是 `docker/community-2c2g/.env`，还包括启动时用过的 `--env-file`、shell 环境变量、`COMPOSE_FILE` 和 `-f` 覆盖文件。需要的值写入 `docker/.env`；网关覆盖文件改放 `docker/compose.gateway.yaml`，`COMPOSE_FILE` 改为 `docker-compose.yml:compose.gateway.yaml`。之后用不带 `-f` 的 `docker compose` 命令就能得到完整配置，不要依赖临时的 shell 变量。
+6. 在 `docker/` 执行 `docker compose config` 核对挂载来源和端口后 `docker compose up -d`，确认实例凭证、角色和记忆都在。再回到仓库根目录，把新容器的有效配置和第 2 步的快照比对：
+
+   ```bash
+   { docker inspect neko --format 'image={{.Config.Image}}'
+     docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
+     docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
+   } | sudo sh -c 'umask 077; cat > /root/neko-official-effective.txt'
+   sudo diff /root/neko-2c2g-effective.txt /root/neko-official-effective.txt
+   ```
+
+   重点确认 `NEKO_REQUIRE_HTTPS`、`NEKO_INSTANCE_ACCESS_KEY`、`NEKO_INSTANCE_PUBLIC_ORIGIN`、`NEKO_TRUSTED_HOSTS`、`NEKO_TRUSTED_ORIGINS`、`SSL_DOMAIN`、镜像和端口没有丢失或变化。有非预期差异时先 `docker compose down`，修正 `docker/.env` 或覆盖文件后再启动。迁移确认成功后再删除这两个快照文件。
+
+   迁移失败需要回退到旧部署时，在仓库根目录执行：
 
    ```bash
    (cd docker && docker compose down)       # 停掉并删除新容器，不要加 -v
