@@ -14,6 +14,127 @@ from utils.voice_management import providers, service
 from utils.voice_management.providers.cosyvoice import CosyVoiceAdapter
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote_record", ["doubao_tts", "cosyvoice", "cosyvoice_intl"], indirect=True)
+@pytest.mark.parametrize("terminal", ["completed", "failed"])
+@pytest.mark.parametrize("cancel_waiter", [False, True])
+@pytest.mark.parametrize("winner_revision", ["2", "3"])
+async def test_refresh_wins_between_preflight_and_overwrite_claim(
+    remote_record, terminal, cancel_waiter, winner_revision, monkeypatch,
+):
+    from tests.unit.test_voice_management_revisions import isolated_api, upstream_transport
+    from tests.unit.test_voice_management_routes import _wav
+    from utils import voice_clone
+
+    cm, adapter, ref, data, storage = remote_record
+    provider = adapter.resolve_runtime(cm).provider
+    await cm.aupdate_imported_voice(ref, data["scope_id"], {
+        "remote_revision": revision_for(provider, "2"), "overwrite_status": terminal,
+        "can_overwrite": True,
+    })
+    api = isolated_api(cm, monkeypatch)
+    token = service.context_token(adapter.resolve_runtime(cm))
+    query_entered, release_query = asyncio.Event(), asyncio.Event()
+    claim_entered, release_claim = asyncio.Event(), asyncio.Event()
+    queries, mutations, uploads = 0, [], []
+
+    class Uploader:
+        def __init__(self, *args):
+            pass
+
+        async def upload_file(self, *args):
+            uploads.append(args)
+            return "https://controlled.upload/reference.wav"
+
+    monkeypatch.setattr(voice_clone, "QwenVoiceCloneClient", Uploader)
+
+    async def upstream(request):
+        nonlocal queries
+        body = json.loads(request.content)
+        if request.url.path.endswith("/voice_clone") or body.get("input", {}).get("action") == "update_voice":
+            current = await asyncio.to_thread(cm.get_imported_voice, ref)
+            assert current["remote_revision"] == revision_for(provider, winner_revision)
+            mutations.append(request)
+            reply = {"code": 0, "speaker_id": data["remote_voice_id"]} if provider == "doubao_tts" else {"output": {}}
+            return httpx.Response(200, json=reply)
+        queries += 1
+        index = queries
+        if index == 1:
+            query_entered.set()
+            await release_query.wait()
+        revision = "2" if index == 2 else str(int(winner_revision) + 1) if index >= 4 else winner_revision
+        return response_for(provider, data, "stale-ready", revision)
+
+    upstream_transport(monkeypatch, upstream)
+    original = cm.aupdate_imported_voice
+
+    async def pause_claim(local_ref, scope, values, **kwargs):
+        if values.get("overwrite_status") == "processing" and values.get("overwrite_operation_id") != "same-operation":
+            claim_entered.set()
+            await release_claim.wait()
+        return await original(local_ref, scope, values, **kwargs)
+
+    monkeypatch.setattr(cm, "aupdate_imported_voice", pause_claim)
+    refresh = overwrite = None
+    async with api:
+        try:
+            refresh = asyncio.create_task(api.get(
+                f"/api/characters/voices/{ref}/overwrite_status", params={"context_token": token},
+            ))
+            await asyncio.wait_for(query_entered.wait(), 5)
+            overwrite = asyncio.create_task(api.post(
+                f"/api/characters/voices/{ref}/overwrite", data={"context_token": token},
+                files={"audio": ("reference.wav", _wav(), "audio/wav")},
+            ))
+            await asyncio.wait_for(claim_entered.wait(), 5)
+            release_query.set()
+            refreshed = await asyncio.wait_for(refresh, 5)
+            assert refreshed.status_code == 200
+            assert refreshed.json()["voice_data"]["remote_revision"] == revision_for(provider, winner_revision)
+            winner = await asyncio.to_thread(cm.get_imported_voice, ref)
+            winner_bytes = await asyncio.to_thread(storage.read_bytes)
+            if cancel_waiter:
+                overwrite.cancel()
+            release_claim.set()
+            if cancel_waiter:
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(overwrite, 5)
+            else:
+                result = await asyncio.wait_for(overwrite, 5)
+                assert result.status_code == 409 and result.json()["code"] == "VOICE_STATE_CHANGED"
+            saved = await asyncio.to_thread(cm.get_imported_voice, ref)
+            assert saved == winner
+            assert await asyncio.to_thread(storage.read_bytes) == winner_bytes
+            assert saved["overwrite_operation_id"] == "same-operation"
+            assert saved["overwrite_status"] == terminal
+            assert len(mutations) == 0 and queries == 2
+            # CosyVoice may already have uploaded its reference; no voice update
+            # was submitted. A rejected claim does not promise upload rollback.
+            assert len(uploads) == (0 if provider == "doubao_tts" else 1)
+            remaining_lock = service._OVERWRITE_LOCKS.get(ref)
+            assert remaining_lock is None or not remaining_lock.locked()
+            if not cancel_waiter:
+                retry = await api.post(
+                    f"/api/characters/voices/{ref}/overwrite", data={"context_token": token},
+                    files={"audio": ("reference.wav", _wav(), "audio/wav")},
+                )
+                assert retry.status_code == 200 and retry.json()["status"] == "completed"
+                retried = await asyncio.to_thread(cm.get_imported_voice, ref)
+                assert retried["local_ref"] == ref and retried["remote_voice_id"] == winner["remote_voice_id"]
+                assert retried["overwrite_operation_id"] != winner["overwrite_operation_id"]
+                assert retried["overwrite_previous_revision"] == revision_for(provider, winner_revision)
+                assert retried["remote_revision"] == revision_for(provider, str(int(winner_revision) + 1))
+                assert queries == 4 and len(mutations) == 1
+            assert await cm.adelete_imported_voice(ref)
+        finally:
+            release_query.set()
+            release_claim.set()
+            for task in (refresh, overwrite):
+                if task and not task.done():
+                    task.cancel()
+            await asyncio.gather(*[task for task in (refresh, overwrite) if task], return_exceptions=True)
+
+
 def revision_for(provider, value):
     # CosyVoice's documented revision is a modification time, not a counter.
     if provider != "doubao_tts" and isinstance(value, str) and value.isdecimal():

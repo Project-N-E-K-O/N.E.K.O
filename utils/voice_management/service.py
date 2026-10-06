@@ -251,12 +251,15 @@ async def overwrite_remote_voice(
             order = adapter.compare_revisions(previous_revision, floor)
             if order is None or order < 0:
                 raise VoiceManagementError("UPDATE_OUTCOME_UNKNOWN", 409)
-            claim = asyncio.create_task(cm.aupdate_imported_voice(local_ref, runtime.scope_id, {
-                "overwrite_status": "processing", "overwrite_operation_id": operation_id,
-                "overwrite_previous_revision": previous_revision,
-            }, expected_operation_id=record.get("overwrite_operation_id") or ""))
+            claim = asyncio.create_task(cm.aupdate_imported_voice(
+                local_ref, runtime.scope_id, {
+                    "overwrite_status": "processing", "overwrite_operation_id": operation_id,
+                    "overwrite_previous_revision": previous_revision,
+                }, expected_operation_id=record.get("overwrite_operation_id") or "",
+                expected_record_revision=latest.get("_record_revision", 0),
+            ))
             try:
-                await asyncio.shield(claim)
+                claimed = await asyncio.shield(claim)
             except asyncio.CancelledError:
                 # A to_thread write continues after its waiter is cancelled.
                 # Join it before cleanup so it cannot write a late pending marker.
@@ -265,10 +268,14 @@ async def overwrite_remote_voice(
                         await asyncio.shield(claim)
                     except asyncio.CancelledError:
                         continue
-                claim.result()
-                claim_owned = True
+                claimed = claim.result()
+                claim_owned = claimed.get("overwrite_operation_id") == operation_id
                 raise
-            claim_owned = True
+            # A rejected conditional write returns the stored winner. Only a
+            # persisted new owner permits the provider mutation or cleanup.
+            claim_owned = claimed.get("overwrite_operation_id") == operation_id
+            if not claim_owned:
+                raise VoiceManagementError("VOICE_STATE_CHANGED", 409)
             await _check_context(adapter, cm, runtime, voice_data=record)
             mutation_started = True
 

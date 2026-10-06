@@ -1945,6 +1945,7 @@
             "invalidId": "Enter a valid voice ID.",
             "invalidMetadata": "Check the display name and required voice fields.",
             "operationInProgress": "An update is already in progress. Refresh its status.",
+            "voiceStateChanged": "The voice state changed. This voice update was not submitted. Check the latest state before trying again.",
             "updateLocalFailed": "The remote voice changed, but the local result could not be saved. Refresh status before any new update.",
             "uploadFailed": "Reference audio upload failed.",
             "saveFailed": "The voice could not be saved locally.",

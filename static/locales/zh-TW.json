@@ -1945,6 +1945,7 @@
             "invalidId": "請填寫有效的音色 ID。",
             "invalidMetadata": "請檢查顯示名稱與必填音色資訊。",
             "operationInProgress": "已有更新正在進行，請重新整理狀態。",
+            "voiceStateChanged": "音色狀態已變更，本次音色更新尚未提交，請確認最新狀態後重試。",
             "updateLocalFailed": "遠端音色已修改，但本機結果儲存失敗，請先重新整理狀態再更新。",
             "uploadFailed": "參考音訊上傳失敗。",
             "saveFailed": "無法將音色儲存至本機。",

@@ -77,6 +77,7 @@
             CONFIG_MISSING: 'configureFirst', MANAGEMENT_CONFIG_MISSING: 'configureFirst',
             AUTH_FAILED: 'authFailed', PERMISSION_DENIED: 'permissionDenied', RATE_LIMITED: 'rateLimited',
             CONTEXT_CHANGED: 'contextChanged', VOICE_NOT_FOUND: 'voiceNotFound', VOICE_NOT_READY: 'voiceNotReady',
+            VOICE_STATE_CHANGED: 'voiceStateChanged',
             INVALID_VOICE_ID: 'invalidId', INVALID_DISPLAY_NAME: 'invalidMetadata', INVALID_METADATA: 'invalidMetadata',
             LIST_UNSUPPORTED: 'listUnavailable', DETAILS_UNSUPPORTED: 'listUnavailable', IMPORT_UNSUPPORTED: 'failed',
             OVERWRITE_UNSUPPORTED: 'overwriteUnsupported', OPERATION_IN_PROGRESS: 'operationInProgress',

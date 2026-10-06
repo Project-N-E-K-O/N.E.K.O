@@ -15,6 +15,40 @@ async function bounded(promise) {
         })]);
     } finally { clearTimeout(timer); }
 }
+async function verifyOverwriteClaimConflict({ run, waitFor, state }) {
+    const ref = Object.keys(state.voices).find(key => state.voices[key].provider === 'cosyvoice');
+    assert.ok(ref);
+    const original = state.voices[ref], binding = state.binding;
+    const initialUpdates = state.updates.length, initialQueries = state.statusQueries || 0;
+    const submit = "Array.from(document.querySelectorAll('.remote-voice-dialog button')).find(button=>button.textContent===window.t('voice.remote.overwrite'))";
+    state.overwriteConflict = true;
+    try {
+        for (const terminal of ['completed', 'failed']) {
+            state.voices[ref] = { ...original, overwrite_status: terminal, can_overwrite: true };
+            const winner = JSON.parse(JSON.stringify(state.voices[ref]));
+            await run('window.loadVoices()');
+            await run(`Array.from(document.querySelectorAll('[data-voice-id="${ref}"] button')).find(button=>button.textContent===window.t('voice.remote.overwrite')).click();true;`);
+            await run("(()=>{const files=new DataTransfer();files.items.add(new File([new Uint8Array(512)],'retained.wav',{type:'audio/wav'}));const input=document.querySelector('.remote-voice-dialog input[type=file]');input.files=files.files;input.dispatchEvent(new Event('change',{bubbles:true}));return true;})()");
+            for (let attempt = 0; attempt < 2; attempt++) {
+                const rejected = (state.rejectedUpdates || []).length;
+                await run(submit + '.click();true;');
+                await waitFor("document.querySelector('.remote-voice-status').textContent===window.t('voice.remote.voiceStateChanged') && document.querySelector('.remote-voice-dialog').getAttribute('aria-busy')==='false'");
+                assert.equal((state.rejectedUpdates || []).length, rejected + 1);
+                assert.equal(await run(`(()=>{const button=${submit};return !button.hidden&&!button.disabled;})()`), true);
+                assert.equal(await run("document.querySelector('.remote-voice-dialog input[type=file]').files[0].name"), 'retained.wav');
+                assert.equal(await run("Array.from(document.querySelectorAll('.remote-voice-dialog button')).find(button=>button.textContent===window.t('voice.remote.refreshStatus')).hidden"), true);
+                assert.equal(state.updates.length, initialUpdates);
+                assert.equal(state.statusQueries || 0, initialQueries);
+                assert.equal(state.binding, binding);
+                assert.deepEqual(state.voices[ref], winner);
+            }
+            await run("document.querySelector('.remote-voice-close').click();true;");
+        }
+    } finally {
+        delete state.overwriteConflict;
+        state.voices[ref] = original;
+    }
+}
 async function verifyVoiceRaces({ run, waitFor, state }) {
     await run(`(() => {
         document.getElementById('voiceProvider').value = 'cosyvoice';
@@ -99,6 +133,8 @@ async function verifyVoiceRaces({ run, waitFor, state }) {
             await run('window.Audio=window.__raceOriginalAudio;window.confirm=window.__raceOriginalConfirm;true;');
         }
     } finally { await run('window.loadVoices=window.__raceLoadVoices;true;'); }
-    return { importAcknowledgementOwned: true, deletionRejectsLatePreview: true, playingAudioReleased: true };
+    await verifyOverwriteClaimConflict({ run, waitFor, state });
+    return { importAcknowledgementOwned: true, deletionRejectsLatePreview: true, playingAudioReleased: true,
+        overwriteClaimConflictRecoverable: true };
 }
 module.exports = { verifyVoiceRaces };

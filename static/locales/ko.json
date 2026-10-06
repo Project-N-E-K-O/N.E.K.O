@@ -1945,6 +1945,7 @@
             "invalidId": "유효한 음성 ID를 입력하세요.",
             "invalidMetadata": "표시 이름과 필수 음성 정보를 확인하세요.",
             "operationInProgress": "업데이트가 진행 중입니다. 상태를 확인하세요.",
+            "voiceStateChanged": "음성 상태가 변경되었습니다. 이번 음성 업데이트는 제출되지 않았습니다. 최신 상태를 확인한 후 다시 시도하세요.",
             "updateLocalFailed": "원격 음성은 변경되었지만 로컬 저장에 실패했습니다. 새 업데이트 전에 상태를 확인하세요.",
             "uploadFailed": "참조 오디오 업로드에 실패했습니다.",
             "saveFailed": "음성을 로컬에 저장할 수 없습니다.",

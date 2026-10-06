@@ -464,6 +464,30 @@ test('provider switch retires old dialog and international CosyVoice keeps the e
     assert.equal(h.entry.hidden, true);
 });
 
+test('a rejected overwrite claim retains audio and allows only an explicit retry', async () => {
+    const h = harness();
+    h.window.RemoteVoiceManager.openOverwrite('voice-local', { provider: 'cosyvoice', remote_voice_id: 'remote' });
+    const file = h.panel().querySelectorAll('input')[0], audio = new Blob(['audio']);
+    file.files = [audio]; file.dispatch('change');
+    h.button('overwrite').dispatch('click');
+    h.resolve(0, { ...h.ctx, provider: 'cosyvoice', capabilities: { ...h.ctx.capabilities, overwrite: true } }); await tick();
+    h.resolve(1, { success: false, code: 'VOICE_STATE_CHANGED' }, 409); await tick();
+    assert.ok(h.panel().textContent.includes('voice.remote.voiceStateChanged'));
+    assert.equal(h.button('overwrite').hidden, false);
+    assert.equal(h.button('overwrite').disabled, false);
+    assert.equal(h.button('refreshStatus').hidden, true);
+    assert.equal(file.files[0], audio);
+    assert.equal(h.refreshes(), 0);
+    assert.equal(h.requests.length, 2);
+    h.button('overwrite').dispatch('click');
+    h.resolve(2, { ...h.ctx, capabilities: { ...h.ctx.capabilities, overwrite: true } }); await tick();
+    assert.equal(h.requests[3].options.body.get('audio').size, audio.size);
+    h.resolve(3, { success: true, status: 'completed' }); await tick();
+    assert.equal(h.requests.filter(request => request.options.method === 'POST').length, 2);
+    assert.equal(h.requests.some(request => request.url.includes('overwrite_status')), false);
+    assert.ok(h.panel().textContent.includes('voice.remote.completed'));
+});
+
 test('uncertain overwrite disables resubmission and offers explicit status refresh', async () => {
     const h = harness(); h.window.RemoteVoiceManager.openOverwrite('voice-local', { provider: 'cosyvoice', remote_voice_id: 'remote' });
     const file = h.panel().querySelectorAll('input')[0]; file.files = [new Blob(['audio'])]; file.dispatch('change');

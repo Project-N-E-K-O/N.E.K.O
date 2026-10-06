@@ -70,11 +70,16 @@ function createVoiceManagerServer() {
             return json(response, { success: true });
         }
         if (url.pathname.endsWith('/overwrite')) {
+            if (state.overwriteConflict) {
+                (state.rejectedUpdates ||= []).push(await read(request));
+                return json(response, { success: false, code: 'VOICE_STATE_CHANGED' }, 409);
+            }
             state.updates.push(await read(request)); const ref = url.pathname.split('/')[4];
             if (state.voices[ref]) state.voices[ref].overwrite_status = 'unknown';
             return json(response, { success: false, code: 'UPDATE_OUTCOME_UNKNOWN' }, 504);
         }
         if (url.pathname.endsWith('/overwrite_status')) {
+            state.statusQueries = (state.statusQueries || 0) + 1;
             const ref = url.pathname.split('/')[4]; if (state.voices[ref]) state.voices[ref].overwrite_status = 'completed';
             return json(response, { success: true, status: 'completed', voice_data: state.voices[ref] });
         }
