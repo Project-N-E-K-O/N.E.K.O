@@ -311,27 +311,48 @@ async def test_unadmitted_semantic_completion_does_not_wait_for_a_nonexistent_fi
 
 
 @pytest.mark.asyncio
-async def test_partial_hold_then_expanded_content_releases_only_latest_preview():
+async def test_admitted_filler_and_expanded_content_reach_preview_callback():
     runtime, callbacks, session, vad, token = make_runtime(False)
     try:
         await send(runtime, vad, token, [0.9] * 7)
-        turn = runtime._asr_prepared_turn_token
-        # Exercise the defensive policy with a provider result whose own
-        # snapshot is weak; no fake low-confidence value is synthesized.
-        runtime._asr_admission_evidence[turn] = CandidateAdmission("weak").observe(
-            0, 512, 0.9
-        )
         await runtime._send_independent_asr_preview("嗯。", runtime._asr_session_epoch)
-        callbacks.on_partial.assert_not_awaited()
-        assert runtime._asr_held_preview.turn_token == turn
+        callbacks.on_partial.assert_awaited_once()
+        assert callbacks.on_partial.await_args.args[0].text == "嗯。"
+        assert callbacks.on_partial.await_args.args[0].evidence.decision.value == "admit"
         await runtime._send_independent_asr_preview(
             "嗯，我想换一个", runtime._asr_session_epoch
         )
-        callbacks.on_partial.assert_awaited_once()
+        assert callbacks.on_partial.await_count == 2
         assert callbacks.on_partial.await_args.args[0].text == "嗯，我想换一个"
-        assert runtime._asr_held_preview is None
     finally:
         await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("optimization", [False, True])
+async def test_near_limit_admission_with_evicted_prefix_blocks_without_partial_upload(optimization):
+    runtime, callbacks, session, vad, token = make_runtime(optimization)
+    lifecycle = runtime._asr_lifecycle
+    try:
+        # First ADMIT occurs at 640 ms; its 128 ms pre-roll cannot fit the
+        # existing 700 ms unconfirmed budget. This uses the real gate and queues.
+        await send(runtime, vad, token, [0.1] * 4 + [0.9, 0.4, 0.4] * 4 + [0.9] * 8)
+        assert lifecycle.admission_failure_reason == "candidate_audio_range_missing"
+        callbacks.on_failure.assert_awaited_once()
+        assert callbacks.on_failure.await_args.args[0].code == "ASR_INGRESS_BACKPRESSURE"
+        callbacks.on_prepare_turn.assert_not_awaited()
+        session.stream_audio.assert_not_awaited()
+        assert runtime._asr_lifecycle is None
+    finally:
+        await runtime.close()
+    successor, successor_callbacks, successor_session, next_vad, next_token = make_runtime(optimization)
+    try:
+        audio = await send(successor, next_vad, next_token, [0.9] * 7)
+        successor_callbacks.on_prepare_turn.assert_awaited_once()
+        successor_callbacks.on_failure.assert_not_awaited()
+        assert b"".join(call.args[0] for call in successor_session.stream_audio.await_args_list) == audio
+    finally:
+        await successor.close()
 
 
 @pytest.mark.asyncio

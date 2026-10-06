@@ -295,6 +295,9 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         replay_policy="provider_managed",
         connect_max_attempts=3,
         failure_rules=(
+            ("ASR_SONIOX_RETRYABLE", AsrFailureRule(retry_connect=True)),
+            ("ASR_SONIOX_CONNECTION_LIMIT", AsrFailureRule(retry_connect=True)),
+            ("ASR_RATE_LIMITED", AsrFailureRule(retry_connect=True)),
             ("ASR_SONIOX_PROTECTED_REPLAY_DISABLED", AsrFailureRule(use_delivery_notice=True)),
             ("ASR_SONIOX_REPLAY_INCOMPLETE", AsrFailureRule(use_delivery_notice=True)),
         ),

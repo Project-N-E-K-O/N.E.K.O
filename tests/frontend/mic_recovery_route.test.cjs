@@ -115,6 +115,54 @@ test('all supported locales contain the incomplete-turn recovery message', () =>
     }
 });
 
+test('current terminal BLOCKED cleans the route when STARTED or FAILED was not delivered', async () => {
+    for (const startedDelivered of [false, true]) {
+        const env = loadCapture(true);
+        env.installMicrophone();
+        env.loadWebsocket();
+        env.S.voiceSessionEpoch = 12;
+        env.window.setMicMuted(false);
+        await env.window.startMicCapture();
+        const detail = { recovery_id: 1, session_epoch: 12,
+            lease_generation: env.S.voiceInputCurrentLeaseGeneration, route_generation: 7, buffering: true };
+        if (startedDelivered) env.status('ASR_RECOVERY_STARTED', detail);
+        env.sendFrame();
+        const sent = env.frames.length;
+        let stopped = 0;
+        env.window.stopMicCapture = () => { stopped += 1; };
+        env.status('ASR_LIFECYCLE_STATE', { ...detail, state: 'blocked' });
+        assert.equal(stopped, 1);
+        assert.equal(env.S.voiceInputRouteBlocked, true);
+        assert.equal(env.S.independentAsrActive, false);
+        assert.equal(env.S.asrAutomaticRecovery.state, 'failed');
+        env.sendFrame();
+        assert.equal(env.frames.length, sent);
+        env.status('ASR_RECOVERY_READY', detail);
+        assert.notEqual(env.S.asrAutomaticRecovery.state, 'ready');
+    }
+});
+
+test('unsigned, old socket, muted and game-owned terminal BLOCKED cannot stop the active route', async () => {
+    for (const scenario of ['unsigned', 'route', 'socket', 'mute', 'stop', 'game']) {
+        const env = await automaticRecoveryFixture();
+        let stopped = 0;
+        env.window.stopMicCapture = () => { stopped += 1; };
+        const detail = { ...env.detail, state: 'blocked' };
+        if (scenario === 'unsigned') delete detail.route_generation;
+        if (scenario === 'route') detail.route_generation += 1;
+        if (scenario === 'mute') env.window.setMicMuted(true);
+        if (scenario === 'stop') env.S.isRecording = false;
+        if (scenario === 'game') env.S.gameVoiceSttGateActive = true;
+        const socket = env.S.socket;
+        if (scenario === 'socket') env.S.socket = { readyState: 1, send() {} };
+        socket.onmessage({ data: JSON.stringify({ type: 'status', message: JSON.stringify({
+            code: 'ASR_LIFECYCLE_STATE', details: detail
+        }) }) });
+        assert.equal(stopped, 0, scenario);
+        assert.notEqual(env.S.voiceInputRouteBlocked, true, scenario);
+    }
+});
+
 function loadCapture(active, enabled = active) {
     const timers = new Map();
     const listeners = new Map();

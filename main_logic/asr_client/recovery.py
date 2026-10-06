@@ -31,6 +31,10 @@ def classify_failure(code: str, *, source: FailureSource) -> RecoveryDisposition
     In particular a generic worker error or connection-closed code can describe
     an uncertain write. Neither is evidence of a recoverable read disconnect.
     """
+    if source is FailureSource.CONNECT and code == "ASR_CONNECT_TIMEOUT":
+        # No input has crossed this candidate's transport. The caller still
+        # owns the provider's attempt count, startup deadline and cleanup fence.
+        return RecoveryDisposition.RETRY_CONNECT
     if (source, code) in {
         (FailureSource.RUNTIME, "ASR_PROVIDER_FINAL_TIMEOUT"),
         (FailureSource.PROVIDER, "ASR_PROVIDER_FINAL_TIMEOUT"),

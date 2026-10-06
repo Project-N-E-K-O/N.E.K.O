@@ -3797,11 +3797,13 @@
                     }
 
                     if (statusCode === 'ASR_LIFECYCLE_STATE') {
-                        if (statusDetails?.recovery_id != null
-                            && (_thisSocket !== S.socket
-                                || !window.appAudioCapture?.matchesAutomaticRecoveryOperation(statusDetails)
-                                || (statusDetails.state === 'blocked'
-                                    && S.asrAutomaticRecovery?.state !== 'failed'))) return;
+                        if (statusDetails?.recovery_id != null) {
+                            if (_thisSocket !== S.socket) return;
+                            const accepted = statusDetails.state === 'blocked'
+                                ? window.appAudioCapture?.handleAutomaticRecoveryBlocked(statusDetails)
+                                : window.appAudioCapture?.matchesAutomaticRecoveryOperation(statusDetails);
+                            if (!accepted) return;
+                        }
                         var lifecycleState = (statusDetails && statusDetails.state) || '';
                         var allowedLifecycleStates = [
                             'off', 'local_listen', 'prewarming', 'active',

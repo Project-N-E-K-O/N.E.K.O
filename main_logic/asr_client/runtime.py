@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from main_logic.voice_turn.admission import AdmissionDecision
-from main_logic.voice_turn.transcript_admission import assess_transcript, TranscriptDisposition
 
 import asyncio
 import re
@@ -698,7 +697,6 @@ class IndependentAsrRuntime:
         self._asr_recovery_failure_notice: _AsrRecoveryOperation | None = None
         self._asr_admission_evidence = {}
         self._asr_candidate_evidence = None
-        self._asr_held_preview = None
         self._asr_overlap_onset_proof = None
         self._asr_overlap_completed_proofs = deque()
         self._asr_pending_admission_evidence = None
@@ -888,7 +886,6 @@ class IndependentAsrRuntime:
         if not hasattr(self, "_asr_admission_evidence"):
             self._asr_admission_evidence = {}
             self._asr_candidate_evidence = None
-            self._asr_held_preview = None
         # A number of focused unit tests intentionally construct the manager via
         # __new__. Keep those narrow lifecycle doubles compatible.
         if not hasattr(self, "_asr_session_epoch"):
@@ -2786,7 +2783,6 @@ class IndependentAsrRuntime:
 
         self._asr_admission_evidence.clear()
         self._asr_candidate_evidence = None
-        self._asr_held_preview = None
         self._asr_overlap_onset_proof = None
         self._asr_overlap_completed_proofs.clear()
         self._asr_pending_admission_evidence = None
@@ -5298,12 +5294,6 @@ class IndependentAsrRuntime:
         try:
             evidence = self._asr_admission_evidence.get(turn_token)
             preview = VoicePartialEvent(turn_token=turn_token, text=clean, evidence=evidence)
-            verdict = assess_transcript(clean, evidence, is_voice_source=True, final=False)
-            if verdict.disposition is TranscriptDisposition.HOLD:
-                self._asr_held_preview = preview
-                return
-            if self._asr_held_preview is not None and self._asr_held_preview.turn_token == turn_token:
-                self._asr_held_preview = None
             await self._callbacks.on_partial(
                 preview
             )
@@ -5449,8 +5439,6 @@ class IndependentAsrRuntime:
                         evidence=self._asr_admission_evidence.pop(sealed_token.turn, None),
                     )
                     self._asr_previously_sent_turns.discard(sealed_token.turn)
-                    if self._asr_held_preview is not None and self._asr_held_preview.turn_token == sealed_token.turn:
-                        self._asr_held_preview = None
                     if not clean:
                         lifecycle_ref.metrics.false_wake_count += 1
                     if successor_present and not has_pending_turn:
@@ -5732,21 +5720,16 @@ class IndependentAsrRuntime:
             ingress_token=ingress_token,
             turn_token=envelope.turn_token,
         )
-        admission = assess_transcript(envelope.text, envelope.evidence, is_voice_source=True, final=True)
-        rejected = admission.disposition is TranscriptDisposition.REJECT
-        if rejected:
-            logger.info("[voice-admission] turn_id=%s decision=reject reason=%s",
-                        envelope.turn_token.turn_id, admission.reason)
         try:
             accepted = await self._callbacks.on_final(
                 VoiceTranscriptEvent(
                     turn_token=envelope.turn_token,
                     provider=envelope.provider,
-                    text="" if rejected else envelope.text,
+                    text=envelope.text,
                     evidence=envelope.evidence,
                 )
             )
-            if (accepted is True and not rejected and envelope.text.strip()
+            if (accepted is True and envelope.text.strip()
                     and self._asr_recovery is None
                     and self._ingress_token_matches(ingress_token)):
                 self._asr_recovery_budget.mark_completed_turn()

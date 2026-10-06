@@ -74,6 +74,41 @@
     }
     mod.handleAutomaticRecoveryStatus = handleAutomaticRecoveryStatus;
     mod.matchesAutomaticRecoveryOperation = matchesAutomaticRecoveryOperation;
+    function handleAutomaticRecoveryBlocked(detail) {
+        if (!matchesAutomaticRecoveryIdentity(detail)
+                || !Number.isSafeInteger(detail.route_generation)) return false;
+        const current = S.asrAutomaticRecovery;
+        if (current && current.session_epoch === detail.session_epoch
+                && current.lease_generation === detail.lease_generation) {
+            if (detail.recovery_id < current.recovery_id
+                    || detail.route_generation < current.route_generation) return false;
+            if (detail.recovery_id === current.recovery_id) {
+                if (!matchesAutomaticRecoveryOperation(detail)
+                        || current.state === 'ready' || current.state === 'retired') return false;
+                if (current.state === 'failed') return true;
+            }
+        }
+        // Signed lifecycle BLOCKED is itself terminal evidence. STARTED or
+        // FAILED may have missed their bounded delivery window; neither is
+        // required to retire this still-current microphone route.
+        S.asrAutomaticRecovery = {
+            ...detail, state: 'failed', buffering: false,
+            incomplete: current?.recovery_id === detail.recovery_id
+                && current.session_epoch === detail.session_epoch
+                && current.lease_generation === detail.lease_generation
+                && current.route_generation === detail.route_generation
+                && current.incomplete === true
+        };
+        clearVoiceInputRecoveryTimer();
+        S.voiceInputRecoveryGeneration += 1;
+        S.voiceInputRecoveryState = 'failed';
+        updateRecoveryStatus('failed');
+        window.dispatchEvent(new CustomEvent('asr-automatic-recovery-changed', {
+            detail: { ...S.asrAutomaticRecovery }
+        }));
+        return true;
+    }
+    mod.handleAutomaticRecoveryBlocked = handleAutomaticRecoveryBlocked;
     window.addEventListener('mic-mute-state-changed', event => {
         if (event.detail?.muted) retireAutomaticRecovery();
     });
