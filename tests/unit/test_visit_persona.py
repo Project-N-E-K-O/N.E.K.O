@@ -549,9 +549,8 @@ def test_gate_rereads_a_persona_written_while_it_reads(env, monkeypatch):
 
 
 def test_the_token_cap_holds_after_redaction():
-    from config.visit_settings import VISIT_PERSONA_MAX_TOKENS
     from utils.tokenize import count_tokens
 
-    raw = "Al " * (VISIT_PERSONA_MAX_TOKENS * 2)           # 短名字反复出现，替换成更长的中性称呼
+    raw = "Al " * (visit_settings.VISIT_PERSONA_MAX_TOKENS * 2)           # 短名字反复出现，替换成更长的中性称呼
     text = persona._clean_persona_text(raw, ["Al"], "en")
-    assert "Al " not in text and count_tokens(text) <= VISIT_PERSONA_MAX_TOKENS
+    assert "Al " not in text and count_tokens(text) <= visit_settings.VISIT_PERSONA_MAX_TOKENS
