@@ -623,3 +623,9 @@ def test_at_prefixed_contact_handles_are_found():
 def test_a_contact_handle_is_its_own_token_when_more_words_follow():
     tokens = persona.extract_sensitive_tokens("wechat @alicefoo likes cats\n微信：mimi_cat 常在线", [])
     assert "@alicefoo" in tokens and "mimi_cat" in tokens
+
+
+
+def test_a_country_code_is_not_a_token_of_its_own():
+    tokens = persona.extract_sensitive_tokens("phone: +1 555-010-0199", [])
+    assert "+1" not in tokens

@@ -300,10 +300,11 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
             is_address = keyword in _ADDRESS_KEYWORDS or m.groupdict().get("kw2") or m.groupdict().get("kw3")
             if not is_address:
                 # 联系方式的值会把后面的叙述一起吞进来（「wechat @alicefoo likes cats」）：账号本身——
-                # 值的第一个词——另记一个，人设只复述账号也能命中。纯数字的号码另有数字规则
+                # 值的第一个词——另记一个，人设只复述账号也能命中。只认像账号的词（带字母、@ 或 _）：号码与国家码
+                # （「+1」）另有数字 / 电话规则
                 words = value.split()
                 head = words[0] if words else ""
-                if head != value and any(not ch.isdigit() for ch in head):
+                if head != value and any(ch.isalpha() or ch in "@_" for ch in head):
                     found.append(head)
             if is_address:
                 end = _LINE_END_RE.search(text, m.start("value"))
