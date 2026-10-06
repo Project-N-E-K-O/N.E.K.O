@@ -1538,3 +1538,22 @@ async def test_an_aged_broken_sealed_file_is_resealed_from_its_stream_first(tmp_
     monkeypatch.setattr(tu, "reseal_orphan_stream", reseal)
     outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
     assert fake.count("/api/visit/transcripts") >= 1 and outcome.unavailable is None   # 重封后试传，没按过期丢掉
+
+
+
+async def test_a_failed_reseal_keeps_an_aged_broken_file_and_its_stream(tmp_path, servers, monkeypatch):
+    sealed = _spool(tmp_path) / f"{V1}.upload.json"
+    sealed.parent.mkdir(parents=True, exist_ok=True)
+    sealed.write_text("{broken", encoding="utf-8")
+    old = time.time() - 30 * 86400
+    os.utime(sealed, (old, old))
+    stream = _spool(tmp_path) / f"{V1}.upload.jsonl"
+    stream.write_text("{}", encoding="utf-8")
+
+    async def failed(_config_dir, _visit_id):
+        return "failed", None
+
+    monkeypatch.setattr(tu, "reseal_orphan_stream", failed)
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    assert outcome.pending is True and outcome.retryable is True
+    assert sealed.exists() and stream.exists()             # 没有按过期删掉

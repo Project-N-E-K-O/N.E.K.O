@@ -1192,6 +1192,9 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         # 过期的封存文件坏了、旁边还留着完整的流水（封存后没删掉流水，之后封存文件又坏了）：与启动补录
         # 一样先从流水重封，再按「先试传一次」处理，别把唯一能恢复的转录直接按过期删掉
         status, _stream_owner = await reseal_orphan_stream(config_dir, visit_id)
+        if status == "failed":
+            # 一时封不了（读写出错）：留着两份等下一轮，别落到下面按过期把还能恢复的流水删掉
+            return UploadRound(pending=True, retryable=True, owner=owner)
         if status == "sealed":
             try:
                 doc = await asyncio.to_thread(_load_json, sealed)
