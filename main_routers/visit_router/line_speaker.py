@@ -317,8 +317,8 @@ class LineSpeaker:
             redact_boundary=boundary,
         )
         self._goodbye_left: Optional[int] = int(goodbye_max_chars) if header.wu else None
-        # 正好填满告别额度的那一段：末尾字形簇可能在下一段继续（国旗的第二个区域指示符、组合符），
-        # 先扣着它，见到下一段（或收尾）再定
+        # 告别行每段末尾的字形簇可能在下一段继续变长（国旗的第二个区域指示符、ZWJ 序列、组合符），
+        # 先扣着它，见到下一段（或收尾）再按额度定；截点才能退回到簇的开头
         self._goodbye_hold = ""
         # 含标点 / 空白的亲人名（"J. Smith"）：分句器在标点处切句时不扣尾巴，名字没到齐前切出去的
         # 前缀认不出来、会原样出门。文本末尾可能是这类名字开头的那段先不进分句器
@@ -416,7 +416,7 @@ class LineSpeaker:
             if len(text) > left:
                 # 截点按整段（含上一段扣着的簇）退到字形簇边界
                 capped = text[: grapheme_safe_cut(text, left)]
-            elif len(text) == left and not final:
+            elif not final:
                 keep = grapheme_safe_cut(text, len(text) - 1)
                 capped, self._goodbye_hold = text[:keep], text[keep:]
             goodbye_cut = len(capped) + len(self._goodbye_hold) < len(text)
@@ -548,11 +548,12 @@ class LineSpeaker:
     def _push_tts(self, text: str, now: float) -> None:
         if not text:
             return
+        if self._voice.fallen_back and self._first_push_at is None:
+            # 另一行已让本场回退估时，而本行还没推过能念的字（没开流，或流开着但只收过舞台说明）：
+            # 不再开流 / 往流里推，直接估时
+            self._to_estimate(now)
+            return
         if self._stream is None:
-            if self._voice.fallen_back:
-                # 本行建好之后、开流之前，另一行已让本场回退估时：不再开流
-                self._to_estimate(now)
-                return
             if not self._open(now):
                 return
         if self._stream_dead or self._stream is None:

@@ -986,3 +986,28 @@ def test_a_rejected_end_marker_after_only_stage_directions_keeps_tts():
     h.speaker.feed("（微笑）")
     h.speaker.llm_done()
     assert not h.voice.fallen_back and h.speaker.mode == ls.PACED_ESTIMATE
+
+
+
+def test_goodbye_cap_never_leaves_a_dangling_zwj_across_deltas():
+    h = Harness(wu=True)
+    h.speaker.feed("好" * 38 + "👩")                  # 还剩 1 个码点的额度
+    h.speaker.feed("‍💻拜拜")                         # 同一个字形簇在下一段继续
+    h.speaker.llm_done()
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    text = h.results[0].text
+    assert text == "好" * 38 and h.results[0].trunc_reason == "goodbye_cap"
+    assert "".join(h.stream.pushed) == text == "".join(h.texts())
+
+
+def test_an_open_silent_stream_follows_a_visit_fallback():
+    h = Harness()
+    h.open_stream = lambda on_enqueued: h.streams.append(_SilentStream(on_enqueued)) or h.streams[-1]
+    h.speaker = h.new_line("h:2")
+    h.speaker.feed("（微笑）")                       # 流开着，但没推过能念的字
+    stream = h.stream
+    h.voice.fallen_back = True                       # 另一行起播失败，本场回退估时
+    h.speaker.feed("你好呀。")
+    assert h.speaker.mode == ls.PACED_ESTIMATE and stream.aborts == 1
+    assert "你好呀。" not in stream.pushed
