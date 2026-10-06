@@ -257,9 +257,21 @@ def sensitive_token_hits(card: str | None, text: str, family_names: Iterable[str
             hits.append(token)
     text_phones = phone_digits(text)
     for digits in sorted(phone_digits(card or "")):
-        if any(digits in other for other in text_phones) and digits not in hits:
+        if any(_same_number(digits, other) for other in text_phones) and digits not in hits:
             hits.append(digits)
     return hits
+
+
+def _same_number(a: str, b: str) -> bool:
+    """Whether two digit strings write the same phone number.
+
+    The shorter one (at least ``_PHONE_MIN_DIGITS`` digits) inside the
+    longer one counts: a country code may be left out on one side
+    (``+1 555 010 0199`` / ``555-010-0199``), and an adjacent number may
+    have been read into the match (``138 0013 8000 2024``).
+    """
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    return len(short) >= _PHONE_MIN_DIGITS and short in long
 
 
 def persona_privacy_check(

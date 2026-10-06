@@ -394,6 +394,15 @@ def test_phone_numbers_match_whatever_the_separators():
     assert persona.sensitive_token_hits(card, "她出生在 2001 年。", ()) == []
 
 
+@pytest.mark.parametrize("card,text", [
+    ("联系电话 138 0013 8000 2024年登记", "她的号码是138-0013-8000。"),     # 相邻年份被并进匹配
+    ("phone: +1 (555) 010-0199", "Call her at 555-010-0199."),          # 一边省略国家码
+    ("电话 5550100199", "号码 +1 555 010 0199"),
+])
+def test_phone_numbers_match_across_country_codes_and_adjacent_digits(card, text):
+    assert persona.sensitive_token_hits(card, text, ())
+
+
 def test_capped_private_section_list_counts_as_an_incomplete_scan(env, monkeypatch):
     client, _tmp, state, _llm, scan = env
     monkeypatch.setattr(persona, "_PRIVATE_SECTIONS_MAX", 2)
