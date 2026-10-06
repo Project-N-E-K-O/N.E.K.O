@@ -393,6 +393,13 @@ def test_urls_match_without_sentence_punctuation_and_by_host(card, text, hit):
     assert hit in persona.sensitive_token_hits(card, text, ())
 
 
+def test_lowercase_street_names_after_a_house_number_are_caught():
+    card = "Her address: 12 main street, second floor."
+    assert persona.sensitive_token_hits(card, "She often walks down main street.", ()) == ["main street"]
+    pets = "She lives in a flat with 2 cats and a dog."
+    assert persona.sensitive_token_hits(pets, "She loves cats and dogs.", ()) == []
+
+
 def test_capitalised_dotted_words_are_not_host_names():
     assert persona.sensitive_token_hits("She calls him Mr.Smith at home.", "Mr.Smith is her teacher.", ()) == []
 

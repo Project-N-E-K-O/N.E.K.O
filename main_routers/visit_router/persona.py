@@ -151,6 +151,30 @@ def _place_cores(value: str, pattern: re.Pattern[str]) -> list[str]:
     return [m.group(0) for m in pattern.finditer(value)]
 
 
+# 门牌号后面的街名（「12 main street」→「main street」）：小写写法也算
+_STREET_AFTER_NUMBER_RE = re.compile(r"[0-9]+[A-Za-z]?\s+([A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){1,3})")
+
+
+# 街名到第一个虚词为止：「2 cats and a dog」不是地址，不能把「cats and」收成敏感词
+_STREET_STOPWORDS = frozenset({
+    "a", "an", "the", "and", "or", "with", "of", "in", "on", "at", "to", "for", "from", "by", "her", "his",
+    "their", "my", "our", "your", "is", "are", "was", "who", "that", "which",
+})
+
+
+def _street_names(value: str) -> list[str]:
+    """Words after a house number in a keyword value, two to four of them (``main street``)."""
+    out = []
+    for m in _STREET_AFTER_NUMBER_RE.finditer(value):
+        words = []
+        for word in m.group(1).split():
+            if word.lower() in _STREET_STOPWORDS:
+                break
+            words.append(word)
+        out.extend(" ".join(words[:k]) for k in range(2, len(words) + 1))
+    return out
+
+
 def _latin_phrases(value: str) -> list[str]:
     """Runs of two or more capitalised words / numbers inside a keyword value (``Main Street``)."""
     out: list[str] = []
@@ -215,6 +239,7 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
         found.append(value)
         found.extend(_place_cores(value, _ROAD_CORE_RE))
         found.extend(_latin_phrases(value))
+        found.extend(_street_names(value))
     found.extend(_place_cores(text, _ESTATE_CORE_RE))
     out: list[str] = []
     seen: set[str] = set()

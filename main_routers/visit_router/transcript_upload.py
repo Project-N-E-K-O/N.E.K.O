@@ -669,10 +669,21 @@ def _mark_unavailable_sync(path: Path, visit_id: str, reason: str) -> None:
         _write_private_json(path, {**doc, "transcript_unavailable": reason})
 
 
-def _set_rejected_sync(path: Path, visit_id: str, reason: str | None) -> None:
+def same_report(a: Mapping[str, Any] | None, b: Mapping[str, Any] | None) -> bool:
+    """Whether two loaded copies are the same queued report (not a later one for the same visit)."""
+    return (
+        a is not None and b is not None
+        and all(a.get(k) == b.get(k) for k in ("visit_id", "own_account", "own_visit_uid", "queued_at"))
+    )
+
+
+def _set_rejected_sync(path: Path, visit_id: str, reason: str | None, expect: Mapping[str, Any] | None) -> None:
     with path_lock(path):
         doc = _load_json(path)
         if not _valid_report(doc, visit_id) or doc.get("rejected") == reason:
+            return
+        if expect is not None and not same_report(doc, expect):
+            # 提交期间这份已被放弃、换成了另一份（别的账号 / 重新举报）：不能给新的那份记拒收
             return
         doc = {k: v for k, v in doc.items() if k != "rejected"}
         if reason is not None:
@@ -680,16 +691,19 @@ def _set_rejected_sync(path: Path, visit_id: str, reason: str | None) -> None:
         _write_private_json(path, doc)
 
 
-async def set_report_rejected(config_dir: Path, visit_id: str, reason: str | None) -> None:
+async def set_report_rejected(
+    config_dir: Path, visit_id: str, reason: str | None, *, expect: Mapping[str, Any] | None = None,
+) -> None:
     """Mark (or, with None, unmark) a queued report Servers refused for good.
 
     A refused report is never deleted on its own -- only acceptance or the
     user giving it up removes the file (design §4.6 report) -- but it is not
     resubmitted automatically either: the queue lists it with ``rejected``
-    and the user chooses retry or abandon.
+    and the user chooses retry or abandon. With ``expect`` the file is only
+    touched while it still holds that same report (:func:`same_report`).
     """
     try:
-        await asyncio.to_thread(_set_rejected_sync, report_path(config_dir, visit_id), visit_id, reason)
+        await asyncio.to_thread(_set_rejected_sync, report_path(config_dir, visit_id), visit_id, reason, expect)
     except (OSError, ValueError) as exc:
         logger.warning("visit report queue: cannot mark %s: %s", visit_id, type(exc).__name__)
 
@@ -716,6 +730,8 @@ class ReportResult:
     report_id: str | None = None
     unknown_visit: bool = False
     login_required: bool = False
+    attempted: bool = False
+    """The request went out as the owning account (network errors included)."""
 
 
 def report_request(doc: Mapping[str, Any]) -> dict:
@@ -767,17 +783,18 @@ async def send_report(doc: Mapping[str, Any]) -> ReportResult:
         resp = await cr._send("POST", f"{session.base_url}/api/visit/reports", op="reports",
                               headers=session.headers(), json_body=report_request(doc), timeout=_REPORT_TIMEOUT_S)
     except cr.VisitServersUnreachable:
-        return ReportResult()
+        return ReportResult(attempted=True)
     body = _body(resp)
     if resp.status_code in (200, 201):
         report_id = body.get("report_id") if isinstance(body, Mapping) else None
-        return ReportResult(accepted=True, report_id=report_id if isinstance(report_id, str) else None)
+        return ReportResult(accepted=True, report_id=report_id if isinstance(report_id, str) else None,
+                            attempted=True)
     if resp.status_code == 404 and _code(body) == "unknown_visit":
         memory_bridge.diag("report_unknown_visit", visit_id=str(doc.get("visit_id")))
-        return ReportResult(unknown_visit=True)
+        return ReportResult(unknown_visit=True, attempted=True)
     if resp.status_code == 401:
-        return ReportResult(login_required=True)
-    return ReportResult()
+        return ReportResult(login_required=True, attempted=True)
+    return ReportResult(attempted=True)
 
 
 async def submit_queued_report(visit_id: str, report_doc: dict) -> bool:
@@ -786,15 +803,24 @@ async def submit_queued_report(visit_id: str, report_doc: dict) -> bool:
     A report already refused (``rejected``) is not resent; a new ``404
     unknown_visit`` marks it so (the file stays for the user to decide).
     """
-    if report_doc.get("rejected"):
-        return False
-    result = await send_report(report_doc)
-    if result.unknown_visit:
-        await set_report_rejected(Path(config_dir_provider()), require_visit_id(visit_id), "unknown_visit")
-    return result.accepted
+    visit_id = require_visit_id(visit_id)
+    config_dir = Path(config_dir_provider())
+    async with visit_lock(visit_id):
+        # 与端点的放弃 / 重试同一把逐场锁；等锁期间这份可能已被放弃或换成另一份
+        current = await load_report(config_dir, visit_id)
+        if current is None or not same_report(current, report_doc) or current.get("rejected"):
+            return False
+        result = await send_report(report_doc)
+        if result.accepted:
+            # 受理即在锁内删（补录随后的删除只会扑空），不给锁外的新举报留被误删的窗口
+            await delete_report(config_dir, visit_id)
+            return True
+        if result.unknown_visit:
+            await set_report_rejected(config_dir, visit_id, "unknown_visit", expect=report_doc)
+    return False
 
 
-async def finish_report(config_dir: Path, visit_id: str, result: ReportResult) -> bool:
+async def finish_report(config_dir: Path, visit_id: str, result: ReportResult, doc: Mapping[str, Any]) -> bool:
     """Apply one submission's outcome to the queued file; True when it is gone (accepted)."""
     if result.accepted:
         await delete_report(config_dir, visit_id)
@@ -802,7 +828,7 @@ async def finish_report(config_dir: Path, visit_id: str, result: ReportResult) -
         await asyncio.to_thread(_drop_rejected_sealed_sync, config_dir, visit_id)
         return True
     if result.unknown_visit:
-        await set_report_rejected(config_dir, visit_id, "unknown_visit")
+        await set_report_rejected(config_dir, visit_id, "unknown_visit", expect=doc)
     return False
 
 
@@ -965,11 +991,14 @@ async def retry_visit_once(
                 # 原因没写进举报文件（磁盘 / 权限）：提交的这份照样带上
                 report = {**report, "transcript_unavailable": upload.unavailable}
             result = await send_report(report)
-            if await finish_report(config_dir, visit_id, result) or result.unknown_visit:
+            if await finish_report(config_dir, visit_id, result, report) or result.unknown_visit:
                 report_pending = False
-            elif manual and report.get("rejected"):
-                # 用户手动重试、这回没被拒（网络 / 5xx）：回到普通的排队重试
-                await set_report_rejected(config_dir, visit_id, None)
+            elif manual and report.get("rejected") and result.attempted and not result.login_required:
+                # 用户手动重试、请求发出去了且这回没被拒（网络 / 5xx）：回到普通的排队重试。
+                # 没发出去（未登录 / 换了账号）或登录失效时拒收标记照留
+                await set_report_rejected(config_dir, visit_id, None, expect=report)
+            elif report.get("rejected"):
+                report_pending = False
     return RetryRound(pending=report_pending or upload.retryable, retry_after_s=upload.retry_after_s)
 
 

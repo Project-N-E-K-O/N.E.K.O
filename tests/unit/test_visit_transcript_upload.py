@@ -528,8 +528,53 @@ async def test_recovery_callback_marks_an_unknown_visit_and_keeps_the_file(tmp_p
     fake, _ = servers
     fake.report_mode = "404"
     await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
-    assert await tu.submit_queued_report(V1, _report_doc()) is False
+    assert await tu.submit_queued_report(V1, await tu.load_report(tmp_path, V1)) is False
     assert (await tu.load_report(tmp_path, V1))["rejected"] == "unknown_visit"
+
+
+async def test_recovery_callback_skips_a_report_that_was_replaced(tmp_path, servers):
+    fake, _ = servers
+    stale = _report_doc(include_transcript=False, queued_at=1000.0)
+    # 补录读到的是旧的那份；文件此刻已是另一份（放弃后重新排的）：不发、不删、不标记
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False, own_account="u2", own_visit_uid=OTHER))
+    assert await tu.submit_queued_report(V1, stale) is False
+    assert fake.count("/api/visit/reports") == 0
+    assert (await tu.load_report(tmp_path, V1))["own_account"] == "u2"
+
+
+async def test_recovery_callback_deletes_under_the_visit_lock(tmp_path, servers):
+    import asyncio
+
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    doc = await tu.load_report(tmp_path, V1)
+    lock = tu.visit_lock(V1)
+    await lock.acquire()
+    task = asyncio.create_task(tu.submit_queued_report(V1, doc))
+    try:
+        await asyncio.sleep(0.05)
+        assert not task.done()                      # 等端点的放弃 / 重试先做完
+    finally:
+        lock.release()
+    assert await asyncio.wait_for(task, 5) is True
+    assert await tu.load_report(tmp_path, V1) is None
+
+
+async def test_rejected_mark_only_lands_on_the_same_report(tmp_path, servers):
+    first = _report_doc(include_transcript=False, queued_at=1000.0)
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False, queued_at=2000.0))
+    await tu.set_report_rejected(tmp_path, V1, "unknown_visit", expect=first)
+    assert "rejected" not in await tu.load_report(tmp_path, V1)
+
+
+async def test_manual_retry_without_a_sent_request_keeps_the_rejection(tmp_path, servers):
+    fake, state = servers
+    fake.report_mode = "404"
+    path = tmp_path / "visit_reports" / f"{V1}.json"
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    await tu.retry_visit_once(V1)
+    state["account"] = None                         # 登录失效：请求根本没发出
+    assert (await tu.retry_visit_once(V1, manual=True)).pending is False
+    assert json.loads(path.read_text(encoding="utf-8"))["rejected"] == "unknown_visit"
 
 
 async def test_anomaly_count_outlives_the_uploaded_transcript(tmp_path, servers):

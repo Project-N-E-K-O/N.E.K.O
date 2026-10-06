@@ -275,7 +275,7 @@ async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
         # 终态拒收 / 过期时 attempt_upload 已在举报文件里记下原因：重读一次带上
         doc = await tu.load_report(config_dir, visit_id) or doc
     result = await tu.send_report(doc)
-    if await tu.finish_report(config_dir, visit_id, result):
+    if await tu.finish_report(config_dir, visit_id, result, doc):
         return JSONResponse({"ok": True, "report_id": result.report_id})
     if result.unknown_visit:
         # 举报文件留着（只有受理或用户放弃才删）、标记为被拒，队列里给「重试 / 放弃」
