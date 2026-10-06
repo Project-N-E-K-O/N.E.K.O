@@ -240,9 +240,13 @@ class LineSpeaker:
         names = [n for n in family_names if isinstance(n, str) and n.strip()]
 
         def redact(text: str):
-            return redact_outbound_with_spans(text, family_names=names, replacement=neutral_term)
+            # 行被提前截断（告别硬顶 / wire 预算）时收尾那次 flush 连末尾的半个亲人名一起替换：
+            # 截点可能正好落在名字中间，留下的前缀不能出门
+            return redact_outbound_with_spans(text, family_names=names, replacement=neutral_term,
+                                              partial_tail=self._closing_cut)
 
         boundary = redact_outbound_boundary(names) if names else None
+        self._closing_cut = False
         self.header = header
         self._clock = clock
         self._voice = voice
@@ -442,7 +446,15 @@ class LineSpeaker:
             return
         if self._first_push_at is None:
             self._first_push_at = now
-        self._stream.push(accepted)
+        if not self._stream.push(accepted):
+            # 流被外部关掉了（worker 退出等）：音频不会再来，立刻按估时放字幕，不等停滞兜底
+            logger.warning("visit line %s: speech stream closed on push, pacing by estimate", self.header.ln)
+            self._to_estimate(now)
+            return
+        if self._drained:
+            # 播空之后又有新音频入队：停滞计时从这一刻重新起算
+            self._drained = False
+            self._last_progress_at = now
 
     def _open(self, now: float) -> bool:
         try:
@@ -509,6 +521,7 @@ class LineSpeaker:
         if self._llm_done:
             return
         self._llm_done = True
+        self._closing_cut = self._cut_reason is not None
         self._add_clauses(self._splitter.flush())
         if self._mode == PACED_AUDIO and self._stream is not None and not self._stream_dead:
             outcome = self._stream.finish()

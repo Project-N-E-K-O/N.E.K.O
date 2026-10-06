@@ -425,6 +425,50 @@ def test_goodbye_line_is_capped_at_40_chars_everywhere():
     assert h.cancels == 1 and h.stream.finishes == 1
 
 
+def test_a_cut_in_the_middle_of_a_family_name_does_not_leak_its_prefix():
+    h = Harness(wu=True)
+    h.speaker = ls.LineSpeaker(
+        visit_id=VISIT, header=ls.LineHeader(ln="h:1", lp=1, ad="gc", rt="", wu=True),
+        family_names=["小明同学"], neutral_term=NEUTRAL, voice=h.voice, open_stream=h.open_stream,
+        router=h.router, clock=lambda: h.t, on_piece=h.pieces.append, on_done=h.results.append,
+    )
+    h.speaker.feed("谢" * 38 + "小明同学要记得来玩哦")         # 第 40 字截在名字中间
+    h.speaker.llm_done()
+    h.progress(0)
+    h.progress(99_999, ended=True, final=True)
+    text = h.results[0].text
+    assert h.results[0].trunc_reason == "goodbye_cap"
+    assert "小明" not in text and "小" not in text.replace(NEUTRAL, "") and text.endswith(NEUTRAL)
+    assert "".join(h.texts()) == text
+
+
+def test_stream_closed_under_us_switches_to_estimate_at_once():
+    h = Harness()
+    h.speaker.feed(CLAUSES[0])
+    h.progress(0)
+    h.stream.closed = True                      # worker 退出把流关了（不是本行 abort 的）
+    h.speaker.feed(CLAUSES[1])
+    assert h.speaker.mode == ls.PACED_ESTIMATE
+    h.speaker.feed(CLAUSES[2])
+    h.speaker.llm_done()
+    h.at(60)
+    assert h.results[0].text == LINE
+
+
+def test_new_audio_after_a_drain_restarts_the_stall_clock():
+    h = Harness()
+    h.speaker.feed(CLAUSES[0] + CLAUSES[1][:1])
+    h.progress(0)
+    h.t += 1
+    h.progress(1000, ended=True, final=False)   # 播空：没有停滞计时
+    assert h.speaker.next_deadline() is None
+    h.t += 5
+    h.speaker.feed(CLAUSES[1][1:])              # 新文本入队，之后 TTS 再无任何回报
+    assert h.speaker.next_deadline() == pytest.approx(h.t + 3)
+    h.at(6 + 3)
+    assert h.stream.aborts == 1 and h.speaker.mode == ls.PACED_ESTIMATE
+
+
 def _backslash_line() -> str:
     return ("\\\"" * 40 + "。") * 60
 
