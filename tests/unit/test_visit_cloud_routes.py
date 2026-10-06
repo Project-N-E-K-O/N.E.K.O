@@ -395,7 +395,7 @@ def test_abandon_waits_for_an_in_flight_submission(env):
     fake.report_mode = "503"
     _report(client)
     lock = tu.visit_lock(V1)
-    holding, release = client.portal.call(lambda: _make_events())
+    holding, release = client.portal.call(_make_events)
 
     async def submit_in_flight():
         async with lock:
