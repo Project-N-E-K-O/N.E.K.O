@@ -42,7 +42,7 @@ COUNT_FILE="$STATE_DIR/fail-count"
 RESTART_FILE="$STATE_DIR/restart-count"
 EXHAUSTED_FILE="$STATE_DIR/exhaustion-reported"
 STOPPED_FILE="$STATE_DIR/stopped-reported"
-METADATA_FORMAT='{{.Id}} {{index .Config.Labels "org.neko.community-2c2g.watchdog"}} {{index .Config.Labels "com.docker.compose.service"}} {{.State.Running}} {{.State.Paused}} {{.State.Restarting}} {{.State.StartedAt}}'
+METADATA_FORMAT='{{.Id}} {{index .Config.Labels "org.neko.watchdog"}} {{index .Config.Labels "com.docker.compose.service"}} {{.State.Running}} {{.State.Paused}} {{.State.Restarting}} {{.State.StartedAt}}'
 
 # Do not transfer recovery authority to an unrelated container with the same name.
 # Docker's unless-stopped policy handles exits; preserve intentional stops/removal.

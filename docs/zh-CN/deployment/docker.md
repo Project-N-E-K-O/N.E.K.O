@@ -120,3 +120,5 @@ docker build -f docker/Dockerfile.full -t neko-local:full .
 ```
 
 随后设置 `NEKO_IMAGE`。入口脚本生成的是自签名证书，不等于公网可信 TLS。诊断用 `docker compose ps`、`docker logs neko` 和 `curl -f http://127.0.0.1:48911/health`。
+
+在 2 核 2G 等低配云服务器上部署，请继续阅读[低配云服务器部署](./low-spec-server)：内存、磁盘、安全配置与可选的宿主机自愈看门狗。

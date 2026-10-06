@@ -26,6 +26,7 @@ docker/
 ├── Dockerfile              # Docker 镜像构建文件
 ├── docker-compose.yml      # Docker Compose 配置
 ├── .env.example           # 环境变量模板
+├── watchdog/              # 可选宿主机自愈看门狗（见下文「低配云服务器」）
 └── config/                # 配置示例（运行时不挂载此目录）
     ├── core_config.json.example
     ├── characters.json.example
@@ -296,6 +297,10 @@ A: 运行 `docker exec neko python -c "from utils.config_manager import get_conf
      - no-new-privileges:true
    read_only: true
    ```
+
+## 🪶 低配云服务器
+
+2 核 2G 等低配服务器同样使用本目录的 `docker-compose.yml`。宿主机内存（ZRAM/Swap）、磁盘、安全配置，以及可选的宿主机自愈看门狗（`docker/watchdog/`）见[低配云服务器部署](../docs/zh-CN/deployment/low-spec-server.md)。
 
 ## 📚 更多资源
 

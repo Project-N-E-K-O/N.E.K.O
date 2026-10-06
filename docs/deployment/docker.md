@@ -153,3 +153,5 @@ curl -f http://127.0.0.1:48911/health
 ```
 
 See [Environment Variables](/config/environment-vars) for variables verified in current code.
+
+Running on a 2-vCPU / 2 GB cloud server? See [Low-Spec Cloud Server](./low-spec-server) for host memory, disk, security, and the optional self-healing watchdog.

@@ -1,0 +1,206 @@
+# 低配云服务器部署（2C2G）
+
+本页面向 2 核 2G、40G 硬盘、带宽受限的云服务器（例如入门级 ECS），在官方 Docker 部署的基础上补充内存、磁盘、自愈、安全和流量方面的宿主机配置，不需要另一套 Compose。
+
+> 本页整理自社区贡献者 烨儿不会飞（GitHub [@csy-11](https://github.com/csy-11)）在 99 元/年 ECS 上的实践，原始方案见 [#3295](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3295)。如果这份指南帮到了你，可以在[爱发电](https://afdian.com/a/chensye)支持作者。
+
+::: warning 适用范围
+本页命令以 Ubuntu 系宿主机为例，均未在每种云厂商环境逐一验收。官方 Compose 不为主服务设置内存上限，2G 宿主能否稳定运行取决于实际负载；看门狗也不能代替宿主 OOM 防护。上线前请用代表性负载验证峰值内存、延迟和回退方案。
+:::
+
+## 1. 部署
+
+按 [Docker 部署](./docker) 完成安装，Compose 文件就是 `docker/docker-compose.yml`。低配机器上建议：
+
+- **使用 full 镜像**：在 `docker/.env` 设置 `NEKO_IMAGE_VERSION=latest-full`。镜像自带 Chromium，首次启动不用在容器里下载安装浏览器，代价是多占约 1GB 磁盘。
+- **固定版本**：`latest`、`latest-full` 是滚动标签。上线前用 `NEKO_IMAGE` 固定经过验证的 tag 或 digest，并确认镜像包含实例授权（#3289）与 HTTP 配对（#3299）。
+- **自有域名**：在 `docker/.env` 配置，官方 Compose 会把它们传入容器：
+
+```dotenv
+SSL_DOMAIN=your-domain.example
+NEKO_TRUSTED_HOSTS=your-domain.example
+NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
+```
+
+默认允许通过 `http://<服务器IP>:48911` 配对，页面会提示连接未加密；HTTP 会以明文传输配对 key 和会话 Cookie，不要在不可信网络上这样输入凭证。需要强制 HTTPS/WSS 时设置 `NEKO_REQUIRE_HTTPS=1`。实例凭证的读取方式见 [Docker 部署](./docker)。
+
+如需给容器设内存上限，按 [Docker 资源约束文档](https://docs.docker.com/engine/containers/resource_constraints/) 在覆盖文件中设置，并以实测结果确定数值，不要直接套用经验值。
+
+## 2. 外置 TLS 网关：上游只绑定本机
+
+官方 Compose 默认在所有接口发布 48911/48912。由同一宿主机上的网关（Nginx、Caddy 等）终止 HTTPS 时，应把上游改为只绑定本机。在 `docker/` 下创建 `compose.gateway.yaml`（已被 `.gitignore` 忽略）：
+
+```yaml
+services:
+  neko-main:
+    ports: !override
+      - "127.0.0.1:48911:80"
+      - "127.0.0.1:48912:443"
+```
+
+然后在 `docker/.env` 中持久设置文件组合，之后所有不带 `-f` 的 `docker compose` 命令都会加载这两份文件：
+
+```dotenv
+COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml
+```
+
+`!override` 需要 Docker Compose **2.24.4 及以上**。每次重建前用 `docker compose config` 核对最终端口绑定。
+
+网关按浏览器实际访问的公开 Origin 同时配置以下两项（例如网关使用 443）：
+
+```dotenv
+NEKO_INSTANCE_PUBLIC_ORIGIN=https://your-domain.example
+NEKO_TRUSTED_ORIGINS=https://your-domain.example
+```
+
+网关应保留 Host 和正确的客户端 `X-Forwarded-For` 链并代理 WebSocket；公网 HTTP 只能关闭或重定向到 HTTPS，不能把同 Host 的明文流量转发进应用。完整契约见[社区账户与远程实例访问边界](/design/security/community-remote-access)。
+
+## 3. 内存：ZRAM 与 Swap
+
+2G 物理内存是主要瓶颈，而 CPU 往往有空闲。ZRAM 用 CPU 压缩换内存空间：
+
+```bash
+sudo apt update
+sudo apt install zram-tools
+```
+
+编辑 `/etc/default/zramswap`：
+
+```ini
+ALGO=lz4          # 压缩快、CPU 开销低
+PERCENT=50        # 使用物理内存的 50% 作为 ZRAM（约 1G）
+PRIORITY=100      # 优先于磁盘 swap
+```
+
+```bash
+sudo systemctl restart zramswap
+swapon --show
+```
+
+另外保留一个 2–4G 的磁盘 swapfile 作为最后的兜底。
+
+`vm.swappiness` 没有通用最优值。以 ZRAM 为主时，可在代表性负载下评估 100 附近的取值（[内核文档](https://www.kernel.org/doc/html/latest/admin-guide/sysctl/vm.html#swappiness)允许内存型 swap 使用高于 100 的值）；只想减少磁盘 swap I/O 时才考虑 10 这类低值。任何取值都不保证避免 OOM，修改前记下原值以便回退。
+
+## 4. 磁盘：日志与镜像
+
+- 官方 Compose 已把主容器的 Docker 日志（`docker logs`）限制为 10m × 3。
+- 应用写入 `docker/logs/` 的文件日志不受此限制，请用 logrotate 等工具轮转。
+- 其他容器需要同样的限制时，把以下内容合并进现有 `/etc/docker/daemon.json`，再执行 `sudo systemctl restart docker`：
+
+```json
+{
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "3" }
+}
+```
+
+- 升级镜像后用 `docker system df` 查看占用，用 `docker image prune` 清理不再使用的悬空镜像。
+
+## 5. 可选：宿主机自愈看门狗
+
+Docker 的 `unless-stopped` 只在进程退出时重启容器；进程还在但服务卡死（低内存时更常见）不会被处理。`docker/watchdog/` 提供一个可选的宿主机看门狗来补上这一点。它会向宿主机写入 root cron，只在你信任这些脚本的 Linux 主机上使用。
+
+### 前置条件
+
+| 项目 | 说明 |
+|---|---|
+| 宿主工具 | `bash`、`curl`、`timeout`（coreutils）、`flock`（util-linux）：`sudo apt install curl coreutils util-linux` |
+| cron 服务 | `sudo apt install cron && sudo systemctl enable --now cron`，用 `systemctl is-active cron` 确认 |
+| Docker | 官方 apt 安装的 Docker Engine；cron 的 PATH 不含 `/snap/bin`，不支持 snap 版 |
+| 安装器镜像 | 安装器在 `alpine:3.20` 中运行，需能从 Docker Hub 拉取，或换成你已核验的镜像 |
+
+### 工作方式
+
+cron 每 5 分钟执行一次 `/opt/neko/watchdog.sh`：
+
+- 只处理名为 `neko`、带 `org.neko.watchdog=enabled` 标签、Compose 服务名为 `neko-main` 的容器。手动停止、`docker pause`、正在重启或已删除的容器都不会被启动。
+- 健康判据有两项：宿主机请求 `http://127.0.0.1:48911/` 得到 200 或 401，并且容器内直连主服务 `/health` 成功。
+- 容器启动后有 **15 分钟宽限期**。宽限期后连续 2 次不健康才执行 `docker restart`。
+- 同一个容器最多连续自动重启 **3 次**，用完后记录错误并停止主动重启，等人工处理；健康一次即清零。
+- 状态、锁和日志位于 root 私有的 `/opt/neko/`，日志为 `/opt/neko/watchdog.log`（不会自动轮转），有 `logger` 时也写入 syslog（`journalctl -t neko-watchdog`）。
+
+看门狗通过宿主机 `127.0.0.1:48911` 探测。第 2 节的本机绑定不影响探测；如果改了宿主端口或只发布 HTTPS，探测会失败，需要先暂停看门狗并修改 `watchdog.sh` 中的探测地址。
+
+### 安装
+
+核验 `docker/watchdog/` 下的两个脚本后，在 `docker/` 目录执行：
+
+```bash
+docker run --rm --network none \
+  -v /etc/cron.d:/host-cron.d -v /opt:/host-opt \
+  -v "$PWD/watchdog:/source:ro" \
+  alpine:3.20 sh /source/install-watchdog.sh
+```
+
+安装器会拒绝符号链接和非 root 私有目录，原子写入 `/opt/neko/watchdog.sh` 和 `/etc/cron.d/neko-watchdog`。重新安装会保留已有的宽限期设置。
+
+启动明显更慢时，在 `/etc/cron.d/neko-watchdog` 的任务行之前加一行 `NEKO_WATCHDOG_STARTUP_GRACE_SECONDS=1800`（单位秒，0 表示关闭宽限期）。手动运行脚本时不会读取 cron 文件，需要显式传入同一个值。
+
+### 维护、恢复与卸载
+
+```bash
+# 维护前暂停（等待正在执行的探测或重启结束）
+sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled
+
+# 维护完成、确认服务健康后恢复，并清掉暂停前的失败计数
+sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/fail-count /opt/neko/disabled
+
+# 自动重启次数用完、排除故障后恢复预算
+sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/restart-count
+
+# 卸载（保留 /opt/neko 下的状态与日志，便于排查）
+sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled
+sudo rm -f /etc/cron.d/neko-watchdog
+sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/watchdog.sh
+```
+
+`docker compose down` 不会卸载 cron。重新安装不会解除 `disabled` 暂停。
+
+### 测试
+
+`sudo bash docker/watchdog/test-watchdog.sh` 会在临时目录中用模拟的 docker/curl 运行真实脚本，覆盖宽限期、维护锁、重启上限和安装器等逻辑，不修改宿主 cron，也不重启容器。它不能代替实机验收。
+
+## 6. 网络安全
+
+- **优先在云侧限制来源**：在安全组中按实际入口限制来源 IP，并分别验证 IPv4/IPv6。Docker 发布的端口可能绕过 ufw 和宿主 `INPUT` 规则（见 [Docker 防火墙文档](https://docs.docker.com/engine/network/firewall-iptables/)），不要只看宿主防火墙规则就认为 48911/48912 已受保护。
+- **SSH 只用密钥**：在 `/etc/ssh/sshd_config` 中设置 `PasswordAuthentication no`。使用云厂商网页终端或移动端免密登录时，保持 22 端口更省事。
+- **CrowdSec 拦截爆破**：
+
+```bash
+curl -s https://install.crowdsec.net | sudo sh
+sudo apt install crowdsec crowdsec-firewall-bouncer-iptables
+```
+
+Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.net/docs/bouncers/firewall/)在 bouncer 配置中合并 `iptables_chains: [INPUT, DOCKER-USER]`，并从外部来源实际验证封禁效果；nftables 后端的配置不同，不要照搬。CrowdSec 默认用于 SSH 等已接入日志的服务，不能代替实例凭证和 HTTPS。
+
+## 7. 流量与域名
+
+- **阿里云 CDT**：CDT 免费额度按账号共享，仅适用于符合条件的按流量计费公网出向流量，固定带宽不适用。切换计费方式前先估算月流量并与固定带宽总价比较，以[官方计费说明](https://help.aliyun.com/zh/cdt/internet-data-transfers/)和实际账单为准。
+- **动态域名**：公网 IP 会变化时可用 DuckDNS 等服务定时更新解析，并按第 1 节设置 `SSL_DOMAIN`、`NEKO_TRUSTED_HOSTS`、`NEKO_TRUSTED_ORIGINS`，配置对应证书。
+
+## 8. 数据与备份
+
+- 本地只放热数据：N.E.K.O 的记忆以文本为主，SQLite 数据库很轻。长期保存的原始图片和音频可转存到对象存储的低频或归档层。
+- 定期打包 `docker/neko-home/` 做异地备份。其中包含实例凭证和 TLS 私钥，备份不要公开。
+
+## 9. 从 community-2c2g 部署迁移
+
+如果你按此前的 `docker/community-2c2g/` 方案部署过，更新代码后该目录的 Compose 文件已不存在，数据目录仍在原处（已被 `.gitignore` 忽略）：
+
+1. 如装了看门狗，先按第 5 节暂停：`sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled`。
+2. 停止并删除旧容器（数据在宿主目录中，不受影响）：`docker stop neko && docker rm neko`。
+3. 确认 `docker/neko-home` 和 `docker/logs` 尚不存在（已存在说明另有官方部署的数据，先核对，不要覆盖），再以 root 保留属主和权限地复制：`sudo cp -a docker/community-2c2g/neko-home docker/community-2c2g/logs docker/`。TLS 私钥属主为 root、权限 0600，不用 root 复制会遗漏。
+4. 把 `docker/community-2c2g/.env` 中需要的设置迁入 `docker/.env`；网关覆盖文件改放 `docker/compose.gateway.yaml`，`COMPOSE_FILE` 改为 `docker-compose.yml:compose.gateway.yaml`。
+5. 在 `docker/` 执行 `docker compose config` 核对后 `docker compose up -d`，确认实例凭证、角色和记忆都在。
+6. **重新安装看门狗**（第 5 节）。旧脚本只识别旧标签，不重装就不会再处理新容器。确认健康后解除 `disabled`。
+
+## 10. 上线核对清单
+
+- [ ] `docker compose ps` 显示 `neko-main` 运行中
+- [ ] 镜像固定到已验证版本，并包含 #3289/#3299
+- [ ] 首次通过 HTTP 或 HTTPS 输入实例凭证后，刷新可复用；匿名 API 返回 401
+- [ ] 需要严格模式时已设置 `NEKO_REQUIRE_HTTPS=1`；使用外置网关时上游只绑定本机
+- [ ] 安全组已限制来源，并从外部验证过
+- [ ] ZRAM 已生效（`swapon --show`），保留了磁盘 swapfile
+- [ ] 应用文件日志已配置轮转
+- [ ] 若启用看门狗：`/etc/cron.d/neko-watchdog` 为 root、644；宽限期过后手动运行 `sudo /opt/neko/watchdog.sh`，`/opt/neko/watchdog.log` 没有新增探测失败
