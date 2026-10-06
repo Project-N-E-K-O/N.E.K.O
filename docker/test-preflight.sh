@@ -120,19 +120,23 @@ mkdir -p "$CASE/elsewhere" "$CASE/data"
 [[ ! -e $CASE/elsewhere/data ]] || die 'relative paths resolved against the caller cwd'
 ok 'resolves relative paths against docker/ like Compose'
 
-# A default path that is a mount point (stubbed here) gets the strict rule too.
+# A default path that is a mount point gets the strict rule too. mountinfo is
+# faked, and the checkout path contains a space, which mountinfo writes as \040.
 new_case
-mkdir "$CASE/neko-home" "$CASE/logs" "$CASE/stub"
-touch "$CASE/logs/shared.log"
-chown 0:0 "$CASE/logs" "$CASE/logs/shared.log"
-printf '#!/bin/sh\n[ "$3" = "%s/logs" ]\n' "$CASE" > "$CASE/stub/mountpoint"
-chmod 700 "$CASE/stub/mountpoint"
-if PATH="$CASE/stub:$PATH" run; then die 'non-empty mounted default accepted'; fi
+mkdir "$CASE/sp ace"
+mv "$CASE/preflight.sh" "$CASE/sp ace/preflight.sh"
+mkdir "$CASE/sp ace/neko-home" "$CASE/sp ace/logs"
+touch "$CASE/sp ace/logs/shared.log"
+chown 0:0 "$CASE/sp ace/logs" "$CASE/sp ace/logs/shared.log"
+printf '1 0 8:1 / %s/sp\\040ace/logs rw - ext4 /dev/sda1 rw\n' "$CASE" > "$CASE/mountinfo"
+export NEKO_PREFLIGHT_MOUNTINFO="$CASE/mountinfo"
+if sh "$CASE/sp ace/preflight.sh" > "$CASE/out" 2>&1; then die 'non-empty mounted default accepted'; fi
 grep -q 'not a mount point' "$CASE/out" || die 'mount point error not reported'
-[[ $(owner "$CASE/logs") == 0:0 ]] || die 'mounted default was changed'
-: > "$CASE/logs/shared.log"; rm "$CASE/logs/shared.log"
-PATH="$CASE/stub:$PATH" run || die 'empty mounted default'
-[[ $(owner "$CASE/logs") == 1000:1000 ]] || die 'empty mounted default not fixed'
+[[ $(owner "$CASE/sp ace/logs") == 0:0 ]] || die 'mounted default was changed'
+rm "$CASE/sp ace/logs/shared.log"
+sh "$CASE/sp ace/preflight.sh" > "$CASE/out" 2>&1 || die 'empty mounted default'
+[[ $(owner "$CASE/sp ace/logs") == 1000:1000 ]] || die 'empty mounted default not fixed'
+unset NEKO_PREFLIGHT_MOUNTINFO
 ok 'treats a mounted default path like a custom one'
 
 # Outside the defaults, a non-empty directory owned by someone else is never taken

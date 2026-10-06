@@ -99,14 +99,25 @@ check_dir() {
 is_default() { [ "$2" = "$script_dir/$1" ] && ! is_mountpoint "$2"; }
 
 is_mountpoint() {
+    # Field 5 of mountinfo is the mount point, with space, tab, newline and
+    # backslash written as octal escapes. Bind mounts on the same filesystem share
+    # a device number, so stat cannot tell them apart. The path goes through the
+    # environment because awk -v would interpret its backslashes.
     [ -d "$1" ] || return 1
-    if command -v mountpoint > /dev/null 2>&1; then
-        mountpoint -q -- "$1"
-    else
-        # Field 5 of mountinfo is the mount point; bind mounts on the same
-        # filesystem share a device number, so stat cannot tell them apart.
-        awk -v p="$1" '$5 == p { found = 1 } END { exit !found }' /proc/self/mountinfo
-    fi
+    MOUNT_PATH=$1 awk '
+        # Decode every \ooo escape; portable across awks, unlike gsub with "\\".
+        function unescape(s,    out, i, d) {
+            out = ""
+            while ((i = index(s, "\\")) > 0) {
+                d = substr(s, i + 1, 3)
+                out = out substr(s, 1, i - 1) \
+                    sprintf("%c", substr(d, 1, 1) * 64 + substr(d, 2, 1) * 8 + substr(d, 3, 1))
+                s = substr(s, i + 4)
+            }
+            return out s
+        }
+        unescape($5) == ENVIRON["MOUNT_PATH"] { found = 1 }
+        END { exit !found }' "${NEKO_PREFLIGHT_MOUNTINFO:-/proc/self/mountinfo}"
 }
 
 # True when $1 is an existing, non-empty directory not owned by the container user.
