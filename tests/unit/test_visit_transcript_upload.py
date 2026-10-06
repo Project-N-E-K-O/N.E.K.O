@@ -1075,3 +1075,27 @@ async def test_a_stream_still_being_written_is_never_resealed(tmp_path, servers)
     assert outcome.pending is True and stream.exists()
     assert not (_spool(tmp_path) / f"{V1}.upload.json").exists() and fake.count("/api/visit/transcripts") == 0
     await journal.seal("wrap_up", ended_at=1002.0)
+
+
+
+async def test_a_stream_is_registered_as_open_before_it_appears_on_disk(tmp_path, servers, monkeypatch):
+    seen = []
+    real_open = tu.UploadJournal._open_sync
+
+    def watch(self, data):
+        seen.append(self.visit_id in tu._open_streams)    # 建文件那一刻已登记
+        return real_open(self, data)
+
+    monkeypatch.setattr(tu.UploadJournal, "_open_sync", watch)
+    journal = await _journal(tmp_path)
+    assert seen == [True] and V1 in tu._open_streams
+    await journal.seal("wrap_up", ended_at=1001.0)
+    assert V1 not in tu._open_streams
+
+    def broken(self, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tu.UploadJournal, "_open_sync", broken)
+    with pytest.raises(OSError):
+        await _journal(tmp_path, vid(2))
+    assert vid(2) not in tu._open_streams                # 没打开成功就撤销登记

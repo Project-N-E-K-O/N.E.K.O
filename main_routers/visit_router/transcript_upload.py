@@ -287,12 +287,16 @@ class UploadJournal:
             "transport": transport,
         }
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="visit-upload")
+        # 先登记再建文件：流水一出现在磁盘上，重试轮次就必须认得它还开着，不能趁建文件的间隙重封
+        added = self.visit_id not in _open_streams
+        _open_streams.add(self.visit_id)
         try:
             self._fd = await asyncio.wrap_future(executor.submit(self._open_sync, _encode_record(header)))
         except BaseException:
             executor.shutdown(wait=False)
+            if added:
+                _open_streams.discard(self.visit_id)
             raise
-        _open_streams.add(self.visit_id)
         self._executor = executor
         self._records = [header]
         self._role = role
