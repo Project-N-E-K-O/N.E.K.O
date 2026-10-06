@@ -127,6 +127,23 @@ run || die 'already aligned'
 grep -q 'neko-home: .* ok (1000:1000)' "$CASE/out" || die 'aligned directory not reported ok'
 ok 'leaves aligned directories alone'
 
+# Paths that must never be handed to uid 1000. chown and mkdir are stubbed so a
+# regression records the call instead of touching the real system.
+new_case
+mkdir "$CASE/stub" "$CASE/logs"
+for tool in chown mkdir; do
+    printf '#!/bin/sh\necho "%s $*" >> "%s/called"\nexit 1\n' "$tool" "$CASE" > "$CASE/stub/$tool"
+    chmod 700 "$CASE/stub/$tool"
+done
+for bad in / /. // /data /root /home /home/someone /var /var/log /mnt/disk /etc/neko \
+           /usr/local/neko /proc/neko "$CASE" "$CASE/.." "$(dirname -- "$CASE")"; do
+    if PATH="$CASE/stub:$PATH" run "$bad" "$CASE/logs"; then die "accepted $bad"; fi
+    grep -q 'refusing to take ownership' "$CASE/out" || die "no refusal for $bad"
+    if PATH="$CASE/stub:$PATH" run "$CASE/logs" "$bad"; then die "accepted logs $bad"; fi
+done
+[[ ! -e $CASE/called ]] || die "chown/mkdir reached: $(cat "$CASE/called")"
+ok 'refuses the filesystem root, system and top-level directories, and the checkout'
+
 new_case
 if run a b c; then die 'extra arguments accepted'; fi
 run --help || die '--help failed'

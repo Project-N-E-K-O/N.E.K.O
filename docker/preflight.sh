@@ -23,6 +23,10 @@ NEKO_UID=1000
 NEKO_GID=1000
 
 fail() { echo "preflight: $*" >&2; exit 1; }
+refuse() {
+    fail "$1: refusing to take ownership of $2; it is a system, shared or top-level
+  directory. Mount a dedicated directory such as $script_dir/$1 instead."
+}
 
 case "${1:-}" in
     -h|--help) sed -n '2,12s/^# \{0,1\}//p' "$0"; exit 0 ;;
@@ -56,6 +60,23 @@ check_dir() {
   Confirm that directory is dedicated to N.E.K.O, then mount and pass that
   real path instead."
     fi
+    # The mount root is handed to uid 1000 and mounted read-write, so it must be a
+    # dedicated directory: never the filesystem root, a top-level directory, a
+    # system tree, a user's home itself, or this checkout (or one of its parents).
+    case "$resolved" in
+        /etc|/etc/*|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/boot|/boot/*|/run|/run/*|\
+        /bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib32|/lib32/*|/lib64|/lib64/*|/usr|/usr/*)
+            refuse "$1" "$resolved" ;;
+    esac
+    case "$resolved" in
+        /*/*/*) ;;
+        /home/*|/var/*|/mnt/*|/media/*) refuse "$1" "$resolved" ;;
+        /*/*) ;;
+        *) refuse "$1" "$resolved" ;;
+    esac
+    case "$script_dir/" in
+        "$resolved"/*) refuse "$1" "$resolved" ;;
+    esac
     if [ -e "$2" ] && [ ! -d "$2" ]; then
         fail "$1: $2 exists but is not a directory"
     fi

@@ -32,7 +32,7 @@ NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
 sudo sh docker/preflight.sh
 ```
 
-它在宿主机上直接运行，不拉取任何镜像：`docker/neko-home` 或 `docker/logs` 是符号链接时拒绝并退出；目录不存在时创建；再把两个目录本身（不递归）的属主改为 uid/gid 1000。符号链接只有在宿主机上才看得出来：Docker 挂载的是链接目标，入口脚本在容器里分辨不出，会把挂载根目录的属主改为 1000，所以不要用符号链接把这两个目录指向共享目录。需要把数据放到其他磁盘时，在覆盖文件（例如 `docker/compose.local.yaml`）里直接写实际路径，并把同样的路径传给预检：`sudo sh docker/preflight.sh /覆盖文件里的/neko-home /覆盖文件里的/logs`。
+它在宿主机上直接运行，不拉取任何镜像：`docker/neko-home` 或 `docker/logs` 是符号链接时拒绝并退出；`/`、`/var/log`、用户主目录本身这类系统、共享或顶层目录也会拒绝；目录不存在时创建；再把两个目录本身（不递归）的属主改为 uid/gid 1000。符号链接只有在宿主机上才看得出来：Docker 挂载的是链接目标，入口脚本在容器里分辨不出，会把挂载根目录的属主改为 1000，所以不要用符号链接把这两个目录指向共享目录。需要把数据放到其他磁盘时，在覆盖文件（例如 `docker/compose.local.yaml`）里直接写实际路径，并把同样的路径传给预检：`sudo sh docker/preflight.sh /覆盖文件里的/neko-home /覆盖文件里的/logs`。
 
 如需给容器设内存上限，按 [Docker 资源约束文档](https://docs.docker.com/engine/containers/resource_constraints/) 在覆盖文件中设置，并以实测结果确定数值，不要直接套用经验值。
 
