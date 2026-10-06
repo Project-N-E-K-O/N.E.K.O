@@ -321,7 +321,7 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
 
    取回的旧 Compose 继承当前的官方 Compose，回退后的容器同时带有旧标签和新标签，所以无论已安装的是旧版还是第 7 步重装的新版看门狗，都能识别它。确认旧服务健康后，解除第 1 步的暂停并清掉暂停前的失败计数：`sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/fail-count /opt/neko/disabled`。
 
-   浅克隆里找不到该提交时，先执行 `git fetch --unshallow`。取回的 `docker-compose.yaml` 不受版本管理，之后重新迁移成功时删除即可，不要提交。
+   浅克隆里找不到该提交时，先执行 `git fetch --unshallow`。取回的 `docker-compose.yaml` 已被 git 忽略，只在本机使用，之后重新迁移成功时删除即可。
 7. **重新安装看门狗**（第 5 节）。旧脚本只识别旧标签，不重装就不会再处理新容器。确认健康后解除 `disabled`。
 
 ## 10. 上线核对清单

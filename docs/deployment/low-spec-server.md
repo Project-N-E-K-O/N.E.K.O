@@ -244,5 +244,5 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
 
    The retrieved old Compose file extends the current official one, so the rolled-back container carries both the old and the new label and is recognized by either the old watchdog or one reinstalled in step 7. Once the old service is healthy, lift the step 1 pause and clear the pre-pause failure count: `sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/fail-count /opt/neko/disabled`.
 
-   In a shallow clone that lacks the commit, run `git fetch --unshallow` first. The restored `docker-compose.yaml` is untracked; delete it once a later migration succeeds and never commit it.
+   In a shallow clone that lacks the commit, run `git fetch --unshallow` first. The restored `docker-compose.yaml` is git-ignored and for local use only; delete it once a later migration succeeds.
 7. **Reinstall the watchdog** (section 5): the old script only recognizes the old label. Resume it once the service is healthy.
