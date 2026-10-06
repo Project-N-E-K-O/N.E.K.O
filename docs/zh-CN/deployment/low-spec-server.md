@@ -188,11 +188,26 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
 如果你按此前的 `docker/community-2c2g/` 方案部署过，更新代码后该目录的 Compose 文件已不存在，数据目录仍在原处（已被 `.gitignore` 忽略）：
 
 1. 如装了看门狗，先按第 5 节暂停：`sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled`。
-2. 停止并删除旧容器（数据在宿主目录中，不受影响）：`docker stop neko && docker rm neko`。
-3. 确认 `docker/neko-home` 和 `docker/logs` 尚不存在（已存在说明另有官方部署的数据，先核对，不要覆盖），再以 root 保留属主和权限地复制：`sudo cp -a docker/community-2c2g/neko-home docker/community-2c2g/logs docker/`。TLS 私钥属主为 root、权限 0600，不用 root 复制会遗漏。
-4. 把 `docker/community-2c2g/.env` 中需要的设置迁入 `docker/.env`；网关覆盖文件改放 `docker/compose.gateway.yaml`，`COMPOSE_FILE` 改为 `docker-compose.yml:compose.gateway.yaml`。
-5. 在 `docker/` 执行 `docker compose config` 核对后 `docker compose up -d`，确认实例凭证、角色和记忆都在。
-6. **重新安装看门狗**（第 5 节）。旧脚本只识别旧标签，不重装就不会再处理新容器。确认健康后解除 `disabled`。
+2. **删除容器之前**，核对旧容器实际挂载的数据来源：
+
+   ```bash
+   docker inspect neko --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+   ```
+
+   `/home/neko` 和 `/app/logs` 的来源通常是 `docker/community-2c2g/neko-home` 和 `docker/community-2c2g/logs`。若你用覆盖文件改过挂载路径，以下步骤一律换成这里显示的实际来源路径；无法确认时先停下，不要删容器。
+3. 停止容器，再以 root 保留属主和权限备份实际来源目录，以及 `.env` 和网关覆盖文件（如有），并确认备份可读：
+
+   ```bash
+   docker stop neko
+   sudo tar -czpf neko-2c2g-backup.tar.gz -C docker/community-2c2g neko-home logs
+   sudo tar -tzf neko-2c2g-backup.tar.gz > /dev/null && echo backup-ok
+   ```
+
+   备份含实例凭证和 TLS 私钥，不要公开。确认备份成功后再删除容器：`docker rm neko`。
+4. 确认 `docker/neko-home` 和 `docker/logs` 尚不存在（已存在说明另有官方部署的数据，先核对，不要覆盖），再以 root 保留属主和权限地复制：`sudo cp -a docker/community-2c2g/neko-home docker/community-2c2g/logs docker/`。TLS 私钥属主为 root、权限 0600，不用 root 复制会遗漏。
+5. 把 `docker/community-2c2g/.env` 中需要的设置迁入 `docker/.env`；网关覆盖文件改放 `docker/compose.gateway.yaml`，`COMPOSE_FILE` 改为 `docker-compose.yml:compose.gateway.yaml`。
+6. 在 `docker/` 执行 `docker compose config` 核对挂载来源和端口后 `docker compose up -d`，确认实例凭证、角色和记忆都在。迁移失败时停掉新容器，用备份恢复。
+7. **重新安装看门狗**（第 5 节）。旧脚本只识别旧标签，不重装就不会再处理新容器。确认健康后解除 `disabled`。
 
 ## 10. 上线核对清单
 

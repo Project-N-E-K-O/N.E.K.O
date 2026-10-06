@@ -115,8 +115,23 @@ Memory data is mostly text, so the local SQLite stores stay small; move long-ter
 If you deployed with the former `docker/community-2c2g/` files, the Compose file is gone after updating but the data directories remain (git-ignored):
 
 1. Pause the watchdog if installed: `sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled`.
-2. Stop and remove the old container: `docker stop neko && docker rm neko`.
-3. Make sure `docker/neko-home` and `docker/logs` do not exist yet, then copy as root, preserving ownership: `sudo cp -a docker/community-2c2g/neko-home docker/community-2c2g/logs docker/`.
-4. Move needed settings from `docker/community-2c2g/.env` to `docker/.env`; a gateway override becomes `docker/compose.gateway.yaml` with `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml`.
-5. From `docker/`, check `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact.
-6. **Reinstall the watchdog** (section 5): the old script only recognizes the old label. Resume it once the service is healthy.
+2. **Before removing the container**, check where its data is actually mounted from:
+
+   ```bash
+   docker inspect neko --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+   ```
+
+   The sources for `/home/neko` and `/app/logs` are normally `docker/community-2c2g/neko-home` and `docker/community-2c2g/logs`. If an override file changed them, use the actual source paths in every step below; if you cannot tell, stop and keep the container.
+3. Stop the container and back up the actual source directories as root, preserving ownership, together with `.env` and any gateway override; confirm the archive is readable:
+
+   ```bash
+   docker stop neko
+   sudo tar -czpf neko-2c2g-backup.tar.gz -C docker/community-2c2g neko-home logs
+   sudo tar -tzf neko-2c2g-backup.tar.gz > /dev/null && echo backup-ok
+   ```
+
+   The backup contains instance credentials and TLS keys; keep it private. Only then remove the container: `docker rm neko`.
+4. Make sure `docker/neko-home` and `docker/logs` do not exist yet, then copy as root, preserving ownership: `sudo cp -a docker/community-2c2g/neko-home docker/community-2c2g/logs docker/`.
+5. Move needed settings from `docker/community-2c2g/.env` to `docker/.env`; a gateway override becomes `docker/compose.gateway.yaml` with `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml`.
+6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. If migration fails, stop the new container and restore from the backup.
+7. **Reinstall the watchdog** (section 5): the old script only recognizes the old label. Resume it once the service is healthy.
