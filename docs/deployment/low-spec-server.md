@@ -149,14 +149,14 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    The old deployment may also have received configuration from `--env-file`, shell variables, `COMPOSE_FILE`, or `-f` override files. Whatever the source, the values in effect can be read from the container. Before removing it, save them as a root-only snapshot for the comparison in step 6:
 
    ```bash
-   { docker inspect neko --format 'image={{.Config.Image}}'
-     docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
-     docker inspect neko --format '{{printf "memory=%v\n" .HostConfig.Memory}}{{printf "memory_swap=%v\n" .HostConfig.MemorySwap}}{{printf "nano_cpus=%v\n" .HostConfig.NanoCpus}}{{printf "read_only=%v\n" .HostConfig.ReadonlyRootfs}}{{printf "cap_add=%v\n" .HostConfig.CapAdd}}{{printf "cap_drop=%v\n" .HostConfig.CapDrop}}{{printf "security_opt=%v\n" .HostConfig.SecurityOpt}}{{printf "tmpfs=%v\n" .HostConfig.Tmpfs}}{{printf "extra_hosts=%v\n" .HostConfig.ExtraHosts}}{{printf "restart=%v\n" .HostConfig.RestartPolicy.Name}}'
-     docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
-   } | sudo sh -c 'umask 077; cat > /root/neko-2c2g-effective.txt'
+   SNAP=$(docker inspect neko --format 'image={{.Config.Image}}' &&
+     docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}' &&
+     docker inspect neko --format '{{printf "memory=%v\n" .HostConfig.Memory}}{{printf "memory_swap=%v\n" .HostConfig.MemorySwap}}{{printf "nano_cpus=%v\n" .HostConfig.NanoCpus}}{{printf "read_only=%v\n" .HostConfig.ReadonlyRootfs}}{{printf "cap_add=%v\n" .HostConfig.CapAdd}}{{printf "cap_drop=%v\n" .HostConfig.CapDrop}}{{printf "security_opt=%v\n" .HostConfig.SecurityOpt}}{{printf "tmpfs=%v\n" .HostConfig.Tmpfs}}{{printf "extra_hosts=%v\n" .HostConfig.ExtraHosts}}{{printf "restart=%v\n" .HostConfig.RestartPolicy.Name}}' &&
+     docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}') &&
+   printf '%s\n' "$SNAP" | sudo sh -c 'umask 077; cat > /root/neko-2c2g-effective.txt' && echo snapshot-ok
    ```
 
-   Besides the environment, the snapshot records memory/CPU limits, read-only root filesystem, capabilities, security options, tmpfs, extra_hosts, and the restart policy. It contains secrets such as the instance key; never paste it into issues, chats, or logs.
+   If any `docker inspect` call fails, no snapshot is written; only `snapshot-ok` means success (same in step 6). Besides the environment, the snapshot records memory/CPU limits, read-only root filesystem, capabilities, security options, tmpfs, extra_hosts, and the restart policy. It contains secrets such as the instance key; never paste it into issues, chats, or logs.
 3. Stop the container and, as root with ownership preserved, back up those actual sources plus `.env` and the gateway override if present; then verify the archive:
 
    ```bash
@@ -201,11 +201,11 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
 6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. Back at the repository root, compare the new container's effective configuration with the step 2 snapshot:
 
    ```bash
-   { docker inspect neko --format 'image={{.Config.Image}}'
-     docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
-     docker inspect neko --format '{{printf "memory=%v\n" .HostConfig.Memory}}{{printf "memory_swap=%v\n" .HostConfig.MemorySwap}}{{printf "nano_cpus=%v\n" .HostConfig.NanoCpus}}{{printf "read_only=%v\n" .HostConfig.ReadonlyRootfs}}{{printf "cap_add=%v\n" .HostConfig.CapAdd}}{{printf "cap_drop=%v\n" .HostConfig.CapDrop}}{{printf "security_opt=%v\n" .HostConfig.SecurityOpt}}{{printf "tmpfs=%v\n" .HostConfig.Tmpfs}}{{printf "extra_hosts=%v\n" .HostConfig.ExtraHosts}}{{printf "restart=%v\n" .HostConfig.RestartPolicy.Name}}'
-     docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
-   } | sudo sh -c 'umask 077; cat > /root/neko-official-effective.txt'
+   SNAP=$(docker inspect neko --format 'image={{.Config.Image}}' &&
+     docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}' &&
+     docker inspect neko --format '{{printf "memory=%v\n" .HostConfig.Memory}}{{printf "memory_swap=%v\n" .HostConfig.MemorySwap}}{{printf "nano_cpus=%v\n" .HostConfig.NanoCpus}}{{printf "read_only=%v\n" .HostConfig.ReadonlyRootfs}}{{printf "cap_add=%v\n" .HostConfig.CapAdd}}{{printf "cap_drop=%v\n" .HostConfig.CapDrop}}{{printf "security_opt=%v\n" .HostConfig.SecurityOpt}}{{printf "tmpfs=%v\n" .HostConfig.Tmpfs}}{{printf "extra_hosts=%v\n" .HostConfig.ExtraHosts}}{{printf "restart=%v\n" .HostConfig.RestartPolicy.Name}}' &&
+     docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}') &&
+   printf '%s\n' "$SNAP" | sudo sh -c 'umask 077; cat > /root/neko-official-effective.txt' && echo snapshot-ok
    # Lists only the names that differ (< old container, > new container), never the values
    sudo bash -c '[ -s "$0" ] && [ -s "$1" ] || { echo "COMPARE FAILED: snapshot missing or empty"; exit 2; }
      out=$(diff <(sort "$0") <(sort "$1")); rc=$?

@@ -226,14 +226,14 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    旧部署可能还通过 `--env-file`、shell 环境变量、`COMPOSE_FILE` 或 `-f` 覆盖文件带入了配置。不管来源是哪里，容器里最终生效的值都可以读出来。删除容器前把它们存成仅 root 可读的快照，第 6 步用来比对：
 
    ```bash
-   { docker inspect neko --format 'image={{.Config.Image}}'
-     docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
-     docker inspect neko --format '{{printf "memory=%v\n" .HostConfig.Memory}}{{printf "memory_swap=%v\n" .HostConfig.MemorySwap}}{{printf "nano_cpus=%v\n" .HostConfig.NanoCpus}}{{printf "read_only=%v\n" .HostConfig.ReadonlyRootfs}}{{printf "cap_add=%v\n" .HostConfig.CapAdd}}{{printf "cap_drop=%v\n" .HostConfig.CapDrop}}{{printf "security_opt=%v\n" .HostConfig.SecurityOpt}}{{printf "tmpfs=%v\n" .HostConfig.Tmpfs}}{{printf "extra_hosts=%v\n" .HostConfig.ExtraHosts}}{{printf "restart=%v\n" .HostConfig.RestartPolicy.Name}}'
-     docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
-   } | sudo sh -c 'umask 077; cat > /root/neko-2c2g-effective.txt'
+   SNAP=$(docker inspect neko --format 'image={{.Config.Image}}' &&
+     docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}' &&
+     docker inspect neko --format '{{printf "memory=%v\n" .HostConfig.Memory}}{{printf "memory_swap=%v\n" .HostConfig.MemorySwap}}{{printf "nano_cpus=%v\n" .HostConfig.NanoCpus}}{{printf "read_only=%v\n" .HostConfig.ReadonlyRootfs}}{{printf "cap_add=%v\n" .HostConfig.CapAdd}}{{printf "cap_drop=%v\n" .HostConfig.CapDrop}}{{printf "security_opt=%v\n" .HostConfig.SecurityOpt}}{{printf "tmpfs=%v\n" .HostConfig.Tmpfs}}{{printf "extra_hosts=%v\n" .HostConfig.ExtraHosts}}{{printf "restart=%v\n" .HostConfig.RestartPolicy.Name}}' &&
+     docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}') &&
+   printf '%s\n' "$SNAP" | sudo sh -c 'umask 077; cat > /root/neko-2c2g-effective.txt' && echo snapshot-ok
    ```
 
-   快照除了环境变量，还记录内存/CPU 限制、只读根文件系统、capabilities、安全选项、tmpfs、extra_hosts 和重启策略。快照包含实例密钥等敏感值，不要贴到 issue、聊天或日志里。
+   任何一条 `docker inspect` 失败都不会写出快照，只有看到 `snapshot-ok` 才算成功（第 6 步同理）。快照除了环境变量，还记录内存/CPU 限制、只读根文件系统、capabilities、安全选项、tmpfs、extra_hosts 和重启策略。快照包含实例密钥等敏感值，不要贴到 issue、聊天或日志里。
 3. 停止容器，按上面读出的实际来源，以 root 保留属主和权限备份数据目录，以及存在的 `.env` 和网关覆盖文件，然后核验备份：
 
    ```bash
@@ -278,11 +278,11 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
 6. 在 `docker/` 执行 `docker compose config` 核对挂载来源和端口后 `docker compose up -d`，确认实例凭证、角色和记忆都在。再回到仓库根目录，把新容器的有效配置和第 2 步的快照比对：
 
    ```bash
-   { docker inspect neko --format 'image={{.Config.Image}}'
-     docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
-     docker inspect neko --format '{{printf "memory=%v\n" .HostConfig.Memory}}{{printf "memory_swap=%v\n" .HostConfig.MemorySwap}}{{printf "nano_cpus=%v\n" .HostConfig.NanoCpus}}{{printf "read_only=%v\n" .HostConfig.ReadonlyRootfs}}{{printf "cap_add=%v\n" .HostConfig.CapAdd}}{{printf "cap_drop=%v\n" .HostConfig.CapDrop}}{{printf "security_opt=%v\n" .HostConfig.SecurityOpt}}{{printf "tmpfs=%v\n" .HostConfig.Tmpfs}}{{printf "extra_hosts=%v\n" .HostConfig.ExtraHosts}}{{printf "restart=%v\n" .HostConfig.RestartPolicy.Name}}'
-     docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
-   } | sudo sh -c 'umask 077; cat > /root/neko-official-effective.txt'
+   SNAP=$(docker inspect neko --format 'image={{.Config.Image}}' &&
+     docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}' &&
+     docker inspect neko --format '{{printf "memory=%v\n" .HostConfig.Memory}}{{printf "memory_swap=%v\n" .HostConfig.MemorySwap}}{{printf "nano_cpus=%v\n" .HostConfig.NanoCpus}}{{printf "read_only=%v\n" .HostConfig.ReadonlyRootfs}}{{printf "cap_add=%v\n" .HostConfig.CapAdd}}{{printf "cap_drop=%v\n" .HostConfig.CapDrop}}{{printf "security_opt=%v\n" .HostConfig.SecurityOpt}}{{printf "tmpfs=%v\n" .HostConfig.Tmpfs}}{{printf "extra_hosts=%v\n" .HostConfig.ExtraHosts}}{{printf "restart=%v\n" .HostConfig.RestartPolicy.Name}}' &&
+     docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}') &&
+   printf '%s\n' "$SNAP" | sudo sh -c 'umask 077; cat > /root/neko-official-effective.txt' && echo snapshot-ok
    # 只列出有差异的变量名（< 旧容器，> 新容器），不打印任何值
    sudo bash -c '[ -s "$0" ] && [ -s "$1" ] || { echo "COMPARE FAILED: snapshot missing or empty"; exit 2; }
      out=$(diff <(sort "$0") <(sort "$1")); rc=$?
