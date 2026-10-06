@@ -751,3 +751,19 @@ async def test_drive_returns_when_interrupted_without_any_deadline(voice):
     speaker.interrupt("human_interrupt")
     result = await asyncio.wait_for(task, 1.0)
     assert result.truncated and result.trunc_reason == "human_interrupt"
+
+
+def test_a_rejected_end_marker_switches_to_estimate_at_once():
+    h = Harness(finish_result=False)
+    _feed_all(h)
+    h.progress(0)
+    h.speaker.llm_done()
+    assert h.speaker.mode == ls.PACED_ESTIMATE           # 不等 3 s 停滞兜底
+
+
+def test_unspoken_stage_directions_add_no_time():
+    h = Harness()
+    h.speaker.feed("（伸了个懒腰，慢慢地眨了眨眼睛，又打了个大大的哈欠）好呀。我们走吧！")
+    h.speaker.llm_done()
+    ests = [p.est_ms for p in h.speaker._pieces]
+    assert ests[0] == estimate_speech_ms("好呀。")      # 括号里的舞台说明不念，不占时间

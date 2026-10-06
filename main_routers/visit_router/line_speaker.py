@@ -29,7 +29,10 @@ line = one :class:`SpeechStream` = one ``speech_id``:
   :class:`EmotionTagFilter` before both TTS and the splitter, so a tag is
   never read aloud nor cut in half by a clause boundary); each subtitle
   piece is ``sanitize_relay_text(strip_emotion_tags(clause))`` of the
-  redacted clause, and the thresholds estimate the same tag-free raw text.
+  redacted clause, and the thresholds estimate the tag-free raw text after
+  the same markdown / bracket / muted-symbol stripping the chat TTS path
+  applies (a stage direction in parentheses is not spoken, so it adds no
+  time).
 * **Release** of piece ``i`` once ``min(time since playback started,
   played_ms) >= threshold(i)``, ``threshold(i) = sum(estimate_speech_ms(raw_j)
   for j < i)`` (estimated on the raw text TTS speaks). ``ended{final:false}``
@@ -80,6 +83,7 @@ from main_logic.visit.sanitize import (
     sanitize_relay_text,
     strip_emotion_tags,
 )
+from utils.frontend_utils import TtsBracketStripper, TtsMarkdownStripper, strip_tts_muted_symbols
 from utils.logger_config import get_module_logger
 from utils.visit_wire import Clause, ClauseSplitter, WireBudget, estimate_speech_ms
 
@@ -302,6 +306,9 @@ class LineSpeaker:
             clean=clean_relay_text, redact_boundary=boundary,
         )
         self._tags = EmotionTagFilter()
+        # 估时按 TTS 真正合成的文本：与主聊天朗读路径同一套 markdown / 括号 / 静音符号剥离（跨分句保持状态）
+        self._est_markdown = TtsMarkdownStripper()
+        self._est_bracket = TtsBracketStripper()
         self._splitter = ClauseSplitter(
             redact=redact, holdback_chars=max((len(n) for n in names), default=1) - 1,
             redact_boundary=boundary,
@@ -542,7 +549,12 @@ class LineSpeaker:
     def _add_clauses(self, clauses: Sequence[Clause]) -> None:
         for clause in clauses:
             text = sanitize_relay_text(strip_emotion_tags(clause.text))
-            self._pieces.append(_Piece(clause=clause, text=text, est_ms=estimate_speech_ms(clause.raw)))
+            self._pieces.append(_Piece(clause=clause, text=text, est_ms=self._spoken_estimate(clause.raw)))
+
+    def _spoken_estimate(self, raw: str) -> int:
+        """Estimate of what TTS actually synthesizes from ``raw`` (0 when nothing of it is spoken)."""
+        spoken = strip_tts_muted_symbols(self._est_bracket.feed(self._est_markdown.feed(raw)))
+        return estimate_speech_ms(spoken) if spoken.strip() else 0
 
     def _threshold(self, index: int) -> int:
         return sum(p.est_ms for p in self._pieces[:index])
@@ -593,8 +605,10 @@ class LineSpeaker:
             outcome = self._stream.finish()
             self._finished = True
             self._finish_at = now
-            if outcome == FINISH_NO_WORKER:
-                logger.warning("visit line %s: TTS worker gone at finish, pacing by estimate", self.header.ln)
+            if outcome == FINISH_NO_WORKER or outcome is False:
+                # worker 退出 / 流已被关掉：结束标记送不进去，播放终点的 ended 不会来
+                logger.warning("visit line %s: TTS stream did not take the end marker, pacing by estimate",
+                               self.header.ln)
                 self._to_estimate(now)
         elif self._mode == PACED_AUDIO and self._stream is None:
             # 一个字都没接纳（空回复 / 首段就被截掉）：没开过流，按估时收口
