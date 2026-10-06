@@ -1168,6 +1168,9 @@ async def test_a_second_cancel_while_waiting_still_cleans_up(tmp_path, servers, 
 
 async def test_a_rejected_spool_left_after_acceptance_is_cleaned_up_later(tmp_path, servers, monkeypatch):
     fake, _ = servers
+    scheduled = []
+    # 只看轮次本身：不起后台 worker（夹具里等待是空操作，它会抢在断言前把文件删掉）
+    monkeypatch.setattr(tu, "schedule_visit_retry", lambda visit_id, **_k: scheduled.append(visit_id))
     fake.transcript_mode = "parts"
     sealed = _write_sealed(tmp_path, _big_doc(4, 10))
     await tu.queue_report(tmp_path, _report_doc())
@@ -1189,6 +1192,7 @@ async def test_a_rejected_spool_left_after_acceptance_is_cleaned_up_later(tmp_pa
     monkeypatch.setattr(Path, "unlink", busy)
     outcome = await tu.retry_visit_once(V1)
     assert await tu.load_report(tmp_path, V1) is None and sealed.exists() and outcome.pending is True
+    assert scheduled == [V1]                                # 也排上了后台清理
     monkeypatch.setattr(tu, "_mark_unavailable_sync", original_mark)
     assert (await tu.retry_visit_once(V1)).pending is False and not sealed.exists()
 
@@ -1280,3 +1284,24 @@ async def test_a_pending_manual_retry_survives_an_unreadable_round(tmp_path, ser
     assert (await tu.retry_visit_once(V1)).pending is True
     assert V1 in tu._manual_retries                         # 读不了时不作废
     monkeypatch.setattr(tu, "_read_report", real_read)
+
+
+
+async def test_a_manual_retry_that_cannot_read_the_report_is_remembered(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    doc = _report_doc(include_transcript=False)
+    await tu.queue_report(tmp_path, doc)
+    await tu.set_report_rejected(tmp_path, V1, "unknown_visit")
+    real_read = tu._read_report
+    locked = [True]
+
+    async def maybe_unreadable(config_dir, visit_id):
+        if locked[0]:
+            return None, True
+        return await real_read(config_dir, visit_id)
+
+    monkeypatch.setattr(tu, "_read_report", maybe_unreadable)
+    assert (await tu.retry_visit_once(V1, manual=True, owner="u1", expect=doc)).pending is True
+    locked[0] = False
+    assert (await tu.retry_visit_once(V1)).pending is False          # 后台照手动重试提交
+    assert fake.count("/api/visit/reports") == 1 and await tu.load_report(tmp_path, V1) is None

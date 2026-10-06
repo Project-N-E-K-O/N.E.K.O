@@ -338,10 +338,13 @@ async def act_on_queued_report(request: Request, visit_id: str):
     config_dir = Path(tu.config_dir_provider())
     account = await accounts.local_account()
 
-    async def _owned() -> bool:
+    async def _owned_report() -> dict | None:
         report = await tu.load_report(config_dir, visit_id)
         # 别的账号在这台机器上排的举报：不可见、不可删
-        return report is not None and await tu.report_belongs_to(report, account)
+        return report if report is not None and await tu.report_belongs_to(report, account) else None
+
+    async def _owned() -> bool:
+        return await _owned_report() is not None
 
     if action == "abandon":
         # 与后台提交共用逐场锁，并在锁内核对归属：等锁期间原举报可能已提交删除、
@@ -350,9 +353,10 @@ async def act_on_queued_report(request: Request, visit_id: str):
             if not await _owned() or not await tu.delete_report(config_dir, visit_id):
                 return _error(404, "not_queued")
         return JSONResponse({"ok": True, "removed": True})
-    if not await _owned():
+    owned = await _owned_report()
+    if owned is None:
         return _error(404, "not_queued")
-    outcome = await tu.retry_visit_once(visit_id, config_dir=config_dir, manual=True, owner=account)
+    outcome = await tu.retry_visit_once(visit_id, config_dir=config_dir, manual=True, owner=account, expect=owned)
     # 读不了（被占用）不等于已送达：按还在处理
     current, unreadable = await tu._read_report(config_dir, visit_id)
     delivered = not unreadable and (current is None or not await tu.report_belongs_to(current, account))

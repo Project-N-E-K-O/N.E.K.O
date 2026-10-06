@@ -1202,7 +1202,7 @@ def visit_lock(visit_id: str) -> asyncio.Lock:
 
 async def retry_visit_once(
     visit_id: str, *, config_dir: Path | None = None, now: float | None = None, manual: bool = False,
-    owner: str | None = None,
+    owner: str | None = None, expect: Mapping[str, Any] | None = None,
 ) -> RetryRound:
     """One round for ``visit_id``: upload its sealed transcript, then submit its queued report.
 
@@ -1211,7 +1211,9 @@ async def retry_visit_once(
     report Servers refused (``rejected``) is only resent when the user asks
     (``manual``); it no longer keeps the background loop going. ``owner``
     (the account that asked for a manual retry) is checked under the lock:
-    a report queued meanwhile by another account is left alone.
+    a report queued meanwhile by another account is left alone. ``expect``
+    (the report the user asked to retry): when it cannot be read this round,
+    the retry stays pending for that same report.
     """
     visit_id = require_visit_id(visit_id)
     config_dir = Path(config_dir_provider() if config_dir is None else config_dir)
@@ -1231,7 +1233,9 @@ async def retry_visit_once(
         # 标记还在就跳过。只认那一份：举报没了 / 换了一份就作废
         pending_manual = _manual_retries.get(visit_id)
         if unreadable:
-            pass                                       # 读不了不等于没了：保留，等能读了再认
+            # 读不了不等于没了：保留，等能读了再认；用户这次手动重试的那份也记下，后台接着按手动重试处理
+            if manual and expect is not None:
+                _manual_retries[visit_id] = dict(expect)
         elif report is None or not same_report(report, pending_manual):
             _manual_retries.pop(visit_id, None)
         elif not manual:
