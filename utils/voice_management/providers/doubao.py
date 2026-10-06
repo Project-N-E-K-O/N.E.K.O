@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import io
 import json
+import re
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
@@ -82,6 +83,16 @@ class DoubaoVoiceAdapter(ImportOnlyAdapter):
 
     def manual_fields(self, runtime):
         return [{"key": "doubao_resource_id", "label_key": "voice.remote.resource", "required": True, "default_value": runtime.resource_id}]
+
+    def compare_revisions(self, current, previous):
+        # Version is the speaker's training count (e.g. v10), not an opaque tag.
+        counts = []
+        for value in (current, previous):
+            match = re.fullmatch(r"v?([0-9]{1,18})", value) if isinstance(value, str) else None
+            if match is None:
+                return None
+            counts.append(int(match[1]))
+        return (counts[0] > counts[1]) - (counts[0] < counts[1])
 
     def validate_voice_id(self, value):
         voice_id = super().validate_voice_id(value)
@@ -190,6 +201,6 @@ class DoubaoVoiceAdapter(ImportOnlyAdapter):
             updated = None
         previous_revision = current.metadata.get("remote_revision")
         updated_revision = updated.metadata.get("remote_revision") if updated else None
-        if updated and updated.status == "ready" and previous_revision is not None and updated_revision is not None and updated_revision != previous_revision:
+        if updated and updated.status == "ready" and self.compare_revisions(updated_revision, previous_revision) == 1:
             return updated
         return RemoteVoice(voice_id, current.name, current.created_at, "processing", updated.metadata if updated else current.metadata, False)

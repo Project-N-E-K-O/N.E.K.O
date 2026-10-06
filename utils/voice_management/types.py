@@ -98,6 +98,10 @@ class VoiceManagementAdapter(Protocol):
 
     def validate_voice_id(self, value: str) -> str: ...
 
+    def compare_revisions(self, current: str | None, previous: str | None) -> int | None:
+        """Return -1/0/1 for an older/equal/newer revision, or None without ordering evidence."""
+        ...
+
     async def list_voices(
         self, runtime: VoiceRuntime, *, cursor: str | None = None, query: str = ""
     ) -> VoicePage: ...

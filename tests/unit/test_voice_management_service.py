@@ -48,6 +48,11 @@ class Adapter:
     def validate_voice_id(self, value):
         return value
 
+    def compare_revisions(self, current, previous):
+        if not isinstance(current, str) or not isinstance(previous, str) or not current.isdecimal() or not previous.isdecimal():
+            return None
+        return (int(current) > int(previous)) - (int(current) < int(previous))
+
     async def get_voice(self, runtime, voice_id):
         if self.on_detail:
             self.on_detail()
@@ -353,11 +358,11 @@ async def test_rejected_overwrite_stays_failed_after_external_revision_change(fi
         await service.overwrite_remote_voice(adapter, cm, ref, token=token, audio=b"audio", filename="reference.wav")
     failed = cm.get_imported_voice(ref)
     assert failed["overwrite_status"] == "failed"
-    adapter.remote = replace(adapter.remote, metadata={"remote_revision": "external-update"})
+    adapter.remote = replace(adapter.remote, metadata={"remote_revision": "3"})
     refreshed = await service.refresh_overwrite_status(adapter, cm, ref, token=token)
     assert refreshed["status"] == "failed"
     assert refreshed["voice_data"]["overwrite_operation_id"] == failed["overwrite_operation_id"]
-    assert refreshed["voice_data"]["remote_revision"] == "external-update"
+    assert refreshed["voice_data"]["remote_revision"] == "3"
 
 
 @pytest.mark.asyncio

@@ -92,6 +92,10 @@ class ImportOnlyAdapter:
     def manual_fields(self, runtime):
         return []
 
+    def compare_revisions(self, current, previous):
+        # Import-only providers make no promise about revision ordering.
+        return None
+
     def validate_voice_id(self, value):
         if not isinstance(value, str):
             raise VoiceManagementError("INVALID_VOICE_ID")

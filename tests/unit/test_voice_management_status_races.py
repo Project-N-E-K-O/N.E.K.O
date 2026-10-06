@@ -14,6 +14,13 @@ from utils.voice_management import providers, service
 from utils.voice_management.providers.cosyvoice import CosyVoiceAdapter
 
 
+def revision_for(provider, value):
+    # CosyVoice's documented revision is a modification time, not a counter.
+    if provider != "doubao_tts" and isinstance(value, str) and value.isdecimal():
+        return f"2026-10-06 10:00:{int(value):02d}"
+    return value
+
+
 @pytest.fixture
 def remote_record(request, monkeypatch, doubao_import, tmp_path):
     provider = request.param
@@ -28,7 +35,7 @@ def remote_record(request, monkeypatch, doubao_import, tmp_path):
         monkeypatch.setattr(providers, "get_adapter", lambda selected: adapter if selected == provider else lookup(selected))
         runtime = adapter.resolve_runtime(cm)
         ref, data, _ = cm.import_remote_voice(runtime.scope_id, provider, "remote-cosy", {
-            **adapter.import_metadata(runtime), "remote_revision": "1", "can_overwrite": True,
+            **adapter.import_metadata(runtime), "remote_revision": revision_for(provider, "1"), "can_overwrite": True,
         })
     storage = tmp_path / "voice_storage.json"
     atomic_write_json(storage, cm.storage)
@@ -36,7 +43,7 @@ def remote_record(request, monkeypatch, doubao_import, tmp_path):
     monkeypatch.setattr(cm, "save_voice_storage", lambda value: atomic_write_json(storage, value))
     cm.update_imported_voice(ref, data["scope_id"], {
         "overwrite_operation_id": "same-operation", "overwrite_status": "processing",
-        "overwrite_previous_revision": "1",
+        "overwrite_previous_revision": revision_for(provider, "1"),
     })
     return cm, adapter, ref, data, storage
 
@@ -51,7 +58,7 @@ def response_for(provider, data, kind, revision):
     state = {"pending": "UNKNOWN", "stale-ready": "OK", "failed": "UNDEPLOYED", "completed": "OK"}[kind]
     return httpx.Response(200, json={"output": {
         "voice_id": data["remote_voice_id"], "target_model": "cosyvoice-v3-plus",
-        "status": state, "gmt_modified": revision,
+        "status": state, "gmt_modified": revision_for(provider, revision),
     }})
 
 
@@ -110,7 +117,7 @@ async def test_parallel_refresh_returns_persisted_winner(remote_record, checkpoi
             expected = "processing" if stale_kind == "pending" else "completed"
             assert late.json() == current.json()
             assert late.json()["status"] == expected
-            assert late.json()["voice_data"]["remote_revision"] == "3"
+            assert late.json()["voice_data"]["remote_revision"] == revision_for(provider, "3")
             assert "_record_revision" not in late.json()["voice_data"]
             assert "scope_id" not in late.json()["voice_data"]
             # The losing refresh performs no write, including no counter increment.
@@ -216,7 +223,7 @@ async def test_cancel_remote_refresh_can_query_again(remote_record, monkeypatch)
         assert await asyncio.to_thread(storage.read_bytes) == before
         result = await service.refresh_overwrite_status(adapter, cm, ref, token=token)
         assert result["status"] == "completed"
-        assert result["voice_data"]["remote_revision"] == "3"
+        assert result["voice_data"]["remote_revision"] == revision_for(provider, "3")
         assert calls == 2
     finally:
         release.set()
@@ -338,10 +345,10 @@ async def test_pending_winner_does_not_discard_terminal_observation(
             assert calls == 3
             expected = initial_status if confirmed == "pending" else confirmed
             assert final.json()["status"] == expected
-            assert final.json()["voice_data"]["remote_revision"] == "3"
+            assert final.json()["voice_data"]["remote_revision"] == revision_for(provider, "3")
             saved = await asyncio.to_thread(cm.get_imported_voice, ref, include_inactive=True)
             assert saved["overwrite_status"] == expected
-            assert saved["remote_revision"] == "3"
+            assert saved["remote_revision"] == revision_for(provider, "3")
             assert saved["overwrite_operation_id"] == "same-operation"
             if confirmed in {"completed", "failed"}:
                 assert await cm.adelete_imported_voice(ref)

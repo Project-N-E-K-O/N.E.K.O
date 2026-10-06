@@ -168,7 +168,7 @@ async def test_cosy_overwrite_retains_id_and_checks_after_upload(monkeypatch, tr
             assert guards == ["checked"]
             assert body["voice_id"] == "raw-cosy"
             return httpx.Response(200, json={"output": {}})
-        revision = "before" if len(actions) == 1 else "after"
+        revision = "2026-10-06 10:00:01" if len(actions) == 1 else "2026-10-06 10:00:02"
         return httpx.Response(200, json={"output": {"status": "OK", "target_model": "cosyvoice-v3.5-plus", "gmt_modified": revision}})
 
     class Uploader:
@@ -181,7 +181,7 @@ async def test_cosy_overwrite_retains_id_and_checks_after_upload(monkeypatch, tr
             return "https://sample.test/audio.wav"
 
     async def guard(current):
-        assert current.voice_id == "raw-cosy" and current.metadata["remote_revision"] == "before"
+        assert current.voice_id == "raw-cosy" and current.metadata["remote_revision"] == "2026-10-06 10:00:01"
         guards.append("checked")
 
     monkeypatch.setattr(voice_clone, "QwenVoiceCloneClient", Uploader)
@@ -226,7 +226,7 @@ async def test_cosy_acknowledged_update_does_not_claim_old_ready_completed(monke
             return httpx.Response(200, json={"output": {}})
         if len(actions) == 3 and followup == "failed_query":
             return httpx.Response(503, json={"secret": "must not leak"})
-        output = {"target_model": "cosyvoice-v3.5-plus", "status": "OK", "gmt_modified": "old"}
+        output = {"target_model": "cosyvoice-v3.5-plus", "status": "OK", "gmt_modified": "2026-10-06 10:00:01"}
         if followup == "missing_revision" and len(actions) == 3 or followup == "missing_previous_revision" and len(actions) == 1:
             output.pop("gmt_modified")
         return httpx.Response(200, json={"output": output})

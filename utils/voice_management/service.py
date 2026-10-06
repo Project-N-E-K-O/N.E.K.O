@@ -54,7 +54,24 @@ def _voice_metadata(data: dict) -> dict:
 def _overwrite_allowed(adapter: VoiceManagementAdapter, runtime: VoiceRuntime, voice: RemoteVoice | None) -> bool:
     # A ready voice without a revision cannot provide proof that this update completed.
     return bool(adapter.capabilities_for(runtime).overwrite and voice and voice.can_overwrite
-                and _voice_metadata(voice.metadata).get("remote_revision"))
+                and adapter.compare_revisions(
+                    _voice_metadata(voice.metadata).get("remote_revision"),
+                    _voice_metadata(voice.metadata).get("remote_revision"),
+                ) == 0)
+
+
+def _revision_floor(adapter: VoiceManagementAdapter, floor: str | None, *revisions: str | None) -> str | None:
+    """Keep the newest comparable evidence for this operation across queries."""
+    for revision in revisions:
+        if revision is None:
+            continue
+        if adapter.compare_revisions(revision, revision) != 0:
+            raise VoiceManagementError("UPDATE_OUTCOME_UNKNOWN", 409)
+        if floor is None or adapter.compare_revisions(revision, floor) == 1:
+            floor = revision
+        elif adapter.compare_revisions(revision, floor) is None:
+            raise VoiceManagementError("UPDATE_OUTCOME_UNKNOWN", 409)
+    return floor
 
 
 async def management_context(adapter: VoiceManagementAdapter, cm, *, local_ref: str | None = None) -> dict:
@@ -230,6 +247,10 @@ async def overwrite_remote_voice(
                 "scope_id", "remote_voice_id", "provider",
             )):
                 raise VoiceManagementError("CONTEXT_CHANGED", 409)
+            floor = _revision_floor(adapter, None, latest.get("remote_revision"), latest.get("overwrite_previous_revision"))
+            order = adapter.compare_revisions(previous_revision, floor)
+            if order is None or order < 0:
+                raise VoiceManagementError("UPDATE_OUTCOME_UNKNOWN", 409)
             claim = asyncio.create_task(cm.aupdate_imported_voice(local_ref, runtime.scope_id, {
                 "overwrite_status": "processing", "overwrite_operation_id": operation_id,
                 "overwrite_previous_revision": previous_revision,
@@ -276,17 +297,22 @@ async def overwrite_remote_voice(
             await cm.aupdate_imported_voice(local_ref, runtime.scope_id, {"overwrite_status": "unknown"},
                                            expected_operation_id=operation_id)
             raise VoiceManagementError("UPSTREAM_INVALID_RESPONSE", 502)
+        order = adapter.compare_revisions(updated.metadata.get("remote_revision"), previous_revision)
         status = (
             "completed" if updated.status in {"ready", "completed", "OK"}
-            and previous_revision is not None and updated.metadata.get("remote_revision")
-            and updated.metadata["remote_revision"] != previous_revision
+            and order == 1
             else "failed" if updated.status in {"failed", "unavailable"}
             else "processing"
         )
         values = _voice_metadata(updated.metadata)
+        if order is None or order < 0:
+            # An acknowledged mutation followed by an old/invalid observation
+            # has an unknown outcome. Preserve the previous metadata and owner.
+            status = "unknown"
+            values = {}
         values.update({
-            "overwrite_status": status, "remote_status": updated.status,
-            "can_overwrite": _overwrite_allowed(adapter, runtime, updated),
+            "overwrite_status": status, "remote_status": "unknown" if status == "unknown" else updated.status,
+            "can_overwrite": status != "unknown" and _overwrite_allowed(adapter, runtime, updated),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
         try:
@@ -314,6 +340,7 @@ async def refresh_overwrite_status(adapter: VoiceManagementAdapter, cm, local_re
 
 async def _reconcile_overwrite_status(adapter: VoiceManagementAdapter, cm, local_ref: str, *, token: str) -> dict:
     owner = None
+    floor = None
     for _ in range(2):
         record = await asyncio.to_thread(cm.get_imported_voice, local_ref, include_inactive=True)
         if not record:
@@ -330,19 +357,26 @@ async def _reconcile_overwrite_status(adapter: VoiceManagementAdapter, cm, local
             raise VoiceManagementError("OPERATION_IN_PROGRESS", 409)
         if record.get("scope_id") != runtime.scope_id:
             raise VoiceManagementError("CONTEXT_CHANGED", 409)
+        floor = _revision_floor(adapter, floor, record.get("remote_revision"), record.get("overwrite_previous_revision"))
         remote = await adapter.get_voice(runtime, record["remote_voice_id"])
         await _check_context(adapter, cm, runtime, voice_data=record)
         if remote is None:
             raise VoiceManagementError("VOICE_NOT_FOUND", 404)
         status = record.get("overwrite_status", "completed")
         previous = record.get("overwrite_previous_revision")
-        revision = remote.metadata.get("remote_revision")
+        revision = _voice_metadata(remote.metadata).get("remote_revision")
+        order = adapter.compare_revisions(revision, floor)
+        if order is None or order < 0:
+            # A later query may hit a lagging replica. Its arrival time is not
+            # proof of freshness, including after a local CAS conflict.
+            raise VoiceManagementError("UPDATE_OUTCOME_UNKNOWN", 409)
+        floor = revision
         # Reconciliation may settle only an unresolved operation. A later external
         # revision cannot turn a known rejection into success (or undo completion).
         if status in {"processing", "unknown"}:
             if remote.status in {"failed", "unavailable"}:
                 status = "failed"
-            elif remote.status in {"ready", "completed", "OK"} and previous is not None and revision is not None and revision != previous:
+            elif remote.status in {"ready", "completed", "OK"} and adapter.compare_revisions(revision, previous) == 1:
                 status = "completed"
         latest = await asyncio.to_thread(cm.get_imported_voice, local_ref, include_inactive=True)
         if not latest or latest.get("overwrite_operation_id") != record.get("overwrite_operation_id"):

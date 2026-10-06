@@ -1,6 +1,8 @@
 """CosyVoice enrollment REST API with per-request credentials and region."""
 
 import io
+import re
+from datetime import datetime
 from urllib.parse import urlsplit, urlunsplit
 
 from ..types import ManagementCapabilities, RemoteVoice, VoiceManagementError, VoicePage
@@ -44,6 +46,23 @@ class CosyVoiceAdapter(ImportOnlyAdapter):
 
     def manual_fields(self, runtime):
         return [{"key": "clone_model", "label_key": "voice.remote.model", "required": True, "default_value": runtime.model}]
+
+    def compare_revisions(self, current, previous):
+        # gmt_modified is a timestamp. Never sort arbitrary strings or mix
+        # offset-bearing times with timestamps whose timezone is unspecified.
+        timestamps = []
+        for value in (current, previous):
+            if not isinstance(value, str) or re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?", value,
+            ) is None:
+                return None
+            try:
+                timestamps.append(datetime.fromisoformat(value))
+            except ValueError:
+                return None
+        if (timestamps[0].tzinfo is None) != (timestamps[1].tzinfo is None):
+            return None
+        return (timestamps[0] > timestamps[1]) - (timestamps[0] < timestamps[1])
 
     async def _call(self, runtime, action, *, mutation=False, **fields):
         data = await request_json("POST", f"{runtime.base_url}/services/audio/tts/customization", headers={"Authorization": f"Bearer {runtime.api_key}"}, json={"model": "voice-enrollment", "input": {"action": action, **fields}}, mutation=mutation)
@@ -107,8 +126,6 @@ class CosyVoiceAdapter(ImportOnlyAdapter):
             return RemoteVoice(voice_id, current.name, current.created_at, "processing", current.metadata, False)
         previous_revision = current.metadata.get("remote_revision")
         updated_revision = updated.metadata.get("remote_revision")
-        if updated.status == "ready" and (
-            previous_revision is None or updated_revision is None or updated_revision == previous_revision
-        ):
+        if updated.status == "ready" and self.compare_revisions(updated_revision, previous_revision) != 1:
             return RemoteVoice(voice_id, updated.name, updated.created_at, "processing", updated.metadata, False)
         return updated
