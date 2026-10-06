@@ -400,6 +400,10 @@ def test_lowercase_street_names_after_a_house_number_are_caught():
     assert persona.sensitive_token_hits(pets, "She loves cats and dogs.", ()) == []
     playing = "She lives in a flat with 2 cats playing outside."
     assert persona.sensitive_token_hits(playing, "Her cats playing outside is a sight.", ()) == []
+    grove = "address: 12 maple grove, near the river"           # 没有街道类词尾，靠开头的门牌号
+    assert persona.sensitive_token_hits(grove, "She loves walking in maple grove.", ()) == ["maple grove"]
+    mid = "address: the house is at 42 main street"
+    assert persona.sensitive_token_hits(mid, "She grew up near main street.", ()) == ["main street"]
 
 
 def test_capitalised_dotted_words_are_not_host_names():

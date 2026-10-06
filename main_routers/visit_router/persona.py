@@ -166,16 +166,44 @@ _STREET_STOPWORDS = frozenset({
 })
 
 
-def _street_names(value: str) -> list[str]:
-    """Words after the house number a keyword value starts with, two to four of them (``main street``)."""
+# 数字后接 0~2 个词再接街道类词尾：门牌号不在值开头也认（「the house is at 42 main street」）
+_STREET_TYPES = (
+    "street|st|road|rd|avenue|ave|lane|ln|drive|dr|boulevard|blvd|way|court|ct|place|pl|terrace|"
+    "crescent|close|square|sq|highway|hwy|alley|row|parkway|pkwy"
+)
+_NUMBERED_STREET_RE = re.compile(
+    rf"(?<![A-Za-z0-9])[0-9]+[A-Za-z]?\s+((?:[A-Za-z][A-Za-z'\-]*\s+){{0,2}}(?:{_STREET_TYPES}))\b\.?",
+    re.IGNORECASE,
+)
+
+
+def _run_until_stopword(words: list[str]) -> list[str]:
     out = []
-    for m in filter(None, [_STREET_AFTER_NUMBER_RE.match(value)]):
-        words = []
-        for word in m.group(1).split():
-            if word.lower() in _STREET_STOPWORDS:
-                break
-            words.append(word)
+    for word in words:
+        if word.lower() in _STREET_STOPWORDS:
+            break
+        out.append(word)
+    return out
+
+
+def _street_names(value: str) -> list[str]:
+    """Street names in a keyword value (``main street``), lowercase spellings included.
+
+    Two shapes count: the words after the house number the value starts
+    with (two to four, up to the first function word), and anywhere in the
+    value a number followed by up to two words and a street-type word. A
+    number in the middle of a value with no street word after it (``a flat
+    with 2 cats playing outside``) is not an address.
+    """
+    out = []
+    head = _STREET_AFTER_NUMBER_RE.match(value)
+    if head is not None:
+        words = _run_until_stopword(head.group(1).split())
         out.extend(" ".join(words[:k]) for k in range(2, len(words) + 1))
+    for m in _NUMBERED_STREET_RE.finditer(value):
+        words = _run_until_stopword(m.group(1).split())
+        if len(words) >= 2:
+            out.append(" ".join(words))
     return out
 
 
