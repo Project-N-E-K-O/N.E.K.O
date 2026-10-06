@@ -301,7 +301,8 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
             if not is_address:
                 # 联系方式的值会把后面的叙述一起吞进来（「wechat @alicefoo likes cats」）：账号本身——
                 # 值的第一个词——另记一个，人设只复述账号也能命中。纯数字的号码另有数字规则
-                head = value.split()[0] if value.split() else ""
+                words = value.split()
+                head = words[0] if words else ""
                 if head != value and any(not ch.isdigit() for ch in head):
                     found.append(head)
             if is_address:
