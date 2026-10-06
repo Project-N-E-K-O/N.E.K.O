@@ -669,9 +669,11 @@ async def queue_report(config_dir: Path, doc: dict) -> None:
 
 
 def _valid_report(doc: Any, visit_id: str) -> bool:
+    # 没有可用的归属（账号 / visit_uid 都缺）的举报谁都看不到、提交不了也放弃不了：按坏文件处理
     return (
         isinstance(doc, dict) and doc.get("visit_id") == visit_id
         and doc.get("reason") in REPORT_REASONS and isinstance(doc.get("include_transcript"), bool)
+        and any(isinstance(doc.get(k), str) and doc.get(k) for k in ("own_account", "own_visit_uid"))
     )
 
 
@@ -1017,7 +1019,10 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         result = await _upload(visit_id, doc, config_dir)
     if result.done or result.terminal is not None:
         unmarked = await _settle_upload(config_dir, visit_id, sealed, result)
-        return UploadRound(pending=False, unavailable=unmarked)
+        # 已传上去但封存文件没删掉（被占用）：转录不再挡举报，但这一轮仍要重来清理，
+        # 否则它一直占着待上传容量（下一轮重传得到 duplicate 回执即删）
+        leftover = result.done and await asyncio.to_thread(sealed.exists)
+        return UploadRound(pending=False, retryable=leftover, unavailable=unmarked)
     return UploadRound(pending=True, retryable=True, retry_after_s=result.retry_after_s,
                        login_required=result.login_required)
 

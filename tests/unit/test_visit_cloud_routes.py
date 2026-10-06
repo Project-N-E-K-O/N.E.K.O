@@ -570,3 +570,32 @@ def test_the_first_report_attempt_carries_an_unrecordable_transcript_reason(env,
     resp = _report(client, include_transcript=True)
     assert resp.status_code == 200
     assert fake.reports[0]["transcript_unavailable"] == "parts_out_of_range"
+
+
+
+@pytest.mark.parametrize("content", [json.dumps({"visit_id": V1, "reason": "spam", "include_transcript": False})])
+def test_a_queued_report_without_an_owner_is_set_aside(env, content):
+    client, fake, tmp_path, _ = env
+    reports = tmp_path / "visit_reports"
+    reports.mkdir(exist_ok=True)
+    (reports / f"{V1}.json").write_text(content, encoding="utf-8")
+    assert _report(client).status_code == 200
+    assert (reports / f"{V1}.json.invalid").exists() and fake.count("/api/visit/reports") == 1
+
+
+def test_an_upload_bookkeeping_error_after_queueing_still_answers_queued(env, monkeypatch):
+    client, fake, tmp_path, _ = env
+    _write_sealed(tmp_path)
+    real_attempt = tu.attempt_upload
+    calls = []
+
+    async def disk_full_once(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("no space left")
+        return await real_attempt(*args, **kwargs)
+
+    monkeypatch.setattr(tu, "attempt_upload", disk_full_once)
+    resp = _report(client, include_transcript=True)
+    assert resp.status_code == 202 and resp.json() == {"queued": True}
+    assert _queued(tmp_path) is not None and V1 in tu._workers       # 举报留着，已排后台重试

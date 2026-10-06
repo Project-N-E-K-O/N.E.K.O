@@ -275,7 +275,16 @@ async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
         # 附转录的举报等本侧转录先到 Servers：在飞场次等收尾封存，已封存的先同步试传一次
         if tu.is_live(visit_id):
             return JSONResponse({"queued": True}, status_code=202)
-        upload = await tu.attempt_upload(visit_id, config_dir=config_dir)
+        try:
+            upload = await tu.attempt_upload(visit_id, config_dir=config_dir)
+        except OSError as exc:
+            # 举报已落盘：上传的进度记账出错（磁盘满等）不能变成 500，留给后台重试
+            logger.warning("visit report %s: upload attempt failed: %s", visit_id, type(exc).__name__)
+            tu.schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=_after_attempt(None))
+            return JSONResponse({"queued": True}, status_code=202)
+        if not upload.pending and upload.retryable:
+            # 已传上去、只是封存文件还没删掉：后台稍后清理
+            tu.schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=_after_attempt(None))
         if upload.pending:
             if upload.retryable:
                 tu.schedule_visit_retry(visit_id, config_dir=config_dir,

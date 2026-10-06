@@ -804,3 +804,20 @@ async def test_a_worker_keeps_going_when_an_accepted_report_cannot_be_deleted(tm
     assert (await tu.retry_visit_once(V1)).pending is True       # 受理了但文件还在：不能让 worker 退出
     assert (await tu.retry_visit_once(V1)).pending is False
     assert await tu.load_report(tmp_path, V1) is None
+
+
+
+async def test_an_uploaded_spool_that_cannot_be_deleted_keeps_the_round_going(tmp_path, servers, monkeypatch):
+    sealed = _write_sealed(tmp_path, _big_doc(4, 10))
+    real_unlink = Path.unlink
+    calls = []
+
+    def busy(self, missing_ok=False):
+        if self == sealed and not calls:
+            calls.append(self)
+            raise PermissionError("in use")
+        return real_unlink(self, missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", busy)
+    assert (await tu.retry_visit_once(V1)).pending is True and sealed.exists()
+    assert (await tu.retry_visit_once(V1)).pending is False and not sealed.exists()

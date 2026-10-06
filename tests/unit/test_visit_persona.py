@@ -611,3 +611,9 @@ def test_family_nicknames_split_on_whitespace_too():
 def test_an_explicit_chinese_account_keyword_needs_no_separator():
     tokens = persona.extract_sensitive_tokens("微信号小雨\n她常在微信群里聊天。", [])
     assert "小雨" in tokens and not any("群" in t for t in tokens)
+
+
+
+def test_at_prefixed_contact_handles_are_found():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("wechat @alicefoo\n微信@bobcat", [])]
+    assert "@alicefoo" in tokens and "@bobcat" in tokens
