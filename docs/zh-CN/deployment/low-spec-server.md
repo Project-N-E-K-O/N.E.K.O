@@ -160,6 +160,20 @@ sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/watchdog.sh
 
 `docker compose down` 不会卸载 cron。重新安装不会解除 `disabled` 暂停。
 
+### 验收
+
+脚本在暂停、宽限期内或目标不匹配时会静默退出，所以退出码为 0 或日志里没有失败，都不能证明看门狗在保护容器。安装后逐项确认：
+
+```bash
+ls -l /etc/cron.d/neko-watchdog          # root 所有，权限 644
+test ! -e /opt/neko/disabled && echo not-paused
+docker inspect neko --format '{{index .Config.Labels "org.neko.watchdog"}} {{index .Config.Labels "com.docker.compose.service"}} {{.State.Running}}'
+# 应输出：enabled neko-main true
+curl --noproxy '*' -s -o /dev/null -w '%{http_code}\n' --max-time 10 http://127.0.0.1:48911/
+# 应为 200 或 401
+docker exec neko sh -c 'curl --noproxy "*" -fsS --max-time 10 "http://127.0.0.1:${NEKO_MAIN_SERVER_PORT:-48911}/health" > /dev/null' && echo health-ok
+```
+
 ### 测试
 
 在仓库根目录执行 `sudo bash docker/watchdog/test-watchdog.sh`（在 `docker/` 下则是 `sudo bash watchdog/test-watchdog.sh`），它会在临时目录中用模拟的 docker/curl 运行真实脚本，覆盖宽限期、维护锁、重启上限和安装器等逻辑，不修改宿主 cron，也不重启容器。它不能代替实机验收。
@@ -203,14 +217,15 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
 
    ```bash
    docker stop neko
-   sudo tar -czpf neko-2c2g-backup.tar.gz -C docker/community-2c2g neko-home logs
-   sudo tar -tzf neko-2c2g-backup.tar.gz > /dev/null && echo backup-ok
+   # 归档写到仓库外的 /root，umask 077 使其仅 root 可读；连同存在的 .env 和网关覆盖文件一起打包
+   sudo sh -c 'umask 077; cd docker/community-2c2g && tar -czpf /root/neko-2c2g-backup.tar.gz neko-home logs $(ls -d .env compose.gateway.yaml 2>/dev/null)'
+   sudo tar -tzvf /root/neko-2c2g-backup.tar.gz | grep -E ' (\./)?(\.env|compose\.gateway\.yaml|neko-home/|logs/)$'
    ```
 
-   备份含实例凭证和 TLS 私钥，不要公开。确认备份成功后再删除容器：`docker rm neko`。
+   最后一条命令应列出 `neko-home/`、`logs/` 以及你实际使用的 `.env`、`compose.gateway.yaml`。备份含实例凭证和 TLS 私钥，不要复制到仓库目录或公开位置。确认备份完整后再删除容器：`docker rm neko`。
 4. 确认 `docker/neko-home` 和 `docker/logs` 尚不存在（已存在说明另有官方部署的数据，先核对，不要覆盖），再以 root 保留属主和权限地复制：`sudo cp -a docker/community-2c2g/neko-home docker/community-2c2g/logs docker/`。TLS 私钥属主为 root、权限 0600，不用 root 复制会遗漏。
 5. 把 `docker/community-2c2g/.env` 中需要的设置迁入 `docker/.env`；网关覆盖文件改放 `docker/compose.gateway.yaml`，`COMPOSE_FILE` 改为 `docker-compose.yml:compose.gateway.yaml`。
-6. 在 `docker/` 执行 `docker compose config` 核对挂载来源和端口后 `docker compose up -d`，确认实例凭证、角色和记忆都在。迁移失败时停掉新容器，用备份恢复。
+6. 在 `docker/` 执行 `docker compose config` 核对挂载来源和端口后 `docker compose up -d`，确认实例凭证、角色和记忆都在。迁移失败时停掉新容器，用 `sudo tar -xzpf /root/neko-2c2g-backup.tar.gz -C docker/community-2c2g` 恢复数据和配置。
 7. **重新安装看门狗**（第 5 节）。旧脚本只识别旧标签，不重装就不会再处理新容器。确认健康后解除 `disabled`。
 
 ## 10. 上线核对清单
@@ -222,4 +237,4 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
 - [ ] 安全组已限制来源，并从外部验证过
 - [ ] ZRAM 已生效（`swapon --show`），保留了磁盘 swapfile
 - [ ] 若启用看门狗，`/opt/neko/watchdog.log` 已配置 logrotate（它不会自动轮转）
-- [ ] 若启用看门狗：`/etc/cron.d/neko-watchdog` 为 root、644；宽限期过后手动运行 `sudo /opt/neko/watchdog.sh`，`/opt/neko/watchdog.log` 没有新增探测失败
+- [ ] 若启用看门狗：第 5 节「验收」中的各项检查全部通过

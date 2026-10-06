@@ -97,6 +97,18 @@ sudo rm -f /etc/cron.d/neko-watchdog                                            
 sudo flock /opt/neko/watchdog.lock rm -f /opt/neko/watchdog.sh
 ```
 
+**Verify**: the script exits silently while paused, during the grace period, or when the target does not match, so exit code 0 or a clean log alone does not prove the watchdog protects the container. After installing, check each item:
+
+```bash
+ls -l /etc/cron.d/neko-watchdog          # owned by root, mode 644
+test ! -e /opt/neko/disabled && echo not-paused
+docker inspect neko --format '{{index .Config.Labels "org.neko.watchdog"}} {{index .Config.Labels "com.docker.compose.service"}} {{.State.Running}}'
+# expect: enabled neko-main true
+curl --noproxy '*' -s -o /dev/null -w '%{http_code}\n' --max-time 10 http://127.0.0.1:48911/
+# expect 200 or 401
+docker exec neko sh -c 'curl --noproxy "*" -fsS --max-time 10 "http://127.0.0.1:${NEKO_MAIN_SERVER_PORT:-48911}/health" > /dev/null' && echo health-ok
+```
+
 `docker compose down` does not remove the cron job, and reinstalling does not clear `disabled`. From the repository root, `sudo bash docker/watchdog/test-watchdog.sh` (or `sudo bash watchdog/test-watchdog.sh` from `docker/`) runs the real scripts against mocked docker/curl in a temporary directory; it does not replace on-host acceptance.
 
 ## 6. Network security
@@ -130,12 +142,13 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
 
    ```bash
    docker stop neko
-   sudo tar -czpf neko-2c2g-backup.tar.gz -C docker/community-2c2g neko-home logs
-   sudo tar -tzf neko-2c2g-backup.tar.gz > /dev/null && echo backup-ok
+   # Write outside the repository, root-only (umask 077), including .env and the gateway override if present
+   sudo sh -c 'umask 077; cd docker/community-2c2g && tar -czpf /root/neko-2c2g-backup.tar.gz neko-home logs $(ls -d .env compose.gateway.yaml 2>/dev/null)'
+   sudo tar -tzvf /root/neko-2c2g-backup.tar.gz | grep -E ' (\./)?(\.env|compose\.gateway\.yaml|neko-home/|logs/)$'
    ```
 
-   The backup contains instance credentials and TLS keys; keep it private. Only then remove the container: `docker rm neko`.
+   The last command should list `neko-home/`, `logs/`, and whichever of `.env` and `compose.gateway.yaml` you use. The backup contains instance credentials and TLS keys; never copy it into the repository or anywhere public. Only after confirming it is complete, remove the container: `docker rm neko`.
 4. Make sure `docker/neko-home` and `docker/logs` do not exist yet, then copy as root, preserving ownership: `sudo cp -a docker/community-2c2g/neko-home docker/community-2c2g/logs docker/`.
 5. Move needed settings from `docker/community-2c2g/.env` to `docker/.env`; a gateway override becomes `docker/compose.gateway.yaml` with `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml`.
-6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. If migration fails, stop the new container and restore from the backup.
+6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. If migration fails, stop the new container and restore data and configuration with `sudo tar -xzpf /root/neko-2c2g-backup.tar.gz -C docker/community-2c2g`.
 7. **Reinstall the watchdog** (section 5): the old script only recognizes the old label. Resume it once the service is healthy.
