@@ -605,3 +605,9 @@ def test_family_nicknames_split_on_whitespace_too():
     from main_routers.visit_router.local_context import family_names_of
 
     assert family_names_of({"档案名": "张三", "昵称": "Alice Ally, 小A/阿A"}) == ("张三", "Alice", "Ally", "小A", "阿A")
+
+
+
+def test_an_explicit_chinese_account_keyword_needs_no_separator():
+    tokens = persona.extract_sensitive_tokens("微信号小雨\n她常在微信群里聊天。", [])
+    assert "小雨" in tokens and not any("群" in t for t in tokens)
