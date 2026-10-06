@@ -12,6 +12,7 @@ from plugin.server.infrastructure.config_access import get_config_access
 from plugin.server.infrastructure.config_locking import get_plugin_update_lock
 from plugin.server.infrastructure.config_storage import atomic_write_bytes
 from plugin.settings import PLUGIN_CONFIG_ROOTS
+from plugin.utils.path_resolution import PathResolutionCache
 
 logger = get_logger("server.infrastructure.config_paths")
 
@@ -130,18 +131,24 @@ def get_plugin_runtime_config_path(
     plugin_id: str,
     *,
     manifest_path: Path | None = None,
+    read_cache: PathResolutionCache | None = None,
 ) -> Path:
     installed_manifest = manifest_path or get_plugin_manifest_path(plugin_id)
-    return resolve_plugin_layout(plugin_id, installed_manifest.parent).config_path
+    return resolve_plugin_layout(
+        plugin_id, installed_manifest.parent, read_cache=read_cache
+    ).config_path
 
 
 def ensure_plugin_runtime_config(
     plugin_id: str,
     *,
     manifest_path: Path | None = None,
+    read_cache: PathResolutionCache | None = None,
 ) -> Path:
     installed_manifest = manifest_path or get_plugin_manifest_path(plugin_id)
-    layout = resolve_plugin_layout(plugin_id, installed_manifest.parent)
+    layout = resolve_plugin_layout(
+        plugin_id, installed_manifest.parent, read_cache=read_cache
+    )
     return ensure_plugin_layout_runtime_config(layout)
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -185,7 +186,7 @@ def test_install_manager_root_snapshot_is_fresh_per_factory_call(monkeypatch, tm
     assert first.lock_path != second.lock_path
 
 
-def test_general_env_parser_does_not_evaluate_scan_settings():
+def test_general_env_parser_does_not_evaluate_scan_settings(tmp_path):
     probe = r"""
 import os,sys,importlib.util
 from pathlib import Path
@@ -198,7 +199,7 @@ def record(name, default=None):
         reads.append(name)
     return original(name, default)
 os.getenv = record
-spec = importlib.util.spec_from_file_location('isolated_env_parser', Path('plugin/server/application/plugins/_env_budgets.py'))
+spec = importlib.util.spec_from_file_location('isolated_env_parser', Path(sys.argv[1]))
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 env_seconds = module.env_seconds
@@ -208,6 +209,8 @@ assert 'plugin.server.application.plugins._metadata_scan_settings' not in sys.mo
 assert ('plugin.logging_config' in sys.modules) == logging_was_loaded
 print('ok')
 """
-    result = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+    module_path = Path(__file__).resolve().parents[4] / "plugin/server/application/plugins/_env_budgets.py"
+    result = subprocess.run([sys.executable, "-c", probe, str(module_path)],
+                            cwd=tmp_path, capture_output=True,
                             text=True, timeout=120, check=True)
     assert result.stdout.strip().splitlines()[-1] == "ok"

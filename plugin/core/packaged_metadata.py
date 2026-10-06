@@ -15,6 +15,8 @@ from typing import Mapping
 from plugin._types.packaged_metadata import PACKAGED_METADATA_FILENAME
 from plugin.utils.source_paths import (
     METADATA_PROBE_PREFIX,
+    VENDOR_SYNC_STAGING_PREFIX,
+    VENDOR_SYNC_BACKUP_PREFIX,
     is_metadata_probe_path,
     is_vendor_sync_path,
 )
@@ -159,7 +161,7 @@ def _iter_source_files(
             continue
         for entry in children:
             # Skip generated work trees before descending or inspecting links.
-            if entry.name.startswith(".vendor.") and current in (root, vendor):
+            if entry.name.startswith((VENDOR_SYNC_STAGING_PREFIX, VENDOR_SYNC_BACKUP_PREFIX)) and current in (root, vendor):
                 relative = (
                     Path(entry.name) if current == root else Path("vendor", entry.name)
                 )

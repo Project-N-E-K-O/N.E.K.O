@@ -33,7 +33,7 @@ def test_resolve_plugin_config_returns_base_effective_profiles_and_warnings(
     monkeypatch.setattr(
         module,
         "ensure_plugin_runtime_config",
-        lambda plugin_id, *, manifest_path: config_path,
+        lambda plugin_id, *, manifest_path, read_cache=None: config_path,
     )
     monkeypatch.setattr(module, "load_toml_from_file", lambda path: base_config)
     monkeypatch.setattr(
@@ -111,7 +111,7 @@ def test_resolve_plugin_config_can_skip_effective_merge_and_schema_validation(
     monkeypatch.setattr(
         module,
         "ensure_plugin_runtime_config",
-        lambda plugin_id, *, manifest_path: config_path,
+        lambda plugin_id, *, manifest_path, read_cache=None: config_path,
     )
     monkeypatch.setattr(module, "load_toml_from_file", lambda path: base_config)
     monkeypatch.setattr(
@@ -165,7 +165,7 @@ def test_resolve_plugin_config_from_path_reuses_preloaded_manifest_config(
     runtime_config = {"runtime": {"enabled": False}}
     captured: list[Path] = []
 
-    def _ensure_plugin_runtime_config(plugin_id: str, *, manifest_path: Path) -> Path:
+    def _ensure_plugin_runtime_config(plugin_id: str, *, manifest_path: Path, read_cache=None) -> Path:
         assert plugin_id == "demo"
         assert manifest_path == config_path.resolve(strict=False)
         return runtime_path
@@ -235,7 +235,7 @@ def test_resolve_plugin_config_warnings_keep_schema_before_semantic(
     monkeypatch.setattr(
         module,
         "ensure_plugin_runtime_config",
-        lambda plugin_id, *, manifest_path: config_path,
+        lambda plugin_id, *, manifest_path, read_cache=None: config_path,
     )
     monkeypatch.setattr(module, "load_toml_from_file", lambda path: base_config)
     monkeypatch.setattr(
@@ -422,24 +422,42 @@ def test_discovery_snapshot_finishes_before_profile_write(
 @pytest.mark.plugin_unit
 def test_materializing_resolver_uses_discovery_path_cache(tmp_path, monkeypatch):
     from plugin.utils.path_resolution import PathResolutionCache
+    from plugin.core import plugin_layout
+    from plugin.server.infrastructure.config_paths import get_plugin_runtime_config_path
 
-    config = tmp_path / "demo" / "plugin.toml"
-    config.parent.mkdir()
-    config.write_text('[plugin]\nid="demo"\n', encoding="utf-8")
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "data"))
+    storage = tmp_path / "data"
+    roots = []
+    def resolve_root():
+        roots.append(storage)
+        return storage
+    monkeypatch.setattr(plugin_layout, "resolve_runtime_data_root", resolve_root)
     cache = PathResolutionCache()
-    canonical = cache.resolve(config)
+    configs = []
+    layouts = []
+    for plugin_id in ("first", "second"):
+        config = tmp_path / plugin_id / "plugin.toml"
+        config.parent.mkdir()
+        config.write_text(f'[plugin]\nid="{plugin_id}"\n', encoding="utf-8")
+        cache.resolve(config)
+        layouts.append(plugin_layout.resolve_plugin_layout(plugin_id, config.parent, read_cache=cache))
+        configs.append(config)
+    assert roots == [storage]
+    assert all(not layout.config_path.exists() for layout in layouts)
+    protected = {storage, *(config.parent for config in configs), *configs}
     original = Path.resolve
-
     def avoid_repeated_resolve(path, *args, **kwargs):
-        if path == config:
-            pytest.fail("preloaded manifest path must use the cache")
+        if path in protected:
+            pytest.fail(f"already cached path resolved again: {path}")
         return original(path, *args, **kwargs)
-
-    # The runtime initializer receives the already canonical manifest path.
-    runtime = tmp_path / "runtime.toml"
-    runtime.write_text('[plugin]\nid="demo"\n', encoding="utf-8")
-    monkeypatch.setattr(module, "ensure_plugin_runtime_config", lambda *args, **kwargs: runtime)
     monkeypatch.setattr(Path, "resolve", avoid_repeated_resolve)
-    result = module.resolve_plugin_config_from_path("demo", config_path=config, read_cache=cache)
-    assert result["manifest_path"] == str(canonical)
+    for config, layout in zip(configs, layouts):
+        result = module.resolve_plugin_config_from_path(
+            layout.plugin_id, config_path=config, read_cache=cache
+        )
+        assert result["manifest_path"] == str(layout.manifest_path)
+        assert result["config_path"] == str(layout.config_path)
+        assert layout.config_path.read_bytes() == config.read_bytes()
+        assert get_plugin_runtime_config_path(
+            layout.plugin_id, manifest_path=config, read_cache=cache
+        ) == layout.config_path
+    assert roots == [storage]
