@@ -1159,7 +1159,9 @@ async def retry_visit_once(
             if await finish_report(config_dir, visit_id, result, report) or (
                     result.unknown_visit and await rejection_recorded(config_dir, visit_id)):
                 # 受理了但本地文件没删掉（被占用）：这一轮的 worker 别退出，下一轮重提拿 duplicate 回执再删
-                report_pending = result.accepted and same_report(await load_report(config_dir, visit_id), report)
+                # 读不了（被占用）同样当作文件还在
+                current, still_unreadable = await _read_report(config_dir, visit_id)
+                report_pending = result.accepted and (still_unreadable or same_report(current, report))
             elif manual and report.get("rejected") and result.attempted and not result.login_required:
                 # 用户手动重试、请求发出去了且这回没被拒（网络 / 5xx）：回到普通的排队重试。
                 # 没发出去（未登录 / 换了账号）或登录失效时拒收标记照留

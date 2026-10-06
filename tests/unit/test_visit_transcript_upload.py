@@ -1003,3 +1003,29 @@ async def test_a_later_report_carries_a_terminal_reason_settled_before_it(tmp_pa
     await tu.queue_report(tmp_path, _report_doc(include_transcript=True))
     assert (await tu.retry_visit_once(V1)).pending is False
     assert fake.reports[0]["transcript_unavailable"] == "parts_out_of_range"
+
+
+
+async def test_an_unreadable_file_after_acceptance_keeps_the_round_pending(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    original_load, original_delete = tu._load_json, tu.delete_report
+    state = {"reads": 0, "deletes": 0}
+
+    def load(path):
+        if path.name == f"{V1}.json":
+            state["reads"] += 1
+            if state["reads"] == 2:                        # 受理后核对时恰好读不了
+                raise PermissionError("in use")
+        return original_load(path)
+
+    async def delete(config_dir, visit_id):
+        state["deletes"] += 1
+        if state["deletes"] == 1:
+            raise PermissionError("in use")
+        return await original_delete(config_dir, visit_id)
+
+    monkeypatch.setattr(tu, "_load_json", load)
+    monkeypatch.setattr(tu, "delete_report", delete)
+    assert (await tu.retry_visit_once(V1)).pending is True
+    assert (await tu.retry_visit_once(V1)).pending is False and await tu.load_report(tmp_path, V1) is None
