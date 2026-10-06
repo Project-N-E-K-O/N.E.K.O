@@ -300,6 +300,7 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    (cd docker && docker compose down)       # 停掉并删除新容器，不要加 -v
    sudo tar -xzpf /root/neko-2c2g-backup.tar.gz -C /   # 按原绝对路径恢复数据和配置
    # 旧 Compose 文件已从仓库删除，从 #3295 的合并提交取回
+   mkdir -p docker/community-2c2g   # 数据和覆盖文件都在仓库外时，该目录可能已不存在
    git show 5161fba:docker/community-2c2g/docker-compose.yaml > docker/community-2c2g/docker-compose.yaml
    # 启动前核对最终端口绑定和挂载来源：使用外置网关时两个端口都应是 127.0.0.1，
    # 挂载来源应与第 2 步 docker inspect 看到的一致

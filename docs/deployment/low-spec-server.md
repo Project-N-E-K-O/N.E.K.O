@@ -223,6 +223,7 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    (cd docker && docker compose down)       # stop and remove the new container; no -v
    sudo tar -xzpf /root/neko-2c2g-backup.tar.gz -C /   # restores data and config to their original paths
    # The old Compose file was removed from the repository; restore it from the #3295 merge commit
+   mkdir -p docker/community-2c2g   # may no longer exist if data and overrides lived outside the repository
    git show 5161fba:docker/community-2c2g/docker-compose.yaml > docker/community-2c2g/docker-compose.yaml
    # Check port bindings and mount sources before starting: with an external gateway both ports
    # must be 127.0.0.1, and sources must match what docker inspect showed in step 2
