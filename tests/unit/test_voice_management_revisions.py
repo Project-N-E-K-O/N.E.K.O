@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 
 from main_routers.characters_router import voice_management as routes
+from tests.unit.test_voice_management_routes import _wav
 from tests.unit.test_voice_management_status_races import remote_record, response_for, revision_for  # noqa: F401
 from tests.unit.test_voice_management_storage import doubao_import  # noqa: F401
 from utils.voice_management import providers, service
@@ -31,6 +32,8 @@ def upstream_transport(monkeypatch, handler):
 
 @pytest.mark.parametrize("current,previous,expected", [
     ("v10", "v9", 1), ("v9", "v10", -1), ("v1", "1", 0), ("v01", "v1", 0),
+    ("V10", "V9", 1), ("V9", "V10", -1), ("V1", "v1", 0),
+    ("v1", "V1", 0), ("V01", "1", 0), ("V-1", "V1", None),
     ("0", "v1", -1), (None, "v1", None), ("v1", None, None), ("new", "old", None),
     ("v1 ", "v1", None), ("v-1", "v1", None), ("v1.0", "v1", None),
     ("v" + "1" * 100, "v1", None), (1, "v1", None),
@@ -335,3 +338,81 @@ async def test_unordered_voice_import_remains_available_without_overwrite(remote
     with pytest.raises(service.VoiceManagementError, match="OVERWRITE_UNSUPPORTED"):
         await service.overwrite_remote_voice(adapter, cm, imported["local_ref"], token=token, audio=b"reference", filename="reference.wav")
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote_record", ["doubao_tts"], indirect=True)
+@pytest.mark.parametrize("project", [False, True], ids=["app-api", "project-api"])
+@pytest.mark.parametrize("before,same,newer", [
+    ("V9", "v09", "V10"), ("v9", "V09", "v10"), ("9", "V9", "10"),
+])
+async def test_doubao_version_casing_preserves_import_overwrite_and_recovery(
+    remote_record, project, before, same, newer, monkeypatch,
+):
+    cm, adapter, old_ref, data, storage = remote_record
+    await cm.aupdate_imported_voice(old_ref, data["scope_id"], {"overwrite_status": "completed"})
+    assert await cm.adelete_imported_voice(old_ref)
+    if project:
+        cm.raw["doubaoVoiceManagementProjectName"] = "controlled-project"
+    runtime = adapter.resolve_runtime(cm)
+    api = isolated_api(cm, monkeypatch)
+    token = service.context_token(runtime)
+    observation = before
+    mutations = []
+    requests = []
+
+    def upstream(request):
+        nonlocal observation
+        requests.append(request)
+        body = json.loads(request.content)
+        if request.url.path.endswith("/voice_clone"):
+            assert body["speaker_id"] == data["remote_voice_id"]
+            mutations.append(request)
+            observation = same
+            return httpx.Response(200, json={"code": 0, "speaker_id": data["remote_voice_id"]})
+        assert request.url.params["Action"] == "BatchListMegaTTSTrainStatus"
+        assert request.url.params["Version"] == ("2025-05-21" if project else "2023-11-07")
+        assert body.get("ProjectName") == ("controlled-project" if project else None)
+        assert body.get("AppID") == (None if project else runtime.settings["app_id"])
+        return httpx.Response(200, json={"Result": {"Statuses": [{
+            "SpeakerID": data["remote_voice_id"], "State": "Success", "Version": observation,
+            "AvailableTrainingTimes": 5,
+        }]}})
+
+    upstream_transport(monkeypatch, upstream)
+    async with api:
+        params = {"provider": "doubao_tts", "context_token": token}
+        untouched = await asyncio.to_thread(storage.read_bytes)
+        listed = await api.get("/api/characters/remote_voices", params=params)
+        assert listed.status_code == 200
+        assert listed.json()["voices"][0]["can_overwrite"] is True
+        assert listed.json()["voices"][0]["metadata"]["remote_revision"] == before
+        assert await asyncio.to_thread(storage.read_bytes) == untouched and not mutations
+        payload = {**params, "remote_voice_id": data["remote_voice_id"]}
+        imported = await api.post("/api/characters/voices/import", json=payload)
+        assert imported.status_code == 200 and imported.json()["voice_data"]["can_overwrite"] is True
+        ref = imported.json()["voice_id"]
+        duplicate = await api.post("/api/characters/voices/import", json=payload)
+        assert duplicate.status_code == 200 and duplicate.json()["voice_id"] == ref
+        updated = await api.post(
+            f"/api/characters/voices/{ref}/overwrite", data={"context_token": token},
+            files={"audio": ("reference.wav", _wav(), "audio/wav")},
+        )
+        assert updated.status_code == 200 and updated.json()["status"] == "processing"
+        assert len(mutations) == 1
+        owner = updated.json()["voice_data"]["overwrite_operation_id"]
+        with pytest.raises(ValueError, match="VOICE_OPERATION_IN_PROGRESS"):
+            await cm.adelete_imported_voice(ref)
+        observation = newer
+        recovered = await api.get(f"/api/characters/voices/{ref}/overwrite_status", params={"context_token": token})
+        assert recovered.status_code == 200 and recovered.json()["status"] == "completed"
+        assert recovered.json()["voice_data"]["overwrite_operation_id"] == owner
+        assert recovered.json()["voice_data"]["remote_revision"] == newer
+        assert recovered.json()["voice_data"]["can_overwrite"] is True
+        persisted = await asyncio.to_thread(storage.read_bytes)
+        observation = before
+        stale = await api.get(f"/api/characters/voices/{ref}/overwrite_status", params={"context_token": token})
+        assert stale.status_code == 409 and stale.json()["code"] == "UPDATE_OUTCOME_UNKNOWN"
+        assert await asyncio.to_thread(storage.read_bytes) == persisted
+        assert len(mutations) == 1 and len(requests) == 8
+        assert await cm.adelete_imported_voice(ref)

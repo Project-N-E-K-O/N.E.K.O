@@ -85,10 +85,11 @@ class DoubaoVoiceAdapter(ImportOnlyAdapter):
         return [{"key": "doubao_resource_id", "label_key": "voice.remote.resource", "required": True, "default_value": runtime.resource_id}]
 
     def compare_revisions(self, current, previous):
-        # Version is the speaker's training count (e.g. v10), not an opaque tag.
+        # AppID and ProjectName APIs document V1 and v1 respectively; both
+        # represent the speaker's training count rather than an opaque tag.
         counts = []
         for value in (current, previous):
-            match = re.fullmatch(r"v?([0-9]{1,18})", value) if isinstance(value, str) else None
+            match = re.fullmatch(r"[vV]?([0-9]{1,18})", value) if isinstance(value, str) else None
             if match is None:
                 return None
             counts.append(int(match[1]))
