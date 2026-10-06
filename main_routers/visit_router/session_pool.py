@@ -147,6 +147,8 @@ async def create_visit_session(
     )
     # 长度守卫不重 roll：重 roll 会把第二个回答推进已经在念的这一行
     client.max_response_rerolls = 0
+    # 连续相似回复不清空历史：清空会抹掉按序排好的双方发言和本轮的标记
+    client.repetition_reset_enabled = False
     session = VisitSession(client=client, side=side)
     holder["session"] = session
     try:

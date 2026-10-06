@@ -33,6 +33,7 @@ class FakeClient:
         self.kwargs = kwargs
         self._conversation_history = []
         self.max_response_rerolls = 1
+        self.repetition_reset_enabled = True
         self.closed = 0
         self.fail_connect = False
         FakeClient.instances.append(self)
@@ -61,6 +62,7 @@ async def test_session_is_isolated_toolless_and_short():
     assert kwargs["tool_definitions"] == [] and kwargs["max_response_length"] == VISIT_RESPONSE_MAX_TOKENS
     assert kwargs["master_name"] == get_family_neutral_term("zh") and kwargs["lanlan_name"] == "Mimi"
     assert session.client.max_response_rerolls == 0
+    assert session.client.repetition_reset_enabled is False
     assert isinstance(session.history[0], SystemMessage) and session.history[0].content == "SYS"
 
 
@@ -168,3 +170,20 @@ async def test_close_drops_the_sink_and_never_raises():
     s.client.close = boom
     await sp.close_visit_session(s)
     assert s._sink is None
+
+
+
+async def test_repeated_replies_never_wipe_an_ordered_history():
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import AIMessage, HumanMessage
+
+    client = OmniOfflineClient(base_url="http://llm.test", api_key="k", model="m")
+    history = [SystemMessage(content="SYS"), HumanMessage(content="peer"), AIMessage(content="喵喵喵")]
+    client._conversation_history = list(history)
+    client.repetition_reset_enabled = False
+    for _ in range(4):
+        assert await client._check_repetition("喵喵喵") is False
+    assert client._conversation_history == history
+    client.repetition_reset_enabled = True
+    fired = [await client._check_repetition("喵喵喵") for _ in range(3)]
+    assert fired[-1] is True and client._conversation_history == history[:1]   # 默认行为不变

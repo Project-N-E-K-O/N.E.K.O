@@ -1606,8 +1606,10 @@ class ClauseSplitter:
     hard cuts the last ``holdback_chars`` characters before the overflow
     point are not released in that clause (they start the next one); pass
     ``max(len(protected word)) - 1`` so a protected word whose tail has not
-    arrived yet cannot be cut. Punctuation boundaries need no holdback
-    because protected words contain no clause punctuation.
+    arrived yet cannot be cut. Punctuation boundaries get no holdback: a
+    caller whose protected words may contain clause punctuation or spaces
+    (``"J. Smith"``) must keep a trailing prefix of such a word out of
+    ``feed`` until it is complete or the line ends.
 
     Redact injection contract (``redact(raw_buffer)``):
 

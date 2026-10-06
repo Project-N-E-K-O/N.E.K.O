@@ -432,7 +432,10 @@ class _StreamingMixin:
         """
         Check whether the reply is highly repetitive of recent replies.
         Returns True and triggers the callback if 3 consecutive turns are highly repetitive.
+        Never fires while ``repetition_reset_enabled`` is off.
         """
+        if not self.repetition_reset_enabled:
+            return False
 
         # 与最近的回复比较相似度
         high_similarity_count = 0

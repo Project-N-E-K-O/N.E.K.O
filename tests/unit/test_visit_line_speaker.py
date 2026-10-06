@@ -894,3 +894,58 @@ def test_goodbye_cap_never_splits_a_long_combining_sequence():
     text = "好" * 20 + zalgo + "拜拜"
     cut = grapheme_safe_cut(text, 40)
     assert cut == 20                                 # 整个簇都不进，而不是切在它中间
+
+
+
+def test_goodbye_cap_never_splits_a_flag_across_deltas():
+    h = Harness(wu=True)
+    flag = "🇯🇵"
+    h.speaker.feed("好" * 39 + flag[0])              # 正好填满 40 个码点，国旗的后一半还在下一段
+    h.speaker.feed(flag[1] + "拜拜")
+    h.speaker.llm_done()
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    text = h.results[0].text
+    assert text == "好" * 39 and h.results[0].trunc_reason == "goodbye_cap"
+    assert "".join(h.stream.pushed) == text == "".join(h.texts())
+
+
+def test_goodbye_text_that_exactly_fills_the_cap_is_kept_when_the_line_ends():
+    h = Harness(wu=True)
+    h.speaker.feed("好" * 38 + "拜拜")
+    h.speaker.llm_done()
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    assert h.results[0].text == "好" * 38 + "拜拜" and not h.results[0].truncated
+    assert "".join(h.stream.pushed) == h.results[0].text
+
+
+def test_a_punctuated_family_name_is_not_cut_before_it_arrives():
+    h = Harness()
+    h.speaker = ls.LineSpeaker(
+        visit_id=VISIT, header=ls.LineHeader(ln="h:1", lp=1, ad="gc", rt=""),
+        family_names=["J. Smith"], neutral_term=NEUTRAL, voice=h.voice, open_stream=h.open_stream,
+        router=h.router, clock=lambda: h.t, on_piece=h.pieces.append, on_done=h.results.append,
+    )
+    for delta in ("I really asked J. S", "mith to come along. ", "We had fun today!"):
+        h.speaker.feed(delta)
+    h.speaker.llm_done()
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    text = h.results[0].text
+    assert "J." not in text and "Smith" not in text and NEUTRAL in text
+    assert "".join(h.texts()) == text
+
+
+def test_a_held_name_prefix_is_still_spoken_when_the_line_ends_there():
+    h = Harness()
+    h.speaker = ls.LineSpeaker(
+        visit_id=VISIT, header=ls.LineHeader(ln="h:1", lp=1, ad="gc", rt=""),
+        family_names=["J. Smith"], neutral_term=NEUTRAL, voice=h.voice, open_stream=h.open_stream,
+        router=h.router, clock=lambda: h.t, on_piece=h.pieces.append, on_done=h.results.append,
+    )
+    h.speaker.feed("See you later, J.")
+    h.speaker.llm_done()
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    assert h.results[0].text == "See you later, J." == "".join(h.texts())

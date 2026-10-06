@@ -78,6 +78,7 @@ from config.visit_settings import (
 from main_logic.visit.sanitize import (
     clean_relay_text,
     drop_emotion_tags,
+    fold_text,
     redact_outbound_boundary,
     redact_outbound_with_spans,
     sanitize_relay_text,
@@ -316,6 +317,15 @@ class LineSpeaker:
             redact_boundary=boundary,
         )
         self._goodbye_left: Optional[int] = int(goodbye_max_chars) if header.wu else None
+        # 正好填满告别额度的那一段：末尾字形簇可能在下一段继续（国旗的第二个区域指示符、组合符），
+        # 先扣着它，见到下一段（或收尾）再定
+        self._goodbye_hold = ""
+        # 含标点 / 空白的亲人名（"J. Smith"）：分句器在标点处切句时不扣尾巴，名字没到齐前切出去的
+        # 前缀认不出来、会原样出门。文本末尾可能是这类名字开头的那段先不进分句器
+        self._punct_names = sorted({k for k in (fold_text(n.strip()) for n in names)
+                                    if k and not all(ch.isalnum() for ch in k)})
+        self._punct_span = max((len(k) for k in self._punct_names), default=0) * 2 + 8
+        self._name_hold = ""
         self._pieces: list[_Piece] = []
         self._released = 0
         self._emitted: list[str] = []
@@ -391,16 +401,25 @@ class LineSpeaker:
         self._cb.on_wake()
         return accepted
 
-    def _admit(self, text: str) -> str:
+    def _admit(self, text: str, *, final: bool = False) -> str:
         """Goodbye cap then wire budget on tag-free text; sets ``_cut_reason`` on the first cut."""
-        if not text or self._cut_reason is not None:
+        if self._cut_reason is not None:
+            return ""
+        if self._goodbye_left is not None:
+            text, self._goodbye_hold = self._goodbye_hold + text, ""
+        if not text:
             return ""
         capped = text
         goodbye_cut = False
         if self._goodbye_left is not None:
-            capped = text[: grapheme_safe_cut(text, self._goodbye_left)] if len(text) > self._goodbye_left \
-                else text
-            goodbye_cut = len(capped) < len(text)
+            left = self._goodbye_left
+            if len(text) > left:
+                # 截点按整段（含上一段扣着的簇）退到字形簇边界
+                capped = text[: grapheme_safe_cut(text, left)]
+            elif len(text) == left and not final:
+                keep = grapheme_safe_cut(text, len(text) - 1)
+                capped, self._goodbye_hold = text[:keep], text[keep:]
+            goodbye_cut = len(capped) + len(self._goodbye_hold) < len(text)
         accepted = self._budget.take(capped) if capped else ""
         if self._goodbye_left is not None:
             self._goodbye_left -= len(accepted)
@@ -511,7 +530,20 @@ class LineSpeaker:
                 self._est_origin = now
         else:
             self._push_tts(text, now)
-        self._add_clauses(self._splitter.feed(text))
+        if self._punct_names:
+            text = self._name_hold + text
+            cut = self._name_prefix_start(text)
+            text, self._name_hold = text[:cut], text[cut:]
+        if text:
+            self._add_clauses(self._splitter.feed(text))
+
+    def _name_prefix_start(self, text: str) -> int:
+        """Start of the longest suffix of ``text`` that is a proper prefix of a punctuated family name."""
+        for start in range(max(0, len(text) - self._punct_span), len(text)):
+            folded = fold_text(text[start:])
+            if folded and any(len(folded) < len(k) and k.startswith(folded) for k in self._punct_names):
+                return start
+        return len(text)
 
     def _push_tts(self, text: str, now: float) -> None:
         if not text:
@@ -632,8 +664,11 @@ class LineSpeaker:
             return
         self._llm_done = True
         # 收尾时还扣着的半个「<...」不是标签：照常过预算、念出、上字幕（已被截断的行直接丢）
-        self._take_text(self._admit(self._tags.flush()), now)
+        self._take_text(self._admit(self._tags.flush(), final=True), now)
         self._closing_cut = self._cut_reason is not None
+        if self._name_hold:
+            self._add_clauses(self._splitter.feed(self._name_hold))
+            self._name_hold = ""
         self._add_clauses(self._splitter.flush())
         if self._mode == PACED_AUDIO and self._stream is not None and not self._stream_dead:
             outcome = self._stream.finish()
