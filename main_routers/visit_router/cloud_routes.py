@@ -275,13 +275,15 @@ async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
         # 终态拒收 / 过期时 attempt_upload 已在举报文件里记下原因：重读一次带上
         doc = await tu.load_report(config_dir, visit_id) or doc
     result = await tu.send_report(doc)
-    if result.accepted:
-        await tu.delete_report(config_dir, visit_id)
+    if await tu.finish_report(config_dir, visit_id, result):
         return JSONResponse({"ok": True, "report_id": result.report_id})
     if result.unknown_visit:
-        await tu.delete_report(config_dir, visit_id)
+        # 举报文件留着（只有受理或用户放弃才删）、标记为被拒，队列里给「重试 / 放弃」
         return _error(404, "unknown_visit")
     tu.schedule_visit_retry(visit_id, config_dir=config_dir)
+    if result.login_required:
+        # 已排队，但登录失效：提示重新登录（原账号回来后由后台 / 启动补录接着提交）
+        return _cloud_error(cr.VisitLoginRequired())
     return JSONResponse({"queued": True}, status_code=202)
 
 
@@ -309,17 +311,22 @@ async def act_on_queued_report(request: Request, visit_id: str):
         return _error(400, "invalid_action")
     config_dir = Path(tu.config_dir_provider())
     account = await accounts.local_account()
-    report = await tu.load_report(config_dir, visit_id)
-    if report is None or not await tu.report_belongs_to(report, account):
+
+    async def _owned() -> bool:
+        report = await tu.load_report(config_dir, visit_id)
         # 别的账号在这台机器上排的举报：不可见、不可删
-        return _error(404, "not_queued")
+        return report is not None and await tu.report_belongs_to(report, account)
+
     if action == "abandon":
-        # 与后台提交共用逐场锁：放弃要么发生在提交之前（不会再提交），要么提交已完成（文件已删 → 404）
+        # 与后台提交共用逐场锁，并在锁内核对归属：等锁期间原举报可能已提交删除、
+        # 另一账号又排了同一场的举报——删的必须是此刻这份、且属于当前账号
         async with tu.visit_lock(visit_id):
-            if not await tu.delete_report(config_dir, visit_id):
+            if not await _owned() or not await tu.delete_report(config_dir, visit_id):
                 return _error(404, "not_queued")
         return JSONResponse({"ok": True, "removed": True})
-    outcome = await tu.retry_visit_once(visit_id, config_dir=config_dir)
+    if not await _owned():
+        return _error(404, "not_queued")
+    outcome = await tu.retry_visit_once(visit_id, config_dir=config_dir, manual=True)
     delivered = await tu.load_report(config_dir, visit_id) is None
     if not delivered and outcome.pending:
         tu.schedule_visit_retry(visit_id, config_dir=config_dir)

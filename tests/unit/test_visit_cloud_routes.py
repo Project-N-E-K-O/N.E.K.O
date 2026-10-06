@@ -321,10 +321,37 @@ def test_second_report_while_queued_is_409(env):
     assert resp.status_code == 409 and resp.json()["code"] == "already_queued"
 
 
-def test_unknown_visit_is_404_and_not_queued(env):
+def test_unknown_visit_is_404_and_kept_for_the_user(env):
     client, fake, tmp_path, _ = env
     fake.report_mode = "404"
-    assert _report(client).status_code == 404 and _queued(tmp_path) is None
+    assert _report(client).status_code == 404
+    # 只有受理或用户放弃才删：留在队列里、标记被拒，UI 当场给「重试 / 放弃」
+    assert _queued(tmp_path)["rejected"] == "unknown_visit"
+    items = client.get("/api/visit/report/queue", headers=GOOD).json()["items"]
+    assert items[0]["rejected"] == "unknown_visit"
+    fake.report_mode = "ok"
+    resp = client.post(f"/api/visit/report/queue/{V1}", headers=GOOD, json={"action": "retry"})
+    assert resp.json() == {"ok": True, "delivered": True} and _queued(tmp_path) is None
+
+
+def test_report_with_an_expired_login_is_queued_and_asks_to_sign_in(env, monkeypatch):
+    client, fake, tmp_path, _ = env
+
+    async def expired():
+        raise cr.VisitLoginRequired()
+
+    monkeypatch.setattr(cr, "_servers_session", expired)
+    resp = _report(client)
+    assert resp.status_code == 409 and resp.json()["code"] == "VISIT_LOGIN_REQUIRED"
+    assert _queued(tmp_path) is not None
+
+
+def test_report_after_the_upload_still_carries_the_anomaly_count(env):
+    client, fake, tmp_path, _ = env
+    _write_sealed(tmp_path)
+    client.portal.call(tu.retry_visit_once, V1)
+    assert not (tmp_path / "visit_spool" / f"{V1}.upload.json").exists()
+    assert _report(client).status_code == 200 and fake.reports[0]["anomalies"] == 4
 
 
 def test_report_needs_a_login(env):
@@ -394,6 +421,7 @@ def test_abandon_waits_for_an_in_flight_submission(env):
     client, fake, tmp_path, _ = env
     fake.report_mode = "503"
     _report(client)
+    doc = _queued(tmp_path)
     lock = tu.visit_lock(V1)
     holding, release = client.portal.call(_make_events)
 
@@ -401,8 +429,9 @@ def test_abandon_waits_for_an_in_flight_submission(env):
         async with lock:
             holding.set()
             await release.wait()
-            # 后台提交在锁内受理并删掉了文件
+            # 后台提交在锁内受理并删掉了文件；随后另一账号为同一场排了自己的举报
             await tu.delete_report(tmp_path, V1)
+            await tu.queue_report(tmp_path, {**doc, "own_account": "u2", "own_visit_uid": "b" * 24})
 
     client.portal.start_task_soon(submit_in_flight)
     client.portal.call(holding.wait)
@@ -417,6 +446,7 @@ def test_abandon_waits_for_an_in_flight_submission(env):
         client.portal.call(release.set)
         worker.join(5)
     assert blocked and result["resp"].status_code == 404
+    assert _queued(tmp_path)["own_account"] == "u2"      # 别人的那份没被删
 
 
 async def _make_events():

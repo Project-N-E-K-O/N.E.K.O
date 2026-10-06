@@ -50,6 +50,7 @@ import math
 import os
 import time
 import weakref
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -356,17 +357,22 @@ class UploadJournal:
         duration = max(0, int(end - start)) if start is not None and end is not None else 0
         return {"duration_s": duration, **self._usage}
 
-    async def seal(self, finalized_reason: str) -> dict | None:
+    async def seal(self, finalized_reason: str, *, ended_at: float | None = None) -> dict | None:
         """Write ``.upload.json`` from memory, then delete the stream; returns the document.
 
         Idempotent; None when the journal was never opened. Called by
         finalize (before ``state.json.finalized``) and by the shutdown hook.
+        ``ended_at`` (default: now) is the finalize time: a quiet tail after
+        the last record still counts toward the duration. Crash recovery,
+        which has no finalize time, uses the last record instead.
         """
         if self._sealed or self._executor is None:
             return None
         doc = build_upload_doc(self._records, visit_id=self.visit_id, finalized_reason=finalized_reason)
         if doc is None:
             raise RuntimeError("upload journal has no valid header")
+        _stamp_end(doc["request"], time.time() if ended_at is None else ended_at)
+        remember_anomalies(self.visit_id, doc["request"].get("anomalies"))
         self._sealed = True
         executor = self._executor
         try:
@@ -378,6 +384,34 @@ class UploadJournal:
         histogram("visit_duration_s", float(request["usage"]["duration_s"]), role=request["role"])
         counter("visit_transcript_sealed", 1, reason=str(finalized_reason)[:24])
         return doc
+
+
+def _stamp_end(request: dict, ended_at: float) -> None:
+    """Move ``ended_at`` / ``duration_s`` to the finalize time when it is later than the last record."""
+    started = request.get("started_at")
+    if not _finite(ended_at) or not _finite(started) or ended_at <= request.get("ended_at", started):
+        return
+    request["ended_at"] = ended_at
+    request["usage"]["duration_s"] = max(0, int(ended_at - started))
+
+
+_RECENT_ANOMALIES_MAX = 64
+_recent_anomalies: "OrderedDict[str, int]" = OrderedDict()
+"""Anomaly counts of visits sealed or uploaded in this process.
+
+An uploaded transcript's files are deleted, but a report filed afterwards
+still carries the count. (Servers keeps the count of every uploaded
+transcript as well, so one lost across a restart is not lost evidence.)
+"""
+
+
+def remember_anomalies(visit_id: str, count: Any) -> None:
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        return
+    _recent_anomalies[visit_id] = count
+    _recent_anomalies.move_to_end(visit_id)
+    while len(_recent_anomalies) > _RECENT_ANOMALIES_MAX:
+        _recent_anomalies.popitem(last=False)
 
 
 def _write_all(fd: int, data: bytes) -> None:
@@ -508,6 +542,7 @@ async def _upload(visit_id: str, doc: dict, config_dir: Path) -> UploadResult:
         memory_bridge.diag("upload_account_mismatch", visit_id=visit_id)
         return UploadResult()
     request = doc["request"]
+    remember_anomalies(visit_id, request.get("anomalies"))
     path = visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSON_SUFFIX)
     progress = _valid_progress(doc)
     if progress is None:
@@ -634,6 +669,31 @@ def _mark_unavailable_sync(path: Path, visit_id: str, reason: str) -> None:
         _write_private_json(path, {**doc, "transcript_unavailable": reason})
 
 
+def _set_rejected_sync(path: Path, visit_id: str, reason: str | None) -> None:
+    with path_lock(path):
+        doc = _load_json(path)
+        if not _valid_report(doc, visit_id) or doc.get("rejected") == reason:
+            return
+        doc = {k: v for k, v in doc.items() if k != "rejected"}
+        if reason is not None:
+            doc["rejected"] = reason
+        _write_private_json(path, doc)
+
+
+async def set_report_rejected(config_dir: Path, visit_id: str, reason: str | None) -> None:
+    """Mark (or, with None, unmark) a queued report Servers refused for good.
+
+    A refused report is never deleted on its own -- only acceptance or the
+    user giving it up removes the file (design §4.6 report) -- but it is not
+    resubmitted automatically either: the queue lists it with ``rejected``
+    and the user chooses retry or abandon.
+    """
+    try:
+        await asyncio.to_thread(_set_rejected_sync, report_path(config_dir, visit_id), visit_id, reason)
+    except (OSError, ValueError) as exc:
+        logger.warning("visit report queue: cannot mark %s: %s", visit_id, type(exc).__name__)
+
+
 async def mark_report_transcript_unavailable(config_dir: Path, visit_id: str, reason: str) -> bool:
     """Record on the queued report why its transcript will never reach Servers.
 
@@ -656,11 +716,6 @@ class ReportResult:
     report_id: str | None = None
     unknown_visit: bool = False
     login_required: bool = False
-
-    @property
-    def settled(self) -> bool:
-        """Nothing more to do with the queued file: accepted, or a visit Servers never issued."""
-        return self.accepted or self.unknown_visit
 
 
 def report_request(doc: Mapping[str, Any]) -> dict:
@@ -726,12 +781,29 @@ async def send_report(doc: Mapping[str, Any]) -> ReportResult:
 
 
 async def submit_queued_report(visit_id: str, report_doc: dict) -> bool:
-    """PR-08's ``submit_report`` callback: True once the queued file may go.
+    """PR-08's ``submit_report`` callback: True once Servers accepted the queued report.
 
-    That is Servers accepting it, or ``404 unknown_visit`` (a visit Servers
-    never issued or this account was not part of: no retry can change it).
+    A report already refused (``rejected``) is not resent; a new ``404
+    unknown_visit`` marks it so (the file stays for the user to decide).
     """
-    return (await send_report(report_doc)).settled
+    if report_doc.get("rejected"):
+        return False
+    result = await send_report(report_doc)
+    if result.unknown_visit:
+        await set_report_rejected(Path(config_dir_provider()), require_visit_id(visit_id), "unknown_visit")
+    return result.accepted
+
+
+async def finish_report(config_dir: Path, visit_id: str, result: ReportResult) -> bool:
+    """Apply one submission's outcome to the queued file; True when it is gone (accepted)."""
+    if result.accepted:
+        await delete_report(config_dir, visit_id)
+        # 拒收原因没能记进举报而留着的封存文件：举报已受理，它再没有用处，别占待上传容量
+        await asyncio.to_thread(_drop_rejected_sealed_sync, config_dir, visit_id)
+        return True
+    if result.unknown_visit:
+        await set_report_rejected(config_dir, visit_id, "unknown_visit")
+    return False
 
 
 # ── 进程内重试 ─────────────────────────────────────────────────────────
@@ -742,6 +814,20 @@ def _file_age_s(path: Path, now: float) -> float | None:
         return now - path.stat().st_mtime
     except FileNotFoundError:
         return None
+
+
+def _drop_rejected_sealed_sync(config_dir: Path, visit_id: str) -> None:
+    path = visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSON_SUFFIX)
+    with path_lock(path):
+        try:
+            doc = _load_json(path)
+        except (OSError, ValueError):
+            return
+        if isinstance(doc, dict) and isinstance(doc.get("rejected"), str) and doc["rejected"]:
+            try:
+                path.unlink()
+            except OSError as exc:
+                logger.warning("visit upload %s: cannot delete rejected %s: %s", visit_id, path.name, exc)
 
 
 def _mark_sealed_rejected_sync(path: Path, reason: str) -> None:
@@ -856,25 +942,34 @@ def visit_lock(visit_id: str) -> asyncio.Lock:
     return lock
 
 
-async def retry_visit_once(visit_id: str, *, config_dir: Path | None = None, now: float | None = None) -> RetryRound:
+async def retry_visit_once(
+    visit_id: str, *, config_dir: Path | None = None, now: float | None = None, manual: bool = False,
+) -> RetryRound:
     """One round for ``visit_id``: upload its sealed transcript, then submit its queued report.
 
     A report with ``include_transcript:true`` waits for the transcript
-    (accepted, or terminally rejected / expired); ``false`` does not.
+    (accepted, or terminally rejected / expired); ``false`` does not. A
+    report Servers refused (``rejected``) is only resent when the user asks
+    (``manual``); it no longer keeps the background loop going.
     """
     visit_id = require_visit_id(visit_id)
     config_dir = Path(config_dir_provider() if config_dir is None else config_dir)
     async with visit_lock(visit_id):
         upload = await attempt_upload(visit_id, config_dir=config_dir, now=now)
         report = await load_report(config_dir, visit_id)
+        if report is not None and report.get("rejected") and not manual:
+            report = None
         report_pending = report is not None
         if report is not None and not (upload.pending and report["include_transcript"]):
             if upload.unavailable and not report.get("transcript_unavailable"):
                 # 原因没写进举报文件（磁盘 / 权限）：提交的这份照样带上
                 report = {**report, "transcript_unavailable": upload.unavailable}
-            if (await send_report(report)).settled:
-                await delete_report(config_dir, visit_id)
+            result = await send_report(report)
+            if await finish_report(config_dir, visit_id, result) or result.unknown_visit:
                 report_pending = False
+            elif manual and report.get("rejected"):
+                # 用户手动重试、这回没被拒（网络 / 5xx）：回到普通的排队重试
+                await set_report_rejected(config_dir, visit_id, None)
     return RetryRound(pending=report_pending or upload.retryable, retry_after_s=upload.retry_after_s)
 
 
@@ -885,6 +980,7 @@ def _reset_for_tests() -> None:
     for task in _workers.values():
         task.cancel()
     _workers.clear()
+    _recent_anomalies.clear()
 
 
 async def _retry_loop(visit_id: str, config_dir: Path | None) -> None:
@@ -951,7 +1047,7 @@ async def upload_backlog_full(config_dir: Path) -> bool:
     return await asyncio.to_thread(_pending_upload_bytes_sync, config_dir) >= VISIT_UPLOAD_PENDING_CAP_BYTES
 
 
-def _anomalies_sync(config_dir: Path, visit_id: str) -> int:
+def _anomalies_sync(config_dir: Path, visit_id: str) -> int | None:
     spool_dir = _spool_dir(config_dir)
     doc = _load_json(visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX))
     request = doc.get("request") if isinstance(doc, dict) else None
@@ -961,15 +1057,16 @@ def _anomalies_sync(config_dir: Path, visit_id: str) -> int:
         with open(visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX), "rb") as handle:
             return sum(1 for raw in handle if b'"kind":"anomaly"' in raw)
     except FileNotFoundError:
-        return 0
+        return None
 
 
 async def visit_anomalies(config_dir: Path, visit_id: str) -> int:
-    """Anomaly count of a visit from its pending upload (0 once uploaded)."""
+    """Anomaly count of a visit: its pending upload, else what this process saw sealed / uploaded."""
     try:
-        return await asyncio.to_thread(_anomalies_sync, config_dir, visit_id)
+        count = await asyncio.to_thread(_anomalies_sync, config_dir, visit_id)
     except (OSError, ValueError):
-        return 0
+        count = None
+    return count if count is not None else _recent_anomalies.get(visit_id, 0)
 
 
 def _list_reports_sync(config_dir: Path) -> list[tuple[str, Any]]:
@@ -996,7 +1093,10 @@ async def report_belongs_to(doc: Mapping[str, Any], account: str | None) -> bool
 
 
 async def list_queued_reports(config_dir: Path, account: str | None, *, now: float | None = None) -> list[dict]:
-    """Queued reports of ``account`` for the UI: ``{visit_id, reason, include_transcript, queued_at, stale}``.
+    """Queued reports of ``account`` for the UI: ``{visit_id, reason, include_transcript, queued_at, rejected, stale}``.
+
+    ``rejected`` (Servers refused it, e.g. ``'unknown_visit'``) and ``stale``
+    (a week old) both mean the UI offers retry / give up right away.
 
     Reports another account filed on this machine are not listed: every
     account that signs in here shares the queue directory.
@@ -1007,11 +1107,13 @@ async def list_queued_reports(config_dir: Path, account: str | None, *, now: flo
         if not _valid_report(doc, visit_id) or not await report_belongs_to(doc, account):
             continue
         queued_at = doc.get("queued_at") if _finite(doc.get("queued_at")) else None
+        rejected = doc.get("rejected") if isinstance(doc.get("rejected"), str) else None
         rows.append({
             "visit_id": visit_id,
             "reason": doc["reason"],
             "include_transcript": doc["include_transcript"],
             "queued_at": queued_at,
+            "rejected": rejected,
             "stale": queued_at is not None and now - queued_at >= VISIT_REPORT_STALE_S,
         })
     return rows

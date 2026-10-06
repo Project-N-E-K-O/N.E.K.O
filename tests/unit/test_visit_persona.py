@@ -382,6 +382,21 @@ def test_sensitive_tokens_cover_contacts_addresses_and_family():
         assert any(expected in t for t in tokens), expected
 
 
+@pytest.mark.parametrize("card,text,hit", [
+    ("家里的网站 private-family.example 只给亲戚看。", "她提过 private-family.example 这个网站。", "private-family.example"),
+    ("Our page is https://private-family.example/path.", "See https://private-family.example/path for more.",
+     "https://private-family.example/path"),
+    ("Our page is https://private-family.example/path.", "Her family runs private-family.example.",
+     "private-family.example"),
+])
+def test_urls_match_without_sentence_punctuation_and_by_host(card, text, hit):
+    assert hit in persona.sensitive_token_hits(card, text, ())
+
+
+def test_capitalised_dotted_words_are_not_host_names():
+    assert persona.sensitive_token_hits("She calls him Mr.Smith at home.", "Mr.Smith is her teacher.", ()) == []
+
+
 def test_multi_word_addresses_are_caught():
     card = "She lives with her family. Her address: 12 Main Street."
     assert persona.sensitive_token_hits(card, "She often walks down Main Street.", ()) == ["Main Street"]

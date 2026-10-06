@@ -111,6 +111,10 @@ _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+")
 _URL_RE = re.compile(r"(?:https?://|www\.)[^\s，。、！？；：,;:()（）\[\]【】<>「」『』\"']+", re.IGNORECASE)
+# 句末标点不算网址的一部分（「见 https://a.example/x.」→「https://a.example/x」）
+_URL_TRAILING = ".,!?'\"…"
+# 裸域名（「private-family.example」）：只认小写写法，免得把「Mr.Smith」之类当成主机名
+_HOST_RE = re.compile(r"(?<![A-Za-z0-9@._\-])(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?![A-Za-z0-9_\-])")
 _DIGITS_RE = re.compile(r"[0-9]{5,}")
 # 关键词后面跟的值：到标点或行尾为止，中间可以有空格（「住在桂花路」→「桂花路」，
 # 「address: 12 Main Street」→「12 Main Street」）
@@ -162,6 +166,20 @@ def _latin_phrases(value: str) -> list[str]:
     return out
 
 
+def _url_tokens(text: str) -> list[str]:
+    """URLs (sentence punctuation stripped), their host names, and bare host names."""
+    out: list[str] = []
+    for m in _URL_RE.finditer(text):
+        url = m.group(0).rstrip(_URL_TRAILING)
+        out.append(url)
+        host = re.sub(r"^(?:https?://)?(?:www\.)?", "", url, flags=re.IGNORECASE)
+        host = re.split(r"[/?#:]", host, maxsplit=1)[0]
+        if "." in host:
+            out.append(host)
+    out.extend(m.group(0) for m in _HOST_RE.finditer(text))
+    return out
+
+
 def phone_digits(text: str) -> set[str]:
     """Digit strings of the phone-like numbers in ``text`` (at least seven digits, separators dropped)."""
     out = set()
@@ -175,7 +193,8 @@ def phone_digits(text: str) -> set[str]:
 def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> list[str]:
     """Deterministic sensitive tokens of ``card`` (rule 1 of the privacy check).
 
-    Family names (as given), email addresses, URLs, runs of five or more
+    Family names (as given), email addresses, URLs and host names (bare
+    ones included, trailing sentence punctuation dropped), runs of five or more
     digits, phone numbers written with separators, the whole value after a
     contact / address keyword (spaces included) plus its capitalised
     multi-word runs, and address-like fragments. Every token is at least two
@@ -185,8 +204,9 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
     """
     text = _norm(card or "")
     found: list[str] = [str(n).strip() for n in family_names if isinstance(n, str) and n.strip()]
-    for pattern in (_EMAIL_RE, _URL_RE, _DIGITS_RE, _UNIT_RE, _PHONE_RE):
+    for pattern in (_EMAIL_RE, _DIGITS_RE, _UNIT_RE, _PHONE_RE):
         found.extend(m.group(0) for m in pattern.finditer(text))
+    found.extend(_url_tokens(text))
     for m in _ROAD_NUMBER_RE.finditer(text):
         found.append(m.group(0))
         found.extend(_place_cores(m.group(0), _ROAD_CORE_RE))

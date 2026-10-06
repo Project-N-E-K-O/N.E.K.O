@@ -149,7 +149,7 @@ async def test_seal_writes_the_upload_doc_then_deletes_the_stream(tmp_path, serv
 
     monkeypatch.setattr(tu, "_write_private_json", write)
     monkeypatch.setattr(Path, "unlink", unlink)
-    doc = await journal.seal("wrap_up")
+    doc = await journal.seal("wrap_up", ended_at=1002.3)
     monkeypatch.undo()
     assert order[:2] == [("write", f"{V1}.upload.json"), ("unlink", f"{V1}.upload.jsonl")]
     assert not (_spool(tmp_path) / f"{V1}.upload.jsonl").exists()
@@ -162,6 +162,21 @@ async def test_seal_writes_the_upload_doc_then_deletes_the_stream(tmp_path, serv
                                 "tts_requests": 1, "tts_chars": 7}
     if os.name != "nt":
         assert stat.S_IMODE((_spool(tmp_path) / f"{V1}.upload.json").stat().st_mode) == 0o600
+
+
+async def test_seal_counts_the_quiet_tail_up_to_finalize(tmp_path, servers):
+    journal = await _journal(tmp_path)
+    await _say(journal, 1, "hi", ts=1003.0)
+    request = (await journal.seal("wrap_up", ended_at=1060.0))["request"]
+    # 最后一句之后安静了一分钟才收尾：时长算到收尾时刻，不是最后一条记录
+    assert request["ended_at"] == 1060.0 and request["usage"]["duration_s"] == 60
+
+
+async def test_seal_never_moves_the_end_before_the_last_record(tmp_path, servers):
+    journal = await _journal(tmp_path)
+    await _say(journal, 1, "hi", ts=1003.0)
+    request = (await journal.seal("wrap_up", ended_at=1001.0))["request"]
+    assert request["ended_at"] == 1003.0 and request["usage"]["duration_s"] == 3
 
 
 async def test_usage_after_the_seal_is_dropped(tmp_path, servers):
@@ -488,13 +503,44 @@ async def test_queued_report_is_resubmitted_at_startup(tmp_path, servers, monkey
     assert report.reports == {V1: True} and not (tmp_path / "visit_reports" / f"{V1}.json").exists()
 
 
-async def test_queued_report_of_an_unknown_visit_is_settled(tmp_path, servers):
+async def test_queued_report_of_an_unknown_visit_is_kept_for_the_user(tmp_path, servers):
+    fake, _ = servers
+    fake.report_mode = "404"
+    path = tmp_path / "visit_reports" / f"{V1}.json"
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    # 只有受理或用户放弃才删：被拒的留着、标记、不再自动重提
+    assert (await tu.retry_visit_once(V1)).pending is False
+    assert json.loads(path.read_text(encoding="utf-8"))["rejected"] == "unknown_visit"
+    sent = fake.count("/api/visit/reports")
+    assert (await tu.retry_visit_once(V1)).pending is False and fake.count("/api/visit/reports") == sent
+    assert await tu.submit_queued_report(V1, await tu.load_report(tmp_path, V1)) is False
+    assert fake.count("/api/visit/reports") == sent
+    assert (await tu.list_queued_reports(tmp_path, "u1"))[0]["rejected"] == "unknown_visit"
+    # 用户点「重试」：照发；这回网络错误 → 回到普通排队，后台接着重提
+    fake.report_mode = "503"
+    assert (await tu.retry_visit_once(V1, manual=True)).pending is True
+    assert "rejected" not in json.loads(path.read_text(encoding="utf-8"))
+    fake.report_mode = "ok"
+    assert (await tu.retry_visit_once(V1)).pending is False and not path.exists()
+
+
+async def test_recovery_callback_marks_an_unknown_visit_and_keeps_the_file(tmp_path, servers):
     fake, _ = servers
     fake.report_mode = "404"
     await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
-    assert (await tu.retry_visit_once(V1)).pending is False
-    assert not (tmp_path / "visit_reports" / f"{V1}.json").exists()
-    assert await tu.submit_queued_report(V1, _report_doc()) is True
+    assert await tu.submit_queued_report(V1, _report_doc()) is False
+    assert (await tu.load_report(tmp_path, V1))["rejected"] == "unknown_visit"
+
+
+async def test_anomaly_count_outlives_the_uploaded_transcript(tmp_path, servers):
+    journal = await _journal(tmp_path)
+    journal.note_anomaly(ts=1001.0)
+    journal.note_anomaly(ts=1001.5)
+    await journal.seal("wrap_up")
+    assert await tu.visit_anomalies(tmp_path, V1) == 2
+    await tu.retry_visit_once(V1)
+    assert not (_spool(tmp_path) / f"{V1}.upload.json").exists()
+    assert await tu.visit_anomalies(tmp_path, V1) == 2
 
 
 async def test_queued_report_of_another_account_waits(tmp_path, servers):
@@ -532,12 +578,12 @@ async def test_unrecordable_rejection_keeps_the_upload_and_still_reaches_the_rep
     assert sealed.exists() and json.loads(sealed.read_text(encoding="utf-8"))["rejected"] == "parts_out_of_range"
     uploads = fake.count("/api/visit/transcripts")
     fake.report_mode = "ok"
-    await tu.retry_visit_once(V1)
+    assert (await tu.retry_visit_once(V1)).pending is False
     assert fake.reports[0]["transcript_unavailable"] == "parts_out_of_range"
     assert fake.count("/api/visit/transcripts") == uploads          # 已拒收的不再整份重传
-    monkeypatch.setattr(tu, "_mark_unavailable_sync", original)
-    await tu.retry_visit_once(V1)
+    # 举报已受理：留着的拒收文件再没用处，当场删掉，不占待上传容量等到下次启动
     assert not sealed.exists()
+    monkeypatch.setattr(tu, "_mark_unavailable_sync", original)
 
 
 async def test_backlog_counts_pending_upload_bytes(tmp_path, servers, monkeypatch):
