@@ -656,3 +656,30 @@ def test_chunk_bounds_follow_the_contract():
     spans = [tu.chunk_bounds(n, parts, k) for k in range(parts)]
     assert spans == [(0, 3), (3, 5), (5, 7)]
     assert spans[0][0] == 0 and spans[-1][1] == n
+
+
+
+@pytest.mark.parametrize("mode", ["bogus204", "html200"])
+async def test_an_uncontracted_2xx_is_not_a_receipt(tmp_path, servers, mode):
+    fake, _ = servers
+    fake.transcript_mode = mode
+    sealed = _write_sealed(tmp_path, _big_doc(4, 10))
+    assert (await tu.retry_visit_once(V1)).pending is True
+    assert sealed.exists()
+
+
+async def test_chunk_receipts_without_accepted_parts_are_not_trusted(tmp_path, servers):
+    fake, _ = servers
+    fake.transcript_mode = "no_parts"
+    sealed = _write_sealed(tmp_path, _big_doc())        # >512 KiB：分块上传
+    assert (await tu.retry_visit_once(V1)).pending is True
+    doc = json.loads(sealed.read_text(encoding="utf-8"))
+    assert not doc.get("accepted_parts")                 # 没替 Servers 认定任何块
+
+
+async def test_a_report_200_without_its_receipt_stays_queued(tmp_path, servers):
+    fake, _ = servers
+    fake.report_mode = "bogus200"
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    assert (await tu.retry_visit_once(V1)).pending is True
+    assert await tu.load_report(tmp_path, V1) is not None

@@ -94,6 +94,10 @@ class FakeServers:
 
     def _transcripts(self, request: httpx.Request) -> httpx.Response:
         mode = self.transcript_mode
+        if mode == "bogus204":
+            return httpx.Response(204)
+        if mode == "html200":
+            return httpx.Response(200, text="<html>proxy</html>")
         if mode == "503":
             return httpx.Response(503)
         if mode == "429":
@@ -125,12 +129,17 @@ class FakeServers:
         if done:
             self.complete[key] = [line for k in range(parts) for line in group["chunks"][k]]
         out = {"ok": True, "accepted_parts": sorted(group["chunks"]), "complete": done}
+        if mode == "no_parts":
+            del out["accepted_parts"]
+            out["complete"] = False
         if duplicate:
             out["duplicate"] = True
         return httpx.Response(200 if duplicate else 201, json=out)
 
     def _reports(self, request: httpx.Request) -> httpx.Response:
         mode = self.report_mode
+        if mode == "bogus200":
+            return httpx.Response(200, json={"ok": True})
         if mode == "network":
             raise httpx.ConnectError("down")
         if mode == "503":

@@ -497,6 +497,13 @@ def _code(body: Any) -> str | None:
     return code if isinstance(code, str) else None
 
 
+def _upload_receipt(status: int, body: Any) -> bool:
+    """A contract receipt: ``201 {ok:true}`` or ``200 {ok:true, duplicate:true}``."""
+    if not isinstance(body, Mapping) or body.get("ok") is not True:
+        return False
+    return status == 201 or (status == 200 and body.get("duplicate") is True)
+
+
 def _accepted_parts(body: Any, parts: int) -> set[int] | None:
     raw = body.get("accepted_parts") if isinstance(body, Mapping) else None
     if not isinstance(raw, list):
@@ -565,12 +572,22 @@ async def _upload(visit_id: str, doc: dict, config_dir: Path) -> UploadResult:
             status, body = resp.status_code, _body(resp)
             code = _code(body)
             if 200 <= status < 300:
+                if not _upload_receipt(status, body):
+                    # 不合契约的 2xx（204、代理的 HTML 页……）不是受理回执：文件留着、稍后重试
+                    logger.warning("visit upload %s: status=%s without a valid receipt, kept for retry",
+                                   visit_id, status)
+                    return UploadResult()
                 if parts == 1:
                     return UploadResult(done=True)
-                server_view = _accepted_parts(body, parts)
-                accepted = server_view if server_view is not None else accepted | {part}
                 if isinstance(body, Mapping) and body.get("complete") is True:
                     return UploadResult(done=True)
+                server_view = _accepted_parts(body, parts)
+                if server_view is None:
+                    # 分块上传的每个成功响应都带 accepted_parts：缺了就不替 Servers 认定
+                    logger.warning("visit upload %s: chunk receipt without accepted_parts, kept for retry",
+                                   visit_id)
+                    return UploadResult()
+                accepted = server_view
                 await asyncio.to_thread(_persist_progress, path, doc, parts, accepted)
                 continue
             if status == 413 and code == "too_large":
@@ -785,10 +802,15 @@ async def send_report(doc: Mapping[str, Any]) -> ReportResult:
     except cr.VisitServersUnreachable:
         return ReportResult(attempted=True)
     body = _body(resp)
-    if resp.status_code in (200, 201):
-        report_id = body.get("report_id") if isinstance(body, Mapping) else None
-        return ReportResult(accepted=True, report_id=report_id if isinstance(report_id, str) else None,
-                            attempted=True)
+    report_id = body.get("report_id") if isinstance(body, Mapping) else None
+    receipt = isinstance(report_id, str) and bool(report_id) and (
+        resp.status_code == 201 or (resp.status_code == 200 and body.get("duplicate") is True))
+    if receipt:
+        return ReportResult(accepted=True, report_id=report_id, attempted=True)
+    if 200 <= resp.status_code < 300:
+        # 不合契约的 2xx 不算受理：排队文件留着、稍后重提
+        logger.warning("visit report: status=%s without a valid receipt, kept queued", resp.status_code)
+        return ReportResult(attempted=True)
     if resp.status_code == 404 and _code(body) == "unknown_visit":
         memory_bridge.diag("report_unknown_visit", visit_id=str(doc.get("visit_id")))
         return ReportResult(unknown_visit=True, attempted=True)
