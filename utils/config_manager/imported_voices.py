@@ -140,7 +140,10 @@ class ImportedVoiceStorageMixin:
         )
 
     @voice_storage_transaction
-    def update_imported_voice(self, local_ref, scope_id, voice_data, *, expected_operation_id=None):
+    def update_imported_voice(
+        self, local_ref, scope_id, voice_data, *, expected_operation_id=None, expected_record_revision=None,
+    ):
+        """Update an owned record; a stale conditional refresh returns the stored winner."""
         storage = self._load_voice_storage_for_write()
         found = self._find_imported_voice(storage, local_ref)
         if not found or found[1].get("scope_id") != scope_id:
@@ -149,20 +152,33 @@ class ImportedVoiceStorageMixin:
             found[1].get("overwrite_operation_id", "") != expected_operation_id
         ):
             raise ValueError("VOICE_CONTEXT_CHANGED")
+        revision = found[1].get("_record_revision", 0)
+        if type(revision) is not int or revision < 0:
+            raise ValueError("VOICE_STORAGE_INVALID")
+        if expected_record_revision is not None and revision != expected_record_revision:
+            # Scope and operation ownership were checked first. Return only an
+            # already persisted record, never the rejected upstream observation.
+            return deepcopy(found[1])
         metadata = deepcopy(found[1])
         immutable = {
             "local_ref", "scope_id", "provider", "remote_voice_id", "source",
-            "origin", "imported_at", "created_at",
+            "origin", "imported_at", "created_at", "_record_revision",
         }
         metadata.update({key: deepcopy(value) for key, value in voice_data.items() if key not in immutable})
+        # Even a no-op write invalidates earlier observations. Missing on old
+        # records means zero; this counter is independent of vendor revisions.
+        metadata["_record_revision"] = revision + 1
         storage[found[0]][local_ref] = metadata
         self.save_voice_storage(storage)
         return deepcopy(metadata)
 
-    async def aupdate_imported_voice(self, local_ref, scope_id, voice_data, *, expected_operation_id=None):
+    async def aupdate_imported_voice(
+        self, local_ref, scope_id, voice_data, *, expected_operation_id=None, expected_record_revision=None,
+    ):
         return await asyncio.to_thread(
             self.update_imported_voice, local_ref, scope_id, voice_data,
             expected_operation_id=expected_operation_id,
+            expected_record_revision=expected_record_revision,
         )
 
     @voice_storage_transaction

@@ -333,5 +333,10 @@ async def refresh_overwrite_status(adapter: VoiceManagementAdapter, cm, local_re
         "can_overwrite": _overwrite_allowed(adapter, runtime, remote),
     })
     saved = await cm.aupdate_imported_voice(local_ref, runtime.scope_id, values,
-                                          expected_operation_id=record.get("overwrite_operation_id") or "")
-    return {"success": True, "voice_id": local_ref, "status": status, "voice_data": public_voice_data(saved)}
+                                          expected_operation_id=record.get("overwrite_operation_id") or "",
+                                          expected_record_revision=record.get("_record_revision", 0))
+    await _check_context(adapter, cm, runtime, voice_data=saved)
+    # A parallel refresh may already have committed. Report the stored winner,
+    # not the status calculated from this request's rejected observation.
+    return {"success": True, "voice_id": local_ref,
+            "status": saved.get("overwrite_status", "completed"), "voice_data": public_voice_data(saved)}

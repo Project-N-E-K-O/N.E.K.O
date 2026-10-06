@@ -316,3 +316,78 @@ async def test_async_storage_mutations_are_dual(manager):
     updated = await manager.aupdate_imported_voice(ref, "scope-a", {"overwrite_status": "ready"})
     assert updated["overwrite_status"] == "ready"
     assert await manager.adelete_imported_voice(ref)
+
+
+def test_conditional_refresh_preserves_winner_even_after_noop_write(manager):
+    ref, legacy, _ = import_voice(manager)
+    assert "_record_revision" not in legacy
+    first = manager.update_imported_voice(ref, "scope-a", {
+        "overwrite_operation_id": "same", "overwrite_status": "processing", "remote_revision": "1",
+    }, expected_record_revision=0)
+    # Identical business values still constitute an intervening commit.
+    winner = manager.update_imported_voice(ref, "scope-a", {})
+    before = deepcopy(manager.storage)
+    result = manager.update_imported_voice(ref, "scope-a", {
+        "overwrite_status": "failed", "remote_revision": "old", "can_overwrite": False,
+    }, expected_operation_id="same", expected_record_revision=first["_record_revision"])
+    assert result == winner
+    assert result["_record_revision"] == 2
+    assert manager.storage == before
+    result["overwrite_status"] = "modified returned copy"
+    assert manager.get_imported_voice(ref)["overwrite_status"] == "processing"
+
+
+@pytest.mark.asyncio
+async def test_conditional_async_refresh_and_internal_revision_ownership(manager):
+    ref, _, _ = import_voice(manager)
+    first = await manager.aupdate_imported_voice(ref, "scope-a", {
+        "overwrite_status": "completed", "_record_revision": 999,
+    }, expected_operation_id="", expected_record_revision=0)
+    assert first["_record_revision"] == 1
+    result = await manager.aupdate_imported_voice(ref, "scope-a", {
+        "overwrite_status": "processing",
+    }, expected_operation_id="", expected_record_revision=0)
+    assert result == first
+
+
+@pytest.mark.parametrize("change", ["operation", "scope", "delete"])
+def test_revision_conflict_cannot_hide_lost_identity(manager, change):
+    ref, _, _ = import_voice(manager)
+    manager.update_imported_voice(ref, "scope-a", {
+        "overwrite_status": "completed", "overwrite_operation_id": "first",
+    })
+    if change == "operation":
+        manager.update_imported_voice(ref, "scope-a", {"overwrite_operation_id": "second"})
+    elif change == "delete":
+        assert manager.delete_imported_voice(ref)
+    before = deepcopy(manager.storage)
+    with pytest.raises(ValueError) as exc:
+        manager.update_imported_voice(ref, "wrong" if change == "scope" else "scope-a", {
+            "overwrite_status": "failed",
+        }, expected_operation_id="first", expected_record_revision=0)
+    assert exc.value.args == ("VOICE_CONTEXT_CHANGED",)
+    assert manager.storage == before
+
+
+@pytest.mark.parametrize("invalid_revision", [None, True, -1, "1"])
+def test_invalid_local_revision_never_writes(manager, invalid_revision):
+    ref, _, _ = import_voice(manager)
+    manager.storage["__REMOTE_VOICES__scope-a"][ref]["_record_revision"] = invalid_revision
+    before = deepcopy(manager.storage)
+    with pytest.raises(ValueError) as exc:
+        manager.update_imported_voice(ref, "scope-a", {}, expected_record_revision=0)
+    assert exc.value.args == ("VOICE_STORAGE_INVALID",)
+    assert manager.storage == before
+
+
+def test_failed_save_does_not_commit_local_revision(manager, monkeypatch):
+    ref, _, _ = import_voice(manager)
+    before = deepcopy(manager.storage)
+    with monkeypatch.context() as failure:
+        def reject_save(value):
+            raise OSError("controlled failure")
+        failure.setattr(manager, "save_voice_storage", reject_save)
+        with pytest.raises(OSError):
+            manager.update_imported_voice(ref, "scope-a", {}, expected_record_revision=0)
+    assert manager.storage == before
+    assert manager.update_imported_voice(ref, "scope-a", {}, expected_record_revision=0)["_record_revision"] == 1
