@@ -1347,11 +1347,13 @@ main() {
         exit 1
     fi
 
-    # ./logs 挂载点：宿主机上不存在时 Docker 会以 root 创建，镜像里给 /app/logs 的
-    # 属主就被盖掉了，DEBUG 级 dev 日志和后备日志目录随之写不进去。只改挂载点本身
-    # （与上面 /home/neko 同理，不递归），旧的 root 日志文件留给管理员逐个处理。
+    # ./logs 挂载点：宿主机上不存在时 Docker 会以 root 创建一个空目录，镜像里给
+    # /app/logs 的属主就被盖掉了，DEBUG 级 dev 日志和后备日志目录随之写不进去。
+    # 只在它为空时改挂载点本身（不递归）：宿主侧的 ./logs 若是指向别处的符号链接，
+    # Docker 挂的是链接目标，容器里的 -L 识别不出来；限定空目录就不会去改一个已有
+    # 内容的宿主目录（比如 /var/log）的属主。已有内容时交给管理员处理。
     # 主日志在数据目录里，这里失败不影响服务，所以只警告不退出。
-    if [ -d /app/logs ] && [ ! -L /app/logs ]; then
+    if [ -d /app/logs ] && [ ! -L /app/logs ] && [ -z "$(ls -A /app/logs 2>/dev/null)" ]; then
         chown -h 1000:1000 /app/logs 2>/dev/null \
             || echo "⚠️ 无法把 /app/logs 的属主改为 1000:1000，DEBUG 日志可能无法写入"
     fi

@@ -237,7 +237,7 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
 3. 停止容器，按上面读出的实际来源，以 root 保留属主和权限备份数据目录，以及存在的 `.env` 和网关覆盖文件，然后核验备份：
 
    ```bash
-   docker stop neko
+   docker stop neko && [ "$(docker inspect -f '{{.State.Running}}' neko)" = false ] && echo stopped-ok
    BACKUP=("${HOME_SRC#/}" "${LOGS_SRC#/}")
    for f in .env compose.gateway.yaml; do [ -f "$CFG_DIR/$f" ] && BACKUP+=("${CFG_DIR#/}/$f"); done
    # 归档写到仓库外的 /root，umask 077 使其仅 root 可读；按绝对路径保存，回退时可原样恢复
@@ -249,10 +249,10 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    for p in "${BACKUP[@]}"; do printf '%s\n' "$LIST" | grep -qxF -e "$p" -e "$p/" && echo "ok /$p" || echo "MISSING /$p"; done
    ```
 
-   必须依次看到 `tar-ok` 和 `archive-ok`，并且每一项都是 `ok`、没有 `MISSING`。备份含实例凭证和 TLS 私钥，不要复制到仓库目录或公开位置。确认备份完整后再删除容器：`docker rm neko`。
+   必须依次看到 `stopped-ok`、`tar-ok` 和 `archive-ok`，并且每一项都是 `ok`、没有 `MISSING`。备份含实例凭证和 TLS 私钥，不要复制到仓库目录或公开位置。确认备份完整后再删除容器：`docker rm neko`。
 4. 确认 `docker/neko-home` 和 `docker/logs` 尚不存在（已存在说明另有官方部署的数据，先核对，不要覆盖），再从实际来源以 root 保留属主和权限地复制：`sudo cp -a "$HOME_SRC" docker/neko-home && sudo cp -a "$LOGS_SRC" docker/logs`。TLS 私钥属主为 root、权限 0600，不用 root 复制会遗漏。
 
-   复制后不需要手动 `chown -R`：容器每次启动时，入口脚本会以 root 把 `neko-home` 顶层和 `.local/share/N.E.K.O` 下的全部数据（记忆、角色、配置等）对齐到 uid/gid 1000，并把 `logs` 挂载点本身对齐到 1000。它不会递归修改 `logs` 里的旧文件：如果其中有以前以 root 写下的日志，按需逐个修复，例如 `sudo chown --no-dereference 1000:1000 -- docker/logs/某个.log`；不要用 `chown -R` 或通配符，以免改到挂载进来的其他宿主路径。
+   复制后不需要手动 `chown -R`：容器每次启动时，入口脚本会以 root 把 `neko-home` 顶层和 `.local/share/N.E.K.O` 下的全部数据（记忆、角色、配置等）对齐到 uid/gid 1000，`logs` 挂载点只在为空时才被对齐到 1000（避免 `./logs` 是指向别处的符号链接时改到其他宿主目录），也不会递归修改其中的旧文件。迁移过来的 `logs` 用 `cp -a` 保留了原属主，通常已是 1000；如果其中有以前以 root 写下的日志，按需逐个修复，例如 `sudo chown --no-dereference 1000:1000 -- docker/logs/某个.log`；不要用 `chown -R` 或通配符，以免改到挂载进来的其他宿主路径。
 5. 把旧部署的**全部**有效配置迁过来，不只是 `docker/community-2c2g/.env`，还包括启动时用过的 `--env-file`、shell 环境变量、`COMPOSE_FILE` 和 `-f` 覆盖文件。需要的值写入 `docker/.env`；网关覆盖文件改放 `docker/compose.gateway.yaml`，`COMPOSE_FILE` 改为 `docker-compose.yml:compose.gateway.yaml`。之后用不带 `-f` 的 `docker compose` 命令就能得到完整配置，不要依赖临时的 shell 变量。
 
    旧部署的覆盖文件里如果还有 `mem_limit`、`read_only`、`cap_drop`、`tmpfs`、`extra_hosts`、`devices`、`ulimits` 等非环境变量设置，也一并写进 `docker/compose.local.yaml` 的 `neko-main` 下。快照没有覆盖的选项（如 `devices`、`ulimits`）要对照旧覆盖文件人工核对。
