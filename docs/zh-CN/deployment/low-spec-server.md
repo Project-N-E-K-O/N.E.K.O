@@ -252,10 +252,12 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
      docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
      docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
    } | sudo sh -c 'umask 077; cat > /root/neko-official-effective.txt'
-   sudo diff /root/neko-2c2g-effective.txt /root/neko-official-effective.txt
+   # 只列出有差异的变量名（< 旧容器，> 新容器），不打印任何值；没有输出表示完全一致
+   sudo bash -c 'diff <(sort "$0") <(sort "$1") | sed -n "s/^\([<>]\) \([^=]*\)=.*/\1 \2/p"' \
+     /root/neko-2c2g-effective.txt /root/neko-official-effective.txt
    ```
 
-   重点确认 `NEKO_REQUIRE_HTTPS`、`NEKO_INSTANCE_ACCESS_KEY`、`NEKO_INSTANCE_PUBLIC_ORIGIN`、`NEKO_TRUSTED_HOSTS`、`NEKO_TRUSTED_ORIGINS`、`SSL_DOMAIN`、镜像和端口没有丢失或变化。有非预期差异时先 `docker compose down`，修正 `docker/.env` 或覆盖文件后再启动。迁移确认成功后再删除这两个快照文件。
+   重点确认 `NEKO_REQUIRE_HTTPS`、`NEKO_INSTANCE_ACCESS_KEY`、`NEKO_INSTANCE_PUBLIC_ORIGIN`、`NEKO_TRUSTED_HOSTS`、`NEKO_TRUSTED_ORIGINS`、`SSL_DOMAIN`、镜像和端口没有丢失或变化。需要看具体值时，用 `sudo grep '^变量名=' 文件` 单独查看，不要整份打印。有非预期差异时先 `(cd docker && docker compose down)`，修正 `docker/.env` 或覆盖文件后再启动。迁移确认成功后再删除这两个快照文件。
 
    迁移失败需要回退到旧部署时，在仓库根目录执行：
 

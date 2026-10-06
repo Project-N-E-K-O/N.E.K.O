@@ -177,10 +177,12 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
      docker inspect neko --format 'ports={{json .HostConfig.PortBindings}}'
      docker inspect neko --format '{{range .Config.Env}}{{println .}}{{end}}'
    } | sudo sh -c 'umask 077; cat > /root/neko-official-effective.txt'
-   sudo diff /root/neko-2c2g-effective.txt /root/neko-official-effective.txt
+   # Lists only the names that differ (< old container, > new container), never the values; no output means identical
+   sudo bash -c 'diff <(sort "$0") <(sort "$1") | sed -n "s/^\([<>]\) \([^=]*\)=.*/\1 \2/p"' \
+     /root/neko-2c2g-effective.txt /root/neko-official-effective.txt
    ```
 
-   Make sure `NEKO_REQUIRE_HTTPS`, `NEKO_INSTANCE_ACCESS_KEY`, `NEKO_INSTANCE_PUBLIC_ORIGIN`, `NEKO_TRUSTED_HOSTS`, `NEKO_TRUSTED_ORIGINS`, `SSL_DOMAIN`, the image, and the ports were not lost or changed. On an unexpected difference, run `docker compose down`, fix `docker/.env` or the override, and start again. Delete both snapshot files once the migration is confirmed.
+   Make sure `NEKO_REQUIRE_HTTPS`, `NEKO_INSTANCE_ACCESS_KEY`, `NEKO_INSTANCE_PUBLIC_ORIGIN`, `NEKO_TRUSTED_HOSTS`, `NEKO_TRUSTED_ORIGINS`, `SSL_DOMAIN`, the image, and the ports were not lost or changed. To see a specific value, check it alone with `sudo grep '^NAME=' file` instead of printing the whole file. On an unexpected difference, run `(cd docker && docker compose down)`, fix `docker/.env` or the override, and start again. Delete both snapshot files once the migration is confirmed.
 
     To roll back to the old deployment if migration fails, run from the repository root:
 
