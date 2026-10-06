@@ -710,3 +710,9 @@ def test_a_one_word_street_after_a_house_number():
     assert "broadway" in tokens
     tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: 12 main street", [])]
     assert "main street" in tokens and "main" not in tokens        # 多词街名不拆出单个词
+
+
+
+def test_a_lowercase_single_word_after_a_number_is_not_a_street():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("She lives in 2 cities at once.", [])]
+    assert "cities" not in tokens

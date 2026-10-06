@@ -254,8 +254,9 @@ def _street_names(value: str) -> list[str]:
     head = _STREET_AFTER_NUMBER_RE.match(value)
     if head is not None:
         words = _run_until_stopword(head.group(1).split())
-        if len(words) == 1:
-            # 门牌号后只有一个词（「12 Broadway」）：这个词就是街名
+        if len(words) == 1 and words[0][:1].isupper():
+            # 门牌号后只有一个大写开头的词（「12 Broadway」）：这个词就是街名。小写的单个词多半是普通
+            # 名词（「lives in 2 cities」），不收
             out.append(words[0])
         out.extend(" ".join(words[:k]) for k in range(2, len(words) + 1))
     for m in _NUMBERED_STREET_RE.finditer(value):

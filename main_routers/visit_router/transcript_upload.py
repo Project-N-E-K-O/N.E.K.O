@@ -291,16 +291,21 @@ class UploadJournal:
         # 先登记再建文件：流水一出现在磁盘上，重试轮次就必须认得它还开着，不能趁建文件的间隙重封
         added = self.visit_id not in _open_streams
         _open_streams.add(self.visit_id)
-        opening = executor.submit(self._open_sync, _encode_record(header))
+        opening = asyncio.wrap_future(executor.submit(self._open_sync, _encode_record(header)))
         try:
-            self._fd = await asyncio.shield(asyncio.wrap_future(opening))
+            self._fd = await asyncio.shield(opening)
         except BaseException:
-            # 被取消时线程里的建文件可能还在跑：等它结束，关掉拿到的 fd、删掉只写了头的流水，
-            # 之后才撤销登记——否则重试轮次会把一份仍开着的流水当成孤立文件重封
-            try:
-                fd = await asyncio.to_thread(opening.result)
-            except BaseException:  # noqa: BLE001 - 建文件本身失败：没有 fd 要收拾
-                fd = None
+            # 被取消时线程里的建文件可能还在跑：等它结束（等的过程中再被取消也照等），关掉拿到的 fd、
+            # 删掉只写了头的流水，之后才撤销登记——否则重试轮次会把一份仍开着的流水当成孤立文件重封
+            while not opening.done():
+                try:
+                    await asyncio.shield(opening)
+                except asyncio.CancelledError:
+                    continue
+                except BaseException:  # noqa: BLE001 - 建文件本身失败：下面按没有 fd 处理
+                    break
+            fd = opening.result() if opening.done() and not opening.cancelled() \
+                and opening.exception() is None else None
             if fd is not None:
                 with contextlib.suppress(OSError):
                     os.close(fd)

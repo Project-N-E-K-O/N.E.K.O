@@ -255,12 +255,15 @@ async def test_crash_before_any_usage_uploads_zero_usage(tmp_path, servers, monk
 
 async def test_upload_is_held_while_another_account_is_signed_in(tmp_path, servers, monkeypatch):
     fake, state = servers
+    scheduled = []
+    # 回调失败会排后台重试（另有测试覆盖）；这里只看补录本身，不让后台 worker 抢着上传
+    monkeypatch.setattr(tu, "schedule_visit_retry", lambda visit_id, **_k: scheduled.append(visit_id))
     journal = await _journal(tmp_path)
     await _say(journal, 1)
     await journal.seal("wrap_up")
     state["account"] = "u2"
     assert await tu.upload_visit_transcript(V1, _sealed(tmp_path)) is False
-    assert fake.count("/api/visit/transcripts") == 0
+    assert fake.count("/api/visit/transcripts") == 0 and scheduled == [V1]
     await _recover(tmp_path, monkeypatch)
     assert (_spool(tmp_path) / f"{V1}.upload.json").exists()
     state["account"] = "u1"
@@ -1128,6 +1131,33 @@ async def test_a_cancelled_open_cleans_up_after_the_worker(tmp_path, servers, mo
     task.cancel()
     await asyncio.sleep(0.05)
     assert V1 in tu._open_streams                         # 线程还在建文件：登记不能先撤
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert V1 not in tu._open_streams
+    assert not (_spool(tmp_path) / f"{V1}.upload.jsonl").exists()
+
+
+
+async def test_a_second_cancel_while_waiting_still_cleans_up(tmp_path, servers, monkeypatch):
+    import threading
+
+    started, release = threading.Event(), threading.Event()
+    real_open = tu.UploadJournal._open_sync
+
+    def slow(self, data):
+        started.set()
+        release.wait(5)
+        return real_open(self, data)
+
+    monkeypatch.setattr(tu.UploadJournal, "_open_sync", slow)
+    task = asyncio.ensure_future(_journal(tmp_path))
+    await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    task.cancel()                                          # 等线程期间又被取消一次
+    await asyncio.sleep(0.05)
+    assert V1 in tu._open_streams
     release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
