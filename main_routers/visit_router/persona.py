@@ -204,6 +204,13 @@ _NUMBERED_STREET_RE = re.compile(
 )
 
 
+# 住所类通用名词：地址值以它们开头（「Apartment is on the top floor」）不是地名
+_GENERIC_DWELLING_WORDS = frozenset({
+    "apartment", "apt", "flat", "house", "home", "room", "building", "unit", "floor", "suite", "studio",
+    "dorm", "dormitory", "condo", "villa", "cottage", "place", "here", "there", "near", "next", "behind",
+})
+
+
 _STREET_TYPE_WORD_RE = re.compile(rf"(?:{_STREET_TYPES})\.?", re.IGNORECASE)
 
 
@@ -356,7 +363,7 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
             if is_address:
                 words = value.split()
                 if len(words) > 1 and words[0][:1].isupper() and words[1][:1].islower() \
-                        and words[0].lower() not in _STREET_STOPWORDS:
+                        and words[0].lower().strip(".,!?;:") not in _STREET_STOPWORDS | _GENERIC_DWELLING_WORDS:
                     # 地址值以单个大写词开头、后面是小写叙述（「Broadway likes cats」）：这个词就是地名
                     found.append(words[0].strip(".,!?;:"))
                 end = _LINE_END_RE.search(text, m.start("value"))

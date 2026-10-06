@@ -754,3 +754,10 @@ def test_a_leading_one_word_address_before_prose():
     assert "Broadway" in tokens
     tokens = persona.extract_sensitive_tokens("address: The house is blue", [])
     assert "The" not in tokens
+
+
+
+def test_a_generic_dwelling_word_is_not_a_place_name():
+    tokens = persona.extract_sensitive_tokens("address: Apartment is on the top floor", [])
+    assert "Apartment" not in tokens
+    assert "Broadway" in persona.extract_sensitive_tokens("address: Broadway likes cats", [])
