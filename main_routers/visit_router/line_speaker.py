@@ -577,6 +577,12 @@ class LineSpeaker:
             self._drained = False
             self._last_progress_at = now
 
+    def _speakable_tail(self) -> bool:
+        """Whether text the push-side strippers still hold becomes speakable when the line ends."""
+        tail = self._push_markdown.flush()
+        spoken = strip_tts_muted_symbols(self._push_bracket.feed(tail) + self._push_bracket.flush())
+        return bool(spoken.strip())
+
     def _speakable(self, text: str) -> bool:
         """Whether ``text`` (one push) contains anything the TTS chain would actually speak."""
         spoken = strip_tts_muted_symbols(self._push_bracket.feed(self._push_markdown.feed(text)))
@@ -671,6 +677,9 @@ class LineSpeaker:
             self._name_hold = ""
         self._add_clauses(self._splitter.flush())
         if self._mode == PACED_AUDIO and self._stream is not None and not self._stream_dead:
+            if self._first_push_at is None and self._speakable_tail():
+                # 推入时被扣着的未闭合 markdown 收尾后能念出声：起播计时从这一刻起算
+                self._first_push_at = now
             outcome = self._stream.finish()
             self._finished = True
             self._finish_at = now

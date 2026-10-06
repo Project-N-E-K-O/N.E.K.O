@@ -54,6 +54,8 @@ from bisect import bisect_left
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
+
+import regex
 from typing import (
     Annotated,
     Any,
@@ -373,16 +375,25 @@ def _splits_cluster(s: str, p: int) -> bool:
     return False
 
 
-def grapheme_safe_cut(s: str, p: int) -> int:
-    """Largest cut ``<= p`` of ``s`` that does not split a grapheme cluster (emoji, flags, marks).
+_GRAPHEME = regex.compile(r"\X")
 
-    Unlike the budget's bounded backoff, this walks back as far as needed
-    (meant for short texts such as a capped goodbye line).
+
+def grapheme_safe_cut(s: str, p: int) -> int:
+    """Largest cut ``<= p`` of ``s`` that does not split an extended grapheme cluster (UAX #29).
+
+    Unlike the budget's bounded backoff, this uses full cluster segmentation
+    (emoji, flags, combining marks, Hangul jamo ...) and walks back as far as
+    needed; meant for short texts such as a capped goodbye line.
     """
     q = min(max(p, 0), len(s))
-    while q > 0 and _splits_cluster(s, q):
-        q -= 1
-    return q
+    if q == len(s):
+        return q
+    cut = 0
+    for m in _GRAPHEME.finditer(s):
+        if m.end() > q:
+            break
+        cut = m.end()
+    return cut
 
 
 def _safe_cut(s: str, p: int, *, floor: int = 0) -> int:

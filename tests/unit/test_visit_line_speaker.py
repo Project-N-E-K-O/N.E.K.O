@@ -949,3 +949,40 @@ def test_a_held_name_prefix_is_still_spoken_when_the_line_ends_there():
     h.progress(0)
     h.progress(10**7, ended=True, final=True)
     assert h.results[0].text == "See you later, J." == "".join(h.texts())
+
+
+
+def test_goodbye_cap_never_splits_conjoining_hangul_jamo():
+    from utils.visit_wire import grapheme_safe_cut
+
+    syllable = "\u1112\u1161"                        # 用组合字母拼出的「하」：一个字形簇、两个码点
+    text = "好" * 39 + syllable + "拜"
+    assert grapheme_safe_cut(text, 40) == 39
+    h = Harness(wu=True)
+    h.speaker.feed(text)
+    h.speaker.llm_done()
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    assert h.results[0].text == "好" * 39 and h.results[0].trunc_reason == "goodbye_cap"
+
+
+
+def test_a_rejected_end_marker_after_unclosed_markdown_falls_back_for_the_visit():
+    h = Harness(finish_result=False)
+    h.open_stream = lambda on_enqueued: h.streams.append(
+        _SilentStream(on_enqueued, finish_result=False)) or h.streams[-1]
+    h.speaker = h.new_line("h:2")
+    h.speaker.feed("`你好")                          # 推入时 markdown 未闭合：看不出能念的字
+    assert h.speaker.mode == ls.PACED_AUDIO and not h.voice.fallen_back
+    h.speaker.llm_done()                             # 收尾后「你好」能念，结束标记却送不进去
+    assert h.voice.fallen_back and h.speaker.mode == ls.PACED_ESTIMATE
+
+
+def test_a_rejected_end_marker_after_only_stage_directions_keeps_tts():
+    h = Harness(finish_result=False)
+    h.open_stream = lambda on_enqueued: h.streams.append(
+        _SilentStream(on_enqueued, finish_result=False)) or h.streams[-1]
+    h.speaker = h.new_line("h:2")
+    h.speaker.feed("（微笑）")
+    h.speaker.llm_done()
+    assert not h.voice.fallen_back and h.speaker.mode == ls.PACED_ESTIMATE
