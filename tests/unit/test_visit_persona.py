@@ -446,3 +446,34 @@ def test_rule_sections_are_the_private_sentences():
     sections = persona.rule_private_sections(CARD, FAMILY)
     assert set(PRIVATE) <= set(sections)
     assert PUBLIC[1] not in sections
+
+
+
+def test_put_copying_a_private_passage_is_refused(env):
+    client, tmp_path, *_ = env
+    _generate(client)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，每周三都要加班到很晚，你会在门口等他回家。", "reviewed": True})
+    assert resp.status_code == 400 and resp.json()["code"] == "persona_sensitive_overlap"
+
+
+def test_a_regeneration_never_overwrites_an_edit_made_meanwhile(env):
+    client, tmp_path, *_ = env
+    _generate(client)
+    gate = client.portal.call(_make_event)
+
+    async def slow(prompt):
+        await gate.wait()
+        return GOOD_PERSONA
+
+    persona.configure_persona(llm=slow)
+    assert client.post("/api/visit/persona/regenerate?catgirl=A", headers=GOOD, json={}).status_code == 202
+    edited = {**_file(tmp_path), "text": "你是{LANLAN_NAME}，手写的人设。", "edited": True, "reviewed": True}
+    client.portal.call(persona.store().save, UID_A, edited)     # 另一个窗口抢在生成结束前确认了手写
+    client.portal.call(gate.set)
+    _settle(client)
+    assert _file(tmp_path)["text"] == "你是{LANLAN_NAME}，手写的人设。"
+
+
+async def _make_event():
+    return asyncio.Event()

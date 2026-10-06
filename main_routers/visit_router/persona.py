@@ -47,6 +47,7 @@ edited the persona -> allowed, ``card_changed`` is only reported.
 from __future__ import annotations
 
 import asyncio
+import weakref
 import hashlib
 import os
 import re
@@ -615,8 +616,22 @@ def store() -> VisitPersonaStore:
     return VisitPersonaStore(_hooks.config_dir())
 
 
+_PERSONA_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+def persona_lock(character_uid: str) -> asyncio.Lock:
+    """Per-character lock around every persona write (hand edit vs. regeneration commit)."""
+    lock = _PERSONA_LOCKS.get(character_uid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _PERSONA_LOCKS[character_uid] = lock
+    return lock
+
+
 async def _regenerate(name: str, character_uid: str) -> None:
     try:
+        async with persona_lock(character_uid):
+            before = await store().load(character_uid)
         ctx = await _hooks.load_context()
         card = ctx.card(name)
         if card is None:
@@ -628,7 +643,12 @@ async def _regenerate(name: str, character_uid: str) -> None:
         if result.doc is None:
             _errors[character_uid] = result.error or "llm_unavailable"
             return
-        await store().save(character_uid, result.doc)
+        async with persona_lock(character_uid):
+            if await store().load(character_uid) != before:
+                # 生成期间人设被别处改过（另一个窗口手写确认）：不拿生成结果覆盖它
+                logger.info("visit persona: regeneration superseded by an edit, result dropped")
+                return
+            await store().save(character_uid, result.doc)
         _errors.pop(character_uid, None)
     except asyncio.CancelledError:
         raise
@@ -764,42 +784,46 @@ async def put_persona(request: Request, catgirl: str = ""):
     if isinstance(resolved, JSONResponse):
         return resolved
     character_uid, ctx = resolved
-    if is_generating(character_uid):
-        return _error(409, "persona_generating")
-    persona_store = store()
-    doc = await persona_store.load(character_uid)
-    if text is None:
-        if doc is None:
-            return _error(409, "persona_missing")
-        doc = {**doc, "reviewed": True}
-    else:
-        lang = _hooks.lang()
-        cleaned = redact_outbound(
-            strip_control_chars(text).strip(), family_names=ctx.family_names,
-            replacement=get_family_neutral_term(lang),
-        ).strip()
-        if not cleaned:
-            return _error(400, "invalid_text")
-        if count_tokens(cleaned) > VISIT_PERSONA_MAX_TOKENS:
-            return _error(400, "persona_too_long")
-        card = ctx.card(catgirl)
-        hits = sensitive_token_hits(card, cleaned, ctx.family_names)
-        if hits:
-            return _error(400, "persona_sensitive_overlap", hits=hits)
-        if doc is None:
-            # 从没生成过就手写：清单只有规则段落，没有独立扫描
-            digest = card_hash(card)
-            doc = {
-                "text": cleaned, "source_card_hash": digest, "generated_at": None,
-                "edited": True, "reviewed": True,
-                "private_sections": _merge_sections(rule_private_sections(card, ctx.family_names))[0],
-                "scan_card_hash": digest, "scan_complete": False,
-            }
+    # 与后台重生成的落盘互斥：检查「没在生成」到写盘之间不能被重生成插进来
+    async with persona_lock(character_uid):
+        if is_generating(character_uid):
+            return _error(409, "persona_generating")
+        persona_store = store()
+        doc = await persona_store.load(character_uid)
+        if text is None:
+            if doc is None:
+                return _error(409, "persona_missing")
+            doc = {**doc, "reviewed": True}
         else:
-            # 手写不动私人段落清单与它依据的卡片哈希
-            doc = {**doc, "text": cleaned, "edited": True, "reviewed": True}
-    await persona_store.save(character_uid, doc)
-    _errors.pop(character_uid, None)
+            lang = _hooks.lang()
+            cleaned = redact_outbound(
+                strip_control_chars(text).strip(), family_names=ctx.family_names,
+                replacement=get_family_neutral_term(lang),
+            ).strip()
+            if not cleaned:
+                return _error(400, "invalid_text")
+            if count_tokens(cleaned) > VISIT_PERSONA_MAX_TOKENS:
+                return _error(400, "persona_too_long")
+            card = ctx.card(catgirl)
+            # 与生成路径同一套检查：规则敏感词 + 与私人段落（规则段落 + 同一张卡扫描出的段落）的 8-gram
+            scanned = doc["private_sections"] if doc is not None and doc["scan_card_hash"] == card_hash(card) else ()
+            hits = persona_privacy_check(card, cleaned, ctx.family_names, scanned)
+            if hits:
+                return _error(400, "persona_sensitive_overlap", hits=[hit.value for hit in hits])
+            if doc is None:
+                # 从没生成过就手写：清单只有规则段落，没有独立扫描
+                digest = card_hash(card)
+                doc = {
+                    "text": cleaned, "source_card_hash": digest, "generated_at": None,
+                    "edited": True, "reviewed": True,
+                    "private_sections": _merge_sections(rule_private_sections(card, ctx.family_names))[0],
+                    "scan_card_hash": digest, "scan_complete": False,
+                }
+            else:
+                # 手写不动私人段落清单与它依据的卡片哈希
+                doc = {**doc, "text": cleaned, "edited": True, "reviewed": True}
+        await persona_store.save(character_uid, doc)
+        _errors.pop(character_uid, None)
     return JSONResponse(await _view(catgirl, character_uid, ctx))
 
 

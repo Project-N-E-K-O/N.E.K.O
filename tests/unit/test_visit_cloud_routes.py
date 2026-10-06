@@ -464,3 +464,18 @@ def test_report_survives_clearing_the_person(env):
     client.post("/api/visit/memory/forget", headers=GOOD, json={"catgirl": "A", "peer_uid": "1" * 24})
     assert (tmp_path / "visit_reports" / f"{V1}.json").read_bytes() == before
     assert "peer_uid" not in before.decode("utf-8")
+
+
+
+def test_manual_retry_with_an_expired_login_asks_to_sign_in(env, monkeypatch):
+    client, fake, tmp_path, _ = env
+    fake.report_mode = "503"
+    _report(client)
+
+    async def expired():
+        raise cr.VisitLoginRequired()
+
+    monkeypatch.setattr(cr, "_servers_session", expired)
+    resp = client.post(f"/api/visit/report/queue/{V1}", headers=GOOD, json={"action": "retry"})
+    assert resp.status_code == 409 and resp.json()["code"] == "VISIT_LOGIN_REQUIRED"
+    assert _queued(tmp_path) is not None

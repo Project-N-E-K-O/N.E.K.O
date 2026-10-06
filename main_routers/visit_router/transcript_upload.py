@@ -579,8 +579,6 @@ async def _upload(visit_id: str, doc: dict, config_dir: Path) -> UploadResult:
                     return UploadResult()
                 if parts == 1:
                     return UploadResult(done=True)
-                if isinstance(body, Mapping) and body.get("complete") is True:
-                    return UploadResult(done=True)
                 server_view = _accepted_parts(body, parts)
                 if server_view is None:
                     # 分块上传的每个成功响应都带 accepted_parts：缺了就不替 Servers 认定
@@ -588,6 +586,8 @@ async def _upload(visit_id: str, doc: dict, config_dir: Path) -> UploadResult:
                                    visit_id)
                     return UploadResult()
                 accepted = server_view
+                if isinstance(body, Mapping) and body.get("complete") is True and len(accepted) >= parts:
+                    return UploadResult(done=True)
                 await asyncio.to_thread(_persist_progress, path, doc, parts, accepted)
                 continue
             if status == 413 and code == "too_large":
@@ -748,6 +748,8 @@ class ReportResult:
     unknown_visit: bool = False
     login_required: bool = False
     attempted: bool = False
+    retry_after_s: int | None = None
+    """Servers ``429`` delay of the report endpoint."""
     """The request went out as the owning account (network errors included)."""
 
 
@@ -816,6 +818,8 @@ async def send_report(doc: Mapping[str, Any]) -> ReportResult:
         return ReportResult(unknown_visit=True, attempted=True)
     if resp.status_code == 401:
         return ReportResult(login_required=True, attempted=True)
+    if resp.status_code == 429:
+        return ReportResult(attempted=True, retry_after_s=cr._retry_after(body, resp))
     return ReportResult(attempted=True)
 
 
@@ -923,6 +927,8 @@ class RetryRound:
 
     pending: bool
     retry_after_s: int | None = None
+    login_required: bool = False
+    """The queued report could not be sent: the owning account's session is gone."""
 
 
 @dataclass(frozen=True)
@@ -1008,11 +1014,15 @@ async def retry_visit_once(
         if report is not None and report.get("rejected") and not manual:
             report = None
         report_pending = report is not None
+        login_required = False
+        report_retry_after: int | None = None
         if report is not None and not (upload.pending and report["include_transcript"]):
             if upload.unavailable and not report.get("transcript_unavailable"):
                 # 原因没写进举报文件（磁盘 / 权限）：提交的这份照样带上
                 report = {**report, "transcript_unavailable": upload.unavailable}
             result = await send_report(report)
+            login_required = result.login_required
+            report_retry_after = result.retry_after_s
             if await finish_report(config_dir, visit_id, result, report) or result.unknown_visit:
                 report_pending = False
             elif manual and report.get("rejected") and result.attempted and not result.login_required:
@@ -1021,7 +1031,9 @@ async def retry_visit_once(
                 await set_report_rejected(config_dir, visit_id, None, expect=report)
             elif report.get("rejected"):
                 report_pending = False
-    return RetryRound(pending=report_pending or upload.retryable, retry_after_s=upload.retry_after_s)
+    delays = [d for d in (upload.retry_after_s, report_retry_after) if d is not None]
+    return RetryRound(pending=report_pending or upload.retryable, retry_after_s=max(delays) if delays else None,
+                      login_required=login_required)
 
 
 _workers: dict[str, asyncio.Task] = {}
@@ -1034,8 +1046,11 @@ def _reset_for_tests() -> None:
     _recent_anomalies.clear()
 
 
-async def _retry_loop(visit_id: str, config_dir: Path | None) -> None:
+async def _retry_loop(visit_id: str, config_dir: Path | None, initial_delay_s: float = 0.0) -> None:
     delay_index = 0
+    if initial_delay_s > 0:
+        # 调用方刚试过一次（含 429 给的等待）：先等，不立刻再打一次
+        await _sleep(initial_delay_s)
     while True:
         if is_live(visit_id):
             # 在飞场次的转录还没封存：finalize 封存后会重新排上
@@ -1052,13 +1067,19 @@ async def _retry_loop(visit_id: str, config_dir: Path | None) -> None:
         await _sleep(max(delay, outcome.retry_after_s or 0))
 
 
-def schedule_visit_retry(visit_id: str, *, config_dir: Path | None = None) -> asyncio.Task:
-    """Upload / report retries of ``visit_id`` in the background (one task per visit)."""
+def schedule_visit_retry(visit_id: str, *, config_dir: Path | None = None,
+                         initial_delay_s: float = 0.0) -> asyncio.Task:
+    """Upload / report retries of ``visit_id`` in the background (one task per visit).
+
+    ``initial_delay_s``: the caller just made an attempt; wait this long
+    before the first background round (at least the Servers ``retry_after``).
+    """
     visit_id = require_visit_id(visit_id)
     task = _workers.get(visit_id)
     if task is not None and not task.done():
         return task
-    task = asyncio.create_task(_retry_loop(visit_id, config_dir), name=f"visit-upload-{visit_id[:6]}")
+    task = asyncio.create_task(_retry_loop(visit_id, config_dir, initial_delay_s),
+                               name=f"visit-upload-{visit_id[:6]}")
     _workers[visit_id] = task
 
     def _done(t: asyncio.Task) -> None:

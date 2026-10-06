@@ -668,9 +668,10 @@ async def test_an_uncontracted_2xx_is_not_a_receipt(tmp_path, servers, mode):
     assert sealed.exists()
 
 
-async def test_chunk_receipts_without_accepted_parts_are_not_trusted(tmp_path, servers):
+@pytest.mark.parametrize("mode", ["no_parts", "complete_no_parts"])
+async def test_chunk_receipts_without_accepted_parts_are_not_trusted(tmp_path, servers, mode):
     fake, _ = servers
-    fake.transcript_mode = "no_parts"
+    fake.transcript_mode = mode
     sealed = _write_sealed(tmp_path, _big_doc())        # >512 KiB：分块上传
     assert (await tu.retry_visit_once(V1)).pending is True
     doc = json.loads(sealed.read_text(encoding="utf-8"))
@@ -683,3 +684,33 @@ async def test_a_report_200_without_its_receipt_stays_queued(tmp_path, servers):
     await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
     assert (await tu.retry_visit_once(V1)).pending is True
     assert await tu.load_report(tmp_path, V1) is not None
+
+
+
+async def test_a_rate_limited_report_waits_the_servers_delay(tmp_path, servers):
+    fake, _ = servers
+    fake.report_mode = "429"
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    outcome = await tu.retry_visit_once(V1)
+    assert outcome.pending is True and outcome.retry_after_s == 5
+
+
+async def test_a_round_reports_an_expired_login(tmp_path, servers, monkeypatch):
+    async def expired():
+        raise cr.VisitLoginRequired()
+
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    monkeypatch.setattr(cr, "_servers_session", expired)
+    assert (await tu.retry_visit_once(V1, manual=True)).login_required is True
+
+
+async def test_a_scheduled_retry_after_an_attempt_waits_first(tmp_path, servers, monkeypatch):
+    slept = []
+
+    async def sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(tu, "_sleep", sleep)
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    await tu.schedule_visit_retry(V1, initial_delay_s=7)
+    assert slept and slept[0] == 7

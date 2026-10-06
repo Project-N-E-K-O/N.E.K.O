@@ -42,7 +42,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from config.visit_settings import VISIT_REPORT_NOTE_MAX_CHARS
+from config.visit_settings import VISIT_REPORT_NOTE_MAX_CHARS, VISIT_UPLOAD_RETRY_BACKOFF_S
 from main_logic.visit import memory_bridge
 from main_logic.visit.sanitize import neutralize_display_name
 from main_routers.system_router._shared import _read_json_object
@@ -261,6 +261,11 @@ async def report_visit(request: Request):
         return await _submit_new_report(config_dir, doc)
 
 
+def _after_attempt(retry_after_s: int | None) -> float:
+    """Background retry delay right after an attempt: the first backoff step, or Servers' ``retry_after``."""
+    return float(max(VISIT_UPLOAD_RETRY_BACKOFF_S[0], retry_after_s or 0))
+
+
 async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
     visit_id = doc["visit_id"]
     if doc["include_transcript"]:
@@ -270,7 +275,8 @@ async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
         upload = await tu.attempt_upload(visit_id, config_dir=config_dir)
         if upload.pending:
             if upload.retryable:
-                tu.schedule_visit_retry(visit_id, config_dir=config_dir)
+                tu.schedule_visit_retry(visit_id, config_dir=config_dir,
+                                        initial_delay_s=_after_attempt(upload.retry_after_s))
             return JSONResponse({"queued": True}, status_code=202)
         # 终态拒收 / 过期时 attempt_upload 已在举报文件里记下原因：重读一次带上
         doc = await tu.load_report(config_dir, visit_id) or doc
@@ -280,7 +286,7 @@ async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
     if result.unknown_visit:
         # 举报文件留着（只有受理或用户放弃才删）、标记为被拒，队列里给「重试 / 放弃」
         return _error(404, "unknown_visit")
-    tu.schedule_visit_retry(visit_id, config_dir=config_dir)
+    tu.schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=_after_attempt(result.retry_after_s))
     if result.login_required:
         # 已排队，但登录失效：提示重新登录（原账号回来后由后台 / 启动补录接着提交）
         return _cloud_error(cr.VisitLoginRequired())
@@ -328,6 +334,10 @@ async def act_on_queued_report(request: Request, visit_id: str):
         return _error(404, "not_queued")
     outcome = await tu.retry_visit_once(visit_id, config_dir=config_dir, manual=True)
     delivered = await tu.load_report(config_dir, visit_id) is None
+    if not delivered and outcome.login_required:
+        # 原账号的登录已失效：提示重新登录（文件留着，登录后照常补提）
+        return _cloud_error(cr.VisitLoginRequired())
     if not delivered and outcome.pending:
-        tu.schedule_visit_retry(visit_id, config_dir=config_dir)
+        tu.schedule_visit_retry(visit_id, config_dir=config_dir,
+                                initial_delay_s=_after_attempt(outcome.retry_after_s))
     return JSONResponse({"ok": True, "delivered": delivered})

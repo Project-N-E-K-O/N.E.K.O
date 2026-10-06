@@ -129,9 +129,9 @@ class FakeServers:
         if done:
             self.complete[key] = [line for k in range(parts) for line in group["chunks"][k]]
         out = {"ok": True, "accepted_parts": sorted(group["chunks"]), "complete": done}
-        if mode == "no_parts":
+        if mode in ("no_parts", "complete_no_parts"):
             del out["accepted_parts"]
-            out["complete"] = False
+            out["complete"] = mode == "complete_no_parts"
         if duplicate:
             out["duplicate"] = True
         return httpx.Response(200 if duplicate else 201, json=out)
