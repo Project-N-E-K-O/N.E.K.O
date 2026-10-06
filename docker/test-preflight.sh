@@ -112,13 +112,56 @@ run "$CASE/elsewhere/home" "$CASE/elsewhere/logs" || die 'explicit paths'
 ok 'uses explicit paths for overridden mounts'
 
 new_case
-mkdir "$CASE/elsewhere"
+mkdir -p "$CASE/elsewhere" "$CASE/data"
 (cd "$CASE/elsewhere" && sh "$CASE/preflight.sh" ./data/home data/logs > "$CASE/out" 2>&1) \
     || die 'relative paths'
 [[ $(owner "$CASE/data/home") == 1000:1000 && $(owner "$CASE/data/logs") == 1000:1000 ]] \
     || die 'relative paths not resolved against the script directory'
 [[ ! -e $CASE/elsewhere/data ]] || die 'relative paths resolved against the caller cwd'
 ok 'resolves relative paths against docker/ like Compose'
+
+# Outside the defaults, a non-empty directory owned by someone else is never taken
+# over (think /var/lib/docker or ~/.ssh); an empty or already-aligned one is.
+new_case
+mkdir -p "$CASE/srv/state" "$CASE/srv/logs" "$CASE/srv/mine"
+echo secret > "$CASE/srv/state/file"
+chown 0:0 "$CASE/srv/state" "$CASE/srv/state/file"
+if run "$CASE/srv/state" "$CASE/srv/logs"; then die 'foreign non-empty custom directory accepted'; fi
+grep -q 'already holds data' "$CASE/out" || die 'foreign data error not reported'
+[[ $(owner "$CASE/srv/state") == 0:0 && $(owner "$CASE/srv/logs") == 0:0 ]] \
+    || die 'changed something although validation failed'
+touch "$CASE/srv/mine/x"
+chown 1000:1000 "$CASE/srv/mine"
+run "$CASE/srv/mine" "$CASE/srv/logs" || die 'aligned non-empty or empty custom directories'
+[[ $(owner "$CASE/srv/logs") == 1000:1000 ]] || die 'empty custom directory not fixed'
+ok 'takes over custom directories only when empty or already aligned'
+
+# Race: swap the validated parent for a symlink right before the privileged step.
+# The stubbed basename runs inside fix_dir, after check_dir has passed.
+new_case
+mkdir -p "$CASE/p" "$CASE/victim/home" "$CASE/stub" "$CASE/logs"
+chown 0:0 "$CASE/victim" "$CASE/victim/home"
+cat > "$CASE/stub/basename" <<EOF
+#!/bin/sh
+if [ -d "$CASE/p" ] && [ ! -L "$CASE/p" ]; then
+    mv "$CASE/p" "$CASE/p.orig" && ln -s victim "$CASE/p"
+fi
+exec /usr/bin/basename "\$@"
+EOF
+chmod 700 "$CASE/stub/basename"
+if PATH="$CASE/stub:$PATH" run "$CASE/p/home" "$CASE/logs"; then die 'parent swap not detected'; fi
+grep -q 'changed during the check' "$CASE/out" || die 'parent swap error not reported'
+[[ $(owner "$CASE/victim/home") == 0:0 ]] || die 'swapped-in target was changed'
+ok 'detects a parent swapped for a symlink after validation'
+
+new_case
+mkdir -p "$CASE/home/.ssh" "$CASE/logs"
+if run "$CASE/home/.ssh" "$CASE/logs"; then die 'hidden directory accepted'; fi
+grep -q 'hidden path' "$CASE/out" || die 'hidden path error not reported'
+if run "$CASE/missing/home" "$CASE/logs"; then die 'missing parent accepted'; fi
+grep -q 'does not exist' "$CASE/out" || die 'missing parent error not reported'
+[[ ! -e $CASE/missing ]] || die 'missing parent was created'
+ok 'refuses hidden paths and missing parents'
 
 new_case
 mkdir "$CASE/neko-home" "$CASE/logs"

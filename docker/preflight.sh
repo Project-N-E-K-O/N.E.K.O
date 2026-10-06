@@ -80,34 +80,68 @@ check_dir() {
     if [ -e "$2" ] && [ ! -d "$2" ]; then
         fail "$1: $2 exists but is not a directory"
     fi
+    parent=$(dirname -- "$resolved")
+    [ -d "$parent" ] || fail "$1: parent directory $parent does not exist; create it first"
+    # Deny-lists cannot enumerate every sensitive tree (/var/lib/docker, ~/.ssh, ...),
+    # so outside the two default paths only take over a directory that is plainly
+    # ours: missing, empty, or already owned by the container user.
+    if ! is_default "$1" "$resolved"; then
+        case "$resolved" in
+            */.*) fail "$1: refusing hidden path $resolved; use a dedicated, visible directory" ;;
+        esac
+        foreign_nonempty "$resolved" && refuse_foreign "$1" "$resolved"
+    fi
+    return 0
+}
+
+is_default() { [ "$2" = "$script_dir/$1" ]; }
+
+# True when $1 is an existing, non-empty directory not owned by the container user.
+foreign_nonempty() {
+    [ -d "$1" ] && [ "$(stat -c '%u:%g' -- "$1")" != "$NEKO_UID:$NEKO_GID" ] \
+        && [ -n "$(ls -A -- "$1")" ]
+}
+
+refuse_foreign() {
+    fail "$1: $2 already holds data owned by $(stat -c '%u:%g' -- "$2").
+  Only the default docker/neko-home and docker/logs are taken over when non-empty.
+  If this directory really is dedicated to N.E.K.O, change its owner yourself:
+    sudo chown -h $NEKO_UID:$NEKO_GID -- '$2'"
 }
 
 fix_dir() {
-    # $1: label, $2: path
-    if [ ! -d "$2" ]; then
-        mkdir -p -- "$2" || fail "$1: cannot create $2"
+    # $1: label, $2: normalized absolute path. Runs in a subshell (it changes cwd).
+    parent=$(dirname -- "$2")
+    name=$(basename -- "$2")
+    # Pin the parent: once inside it, a parent swapped for a symlink cannot redirect
+    # the privileged calls below, which only use ./name and never follow it.
+    cd -P -- "$parent" || fail "$1: cannot enter $parent"
+    [ "$(pwd -P)" = "$parent" ] || fail "$1: $parent changed during the check"
+    if [ ! -e "./$name" ] && [ ! -L "./$name" ]; then
+        mkdir -- "./$name" || fail "$1: cannot create $2"
         echo "preflight: $1: created $2"
     fi
-    # Re-check after mkdir: a symlink could have appeared in between.
-    [ ! -L "$2" ] || fail "$1: $2 became a symlink"
-    owner=$(stat -c '%u:%g' -- "$2") || fail "$1: cannot stat $2"
+    [ ! -L "./$name" ] && [ -d "./$name" ] || fail "$1: $2 changed during the check"
+    owner=$(stat -c '%u:%g' -- "./$name") || fail "$1: cannot stat $2"
     if [ "$owner" = "$NEKO_UID:$NEKO_GID" ]; then
         echo "preflight: $1: $2 ok ($owner)"
-        return
+        return 0
+    fi
+    if ! is_default "$1" "$2" && foreign_nonempty "./$name"; then
+        refuse_foreign "$1" "$2"
     fi
     # -h: never follow a link. Only the directory itself, never its contents.
-    chown -h "$NEKO_UID:$NEKO_GID" -- "$2" \
+    chown -h "$NEKO_UID:$NEKO_GID" -- "./$name" \
         || fail "$1: cannot chown $2 to $NEKO_UID:$NEKO_GID (run with sudo)"
     echo "preflight: $1: $2 owner $owner -> $NEKO_UID:$NEKO_GID"
 }
 
-# Validate both before touching either, so a bad second path changes nothing.
+# Normalize first (absolute, no trailing "/" or "/." that would make chown -h
+# dereference the last component), then validate both before touching either.
+home_dir=$(realpath -m -s -- "$home_dir") && logs_dir=$(realpath -m -s -- "$logs_dir") \
+    || fail "cannot resolve the paths (GNU realpath is required)"
 check_dir neko-home "$home_dir"
 check_dir logs "$logs_dir"
-# Act only on the normalized form: no trailing "/" or "/." that would make
-# chown -h dereference the last component.
-home_dir=$(realpath -m -s -- "$home_dir")
-logs_dir=$(realpath -m -s -- "$logs_dir")
-fix_dir neko-home "$home_dir"
-fix_dir logs "$logs_dir"
+(fix_dir neko-home "$home_dir")
+(fix_dir logs "$logs_dir")
 echo "preflight: done"

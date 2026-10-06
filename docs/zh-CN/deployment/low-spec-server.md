@@ -102,7 +102,7 @@ swapon --show
   docker inspect neko --format '{{range .Mounts}}{{println .Destination .Source}}{{end}}'
   ```
 
-  `./data/logs` 这类相对路径与 Compose 一样按 `docker/` 目录解析，与在哪个目录执行预检无关。每个 `Source` 都应与传入路径（换算成绝对路径后）完全一致；不一致说明路径上有符号链接，先停下。如果它是共享目录，不要改属主，改为在 `compose.local.yaml` 里把 `/app/logs` 挂到一个专用的空目录。目录里由 root 写下的旧文件按第 9 节第 4 步的方法逐个修复。
+  `./data/logs` 这类相对路径与 Compose 一样按 `docker/` 目录解析，与在哪个目录执行预检无关。上级目录必须已经存在。默认的两个路径之外，预检只接管不存在、为空或已属于 uid 1000 的目录，并拒绝隐藏路径；自定义目录里已有属于其他用户的数据时，它会停下并给出一条 `chown` 命令，由你确认该目录专用于 N.E.K.O 后自行执行。每个 `Source` 都应与传入路径（换算成绝对路径后）完全一致；不一致说明路径上有符号链接，先停下。如果它是共享目录，不要改属主，改为在 `compose.local.yaml` 里把 `/app/logs` 挂到一个专用的空目录。目录里由 root 写下的旧文件按第 9 节第 4 步的方法逐个修复。
 - 其他容器需要同样的限制时，把以下内容合并进现有 `/etc/docker/daemon.json`，再执行 `sudo systemctl restart docker`：
 
 ```json
