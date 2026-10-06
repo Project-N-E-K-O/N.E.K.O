@@ -535,3 +535,23 @@ def test_report_waiting_for_a_transcript_with_an_expired_login_asks_to_sign_in(e
     resp = _report(client, include_transcript=True)
     assert resp.status_code == 409 and resp.json()["code"] == "VISIT_LOGIN_REQUIRED"
     assert _queued(tmp_path) is not None and fake.count("/api/visit/reports") == 0
+
+
+
+def test_an_accepted_report_stays_accepted_when_its_file_cannot_be_deleted(env, monkeypatch):
+    client, fake, tmp_path, _ = env
+    real_delete = tu.delete_report
+    calls = []
+
+    async def locked(config_dir, visit_id):
+        calls.append(visit_id)
+        if len(calls) == 1:
+            raise PermissionError("file in use")
+        return await real_delete(config_dir, visit_id)
+
+    monkeypatch.setattr(tu, "delete_report", locked)
+    resp = _report(client)
+    assert resp.status_code == 200 and resp.json()["ok"] is True
+    assert _queued(tmp_path) is not None and V1 in tu._workers        # 留着，后台稍后补删
+    client.portal.call(tu.retry_visit_once, V1)                       # 重提得到 duplicate 回执后删掉
+    assert _queued(tmp_path) is None

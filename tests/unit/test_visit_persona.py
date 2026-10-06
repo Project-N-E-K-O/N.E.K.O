@@ -554,3 +554,19 @@ def test_the_token_cap_holds_after_redaction():
     raw = "Al " * (visit_settings.VISIT_PERSONA_MAX_TOKENS * 2)           # 短名字反复出现，替换成更长的中性称呼
     text = persona._clean_persona_text(raw, ["Al"], "en")
     assert "Al " not in text and count_tokens(text) <= visit_settings.VISIT_PERSONA_MAX_TOKENS
+
+
+
+def test_address_segments_after_a_comma_are_scanned():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: Apt 4, 12 Main Street", [])]
+    assert "main street" in tokens
+
+
+def test_latin_keywords_need_a_word_boundary_and_a_separator():
+    tokens = persona.extract_sensitive_tokens("She enjoys smartphone games.\nHer phone games are fun.", [])
+    assert not any("games" in t.lower() for t in tokens)
+    tokens = persona.extract_sensitive_tokens("Favorite microphone: Shure SM7B", [])
+    assert not any("shure" in t.lower() for t in tokens)          # microphone 里的 phone 不算关键词
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens(
+        "phone: 138 0013 8000\nwechat: mimi_cat\naddress is 12 Main Street", [])]
+    assert "mimi_cat" in tokens and "main street" in tokens

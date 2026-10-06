@@ -860,17 +860,31 @@ async def submit_queued_report(visit_id: str, report_doc: dict) -> bool:
         result = await send_report(report_doc)
         if result.accepted:
             # 受理即在锁内删（补录随后的删除只会扑空），不给锁外的新举报留被误删的窗口
-            await delete_report(config_dir, visit_id)
+            await _delete_accepted_report(config_dir, visit_id)
             return True
         if result.unknown_visit:
             await set_report_rejected(config_dir, visit_id, "unknown_visit", expect=report_doc)
     return False
 
 
+async def _delete_accepted_report(config_dir: Path, visit_id: str) -> None:
+    """Drop a report Servers accepted; a failed delete never turns the acceptance into an error.
+
+    The file stays queued and a later round resubmits it, which Servers
+    answers as a duplicate, and deletes it then.
+    """
+    try:
+        await delete_report(config_dir, visit_id)
+    except OSError as exc:
+        logger.warning("visit report %s: accepted but the queued file cannot be deleted yet: %s",
+                       visit_id, type(exc).__name__)
+        schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=VISIT_UPLOAD_RETRY_BACKOFF_S[0])
+
+
 async def finish_report(config_dir: Path, visit_id: str, result: ReportResult, doc: Mapping[str, Any]) -> bool:
     """Apply one submission's outcome to the queued file; True when it is gone (accepted)."""
     if result.accepted:
-        await delete_report(config_dir, visit_id)
+        await _delete_accepted_report(config_dir, visit_id)
         # 拒收原因没能记进举报而留着的封存文件：举报已受理，它再没有用处，别占待上传容量
         await asyncio.to_thread(_drop_rejected_sealed_sync, config_dir, visit_id)
         return True
