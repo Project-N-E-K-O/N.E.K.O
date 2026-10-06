@@ -2,7 +2,7 @@
 
 This page is for 2-vCPU / 2 GB cloud servers with small disks and metered bandwidth. It adds host-level memory, disk, self-healing, security, and traffic settings on top of the official Docker deployment; no separate Compose file is needed.
 
-> Adapted from the 2C2G guide by community contributor 烨儿不会飞 (GitHub [@csy-11](https://github.com/csy-11)), originally proposed in [#3295](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3295). If it helps you, you can support the author on [afdian](https://afdian.com/a/chensye).
+> Adapted from the 2C2G guide by community contributor 烨儿不会飞 (GitHub [@csy-11](https://github.com/csy-11)), originally proposed in [#3295](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3295).
 
 ::: warning Scope
 Commands assume an Ubuntu-family host and have not been verified on every cloud provider. The official Compose file sets no memory limit, so whether 2 GB is enough depends on your workload; the watchdog is not OOM protection. Validate peak memory, latency, and a rollback path with a representative workload before going live.

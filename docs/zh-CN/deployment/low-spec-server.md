@@ -2,7 +2,7 @@
 
 本页面向 2 核 2G、40G 硬盘、带宽受限的云服务器（例如入门级 ECS），在官方 Docker 部署的基础上补充内存、磁盘、自愈、安全和流量方面的宿主机配置，不需要另一套 Compose。
 
-> 本页整理自社区贡献者 烨儿不会飞（GitHub [@csy-11](https://github.com/csy-11)）在 99 元/年 ECS 上的实践，原始方案见 [#3295](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3295)。如果这份指南帮到了你，可以在[爱发电](https://afdian.com/a/chensye)支持作者。
+> 本页整理自社区贡献者 烨儿不会飞（GitHub [@csy-11](https://github.com/csy-11)）在 99 元/年 ECS 上的实践，原始方案见 [#3295](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3295)。
 
 ::: warning 适用范围
 本页命令以 Ubuntu 系宿主机为例，均未在每种云厂商环境逐一验收。官方 Compose 不为主服务设置内存上限，2G 宿主能否稳定运行取决于实际负载；看门狗也不能代替宿主 OOM 防护。上线前请用代表性负载验证峰值内存、延迟和回退方案。
