@@ -561,6 +561,16 @@ def test_on_shutdown_has_no_cancellation_escape() -> None:
     from app.main_server import on_shutdown
 
     escapes = _unprotected_awaits(_parse_async_fn(inspect.getsource(on_shutdown)))
+    calls = [
+        node for node in ast.walk(_parse_async_fn(inspect.getsource(on_shutdown)))
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "_run_shutdown_step"
+    ]
+    assert calls
+    assert all(
+        any(kw.arg == "cancellation_budget" for kw in call.keywords)
+        for call in calls
+    ), "every shutdown step must share the cancellation budget"
     assert not escapes, (
         "these awaits let a cancellation escape on_shutdown and skip every cleanup "
         "after them; wrap them in _run_shutdown_step:\n"
@@ -594,3 +604,114 @@ def test_escape_scan_flags_bare_awaits_and_spares_protected_ones() -> None:
         "under_except_exception()",
         "in_handler()",
     ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unbounded", (False, True))
+async def test_shared_cancel_budget_caps_wait_and_grace(monkeypatch, unbounded):
+    """Repeated caller cancels cannot extend either a step or its grace."""
+    from app import main_server
+
+    monkeypatch.setattr(main_server, "_SHUTDOWN_CANCELLED_BUDGET_SECONDS", 0.1)
+    monkeypatch.setattr(main_server, "_SHUTDOWN_STEP_CANCEL_GRACE_SECONDS", 1.0)
+    budget = main_server._ShutdownCancellationBudget()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    child_cancelled = asyncio.Event()
+    observed_deadlines = []
+    later_called = []
+
+    async def refuses_cancel():
+        entered.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                child_cancelled.set()
+
+    async def later():
+        later_called.append(True)
+
+    async def shutdown_like():
+        pending = await main_server._run_shutdown_step(
+            refuses_cancel,
+            what="shared-budget",
+            deadline_monotonic=None if unbounded else time.monotonic() + 10.0,
+            cancelled_budget_seconds=5.5,
+            cancellation_budget=budget,
+        )
+        return await main_server._run_shutdown_step(
+            later,
+            what="after-budget",
+            deadline_monotonic=time.monotonic() + 10.0,
+            pending_cancellation=pending,
+            cancellation_budget=budget,
+        )
+
+    caller = asyncio.create_task(shutdown_like())
+    await entered.wait()
+    caller.cancel("first")
+    await asyncio.sleep(0)
+    observed_deadlines.append(budget.deadline)
+    caller.cancel("second")
+    await asyncio.sleep(0)
+    observed_deadlines.append(budget.deadline)
+    done, _ = await asyncio.wait({caller}, timeout=0.5)
+    try:
+        assert done, "shared budget must cap step wait AND cancellation grace"
+        assert caller.result().args == ("first",)
+        assert observed_deadlines[0] is not None
+        assert observed_deadlines == [budget.deadline, budget.deadline]
+        assert child_cancelled.is_set()
+        assert not later_called, "spent shared budget must skip later async work"
+    finally:
+        release.set()
+        await asyncio.gather(
+            caller, *list(main_server._SHUTDOWN_STEP_TASKS), return_exceptions=True
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_budget_is_shared_across_successful_steps(monkeypatch):
+    """The next cleanup receives only what the previous step left over."""
+    from app import main_server
+
+    monkeypatch.setattr(main_server, "_SHUTDOWN_CANCELLED_BUDGET_SECONDS", 0.15)
+    budget = main_server._ShutdownCancellationBudget()
+    pending = asyncio.CancelledError("earlier")
+    first_finished = []
+    second_cancelled = []
+
+    async def first():
+        await asyncio.sleep(0.05)
+        first_finished.append(True)
+
+    async def second():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            second_cancelled.append(True)
+            raise
+
+    result = await main_server._run_shutdown_step(
+        first, what="first", deadline_monotonic=time.monotonic() + 10.0,
+        pending_cancellation=pending, cancellation_budget=budget,
+    )
+    deadline = budget.deadline
+    caller = asyncio.create_task(main_server._run_shutdown_step(
+        second, what="second", deadline_monotonic=None,
+        cancelled_budget_seconds=5.5, pending_cancellation=result,
+        cancellation_budget=budget,
+    ))
+    done, _ = await asyncio.wait({caller}, timeout=0.4)
+    try:
+        assert done, "later steps must use the remaining shared budget"
+        assert caller.result() is pending
+        assert first_finished and second_cancelled
+        assert budget.deadline == deadline
+    finally:
+        if not caller.done():
+            caller.cancel()
+        await asyncio.gather(caller, return_exceptions=True)

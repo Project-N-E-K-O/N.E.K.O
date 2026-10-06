@@ -1392,3 +1392,59 @@ async def test_main_server_shutdown_requests_memory_server_stop_after_snapshot_u
     )
     assert start_config["shutdown_memory_server_on_exit"] is False
     mock_request_shutdown.assert_awaited_once_with()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_shutdown_uses_one_cancel_budget_for_all_steps(monkeypatch):
+    """Budget exhaustion skips later async cleanup and preserves the cancel."""
+    from app import main_server
+
+    monkeypatch.setattr(main_server, "_SHUTDOWN_CANCELLED_BUDGET_SECONDS", 0.05)
+    cleanup_order = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    def record(name):
+        async def step(*args, **kwargs):
+            cleanup_order.append(name)
+            if name == "voice":
+                entered.set()
+                await release.wait()
+        return step
+
+    with _patched_shutdown_steps(cleanup_order, record):
+        caller = asyncio.create_task(main_server.on_shutdown())
+        await entered.wait()
+        caller.cancel("exit")
+        done, _ = await asyncio.wait({caller}, timeout=0.5)
+        try:
+            assert done, "on_shutdown must pass the shared budget to every step"
+            with pytest.raises(asyncio.CancelledError, match="exit"):
+                caller.result()
+            assert cleanup_order == ["voice", "cleanup", "token"]
+        finally:
+            release.set()
+            await asyncio.gather(
+                caller, *list(main_server._SHUTDOWN_STEP_TASKS), return_exceptions=True
+            )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_budget_exceeded_logs_only_the_specific_warning():
+    from app import main_server
+
+    def record(name):
+        async def step(*args, **kwargs):
+            if name == "cloudsave":
+                raise main_server.CloudsaveDeadlineExceeded(operation="upload_existing_snapshot", stage="write")
+        return step
+
+    with _patched_shutdown_steps([], record), \
+         patch.object(main_server.logger, "warning") as warning_log, \
+         patch.object(main_server.logger, "info") as info_log:
+        await main_server.on_shutdown()
+    assert len(warning_log.call_args_list) == 1
+    assert "upload exceeded 5.0s budget" in warning_log.call_args.args[0]
+    assert not any("staged snapshot upload:" in str(c.args[0]) for c in info_log.call_args_list)
