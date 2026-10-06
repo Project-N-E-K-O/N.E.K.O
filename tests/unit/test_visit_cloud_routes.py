@@ -479,3 +479,35 @@ def test_manual_retry_with_an_expired_login_asks_to_sign_in(env, monkeypatch):
     resp = client.post(f"/api/visit/report/queue/{V1}", headers=GOOD, json={"action": "retry"})
     assert resp.status_code == 409 and resp.json()["code"] == "VISIT_LOGIN_REQUIRED"
     assert _queued(tmp_path) is not None
+
+
+
+def test_a_report_abandoned_while_waiting_for_the_lock_is_not_sent(env):
+    import threading
+
+    client, fake, tmp_path, _ = env
+    lock = tu.visit_lock(V1)
+    holding, release = client.portal.call(_make_events)
+
+    async def submit_in_flight():
+        async with lock:
+            holding.set()
+            await release.wait()
+
+    client.portal.start_task_soon(submit_in_flight)
+    client.portal.call(holding.wait)
+    result = {}
+    worker = threading.Thread(target=lambda: result.setdefault("resp", _report(client)))
+    worker.start()
+    try:
+        for _ in range(200):
+            if _queued(tmp_path) is not None:
+                break
+            time.sleep(0.01)
+        assert _queued(tmp_path) is not None and worker.is_alive()     # 已入队、在等锁
+        client.portal.call(tu.delete_report, tmp_path, V1)              # 另一个窗口放弃了它
+    finally:
+        client.portal.call(release.set)
+        worker.join(5)
+    assert result["resp"].status_code == 404 and result["resp"].json()["code"] == "not_queued"
+    assert fake.count("/api/visit/reports") == 0

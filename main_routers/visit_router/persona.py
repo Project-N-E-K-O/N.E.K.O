@@ -693,6 +693,10 @@ def persona_state(doc: dict | None, character_uid: str) -> str:
     return "ready" if doc["reviewed"] else "unreviewed"
 
 
+_GATE_ATTEMPTS = 3
+"""Re-reads of the persona when it is written while the gate is reading it."""
+
+
 @dataclass(frozen=True)
 class PersonaGate:
     """Verdict of :func:`persona_gate`; ``text`` is the persona to build the session with when ``ok``."""
@@ -714,17 +718,25 @@ async def persona_gate(name: str) -> PersonaGate:
     character_uid = await _hooks.resolve_char_uid(name)
     if not character_uid:
         return PersonaGate(ok=False, state="missing")
-    if is_generating(character_uid):
-        return PersonaGate(ok=False, state="generating", character_uid=character_uid)
-    doc = await store().load(character_uid)
-    if doc is None or not doc["reviewed"]:
-        return PersonaGate(ok=False, state=persona_state(doc, character_uid), character_uid=character_uid)
-    if not doc["edited"]:
-        ctx = await _hooks.load_context()
-        if card_hash(ctx.card(name)) != doc["source_card_hash"]:
-            start_regeneration(name, character_uid)
+    for _attempt in range(_GATE_ATTEMPTS):
+        if is_generating(character_uid):
             return PersonaGate(ok=False, state="generating", character_uid=character_uid)
-    return PersonaGate(ok=True, state="ready", character_uid=character_uid, text=doc["text"])
+        version = _write_versions.get(character_uid, 0)
+        doc = await store().load(character_uid)
+        if doc is None or not doc["reviewed"]:
+            return PersonaGate(ok=False, state=persona_state(doc, character_uid), character_uid=character_uid)
+        if not doc["edited"]:
+            ctx = await _hooks.load_context()
+            if card_hash(ctx.card(name)) != doc["source_card_hash"]:
+                start_regeneration(name, character_uid)
+                return PersonaGate(ok=False, state="generating", character_uid=character_uid)
+        if is_generating(character_uid):
+            # 读盘 / 读卡期间另一个窗口点了重新生成：手里这份已不作数
+            return PersonaGate(ok=False, state="generating", character_uid=character_uid)
+        if _write_versions.get(character_uid, 0) == version:
+            return PersonaGate(ok=True, state="ready", character_uid=character_uid, text=doc["text"])
+        # 读的过程中人设被写过（手写确认 / 重生成落盘）：按新的那份再判一次
+    return PersonaGate(ok=False, state="generating", character_uid=character_uid)
 
 
 # ── 路由 ───────────────────────────────────────────────────────────────

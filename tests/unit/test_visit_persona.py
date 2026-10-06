@@ -506,3 +506,41 @@ def test_a_regeneration_started_while_an_edit_holds_the_lock_does_not_overwrite_
     client.portal.call(gate.set)
     _settle(client)
     assert _file(tmp_path)["text"] == hand
+
+
+
+def test_gate_refuses_when_regeneration_starts_while_it_reads(env, monkeypatch):
+    client, *_ = env
+    _generate(client)
+    client.put("/api/visit/persona?catgirl=A", headers=GOOD, json={"reviewed": True})
+    real = persona._hooks.load_context
+
+    async def read_then_click():
+        ctx = await real()
+        persona.start_regeneration("A", UID_A)          # 另一个窗口此刻点了重新生成
+        return ctx
+
+    monkeypatch.setattr(persona._hooks, "load_context", read_then_click)
+    gate = _gate(client)
+    assert gate.ok is False and gate.state == "generating"
+    _settle(client)
+
+
+def test_gate_rereads_a_persona_written_while_it_reads(env, monkeypatch):
+    client, tmp_path, *_ = env
+    _generate(client)
+    client.put("/api/visit/persona?catgirl=A", headers=GOOD, json={"reviewed": True})
+    real = persona._hooks.load_context
+    written = []
+
+    async def read_then_write():
+        ctx = await real()
+        if not written:                                  # 重生成刚落了一份未审核的
+            written.append(True)
+            await persona.store().save(UID_A, {**_file(tmp_path), "reviewed": False})
+            persona._note_write(UID_A)
+        return ctx
+
+    monkeypatch.setattr(persona._hooks, "load_context", read_then_write)
+    gate = _gate(client)
+    assert gate.ok is False and gate.state == "unreviewed"
