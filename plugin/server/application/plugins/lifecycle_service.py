@@ -61,7 +61,10 @@ from plugin.server.application.plugins.installation_transactions import (
     retry_deferred_profile_cleanup_sync,
     uninstall_plugin,
 )
-from plugin.server.application.plugins._env_budgets import env_seconds
+from plugin.server.application.plugins._env_budgets import (
+    METADATA_SCAN_TIMEOUT_SECONDS as _DEFAULT_METADATA_SCAN_TIMEOUT,
+    env_seconds,
+)
 from plugin.server.infrastructure.packaged_metadata import (
     SourceTreeSnapshot,
     entries_config_digest,
@@ -104,7 +107,6 @@ from plugin.utils import parse_bool_config
 from plugin.utils.asyncio_utils import await_cancellation_safe
 
 logger = get_logger("server.application.plugins.lifecycle")
-_DEFAULT_METADATA_SCAN_TIMEOUT = env_seconds("NEKO_PLUGIN_METADATA_SCAN_TIMEOUT", 10.0)
 
 
 def create_plugin_host(
@@ -335,10 +337,20 @@ def _metadata_rebuild_manifest(
         manifest.get("plugin") if isinstance(manifest.get("plugin"), dict) else {}
     )
     if plugin_id is not None and str(manifest_pdata.get("id") or "") != plugin_id:
+        logger.info(
+            "packaged metadata rebuild skipped: runtime id differs from manifest id; "
+            "metadata will be rescanned on start: plugin_id={}, path={}",
+            plugin_id, config_path,
+        )
         return None
     if conf is not None and entries_config_digest(conf, pdata) != entries_config_digest(
         manifest, manifest_pdata
     ):
+        logger.info(
+            "packaged metadata rebuild skipped: effective configuration overrides entries; "
+            "metadata will be rescanned on start: plugin_id={}, path={}",
+            plugin_id, config_path,
+        )
         return None
     return manifest
 
@@ -988,7 +1000,6 @@ async def _start_host_with_timeout(
 # 已经停掉的照常汇报，剩下的留在原地——比让整个请求超时、而操作又在后台继续
 # 落地要好。
 # Env: NEKO_PLUGIN_RELOAD_ALL_BUDGET
-from plugin.server.application.plugins._env_budgets import env_seconds
 
 _RELOAD_ALL_BUDGET_SECONDS = env_seconds("NEKO_PLUGIN_RELOAD_ALL_BUDGET", 20.0)
 

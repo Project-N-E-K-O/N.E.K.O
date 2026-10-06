@@ -11,6 +11,31 @@ from plugin.core import packaged_metadata as metadata_contract
 pytestmark = pytest.mark.plugin_unit
 
 
+def test_metadata_scan_budget_is_read_once_across_import_orders():
+    probe = r'''
+import os
+original = os.getenv
+reads = []
+def changing_override(name, default=None):
+    if name == 'NEKO_PLUGIN_METADATA_SCAN_TIMEOUT':
+        reads.append(name)
+        return '7.5' if len(reads) == 1 else '99'
+    return original(name, default)
+os.getenv = changing_override
+from plugin.server.application.plugins import metadata_scanner, lifecycle_service, hot_reload_service
+assert metadata_scanner._DEFAULT_SCAN_TIMEOUT_SECONDS == 7.5
+assert lifecycle_service._DEFAULT_METADATA_SCAN_TIMEOUT == 7.5
+assert hot_reload_service._DEFAULT_SCAN_TIMEOUT_SECONDS == 7.5
+assert reads == ['NEKO_PLUGIN_METADATA_SCAN_TIMEOUT'], reads
+print('ok')
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True,
+        text=True, timeout=120, check=True,
+    )
+    assert result.stdout.strip().splitlines()[-1] == "ok"
+
+
 @pytest.mark.parametrize(
     ("process_arch", "native_arch", "expected"),
     [("AMD64", "", "AMD64"), ("x86", "AMD64", "AMD64"),

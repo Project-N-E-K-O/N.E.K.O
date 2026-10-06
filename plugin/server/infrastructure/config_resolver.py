@@ -153,18 +153,8 @@ def resolve_plugin_config_from_path(
     base_config: dict[str, object] | None = None,
     include_effective_config: bool = True,
     validate_schema: bool = True,
-    materialize_runtime_config: bool = True,
     read_cache: PathResolutionCache | None = None,
 ) -> dict[str, object]:
-    if not materialize_runtime_config:
-        return read_plugin_config_from_path(
-            plugin_id,
-            config_path=config_path,
-            base_config=base_config,
-            include_effective_config=include_effective_config,
-            validate_schema=validate_schema,
-            read_cache=read_cache,
-        )
     # Profile and runtime writes use the same per-plugin lock. Keeping the
     # complete synchronous read under that lock prevents an application-state
     # query from observing one file before an atomic replacement and another

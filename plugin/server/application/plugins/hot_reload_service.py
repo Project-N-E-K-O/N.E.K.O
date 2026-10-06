@@ -52,11 +52,13 @@ from plugin.utils.source_paths import is_vendor_sync_path
 from plugin.server.application.plugins import development as development_store
 from plugin.server.application.plugins.lifecycle_service import (
     PluginLifecycleService,
-    _DEFAULT_METADATA_SCAN_TIMEOUT as _DEFAULT_SCAN_TIMEOUT_SECONDS,
     _resolve_registered_config_path_sync,
     active_startup_timeout,
     plugin_is_running_sync,
     plugin_needs_hot_reload_recovery,
+)
+from plugin.server.application.plugins._env_budgets import (
+    METADATA_SCAN_TIMEOUT_SECONDS as _DEFAULT_SCAN_TIMEOUT_SECONDS,
 )
 from plugin.server.application.plugins.operation_lock import (
     PluginOperationBusy,

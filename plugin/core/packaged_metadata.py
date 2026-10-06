@@ -177,7 +177,11 @@ def _iter_source_files(
                         # （codex）。增删条目都会更新父目录的 mtime。
                         dirs.append(entry.path)
                     continue
-                if is_metadata_probe_path(Path(entry.path).relative_to(plugin_dir)):
+                if (
+                    current == root
+                    and entry.name.startswith(".metadata_probe_")
+                    and is_metadata_probe_path(Path(entry.name))
+                ):
                     continue
                 if entry.name in _GENERATED_METADATA_NAMES and current == str(
                     plugin_dir

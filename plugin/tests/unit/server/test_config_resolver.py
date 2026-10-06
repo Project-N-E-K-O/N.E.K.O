@@ -306,8 +306,8 @@ def test_discovery_config_matches_initialized_config_without_writing(
         layout.config_path.parent.mkdir(parents=True)
         layout.config_path.write_text("[runtime]\nregion='existing'\n", encoding="utf-8")
 
-    discovered = module.resolve_plugin_config_from_path(
-        "demo", config_path=manifest, materialize_runtime_config=False
+    discovered = module.read_plugin_config_from_path(
+        "demo", config_path=manifest
     )
     assert layout.config_path.exists() == (seed == "existing")
     assert discovered["config_path"] == str(layout.config_path)
@@ -320,8 +320,8 @@ def test_discovery_config_matches_initialized_config_without_writing(
 
     # Discovery always rereads user edits; defaults are not a persistent cache.
     layout.config_path.write_text("[runtime]\nregion='edited'\n", encoding="utf-8")
-    edited = module.resolve_plugin_config_from_path(
-        "demo", config_path=manifest, materialize_runtime_config=False
+    edited = module.read_plugin_config_from_path(
+        "demo", config_path=manifest
     )
     assert edited["effective_config"]["runtime"]["region"] == "edited"
 
@@ -341,8 +341,8 @@ def test_discovery_config_rejects_non_file_runtime_path(
     layout = resolve_plugin_layout("demo", installed)
     layout.config_path.mkdir(parents=True)
     with pytest.raises(HTTPException, match="runtime config path is not a file"):
-        module.resolve_plugin_config_from_path(
-            "demo", config_path=manifest, materialize_runtime_config=False
+        module.read_plugin_config_from_path(
+            "demo", config_path=manifest
         )
 
 

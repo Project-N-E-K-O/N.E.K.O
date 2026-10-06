@@ -59,9 +59,9 @@ _WORKER_BOOTSTRAP = (
 # 注意单项上限本身不足以封顶：17 个插件按 5 并发是 4 波，4×10s 仍然超前端预算。
 # 真正封顶的是 registry_service 那边的总预算，这里只负责让单个坏插件早点放手。
 # Env: NEKO_PLUGIN_METADATA_SCAN_TIMEOUT
-from plugin.server.application.plugins._env_budgets import env_seconds
-
-_DEFAULT_SCAN_TIMEOUT_SECONDS = env_seconds("NEKO_PLUGIN_METADATA_SCAN_TIMEOUT", 10.0)
+from plugin.server.application.plugins._env_budgets import (
+    METADATA_SCAN_TIMEOUT_SECONDS as _DEFAULT_SCAN_TIMEOUT_SECONDS,
+)
 
 # 这里曾经有一个全局信号量，限制同时活着的元数据解释器数量，因为 discovery 会
 # 并行强扫十几个插件、每个常驻约 66 MB。discovery 不再扫描之后扇出没有了：唯一

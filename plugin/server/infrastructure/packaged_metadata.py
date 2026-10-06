@@ -321,6 +321,10 @@ def packaged_metadata_env_mismatched(plugin_dir: Path) -> bool:
     if loaded is None:
         return False
     raw, _meta_stat, _encoded = loaded
+    return _packaged_metadata_env_mismatched(raw)
+
+
+def _packaged_metadata_env_mismatched(raw: Mapping[str, object]) -> bool:
     version = raw.get("schema_version")
     if isinstance(version, bool) or not isinstance(version, int):
         return False
@@ -698,11 +702,15 @@ def write_local_packaged_metadata(
     """
     if before_scan is None:
         return False
-    if not packaged_metadata_env_mismatched(plugin_dir):
+    loaded = _read_metadata_json(plugin_dir / PACKAGED_METADATA_FILENAME)
+    if loaded is None:
+        return False
+    raw, _meta_stat, _encoded = loaded
+    if not _packaged_metadata_env_mismatched(raw):
         # 不是"异环境"这一种情况就不归这里管：schema 过期走
         # refresh_stale_packaged_metadata，本机包压根不需要写，缺文件则见上。
         return False
-    target = local_packaged_metadata_path(plugin_dir)
+    target = _local_packaged_metadata_path(plugin_dir, raw)
     if target is None:
         return False
     if not _write_scanned_packaged_metadata(

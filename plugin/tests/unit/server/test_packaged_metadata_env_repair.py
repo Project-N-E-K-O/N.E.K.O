@@ -1164,7 +1164,7 @@ def test_metadata_read_is_bounded_even_if_stat_reports_a_smaller_file(tmp_path, 
 
 
 @pytest.mark.parametrize("ineligible", ["runtime_id", "entries_override"])
-def test_ineligible_rebuilds_do_not_hash_the_source_tree(tmp_path, monkeypatch, ineligible):
+def test_ineligible_rebuilds_do_not_hash_the_source_tree(tmp_path, monkeypatch, ineligible, caplog):
     import tomllib
     from plugin.server.application.plugins import lifecycle_service
 
@@ -1184,6 +1184,8 @@ def test_ineligible_rebuilds_do_not_hash_the_source_tree(tmp_path, monkeypatch, 
         conf=conf,
         pdata=manifest["plugin"],
     ) is None
+    reason = "runtime id differs" if ineligible == "runtime_id" else "overrides entries"
+    assert reason in caplog.text
 
 
 @pytest.mark.parametrize("probe_succeeds", [False, True])
@@ -1288,3 +1290,41 @@ def test_crashed_metadata_probe_does_not_invalidate_or_enter_package(tmp_path, n
     assert should_skip_path(Path(name), is_dir=False, rules=BuildRuleSet())
     assert not should_skip_path(Path("data") / name, is_dir=False, rules=BuildRuleSet())
     assert not should_skip_path(Path(".metadata_probe_notes"), is_dir=False, rules=BuildRuleSet())
+
+
+
+def test_local_cache_write_parses_shipped_metadata_once(tmp_path, monkeypatch):
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    before = packaged_metadata.snapshot_source_tree(plugin_dir)
+    original = packaged_metadata._read_metadata_json
+    reads = []
+
+    def record(path, **kwargs):
+        reads.append(path)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(packaged_metadata, "_read_metadata_json", record)
+    assert packaged_metadata.write_local_packaged_metadata(plugin_dir, before_scan=before, **_SCAN_KWARGS)
+    assert reads == [plugin_dir / _META]
+
+
+def test_probe_check_does_not_run_for_vendor_or_regular_source(tmp_path, monkeypatch):
+    from plugin.core import packaged_metadata as core
+
+    plugin_dir = _write_plugin(tmp_path)
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / ".metadata_probe_abcdefgh").write_bytes(b"vendor business data")
+    (plugin_dir / ".metadata_probe_abcdefgh").write_bytes(b"generated")
+    original = core.is_metadata_probe_path
+    probes = []
+
+    def record(path):
+        probes.append(path)
+        return original(path)
+
+    monkeypatch.setattr(core, "is_metadata_probe_path", record)
+    names, _ = core.source_file_names(plugin_dir)
+    assert "vendor/.metadata_probe_abcdefgh" in names
+    assert ".metadata_probe_abcdefgh" not in names
+    assert probes == [Path(".metadata_probe_abcdefgh")]
