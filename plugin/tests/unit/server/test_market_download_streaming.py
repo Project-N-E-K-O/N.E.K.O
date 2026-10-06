@@ -486,3 +486,25 @@ async def test_slow_file_io_drains_without_blocking_the_loop(
         fallback_release.cancel()
         await asyncio.gather(download, return_exceptions=True)
         await asyncio.to_thread(fallback_release.join)
+
+
+@pytest.mark.asyncio
+async def test_filesystem_timeout_is_not_classified_as_download_deadline(
+    http_server, isolated_download_root, monkeypatch
+):
+    import errno
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def broken_file(path):
+        class File:
+            def writelines(self, chunks):
+                raise OSError(errno.ETIMEDOUT, "filesystem timed out")
+        yield File()
+
+    monkeypatch.setattr(download_io, "_open_download_file", broken_file)
+    srv = http_server(b"package")
+    with pytest.raises(TimeoutError, match="filesystem timed out") as excinfo:
+        await module._download_package_once(_url(srv), {"progress": 0.0})
+    assert not isinstance(excinfo.value, download_io.PackageDownloadDeadline)
+    assert list((isolated_download_root / ".downloads").iterdir()) == []

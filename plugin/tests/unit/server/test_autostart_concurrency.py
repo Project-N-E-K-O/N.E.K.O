@@ -635,3 +635,52 @@ def test_dependency_classification_accepts_legacy_metadata_without_dependencies(
         "renamed": {"dependencies": [{"id": "provider"}]},
     })
     assert registry_module._dependency_declaring_runtime_plugin_ids() == {"renamed"}
+
+
+@pytest.mark.asyncio
+async def test_failed_wave_lock_does_not_abort_later_plugins(monkeypatch):
+    service, state, counter = _service_with_recorder(monkeypatch)
+    original = counter.hold
+    attempts = 0
+
+    def hold():
+        nonlocal attempts
+        attempts += 1
+        if attempts != 1:
+            return original()
+
+        class BrokenLock:
+            async def __aenter__(self):
+                raise PermissionError("lock unavailable")
+
+            async def __aexit__(self, *args):
+                return False
+
+        return BrokenLock()
+
+    monkeypatch.setattr(counter, "hold", hold)
+    result = await service.start_plugins_batch(["a", "b", "c", "d"], ["dependent"], concurrency=2)
+    assert result == {"started": ["c", "d", "dependent"], "failed": ["a", "b"]}
+    assert state["finished"] == ["c", "d", "dependent"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("concurrency", [1, 3])
+async def test_batch_deduplicates_ids_across_both_groups(monkeypatch, concurrency):
+    service, state, _ = _service_with_recorder(monkeypatch)
+    result = await service.start_plugins_batch(["a", "a", "b"], ["b", "c", "c"], concurrency=concurrency)
+    assert result == {"started": ["a", "b", "c"], "failed": []}
+    assert state["finished"] == ["a", "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_independently_cancelled_start_is_reported_as_failed(monkeypatch):
+    service, _, _ = _service_with_recorder(monkeypatch)
+
+    async def start(plugin_id, **kwargs):
+        if plugin_id == "cancelled":
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(service, "_start_plugin_under_lock", start)
+    result = await service.start_plugins_batch(["cancelled", "ok"], concurrency=2)
+    assert result == {"started": ["ok"], "failed": ["cancelled"]}

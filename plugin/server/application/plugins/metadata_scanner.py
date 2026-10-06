@@ -739,10 +739,9 @@ def scan_plugin_metadata_isolated(
     and imports nothing — see
     :mod:`plugin.server.infrastructure.packaged_metadata`.
 
-    There is no result cache and no concurrency gate here any more. Both existed
-    to make a fan-out of seventeen simultaneous scans survivable; discovery no
-    longer scans, and ``start_plugin`` runs under the plugin operation lock, so
-    scans are serialised by construction.
+    There is no result cache or concurrency gate here. Discovery does not scan.
+    Manual starts are serialized by the plugin operation lock; independent
+    autostart plugins can scan concurrently within the configured batch limit.
     """
     return _scan_plugin_metadata_uncached(
         plugin_id=plugin_id,

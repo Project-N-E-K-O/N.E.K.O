@@ -1630,10 +1630,14 @@ class PluginLifecycleService:
                 started.append(plugin_id)
                 logger.debug("autostart plugin started: plugin_id={}", plugin_id)
 
-        independent = [
+        independent = list(dict.fromkeys(
             str(plugin_id) for plugin_id in independent_plugin_ids if plugin_id
-        ]
-        ordered = [str(plugin_id) for plugin_id in ordered_plugin_ids if plugin_id]
+        ))
+        independent_set = set(independent)
+        ordered = list(dict.fromkeys(
+            str(plugin_id) for plugin_id in ordered_plugin_ids
+            if plugin_id and str(plugin_id) not in independent_set
+        ))
 
         if limit <= 1 or len(independent) <= 1:
             for plugin_id in independent:
@@ -1644,30 +1648,38 @@ class PluginLifecycleService:
             # even when each individual plugin starts within its own timeout.
             for offset in range(0, len(independent), limit):
                 wave = independent[offset : offset + limit]
-                async with plugin_operation_lock.hold() as operation_scope:
-                    # Collect unexpected task errors only after every sibling
-                    # has finished; otherwise the wave lock releases too early.
-                    outcomes = await asyncio.gather(
-                        *(
-                            _start_one(plugin_id, operation_scope=operation_scope)
-                            for plugin_id in wave
-                        ),
-                        return_exceptions=True,
+                try:
+                    async with plugin_operation_lock.hold() as operation_scope:
+                        # Collect unexpected task errors only after every sibling
+                        # has finished; otherwise the wave lock releases too early.
+                        outcomes = await asyncio.gather(
+                            *(
+                                _start_one(plugin_id, operation_scope=operation_scope)
+                                for plugin_id in wave
+                            ),
+                            return_exceptions=True,
+                        )
+                        for plugin_id, outcome in zip(wave, outcomes):
+                            if isinstance(outcome, BaseException):
+                                # A startup failure was already recorded by
+                                # _start_one; retain any unexpected task failure.
+                                if plugin_id not in failed and plugin_id not in started:
+                                    failed.append(plugin_id)
+                                    logger.error(
+                                        "autostart task failed unexpectedly: plugin_id={}, err_type={}, err={}",
+                                        plugin_id,
+                                        type(outcome).__name__,
+                                        str(outcome),
+                                    )
+                except Exception as error:
+                    # A failed lock acquisition must not abort server startup.
+                    for plugin_id in wave:
+                        if plugin_id not in started and plugin_id not in failed:
+                            failed.append(plugin_id)
+                    logger.error(
+                        "autostart wave failed: plugin_ids={}, err_type={}, err={}",
+                        wave, type(error).__name__, str(error),
                     )
-                    for plugin_id, outcome in zip(wave, outcomes):
-                        if isinstance(outcome, BaseException) and not isinstance(
-                            outcome, asyncio.CancelledError
-                        ):
-                            # A startup failure was already recorded by
-                            # _start_one; retain any unexpected task failure.
-                            if plugin_id not in failed and plugin_id not in started:
-                                failed.append(plugin_id)
-                                logger.error(
-                                    "autostart task failed unexpectedly: plugin_id={}, err_type={}, err={}",
-                                    plugin_id,
-                                    type(outcome).__name__,
-                                    str(outcome),
-                                )
 
         # Providers have completed; dependents keep their existing order and
         # yield the operation lock after each plugin, as serial autostart did.

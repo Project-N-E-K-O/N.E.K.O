@@ -36,6 +36,7 @@ from plugin.logging_config import get_logger
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
 from plugin.utils.http_imports import ensure_httpx, load_httpx
 from plugin.server.infrastructure.package_download import (
+    PackageDownloadDeadline,
     PackageSizeExceeded,
     cleanup_download_file as _cleanup_download_file,
     download_package_file,
@@ -4526,7 +4527,7 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             _safe_url_log_origin(url),
         )
         raise _DownloadAttemptError("下载网络错误") from exc
-    except TimeoutError as exc:
+    except PackageDownloadDeadline as exc:
         # asyncio.timeout 的**总时长**兜底到期。与上面的 httpx.TimeoutException 是两回事：
         # 那个是某一阶段超时，这个是"每阶段都没超时、但整通下载拖得太久"（滴流式响应）。
         # 必须单独接住并转成 _DownloadAttemptError，否则会落到最后的 except Exception

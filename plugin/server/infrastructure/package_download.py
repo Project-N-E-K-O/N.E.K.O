@@ -17,6 +17,10 @@ from plugin.utils.http_imports import ensure_httpx
 logger = get_logger("server.infrastructure.package_download")
 
 
+class PackageDownloadDeadline(TimeoutError):
+    """The downloader total deadline expired, rather than a filesystem error."""
+
+
 class PackageSizeExceeded(ValueError):
     def __init__(self, actual: int, maximum: int) -> None:
         self.actual = actual
@@ -70,9 +74,10 @@ async def download_package_file(
     check_cancelled()
     creation = asyncio.create_task(asyncio.to_thread(_create_download_file, directory))
     completed = False
+    deadline: asyncio.Timeout | None = None
     try:
         path = await await_cancellation_safe(creation)
-        async with asyncio.timeout(total_timeout):
+        async with asyncio.timeout(total_timeout) as deadline:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(phase_timeout),
                 follow_redirects=True,
@@ -119,6 +124,10 @@ async def download_package_file(
                         await flush()
         completed = True
         return path
+    except TimeoutError as exc:
+        if deadline is not None and deadline.expired():
+            raise PackageDownloadDeadline("Package download total deadline expired") from exc
+        raise
     finally:
         if (
             not completed

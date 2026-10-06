@@ -12,6 +12,7 @@ from plugin.utils.source_paths import (
     VENDOR_SYNC_PENDING_SUFFIX as VENDOR_SYNC_PENDING_SUFFIX,
     VENDOR_SYNC_STAGING_PREFIX as VENDOR_SYNC_STAGING_PREFIX,
     is_vendor_sync_path,
+    is_metadata_probe_path,
 )
 
 # Built-in excludes are hard safety defaults. User rules extend them, but do
@@ -139,6 +140,8 @@ def should_skip_path(relative_path: Path, *, is_dir: bool, rules: BuildRuleSet) 
         return True
 
     if not is_dir:
+        if is_metadata_probe_path(relative_path):
+            return True
         if relative_path.name in _DEFAULT_EXCLUDE_FILE_NAMES:
             return True
         if relative_path.suffix in _DEFAULT_EXCLUDE_SUFFIXES:

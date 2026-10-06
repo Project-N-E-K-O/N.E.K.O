@@ -232,7 +232,7 @@ def _tables_are_well_formed(raw: Mapping[str, object]) -> bool:
 
 def _read_metadata_json(
     meta_path: Path, *, warn: bool = False
-) -> tuple[Mapping[str, object], os.stat_result] | None:
+) -> tuple[Mapping[str, object], os.stat_result, bytes] | None:
     """Read one regular metadata file with a bounded allocation and JSON depth.
 
     Recheck the opened descriptor and use nonblocking open where available so
@@ -282,7 +282,7 @@ def _read_metadata_json(
                 "packaged plugin metadata is not an object: path={}", meta_path
             )
         return None
-    return raw, meta_stat
+    return raw, meta_stat, encoded
 
 
 def stale_packaged_schema_version(plugin_dir: Path) -> int | None:
@@ -298,7 +298,7 @@ def stale_packaged_schema_version(plugin_dir: Path) -> int | None:
     loaded = _read_metadata_json(plugin_dir / PACKAGED_METADATA_FILENAME)
     if loaded is None:
         return None
-    raw, _meta_stat = loaded
+    raw, _meta_stat, _encoded = loaded
     version = raw.get("schema_version")
     if isinstance(version, bool) or not isinstance(version, int):
         return None
@@ -320,7 +320,7 @@ def packaged_metadata_env_mismatched(plugin_dir: Path) -> bool:
     loaded = _read_metadata_json(plugin_dir / PACKAGED_METADATA_FILENAME)
     if loaded is None:
         return False
-    raw, _meta_stat = loaded
+    raw, _meta_stat, _encoded = loaded
     version = raw.get("schema_version")
     if isinstance(version, bool) or not isinstance(version, int):
         return False
@@ -335,7 +335,7 @@ def packaged_metadata_needs_rebuild(plugin_dir: Path) -> bool:
     loaded = _read_metadata_json(plugin_dir / PACKAGED_METADATA_FILENAME)
     if loaded is None:
         return False
-    raw, _meta_stat = loaded
+    raw, _meta_stat, _encoded = loaded
     version = raw.get("schema_version")
     if isinstance(version, bool) or not isinstance(version, int):
         return False
@@ -354,7 +354,7 @@ def local_packaged_metadata_path(plugin_dir: Path) -> Path | None:
     loaded = _read_metadata_json(plugin_dir / PACKAGED_METADATA_FILENAME)
     if loaded is None:
         return None
-    raw, _stat = loaded
+    raw, _stat, _encoded = loaded
     return _local_packaged_metadata_path(plugin_dir, raw)
 
 
@@ -727,24 +727,35 @@ def write_local_packaged_metadata(
     return True
 
 
-def _metadata_snapshot_is_current(meta_path: Path, expected: os.stat_result) -> bool:
+def _metadata_snapshot_is_current(
+    meta_path: Path, expected: os.stat_result, encoded: bytes | None = None
+) -> bool:
     """Reject metadata replaced, removed or modified since the bounded read."""
     try:
         current = meta_path.stat()
     except OSError:
         return False
+    if (current.st_dev, current.st_ino, current.st_size) != (
+        expected.st_dev, expected.st_ino, expected.st_size
+    ):
+        return False
+    if (current.st_mtime_ns, current.st_ctime_ns) == (
+        expected.st_mtime_ns, expected.st_ctime_ns
+    ):
+        return True
+    # A concurrent reader can stamp the same, unchanged metadata file.
+    # Only this rare path rereads bytes; normal reads still parse JSON once.
+    if encoded is None:
+        return False
+    reread = _read_metadata_json(meta_path)
+    if reread is None:
+        return False
+    _raw, reread_stat, reread_bytes = reread
     return (
-        current.st_dev,
-        current.st_ino,
-        current.st_size,
-        current.st_mtime_ns,
-        current.st_ctime_ns,
-    ) == (
-        expected.st_dev,
-        expected.st_ino,
-        expected.st_size,
-        expected.st_mtime_ns,
-        expected.st_ctime_ns,
+        (reread_stat.st_dev, reread_stat.st_ino, reread_stat.st_size)
+        == (expected.st_dev, expected.st_ino, expected.st_size)
+        and reread_bytes == encoded
+        and _metadata_snapshot_is_current(meta_path, reread_stat)
     )
 
 
@@ -758,28 +769,27 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
     loaded = _read_metadata_json(meta_path, warn=True)
     if loaded is None:
         return None
-    raw, meta_stat = loaded
+    raw, meta_stat, encoded = loaded
     if _environment_matches(raw.get("build_env")):
-        return _validate_metadata_snapshot(meta_path, plugin_dir, raw, meta_stat)
+        return _validate_metadata_snapshot(meta_path, plugin_dir, raw, meta_stat, encoded)
     target = _local_packaged_metadata_path(plugin_dir, raw)
     local = (
         _read_packaged_metadata_from(target, plugin_dir) if target is not None else None
     )
     if local is not None and local.built_in_this_environment:
-        return local if _metadata_snapshot_is_current(meta_path, meta_stat) else None
+        return local if _metadata_snapshot_is_current(meta_path, meta_stat, encoded) else None
     if target is not None:
         # Reuse caches written by the former flat layout. New writes and
         # retention stay scoped to this installation's directory.
         legacy = target.parent.parent / target.name
-        if legacy.is_file():
-            local = _read_packaged_metadata_from(legacy, plugin_dir)
-            if local is not None and local.built_in_this_environment:
-                return (
-                    local
-                    if _metadata_snapshot_is_current(meta_path, meta_stat)
-                    else None
-                )
-    return _validate_metadata_snapshot(meta_path, plugin_dir, raw, meta_stat)
+        local = _read_packaged_metadata_from(legacy, plugin_dir)
+        if local is not None and local.built_in_this_environment:
+            return (
+                local
+                if _metadata_snapshot_is_current(meta_path, meta_stat, encoded)
+                else None
+            )
+    return _validate_metadata_snapshot(meta_path, plugin_dir, raw, meta_stat, encoded)
 
 
 def _read_packaged_metadata_from(
@@ -790,8 +800,8 @@ def _read_packaged_metadata_from(
     loaded = _read_metadata_json(meta_path, warn=True)
     if loaded is None:
         return None
-    raw, meta_stat = loaded
-    return _validate_metadata_snapshot(meta_path, plugin_dir, raw, meta_stat)
+    raw, meta_stat, encoded = loaded
+    return _validate_metadata_snapshot(meta_path, plugin_dir, raw, meta_stat, encoded)
 
 
 def _validate_metadata_snapshot(
@@ -799,10 +809,11 @@ def _validate_metadata_snapshot(
     plugin_dir: Path,
     raw: Mapping[str, object],
     meta_stat: os.stat_result,
+    encoded: bytes,
 ) -> PackagedPluginMetadata | None:
     """Check snapshot stability before stamping a successful source verification."""
     validated = _validate_packaged_metadata(meta_path, plugin_dir, raw, meta_stat)
-    if validated is None or not _metadata_snapshot_is_current(meta_path, meta_stat):
+    if validated is None or not _metadata_snapshot_is_current(meta_path, meta_stat, encoded):
         return None
     result, verified_source_mtime = validated
     # Updating mtime/ctime during validation would invalidate our own snapshot,

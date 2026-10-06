@@ -197,7 +197,7 @@ def test_real_fork_scrubs_inflight_sibling_credentials(monkeypatch):
     host_module._PLUGIN_HOSTS.update((own, sibling))
     host_module._FORKING_HOST.host = own
     sender = _StartingCommunication(sibling.transport)
-    fake_state = SimpleNamespace(
+    fake_state = _InheritedReferences(
         plugin_hosts={}, _plugin_downlink_senders={"sibling": sender.send_plugin_response}
     )
     monkeypatch.setattr(host_module, "state", fake_state)
@@ -225,3 +225,20 @@ def test_real_fork_scrubs_inflight_sibling_credentials(monkeypatch):
         except ProcessLookupError:
             pass
         os.waitpid(pid, 0)
+
+
+@pytest.mark.plugin_unit
+def test_failed_host_scrub_does_not_skip_other_hosts_or_state(monkeypatch):
+    class BrokenHost:
+        def clear_inherited_credentials(self, **kwargs):
+            raise RuntimeError("partial host")
+
+    sibling = _StartingHost("sibling-token")
+    broken = BrokenHost()
+    monkeypatch.setattr(host_module, "_PLUGIN_HOSTS", [broken, sibling])
+    fake_state = _InheritedReferences(plugin_hosts={}, _plugin_downlink_senders={"sibling": object()})
+    monkeypatch.setattr(host_module, "state", fake_state)
+    host_module._scrub_inherited_host_credentials()
+    assert sibling._model_gateway_token == ""
+    assert not fake_state._plugin_downlink_senders
+    assert not host_module._PLUGIN_HOSTS

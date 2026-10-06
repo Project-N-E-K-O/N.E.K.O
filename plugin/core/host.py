@@ -2140,9 +2140,15 @@ _FORKING_HOST = threading.local()
 def _scrub_inherited_host_credentials() -> None:
     current = getattr(_FORKING_HOST, "host", None)
     for host in tuple(_PLUGIN_HOSTS):
-        host.clear_inherited_credentials(keep_launch_options=host is current)
+        try:
+            host.clear_inherited_credentials(keep_launch_options=host is current)
+        except Exception:
+            pass
     _PLUGIN_HOSTS.clear()
-    state.clear_inherited_plugin_references()
+    try:
+        state.clear_inherited_plugin_references()
+    except Exception:
+        pass
 
 
 _HOST_CREDENTIAL_FORK_HOOK_REGISTERED = False

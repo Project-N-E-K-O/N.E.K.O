@@ -357,7 +357,7 @@ def test_each_read_parses_shipped_metadata_once(tmp_path, monkeypatch, cache_cas
     result = packaged_metadata.read_packaged_metadata(plugin_dir)
     assert result is not None
     assert reads.count(plugin_dir / _META) == 1
-    assert len(reads) == (1 if cache_case == "same_env" else 2)
+    assert len(reads) == {"same_env": 1, "valid": 2, "missing": 3, "invalid": 3}[cache_case]
     assert result.built_in_this_environment == (cache_case in {"same_env", "valid"})
 
 
@@ -1206,3 +1206,85 @@ def test_direct_probe_preserves_local_metadata_named_business_data(tmp_path, mon
     assert local.read_bytes() == saved_data
     assert (written is not None) == probe_succeeds
     assert (plugin_dir / _META).exists() == probe_succeeds
+
+
+@pytest.mark.parametrize("layout", ["same_env", "scoped", "legacy"])
+def test_concurrent_verification_accepts_timestamp_only_changes(tmp_path, monkeypatch, layout):
+    import threading
+
+    plugin_dir = _write_plugin(
+        tmp_path, build_env=None if layout == "same_env" else _foreign_env(python="3.9")
+    )
+    target = plugin_dir / _META
+    if layout != "same_env":
+        assert packaged_metadata.write_local_packaged_metadata(
+            plugin_dir, before_scan=packaged_metadata.snapshot_source_tree(plugin_dir),
+            **_SCAN_KWARGS,
+        )
+        target = _cache_path(plugin_dir)
+        if layout == "legacy":
+            target = target.replace(target.parent.parent / target.name)
+    older = target.stat().st_mtime_ns - 10_000_000_000
+    os.utime(target, ns=(older, older))
+    barrier = threading.Barrier(2)
+    stamped = threading.Event()
+    original = packaged_metadata._validate_packaged_metadata
+    results = {}
+    errors = []
+
+    def synchronized(*args):
+        result = original(*args)
+        barrier.wait(timeout=5)
+        if threading.current_thread().name == "reader_b":
+            assert stamped.wait(5)
+        return result
+
+    def read():
+        try:
+            results[threading.current_thread().name] = packaged_metadata.read_packaged_metadata(plugin_dir)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            if threading.current_thread().name == "reader_a":
+                stamped.set()
+
+    monkeypatch.setattr(packaged_metadata, "_validate_packaged_metadata", synchronized)
+    threads = [threading.Thread(target=read, name=name) for name in ("reader_a", "reader_b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    assert all(results[name].built_in_this_environment for name in ("reader_a", "reader_b"))
+
+
+def test_inaccessible_legacy_cache_falls_back_to_shipped_metadata(tmp_path, monkeypatch):
+    plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
+    target = _cache_path(plugin_dir)
+    legacy = target.parent.parent / target.name
+    original = Path.stat
+
+    def inaccessible(path, *args, **kwargs):
+        if path == legacy:
+            raise PermissionError("cache access denied")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", inaccessible)
+    result = packaged_metadata.read_packaged_metadata(plugin_dir)
+    assert result.handlers["demo.go"]["name"] == "Old"
+    assert not result.built_in_this_environment
+
+
+@pytest.mark.parametrize("name", [".metadata_probe_abcdefgh", ".metadata_probe_abcdefgh.ready"])
+def test_crashed_metadata_probe_does_not_invalidate_or_enter_package(tmp_path, name):
+    from plugin.neko_plugin_cli.core.build_rules import BuildRuleSet, should_skip_path
+
+    plugin_dir = _write_plugin(tmp_path)
+    digest = packaged_metadata.compute_source_sha256(plugin_dir)
+    (plugin_dir / name).write_bytes(b"probe")
+    assert packaged_metadata.compute_source_sha256(plugin_dir) == digest
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None
+    assert should_skip_path(Path(name), is_dir=False, rules=BuildRuleSet())
+    assert not should_skip_path(Path("data") / name, is_dir=False, rules=BuildRuleSet())
+    assert not should_skip_path(Path(".metadata_probe_notes"), is_dir=False, rules=BuildRuleSet())

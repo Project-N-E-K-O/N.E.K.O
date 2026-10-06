@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Mapping
 
 from plugin._types.packaged_metadata import PACKAGED_METADATA_FILENAME
-from plugin.utils.source_paths import is_vendor_sync_path
+from plugin.utils.source_paths import is_metadata_probe_path, is_vendor_sync_path
 
 
 # Only the shipped root metadata is generated. Host caches live outside
@@ -176,6 +176,8 @@ def _iter_source_files(
                         # 块"这种改动，宿主继续端着按删除前推出来的 schema
                         # （codex）。增删条目都会更新父目录的 mtime。
                         dirs.append(entry.path)
+                    continue
+                if is_metadata_probe_path(Path(entry.path).relative_to(plugin_dir)):
                     continue
                 if entry.name in _GENERATED_METADATA_NAMES and current == str(
                     plugin_dir

@@ -80,7 +80,7 @@ deployments.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `NEKO_PLUGIN_AUTOSTART_CONCURRENCY` | `min(8, max(2, (os.cpu_count() or 4) // 2))` | Maximum number of plugins without declared dependencies started concurrently in one autostart batch. Accepts integers from `1` to `64`; `1` restores serial startup with a separate operation lock per plugin. |
+| `NEKO_PLUGIN_AUTOSTART_CONCURRENCY` | `min(8, max(2, (os.cpu_count() or 4) // 2))` | Maximum number of plugins without declared dependencies started concurrently in one autostart batch. Accepts integers from `1` to `64`; `1` starts plugins serially with a separate operation lock per plugin. Independent plugins still precede dependent plugins; this does not restore the former global topological/adapter-priority order. |
 
 The default is between 2 and 8; if the logical CPU count is unavailable, it uses
 4 logical CPUs to calculate the default, giving a limit of 2. Plugins with declared
