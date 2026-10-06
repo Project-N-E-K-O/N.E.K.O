@@ -947,3 +947,21 @@ async def test_an_unreadable_report_does_not_count_as_a_recorded_rejection(tmp_p
     assert await tu.rejection_recorded(tmp_path, V1) is True
     await tu.delete_report(tmp_path, V1)
     assert await tu.rejection_recorded(tmp_path, V1) is True           # 已不在队列
+
+
+
+async def test_a_round_stays_pending_while_the_report_file_cannot_be_read(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    original = tu._load_json
+    locked = [True]
+
+    def maybe_locked(path):
+        if locked[0] and path.name == f"{V1}.json":
+            raise PermissionError("in use")
+        return original(path)
+
+    monkeypatch.setattr(tu, "_load_json", maybe_locked)
+    assert (await tu.retry_visit_once(V1)).pending is True and fake.count("/api/visit/reports") == 0
+    locked[0] = False
+    assert (await tu.retry_visit_once(V1)).pending is False and fake.count("/api/visit/reports") == 1

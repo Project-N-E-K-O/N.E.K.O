@@ -731,6 +731,18 @@ def _set_rejected_sync(path: Path, visit_id: str, reason: str | None, expect: Ma
         _write_private_json(path, doc)
 
 
+async def _report_unreadable(config_dir: Path, visit_id: str) -> bool:
+    """The queued report file exists but cannot be read right now (sharing violation, permissions)."""
+    try:
+        await asyncio.to_thread(_load_json, report_path(config_dir, visit_id))
+    except OSError:
+        return True
+    except ValueError:
+        # 内容坏了不是暂时的：下次入队时隔离，不让 worker 一直空转
+        return False
+    return False
+
+
 async def rejection_recorded(config_dir: Path, visit_id: str) -> bool:
     """Whether the queued report of ``visit_id`` carries its ``rejected`` marker (or is gone).
 
@@ -1090,6 +1102,8 @@ async def retry_visit_once(
             logger.warning("visit upload %s: attempt failed: %s", visit_id, type(exc).__name__)
             upload = UploadRound(pending=True, retryable=True)
         report = await load_report(config_dir, visit_id)
+        # 举报文件暂时读不了：当成还有事没办完，worker 别退出，等能读了再提交 / 补记
+        unreadable = report is None and await _report_unreadable(config_dir, visit_id)
         if report is not None and owner is not None and not await report_belongs_to(report, owner):
             # 等锁期间原举报没了、换成了另一账号排的：不替它提交，也不动它的拒收标记
             report = None
@@ -1117,7 +1131,8 @@ async def retry_visit_once(
             elif report.get("rejected"):
                 report_pending = False
     delays = [d for d in (upload.retry_after_s, report_retry_after) if d is not None]
-    return RetryRound(pending=report_pending or upload.retryable, retry_after_s=max(delays) if delays else None,
+    return RetryRound(pending=report_pending or upload.retryable or unreadable,
+                      retry_after_s=max(delays) if delays else None,
                       login_required=login_required)
 
 
