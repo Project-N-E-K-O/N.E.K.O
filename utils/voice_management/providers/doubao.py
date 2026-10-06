@@ -175,7 +175,9 @@ class DoubaoVoiceAdapter(ImportOnlyAdapter):
             voice = next((voice for voice in page.voices if voice.voice_id == voice_id), None)
             if voice:
                 return voice
-        return None
+        # A successful lookup covers purchased slots in this app/project,
+        # including untrained states. Absence is not an unavailable lookup.
+        raise VoiceManagementError("VOICE_NOT_FOUND", 404)
 
     async def overwrite(self, runtime, voice_id, *, audio, filename, before_mutation=None):
         from utils.doubao_tts import DoubaoVoiceCloneClient, DoubaoTtsError

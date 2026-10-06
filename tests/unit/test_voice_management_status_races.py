@@ -150,7 +150,7 @@ def remote_record(request, monkeypatch, doubao_import, tmp_path):
     else:
         cm, adapter = MemoryVoiceManager(), CosyVoiceAdapter(provider)
         monkeypatch.setattr(cm, "get_cosyvoice_clone_runtime", lambda selected: {
-            "api_key": "controlled-key", "base_url": "https://controlled.vendor/api/v1",
+            "api_key": "controlled-key", "base_url": "https://dashscope-intl.aliyuncs.com/api/v1" if selected.endswith("_intl") else "https://dashscope.aliyuncs.com/api/v1",
         }, raising=False)
         lookup = providers.get_adapter
         monkeypatch.setattr(providers, "get_adapter", lambda selected: adapter if selected == provider else lookup(selected))

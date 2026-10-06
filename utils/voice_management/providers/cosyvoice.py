@@ -3,25 +3,11 @@
 import io
 import re
 from datetime import datetime
-from urllib.parse import urlsplit, urlunsplit
+
+from utils.dashscope_region import DASHSCOPE_DEFAULT_HTTP_API_URL, dashscope_http_url_from_base
 
 from ..types import ManagementCapabilities, RemoteVoice, VoiceManagementError, VoicePage
 from ._shared import ImportOnlyAdapter, filter_voices, numeric_cursor, remote_date, request_json, runtime_for, voice_rows
-
-
-def _http_base(base_url):
-    parsed = urlsplit(base_url)
-    if parsed.scheme not in ("http", "https", "ws", "wss") or not parsed.netloc:
-        raise VoiceManagementError("CONFIG_MISSING")
-    # Existing settings commonly store a compatible-mode or websocket URL.
-    path = parsed.path.rstrip("/")
-    for marker in ("/compatible-mode", "/api-ws"):
-        if marker in path:
-            path = path.split(marker, 1)[0] + "/api/v1"
-            break
-    if not path:
-        path = "/api/v1"
-    return urlunsplit(("https" if parsed.scheme in ("https", "wss") else "http", parsed.netloc, path, "", ""))
 
 
 class CosyVoiceAdapter(ImportOnlyAdapter):
@@ -38,7 +24,10 @@ class CosyVoiceAdapter(ImportOnlyAdapter):
         core = config_manager.get_core_config()
         configured_model = str(core.get("TTS_MODEL") or "")
         model = configured_model if self.provider == "cosyvoice" and configured_model.startswith("cosyvoice-v") else get_cosyvoice_clone_model(self.provider)
-        base_url = _http_base(config.get("base_url") or ("https://dashscope-intl.aliyuncs.com/api/v1" if self.provider == "cosyvoice_intl" else "https://dashscope.aliyuncs.com/api/v1"))
+        default = "https://dashscope-intl.aliyuncs.com/api/v1" if self.provider == "cosyvoice_intl" else DASHSCOPE_DEFAULT_HTTP_API_URL
+        # Persist the effective SDK endpoint so management, synthesis and scope
+        # agree even when the Qwen profile contains a custom proxy URL.
+        base_url = dashscope_http_url_from_base(config.get("base_url") or "", default)
         return runtime_for(self.provider, config.get("api_key"), base_url, model=model, settings={"upload_url": TFLINK_UPLOAD_URL})
 
     def import_metadata(self, runtime):

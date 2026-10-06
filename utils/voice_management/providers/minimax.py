@@ -41,6 +41,9 @@ class MiniMaxVoiceAdapter(ImportOnlyAdapter):
             code = str(base_resp.get("status_code", "")) if isinstance(base_resp, dict) else ""
             error = "AUTH_FAILED" if code in ("1004", "2049") else "RATE_LIMITED" if code == "1002" else "UPSTREAM_REJECTED"
             raise VoiceManagementError(error, 401 if error == "AUTH_FAILED" else 429 if error == "RATE_LIMITED" else 400)
+        # The official client accepts a missing/null clone category as empty.
+        # Preserve strict schema errors for other non-list values.
+        rows = data.get("voice_cloning")
         voices = [RemoteVoice(str(row["voice_id"]), str(row.get("voice_name") or row["voice_id"]), remote_date(row.get("created_time")), "ready", {"minimax_base_url": runtime.base_url}, False)
-                  for row in voice_rows(data.get("voice_cloning")) if row.get("voice_id")]
+                  for row in voice_rows([] if rows is None else rows) if row.get("voice_id")]
         return VoicePage(filter_voices(voices, query))

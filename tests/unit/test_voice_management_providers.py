@@ -9,7 +9,6 @@ import pytest
 
 from utils.voice_management.providers import get_adapter
 from utils.voice_management.providers._shared import numeric_cursor, remote_date, runtime_for
-from utils.voice_management.providers.cosyvoice import _http_base
 from utils.voice_management.providers.doubao import _parse_cursor, _signed_headers
 from utils.voice_management.types import VoiceManagementError
 
@@ -129,10 +128,14 @@ async def test_elevenlabs_details_reject_missing_or_system(status, payload, tran
     ("https://dashscope.aliyuncs.com/compatible-mode/v1", "https://dashscope.aliyuncs.com/api/v1"),
     ("wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference", "https://dashscope-intl.aliyuncs.com/api/v1"),
     ("https://dashscope-us.aliyuncs.com", "https://dashscope-us.aliyuncs.com/api/v1"),
-    ("http://proxy.local/api/v1", "http://proxy.local/api/v1"),
+    ("http://proxy.local/api/v1", "https://dashscope.aliyuncs.com/api/v1"),
 ])
-def test_cosy_region_http_endpoint(url, expected):
-    assert _http_base(url) == expected
+def test_cosy_region_http_endpoint(url, expected, monkeypatch):
+    cm = ConfigSnapshot()
+    monkeypatch.setattr(cm, "get_cosyvoice_clone_runtime", lambda provider: {
+        "api_key": "configured-secret", "base_url": url,
+    })
+    assert get_adapter("cosyvoice").resolve_runtime(cm).base_url == expected
 
 
 @pytest.mark.asyncio
