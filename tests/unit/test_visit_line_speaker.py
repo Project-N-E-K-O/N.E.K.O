@@ -240,12 +240,35 @@ def test_emotion_tags_never_reach_tts_even_split_across_deltas():
     assert [p.est_ms for p in h.speaker._pieces] == EST
 
 
+def test_a_hard_clause_cut_never_splits_a_tag_into_the_subtitles():
+    h = Harness()
+    # 没有标点的长句在 800 字节处硬切，切点正好落在 <happy> 中间
+    line = "谢" * 265 + "<happy>" + "谢" * 60 + "。"
+    for k in range(0, len(line), 7):
+        h.speaker.feed(line[k:k + 7])
+    h.speaker.llm_done()
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    shown = "".join(h.texts())
+    assert "<" not in shown and ">" not in shown and "ppy" not in shown
+    assert shown == h.results[0].text == "谢" * 325 + "。"
+
+
 def test_angle_brackets_that_are_not_tags_are_still_spoken():
     h = Harness()
     for delta in ("我爱你 <", "3 真的。", "a < b 吗？", "看 <https://a.example", "> 吧。"):
         h.speaker.feed(delta)
     h.speaker.llm_done()
     assert "".join(h.stream.pushed) == "我爱你 <3 真的。a < b 吗？看 <https://a.example> 吧。"
+
+
+def test_an_unclosed_bracket_at_the_end_is_spoken_and_shown():
+    h = Harness()
+    h.speaker.feed("我爱你 <")
+    h.speaker.llm_done()
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    assert "".join(h.stream.pushed) == "我爱你 <" and h.results[0].text.endswith("<")
 
 
 def test_emotion_tag_filter_lets_a_long_unclosed_tail_through():

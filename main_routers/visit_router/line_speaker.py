@@ -26,9 +26,10 @@ line = one :class:`SpeechStream` = one ``speech_id``:
   the line ``truncated`` (``goodbye_cap`` / ``wire_size``).
 * **TTS input is the raw text** (family names included: the audio only plays
   at home) minus the decoration tags (``<happy>``, stripped across deltas by
-  :class:`EmotionTagFilter`, so a tag is never read aloud); each subtitle
+  :class:`EmotionTagFilter` before both TTS and the splitter, so a tag is
+  never read aloud nor cut in half by a clause boundary); each subtitle
   piece is ``sanitize_relay_text(strip_emotion_tags(clause))`` of the
-  redacted clause, and the thresholds estimate the tag-free raw text.
+  redacted clause, and the thresholds estimate the same tag-free raw text.
 * **Release** of piece ``i`` once ``min(time since playback started,
   played_ms) >= threshold(i)``, ``threshold(i) = sum(estimate_speech_ms(raw_j)
   for j < i)`` (estimated on the raw text TTS speaks). ``ended{final:false}``
@@ -378,8 +379,7 @@ class LineSpeaker:
         if self._goodbye_left is not None:
             self._goodbye_left -= len(accepted)
         if accepted:
-            self._speak(accepted, now)
-            self._add_clauses(self._splitter.feed(accepted))
+            self._take_text(self._tags.feed(accepted), now)
         if self._budget.exhausted or goodbye_cut:
             self._cut_reason = "wire_size" if self._budget.exhausted else "goodbye_cap"
             self._cb.on_cancel_llm()
@@ -474,12 +474,16 @@ class LineSpeaker:
 
     # ── 内部 ─────────────────────────────────────────────────────────
 
-    def _speak(self, accepted: str, now: float) -> None:
+    def _take_text(self, text: str, now: float) -> None:
+        """Tag-free accepted text: to TTS and to the splitter, the same string."""
+        if not text:
+            return
         if self._mode != PACED_AUDIO:
             if self._est_origin is None:
                 self._est_origin = now
-            return
-        self._push_tts(self._tags.feed(accepted), now)
+        else:
+            self._push_tts(text, now)
+        self._add_clauses(self._splitter.feed(text))
 
     def _push_tts(self, text: str, now: float) -> None:
         if not text:
@@ -522,7 +526,7 @@ class LineSpeaker:
     def _add_clauses(self, clauses: Sequence[Clause]) -> None:
         for clause in clauses:
             text = sanitize_relay_text(strip_emotion_tags(clause.text))
-            self._pieces.append(_Piece(clause=clause, text=text, est_ms=estimate_speech_ms(drop_emotion_tags(clause.raw))))
+            self._pieces.append(_Piece(clause=clause, text=text, est_ms=estimate_speech_ms(clause.raw)))
 
     def _threshold(self, index: int) -> int:
         return sum(p.est_ms for p in self._pieces[:index])
@@ -565,11 +569,10 @@ class LineSpeaker:
         if self._llm_done:
             return
         self._llm_done = True
+        # 收尾时还扣着的半个「<...」不是标签：照常念出、照常上字幕
+        self._take_text(self._tags.flush(), now)
         self._closing_cut = self._cut_reason is not None
         self._add_clauses(self._splitter.flush())
-        if self._mode == PACED_AUDIO:
-            # 收尾时还扣着的半个「<...」不是标签：照常念出
-            self._push_tts(self._tags.flush(), now)
         if self._mode == PACED_AUDIO and self._stream is not None and not self._stream_dead:
             outcome = self._stream.finish()
             self._finished = True
