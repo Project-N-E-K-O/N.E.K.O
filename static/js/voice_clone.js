@@ -2326,6 +2326,14 @@ function updateVoicePreviewSessionState(session, state) {
 function finishVoicePreviewSession(session) {
     if (activeVoicePreviewSessions.get(session.voiceId) !== session) return;
     activeVoicePreviewSessions.delete(session.voiceId);
+    if (session.controller) session.controller.abort();
+    if (session.audio) {
+        const audio = session.audio;
+        session.audio = null;
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.load();
+    }
     session.buttons.forEach(btn => setVoicePreviewButtonState(btn, 'idle'));
     session.buttons.clear();
 }
@@ -2350,6 +2358,9 @@ async function playPreview(voiceId, btn, options = {}) {
     const session = {
         voiceId: voiceIdKey,
         cacheIdentity,
+        imported: options.origin === 'import',
+        controller: null,
+        audio: null,
         state: 'loading',
         buttons: new Set(),
     };
@@ -2398,6 +2409,7 @@ async function playPreview(voiceId, btn, options = {}) {
                 if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
                 response = null;
                 const ctrl = new AbortController();
+                session.controller = ctrl;
                 const tid = setTimeout(() => ctrl.abort(), ttsTimeoutMs);
                 try {
                     response = await fetch(
@@ -2413,7 +2425,9 @@ async function playPreview(voiceId, btn, options = {}) {
                     if (attempt >= ttsMaxAttempts) break;
                 } finally {
                     clearTimeout(tid);
+                    if (session.controller === ctrl) session.controller = null;
                 }
+                if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
                 await sleepVoiceCloneLoaderRetry(VOICE_CLONE_LOADER_FETCH_BACKOFF_MS * attempt);
             }
             if (!response) throw lastTtsError || new Error('请求失败');
@@ -2451,6 +2465,7 @@ async function playPreview(voiceId, btn, options = {}) {
 
         if (audioSrc && activeVoicePreviewSessions.get(voiceIdKey) === session) {
             const audio = new Audio(audioSrc);
+            session.audio = audio;
             let playbackFinished = false;
             const restorePreviewButton = () => {
                 if (playbackFinished) return;
@@ -2464,6 +2479,7 @@ async function playPreview(voiceId, btn, options = {}) {
             try {
                 await audio.play();
             } catch (e) {
+                if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
                 restorePreviewButton();
                 console.error('Audio play error:', e);
                 const errorMsg = e?.message || e?.toString();
@@ -2529,6 +2545,15 @@ async function loadVoices() {
         }
         if (nonJson) {
             throw new Error(buildNonJsonError(response, text));
+        }
+
+        for (const session of activeVoicePreviewSessions.values()) {
+            if (!session.imported) continue;
+            const voice = data.voices && data.voices[session.voiceId];
+            if (!voice || voice.availability === 'unavailable' ||
+                voicePreviewCacheIdentity(voice) !== session.cacheIdentity) {
+                finishVoicePreviewSession(session);
+            }
         }
 
         if ((!data.voices || Object.keys(data.voices).length === 0) &&
@@ -2985,6 +3010,8 @@ async function deleteVoice(voiceId, voiceName) {
         const data = parsed || {};
 
         if (response.ok && data.success) {
+            const session = activeVoicePreviewSessions.get(String(voiceId));
+            if (session) finishVoicePreviewSession(session);
             // 删除本地缓存的预览音频
             localStorage.removeItem(`voice_preview_${voiceId}`);
             

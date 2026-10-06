@@ -151,6 +151,7 @@
         if (state.submit) state.submit.disabled = value || (state.mode === 'list' && !state.selection) || (state.mode === 'manual' && !state.id.value.trim());
         if (state.more) state.more.disabled = value;
         if (state.refreshStatus) state.refreshStatus.disabled = value;
+        for (const control of state.importControls || []) control.disabled = !!state.importSubmitting;
         if (state.mode === 'list' && state.empty) state.empty.hidden = value || state.rows.children.length > 0;
     }
 
@@ -164,12 +165,17 @@
     }
 
     function manual(state) {
+        if (state.importSubmitting) return;
         clearTimeout(state.searchTimer);
         operations.cancel();
         state.mode = 'manual';
         state.selection = null;
         state.body.replaceChildren();
-        state.body.append(button('backToList', () => { state.mode = 'list'; listView(state); refresh(state); }, 'remote-voice-link'));
+        const back = button('backToList', () => {
+            if (state.importSubmitting) return;
+            state.mode = 'list'; listView(state); refresh(state);
+        }, 'remote-voice-link');
+        state.body.append(back);
         const fields = node('div', 'remote-voice-manual');
         function input(label, key, required = false, value = '') {
             const wrapper = node('label', 'remote-voice-field', t(label));
@@ -192,6 +198,7 @@
             state.metadata[spec.key] = field;
         }
         state.body.append(fields, node('p', 'remote-voice-hint', t('manualHint')));
+        state.importControls = [back, state.id, state.name, ...Object.values(state.metadata)];
         state.submit.textContent = t('import');
         state.submit.disabled = true;
         state.id.addEventListener('input', () => busy(state, state.busy));
@@ -245,6 +252,7 @@
         state.search = node('input'); state.search.type = 'search'; state.search.placeholder = t('search');
         state.search.setAttribute('aria-label', t('search'));
         state.search.addEventListener('input', () => {
+            if (state.importSubmitting) return;
             clearTimeout(state.searchTimer);
             operations.cancel();
             state.selection = null;
@@ -253,7 +261,8 @@
             state.status.textContent = t('loading');
             state.searchTimer = setTimeout(() => refresh(state), 250);
         });
-        toolbar.append(state.search, button('refresh', () => refresh(state)));
+        const refreshButton = button('refresh', () => refresh(state));
+        toolbar.append(state.search, refreshButton);
         const scroller = node('div', 'remote-voice-table-scroll');
         const table = node('table', 'remote-voice-table');
         const head = node('thead'), row = node('tr');
@@ -264,12 +273,13 @@
         const manualButton = button('manualEntry', () => manual(state), 'remote-voice-link');
         const settings = button('apiSettings', () => { if (typeof root.openApiSettings === 'function') root.openApiSettings(); }, 'remote-voice-link');
         state.body.append(toolbar, scroller, state.empty, state.more, manualButton, settings);
+        state.importControls = [state.search, refreshButton, manualButton];
         state.submit.textContent = t('importSelected');
         renderRows(state);
     }
 
     async function refresh(state, append = false) {
-        if (active !== state || state.mode !== 'list' || (append && state.busy)) return;
+        if (active !== state || state.importSubmitting || state.mode !== 'list' || (append && state.busy)) return;
         clearTimeout(state.searchTimer);
         const operation = operations.begin(state.provider);
         const query = state.search.value.trim();
@@ -322,6 +332,7 @@
         const id = manualMode ? state.id.value.trim() : state.selection && state.selection.voice_id;
         if (!id) return;
         if (manualMode && Object.values(state.metadata).some(field => !field.reportValidity())) return;
+        state.importSubmitting = true;
         const operation = operations.begin(state.provider);
         busy(state, true); state.status.textContent = t('importing');
         try {
@@ -340,7 +351,10 @@
             if (typeof root.loadVoices === 'function') await root.loadVoices();
         } catch (error) {
             if (active === state && operations.current === operation) showError(state, error);
-        } finally { if (active === state && operations.current === operation) busy(state, false); }
+        } finally {
+            state.importSubmitting = false;
+            if (active === state && operations.current === operation) busy(state, false);
+        }
     }
 
     function openImport() {

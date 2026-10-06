@@ -2,6 +2,7 @@
 // Standalone Chromium fallback when the desktop Browser plugin has no browser.
 const { chromium } = require(process.env.NEKO_TEST_PLAYWRIGHT_MODULE || 'playwright');
 const { createVoiceManagerServer } = require('./remote_voice_manager_server.cjs');
+const { verifyVoiceRaces } = require('./remote_voice_manager_races.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -70,9 +71,12 @@ const os = require('node:os');
         await page.keyboard.press('Escape');
         await page.locator('#voiceProvider').selectOption('mimo');
         assert.equal(await page.locator('#importExistingVoice').isHidden(), true);
+        const races = await verifyVoiceRaces({ run: code => page.evaluate(code),
+            waitFor: expression => page.waitForFunction(expression), state });
         assert.deepEqual(errors, []);
         console.log(JSON.stringify({ browser: await browser.version(), actualProductAssets: true, controlledApiOnly: true,
             explicitImport: true, rawIdAndAvailablePreview: true, paginatedSearch: true, manualRequiredFields: true, noImplicitBinding: true,
+            ...races,
             tutorialDeferredAndResumed: true, keyboardFocus: true, narrowViewport: true, unsupportedProviderHidden: true, listScreenshot, manualScreenshot, screenshot }, null, 2));
     } finally { if (browser) await browser.close(); await new Promise(resolve => server.close(resolve)); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

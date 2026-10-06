@@ -3,6 +3,7 @@
 import asyncio
 from fastapi.responses import JSONResponse
 
+from utils.config_manager.imported_voices import VOICE_STORAGE_LOCK
 from utils.voice_management import providers
 from utils.voice_management.runtime_snapshot import VoiceRuntimeSnapshot
 
@@ -22,11 +23,25 @@ class ImportedPreviewConfig(VoiceRuntimeSnapshot):
         self.voice_data = dict(voice_data or {})
 
     async def is_current(self):
+        def check():
+            # Serialize the delivery checkpoint with local delete/update commits.
+            # Provider I/O has already finished and never runs under this lock.
+            with VOICE_STORAGE_LOCK:
+                current = self.manager.get_imported_voice(self.voice_data["local_ref"])
+                if current is None or any(
+                    current.get(field) != self.voice_data.get(field)
+                    for field in (
+                        "scope_id", "provider", "remote_voice_id", "overwrite_operation_id",
+                        "overwrite_status", "remote_revision",
+                    )
+                ):
+                    return False
+                runtime = providers.get_adapter(self.runtime.provider).resolve_runtime(
+                    self.manager, voice_data=current,
+                )
+                return runtime.scope_id == self.runtime.scope_id and bool(runtime.api_key)
+
         try:
-            runtime = await asyncio.to_thread(
-                providers.get_adapter(self.runtime.provider).resolve_runtime, self.manager,
-                voice_data=self.voice_data,
-            )
-            return runtime.scope_id == self.runtime.scope_id and bool(runtime.api_key)
+            return await asyncio.to_thread(check)
         except Exception:
             return False

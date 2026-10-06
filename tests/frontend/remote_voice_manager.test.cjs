@@ -15,28 +15,35 @@ const deferred = () => {
 
 function previewHarness(storage = new Map()) {
     const previewSource = fs.readFileSync(path.join(__dirname, '../../static/js/voice_clone.js'), 'utf8');
-    const method = previewSource.slice(previewSource.indexOf('function voicePreviewCacheIdentity('), previewSource.indexOf('// 加载音色列表', previewSource.indexOf('async function playPreview(')));
-    const sessions = new Map(), requests = [], audios = [], deadlines = [], errors = [];
+    const method = previewSource.slice(previewSource.indexOf('function finishVoicePreviewSession('), previewSource.indexOf('// 加载音色列表', previewSource.indexOf('async function playPreview(')));
+    const sessions = new Map(), requests = [], audios = [], audioInstances = [], deadlines = [], errors = [];
     const context = vm.createContext({
         activeVoicePreviewSessions: sessions,
         attachVoicePreviewButton() {},
-        finishVoicePreviewSession(session) { if (sessions.get(session.voiceId) === session) sessions.delete(session.voiceId); },
+        setVoicePreviewButtonState() {},
         updateVoicePreviewSessionState() {},
         getVoicePreviewLanguage: () => 'zh-CN',
-        localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) },
+        localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
         AbortController, setTimeout: (_callback, ms) => { deadlines.push(ms); return ms; }, clearTimeout() {},
-        fetch: () => { const request = deferred(); requests.push(request); return request.promise; },
+        fetch: (url, options) => { const request = { ...deferred(), url, options }; requests.push(request); return request.promise; },
         safeReadResponse: async response => ({ data: response.data }),
         sleepVoiceCloneLoaderRetry: async () => {}, VOICE_CLONE_LOADER_FETCH_BACKOFF_MS: 1,
         window: {}, console: { warn() {}, error() {} },
         showVoicePreviewErrorNotice: value => errors.push(value),
-        Audio: class { constructor(src) { audios.push(src); } addEventListener() {} async play() {} },
+        Audio: class {
+            constructor(src) { audios.push(src); audioInstances.push(this); this.src = src; this.paused = false; this.released = false; }
+            addEventListener() {}
+            async play() { if (this.pendingPlay) await this.pendingPlay.promise; }
+            pause() { this.paused = true; }
+            removeAttribute(key) { assert.equal(key, 'src'); this.src = ''; }
+            load() { this.released = true; }
+        },
         encodeURIComponent, Map, Set, JSON
     });
     vm.runInContext(method, context);
-    return { context, sessions, requests, audios, deadlines, errors, storage,
+    return { context, sessions, requests, audios, audioInstances, deadlines, errors, storage,
         play: options => context.playPreview('voice_1234567890abcdef1234567890abcdef', { disabled: false }, options),
-        finish: () => sessions.clear(),
+        finish: () => { for (const session of sessions.values()) context.finishVoicePreviewSession(session); },
         resolve: (index, audio = 'NEW') => requests[index].resolve({ ok: true, status: 200, data: { success: true, audio } }) };
 }
 
@@ -339,6 +346,101 @@ test('manual mode replaces a pending list and import only saves the chosen ID', 
     assert.ok(h.panel().textContent.includes('voice.remote.importedUnverified'));
     assert.ok(!h.panel().textContent.includes('late'));
     assert.equal(h.requests.some(request => request.url.includes('clone') || request.url.includes('voice_id')), false);
+});
+
+for (const action of ['search', 'refresh', 'manualEntry', 'backToList']) {
+    test(`pending import owns its acknowledgement despite ${action}`, async () => {
+        const clock = searchClock(), h = harness(clock);
+        h.window.RemoteVoiceManager.openImport(); h.resolve(0, h.ctx); await tick();
+        h.resolve(1, { success: true, voices: [{ voice_id: 'Existing', name: 'Voice' }] }); await tick();
+        if (action === 'backToList') {
+            h.button('manualEntry').dispatch('click');
+            const id = h.panel().querySelectorAll('input')[0]; id.value = 'Existing'; id.dispatch('input');
+            h.button('import').dispatch('click');
+        } else {
+            h.panel().querySelectorAll('input').find(input => input.type === 'radio').dispatch('change');
+            h.button('importSelected').dispatch('click');
+        }
+        const control = action === 'search' ? h.panel().querySelectorAll('input').find(input => input.type === 'search') : h.button(action);
+        assert.equal(control.disabled, true);
+        // Force dispatch too: disabled DOM controls alone cannot enforce ownership.
+        if (action === 'search') { control.value = 'Other'; control.dispatch('input'); }
+        else control.dispatch('click');
+        clock.fire(250); await tick();
+        assert.equal(h.requests.length, 3);
+        assert.equal(h.requests[2].options.signal.aborted, false);
+        h.resolve(2, { success: true, verification: 'verified' }); await tick();
+        assert.equal(h.refreshes(), 1);
+        assert.ok(h.panel().textContent.includes('voice.remote.imported'));
+        assert.ok(h.panel().textContent.includes('voice.remote.bindHint'));
+        h.window.RemoteVoiceManager.close(); assert.equal(clock.size(), 0);
+    });
+}
+
+test('failed import releases query controls and manual values for a deliberate retry', async () => {
+    const h = harness(searchClock());
+    h.window.RemoteVoiceManager.openImport(); h.resolve(0, h.ctx); await tick();
+    h.resolve(1, { success: true, voices: [] }); await tick();
+    h.button('manualEntry').dispatch('click');
+    const id = h.panel().querySelectorAll('input')[0]; id.value = 'Existing'; id.dispatch('input');
+    h.button('import').dispatch('click');
+    assert.equal(id.disabled, true);
+    h.resolve(2, { success: false, code: 'CONTEXT_CHANGED' }, 409); await tick();
+    assert.equal(id.disabled, false); assert.equal(id.value, 'Existing');
+    assert.equal(h.button('backToList').disabled, false);
+    assert.equal(h.button('import').disabled, false); assert.equal(h.refreshes(), 0);
+    h.button('backToList').dispatch('click');
+    h.resolve(3, h.ctx); await tick(); h.resolve(4, { success: true, voices: [] }); await tick();
+    assert.equal(h.panel().querySelectorAll('input').find(input => input.type === 'search').disabled, false);
+    h.window.RemoteVoiceManager.close();
+});
+
+for (const phase of ['fetching', 'playing', 'play-rejection']) {
+    test(`confirmed deletion retires ${phase} preview and ignores late delivery`, async () => {
+        const h = previewHarness(), dom = harness(), ref = 'voice_1234567890abcdef1234567890abcdef';
+        const product = fs.readFileSync(path.join(__dirname, '../../static/js/voice_clone.js'), 'utf8');
+        const start = product.indexOf('async function deleteVoice(');
+        const list = new Element('div', dom.document); list.id = 'voice-list-container'; dom.container.append(list);
+        Object.assign(h.context, { document: dom.document, confirm: () => true, alert: assert.fail,
+            loadVoices: dom.window.loadVoices, window: dom.window });
+        vm.runInContext(product.slice(start, product.indexOf('// 页面加载时自动加载音色列表', start)), h.context);
+        if (phase === 'play-rejection') {
+            const Audio = h.context.Audio, play = deferred();
+            h.context.Audio = class extends Audio { constructor(src) { super(src); this.pendingPlay = play; } };
+        }
+        const pending = h.play(importedPreview);
+        if (phase !== 'fetching') { h.resolve(0); await tick(); }
+        const deleted = h.context.deleteVoice(ref, 'Voice'); await tick();
+        h.requests[1].resolve({ ok: true, status: 200, data: { success: true } }); await deleted;
+        assert.equal(h.sessions.size, 0); assert.equal(dom.refreshes(), 1);
+        if (phase === 'fetching') {
+            assert.equal(h.requests[0].options.signal.aborted, true);
+            h.resolve(0, 'DELETED');
+        } else {
+            assert.equal(h.audioInstances[0].paused, true); assert.equal(h.audioInstances[0].released, true);
+            if (phase === 'play-rejection') h.audioInstances[0].pendingPlay.reject(new Error('retired play'));
+        }
+        await pending;
+        assert.equal(h.storage.size, 0); assert.deepEqual(h.errors, []);
+        assert.equal(h.audios.length, phase === 'fetching' ? 0 : 1);
+    });
+}
+
+test('a successful empty library refresh retires only missing imported preview sessions', async () => {
+    const h = previewHarness(), dom = harness();
+    const product = fs.readFileSync(path.join(__dirname, '../../static/js/voice_clone.js'), 'utf8');
+    const list = new Element('div', dom.document); list.id = 'voice-list-container'; dom.container.append(list);
+    Object.assign(h.context, { document: dom.document, window: dom.window,
+        getCurrentCharacterVoiceId: async () => '',
+        fetchVoiceCloneLoaderResponse: async () => ({ ok: true, status: 200, data: { voices: {} } }) });
+    vm.runInContext(product.slice(product.indexOf('let voiceListLoadGeneration ='), product.indexOf('// 删除音色')), h.context);
+    const pending = h.play(importedPreview);
+    const legacy = { voiceId: 'legacy', imported: false, buttons: new Set() }; h.sessions.set('legacy', legacy);
+    await h.context.loadVoices();
+    assert.equal(h.requests[0].options.signal.aborted, true);
+    assert.equal(h.sessions.get('legacy'), legacy);
+    h.resolve(0, 'DELETED'); await pending;
+    assert.equal(h.audios.length, 0); assert.equal(h.storage.size, 0);
 });
 
 test('already imported rows cannot be selected and pagination deduplicates results', async () => {

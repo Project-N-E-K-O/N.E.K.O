@@ -22,6 +22,7 @@ class VoiceManager:
     def __init__(self, provider):
         self.active = True
         self.metadata = {
+            "local_ref": LOCAL_REF,
             "origin": "import", "source": "clone", "provider": provider,
             "remote_voice_id": "S_remote123" if provider == "doubao_tts" else "remote123",
             "scope_id": "scope", "clone_model": "cosyvoice-v3.5-plus",
@@ -244,6 +245,107 @@ async def test_cosy_preview_preserves_model_and_remote_voice(manager, monkeypatc
     assert result["success"]
     assert observed[0]["voice"] == "remote123"
     assert observed[0]["model"] == "cosyvoice-v3.5-plus"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", [
+    "minimax", "minimax_intl", "elevenlabs", "doubao_tts", "glm_tts", "cosyvoice", "cosyvoice_intl",
+])
+@pytest.mark.parametrize("change", ["unchanged", "delete", "overwrite", "inactive"])
+async def test_all_imported_preview_paths_fence_late_audio(manager, monkeypatch, provider, change):
+    """Delay actual synthesis delivery, then retire the captured local record."""
+    manager.metadata["provider"] = provider
+    started, release = asyncio.Event(), asyncio.Event()
+    thread_release = threading.Event()
+    loop = asyncio.get_running_loop()
+    real_client = httpx.AsyncClient
+
+    async def transport(request):
+        started.set()
+        await release.wait()
+        if provider.startswith("minimax"):
+            return httpx.Response(200, json={"base_resp": {"status_code": 0}, "data": {"audio": b"audio".hex()}})
+        if provider == "doubao_tts":
+            return httpx.Response(200, json={"code": 0, "data": base64.b64encode(b"audio").decode()})
+        return httpx.Response(200, content=b"audio", headers={"content-type": "audio/wav"})
+
+    def synthesis(text):
+        loop.call_soon_threadsafe(started.set)
+        assert thread_release.wait(timeout=10)
+        return b"audio"
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: real_client(
+        **{**kwargs, "transport": httpx.MockTransport(transport)},
+    ))
+    if provider.startswith("cosyvoice"):
+        from dashscope.audio import tts_v2
+        monkeypatch.setattr(tts_v2, "SpeechSynthesizer", lambda **kwargs: SimpleNamespace(call=synthesis))
+    pending = asyncio.create_task(voice_preview.get_voice_preview(
+        Request({"type": "http", "headers": [], "query_string": b""}), LOCAL_REF,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=10)
+        if change == "delete":
+            monkeypatch.setattr(manager, "get_imported_voice", lambda *args, **kwargs: None)
+        elif change == "overwrite":
+            manager.metadata.update(overwrite_operation_id="new-operation", overwrite_status="completed", remote_revision="2")
+        elif change == "inactive":
+            manager.active = False
+    finally:
+        release.set()
+        thread_release.set()
+    result = await asyncio.wait_for(pending, timeout=10)
+    if change == "unchanged":
+        assert result["success"] and base64.b64decode(result["audio"]) == b"audio"
+    else:
+        assert result.status_code == 409
+        assert json.loads(result.body)["code"] == "IMPORTED_VOICE_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["unchanged", "delete_other", "delete", "overwrite", "storage_error"])
+async def test_preview_delivery_checks_actual_local_storage(doubao_import, monkeypatch, change):
+    cm, adapter, ref, metadata = doubao_import
+    monkeypatch.setattr(voice_preview, "get_config_manager", lambda: cm)
+    started, release = asyncio.Event(), asyncio.Event()
+    real_client = httpx.AsyncClient
+
+    async def transport(request):
+        started.set()
+        await release.wait()
+        return httpx.Response(200, json={"code": 0, "data": base64.b64encode(b"audio").decode()})
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: real_client(
+        **{**kwargs, "transport": httpx.MockTransport(transport)},
+    ))
+    pending = asyncio.create_task(voice_preview.get_voice_preview(
+        Request({"type": "http", "headers": [], "query_string": b""}), ref,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=10)
+        if change == "delete":
+            assert await cm.adelete_imported_voice(ref)
+        elif change == "delete_other":
+            other, _, _ = await cm.aimport_remote_voice(
+                metadata["scope_id"], metadata["provider"], "S_another123", adapter.import_metadata(adapter.resolve_runtime(cm)),
+            )
+            assert await cm.adelete_imported_voice(other)
+        elif change == "overwrite":
+            await cm.aupdate_imported_voice(ref, metadata["scope_id"], {
+                "overwrite_operation_id": "new-operation", "overwrite_status": "completed", "remote_revision": "2",
+            })
+        elif change == "storage_error":
+            def unreadable():
+                raise OSError("unreadable voice storage")
+            monkeypatch.setattr(cm, "load_voice_storage", unreadable)
+    finally:
+        release.set()
+    result = await asyncio.wait_for(pending, timeout=10)
+    if change in {"unchanged", "delete_other"}:
+        assert result["success"] and base64.b64decode(result["audio"]) == b"audio"
+    else:
+        assert result.status_code == 409
+        assert json.loads(result.body)["code"] == "IMPORTED_VOICE_UNAVAILABLE"
 
 
 def test_dispatch_freezes_imported_provider_credentials(manager, monkeypatch):

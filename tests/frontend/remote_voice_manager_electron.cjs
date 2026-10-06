@@ -6,6 +6,7 @@ const path = require('node:path');
 const os = require('node:os');
 const assert = require('node:assert/strict');
 const { createVoiceManagerServer } = require('./remote_voice_manager_server.cjs');
+const { verifyVoiceRaces } = require('./remote_voice_manager_races.cjs');
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'neko-remote-voice-ui-'));
 app.setPath('userData', path.join(scratch, 'user-data'));
 const { server, state } = createVoiceManagerServer();
@@ -94,6 +95,7 @@ app.whenReady().then(async () => {
     const narrowScreenshot = await screenshot('narrow');
     await run("document.querySelector('.remote-voice-close').click();true;");
     win.setSize(1120, 880);
+    const races = await verifyVoiceRaces({ run, waitFor, state });
     await win.loadURL(origin + '/api_key');
     await waitFor("document.getElementById('doubaoVoiceManagementAccessKey') && document.getElementById('doubaoVoiceManagementAccessKey').dataset.maskedSecret==='true'");
     assert.equal(await run("getRealKey(document.getElementById('doubaoVoiceManagementAccessKey'))"), '__NEKO_SECRET_MASKED__');
@@ -108,6 +110,7 @@ app.whenReady().then(async () => {
     assert.equal(state.settings[0].doubaoVoiceManagementProjectName, 'Controlled Project');
     console.log(JSON.stringify({ electron: process.versions.electron, chromium: process.versions.chrome,
         actualProductAssets: true, controlledApiOnly: true, importWithoutBinding: true, localReferenceBinding: true,
+        ...races,
         originalRemoteIdVisible: true, manualImport: true, uncertainUpdateNoRetry: true, explicitStatusRefresh: true,
         keyboardImeAndFocus: true, narrowWindow: true, tutorialDeferredAndResumed: true, maskedManagementCredentialRoundTrip: true,
         listScreenshot, manualScreenshot, narrowScreenshot, consoleErrors: errors }, null, 2));

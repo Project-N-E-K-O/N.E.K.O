@@ -58,7 +58,16 @@ function createVoiceManagerServer() {
             const data = { local_ref: ref, remote_voice_id: body.remote_voice_id, display_name: body.display_name || '已有克隆音色', prefix: body.display_name || '已有克隆音色',
                 source: 'clone', provider: body.provider, availability: 'available', origin: 'import', verification: 'verified', remote_revision: 'controlled-revision-1', clone_model: body.metadata.clone_model || (body.provider.startsWith('cosyvoice') ? 'cosyvoice-v3-plus' : ''), can_overwrite: management(body.provider).overwrite, created_at: new Date().toISOString() };
             state.voices[ref] = data;
+            if (state.beforeImportResponse) await state.beforeImportResponse();
             return json(response, { success: true, voice_id: ref, voice_data: data, created: true, verification: data.verification });
+        }
+        if (url.pathname === '/api/characters/voice_preview') {
+            if (state.beforePreviewResponse) await state.beforePreviewResponse();
+            return json(response, { success: true, audio: Buffer.from('controlled-audio').toString('base64') });
+        }
+        if (request.method === 'DELETE' && url.pathname.startsWith('/api/characters/voices/')) {
+            delete state.voices[url.pathname.split('/')[4]];
+            return json(response, { success: true });
         }
         if (url.pathname.endsWith('/overwrite')) {
             state.updates.push(await read(request)); const ref = url.pathname.split('/')[4];
