@@ -559,7 +559,10 @@ async def _upload(visit_id: str, doc: dict, config_dir: Path) -> UploadResult:
         parts, accepted = progress
     url = f"{session.base_url}/api/visit/transcripts"
     for _round in range(_MAX_SEND_ROUNDS):
-        regrouped = False
+        if len(accepted) >= parts:
+            # 块都收下了却还没见到 complete（本轮之前的回执、或上次重试落盘的进度）：只有 Servers
+            # 拼好整组才算完成。重发最后一块（按块幂等）换一份带 complete 的回执，不空转一轮
+            accepted.discard(parts - 1)
         for part in range(parts):
             if part in accepted:
                 continue
@@ -596,7 +599,6 @@ async def _upload(visit_id: str, doc: dict, config_dir: Path) -> UploadResult:
                 # 新一代分块：整组重切重传，已受理集合清空（幂等键含 parts，不会与上一代撞）
                 parts, accepted = parts * 2, set()
                 await asyncio.to_thread(_persist_progress, path, doc, parts, accepted)
-                regrouped = True
                 break
             if (status, code) in TERMINAL_UPLOAD_REPLIES:
                 return UploadResult(terminal=code)
@@ -608,10 +610,7 @@ async def _upload(visit_id: str, doc: dict, config_dir: Path) -> UploadResult:
             if status < 500:
                 logger.warning("visit upload %s: status=%s code=%s, kept for retry", visit_id, status, cr._diag_code(code))
             return UploadResult()
-        if not regrouped and len(accepted) >= parts:
-            # 块都收下了却没见到 complete：只有 Servers 拼好整组才算完成。重发最后一块（幂等）
-            # 拿一份带 complete 的回执；几轮都拿不到就留着下次再试
-            accepted.discard(parts - 1)
+    # 几轮都没拿到带 complete 的回执：留着下次再试
     return UploadResult()
 
 

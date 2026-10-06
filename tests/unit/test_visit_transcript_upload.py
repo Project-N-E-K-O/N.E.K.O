@@ -746,5 +746,8 @@ async def test_all_parts_without_complete_is_not_done(tmp_path, servers):
     fake.transcript_mode = "never_complete"
     sealed = _write_sealed(tmp_path, _big_doc())
     assert (await tu.retry_visit_once(V1)).pending is True and sealed.exists()
+    sent = fake.count("/api/visit/transcripts")
     fake.transcript_mode = "ok"
     assert (await tu.retry_visit_once(V1)).pending is False and not sealed.exists()
+    # 落盘进度里全部块已受理：下次重试直接重发末块换 complete 回执，不重传整组
+    assert fake.count("/api/visit/transcripts") == sent + 1
