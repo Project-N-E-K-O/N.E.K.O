@@ -702,3 +702,11 @@ def test_lowercase_street_names_with_an_unambiguous_street_type():
 def test_a_street_core_is_registered_without_a_leading_preposition():
     tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: Apt 4, near main street", [])]
     assert "main street" in tokens
+
+
+
+def test_a_one_word_street_after_a_house_number():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: 12 Broadway", [])]
+    assert "broadway" in tokens
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: 12 main street", [])]
+    assert "main street" in tokens and "main" not in tokens        # 多词街名不拆出单个词

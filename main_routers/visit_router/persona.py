@@ -180,7 +180,7 @@ def _place_cores(value: str, pattern: re.Pattern[str]) -> list[str]:
 # 以门牌号开头的值里，门牌号后面的街名（「12 main street」→「main street」）：小写写法也算。
 # 数字在值中间（「a flat with 2 cats playing」）不是门牌号
 _STREET_AFTER_NUMBER_RE = re.compile(
-    r"\s*(?:#|no\.?\s*)?[0-9]+[A-Za-z]?\s+([A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){1,3})",
+    r"\s*(?:#|no\.?\s*)?[0-9]+[A-Za-z]?\s+([A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){0,3})",
     re.IGNORECASE,
 )
 
@@ -254,6 +254,9 @@ def _street_names(value: str) -> list[str]:
     head = _STREET_AFTER_NUMBER_RE.match(value)
     if head is not None:
         words = _run_until_stopword(head.group(1).split())
+        if len(words) == 1:
+            # 门牌号后只有一个词（「12 Broadway」）：这个词就是街名
+            out.append(words[0])
         out.extend(" ".join(words[:k]) for k in range(2, len(words) + 1))
     for m in _NUMBERED_STREET_RE.finditer(value):
         words = _run_until_stopword(m.group(1).split())

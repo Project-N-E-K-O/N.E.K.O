@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import json
 import math
 import os
@@ -290,9 +291,21 @@ class UploadJournal:
         # 先登记再建文件：流水一出现在磁盘上，重试轮次就必须认得它还开着，不能趁建文件的间隙重封
         added = self.visit_id not in _open_streams
         _open_streams.add(self.visit_id)
+        opening = executor.submit(self._open_sync, _encode_record(header))
         try:
-            self._fd = await asyncio.wrap_future(executor.submit(self._open_sync, _encode_record(header)))
+            self._fd = await asyncio.shield(asyncio.wrap_future(opening))
         except BaseException:
+            # 被取消时线程里的建文件可能还在跑：等它结束，关掉拿到的 fd、删掉只写了头的流水，
+            # 之后才撤销登记——否则重试轮次会把一份仍开着的流水当成孤立文件重封
+            try:
+                fd = await asyncio.to_thread(opening.result)
+            except BaseException:  # noqa: BLE001 - 建文件本身失败：没有 fd 要收拾
+                fd = None
+            if fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+                with contextlib.suppress(OSError):
+                    self.stream_path.unlink(missing_ok=True)
             executor.shutdown(wait=False)
             if added:
                 _open_streams.discard(self.visit_id)
@@ -640,9 +653,15 @@ async def upload_visit_transcript(visit_id: str, upload_doc: dict) -> bool | str
     another account signed in). Chunk progress is written into the file.
     """
     visit_id = require_visit_id(visit_id)
+    config_dir = Path(config_dir_provider())
     # 与重试轮次同一把逐场锁：分块进度的落盘与上传结清不能和另一轮交错
     async with visit_lock(visit_id):
-        return (await _upload(visit_id, upload_doc, Path(config_dir_provider()))).callback_value
+        result = await _upload(visit_id, upload_doc, config_dir)
+    if not result.done and result.terminal is None:
+        # 网络 / 5xx / 429 / 未登录或换了账号：补录只跑一轮，本进程里接着由后台重试
+        schedule_visit_retry(visit_id, config_dir=config_dir,
+                             initial_delay_s=max(VISIT_UPLOAD_RETRY_BACKOFF_S[0], result.retry_after_s or 0))
+    return result.callback_value
 
 
 # ── 举报队列 ───────────────────────────────────────────────────────────

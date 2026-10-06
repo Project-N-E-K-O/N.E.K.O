@@ -1099,3 +1099,37 @@ async def test_a_stream_is_registered_as_open_before_it_appears_on_disk(tmp_path
     with pytest.raises(OSError):
         await _journal(tmp_path, vid(2))
     assert vid(2) not in tu._open_streams                # 没打开成功就撤销登记
+
+
+
+async def test_a_recovery_upload_failure_re_arms_the_background_worker(tmp_path, servers):
+    fake, _ = servers
+    fake.transcript_mode = "503"
+    sealed = _write_sealed(tmp_path, _big_doc(4, 10))
+    doc = json.loads(sealed.read_text(encoding="utf-8"))
+    assert await tu.upload_visit_transcript(V1, doc) is False
+    assert V1 in tu._workers
+
+
+async def test_a_cancelled_open_cleans_up_after_the_worker(tmp_path, servers, monkeypatch):
+    import threading
+
+    started, release = threading.Event(), threading.Event()
+    real_open = tu.UploadJournal._open_sync
+
+    def slow(self, data):
+        started.set()
+        release.wait(5)
+        return real_open(self, data)
+
+    monkeypatch.setattr(tu.UploadJournal, "_open_sync", slow)
+    task = asyncio.ensure_future(_journal(tmp_path))
+    await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert V1 in tu._open_streams                         # 线程还在建文件：登记不能先撤
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert V1 not in tu._open_streams
+    assert not (_spool(tmp_path) / f"{V1}.upload.jsonl").exists()
