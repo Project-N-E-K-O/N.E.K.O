@@ -240,6 +240,41 @@ def test_emotion_tags_never_reach_tts_even_split_across_deltas():
     assert [p.est_ms for p in h.speaker._pieces] == EST
 
 
+def test_a_family_name_split_by_a_tag_is_budgeted_as_the_name():
+    filler = "谢。" * 5000
+    capacity = len(Harness().speaker.feed(filler))
+    h = Harness()
+    # 「小<happy>明」剥标签后就是「小明」：预算必须按换成「家里人」之后的长度量
+    h.speaker.feed(filler[:capacity - 2] + "小<happy>明同学")
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    result = h.results[0]
+    assert "小" not in result.text and "happy" not in result.text
+    payload = {"t": "text", "v": 1, "ln": "h:1", "lp": 1, "sp": "c", "ad": "gc", "rt": "", "wu": False,
+               "final": True, "txt": result.text, "truncated": True, "i_done": result.pieces,
+               "trunc_reason": "wire_size", "tail_ms": 0}
+    assert fit_text_to_wire(payload, visit_id=VISIT) == payload
+
+
+def test_goodbye_cap_does_not_count_tags():
+    h = Harness(wu=True)
+    h.speaker.feed("<happy>" * 5 + "拜拜啦，下次再来玩！")
+    h.speaker.llm_done()
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    assert h.results[0].text == "拜拜啦，下次再来玩！" and not h.results[0].truncated
+
+
+def test_a_held_bracket_tail_still_obeys_the_goodbye_cap():
+    h = Harness(wu=True)
+    h.speaker.feed("好" * 39 + "<abc")            # 末尾「<abc」被当作可能的标签扣着
+    h.speaker.llm_done()                          # 收尾放出时同样过告别硬顶
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    result = h.results[0]
+    assert len(result.text) <= 40 and result.truncated and result.trunc_reason == "goodbye_cap"
+
+
 def test_a_hard_clause_cut_never_splits_a_tag_into_the_subtitles():
     h = Harness()
     # 没有标点的长句在 800 字节处硬切，切点正好落在 <happy> 中间

@@ -370,23 +370,32 @@ class LineSpeaker:
         if self._done or self._llm_done or not delta:
             return ""
         now = self._now(now)
-        capped = delta
-        goodbye_cut = False
-        if self._goodbye_left is not None:
-            capped = delta[: self._goodbye_left]
-            goodbye_cut = len(capped) < len(delta)
-        accepted = self._budget.take(capped) if capped else ""
-        if self._goodbye_left is not None:
-            self._goodbye_left -= len(accepted)
+        # 先剥标签再进告别硬顶与线缆预算：预算量的就是真正出门的文本（标签拆开的名字也认得出）
+        accepted = self._admit(self._tags.feed(delta))
         if accepted:
-            self._take_text(self._tags.feed(accepted), now)
-        if self._budget.exhausted or goodbye_cut:
-            self._cut_reason = "wire_size" if self._budget.exhausted else "goodbye_cap"
+            self._take_text(accepted, now)
+        if self._cut_reason is not None:
             self._cb.on_cancel_llm()
             self._end_of_text(now)
         else:
             self._advance(now)
         self._cb.on_wake()
+        return accepted
+
+    def _admit(self, text: str) -> str:
+        """Goodbye cap then wire budget on tag-free text; sets ``_cut_reason`` on the first cut."""
+        if not text or self._cut_reason is not None:
+            return ""
+        capped = text
+        goodbye_cut = False
+        if self._goodbye_left is not None:
+            capped = text[: self._goodbye_left]
+            goodbye_cut = len(capped) < len(text)
+        accepted = self._budget.take(capped) if capped else ""
+        if self._goodbye_left is not None:
+            self._goodbye_left -= len(accepted)
+        if self._budget.exhausted or goodbye_cut:
+            self._cut_reason = "wire_size" if self._budget.exhausted else "goodbye_cap"
         return accepted
 
     def llm_done(self, *, now: Optional[float] = None) -> None:
@@ -569,8 +578,8 @@ class LineSpeaker:
         if self._llm_done:
             return
         self._llm_done = True
-        # 收尾时还扣着的半个「<...」不是标签：照常念出、照常上字幕
-        self._take_text(self._tags.flush(), now)
+        # 收尾时还扣着的半个「<...」不是标签：照常过预算、念出、上字幕（已被截断的行直接丢）
+        self._take_text(self._admit(self._tags.flush()), now)
         self._closing_cut = self._cut_reason is not None
         self._add_clauses(self._splitter.flush())
         if self._mode == PACED_AUDIO and self._stream is not None and not self._stream_dead:
