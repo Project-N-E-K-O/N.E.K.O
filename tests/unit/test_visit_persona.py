@@ -696,3 +696,9 @@ def test_lowercase_street_names_with_an_unambiguous_street_type():
     tokens = [t.lower() for t in persona.extract_sensitive_tokens(
         "address: Apt 4, main street\naddress: 12 Maple Dr, we went the long way around", [])]
     assert "main street" in tokens and not any("long way" in t for t in tokens)
+
+
+
+def test_a_street_core_is_registered_without_a_leading_preposition():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: Apt 4, near main street", [])]
+    assert "main street" in tokens

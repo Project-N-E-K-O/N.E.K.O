@@ -222,9 +222,13 @@ def _unnumbered_streets(segment: str) -> list[str]:
     out = []
     for m in (*_UNNUMBERED_STREET_RE.finditer(segment), *_LOWERCASE_STREET_RE.finditer(segment)):
         words = m.group(1).split()
-        kept = _run_until_stopword(list(reversed(words)))
+        kept = list(reversed(_run_until_stopword(list(reversed(words)))))
         if len(kept) >= 2:
-            out.append(" ".join(reversed(kept)))
+            out.append(" ".join(kept))
+            if len(kept) > 2:
+                # 前面多带的词可能只是介词 / 方位词（「near main street」）：街名核心（最后一个名字词
+                # + 词尾）另记一个，人设只写「main street」也能命中
+                out.append(" ".join(kept[-2:]))
     return out
 
 
