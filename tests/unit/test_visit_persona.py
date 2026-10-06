@@ -732,3 +732,11 @@ def test_lowercase_road_names_and_colon_line_handles():
         "address: Apt 4, main road\nLINE: alicefoo likes cats\nShe waited in line for hours.", [])]
     assert "main road" in tokens and "alicefoo" in tokens
     assert not any(t.startswith("for hours") for t in tokens)
+
+
+
+def test_a_one_word_street_before_trailing_prose():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: 12 Broadway likes cats", [])]
+    assert "broadway" in tokens
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: 12 Main Street", [])]
+    assert "main" not in tokens

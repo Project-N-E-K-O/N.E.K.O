@@ -296,6 +296,8 @@ async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
         # 没能写进文件（磁盘 / 权限）时原因在 upload.unavailable 里，提交的这份照样带上
         doc = await tu.load_report(config_dir, visit_id) or doc
         if upload.unavailable and not doc.get("transcript_unavailable"):
+            # 原因只在内存里（转录先于举报结清 / 之前没写成）：补写进排队的举报，重启后补录提交时也带着
+            await tu.mark_report_transcript_unavailable(config_dir, visit_id, upload.unavailable)
             doc = {**doc, "transcript_unavailable": upload.unavailable}
     result = await tu.send_report(doc)
     if await tu.finish_report(config_dir, visit_id, result, doc):

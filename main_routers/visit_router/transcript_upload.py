@@ -951,7 +951,10 @@ async def submit_queued_report(visit_id: str, report_doc: dict) -> bool:
             await _delete_accepted_report(config_dir, visit_id)
             return True
         if result.unknown_visit:
-            await set_report_rejected(config_dir, visit_id, "unknown_visit", expect=report_doc)
+            if not await set_report_rejected(config_dir, visit_id, "unknown_visit", expect=report_doc):
+                # 拒收标记没写成（磁盘 / 权限）：补录只跑一轮，交给后台下一轮再记
+                schedule_visit_retry(visit_id, config_dir=config_dir,
+                                     initial_delay_s=VISIT_UPLOAD_RETRY_BACKOFF_S[0])
             return False
     # 网络 / 5xx / 429 / 登录失效：补录留着文件，本进程里接着由后台重试，不等下次启动
     schedule_visit_retry(visit_id, config_dir=config_dir,
@@ -1009,11 +1012,14 @@ def _drop_rejected_sealed_sync(config_dir: Path, visit_id: str) -> bool:
         except ValueError:
             return True
         if isinstance(doc, dict) and isinstance(doc.get("rejected"), str) and doc["rejected"]:
-            try:
-                path.unlink()
-            except OSError as exc:
-                logger.warning("visit upload %s: cannot delete rejected %s: %s", visit_id, path.name, exc)
-                return False
+            # 封存时没删掉的流水也是这份已拒收转录的：一并删，免得之后被重封、重传
+            stream = visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSONL_SUFFIX)
+            for target in (path, stream):
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning("visit upload %s: cannot delete rejected %s: %s", visit_id, target.name, exc)
+                    return False
     return True
 
 
@@ -1248,7 +1254,9 @@ async def retry_visit_once(
         report_retry_after: int | None = None
         if report is not None and not (upload.pending and report["include_transcript"]):
             if upload.unavailable and not report.get("transcript_unavailable"):
-                # 原因没写进举报文件（磁盘 / 权限）：提交的这份照样带上
+                # 原因还没在举报文件里（之前没写成，或是转录先于举报结清、原因只在内存里）：先补写进文件，
+                # 写不成提交的这份也照样带上
+                await mark_report_transcript_unavailable(config_dir, visit_id, upload.unavailable)
                 report = {**report, "transcript_unavailable": upload.unavailable}
             result = await send_report(report)
             if result.accepted or result.unknown_visit:

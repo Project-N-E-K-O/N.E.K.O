@@ -1305,3 +1305,52 @@ async def test_a_manual_retry_that_cannot_read_the_report_is_remembered(tmp_path
     locked[0] = False
     assert (await tu.retry_visit_once(V1)).pending is False          # 后台照手动重试提交
     assert fake.count("/api/visit/reports") == 1 and await tu.load_report(tmp_path, V1) is None
+
+
+
+async def test_accepting_a_report_drops_the_rejected_spool_and_its_residual_stream(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    fake.transcript_mode = "parts"
+    sealed = _write_sealed(tmp_path, _big_doc(4, 10))
+    stream = sealed.with_name(f"{V1}.upload.jsonl")
+    await tu.queue_report(tmp_path, _report_doc())
+
+    def broken(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tu, "_mark_unavailable_sync", broken)
+    monkeypatch.setattr(tu, "schedule_visit_retry", lambda *_a, **_k: None)
+    fake.report_mode = "503"
+    await tu.retry_visit_once(V1)                         # 拒收：原因记不进举报，封存文件带 rejected 留着
+    stream.write_text("{}\n", encoding="utf-8")          # 封存时没删掉的流水
+    fake.report_mode = "ok"
+    assert (await tu.retry_visit_once(V1)).pending is False
+    assert not sealed.exists() and not stream.exists()
+
+
+async def test_an_inherited_terminal_reason_is_written_into_the_queued_report(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    fake.transcript_mode = "parts"
+    _write_sealed(tmp_path, _big_doc(4, 10))
+    await tu.attempt_upload(V1, config_dir=tmp_path)       # 转录先于举报结清
+    fake.report_mode = "503"
+    monkeypatch.setattr(tu, "schedule_visit_retry", lambda *_a, **_k: None)
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=True))
+    await tu.retry_visit_once(V1)
+    assert (await tu.load_report(tmp_path, V1))["transcript_unavailable"] == "parts_out_of_range"
+
+
+async def test_a_recovery_rejection_marker_failure_re_arms_the_worker(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    fake.report_mode = "404"
+    doc = _report_doc(include_transcript=False)
+    await tu.queue_report(tmp_path, doc)
+    scheduled = []
+    monkeypatch.setattr(tu, "schedule_visit_retry", lambda visit_id, **_k: scheduled.append(visit_id))
+
+    def broken(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tu, "_set_rejected_sync", broken)
+    assert await tu.submit_queued_report(V1, doc) is False
+    assert scheduled == [V1]
