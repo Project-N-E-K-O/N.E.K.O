@@ -112,6 +112,15 @@ run "$CASE/elsewhere/home" "$CASE/elsewhere/logs" || die 'explicit paths'
 ok 'uses explicit paths for overridden mounts'
 
 new_case
+mkdir "$CASE/elsewhere"
+(cd "$CASE/elsewhere" && sh "$CASE/preflight.sh" ./data/home data/logs > "$CASE/out" 2>&1) \
+    || die 'relative paths'
+[[ $(owner "$CASE/data/home") == 1000:1000 && $(owner "$CASE/data/logs") == 1000:1000 ]] \
+    || die 'relative paths not resolved against the script directory'
+[[ ! -e $CASE/elsewhere/data ]] || die 'relative paths resolved against the caller cwd'
+ok 'resolves relative paths against docker/ like Compose'
+
+new_case
 mkdir "$CASE/neko-home" "$CASE/logs"
 chown 1000:1000 "$CASE/neko-home" "$CASE/logs"
 run || die 'already aligned'

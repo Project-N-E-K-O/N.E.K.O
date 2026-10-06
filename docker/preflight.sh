@@ -8,7 +8,8 @@
 # Defaults: neko-home/ and logs/ next to this script, i.e. the sources used by
 # docker-compose.yml. When an override file mounts other directories, pass the
 # paths exactly as written there (not what `docker inspect` reports, which has
-# already followed any symlink).
+# already followed any symlink). Relative paths resolve against docker/, as in
+# Compose, wherever this script is run from.
 #
 # Docker resolves a host symlink before mounting it, so the container cannot tell
 # that /home/neko or /app/logs is really a shared host directory. The entrypoint
@@ -24,13 +25,17 @@ NEKO_GID=1000
 fail() { echo "preflight: $*" >&2; exit 1; }
 
 case "${1:-}" in
-    -h|--help) sed -n '2,11s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,12s/^# \{0,1\}//p' "$0"; exit 0 ;;
 esac
 [ "$#" -le 2 ] || fail "too many arguments (see --help)"
 
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
 home_dir=${1:-$script_dir/neko-home}
 logs_dir=${2:-$script_dir/logs}
+# Compose resolves relative bind sources against the project directory, which is
+# docker/ (where docker-compose.yml lives), not against the caller's cwd.
+case "$home_dir" in /*) ;; *) home_dir=$script_dir/$home_dir ;; esac
+case "$logs_dir" in /*) ;; *) logs_dir=$script_dir/$logs_dir ;; esac
 
 check_dir() {
     # $1: label, $2: path

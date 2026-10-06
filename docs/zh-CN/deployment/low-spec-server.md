@@ -102,7 +102,7 @@ swapon --show
   docker inspect neko --format '{{range .Mounts}}{{println .Destination .Source}}{{end}}'
   ```
 
-  每个 `Source` 都应与传入的路径完全一致；不一致说明路径上有符号链接，先停下。如果它是共享目录，不要改属主，改为在 `compose.local.yaml` 里把 `/app/logs` 挂到一个专用的空目录。目录里由 root 写下的旧文件按第 9 节第 4 步的方法逐个修复。
+  `./data/logs` 这类相对路径与 Compose 一样按 `docker/` 目录解析，与在哪个目录执行预检无关。每个 `Source` 都应与传入路径（换算成绝对路径后）完全一致；不一致说明路径上有符号链接，先停下。如果它是共享目录，不要改属主，改为在 `compose.local.yaml` 里把 `/app/logs` 挂到一个专用的空目录。目录里由 root 写下的旧文件按第 9 节第 4 步的方法逐个修复。
 - 其他容器需要同样的限制时，把以下内容合并进现有 `/etc/docker/daemon.json`，再执行 `sudo systemctl restart docker`：
 
 ```json

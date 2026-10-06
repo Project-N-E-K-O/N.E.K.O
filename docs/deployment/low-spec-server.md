@@ -78,7 +78,7 @@ There is no universal `vm.swappiness`. With ZRAM as the primary swap, evaluate v
   docker inspect neko --format '{{range .Mounts}}{{println .Destination .Source}}{{end}}'
   ```
 
-  Each `Source` must equal the path you passed; if one differs, something on that path is a symlink, so stop. If it is a shared directory, leave its owner alone and mount a dedicated empty directory at `/app/logs` in `compose.local.yaml` instead. Fix old root-owned files inside it one by one as described in section 9, step 4.
+  Relative paths such as `./data/logs` are resolved against `docker/`, as Compose does, wherever you run the preflight. Each `Source` must equal the path you passed (made absolute); if one differs, something on that path is a symlink, so stop. If it is a shared directory, leave its owner alone and mount a dedicated empty directory at `/app/logs` in `compose.local.yaml` instead. Fix old root-owned files inside it one by one as described in section 9, step 4.
 - To apply the same cap to other containers, merge `"log-driver": "json-file"` and `"log-opts": {"max-size": "10m", "max-file": "3"}` into `/etc/docker/daemon.json`, then restart Docker. This only applies to containers created afterwards; existing containers keep their old logging options, so recreate them (for example `docker compose up -d --force-recreate` in each project) and confirm:
 
   ```bash

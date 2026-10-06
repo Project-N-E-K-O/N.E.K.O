@@ -206,7 +206,7 @@ volumes:
 
 ```bash
 sudo sh preflight.sh                      # 默认检查 ./neko-home 和 ./logs
-sudo sh preflight.sh /覆盖文件里的/neko-home /覆盖文件里的/logs   # 覆盖文件挂载了其他目录时，原样传入
+sudo sh preflight.sh /覆盖文件里的/neko-home /覆盖文件里的/logs   # 覆盖文件挂载了其他目录时原样传入，相对路径按 docker/ 解析
 ```
 
 它拒绝本身是、或路径中经过符号链接的挂载来源（Docker 会挂载链接目标，容器会接管它的属主），创建缺失的目录，并只把这两个目录本身的属主设为 uid/gid 1000。数据目录内部的属主由入口脚本每次启动时对齐。回归测试：`sudo bash test-preflight.sh`。
