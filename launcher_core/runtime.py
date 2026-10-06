@@ -3231,7 +3231,10 @@ def main():
             )
 
         print("\n清理完成", flush=True)
-        if allow_storage_restart:
+        # A migration restart is only safe after every old server process is
+        # proven dead.  Acquiring a filesystem barrier is defence in depth; it
+        # is not evidence that a stuck Main process cannot still mutate state.
+        if allow_storage_restart and not has_alive:
             try:
                 restart_scheduled = _maybe_schedule_storage_restart()
             except Exception as e:

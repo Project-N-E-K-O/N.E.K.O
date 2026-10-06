@@ -367,6 +367,22 @@ def bridge_e2e_env(
 # ─── Tests ────────────────────────────────────────────────────────────
 
 
+def test_knowledge_subscription_routes_precede_generic_bridge() -> None:
+    from plugin.server.http_app import build_plugin_server_app
+    from tests.fastapi_routes import iter_routes
+
+    # Effective routes as served: newer FastAPI keeps included routers as a
+    # tree instead of flattening them into app.routes.
+    paths = [
+        getattr(route, "path", "")
+        for route in iter_routes(build_plugin_server_app().routes)
+    ]
+
+    assert paths.index("/market/knowledge/subscribe") < paths.index(
+        "/market/knowledge/{path:path}"
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("requested_market_id", ["401", "403"])
 async def test_install_rejects_another_plugins_release(
@@ -744,12 +760,7 @@ async def test_market_catalog_bridge_rejects_upstream_redirects(
 @pytest.mark.asyncio
 async def test_bridge_token_rejects_trusted_remote_origin(
     bridge_e2e_env: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from plugin.server.routes import market_bridge as market_bridge_module
-
-    monkeypatch.setattr(market_bridge_module, "_main_server_port", lambda: 48911)
-
     res = await bridge_e2e_env["client"].get(
         "/market/bridge-token",
         headers={
@@ -764,22 +775,93 @@ async def test_bridge_token_rejects_trusted_remote_origin(
 @pytest.mark.asyncio
 async def test_bridge_token_allows_local_same_origin(
     bridge_e2e_env: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from plugin.server.routes import market_bridge as market_bridge_module
-
-    monkeypatch.setattr(market_bridge_module, "_main_server_port", lambda: 48911)
-
     res = await bridge_e2e_env["client"].get(
         "/market/bridge-token",
         headers={
-            "Host": "127.0.0.1:48911",
-            "Origin": "http://127.0.0.1:48911",
+            "Host": "127.0.0.1:48916",
+            "Origin": "http://127.0.0.1:48916",
         },
     )
 
     assert res.status_code == 200
     assert res.json()["bridge_token"] == bridge_e2e_env["token"]
+    assert res.json()["port"] == 48916
+
+
+@pytest.mark.asyncio
+async def test_pair_code_allows_local_manager_and_is_single_use(
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    issued = await bridge_e2e_env["client"].post(
+        "/market/pair-code",
+        headers={
+            "Host": "127.0.0.1:48916",
+            "Origin": "http://127.0.0.1:48916",
+        },
+    )
+
+    assert issued.status_code == 200
+    payload = issued.json()
+    assert payload["port"] == 48916
+    exchanged = await bridge_e2e_env["client"].post(
+        "/market/token-exchange",
+        json={"one_time_code": payload["one_time_code"]},
+    )
+    repeated = await bridge_e2e_env["client"].post(
+        "/market/token-exchange",
+        json={"one_time_code": payload["one_time_code"]},
+    )
+
+    assert exchanged.status_code == 200
+    assert exchanged.json()["bridge_token"] == bridge_e2e_env["token"]
+    assert repeated.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_pair_code_allows_local_vite_origin(
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    res = await bridge_e2e_env["client"].post(
+        "/market/pair-code",
+        headers={
+            "Host": "127.0.0.1:48916",
+            "Origin": "http://127.0.0.1:5173",
+        },
+    )
+
+    assert res.status_code == 200
+    assert res.json()["port"] == 48916
+
+
+@pytest.mark.asyncio
+async def test_pair_code_rejects_mismatched_local_origin(
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    res = await bridge_e2e_env["client"].post(
+        "/market/pair-code",
+        headers={
+            "Host": "127.0.0.1:48916",
+            "Origin": "http://127.0.0.1:5174",
+        },
+    )
+
+    assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_pair_code_rejects_remote_origin(
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    res = await bridge_e2e_env["client"].post(
+        "/market/pair-code",
+        headers={
+            "Host": "127.0.0.1:48911",
+            "Origin": "https://market.example.com",
+        },
+    )
+
+    assert res.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -798,7 +880,12 @@ async def test_market_install_rejects_invalid_bridge_token_before_side_effects(
     )
 
     assert response.status_code == 403
-    assert response.json() == {"detail": "无效的 bridge token"}
+    assert response.json() == {
+        "detail": {
+            "code": "invalid_bridge_token",
+            "message": "无效的 bridge token",
+        }
+    }
     assert not response.headers.get("x-error-code")
 
 

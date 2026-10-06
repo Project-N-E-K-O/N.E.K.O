@@ -174,6 +174,8 @@ async def test_rps_payload_reaches_the_runtime_delivered_result_without_action_f
             self.lock = asyncio.Lock()
             self.current_speech_id = ""
             self._pending_turn_meta = None
+            # Mirrors LLMSessionManager.__init__: _emit_turn_end reads it.
+            self._text_route_owners = {}
             self.acks = []
 
         def _get_text_guard_max_length(self):
@@ -790,6 +792,8 @@ def _builtin_runtime(monkeypatch, *, cooldown_ms=600, clock=None):
             self.lock = asyncio.Lock()
             self.current_speech_id = ""
             self._pending_turn_meta = None
+            # Mirrors LLMSessionManager.__init__: _emit_turn_end reads it.
+            self._text_route_owners = {}
             self.acks = []
 
         def _get_text_guard_max_length(self):

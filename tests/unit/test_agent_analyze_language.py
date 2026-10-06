@@ -464,6 +464,42 @@ def test_publisher_puts_the_language_on_the_event(monkeypatch: pytest.MonkeyPatc
     assert without is not None and "language" not in without
 
 
+def test_publisher_only_forwards_supported_route_owner(monkeypatch: pytest.MonkeyPatch):
+    from main_logic import agent_event_bus as bus
+
+    published: list[dict[str, Any]] = []
+
+    class _Bridge:
+        owner_loop = None
+        owner_thread_id = None
+
+        async def publish_analyze_request(self, event):
+            published.append(event)
+            return False
+
+    async def _go(route_owner):
+        published.clear()
+        monkeypatch.setattr(bus, "_main_bridge_ref", _Bridge(), raising=False)
+        import threading
+
+        _Bridge.owner_loop = asyncio.get_running_loop()
+        _Bridge.owner_thread_id = threading.get_ident()
+        await bus.publish_analyze_request_reliably(
+            lanlan_name="喵喵",
+            trigger="turn_end",
+            messages=[{"role": "user", "content": "x"}],
+            retries=0,
+            route_owner=route_owner,
+        )
+        return published[0]
+
+    supported = asyncio.run(_go("public_knowledge"))
+    assert supported["route_owner"] == "public_knowledge"
+
+    unknown = asyncio.run(_go("unknown"))
+    assert "route_owner" not in unknown
+
+
 def test_every_analyze_publish_call_site_passes_a_language():
     """Auto-discovered: a new publish site that forgets ``language`` fails here.
 
@@ -496,3 +532,32 @@ def test_every_analyze_publish_call_site_passes_a_language():
 
     assert checked >= 3, f"found only {checked} publish call sites — did the API get renamed?"
     assert not offenders, f"analyze publish call sites missing language=: {offenders}"
+
+
+def test_turn_end_dispatch_keeps_the_owner_of_a_turn_without_request_id():
+    """An independent voice turn has no request id but still owns its route."""
+    from main_logic import cross_server
+
+    assert cross_server._turn_end_dispatch_owner(
+        "public_knowledge", had_user_input=True
+    ) == "public_knowledge"
+    # Retaining it past a failed dispatch still needs a turn to bind to.
+    assert cross_server._pending_analyze_owner("", "public_knowledge") is None
+    assert cross_server._turn_end_dispatch_owner(
+        "public_knowledge", had_user_input=False
+    ) is None
+    assert cross_server._turn_end_dispatch_owner(
+        "something_else", had_user_input=True
+    ) is None
+
+
+def test_turn_end_dispatch_reads_the_owner_without_the_request_id_binding():
+    """Guard the call site: the immediate dispatch must not go through the
+    request-id-bound pending owner again."""
+    import inspect
+
+    from main_logic import cross_server
+
+    source = inspect.getsource(cross_server)
+    assert "dispatch_route_owner = _turn_end_dispatch_owner(" in source
+    assert 'current_pending_owner["owner"]' not in source

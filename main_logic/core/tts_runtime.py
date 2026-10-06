@@ -1179,7 +1179,7 @@ class TtsRuntimeMixin:
                 int(getattr(self, "_game_speech_preload_pending_batches", 1)) - 1,
             )
 
-    async def _clear_tts_pipeline(self):
+    async def _clear_tts_pipeline(self, *, expected_speech_id=None):
         """Clear the TTS request/response queues and pending caches, stopping the current synthesis.
 
         Gate is on worker liveness, not ``self.use_tts``: mirror channel
@@ -1197,9 +1197,20 @@ class TtsRuntimeMixin:
         ``_let_tts_interrupt_land`` (audio a handler already held goes out,
         what leaked meanwhile is dropped) and ``_finish_tts_clear``.
         """
+        # ``expected_speech_id`` scopes the clear to one turn: a scoped clear
+        # that lost its turn meanwhile leaves the response queue and the
+        # newer turn's pending text to that turn. Omitted, everything goes --
+        # the caller is about to rotate to a new sid.
+        scoped = expected_speech_id is not None
+
+        def still_owned() -> bool:
+            return getattr(self, "current_speech_id", None) == expected_speech_id
+
         interrupt = self._interrupt_tts_now()
-        await self._let_tts_interrupt_land(interrupt)
-        await self._finish_tts_clear(interrupt)
+        await self._let_tts_interrupt_land(
+            interrupt, still_owned=still_owned if scoped else None,
+        )
+        await self._finish_tts_clear(interrupt, expected_speech_id=expected_speech_id)
 
     @staticmethod
     def _drain_tts_responses(response_queue) -> None:
@@ -1289,11 +1300,16 @@ class TtsRuntimeMixin:
         if still_owned is None or still_owned():
             self._drain_tts_responses(interrupt[1])
 
-    async def _finish_tts_clear(self, interrupt) -> None:
+    async def _finish_tts_clear(self, interrupt, *, expected_speech_id=None) -> None:
         """The last step of ``_clear_tts_pipeline``, given what
-        ``_interrupt_tts_now`` returned: the pending caches."""
+        ``_interrupt_tts_now`` returned: the pending caches.
+
+        With ``expected_speech_id`` the clear is scoped to that turn (see
+        ``_clear_tts_pipeline``); omitted, every pending chunk goes.
+        """
         if interrupt is None:
             return
+        clear_all_pending = expected_speech_id is None
         runtime, response_queue, pending_chunks, session, speech_id, _interrupted = interrupt
         async with self.tts_cache_lock:
             owns_queues = (runtime is getattr(self, "_tts_runtime", None)
@@ -1310,7 +1326,41 @@ class TtsRuntimeMixin:
             if (not (owns_queues or owns_transferred_replay)
                     or not self._tts_output_is_current()):
                 return
-            self.tts_pending_chunks.clear()
+            # 判据是白名单「只留当前轮」，不是黑名单「只删 expected」：
+            # ``current_speech_id`` 可以在不经过本函数的路径上 rotate
+            # （prepare_proactive_delivery / handle_avatar_interaction 直接赋
+            # uuid4），worker 未就绪时 pending 里因此可能同时躺着第三个已作废的
+            # sid。只删 expected 会把它永久漏下，等 __ready__ 触发
+            # ``_flush_tts_pending_chunks`` 时被重新入队念出来——正是打断要防的。
+            # 没被抢占（current == expected）时全清，与引入本参数之前同行为。
+            if clear_all_pending or getattr(self, "current_speech_id", None) == expected_speech_id:
+                self.tts_pending_chunks.clear()
+            else:
+                self.tts_pending_chunks[:] = [
+                    (pending_sid, text)
+                    for pending_sid, text in self.tts_pending_chunks
+                    if pending_sid == getattr(self, "current_speech_id", None)
+                ]
+            # ``_tts_done_pending_until_ready`` 的对偶是 ``tts_pending_chunks``
+            # （见函数顶部注释），所以它跟摘除同步清零，不受下面的陈旧
+            # early-return 管辖——但只在 pending 真的空了之后才清：
+            #  - pending 空：没有文本等着刷了，留 True 会让 __ready__ 后的
+            #    ``_flush_tts_pending_chunks`` 给已作废的那轮补发 done sentinel，
+            #    落到还在流式输出的新一轮上提前收尾。
+            #  - pending 非空：留着的是新一轮的文本，它们刷出后仍需补 done，
+            #    这里清成 False 会让那一轮的 sentinel 永远发不出、合成器不 flush。
+            if not self.tts_pending_chunks:
+                self._tts_done_pending_until_ready = False
+            if (
+                not clear_all_pending
+                and getattr(self, "current_speech_id", None) != expected_speech_id
+            ):
+                if (
+                    getattr(self, "_tts_replay_speech_id", None)
+                    == expected_speech_id
+                ):
+                    self._reset_tts_replay_state()
+                return
             # 再清一次 queued：上面那 20ms 里并发路径（finish_proactive_delivery
             # 等）可能看到 False、排了自己的 sentinel 并把它置回 True。那个
             # sentinel 排在 __interrupt__ 之后、本轮后续文本之前，本来就已作废；

@@ -253,7 +253,9 @@ def _find_by_identity(messages, index: int, message) -> int:
 _REPLY_GENERATION_ATTR = "_reply_generation"
 
 
-def _cancelled_turn_end(history, start: int, generation: int) -> int:
+def _cancelled_turn_end(
+    history, start: int, generation: int, *, skip_messages=(),
+) -> int:
     """Where the turn anchored at ``history[start]`` ends: the index of the
     first message of a later turn after it, ``len(history)`` when none.
 
@@ -264,10 +266,14 @@ def _cancelled_turn_end(history, start: int, generation: int) -> int:
     begin) was shown first and does not end the turn. A proactive reply saved
     without a generation (``finish_proactive_delivery``) is always later: it
     is only claimed while no reply is in progress. ``start`` is -1 for a turn
-    that began on an empty history.
+    that began on an empty history. ``skip_messages`` are turn-local
+    instructions a running turn placed in history (``stream_text``'s
+    ephemeral instruction): matched by identity, they start no turn.
     """
     for index in range(start + 1, len(history)):
         message = history[index]
+        if any(message is skipped for skipped in skip_messages):
+            continue
         if isinstance(message, HumanMessage):
             return index
         extra = getattr(message, "additional_kwargs", None)

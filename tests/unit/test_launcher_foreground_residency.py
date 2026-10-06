@@ -138,6 +138,14 @@ def test_cleanup_does_not_close_the_job_handle_it_is_a_member_of():
     assert "CloseHandle(JOB_HANDLE)" not in cleanup
 
 
+@pytest.mark.unit
+def test_storage_restart_requires_every_old_server_to_be_dead():
+    """A root barrier cannot substitute for proof that old Main exited."""
+
+    source = (LAUNCHER_CORE / "runtime.py").read_text(encoding="utf-8")
+    assert "if allow_storage_restart and not has_alive:" in source
+
+
 # ---------------------------------------------------------------------------
 #  Relaunch stays attached
 # ---------------------------------------------------------------------------

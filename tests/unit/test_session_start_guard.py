@@ -33,6 +33,7 @@ def _make_inactive_manager(*, starting_count=1):
     mgr.tts_response_queue = Queue()
     mgr._audio_stream_epoch = 0
     mgr._user_session_abandon_epoch = 0
+    mgr._public_knowledge_session_key = "logical-session-before-end"
     mgr._reset_tts_retry_state = lambda: None
     mgr._clear_audio_stream_queue = lambda reason: None
     mgr._cancel_audio_stream_worker = lambda reason: None
@@ -77,6 +78,7 @@ async def test_inactive_end_session_clears_starting_guard_for_frontend_timeout()
     assert mgr.session_ready is False
     assert mgr.pending_input_data == []
     assert mgr._asr_route_mode == "blocked"
+    assert mgr._public_knowledge_session_key != "logical-session-before-end"
 
 
 @pytest.mark.unit
@@ -89,6 +91,49 @@ async def test_inactive_end_session_preserves_starting_guard_for_internal_cleanu
     assert mgr._starting_session_count == 1
     assert mgr.session_ready is True
     assert mgr.pending_input_data == [{"input_type": "text", "data": "stale"}]
+    assert mgr._public_knowledge_session_key == "logical-session-before-end"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_idle_reset_style_end_session_rotates_knowledge_but_keeps_guard():
+    """The idle reset keeps the startup guard yet still starts a fresh dialog."""
+    mgr = _make_inactive_manager(starting_count=1)
+
+    await LLMSessionManager.end_session(
+        mgr,
+        reset_starting_count=False,
+        rotate_knowledge_session=True,
+    )
+
+    assert mgr._starting_session_count == 1
+    assert mgr._public_knowledge_session_key != "logical-session-before-end"
+
+
+@pytest.mark.unit
+def test_idle_session_reset_asks_for_a_knowledge_rotation():
+    """Guard the one caller that ends a dialog without resetting the guard."""
+    import ast
+    import inspect
+    import textwrap
+
+    from main_logic.core import lifecycle
+
+    tree = ast.parse(
+        textwrap.dedent(inspect.getsource(lifecycle.LifecycleMixin._idle_session_reset_loop))
+    )
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "end_session"
+    ]
+    assert calls
+    for call in calls:
+        keywords = {kw.arg: kw.value for kw in call.keywords}
+        assert isinstance(keywords.get("rotate_knowledge_session"), ast.Constant)
+        assert keywords["rotate_knowledge_session"].value is True
 
 
 @pytest.mark.unit

@@ -95,6 +95,8 @@ __pycache__/
 /.pytest_tmp*/
 .DS_Store
 .codex
+/.codex-runtime/
+/.pnpm-store/
 # Local investigation material: raw provider responses, synthetic fixtures
 # and credential-reading probe scripts. Never commit these — the repository
 # is public and the incident record keeps such artifacts local on purpose.
@@ -175,6 +177,7 @@ build*
 !build_frontend.bat
 !build_frontend.sh
 !build-desktop*.yml
+!scripts/build_knowledge_pack_index.py
 !scripts/build-desktop-release.ps1
 metadata.package.json
 version_info.txt

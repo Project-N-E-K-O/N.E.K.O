@@ -29,6 +29,10 @@ These documents preserve design intent and implementation context. They are grou
 - [Live2D idle motion selection and recovery](/live2d_motion_plan)
 - [PNGTubeRemix layered physics compatibility](/pngtuber-remix-physics-plan)
 
+## Active remediation plans
+
+- [PR #2951 public-knowledge boundary remediation](./public-knowledge-pr2951-boundary-remediation) — review evidence preserved by round; the record itself states which rounds have landed, and code, tests and CI remain the source of truth
+
 ## N.E.K.O 小剧场与剧本工坊
 
 - [小剧场架构](./neko-theater-architecture)：当前唯一的实现合同——模块与权限、Story Package／Session／Ledger／记忆归档数据合同、回合流水线、复核与确定性检查、生命周期事务、胶囊展示合同与可选模块开关。
