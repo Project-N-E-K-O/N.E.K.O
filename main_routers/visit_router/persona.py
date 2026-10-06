@@ -203,10 +203,16 @@ _NUMBERED_STREET_RE = re.compile(
 )
 
 
-# 地址关键词那一行里没写门牌号的街名（「Apt 4, Main Street」）：一两个大写开头的词再接街道类词尾。
-# 要求大写：way / place / close 也是普通词，「the long way around」不是街名
+# 地址关键词那一行里没写门牌号的街名（「Apt 4, Main Street」）：一两个词再接街道类词尾。
+# way / place / close / court 这类词尾也是普通词（「the long way around」）：前面的词须大写开头；
+# street / avenue / boulevard 等不会是普通词的词尾，小写写法（「main street」）也收
 _UNNUMBERED_STREET_RE = re.compile(
     rf"(?<![A-Za-z0-9])((?:(?-i:[A-Z])[A-Za-z'\-]*\s+){{1,2}}(?:{_STREET_TYPES}))\b\.?",
+    re.IGNORECASE,
+)
+_UNAMBIGUOUS_STREET_TYPES = "street|avenue|ave|boulevard|blvd|lane|highway|hwy|parkway|pkwy|rd"
+_LOWERCASE_STREET_RE = re.compile(
+    rf"(?<![A-Za-z0-9])((?:[A-Za-z][A-Za-z'\-]*\s+){{1,2}}(?:{_UNAMBIGUOUS_STREET_TYPES}))\b\.?",
     re.IGNORECASE,
 )
 
@@ -214,7 +220,7 @@ _UNNUMBERED_STREET_RE = re.compile(
 def _unnumbered_streets(segment: str) -> list[str]:
     """Street-type phrases of an address-labelled segment, cut at the first function word."""
     out = []
-    for m in _UNNUMBERED_STREET_RE.finditer(segment):
+    for m in (*_UNNUMBERED_STREET_RE.finditer(segment), *_LOWERCASE_STREET_RE.finditer(segment)):
         words = m.group(1).split()
         kept = _run_until_stopword(list(reversed(words)))
         if len(kept) >= 2:
