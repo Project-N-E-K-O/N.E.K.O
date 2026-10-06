@@ -68,7 +68,7 @@ services:
       - NEKO_REQUIRE_HTTPS=${NEKO_REQUIRE_HTTPS:-}
       - NEKO_COMMUNITY_WEB_CLIENT_ID=${NEKO_COMMUNITY_WEB_CLIENT_ID:-}
       - NEKO_COMMUNITY_WEB_REDIRECT_URI=${NEKO_COMMUNITY_WEB_REDIRECT_URI:-}
-      # 自有域名：留空时沿用入口脚本默认值（SSL_DOMAIN 默认 project-neko.online，
+      # 自有域名：留空时保持原有行为（SSL_DOMAIN 用入口脚本默认值 project-neko.online，
       # NEKO_TRUSTED_HOSTS 回退到 SSL_DOMAIN，NEKO_TRUSTED_ORIGINS 为空）
       - SSL_DOMAIN=${SSL_DOMAIN:-}
       - NEKO_TRUSTED_HOSTS=${NEKO_TRUSTED_HOSTS:-}

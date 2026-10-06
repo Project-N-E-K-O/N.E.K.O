@@ -206,32 +206,39 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
 如果你按此前的 `docker/community-2c2g/` 方案部署过，更新代码后该目录的 Compose 文件已不存在，数据目录仍在原处（已被 `.gitignore` 忽略）。除特别注明外，以下命令都在**仓库根目录**执行（先 `cd` 到包含 `docker/` 的 N.E.K.O 目录）：
 
 1. 如装了看门狗，先按第 5 节暂停：`sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled`。
-2. **删除容器之前**，核对旧容器实际挂载的数据来源：
+2. **删除容器之前**，从旧容器读出实际挂载的数据来源。第 2 到 4 步要在同一个 bash 会话里执行，后面的命令会用到这里的变量：
 
    ```bash
-   docker inspect neko --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+   HOME_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/home/neko"}}{{.Source}}{{end}}{{end}}')
+   LOGS_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/app/logs"}}{{.Source}}{{end}}{{end}}')
+   CFG_DIR=$(realpath docker/community-2c2g)    # .env 和网关覆盖文件所在目录
+   echo "home=$HOME_SRC logs=$LOGS_SRC cfg=$CFG_DIR"
    ```
 
-   `/home/neko` 和 `/app/logs` 的来源通常是 `docker/community-2c2g/neko-home` 和 `docker/community-2c2g/logs`。若你用覆盖文件改过挂载路径，以下步骤一律换成这里显示的实际来源路径；无法确认时先停下，不要删容器。
-3. 停止容器，再以 root 保留属主和权限备份实际来源目录，以及 `.env` 和网关覆盖文件（如有），并确认备份可读：
+   通常两个来源分别是 `docker/community-2c2g/neko-home` 和 `docker/community-2c2g/logs`，改过挂载路径时会显示实际路径。任一变量为空，或路径与预期不符时，先停下，不要删容器。
+3. 停止容器，按上面读出的实际来源，以 root 保留属主和权限备份数据目录，以及存在的 `.env` 和网关覆盖文件，然后核验备份：
 
    ```bash
    docker stop neko
-   # 归档写到仓库外的 /root，umask 077 使其仅 root 可读；连同存在的 .env 和网关覆盖文件一起打包
-   sudo sh -c 'umask 077; cd docker/community-2c2g && tar -czpf /root/neko-2c2g-backup.tar.gz neko-home logs $(ls -d .env compose.gateway.yaml 2>/dev/null)'
+   BACKUP=("${HOME_SRC#/}" "${LOGS_SRC#/}")
+   for f in .env compose.gateway.yaml; do [ -f "$CFG_DIR/$f" ] && BACKUP+=("${CFG_DIR#/}/$f"); done
+   # 归档写到仓库外的 /root，umask 077 使其仅 root 可读；按绝对路径保存，回退时可原样恢复
+   sudo sh -c 'umask 077; tar -czpf "$0" -C / "$@"' /root/neko-2c2g-backup.tar.gz "${BACKUP[@]}"
    # 先完整读一遍归档：截断或损坏时 tar 会报错，不会输出 archive-ok
    sudo tar -tzf /root/neko-2c2g-backup.tar.gz > /dev/null && echo archive-ok
-   sudo tar -tzvf /root/neko-2c2g-backup.tar.gz | grep -E ' (\./)?(\.env|compose\.gateway\.yaml|neko-home/|logs/)$'
+   # 再逐项确认实际来源都在归档里
+   LIST=$(sudo tar -tzf /root/neko-2c2g-backup.tar.gz)
+   for p in "${BACKUP[@]}"; do printf '%s\n' "$LIST" | grep -qxF -e "$p" -e "$p/" && echo "ok /$p" || echo "MISSING /$p"; done
    ```
 
-   必须看到 `archive-ok`，最后一条命令还应列出 `neko-home/`、`logs/` 以及你实际使用的 `.env`、`compose.gateway.yaml`。备份含实例凭证和 TLS 私钥，不要复制到仓库目录或公开位置。确认备份完整后再删除容器：`docker rm neko`。
-4. 确认 `docker/neko-home` 和 `docker/logs` 尚不存在（已存在说明另有官方部署的数据，先核对，不要覆盖），再以 root 保留属主和权限地复制：`sudo cp -a docker/community-2c2g/neko-home docker/community-2c2g/logs docker/`。TLS 私钥属主为 root、权限 0600，不用 root 复制会遗漏。
+   必须看到 `archive-ok`，并且每一项都是 `ok`、没有 `MISSING`。备份含实例凭证和 TLS 私钥，不要复制到仓库目录或公开位置。确认备份完整后再删除容器：`docker rm neko`。
+4. 确认 `docker/neko-home` 和 `docker/logs` 尚不存在（已存在说明另有官方部署的数据，先核对，不要覆盖），再从实际来源以 root 保留属主和权限地复制：`sudo cp -a "$HOME_SRC" docker/neko-home && sudo cp -a "$LOGS_SRC" docker/logs`。TLS 私钥属主为 root、权限 0600，不用 root 复制会遗漏。
 5. 把 `docker/community-2c2g/.env` 中需要的设置迁入 `docker/.env`；网关覆盖文件改放 `docker/compose.gateway.yaml`，`COMPOSE_FILE` 改为 `docker-compose.yml:compose.gateway.yaml`。
 6. 在 `docker/` 执行 `docker compose config` 核对挂载来源和端口后 `docker compose up -d`，确认实例凭证、角色和记忆都在。迁移失败需要回退到旧部署时，在仓库根目录执行：
 
    ```bash
    (cd docker && docker compose down)       # 停掉并删除新容器，不要加 -v
-   sudo tar -xzpf /root/neko-2c2g-backup.tar.gz -C docker/community-2c2g
+   sudo tar -xzpf /root/neko-2c2g-backup.tar.gz -C /   # 按原绝对路径恢复数据和配置
    # 旧 Compose 文件已从仓库删除，从 #3295 的合并提交取回
    git show 5161fba:docker/community-2c2g/docker-compose.yaml > docker/community-2c2g/docker-compose.yaml
    # 启动前核对最终端口绑定和挂载来源：使用外置网关时两个端口都应是 127.0.0.1，

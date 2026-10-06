@@ -131,32 +131,39 @@ Memory data is mostly text, so the local SQLite stores stay small; move long-ter
 If you deployed with the former `docker/community-2c2g/` files, the Compose file is gone after updating but the data directories remain (git-ignored). Unless a step says otherwise, run the commands from the **repository root** (`cd` into the N.E.K.O directory that contains `docker/`):
 
 1. Pause the watchdog if installed: `sudo flock /opt/neko/watchdog.lock touch /opt/neko/disabled`.
-2. **Before removing the container**, check where its data is actually mounted from:
+2. **Before removing the container**, read the actual data mount sources from it. Run steps 2–4 in the same bash session; later commands use these variables:
 
    ```bash
-   docker inspect neko --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+   HOME_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/home/neko"}}{{.Source}}{{end}}{{end}}')
+   LOGS_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/app/logs"}}{{.Source}}{{end}}{{end}}')
+   CFG_DIR=$(realpath docker/community-2c2g)    # where .env and the gateway override live
+   echo "home=$HOME_SRC logs=$LOGS_SRC cfg=$CFG_DIR"
    ```
 
-   The sources for `/home/neko` and `/app/logs` are normally `docker/community-2c2g/neko-home` and `docker/community-2c2g/logs`. If an override file changed them, use the actual source paths in every step below; if you cannot tell, stop and keep the container.
-3. Stop the container and back up the actual source directories as root, preserving ownership, together with `.env` and any gateway override; confirm the archive is readable:
+   The sources are normally `docker/community-2c2g/neko-home` and `docker/community-2c2g/logs`; customized mounts show their real paths. If either variable is empty or a path is not what you expect, stop and keep the container.
+3. Stop the container and, as root with ownership preserved, back up those actual sources plus `.env` and the gateway override if present; then verify the archive:
 
    ```bash
    docker stop neko
-   # Write outside the repository, root-only (umask 077), including .env and the gateway override if present
-   sudo sh -c 'umask 077; cd docker/community-2c2g && tar -czpf /root/neko-2c2g-backup.tar.gz neko-home logs $(ls -d .env compose.gateway.yaml 2>/dev/null)'
+   BACKUP=("${HOME_SRC#/}" "${LOGS_SRC#/}")
+   for f in .env compose.gateway.yaml; do [ -f "$CFG_DIR/$f" ] && BACKUP+=("${CFG_DIR#/}/$f"); done
+   # Write outside the repository, root-only (umask 077), with absolute paths so rollback restores in place
+   sudo sh -c 'umask 077; tar -czpf "$0" -C / "$@"' /root/neko-2c2g-backup.tar.gz "${BACKUP[@]}"
    # Read the whole archive first: tar fails on truncation or corruption and archive-ok is not printed
    sudo tar -tzf /root/neko-2c2g-backup.tar.gz > /dev/null && echo archive-ok
-   sudo tar -tzvf /root/neko-2c2g-backup.tar.gz | grep -E ' (\./)?(\.env|compose\.gateway\.yaml|neko-home/|logs/)$'
+   # Then confirm every actual source is in the archive
+   LIST=$(sudo tar -tzf /root/neko-2c2g-backup.tar.gz)
+   for p in "${BACKUP[@]}"; do printf '%s\n' "$LIST" | grep -qxF -e "$p" -e "$p/" && echo "ok /$p" || echo "MISSING /$p"; done
    ```
 
-   You must see `archive-ok`, and the last command should list `neko-home/`, `logs/`, and whichever of `.env` and `compose.gateway.yaml` you use. The backup contains instance credentials and TLS keys; never copy it into the repository or anywhere public. Only after confirming it is complete, remove the container: `docker rm neko`.
-4. Make sure `docker/neko-home` and `docker/logs` do not exist yet, then copy as root, preserving ownership: `sudo cp -a docker/community-2c2g/neko-home docker/community-2c2g/logs docker/`.
+   You must see `archive-ok` and only `ok` lines, no `MISSING`. The backup contains instance credentials and TLS keys; never copy it into the repository or anywhere public. Only after confirming it is complete, remove the container: `docker rm neko`.
+4. Make sure `docker/neko-home` and `docker/logs` do not exist yet, then copy from the actual sources as root, preserving ownership: `sudo cp -a "$HOME_SRC" docker/neko-home && sudo cp -a "$LOGS_SRC" docker/logs`.
 5. Move needed settings from `docker/community-2c2g/.env` to `docker/.env`; a gateway override becomes `docker/compose.gateway.yaml` with `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml`.
 6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. To roll back to the old deployment if migration fails, run from the repository root:
 
    ```bash
    (cd docker && docker compose down)       # stop and remove the new container; no -v
-   sudo tar -xzpf /root/neko-2c2g-backup.tar.gz -C docker/community-2c2g
+   sudo tar -xzpf /root/neko-2c2g-backup.tar.gz -C /   # restores data and config to their original paths
    # The old Compose file was removed from the repository; restore it from the #3295 merge commit
    git show 5161fba:docker/community-2c2g/docker-compose.yaml > docker/community-2c2g/docker-compose.yaml
    # Check port bindings and mount sources before starting: with an external gateway both ports
