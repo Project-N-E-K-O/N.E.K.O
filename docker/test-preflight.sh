@@ -57,6 +57,24 @@ if run; then die 'symlinked logs accepted'; fi
 ok 'rejects a symlinked logs directory before creating anything'
 
 new_case
+mkdir -p "$CASE/shared/home" "$CASE/shared/logs"
+chown 0:0 "$CASE/shared/home" "$CASE/shared/logs"
+ln -s shared "$CASE/link"
+if run "$CASE/link/home" "$CASE/link/logs"; then die 'link in a parent component accepted'; fi
+grep -q 'goes through a symlink' "$CASE/out" || die 'parent link error not reported'
+[[ $(owner "$CASE/shared/home") == 0:0 && $(owner "$CASE/shared/logs") == 0:0 ]] \
+    || die 'parent link target was changed'
+ok 'rejects a symlink in a parent path component'
+
+new_case
+mkdir "$CASE/real"
+mv "$CASE/preflight.sh" "$CASE/real/preflight.sh"
+ln -s real "$CASE/via"
+sh "$CASE/via/preflight.sh" > "$CASE/out" 2>&1 || die 'script reached through a linked directory'
+[[ -d $CASE/real/neko-home && -d $CASE/real/logs ]] || die 'defaults not resolved physically'
+ok 'resolves default paths physically when invoked through a link'
+
+new_case
 ln -s missing "$CASE/logs"
 if run; then die 'dangling symlink accepted'; fi
 [[ ! -e $CASE/missing ]] || die 'dangling symlink target created'

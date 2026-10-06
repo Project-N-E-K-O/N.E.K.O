@@ -32,7 +32,7 @@ Before the first start, run the host preflight once from the repository root (al
 sudo sh docker/preflight.sh
 ```
 
-It runs directly on the host and pulls no image: it refuses to continue if `docker/neko-home` or `docker/logs` is a symlink, creates them if missing, and sets the owner of each directory itself (not recursively) to uid/gid 1000. Symlinks are only visible on the host: Docker mounts the link target, the entrypoint cannot tell from inside the container, and it would change the mount root's owner to 1000, so do not point these directories at a shared directory with a symlink. To keep data on another disk, write the real path in an override file (for example `docker/compose.local.yaml`) and pass both paths to the preflight: `sudo sh docker/preflight.sh /real/neko-home /real/logs`.
+It runs directly on the host and pulls no image: it refuses to continue if `docker/neko-home` or `docker/logs` is a symlink, creates them if missing, and sets the owner of each directory itself (not recursively) to uid/gid 1000. Symlinks are only visible on the host: Docker mounts the link target, the entrypoint cannot tell from inside the container, and it would change the mount root's owner to 1000, so do not point these directories at a shared directory with a symlink. To keep data on another disk, write the real path in an override file (for example `docker/compose.local.yaml`) and pass the same paths to the preflight: `sudo sh docker/preflight.sh /path/from/override/neko-home /path/from/override/logs`.
 
 If you want a container memory limit, set it in an override file following the [Docker resource constraints docs](https://docs.docker.com/engine/containers/resource_constraints/) and size it from measurements.
 
@@ -71,16 +71,14 @@ There is no universal `vm.swappiness`. With ZRAM as the primary swap, evaluate v
 
 - The official Compose file caps the main container's Docker log (`docker logs`) at 10m × 3.
 - Application file logs live in `docker/neko-home/.local/share/N.E.K.O/logs/` (`docker/logs/` is only a fallback). They are not covered by the Docker cap, but the application rotates them itself (10 MB per file, 5 backups, files older than 30 days removed). Look there first when diagnosing.
-- The entrypoint aligns the logs mount to uid 1000 only while it is empty, and warns at startup when it is non-empty and owned by someone else. If Docker created `docker/logs` as root earlier and files have been written there since, DEBUG and fallback logs may fail to write; run `sudo sh docker/preflight.sh` from the repository root (section 1). It fixes only the directory itself, not the files in it, and refuses symlinks. With a custom logs mount, read the container's actual source first and pass it explicitly, after confirming it is dedicated to this deployment (not something other services use such as `/var/log`):
+- The entrypoint aligns the logs mount to uid 1000 only while it is empty, and warns at startup when it is non-empty and owned by someone else. If Docker created `docker/logs` as root earlier and files have been written there since, DEBUG and fallback logs may fail to write; run `sudo sh docker/preflight.sh` from the repository root (section 1). It fixes only the directory itself, not the files in it, and refuses symlinks. With custom mounts, pass the paths exactly as written in your override file, after confirming they are dedicated to this deployment (not something other services use such as `/var/log`). Do not pass `docker inspect` output: it reports the target after symlinks are followed, which would hide a link from the check. Use it only afterwards, to confirm the container mounts what you configured:
 
   ```bash
-  LOGS_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/app/logs"}}{{.Source}}{{end}}{{end}}')
-  HOME_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/home/neko"}}{{.Source}}{{end}}{{end}}')
-  echo "home=$HOME_SRC logs=$LOGS_SRC"
-  [ -n "$HOME_SRC" ] && [ -n "$LOGS_SRC" ] && sudo sh docker/preflight.sh "$HOME_SRC" "$LOGS_SRC"
+  sudo sh docker/preflight.sh /path/from/override/neko-home /path/from/override/logs
+  docker inspect neko --format '{{range .Mounts}}{{println .Destination .Source}}{{end}}'
   ```
 
-  `docker inspect` reports the resolved target, so the symlink check only helps when you pass the path you configured. If it is a shared directory, leave its owner alone and mount a dedicated empty directory at `/app/logs` in `compose.local.yaml` instead. Fix old root-owned files inside it one by one as described in section 9, step 4.
+  Each `Source` must equal the path you passed; if one differs, something on that path is a symlink, so stop. If it is a shared directory, leave its owner alone and mount a dedicated empty directory at `/app/logs` in `compose.local.yaml` instead. Fix old root-owned files inside it one by one as described in section 9, step 4.
 - To apply the same cap to other containers, merge `"log-driver": "json-file"` and `"log-opts": {"max-size": "10m", "max-file": "3"}` into `/etc/docker/daemon.json`, then restart Docker. This only applies to containers created afterwards; existing containers keep their old logging options, so recreate them (for example `docker compose up -d --force-recreate` in each project) and confirm:
 
   ```bash

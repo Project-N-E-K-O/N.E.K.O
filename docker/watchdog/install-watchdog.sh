@@ -10,6 +10,7 @@ fail() { echo "watchdog install: $*" >&2; exit 1; }
 opt_dir=/host-opt
 cron_dir=/host-cron.d
 source_script=/source/watchdog.sh
+[ "$#" -le 1 ] || fail "too many arguments"
 case "${1:-}" in
     '') ;;
     --host)

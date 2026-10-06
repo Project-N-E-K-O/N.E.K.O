@@ -425,6 +425,8 @@ if sh "$ROOT/install.sh"; then exit 1; fi
 rm "$ROOT/cron/neko-watchdog"
 if sh "$ROOT/install.sh" --bogus 2> "$ROOT/install-error"; then exit 1; fi
 grep -q 'unknown argument' "$ROOT/install-error"
+if sh "$ROOT/install.sh" --host --bogus 2> "$ROOT/install-error"; then exit 1; fi
+grep -q 'too many arguments' "$ROOT/install-error"
 # --host installs straight onto host paths (redirected here) with no helper image,
 # taking watchdog.sh from the installer's own directory.
 mkdir "$ROOT/hostsrc" "$ROOT/hopt" "$ROOT/hcron"

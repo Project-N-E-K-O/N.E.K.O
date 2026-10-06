@@ -32,7 +32,7 @@ NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
 sudo sh docker/preflight.sh
 ```
 
-它在宿主机上直接运行，不拉取任何镜像：`docker/neko-home` 或 `docker/logs` 是符号链接时拒绝并退出；目录不存在时创建；再把两个目录本身（不递归）的属主改为 uid/gid 1000。符号链接只有在宿主机上才看得出来：Docker 挂载的是链接目标，入口脚本在容器里分辨不出，会把挂载根目录的属主改为 1000，所以不要用符号链接把这两个目录指向共享目录。需要把数据放到其他磁盘时，在覆盖文件（例如 `docker/compose.local.yaml`）里直接写实际路径，并把这两个路径传给预检：`sudo sh docker/preflight.sh /实际/neko-home /实际/logs`。
+它在宿主机上直接运行，不拉取任何镜像：`docker/neko-home` 或 `docker/logs` 是符号链接时拒绝并退出；目录不存在时创建；再把两个目录本身（不递归）的属主改为 uid/gid 1000。符号链接只有在宿主机上才看得出来：Docker 挂载的是链接目标，入口脚本在容器里分辨不出，会把挂载根目录的属主改为 1000，所以不要用符号链接把这两个目录指向共享目录。需要把数据放到其他磁盘时，在覆盖文件（例如 `docker/compose.local.yaml`）里直接写实际路径，并把同样的路径传给预检：`sudo sh docker/preflight.sh /覆盖文件里的/neko-home /覆盖文件里的/logs`。
 
 如需给容器设内存上限，按 [Docker 资源约束文档](https://docs.docker.com/engine/containers/resource_constraints/) 在覆盖文件中设置，并以实测结果确定数值，不要直接套用经验值。
 
@@ -95,16 +95,14 @@ swapon --show
 
 - 官方 Compose 已把主容器的 Docker 日志（`docker logs`）限制为 10m × 3。
 - 应用文件日志写在 `docker/neko-home/.local/share/N.E.K.O/logs/`（`docker/logs/` 只是后备目录），不受上面的限制，但应用会自行轮转（单个文件 10MB、保留 5 份，30 天前的日志自动清理）。排查问题时也先看这里。
-- 入口脚本只在日志挂载目录为空时把它对齐到 uid 1000；目录非空且属主不是 1000 时，启动日志里会给出警告。如果 `docker/logs` 是 Docker 早先以 root 创建、之后又已经写入了文件的目录，DEBUG 日志和后备日志可能写不进去，在仓库根目录执行 `sudo sh docker/preflight.sh`（见第 1 节）即可。它只修目录本身，不改其中的文件，并拒绝符号链接。改过日志挂载路径时，先读出容器实际挂载的来源，确认是本部署专用的目录（而不是 `/var/log` 这类其他服务也在用的目录）后显式传入：
+- 入口脚本只在日志挂载目录为空时把它对齐到 uid 1000；目录非空且属主不是 1000 时，启动日志里会给出警告。如果 `docker/logs` 是 Docker 早先以 root 创建、之后又已经写入了文件的目录，DEBUG 日志和后备日志可能写不进去，在仓库根目录执行 `sudo sh docker/preflight.sh`（见第 1 节）即可。它只修目录本身，不改其中的文件，并拒绝符号链接。改过挂载路径时，确认它们是本部署专用的目录（而不是 `/var/log` 这类其他服务也在用的目录）后，按覆盖文件里写的原样传入。不要传 `docker inspect` 的输出：它显示的是跟随符号链接之后的目标，会让预检看不到链接。它只用于事后核对容器实际挂载的是不是你配置的路径：
 
   ```bash
-  LOGS_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/app/logs"}}{{.Source}}{{end}}{{end}}')
-  HOME_SRC=$(docker inspect neko --format '{{range .Mounts}}{{if eq .Destination "/home/neko"}}{{.Source}}{{end}}{{end}}')
-  echo "home=$HOME_SRC logs=$LOGS_SRC"
-  [ -n "$HOME_SRC" ] && [ -n "$LOGS_SRC" ] && sudo sh docker/preflight.sh "$HOME_SRC" "$LOGS_SRC"
+  sudo sh docker/preflight.sh /覆盖文件里的/neko-home /覆盖文件里的/logs
+  docker inspect neko --format '{{range .Mounts}}{{println .Destination .Source}}{{end}}'
   ```
 
-  `docker inspect` 显示的是解析后的目标路径，所以只有传入你自己配置的路径时，符号链接检查才起作用。如果它是共享目录，不要改属主，改为在 `compose.local.yaml` 里把 `/app/logs` 挂到一个专用的空目录。目录里由 root 写下的旧文件按第 9 节第 4 步的方法逐个修复。
+  每个 `Source` 都应与传入的路径完全一致；不一致说明路径上有符号链接，先停下。如果它是共享目录，不要改属主，改为在 `compose.local.yaml` 里把 `/app/logs` 挂到一个专用的空目录。目录里由 root 写下的旧文件按第 9 节第 4 步的方法逐个修复。
 - 其他容器需要同样的限制时，把以下内容合并进现有 `/etc/docker/daemon.json`，再执行 `sudo systemctl restart docker`：
 
 ```json

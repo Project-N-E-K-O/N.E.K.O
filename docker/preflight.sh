@@ -6,14 +6,16 @@
 #   sudo sh docker/preflight.sh [NEKO_HOME_DIR [LOGS_DIR]]
 #
 # Defaults: neko-home/ and logs/ next to this script, i.e. the sources used by
-# docker-compose.yml. Pass the real paths when an override file mounts others.
+# docker-compose.yml. When an override file mounts other directories, pass the
+# paths exactly as written there (not what `docker inspect` reports, which has
+# already followed any symlink).
 #
 # Docker resolves a host symlink before mounting it, so the container cannot tell
 # that /home/neko or /app/logs is really a shared host directory. The entrypoint
 # therefore only chowns /app/logs while it is empty. This script runs where the
-# symlink is still visible: it rejects symlinked mount sources, creates missing
-# directories, and sets the owner of each mount root (never recursively) to the
-# container user. Data inside neko-home is aligned by the entrypoint on every start.
+# symlink is still visible: it rejects mount sources that are, or go through, a
+# symlink at any path component, creates missing directories, and sets the owner
+# of each mount root (never recursively) to the container user. Data inside neko-home is aligned by the entrypoint on every start.
 set -eu
 
 NEKO_UID=1000
@@ -22,11 +24,11 @@ NEKO_GID=1000
 fail() { echo "preflight: $*" >&2; exit 1; }
 
 case "${1:-}" in
-    -h|--help) sed -n '2,9s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,11s/^# \{0,1\}//p' "$0"; exit 0 ;;
 esac
 [ "$#" -le 2 ] || fail "too many arguments (see --help)"
 
-script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+script_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
 home_dir=${1:-$script_dir/neko-home}
 logs_dir=${2:-$script_dir/logs}
 
@@ -38,6 +40,16 @@ check_dir() {
   Docker would mount its target and the container would take ownership of it.
   Write the real directory into an override file (e.g. compose.local.yaml)
   instead of linking, after confirming it is dedicated to N.E.K.O."
+    fi
+    # A link in any parent component is followed just the same, e.g. /srv/link/logs
+    # with link -> /var lands on /var/logs. Compare the path with links resolved
+    # against the same path with them kept; any difference means a link.
+    resolved=$(realpath -m -- "$2") && literal=$(realpath -m -s -- "$2") \
+        || fail "$1: cannot resolve $2 (GNU realpath is required)"
+    if [ "$resolved" != "$literal" ]; then
+        fail "$1: $2 goes through a symlink (resolves to $resolved).
+  Confirm that directory is dedicated to N.E.K.O, then mount and pass that
+  real path instead."
     fi
     if [ -e "$2" ] && [ ! -d "$2" ]; then
         fail "$1: $2 exists but is not a directory"
