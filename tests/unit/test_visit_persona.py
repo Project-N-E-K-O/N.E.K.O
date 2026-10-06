@@ -617,3 +617,9 @@ def test_an_explicit_chinese_account_keyword_needs_no_separator():
 def test_at_prefixed_contact_handles_are_found():
     tokens = [t.lower() for t in persona.extract_sensitive_tokens("wechat @alicefoo\n微信@bobcat", [])]
     assert "@alicefoo" in tokens and "@bobcat" in tokens
+
+
+
+def test_a_contact_handle_is_its_own_token_when_more_words_follow():
+    tokens = persona.extract_sensitive_tokens("wechat @alicefoo likes cats\n微信：mimi_cat 常在线", [])
+    assert "@alicefoo" in tokens and "mimi_cat" in tokens

@@ -297,7 +297,14 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
             found.extend(_latin_phrases(value))
             found.extend(_street_names(value))
             keyword = (m.group("kw") or "").lower()
-            if keyword in _ADDRESS_KEYWORDS or m.groupdict().get("kw2") or m.groupdict().get("kw3"):
+            is_address = keyword in _ADDRESS_KEYWORDS or m.groupdict().get("kw2") or m.groupdict().get("kw3")
+            if not is_address:
+                # 联系方式的值会把后面的叙述一起吞进来（「wechat @alicefoo likes cats」）：账号本身——
+                # 值的第一个词——另记一个，人设只复述账号也能命中。纯数字的号码另有数字规则
+                head = value.split()[0] if value.split() else ""
+                if head != value and any(not ch.isdigit() for ch in head):
+                    found.append(head)
+            if is_address:
                 end = _LINE_END_RE.search(text, m.start("value"))
                 rest = text[m.end("value"):end.start() if end else len(text)]
                 for segment in _ADDRESS_SEGMENT_SPLIT_RE.split(rest):
