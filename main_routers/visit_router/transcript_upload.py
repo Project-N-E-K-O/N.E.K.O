@@ -1227,8 +1227,13 @@ async def retry_visit_once(
         if report is not None and owner is not None and not await report_belongs_to(report, owner):
             # 等锁期间原举报没了、换成了另一账号排的：不替它提交，也不动它的拒收标记
             report = None
-        # 用户要求重试、但拒收标记没能清掉（磁盘 / 权限）：后台轮次照手动重试处理，别因为标记还在就跳过
-        manual = manual or visit_id in _manual_retries
+        # 用户要求重试、但拒收标记没能清掉（磁盘 / 权限）：后台轮次对同一份举报照手动重试处理，别因为
+        # 标记还在就跳过。只认那一份：举报没了 / 换了一份就作废
+        pending_manual = _manual_retries.get(visit_id)
+        if report is None or not same_report(report, pending_manual):
+            _manual_retries.pop(visit_id, None)
+        elif not manual:
+            manual = True
         if report is not None and report.get("rejected") and not manual:
             report = None
         report_pending = report is not None
@@ -1240,6 +1245,9 @@ async def retry_visit_once(
                 # 原因没写进举报文件（磁盘 / 权限）：提交的这份照样带上
                 report = {**report, "transcript_unavailable": upload.unavailable}
             result = await send_report(report)
+            if result.accepted or result.unknown_visit:
+                # 受理了，或又被拒（等用户再决定）：之前那次手动重试到此为止
+                _manual_retries.pop(visit_id, None)
             login_required = login_required or result.login_required
             report_retry_after = result.retry_after_s
             if await finish_report(config_dir, visit_id, result, report) or (
@@ -1252,9 +1260,9 @@ async def retry_visit_once(
                 # 用户手动重试、请求发出去了且这回没被拒（网络 / 5xx）：回到普通的排队重试。
                 # 没发出去（未登录 / 换了账号）或登录失效时拒收标记照留
                 if await set_report_rejected(config_dir, visit_id, None, expect=report):
-                    _manual_retries.discard(visit_id)
+                    _manual_retries.pop(visit_id, None)
                 else:
-                    _manual_retries.add(visit_id)
+                    _manual_retries[visit_id] = dict(report)
             elif report.get("rejected"):
                 report_pending = False
     delays = [d for d in (upload.retry_after_s, report_retry_after) if d is not None]
@@ -1265,8 +1273,8 @@ async def retry_visit_once(
 
 _workers: dict[str, asyncio.Task] = {}
 
-_manual_retries: set[str] = set()
-"""visit_ids the user asked to retry whose ``rejected`` marker could not be cleared yet."""
+_manual_retries: dict[str, dict] = {}
+"""visit_id -> the report the user asked to retry whose ``rejected`` marker could not be cleared yet."""
 
 _settled_leftovers: set[str] = set()
 """visit_ids whose sealed upload is settled but could not be deleted yet (the next round only deletes it)."""

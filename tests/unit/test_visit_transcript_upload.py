@@ -1226,3 +1226,41 @@ async def test_a_recovered_owner_is_written_before_the_upload_is_deferred(tmp_pa
     assert json.loads(sealed.read_text(encoding="utf-8"))["own_visit_uid"] == OWN
     state["account"] = "u1"
     assert (await tu.retry_visit_once(V1)).pending is False and not sealed.exists()
+
+
+
+async def test_a_pending_manual_retry_ends_when_servers_rejects_again(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    await tu.set_report_rejected(tmp_path, V1, "unknown_visit")
+    fake.report_mode = "503"
+    original = tu._set_rejected_sync
+    calls = []
+
+    def broken_once(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("disk full")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(tu, "_set_rejected_sync", broken_once)
+    await tu.retry_visit_once(V1, manual=True)
+    assert V1 in tu._manual_retries
+    fake.report_mode = "404"                               # 后台那一轮又被拒
+    await tu.retry_visit_once(V1)
+    assert V1 not in tu._manual_retries
+    sent = fake.count("/api/visit/reports")
+    assert (await tu.retry_visit_once(V1)).pending is False   # 不再自动重提，等用户决定
+    assert fake.count("/api/visit/reports") == sent
+
+
+async def test_a_pending_manual_retry_does_not_carry_over_to_a_new_report(tmp_path, servers):
+    fake, _ = servers
+    old = _report_doc(include_transcript=False, queued_at=1.0)
+    await tu.queue_report(tmp_path, old)
+    tu._manual_retries[V1] = dict(old)
+    await tu.delete_report(tmp_path, V1)                    # 用户放弃了那一份
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False, queued_at=2.0))
+    await tu.set_report_rejected(tmp_path, V1, "unknown_visit")
+    assert (await tu.retry_visit_once(V1)).pending is False
+    assert fake.count("/api/visit/reports") == 0 and V1 not in tu._manual_retries
