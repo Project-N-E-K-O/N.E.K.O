@@ -159,8 +159,13 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    sudo tar -xzpf /root/neko-2c2g-backup.tar.gz -C docker/community-2c2g
    # The old Compose file was removed from the repository; restore it from the #3295 merge commit
    git show 5161fba:docker/community-2c2g/docker-compose.yaml > docker/community-2c2g/docker-compose.yaml
+   # Check port bindings and mount sources before starting: with an external gateway both ports
+   # must be 127.0.0.1, and sources must match what docker inspect showed in step 2
+   (cd docker/community-2c2g && docker compose config | grep -E 'host_ip|published|source:')
    (cd docker/community-2c2g && docker compose up -d)
    ```
+
+   A `COMPOSE_FILE` entry in the restored `.env` loads the gateway override automatically. If the old deployment passed the override with explicit `-f` flags, use the same `-f` flags for both `config` and `up`; do not start it if the bindings or mount sources are wrong.
 
    In a shallow clone that lacks the commit, run `git fetch --unshallow` first. The restored `docker-compose.yaml` is untracked; delete it once a later migration succeeds and never commit it.
 7. **Reinstall the watchdog** (section 5): the old script only recognizes the old label. Resume it once the service is healthy.

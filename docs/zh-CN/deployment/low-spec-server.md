@@ -234,8 +234,13 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    sudo tar -xzpf /root/neko-2c2g-backup.tar.gz -C docker/community-2c2g
    # 旧 Compose 文件已从仓库删除，从 #3295 的合并提交取回
    git show 5161fba:docker/community-2c2g/docker-compose.yaml > docker/community-2c2g/docker-compose.yaml
+   # 启动前核对最终端口绑定和挂载来源：使用外置网关时两个端口都应是 127.0.0.1，
+   # 挂载来源应与第 2 步 docker inspect 看到的一致
+   (cd docker/community-2c2g && docker compose config | grep -E 'host_ip|published|source:')
    (cd docker/community-2c2g && docker compose up -d)
    ```
+
+   恢复的 `.env` 里若有 `COMPOSE_FILE`，上面的命令会自动加载网关覆盖文件。旧部署如果是用 `-f` 显式指定覆盖文件的，`config` 和 `up` 都要带上同样的 `-f` 参数；端口绑定或挂载来源不对时不要启动。
 
    浅克隆里找不到该提交时，先执行 `git fetch --unshallow`。取回的 `docker-compose.yaml` 不受版本管理，之后重新迁移成功时删除即可，不要提交。
 7. **重新安装看门狗**（第 5 节）。旧脚本只识别旧标签，不重装就不会再处理新容器。确认健康后解除 `disabled`。
