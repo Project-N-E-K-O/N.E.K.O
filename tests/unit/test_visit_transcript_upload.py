@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -714,3 +715,27 @@ async def test_a_scheduled_retry_after_an_attempt_waits_first(tmp_path, servers,
     await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
     await tu.schedule_visit_retry(V1, initial_delay_s=7)
     assert slept and slept[0] == 7
+
+
+
+async def test_a_longer_delay_pushes_back_a_waiting_worker(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    fake.report_mode = "503"
+    slept = []
+    first_wait = asyncio.Event()
+
+    async def sleep(seconds):
+        slept.append(round(seconds))
+        if len(slept) == 1:
+            first_wait.set()
+            await asyncio.sleep(0.05)               # 后台任务正在等第一段
+
+    monkeypatch.setattr(tu, "_sleep", sleep)
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    task = tu.schedule_visit_retry(V1, initial_delay_s=10)
+    await first_wait.wait()
+    tu.schedule_visit_retry(V1, initial_delay_s=600)    # 手动重试拿到了更长的 retry_after
+    fake.report_mode = "ok"
+    await asyncio.wait_for(task, 5)
+    assert slept[0] == 10 and slept[1] >= 590             # 先按旧的等，被推后后再按新的等完才重试
+    assert fake.count("/api/visit/reports") == 1

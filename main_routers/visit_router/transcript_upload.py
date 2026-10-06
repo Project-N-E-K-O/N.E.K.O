@@ -1044,14 +1044,31 @@ def _reset_for_tests() -> None:
         task.cancel()
     _workers.clear()
     _recent_anomalies.clear()
+    _not_before.clear()
 
 
-async def _retry_loop(visit_id: str, config_dir: Path | None, initial_delay_s: float = 0.0) -> None:
+_not_before: dict[str, float] = {}
+"""visit_id -> monotonic time before which no background round may run (Servers ``retry_after``)."""
+
+
+def _defer(visit_id: str, delay_s: float) -> None:
+    """Push the next background round of ``visit_id`` back by at least ``delay_s`` (never earlier)."""
+    if delay_s > 0:
+        _not_before[visit_id] = max(_not_before.get(visit_id, 0.0), time.monotonic() + delay_s)
+
+
+async def _retry_loop(visit_id: str, config_dir: Path | None) -> None:
     delay_index = 0
-    if initial_delay_s > 0:
-        # 调用方刚试过一次（含 429 给的等待）：先等，不立刻再打一次
-        await _sleep(initial_delay_s)
     while True:
+        deadline = _not_before.get(visit_id)
+        if deadline is not None:
+            wait = deadline - time.monotonic()
+            if wait > 0:
+                await _sleep(wait)
+            if _not_before.get(visit_id, deadline) != deadline:
+                # 等待期间又被推后（手动重试拿到了更长的 retry_after）：按新时间再等
+                continue
+            _not_before.pop(visit_id, None)
         if is_live(visit_id):
             # 在飞场次的转录还没封存：finalize 封存后会重新排上
             return
@@ -1064,22 +1081,24 @@ async def _retry_loop(visit_id: str, config_dir: Path | None, initial_delay_s: f
             return
         delay = VISIT_UPLOAD_RETRY_BACKOFF_S[min(delay_index, len(VISIT_UPLOAD_RETRY_BACKOFF_S) - 1)]
         delay_index += 1
-        await _sleep(max(delay, outcome.retry_after_s or 0))
+        _defer(visit_id, max(delay, outcome.retry_after_s or 0))
 
 
 def schedule_visit_retry(visit_id: str, *, config_dir: Path | None = None,
                          initial_delay_s: float = 0.0) -> asyncio.Task:
     """Upload / report retries of ``visit_id`` in the background (one task per visit).
 
-    ``initial_delay_s``: the caller just made an attempt; wait this long
-    before the first background round (at least the Servers ``retry_after``).
+    ``initial_delay_s``: the caller just made an attempt; no background round
+    runs before this long (at least the Servers ``retry_after``). It also
+    applies to a worker that is already waiting -- a longer delay pushes its
+    next round back, a shorter one never pulls it forward.
     """
     visit_id = require_visit_id(visit_id)
+    _defer(visit_id, initial_delay_s)
     task = _workers.get(visit_id)
     if task is not None and not task.done():
         return task
-    task = asyncio.create_task(_retry_loop(visit_id, config_dir, initial_delay_s),
-                               name=f"visit-upload-{visit_id[:6]}")
+    task = asyncio.create_task(_retry_loop(visit_id, config_dir), name=f"visit-upload-{visit_id[:6]}")
     _workers[visit_id] = task
 
     def _done(t: asyncio.Task) -> None:
