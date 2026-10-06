@@ -26,14 +26,23 @@ Two layers:
 2. **Second layer: Origin / Host allow-list + CSRF token**, the same scheme
    as ``WS /api/vmc/ws`` (``main_routers/vmc_router.py``).
 
-Used by the transport WS here; PR-09a reuses it for ``/api/visit/*`` HTTP and
-``visit_bind`` on the display socket.
+Used by the transport WS, by every ``/api/visit/*`` HTTP endpoint
+(:func:`http_denied`) and by ``visit_bind`` on the display socket.
+
+:func:`require_visit_enabled` is the ``NEKO_VISIT_ENABLED`` release switch
+of the endpoints that start or join a visit (design §4.6 preamble): the
+package router attaches it to those sub-routers only, data management keeps
+working while the switch is off.
 """
 
 from __future__ import annotations
 
 import ipaddress
 from typing import Any, Mapping
+
+from fastapi import HTTPException, WebSocketException
+from fastapi.responses import JSONResponse
+from starlette.requests import HTTPConnection, Request
 
 import config.visit_settings as visit_settings
 from config import AUTOSTART_ALLOWED_ORIGINS, AUTOSTART_CSRF_TOKEN
@@ -97,3 +106,36 @@ def websocket_origin_allowed(origin: str, request_host: str | None) -> bool:
 def valid_auth_frame(message: Any) -> bool:
     """First-frame check ``{type:'auth', csrf_token}`` (shared with ``/api/vmc/ws``)."""
     return local_ws_guard.valid_auth_frame(message, AUTOSTART_CSRF_TOKEN)
+
+
+def http_denied(request: Request, payload: Mapping[str, Any] | None = None) -> JSONResponse | None:
+    """Both layers for one ``/api/visit/*`` HTTP request; a 403 response, or None when allowed.
+
+    Read endpoints call it too (design §4.6). The second layer is the shared
+    ``_validate_local_mutation_request`` (Origin / Host allow-list + CSRF
+    token from the header or the body's ``_csrf_token``).
+    """
+    from main_routers.system_router._shared import _validate_local_mutation_request
+
+    client_host = request.client.host if request.client else None
+    if not local_peer_allowed(client_host, request.headers):
+        return JSONResponse({"ok": False, "code": UNAUTHORIZED_CODE}, status_code=403)
+    return _validate_local_mutation_request(request, payload=dict(payload) if payload is not None else None)
+
+
+def visit_enabled() -> bool:
+    """The ``NEKO_VISIT_ENABLED`` release switch (read from the settings module per call)."""
+    return bool(visit_settings.VISIT_ENABLED)
+
+
+async def require_visit_enabled(connection: HTTPConnection) -> None:
+    """Router dependency: the start / join endpoints do not exist while the switch is off.
+
+    HTTP answers 404 like an unknown route; a WebSocket is refused before
+    ``accept`` with 4404 (the transport iframe's terminal close code).
+    """
+    if visit_enabled():
+        return
+    if connection.scope.get("type") == "websocket":
+        raise WebSocketException(code=4404)
+    raise HTTPException(status_code=404)

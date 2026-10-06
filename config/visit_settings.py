@@ -656,6 +656,21 @@ VISIT_PEER_NGRAM_N = 8
 VISIT_PERSONA_MAX_TOKENS = 800
 """Token cap of the public visit persona."""
 
+VISIT_UPLOAD_MAX_PARTS = 128
+"""Upper bound of ``parts`` in one transcript upload (Servers answers ``400 parts_out_of_range`` above)."""
+
+VISIT_UPLOAD_RETRY_BACKOFF_S = (30, 120, 600, 1800, 3600)
+"""In-process back-off (s) of transcript upload / queued report retries; the last item repeats."""
+
+VISIT_REPORT_NOTE_MAX_CHARS = 500
+"""Max characters of the free-text note of a report."""
+
+VISIT_REPORT_STALE_S = 7 * 86400
+"""A queued report older than this is shown as "not delivered yet" with retry / give up."""
+
+VISIT_ACCOUNTS_FILENAME = "visit_accounts.json"
+"""Local map community account id -> own ``visit_uid`` under ``config_dir`` (written when credentials arrive)."""
+
 
 def _check_invariants() -> None:
     """Raise if the cross-axis relations the design depends on are broken."""
