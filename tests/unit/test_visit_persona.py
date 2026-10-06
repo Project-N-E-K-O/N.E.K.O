@@ -724,3 +724,11 @@ def test_a_single_proper_word_segment_on_an_address_line():
     assert "Broadway" in tokens
     tokens = persona.extract_sensitive_tokens("address: Apt 4, upstairs", [])
     assert "upstairs" not in tokens
+
+
+
+def test_lowercase_road_names_and_colon_line_handles():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens(
+        "address: Apt 4, main road\nLINE: alicefoo likes cats\nShe waited in line for hours.", [])]
+    assert "main road" in tokens and "alicefoo" in tokens
+    assert not any(t.startswith("for hours") for t in tokens)

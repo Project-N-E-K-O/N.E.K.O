@@ -141,6 +141,7 @@ _LATIN_KEYWORD_VALUE_RE = re.compile(
     r"(?:\s*[:：=]\s*|\s+(?:is\s+|at\s+)?(?=[#+0-9@])|\s+(?=[A-Za-z0-9.\-]*[0-9_])"
     r"|(?<=[iI][dD])\s+(?:is\s+)?|\s+(?=(?-i:[A-Za-z]*[a-z][A-Z])))"
     r"|(?P<kw2>lives?\s+in)\s+"
+    r"|(?P<kw6>line)\s*[:：]\s*"
     r"|(?P<kw3>address)\s+(?=(?-i:[A-Z])))" + _KEYWORD_VALUE,
     re.IGNORECASE,
 )
@@ -212,7 +213,7 @@ _UNNUMBERED_STREET_RE = re.compile(
 )
 # 地址行逗号后整段只有一个大写开头的词：街名 / 地名本身
 _PROPER_PLACE_RE = re.compile(r"(?-i:[A-Z])[A-Za-z'\-]+")
-_UNAMBIGUOUS_STREET_TYPES = "street|avenue|ave|boulevard|blvd|lane|highway|hwy|parkway|pkwy|rd"
+_UNAMBIGUOUS_STREET_TYPES = "street|avenue|ave|boulevard|blvd|lane|highway|hwy|parkway|pkwy|road|rd"
 _LOWERCASE_STREET_RE = re.compile(
     rf"(?<![A-Za-z0-9])((?:[A-Za-z][A-Za-z'\-]*\s+){{1,2}}(?:{_UNAMBIGUOUS_STREET_TYPES}))\b\.?",
     re.IGNORECASE,
@@ -343,7 +344,7 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
                 words = value.split()
                 if len(words) > 1:
                     found.extend(w.strip(".,!?;:") for w in words if _ACCOUNT_WORD_RE.search(w))
-                    if keyword.endswith("id") or m.groupdict().get("kw5"):
+                    if keyword.endswith("id") or m.groupdict().get("kw5") or m.groupdict().get("kw6"):
                         # 明说是账号的关键词（line id / wechat id / 微信号）：后面第一个词就是账号本身
                         found.append(words[0].strip(".,!?;:"))
             if is_address:

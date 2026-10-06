@@ -1191,3 +1191,38 @@ async def test_a_rejected_spool_left_after_acceptance_is_cleaned_up_later(tmp_pa
     assert await tu.load_report(tmp_path, V1) is None and sealed.exists() and outcome.pending is True
     monkeypatch.setattr(tu, "_mark_unavailable_sync", original_mark)
     assert (await tu.retry_visit_once(V1)).pending is False and not sealed.exists()
+
+
+
+async def test_a_manual_retry_keeps_going_when_the_rejection_marker_cannot_be_cleared(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    await tu.set_report_rejected(tmp_path, V1, "unknown_visit")
+    fake.report_mode = "503"
+    original = tu._set_rejected_sync
+    calls = []
+
+    def broken_once(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("disk full")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(tu, "_set_rejected_sync", broken_once)
+    assert (await tu.retry_visit_once(V1, manual=True)).pending is True
+    assert (await tu.load_report(tmp_path, V1))["rejected"] == "unknown_visit"     # 标记没清掉
+    fake.report_mode = "ok"
+    assert (await tu.retry_visit_once(V1)).pending is False                      # 后台轮次照样提交
+    assert await tu.load_report(tmp_path, V1) is None
+
+
+async def test_a_recovered_owner_is_written_before_the_upload_is_deferred(tmp_path, servers):
+    fake, state = servers
+    doc = _big_doc(4, 10)
+    doc.pop("own_visit_uid")                             # 老版本文件：没记归属
+    sealed = _write_sealed(tmp_path, doc)
+    state["account"] = "u2"                               # 现在登录的是别的账号
+    assert await tu.upload_visit_transcript(V1, {**doc, "own_visit_uid": OWN}) is False
+    assert json.loads(sealed.read_text(encoding="utf-8"))["own_visit_uid"] == OWN
+    state["account"] = "u1"
+    assert (await tu.retry_visit_once(V1)).pending is False and not sealed.exists()

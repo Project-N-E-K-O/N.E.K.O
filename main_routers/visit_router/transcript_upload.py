@@ -558,6 +558,23 @@ def _persist_progress(path: Path, doc: dict, parts: int, accepted: set[int]) -> 
             logger.warning("visit upload: cannot keep the age of %s: %s", path.name, exc)
 
 
+def _persist_owner_sync(path: Path, owner: str) -> None:
+    """Write ``own_visit_uid`` into a sealed upload that lacks it (age kept)."""
+    with path_lock(path):
+        try:
+            before = path.stat()
+        except FileNotFoundError:
+            return
+        doc = _load_json(path)
+        if not isinstance(doc, dict) or doc.get("own_visit_uid"):
+            return
+        _write_private_json(path, {**doc, "own_visit_uid": owner})
+        try:
+            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        except OSError as exc:
+            logger.warning("visit upload: cannot keep the age of %s: %s", path.name, exc)
+
+
 def _valid_progress(doc: Mapping[str, Any]) -> tuple[int, set[int]] | None:
     parts = doc.get("parts")
     if not isinstance(parts, int) or isinstance(parts, bool) or not 1 <= parts <= VISIT_UPLOAD_MAX_PARTS:
@@ -661,6 +678,14 @@ async def upload_visit_transcript(visit_id: str, upload_doc: dict) -> bool | str
     config_dir = Path(config_dir_provider())
     # 与重试轮次同一把逐场锁：分块进度的落盘与上传结清不能和另一轮交错
     async with visit_lock(visit_id):
+        owner = upload_doc.get("own_visit_uid")
+        if isinstance(owner, str) and owner:
+            # 补录为老文件补上的归属只在内存里：先写进文件，后台重试重读文件时才认得原账号
+            try:
+                await asyncio.to_thread(
+                    _persist_owner_sync, visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSON_SUFFIX), owner)
+            except (OSError, ValueError) as exc:
+                logger.warning("visit upload %s: cannot record the owner: %s", visit_id, type(exc).__name__)
         result = await _upload(visit_id, upload_doc, config_dir)
     if not result.done and result.terminal is None:
         # 网络 / 5xx / 429 / 未登录或换了账号：补录只跑一轮，本进程里接着由后台重试
@@ -792,7 +817,7 @@ async def rejection_recorded(config_dir: Path, visit_id: str) -> bool:
 
 async def set_report_rejected(
     config_dir: Path, visit_id: str, reason: str | None, *, expect: Mapping[str, Any] | None = None,
-) -> None:
+) -> bool:
     """Mark (or, with None, unmark) a queued report Servers refused for good.
 
     A refused report is never deleted on its own -- only acceptance or the
@@ -805,6 +830,8 @@ async def set_report_rejected(
         await asyncio.to_thread(_set_rejected_sync, report_path(config_dir, visit_id), visit_id, reason, expect)
     except (OSError, ValueError) as exc:
         logger.warning("visit report queue: cannot mark %s: %s", visit_id, type(exc).__name__)
+        return False
+    return True
 
 
 async def mark_report_transcript_unavailable(config_dir: Path, visit_id: str, reason: str) -> bool:
@@ -1200,6 +1227,8 @@ async def retry_visit_once(
         if report is not None and owner is not None and not await report_belongs_to(report, owner):
             # 等锁期间原举报没了、换成了另一账号排的：不替它提交，也不动它的拒收标记
             report = None
+        # 用户要求重试、但拒收标记没能清掉（磁盘 / 权限）：后台轮次照手动重试处理，别因为标记还在就跳过
+        manual = manual or visit_id in _manual_retries
         if report is not None and report.get("rejected") and not manual:
             report = None
         report_pending = report is not None
@@ -1222,7 +1251,10 @@ async def retry_visit_once(
             elif manual and report.get("rejected") and result.attempted and not result.login_required:
                 # 用户手动重试、请求发出去了且这回没被拒（网络 / 5xx）：回到普通的排队重试。
                 # 没发出去（未登录 / 换了账号）或登录失效时拒收标记照留
-                await set_report_rejected(config_dir, visit_id, None, expect=report)
+                if await set_report_rejected(config_dir, visit_id, None, expect=report):
+                    _manual_retries.discard(visit_id)
+                else:
+                    _manual_retries.add(visit_id)
             elif report.get("rejected"):
                 report_pending = False
     delays = [d for d in (upload.retry_after_s, report_retry_after) if d is not None]
@@ -1232,6 +1264,9 @@ async def retry_visit_once(
 
 
 _workers: dict[str, asyncio.Task] = {}
+
+_manual_retries: set[str] = set()
+"""visit_ids the user asked to retry whose ``rejected`` marker could not be cleared yet."""
 
 _settled_leftovers: set[str] = set()
 """visit_ids whose sealed upload is settled but could not be deleted yet (the next round only deletes it)."""
@@ -1244,6 +1279,7 @@ def _reset_for_tests() -> None:
     _recent_anomalies.clear()
     _terminal_reasons.clear()
     _open_streams.clear()
+    _manual_retries.clear()
     # 上一个测试的事件循环里残留的任务可能还握着锁：换新的锁表，不跨事件循环复用
     _VISIT_LOCKS.clear()
     _not_before.clear()
