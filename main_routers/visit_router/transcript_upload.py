@@ -166,6 +166,10 @@ def _finite(value: Any) -> bool:
 # ── 上传流水 ───────────────────────────────────────────────────────────
 
 
+_open_streams: set[str] = set()
+"""visit_ids whose upload stream this process still has open (being written): never resealed by a retry round."""
+
+
 class UploadJournal:
     """The upload stream of one live visit plus its in-memory copy.
 
@@ -227,6 +231,7 @@ class UploadJournal:
         fd, self._fd = self._fd, None
         if fd is not None:
             os.close(fd)
+        _open_streams.discard(self.visit_id)
 
     def _seal_sync(self, doc: dict) -> None:
         # 先原子写 .upload.json、再删流水（§3.2.6 第 22 条第 3 步）：两步之间崩溃时两份都在，
@@ -287,6 +292,7 @@ class UploadJournal:
         except BaseException:
             executor.shutdown(wait=False)
             raise
+        _open_streams.add(self.visit_id)
         self._executor = executor
         self._records = [header]
         self._role = role
@@ -1037,7 +1043,8 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         if not await asyncio.to_thread(stream.exists):
             # 转录早已结清：若是终态拒收 / 过期，之后才排的举报也要带上原因
             return UploadRound(pending=False, unavailable=_terminal_reasons.get(visit_id))
-        if is_live(visit_id):
+        if is_live(visit_id) or visit_id in _open_streams:
+            # 还在写的流水（场次进行中）：等收尾封存，绝不提前重封
             return UploadRound(pending=True)
         # 场次已结束、只留下流水（封存时写上传文件失败）：按补录同一规则从流水重封，再接着上传
         status = await reseal_orphan_stream(config_dir, visit_id)
@@ -1200,6 +1207,7 @@ def _reset_for_tests() -> None:
     _workers.clear()
     _recent_anomalies.clear()
     _terminal_reasons.clear()
+    _open_streams.clear()
     _not_before.clear()
     _settled_leftovers.clear()
 

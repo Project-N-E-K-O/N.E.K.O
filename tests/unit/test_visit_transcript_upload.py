@@ -1062,3 +1062,16 @@ async def test_a_recovery_report_failure_re_arms_the_background_worker(tmp_path,
     await tu.queue_report(tmp_path, doc)
     assert await tu.submit_queued_report(V1, doc) is False
     assert V1 in tu._workers
+
+
+
+async def test_a_stream_still_being_written_is_never_resealed(tmp_path, servers):
+    fake, _ = servers
+    journal = await _journal(tmp_path)                    # is_live 未接线（默认 False）也不能重封
+    await _say(journal, 1, "first")
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=True))
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    stream = _spool(tmp_path) / f"{V1}.upload.jsonl"
+    assert outcome.pending is True and stream.exists()
+    assert not (_spool(tmp_path) / f"{V1}.upload.json").exists() and fake.count("/api/visit/transcripts") == 0
+    await journal.seal("wrap_up", ended_at=1002.0)

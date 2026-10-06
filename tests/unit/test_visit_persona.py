@@ -676,3 +676,16 @@ def test_unnumbered_street_names_after_an_address_comma():
     assert "main street" in tokens and not any("star wars" in t or "the station" in t for t in tokens)
     tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: Apt 4, near the High Street", [])]
     assert "high street" in tokens and "the high street" not in tokens       # 街名截到虚词为止
+
+
+
+def test_lowercase_street_type_words_are_not_street_names():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens(
+        "address: 12 Maple Dr, we went the long way around", [])]
+    assert not any("long way" in t for t in tokens)
+
+
+
+def test_an_explicit_id_keyword_skips_a_linking_is():
+    tokens = persona.extract_sensitive_tokens("line id is alicefoo likes cats", [])
+    assert "alicefoo" in tokens and "is" not in tokens

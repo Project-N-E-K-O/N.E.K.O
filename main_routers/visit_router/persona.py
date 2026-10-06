@@ -139,7 +139,7 @@ _LATIN_KEYWORD_VALUE_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:"
     r"(?P<kw>(?:wechat|weixin|vx|qq)(?:\s*id)?|e-?mail|phone(?:\s*number)?|address|line\s*id)(?![A-Za-z0-9])"
     r"(?:\s*[:：=]\s*|\s+(?:is\s+|at\s+)?(?=[#+0-9@])|\s+(?=[A-Za-z0-9.\-]*[0-9_])"
-    r"|(?<=[iI][dD])\s+|\s+(?=(?-i:[A-Za-z]*[a-z][A-Z])))"
+    r"|(?<=[iI][dD])\s+(?:is\s+)?|\s+(?=(?-i:[A-Za-z]*[a-z][A-Z])))"
     r"|(?P<kw2>lives?\s+in)\s+"
     r"|(?P<kw3>address)\s+(?=(?-i:[A-Z])))" + _KEYWORD_VALUE,
     re.IGNORECASE,
@@ -203,9 +203,10 @@ _NUMBERED_STREET_RE = re.compile(
 )
 
 
-# 地址关键词那一行里没写门牌号的街名（「Apt 4, Main Street」）：一两个词再接街道类词尾
+# 地址关键词那一行里没写门牌号的街名（「Apt 4, Main Street」）：一两个大写开头的词再接街道类词尾。
+# 要求大写：way / place / close 也是普通词，「the long way around」不是街名
 _UNNUMBERED_STREET_RE = re.compile(
-    rf"(?<![A-Za-z0-9])((?:[A-Za-z][A-Za-z'\-]*\s+){{1,2}}(?:{_STREET_TYPES}))\b\.?",
+    rf"(?<![A-Za-z0-9])((?:(?-i:[A-Z])[A-Za-z'\-]*\s+){{1,2}}(?:{_STREET_TYPES}))\b\.?",
     re.IGNORECASE,
 )
 
