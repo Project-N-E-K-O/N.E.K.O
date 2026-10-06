@@ -260,11 +260,12 @@ def _street_names(value: str) -> list[str]:
     head = _STREET_AFTER_NUMBER_RE.match(value)
     if head is not None:
         words = _run_until_stopword(head.group(1).split())
-        single = len(words) == 1 or (len(words) > 1 and not _STREET_TYPE_WORD_RE.fullmatch(words[1]))
+        single = len(words) == 1 or (
+            len(words) > 1 and words[1][:1].islower() and not _STREET_TYPE_WORD_RE.fullmatch(words[1]))
         if words and single and words[0][:1].isupper():
-            # 门牌号后的街名只有一个大写开头的词（「12 Broadway」「12 Broadway likes cats」）：这个词就是
-            # 街名。下一个词是街道类词尾时（「12 Main Street」）街名是两个词，不拆出「Main」；小写的单个
-            # 词多半是普通名词（「lives in 2 cities」），不收
+            # 门牌号后的街名只有一个大写开头的词（「12 Broadway」「12 Broadway likes cats」，后面是小写的
+            # 叙述）：这个词就是街名。下一个词是街道类词尾或也大写开头时（「12 Main Street」「12 Maple
+            # Grove」）街名是多个词，不拆出单个词；小写的单个词多半是普通名词（「lives in 2 cities」），不收
             out.append(words[0])
         out.extend(" ".join(words[:k]) for k in range(2, len(words) + 1))
     for m in _NUMBERED_STREET_RE.finditer(value):

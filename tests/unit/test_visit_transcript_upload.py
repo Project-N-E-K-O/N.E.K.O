@@ -1354,3 +1354,23 @@ async def test_a_recovery_rejection_marker_failure_re_arms_the_worker(tmp_path, 
     monkeypatch.setattr(tu, "_set_rejected_sync", broken)
     assert await tu.submit_queued_report(V1, doc) is False
     assert scheduled == [V1]
+
+
+
+async def test_the_rejected_marker_outlives_a_stream_that_cannot_be_deleted(tmp_path, servers, monkeypatch):
+    spool = _spool(tmp_path)
+    spool.mkdir(parents=True, exist_ok=True)
+    sealed = spool / f"{V1}.upload.json"
+    stream = spool / f"{V1}.upload.jsonl"
+    sealed.write_text(json.dumps({"rejected": "parts_out_of_range"}), encoding="utf-8")
+    stream.write_text("{}" + chr(10), encoding="utf-8")
+    real_unlink = Path.unlink
+
+    def busy(self, missing_ok=False):
+        if self == stream:
+            raise PermissionError("in use")
+        return real_unlink(self, missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", busy)
+    assert tu._drop_rejected_sealed_sync(tmp_path, V1) is False
+    assert sealed.exists() and json.loads(sealed.read_text(encoding="utf-8"))["rejected"]   # 标记还在

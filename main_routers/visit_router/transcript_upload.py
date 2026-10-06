@@ -1012,9 +1012,10 @@ def _drop_rejected_sealed_sync(config_dir: Path, visit_id: str) -> bool:
         except ValueError:
             return True
         if isinstance(doc, dict) and isinstance(doc.get("rejected"), str) and doc["rejected"]:
-            # 封存时没删掉的流水也是这份已拒收转录的：一并删，免得之后被重封、重传
+            # 封存时没删掉的流水也是这份已拒收转录的：一并删，免得之后被重封、重传。先删流水，带拒收标记的
+            # 封存文件最后删——流水删不掉时标记还在，重启后补录不会把它当成未上传的转录重封
             stream = visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSONL_SUFFIX)
-            for target in (path, stream):
+            for target in (stream, path):
                 try:
                     target.unlink(missing_ok=True)
                 except OSError as exc:

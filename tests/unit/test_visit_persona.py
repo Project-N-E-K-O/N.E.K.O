@@ -740,3 +740,9 @@ def test_a_one_word_street_before_trailing_prose():
     assert "broadway" in tokens
     tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: 12 Main Street", [])]
     assert "main" not in tokens
+
+
+
+def test_a_multi_word_proper_street_is_not_split():
+    tokens = [t.lower() for t in persona.extract_sensitive_tokens("address: 12 Maple Grove", [])]
+    assert "maple" not in tokens and "maple grove" in tokens
