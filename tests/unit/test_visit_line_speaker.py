@@ -1034,3 +1034,34 @@ def test_a_punctuated_name_hidden_by_zero_width_characters_is_still_held():
     h.progress(10**7, ended=True, final=True)
     text = h.results[0].text
     assert "J." not in text and "mith" not in text and NEUTRAL in text
+
+
+
+def test_goodbye_cap_keeps_regional_indicators_paired_across_deltas():
+    h = Harness(wu=True)
+    ri = "\U0001F1EF"
+    h.speaker.feed("好" * 23 + ri)                    # 离上限正好 16 个码点：不扣
+    h.speaker.feed(ri * 17 + "拜")
+    h.speaker.llm_done()
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    text = h.results[0].text
+    run = len(text) - len(text.rstrip(ri))
+    assert run % 2 == 0 and len(text) <= 40 and h.results[0].trunc_reason == "goodbye_cap"
+    assert "".join(h.stream.pushed) == text
+
+
+def test_a_name_stretched_by_zero_width_characters_is_held_at_a_hard_cut():
+    h = Harness()
+    h.speaker = ls.LineSpeaker(
+        visit_id=VISIT, header=ls.LineHeader(ln="h:1", lp=1, ad="gc", rt=""),
+        family_names=["小明"], neutral_term=NEUTRAL, voice=h.voice, open_stream=h.open_stream,
+        router=h.router, clock=lambda: h.t, on_piece=h.pieces.append, on_done=h.results.append,
+    )
+    h.speaker.feed("好" * 230 + "小" + "\u200b" * 36)    # 超出分句硬上限，名字后一半还没到
+    h.speaker.feed("明来玩。")
+    h.speaker.llm_done()
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    text = h.results[0].text
+    assert "小" not in text and NEUTRAL in text

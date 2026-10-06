@@ -324,11 +324,13 @@ class LineSpeaker:
         # 组合符）：先扣着它，见到下一段（或收尾）再按额度定，截点才能退回到簇的开头。离额度还远时
         # 不扣，免得逐段播放被拖慢一个字
         self._goodbye_hold = ""
-        # 含标点 / 空白的亲人名（"J. Smith"）：分句器在标点处切句时不扣尾巴，名字没到齐前切出去的
-        # 前缀认不出来、会原样出门。文本末尾可能是这类名字开头的那段先不进分句器
-        self._punct_names = sorted({k for k in (fold_text(n.strip()) for n in names)
-                                    if k and not all(ch.isalnum() for ch in k)})
-        self._punct_max = max((len(k) for k in self._punct_names), default=0)
+        # 已放行的告别文本：截点按「已放行 + 本段」整体切分，跨段的字形簇也按完整的簇判断
+        self._goodbye_taken = ""
+        # 文本末尾可能是亲人名开头的那段先不进分句器：标点切句不扣尾巴（"J. Smith"），硬切只按
+        # 原文码点扣尾巴、被零宽字符撑开的名字（"小" + 零宽 + "明"）扣不住，名字没到齐前切出去的
+        # 前缀认不出来、会原样出门。扣留按折叠后的文本判断
+        self._held_names = sorted({k for k in (fold_text(n.strip()) for n in names) if k})
+        self._held_max = max((len(k) for k in self._held_names), default=0)
         self._name_hold = ""
         self._pieces: list[_Piece] = []
         self._released = 0
@@ -418,8 +420,10 @@ class LineSpeaker:
         if self._goodbye_left is not None:
             left = self._goodbye_left
             if len(text) > left:
-                # 截点按整段（含上一段扣着的簇）退到字形簇边界
-                capped = text[: grapheme_safe_cut(text, left)]
+                # 截点按「已放行 + 本段」整体退到字形簇边界（已放行的部分收不回，最多退到它的末尾）
+                taken = len(self._goodbye_taken)
+                cut = max(grapheme_safe_cut(self._goodbye_taken + text, taken + left), taken)
+                capped = text[: cut - taken]
             elif not final and left - len(text) < _GOODBYE_HOLD_WINDOW:
                 keep = grapheme_safe_cut(text, len(text) - 1)
                 capped, self._goodbye_hold = text[:keep], text[keep:]
@@ -427,6 +431,7 @@ class LineSpeaker:
         accepted = self._budget.take(capped) if capped else ""
         if self._goodbye_left is not None:
             self._goodbye_left -= len(accepted)
+            self._goodbye_taken += accepted
         if self._budget.exhausted or goodbye_cut:
             self._cut_reason = "wire_size" if self._budget.exhausted else "goodbye_cap"
         return accepted
@@ -534,7 +539,7 @@ class LineSpeaker:
                 self._est_origin = now
         else:
             self._push_tts(text, now)
-        if self._punct_names:
+        if self._held_names:
             text = self._name_hold + text
             cut = self._name_prefix_start(text)
             text, self._name_hold = text[:cut], text[cut:]
@@ -542,15 +547,15 @@ class LineSpeaker:
             self._add_clauses(self._splitter.feed(text))
 
     def _name_prefix_start(self, text: str) -> int:
-        """Start of the longest suffix of ``text`` that is a proper prefix of a punctuated family name."""
+        """Start of the longest suffix of ``text`` that is a proper prefix of a (folded) family name."""
         # 往前退到折叠后的长度超过最长名字为止：零宽字符等折叠成空的字符不占名额，退多少都算
         lo, folded_len = len(text), 0
-        while lo > 0 and folded_len <= self._punct_max:
+        while lo > 0 and folded_len <= self._held_max:
             lo -= 1
             folded_len += len(fold_text(text[lo]))
         for start in range(lo, len(text)):
             folded = fold_text(text[start:])
-            if folded and any(len(folded) < len(k) and k.startswith(folded) for k in self._punct_names):
+            if folded and any(len(folded) < len(k) and k.startswith(folded) for k in self._held_names):
                 return start
         return len(text)
 
