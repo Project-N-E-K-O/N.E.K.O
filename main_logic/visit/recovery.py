@@ -1008,20 +1008,29 @@ async def _submit_report(
         ok = False
     report.reports[visit_id] = ok
     if ok:
-        # 举报文件只在 Servers 受理后删（与改写它的各方同一把逐路径锁）
+        # 举报文件只在 Servers 受理后删（与改写它的各方同一把逐路径锁）；只删交上去的那一份——
+        # 提交期间文件可能已被换成另一份尚未送达的举报
         try:
-            await asyncio.to_thread(_unlink_locked, path)
+            await asyncio.to_thread(_unlink_same_report_locked, path, doc)
         except OSError as exc:
             logger.warning("visit recovery: report %s accepted but cannot delete it: %s", path.name, exc)
 
 
+_REPORT_IDENTITY = ("visit_id", "own_account", "own_visit_uid", "queued_at")
+
+
+def _unlink_same_report_locked(path: Path, submitted: dict) -> None:
+    with path_lock(path):
+        try:
+            current = _load_json(path)
+        except (OSError, ValueError):
+            return
+        if isinstance(current, dict) and all(current.get(k) == submitted.get(k) for k in _REPORT_IDENTITY):
+            path.unlink(missing_ok=True)
+
+
 def _report_belongs(doc: Any, visit_id: str) -> bool:
     return isinstance(doc, dict) and doc.get("visit_id") == visit_id
-
-
-def _unlink_locked(path: Path) -> None:
-    with path_lock(path):
-        path.unlink(missing_ok=True)
 
 
 def _quarantine_report(path: Path, visit_id: str) -> None:

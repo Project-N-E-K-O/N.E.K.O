@@ -151,8 +151,12 @@ def _place_cores(value: str, pattern: re.Pattern[str]) -> list[str]:
     return [m.group(0) for m in pattern.finditer(value)]
 
 
-# 门牌号后面的街名（「12 main street」→「main street」）：小写写法也算
-_STREET_AFTER_NUMBER_RE = re.compile(r"[0-9]+[A-Za-z]?\s+([A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){1,3})")
+# 以门牌号开头的值里，门牌号后面的街名（「12 main street」→「main street」）：小写写法也算。
+# 数字在值中间（「a flat with 2 cats playing」）不是门牌号
+_STREET_AFTER_NUMBER_RE = re.compile(
+    r"\s*(?:#|no\.?\s*)?[0-9]+[A-Za-z]?\s+([A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){1,3})",
+    re.IGNORECASE,
+)
 
 
 # 街名到第一个虚词为止：「2 cats and a dog」不是地址，不能把「cats and」收成敏感词
@@ -163,9 +167,9 @@ _STREET_STOPWORDS = frozenset({
 
 
 def _street_names(value: str) -> list[str]:
-    """Words after a house number in a keyword value, two to four of them (``main street``)."""
+    """Words after the house number a keyword value starts with, two to four of them (``main street``)."""
     out = []
-    for m in _STREET_AFTER_NUMBER_RE.finditer(value):
+    for m in filter(None, [_STREET_AFTER_NUMBER_RE.match(value)]):
         words = []
         for word in m.group(1).split():
             if word.lower() in _STREET_STOPWORDS:

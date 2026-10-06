@@ -398,6 +398,8 @@ def test_lowercase_street_names_after_a_house_number_are_caught():
     assert persona.sensitive_token_hits(card, "She often walks down main street.", ()) == ["main street"]
     pets = "She lives in a flat with 2 cats and a dog."
     assert persona.sensitive_token_hits(pets, "She loves cats and dogs.", ()) == []
+    playing = "She lives in a flat with 2 cats playing outside."
+    assert persona.sensitive_token_hits(playing, "Her cats playing outside is a sight.", ()) == []
 
 
 def test_capitalised_dotted_words_are_not_host_names():

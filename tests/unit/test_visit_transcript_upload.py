@@ -105,7 +105,7 @@ def _write_sealed(tmp_path, doc, visit_id=V1):
     return path
 
 
-async def _recover(tmp_path, monkeypatch):
+async def _recover(tmp_path, monkeypatch, submit=None):
     async def readable():
         return None
 
@@ -121,7 +121,7 @@ async def _recover(tmp_path, monkeypatch):
     monkeypatch.setattr(local_chars, "ensure_characters_readable", readable)
     return await visit_spool_recovery(
         chips, tu.upload_visit_transcript, config_dir=tmp_path, is_live=lambda _v: False,
-        resolve_char_name=resolve, list_char_names=names, submit_report=tu.submit_queued_report,
+        resolve_char_name=resolve, list_char_names=names, submit_report=submit or tu.submit_queued_report,
         client=FakeMemoryServer().client(),
     )
 
@@ -557,6 +557,19 @@ async def test_recovery_callback_deletes_under_the_visit_lock(tmp_path, servers)
         lock.release()
     assert await asyncio.wait_for(task, 5) is True
     assert await tu.load_report(tmp_path, V1) is None
+
+
+async def test_recovery_does_not_delete_a_report_queued_after_the_one_it_sent(tmp_path, servers, monkeypatch):
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False, queued_at=1000.0))
+
+    async def accepted_then_replaced(visit_id, doc):
+        # Servers 受理了这一份；补录随后删除之前，同一场又排进了另一份
+        await tu.delete_report(tmp_path, visit_id)
+        await tu.queue_report(tmp_path, _report_doc(include_transcript=False, queued_at=2000.0))
+        return True
+
+    await _recover(tmp_path, monkeypatch, submit=accepted_then_replaced)
+    assert (await tu.load_report(tmp_path, V1))["queued_at"] == 2000.0
 
 
 async def test_rejected_mark_only_lands_on_the_same_report(tmp_path, servers):
