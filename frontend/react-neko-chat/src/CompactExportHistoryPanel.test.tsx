@@ -66,6 +66,25 @@ describe('CompactExportHistoryPanel', () => {
     expect(props.onToggleMessage).toHaveBeenCalledWith(imageMessage.id);
   });
 
+  it('keeps nonselectable image messages accessible with selection controls open', () => {
+    const imageMessage = parseChatMessage({
+      ...message,
+      status: 'sending',
+      blocks: [{ type: 'image', url: '/media/selfie', alt: 'Selfie' }],
+    });
+    const props = createPanelProps({
+      messages: [imageMessage], previewOpen: false, visibilityState: 'open', controlsOpen: true,
+      selectedIds: new Set(), selectedCount: 0, selectableCount: 0,
+    });
+    const { container } = render(<CompactExportHistoryPanel {...props} />);
+    const bubble = container.querySelector('.compact-export-history-bubble');
+    expect(bubble).not.toHaveAttribute('role');
+    expect(bubble).not.toHaveAttribute('aria-disabled');
+    expect(screen.getByRole('button', { name: 'Save image' })).toHaveAttribute('aria-disabled', 'false');
+    fireEvent.click(bubble!);
+    expect(props.onToggleMessage).not.toHaveBeenCalled();
+  });
+
   it('shows the history height resize bar only outside preview and wires its hit-region', () => {
     const { container, rerender } = renderPanel({ previewOpen: false, visibilityState: 'open' });
     const bar = container.querySelector('.compact-export-history-resize-bar');

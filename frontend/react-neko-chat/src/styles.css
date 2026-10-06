@@ -1447,7 +1447,8 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 
 .message-block-image:hover .message-image-save,
 .message-image-save:hover,
-.message-image-save:focus-visible {
+.message-image-save:focus-visible,
+.message-image-save[aria-busy="true"] {
   opacity: 1;
   pointer-events: auto;
 }
@@ -1456,7 +1457,7 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   flex-shrink: 0;
 }
 
-.message-image-save:hover:not(:disabled) {
+.message-image-save:hover:not([aria-disabled="true"]) {
   background: rgba(24, 32, 48, 0.9);
 }
 
@@ -1465,7 +1466,7 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   outline-offset: -4px;
 }
 
-.message-image-save:disabled {
+.message-image-save[aria-disabled="true"] {
   cursor: default;
 }
 
@@ -9363,7 +9364,6 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 [data-theme="dark"] .message-link-url {
   color: #6fa8ff;
 }
-
 
 /* --- 状态块 --- */
 [data-theme="dark"] .message-block-status.tone-info {

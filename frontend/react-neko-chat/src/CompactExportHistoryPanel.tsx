@@ -1069,7 +1069,7 @@ export default function CompactExportHistoryPanel({
                         className="compact-export-history-bubble"
                         role={selectionEnabled ? 'button' : undefined}
                         aria-pressed={selectionEnabled ? selected : undefined}
-                        aria-disabled={selectionControlsInteractive ? !selectable : undefined}
+                        aria-disabled={selectionEnabled ? false : undefined}
                         tabIndex={selectionEnabled ? 0 : -1}
                         data-compact-hit-region={historyInteractive ? 'true' : undefined}
                         data-compact-hit-region-id={historyInteractive ? `history:message:${message.id}` : undefined}

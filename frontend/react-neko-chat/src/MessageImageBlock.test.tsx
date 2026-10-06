@@ -86,15 +86,21 @@ describe('saving chat images', () => {
         <MessageBlockView block={{ type: 'image', url: '/media/selfie-id' }} message={message} />
       </div>,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Save image' }));
+    const saveButton = screen.getByRole('button', { name: 'Save image' });
+    saveButton.focus();
+    fireEvent.click(saveButton);
     const saving = screen.getByRole('button', { name: 'Saving…' });
-    expect(saving).toBeDisabled();
+    expect(saving).toBeEnabled();
+    expect(saving).toHaveAttribute('aria-disabled', 'true');
+    expect(saving).toHaveFocus();
     expect(saving).toHaveAttribute('aria-busy', 'true');
     expect(parentClick).not.toHaveBeenCalled();
     fireEvent.click(saving);
     expect(fetchImage).toHaveBeenCalledTimes(1);
     await act(async () => { finish(imageResponse()); });
     expect(downloads).toHaveLength(1);
+    expect(saveButton).toHaveFocus();
+    expect(saveButton).toHaveAttribute('aria-disabled', 'false');
   });
 
   it.each(['missing', 'html', 'empty', 'cors'])('shows a retryable error for %s responses', async (kind) => {
@@ -203,7 +209,10 @@ describe('saving chat images', () => {
     const { rerender } = showImage('/api/meme/proxy-image?url=missing');
     fireEvent.error(screen.getByRole('img', { name: 'Selfie' }));
     expect(screen.getByRole('img')).toHaveAttribute('src', MEME_IMAGE_LOAD_FAILED_STICKER_URL);
-    expect(screen.getByRole('button', { name: 'Save image' })).toBeDisabled();
+    const fallbackSave = screen.getByRole('button', { name: 'Save image' });
+    expect(fallbackSave).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(fallbackSave);
+    expect(fetchImage).not.toHaveBeenCalled();
     rerender(<MessageBlockView block={{ type: 'image', url: '/media/new-selfie', alt: 'New selfie' }} message={message} />);
     expect(screen.getByRole('button', { name: 'Save image' })).toBeEnabled();
     expect(screen.getByRole('img')).toHaveAttribute('src', '/media/new-selfie');

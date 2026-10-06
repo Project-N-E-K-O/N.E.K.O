@@ -118,7 +118,7 @@ export default function MessageImageBlock({
             type="button"
             aria-label={saveLabel}
             title={saveLabel}
-            disabled={saving || showingFallback}
+            aria-disabled={saving || showingFallback}
             aria-busy={saving}
             onClick={(event) => {
               event.stopPropagation();

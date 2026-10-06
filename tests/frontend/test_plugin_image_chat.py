@@ -273,6 +273,54 @@ def test_plugin_image_can_be_saved_without_reencoding(
         context.close()
 
 
+@pytest.mark.frontend
+@pytest.mark.parametrize("surface_path", ["chat_full", "chat"])
+def test_image_save_keeps_keyboard_focus_while_pending(
+    mock_page: Page, running_server: str, surface_path: str,
+) -> None:
+    page = mock_page
+    _open_chat(page, running_server, surface_path)
+    page.evaluate(
+        """(imageUrl) => {
+            window.appendReactChatBlocks({
+                request_id: 'keyboard-image-save',
+                blocks: [{ type: 'image', url: imageUrl, alt: 'Selfie' }]
+            });
+            const originalFetch = window.fetch;
+            window.imageSaveFetchCalls = 0;
+            window.fetch = (...args) => {
+                if (args[0] !== imageUrl) return originalFetch(...args);
+                window.imageSaveFetchCalls += 1;
+                return new Promise(resolve => {
+                    window.finishImageSave = () => resolve(originalFetch(...args));
+                });
+            };
+        }""",
+        _ONE_PIXEL_PNG,
+    )
+    if surface_path == "chat":
+        page.evaluate("() => reactChatWindowHost.setCompactHistoryOpen(true)")
+    button = page.locator(".message-image-save")
+    button.wait_for(state="attached")
+    page.mouse.move(0, 0)
+    button.focus()
+    page.keyboard.press("Enter")
+    expect(button).to_have_attribute("aria-busy", "true")
+    expect(button).to_have_attribute("aria-disabled", "true")
+    expect(button).to_be_focused()
+    expect(button).to_have_css("opacity", "1")
+    page.keyboard.press("Enter")
+    assert page.evaluate("window.imageSaveFetchCalls") == 1
+    button.evaluate("element => element.blur()")
+    expect(button).to_have_css("opacity", "1")
+    button.focus()
+    with page.expect_download():
+        page.evaluate("() => window.finishImageSave()")
+    expect(button).to_have_attribute("aria-busy", "false")
+    expect(button).to_be_enabled()
+    expect(button).to_be_focused()
+
+
 def _check_image_download(page: Page, running_server: str, tmp_path: Path, surface_path: str, touch: bool) -> None:
     _open_chat(page, running_server, surface_path)
     image_data = BytesIO()
