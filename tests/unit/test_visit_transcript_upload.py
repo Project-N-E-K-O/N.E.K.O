@@ -927,3 +927,23 @@ async def test_an_unrecorded_rejection_keeps_the_round_pending(tmp_path, servers
     assert (await tu.retry_visit_once(V1)).pending is True
     assert (await tu.retry_visit_once(V1)).pending is False
     assert (await tu.load_report(tmp_path, V1))["rejected"] == "unknown_visit"
+
+
+
+async def test_an_unreadable_report_does_not_count_as_a_recorded_rejection(tmp_path, servers, monkeypatch):
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    original = tu._load_json
+
+    def locked(path):
+        if path.name == f"{V1}.json":
+            raise PermissionError("in use")
+        return original(path)
+
+    monkeypatch.setattr(tu, "_load_json", locked)
+    assert await tu.rejection_recorded(tmp_path, V1) is False
+    monkeypatch.setattr(tu, "_load_json", original)
+    assert await tu.rejection_recorded(tmp_path, V1) is False          # 读得到、但没有标记
+    await tu.set_report_rejected(tmp_path, V1, "unknown_visit")
+    assert await tu.rejection_recorded(tmp_path, V1) is True
+    await tu.delete_report(tmp_path, V1)
+    assert await tu.rejection_recorded(tmp_path, V1) is True           # 已不在队列

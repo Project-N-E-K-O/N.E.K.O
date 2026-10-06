@@ -732,9 +732,16 @@ def _set_rejected_sync(path: Path, visit_id: str, reason: str | None, expect: Ma
 
 
 async def rejection_recorded(config_dir: Path, visit_id: str) -> bool:
-    """Whether the queued report of ``visit_id`` carries its ``rejected`` marker (or is gone)."""
-    report = await load_report(config_dir, visit_id)
-    return report is None or bool(report.get("rejected"))
+    """Whether the queued report of ``visit_id`` carries its ``rejected`` marker (or is gone).
+
+    A file that exists but cannot be read right now does not count: the
+    marker may well be missing, so the caller keeps a retry pending.
+    """
+    try:
+        doc = await asyncio.to_thread(_load_json, report_path(config_dir, visit_id))
+    except (OSError, ValueError):
+        return False
+    return not _valid_report(doc, visit_id) or bool(doc.get("rejected"))
 
 
 async def set_report_rejected(
