@@ -148,6 +148,16 @@ async def test_usage_estimate_counts_history_and_output():
     assert usage["llm_input_tokens"] > 0 and usage["llm_output_tokens"] > 0
 
 
+async def test_usage_estimate_does_not_count_the_reply_as_input():
+    s = await _session()
+    s.history.append(HumanMessage(content="今天去哪儿玩"))
+    before = sp.estimate_turn_usage(s, "")["llm_input_tokens"]
+    reply = "我们去公园晒太阳吧，那里有好多鸽子和长椅可以坐。" * 4
+    s.history.append(AIMessage(content=reply))     # stream_text 把本轮回复追加在末尾
+    usage = sp.estimate_turn_usage(s, reply)
+    assert usage["llm_input_tokens"] == before and usage["llm_output_tokens"] > 0
+
+
 async def test_close_drops_the_sink_and_never_raises():
     s = await _session()
     s.set_sink(lambda _t: None)

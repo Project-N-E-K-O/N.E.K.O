@@ -22,7 +22,13 @@ import itertools
 import pytest
 
 from main_routers.visit_router import line_speaker as ls
-from utils.visit_wire import encode_msg, estimate_speech_ms, fit_text_to_wire, split_clauses, wire_size
+from utils.visit_wire import (
+    encode_msg,
+    estimate_speech_ms,
+    fit_text_to_wire,
+    split_clauses,
+    wire_size,
+)
 
 VISIT = "visit00000000000000001"
 NEUTRAL = "家里人"
@@ -223,15 +229,41 @@ def test_audio_faster_than_estimate_closes_without_tail():
     assert h.texts() == CLAUSES and h.results[0].tail_ms == 0
 
 
-def test_tts_catching_up_releases_generated_pieces_but_not_final():
+def test_emotion_tags_never_reach_tts_even_split_across_deltas():
+    h = Harness()
+    for delta in ("<ha", "ppy>今天天气真好。", "我们去公园吧！<", "/happy>你喜欢猫吗？"):
+        h.speaker.feed(delta)
+    h.speaker.llm_done()
+    spoken = "".join(h.stream.pushed)
+    assert spoken == LINE and "happy" not in spoken
+    # 阈值按真正念出的（去掉标签的）原文估时
+    assert [p.est_ms for p in h.speaker._pieces] == EST
+
+
+def test_angle_brackets_that_are_not_tags_are_still_spoken():
+    h = Harness()
+    for delta in ("我爱你 <", "3 真的。", "a < b 吗？", "看 <https://a.example", "> 吧。"):
+        h.speaker.feed(delta)
+    h.speaker.llm_done()
+    assert "".join(h.stream.pushed) == "我爱你 <3 真的。a < b 吗？看 <https://a.example> 吧。"
+
+
+def test_emotion_tag_filter_lets_a_long_unclosed_tail_through():
+    f = ls.EmotionTagFilter()
+    assert f.feed("x <") == "x "
+    assert f.feed("b" * 40) == "<" + "b" * 40          # 不可能是标签：不再扣着
+    assert f.feed("<sad") == "" and f.flush() == "<sad"
+
+
+def test_a_non_final_drain_releases_only_what_played():
     h = Harness()
     first_two = CLAUSES[0] + CLAUSES[1]
     h.speaker.feed(first_two)
     h.speaker.feed(CLAUSES[2][:1])                # 第 3 片开了个头，还没成片
     h.progress(0)
     h.t += 1
-    h.progress(900, ended=True, final=False)      # 已收到的音频播完了，LLM 还在生成
-    assert h.texts() == CLAUSES[:2] and h.results == []
+    h.progress(900, ended=True, final=False)      # 已入队的音频播空，第 2 片可能还在合成
+    assert h.texts() == CLAUSES[:1] and h.results == []
     h.speaker.feed(CLAUSES[2][1:])
     h.speaker.llm_done()
     h.t += 0.5
@@ -241,18 +273,21 @@ def test_tts_catching_up_releases_generated_pieces_but_not_final():
     assert h.texts() == CLAUSES and h.results[0].text == LINE
 
 
-def test_pieces_after_a_drain_follow_the_new_audio():
+def test_pieces_after_a_drain_keep_following_played_ms():
     h = Harness()
     h.speaker.feed(CLAUSES[0] + CLAUSES[1])
     h.speaker.feed(CLAUSES[2][:1])
     h.progress(0)
     h.t += 0.5
-    h.progress(500, ended=True, final=False)      # 音频比估时快，提前播空
-    assert h.texts() == CLAUSES[:2]
+    h.progress(500, ended=True, final=False)      # 播空：不提前放第 2 片
+    assert h.texts() == CLAUSES[:1]
     h.speaker.feed(CLAUSES[2][1:] + "好")          # 第 3 片成片、随新音频入队
-    h.t += 0.2
-    h.progress(600)
-    assert h.texts() == CLAUSES                    # 以排空处为新锚点，不再等旧估时
+    h.t += 1.0
+    h.progress(EST[0])
+    assert h.texts() == CLAUSES[:2]                # 第 2 片的音频到点才放
+    h.t += 2.0
+    h.progress(EST[0] + EST[1])
+    assert h.texts() == CLAUSES
 
 
 def test_stale_non_final_ended_after_finish_does_not_close():
@@ -442,6 +477,23 @@ def test_a_cut_in_the_middle_of_a_family_name_does_not_leak_its_prefix():
     assert "".join(h.texts()) == text
 
 
+def test_a_wire_cut_inside_a_family_name_still_fits_the_wire():
+    filler = "谢。" * 5000
+    capacity = len(Harness().speaker.feed(filler))
+    h = Harness()
+    # 只剩 1 字的余量时来了「小明」：「小」按原样量放得下，收尾换成更长的「家里人」就超了
+    accepted = h.speaker.feed(filler[:capacity - 1] + "小明同学")
+    assert accepted == filler[:capacity - 1]
+    h.progress(0)
+    h.progress(10**7, ended=True, final=True)
+    result = h.results[0]
+    assert result.trunc_reason == "wire_size" and "小" not in result.text
+    payload = {"t": "text", "v": 1, "ln": "h:1", "lp": 1, "sp": "c", "ad": "gc", "rt": "", "wu": False,
+               "final": True, "txt": result.text, "truncated": True, "i_done": result.pieces,
+               "trunc_reason": "wire_size", "tail_ms": 0}
+    assert fit_text_to_wire(payload, visit_id=VISIT) == payload          # 兜底截断未触发
+
+
 def test_stream_closed_under_us_switches_to_estimate_at_once():
     h = Harness()
     h.speaker.feed(CLAUSES[0])
@@ -534,7 +586,7 @@ async def test_drive_ticks_until_the_line_is_done():
     results = []
     speaker = ls.LineSpeaker(
         visit_id=VISIT, header=ls.LineHeader(ln="h:1", lp=1, ad="gc", rt=""), family_names=[],
-        neutral_term=NEUTRAL, voice=ls.VoiceState(enabled=True), open_stream=lambda cb: FakeStream(cb),
+        neutral_term=NEUTRAL, voice=ls.VoiceState(enabled=True), open_stream=FakeStream,
         router=ls.SpeechRouter(), clock=loop.time, on_done=results.append, start_timeout_s=0.05,
     )
     task = asyncio.create_task(ls.drive(speaker, clock=loop.time))

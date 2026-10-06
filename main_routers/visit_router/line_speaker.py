@@ -25,13 +25,17 @@ line = one :class:`SpeechStream` = one ``speech_id``:
   same prefix. The first cut finishes the stream, cancels the LLM and marks
   the line ``truncated`` (``goodbye_cap`` / ``wire_size``).
 * **TTS input is the raw text** (family names included: the audio only plays
-  at home); each subtitle piece is ``sanitize_relay_text(strip_emotion_tags(
-  clause))`` of the redacted clause.
+  at home) minus the decoration tags (``<happy>``, stripped across deltas by
+  :class:`EmotionTagFilter`, so a tag is never read aloud); each subtitle
+  piece is ``sanitize_relay_text(strip_emotion_tags(clause))`` of the
+  redacted clause, and the thresholds estimate the tag-free raw text.
 * **Release** of piece ``i`` once ``min(time since playback started,
   played_ms) >= threshold(i)``, ``threshold(i) = sum(estimate_speech_ms(raw_j)
   for j < i)`` (estimated on the raw text TTS speaks). ``ended{final:false}``
-  (TTS caught up with the LLM) releases every piece generated so far and
-  re-anchors the thresholds there; only ``ended{final:true}`` after
+  (the audio queued so far has played, the LLM is still writing) releases
+  nothing by itself -- pieces still follow ``played_ms``, since generated
+  clauses may still be waiting for synthesis -- it only pauses the stall
+  timer until new audio is queued; only ``ended{final:true}`` after
   :meth:`finish` ends the line (remaining pieces at once, ``tail_ms = 0``).
   The LLM ending only means "no new pieces".
 * **Fallbacks** -- every TTS failure is "abort first, then pace by estimate":
@@ -69,6 +73,7 @@ from config.visit_settings import (
 )
 from main_logic.visit.sanitize import (
     clean_relay_text,
+    drop_emotion_tags,
     redact_outbound_boundary,
     redact_outbound_with_spans,
     sanitize_relay_text,
@@ -95,13 +100,17 @@ class SpeechStream(Protocol):
     """
 
     @property
-    def speech_id(self) -> str: ...
+    def speech_id(self) -> str:
+        """The speech id progress reports carry."""
 
-    def push(self, delta: str) -> bool: ...
+    def push(self, delta: str) -> bool:
+        """Queue more text; False once the stream is closed."""
 
-    def finish(self) -> Union[bool, str]: ...
+    def finish(self) -> Union[bool, str]:
+        """Queue the end marker; :data:`FINISH_NO_WORKER` when no worker can take it."""
 
-    def abort(self) -> bool: ...
+    def abort(self) -> bool:
+        """Drop what is queued and stop (terminal, idempotent)."""
 
 
 OpenStream = Callable[[Callable[[int], None]], SpeechStream]
@@ -214,6 +223,32 @@ class _Callbacks:
     on_wake: Callable[[], None] = _noop
 
 
+class EmotionTagFilter:
+    """Streaming :func:`drop_emotion_tags`: an unclosed ``<...`` tail waits for the next delta.
+
+    A tail longer than any tag (``<`` + up to 33 more characters) cannot
+    become one and is let through; :meth:`flush` returns whatever is still
+    held (an unclosed ``<`` is ordinary text then).
+    """
+
+    _HOLD_MAX = 34
+
+    def __init__(self) -> None:
+        self._held = ""
+
+    def feed(self, text: str) -> str:
+        text = self._held + (text or "")
+        self._held = ""
+        cut = text.rfind("<")
+        if cut != -1 and ">" not in text[cut:] and len(text) - cut <= self._HOLD_MAX:
+            text, self._held = text[:cut], text[cut:]
+        return drop_emotion_tags(text)
+
+    def flush(self) -> str:
+        held, self._held = self._held, ""
+        return held
+
+
 class LineSpeaker:
     """Speaker of one cat line (see the module docstring)."""
 
@@ -245,6 +280,12 @@ class LineSpeaker:
             return redact_outbound_with_spans(text, family_names=names, replacement=neutral_term,
                                               partial_tail=self._closing_cut)
 
+        def budget_redact(text: str) -> str:
+            # 预算永远按「截在这里」量：末尾半个亲人名照收尾时那样换成中性称呼再量，
+            # 截点落在名字中间时最终文本也不会比核准的更长（中性称呼可能比名字前缀长）
+            return redact_outbound_with_spans(text, family_names=names, replacement=neutral_term,
+                                              partial_tail=True)[0]
+
         boundary = redact_outbound_boundary(names) if names else None
         self._closing_cut = False
         self.header = header
@@ -256,9 +297,10 @@ class LineSpeaker:
         self._start_timeout = float(start_timeout_s)
         self._stall = float(stall_s)
         self._budget = WireBudget(
-            visit_id=visit_id, header=header.wire(), redact=redact, sanitize=sanitize_relay_text,
+            visit_id=visit_id, header=header.wire(), redact=budget_redact, sanitize=sanitize_relay_text,
             clean=clean_relay_text, redact_boundary=boundary,
         )
+        self._tags = EmotionTagFilter()
         self._splitter = ClauseSplitter(
             redact=redact, holdback_chars=max((len(n) for n in names), default=1) - 1,
             redact_boundary=boundary,
@@ -267,8 +309,6 @@ class LineSpeaker:
         self._pieces: list[_Piece] = []
         self._released = 0
         self._emitted: list[str] = []
-        self._anchor_index = 0
-        self._anchor_ms = 0
         self._llm_done = False
         self._cut_reason: Optional[str] = None
         self._done = False
@@ -371,10 +411,10 @@ class LineSpeaker:
             self._release_through(len(self._pieces), PACED_AUDIO)
             self._complete(tail_ms=0, spoken=True)
         elif ended:
-            # TTS 追上了 LLM：已生成的分片都念过了，放出并以此为新锚点；之后的分片随新音频按 played_ms 放
+            # 已入队的音频播空、LLM 还在写：不凭它放字幕（已切出的分片可能还在合成），
+            # 仍按 played_ms 放；只是新音频入队之前不算停滞
             self._drained = True
-            self._release_through(len(self._pieces), PACED_AUDIO)
-            self._anchor_index, self._anchor_ms = len(self._pieces), self._played_ms
+            self._advance(now)
         else:
             self._drained = False
             self._advance(now)
@@ -439,6 +479,11 @@ class LineSpeaker:
             if self._est_origin is None:
                 self._est_origin = now
             return
+        self._push_tts(self._tags.feed(accepted), now)
+
+    def _push_tts(self, text: str, now: float) -> None:
+        if not text:
+            return
         if self._stream is None:
             if not self._open(now):
                 return
@@ -446,7 +491,7 @@ class LineSpeaker:
             return
         if self._first_push_at is None:
             self._first_push_at = now
-        if not self._stream.push(accepted):
+        if not self._stream.push(text):
             # 流被外部关掉了（worker 退出等）：音频不会再来，立刻按估时放字幕，不等停滞兜底
             logger.warning("visit line %s: speech stream closed on push, pacing by estimate", self.header.ln)
             self._to_estimate(now)
@@ -458,7 +503,7 @@ class LineSpeaker:
 
     def _open(self, now: float) -> bool:
         try:
-            stream = self._open_stream(lambda n: self._usage_chars(n))  # type: ignore[misc]
+            stream = self._open_stream(self._usage_chars)
         except Exception as exc:  # noqa: BLE001 - TTS 未就绪：本场改走估时
             logger.warning("visit line %s: speech stream unavailable: %s", self.header.ln, type(exc).__name__)
             stream = None
@@ -477,11 +522,10 @@ class LineSpeaker:
     def _add_clauses(self, clauses: Sequence[Clause]) -> None:
         for clause in clauses:
             text = sanitize_relay_text(strip_emotion_tags(clause.text))
-            self._pieces.append(_Piece(clause=clause, text=text, est_ms=estimate_speech_ms(clause.raw)))
+            self._pieces.append(_Piece(clause=clause, text=text, est_ms=estimate_speech_ms(drop_emotion_tags(clause.raw))))
 
     def _threshold(self, index: int) -> int:
-        start = min(self._anchor_index, index)
-        return self._anchor_ms + sum(p.est_ms for p in self._pieces[start:index])
+        return sum(p.est_ms for p in self._pieces[:index])
 
     def _reference_ms(self, now: float) -> Optional[int]:
         if self._mode == PACED_ESTIMATE:
@@ -523,6 +567,9 @@ class LineSpeaker:
         self._llm_done = True
         self._closing_cut = self._cut_reason is not None
         self._add_clauses(self._splitter.flush())
+        if self._mode == PACED_AUDIO:
+            # 收尾时还扣着的半个「<...」不是标签：照常念出
+            self._push_tts(self._tags.flush(), now)
         if self._mode == PACED_AUDIO and self._stream is not None and not self._stream_dead:
             outcome = self._stream.finish()
             self._finished = True
@@ -594,7 +641,7 @@ async def drive(speaker: LineSpeaker, *, clock: Callable[[], float]) -> Optional
                 try:
                     await asyncio.wait_for(wake.wait(), delay)
                 except asyncio.TimeoutError:
-                    pass
+                    pass        # 到点了：下面的 tick 处理
         speaker.tick()
     return speaker.result
 

@@ -261,10 +261,16 @@ def pop_trailing_ai_message(session: VisitSession, expected: str) -> bool:
 def estimate_turn_usage(session: VisitSession, output_text: str) -> dict:
     """Token estimate of one LLM call, for the usage record when the provider reports none.
 
-    Input = the whole history the call sent (system prompt included);
-    output = the streamed text.
+    Called right after the call: input = the history it sent (system prompt
+    included), i.e. the current history minus the reply ``stream_text``
+    appended at its end; output = the streamed text.
     """
-    sent = sum(count_tokens(_content_text(m)) for m in session.history)
+    from utils.llm_client import AIMessage
+
+    history = list(session.history)
+    if history and isinstance(history[-1], AIMessage):
+        history.pop()
+    sent = sum(count_tokens(_content_text(m)) for m in history)
     return {"llm_input_tokens": sent, "llm_output_tokens": count_tokens(output_text or "")}
 
 
