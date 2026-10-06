@@ -423,7 +423,6 @@ def test_discovery_snapshot_finishes_before_profile_write(
 def test_readonly_resolver_uses_discovery_path_cache(tmp_path, monkeypatch):
     from plugin.utils.path_resolution import PathResolutionCache
     from plugin.core import plugin_layout
-    from plugin.server.infrastructure.config_paths import get_plugin_runtime_config_path
 
     storage = tmp_path / "data"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(storage))
@@ -460,9 +459,6 @@ def test_readonly_resolver_uses_discovery_path_cache(tmp_path, monkeypatch):
         assert result["manifest_path"] == str(layout.manifest_path)
         assert result["config_path"] == str(layout.config_path)
         assert not layout.config_path.exists()
-        assert get_plugin_runtime_config_path(
-            layout.plugin_id, manifest_path=config, read_cache=cache
-        ) == layout.config_path
     assert roots == [storage]
 
 
@@ -484,6 +480,9 @@ def test_runtime_paths_use_current_storage_after_migration(tmp_path, monkeypatch
     old_layout = resolve_plugin_layout("demo", manifest.parent, read_cache=cache)
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(new_root))
     new_layout = resolve_plugin_layout("demo", manifest.parent)
+    assert config_paths.get_plugin_runtime_config_path(
+        "demo", manifest_path=manifest, read_cache=cache
+    ) == new_layout.config_path
     if operation == "materialize":
         result = module.resolve_plugin_config_from_path(
             "demo", config_path=manifest, read_cache=cache
@@ -502,3 +501,34 @@ def test_runtime_paths_use_current_storage_after_migration(tmp_path, monkeypatch
     assert not old_layout.config_path.exists()
     if operation != "lookup":
         assert new_layout.config_path.read_bytes() == manifest.read_bytes()
+
+
+@pytest.mark.plugin_unit
+def test_materialization_keeps_cached_installation_with_current_storage(tmp_path, monkeypatch):
+    from plugin.utils.path_resolution import PathResolutionCache
+
+    old_manifest = tmp_path / "old_install" / "plugin.toml"
+    new_manifest = tmp_path / "new_install" / "plugin.toml"
+    for manifest, value in ((old_manifest, "old"), (new_manifest, "new")):
+        manifest.parent.mkdir()
+        manifest.write_text(f'[plugin]\nid="demo"\n[runtime]\nsource="{value}"\n', encoding="utf-8")
+    alias = tmp_path / "selected" / "plugin.toml"
+    target = [old_manifest]
+    real_resolve = Path.resolve
+    def resolve(path, *args, **kwargs):
+        return target[0] if path == alias else real_resolve(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "resolve", resolve)
+    cache = PathResolutionCache()
+    assert cache.resolve(alias) == old_manifest
+    base_config = module.load_toml_from_file(old_manifest)
+    target[0] = new_manifest
+    storage = tmp_path / "current_storage"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(storage))
+    result = module.resolve_plugin_config_from_path(
+        "demo", config_path=alias, base_config=base_config, read_cache=cache
+    )
+    assert result["manifest_path"] == str(old_manifest)
+    runtime_path = storage / "plugins/demo/config/plugin.toml"
+    assert result["config_path"] == str(runtime_path)
+    assert runtime_path.read_bytes() == old_manifest.read_bytes()
+    assert result["effective_config"]["runtime"]["source"] == "old"

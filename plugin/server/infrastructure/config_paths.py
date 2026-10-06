@@ -6,6 +6,7 @@ from pathlib import Path
 from plugin.server.infrastructure.error_mapping import http_exception
 
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
+from plugin.sdk.shared.core.base_runtime import resolve_runtime_data_root
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.infrastructure.config_access import get_config_access
@@ -132,13 +133,14 @@ def _runtime_layout(
     manifest_path: Path | None,
     read_cache: PathResolutionCache | None,
 ) -> PluginLayout:
-    # A discovered manifest and its cache belong to one read snapshot. Without
-    # that manifest, resolve both installation and storage roots afresh.
+    # Preserve a supplied installation snapshot, but always use current storage.
+    # Without a discovered manifest, resolve installation paths afresh as well.
     if manifest_path is None:
         manifest_path = get_plugin_manifest_path(plugin_id)
         read_cache = None
     return resolve_plugin_layout(
-        plugin_id, manifest_path.parent, read_cache=read_cache
+        plugin_id, manifest_path.parent,
+        storage_root=resolve_runtime_data_root(), read_cache=read_cache,
     )
 
 
@@ -148,6 +150,7 @@ def get_plugin_runtime_config_path(
     manifest_path: Path | None = None,
     read_cache: PathResolutionCache | None = None,
 ) -> Path:
+    """Return the current runtime path, caching only installation paths."""
     return _runtime_layout(plugin_id, manifest_path, read_cache).config_path
 
 
@@ -157,9 +160,11 @@ def ensure_plugin_runtime_config(
     manifest_path: Path | None = None,
     read_cache: PathResolutionCache | None = None,
 ) -> Path:
-    # Writes must observe the current storage root, even if a caller supplies
-    # a discovery cache captured before a storage migration.
-    layout = _runtime_layout(plugin_id, manifest_path, None)
+    """Initialize current runtime storage using the supplied installation snapshot.
+
+    ``read_cache`` preserves installation paths; its cached storage root is ignored.
+    """
+    layout = _runtime_layout(plugin_id, manifest_path, read_cache)
     return ensure_plugin_layout_runtime_config(layout)
 
 

@@ -213,7 +213,9 @@ print('ok')
 """
     module_path = Path(__file__).resolve().parents[4] / "plugin/server/application/plugins/_env_budgets.py"
     child_env = dict(os.environ)
-    child_env["PYTHONPATH"] = str(Path(__file__).resolve().parents[4])
+    child_env["PYTHONPATH"] = os.pathsep.join(filter(None, (
+        str(Path(__file__).resolve().parents[4]), child_env.get("PYTHONPATH"),
+    )))
     result = subprocess.run([sys.executable, "-c", probe, str(module_path)],
                             cwd=tmp_path, env=child_env, capture_output=True,
                             text=True, timeout=120, check=True)

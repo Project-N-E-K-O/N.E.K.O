@@ -155,16 +155,20 @@ def resolve_plugin_config_from_path(
     validate_schema: bool = True,
     read_cache: PathResolutionCache | None = None,
 ) -> dict[str, object]:
+    """Materialize current runtime storage from a consistent installation snapshot.
+
+    ``read_cache`` pins installation paths, while runtime storage is resolved afresh.
+    """
     # Profile and runtime writes use the same per-plugin lock. Keeping the
     # complete synchronous read under that lock prevents an application-state
     # query from observing one file before an atomic replacement and another
-    # file after it. Materialization always resolves current paths; discovery
-    # caches must not direct writes to a former storage root.
+    # file after it. Preserve discovery's installation snapshot but resolve
+    # current runtime storage, so migration cannot direct writes to an old root.
     with get_plugin_update_lock(plugin_id):
-        manifest_path = canonical_read_path(config_path)
+        manifest_path = canonical_read_path(config_path, cache=read_cache)
         manifest_config = base_config if isinstance(base_config, dict) else load_toml_from_file(manifest_path)
         runtime_config_path = ensure_plugin_runtime_config(
-            plugin_id, manifest_path=manifest_path
+            plugin_id, manifest_path=manifest_path, read_cache=read_cache
         )
         with plugin_config_file_lock(runtime_config_path):
             runtime_config = load_toml_from_file(runtime_config_path)
