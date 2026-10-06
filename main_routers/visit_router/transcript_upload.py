@@ -476,6 +476,8 @@ class UploadResult:
     done: bool = False
     terminal: str | None = None
     retry_after_s: int | None = None
+    login_required: bool = False
+    """The owning account's Servers session is gone (not signed in / ``401``)."""
 
     @property
     def callback_value(self) -> bool | str:
@@ -541,6 +543,8 @@ def _valid_progress(doc: Mapping[str, Any]) -> tuple[int, set[int]] | None:
 async def _upload(visit_id: str, doc: dict, config_dir: Path) -> UploadResult:
     try:
         session = await cr._servers_session()
+    except cr.VisitLoginRequired:
+        return UploadResult(login_required=True)
     except cr.VisitServersError:
         return UploadResult()
     owner = doc.get("own_visit_uid")
@@ -607,6 +611,9 @@ async def _upload(visit_id: str, doc: dict, config_dir: Path) -> UploadResult:
                 return UploadResult(terminal="visit_not_started") if final else UploadResult()
             if status == 429:
                 return UploadResult(retry_after_s=cr._retry_after(body, resp))
+            if status == 401:
+                # 原账号的登录失效：文件留着，提示重新登录（附转录的举报也在等它）
+                return UploadResult(login_required=True)
             if status < 500:
                 logger.warning("visit upload %s: status=%s code=%s, kept for retry", visit_id, status, cr._diag_code(code))
             return UploadResult()
@@ -622,7 +629,10 @@ async def upload_visit_transcript(visit_id: str, upload_doc: dict) -> bool | str
     (network, 5xx, 429, ``visit_not_started{final:false}``, not signed in or
     another account signed in). Chunk progress is written into the file.
     """
-    return (await _upload(require_visit_id(visit_id), upload_doc, Path(config_dir_provider()))).callback_value
+    visit_id = require_visit_id(visit_id)
+    # 与重试轮次同一把逐场锁：分块进度的落盘与上传结清不能和另一轮交错
+    async with visit_lock(visit_id):
+        return (await _upload(visit_id, upload_doc, Path(config_dir_provider()))).callback_value
 
 
 # ── 举报队列 ───────────────────────────────────────────────────────────
@@ -956,6 +966,8 @@ class UploadRound:
     retry_after_s: int | None = None
     unavailable: str | None = None
     """Terminal reason the queued report could not record; the caller submits it in memory."""
+    login_required: bool = False
+    """The upload could not go out: the owning account's session is gone."""
 
 
 async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None = None) -> UploadRound:
@@ -992,7 +1004,8 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
     if result.done or result.terminal is not None:
         unmarked = await _settle_upload(config_dir, visit_id, sealed, result)
         return UploadRound(pending=False, unavailable=unmarked)
-    return UploadRound(pending=True, retryable=True, retry_after_s=result.retry_after_s)
+    return UploadRound(pending=True, retryable=True, retry_after_s=result.retry_after_s,
+                       login_required=result.login_required)
 
 
 _VISIT_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
@@ -1025,14 +1038,15 @@ async def retry_visit_once(
         if report is not None and report.get("rejected") and not manual:
             report = None
         report_pending = report is not None
-        login_required = False
+        # 附转录的举报在等转录：转录因登录失效传不上去时同样要提示重新登录
+        login_required = upload.login_required and report_pending and bool(report["include_transcript"])
         report_retry_after: int | None = None
         if report is not None and not (upload.pending and report["include_transcript"]):
             if upload.unavailable and not report.get("transcript_unavailable"):
                 # 原因没写进举报文件（磁盘 / 权限）：提交的这份照样带上
                 report = {**report, "transcript_unavailable": upload.unavailable}
             result = await send_report(report)
-            login_required = result.login_required
+            login_required = login_required or result.login_required
             report_retry_after = result.retry_after_s
             if await finish_report(config_dir, visit_id, result, report) or result.unknown_visit:
                 report_pending = False

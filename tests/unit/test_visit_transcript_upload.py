@@ -751,3 +751,29 @@ async def test_all_parts_without_complete_is_not_done(tmp_path, servers):
     assert (await tu.retry_visit_once(V1)).pending is False and not sealed.exists()
     # 落盘进度里全部块已受理：下次重试直接重发末块换 complete 回执，不重传整组
     assert fake.count("/api/visit/transcripts") == sent + 1
+
+
+
+async def test_a_401_on_the_transcript_asks_to_sign_in_for_a_waiting_report(tmp_path, servers):
+    fake, _ = servers
+    fake.transcript_mode = "401"
+    _write_sealed(tmp_path, _big_doc())
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=True))
+    outcome = await tu.retry_visit_once(V1, manual=True)
+    assert outcome.pending is True and outcome.login_required is True
+    assert fake.count("/api/visit/reports") == 0
+
+
+async def test_the_recovery_upload_waits_for_a_running_round(tmp_path, servers):
+    fake, _ = servers
+    sealed = _write_sealed(tmp_path, _big_doc())
+    doc = json.loads(sealed.read_text(encoding="utf-8"))
+    lock = tu.visit_lock(V1)
+    await lock.acquire()
+    try:
+        task = asyncio.ensure_future(tu.upload_visit_transcript(V1, doc))
+        await asyncio.sleep(0.05)
+        assert not task.done() and fake.count("/api/visit/transcripts") == 0     # 等另一轮结束
+    finally:
+        lock.release()
+    assert await asyncio.wait_for(task, 5) is True

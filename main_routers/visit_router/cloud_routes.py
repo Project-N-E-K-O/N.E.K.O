@@ -280,6 +280,9 @@ async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
             if upload.retryable:
                 tu.schedule_visit_retry(visit_id, config_dir=config_dir,
                                         initial_delay_s=_after_attempt(upload.retry_after_s))
+            if upload.login_required:
+                # 已排队，但转录因登录失效传不上去：提示重新登录
+                return _cloud_error(cr.VisitLoginRequired())
             return JSONResponse({"queued": True}, status_code=202)
         # 终态拒收 / 过期时 attempt_upload 已在举报文件里记下原因：重读一次带上
         doc = await tu.load_report(config_dir, visit_id) or doc

@@ -525,3 +525,13 @@ def test_an_unreadable_queued_report_does_not_block_a_new_one(env, content):
     assert resp.status_code == 200 and resp.json()["ok"] is True
     assert (reports / f"{V1}.json.invalid").read_text(encoding="utf-8") == content    # 坏的那份改名留底
     assert fake.count("/api/visit/reports") == 1
+
+
+
+def test_report_waiting_for_a_transcript_with_an_expired_login_asks_to_sign_in(env):
+    client, fake, tmp_path, _ = env
+    fake.transcript_mode = "401"
+    _write_sealed(tmp_path)
+    resp = _report(client, include_transcript=True)
+    assert resp.status_code == 409 and resp.json()["code"] == "VISIT_LOGIN_REQUIRED"
+    assert _queued(tmp_path) is not None and fake.count("/api/visit/reports") == 0

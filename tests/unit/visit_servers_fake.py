@@ -102,6 +102,8 @@ class FakeServers:
             return httpx.Response(503)
         if mode == "429":
             return httpx.Response(429, json={"code": "rate_limited", "retry_after_s": 77})
+        if mode == "401":
+            return httpx.Response(401, json={"code": "unauthorized"})
         if mode == "budget":
             return httpx.Response(413, json={"code": "transcript_budget_exceeded"})
         if mode == "parts":

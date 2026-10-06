@@ -465,8 +465,9 @@ class PersonaResult:
 
 def _clean_persona_text(raw: str, family_names: Sequence[str], lang: str | None) -> str:
     text = strip_control_chars(str(raw or "")).strip()
-    text = truncate_to_tokens(text, VISIT_PERSONA_MAX_TOKENS)
-    return redact_outbound(text, family_names=family_names, replacement=get_family_neutral_term(lang)).strip()
+    # 先整段脱敏再截 token：先截会把名字截成半截认不出；替换成的中性称呼可能比名字长，截在最后才守得住上限
+    text = redact_outbound(text, family_names=family_names, replacement=get_family_neutral_term(lang))
+    return truncate_to_tokens(text, VISIT_PERSONA_MAX_TOKENS).strip()
 
 
 def _parse_scan(raw: str) -> list[str]:
