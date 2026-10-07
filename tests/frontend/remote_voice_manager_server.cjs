@@ -76,6 +76,26 @@ function createVoiceManagerServer() {
         }
         if (url.pathname.endsWith('/overwrite')) {
             const ref = url.pathname.split('/')[4];
+            if (state.overwriteMode) {
+                const body = await read(request);
+                (state.overwriteAttempts ||= []).push(body);
+                const mode = state.overwriteMode;
+                const voice = state.voices[ref];
+                voice.overwrite_operation_id = mode === 'stale-pending' ? 'previous-operation' : 'current-operation';
+                voice._record_revision = (voice._record_revision || 0) + 1;
+                voice.overwrite_status = mode === 'rejected' ? 'failed' : mode === 'stale-pending' ? 'unknown' : 'processing';
+                if (mode === 'rejected' || mode === 'save-failure') state.updates.push(body);
+                const details = {
+                    attempt_outcome: mode === 'rejected' || mode === 'save-failure' ? 'rejected' : 'not_submitted',
+                    state_sync: mode === 'save-failure' ? 'failed' : mode === 'rejected' ? 'saved' : 'unchanged',
+                    voice_state: voiceState(ref)
+                };
+                if (state.beforeOverwriteResponse) await state.beforeOverwriteResponse();
+                return json(response, { success: false,
+                    code: mode === 'stale-pending' ? 'UPDATE_OUTCOME_UNKNOWN' : mode === 'active' ? 'OPERATION_IN_PROGRESS' :
+                        mode === 'save-failure' ? 'LOCAL_SAVE_FAILED_AFTER_UPDATE' : 'UPSTREAM_REJECTED', details
+                }, mode === 'save-failure' ? 500 : mode === 'rejected' ? 400 : 409);
+            }
             if (state.overwriteConflict) {
                 (state.rejectedUpdates ||= []).push(await read(request));
                 return json(response, { success: false, code: 'VOICE_STATE_CHANGED', details: {
@@ -90,8 +110,13 @@ function createVoiceManagerServer() {
         }
         if (url.pathname.endsWith('/overwrite_status')) {
             state.statusQueries = (state.statusQueries || 0) + 1;
-            const ref = url.pathname.split('/')[4]; if (state.voices[ref]) state.voices[ref].overwrite_status = 'completed';
-            return json(response, { success: true, status: 'completed', voice_data: state.voices[ref], details: {
+            const ref = url.pathname.split('/')[4];
+            const status = state.statusResult || 'completed';
+            if (state.voices[ref]) {
+                state.voices[ref].overwrite_status = status;
+                state.voices[ref]._record_revision = (state.voices[ref]._record_revision || 0) + 1;
+            }
+            return json(response, { success: true, status, voice_data: state.voices[ref], details: {
                 attempt_outcome: 'not_submitted', state_sync: 'saved', voice_state: voiceState(ref)
             } });
         }
