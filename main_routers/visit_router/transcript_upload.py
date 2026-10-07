@@ -1207,9 +1207,11 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         return UploadRound(pending=True, retryable=True)
     except ValueError:
         doc = None
-    owner = doc.get("own_visit_uid") if isinstance(doc, dict) else None
+    # 只信本场的文件（含本版本留着不动的新版本文件）里写的账号：别场 / 坏文件写的不算，按未知处理
+    doc_trusted = sealed_upload_doc_usable(doc, visit_id) or sealed_upload_doc_from_another_version(doc, visit_id)
+    owner = doc.get("own_visit_uid") if doc_trusted else None
     owner = owner if isinstance(owner, str) and owner else None
-    if owner is None and isinstance(doc, dict) and visit_id in _pending_owners:
+    if owner is None and doc_trusted and visit_id in _pending_owners:
         # 补录补上的归属还没写进文件：先用内存里的，顺手再补写一次
         owner = _pending_owners[visit_id]
         await _record_owner(config_dir, visit_id, owner)
@@ -1248,8 +1250,7 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         # 读不出 / 结构不对 / 别的场次或别的版本的封存文件：不直接传，交给启动补录判
         # （它能对照流水与 state.json 重封、隔离，或留给新版本）。别场 / 坏文件里写的账号不可信，
         # 归属按未知报（附转录的举报照旧等）；本场的新版本文件补录会原样留着，它写的账号可信
-        trusted = sealed_upload_doc_from_another_version(doc, visit_id)
-        return UploadRound(pending=True, owner=owner if trusted else None)
+        return UploadRound(pending=True, owner=owner)
     rejected = doc.get("rejected")
     if isinstance(rejected, str) and rejected:
         # 上一轮已终态拒收、只是原因没记进举报：不再整份重传，接着记原因、删文件

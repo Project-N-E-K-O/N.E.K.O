@@ -1800,3 +1800,16 @@ async def test_recovery_rearms_a_report_it_cannot_reread_right_now(tmp_path, ser
     assert await tu.submit_queued_report(V1, doc) is False
     # 读不了不等于没了：交给后台再核对、再交，不留到下次启动
     assert armed == [V1] and (tmp_path / "visit_reports" / f"{V1}.json").exists()
+
+
+
+async def test_an_aged_file_of_another_visit_settles_without_its_owner(tmp_path, servers):
+    doc = _big_doc(4, 10)
+    doc["request"]["visit_id"] = vid(9)                                 # 别场的文件，写着 OWN
+    _write_sealed(tmp_path, doc)
+    sealed = _spool(tmp_path) / f"{V1}.upload.json"
+    old = time.time() - 30 * 86400
+    os.utime(sealed, (old, old))
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    # 别场文件里写的账号不算：按未知结清，排着的举报照记「过期」
+    assert outcome.owner is None and tu._terminal_reasons[V1] == ("expired", None)

@@ -1132,3 +1132,35 @@ def test_a_sharing_violation_on_the_persona_file_raises_unavailable(tmp_path, mo
     monkeypatch.setattr(builtins, "open", locked_open)
     with pytest.raises(persona.PersonaUnavailable):
         store._load_sync(UID_A)
+
+
+
+def test_a_hand_edit_is_refused_when_the_card_changes_during_its_check(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    before = _file(tmp_path)
+    real = persona.persona_privacy_check
+
+    def check_while_the_card_changes(*args, **kwargs):
+        state["cards"]["A"] = CARD + "\n新加的私人内容：她把钥匙藏在门口第三块砖下面。"   # 检查期间改了卡
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(persona, "persona_privacy_check", check_while_the_card_changes)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
+    assert resp.status_code == 409 and resp.json()["code"] == "persona_card_changed"
+    assert _file(tmp_path) == before
+
+
+def test_the_gate_redacts_with_the_family_names_of_now(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    _confirm(client)
+    assert "橘色" in _file(tmp_path)["text"]
+
+    async def renamed_family():
+        return CharacterContext(family_names=FAMILY + ("橘色",), cards=dict(state["cards"]))
+
+    monkeypatch.setattr(persona._hooks, "load_context", renamed_family)   # 确认之后亲人改了昵称
+    gate = _gate(client)
+    assert gate.ok is True and "橘色" not in gate.text

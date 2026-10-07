@@ -989,8 +989,8 @@ async def persona_gate(name: str) -> PersonaGate:
             return PersonaGate(ok=False, state="unavailable", character_uid=character_uid)
         if doc is None or not doc["reviewed"]:
             return PersonaGate(ok=False, state=persona_state(doc, character_uid), character_uid=character_uid)
+        ctx = await _hooks.load_context()
         if not doc["edited"]:
-            ctx = await _hooks.load_context()
             if card_hash(ctx.card(name)) != doc["source_card_hash"]:
                 if is_generating(character_uid):
                     return PersonaGate(ok=False, state="generating", character_uid=character_uid)
@@ -1003,7 +1003,11 @@ async def persona_gate(name: str) -> PersonaGate:
             # 读盘 / 读卡期间另一个窗口点了重新生成：手里这份已不作数
             return PersonaGate(ok=False, state="generating", character_uid=character_uid)
         if _write_versions.get(character_uid, 0) == version:
-            return PersonaGate(ok=True, state="ready", character_uid=character_uid, text=doc["text"])
+            # 确认之后亲人的档案名 / 昵称可能改过：出门前按此刻的名单再替换一遍，旧确认挡不住新名字
+            text = redact_outbound(
+                doc["text"], family_names=ctx.family_names, replacement=get_family_neutral_term(_hooks.lang()),
+            )
+            return PersonaGate(ok=True, state="ready", character_uid=character_uid, text=text)
         # 读的过程中人设被写过（手写确认 / 重生成落盘）：按新的那份再判一次
     # 连着几次都碰上写入：并没有在生成，按「待确认」拒，引导去面板看最新的那份（「generating」会让前端一直等）
     return PersonaGate(ok=False, state="unreviewed", character_uid=character_uid)
@@ -1139,6 +1143,9 @@ async def put_persona(request: Request, catgirl: str = ""):
             hits = await asyncio.to_thread(persona_privacy_check, card, cleaned, ctx.family_names, scanned)
             if hits:
                 return _error(400, "persona_sensitive_overlap", hits=[hit.value for hit in hits])
+            if card_hash((await _hooks.load_context()).card(catgirl)) != card_hash(card):
+                # 检查期间卡片又改了（改卡不走人设锁）：按旧卡查过的手写不能存，面板重新提交即按新卡查
+                return _error(409, "persona_card_changed")
             if doc is None:
                 # 从没生成过就手写：清单只有规则段落，没有独立扫描
                 digest = card_hash(card)
