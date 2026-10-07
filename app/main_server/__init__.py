@@ -894,6 +894,7 @@ async def _run_shutdown_step(
     _SHUTDOWN_STEP_TASKS.add(task)
     task.add_done_callback(_forget_shutdown_step)
     timed_out = False
+    cancel_grace_seconds = _SHUTDOWN_STEP_CANCEL_GRACE_SECONDS
     while not task.done():
         remaining = None
         if deadline_monotonic is not None:
@@ -906,11 +907,13 @@ async def _run_shutdown_step(
                     "%s exceeded its shutdown deadline; cancelling it", what
                 )
                 task.cancel()
+                cancel_started = time.monotonic()
                 deadline_monotonic = (
-                    time.monotonic() + _SHUTDOWN_STEP_CANCEL_GRACE_SECONDS
+                    cancel_started + _SHUTDOWN_STEP_CANCEL_GRACE_SECONDS
                 )
                 if cancellation_budget is not None:
                     deadline_monotonic = cancellation_budget.clamp(deadline_monotonic)
+                cancel_grace_seconds = max(0.0, deadline_monotonic - cancel_started)
                 continue
         try:
             async with asyncio.timeout(remaining):
@@ -944,7 +947,7 @@ async def _run_shutdown_step(
         logger.warning(
             "%s did not stop within %.1fs after cancellation; moving on",
             what,
-            _SHUTDOWN_STEP_CANCEL_GRACE_SECONDS,
+            cancel_grace_seconds,
         )
         task.add_done_callback(_log_abandoned_shutdown_step_outcome(what))
     elif task.cancelled():
@@ -1443,7 +1446,10 @@ async def on_shutdown():
             shutdown_cancellation = await _run_shutdown_step(
                 close_voice_identity_runtime,
                 what="voice identity cleanup",
-                deadline_monotonic=time.monotonic() + 5.0,
+                # Registry cleanup scales with manager count and shields its
+                # internal work; preserve normal shutdown ordering by waiting.
+                deadline_monotonic=None,
+                cancelled_budget_seconds=_SHUTDOWN_CANCELLED_BUDGET_SECONDS,
                 pending_cancellation=shutdown_cancellation,
                 cancellation_budget=cancellation_budget,
             )
@@ -1615,7 +1621,7 @@ async def on_shutdown():
                     any_release_failed = True
                     failed_release_characters = list(releasable_names)
                     logger.warning(
-                        "Steam Auto-Cloud pre-shutdown release phase exceeded 3.0s budget; assuming all characters not fully released"
+                        "Steam Auto-Cloud pre-shutdown release phase did not complete; assuming all characters not fully released"
                     )
                     results = []
 

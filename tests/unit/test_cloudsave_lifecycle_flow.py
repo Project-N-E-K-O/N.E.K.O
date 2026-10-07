@@ -673,10 +673,11 @@ async def test_main_server_shutdown_waits_for_cloudsave_upload_without_deadline(
         await main_server.on_shutdown()
 
     assert deadlines["Steam Auto-Cloud shutdown staged snapshot upload"] is None
+    assert deadlines["voice identity cleanup"] is None
     assert all(
         deadline is not None
         for what, deadline in deadlines.items()
-        if what != "Steam Auto-Cloud shutdown staged snapshot upload"
+        if what not in ("Steam Auto-Cloud shutdown staged snapshot upload", "voice identity cleanup")
     )
 
 
@@ -1448,3 +1449,36 @@ async def test_cloudsave_budget_exceeded_logs_only_the_specific_warning():
     assert len(warning_log.call_args_list) == 1
     assert "upload exceeded 5.0s budget" in warning_log.call_args.args[0]
     assert not any("staged snapshot upload:" in str(c.args[0]) for c in info_log.call_args_list)
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_normal_shutdown_waits_for_slow_voice_cleanup():
+    """Multi-manager voice cleanup must finish before later resources close."""
+    from app import main_server
+
+    cleanup_order: list[str] = []
+    voice_finished = False
+
+    def _record(name):
+        async def _step(*_args, **_kwargs):
+            nonlocal voice_finished
+            cleanup_order.append(name)
+            if name == "voice":
+                await asyncio.sleep(5.1)
+                voice_finished = True
+            else:
+                assert voice_finished, "later cleanup raced unfinished voice cleanup"
+
+        return _step
+
+    def _cleanup():
+        assert voice_finished, "synchronous cleanup raced unfinished voice cleanup"
+        cleanup_order.append("cleanup")
+
+    with _patched_shutdown_steps(cleanup_order, _record), patch.object(
+        main_server, "cleanup", Mock(side_effect=_cleanup),
+    ):
+        await asyncio.wait_for(main_server.on_shutdown(), timeout=10.0)
+
+    assert voice_finished
+    assert cleanup_order == _SHUTDOWN_CLEANUP_ORDER

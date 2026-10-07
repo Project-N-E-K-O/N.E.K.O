@@ -609,7 +609,7 @@ def test_escape_scan_flags_bare_awaits_and_spares_protected_ones() -> None:
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize("unbounded", (False, True))
-async def test_shared_cancel_budget_caps_wait_and_grace(monkeypatch, unbounded):
+async def test_shared_cancel_budget_caps_wait_and_grace(monkeypatch, caplog, unbounded):
     """Repeated caller cancels cannot extend either a step or its grace."""
     from app import main_server
 
@@ -664,6 +664,7 @@ async def test_shared_cancel_budget_caps_wait_and_grace(monkeypatch, unbounded):
         assert observed_deadlines[0] is not None
         assert observed_deadlines == [budget.deadline, budget.deadline]
         assert child_cancelled.is_set()
+        assert "shared-budget did not stop within 0.0s after cancellation" in caplog.text
         assert not later_called, "spent shared budget must skip later async work"
     finally:
         release.set()
