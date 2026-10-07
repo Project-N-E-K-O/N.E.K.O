@@ -1069,6 +1069,9 @@ async def _resolve(name: str) -> tuple[str, CharacterContext] | JSONResponse:
     ctx = await _hooks.load_context()
     if not character_uid or ctx.card(name) is None:
         return _error(404, "unknown_catgirl")
+    if await _hooks.resolve_char_uid(name) != character_uid:
+        # 两步之间原角色改名、名字被新角色占了：不能拿原角色的人设配新角色的卡
+        return _error(409, "catgirl_changed")
     return character_uid, ctx
 
 

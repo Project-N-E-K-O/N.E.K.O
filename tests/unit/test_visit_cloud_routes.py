@@ -276,6 +276,7 @@ def test_report_failures_queue_it_and_keep_retrying(env, mode):
     doc = _queued(tmp_path)
     assert set(doc) >= set(tu.REPORT_FIELDS) and doc["own_visit_uid"] == OWN and doc["note"] == "rude"
     fake.report_mode = "ok"
+    tu._report_not_before.clear()                                        # 429 的 Retry-After 已过
     client.portal.call(tu.retry_visit_once, V1)
     assert _queued(tmp_path) is None and fake.reports[-1]["reason"] == "harassment"
 
@@ -660,3 +661,16 @@ def test_a_note_that_cannot_be_written_is_a_client_error(env):
     raw = '{"visit_id": "%s", "reason": "harassment", "note": "rude \\ud800", "include_transcript": false}' % V1
     resp = client.post("/api/visit/report", headers={**GOOD, "Content-Type": "application/json"}, content=raw)
     assert resp.status_code == 400 and resp.json()["code"] == "invalid_note" and _queued(tmp_path) is None
+
+
+
+def test_a_manual_retry_waits_for_the_reports_retry_after(env, monkeypatch):
+    client, fake, tmp_path, _ = env
+    monkeypatch.setattr(tu, "schedule_visit_retry", lambda *_a, **_k: None)
+    fake.report_mode = "429"
+    assert _report(client).status_code == 202
+    sent = fake.count("/api/visit/reports")
+    fake.report_mode = "ok"
+    resp = client.post(f"/api/visit/report/queue/{V1}", headers=GOOD, json={"action": "retry"})
+    # 这份举报自己的 Retry-After 还没到：手动重试也不重提
+    assert resp.json() == {"ok": True, "delivered": False} and fake.count("/api/visit/reports") == sent

@@ -3040,3 +3040,11 @@ async def test_a_corrupt_streams_header_owner_guards_another_accounts_report(tmp
     # 没有 state.json：归属按流水头的 OWN_A 记，另一账号的举报不带「corrupt」
     for _visit_id, doc in reports.calls:
         assert "transcript_unavailable" not in doc
+
+
+def test_a_transcript_line_that_cannot_be_written_is_corrupt():
+    from main_logic.visit import recovery
+
+    line = {"lp": 1, "side": "host", "from": "own_cat", "ts": 1.0, "text": "ok", "truncated": False}
+    assert recovery._valid_line(line) is True
+    assert recovery._valid_line({**line, "text": "x" + chr(0xD800)}) is False

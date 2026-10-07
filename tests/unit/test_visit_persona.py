@@ -1418,3 +1418,18 @@ def test_a_persona_file_with_a_lone_surrogate_counts_as_malformed(tmp_path, fiel
         value if field == "text" else other_text, "0" * 64, value if field == "private_sections" else "[]", "0" * 64)
     path.write_text(raw, encoding="utf-8")                                # 文件里是转义的孤立代理字符
     assert store._load_sync(UID_A) is None
+
+
+def test_reading_a_persona_is_refused_when_the_name_moves_meanwhile(env, monkeypatch):
+    client, *_ = env
+    _generate(client)
+    real = persona._hooks.resolve_char_uid
+    calls = []
+
+    async def moved(name):
+        calls.append(name)
+        return await real(name) if len(calls) == 1 else "d" * 32
+
+    monkeypatch.setattr(persona._hooks, "resolve_char_uid", moved)
+    resp = client.get("/api/visit/persona?catgirl=A", headers=GOOD)
+    assert resp.status_code == 409 and resp.json()["code"] == "catgirl_changed"

@@ -1956,3 +1956,16 @@ async def test_an_unreadable_visit_state_defers_the_upload(tmp_path, servers, mo
 def test_a_queued_report_with_a_non_finite_timestamp_is_malformed():
     assert tu._valid_report(_report_doc(queued_at=float("nan")), V1) is False
     assert tu._valid_report(_report_doc(), V1) is True
+
+
+def test_a_queued_report_with_an_unwritable_note_is_malformed():
+    assert tu._valid_report(_report_doc(note="x" * 10000), V1) is False
+    assert tu._valid_report(_report_doc(note=chr(0xD800)), V1) is False
+    assert tu._valid_report(_report_doc(note=None), V1) is True
+
+
+async def test_a_new_report_is_not_held_by_the_abandoned_ones_retry_after(tmp_path, servers):
+    old = _report_doc(queued_at=1000.0)
+    tu._note_report_retry_after(old, 5000)
+    assert tu.report_deferred_s(V1, old) > 4900
+    assert tu.report_deferred_s(V1, _report_doc(queued_at=2000.0)) == 0      # 换了一份举报

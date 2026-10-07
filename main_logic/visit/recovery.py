@@ -191,9 +191,18 @@ def _valid_line(record: dict) -> bool:
         and record.get("side") in ("host", "guest")
         and record.get("from") in ("own_cat", "peer_cat", "own_human", "peer_human")
         and _number(record.get("ts")) is not None
-        and isinstance(record.get("text"), str)
+        and isinstance(record.get("text"), str) and _utf8_ok(record["text"])
         and isinstance(record.get("truncated"), bool)
     )
+
+
+def _utf8_ok(text: str) -> bool:
+    # JSON 里转义的孤立代理字符解析得出字符串，却编不成 UTF-8：上传时编码失败、被当成本地错误一直重试
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def build_upload_doc(

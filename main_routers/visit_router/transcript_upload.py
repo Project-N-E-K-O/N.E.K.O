@@ -61,6 +61,7 @@ import httpx
 
 from config.visit_settings import (
     VISIT_REPORTS_DIRNAME,
+    VISIT_REPORT_NOTE_MAX_CHARS,
     VISIT_REPORT_STALE_S,
     VISIT_SPOOL_DIRNAME,
     VISIT_SPOOL_RETENTION_DAYS,
@@ -773,7 +774,21 @@ def _valid_report(doc: Any, visit_id: str) -> bool:
         and any(isinstance(doc.get(k), str) and doc.get(k) for k in ("own_account", "own_visit_uid"))
         # queued_at 是举报的身份字段之一：NaN 与自己都不相等，同一份举报会被认成换了一份
         and _finite_or_absent(doc.get("queued_at"))
+        # 与收举报时同一套备注检查：旧版 / 改坏的文件里写不进请求的备注会让每次提交都在本地出错
+        and _valid_note(doc.get("note"))
     )
+
+
+def _valid_note(note: Any) -> bool:
+    if note is None:
+        return True
+    if not isinstance(note, str) or len(note) > VISIT_REPORT_NOTE_MAX_CHARS:
+        return False
+    try:
+        note.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _finite_or_absent(value: Any) -> bool:
@@ -980,8 +995,32 @@ async def send_report(doc: Mapping[str, Any]) -> ReportResult:
     if resp.status_code == 401:
         return ReportResult(login_required=True, attempted=True)
     if resp.status_code == 429:
-        return ReportResult(attempted=True, retry_after_s=cr._retry_after(body, resp))
+        retry_after = cr._retry_after(body, resp)
+        _note_report_retry_after(doc, retry_after)
+        return ReportResult(attempted=True, retry_after_s=retry_after)
     return ReportResult(attempted=True)
+
+
+_report_not_before: dict[str, tuple[float, Any]] = {}
+"""visit_id -> (monotonic deadline, ``queued_at`` of the report that got the ``Retry-After``)."""
+
+
+def _note_report_retry_after(doc: Mapping[str, Any], retry_after_s: int | None) -> None:
+    visit_id = doc.get("visit_id")
+    if retry_after_s and isinstance(visit_id, str):
+        _report_not_before[visit_id] = (time.monotonic() + retry_after_s, doc.get("queued_at"))
+
+
+def report_deferred_s(visit_id: str, doc: Mapping[str, Any]) -> float:
+    """Seconds left before this queued report may be resent (its own ``Retry-After``); 0 when none.
+
+    Keyed to the report's ``queued_at``: a deadline of an abandoned report
+    does not hold back the one queued after it.
+    """
+    noted = _report_not_before.get(visit_id)
+    if noted is None or noted[1] != doc.get("queued_at"):
+        return 0.0
+    return max(0.0, noted[0] - time.monotonic())
 
 
 async def submit_queued_report(visit_id: str, report_doc: dict) -> bool:
@@ -1429,7 +1468,11 @@ async def retry_visit_once(
         login_required = upload.login_required and report_pending and bool(report["include_transcript"])
         report_retry_after: int | None = None
         rejected_again = False
-        if report is not None and not (upload.pending and report["include_transcript"]):
+        report_wait = report_deferred_s(visit_id, report) if report is not None else 0.0
+        if report is not None and report_wait > 0 and not (upload.pending and report["include_transcript"]):
+            # 这份举报自己的 Retry-After 还没到（手动重试也一样）：这一轮不重提，按剩余时间再来
+            report_retry_after = math.ceil(report_wait)
+        elif report is not None and not (upload.pending and report["include_transcript"]):
             if upload.unavailable and report["include_transcript"] and not report.get("transcript_unavailable"):
                 # 原因还没在举报文件里（之前没写成，或是转录先于举报结清、原因只在内存里）：先补写进文件，
                 # 写不成提交的这份也照样带上
@@ -1488,6 +1531,7 @@ def _reset_for_tests() -> None:
     _not_before.clear()
     _upload_not_before.clear()
     _upload_deadline_owner.clear()
+    _report_not_before.clear()
     _wakeups.clear()
     _settled_leftovers.clear()
 
@@ -1626,6 +1670,7 @@ def schedule_visit_retry(visit_id: str, *, config_dir: Path | None = None,
             _wakeups.pop(visit_id, None)
             _upload_not_before.pop(visit_id, None)
             _upload_deadline_owner.pop(visit_id, None)
+            _report_not_before.pop(visit_id, None)
 
     task.add_done_callback(_done)
     return task
