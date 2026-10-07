@@ -775,3 +775,9 @@ def test_a_place_name_after_an_address_qualifier():
 def test_a_descriptive_word_after_with_is_not_a_place():
     assert "Garden" not in persona.extract_sensitive_tokens("address: House with Garden", [])
     assert "Broadway" in persona.extract_sensitive_tokens("address: Apartment near Broadway", [])
+
+
+
+def test_sentence_punctuation_after_a_one_word_value_is_not_part_of_it():
+    assert persona.sensitive_token_hits("LINE: alicefoo.", "my line is alicefoo too", []) == ["alicefoo"]
+    assert persona.sensitive_token_hits("address: Broadway.", "we met on Broadway today", []) == ["Broadway"]

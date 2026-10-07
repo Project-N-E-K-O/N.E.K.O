@@ -365,7 +365,10 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
         found.extend(_place_cores(m.group(0), _ROAD_CORE_RE))
     for pattern in (_CJK_KEYWORD_VALUE_RE, _LATIN_KEYWORD_VALUE_RE):
         for m in pattern.finditer(text):
-            value = m.group("value").strip()
+            # 值末尾的句读不属于值本身（「LINE: alicefoo.」）：留着人设句中复述的 alicefoo 就对不上
+            value = m.group("value").strip().rstrip(".,!?;:").rstrip()
+            if not value:
+                continue
             found.append(value)
             found.extend(_place_cores(value, _ROAD_CORE_RE))
             found.extend(_latin_phrases(value))
