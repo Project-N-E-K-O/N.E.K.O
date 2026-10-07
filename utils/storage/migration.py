@@ -698,15 +698,19 @@ def _rollback_publish_or_require_recovery(
 
 
 def _remove_completed_transaction_leftover(payload: dict[str, Any] | None) -> None:
-    """Retry removing a completed migration's transaction directory.
+    """Retry removing a finished migration's transaction directory.
 
-    Completion only logs a failed removal (a file in ``backup`` may be locked
-    on Windows), and a completed checkpoint is never run again, so without
-    this the overwritten original target could stay under ``.smtx`` forever.
+    Completion, and the cleanup after a PREFLIGHT/COPYING failure, only log a
+    failed removal (a file may be locked on Windows), and a completed or
+    failed checkpoint is never run again, so without this the overwritten
+    original target or a staged copy could stay under ``.smtx`` forever.
+    A failed checkpoint's transaction is removed only while its backup is
+    empty: original target data in there is never thrown away.
     """
     if not isinstance(payload, dict):
         return
-    if str(payload.get("status") or "").strip().lower() != STORAGE_MIGRATION_STATUS_COMPLETED:
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in {STORAGE_MIGRATION_STATUS_COMPLETED, STORAGE_MIGRATION_STATUS_FAILED}:
         return
     raw_target_root = str(payload.get("target_root") or "").strip()
     txid = str(payload.get("txid") or "").strip()
@@ -714,8 +718,13 @@ def _remove_completed_transaction_leftover(payload: dict[str, Any] | None) -> No
         return
     try:
         transaction_root = _transaction_path(normalize_runtime_root(raw_target_root), txid)
-        if os.path.lexists(transaction_root):
-            _remove_transaction(transaction_root)
+        if not os.path.lexists(transaction_root):
+            return
+        if status == STORAGE_MIGRATION_STATUS_FAILED:
+            backup_root = transaction_root / "backup"
+            if os.path.lexists(backup_root) and any(backup_root.iterdir()):
+                return
+        _remove_transaction(transaction_root)
     except Exception as exc:
         logger.warning("Failed to remove leftover storage migration transaction: %s", exc)
 

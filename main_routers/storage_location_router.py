@@ -69,6 +69,7 @@ from utils.storage_migration import (
     MIGRATED_RUNTIME_ENTRY_NAMES,
     STORAGE_MIGRATION_STATUS_COMPLETED,
     STORAGE_MIGRATION_STATUS_FAILED,
+    StorageMigrationError,
     classify_entry_no_follow,
     copy_evidence_entries,
     create_pending_storage_migration,
@@ -1667,20 +1668,38 @@ def _cleanup_retained_runtime_root(
     # target only has to still hold a real entry of the copied kind: running
     # the app on it since is the normal case and does not make the old copy
     # worth keeping, but a link (even a dangling one) or a different kind of
-    # entry is no longer that copy.
-    for entry_name, proof in proved_entries:
+    # entry is no longer that copy. An entry that fails any check -- or
+    # cannot be read right now -- is simply kept and reported among the
+    # remaining entries; one bad entry must not block cleaning the others.
+    def _proof_still_holds(entry_name: str, proof: dict) -> bool:
         source_entry = retained_path / entry_name
         target_entry = normalized_target / entry_name
         target_manifest = proof.get("target_manifest")
         expected_kind = target_manifest.get("kind") if isinstance(target_manifest, dict) else None
-        if (
-            not os.path.lexists(source_entry)
-            or classify_entry_no_follow(target_entry) != expected_kind
-            or snapshot_runtime_entry(source_entry) != proof.get("source_manifest")
-        ):
-            raise ValueError(f"保留目录条目证据已变化，拒绝清理: {entry_name}")
+        try:
+            return (
+                os.path.lexists(source_entry)
+                and classify_entry_no_follow(target_entry) == expected_kind
+                and snapshot_runtime_entry(source_entry) == proof.get("source_manifest")
+            )
+        except (StorageMigrationError, OSError):
+            return False
+
+    proved_entries = [
+        (entry_name, proof)
+        for entry_name, proof in proved_entries
+        if _proof_still_holds(entry_name, proof)
+    ]
 
     def _legacy_entry_matches(entry_name: str) -> bool:
+        try:
+            return _legacy_entry_matches_unchecked(entry_name)
+        except (StorageMigrationError, OSError):
+            # Unreadable now (an app writing to the target, a locked file):
+            # keep the entry and report it instead of failing everything.
+            return False
+
+    def _legacy_entry_matches_unchecked(entry_name: str) -> bool:
         retained_entry = retained_path / entry_name
         retained_manifest = snapshot_runtime_entry(retained_entry)
         target_manifest = snapshot_runtime_entry(normalized_target / entry_name)
@@ -1710,7 +1729,13 @@ def _cleanup_retained_runtime_root(
         entry_name for entry_name in legacy_entries if _legacy_entry_matches(entry_name)
     ]
     for entry_name in [name for name, _proof in proved_entries] + legacy_entries:
-        remove_runtime_entry(retained_path / entry_name)
+        try:
+            remove_runtime_entry(retained_path / entry_name)
+        except (StorageMigrationError, OSError) as exc:
+            # A file locked by an antivirus scan or Explorer preview: what
+            # is left of the entry stays and shows up in remaining_entries,
+            # so the user knows what to finish by hand.
+            logger.warning("Retained root cleanup kept %s: %s", entry_name, exc)
 
     # The anchor root holds more than runtime data (state, cloud saves) and
     # always stays. Any other retained root goes once emptied; files the user

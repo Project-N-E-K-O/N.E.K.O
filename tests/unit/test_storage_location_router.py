@@ -3077,8 +3077,10 @@ def test_storage_location_cleanup_rejects_changed_copy_evidence(tmp_path):
             json={"retained_root": str(source_root)},
         )
 
-    assert cleanup_response.status_code == 500
-    assert cleanup_response.json()["error_code"] == "retained_source_cleanup_failed"
+    # The changed entry is kept and reported, not deleted.
+    assert cleanup_response.status_code == 409
+    assert cleanup_response.json()["error_code"] == "retained_source_cleanup_incomplete"
+    assert cleanup_response.json()["remaining_entries"] == ["config"]
     assert (source_root / "config" / "characters.json").read_text(encoding="utf-8") == "changed!"
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "original"
 
@@ -3137,6 +3139,73 @@ def _migrate_config_then_replace_target(tmp_path, replace_target):
             json={"retained_root": str(source_root)},
         )
     return cleanup_response, source_root
+
+
+def _migrate_config_and_memory(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "memory").mkdir(parents=True)
+    (source_root / "memory" / "recent.json").write_text("[]", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    return source_root, target_root
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_an_entry_that_fails_to_delete(tmp_path, monkeypatch):
+    """A file locked mid-delete keeps that entry; the others are still cleaned."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    original_remove = storage_location_router_module.remove_runtime_entry
+
+    def _locked_memory(path):
+        if Path(path).name == "memory":
+            raise PermissionError(32, "the file is being used by another process")
+        return original_remove(path)
+
+    monkeypatch.setattr(storage_location_router_module, "remove_runtime_entry", _locked_memory)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 409, cleanup_response.json()
+    assert cleanup_response.json()["remaining_entries"] == ["memory"]
+    assert not (source_root / "config").exists()
+    assert (source_root / "memory" / "recent.json").is_file()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_an_entry_that_cannot_be_read(tmp_path, monkeypatch):
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    original_snapshot = storage_location_router_module.snapshot_runtime_entry
+
+    def _unreadable_memory(path):
+        if Path(path) == source_root / "memory":
+            raise PermissionError(32, "the file is being used by another process")
+        return original_snapshot(path)
+
+    monkeypatch.setattr(storage_location_router_module, "snapshot_runtime_entry", _unreadable_memory)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 409, cleanup_response.json()
+    assert cleanup_response.json()["remaining_entries"] == ["memory"]
+    assert not (source_root / "config").exists()
+    assert (source_root / "memory" / "recent.json").is_file()
 
 
 @pytest.mark.unit
@@ -3330,7 +3399,8 @@ def test_storage_location_cleanup_keeps_source_when_target_changed_kind(tmp_path
         tmp_path, _replace_with_file
     )
 
-    assert cleanup_response.status_code == 500
+    assert cleanup_response.status_code == 409
+    assert cleanup_response.json()["remaining_entries"] == ["config"]
     assert (source_root / "config" / "characters.json").read_text(encoding="utf-8") == "original"
 
 
@@ -3346,7 +3416,8 @@ def test_storage_location_cleanup_keeps_source_when_target_is_a_dangling_link(tm
         tmp_path, _replace_with_dangling_link
     )
 
-    assert cleanup_response.status_code == 500
+    assert cleanup_response.status_code == 409
+    assert cleanup_response.json()["remaining_entries"] == ["config"]
     assert (source_root / "config" / "characters.json").read_text(encoding="utf-8") == "original"
 
 

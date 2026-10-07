@@ -1882,3 +1882,64 @@ def test_status_migration_payload_carries_what_the_maintenance_view_reads(tmp_pa
     assert migration["txid"] == checkpoint["txid"]
     # The prefix the view shows is the transaction directory that exists.
     assert (target_root / ".smtx" / migration["txid"][:12] / "backup").is_dir()
+
+
+@pytest.mark.unit
+def test_failed_staging_leftover_is_removed_on_next_launch(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    _write_memory_tree(source_root)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_copy = storage_migration_module._copy_runtime_entry
+    original_remove = storage_migration_module._remove_transaction
+    copies = 0
+
+    def _fail_second_copy(source_path, target_path):
+        nonlocal copies
+        copies += 1
+        if copies == 2:
+            raise StorageMigrationError("copy_failed", "simulated copy failure")
+        return original_copy(source_path, target_path)
+
+    def _locked(_transaction_root):
+        raise OSError("simulated locked staged file")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _fail_second_copy)
+    monkeypatch.setattr(storage_migration_module, "_remove_transaction", _locked)
+    result = run_pending_storage_migration(config_manager)
+    assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_FAILED
+    assert list((target_root / ".smtx").glob("*/stage/config"))
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", original_copy)
+    monkeypatch.setattr(storage_migration_module, "_remove_transaction", original_remove)
+    later = run_pending_storage_migration(config_manager)
+
+    assert later["attempted"] is False
+    assert not (target_root / ".smtx").exists()
+
+
+@pytest.mark.unit
+def test_failed_checkpoint_never_drops_a_non_empty_backup(tmp_path):
+    from utils.storage_migration import _remove_completed_transaction_leftover
+
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    txid = "0123456789abcdef0123456789abcdef"
+    backup_entry = target_root / ".smtx" / txid[:12] / "backup" / "config"
+    backup_entry.mkdir(parents=True)
+    (backup_entry / "characters.json").write_text("original", encoding="utf-8")
+
+    _remove_completed_transaction_leftover(
+        {"status": "failed", "target_root": str(target_root), "txid": txid}
+    )
+
+    assert (backup_entry / "characters.json").read_text(encoding="utf-8") == "original"
