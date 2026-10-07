@@ -84,11 +84,7 @@ class TurnMixin:
         self._tts_done_pending_until_ready = False
         # 新一轮开始：清空上一轮 AI 文本累加器（即使上轮 turn end 已清过，
         # proactive abort 等异常路径可能漏清，新轮次起点重置最稳）
-        self._current_ai_turn_text = ''
-        self._current_ai_turn_id = ''
-        self._current_ai_turn_started_at = 0.0
-        self._current_ai_turn_type = None
-        self._current_ai_turn_client_owned = False
+        self._reset_ai_turn_buffer()
         self._discarded_turn_open = False
 
         await self.send_user_activity()
@@ -328,6 +324,14 @@ class TurnMixin:
         else:
             self._activity_tracker.on_ai_message(text=text, now=now)
 
+    def _reset_ai_turn_buffer(self) -> None:
+        """Clear buffered AI text and its identity without changing discard state."""
+        self._current_ai_turn_text = ''
+        self._current_ai_turn_id = ''
+        self._current_ai_turn_started_at = 0.0
+        self._current_ai_turn_type = None
+        self._current_ai_turn_client_owned = False
+
     def _flush_ai_turn_text_to_tracker(self, *, turn_type: str | None = None) -> None:
         """Flush the per-turn AI text buffer into conversation turn sinks.
 
@@ -357,12 +361,8 @@ class TurnMixin:
         started_at = float(getattr(self, "_current_ai_turn_started_at", 0.0) or 0.0)
         client_owned = getattr(self, "_current_ai_turn_client_owned", False)
         self._note_ai_turn(text=ai_text or None)
-        self._current_ai_turn_text = ''
+        self._reset_ai_turn_buffer()
         self._discarded_turn_open = False
-        self._current_ai_turn_id = ''
-        self._current_ai_turn_started_at = 0.0
-        self._current_ai_turn_type = None
-        self._current_ai_turn_client_owned = False
         self._publish_ai_message_to_plugin_bus(
             ai_text, turn_type, turn_id=turn_id, started_at=started_at,
             client_owned=client_owned,
@@ -1037,11 +1037,7 @@ class TurnMixin:
             logger.info("[%s] session takeover active: dropping ordinary realtime response completion", self.lanlan_name)
             await self._clear_tts_pipeline()
             self._pending_turn_meta = None
-            self._current_ai_turn_text = ""
-            self._current_ai_turn_id = ""
-            self._current_ai_turn_started_at = 0.0
-            self._current_ai_turn_type = None
-            self._current_ai_turn_client_owned = False
+            self._reset_ai_turn_buffer()
             self._discarded_turn_open = False
             self._active_text_request_id = None
             return
@@ -1292,11 +1288,7 @@ class TurnMixin:
                 # stays open until a turn end: should this reply's close be
                 # taken over now, the close must still send one.
                 self._discarded_turn_open = True
-            self._current_ai_turn_text = ''
-            self._current_ai_turn_id = ''
-            self._current_ai_turn_started_at = 0.0
-            self._current_ai_turn_type = None
-            self._current_ai_turn_client_owned = False
+            self._reset_ai_turn_buffer()
             if self.sync_message_queue:
                 self.sync_message_queue.put({
                     'type': 'system',
