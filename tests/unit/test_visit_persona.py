@@ -1164,3 +1164,23 @@ def test_the_gate_redacts_with_the_family_names_of_now(env, monkeypatch):
     monkeypatch.setattr(persona._hooks, "load_context", renamed_family)   # 确认之后亲人改了昵称
     gate = _gate(client)
     assert gate.ok is True and "橘色" not in gate.text
+
+
+
+def test_the_gate_keeps_the_token_cap_after_redacting_new_names(env, monkeypatch):
+    from utils.tokenize import count_tokens
+
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    _confirm(client)
+    long_text = "你是{LANLAN_NAME}。" + "阿喵喜欢晒太阳。" * 400               # 接近上限、到处是「阿喵」
+    long_text = persona.truncate_to_tokens(long_text, persona.VISIT_PERSONA_MAX_TOKENS)
+    client.portal.call(persona.store().save, UID_A, {**_file(tmp_path), "text": long_text})
+
+    async def renamed_family():
+        return CharacterContext(family_names=FAMILY + ("阿喵",), cards=dict(state["cards"]))
+
+    monkeypatch.setattr(persona._hooks, "load_context", renamed_family)
+    gate = _gate(client)
+    assert gate.ok is True and "阿喵" not in gate.text
+    assert count_tokens(gate.text) <= persona.VISIT_PERSONA_MAX_TOKENS

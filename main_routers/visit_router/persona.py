@@ -1003,10 +1003,9 @@ async def persona_gate(name: str) -> PersonaGate:
             # 读盘 / 读卡期间另一个窗口点了重新生成：手里这份已不作数
             return PersonaGate(ok=False, state="generating", character_uid=character_uid)
         if _write_versions.get(character_uid, 0) == version:
-            # 确认之后亲人的档案名 / 昵称可能改过：出门前按此刻的名单再替换一遍，旧确认挡不住新名字
-            text = redact_outbound(
-                doc["text"], family_names=ctx.family_names, replacement=get_family_neutral_term(_hooks.lang()),
-            )
+            # 确认之后亲人的档案名 / 昵称可能改过：出门前按此刻的名单再替换一遍，旧确认挡不住新名字。
+            # 与生成路径同一顺序：替换成的中性称呼可能比名字长，替换后再守一次 token 上限
+            text = _clean_persona_text(doc["text"], ctx.family_names, _hooks.lang())
             return PersonaGate(ok=True, state="ready", character_uid=character_uid, text=text)
         # 读的过程中人设被写过（手写确认 / 重生成落盘）：按新的那份再判一次
     # 连着几次都碰上写入：并没有在生成，按「待确认」拒，引导去面板看最新的那份（「generating」会让前端一直等）
