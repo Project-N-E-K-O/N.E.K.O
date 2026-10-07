@@ -261,7 +261,7 @@ def _qualified_places(words: list[str]) -> list[str]:
         after = cleaned[i + 1] if i + 1 < len(cleaned) else ""
         if (word[:1].isupper() and len(word) >= _TOKEN_MIN_CHARS
                 and word.lower() not in _STREET_STOPWORDS | _GENERIC_DWELLING_WORDS
-                and before in _PLACE_PREPOSITIONS
+                and before in _PLACE_PREPOSITIONS | _GENERIC_DWELLING_WORDS
                 and not after[:1].isupper()):
             out.append(word)
     return out
@@ -785,6 +785,11 @@ async def _regenerate(name: str, character_uid: str, started_version: int) -> No
             _errors[character_uid] = result.error or "llm_unavailable"
             return
         async with persona_lock(character_uid):
+            if await _hooks.resolve_char_uid(name) != character_uid:
+                # 生成期间角色被删除（或改了名）：不再给它写人设，否则删除角色时清掉的人设文件又被建回来
+                _errors[character_uid] = "unknown_catgirl"
+                logger.info("visit persona: character gone during regeneration, result dropped")
+                return
             if _write_versions.get(character_uid, 0) != started_version:
                 # 开始生成之后人设被写过（另一个窗口的手写确认，哪怕它在开始前就已拿着锁）：
                 # 不拿生成结果覆盖它

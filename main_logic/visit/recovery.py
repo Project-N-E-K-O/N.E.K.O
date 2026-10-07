@@ -848,7 +848,9 @@ async def _upload_pending(
             pending.add(visit_id)
         else:
             # 流水坏了、也没有有效的封存文件：这场转录再也传不上去，排队的举报记下原因
-            await _mark_report_transcript_unavailable(config_dir, visit_id, "corrupt", report)
+            # （归属取 state.json 记的账号：共用电脑上另一账号的举报不记）
+            await _mark_report_transcript_unavailable(
+                config_dir, visit_id, "corrupt", report, owner=_owner_or_none(owner))
     for visit_id in sorted(sealed):
         if live(visit_id):
             # 在飞场次的转录还没传：它排队的举报也不能先交
@@ -877,7 +879,8 @@ async def _upload_pending(
             if not await _drop_corrupt_sealed(spool_dir, visit_id):
                 pending.add(visit_id)
             else:
-                await _mark_report_transcript_unavailable(config_dir, visit_id, "corrupt", report)
+                await _mark_report_transcript_unavailable(
+                    config_dir, visit_id, "corrupt", report, owner=await _state_owner(config_dir, visit_id))
             continue
         if visit_id not in stream_checked:
             matches, state_owner = await _sealed_matches_state(config_dir, visit_id, doc)
@@ -887,7 +890,8 @@ async def _upload_pending(
                 if not await _drop_corrupt_sealed(spool_dir, visit_id):
                     pending.add(visit_id)
                 else:
-                    await _mark_report_transcript_unavailable(config_dir, visit_id, "corrupt", report)
+                    await _mark_report_transcript_unavailable(
+                        config_dir, visit_id, "corrupt", report, owner=state_owner)
                 continue
             if doc.get("own_visit_uid") is None and state_owner is not None:
                 # 旧版本封出来的无主文件：用本场 state.json 记的账号补上，否则只认账号的上传回调
@@ -949,6 +953,15 @@ async def _upload_pending(
         # 该场转录上传成功（或终态拒收、原因已记进举报）后，接着提交它排队的举报
         await _submit_report(config_dir, visit_id, submit_report, report)
     return pending
+
+
+async def _state_owner(config_dir: Path, visit_id: str) -> str | None:
+    """``own_uid`` recorded in the visit's ``state.json``; None when absent or unreadable."""
+    try:
+        state = await VisitSpool(config_dir, visit_id).read_state()
+    except (OSError, ValueError):
+        return None
+    return _owner_or_none(state.get("own_uid")) if state else None
 
 
 async def _drop_corrupt_sealed(spool_dir: Path, visit_id: str) -> bool:

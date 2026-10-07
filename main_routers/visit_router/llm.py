@@ -21,11 +21,15 @@ bounded by an output token budget and a timeout; the caller bounds the input
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
+
+_ACLOSE_TIMEOUT_S = 5.0
+"""Upper bound on closing the client after a call (it may run while that call is being cancelled)."""
 
 OneShotLLM = Callable[[str], Awaitable[str]]
 """Prompt in, reply text out; raises on any failure (no client, timeout, empty reply)."""
@@ -64,8 +68,9 @@ async def one_shot(prompt: str, *, max_tokens: int, timeout: float, model_type: 
         raise VisitLLMUnavailable("call failed") from None
     finally:
         try:
-            await llm.aclose()
-        except Exception as exc:  # noqa: BLE001 - 关闭失败不影响已拿到的结果
+            # 限时：调用超时被取消后还卡在关闭上，外层的 wait_for 会一直等这段清理
+            await asyncio.wait_for(llm.aclose(), _ACLOSE_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001 - 关闭失败 / 超时不影响已拿到的结果
             logger.debug("visit llm: aclose failed: %s", type(exc).__name__)
     content = getattr(resp, "content", None)
     text = content if isinstance(content, str) else ""

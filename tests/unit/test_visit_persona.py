@@ -781,3 +781,26 @@ def test_a_descriptive_word_after_with_is_not_a_place():
 def test_sentence_punctuation_after_a_one_word_value_is_not_part_of_it():
     assert persona.sensitive_token_hits("LINE: alicefoo.", "my line is alicefoo too", []) == ["alicefoo"]
     assert persona.sensitive_token_hits("address: Broadway.", "we met on Broadway today", []) == ["Broadway"]
+
+
+
+def test_a_place_name_after_a_bare_dwelling_word():
+    assert "Broadway" in persona.extract_sensitive_tokens("address: apartment Broadway", [])
+
+
+def test_a_regeneration_does_not_save_for_a_character_deleted_meanwhile(env):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    gate = client.portal.call(_make_event)
+
+    async def slow(prompt):
+        await gate.wait()
+        return GOOD_PERSONA
+
+    persona.configure_persona(llm=slow)
+    assert client.post("/api/visit/persona/regenerate?catgirl=A", headers=GOOD, json={}).status_code == 202
+    del state["uids"]["A"]                                           # 生成期间角色被删除
+    client.portal.call(persona.store().retire, UID_A)
+    client.portal.call(gate.set)
+    _settle(client)
+    assert not (tmp_path / "visit_persona" / f"{UID_A}.json").exists()

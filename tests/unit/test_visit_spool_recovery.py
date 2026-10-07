@@ -2748,3 +2748,27 @@ async def test_an_unverified_reason_is_not_attached_to_another_accounts_report(t
     monkeypatch.setattr(recovery, "_mark_report_sync", real_mark)
     for _visit_id, doc in reports.calls:
         assert "transcript_unavailable" not in doc          # 提交前复核：属于另一账号的举报不带原因
+
+
+
+@pytest.mark.parametrize("damage", ["sealed_only", "stream_only"])
+async def test_a_corrupt_upload_leaves_another_accounts_report_unmarked(tmp_path, damage):
+    v = vid(106)
+    await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_A)
+    d = _spool_dir(tmp_path)
+    if damage == "sealed_only":
+        (d / f"{v}.upload.json").write_text("{torn", encoding="utf-8")
+    else:
+        _write_stream(tmp_path, v, [{"kind": "line"}])                       # 流水没有头行：损坏
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    other = "f" * 24
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": other}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
+    # 损坏的是 OWN_A 那一侧的转录：另一账号排的举报不带这个原因
+    for _visit_id, doc in reports.calls:
+        assert "transcript_unavailable" not in doc
+    if (reports_dir / f"{v}.json").exists():
+        assert "transcript_unavailable" not in json.loads((reports_dir / f"{v}.json").read_text(encoding="utf-8"))
