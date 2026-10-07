@@ -385,8 +385,10 @@ def test_report_validation(env, body):
     assert _report(client, **body).status_code == 400
 
 
-def test_queued_report_retry_and_abandon(env):
+def test_queued_report_retry_and_abandon(env, monkeypatch):
     client, fake, tmp_path, _ = env
+    # 后台重试在测试夹具里不睡（_sleep 打桩）：留着它会与下面的手动重试抢着提交、删文件，结果时有时无
+    monkeypatch.setattr(tu, "schedule_visit_retry", lambda *_a, **_k: None)
     fake.report_mode = "503"
     _report(client)
     doc = _queued(tmp_path)

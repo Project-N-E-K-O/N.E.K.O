@@ -444,7 +444,8 @@ async def test_background_retry_runs_until_delivered(tmp_path, servers):
 
     tu._sleep = sleep
     await tu.schedule_visit_retry(V1)
-    assert calls == list(tu.VISIT_UPLOAD_RETRY_BACKOFF_S[:2])
+    # 等待时长按单调时钟截止时间算出：差几微秒，不能精确比较（Windows 时钟粒度粗才碰巧相等）
+    assert calls == pytest.approx(list(tu.VISIT_UPLOAD_RETRY_BACKOFF_S[:2]), abs=0.05)
     assert not (_spool(tmp_path) / f"{V1}.upload.json").exists()
 
 
@@ -716,7 +717,7 @@ async def test_a_scheduled_retry_after_an_attempt_waits_first(tmp_path, servers,
     monkeypatch.setattr(tu, "_sleep", sleep)
     await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
     await tu.schedule_visit_retry(V1, initial_delay_s=7)
-    assert slept and slept[0] == 7
+    assert slept and slept[0] == pytest.approx(7, abs=0.05)
 
 
 

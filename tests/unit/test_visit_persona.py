@@ -918,11 +918,16 @@ def test_a_hand_edit_after_a_card_change_still_checks_scanned_passages_left_in_t
 
 @pytest.mark.parametrize("length", [2000, 2001, 3800, 4000, 5600, 5601, 9200])
 def test_section_chunks_always_reach_the_end_with_the_full_overlap(length):
-    passage = "".join(chr(0x4E00 + i % 500) for i in range(length))
+    passage = "".join(chr(0x4E00 + i) for i in range(length))         # 不重复：漏掉中间一段也看得出来
     pieces = persona._section_chunks(passage)
-    assert pieces[0] == passage[:persona._SECTION_MAX_CHARS] and pieces[-1].endswith(passage[-50:])
-    for a, b in zip(pieces, pieces[1:]):
-        assert len(a) == persona._SECTION_MAX_CHARS and a[-persona._SECTION_CHUNK_OVERLAP:] == b[:persona._SECTION_CHUNK_OVERLAP]
+    step = persona._SECTION_MAX_CHARS - persona._SECTION_CHUNK_OVERLAP
+    # 每块就是预期的那一段切片：从 0 起每次前进 step，最后一块到结尾
+    assert pieces == [passage[i:i + persona._SECTION_MAX_CHARS] for i in range(0, len(pieces) * step, step)]
+    assert pieces[-1].endswith(passage[-50:])
+    covered = set()
+    for i in range(len(pieces)):
+        covered.update(range(i * step, min(i * step + persona._SECTION_MAX_CHARS, length)))
+    assert covered == set(range(length))
 
 
 def test_privacy_checks_run_off_the_event_loop(env, monkeypatch):
@@ -966,3 +971,25 @@ def test_a_gate_that_keeps_meeting_writes_does_not_report_generating(env, monkey
     gate = _gate(client)
     # 并没有在生成：按待确认拒，前端引导去面板，而不是一直等「生成中」
     assert gate.ok is False and gate.state == "unreviewed" and not persona.is_generating(UID_A)
+
+
+
+def test_a_scan_reply_with_non_string_entries_counts_as_failed():
+    with pytest.raises(ValueError):
+        persona._parse_scan('[{"section": "她偷偷收藏了一整抽屉的旧电影票根。"}]')
+
+
+def test_a_hand_edit_is_checked_against_the_card_as_it_is_when_saved(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    secret = "她偷偷收藏了一整抽屉的旧电影票根，号码是 13800138000。"
+    real_load = persona.VisitPersonaStore.load
+
+    async def card_edited_while_waiting(self, uid):
+        state["cards"]["A"] = CARD + "\n" + secret                 # 等锁 / 读盘期间卡片改了
+        return await real_load(self, uid)
+
+    monkeypatch.setattr(persona.VisitPersonaStore, "load", card_edited_while_waiting)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，号码 13800138000。", "reviewed": True})
+    assert resp.status_code == 400 and resp.json()["code"] == "persona_sensitive_overlap"

@@ -661,7 +661,11 @@ def _parse_scan(raw: str) -> list[str]:
         raise ValueError("scan reply is not a JSON list")
     out = []
     for item in items:
-        if isinstance(item, str) and item.strip():
+        if not isinstance(item, str):
+            # 不是约定的字符串列表（如 [{"section": ...}]）：按扫描失败处理，如实落 scan_complete:false，
+            # 不能悄悄丢掉这些段落还报「检查完整」
+            raise ValueError("scan reply has a non-string entry")
+        if item.strip():
             out.extend(_section_chunks(item.strip()))
     return out
 
@@ -1035,6 +1039,12 @@ async def put_persona(request: Request, catgirl: str = ""):
         if await _hooks.resolve_char_name(character_uid) is None:
             # 请求进来之后角色被删除：不再写，否则删除角色时清掉的人设文件又被建回来
             return _error(404, "unknown_catgirl")
+        if text is not None:
+            # 锁内重读卡片：等锁期间卡片改过（新加了私人内容）时按新卡检查。手写的人设 edited=True，
+            # 门槛不会因卡片变更再重生成，拿旧卡检查就会放过新加的内容
+            ctx = await _hooks.load_context()
+            if ctx.card(catgirl) is None:
+                return _error(404, "unknown_catgirl")
         if text is None:
             if doc is None:
                 return _error(409, "persona_missing")
