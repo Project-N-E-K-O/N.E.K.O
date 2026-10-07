@@ -141,16 +141,18 @@ class ReceiveMixin:
         if res.violation is not None:
             self.request_finalize("peer_protocol_violation")
             return
+        early, self._early_effects = self._early_effects, []
+        for eff in early:
+            self.apply_effects(eff)
+        # 先按序处理交付的消息，再看 leave：补齐 leave 之前缺口的那一条（常是最后一行
+        # text{final}）必须先进转录，结束之后就不再处理台词了
+        for item in res.deliver:
+            await self._dispatch(item, from_vid, now)
         if res.leave is not None:
             self._on_peer_leave(res.leave, now)
         if res.leave_gap_filled and self._pending_leave_final is not None:
             if self.liveness.on_gap_filled(now) is not None:
                 self.request_finalize(self._pending_leave_final, peer_reason=self.pending_peer_reason)
-        early, self._early_effects = self._early_effects, []
-        for eff in early:
-            self.apply_effects(eff)
-        for item in res.deliver:
-            await self._dispatch(item, from_vid, now)
         if self.sequencer.ack_due(now):
             self.kick()
 
@@ -188,11 +190,16 @@ class ReceiveMixin:
             # 接待前闸门：台词类一律丢弃并单独计数（不进连续异常，免得早到的台词把对端踢掉）
             self.gate_dropped += 1
             return
-        if self.room is not None:
-            self.room.record_valid_message()
         handler = _HANDLERS.get(str(t))
-        if handler is not None:
-            await handler(self, m, from_vid, now)
+        if handler is None:
+            return
+        room = self.room
+        before = room.anomalies_total if room is not None else None
+        await handler(self, m, from_vid, now)
+        # 处理完且没记任何异常才算一条合法消息、清零连续计数：先清零的话，持续超速 / 坏字段的
+        # 对端每条都被下一条清零，永远到不了 VISIT_ANOMALY_FINALIZE_COUNT
+        if room is not None and self.room is room and room.anomalies_total == before:
+            room.record_valid_message()
 
     async def _rx_hello(self, m: dict, from_vid: str, now: float) -> None:
         if not proto_compatible(1, m.get("caps") or {}):
@@ -247,11 +254,12 @@ class ReceiveMixin:
             from config.visit_settings import VISIT_ACCEPT_TIMEOUT_S
 
             self._accept_deadline = now + VISIT_ACCEPT_TIMEOUT_S
-            await self.host.send_frame({
+            self._invite_frame = {
                 "type": "visit_invite", "visit_id": self.visit_id, "peer_name": self.peer.display,
                 "peer_short_id": self.peer.short_id, "cross_region": bool(creds and creds.cross_region),
                 "expires_at": self.wall() + VISIT_ACCEPT_TIMEOUT_S,
-            })
+            }
+            await self.host.send_frame(dict(self._invite_frame))
             # peer_vid 补齐（订阅仍是 false：接待之前不收看）
             await self.send_media()
         else:

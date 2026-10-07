@@ -540,6 +540,25 @@ VISIT_SYSTEM_NOTICE_PEER_ARRIVED = {
 }
 
 
+# 每一轮回话的提问：历史里已按 (lp, 侧位) 排好双方的话，这条只说「轮到你了」，
+# 回合结束后从历史里摘掉。对端提供的任何字段都不插值进这里。
+VISIT_SYSTEM_NOTICE_YOUR_TURN = {
+    "zh": _NOTICE_OPEN["zh"] + "\n轮到你说话了。接着上面的对话，回应刚才对你说的话，一两句就好。\n" + _NOTICE_CLOSE["zh"],
+    "zh-TW": _NOTICE_OPEN["zh-TW"] + "\n輪到你說話了。接著上面的對話，回應剛才對你說的話，一兩句就好。\n" + _NOTICE_CLOSE["zh-TW"],
+    "en": _NOTICE_OPEN["en"] + "\nIt is your turn to speak. Continue the conversation above and answer what was just said to you, in a sentence or two.\n" + _NOTICE_CLOSE["en"],
+    "ja": _NOTICE_OPEN["ja"] + "\nあなたが話す番です。上の会話の続きとして、いま言われたことに一、二文で答えてください。\n" + _NOTICE_CLOSE["ja"],
+    "ko": _NOTICE_OPEN["ko"] + "\n이제 당신이 말할 차례입니다. 위의 대화를 이어서, 방금 당신에게 한 말에 한두 문장으로 답하세요.\n" + _NOTICE_CLOSE["ko"],
+    "ru": _NOTICE_OPEN["ru"] + "\nТеперь твоя очередь говорить. Продолжи разговор выше и ответь на то, что тебе только что сказали, одной-двумя фразами.\n" + _NOTICE_CLOSE["ru"],
+    "es": _NOTICE_OPEN["es"] + "\nAhora te toca hablar. Sigue la conversación de arriba y responde a lo que acaban de decirte, con una o dos frases.\n" + _NOTICE_CLOSE["es"],
+    "pt": _NOTICE_OPEN["pt"] + "\nAgora é a sua vez de falar. Continue a conversa acima e responda ao que acabaram de dizer a você, com uma ou duas frases.\n" + _NOTICE_CLOSE["pt"],
+}
+
+
+def get_visit_your_turn_notice(lang: str | None) -> str:
+    """Return the per-turn prompt of a reply (the lines themselves are already in the history)."""
+    return _loc(VISIT_SYSTEM_NOTICE_YOUR_TURN, lang)
+
+
 def get_visit_scene_block(side: str, lang: str | None) -> str:
     """Return the scene block for ``side`` (``guest`` or ``host``)."""
     table = VISIT_SCENE_BLOCK_GUEST if _check_side(side) == "guest" else VISIT_SCENE_BLOCK_HOST

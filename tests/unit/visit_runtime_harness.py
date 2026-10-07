@@ -292,6 +292,10 @@ class FakeClient:
         out = []
         for chunk in chunks:
             await asyncio.sleep(0)
+            if isinstance(chunk, asyncio.Event):
+                # 生成途中的停顿点：测试在这里插入打断 / 结束
+                await chunk.wait()
+                continue
             out.append(chunk)
             await self.on_text_delta(chunk, len(out) == 1)
         self._conversation_history.append(AIMessage(content="".join(out)))
@@ -486,6 +490,23 @@ async def wait_for(pred: Callable[[], bool], timeout: float = 5.0, step: float =
         await asyncio.sleep(step)
 
 
+async def step(clock: FakeClock, seconds: float, *runtimes: rtm.VisitRuntime, every: float = 2.0) -> None:
+    """Advance ``clock`` in small steps: each step flushes (heartbeats / acks reach the peer) and ticks."""
+    left = float(seconds)
+    while left > 0:
+        dt = min(every, left)
+        clock.advance(dt)
+        left -= dt
+        for rt in runtimes:
+            if rt.exit_task is None:
+                await rt.flush()
+        await settle(60)
+        for rt in runtimes:
+            if rt.exit_task is None:
+                await rt.tick()
+        await settle(20)
+
+
 async def start_side(side: Side, *, crop: str = "upper", invite_code: Optional[str] = None,
                      clock: FakeClock, wall: FakeClock) -> rtm.VisitRuntime:
     """``start_visit`` with the persona gate and the local account stubbed."""
@@ -547,7 +568,22 @@ def patch_admission(monkeypatch) -> None:
     monkeypatch.setattr(rtm, "_local_account", account)
 
 
-async def teardown(*sides: Side, wire: Optional[Wire] = None) -> None:
+async def finish(rt: rtm.VisitRuntime, clock: Optional[FakeClock] = None, *, timeout: float = 20.0) -> None:
+    """Wait for ``rt``'s exit flow, jumping ``clock`` forward so drain / leave windows pass quickly."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + timeout
+    jumped = 0.0
+    while rt.exit_task is None or not rt.exit_task.done():
+        if loop.time() > end:
+            raise AssertionError("exit flow did not finish")
+        # 只快进到足够跳过排空与 leave 补传窗口：不能把交还回调的兜底期限也跳过去
+        if clock is not None and rt.exit_task is not None and jumped < 12.0:
+            clock.advance(0.5)
+            jumped += 0.5
+        await asyncio.sleep(0.01)
+
+
+async def teardown(*sides: Side, wire: Optional[Wire] = None, clock: Optional[FakeClock] = None) -> None:
     """Finish every runtime still alive (no files or tasks left behind)."""
     for side in sides:
         rt = side.rt
@@ -555,11 +591,10 @@ async def teardown(*sides: Side, wire: Optional[Wire] = None) -> None:
             continue
         if rt.exit_task is None and rt.phase != "ended":
             rt.request_finalize("route_end")
-        task = rt.exit_task
-        if task is not None:
+        if rt.exit_task is not None:
             try:
-                await asyncio.wait_for(asyncio.shield(task), 30)
-            except Exception:  # noqa: BLE001
+                await finish(rt, clock, timeout=30)
+            except AssertionError:
                 pass
     if wire is not None:
         await wire.close()

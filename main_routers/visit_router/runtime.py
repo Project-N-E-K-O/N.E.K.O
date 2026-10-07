@@ -60,6 +60,7 @@ from config.visit_settings import (
     VISIT_CAPS_PREFLIGHT_TIMEOUT_S,
     VISIT_CAPS_SDK_TIMEOUT_S,
     VISIT_CROP_DEFAULT,
+    VISIT_ENDING_SOON_S,
     VISIT_IDLE_TIMEOUT_S,
     VISIT_INBOX_HANDOFF_ABS_MAX_S,
     VISIT_LEAVE_GAP_GRACE_S,
@@ -308,17 +309,33 @@ def has_visit_background_tasks(lanlan_name: str) -> bool:
     return bool(tasks and any(not t.done() for t in tasks))
 
 
+async def _remember_name(character_uid: str) -> None:
+    # 守卫按名字查：补录派生的任务只带 uid（这个角色在本进程可能没串过门），先认出它现在叫什么
+    if character_uid in _uid_by_name.values():
+        return
+    try:
+        from main_logic.visit import local_chars
+
+        name = await local_chars.resolve_char_name(character_uid)
+    except Exception:  # noqa: BLE001 - 认不出名字就只按 uid 登记
+        return
+    if name:
+        _uid_by_name[name] = character_uid
+
+
 def spawn_visit_background(character_uid: str, factory: Callable[[], Awaitable[Any]]) -> asyncio.Task:
     """Run a visit background write registered under ``character_uid`` until it finishes.
 
     The ``spawn_background`` callback of PR-08 recovery and of the finalize
     flow (digest, last summary): rename / delete of the character stay
-    refused while any of them runs.
+    refused while any of them runs (the character's current name is looked
+    up first, so a task spawned by recovery is found by name as well).
     """
     bucket = _visit_bg_tasks.setdefault(character_uid, set())
 
     async def run() -> Any:
         try:
+            await _remember_name(character_uid)
             return await factory()
         finally:
             bucket.discard(task)
@@ -351,6 +368,9 @@ def _unregister(rt: "VisitRuntime") -> None:
 
 
 def _reset_for_tests() -> None:
+    for task in list(_detached):
+        task.cancel()
+    _detached.clear()
     _runtimes.clear()
     _by_visit.clear()
     _recent.clear()
@@ -492,6 +512,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.started_at_mono: Optional[float] = None
         self.started_at_wall: Optional[float] = None
         self._time_up_sent = False
+        self._ending_soon_sent = False
+        self._invite_frame: Optional[dict] = None
+        self._last_hidden_sent: Optional[bool] = None
         self.last_text_at: Optional[float] = None
         self.local_hidden = False
         self.ladder = 0
@@ -727,6 +750,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         state = msg.get("state")
         if isinstance(msg.get("hidden"), bool):
             self.local_hidden = msg["hidden"]
+            self._announce_view()
         if state in ("joined", "connected"):
             reconnected = self.liveness.self_disconnected_at is not None
             self.liveness.on_self_connected(now)
@@ -775,14 +799,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
             self.liveness.wait_deadline = now + VISIT_INVITE_WAIT_S
             self._set_phase(PHASE_INVITE_READY)
-            self.spawn(self.push(PHASE_INVITE_READY, invite_code=creds.invite_code,
-                                 invite_expires_at=creds.invite_expires_at, transport=creds.transport))
+            await self.push(PHASE_INVITE_READY, invite_code=creds.invite_code,
+                            invite_expires_at=creds.invite_expires_at, transport=creds.transport)
         else:
             from config.visit_settings import VISIT_PEER_LOST_S
 
             self.liveness.wait_deadline = now + VISIT_PEER_LOST_S
             self._set_phase(PHASE_JOINING)
-            self.spawn(self.push(PHASE_JOINING, transport=creds.transport, cross_region=creds.cross_region))
+            await self.push(PHASE_JOINING, transport=creds.transport, cross_region=creds.cross_region)
 
     def _on_peer_presence(self, present: bool, vendor_reason: Any, now: float) -> None:
         if present:
@@ -820,13 +844,59 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             "lang": (self.lang_tag() or "und")[:16], "jti_reuse": False,
         }, now=now)
 
+    def _announce_view(self) -> None:
+        """Data-channel ``state{hidden, crop, tier}`` when this side's visibility changed (lossy, 1 Hz at most)."""
+        creds = self.creds
+        if self.peer is None or creds is None or self._last_hidden_sent == self.local_hidden:
+            return
+        self._last_hidden_sent = self.local_hidden
+        try:
+            self.outbox.send({"t": "state", "v": 1, "hidden": bool(self.local_hidden), "crop": self.crop,
+                              "tier": creds.tier}, now=self.clock())
+        except ValueError:
+            return
+        self.kick()
+
     def on_transport_stats(self, msg: dict) -> None:
+        """iframe ``stats``: kept for ``GET /state`` and forwarded to the peer as data-channel ``stats``."""
         global _vp8_next_visit
-        keep = ("tx_fps", "enc_fps", "tx_kbps", "rx_fps", "rx_kbps", "rtt_ms", "loss_pct", "dc_queue")
+        keep = ("tx_fps", "enc_fps", "tx_kbps", "rx_fps", "rx_kbps", "rtt_ms", "loss_pct", "dc_queue",
+                "rx_w", "rx_h")
         self.stats = {k: msg.get(k) for k in keep if isinstance(msg.get(k), (int, float))
-                      and not isinstance(msg.get(k), bool)}
+                      and not isinstance(msg.get(k), bool) and msg.get(k) >= 0}
         if msg.get("softenc_overloaded") is True:
             _vp8_next_visit = True
+        if self.peer is None or not self.ready_exchanged or self.finalizing:
+            return
+        wire = {"rx_fps": float, "rx_kbps": int, "rtt_ms": int, "loss_pct": float, "rx_w": int, "rx_h": int}
+        if not all(k in self.stats for k in wire):
+            return
+        payload = {"t": "stats", "v": 1, **{k: cast(self.stats[k]) for k, cast in wire.items()}}
+        if msg.get("qlr") in ("none", "bandwidth", "cpu", "other"):
+            payload["qlr"] = msg["qlr"]
+        try:
+            self.outbox.send(payload, now=self.clock())
+        except ValueError:
+            return
+        self.kick()
+
+    def bind_replay_frames(self) -> list[dict]:
+        """Frames a freshly bound display socket must get again (PR-09b ``visit_bind``, §4.5).
+
+        A host still waiting for its guest gets ``invite_ready`` (with the
+        invite code, only on bound sockets); a host whose family has not
+        answered yet gets the same ``visit_invite`` (original deadline).
+        """
+        creds = self.creds
+        frames: list[dict] = []
+        if self.side == "host" and self.phase == PHASE_INVITE_READY and creds is not None:
+            frames.append({"type": "visit_state_change", "action": PHASE_INVITE_READY, "side": self.side,
+                           "visit_id": self.visit_id, "invite_code": creds.invite_code,
+                           "invite_expires_at": creds.invite_expires_at, "transport": creds.transport,
+                           "ts": self.wall()})
+        if self.side == "host" and self.phase == PHASE_AWAITING and self._invite_frame is not None:
+            frames.append(dict(self._invite_frame))
+        return frames
 
     # ── 媒体 ─────────────────────────────────────────────────────────
 
@@ -930,6 +1000,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if elapsed >= VISIT_MAX_DURATION_S:
             self.request_finalize("max_duration")
             return
+        if not self._ending_soon_sent and elapsed >= VISIT_MAX_DURATION_S - VISIT_ENDING_SOON_S:
+            self._ending_soon_sent = True
+            ends_at = (self.started_at_wall or self.wall()) + VISIT_MAX_DURATION_S
+            self.spawn(self.push("ending_soon", ends_at=ends_at))
         if not self._time_up_sent and elapsed >= VISIT_MAX_DURATION_S - VISIT_TIME_UP_WRAP_UP_S:
             self._time_up_sent = True
             self.apply_effects(self.room.on_time_up(now))
@@ -1187,7 +1261,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         return self._exit_task
 
     def _sends_leave(self) -> Optional[str]:
-        if self.peer is None:
+        # 有人能收到才发：核验过的对端，或已在房、刚被拒绝核验的对端（让它也立刻结束）
+        if self.peer is None and not self.peer_present:
             return None
         return leave_reason_for(self.finalize_reason or "", side=self.side, done_received=self.done_received)
 
@@ -1242,8 +1317,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             from main_routers.visit_router.debrief import run_debrief
 
             await run_debrief(self, input_stamp=input_stamp)
-        # ⑨ 交还 VisitInbox：仪式句与简述都播完（或兜底期限）
-        await self._hand_back_callbacks()
+        # ⑨ 交还 VisitInbox：仪式句与简述都播完（或兜底期限）。独立任务，不占角色锁：
+        # 路由 pop 之后到的 ended 经 inbox_handoff 表照样转给它
+        _detach(self._hand_back_callbacks())
 
     async def _close_channel(self, reason: str) -> None:
         """Drain (normal ends), ``leave``, its resend window; then stop the iframe and drop the transport."""
@@ -1264,7 +1340,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 while not self.outbox.leave_done(self.clock()):
                     self.kick()
                     await asyncio.sleep(0.1)
-            elif self.side == "host" and self.creds is not None and self.peer is None:
+            if self.side == "host" and self.creds is not None and self.peer is None:
                 # 对端核验之前就结束：邀请码还可能被兑换，后台取消房间（不扣对方配额）
                 creds = self.creds
                 self.spawn(self.deps.cancel_room(self.visit_id, invite_expires_at=creds.invite_expires_at,
@@ -1454,6 +1530,17 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         return (self.room.anomalies_total if self.room is not None else 0) + self.pre_room_anomalies
 
 
+_detached: set[asyncio.Task] = set()
+"""Tasks that outlive their runtime (the inbox handoff); kept referenced until done."""
+
+
+def _detach(coro: Awaitable[Any]) -> asyncio.Task:
+    task = asyncio.ensure_future(coro)
+    _detached.add(task)
+    task.add_done_callback(_detached.discard)
+    return task
+
+
 def _make_inbox() -> Any:
     from main_logic.watch_together.live import LiveInbox
 
@@ -1488,10 +1575,10 @@ async def start_visit(
 ) -> "VisitRuntime":
     """Admit and start one side of a visit; raises :class:`VisitRefused` for the synchronous answers.
 
-    Order (design §3.2.1): route lock and persona gate *before* the slot is
-    reserved (a reservation makes the lock true), then the slot, then the
-    preconditions that do not depend on it (voice session, goodbye silence,
-    hot swap, local login). Everything after this returns (capability gate,
+    Order (design §3.2.1): persona gate, then the route lock checked once and
+    the slot reserved right after it with no await in between (a reservation
+    makes the lock true), then the preconditions that do not depend on it
+    (voice session, goodbye silence, hot swap, local login, banned cache). Everything after this returns (capability gate,
     Servers, takeover) runs on the transport events and the sweep.
     """
     from main_routers.visit_router.persona import persona_gate
@@ -1500,17 +1587,16 @@ async def start_visit(
     name = str(lanlan_name or "")
     if side not in ("host", "guest"):
         raise ValueError("side must be 'host' or 'guest'")
-    if is_external_route_locked(name):
-        raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "route_owned"})
     gate = await persona_gate(name)
     if not gate.ok:
         raise VisitRefused(409, {"code": "VISIT_PERSONA_UNREVIEWED", "state": gate.state})
-    if is_external_route_locked(name):
-        raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "route_owned"})
     host = host or ManagerHost.for_character(name)
     if host is None:
         raise VisitRefused(409, {"reason": "busy"})
     vid = visit_id or secrets.token_urlsafe(16)
+    # 锁检查与占位之间没有 await：查完立刻占位，别的路由插不进来；占位之后它必为真，不能再查
+    if is_external_route_locked(name):
+        raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "route_owned"})
     slot = activate_visit_route(name, phase=PHASE_PENDING, visit_id=vid)
     try:
         failure = host.precondition_failure()

@@ -162,7 +162,14 @@ async def run_debrief(rt: Any, *, input_stamp: float) -> None:
             logger.warning("visit %s: debrief summary not shown: %s", rt.visit_id[:6], type(exc).__name__)
     else:
         await rt.speak_home_segment("debrief", text, kind="visit_debrief")
+    await _push_state(rt, "summary")
     await _offer_chips(rt, has_lines=bool(lines))
+
+
+async def _push_state(rt: Any, phase: str) -> None:
+    """``visit_debrief{phase}`` status frame (§4.5; the chips themselves are ``chat_blocks``)."""
+    await rt.host.send_frame({"type": "visit_debrief", "visit_id": rt.visit_id, "phase": phase,
+                              "request_id": chips_request_id(rt.visit_id), "ts": rt.wall()})
 
 
 async def _offer_chips(rt: Any, *, has_lines: bool) -> None:
@@ -174,3 +181,4 @@ async def _offer_chips(rt: Any, *, has_lines: bool) -> None:
     except Exception as exc:  # noqa: BLE001 - 标记写不进：芯片照常出，下次启动由补录兜底
         logger.warning("visit %s: debrief state not written: %s", rt.visit_id[:6], type(exc).__name__)
     await show_chips(rt.host, rt.visit_id, own_char=rt.lanlan_name, lang=rt.lang)
+    await _push_state(rt, "asked")

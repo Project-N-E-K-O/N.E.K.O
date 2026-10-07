@@ -28,10 +28,11 @@ The family's line (host only, §4.5 ``stream_data``): reserve outbox bytes
 record), enqueue with the reservation, and ``mirror_user_input`` last.
 
 History: every line goes into the isolated session with its total-order key
-``(lp, side_rank)``; a reply takes the replied line out of the history and
-sends it as the turn's prompt (``stream_text`` puts it back), and the AI
-message ``stream_text`` appends is replaced by what was actually released
-(plus ``VISIT_MARK_INTERRUPTED`` when the line was cut off).
+``(lp, side_rank)`` and nothing else stays there. A turn's prompt is a system
+notice (arrival / your turn / goodbye); after the turn the prompt and the AI
+message ``stream_text`` appended are taken out again, and the line is added
+as what was actually released (plus ``VISIT_MARK_INTERRUPTED`` when it was
+cut off). Both sides therefore feed their LLM the same ordered lines.
 """
 
 from __future__ import annotations
@@ -96,8 +97,6 @@ class _LineRun:
     reply_to: Optional[LineRef]
     goodbye: bool
     prompt: str
-    prompt_key: tuple[int, int]
-    target: Any = None
     speaker: Optional[LineSpeaker] = None
     llm_task: Optional[asyncio.Task] = None
     task: Optional[asyncio.Task] = None
@@ -117,7 +116,6 @@ class TalkMixin:
         self._line_kinds: dict[str, str] = {}
         self._line: Optional[_LineRun] = None
         self._reply_task: Optional[asyncio.Task] = None
-        self._history_msgs: dict[str, Any] = {}
         self.neutral_term = ""
         self._llm_failures = 0
         self._handoff_stamps: dict[str, float] = {}
@@ -280,19 +278,20 @@ class TalkMixin:
         kind = self._line_kinds.get(reply_to.line_id, "cat")
         return addressee_code(reply_to.side, kind)
 
-    def _prompt_for(self, reply_to: Optional[LineRef], goodbye: bool) -> tuple[str, Any, Optional[tuple]]:
-        from config.prompts.prompts_visit import build_wrap_up_prompt, get_visit_arrival_notice
+    def _prompt_for(self, reply_to: Optional[LineRef], goodbye: bool) -> str:
+        from config.prompts.prompts_visit import (
+            build_wrap_up_prompt,
+            get_visit_arrival_notice,
+            get_visit_your_turn_notice,
+        )
 
         if goodbye:
             reason = self.room.wrap_up.reason if self.room is not None else "quiet"
             peer_goodbye = self.last_peer_goodbye if self.side == "host" else None
-            return build_wrap_up_prompt(self.side, reason or "quiet", self.lang, peer_goodbye=peer_goodbye), None, None
+            return build_wrap_up_prompt(self.side, reason or "quiet", self.lang, peer_goodbye=peer_goodbye)
         if reply_to is not None:
-            target = self._history_msgs.get(reply_to.line_id)
-            content = getattr(target, "content", None)
-            if isinstance(content, str) and content:
-                return content, target, sort_key(reply_to.lp, reply_to.side)
-        return get_visit_arrival_notice(self.side, self.lang), None, None
+            return get_visit_your_turn_notice(self.lang)
+        return get_visit_arrival_notice(self.side, self.lang)
 
     async def speak_line(self, *, reply_to: Optional[LineRef], goodbye: bool) -> None:
         """Generate, speak and close one own line; returns once it is committed."""
@@ -305,12 +304,11 @@ class TalkMixin:
         ref = LineRef(ln, lp, self.side)
         self.own_line_lp[ln] = lp
         self._line_kinds[ln] = "cat"
-        prompt, target, prompt_key = self._prompt_for(reply_to, goodbye)
+        prompt = self._prompt_for(reply_to, goodbye)
         header = LineHeader(ln=ln, lp=lp, ad=self._addressee_of(reply_to),
                             rt=reply_to.line_id if reply_to is not None else "", wu=goodbye, sp="c",
                             lang=(self.lang or None) and str(self.lang)[:16])
-        line = _LineRun(ref=ref, header=header, reply_to=reply_to, goodbye=goodbye, prompt=prompt,
-                        prompt_key=prompt_key or sort_key(lp, self.side), target=target)
+        line = _LineRun(ref=ref, header=header, reply_to=reply_to, goodbye=goodbye, prompt=prompt)
         # 告别行开口前先发 wrap_up{speaking}（两种字幕模式都一样）
         self.apply_effects(room.on_local_line_started(ref, reply_to, goodbye, now))
         if self.finalizing:
@@ -359,8 +357,6 @@ class TalkMixin:
             task.cancel()
 
     async def _generate(self, line: _LineRun, timeout: float) -> None:
-        from utils.llm_client import AIMessage, HumanMessage
-
         session = self.session
         speaker = line.speaker
         if session is None:
@@ -375,15 +371,7 @@ class TalkMixin:
         try:
             async with session.turn_lock:
                 sort_visit_history(session)
-                history = session.history
-                before = {id(m) for m in history}
-                removed = False
-                if line.target is not None:
-                    for i, msg in enumerate(history):
-                        if msg is line.target:
-                            del history[i]
-                            removed = True
-                            break
+                before = {id(m) for m in session.history}
                 session.set_sink(sink)
                 try:
                     await asyncio.wait_for(session.client.stream_text(line.prompt), timeout)
@@ -402,19 +390,8 @@ class TalkMixin:
                         self._on_usage(estimate_turn_usage(session, output))
                     except Exception:  # noqa: BLE001
                         pass
-                    new = [m for m in session.history if id(m) not in before]
-                    prompt_msg = next((m for m in new if isinstance(m, HumanMessage)
-                                       and getattr(m, "content", None) == line.prompt), None)
-                    if prompt_msg is not None:
-                        session.tag(prompt_msg, line.prompt_key)
-                        if removed:
-                            self._history_msgs[line.reply_to.line_id] = prompt_msg  # type: ignore[union-attr]
-                    elif removed:
-                        append_visit_message(session, line.target, line.prompt_key)
-                    for msg in new:
-                        if isinstance(msg, AIMessage):
-                            session.history.remove(msg)
-                    session.forget_untracked()
+                    # 这一轮追加的提问与回复都摘掉：历史里只留真实台词（本行收口后按已放出的入史）
+                    _drop_new_messages(session, before)
         except asyncio.CancelledError:
             if not line.llm_cancelled:
                 speaker.llm_done()
@@ -558,7 +535,6 @@ class TalkMixin:
         session = self.session
         if session is None:
             return
-        self._history_msgs[ln] = message
 
         async def add() -> None:
             async with session.turn_lock:
@@ -724,6 +700,7 @@ class TalkMixin:
             return None
         chunks: list[str] = []
         async with session.turn_lock:
+            before = {id(m) for m in session.history}
             session.set_sink(chunks.append)
             try:
                 await asyncio.wait_for(session.client.stream_text(prompt), timeout)
@@ -732,6 +709,7 @@ class TalkMixin:
                 return None
             finally:
                 session.set_sink(None)
+                _drop_new_messages(session, before)
         text = strip_emotion_tags("".join(chunks)).strip()
         return text or None
 
@@ -780,3 +758,10 @@ class TalkMixin:
             await close_visit_session(session)
         except Exception:  # noqa: BLE001
             pass
+
+
+def _drop_new_messages(session: Any, before: set[int]) -> None:
+    """Remove what a turn appended to the history (its prompt and its reply)."""
+    history = session.history
+    history[:] = [m for m in history if id(m) in before]
+    session.forget_untracked()

@@ -874,3 +874,64 @@ async def test_purge_outbox_skips_entries_it_cannot_stat_or_delete(tmp_path, mon
     monkeypatch.setattr(outbox_mod.os, "unlink", unlink)
     deleted = await purge_outbox_files(tmp_path)
     assert [p.name for p in deleted] == [names[2]]
+
+
+# ── 可释放的在途字节预留（§4.5 stream_data：预留 → 落盘 → 入队）──
+
+
+def test_reservation_holds_bytes_until_released_or_consumed(tmp_path):
+    from config.visit_settings import VISIT_OUTBOX_PENDING_MAX_BYTES
+
+    tx = make_outbox(tmp_path)
+    msg = text(1, "x" * 2000)
+    _pieces, nbytes = tx.encoded_size(msg)
+    first = tx.reserve(nbytes)
+    assert first is not None and first.held
+    assert tx.pending_bytes == nbytes
+    # 别的行在持有者 await 期间拿不走这部分额度
+    others = []
+    while (r := tx.reserve(nbytes)) is not None:
+        others.append(r)
+    assert tx.pending_bytes <= VISIT_OUTBOX_PENDING_MAX_BYTES
+    for r in others:
+        r.release()
+    first.release()
+    first.release()                      # 幂等
+    assert tx.pending_bytes == 0
+    second = tx.reserve(nbytes)
+    seq = tx.send(msg, reservation=second)
+    assert seq == 1 and not second.held
+    queued = tx.pending_bytes
+    assert 0 < queued <= nbytes          # 现在只算这条必达项自己的字节
+    second.release()                     # 已消费：不再退还
+    assert tx.pending_bytes == queued
+
+
+def test_rejected_send_keeps_the_reservation_held(tmp_path):
+    tx = make_outbox(tmp_path)
+    res = tx.reserve(100)
+    with pytest.raises(ValueError):
+        tx.send({"t": "text", "ln": "h:1"}, reservation=res)
+    assert res.held and tx.pending_bytes == 100
+    res.release()
+    assert tx.pending_bytes == 0
+
+
+def test_reservation_of_another_outbox_is_refused(tmp_path):
+    a = make_outbox(tmp_path / "a")
+    b = make_outbox(tmp_path / "b")
+    res = a.reserve(10)
+    with pytest.raises(ValueError):
+        b.send(text(1), reservation=res)
+
+
+def test_forced_ack_skips_the_coalescing_window():
+    seq = InboxSequencer()
+    seq.accept({"t": "text", "seq": 1, "ln": "g:1", "lp": 1, "sp": "c", "ad": "hc", "rt": "", "wu": False,
+                "final": True, "txt": "a", "truncated": False, "i_done": 0}, 0.0)
+    assert seq.poll_ack(0.0) == 1
+    seq.accept({"t": "text", "seq": 2, "ln": "g:2", "lp": 2, "sp": "c", "ad": "hc", "rt": "", "wu": False,
+                "final": True, "txt": "b", "truncated": False, "i_done": 0}, 0.1)
+    assert seq.poll_ack(0.1) is None                 # 合并窗口内
+    assert seq.poll_ack(0.1, force=True) == 2
+    assert seq.poll_ack(0.2, force=True) is None     # 没有欠着的
