@@ -629,3 +629,15 @@ def test_a_manual_retry_does_not_call_an_unreadable_report_delivered(env, monkey
 
 async def _queued_async(tmp_path):
     return _queued(tmp_path)
+
+
+
+def test_an_attached_report_does_not_resend_a_rate_limited_transcript(env, monkeypatch):
+    client, fake, tmp_path, _ = env
+    armed = []
+    monkeypatch.setattr(tu, "schedule_visit_retry", lambda visit_id, **kw: armed.append(kw.get("initial_delay_s")))
+    tu._note_upload_retry_after(V1, 1000)                                  # 转录刚拿到 Retry-After
+    resp = _report(client, include_transcript=True)
+    # 不在这里同步重传：举报落盘排队，交给按 Retry-After 推后的后台重试
+    assert resp.status_code == 202 and fake.count("/api/visit/transcripts") == 0
+    assert armed and armed[0] > 900 and _queued(tmp_path) is not None

@@ -1887,3 +1887,17 @@ async def test_a_new_report_keeps_the_transcripts_own_retry_after(tmp_path, serv
     tu._note_upload_retry_after(V1, 5000)                                # 转录自己拿到的 Retry-After
     tu.restart_retry_deadline(V1)                                        # 随后排了新举报
     assert tu._not_before[V1] >= time.monotonic() + 4900
+
+
+
+def test_a_transcript_free_report_carries_no_transcript_reason():
+    body = tu.report_request(_report_doc(include_transcript=False, transcript_unavailable="expired"))
+    assert "transcript_unavailable" not in body
+    body = tu.report_request(_report_doc(include_transcript=True, transcript_unavailable="expired"))
+    assert body["transcript_unavailable"] == "expired"
+
+
+async def test_a_transcript_free_report_is_not_marked_with_a_transcript_reason(tmp_path, servers):
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    await tu.mark_report_transcript_unavailable(tmp_path, V1, "expired")
+    assert "transcript_unavailable" not in await tu.load_report(tmp_path, V1)

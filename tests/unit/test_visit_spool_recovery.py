@@ -3007,3 +3007,19 @@ async def test_a_lone_streams_header_names_the_pending_owner(tmp_path):
     other = vid(120)
     _write_stream(tmp_path, other, [_header(v)])                         # 头行写的是别场
     assert await recovery._pending_upload_owner(tmp_path, other) is None
+
+
+
+async def test_recovery_does_not_mark_a_transcript_free_report(tmp_path):
+    from main_logic.visit import recovery
+
+    v = vid(121)
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    path = reports_dir / f"{v}.json"
+    path.write_text(json.dumps({"visit_id": v, "include_transcript": False, "own_visit_uid": OWN_A}),
+                    encoding="utf-8")
+    report = recovery.RecoveryReport()
+    await recovery._mark_report_transcript_unavailable(tmp_path, v, "expired", report)
+    assert "transcript_unavailable" not in json.loads(path.read_text(encoding="utf-8"))
+    assert v not in report.transcript_unavailable

@@ -810,7 +810,8 @@ async def delete_report(config_dir: Path, visit_id: str) -> bool:
 def _mark_unavailable_sync(path: Path, visit_id: str, reason: str, owner: str | None = None) -> None:
     with path_lock(path):
         doc = _load_json(path)
-        if not _valid_report(doc, visit_id) or doc.get("transcript_unavailable"):
+        if not _valid_report(doc, visit_id) or doc.get("transcript_unavailable") or not doc["include_transcript"]:
+            # 不附转录的举报不记转录的原因
             return
         if owner is not None and doc.get("own_visit_uid") and doc["own_visit_uid"] != owner:
             # 共用电脑上另一账号排的举报：这份转录不是它那一侧的，不替它记原因（举报的归属未知时照记）
@@ -916,7 +917,8 @@ def report_request(doc: Mapping[str, Any]) -> dict:
     if isinstance(note, str) and note:
         body["note"] = note
     unavailable = doc.get("transcript_unavailable")
-    if isinstance(unavailable, str) and unavailable:
+    if body["include_transcript"] and isinstance(unavailable, str) and unavailable:
+        # 只有附转录的举报才说明转录为什么没有：不附转录的带上这个字段自相矛盾
         body["transcript_unavailable"] = unavailable
     return body
 
@@ -1407,7 +1409,7 @@ async def retry_visit_once(
         report_retry_after: int | None = None
         rejected_again = False
         if report is not None and not (upload.pending and report["include_transcript"]):
-            if upload.unavailable and not report.get("transcript_unavailable"):
+            if upload.unavailable and report["include_transcript"] and not report.get("transcript_unavailable"):
                 # 原因还没在举报文件里（之前没写成，或是转录先于举报结清、原因只在内存里）：先补写进文件，
                 # 写不成提交的这份也照样带上
                 await mark_report_transcript_unavailable(config_dir, visit_id, upload.unavailable)
@@ -1475,6 +1477,11 @@ _not_before: dict[str, float] = {}
 
 _upload_not_before: dict[str, float] = {}
 """visit_id -> monotonic time before which the transcript must not be resent (its own ``Retry-After``)."""
+
+
+def upload_deferred_s(visit_id: str) -> float:
+    """Seconds left before the transcript of ``visit_id`` may be resent (its own ``Retry-After``); 0 when none."""
+    return max(0.0, _upload_not_before.get(visit_id, 0.0) - time.monotonic())
 
 
 def _note_upload_retry_after(visit_id: str, retry_after_s: int | None) -> None:

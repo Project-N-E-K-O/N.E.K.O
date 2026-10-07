@@ -1370,3 +1370,24 @@ def test_a_hand_edit_is_rolled_back_when_the_name_moves_during_its_checks(env, m
     resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
                       json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
     assert resp.status_code == 409 and _file(tmp_path) == before
+
+
+
+def test_confirming_is_refused_when_the_name_moves_during_the_check(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    client.portal.call(persona.store().save, UID_A, {
+        **_file(tmp_path), "text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "edited": True, "reviewed": False})
+    view = client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()
+    real = persona._hooks.resolve_char_uid
+    calls = []
+
+    async def replaced_during_the_check(name):
+        calls.append(name)
+        return await real(name) if len(calls) <= 2 else "d" * 32
+
+    monkeypatch.setattr(persona._hooks, "resolve_char_uid", replaced_during_the_check)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"reviewed": True, "persona_version": view["persona_version"]})
+    assert resp.status_code == 409 and resp.json()["code"] == "catgirl_changed"
+    assert _file(tmp_path)["reviewed"] is False

@@ -1150,7 +1150,7 @@ async def _submit_report(
     if unavailable_owner and doc.get("own_visit_uid") and doc["own_visit_uid"] != unavailable_owner:
         # 原因属于另一账号那一侧的转录（共用电脑）：不带进这份举报
         unavailable = None
-    if unavailable and not doc.get("transcript_unavailable"):
+    if unavailable and doc.get("include_transcript") is not False and not doc.get("transcript_unavailable"):
         # 举报文件没写进不可用标记（磁盘满 / 权限）：提交的那份照样带上，Servers 才知道转录已经没了
         doc = {**doc, "transcript_unavailable": unavailable}
     try:
@@ -1259,6 +1259,9 @@ def _mark_report_sync(path: Path, visit_id: str, reason: str, owner: str | None 
         if isinstance(doc, dict) and owner is not None and doc.get("own_visit_uid") \
                 and doc["own_visit_uid"] != owner:
             # 共用电脑上另一账号排的举报：这份转录不是它那一侧的，不替它记原因（归属未知时照记）
+            return False
+        if isinstance(doc, dict) and doc.get("include_transcript") is False:
+            # 不附转录的举报不记转录的原因（也不在本轮提交时补带）
             return False
         if not _report_belongs(doc, visit_id) or doc.get("transcript_unavailable"):
             # 别场的举报（文件被复制 / 改过）不能盖上这场转录的原因

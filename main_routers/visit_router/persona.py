@@ -1156,6 +1156,9 @@ async def put_persona(request: Request, catgirl: str = ""):
                     return _error(400, "persona_sensitive_overlap", hits=[hit.value for hit in hits])
                 if card_hash((await _hooks.load_context()).card(catgirl)) != card_hash(card):
                     return _error(409, "persona_card_changed")
+                if await _hooks.resolve_char_uid(catgirl) != character_uid:
+                    # 检查期间名字换成了另一个角色（卡片一字不差也算）：不替原角色确认
+                    return _error(409, "catgirl_changed")
             doc = {**doc, "reviewed": True}
         else:
             lang = _hooks.lang()
