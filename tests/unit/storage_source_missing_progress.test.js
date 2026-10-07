@@ -52,10 +52,11 @@ for (const locale of ['en', 'zh-CN']) {
         status: 'rollback_required',
         error_code: 'migration_publish_conflict',
         target_root: 'E:/new/N.E.K.O',
+        txid: '0123456789abcdef0123456789abcdef',
       },
     });
 
-    assert.strictEqual(progress.label, `${messages.storage.progressPublishConflict} E:/new/N.E.K.O/.smtx`);
+    assert.strictEqual(progress.label, `${messages.storage.progressPublishConflict} E:/new/N.E.K.O/.smtx/0123456789ab`);
   });
 
   test(`${locale}: publish conflict keeps Windows separators consistent`, () => {
@@ -68,10 +69,11 @@ for (const locale of ['en', 'zh-CN']) {
         status: 'rollback_required',
         error_code: 'migration_publish_conflict',
         target_root: windowsRoot,
+        txid: '0123456789abcdef0123456789abcdef',
       },
     });
 
-    assert.strictEqual(progress.label, `${messages.storage.progressPublishConflict} ${windowsRoot}${backslash}.smtx`);
+    assert.strictEqual(progress.label, `${messages.storage.progressPublishConflict} ${windowsRoot}${backslash}.smtx${backslash}0123456789ab`);
   });
 
   test(`${locale}: other failed migrations keep the generic text`, () => {

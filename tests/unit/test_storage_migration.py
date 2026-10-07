@@ -1786,3 +1786,70 @@ def test_reused_identical_config_gets_its_workshop_paths_rebased(tmp_path):
     assert result["completed"] is True, result
     rebased = json.loads((target_root / "config" / "workshop_config.json").read_text(encoding="utf-8"))
     assert rebased["user_mod_folder"] == str((target_root / "mods").resolve())
+
+
+@pytest.mark.unit
+def test_fresh_attempt_drops_publish_records_of_a_removed_transaction(tmp_path, monkeypatch):
+    """A conflict was resolved by deleting .smtx; the checkpoint still lists
+    entries that transaction had published. A new attempt interrupted while
+    staging must not try to restore backups that never existed."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    stale = dict(load_storage_migration(config_manager))
+    stale.update(
+        {
+            "published_entries": ["config"],
+            "original_target_entries": ["config"],
+            "publishing_entry": "memory",
+            "publishing_target_existed": True,
+            "restoring_entries": ["config"],
+        }
+    )
+    save_storage_migration(config_manager, stale)
+    original_copy = storage_migration_module._copy_runtime_entry
+
+    def _interrupt(source_path, target_path):
+        original_copy(source_path, target_path)
+        raise KeyboardInterrupt("simulated process loss while staging")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", original_copy)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "new"
+
+
+@pytest.mark.unit
+def test_unreadable_source_during_recovery_stays_retryable(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, source_root, target_root = _overwrite_migration(tmp_path)
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _crash_after_publish(staged, target):
+        original_publish(staged, target)
+        raise KeyboardInterrupt("simulated process loss after publish")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", original_publish)
+    original_snapshot = storage_migration_module._snapshot_path
+
+    def _locked_source(path):
+        if Path(path) == source_root / "config":
+            raise PermissionError(32, "the file is being used by another process")
+        return original_snapshot(path)
+
+    monkeypatch.setattr(storage_migration_module, "_snapshot_path", _locked_source)
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "migration_source_missing"
+    assert result["payload"]["status"] == "rollback_required"
+    assert load_storage_policy(config_manager) is None
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "new"

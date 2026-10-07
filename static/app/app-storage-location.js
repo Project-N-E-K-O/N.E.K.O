@@ -1088,8 +1088,14 @@
                         // Windows path does not end up mixing both kinds.
                         var backslash = String.fromCharCode(92);
                         var separator = targetRoot.indexOf(backslash) >= 0 ? backslash : '/';
-                        label = translate('storage.progressPublishConflict', '迁移时目标位置被其他程序重新创建，迁移已暂停，新旧数据都已保留。原来的数据在下面这个事务目录的 backup 里，请勿删除，确认后再手动处理：')
-                            + ' ' + (targetRoot ? targetRoot + separator + '.smtx' : '.smtx');
+                        label = translate('storage.progressPublishConflict', '迁移时目标位置被其他程序重新创建，迁移已暂停，新旧数据都已保留。原来的数据在下面这个事务目录的 backup 里，请勿删除，确认后再手动处理：');
+                        // The backup sits in this transaction's own directory,
+                        // named after the first 12 characters of its id.
+                        var transactionDir = ['.smtx', String(migrationPayload.txid || '').slice(0, 12)]
+                            .filter(function (part) { return !!part; })
+                            .join(separator);
+                        label = label
+                            + ' ' + (targetRoot ? targetRoot + separator + transactionDir : transactionDir);
                     } else {
                         label = translate('storage.progressFailed', '迁移未能完成，正在等待恢复处理');
                     }

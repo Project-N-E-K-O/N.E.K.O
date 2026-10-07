@@ -754,7 +754,9 @@ def _transaction_entries_diverged_from_source(
             continue
         try:
             changed = _snapshot_path(source_entry) != expected
-        except StorageMigrationError:
+        except (StorageMigrationError, OSError):
+            # Unreadable right now (a Windows sharing violation, say) is no
+            # proof the source is intact: keep everything and retry later.
             changed = True
         if changed:
             diverged.append(entry_name)
@@ -1345,10 +1347,17 @@ def run_pending_storage_migration(
             source_root=str(source_root),
             target_root=str(target_root),
             resuming_v1_copy=resuming_v1_copy,
-            # A conflict only stops the transaction it was found in; reaching
-            # here means that transaction is gone and this attempt is fresh.
+            # Reaching here means no transaction is left (rolled back, or removed
+            # by hand after a conflict): this attempt starts from a clean record,
+            # so nothing a previous attempt left behind can steer a later rollback.
             publish_conflict_entry="",
             staged_source_manifests={},
+            copied_entries={},
+            published_entries=[],
+            original_target_entries=[],
+            publishing_entry="",
+            publishing_target_existed=False,
+            restoring_entries=[],
             error_code="",
             error_message="",
         )
