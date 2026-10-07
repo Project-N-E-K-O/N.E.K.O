@@ -970,20 +970,19 @@ async def _upload_pending(
 
 
 async def _pending_upload_owner(config_dir: Path, visit_id: str) -> str | None:
-    """Owner of the visit's pending transcript: ``state.json``, else the sealed upload itself.
+    """Owner of the visit's pending transcript: the sealed upload's own, else ``state.json``.
 
-    A sealed upload is self-contained (its state may be gone or unreadable,
-    or it may come from a newer version and be kept as is).
+    The sealed upload is self-contained and names its own account (a file a
+    newer version wrote is kept as is even when ``state.json`` names another
+    account); ``state.json`` covers legacy ownerless files and a lone stream.
     """
-    owner = await _state_owner(config_dir, visit_id)
-    if owner is not None:
-        return owner
     try:
         doc = await asyncio.to_thread(
             _load_json, visit_path(config_dir / VISIT_SPOOL_DIRNAME, visit_id, UPLOAD_JSON_SUFFIX))
     except (OSError, ValueError):
-        return None
-    return _owner_or_none(doc.get("own_visit_uid")) if isinstance(doc, dict) else None
+        doc = None
+    owner = _owner_or_none(doc.get("own_visit_uid")) if isinstance(doc, dict) else None
+    return owner if owner is not None else await _state_owner(config_dir, visit_id)
 
 
 async def _state_owner(config_dir: Path, visit_id: str) -> str | None:

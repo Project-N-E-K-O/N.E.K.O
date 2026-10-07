@@ -2868,3 +2868,19 @@ async def test_the_report_gate_reads_the_owner_from_the_upload_when_state_is_gon
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
     # 没有 state.json：归属从封存文件里取，另一账号的附转录举报不等这份
     assert [visit_id for visit_id, _doc in reports.calls] == [v]
+
+
+
+async def test_the_report_gate_prefers_the_owner_named_by_the_upload_itself(tmp_path):
+    v = vid(112)
+    await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_B)                   # state.json 记的是 B
+    newer = {**_sealed(v), "v": 99, "own_visit_uid": OWN_A}                 # 留着的新版本转录是 A 的
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(newer), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": OWN_A}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
+    # 待传的是 A 自己那一侧的转录：A 的附转录举报照样等它，不能按 state.json 的 B 放行
+    assert reports.calls == []

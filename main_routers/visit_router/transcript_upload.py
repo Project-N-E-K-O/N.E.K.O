@@ -1530,8 +1530,12 @@ async def upload_backlog_full(config_dir: Path) -> bool:
     return await asyncio.to_thread(_pending_upload_bytes_sync, config_dir) >= VISIT_UPLOAD_PENDING_CAP_BYTES
 
 
-def _anomalies_sync(config_dir: Path, visit_id: str) -> tuple[int, str | None] | None:
-    """``(count, own_visit_uid of the transcript)`` from the pending upload, or None when there is none."""
+def _anomalies_sync(config_dir: Path, visit_id: str) -> tuple[int, str | None, bool] | None:
+    """``(count, own_visit_uid of the transcript, counted from the stream)`` of the pending upload.
+
+    None when there is none. A count from the stream may be short (an append
+    that failed); the caller prefers the count this process recorded at seal.
+    """
     spool_dir = _spool_dir(config_dir)
     try:
         doc = _load_json(visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX))
@@ -1541,7 +1545,7 @@ def _anomalies_sync(config_dir: Path, visit_id: str) -> tuple[int, str | None] |
     request = doc.get("request") if isinstance(doc, dict) else None
     if isinstance(request, dict) and isinstance(request.get("anomalies"), int):
         owner = doc.get("own_visit_uid")
-        return max(0, request["anomalies"]), owner if isinstance(owner, str) and owner else None
+        return max(0, request["anomalies"]), owner if isinstance(owner, str) and owner else None, False
     try:
         with open(visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX), "rb") as handle:
             owner = None
@@ -1556,7 +1560,7 @@ def _anomalies_sync(config_dir: Path, visit_id: str) -> tuple[int, str | None] |
                     owner = value if isinstance(value, str) and value else None
                 if b'"kind":"anomaly"' in raw:
                     count += 1
-            return count, owner
+            return count, owner, True
     except FileNotFoundError:
         return None
 
@@ -1569,11 +1573,13 @@ async def visit_anomalies(config_dir: Path, visit_id: str, owner: str | None = N
     by several community accounts) is not used.
     """
     try:
-        found = await asyncio.to_thread(_anomalies_sync, config_dir, visit_id)
+        pending = await asyncio.to_thread(_anomalies_sync, config_dir, visit_id)
     except (OSError, ValueError):
-        found = None
-    if found is None:
-        found = _recent_anomalies.get(visit_id)
+        pending = None
+    found = pending[:2] if pending is not None else None
+    if found is None or (pending[2] and visit_id in _recent_anomalies):
+        # 没有待传文件，或只能从流水数（流水可能少写了几行）：本进程封存时记下的计数是完整的，优先用它
+        found = _recent_anomalies.get(visit_id, found)
     if found is None:
         return 0
     count, source = found

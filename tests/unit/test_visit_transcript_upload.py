@@ -1694,3 +1694,15 @@ async def test_an_unreadable_sealed_upload_falls_back_to_its_stream_for_anomalie
     (_spool(tmp_path) / f"{V1}.upload.jsonl").write_text(
         header + "\n" + '{"kind":"anomaly"}' + "\n" + '{"kind":"anomaly"}' + "\n", encoding="utf-8")
     assert await tu.visit_anomalies(tmp_path, V1, OWN) == 2
+
+
+
+async def test_the_count_recorded_at_seal_wins_over_a_short_stream(tmp_path, servers):
+    sealed = _spool(tmp_path) / f"{V1}.upload.json"
+    sealed.parent.mkdir(parents=True, exist_ok=True)
+    sealed.write_text("{broken", encoding="utf-8")
+    header = json.dumps({"kind": "header", "own_visit_uid": OWN})
+    (_spool(tmp_path) / f"{V1}.upload.jsonl").write_text(
+        header + "\n" + '{"kind":"anomaly"}' + "\n", encoding="utf-8")       # 流水少写了几行
+    tu.remember_anomalies(V1, 3, OWN)                                       # 封存时记下的完整计数
+    assert await tu.visit_anomalies(tmp_path, V1, OWN) == 3
