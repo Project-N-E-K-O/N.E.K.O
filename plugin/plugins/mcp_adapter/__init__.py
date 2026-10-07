@@ -2894,10 +2894,10 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         async with self._servers_config_lock:
             config = await self.config.dump()
             servers_config = config.get("mcp_servers", {})
-        
+
             removed = []
             not_found = []
-        
+
             async with self._chat_tools_lock:
                 mapped_ids = [
                     tid for mapping in (self._chat_tools, self._pending_chat_tools)
