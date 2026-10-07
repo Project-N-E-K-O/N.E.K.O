@@ -642,3 +642,260 @@ def test_run_pending_storage_migration_failure_uses_payload_source_before_normal
     assert root_state["last_known_good_root"] == persisted_source_root
     assert root_state["last_migration_source"] == persisted_source_root
     assert root_state["last_migration_backup"] == persisted_source_root
+
+
+def _overwrite_migration(tmp_path: Path):
+    """Source config ``new`` over an existing target config ``healthy``."""
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    (target_root / "config").mkdir(parents=True)
+    (target_root / "config" / "characters.json").write_text("healthy", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+        confirmed_existing_target_content=True,
+    )
+    return config_manager, source_root, target_root
+
+
+def _fail_committing_checkpoint(monkeypatch, storage_migration_module):
+    original_persist = storage_migration_module._persist_migration_payload
+
+    def _persist(*args, **kwargs):
+        if kwargs.get("status") == "committing":
+            raise OSError("simulated checkpoint write failure")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", _persist)
+
+
+def _stop_after_recovery(monkeypatch, storage_migration_module):
+    def _stop(*_args, **_kwargs):
+        raise StorageMigrationError("stop_after_recovery", "inspect restored target")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _stop)
+
+
+@pytest.mark.unit
+def test_failed_committing_checkpoint_rolls_the_publish_back(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    _fail_committing_checkpoint(monkeypatch, storage_migration_module)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
+    # No original target entry is left behind in a transaction backup.
+    assert not (target_root / ".smtx").exists()
+
+
+@pytest.mark.unit
+def test_failed_rollback_stays_retryable_and_keeps_the_backup(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    _fail_committing_checkpoint(monkeypatch, storage_migration_module)
+    original_replace = storage_migration_module.os.replace
+
+    def _replace(source, target):
+        if Path(source).parent.name == "backup":
+            raise OSError("simulated locked file during rollback")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(storage_migration_module.os, "replace", _replace)
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "migration_rollback_required"
+    assert result["payload"]["status"] == "rollback_required"
+    assert is_storage_migration_pending(load_storage_migration(config_manager))
+    backups = list((target_root / ".smtx").glob("*/backup/config/characters.json"))
+    assert [path.read_text(encoding="utf-8") for path in backups] == ["healthy"]
+
+    monkeypatch.undo()
+    _stop_after_recovery(monkeypatch, storage_migration_module)
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "stop_after_recovery"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
+
+
+@pytest.mark.unit
+def test_rollback_interrupted_after_restoring_resumes(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    original_replace = storage_migration_module.os.replace
+    original_persist = storage_migration_module._persist_migration_payload
+
+    def _crash_once_published(*args, **kwargs):
+        # Every entry is recorded as published by the time COMMITTING is written.
+        if kwargs.get("status") == "committing":
+            raise KeyboardInterrupt("simulated process loss after publish")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module, "_persist_migration_payload", _crash_once_published
+    )
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    assert load_storage_migration(config_manager)["published_entries"] == ["config"]
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", original_persist)
+
+    def _crash_after_restore(source, target):
+        original_replace(source, target)
+        if Path(source).parent.name == "backup":
+            raise KeyboardInterrupt("simulated process loss during rollback")
+
+    monkeypatch.setattr(storage_migration_module.os, "replace", _crash_after_restore)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
+
+    monkeypatch.setattr(storage_migration_module.os, "replace", original_replace)
+    _stop_after_recovery(monkeypatch, storage_migration_module)
+    retry = run_pending_storage_migration(config_manager)
+
+    # The restored entry is recognised instead of reported as a lost backup.
+    assert retry["error_code"] == "stop_after_recovery"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
+
+
+@pytest.mark.unit
+def test_committed_target_written_since_is_never_rolled_back(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_persist = storage_migration_module._persist_migration_payload
+    failed_once = False
+
+    def _fail_completed_checkpoint(*args, **kwargs):
+        nonlocal failed_once
+        if kwargs.get("status") == STORAGE_MIGRATION_STATUS_COMPLETED and not failed_once:
+            failed_once = True
+            raise OSError("simulated checkpoint loss")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module,
+        "_persist_migration_payload",
+        _fail_completed_checkpoint,
+    )
+    first = run_pending_storage_migration(config_manager)
+    assert first["error_code"] == "migration_commit_pending"
+
+    # The launcher starts services on the committed target regardless.
+    (target_root / "config" / "characters.json").write_text("edited", encoding="utf-8")
+    (target_root / "config" / "written_by_service.json").write_text("{}", encoding="utf-8")
+
+    second = run_pending_storage_migration(config_manager)
+
+    assert second["completed"] is True
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "edited"
+    assert (target_root / "config" / "written_by_service.json").is_file()
+
+
+@pytest.mark.unit
+def test_torn_config_copy_fails_staging_verification(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("complete", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_copy = storage_migration_module._copy_runtime_entry
+
+    def _torn_copy(source_path, target_path):
+        original_copy(source_path, target_path)
+        if Path(target_path).name == "config":
+            # The source changed between its manifest and the copy.
+            (Path(target_path) / "characters.json").write_text("torn", encoding="utf-8")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _torn_copy)
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "verification_failed"
+    assert not (target_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_storage_migration_keeps_directory_metadata(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    private_dir = source_root / "memory" / "private"
+    private_dir.mkdir(parents=True)
+    (private_dir / "notes.json").write_text("{}", encoding="utf-8")
+    old_time = 1_000_000_000
+    os.utime(private_dir, (old_time, old_time))
+    os.utime(source_root / "memory", (old_time, old_time))
+    if os.name == "posix":
+        private_dir.chmod(0o700)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+
+    copied_private = target_root / "memory" / "private"
+    assert int(copied_private.stat().st_mtime) == old_time
+    assert int((target_root / "memory").stat().st_mtime) == old_time
+    if os.name == "posix":
+        assert copied_private.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.unit
+def test_storage_migration_refuses_a_linked_transaction_directory(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    external = tmp_path / "external"
+    external.mkdir()
+    target_root.mkdir(parents=True)
+    try:
+        os.symlink(external, target_root / ".smtx", target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "path_link_unsupported"
+    assert list(external.iterdir()) == []
+    assert not (target_root / "config").exists()

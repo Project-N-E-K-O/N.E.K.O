@@ -20,9 +20,10 @@ import os
 import shutil
 import stat
 import uuid
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from utils.file_utils import atomic_write_json, read_json
 from utils.logger_config import get_module_logger
@@ -346,6 +347,7 @@ def _copy_runtime_entry(source_path: Path, target_path: Path) -> None:
         return
     target_path.mkdir()
     pending = [(source_path, target_path)]
+    created_dirs = [(source_path, target_path)]
     while pending:
         source_dir, target_dir = pending.pop()
         with os.scandir(source_dir) as iterator:
@@ -357,8 +359,15 @@ def _copy_runtime_entry(source_path: Path, target_path: Path) -> None:
             if child_kind == "dir":
                 child_target.mkdir()
                 pending.append((child_source, child_target))
+                created_dirs.append((child_source, child_target))
             else:
                 _copy_regular_file_no_follow(child_source, child_target)
+    # Keep directory modes and timestamps as ``copytree`` did. Apply them
+    # children first, after every file is in place: a read-only directory
+    # could not receive its children, and writing a child would bump the
+    # parent's mtime again.
+    for source_dir, target_dir in reversed(created_dirs):
+        shutil.copystat(source_dir, target_dir, follow_symlinks=False)
 
 
 def _rewrite_migrated_runtime_config_paths(
@@ -406,13 +415,13 @@ def _transaction_path(target_root: Path, txid: str) -> Path:
 
 
 def _remove_transaction(transaction_root: Path) -> None:
+    _ensure_transaction_parent(transaction_root)
     _remove_existing_path(transaction_root)
     # Drop the shared transaction parent too once nothing else is in it, so a
-    # finished or rolled-back migration leaves no empty directory behind.
-    try:
+    # finished or rolled-back migration leaves no empty directory behind. A
+    # parent that still holds another transaction refuses rmdir and stays.
+    with suppress(OSError):
         transaction_root.parent.rmdir()
-    except OSError:
-        pass
 
 
 def _rollback_interrupted_publish(
@@ -420,9 +429,19 @@ def _rollback_interrupted_publish(
     payload: dict[str, Any],
     target_root: Path,
     transaction_root: Path,
+    mark_restoring: Callable[[str], None] | None = None,
 ) -> None:
-    """Restore the exact pre-publish target state recorded by the checkpoint."""
+    """Restore the exact pre-publish target state recorded by the checkpoint.
+
+    ``mark_restoring`` records an entry in the checkpoint before its backup is
+    moved back. A backup only disappears through that move, so on a later run
+    a marked entry without a backup is already restored, while an unmarked one
+    has really lost its backup.
+    """
     backup_root = transaction_root / "backup"
+    restoring_entries = {
+        str(entry) for entry in payload.get("restoring_entries") or []
+    }
     published_entries = [
         str(entry)
         for entry in payload.get("published_entries") or []
@@ -452,10 +471,17 @@ def _rollback_interrupted_publish(
             target_existed = bool(payload.get("publishing_target_existed"))
 
         if target_existed and os.path.lexists(backup_entry):
+            if mark_restoring is not None and entry_name not in restoring_entries:
+                mark_restoring(entry_name)
+                restoring_entries.add(entry_name)
             _remove_existing_path(target_entry)
             os.replace(backup_entry, target_entry)
             continue
         if target_existed:
+            if entry_name in restoring_entries and os.path.lexists(target_entry):
+                # An earlier rollback moved this backup back and stopped
+                # before removing the transaction.
+                continue
             if was_published:
                 raise StorageMigrationError(
                     "migration_rollback_required",
@@ -469,24 +495,53 @@ def _rollback_interrupted_publish(
     _remove_transaction(transaction_root)
 
 
-def _committed_target_matches_checkpoint(
+def _rollback_publish_or_require_recovery(
     *,
     payload: dict[str, Any],
     target_root: Path,
-) -> bool:
-    copied_entries = payload.get("copied_entries")
-    if not isinstance(copied_entries, dict) or not copied_entries:
-        return False
-    for entry_name, proof in copied_entries.items():
-        if entry_name not in MIGRATED_RUNTIME_ENTRY_NAMES or not isinstance(proof, dict):
-            return False
-        target_manifest = proof.get("target_manifest")
-        if not isinstance(target_manifest, dict):
-            return False
-        target_entry = target_root / entry_name
-        if not os.path.lexists(target_entry) or _snapshot_path(target_entry) != target_manifest:
-            return False
-    return True
+    transaction_root: Path,
+    mark_restoring: Callable[[str], None] | None = None,
+) -> None:
+    """Roll back, turning any failure into the retryable rollback state.
+
+    A failed rollback can leave original target entries only in the
+    transaction backup. ``migration_rollback_required`` keeps the checkpoint
+    active so the next start tries the rollback again instead of treating the
+    migration as finished.
+    """
+    try:
+        _rollback_interrupted_publish(
+            payload=payload,
+            target_root=target_root,
+            transaction_root=transaction_root,
+            mark_restoring=mark_restoring,
+        )
+    except StorageMigrationError as exc:
+        if exc.error_code == "migration_rollback_required":
+            raise
+        raise StorageMigrationError(
+            "migration_rollback_required",
+            f"迁移目标回滚未完成: {exc.message}",
+        ) from exc
+    except Exception as exc:
+        raise StorageMigrationError(
+            "migration_rollback_required",
+            f"迁移目标回滚未完成: {exc}",
+        ) from exc
+
+
+def _ensure_transaction_parent(transaction_root: Path) -> None:
+    parent = transaction_root.parent
+    if not os.path.lexists(parent):
+        return
+    # ``mkdir(parents=True)`` would follow a link or junction here and stage
+    # the migration somewhere else entirely.
+    kind, _parent_stat = _classify_no_follow(parent)
+    if kind != "dir":
+        raise StorageMigrationError(
+            "target_special_file_unsupported",
+            f"迁移事务目录不是普通目录: {parent}",
+        )
 
 
 def _iter_existing_runtime_entries(root: Path) -> list[str]:
@@ -602,6 +657,7 @@ def build_pending_storage_migration_payload(
         "published_entries": [],
         "publishing_entry": "",
         "publishing_target_existed": False,
+        "restoring_entries": [],
         "error_code": "",
         "error_message": "",
         "requested_at": timestamp,
@@ -754,6 +810,16 @@ def run_pending_storage_migration(
             "error_message": error_message,
         }
 
+    def _mark_restoring(entry_name: str) -> None:
+        nonlocal payload
+        restoring = [str(entry) for entry in payload.get("restoring_entries") or []]
+        payload = _persist_migration_payload(
+            config_manager,
+            payload,
+            anchor_root=normalized_anchor_root,
+            restoring_entries=list(dict.fromkeys([*restoring, entry_name])),
+        )
+
     def _finish_success(
         *,
         copied_entries: dict[str, dict[str, Any]],
@@ -772,17 +838,12 @@ def run_pending_storage_migration(
                     anchor_root=normalized_anchor_root,
                 )
             except Exception as exc:
-                try:
-                    _rollback_interrupted_publish(
-                        payload=payload,
-                        target_root=target_root,
-                        transaction_root=transaction_root,
-                    )
-                except Exception as rollback_exc:
-                    raise StorageMigrationError(
-                        "migration_rollback_required",
-                        f"存储策略提交失败且目标回滚未完成: {rollback_exc}",
-                    ) from rollback_exc
+                _rollback_publish_or_require_recovery(
+                    payload=payload,
+                    target_root=target_root,
+                    transaction_root=transaction_root,
+                    mark_restoring=_mark_restoring,
+                )
                 raise StorageMigrationError(
                     "policy_commit_failed",
                     f"存储策略提交失败，目标已恢复: {exc}",
@@ -837,6 +898,7 @@ def run_pending_storage_migration(
                 original_target_entries=[],
                 publishing_entry="",
                 publishing_target_existed=False,
+                restoring_entries=[],
             )
         except Exception as exc:
             logger.warning(
@@ -918,22 +980,28 @@ def run_pending_storage_migration(
             checkpoint_status == STORAGE_MIGRATION_STATUS_COMMITTING
             and policy_selected_root
             and paths_equal(policy_selected_root, target_root)
-            and _committed_target_matches_checkpoint(
-                payload=payload,
-                target_root=target_root,
-            )
         ):
+            # COMMITTING is written only after every entry is published, and
+            # the policy already points at the target: the launcher may have
+            # run services on it since. Never roll that back -- only finish
+            # the checkpoint. Cleanup re-checks each entry before deleting.
             return _finish_success(
-                copied_entries=dict(copied_checkpoint),
+                copied_entries=(
+                    dict(copied_checkpoint)
+                    if isinstance(copied_checkpoint, dict)
+                    else {}
+                ),
                 transaction_root=transaction_root,
                 persist_policy=False,
                 selection_source=selection_source,
             )
-        if transaction_root.exists():
-            _rollback_interrupted_publish(
+        _ensure_transaction_parent(transaction_root)
+        if os.path.lexists(transaction_root):
+            _rollback_publish_or_require_recovery(
                 payload=payload,
                 target_root=target_root,
                 transaction_root=transaction_root,
+                mark_restoring=_mark_restoring,
             )
             payload = _persist_migration_payload(
                 config_manager,
@@ -945,6 +1013,7 @@ def run_pending_storage_migration(
                 original_target_entries=[],
                 publishing_entry="",
                 publishing_target_existed=False,
+                restoring_entries=[],
                 error_code="",
                 error_message="",
             )
@@ -1014,18 +1083,21 @@ def run_pending_storage_migration(
                 continue
             staged_entry = stage_root / entry_name
             _copy_runtime_entry(source_entry, staged_entry)
+            staged_manifest = _snapshot_path(staged_entry)
+            if staged_manifest != source_manifest:
+                raise StorageMigrationError(
+                    "verification_failed",
+                    f"迁移 staging 校验失败：{entry_name}。",
+                )
             if entry_name == "config":
+                # Verify the verbatim copy first; only then apply the one
+                # intended change and take the manifest the target must match.
                 _rewrite_migrated_runtime_config_paths(
                     source_root=source_root,
                     target_root=target_root,
                     config_root=stage_root,
                 )
-            staged_manifest = _snapshot_path(staged_entry)
-            if entry_name != "config" and staged_manifest != source_manifest:
-                raise StorageMigrationError(
-                    "verification_failed",
-                    f"迁移 staging 校验失败：{entry_name}。",
-                )
+                staged_manifest = _snapshot_path(staged_entry)
             staged_manifests[entry_name] = staged_manifest
             entries_to_publish.append(entry_name)
             if os.path.lexists(target_entry):
@@ -1094,30 +1166,24 @@ def run_pending_storage_migration(
                     publishing_entry="",
                     publishing_target_existed=False,
                 )
+            # Until the policy points at the target, a failed checkpoint
+            # write must undo the publish like any other failure here.
+            payload = _persist_migration_payload(
+                config_manager,
+                payload,
+                anchor_root=normalized_anchor_root,
+                status=STORAGE_MIGRATION_STATUS_COMMITTING,
+                committed_at=_utc_now_iso(),
+            )
         except Exception:
-            _rollback_interrupted_publish(
+            _rollback_publish_or_require_recovery(
                 payload=payload,
                 target_root=target_root,
                 transaction_root=transaction_root,
+                mark_restoring=_mark_restoring,
             )
             raise
 
-        payload = _persist_migration_payload(
-            config_manager,
-            payload,
-            anchor_root=normalized_anchor_root,
-            status=STORAGE_MIGRATION_STATUS_VERIFYING,
-            backup_root=str(source_root),
-            copied_entries=copied_entries,
-        )
-
-        payload = _persist_migration_payload(
-            config_manager,
-            payload,
-            anchor_root=normalized_anchor_root,
-            status=STORAGE_MIGRATION_STATUS_COMMITTING,
-            committed_at=_utc_now_iso(),
-        )
         return _finish_success(
             copied_entries=copied_entries,
             transaction_root=transaction_root,

@@ -3083,6 +3083,36 @@ def test_storage_location_cleanup_rejects_changed_copy_evidence(tmp_path):
 
 
 @pytest.mark.unit
+def test_storage_location_cleanup_allows_a_target_used_since_migration(tmp_path):
+    """Running the app on the new root must not make the old copy uncleanable."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (target_root / "config" / "characters.json").write_text("edited in the app", encoding="utf-8")
+    (target_root / "config" / "core_config.json").write_text("{}", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert not source_root.exists()
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "edited in the app"
+
+
+@pytest.mark.unit
 def test_storage_location_cleanup_reports_unproved_runtime_entries(tmp_path):
     config_manager = _make_real_config_manager(tmp_path)
     source_root = tmp_path / "legacy-runtime" / "N.E.K.O"

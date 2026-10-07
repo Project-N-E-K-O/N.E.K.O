@@ -1663,16 +1663,17 @@ def _cleanup_retained_runtime_root(
         if os.path.lexists(retained_path / entry_name)
     ]
 
+    # The evidence proves each entry was copied completely. What is deleted is
+    # the retained copy, so it must still be exactly what was copied. The
+    # target only has to still hold the entry: running the app on it since is
+    # the normal case and does not make the old copy worth keeping.
     for entry_name, proof in proved_entries:
         source_entry = retained_path / entry_name
         target_entry = normalized_target / entry_name
-        source_manifest = proof.get("source_manifest")
-        target_manifest = proof.get("target_manifest")
         if (
             not os.path.lexists(source_entry)
             or not os.path.lexists(target_entry)
-            or _snapshot_path(source_entry) != source_manifest
-            or _snapshot_path(target_entry) != target_manifest
+            or _snapshot_path(source_entry) != proof.get("source_manifest")
         ):
             raise ValueError(f"保留目录条目证据已变化，拒绝清理: {entry_name}")
 
@@ -1690,10 +1691,9 @@ def _cleanup_retained_runtime_root(
             entry_path.unlink()
 
     if not paths_equal(retained_path, anchor_root):
-        try:
+        # Only an emptied retained root goes; anything left in it stays put.
+        with suppress(OSError):
             retained_path.rmdir()
-        except OSError:
-            pass
     return tuple(
         entry_name
         for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES
