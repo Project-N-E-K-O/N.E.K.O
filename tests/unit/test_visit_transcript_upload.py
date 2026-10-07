@@ -1770,3 +1770,14 @@ async def test_an_aged_upload_is_kept_while_the_owner_is_signed_out(tmp_path, se
     outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
     # 没登录：请求没发出，不算试传过，不按过期删
     assert outcome.pending and outcome.login_required and sealed.exists() and V1 not in tu._aged_attempted
+
+
+
+async def test_this_visits_newer_version_file_still_names_its_owner_and_count(tmp_path, servers):
+    doc = _big_doc(4, 10)
+    doc["v"] = 99                                                       # 新版本写的、本场的文件
+    doc["request"]["anomalies"] = 4
+    _write_sealed(tmp_path, doc)
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    assert outcome.pending is True and outcome.owner == OWN             # 另一账号的举报不必等它
+    assert await tu.visit_anomalies(tmp_path, V1, OWN) == 4

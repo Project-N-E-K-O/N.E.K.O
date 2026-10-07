@@ -379,6 +379,14 @@ def sealed_upload_doc_usable(doc: Any, visit_id: str) -> bool:
     return _sealed_doc_belongs(doc, visit_id)
 
 
+def sealed_upload_doc_from_another_version(doc: Any, visit_id: str) -> bool:
+    """Whether an unusable ``.upload.json`` is this visit's file written by another (newer) version.
+
+    Recovery keeps such a file as is; its owner and anomaly count can still be trusted.
+    """
+    return _sealed_doc_unrecognized(doc, visit_id)
+
+
 def _sealed_doc_unrecognized(doc: Any, visit_id: str) -> bool:
     """Whether an invalid ``.upload.json`` looks like another version's intact document.
 

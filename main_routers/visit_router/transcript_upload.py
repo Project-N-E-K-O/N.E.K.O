@@ -75,6 +75,7 @@ from main_logic.visit.recovery import (
     REPORT_IDENTITY,
     build_upload_doc,
     reseal_orphan_stream,
+    sealed_upload_doc_from_another_version,
     sealed_upload_doc_usable,
 )
 from main_logic.visit.spool import UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX
@@ -1241,9 +1242,10 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         return await _settled_round(config_dir, visit_id, sealed, UploadResult(terminal="expired"), owner=owner)
     if not sealed_upload_doc_usable(doc, visit_id):
         # 读不出 / 结构不对 / 别的场次或别的版本的封存文件：不直接传，交给启动补录判
-        # （它能对照流水与 state.json 重封、隔离，或留给新版本）。文件里写的账号不可信，
-        # 归属按未知报（附转录的举报照旧等），免得别场文件里的账号让另一侧的举报不等就交
-        return UploadRound(pending=True)
+        # （它能对照流水与 state.json 重封、隔离，或留给新版本）。别场 / 坏文件里写的账号不可信，
+        # 归属按未知报（附转录的举报照旧等）；本场的新版本文件补录会原样留着，它写的账号可信
+        trusted = sealed_upload_doc_from_another_version(doc, visit_id)
+        return UploadRound(pending=True, owner=owner if trusted else None)
     rejected = doc.get("rejected")
     if isinstance(rejected, str) and rejected:
         # 上一轮已终态拒收、只是原因没记进举报：不再整份重传，接着记原因、删文件
@@ -1551,8 +1553,9 @@ def _anomalies_sync(config_dir: Path, visit_id: str) -> tuple[int, str | None, b
     except (OSError, ValueError):
         # 封存文件坏了 / 一时读不了：旁边若还留着流水（封存后没删掉），计数从流水里数
         doc = None
-    if not sealed_upload_doc_usable(doc, visit_id):
-        # 别场 / 结构不对的文件里的计数不是这一场的：按没有封存文件处理，改从流水数
+    if not (sealed_upload_doc_usable(doc, visit_id) or sealed_upload_doc_from_another_version(doc, visit_id)):
+        # 别场 / 结构不对的文件里的计数不是这一场的：按没有封存文件处理，改从流水数。
+        # 本场的新版本文件（降级后留着的）计数照用
         doc = None
     request = doc.get("request") if isinstance(doc, dict) else None
     if isinstance(request, dict) and isinstance(request.get("anomalies"), int):
