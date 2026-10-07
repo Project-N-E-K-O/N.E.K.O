@@ -3109,6 +3109,7 @@ def test_storage_location_cleanup_allows_a_target_used_since_migration(tmp_path)
         )
 
     assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert cleanup_response.json()["retained_root_kept"] is False
     assert not source_root.exists()
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "edited in the app"
 
@@ -3136,6 +3137,35 @@ def _migrate_config_then_replace_target(tmp_path, replace_target):
             json={"retained_root": str(source_root)},
         )
     return cleanup_response, source_root
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_reports_when_other_files_keep_the_retained_root(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (source_root / "my-notes.txt").write_text("not runtime data", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert cleanup_response.json()["retained_root_kept"] is True
+    assert not (source_root / "config").exists()
+    assert (source_root / "my-notes.txt").read_text(encoding="utf-8") == "not runtime data"
 
 
 @pytest.mark.unit

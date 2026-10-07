@@ -79,7 +79,7 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     "avatar_tools",
 )
 
-_WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+_WINDOWS_IO_REPARSE_TAG_NAME_SURROGATE = 0x20000000
 # Every migrated file is staged under ``<target>/<this>/<txid>/stage/`` before
 # it is published, so both segments add to each staged path. Windows without
 # long-path support fails at 260 characters, and a deep model or avatar-tool
@@ -201,10 +201,15 @@ def _remove_existing_path(path: Path) -> None:
 
 
 def _stat_is_reparse(path_stat: os.stat_result) -> bool:
-    return bool(
-        int(getattr(path_stat, "st_file_attributes", 0))
-        & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT
-    )
+    """Whether a Windows ``lstat`` result is a link-like reparse point.
+
+    Only name surrogates (symlinks, junctions, mount points) redirect to
+    another path. Cloud-sync placeholders (OneDrive Files On-Demand), dedup
+    files and app execution aliases also carry the reparse attribute but are
+    ordinary data, so the attribute alone must not reject them.
+    """
+    tag = int(getattr(path_stat, "st_reparse_tag", 0) or 0)
+    return bool(tag & _WINDOWS_IO_REPARSE_TAG_NAME_SURROGATE)
 
 
 def _classify_no_follow(path: Path) -> tuple[str, os.stat_result]:
@@ -242,7 +247,7 @@ def _hash_regular_file(path: Path) -> tuple[int, str]:
     descriptor = os.open(path, flags)
     try:
         opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode) or _stat_is_reparse(opened):
+        if not stat.S_ISREG(opened.st_mode):
             raise StorageMigrationError(
                 "path_not_file",
                 f"迁移清单打开的对象不是普通文件: {path}",
@@ -324,7 +329,7 @@ def _copy_regular_file_no_follow(source_path: Path, target_path: Path) -> None:
     source_fd = os.open(source_path, flags)
     try:
         opened = os.fstat(source_fd)
-        if not stat.S_ISREG(opened.st_mode) or _stat_is_reparse(opened):
+        if not stat.S_ISREG(opened.st_mode):
             raise StorageMigrationError(
                 "path_not_file",
                 f"迁移源对象不是普通文件: {source_path}",
@@ -366,9 +371,14 @@ def _copy_runtime_entry(source_path: Path, target_path: Path) -> None:
     # Keep directory modes and timestamps as ``copytree`` did. Apply them
     # children first, after every file is in place: a read-only directory
     # could not receive its children, and writing a child would bump the
-    # parent's mtime again.
+    # parent's mtime again. The owner keeps write access to each directory:
+    # on POSIX, moving a directory to another parent (publish) and removing
+    # its contents (rollback, cleanup) both need it.
     for source_dir, target_dir in reversed(created_dirs):
         shutil.copystat(source_dir, target_dir, follow_symlinks=False)
+        mode = stat.S_IMODE(target_dir.lstat().st_mode)
+        if not mode & stat.S_IWUSR:
+            os.chmod(target_dir, mode | stat.S_IWUSR)
 
 
 def _rewrite_migrated_runtime_config_paths(
@@ -407,6 +417,45 @@ def _snapshot_path(path: Path) -> dict[str, int | str]:
             "manifest_digest": "",
         }
     return _manifest_path(path)
+
+
+def classify_entry_no_follow(path: Path) -> str | None:
+    """Return ``"file"``/``"dir"`` for a real entry, ``None`` for anything else.
+
+    Links, junctions, special files and missing paths all give ``None``.
+    """
+    if not os.path.lexists(path):
+        return None
+    try:
+        kind, _entry_stat = _classify_no_follow(path)
+    except StorageMigrationError:
+        return None
+    return kind
+
+
+def snapshot_runtime_entry(path: Path) -> dict[str, int | str]:
+    """Content manifest of one runtime entry, the form copy evidence uses."""
+    return _snapshot_path(path)
+
+
+def rewrite_migrated_config_paths(*, source_root: Path, target_root: Path, config_root: Path) -> None:
+    """Rebase workshop paths in ``config_root/config`` the way migration does."""
+    _rewrite_migrated_runtime_config_paths(
+        source_root=source_root,
+        target_root=target_root,
+        config_root=config_root,
+    )
+
+
+def copy_evidence_entries(copied_entries: Any) -> dict[str, dict[str, Any]]:
+    """The per-entry copy evidence a checkpoint's ``copied_entries`` carries."""
+    if not isinstance(copied_entries, dict):
+        return {}
+    return {
+        str(entry_name): proof
+        for entry_name, proof in copied_entries.items()
+        if entry_name in MIGRATED_RUNTIME_ENTRY_NAMES and isinstance(proof, dict)
+    }
 
 
 def _transaction_path(target_root: Path, txid: str) -> Path:
@@ -896,13 +945,14 @@ def run_pending_storage_migration(
         # A v1 checkpoint finished from COMMITTING carries no copy evidence.
         # Keep it classified as v1 so retained-root cleanup can still prove
         # entries by comparing both sides instead of refusing for good.
+        has_copy_evidence = bool(copy_evidence_entries(copied_entries))
         completed_version = (
             STORAGE_MIGRATION_VERSION
-            if copied_entries or prior_version >= STORAGE_MIGRATION_VERSION
+            if has_copy_evidence or prior_version >= STORAGE_MIGRATION_VERSION
             else prior_version
         )
         has_cleanup_basis = (
-            bool(copied_entries) or completed_version < STORAGE_MIGRATION_VERSION
+            has_copy_evidence or completed_version < STORAGE_MIGRATION_VERSION
         )
 
         try:

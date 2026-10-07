@@ -392,6 +392,8 @@
                 return translate('storage.restartUnavailable', '当前应用暂时无法执行受控重启，请稍后重试。');
             case 'retained_source_cleanup_failed':
                 return translate('storage.retainedSourceCleanupFailed', '清理旧数据保留目录失败，请稍后重试。');
+            case 'retained_source_cleanup_incomplete':
+                return translate('storage.retainedSourceCleanupIncomplete', '已清理能确认复制完整的部分。以下条目与新目录不一致或缺少复制记录，已原样保留，请手动确认并删除后再点一次「清理旧数据」：');
             case 'retained_source_mismatch':
                 return translate('storage.retainedSourceMismatch', '请求的清理路径与当前保留目录不一致，请刷新后重试。');
             case 'retained_source_not_found':
@@ -1372,6 +1374,24 @@
             try {
                 payload = await response.json();
             } catch (_) {}
+            if (payload && payload.error_code === 'retained_source_cleanup_incomplete') {
+                // Part of the old directory is already gone; say so and name
+                // what was kept instead of reporting a plain failure.
+                var remainingEntries = Array.isArray(payload.remaining_entries)
+                    ? payload.remaining_entries.map(function (entry) { return String(entry); }).join(', ')
+                    : '';
+                if (state.completionCleanupButton) {
+                    state.completionCleanupButton.disabled = false;
+                }
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(
+                        extractResponseError(payload, '') + (remainingEntries ? ' ' + remainingEntries : ''),
+                        8000
+                    );
+                }
+                await checkReadyStateCompletionNotice();
+                return;
+            }
             if (!response.ok || !payload || payload.ok !== true) {
                 throw new Error(extractResponseError(payload, translate('storage.cleanupRetainedRootFailed', '清理旧数据目录失败，请稍后重试。')));
             }
@@ -1379,7 +1399,9 @@
             applyCompletionNotice({ completed: false });
             if (typeof window.showStatusToast === 'function') {
                 window.showStatusToast(
-                    translate('storage.cleanupRetainedRootDone', '旧数据目录已清理，当前仅保留新的运行目录。'),
+                    payload.retained_root_kept === true
+                        ? translate('storage.cleanupRetainedRootDoneKept', '旧数据目录里迁移过的数据已清理；目录里还有其他文件，已原样保留。')
+                        : translate('storage.cleanupRetainedRootDone', '旧数据目录已清理，当前仅保留新的运行目录。'),
                     4000
                 );
             }

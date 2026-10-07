@@ -1069,3 +1069,93 @@ def test_malformed_transaction_id_never_reaches_the_filesystem(tmp_path):
     assert result["completed"] is False
     assert result["error_code"] == "transaction_id_invalid"
     assert (victim / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("attributes", "reparse_tag", "is_link"),
+    (
+        # OneDrive Files On-Demand placeholder: reparse attribute, lstat
+        # traverses it so no tag is reported.
+        (0x400 | 0x20, 0, False),
+        # App execution alias (IO_REPARSE_TAG_APPEXECLINK) as lstat reports it.
+        (0x420, 0x8000001B, False),
+        # Dedup file (IO_REPARSE_TAG_DEDUP).
+        (0x420, 0x80000013, False),
+        # Junction (IO_REPARSE_TAG_MOUNT_POINT) and symlink: name surrogates.
+        (0x410, 0xA0000003, True),
+        (0x410, 0xA000000C, True),
+        (0x20, 0, False),
+    ),
+)
+def test_only_name_surrogate_reparse_points_count_as_links(attributes, reparse_tag, is_link):
+    from types import SimpleNamespace
+
+    from utils import storage_migration as storage_migration_module
+
+    path_stat = SimpleNamespace(st_file_attributes=attributes, st_reparse_tag=reparse_tag)
+
+    assert storage_migration_module._stat_is_reparse(path_stat) is is_link
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="junctions are Windows-only")
+def test_storage_migration_rejects_a_real_junction(tmp_path):
+    import subprocess
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "sentinel.txt").write_text("keep", encoding="utf-8")
+    (source_root / "memory").mkdir(parents=True)
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(source_root / "memory" / "linked"), str(external)],
+        capture_output=True,
+        text=True,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"junction creation is unavailable: {created.stderr}")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "path_link_unsupported"
+    assert (external / "sentinel.txt").read_text(encoding="utf-8") == "keep"
+    assert not (target_root / "memory").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix", reason="directory write bits only gate rename/removal on POSIX")
+def test_storage_migration_publishes_a_read_only_directory(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    read_only_dir = source_root / "memory" / "frozen"
+    read_only_dir.mkdir(parents=True)
+    (read_only_dir / "notes.json").write_text("{}", encoding="utf-8")
+    read_only_dir.chmod(0o555)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    try:
+        result = run_pending_storage_migration(config_manager)
+    finally:
+        read_only_dir.chmod(0o755)
+
+    assert result["completed"] is True, result
+    copied = target_root / "memory" / "frozen"
+    assert (copied / "notes.json").is_file()
+    # Everything but the owner write bit follows the source.
+    assert copied.stat().st_mode & 0o777 == 0o755
+    assert not (target_root / ".smtx").exists()

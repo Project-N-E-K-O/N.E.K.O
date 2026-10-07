@@ -68,6 +68,8 @@ from utils.storage_migration import (
     MIGRATED_RUNTIME_ENTRY_NAMES,
     STORAGE_MIGRATION_STATUS_COMPLETED,
     STORAGE_MIGRATION_STATUS_FAILED,
+    classify_entry_no_follow,
+    copy_evidence_entries,
     create_pending_storage_migration,
     delete_storage_migration,
     get_storage_migration_path,
@@ -75,7 +77,9 @@ from utils.storage_migration import (
     is_retained_root_cleanup_available,
     is_storage_migration_pending,
     load_storage_migration,
+    rewrite_migrated_config_paths,
     save_storage_migration,
+    snapshot_runtime_entry,
 )
 from utils.storage_policy import (
     StorageSelectionValidationError,
@@ -1572,14 +1576,7 @@ def _build_completed_migration_notice(
         or ""
     ).strip()
     retained_exists = bool(retained_root and Path(retained_root).exists())
-    copied_entries = migration_payload.get("copied_entries")
-    has_cleanup_proof = bool(
-        isinstance(copied_entries, dict)
-        and any(
-            entry_name in MIGRATED_RUNTIME_ENTRY_NAMES and isinstance(proof, dict)
-            for entry_name, proof in copied_entries.items()
-        )
-    )
+    has_cleanup_proof = bool(copy_evidence_entries(migration_payload.get("copied_entries")))
     cleanup_available = (
         (has_cleanup_proof or is_legacy_unproven_checkpoint(migration_payload))
         and not is_storage_migration_pending(migration_payload)
@@ -1629,35 +1626,14 @@ def _cleanup_retained_runtime_root(
     ):
         raise ValueError("保留目录当前不满足安全清理条件。")
 
-    from utils.storage.migration import (
-        StorageMigrationError,
-        _classify_no_follow,
-        _rewrite_migrated_runtime_config_paths,
-        _snapshot_path,
-    )
-
-    def _plain_entry_kind(path: Path) -> str | None:
-        """Return ``file``/``dir`` for a real entry, ``None`` for anything else."""
-        if not os.path.lexists(path):
-            return None
-        try:
-            kind, _entry_stat = _classify_no_follow(path)
-        except StorageMigrationError:
-            return None
-        return kind
-
     # Everything below deletes children of ``retained_path``. Through a link or
     # junction that would reach into whatever directory it points at.
-    if _plain_entry_kind(retained_path) != "dir":
+    if classify_entry_no_follow(retained_path) != "dir":
         raise ValueError("保留目录不是普通目录（可能是链接或 junction），拒绝清理。")
 
-    proofs = copied_entries if isinstance(copied_entries, dict) else {}
+    proofs = copy_evidence_entries(copied_entries)
     normalized_target = normalize_runtime_root(target_root) if str(target_root or "").strip() else None
-    proved_entries = [
-        (entry_name, proof)
-        for entry_name, proof in proofs.items()
-        if entry_name in MIGRATED_RUNTIME_ENTRY_NAMES and isinstance(proof, dict)
-    ]
+    proved_entries = list(proofs.items())
     # A checkpoint from before copy evidence existed (v1) has no record of
     # what was copied, so an entry is removed only when the target holds the
     # same entry with the same content right now. Anything else -- never
@@ -1697,15 +1673,15 @@ def _cleanup_retained_runtime_root(
         expected_kind = target_manifest.get("kind") if isinstance(target_manifest, dict) else None
         if (
             not os.path.lexists(source_entry)
-            or _plain_entry_kind(target_entry) != expected_kind
-            or _snapshot_path(source_entry) != proof.get("source_manifest")
+            or classify_entry_no_follow(target_entry) != expected_kind
+            or snapshot_runtime_entry(source_entry) != proof.get("source_manifest")
         ):
             raise ValueError(f"保留目录条目证据已变化，拒绝清理: {entry_name}")
 
     def _legacy_entry_matches(entry_name: str) -> bool:
         retained_entry = retained_path / entry_name
-        retained_manifest = _snapshot_path(retained_entry)
-        target_manifest = _snapshot_path(normalized_target / entry_name)
+        retained_manifest = snapshot_runtime_entry(retained_entry)
+        target_manifest = snapshot_runtime_entry(normalized_target / entry_name)
         if entry_name != "config" or retained_manifest["kind"] != "dir":
             return retained_manifest == target_manifest
         # A v1 migration rebased workshop paths under the source root onto the
@@ -1714,12 +1690,12 @@ def _cleanup_retained_runtime_root(
         with tempfile.TemporaryDirectory(prefix="neko-cleanup-") as scratch:
             scratch_root = Path(scratch)
             shutil.copytree(retained_entry, scratch_root / "config", symlinks=True)
-            _rewrite_migrated_runtime_config_paths(
+            rewrite_migrated_config_paths(
                 source_root=retained_path,
                 target_root=normalized_target,
                 config_root=scratch_root,
             )
-            return _snapshot_path(scratch_root / "config") == target_manifest
+            return snapshot_runtime_entry(scratch_root / "config") == target_manifest
 
     legacy_entries = [
         entry_name for entry_name in legacy_entries if _legacy_entry_matches(entry_name)
@@ -2083,6 +2059,11 @@ async def _post_storage_location_retained_source_cleanup_locked(
     return {
         "ok": True,
         "cleaned_root": expected_retained_root,
+        # A non-anchor retained root is removed once emptied; other files the
+        # user kept in it stay, and the UI should not claim it is gone.
+        "retained_root_kept": (
+            not paths_equal(retained_path, anchor_root) and os.path.lexists(retained_path)
+        ),
     }
 
 
