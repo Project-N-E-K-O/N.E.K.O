@@ -687,6 +687,25 @@ def _remove_completed_transaction_leftover(payload: dict[str, Any] | None) -> No
         logger.warning("Failed to remove leftover storage migration transaction: %s", exc)
 
 
+def _transaction_entries_missing_from_source(
+    *,
+    payload: dict[str, Any],
+    source_root: Path,
+    transaction_root: Path,
+) -> list[str]:
+    """Entries this transaction published or staged that the source no longer has."""
+    entries = [str(entry) for entry in payload.get("published_entries") or []]
+    entries.append(str(payload.get("publishing_entry") or ""))
+    with suppress(OSError):
+        entries.extend(child.name for child in (transaction_root / "stage").iterdir())
+    return [
+        entry_name
+        for entry_name in dict.fromkeys(entries)
+        if entry_name in MIGRATED_RUNTIME_ENTRY_NAMES
+        and not os.path.lexists(source_root / entry_name)
+    ]
+
+
 def _ensure_transaction_parent(transaction_root: Path) -> None:
     parent = transaction_root.parent
     if not os.path.lexists(parent):
@@ -1194,17 +1213,25 @@ def run_pending_storage_migration(
                 )
         transaction_root = _transaction_path(target_root, txid)
         _ensure_transaction_parent(transaction_root)
-        if not source_root.exists() or not source_root.is_dir():
-            if os.path.lexists(transaction_root):
-                # Rolling back restores the state before this migration, and
-                # that state lived in the source. With the source gone, the
-                # published entries and the staged copies may be the only
-                # copy left: keep them all and stay retryable until the source
-                # comes back or someone sorts it out by hand.
+        source_root_present = source_root.exists() and source_root.is_dir()
+        if os.path.lexists(transaction_root):
+            # Rolling back restores the state before this migration, and that
+            # state lived in the source. If the source -- or just one of the
+            # entries this transaction published or staged -- is gone, those
+            # copies may be the only ones left: keep them all and stay
+            # retryable until the source comes back or someone sorts it out.
+            missing_source_entries = _transaction_entries_missing_from_source(
+                payload=payload,
+                source_root=source_root,
+                transaction_root=transaction_root,
+            )
+            if not source_root_present or missing_source_entries:
                 raise StorageMigrationError(
                     "migration_source_missing",
-                    "原始数据目录不存在，迁移未完成，已保留目标与事务目录，恢复原始目录后会继续处理。",
+                    "原始数据目录或其中的条目不存在，迁移未完成，已保留目标与事务目录，恢复后会继续处理: "
+                    + (", ".join(missing_source_entries) or str(source_root)),
                 )
+        if not source_root_present:
             raise StorageMigrationError("source_root_missing", "原始数据目录不存在，无法继续迁移。")
         if os.path.lexists(transaction_root):
             _rollback_publish_or_require_recovery(

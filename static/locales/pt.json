@@ -2526,6 +2526,7 @@
         "progressCompleted": "Migração concluída. Recuperando o serviço",
         "progressCopying": "Migrando os dados de execução",
         "progressFailed": "A migração não foi concluída. Aguardando o tratamento de recuperação",
+        "progressSourceMissing": "O diretório de dados original, ou parte dos dados dentro dele, está ausente. A migração está pausada e os dados dos dois lados foram mantidos como estão. Restaure o diretório de dados original e reinicie:",
         "progressPending": "Fechando",
         "progressPreflight": "Fazendo a verificação prévia do destino e preparando a migração",
         "progressRebindPreflight": "Fazendo a verificação prévia para reconectar o local de armazenamento original",

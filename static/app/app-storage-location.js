@@ -1074,7 +1074,15 @@
                 case 'rollback_required':
                     percent = 100;
                     activeIndex = 2;
-                    label = translate('storage.progressFailed', '迁移未能完成，正在等待恢复处理');
+                    var migrationPayload = statusPayload && statusPayload.migration;
+                    if (migrationPayload && migrationPayload.error_code === 'migration_source_missing') {
+                        // Nothing is rolled back until the source is back; tell
+                        // the user which directory that is instead of "waiting".
+                        label = translate('storage.progressSourceMissing', '原始数据目录或其中的数据不见了，迁移已暂停，新旧两边的数据都原样保留。请把原始数据目录恢复原样后重启：')
+                            + ' ' + String(migrationPayload.source_root || '').trim();
+                    } else {
+                        label = translate('storage.progressFailed', '迁移未能完成，正在等待恢复处理');
+                    }
                     break;
                 default:
                     percent = isRebindOnly ? 38 : 14;
@@ -2409,6 +2417,7 @@
 
     window.appStorageLocation = {
         formatError: extractResponseError,
+        buildMaintenanceProgressModel: buildMaintenanceProgressModel,
         init: init,
         waitUntilMainUiAllowed: function () {
             return init();

@@ -1418,3 +1418,83 @@ def test_empty_target_directory_appearing_at_publish_is_kept(tmp_path, monkeypat
     assert list((target_root / "config").iterdir()) == []
     if os.name == "posix":
         assert (target_root / "config").stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.unit
+def test_interrupted_publish_is_kept_when_a_source_entry_is_gone(tmp_path, monkeypatch):
+    """The source root itself (often the anchor root) survives; the user only
+    deleted the entries that already showed up in the new directory."""
+    import shutil
+
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, source_root, target_root = _overwrite_migration(tmp_path)
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _crash_after_publish(staged, target):
+        original_publish(staged, target)
+        raise KeyboardInterrupt("simulated process loss after publish")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", original_publish)
+    parked_entry = tmp_path / "parked-config"
+    shutil.move(str(source_root / "config"), str(parked_entry))
+    assert source_root.is_dir()
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "migration_source_missing"
+    assert "config" in result["error_message"]
+    assert result["payload"]["status"] == "rollback_required"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "new"
+    backups = list((target_root / ".smtx").glob("*/backup/config/characters.json"))
+    assert [path.read_text(encoding="utf-8") for path in backups] == ["healthy"]
+
+    shutil.move(str(parked_entry), str(source_root / "config"))
+    _stop_after_recovery(monkeypatch, storage_migration_module)
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "stop_after_recovery"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
+
+
+@pytest.mark.unit
+def test_staged_copy_is_kept_when_its_source_entry_is_gone(tmp_path, monkeypatch):
+    """An entry that was only staged (never published) can still be the last copy."""
+    import shutil
+
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    _write_memory_tree(source_root)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_copy = storage_migration_module._copy_runtime_entry
+
+    def _crash_after_first_copy(source_path, target_path):
+        original_copy(source_path, target_path)
+        raise KeyboardInterrupt("simulated process loss while staging")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _crash_after_first_copy)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", original_copy)
+    staged = list((target_root / ".smtx").glob("*/stage/config/characters.json"))
+    assert len(staged) == 1
+    shutil.rmtree(source_root / "config")
+    assert source_root.is_dir()
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "migration_source_missing"
+    assert staged[0].read_text(encoding="utf-8") == "new"

@@ -2526,6 +2526,7 @@
         "progressCompleted": "迁移已完成，正在恢复服务",
         "progressCopying": "正在迁移运行时数据",
         "progressFailed": "迁移未能完成，正在等待恢复处理",
+        "progressSourceMissing": "原始数据目录或其中的数据不见了，迁移已暂停，新旧两边的数据都原样保留。请把原始数据目录恢复原样后重启：",
         "progressPending": "正在关闭",
         "progressPreflight": "正在检查目标位置并准备迁移",
         "progressRebindPreflight": "正在准备重连原始存储位置",

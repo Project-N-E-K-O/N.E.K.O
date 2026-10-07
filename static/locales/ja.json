@@ -2526,6 +2526,7 @@
         "progressCompleted": "移行が完了しました。サービスを復旧しています",
         "progressCopying": "実行データを移行しています",
         "progressFailed": "移行は完了しませんでした。復旧処理を待っています",
+        "progressSourceMissing": "元のデータ用フォルダー、またはその中のデータが見つかりません。移行は一時停止しており、新旧どちらのデータもそのまま残しています。元のデータ用フォルダーを元に戻してから再起動してください：",
         "progressPending": "終了しています",
         "progressPreflight": "移行前チェックを行い、準備しています",
         "progressRebindPreflight": "元の保存場所への再接続を準備しています",
