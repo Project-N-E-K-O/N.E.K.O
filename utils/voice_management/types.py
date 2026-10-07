@@ -18,9 +18,12 @@ class AttemptOutcome(str, Enum):
 
 
 class StateSync(str, Enum):
+    """Outcome of synchronizing this request's result, independent of its snapshot."""
+
     SAVED = "saved"
     UNCHANGED = "unchanged"
     FAILED = "failed"
+    UNKNOWN = "unknown"  # The write may outlive its cancelled/deadline-expired waiter.
 
 
 def build_voice_scope(

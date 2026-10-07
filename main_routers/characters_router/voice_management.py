@@ -101,6 +101,7 @@ async def overwrite_existing_voice(
     local_ref: str, audio: UploadFile = File(...), context_token: str = Form(...)
 ):
     cm = adapter = None
+    service_entered = False
     try:
         cm = get_config_manager()
         adapter = await _record_adapter(cm, local_ref)
@@ -118,17 +119,22 @@ async def overwrite_existing_voice(
             )
         except ValueError:
             raise VoiceManagementError("INVALID_AUDIO", 400) from None
+        service_entered = True
         result = await service.overwrite_remote_voice(
             adapter, cm, local_ref, token=context_token,
             audio=normalized.getvalue(), filename=filename,
         )
         return _json_no_store_response(result)
     except Exception as exc:
-        # Validation failed before the service's submission boundary. Return
-        # advice from the persisted record so the same dialog can be corrected.
+        # Only validation before service entry proves no submission or result
+        # write. Preserve service evidence; an unclassified fallback is unknown.
         details = None
         if not isinstance(exc, VoiceManagementError) or "attempt_outcome" not in exc.details:
-            details = await service.overwrite_result_details(adapter, cm, local_ref, token=context_token) if adapter else {
+            details = await service.overwrite_result_details(
+                adapter, cm, local_ref, token=context_token,
+                attempt_outcome="unknown" if service_entered else "not_submitted",
+                state_sync="unknown" if service_entered else "unchanged",
+            ) if adapter else {
                 "attempt_outcome": "not_submitted", "voice_state": None, "state_sync": "unchanged",
             }
         return _error(exc, details=details)

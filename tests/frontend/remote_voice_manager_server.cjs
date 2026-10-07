@@ -80,6 +80,12 @@ function createVoiceManagerServer() {
                 const body = await read(request);
                 (state.overwriteAttempts ||= []).push(body);
                 const mode = state.overwriteMode;
+                if (mode === 'deleted') {
+                    delete state.voices[ref];
+                    return json(response, { success: false, code: 'VOICE_NOT_FOUND', details: {
+                        attempt_outcome: 'not_submitted', state_sync: 'unchanged', voice_state: null
+                    } }, 404);
+                }
                 const voice = state.voices[ref];
                 voice.overwrite_operation_id = mode === 'stale-pending' ? 'previous-operation' : 'current-operation';
                 voice._record_revision = (voice._record_revision || 0) + 1;

@@ -50,6 +50,32 @@ async function rejectChangedQuery(h) {
     await tick();
 }
 
+for (const scenario of ['deleted', 'old-pending', 'transport']) {
+    test('overwrite ' + scenario + ' separates the attempt reason from submission controls', async () => {
+        const h = harness();
+        try {
+            h.window.RemoteVoiceManager.openOverwrite('voice-local', { provider: 'cosyvoice', remote_voice_id: 'remote' });
+            const audio = h.panel().querySelectorAll('input')[0];
+            audio.files = [new Blob(['isolated audio'])]; audio.dispatch('change');
+            h.button('overwrite').dispatch('click'); h.resolve(0, context(h)); await tick();
+            if (scenario === 'transport') h.requests[1].reject(new TypeError('controlled response loss'));
+            else h.resolve(1, { success: false,
+                code: scenario === 'deleted' ? 'VOICE_NOT_FOUND' : 'UPDATE_OUTCOME_UNKNOWN',
+                details: { attempt_outcome: 'not_submitted', state_sync: 'unchanged',
+                    voice_state: scenario === 'deleted' ? null : state().details.voice_state }
+            }, scenario === 'deleted' ? 404 : 409);
+            await tick();
+            assert.equal(h.panel().querySelector('.remote-voice-status').textContent,
+                'voice.remote.' + (scenario === 'deleted' ? 'voiceNotFound' : 'uncertain'));
+            assert.equal(h.button('overwrite').hidden, true);
+            assert.equal(h.button('refreshStatus').hidden, false);
+            assert.equal(h.button('refreshStatus').disabled, false);
+            assert.equal(h.panel().attributes['aria-busy'], 'false');
+            assert.equal(h.requests.filter(request => request.options.method === 'POST').length, 1);
+        } finally { await cleanup(h); }
+    });
+}
+
 for (const status of ['failed', 'completed']) {
     test('legacy ' + status + ' overwrite result retains a query exit without enabling resubmission', async () => {
         const h = harness();

@@ -59,7 +59,7 @@ async function verifyOverwriteOutcomes({ run, waitFor, state }) {
         await run("(()=>{const files=new DataTransfer();files.items.add(new File([new Uint8Array(512)],'retained.wav',{type:'audio/wav'}));const input=document.querySelector('.remote-voice-dialog input[type=file]');input.files=files.files;input.dispatchEvent(new Event('change',{bubbles:true}));return true;})()");
     };
     try {
-        for (const mode of ['stale-pending', 'active', 'rejected', 'save-failure']) {
+        for (const mode of ['stale-pending', 'active', 'rejected', 'save-failure', 'deleted']) {
             state.voices[ref] = { ...original, overwrite_status: 'completed', can_overwrite: true };
             state.overwriteMode = mode;
             const beforeUpdates = state.updates.length;
@@ -73,6 +73,13 @@ async function verifyOverwriteOutcomes({ run, waitFor, state }) {
             assert.equal(await run(control('refreshStatus') + '.hidden'), false);
             assert.equal(await run(control('refreshStatus') + '.disabled'), false);
             assert.equal(await run("document.querySelector('.remote-voice-dialog input[type=file]').files[0].name"), 'retained.wav');
+            if (mode === 'deleted') {
+                assert.equal(await run("document.querySelector('.remote-voice-status').textContent"),
+                    await run("window.t('voice.remote.voiceNotFound')"));
+                assert.equal(state.binding, binding);
+                await run('window.RemoteVoiceManager.close();true;');
+                continue;
+            }
             state.statusResult = 'failed';
             await run(control('refreshStatus') + '.click();true;');
             await waitFor("document.querySelector('.remote-voice-status').textContent===window.t('voice.remote.failed') && document.querySelector('.remote-voice-dialog').getAttribute('aria-busy')==='false'");
@@ -83,6 +90,7 @@ async function verifyOverwriteOutcomes({ run, waitFor, state }) {
             await run('window.RemoteVoiceManager.close();true;');
         }
         // A delayed error belongs to the closed dialog, including its actions.
+        state.voices[ref] = { ...original, overwrite_status: 'completed', can_overwrite: true };
         const responseGate = gate();
         state.beforeOverwriteResponse = responseGate.hold;
         state.overwriteMode = 'stale-pending';

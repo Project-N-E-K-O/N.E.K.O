@@ -394,7 +394,8 @@
         if (state.recoveryHint) state.recoveryHint.hidden = !state.recoverySnapshot;
         if (state.reopenOverwrite) state.reopenOverwrite.hidden = !state.overwriteAllowed;
         if (error) {
-            const uncertain = sent && (!valid || pending) && !['OPERATION_IN_PROGRESS', 'CONTEXT_CHANGED'].includes(error.code);
+            const uncertain = sent && !['not_submitted', 'rejected'].includes(error.details?.attempt_outcome) &&
+                (!valid || pending) && !['OPERATION_IN_PROGRESS', 'CONTEXT_CHANGED'].includes(error.code);
             showError(state, error, uncertain);
         } else {
             state.status.classList.remove('remote-voice-error');
