@@ -1071,8 +1071,12 @@ async def _submit_report(
         await asyncio.to_thread(_quarantine_report, path, visit_id)
         return
     if transcript_gated and doc.get("include_transcript") is not False:
-        # 转录还没传上去：附转录的举报等它；明确不附转录的举报不受转录上传的闸
-        return
+        # 转录还没传上去：附转录的举报等它；明确不附转录的举报不受转录上传的闸。待传的转录属于另一个
+        # 已知账号时（共用电脑）不是这份举报那一侧的转录，不等它
+        transcript_owner = await _state_owner(config_dir, visit_id)
+        report_owner = doc.get("own_visit_uid")
+        if not (transcript_owner and report_owner and report_owner != transcript_owner):
+            return
     unavailable = report.transcript_unavailable.get(visit_id)
     unavailable_owner = report.unavailable_owner.get(visit_id)
     if unavailable_owner and doc.get("own_visit_uid") and doc["own_visit_uid"] != unavailable_owner:

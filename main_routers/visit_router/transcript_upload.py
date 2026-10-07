@@ -1186,7 +1186,8 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
             return UploadRound(pending=False, unavailable=None if marked else "corrupt", owner=stream_owner)
         age = await asyncio.to_thread(_file_age_s, sealed, now) if status == "sealed" else None
         if age is None:
-            return UploadRound(pending=True, retryable=True)
+            # 一时封不了：归属取流水头 / state.json 给的，另一账号的附转录举报不必等这份
+            return UploadRound(pending=True, retryable=True, owner=stream_owner)
     try:
         doc = await asyncio.to_thread(_load_json, sealed)
     except OSError as exc:
@@ -1213,10 +1214,19 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
             # 一时封不了（读写出错）：留着两份等下一轮，别落到下面按过期把还能恢复的流水删掉。
             # 坏文件推不出归属时用流水头 / state.json 给的
             return UploadRound(pending=True, retryable=True, owner=owner or stream_owner)
+        if status == "corrupt":
+            # 旁边的流水也坏了（已被重封函数删掉）：这场转录已无法恢复，按损坏结清，归属用流水头 /
+            # state.json 给的（坏封存文件推不出归属）
+            return await _settled_round(config_dir, visit_id, sealed, UploadResult(terminal="corrupt"),
+                                        owner=owner or stream_owner)
         if status == "sealed":
             try:
                 doc = await asyncio.to_thread(_load_json, sealed)
-            except (OSError, ValueError):
+            except OSError as exc:
+                # 刚重封好的文件一时读不了（被占用）：不是坏文件，别按过期删掉，下一轮再读
+                logger.warning("visit upload %s: cannot read %s: %s", visit_id, sealed.name, type(exc).__name__)
+                return UploadRound(pending=True, retryable=True, owner=owner or stream_owner)
+            except ValueError:
                 doc = None
             owner = doc.get("own_visit_uid") if isinstance(doc, dict) else None
             owner = owner if isinstance(owner, str) and owner else None

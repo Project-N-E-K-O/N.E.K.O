@@ -2837,3 +2837,17 @@ async def test_a_transient_seal_failure_rearms_the_retry_only_for_a_lone_stream(
     )
     # 只剩流水：后台会从流水重封；旁边有坏封存文件：后台重封不了，不白排一个立刻退出的重试
     assert v in pending and armed == ([v] if beside == "nothing" else [])
+
+
+async def test_another_accounts_pending_upload_does_not_hold_back_a_report(tmp_path):
+    v = vid(110)
+    await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_A)
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": "f" * 24}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
+    # 待传的是 OWN_A 那一侧的转录：另一账号的附转录举报不等它
+    assert [visit_id for visit_id, _doc in reports.calls] == [v]

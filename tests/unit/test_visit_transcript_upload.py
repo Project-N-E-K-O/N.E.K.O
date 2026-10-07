@@ -1622,3 +1622,64 @@ async def test_the_recovery_callback_remembers_a_terminal_rejection(tmp_path, se
     assert await tu.upload_visit_transcript(V1, doc) == "parts_out_of_range"
     # 补录随后删掉封存文件：之后才提交的附转录举报靠这一份带上原因
     assert tu._terminal_reasons[V1] == ("parts_out_of_range", OWN)
+
+
+async def test_a_lone_stream_that_cannot_be_resealed_keeps_its_owner(tmp_path, servers, monkeypatch):
+    stream = _spool(tmp_path) / f"{V1}.upload.jsonl"
+    stream.parent.mkdir(parents=True, exist_ok=True)
+    stream.write_text("{}", encoding="utf-8")
+
+    async def failed(_config_dir, _visit_id):
+        return "failed", OWN
+
+    monkeypatch.setattr(tu, "reseal_orphan_stream", failed)
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    assert outcome.pending and outcome.retryable and outcome.owner == OWN
+
+
+async def test_an_aged_broken_upload_with_a_corrupt_stream_settles_as_corrupt_with_the_stream_owner(
+        tmp_path, servers, monkeypatch):
+    sealed = _spool(tmp_path) / f"{V1}.upload.json"
+    sealed.parent.mkdir(parents=True, exist_ok=True)
+    sealed.write_text("{broken", encoding="utf-8")
+    old = time.time() - 30 * 86400
+    os.utime(sealed, (old, old))
+    (_spool(tmp_path) / f"{V1}.upload.jsonl").write_text("{}", encoding="utf-8")
+
+    async def corrupt(_config_dir, _visit_id):
+        return "corrupt", OWN
+
+    monkeypatch.setattr(tu, "reseal_orphan_stream", corrupt)
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    assert outcome.pending is False and outcome.owner == OWN
+    assert tu._terminal_reasons[V1] == ("corrupt", OWN) and not sealed.exists()
+
+
+async def test_a_transient_read_after_resealing_does_not_expire_the_transcript(tmp_path, servers, monkeypatch):
+    sealed = _spool(tmp_path) / f"{V1}.upload.json"
+    sealed.parent.mkdir(parents=True, exist_ok=True)
+    sealed.write_text("{broken", encoding="utf-8")
+    old = time.time() - 30 * 86400
+    os.utime(sealed, (old, old))
+    (_spool(tmp_path) / f"{V1}.upload.jsonl").write_text("{}", encoding="utf-8")
+    good = _big_doc(4, 10)
+
+    async def resealed(_config_dir, _visit_id):
+        sealed.write_text(json.dumps(good), encoding="utf-8")
+        os.utime(sealed, (old, old))
+        return "sealed", OWN
+
+    reads = []
+    original = tu._load_json
+
+    def load(path):
+        if path.name.endswith(".upload.json"):
+            reads.append(path)
+            if len(reads) == 2:
+                raise PermissionError("in use")                   # 重封后重读：一时被占用
+        return original(path)
+
+    monkeypatch.setattr(tu, "reseal_orphan_stream", resealed)
+    monkeypatch.setattr(tu, "_load_json", load)
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    assert outcome.pending and outcome.retryable and sealed.exists()
