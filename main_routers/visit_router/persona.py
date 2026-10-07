@@ -891,12 +891,11 @@ async def retire_persona(character_uid: str) -> bool:
     """Retire the persona of a deleted character (``pending_retire``, PR-09b); True if a file existed.
 
     Holds the per-character persona lock, so a hand edit or a regeneration
-    commit that already checked the character cannot write the file back
-    after it is gone; a running regeneration is cancelled first.
+    commit already writing finishes first and the file is deleted after it.
+    A running regeneration is not cancelled: cancelling would release the
+    lock while its write may still run in a worker thread. It drops its
+    result instead (the character is gone and the write version moved on).
     """
-    task = _jobs.get(character_uid)
-    if task is not None and not task.done():
-        task.cancel()
     async with persona_lock(character_uid):
         _note_write(character_uid)
         _errors.pop(character_uid, None)

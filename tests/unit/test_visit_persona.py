@@ -1044,3 +1044,38 @@ def test_retiring_a_persona_waits_for_a_write_in_progress(env):
 
     assert client.portal.call(retire_during_a_write) is True
     assert not path.exists()                                        # 写完之后才删：不会留下孤儿文件
+
+
+
+def test_retiring_waits_for_a_regeneration_write_already_in_its_thread(env, monkeypatch):
+    import threading
+
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    path = tmp_path / "visit_persona" / f"{UID_A}.json"
+    started, release, written = threading.Event(), threading.Event(), threading.Event()
+    real_save = persona.VisitPersonaStore._save_sync
+
+    def slow_save(self, uid, doc):
+        started.set()
+        release.wait(5)                                              # 写盘线程卡在这里
+        real_save(self, uid, doc)
+        written.set()
+
+    monkeypatch.setattr(persona.VisitPersonaStore, "_save_sync", slow_save)
+
+    async def scenario():
+        job = persona.start_regeneration("A", UID_A)
+        while not started.is_set():
+            await asyncio.sleep(0.01)                               # 重生成已进入写盘
+        del state["uids"]["A"]                                       # 此时角色被删除
+        retire = asyncio.create_task(persona.retire_persona(UID_A))
+        await asyncio.sleep(0.05)
+        release.set()
+        await retire
+        await asyncio.gather(job, return_exceptions=True)
+
+    client.portal.call(scenario)
+    written.wait(5)
+    # 退役等在途写盘写完才删：不会被写回来
+    assert not path.exists()
