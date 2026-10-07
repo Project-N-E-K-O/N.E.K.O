@@ -2718,3 +2718,33 @@ async def test_terminal_rejection_leaves_another_accounts_report_unmarked(tmp_pa
     on_disk = json.loads((reports_dir / f"{v}.json").read_text(encoding="utf-8")) \
         if (reports_dir / f"{v}.json").exists() else {}
     assert "transcript_unavailable" not in on_disk
+
+
+
+async def test_an_unverified_reason_is_not_attached_to_another_accounts_report(tmp_path, monkeypatch):
+    import main_logic.visit.recovery as recovery
+
+    v = vid(105)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    (d / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    other = "f" * 24
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": other}), encoding="utf-8")
+    real_mark = recovery._mark_report_sync
+
+    def unreadable(*_a, **_k):
+        raise OSError("in use")                              # 核对归属时读不了举报
+
+    monkeypatch.setattr(recovery, "_mark_report_sync", unreadable)
+
+    async def reject(_visit_id, _doc):
+        return "parts_out_of_range"
+
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
+    monkeypatch.setattr(recovery, "_mark_report_sync", real_mark)
+    for _visit_id, doc in reports.calls:
+        assert "transcript_unavailable" not in doc          # 提交前复核：属于另一账号的举报不带原因

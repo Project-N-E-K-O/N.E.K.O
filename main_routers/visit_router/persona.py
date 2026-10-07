@@ -245,6 +245,13 @@ def _unnumbered_streets(segment: str) -> list[str]:
     return out
 
 
+# 表示位置的介词：其后的单个大写词是地名（「Apartment near Broadway」）。「with」「and」之类不算
+# （「House with Garden」的 Garden 是描述，不是地名）
+_PLACE_PREPOSITIONS = frozenset({
+    "in", "on", "at", "near", "by", "off", "behind", "beside", "opposite", "along", "across", "next",
+})
+
+
 def _qualified_places(words: list[str]) -> list[str]:
     """Single proper words after a dwelling noun / preposition in an address value (``Apartment near Broadway``)."""
     out = []
@@ -254,7 +261,7 @@ def _qualified_places(words: list[str]) -> list[str]:
         after = cleaned[i + 1] if i + 1 < len(cleaned) else ""
         if (word[:1].isupper() and len(word) >= _TOKEN_MIN_CHARS
                 and word.lower() not in _STREET_STOPWORDS | _GENERIC_DWELLING_WORDS
-                and (before in _STREET_STOPWORDS or before in _GENERIC_DWELLING_WORDS)
+                and before in _PLACE_PREPOSITIONS
                 and not after[:1].isupper()):
             out.append(word)
     return out

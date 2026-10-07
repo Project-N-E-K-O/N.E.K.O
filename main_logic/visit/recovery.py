@@ -143,6 +143,12 @@ class RecoveryReport:
     swept: int = 0
     # 本轮判定为不可用的转录及原因：举报文件写不进标记时，提交的那份照样带上
     transcript_unavailable: dict[str, str] = field(default_factory=dict)
+    unavailable_owner: dict[str, str] = field(default_factory=dict)
+    """visit_id -> ``own_visit_uid`` of the transcript a ``transcript_unavailable`` reason belongs to.
+
+    Set when the reason could not be checked against the queued report (file
+    unreadable): the submission compares it with the report's owner first.
+    """
 
 
 # ── 上传流水 → 上传文件 ───────────────────────────────────────────────
@@ -1041,6 +1047,10 @@ async def _submit_report(
         # 转录还没传上去：附转录的举报等它；明确不附转录的举报不受转录上传的闸
         return
     unavailable = report.transcript_unavailable.get(visit_id)
+    unavailable_owner = report.unavailable_owner.get(visit_id)
+    if unavailable_owner and doc.get("own_visit_uid") and doc["own_visit_uid"] != unavailable_owner:
+        # 原因属于另一账号那一侧的转录（共用电脑）：不带进这份举报
+        unavailable = None
     if unavailable and not doc.get("transcript_unavailable"):
         # 举报文件没写进不可用标记（磁盘满 / 权限）：提交的那份照样带上，Servers 才知道转录已经没了
         doc = {**doc, "transcript_unavailable": unavailable}
@@ -1129,8 +1139,10 @@ async def _mark_report_transcript_unavailable(
     try:
         applies = await asyncio.to_thread(_mark_report_sync, path, visit_id, reason, owner)
     except (OSError, ValueError) as exc:
-        # 文件里记不上：本轮提交时由 report 上的那份补上
+        # 文件里记不上：本轮提交时由 report 上的那份补上。归属这时没核对过：一并记下，提交前再比
         report.transcript_unavailable.setdefault(visit_id, reason)
+        if owner is not None:
+            report.unavailable_owner.setdefault(visit_id, owner)
         logger.warning("visit recovery: cannot mark report %s transcript_unavailable: %s", path.name, exc)
         return False
     if applies:

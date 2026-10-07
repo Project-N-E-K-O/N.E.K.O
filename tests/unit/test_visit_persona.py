@@ -769,3 +769,9 @@ def test_a_place_name_after_an_address_qualifier():
     assert "Broadway" in tokens and "Apartment" not in tokens
     tokens = persona.extract_sensitive_tokens("address: House on the top floor", [])
     assert not any(t in ("House", "floor") for t in tokens)
+
+
+
+def test_a_descriptive_word_after_with_is_not_a_place():
+    assert "Garden" not in persona.extract_sensitive_tokens("address: House with Garden", [])
+    assert "Broadway" in persona.extract_sensitive_tokens("address: Apartment near Broadway", [])
