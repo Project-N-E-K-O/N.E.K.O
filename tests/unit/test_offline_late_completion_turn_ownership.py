@@ -1003,8 +1003,8 @@ async def test_lifecycle_bound_takeover_callbacks_act_only_for_the_installed_cli
         assert getattr(callback, "_session_owner", None) is client, name
         assert not inspect.iscoroutinefunction(callback), name
 
-    settles = []
-    mgr._fire_task = lambda coro: (settles.append(coro), coro.close())
+    spawned = []
+    mgr._fire_task = lambda coro: (spawned.append(coro.cr_code.co_name), coro.close())
 
     def host_turn(text):
         mgr._current_ai_turn_text = text
@@ -1017,7 +1017,7 @@ async def test_lifecycle_bound_takeover_callbacks_act_only_for_the_installed_cli
         assert mgr._current_ai_turn_text == text
         assert mgr._turn_wrap_up_owed is True
         assert len(mgr.sync_message_queue.queue) == queued
-        assert settles == []
+        assert spawned == []
 
     mgr.session = object()  # the session the client is to replace
     mgr._register_connection(client)
@@ -1032,9 +1032,12 @@ async def test_lifecycle_bound_takeover_callbacks_act_only_for_the_installed_cli
     assert [m.get("data") for m in list(mgr.sync_message_queue.queue)[queued:]] == ["turn end"]
     assert mgr.websocket.messages[-1].get("data") == "turn end"
     client.on_idle()
-    assert len(settles) == 1
+    assert spawned == [
+        "publish_conversation_turn_observed_best_effort",
+        "_settle_owed_turn_wrap_up",
+    ]
 
-    settles.clear()
+    spawned.clear()
     mgr._connection_record(client).retired = True
     assert_left_alone("SUCCESSOR TURN", host_turn("SUCCESSOR TURN"))
     await client.close()
