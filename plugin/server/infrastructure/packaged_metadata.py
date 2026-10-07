@@ -663,6 +663,14 @@ def _write_scanned_packaged_metadata(
         atomic_write_bytes(target, encoded)
     except (OSError, PackagedMetadataError) as exc:
         if summary is not None:
+            # The probe and a failed atomic write may add and remove files beside
+            # the target. For an in-place target that directory is the plugin
+            # root, whose mtime the summary counts, so key the backoff to the
+            # tree as it is after the failure.
+            try:
+                summary = source_stat_summary(plugin_dir)
+            except (OSError, PackagedMetadataError):
+                pass
             _record_rebuild_failure(target, summary)
         # compute_source_sha256 wraps its OSError in PackagedMetadataError (a
         # ValueError); an optional optimisation must not turn that into a
