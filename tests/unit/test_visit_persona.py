@@ -1072,7 +1072,7 @@ def test_retiring_waits_for_a_regeneration_write_already_in_its_thread(env, monk
         retire = asyncio.create_task(persona.retire_persona(UID_A))
         await asyncio.sleep(0.05)
         release.set()
-        await retire
+        assert await retire is True                                  # 删到了在途写盘落下的那份
         await asyncio.gather(job, return_exceptions=True)
         assert written.is_set()                                     # 写盘确实发生过，退役等它写完
 
