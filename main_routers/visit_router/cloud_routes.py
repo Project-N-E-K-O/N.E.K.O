@@ -17,7 +17,7 @@
 * ``GET /history?cursor=`` -- proxies ``GET {social_base}/api/visit/history``;
   ``peer_display_name`` is self-reported by the peer, so it goes through the
   OD-23 display-name cleaning before it reaches the page.
-* ``GET /details/{visit_id}?catgirl=&cursor=`` -- proxies the details of one
+* ``GET /details/{visit_id}?cursor=`` -- proxies the details of one
   visit ("view details", OD-26 v3), one page per call, ``cursor`` passed
   through and ``next_cursor`` returned as is.
 * ``POST /report`` -- writes the queued report file first, then submits it
