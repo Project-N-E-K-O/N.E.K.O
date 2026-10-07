@@ -772,31 +772,50 @@ async def update_emotion_mapping(model_name: str, request: Request):
 
 @router.get('/expressions/{model_name}')
 async def get_model_expressions(model_name: str):
-    """Get the list of expressions supported by a VRM model (read from config, if present)."""
-    # TODO: model_name parameter is intentionally unused. Model-specific expression
-    # resolution is not implemented here because VRM files must be parsed on the frontend.
-    # The frontend obtains actual expression lists after loading the model.
-    # This endpoint returns a common expression list as a reference.
-    _ = model_name  # Mark as intentionally unused
+    """Get the expression names supported by a VRM model.
+
+    Expression names are read from the model's saved emotion mapping
+    (``static/vrm/configs/{model_name}_emotion.json``), whose values are the
+    expression names configured for that model.  When no mapping exists yet,
+    the common reference list is returned so the emotion editor still has a
+    starting point before the model is loaded on the frontend.
+    """
+    common_expressions = [
+        "neutral", "happy", "joy", "fun", "smile", "joy_01",
+        "relaxed", "content",
+        "sad", "sorrow", "grief",
+        "angry", "anger",
+        "surprised", "surprise", "shock",
+        "blink", "blink_l", "blink_r",
+        "aa", "ih", "ou", "ee", "oh",
+        "lookUp", "lookDown", "lookLeft", "lookRight"
+    ]
 
     try:
-        # 由于VRM文件需要前端解析，这里返回常见表情列表
-        # 前端会在加载模型后获取实际表情列表
-
-        common_expressions = [
-            "neutral", "happy", "joy", "fun", "smile", "joy_01",
-            "relaxed", "content",
-            "sad", "sorrow", "grief",
-            "angry", "anger",
-            "surprised", "surprise", "shock",
-            "blink", "blink_l", "blink_r",
-            "aa", "ih", "ou", "ee", "oh",
-            "lookUp", "lookDown", "lookLeft", "lookRight"
-        ]
+        config_path = _get_emotion_config_path(model_name)
+        if config_path and config_path.is_file():
+            mapping = await read_json_async(config_path)
+            expressions: list[str] = []
+            seen: set[str] = set()
+            if isinstance(mapping, dict):
+                for value in mapping.values():
+                    names = value if isinstance(value, list) else [value]
+                    for name in names:
+                        if isinstance(name, str) and name and name not in seen:
+                            seen.add(name)
+                            expressions.append(name)
+            if expressions:
+                return {
+                    "success": True,
+                    "expressions": expressions,
+                    "source": "emotion_mapping",
+                    "note": "来自该模型已保存的情感映射"
+                }
 
         return {
             "success": True,
             "expressions": common_expressions,
+            "source": "common",
             "note": "这是常见表情列表，实际表情以模型为准"
         }
 

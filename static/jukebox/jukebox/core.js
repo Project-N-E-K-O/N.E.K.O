@@ -105,6 +105,7 @@ Object.assign(window.Jukebox, {
     playRequestId: 0,
     isPaused: false,
     savedIdleAnimationUrl: null,
+    savedFbxIdleAnimationUrl: null,
     savedVolume: 1,
     // 面板建好、播放器还没建出来的窗口里用户拖过的音量。只有它非空时才在建
     // 播放器后强行覆盖 —— savedVolume 的默认值是 1，拿它当「用户设过」会在冷
