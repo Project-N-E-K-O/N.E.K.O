@@ -1022,3 +1022,25 @@ def test_a_space_separated_profile_name_is_not_split_into_common_words():
     assert names == ("Will Smith",)
     # 拆成 Will 会把人设里的普通词 will 一起换掉
     assert redact_outbound("I will tell you.", family_names=names, replacement="[F]") == "I will tell you."
+
+
+
+def test_a_copular_address_label_registers_the_place():
+    assert "Broadway" in persona.extract_sensitive_tokens("address is Broadway", [])
+
+
+def test_retiring_a_persona_waits_for_a_write_in_progress(env):
+    client, tmp_path, *_ = env
+    _generate(client)
+    path = tmp_path / "visit_persona" / f"{UID_A}.json"
+
+    async def retire_during_a_write():
+        async with persona.persona_lock(UID_A):                     # 手写保存正拿着锁
+            task = asyncio.create_task(persona.retire_persona(UID_A))
+            await asyncio.sleep(0.05)
+            assert not task.done()                                  # 删角色的清理等它写完
+            await persona.store().save(UID_A, _file(tmp_path))
+        return await task
+
+    assert client.portal.call(retire_during_a_write) is True
+    assert not path.exists()                                        # 写完之后才删：不会留下孤儿文件

@@ -2884,3 +2884,26 @@ async def test_the_report_gate_prefers_the_owner_named_by_the_upload_itself(tmp_
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
     # 待传的是 A 自己那一侧的转录：A 的附转录举报照样等它，不能按 state.json 的 B 放行
     assert reports.calls == []
+
+
+
+async def test_the_report_gate_ignores_the_owner_of_a_file_from_another_visit(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+
+    v = vid(113)
+    await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_B)
+    wrong = {**_sealed(vid(114)), "own_visit_uid": OWN_A}                    # 别场的文件，写着 A
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(wrong), encoding="utf-8")
+
+    async def undeletable(_spool_dir, _visit_id):
+        return False                                                    # 一时删不掉，留着待处理
+
+    monkeypatch.setattr(recovery, "_drop_corrupt_sealed", undeletable)
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": OWN_B}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
+    # 别场文件里写的 A 不算：按 state.json 的 B，B 的附转录举报照旧等
+    assert reports.calls == []

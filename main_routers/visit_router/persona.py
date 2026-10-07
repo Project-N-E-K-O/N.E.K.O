@@ -144,7 +144,7 @@ _LATIN_KEYWORD_VALUE_RE = re.compile(
     r"|(?<=[iI][dD])\s+(?:is\s+)?|\s+(?=(?-i:[A-Za-z]*[a-z][A-Z])))"
     r"|(?P<kw2>lives?\s+in)\s+"
     r"|(?P<kw6>line)\s*[:：]\s*"
-    r"|(?P<kw3>address)\s+(?=(?-i:[A-Z])))" + _KEYWORD_VALUE,
+    r"|(?P<kw3>address)\s+(?:is\s+)?(?=(?-i:[A-Z])))" + _KEYWORD_VALUE,
     re.IGNORECASE,
 )
 # 中文地址关键词不带分隔时（「住在一起」「地址保密」「家住得离公司很近」），值要有地址形态才收：路名 /
@@ -625,7 +625,11 @@ class VisitPersonaStore:
         return True
 
     async def retire(self, character_uid: str) -> bool:
-        """Delete the persona of a deleted character (``pending_retire``, PR-09b); True if one existed."""
+        """Delete the persona file of ``character_uid``; True if one existed.
+
+        Bare file operation: a deleted character's persona is retired through
+        :func:`retire_persona`, which serializes with edits and regeneration.
+        """
         return await asyncio.to_thread(self._retire_sync, character_uid)
 
 
@@ -881,6 +885,22 @@ async def _regenerate(name: str, character_uid: str, started_version: int) -> No
     except Exception as exc:  # noqa: BLE001 - 后台任务：失败记进状态，GET 可见
         logger.warning("visit persona: regeneration failed: %s", type(exc).__name__)
         _errors[character_uid] = "llm_unavailable"
+
+
+async def retire_persona(character_uid: str) -> bool:
+    """Retire the persona of a deleted character (``pending_retire``, PR-09b); True if a file existed.
+
+    Holds the per-character persona lock, so a hand edit or a regeneration
+    commit that already checked the character cannot write the file back
+    after it is gone; a running regeneration is cancelled first.
+    """
+    task = _jobs.get(character_uid)
+    if task is not None and not task.done():
+        task.cancel()
+    async with persona_lock(character_uid):
+        _note_write(character_uid)
+        _errors.pop(character_uid, None)
+        return await store().retire(character_uid)
 
 
 def start_regeneration(name: str, character_uid: str) -> asyncio.Task | None:
