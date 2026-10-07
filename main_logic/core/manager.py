@@ -510,7 +510,6 @@ class LLMSessionManager(
         self._current_ai_turn_started_at: float = 0.0
         self._current_ai_turn_type: str | None = None
         self._current_ai_turn_client_owned: bool = False
-        self._plugin_bus_voice_proactive = None
         # A discard emptied that buffer after its text had already reached
         # cross_server, which stays in that assistant turn until a turn end.
         self._discarded_turn_open: bool = False

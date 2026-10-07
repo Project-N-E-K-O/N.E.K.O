@@ -463,12 +463,12 @@ def test_real_voice_nudge_labels_next_reply_without_sm_claim(published, delivere
 
         async def inject(**kwargs):
             if delivered:
+                session._current_response_source = "proactive"
                 await asyncio.create_task(stub.send_lanlan_response("voice nudge reply"))
             return delivered
 
         session.prompt_ephemeral = inject
         assert await stub.trigger_voice_proactive_nudge() is delivered
-        assert getattr(stub, "_plugin_bus_voice_proactive", None) is None
         if not delivered:
             await stub.send_lanlan_response("ordinary reply after rejected nudge")
         stub._flush_ai_turn_text_to_tracker()
@@ -504,10 +504,10 @@ def test_real_voice_callback_injection_marks_or_clears_next_reply(published, rej
         mgr = _make_mgr(session=session)
         mgr.pending_agent_callbacks = [{"status": "completed", "summary": "task complete"}]
         assert await LLMSessionManager.trigger_agent_callbacks(mgr) is True
-        assert mgr._plugin_bus_voice_proactive[0] is session
+        session._current_response_source = "proactive"
         if rejected:
             reject_handler("response_already_active")
-            assert mgr._plugin_bus_voice_proactive is None
+            session._current_response_source = None
         # Run the actual first-chunk publisher on the same manager that injected.
         minimal = _StubManager()
         for field in (
@@ -523,3 +523,63 @@ def test_real_voice_callback_injection_marks_or_clears_next_reply(published, rej
 
     asyncio.run(scenario())
     assert published[0]["turn_type"] == ("assistant_message" if rejected else "proactive_reply")
+
+
+def test_queued_proactive_does_not_claim_server_vad_reply(published):
+    """A server reply arriving first cannot consume a queued proactive source."""
+    from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
+    from tests.unit.test_realtime_arbiter_native_path import _native_client
+
+    async def scenario():
+        sent = []
+
+        async def send(event):
+            sent.append(event)
+
+        session = _native_client()
+        arbiter = RealtimeResponseArbiter(send)
+        session._response_arbiter = arbiter
+        stub = _StubManager()
+        stub.session = session
+        arbiter.notify_response_created({"type": "response.created", "response": {"id": "user-response"}})
+        ticket = await arbiter.enqueue(source="proactive")
+        session._begin_response_lifecycle("user-response")
+        await stub.send_lanlan_response("ordinary user reply")
+        stub._flush_ai_turn_text_to_tracker()
+        assert session.get_conversation_turn_type() == "assistant_message"
+        arbiter.notify_response_terminal({"type": "response.done", "response": {"id": "user-response"}})
+        await asyncio.wait_for(ticket.sent, timeout=1)
+        arbiter.notify_response_created({"type": "response.created", "response": {"id": "proactive-response"}})
+        session._begin_response_lifecycle("proactive-response")
+        # Terminal processing may detach the owner before a final transcript.
+        arbiter.notify_response_terminal({"type": "response.done", "response": {"id": "proactive-response"}})
+        await asyncio.wait_for(ticket.done, timeout=1)
+        await arbiter.wait_until_idle(timeout=1)
+        await stub.send_lanlan_response("actual proactive reply")
+        stub._flush_ai_turn_text_to_tracker()
+        await stub.drain()
+
+    asyncio.run(scenario())
+    assert [record["turn_type"] for record in published] == ["assistant_message", "proactive_reply"]
+
+
+@pytest.mark.parametrize("changed", ["none", "scope", "session", "connection", "token"])
+def test_gemini_proactive_label_requires_current_generation(changed):
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    client = object.__new__(OmniRealtimeClient)
+    client._is_gemini = True
+    client._connection_generation = 3
+    client._gemini_session = object()
+    client._tool_scope_generation = 7
+    client._proactive_inject_outcome_token = "inject-1"
+    client._gemini_proactive_outcome_owner = (3, client._gemini_session, "inject-1", None, 7)
+    if changed == "scope":
+        client._tool_scope_generation = 8
+    elif changed == "session":
+        client._gemini_session = object()
+    elif changed == "connection":
+        client._connection_generation = 4
+    elif changed == "token":
+        client._proactive_inject_outcome_token = "inject-2"
+    assert client.get_conversation_turn_type() == ("proactive_reply" if changed == "none" else "assistant_message")

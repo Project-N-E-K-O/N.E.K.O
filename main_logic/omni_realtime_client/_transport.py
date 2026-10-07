@@ -2445,6 +2445,10 @@ class _TransportMixin:
         """Apply the host-side state shared by all accepted start evidence."""
 
         self._current_response_id = response_id
+        arbiter = getattr(self, "_response_arbiter", None)
+        self._current_response_source = (
+            arbiter.response_source_for(response_id) if arbiter is not None else None
+        )
         self._is_responding = True
         self._turn_epoch += 1
         self._current_turn_epoch = self._turn_epoch

@@ -89,7 +89,6 @@ class TurnMixin:
         self._current_ai_turn_started_at = 0.0
         self._current_ai_turn_type = None
         self._current_ai_turn_client_owned = False
-        self._plugin_bus_voice_proactive = None
         self._discarded_turn_open = False
 
         await self.send_user_activity()
@@ -354,8 +353,6 @@ class TurnMixin:
                 else "assistant_message"
             )
         ai_text = self._current_ai_turn_text
-        if not ai_text:
-            self._plugin_bus_voice_proactive = None
         turn_id = getattr(self, "_current_ai_turn_id", "")
         started_at = float(getattr(self, "_current_ai_turn_started_at", 0.0) or 0.0)
         client_owned = getattr(self, "_current_ai_turn_client_owned", False)
@@ -1045,7 +1042,6 @@ class TurnMixin:
             self._current_ai_turn_started_at = 0.0
             self._current_ai_turn_type = None
             self._current_ai_turn_client_owned = False
-            self._plugin_bus_voice_proactive = None
             self._discarded_turn_open = False
             self._active_text_request_id = None
             return
@@ -2507,18 +2503,18 @@ class TurnMixin:
             if not self._current_ai_turn_text:
                 # 轮次开始：记下她"开口"的时刻，flush 时用它做插件总线的时间戳。
                 self._current_ai_turn_started_at = time.time()
-                pending_proactive = getattr(self, "_plugin_bus_voice_proactive", None)
-                voice_proactive = bool(pending_proactive and pending_proactive[0] is self.session)
-                self._plugin_bus_voice_proactive = None
                 self._current_ai_turn_client_owned = (
                     _proactive_expected_sid.get() is not None
                     and isinstance(getattr(self, "session", None), OmniOfflineClient)
                 )
-                self._current_ai_turn_type = (
-                    "proactive_reply"
-                    if voice_proactive or getattr(getattr(self, "state", None), "owner", None) is TurnOwner.PROACTIVE
-                    else "assistant_message"
-                )
+                if isinstance(getattr(self, "session", None), OmniRealtimeClient):
+                    self._current_ai_turn_type = self.session.get_conversation_turn_type()
+                else:
+                    self._current_ai_turn_type = (
+                        "proactive_reply"
+                        if getattr(getattr(self, "state", None), "owner", None) is TurnOwner.PROACTIVE
+                        else "assistant_message"
+                    )
             self._current_ai_turn_text += text_clean
             self._current_ai_turn_id = str(effective_turn_id or '')
             if remember_voice_echo:

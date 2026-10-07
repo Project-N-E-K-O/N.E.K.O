@@ -623,6 +623,19 @@ class RealtimeResponseArbiter:
     def current_source(self) -> str | None:
         return self._current.source if self._current is not None else None
 
+    def response_source_for(self, response_id: str | None) -> str | None:
+        """Return the confirmed owner of this response, never a queued request."""
+        owner = self._response_owner
+        if (
+            owner is not None
+            and owner.response_id == response_id
+            and owner.ticket.started.done()
+            and not owner.ticket.started.cancelled()
+            and owner.ticket.started.exception() is None
+        ):
+            return owner.source
+        return None
+
     @property
     def has_live_response(self) -> bool:
         """Whether a response the provider already knows about is in flight.

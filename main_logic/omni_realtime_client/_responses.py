@@ -78,6 +78,24 @@ def _proactive_text_instruction(language: str, *, has_vision: bool) -> str:
 
 
 class _ResponseMixin:
+    def get_conversation_turn_type(self) -> str:
+        """Classify delivered content by its provider response ownership."""
+        if getattr(self, "_is_gemini", False):
+            owner = getattr(self, "_gemini_proactive_outcome_owner", None)
+            proactive = bool(
+                owner is not None
+                and len(owner) > 4
+                and owner[0] == getattr(self, "_connection_generation", None)
+                and owner[1] is getattr(self, "_gemini_session", None)
+                and owner[2] == getattr(self, "_proactive_inject_outcome_token", None)
+                and owner[4] == getattr(self, "_tool_scope_generation", 0)
+            )
+        else:
+            # Captured when accepted start evidence opens the response. It
+            # survives terminal bookkeeping before a final transcript flush.
+            proactive = getattr(self, "_current_response_source", None) == "proactive"
+        return "proactive_reply" if proactive else "assistant_message"
+
     def _ensure_response_arbiter(self) -> RealtimeResponseArbiter:
         arbiter = getattr(self, "_response_arbiter", None)
         if arbiter is None:
