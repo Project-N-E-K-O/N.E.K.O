@@ -76,6 +76,7 @@ from main_logic.visit.recovery import (
     build_upload_doc,
     reseal_orphan_stream,
     sealed_upload_doc_from_another_version,
+    sealed_upload_doc_matches_state,
     sealed_upload_doc_usable,
 )
 from main_logic.visit.spool import UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX
@@ -1209,6 +1210,13 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         return UploadRound(pending=True, retryable=True)
     except ValueError:
         doc = None
+    if sealed_upload_doc_usable(doc, visit_id):
+        matches, state_owner = await sealed_upload_doc_matches_state(config_dir, visit_id, doc)
+        if not matches:
+            # 本场格式、却与 state.json 记的角色 / 账号对不上（复制来的 / 别的账号的文件）：不传、不信它写的
+            # 账号，按 state 的账号报，交给启动补录判（隔离或重封）
+            logger.warning("visit upload %s: sealed file disagrees with the visit state, left to recovery", visit_id)
+            return UploadRound(pending=True, owner=state_owner)
     # 只信本场的文件（含本版本留着不动的新版本文件）里写的账号：别场 / 坏文件写的不算，按未知处理
     doc_trusted = sealed_upload_doc_usable(doc, visit_id) or sealed_upload_doc_from_another_version(doc, visit_id)
     owner = doc.get("own_visit_uid") if doc_trusted else None

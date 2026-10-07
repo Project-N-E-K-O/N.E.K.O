@@ -1308,3 +1308,29 @@ def test_confirming_a_hand_edit_checks_it_against_the_current_card(env):
     resp = _confirm(client)
     assert resp.status_code == 400 and resp.json()["code"] == "persona_sensitive_overlap"
     assert _file(tmp_path)["reviewed"] is False
+
+
+
+def test_old_scan_sections_still_in_the_card_survive_case_and_spacing_changes():
+    secret = "She Keeps Old Ticket Stubs In A Drawer"
+    doc = {"scan_card_hash": "0" * 64, "private_sections": [secret, "a passage that is gone"]}
+    card = "she keeps old ticket stubs\nin a drawer"                       # 只改了大小写与换行
+    assert list(persona._scanned_sections(doc, card)) == [secret]
+
+
+def test_a_hand_edit_is_refused_when_the_name_now_belongs_to_another_character(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    before = _file(tmp_path)
+    real = persona._hooks.resolve_char_uid
+    calls = []
+
+    async def renamed_meanwhile(name):
+        calls.append(name)
+        return await real(name) if len(calls) == 1 else "d" * 32          # 之后「A」成了新建的另一个角色
+
+    monkeypatch.setattr(persona._hooks, "resolve_char_uid", renamed_meanwhile)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
+    assert resp.status_code == 409 and resp.json()["code"] == "catgirl_changed"
+    assert _file(tmp_path) == before

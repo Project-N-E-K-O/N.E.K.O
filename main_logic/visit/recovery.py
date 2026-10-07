@@ -941,6 +941,9 @@ async def _upload_pending(
             except Exception as exc:  # noqa: BLE001 - 任何失败都留文件下次再试
                 logger.warning("visit recovery: upload of %s failed: %r", visit_id, exc)
                 ok = False
+                if retry_later is not None:
+                    # 回调在自己排后台重试之前就出错（本地准备时一时读写不了）：补录只跑一轮，交给后台
+                    retry_later(visit_id)
             if terminal_reason is None:
                 # 终态拒收不记成上传成功：uploads 的 True 只表示转录到了 Servers
                 report.uploads[visit_id] = ok
@@ -1022,6 +1025,15 @@ async def _drop_corrupt_sealed(spool_dir: Path, visit_id: str) -> bool:
         logger.warning("visit recovery: cannot delete corrupt upload %s: %s", path.name, exc)
         return False
     return True
+
+
+async def sealed_upload_doc_matches_state(config_dir: Path, visit_id: str, doc: dict) -> tuple[bool, str | None]:
+    """``(matches, state owner)``: whether a usable sealed document agrees with the visit's ``state.json``.
+
+    Its character id, and its account when both name one, must be the ones
+    the state records; ``(True, None)`` without a readable state.
+    """
+    return await _sealed_matches_state(config_dir, visit_id, doc)
 
 
 async def _sealed_matches_state(config_dir: Path, visit_id: str, doc: dict) -> tuple[bool, str | None]:

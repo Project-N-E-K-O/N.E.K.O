@@ -1856,3 +1856,14 @@ async def test_a_finished_worker_leaves_no_wakeup_event_behind(tmp_path, servers
     await asyncio.wait_for(tu.schedule_visit_retry(V1, initial_delay_s=5), 5)
     await asyncio.sleep(0)                                               # 让 done 回调跑完
     assert calls and V1 not in tu._wakeups
+
+
+
+async def test_a_sealed_file_that_disagrees_with_the_visit_state_is_not_sent(tmp_path, servers):
+    from tests.unit.visit_memory_test_helpers import make_visit
+
+    fake, _ = servers
+    await make_visit(tmp_path, V1, [], memory_enabled=False, own_uid=OWN, own_char_uid="e" * 32)  # 本场是另一个角色
+    _write_sealed(tmp_path, _big_doc(4, 10))                               # 文件却写着 CHAR_UID
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    assert outcome.pending is True and fake.count("/api/visit/transcripts") == 0

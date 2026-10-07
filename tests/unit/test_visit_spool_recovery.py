@@ -2975,3 +2975,23 @@ async def test_a_transiently_unreadable_queued_report_rearms_the_retry(tmp_path,
                                    report=recovery.RecoveryReport(), retry_later=armed.append)
     # 只交举报、没有上传任务的场次：一时读不了就交给后台，不等下次启动
     assert reports.calls == [] and armed == [v]
+
+
+
+async def test_an_upload_callback_failing_before_its_own_scheduling_rearms_the_retry(tmp_path):
+    from main_logic.visit import recovery
+
+    v = vid(118)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    (d / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
+
+    async def setup_failed(_visit_id, _doc):
+        raise PermissionError("progress file in use")                   # 回调自己排重试之前就出错
+
+    armed = []
+    pending = await recovery._upload_pending(
+        tmp_path, live=lambda _v: False, upload_transcript=setup_failed, submit_report=None,
+        report=recovery.RecoveryReport(), retry_later=armed.append,
+    )
+    assert v in pending and armed == [v]

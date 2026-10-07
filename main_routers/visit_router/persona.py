@@ -1076,8 +1076,10 @@ def _scanned_sections(doc: dict | None, card: str | None) -> Sequence[str]:
         return ()
     if doc["scan_card_hash"] == card_hash(card):
         return doc["private_sections"]
-    # 卡片改过：扫描清单基于旧卡，其中仍原样在当前卡里的段落照样比对（手写常发生在刚改完卡之后）
-    return [section for section in doc["private_sections"] if section in (card or "")]
+    # 卡片改过：扫描清单基于旧卡，其中仍原样在当前卡里的段落照样比对（手写常发生在刚改完卡之后）。
+    # 与扫描结果同一口径比对：只改了大小写 / 全半角 / 空白的段落仍算在卡里
+    current = _squash(card or "")
+    return [section for section in doc["private_sections"] if _squash(section) in current]
 
 
 async def _view_response(name: str, character_uid: str, ctx: CharacterContext) -> JSONResponse:
@@ -1118,6 +1120,10 @@ async def put_persona(request: Request, catgirl: str = ""):
         if await _hooks.resolve_char_name(character_uid) is None:
             # 请求进来之后角色被删除：不再写，否则删除角色时清掉的人设文件又被建回来
             return _error(404, "unknown_catgirl")
+        if await _hooks.resolve_char_uid(catgirl) != character_uid:
+            # 请求进来之后这个名字换了角色（原角色改名、又新建了同名角色）：卡片按名字读会读到新角色的，
+            # 写进原角色的人设就错了。面板重新拉取
+            return _error(409, "catgirl_changed")
         if text is not None:
             # 锁内重读卡片：等锁期间卡片改过（新加了私人内容）时按新卡检查。手写的人设 edited=True，
             # 门槛不会因卡片变更再重生成，拿旧卡检查就会放过新加的内容
