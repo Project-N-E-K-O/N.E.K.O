@@ -1403,3 +1403,18 @@ def test_a_persona_file_with_a_non_finite_timestamp_counts_as_malformed(tmp_path
            "private_sections": [], "scan_card_hash": "0" * 64, "scan_complete": False}
     path.write_text(json.dumps(doc), encoding="utf-8")                  # JSON 里的 NaN / Infinity
     assert store._load_sync(UID_A) is None
+
+
+
+@pytest.mark.parametrize("field", ["text", "private_sections"])
+def test_a_persona_file_with_a_lone_surrogate_counts_as_malformed(tmp_path, field):
+    store = persona.VisitPersonaStore(tmp_path)
+    path = store.path(UID_A)
+    path.parent.mkdir(parents=True)
+    value = '"x \\ud800"' if field == "text" else '["x \\ud800"]'
+    other_text = '"x"' if field != "text" else None
+    raw = ('{"text": %s, "source_card_hash": "%s", "generated_at": null, "edited": false, "reviewed": false, '
+           '"private_sections": %s, "scan_card_hash": "%s", "scan_complete": false}') % (
+        value if field == "text" else other_text, "0" * 64, value if field == "private_sections" else "[]", "0" * 64)
+    path.write_text(raw, encoding="utf-8")                                # 文件里是转义的孤立代理字符
+    assert store._load_sync(UID_A) is None

@@ -556,18 +556,27 @@ def card_hash(card: str | None) -> str:
 # ── 存储 ───────────────────────────────────────────────────────────────
 
 
+def _utf8_ok(text: str) -> bool:
+    # JSON 里转义的孤立代理字符（"\ud800"）解析得出字符串，却编不成 UTF-8：返回给面板时整个响应 500
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _valid_doc(doc: Any) -> bool:
     if not isinstance(doc, dict) or set(doc) != set(PERSONA_FIELDS):
         return False
     sections = doc["private_sections"]
     generated_at = doc["generated_at"]
     return (
-        isinstance(doc["text"], str)
+        isinstance(doc["text"], str) and _utf8_ok(doc["text"])
         and isinstance(doc["source_card_hash"], str) and _HASH_RE.fullmatch(doc["source_card_hash"]) is not None
         and (generated_at is None or (isinstance(generated_at, (int, float)) and not isinstance(generated_at, bool)
                                       and math.isfinite(generated_at)))
         and all(isinstance(doc[k], bool) for k in ("edited", "reviewed", "scan_complete"))
-        and isinstance(sections, list) and all(isinstance(s, str) for s in sections)
+        and isinstance(sections, list) and all(isinstance(s, str) and _utf8_ok(s) for s in sections)
         and isinstance(doc["scan_card_hash"], str) and _HASH_RE.fullmatch(doc["scan_card_hash"]) is not None
     )
 
