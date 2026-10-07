@@ -154,12 +154,48 @@ jobs:
           # 而非手列清单，新增文件无法再静默绕过 CI。
           node --test tests/unit/*.test.js
 
+  remote-voice-chromium:
+    name: remote voice manager (Chromium actual page)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install locked Playwright and its Chromium
+        working-directory: frontend/plugin-manager
+        run: |
+          npm ci --no-audit --no-fund
+          node -e "require('node:assert/strict').equal(require('playwright/package.json').version, '1.63.0')"
+          npx --no-install playwright install --with-deps chromium
+
+      - name: Run actual remote voice manager page
+        env:
+          NEKO_TEST_PLAYWRIGHT_MODULE: ${{ github.workspace }}/frontend/plugin-manager/node_modules/playwright
+          NEKO_TEST_ARTIFACT_DIR: ${{ runner.temp }}/remote-voice-chromium
+        run: node tests/frontend/remote_voice_manager_browser.cjs
+
+      - name: Retain remote voice Chromium diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-voice-chromium-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/remote-voice-chromium
+          if-no-files-found: warn
+
   voice-readiness-electron:
     name: voice readiness (Electron actual page)
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -177,3 +213,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Voice readiness Electron test failed ($LASTEXITCODE)." }
           node "$env:RUNNER_TEMP/voice-readiness-electron/node_modules/electron/cli.js" tests/frontend/mic_capture_electron.cjs
           if ($LASTEXITCODE -ne 0) { throw "Microphone capture Electron test failed ($LASTEXITCODE)." }
+
+      - name: Run actual remote voice manager page
+        shell: pwsh
+        env:
+          NEKO_TEST_ARTIFACT_DIR: ${{ runner.temp }}/remote-voice-electron
+          NEKO_TEST_ELECTRON_MODULE: ${{ runner.temp }}/voice-readiness-electron/node_modules/electron
+        run: |
+          Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+          node tests/frontend/remote_voice_electron_runner.cjs tests/frontend/remote_voice_manager_electron.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Remote voice manager Electron test failed ($LASTEXITCODE)." }
+
+      - name: Retain remote voice Electron diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-voice-electron-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/remote-voice-electron
+          if-no-files-found: warn

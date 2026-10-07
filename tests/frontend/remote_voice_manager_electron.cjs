@@ -3,15 +3,35 @@
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
 const assert = require('node:assert/strict');
 const { createVoiceManagerServer } = require('./remote_voice_manager_server.cjs');
 const { verifyVoiceRaces } = require('./remote_voice_manager_races.cjs');
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'neko-remote-voice-ui-'));
-app.setPath('userData', path.join(scratch, 'user-data'));
+const { createPageDiagnostics, closeTestServer } = require('./remote_voice_page_diagnostics.cjs');
+const diagnostics = createPageDiagnostics('electron');
+const scratch = diagnostics.directory;
+if (!process.env.NEKO_TEST_ELECTRON_PROFILE) throw new Error('Run through remote_voice_electron_runner.cjs to own and clean the profile');
+app.setPath('userData', process.env.NEKO_TEST_ELECTRON_PROFILE);
 const { server, state } = createVoiceManagerServer();
 let win;
-const watchdog = setTimeout(() => { console.error('REMOTE_VOICE_ELECTRON_TIMEOUT'); app.exit(2); }, 60000);
+let finished = false;
+app.on('window-all-closed', () => {});
+async function finish(code, result, error) {
+    if (finished) return;
+    finished = true;
+    clearTimeout(watchdog);
+    if (error) {
+        console.error(error);
+        if (win && !win.isDestroyed()) await screenshot('failure').catch(captureError => diagnostics.log('screenshot-error', captureError));
+    }
+    if (win && !win.isDestroyed()) win.destroy();
+    try { await closeTestServer(server); }
+    catch (cleanupError) { diagnostics.error(cleanupError); code = 1; }
+    diagnostics.finish(result, error || (code ? new Error('Electron test cleanup failed') : undefined));
+    app.exit(code);
+}
+const watchdog = setTimeout(() => { void finish(2, undefined, new Error('REMOTE_VOICE_ELECTRON_TIMEOUT')); }, 60000);
+process.on('unhandledRejection', error => { void finish(1, undefined, error); });
+process.on('uncaughtException', error => { void finish(1, undefined, error); });
 const run = code => win.webContents.executeJavaScript(code, true).catch(error => { console.error('UI expression failed:', code); throw error; });
 async function waitFor(expression) {
     return run(`new Promise((resolve,reject)=>{const check=()=>(${expression});if(check())return resolve(true);const observer=new MutationObserver(()=>{if(check()){clearTimeout(timer);observer.disconnect();resolve(true);}});observer.observe(document.body,{subtree:true,attributes:true,childList:true,characterData:true});const timer=setTimeout(()=>{observer.disconnect();reject(new Error('UI timeout: '+${JSON.stringify(expression)}));},10000);})`);
@@ -23,9 +43,18 @@ app.whenReady().then(async () => {
     const origin = 'http://127.0.0.1:' + server.address().port;
     win = new BrowserWindow({ show: false, width: 1120, height: 880, skipTaskbar: true,
         webPreferences: { contextIsolation: false, nodeIntegration: false, sandbox: false, backgroundThrottling: false } });
-    const errors = [];
-    win.webContents.on('console-message', (event, level, message) => { if (level >= 3) { errors.push(message); console.error('Renderer:', message); } });
+    win.webContents.on('console-message', event => diagnostics.log(event.level, event.message));
+    win.webContents.on('render-process-gone', (_event, details) => diagnostics.error(new Error('Renderer process gone: ' + JSON.stringify(details))));
+    win.webContents.debugger.attach('1.3');
+    win.webContents.debugger.on('message', (_event, method, params) => {
+        if (method === 'Runtime.exceptionThrown') {
+            const detail = params.exceptionDetails;
+            diagnostics.error(new Error(detail.exception?.description || detail.text));
+        }
+    });
+    const runtimeCapture = win.webContents.debugger.sendCommand('Runtime.enable');
     await win.loadURL(origin + '/voice_clone?lanlan_name=Test');
+    await runtimeCapture;
     await waitFor("typeof window.t==='function' && document.getElementById('voiceProvider').value==='cosyvoice' && !document.getElementById('importExistingVoice').hidden && !document.getElementById('importExistingVoice').disabled");
     const entryPlacement = await run("(()=>{const button=document.getElementById('importExistingVoice').getBoundingClientRect();const select=document.querySelector('.remote-voice-provider-controls .api-provider-dropdown').getBoundingClientRect();return button.left>=select.right-1 && Math.abs(button.top-select.top)<12;})()");
     if (!entryPlacement) {
@@ -108,11 +137,13 @@ app.whenReady().then(async () => {
     assert.equal(state.settings[0].doubaoVoiceManagementAccessKey, '__NEKO_SECRET_MASKED__');
     assert.equal(state.settings[0].doubaoVoiceManagementSecretKey, '__NEKO_SECRET_MASKED__');
     assert.equal(state.settings[0].doubaoVoiceManagementProjectName, 'Controlled Project');
-    console.log(JSON.stringify({ electron: process.versions.electron, chromium: process.versions.chrome,
+    diagnostics.assertClean();
+    const result = { electron: process.versions.electron, chromium: process.versions.chrome,
         actualProductAssets: true, controlledApiOnly: true, importWithoutBinding: true, localReferenceBinding: true,
         ...races,
         originalRemoteIdVisible: true, manualImport: true, uncertainUpdateNoRetry: true, explicitStatusRefresh: true,
         keyboardImeAndFocus: true, narrowWindow: true, tutorialDeferredAndResumed: true, maskedManagementCredentialRoundTrip: true,
-        listScreenshot, manualScreenshot, narrowScreenshot, consoleErrors: errors }, null, 2));
-    clearTimeout(watchdog); win.destroy(); server.close(); app.quit();
-}).catch(error => { console.error(error); clearTimeout(watchdog); if (win) win.destroy(); server.close(); app.exit(1); });
+        listScreenshot, manualScreenshot, narrowScreenshot };
+    console.log(JSON.stringify(result, null, 2));
+    await finish(0, result);
+}).catch(error => { void finish(1, undefined, error); });

@@ -3,24 +3,27 @@
 const { chromium } = require(process.env.NEKO_TEST_PLAYWRIGHT_MODULE || 'playwright');
 const { createVoiceManagerServer } = require('./remote_voice_manager_server.cjs');
 const { verifyVoiceRaces } = require('./remote_voice_manager_races.cjs');
+const { createPageDiagnostics, closeTestServer } = require('./remote_voice_page_diagnostics.cjs');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
 (async () => {
+    const diagnostics = createPageDiagnostics('chromium');
     const { server, state } = createVoiceManagerServer();
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const channel = process.env.NEKO_TEST_BROWSER_CHANNEL;
-    let browser;
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'neko-remote-voice-web-'));
+    let browser, page, result, failure;
+    const scratch = diagnostics.directory;
     try {
         browser = await chromium.launch({ headless: true, ...(channel ? { channel } : {}) });
         const context = await browser.newContext({ viewport: { width: 1120, height: 850 } });
-        const page = await context.newPage();
-        const errors = []; page.on('pageerror', error => errors.push(error.message));
+        page = await context.newPage();
+        page.on('pageerror', error => diagnostics.error(error));
+        page.on('console', message => diagnostics.log(message.type(), message.text()));
         await page.goto('http://127.0.0.1:' + server.address().port + '/voice_clone?lanlan_name=Test');
         await page.waitForFunction(() => document.getElementById('voiceProvider').value === 'cosyvoice' && !document.getElementById('importExistingVoice').hidden && !document.getElementById('importExistingVoice').disabled);
-        await page.locator('#importExistingVoice').click();
+        // Activate before the tutorial's delayed overlay can intercept the pointer.
+        // The modal's real tutorial deferral and resumption are asserted below.
+        await page.evaluate(() => document.getElementById('importExistingVoice').click());
         await page.locator('.remote-voice-table tbody tr').first().waitFor();
         await page.waitForFunction(() => !!window.pageTutorialManager._modalTutorialWaitCleanup);
         assert.equal(await page.evaluate(() => window.pageTutorialManager.isTutorialRunning), false);
@@ -73,10 +76,20 @@ const os = require('node:os');
         assert.equal(await page.locator('#importExistingVoice').isHidden(), true);
         const races = await verifyVoiceRaces({ run: code => page.evaluate(code),
             waitFor: expression => page.waitForFunction(expression), state });
-        assert.deepEqual(errors, []);
-        console.log(JSON.stringify({ browser: await browser.version(), actualProductAssets: true, controlledApiOnly: true,
+        diagnostics.assertClean();
+        result = { browser: await browser.version(), actualProductAssets: true, controlledApiOnly: true,
             explicitImport: true, rawIdAndAvailablePreview: true, paginatedSearch: true, manualRequiredFields: true, noImplicitBinding: true,
             ...races,
-            tutorialDeferredAndResumed: true, keyboardFocus: true, narrowViewport: true, unsupportedProviderHidden: true, listScreenshot, manualScreenshot, screenshot }, null, 2));
-    } finally { if (browser) await browser.close(); await new Promise(resolve => server.close(resolve)); }
+            tutorialDeferredAndResumed: true, keyboardFocus: true, narrowViewport: true, unsupportedProviderHidden: true, listScreenshot, manualScreenshot, screenshot };
+        console.log(JSON.stringify(result, null, 2));
+    } catch (error) {
+        failure = error;
+        if (page) await page.screenshot({ path: path.join(scratch, 'failure.png') }).catch(screenshotError => diagnostics.log('screenshot-error', screenshotError));
+        throw error;
+    } finally {
+        const cleanup = await Promise.allSettled([browser && browser.close(), closeTestServer(server)]);
+        for (const item of cleanup) if (item.status === 'rejected') diagnostics.error(item.reason);
+        diagnostics.finish(result, failure || cleanup.find(item => item.status === 'rejected')?.reason);
+        if (!failure) diagnostics.assertClean();
+    }
 })().catch(error => { console.error(error); process.exitCode = 1; });
