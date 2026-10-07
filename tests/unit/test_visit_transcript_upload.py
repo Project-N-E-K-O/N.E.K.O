@@ -1570,3 +1570,33 @@ async def test_anomaly_counts_of_another_accounts_side_are_not_used(tmp_path, se
     tu.remember_anomalies(vid(2), 5, OWN)
     assert await tu.visit_anomalies(tmp_path, vid(2), "b" * 24) == 0
     assert await tu.visit_anomalies(tmp_path, vid(2), OWN) == 5
+
+
+
+async def test_a_transient_sealed_read_failure_stays_retryable(tmp_path, servers, monkeypatch):
+    _write_sealed(tmp_path, _big_doc(4, 10))
+    original = tu._load_json
+
+    def locked(path):
+        if path.name.endswith(".upload.json"):
+            raise PermissionError("in use")
+        return original(path)
+
+    monkeypatch.setattr(tu, "_load_json", locked)
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    assert outcome.pending is True and outcome.retryable is True
+
+
+async def test_a_failed_reseal_keeps_the_owner_from_the_stream(tmp_path, servers, monkeypatch):
+    sealed = _spool(tmp_path) / f"{V1}.upload.json"
+    sealed.parent.mkdir(parents=True, exist_ok=True)
+    sealed.write_text("{broken", encoding="utf-8")
+    old = time.time() - 30 * 86400
+    os.utime(sealed, (old, old))
+    (_spool(tmp_path) / f"{V1}.upload.jsonl").write_text("{}", encoding="utf-8")
+
+    async def failed(_config_dir, _visit_id):
+        return "failed", OWN
+
+    monkeypatch.setattr(tu, "reseal_orphan_stream", failed)
+    assert (await tu.attempt_upload(V1, config_dir=tmp_path)).owner == OWN

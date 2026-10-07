@@ -245,6 +245,21 @@ def _unnumbered_streets(segment: str) -> list[str]:
     return out
 
 
+def _qualified_places(words: list[str]) -> list[str]:
+    """Single proper words after a dwelling noun / preposition in an address value (``Apartment near Broadway``)."""
+    out = []
+    cleaned = [w.strip(".,!?;:") for w in words]
+    for i in range(1, len(cleaned)):
+        word, before = cleaned[i], cleaned[i - 1].lower()
+        after = cleaned[i + 1] if i + 1 < len(cleaned) else ""
+        if (word[:1].isupper() and len(word) >= _TOKEN_MIN_CHARS
+                and word.lower() not in _STREET_STOPWORDS | _GENERIC_DWELLING_WORDS
+                and (before in _STREET_STOPWORDS or before in _GENERIC_DWELLING_WORDS)
+                and not after[:1].isupper()):
+            out.append(word)
+    return out
+
+
 def _run_until_stopword(words: list[str]) -> list[str]:
     out = []
     for word in words:
@@ -366,6 +381,7 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
                         and words[0].lower().strip(".,!?;:") not in _STREET_STOPWORDS | _GENERIC_DWELLING_WORDS:
                     # 地址值以单个大写词开头、后面是小写叙述（「Broadway likes cats」）：这个词就是地名
                     found.append(words[0].strip(".,!?;:"))
+                found.extend(_qualified_places(words))
                 end = _LINE_END_RE.search(text, m.start("value"))
                 rest = text[m.end("value"):end.start() if end else len(text)]
                 for segment in _ADDRESS_SEGMENT_SPLIT_RE.split(rest):

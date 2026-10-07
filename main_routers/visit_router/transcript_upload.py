@@ -1176,7 +1176,11 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
             return UploadRound(pending=True, retryable=True)
     try:
         doc = await asyncio.to_thread(_load_json, sealed)
-    except (OSError, ValueError):
+    except OSError as exc:
+        # 一时读不了（被占用 / 权限）不是坏文件：这一轮算没传上去，worker 接着试
+        logger.warning("visit upload %s: cannot read %s: %s", visit_id, sealed.name, type(exc).__name__)
+        return UploadRound(pending=True, retryable=True)
+    except ValueError:
         doc = None
     owner = doc.get("own_visit_uid") if isinstance(doc, dict) else None
     owner = owner if isinstance(owner, str) and owner else None
@@ -1191,10 +1195,11 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
             and await asyncio.to_thread(stream.exists)):
         # 过期的封存文件坏了、旁边还留着完整的流水（封存后没删掉流水，之后封存文件又坏了）：与启动补录
         # 一样先从流水重封，再按「先试传一次」处理，别把唯一能恢复的转录直接按过期删掉
-        status, _stream_owner = await reseal_orphan_stream(config_dir, visit_id)
+        status, stream_owner = await reseal_orphan_stream(config_dir, visit_id)
         if status == "failed":
-            # 一时封不了（读写出错）：留着两份等下一轮，别落到下面按过期把还能恢复的流水删掉
-            return UploadRound(pending=True, retryable=True, owner=owner)
+            # 一时封不了（读写出错）：留着两份等下一轮，别落到下面按过期把还能恢复的流水删掉。
+            # 坏文件推不出归属时用流水头 / state.json 给的
+            return UploadRound(pending=True, retryable=True, owner=owner or stream_owner)
         if status == "sealed":
             try:
                 doc = await asyncio.to_thread(_load_json, sealed)
