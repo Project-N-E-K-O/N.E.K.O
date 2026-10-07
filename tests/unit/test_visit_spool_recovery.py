@@ -2951,3 +2951,27 @@ async def test_the_report_gate_uses_the_state_owner_for_a_rejected_current_file(
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
     # 与 state.json 对不上的文件被拒：按 state 的 B 算，B 的附转录举报照旧等，不当作别人的转录放行
     assert reports.calls == []
+
+
+
+async def test_a_transiently_unreadable_queued_report_rearms_the_retry(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+
+    v = vid(117)
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": False, "own_visit_uid": OWN_A}), encoding="utf-8")
+    real_load = recovery._load_json
+
+    def locked(path):
+        if path.parent.name == "visit_reports":
+            raise PermissionError("in use")
+        return real_load(path)
+
+    monkeypatch.setattr(recovery, "_load_json", locked)
+    armed, reports = [], Reports()
+    await recovery._submit_reports(tmp_path, skip=set(), submit_report=reports,
+                                   report=recovery.RecoveryReport(), retry_later=armed.append)
+    # 只交举报、没有上传任务的场次：一时读不了就交给后台，不等下次启动
+    assert reports.calls == [] and armed == [v]

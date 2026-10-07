@@ -1084,7 +1084,7 @@ def _load_json(path: Path) -> Any:
 
 async def _submit_report(
     config_dir: Path, visit_id: str, submit_report: SubmitReport | None, report: RecoveryReport,
-    *, transcript_gated: bool = False,
+    *, transcript_gated: bool = False, retry_later: Callable[[str], Any] | None = None,
 ) -> None:
     if submit_report is None:
         return
@@ -1093,6 +1093,9 @@ async def _submit_report(
         doc = await asyncio.to_thread(_load_json, path)
     except (OSError, ValueError) as exc:
         logger.warning("visit recovery: queued report %s unreadable: %s", path.name, exc)
+        if retry_later is not None and isinstance(exc, OSError):
+            # 一时读不了（被占用）：只交举报的场次没有上传任务会再来，交给后台等能读了再交
+            retry_later(visit_id)
         return
     if doc is None:
         return
@@ -1236,6 +1239,7 @@ def _mark_report_sync(path: Path, visit_id: str, reason: str, owner: str | None 
 
 async def _submit_reports(
     config_dir: Path, *, skip: set[str], submit_report: SubmitReport | None, report: RecoveryReport,
+    retry_later: Callable[[str], Any] | None = None,
 ) -> None:
     directory = config_dir / VISIT_REPORTS_DIRNAME
     try:
@@ -1246,7 +1250,8 @@ async def _submit_reports(
         visit_id = name[: -len(".json")] if name.endswith(".json") else ""
         if not VISIT_ID_RE.fullmatch(visit_id) or visit_id in report.reports:
             continue
-        await _submit_report(config_dir, visit_id, submit_report, report, transcript_gated=visit_id in skip)
+        await _submit_report(config_dir, visit_id, submit_report, report, transcript_gated=visit_id in skip,
+                             retry_later=retry_later)
 
 
 async def visit_spool_recovery(
@@ -1393,5 +1398,6 @@ async def visit_spool_recovery(
         logger.error("visit recovery: upload expiry failed: %r", exc)
     # 另外独立扫描举报队列：转录已上传（.upload.json 已删）而举报还没提交的也继续提交
     streams = set(await VisitSpool.list_visit_ids(config_dir, (UPLOAD_JSONL_SUFFIX,)))
-    await _submit_reports(config_dir, skip=pending | streams, submit_report=submit_report, report=report)
+    await _submit_reports(config_dir, skip=pending | streams, submit_report=submit_report, report=report,
+                          retry_later=retry_later)
     return report
