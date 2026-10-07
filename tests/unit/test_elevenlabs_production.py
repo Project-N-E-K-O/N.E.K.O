@@ -25,7 +25,8 @@ class _ConfigManager:
 
 
 @pytest.mark.asyncio
-async def test_uploaded_clone_is_normalized_registered_and_saved(monkeypatch):
+@pytest.mark.parametrize("source", ["upload", "direct"])
+async def test_clone_is_normalized_registered_and_saved(monkeypatch, source):
     captured = {}
 
     class CloneConfig(_ConfigManager):
@@ -61,10 +62,39 @@ async def test_uploaded_clone_is_normalized_registered_and_saved(monkeypatch):
     monkeypatch.setattr(voice_cloning, "get_config_manager", lambda: CloneConfig())
     monkeypatch.setattr(voice_cloning, "_elevenlabs_clone_voice", fake_clone)
 
-    response = await voice_cloning.voice_clone(
-        file=UploadFile(file=sample, filename="reference.wav"),
-        prefix="V4Turbo", ref_language="ch", provider="elevenlabs", ref_text="",
-    )
+    if source == "upload":
+        response = await voice_cloning.voice_clone(
+            file=UploadFile(file=sample, filename="reference.wav"),
+            prefix="V4Turbo", ref_language="ch", provider="elevenlabs", ref_text="",
+        )
+    else:
+        direct_link = "https://example.com/reference.wav"
+
+        async def request_json():
+            return {
+                "direct_link": direct_link, "prefix": "V4Turbo",
+                "ref_language": "ch", "provider": "elevenlabs",
+            }
+
+        async def validate_link(url):
+            assert url == direct_link
+
+        async def close_response():
+            pass
+
+        async def request_link(method, url):
+            assert method == "HEAD"
+            assert url == direct_link
+            return SimpleNamespace(status_code=200, aclose=close_response)
+
+        async def download_audio(url, *, max_file_size):
+            assert url == direct_link
+            return "reference.wav", sample.getvalue()
+
+        monkeypatch.setattr(voice_cloning, "_validate_direct_link_target", validate_link)
+        monkeypatch.setattr(voice_cloning, "_request_direct_link_follow_redirects", request_link)
+        monkeypatch.setattr(voice_cloning, "_download_direct_link_audio", download_audio)
+        response = await voice_cloning.voice_clone_direct(SimpleNamespace(json=request_json))
 
     assert response.status_code == 200
     assert json.loads(response.body)["voice_id"] == "eleven:created-123"
@@ -73,7 +103,11 @@ async def test_uploaded_clone_is_normalized_registered_and_saved(monkeypatch):
     assert captured["saved_voice_id"] == "eleven:created-123"
     assert captured["metadata"]["raw_voice_id"] == "created-123"
     assert captured["metadata"]["provider"] == "elevenlabs"
-    assert captured["metadata"]["source"] == "clone"
+    if source == "upload":
+        assert captured["metadata"]["source"] == "clone"
+    else:
+        assert captured["metadata"]["is_direct_link"] is True
+        assert captured["metadata"]["direct_link"] == direct_link
 
 
 @pytest.mark.asyncio
