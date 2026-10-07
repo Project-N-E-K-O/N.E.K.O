@@ -583,3 +583,38 @@ def test_gemini_proactive_label_requires_current_generation(changed):
     elif changed == "token":
         client._proactive_inject_outcome_token = "inject-2"
     assert client.get_conversation_turn_type() == ("proactive_reply" if changed == "none" else "assistant_message")
+
+
+@pytest.mark.parametrize("response_id", [None, "proactive-id"])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_response_source_requires_id_and_uninterrupted_owner(response_id, interrupted):
+    """An idless successor cannot borrow the interrupted proactive owner."""
+    from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
+
+    async def scenario():
+        async def send(event):
+            pass
+
+        arbiter = RealtimeResponseArbiter(send)
+        ticket = await arbiter.enqueue(source="proactive")
+        await asyncio.wait_for(ticket.sent, timeout=1)
+        event = {"type": "response.created", "response": {}}
+        if response_id is not None:
+            event["response"]["id"] = response_id
+        arbiter.notify_response_created(event)
+        assert ticket.started.done()
+        if interrupted:
+            # Capture the gap after interruption, before the owner's terminal.
+            arbiter._response_owner.interrupted = True
+        assert arbiter.response_source_for(response_id) == (
+            "proactive" if response_id is not None and not interrupted else None
+        )
+        arbiter.notify_response_terminal({"type": "response.done", "response": event["response"]})
+        if interrupted:
+            with pytest.raises(RuntimeError, match="response dispatch interrupted"):
+                await asyncio.wait_for(ticket.done, timeout=1)
+        else:
+            await asyncio.wait_for(ticket.done, timeout=1)
+        await arbiter.wait_until_idle(timeout=1)
+
+    asyncio.run(scenario())

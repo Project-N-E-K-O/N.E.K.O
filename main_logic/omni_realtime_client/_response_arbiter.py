@@ -628,7 +628,9 @@ class RealtimeResponseArbiter:
         owner = self._response_owner
         if (
             owner is not None
+            and response_id is not None
             and owner.response_id == response_id
+            and not owner.interrupted
             and owner.ticket.started.done()
             and not owner.ticket.started.cancelled()
             and owner.ticket.started.exception() is None
