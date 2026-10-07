@@ -1028,6 +1028,7 @@ def test_a_space_separated_profile_name_is_not_split_into_common_words():
 def test_a_copular_address_label_registers_the_place():
     assert "Broadway" in persona.extract_sensitive_tokens("address is Broadway", [])
     assert "broadway" in persona.extract_sensitive_tokens("address is broadway", [])   # 「is」本身就是分隔
+    assert "Broadway" in persona.extract_sensitive_tokens("address at Broadway", [])
 
 
 def test_retiring_a_persona_waits_for_a_write_in_progress(env):

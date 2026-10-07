@@ -979,7 +979,11 @@ async def submit_queued_report(visit_id: str, report_doc: dict) -> bool:
     config_dir = Path(config_dir_provider())
     async with visit_lock(visit_id):
         # 与端点的放弃 / 重试同一把逐场锁；等锁期间这份可能已被放弃或换成另一份
-        current = await load_report(config_dir, visit_id)
+        current, unreadable = await _read_report(config_dir, visit_id)
+        if unreadable:
+            # 一时读不了（被占用）不等于没了：补录只跑一轮，交给后台等能读了再核对、再交
+            schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=VISIT_UPLOAD_RETRY_BACKOFF_S[0])
+            return False
         if current is None or not same_report(current, report_doc) or current.get("rejected"):
             return False
         result = await send_report(report_doc)

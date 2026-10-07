@@ -144,7 +144,7 @@ _LATIN_KEYWORD_VALUE_RE = re.compile(
     r"|(?<=[iI][dD])\s+(?:is\s+)?|\s+(?=(?-i:[A-Za-z]*[a-z][A-Z])))"
     r"|(?P<kw2>lives?\s+in)\s+"
     r"|(?P<kw6>line)\s*[:：]\s*"
-    r"|(?P<kw3>address)\s+(?:is\s+|(?=(?-i:[A-Z]))))" + _KEYWORD_VALUE,
+    r"|(?P<kw3>address)\s+(?:is\s+|at\s+|(?=(?-i:[A-Z]))))" + _KEYWORD_VALUE,
     re.IGNORECASE,
 )
 # 中文地址关键词不带分隔时（「住在一起」「地址保密」「家住得离公司很近」），值要有地址形态才收：路名 /

@@ -1781,3 +1781,22 @@ async def test_this_visits_newer_version_file_still_names_its_owner_and_count(tm
     outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
     assert outcome.pending is True and outcome.owner == OWN             # 另一账号的举报不必等它
     assert await tu.visit_anomalies(tmp_path, V1, OWN) == 4
+
+
+
+async def test_recovery_rearms_a_report_it_cannot_reread_right_now(tmp_path, servers, monkeypatch):
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    doc = await tu.load_report(tmp_path, V1)
+    original = tu._load_json
+
+    def locked(path):
+        if path.parent.name == "visit_reports":
+            raise PermissionError("in use")                          # 锁内重读：一时被占用
+        return original(path)
+
+    armed = []
+    monkeypatch.setattr(tu, "_load_json", locked)
+    monkeypatch.setattr(tu, "schedule_visit_retry", lambda visit_id, **_k: armed.append(visit_id))
+    assert await tu.submit_queued_report(V1, doc) is False
+    # 读不了不等于没了：交给后台再核对、再交，不留到下次启动
+    assert armed == [V1] and (tmp_path / "visit_reports" / f"{V1}.json").exists()
