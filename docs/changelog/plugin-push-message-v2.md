@@ -101,10 +101,12 @@ citing this version target. `None` values and inactive boolean flags
 
 The wire payload populates **both** v2 (`schema`, `visibility`,
 `ai_behavior`, `parts`) and synthesised legacy fields (`message_type`,
-`content`, `binary_data`, `binary_url`, `mime`, `description`, `unsafe`,
+`content`, `binary_data`, `binary_url`, `mime`, `unsafe`,
 `delivery`, `reply`) so that downstream readers that have not migrated yet (notably
 `plugin/server/application/messages/query_service.py`)
-keep working through the deprecation window.
+keep working through the deprecation window. `description` is no longer among
+them: it has no semantic consumer in v2. `metadata["description"]` still carries
+the label for callers that set one, but the top-level wire field is gone.
 
 `SdkContext.register_music_domains()` is **removed outright** — no
 in-tree consumers were using it. Plugins that called it must migrate

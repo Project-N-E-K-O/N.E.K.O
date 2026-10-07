@@ -86,7 +86,6 @@ async def test_get_plugin_messages_keeps_serialized_binary_data(monkeypatch: pyt
         {
             "plugin_id": "a",
             "source": "",
-            "description": "",
             "priority": 1,
             "message_type": "binary",
             "content": "ok",
@@ -179,7 +178,6 @@ def test_inline_image_push_still_serializes_binary_data(
     assert set(serialized) == {
         "plugin_id",
         "source",
-        "description",
         "priority",
         "message_type",
         "content",
