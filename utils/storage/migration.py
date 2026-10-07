@@ -262,9 +262,10 @@ def _publish_without_overwrite(staged: Path, target: Path) -> None:
     except FileExistsError:
         raise
     except OSError:
-        # Filesystems without hard links (FAT, exFAT): best effort.
-        if os.path.lexists(target):
-            raise FileExistsError(errno.EEXIST, "migration target already exists", str(target))
+        # Filesystems without hard links (FAT, exFAT): reserve the name with
+        # O_EXCL, which is atomic and refuses anything already there, then
+        # replace only that empty reservation.
+        os.close(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
         os.rename(staged, target)
         return
     os.unlink(staged)
@@ -419,13 +420,18 @@ def _copy_regular_file_no_follow(source_path: Path, target_path: Path) -> None:
         os.close(source_fd)
 
 
-def _copy_runtime_entry(source_path: Path, target_path: Path) -> None:
+def _copy_runtime_entry(source_path: Path, target_path: Path) -> list[tuple[Path, int]]:
+    """Copy one runtime entry without following links.
+
+    Returns the directories (relative to ``target_path``) given owner write
+    access only for the move, with the mode to put back once published.
+    """
     _remove_existing_path(target_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     kind, _source_stat = _classify_no_follow(source_path)
     if kind == "file":
         _copy_regular_file_no_follow(source_path, target_path)
-        return
+        return []
     target_path.mkdir()
     pending = [(source_path, target_path)]
     created_dirs = [(source_path, target_path)]
@@ -446,14 +452,17 @@ def _copy_runtime_entry(source_path: Path, target_path: Path) -> None:
     # Keep directory modes and timestamps as ``copytree`` did. Apply them
     # children first, after every file is in place: a read-only directory
     # could not receive its children, and writing a child would bump the
-    # parent's mtime again. The owner keeps write access to each directory:
-    # on POSIX, moving a directory to another parent (publish) and removing
-    # its contents (rollback, cleanup) both need it.
+    # parent's mtime again. Until published, the owner keeps write access to
+    # each directory: on POSIX, moving a directory to another parent needs
+    # it (to update ``..``); the source mode is put back after publishing.
+    widened: list[tuple[Path, int]] = []
     for source_dir, target_dir in reversed(created_dirs):
         shutil.copystat(source_dir, target_dir, follow_symlinks=False)
         mode = stat.S_IMODE(target_dir.lstat().st_mode)
         if not mode & stat.S_IWUSR:
             os.chmod(target_dir, mode | stat.S_IWUSR)
+            widened.append((target_dir.relative_to(target_path), mode))
+    return widened
 
 
 def _rewrite_migrated_runtime_config_paths(
@@ -967,6 +976,7 @@ def run_pending_storage_migration(
         status = {
             "migration_rollback_required": STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
             "migration_source_missing": STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
+            "migration_publish_conflict": STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
             # Keep COMMITTING so the next start decides again from the policy.
             "migration_commit_ambiguous": STORAGE_MIGRATION_STATUS_COMMITTING,
         }.get(error_code, STORAGE_MIGRATION_STATUS_PENDING)
@@ -1153,6 +1163,17 @@ def run_pending_storage_migration(
         target_root = normalize_runtime_root(str(payload.get("target_root") or "").strip())
         selection_source = _normalize_selection_source(str(payload.get("selection_source") or ""))
         checkpoint_status = str(payload.get("status") or "").strip().lower()
+        try:
+            checkpoint_version = int(payload.get("version") or 1)
+        except (TypeError, ValueError):
+            checkpoint_version = 1
+        # v1 copied straight into the target. A v1 run that stopped in COPYING
+        # left only its own partial copy there: never reuse it as an existing
+        # target, overwrite it (replaced entries still go to the backup).
+        resuming_v1_copy = (
+            checkpoint_version < STORAGE_MIGRATION_VERSION
+            and checkpoint_status == STORAGE_MIGRATION_STATUS_COPYING
+        )
 
         if paths_equal(source_root, target_root):
             raise StorageMigrationError("target_matches_source", "目标路径与当前路径一致，不需要执行迁移。")
@@ -1233,6 +1254,14 @@ def run_pending_storage_migration(
                 )
         if not source_root_present:
             raise StorageMigrationError("source_root_missing", "原始数据目录不存在，无法继续迁移。")
+        conflict_entry = str(payload.get("publish_conflict_entry") or "")
+        if conflict_entry and os.path.lexists(transaction_root):
+            # A rollback would delete what was recreated at the target; leave
+            # every copy alone until someone resolves the conflict by hand.
+            raise StorageMigrationError(
+                "migration_publish_conflict",
+                f"迁移目标在发布期间被重新创建，原目标已在事务备份中，等待人工处理: {conflict_entry}",
+            )
         if os.path.lexists(transaction_root):
             _rollback_publish_or_require_recovery(
                 payload=payload,
@@ -1268,11 +1297,14 @@ def run_pending_storage_migration(
         )
 
         target_has_user_content = _root_has_user_content(target_root, config_manager=config_manager)
-        use_existing_target = target_has_user_content and selection_source in {
-            "legacy",
-            POLICY_SELECTION_SOURCE_RECOVERED,
-        }
-        confirmed_existing_target_content = bool(payload.get("confirmed_existing_target_content"))
+        use_existing_target = (
+            not resuming_v1_copy
+            and target_has_user_content
+            and selection_source in {"legacy", POLICY_SELECTION_SOURCE_RECOVERED}
+        )
+        confirmed_existing_target_content = resuming_v1_copy or bool(
+            payload.get("confirmed_existing_target_content")
+        )
 
         if target_has_user_content and not use_existing_target and not confirmed_existing_target_content:
             raise StorageMigrationError(
@@ -1298,6 +1330,7 @@ def run_pending_storage_migration(
         stage_root.mkdir(parents=True)
         backup_root.mkdir(parents=True)
         staged_manifests: dict[str, dict[str, int | str]] = {}
+        widened_modes: dict[str, list[tuple[Path, int]]] = {}
         copied_entries: dict[str, dict[str, Any]] = {}
         entries_to_publish: list[str] = []
         original_target_entries: list[str] = []
@@ -1319,7 +1352,7 @@ def run_pending_storage_migration(
                 # not prove the source copy and therefore are not cleanup-safe.
                 continue
             staged_entry = stage_root / entry_name
-            _copy_runtime_entry(source_entry, staged_entry)
+            widened_modes[entry_name] = _copy_runtime_entry(source_entry, staged_entry) or []
             staged_manifest = _snapshot_path(staged_entry)
             if staged_manifest != source_manifest:
                 raise StorageMigrationError(
@@ -1393,6 +1426,21 @@ def run_pending_storage_migration(
                 try:
                     _publish_without_overwrite(stage_root / entry_name, target_entry)
                 except FileExistsError as exc:
+                    if target_existed:
+                        # The original is in the backup and something new now
+                        # sits at its place. Rolling back would delete the
+                        # newcomer to restore the original; keep both and wait
+                        # for a person to decide instead.
+                        payload = _persist_migration_payload(
+                            config_manager,
+                            payload,
+                            anchor_root=normalized_anchor_root,
+                            publish_conflict_entry=entry_name,
+                        )
+                        raise StorageMigrationError(
+                            "migration_publish_conflict",
+                            f"迁移目标在发布期间被重新创建，原目标已在事务备份中，已停止迁移等待人工处理: {entry_name}",
+                        ) from exc
                     if not target_existed:
                         # Nothing of ours is at the target: what is there
                         # appeared after the check above, so rollback must
@@ -1416,6 +1464,10 @@ def run_pending_storage_migration(
                         "verification_failed",
                         f"迁移发布校验失败：{entry_name}。",
                     )
+                # Children were recorded first, so a read-only parent is
+                # restored only after everything below it.
+                for relative_dir, original_mode in widened_modes.get(entry_name, []):
+                    os.chmod(target_entry / relative_dir, original_mode)
                 copied_entries[entry_name] = {
                     "source_manifest": source_snapshots[entry_name],
                     "target_manifest": actual_manifest,
@@ -1439,7 +1491,9 @@ def run_pending_storage_migration(
                 status=STORAGE_MIGRATION_STATUS_COMMITTING,
                 committed_at=_utc_now_iso(),
             )
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, StorageMigrationError) and exc.error_code == "migration_publish_conflict":
+                raise
             _rollback_publish_or_require_recovery(
                 payload=payload,
                 target_root=target_root,
@@ -1461,6 +1515,7 @@ def run_pending_storage_migration(
             "migration_rollback_required",
             "migration_commit_ambiguous",
             "migration_source_missing",
+            "migration_publish_conflict",
         }:
             return _finish_retryable(exc.error_code, exc.message)
         return _finish_failure(exc.error_code, exc.message)

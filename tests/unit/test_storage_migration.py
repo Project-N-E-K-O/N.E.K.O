@@ -1155,10 +1155,13 @@ def test_storage_migration_publishes_a_read_only_directory(tmp_path):
 
     assert result["completed"] is True, result
     copied = target_root / "memory" / "frozen"
-    assert (copied / "notes.json").is_file()
-    # Everything but the owner write bit follows the source.
-    assert copied.stat().st_mode & 0o777 == 0o755
-    assert not (target_root / ".smtx").exists()
+    try:
+        assert (copied / "notes.json").is_file()
+        # Write access was only borrowed for the move; the source mode is back.
+        assert copied.stat().st_mode & 0o777 == 0o555
+        assert not (target_root / ".smtx").exists()
+    finally:
+        copied.chmod(0o755)
 
 
 @pytest.mark.unit
@@ -1498,3 +1501,97 @@ def test_staged_copy_is_kept_when_its_source_entry_is_gone(tmp_path, monkeypatch
 
     assert result["error_code"] == "migration_source_missing"
     assert staged[0].read_text(encoding="utf-8") == "new"
+
+
+@pytest.mark.unit
+def test_target_recreated_after_backup_keeps_both_copies(tmp_path, monkeypatch):
+    """The original went to the backup, then something recreated the target:
+    rolling back would delete the newcomer, so keep both and wait."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _recreate_then_publish(staged, target):
+        Path(target).mkdir(parents=True, exist_ok=True)
+        (Path(target) / "newcomer.json").write_text("newcomer", encoding="utf-8")
+        original_publish(staged, target)
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _recreate_then_publish)
+    result = run_pending_storage_migration(config_manager)
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", original_publish)
+
+    assert result["error_code"] == "migration_publish_conflict"
+    assert result["payload"]["status"] == "rollback_required"
+    assert (target_root / "config" / "newcomer.json").read_text(encoding="utf-8") == "newcomer"
+    backups = list((target_root / ".smtx").glob("*/backup/config/characters.json"))
+    assert [path.read_text(encoding="utf-8") for path in backups] == ["healthy"]
+
+    # A later start must not resolve the conflict by deleting either copy.
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "migration_publish_conflict"
+    assert (target_root / "config" / "newcomer.json").read_text(encoding="utf-8") == "newcomer"
+    assert [path.read_text(encoding="utf-8") for path in backups] == ["healthy"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix", reason="the hard-link fallback is the POSIX file path")
+def test_file_publish_without_hard_links_refuses_an_existing_target(tmp_path, monkeypatch):
+    import errno
+
+    from utils import storage_migration as storage_migration_module
+
+    staged = tmp_path / "staged.json"
+    staged.write_text("staged", encoding="utf-8")
+    target = tmp_path / "target.json"
+    target.write_text("newcomer", encoding="utf-8")
+
+    def _no_hard_links(_source, _destination):
+        raise OSError(errno.EPERM, "hard links unsupported")
+
+    monkeypatch.setattr(storage_migration_module.os, "link", _no_hard_links)
+    with pytest.raises(FileExistsError):
+        storage_migration_module._publish_without_overwrite(staged, target)
+
+    assert target.read_text(encoding="utf-8") == "newcomer"
+    assert staged.read_text(encoding="utf-8") == "staged"
+
+    target.unlink()
+    storage_migration_module._publish_without_overwrite(staged, target)
+    assert target.read_text(encoding="utf-8") == "staged"
+    assert not staged.exists()
+
+
+@pytest.mark.unit
+def test_interrupted_v1_copy_is_overwritten_not_reused(tmp_path):
+    """A v1 run stopped in COPYING left a partial copy in the target; with a
+    legacy selection that partial copy must not become the new data."""
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("complete", encoding="utf-8")
+    (source_root / "config" / "core_config.json").write_text("{}", encoding="utf-8")
+    # What v1 managed to copy before it stopped.
+    (target_root / "config").mkdir(parents=True)
+    (target_root / "config" / "characters.json").write_text("comp", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+    v1_payload = dict(load_storage_migration(config_manager))
+    v1_payload["version"] = 1
+    v1_payload["status"] = "copying"
+    for key in ("copied_entries", "published_entries", "publishing_entry", "publishing_target_existed", "restoring_entries"):
+        v1_payload.pop(key, None)
+    save_storage_migration(config_manager, v1_payload)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "complete"
+    assert (target_root / "config" / "core_config.json").is_file()
+    assert "config" in result["payload"]["copied_entries"]
