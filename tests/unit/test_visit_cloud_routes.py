@@ -641,3 +641,13 @@ def test_an_attached_report_does_not_resend_a_rate_limited_transcript(env, monke
     # 不在这里同步重传：举报落盘排队，交给按 Retry-After 推后的后台重试
     assert resp.status_code == 202 and fake.count("/api/visit/transcripts") == 0
     assert armed and armed[0] > 900 and _queued(tmp_path) is not None
+
+
+
+def test_another_accounts_rate_limited_transcript_does_not_hold_back_a_report(env, monkeypatch):
+    client, fake, tmp_path, _ = env
+    monkeypatch.setattr(tu, "schedule_visit_retry", lambda *_a, **_k: None)
+    tu._note_upload_retry_after(V1, 1000, "b" * 24)                       # 限流的是另一账号那一侧的转录
+    resp = _report(client, include_transcript=True)
+    # 本账号这一侧没有待传转录：举报照常立即提交
+    assert resp.status_code == 200 and fake.count("/api/visit/reports") == 1

@@ -276,9 +276,10 @@ async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
         # 附转录的举报等本侧转录先到 Servers：在飞场次等收尾封存，已封存的先同步试传一次
         if tu.is_live(visit_id):
             return JSONResponse({"queued": True}, status_code=202)
-        deferred = tu.upload_deferred_s(visit_id)
+        deferred = tu.upload_deferred_s(visit_id, doc.get("own_visit_uid"))
         if deferred > 0:
-            # 转录刚被 Servers 限流（Retry-After 未到）：不在这里同步重传，交给已推后的后台重试
+            # 这份举报那一侧的转录刚被 Servers 限流（Retry-After 未到）：不在这里同步重传，交给已推后的
+            # 后台重试。另一账号那一侧的转录在限流时不挡（照常走下面的归属判断）
             tu.schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=deferred)
             return JSONResponse({"queued": True}, status_code=202)
         try:

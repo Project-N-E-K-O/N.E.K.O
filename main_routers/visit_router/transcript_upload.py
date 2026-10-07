@@ -700,7 +700,7 @@ async def upload_visit_transcript(visit_id: str, upload_doc: dict) -> bool | str
             # 记在进程内，后台轮次接着用它、接着补写
             await _record_owner(config_dir, visit_id, owner)
         result = await _upload(visit_id, upload_doc, config_dir)
-    _note_upload_retry_after(visit_id, result.retry_after_s)
+    _note_upload_retry_after(visit_id, result.retry_after_s, owner)
     if result.terminal:
         # 补录删掉封存文件后，原因只剩这一份：之后才提交的附转录举报照样带上
         remember_terminal_reason(visit_id, result.terminal, owner if isinstance(owner, str) and owner else None)
@@ -1437,7 +1437,7 @@ async def retry_visit_once(
                     _manual_retries[visit_id] = dict(report)
             elif report.get("rejected"):
                 report_pending = False
-    _note_upload_retry_after(visit_id, upload.retry_after_s)
+    _note_upload_retry_after(visit_id, upload.retry_after_s, upload.owner)
     delays = [d for d in (upload.retry_after_s, report_retry_after) if d is not None]
     return RetryRound(pending=report_pending or upload.retryable or unreadable or visit_id in _settled_leftovers,
                       retry_after_s=max(delays) if delays else None,
@@ -1467,6 +1467,7 @@ def _reset_for_tests() -> None:
     _VISIT_LOCKS.clear()
     _not_before.clear()
     _upload_not_before.clear()
+    _upload_deadline_owner.clear()
     _wakeups.clear()
     _settled_leftovers.clear()
 
@@ -1479,15 +1480,27 @@ _upload_not_before: dict[str, float] = {}
 """visit_id -> monotonic time before which the transcript must not be resent (its own ``Retry-After``)."""
 
 
-def upload_deferred_s(visit_id: str) -> float:
-    """Seconds left before the transcript of ``visit_id`` may be resent (its own ``Retry-After``); 0 when none."""
+_upload_deadline_owner: dict[str, str | None] = {}
+"""visit_id -> ``own_visit_uid`` of the transcript that got the ``Retry-After`` (None: unknown)."""
+
+
+def upload_deferred_s(visit_id: str, owner: str | None = None) -> float:
+    """Seconds left before the transcript of ``visit_id`` may be resent (its own ``Retry-After``); 0 when none.
+
+    With ``owner`` (a report's ``own_visit_uid``): 0 when the rate-limited
+    transcript is another known account's side (a shared computer).
+    """
+    noted = _upload_deadline_owner.get(visit_id)
+    if owner and noted and noted != owner:
+        return 0.0
     return max(0.0, _upload_not_before.get(visit_id, 0.0) - time.monotonic())
 
 
-def _note_upload_retry_after(visit_id: str, retry_after_s: int | None) -> None:
+def _note_upload_retry_after(visit_id: str, retry_after_s: int | None, owner: str | None = None) -> None:
     if retry_after_s:
         _upload_not_before[visit_id] = max(_upload_not_before.get(visit_id, 0.0),
                                            time.monotonic() + retry_after_s)
+        _upload_deadline_owner[visit_id] = owner if isinstance(owner, str) and owner else None
 
 
 _wakeups: dict[str, asyncio.Event] = {}
@@ -1592,6 +1605,7 @@ def schedule_visit_retry(visit_id: str, *, config_dir: Path | None = None,
             # 唤醒事件只给在等的后台任务用：任务结束就拿掉，别随场次数一直攒着
             _wakeups.pop(visit_id, None)
             _upload_not_before.pop(visit_id, None)
+            _upload_deadline_owner.pop(visit_id, None)
 
     task.add_done_callback(_done)
     return task
