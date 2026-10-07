@@ -28,8 +28,10 @@ from .direct_link import (
 from .voice_providers import (
     ElevenLabsUpstreamError,
     _elevenlabs_clone_voice,
+    _get_elevenlabs_base_url,
     _is_local_voice_clone_tts_config,
     _local_voice_clone_tts_base_url,
+    _raw_elevenlabs_voice_id,
 )
 
 import io

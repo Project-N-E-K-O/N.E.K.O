@@ -4,13 +4,17 @@
 from __future__ import annotations
 
 import inspect
+import io
+import json
+import wave
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from fastapi import UploadFile
 
 from main_logic.tts_client.workers import elevenlabs as elevenlabs_worker
-from main_routers.characters_router import voice_providers
+from main_routers.characters_router import voice_cloning, voice_providers
 from utils.tts.providers.elevenlabs import ELEVENLABS_TTS_DEFAULT_MODEL
 
 
@@ -21,7 +25,59 @@ class _ConfigManager:
 
 
 @pytest.mark.asyncio
-async def test_preview_uses_v3_text_to_dialogue(monkeypatch):
+async def test_uploaded_clone_is_normalized_registered_and_saved(monkeypatch):
+    captured = {}
+
+    class CloneConfig(_ConfigManager):
+        async def aget_core_config(self):
+            return {"enableCustomApi": False}
+
+        async def aget_model_api_config(self, model_type, **kwargs):
+            return {}
+
+        def find_voice_by_audio_md5(self, storage_key, audio_md5, ref_language):
+            return None
+
+        def save_voice_for_api_key(self, storage_key, voice_id, metadata):
+            captured["saved_voice_id"] = voice_id
+            captured["metadata"] = metadata
+
+    async def fake_clone(**kwargs):
+        captured["clone_args"] = kwargs
+        kwargs["audio_buffer"].seek(0)
+        with wave.open(kwargs["audio_buffer"], "rb") as audio:
+            assert audio.getnchannels() == 1
+            assert audio.getsampwidth() == 2
+            assert audio.getnframes() > 0
+        return "eleven:created-123"
+
+    sample = io.BytesIO()
+    with wave.open(sample, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(48000)
+        audio.writeframes(b"\0\0" * 48000 * 8)
+    sample.seek(0)
+    monkeypatch.setattr(voice_cloning, "get_config_manager", lambda: CloneConfig())
+    monkeypatch.setattr(voice_cloning, "_elevenlabs_clone_voice", fake_clone)
+
+    response = await voice_cloning.voice_clone(
+        file=UploadFile(file=sample, filename="reference.wav"),
+        prefix="V4Turbo", ref_language="ch", provider="elevenlabs", ref_text="",
+    )
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["voice_id"] == "eleven:created-123"
+    assert captured["clone_args"]["base_url"] == "https://api.elevenlabs.io"
+    assert captured["clone_args"]["api_key"] == "test-key"
+    assert captured["saved_voice_id"] == "eleven:created-123"
+    assert captured["metadata"]["raw_voice_id"] == "created-123"
+    assert captured["metadata"]["provider"] == "elevenlabs"
+    assert captured["metadata"]["source"] == "clone"
+
+
+@pytest.mark.asyncio
+async def test_preview_uses_v4_text_to_dialogue(monkeypatch):
     captured = {}
 
     class _FakeClient:
@@ -53,19 +109,19 @@ async def test_preview_uses_v3_text_to_dialogue(monkeypatch):
     assert captured["request_kwargs"]["params"] == {"output_format": "mp3_44100_128"}
     assert captured["request_kwargs"]["json"] == {
         "inputs": [{"text": "正式预览文本", "voice_id": "voice-123"}],
-        "model_id": "eleven_v3_conversational",
+        "model_id": "eleven_v4",
     }
 
 
-def test_worker_uses_v3_text_to_dialogue_protocol():
-    assert ELEVENLABS_TTS_DEFAULT_MODEL == "eleven_v3_conversational"
+def test_worker_uses_v4_turbo_text_to_dialogue_protocol():
+    assert ELEVENLABS_TTS_DEFAULT_MODEL == "eleven_v4_turbo"
     assert elevenlabs_worker._elevenlabs_dialogue_ws_url(
         "https://api.elevenlabs.io",
         ELEVENLABS_TTS_DEFAULT_MODEL,
         "pcm_24000",
     ) == (
         "wss://api.elevenlabs.io/v1/text-to-dialogue/stream-input"
-        "?model_id=eleven_v3_conversational&output_format=pcm_24000"
+        "?model_id=eleven_v4_turbo&output_format=pcm_24000"
     )
     assert elevenlabs_worker._elevenlabs_dialogue_init_payload("voice-123") == {
         "voices": ["voice-123"],
@@ -82,7 +138,7 @@ def test_worker_uses_v3_text_to_dialogue_protocol():
     }
 
 
-def test_worker_classifies_v3_audio_turn_final_and_session_final_sequence():
+def test_worker_classifies_audio_turn_final_and_session_final_sequence():
     assert elevenlabs_worker._elevenlabs_dialogue_event_flags({"audio": "cGNt"}) == (
         False,
         False,
