@@ -1252,3 +1252,46 @@ def test_a_regeneration_reads_the_card_of_its_own_character_after_a_rename(env, 
     client.portal.call(scenario)
     # 生成用的是 UID_A 这只猫（改名后的 A2）的卡，不是新建的同名角色
     assert "完全不同的猫" not in prompts[0] and "橘色猫娘" in prompts[0]
+
+
+
+def test_a_hand_edit_is_never_ready_before_its_card_recheck(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    _confirm(client)
+    real_save = persona.VisitPersonaStore.save
+    seen = []
+
+    async def save_and_peek(self, uid, doc):
+        await real_save(self, uid, doc)
+        if "Broadway" in doc["text"] and not seen:
+            seen.append(await persona.persona_gate("A"))                 # 写盘之后、核对卡片之前，另一个建房请求
+            state["cards"]["A"] = "\n".join([CARD, "address: Broadway"])
+
+    monkeypatch.setattr(persona.VisitPersonaStore, "save", save_and_peek)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，住在 Broadway 附近的猫。", "reviewed": True})
+    # 空档里门槛只看到待确认，不放行；随后发现卡片变了，撤回
+    assert seen and seen[0].ok is False and seen[0].state == "unreviewed"
+    assert resp.status_code == 409 and "Broadway" not in _file(tmp_path)["text"]
+
+
+def test_a_failed_card_recheck_leaves_the_hand_edit_unreviewed_at_most(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    _confirm(client)
+    real_load = persona._hooks.load_context
+    calls = []
+
+    async def fails_on_recheck():
+        calls.append(1)
+        if len(calls) >= 4:                                             # _resolve、锁内重读、存前核对之后：写盘后的核对
+            raise OSError("config unreadable")
+        return await real_load()
+
+    monkeypatch.setattr(persona._hooks, "load_context", fails_on_recheck)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
+    # 核对不了就当卡片变了：不留下一份已确认、却没核对过卡片的手写
+    assert resp.status_code == 409
+    assert not (_file(tmp_path)["text"] == "你是{LANLAN_NAME}，一只爱睡觉的猫。" and _file(tmp_path)["reviewed"])

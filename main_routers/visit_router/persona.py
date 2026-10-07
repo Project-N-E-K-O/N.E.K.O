@@ -1162,17 +1162,27 @@ async def put_persona(request: Request, catgirl: str = ""):
             else:
                 # 手写不动私人段落清单与它依据的卡片哈希
                 doc = {**doc, "text": cleaned, "edited": True, "reviewed": True}
+        if text is not None:
+            # 手写分两步落盘：先以「待确认」写下，再核对写盘期间卡片没变（改卡不走人设锁），才标成已确认。
+            # 中途门槛读到的只是待确认（不放行）；核对 / 撤回出错或进程退出，留下的也只是待确认
+            await persona_store.save(character_uid, {**doc, "reviewed": False})
+            _note_write(character_uid)
+            try:
+                changed = card_hash((await _hooks.load_context()).card(catgirl)) != card_hash(card)
+            except Exception as exc:  # noqa: BLE001 - 核对不了就当变了：宁可不存
+                logger.warning("visit persona: cannot recheck the card: %s", type(exc).__name__)
+                changed = True
+            if changed:
+                # 这份手写只按旧卡查过：撤回、恢复成原来那份（写盘之后才改的卡属于「手改过的人设不随卡片
+                # 变化」，不在此列）
+                if previous is None:
+                    await persona_store.retire(character_uid)
+                else:
+                    await persona_store.save(character_uid, previous)
+                _note_write(character_uid)
+                return _error(409, "persona_card_changed")
         await persona_store.save(character_uid, doc)
         _note_write(character_uid)
-        if text is not None and card_hash((await _hooks.load_context()).card(catgirl)) != card_hash(card):
-            # 写盘期间卡片又改了（改卡不走人设锁）：这份手写只按旧卡查过，撤回、恢复成原来那份。
-            # 写盘之后才改的卡属于「手改过的人设不随卡片变化」，不在此列
-            if previous is None:
-                await persona_store.retire(character_uid)
-            else:
-                await persona_store.save(character_uid, previous)
-            _note_write(character_uid)
-            return _error(409, "persona_card_changed")
         _errors.pop(character_uid, None)
     return await _view_response(catgirl, character_uid, ctx)
 
