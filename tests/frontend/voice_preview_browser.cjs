@@ -2,37 +2,59 @@
 const { chromium } = require(process.env.NEKO_TEST_PLAYWRIGHT_MODULE || 'playwright');
 const { createVoicePreviewServer } = require('./voice_preview_server.cjs');
 const { verifyPreviewBodyRaces } = require('./voice_preview_races.cjs');
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
+const { createPageDiagnostics } = require('./remote_voice_page_diagnostics.cjs');
 const path = require('node:path');
-const os = require('node:os');
+
+const controlled = createVoicePreviewServer();
+const diagnostics = createPageDiagnostics('voice-preview-chromium');
+let browser, page, finishing, result = {};
+function bounded(operation, milliseconds, label) {
+    let timer;
+    return Promise.race([operation, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label + ' timed out')), milliseconds);
+    })]).finally(() => clearTimeout(timer));
+}
+function finish(error) {
+    if (finishing) return finishing;
+    finishing = (async () => {
+        clearTimeout(watchdog);
+        let failure = error;
+        if (error && page) await page.screenshot({ path: path.join(diagnostics.directory, 'failure.png'), timeout: 2000 })
+            .catch(captureError => diagnostics.log('screenshot-error', captureError));
+        const cleanup = await Promise.allSettled([
+            bounded(Promise.resolve().then(() => { controlled.server.closeAllConnections(); return controlled.close(); }), 5000, 'HTTP cleanup')
+            , bounded(Promise.resolve().then(() => browser && browser.close()), 5000, 'Browser cleanup')
+        ]);
+        for (const item of cleanup) if (item.status === 'rejected') {
+            diagnostics.error(item.reason); failure ||= item.reason;
+        }
+        try { diagnostics.assertClean(); }
+        catch (lateError) { failure ||= lateError; }
+        diagnostics.finish(result, failure);
+        if (failure) console.error(failure);
+        process.exitCode = failure ? 1 : 0;
+        // A stuck driver is also retired when its control pipe closes on exit.
+        if (cleanup.some(item => item.status === 'rejected')) process.exit(1);
+    })();
+    return finishing;
+}
+const watchdog = setTimeout(() => { void finish(new Error('VOICE_PREVIEW_CHROMIUM_TIMEOUT')); }, 60000);
+process.on('unhandledRejection', error => { void finish(error); });
+process.on('uncaughtException', error => { void finish(error); });
 (async () => {
-    const transport = createVoicePreviewServer();
-    await new Promise(resolve => transport.server.listen(0, '127.0.0.1', resolve));
-    const scratch = process.env.NEKO_TEST_ARTIFACT_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'neko-preview-browser-'));
-    fs.mkdirSync(scratch, { recursive: true });
-    let browser, page;
-    const errors = [], logs = [];
-    try {
-        const channel = process.env.NEKO_TEST_BROWSER_CHANNEL;
-        browser = await chromium.launch({ headless: true, ...(channel ? { channel } : {}) });
-        page = await browser.newPage();
-        page.on('pageerror', error => errors.push(error.message));
-        page.on('console', message => logs.push(message.type() + ': ' + message.text()));
-        await page.goto('http://127.0.0.1:' + transport.server.address().port + '/voice_clone?lanlan_name=Test');
-        await page.waitForFunction(() => typeof playPreview === 'function' && typeof window.t === 'function' && document.querySelector('[data-voice-id="preview-body"]'));
-        const results = await verifyPreviewBodyRaces({ run: code => page.evaluate(code), transport, page: true });
-        assert.deepEqual(errors, []);
-        const summary = { browser: await browser.version(), actualProductTemplate: true, controlledHttpTransport: true, ...results };
-        fs.writeFileSync(path.join(scratch, 'voice-preview-browser-summary.json'), JSON.stringify(summary, null, 2));
-        console.log(JSON.stringify(summary));
-    } catch (error) {
-        fs.writeFileSync(path.join(scratch, 'voice-preview-browser-summary.json'), JSON.stringify({ success: false, error: error.stack || String(error) }, null, 2));
-        if (page) await page.screenshot({ path: path.join(scratch, 'voice-preview-browser-failure.png') }).catch(() => {});
-        throw error;
-    } finally {
-        fs.writeFileSync(path.join(scratch, 'voice-preview-browser-console.json'), JSON.stringify({ errors, logs }, null, 2));
-        if (browser) await browser.close();
-        await transport.close();
-    }
-})().catch(error => { console.error(error); process.exitCode = 1; });
+    await new Promise((resolve, reject) => { controlled.server.once('error', reject); controlled.server.listen(0, '127.0.0.1', resolve); });
+    const channel = process.env.NEKO_TEST_BROWSER_CHANNEL;
+    browser = await chromium.launch({ headless: true, ...(channel ? { channel } : {}) });
+    if (finishing) { await bounded(browser.close(), 5000, 'Late browser cleanup'); return; }
+    page = await browser.newPage();
+    page.on('pageerror', error => diagnostics.error(error));
+    page.on('console', message => diagnostics.log(message.type(), message.text()));
+    await page.goto('http://127.0.0.1:' + controlled.server.address().port + '/voice_clone?lanlan_name=Test');
+    await page.waitForFunction(() => typeof playPreview === 'function' && typeof window.t === 'function' && document.querySelector('[data-voice-id="preview-body"]'));
+    const run = code => page.evaluate(code);
+    const waitFor = code => page.waitForFunction(code);
+    const scenarios = await verifyPreviewBodyRaces({ run, transport: controlled, page: true });
+    diagnostics.assertClean();
+    result = { browser: await browser.version(), actualProductTemplate: true, controlledHttpTransport: true, ...scenarios };
+    console.log(JSON.stringify(result));
+})().then(() => finish(), error => finish(error));

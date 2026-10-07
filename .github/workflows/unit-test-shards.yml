@@ -143,6 +143,7 @@ jobs:
           node --test tests/frontend/mic_recovery_route.test.cjs
           node --test tests/frontend/voice_preparing_toast.test.cjs
           node --test tests/frontend/remote_voice_manager.test.cjs tests/frontend/api_key_secret_masking.test.cjs
+          node --test tests/frontend/voice_preview.test.cjs
           node --test tests/frontend/computer_use_capture_lifecycle.test.cjs
           node --test tests/frontend/test_game_voice_control_runtime.js
           node tests/frontend/test_storage_error_messages_runtime.js
@@ -180,12 +181,20 @@ jobs:
           NEKO_TEST_ARTIFACT_DIR: ${{ runner.temp }}/remote-voice-chromium
         run: node tests/frontend/remote_voice_manager_browser.cjs
 
+      - name: Run actual voice preview cancellation page
+        env:
+          NEKO_TEST_PLAYWRIGHT_MODULE: ${{ github.workspace }}/frontend/plugin-manager/node_modules/playwright
+          NEKO_TEST_ARTIFACT_DIR: ${{ runner.temp }}/voice-preview-chromium
+        run: node tests/frontend/voice_preview_browser.cjs
+
       - name: Retain remote voice Chromium diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: remote-voice-chromium-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/remote-voice-chromium
+          path: |
+            ${{ runner.temp }}/remote-voice-chromium
+            ${{ runner.temp }}/voice-preview-chromium
           if-no-files-found: warn
 
   voice-readiness-electron:
@@ -224,10 +233,22 @@ jobs:
           node tests/frontend/remote_voice_electron_runner.cjs tests/frontend/remote_voice_manager_electron.cjs
           if ($LASTEXITCODE -ne 0) { throw "Remote voice manager Electron test failed ($LASTEXITCODE)." }
 
+      - name: Run actual voice preview cancellation page
+        shell: pwsh
+        env:
+          NEKO_TEST_ARTIFACT_DIR: ${{ runner.temp }}/voice-preview-electron
+          NEKO_TEST_ELECTRON_MODULE: ${{ runner.temp }}/voice-readiness-electron/node_modules/electron
+        run: |
+          Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+          node tests/frontend/remote_voice_electron_runner.cjs tests/frontend/voice_preview_electron.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Voice preview Electron test failed ($LASTEXITCODE)." }
+
       - name: Retain remote voice Electron diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: remote-voice-electron-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/remote-voice-electron
+          path: |
+            ${{ runner.temp }}/remote-voice-electron
+            ${{ runner.temp }}/voice-preview-electron
           if-no-files-found: warn
