@@ -564,20 +564,30 @@ async def test_noise_reduction_runtime_updates_follow_persisted_revision(monkeyp
     allow_old_apply = asyncio.Event()
     calls = []
 
-    async def fake_snapshot():
+    async def fake_snapshot(*, strict=False):
+        assert strict is True
         return current
 
     async def fake_apply(enabled):
         calls.append(("start", enabled))
         if enabled:
             old_apply_started.set()
-            await allow_old_apply.wait()
+            await asyncio.wait_for(allow_old_apply.wait(), timeout=5)
         calls.append(("end", enabled))
+        return True
 
     monkeypatch.setattr(
         preferences_router,
         "_NOISE_REDUCTION_APPLY_LOCK",
         asyncio.Lock(),
+    )
+    monkeypatch.setattr(
+        preferences_router,
+        "_VOICE_IDENTITY_AUDIO_CONTRACT_CALLBACKS",
+        (
+            preferences_router._prepare_voice_identity_audio_contract_change_default,
+            preferences_router._reconcile_voice_identity_audio_contract_change_default,
+        ),
     )
     monkeypatch.setattr(
         preferences_router,
@@ -593,16 +603,18 @@ async def test_noise_reduction_runtime_updates_follow_persisted_revision(monkeyp
     old_apply = asyncio.create_task(
         preferences_router._apply_noise_reduction_if_current(True)
     )
-    await old_apply_started.wait()
-    current = SimpleNamespace(
-        revision=2,
-        settings={
-            "noiseReductionEnabled": True,
-            "focusModeEnabled": True,
-        },
-    )
-    allow_old_apply.set()
-    await old_apply
+    try:
+        await asyncio.wait_for(old_apply_started.wait(), timeout=5)
+        current = SimpleNamespace(
+            revision=2,
+            settings={
+                "noiseReductionEnabled": True,
+                "focusModeEnabled": True,
+            },
+        )
+    finally:
+        allow_old_apply.set()
+        await asyncio.wait_for(old_apply, timeout=5)
     assert calls == [
         ("start", True),
         ("end", True),

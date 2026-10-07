@@ -28,6 +28,7 @@ from main_routers.game_router import route_lifecycle as gr_route_lifecycle
 from main_routers.game_router import visible_events as gr_visible_events
 from main_routers.system_router import AUTOSTART_CSRF_TOKEN
 from main_logic.core import LLMSessionManager
+from main_logic.core.takeover import TakeoverMixin
 from tests.fake_clock import patch_module_clock
 from utils import game_log
 from utils.llm_client import AIMessage, HumanMessage
@@ -50,7 +51,7 @@ class _FakeRequest:
         return self._payload
 
 
-class _LocaleTrackingManager:
+class _LocaleTrackingManager(TakeoverMixin):
     def __init__(self, language="en", *, explicit=False, render_language="en"):
         self.user_language = language
         self._user_language_explicit = explicit
@@ -5189,7 +5190,7 @@ class _FakeRealtimeSession:
         self.create_response_calls.append(text)
 
 
-class _FakeRealtimeManager:
+class _FakeRealtimeManager(TakeoverMixin):
     def __init__(self, session, append_context_result=None):
         self.session = session
         self.is_active = True
@@ -5343,7 +5344,7 @@ async def test_realtime_context_revalidates_route_at_append_boundary(monkeypatch
     assert session.prime_context_calls == []
 
 
-class _FakeGameRouteManager:
+class _FakeGameRouteManager(TakeoverMixin):
     def __init__(self):
         self.is_active = False
         self.session = None
@@ -9407,7 +9408,7 @@ class _FakePostgameState:
         self.events.append((event, kwargs))
 
 
-class _FakePostgameTextManager:
+class _FakePostgameTextManager(TakeoverMixin):
     def __init__(self):
         self.is_active = False
         self.session = None

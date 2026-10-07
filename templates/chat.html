@@ -16,7 +16,9 @@
     <link rel="stylesheet" href="/static/css/index.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/music_ui.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/subtitle.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/agent-plugin-views.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/yui-guide.css?v={{ static_asset_version }}">
     <script>window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};</script>
     <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ react_chat_asset_version }}">
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
@@ -654,6 +656,9 @@
     <script src="/static/app/app-audio-playback.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-widget-interaction.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-spatial-audio.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/microphone-input.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/voice-session-readiness.css?v={{ static_asset_version }}">
+    <script src="/static/app/app-voice-readiness.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-audio-capture.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-screen.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-crop.js?v={{ static_asset_version }}"></script>
@@ -676,6 +681,8 @@
     <script src="/static/app/app-interpage/listeners-and-api.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-proactive.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-settings.js?v={{ static_asset_version }}"></script>
+    <script src="/static/common-ui-hud.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-plugin-views.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-agent.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-character.js?v={{ static_asset_version }}"></script>
     <!-- Match index.html: install the adapter before app.js opens the WebSocket. -->
@@ -701,6 +708,9 @@
     <script src="/static/app/app-react-chat-window/cat-local-chat-lexicon.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-react-chat-window/cat-local-chat.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-react-chat-window/resize-drag-and-api.js?v={{ react_chat_asset_version }}"></script>
+    <!-- 小剧场本体与选择页共用同一份消息和请求协议。 -->
+    <script src="/static/js/theater_transport.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-theater-runtime.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-chat-export.js?v={{ static_asset_version }}"></script>
 
     <script>
@@ -1591,5 +1601,7 @@
         });
     })();
     </script>
+    <script src="/static/tutorial/click-guide/state.js?v={{ static_asset_version }}"></script>
+    {% include 'templates/_click_guide_scripts.html' %}
 </body>
 </html>

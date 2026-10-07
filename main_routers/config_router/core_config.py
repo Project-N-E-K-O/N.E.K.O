@@ -46,6 +46,7 @@ CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
     'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
     'assistApiKeyOrcarouter',
+    'assistApiKeyRequesty',
 )
 
 CORE_CONFIG_MODEL_API_KEY_FIELDS = tuple(
@@ -204,10 +205,19 @@ async def get_core_config_api():
             or runtime_core_config.get('CORE_API_TYPE')
             or _core_api_provider
         ).strip().lower()
-        from main_logic.asr_client import get_asr_core_capabilities
+        from main_logic.asr_client import (
+            get_asr_core_capabilities,
+            is_local_asr_available,
+        )
         _core_asr_capabilities = get_asr_core_capabilities(
             _effective_core_api_provider
         )
+        try:
+            # find_spec walks sys.path finders; keep it off the event loop.
+            _local_asr_available = await asyncio.to_thread(is_local_asr_available)
+        except Exception:
+            logger.warning('Unable to probe local ASR availability', exc_info=True)
+            _local_asr_available = False
         _fallback_providers = {_core_api_provider, _assist_api_provider}
         _doubao_tts_shared_key = ''
         if str(core_cfg.get('ttsModelProvider') or '').strip() == 'doubao_tts':
@@ -226,6 +236,9 @@ async def get_core_config_api():
                 if _core_asr_capabilities is None
                 else _core_asr_capabilities.supports_independent_asr
             ),
+            # Whether the optional local ASR dependency is installed. Packaged
+            # builds do not ship it, so the settings UI hides the option.
+            "localAsrAvailable": _local_asr_available,
             "assistApi": _assist_api_provider,
             "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', '') or _fb('qwen'),
             "assistApiKeyQwenIntl": core_cfg.get('assistApiKeyQwenIntl', '') or _fb('qwen_intl'),
@@ -251,6 +264,7 @@ async def get_core_config_api():
             "assistApiKeyClaude": core_cfg.get('assistApiKeyClaude', '') or _fb('claude'),
             "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter'),
             "assistApiKeyOrcarouter": core_cfg.get('assistApiKeyOrcarouter', '') or _fb('orcarouter'),
+            "assistApiKeyRequesty": core_cfg.get('assistApiKeyRequesty', ''),
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
@@ -757,6 +771,7 @@ async def get_api_providers_config():
             get_config,
             get_core_api_providers_for_frontend,
             get_assist_api_providers_for_frontend,
+            get_assist_api_profiles,
         )
 
         full_config = get_config(force_reload=True)
@@ -786,6 +801,13 @@ async def get_api_providers_config():
             "assist_api_providers": assist_providers,
             "api_key_registry": full_config.get("api_key_registry", {}),
             "assist_api_providers_full": full_config.get("assist_api_providers", {}),
+            "assist_model_defaults": {
+                key: {field: profile.get(field, '') for field in (
+                    'CONVERSATION_MODEL', 'VISION_MODEL', 'SUMMARY_MODEL',
+                    'CORRECTION_MODEL', 'EMOTION_MODEL', 'AGENT_MODEL',
+                )}
+                for key, profile in get_assist_api_profiles().items()
+            },
             "core_api_providers_full": full_config.get("core_api_providers", {}),
             "keybook_api_providers_full": full_config.get("keybook_api_providers", {}),
             "tts_providers": tts_providers,

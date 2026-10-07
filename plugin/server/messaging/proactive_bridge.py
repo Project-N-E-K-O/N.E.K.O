@@ -124,12 +124,14 @@ class ProactiveBridge:
     def __init__(self) -> None:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        # SUB 真正连上并订阅之后才置位。启动顺序要用它：autostart 插件可以在
+        # SUB/PUSH 创建、connect 和 SUBSCRIBE 调用成功之后才置位（不保证远端
+        # 已连接或处理订阅）。启动顺序要用它：autostart 插件可以在
         # startup 钩子里 push_message()，而 PUB 对缺席的订阅方是直接丢弃 ——
         # 那扇窗口里推的消息角色永远不会说，push_message() 却已经回了
         # submitted=True。只把 bridge 挪到插件前面只是让计时更早开始，窗口
-        # 本身还在（下面那个 1 秒等待就在窗口里）。
+        # 本身还在（SUBSCRIBE 传播到 PUB 侧之前那一小段）。
         self._subscribed = threading.Event()
+        self._startup_finished = threading.Event()
 
     def start(self) -> None:
         if zmq is None:
@@ -142,20 +144,32 @@ class ProactiveBridge:
         # 还是退休前那个 PUB 端点，而且和新线程一起往同一个 PUSH 上投递。它
         # 自己那个事件保持置位，于是按自己的节奏退出，且不会被叫回来。
         self._stop = threading.Event()
-        # 必须清：stop() 会置位 _subscribed 来唤醒等待者，重启后不清的话
-        # wait_until_subscribed() 会拿着上一条命的事件立刻返回，窗口原样回来。
-        self._subscribed.clear()
+        # _subscribed 同样每代新建，而不是 clear() 掉共用的那个：退休线程握的是
+        # 它自己那代的事件，即便它在 stop 之后才跑到就绪置位，也只置位自己那代
+        # （已作废）的事件，碰不到新代的——wait_until_subscribed() 读的是
+        # self._subscribed（新代），不会被上一条命误认证就绪。这与上面 _stop 每
+        # 代重绑是同一套设计；无需再加锁去保护代际切换。
+        subscribed = threading.Event()
+        self._subscribed = subscribed
+        # Wake startup waiters on either setup success or failure, without
+        # conflating completion with readiness. Retired generations keep their
+        # own event, just like stop and subscribed.
+        startup_finished = threading.Event()
+        self._startup_finished = startup_finished
         t = threading.Thread(
-            target=self._run, args=(self._stop,), daemon=True, name="proactive-bridge"
+            target=self._run,
+            args=(self._stop, subscribed, startup_finished),
+            daemon=True,
+            name="proactive-bridge",
         )
         self._thread = t
         t.start()
         logger.info("proactive bridge started")
 
     def wait_until_subscribed(self, timeout: float) -> bool:
-        """Block until the SUB socket is connected and subscribed.
+        """Wait until socket setup succeeds, fails, or the generation stops.
 
-        Returns False on timeout, and on a bridge that was never started — the
+        Returns False on timeout, setup failure, stop, or a never-started bridge. The
         caller must not be blocked by a bridge that is disabled or already
         dead, only by one that is still coming up.
 
@@ -165,12 +179,16 @@ class ProactiveBridge:
         的风险（角色把同一句说两遍），不在这次范围内。
         """
         t = self._thread
+        subscribed = self._subscribed
+        startup_finished = self._startup_finished
+        stop = self._stop
         if t is None or not t.is_alive():
-            return self._subscribed.is_set()
-        return self._subscribed.wait(timeout)
+            return subscribed.is_set() and not stop.is_set()
+        startup_finished.wait(timeout)
+        return subscribed.is_set() and not stop.is_set()
 
     def is_alive(self) -> bool:
-        """Whether the bridge thread is running.
+        """Whether the bridge is running without a known startup failure or stop.
 
         ``wait_until_subscribed`` answers ``False`` both for a bridge that is
         still coming up and for one that never started or has died, and those
@@ -178,22 +196,31 @@ class ProactiveBridge:
         only if something restarts it. Callers that must tell them apart ask here.
         """
         t = self._thread
-        return t is not None and t.is_alive()
+        return (
+            t is not None and t.is_alive()
+            and not self._stop.is_set()
+            and not (self._startup_finished.is_set() and not self._subscribed.is_set())
+        )
 
     def stop(self) -> None:
         self._stop.set()
         # 醒掉任何在等订阅的人：bridge 停了就不会再有订阅了，让它们继续跑，
         # 别把关停变成一次 timeout 长的挂起。
-        self._subscribed.set()
+        self._startup_finished.set()
         t = self._thread
         self._thread = None
         if t is not None and t.is_alive():
             t.join(timeout=2.0)
 
-    def _run(self, stop: threading.Event) -> None:
-        # ``stop`` is THIS thread's event, handed over at start. Never
-        # ``self._stop`` -- that name is rebound for each new thread, so reading
-        # it here would make a retired thread obey its successor's lifetime.
+    def _run(
+        self, stop: threading.Event, subscribed: threading.Event,
+        startup_finished: threading.Event,
+    ) -> None:
+        # All three events belong to THIS generation, handed over at
+        # start. Never read the rebound instance events here -- those names are
+        # rebound for each new thread, so reading them here would let a retired
+        # thread obey its successor's lifetime, or certify readiness for a
+        # generation that is not its own.
         from plugin.settings import MESSAGE_PLANE_ZMQ_PUB_ENDPOINT
 
         pub_endpoint = os.getenv(
@@ -202,25 +229,73 @@ class ProactiveBridge:
         )
         agent_push_addr = _resolve_agent_push_addr()
 
-        # Brief wait for message_plane PUB to bind before we connect.
-        time.sleep(1.0)
+        # No fixed wait before connecting. Server startup binds the plane PUB
+        # synchronously (MessagePlanePubServer.__post_init__) before it starts
+        # this bridge, so the endpoint is already listening; and even if a peer
+        # binds later, ZeroMQ connect is asynchronous and reconnects, replaying
+        # the subscription on each attach. A delay before SUBSCRIBE only
+        # postpones subscription -- it never closes the PUB/SUB slow-joiner
+        # window. Readiness is gated on _subscribed (set below), which startup
+        # waits for before admitting autostart plugins.
         if stop.is_set():
+            startup_finished.set()
             return
 
-        ctx = zmq.Context.instance()
-        sub_sock = ctx.socket(zmq.SUB)
-        sub_sock.linger = 0
-        sub_sock.setsockopt(zmq.RCVTIMEO, 1000)
-        sub_sock.connect(pub_endpoint)
-        sub_sock.setsockopt_string(zmq.SUBSCRIBE, "messages.")
-        self._subscribed.set()
+        sub_sock = None
+        push_sock = None
+        try:
+            ctx = zmq.Context.instance()
+            sub_sock = ctx.socket(zmq.SUB)
+            sub_sock.linger = 0
+            sub_sock.setsockopt(zmq.RCVTIMEO, 1000)
+            sub_sock.connect(pub_endpoint)
+            sub_sock.setsockopt_string(zmq.SUBSCRIBE, "messages.")
 
-        push_sock = ctx.socket(zmq.PUSH)
-        push_sock.linger = 1000
-        push_sock.connect(agent_push_addr)
+            push_sock = ctx.socket(zmq.PUSH)
+            push_sock.linger = 1000
+            push_sock.connect(agent_push_addr)
+        except Exception as exc:
+            # Socket setup failed. Do NOT signal readiness: a bridge that dies
+            # here must report not-alive so startup's wait_for_proactive_subscriber
+            # falls through to the proactive_bridge_is_alive() check and marks the
+            # delivery path incomplete. Signalling ready with a dead forwarder is
+            # the silent non-delivery this whole mechanism exists to prevent --
+            # push_message() would keep answering submitted=True.
+            logger.warning(
+                "proactive bridge socket setup failed: err_type={}, err={}",
+                type(exc).__name__, str(exc),
+            )
+            for sock in (sub_sock, push_sock):
+                if sock is not None:
+                    try:
+                        sock.close(linger=0)
+                    except Exception:
+                        pass
+            startup_finished.set()
+            return
+
+        if stop.is_set():
+            # This generation was retired mid-setup; do not report it as ready.
+            for sock in (sub_sock, push_sock):
+                if sock is not None:
+                    try:
+                        sock.close(linger=0)
+                    except Exception:
+                        pass
+            startup_finished.set()
+            return
+
+        # Signal readiness only once BOTH sockets exist: the SUB is subscribed
+        # and connect has been issued for PUSH (remote attachment is asynchronous).
+        # Setting this right after SUBSCRIBE (before push_sock was built) let a failure in between
+        # latch the bridge as ready while it could receive but never forward.
+        # Sets THIS generation's event, so a retired thread can never certify a
+        # successor that has not finished its own setup.
+        subscribed.set()
+        startup_finished.set()
 
         logger.info(
-            "proactive bridge connected: sub={} push={}",
+            "proactive bridge socket setup complete: sub={} push={}",
             pub_endpoint,
             agent_push_addr,
         )
@@ -318,6 +393,15 @@ class ProactiveBridge:
         target_lanlan = payload.get("target_lanlan") or metadata.get("target_lanlan") or None
 
         events_out: list[dict[str, Any]] = []
+
+        # Cards use their own display-only event, including updates with no text.
+        if "chat" in visibility:
+            for part in parts:
+                if isinstance(part, dict) and part.get("type") == "html_card":
+                    events_out.append({
+                        "event_type": "plugin_card", "plugin_id": plugin_id,
+                        "lanlan_name": target_lanlan, "card": part,
+                    })
 
         # ---- ui_action parts → frontend control events ----
         for ui in _ui_action_parts(parts):

@@ -72,6 +72,11 @@ export default defineConfig({
         changeOrigin: true,
         secure: false
       },
+      '/api/model-config': {
+        target: BACKEND_TARGET,
+        changeOrigin: true,
+        secure: false
+      },
       // 代理所有插件服务器 API 请求
       '/plugin/': {
         target: BACKEND_TARGET,
@@ -115,6 +120,12 @@ export default defineConfig({
         secure: false
       },
       '/health': {
+        target: BACKEND_TARGET,
+        changeOrigin: true,
+        secure: false
+      },
+      // CSRF token bootstrap used by the shared mutation request interceptor.
+      '^/security/csrf-token(?:\\?.*)?$': {
         target: BACKEND_TARGET,
         changeOrigin: true,
         secure: false

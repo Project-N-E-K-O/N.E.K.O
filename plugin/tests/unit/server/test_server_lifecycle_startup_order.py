@@ -1,13 +1,16 @@
 """Startup order: the plane bridges come up before any plugin can push.
 
 An autostart plugin may call ``push_message()`` from its startup hook, and
-ProactiveBridge's SUB socket takes about a second to connect in its own thread.
-PUB/SUB drops for an absent subscriber, so a push inside that window is never
-spoken while ``push_message()`` has already answered ``submitted=True``.
+ProactiveBridge's SUB socket connects in its own thread. PUB/SUB drops for an
+absent subscriber, so a push before the subscription reaches the publisher is
+never spoken while ``push_message()`` has already answered ``submitted=True``.
 
-Ordering NARROWS that window rather than closing it -- the connect delay is
-still there, it just starts earlier. Closing it needs the bridge to signal SUB
-readiness (or to backfill from the store), which is a separate change.
+Startup waits for the bridge to signal that SUBSCRIBE was installed
+(``wait_for_proactive_subscriber``). That narrows the window; PUB/SUB still
+does not acknowledge remote subscription propagation, so retaining an
+arbitrary delay before connect cannot close it. Truly closing it needs the
+bridge to backfill from the store and dedupe by message_id, which risks
+duplicate delivery and is a separate change.
 
 An earlier version of this docstring also claimed the plane bridge refuses
 records before ``start_bridge()``. Measured: it does not. ``_Bridge._enabled``
@@ -139,13 +142,18 @@ def test_the_bridge_signals_only_after_it_subscribes() -> None:
                 for arg in node.args:
                     if isinstance(arg, ast.Constant) and arg.value == "messages.":
                         subscribe_line = node.lineno
-            if (
-                isinstance(func, ast.Attribute)
-                and func.attr == "set"
-                and isinstance(func.value, ast.Attribute)
-                and func.value.attr == "_subscribed"
-            ):
-                signal_line = node.lineno
+            if isinstance(func, ast.Attribute) and func.attr == "set":
+                # Readiness is signalled on the per-generation ``subscribed``
+                # event handed to _run (historically ``self._subscribed``); match
+                # either shape so this contract survives that ownership change.
+                target = func.value
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr == "_subscribed"
+                ) or (
+                    isinstance(target, ast.Name) and target.id == "subscribed"
+                ):
+                    signal_line = node.lineno
 
     assert subscribe_line is not None, "找不到 SUBSCRIBE 'messages.'"
     assert signal_line is not None, "_run 里没有置就绪位——启动会一直等到超时"
@@ -186,13 +194,14 @@ def test_stopping_releases_a_waiter() -> None:
 
     bridge.stop()
 
-    assert bridge.wait_until_subscribed(timeout=30.0) is True
+    assert bridge._startup_finished.is_set()
+    assert bridge.wait_until_subscribed(timeout=30.0) is False
 
 
-def test_restarting_the_bridge_does_not_reuse_the_old_readiness() -> None:
-    """``stop()`` sets the event to wake waiters; ``start()`` must clear it.
+def test_restarting_the_bridge_does_not_reuse_the_old_readiness(monkeypatch) -> None:
+    """Each generation owns independent readiness and startup-result events.
 
-    Without the clear, a stop/start cycle leaves ``wait_until_subscribed()``
+    Reusing readiness across a stop/start cycle leaves ``wait_until_subscribed()``
     answering True off the previous life, and the startup wait becomes a no-op
     — the original window, back, with a green test on top of it.
     """
@@ -208,10 +217,20 @@ def test_restarting_the_bridge_does_not_reuse_the_old_readiness() -> None:
     bridge = ProactiveBridge()
     bridge._thread = _LiveThread()
     bridge.stop()
-    assert bridge._subscribed.is_set(), "前提没成立：stop 应该唤醒等待者"
+    assert bridge._startup_finished.is_set(), "前提没成立：stop 应该唤醒等待者"
+    retired_subscribed = bridge._subscribed
+    retired_finished = bridge._startup_finished
 
+    # Hold socket setup: without the old pre-connect delay a real thread can
+    # legitimately subscribe before start() returns, so pin _run to keep this
+    # test about independent generation events, not about scheduling.
+    monkeypatch.setattr(bridge, "_run", lambda stop, subscribed, finished: stop.wait(3))
     bridge.start()
     try:
+        retired_subscribed.set()
+        retired_finished.set()
+        assert bridge._startup_finished is not retired_finished
+        assert not bridge._startup_finished.is_set()
         assert not bridge._subscribed.is_set(), (
             "重启后还带着上一条命的就绪位——等它等于没等"
         )

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+import logging
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 
 if TYPE_CHECKING:
-    from .lifecycle import VoiceTurnToken
+    from main_logic.voice_turn.contracts import VoiceTurnToken
 
 
 class AudioRingBuffer:
@@ -26,6 +28,11 @@ class AudioRingBuffer:
         if self._capacity_bytes <= 0:
             raise ValueError("capacity_ms is too small for the sample rate")
         self._audio = bytearray()
+
+    @property
+    def byte_count(self) -> int:
+        """Inspect capacity without allocating a copy of buffered PCM."""
+        return len(self._audio)
 
     @property
     def duration_ms(self) -> int:
@@ -99,10 +106,70 @@ class AsrSealCommand:
     after_sequence: int
 
 
-_Command: TypeAlias = AsrActivateCommand | AsrAudioCommand | AsrSealCommand
+@dataclass(frozen=True, slots=True)
+class AsrPauseHintCommand:
+    generation: int
+    turn_token: VoiceTurnToken
+    session_ref: Any
+    completed: asyncio.Future[bool]
+    revision: int
+
+
+_Command: TypeAlias = AsrActivateCommand | AsrAudioCommand | AsrSealCommand | AsrPauseHintCommand
 _Validator: TypeAlias = Callable[["VoiceTurnToken", Any], bool]
 _WireCallback: TypeAlias = Callable[["VoiceTurnToken", Any, int], Awaitable[None]]
 _FailureCallback: TypeAlias = Callable[["VoiceTurnToken", BaseException], Awaitable[None]]
+
+
+class _CommandQueue(asyncio.Queue[_Command]):
+    """FIFO with separately counted optional observations and normal commands."""
+
+    def _init(self, maxsize: int) -> None:
+        self.commands: deque[_Command] = deque()
+        self._queue = self.commands
+        self.normal_count = 0
+        self.pause_count = 0
+
+    def _put(self, command: _Command) -> None:
+        self.commands.append(command)
+        if isinstance(command, AsrPauseHintCommand):
+            self.pause_count += 1
+        else:
+            self.normal_count += 1
+
+    def _get(self) -> _Command:
+        command = self.commands.popleft()
+        if isinstance(command, AsrPauseHintCommand):
+            self.pause_count -= 1
+        else:
+            self.normal_count -= 1
+        return command
+
+    def qsize(self) -> int:
+        return len(self.commands)
+
+    def remove_pause_hints(self) -> list[AsrPauseHintCommand]:
+        if not self.pause_count:
+            return []
+        hints = [c for c in self.commands if isinstance(c, AsrPauseHintCommand)]
+        for hint in hints:
+            self.commands.remove(hint)
+            self.pause_count -= 1
+            self.task_done()
+        return hints
+
+
+def _log_hint_failure(error: BaseException) -> None:
+    # Exception messages can contain provider/user payloads. Log only type
+    # and our known control code, never the raw exception or transcript.
+    expected = isinstance(error, RuntimeError) and str(error) in {
+        "ASR_ACTIVITY_HINT_BACKPRESSURE", "ASR_SESSION_NOT_READY: session is not ready",
+    }
+    logging.getLogger(__name__).warning(
+        "ASR activity hint failed: category=%s type=%s",
+        "backpressure_or_not_ready" if expected else "session_error",
+        type(error).__name__,
+    )
 
 
 class AsrAudioDispatcher:
@@ -121,7 +188,10 @@ class AsrAudioDispatcher:
         self._validator = validator
         self._on_wire_audio = on_wire_audio
         self._on_failure = on_failure
-        self._queue: asyncio.Queue[_Command] = asyncio.Queue(maxsize=max_commands)
+        self._max_commands = max_commands
+        # One separately budgeted observation may accompany a full PCM queue;
+        # it must never consume the last slot available to normal commands.
+        self._queue = _CommandQueue(maxsize=max_commands + 1)
         self._worker: asyncio.Task[None] | None = None
         self._failure_tasks: set[asyncio.Task[None]] = set()
         self._generation = 0
@@ -140,6 +210,8 @@ class AsrAudioDispatcher:
         self.asr_audio_command_queue_ms = 0
         self.asr_abort_discarded_command_count = 0
         self.provider_wire_sequence = 0
+        self._pause_hint_revision = 0
+        self._pause_hint_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def active_turn(self) -> VoiceTurnToken | None:
@@ -229,6 +301,7 @@ class AsrAudioDispatcher:
     def abort(self, turn_token: VoiceTurnToken | None = None) -> None:
         if turn_token is not None and self._turn_token != turn_token:
             return
+        self.cancel_pending_pause_hints()
         discarded = 0
         while True:
             try:
@@ -236,6 +309,8 @@ class AsrAudioDispatcher:
             except asyncio.QueueEmpty:
                 break
             self._enqueued_at.pop(id(command), None)
+            if isinstance(command, AsrPauseHintCommand) and not command.completed.done():
+                command.completed.set_result(False)
             self._queue.task_done()
             discarded += 1
         self.asr_abort_discarded_command_count += discarded
@@ -248,6 +323,59 @@ class AsrAudioDispatcher:
     async def wait_idle(self) -> None:
         await self._queue.join()
 
+    async def signal_pause_after_audio(self, session_ref: Any, *, wait_for_delivery: bool = True) -> bool:
+        """Place an observational hint behind current PCM, ahead of later PCM."""
+        token = self.active_turn
+        if token is None or self._session_ref is not session_ref:
+            if wait_for_delivery:
+                await session_ref.signal_local_activity(speech_active=False)
+            else:
+                task = asyncio.create_task(session_ref.signal_local_activity(speech_active=False))
+                self._pause_hint_tasks.add(task)
+
+                def finish_hint(finished):
+                    self._pause_hint_tasks.discard(finished)
+                    if not finished.cancelled():
+                        error = finished.exception()
+                        if error is not None:
+                            _log_hint_failure(error)
+
+                task.add_done_callback(finish_hint)
+            return True
+        if self._queue.pause_count:
+            # Optional observation cannot evict or abort queued PCM.
+            raise RuntimeError("ASR_ACTIVITY_HINT_BACKPRESSURE")
+        completed = asyncio.get_running_loop().create_future()
+        if not self._put(AsrPauseHintCommand(
+            self._generation, token, session_ref, completed, self._pause_hint_revision
+        )):
+            return False
+        if wait_for_delivery:
+            return await completed
+        # The microphone must continue feeding the detector while PCM drains.
+        # Consume optional observer failures; they must not fail queued audio.
+        def finish_hint_delivery(future):
+            if not future.cancelled():
+                error = future.exception()
+                if error is not None:
+                    _log_hint_failure(error)
+
+        completed.add_done_callback(finish_hint_delivery)
+        return True
+
+    def cancel_pending_pause_hints(self) -> None:
+        self._pause_hint_revision += 1
+        for command in self._queue.remove_pause_hints():
+            self._enqueued_at.pop(id(command), None)
+            if not command.completed.done():
+                command.completed.set_result(False)
+        for task in tuple(self._pause_hint_tasks):
+            task.cancel()
+
+    @property
+    def pause_hint_revision(self) -> int:
+        return self._pause_hint_revision
+
     async def close(self) -> None:
         self.abort()
         worker, self._worker = self._worker, None
@@ -258,6 +386,11 @@ class AsrAudioDispatcher:
     def _put(self, command: _Command) -> bool:
         self._ensure_worker()
         try:
+            if (
+                not isinstance(command, AsrPauseHintCommand)
+                and self._queue.normal_count >= self._max_commands
+            ):
+                raise asyncio.QueueFull
             self._queue.put_nowait(command)
         except asyncio.QueueFull:
             self.abort(command.turn_token)
@@ -302,6 +435,38 @@ class AsrAudioDispatcher:
                     )
                 if not self._command_is_current(command):
                     continue
+                if isinstance(command, AsrPauseHintCommand):
+                    if not command.completed.cancelled() and command.revision == self._pause_hint_revision:
+                        async def send_hint(session=command.session_ref):
+                            await session.signal_local_activity(speech_active=False)
+
+                        hint_task = asyncio.create_task(send_hint())
+                        self._pause_hint_tasks.add(hint_task)
+
+                        def cancel_hint(completed, task=hint_task):
+                            if completed.cancelled():
+                                task.cancel()
+
+                        command.completed.add_done_callback(cancel_hint)
+                        try:
+                            await hint_task
+                        except asyncio.CancelledError:
+                            if asyncio.current_task().cancelling():
+                                raise
+                            continue
+                        except Exception as exc:
+                            # An optional observer failure must not abort PCM
+                            # delivery. The awaiting runtime handles this hint
+                            # error with its existing identity checks/logging.
+                            if not command.completed.done():
+                                command.completed.set_exception(exc)
+                            continue
+                        finally:
+                            self._pause_hint_tasks.discard(hint_task)
+                            command.completed.remove_done_callback(cancel_hint)
+                        if not command.completed.done():
+                            command.completed.set_result(self._command_is_current(command))
+                    continue
                 if isinstance(command, AsrSealCommand):
                     await command.session_ref.signal_user_activity_end()
                     if self._command_is_current(command):
@@ -343,6 +508,8 @@ class AsrAudioDispatcher:
                     name="asr-audio-dispatch-failure",
                 )
             finally:
+                if isinstance(command, AsrPauseHintCommand) and not command.completed.done():
+                    command.completed.set_result(False)
                 self._queue.task_done()
 
     def _command_is_current(self, command: _Command) -> bool:

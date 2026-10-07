@@ -100,6 +100,10 @@ _CHARACTER_SCOPED_WRITE_OPS = frozenset({
     "scoped_history",
     "scoped_forget",
     "scoped_mentions",
+    # 剧场遗忘会同时改 recent 与时间索引，角色删除期间也必须进入同一围栏。
+    "theater/forget",
+    # Retracting a declined archive capsule writes recent and the time index too.
+    "theater/retract",
 })
 _admitted_character_context: ContextVar[frozenset[str]] = ContextVar(
     "admitted_character_context",
@@ -135,7 +139,9 @@ def _character_write_name_from_path(path: str, method: str) -> str | None:
         and path.startswith(_CHARACTER_SCOPED_WRITE_PATH_PREFIX)
     ):
         segments = path[len(_CHARACTER_SCOPED_WRITE_PATH_PREFIX):].split("/")
-        if len(segments) == 2 and segments[1] in _CHARACTER_SCOPED_WRITE_OPS:
+        # 操作名允许包含固定子路径，但仍通过完整字符串白名单精确匹配。
+        operation = "/".join(segments[1:])
+        if len(segments) >= 2 and operation in _CHARACTER_SCOPED_WRITE_OPS:
             raw_name = segments[0]
     if not raw_name:
         return None
@@ -293,6 +299,8 @@ async def storage_limited_mode_guard(request: Request, call_next):
 # 全局入站 body 体积守门（issue #1586）：与 main_server 对偶，memory_server 的
 # 端点（对话缓存 / reflection 记录等）都是小 JSON，统一加上同一守门保持一致。
 app.add_middleware(InboundBodySizeLimitMiddleware)
+from utils.instance_access import InstanceAccessMiddleware
+app.add_middleware(InstanceAccessMiddleware)
 app.add_middleware(HostOriginGuardMiddleware)
 
 
@@ -1131,6 +1139,10 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(refine_loops._periodic_reflection_synthesis_loop())
             # 群记忆系列 5/7: scoped 轻量 refine cron
             _spawn_background_task(refine_loops._periodic_scoped_refine_loop())
+            # 带键写入的辅助数据：过期暂存残留与墓碑（键记录永久保留）。
+            # 后台跑，不阻塞启动链路。
+            from . import idempotency
+            _spawn_background_task(idempotency.cleanup_expired(list(catgirl_names)))
             _memory_background_tasks_started = True
 
         # memory-enhancements P2: vector embedding warmup + backfill worker.

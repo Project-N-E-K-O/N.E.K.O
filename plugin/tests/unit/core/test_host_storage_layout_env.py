@@ -201,6 +201,10 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
     monkeypatch.setattr(host_module, "ChildTransport", _ChildTransport)
     monkeypatch.setattr(host_module, "PluginContext", _Context)
 
+    model_gateway_options = {
+        "base_url": "http://127.0.0.1:49001/api/models/v1",
+        "token": "this-instance-token",
+    }
     host_module._plugin_process_runner(
         plugin_id="demo",
         entry_point="tests.fake:DemoRouter",
@@ -208,19 +212,28 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
         downlink_endpoint="ipc://down",
         uplink_endpoint="ipc://up",
         uplink_token="test-uplink-token",
+        model_gateway_options=model_gateway_options,
     )
 
     assert closed == ["context", "transport"]
     assert payloads[-1]["status"] == "error"
+    assert contexts[0]["_model_gateway_base_url"] == "http://127.0.0.1:49001/api/models/v1"
+    assert contexts[0]["_model_gateway_token"] == "this-instance-token"
+    assert model_gateway_options == {}
 
 
 @pytest.mark.plugin_unit
+@pytest.mark.parametrize("startup_warning", [False, True])
+@pytest.mark.parametrize("resolve_failure", [False, True])
 def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    startup_warning: bool,
+    resolve_failure: bool,
 ) -> None:
     order: list[str] = []
     payloads: list[dict[str, object]] = []
+    effective_configs: list[dict[str, object] | None] = []
     config_path = tmp_path / "demo" / "plugin.toml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("[plugin]\nid='demo'\ntype='adapter'\n", encoding="utf-8")
@@ -235,6 +248,8 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
 
     async def _startup() -> None:
         order.append("startup")
+        if startup_warning:
+            raise RuntimeError("startup warning")
 
     async def _auto_custom() -> None:
         order.append("auto_custom")
@@ -245,7 +260,13 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
     class _Plugin:
         def __init__(self, ctx) -> None:
             self.ctx = ctx
-            self.config = SimpleNamespace(dump_effective_sync=lambda timeout=3.0: {})
+            effective_configs.append(ctx._effective_config)
+
+            async def dump(timeout: float = 3.0) -> dict[str, object]:
+                del timeout
+                return {"plugin_state": {"persist_mode": "manual"}}
+
+            self.config = SimpleNamespace(dump=dump)
 
         def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
             return {
@@ -310,6 +331,13 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
     monkeypatch.setattr(host_module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(DemoPlugin=_Plugin))
     monkeypatch.setattr(host_module, "ChildTransport", _ChildTransport)
     monkeypatch.setattr(host_module.threading, "Thread", _ImmediateThread)
+    if resolve_failure:
+        from plugin.server.infrastructure import config_resolver
+
+        def _failed_resolve(*_args, **_kwargs):
+            raise RuntimeError("child resolver unavailable")
+
+        monkeypatch.setattr(config_resolver, "resolve_plugin_config_from_path", _failed_resolve)
 
     host_module._plugin_process_runner(
         plugin_id="demo",
@@ -327,7 +355,197 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
         "lifecycle.command_loop_start",
     ]
     startup_payload = next(payload for payload in payloads if payload.get("req_id") == host_module.STARTUP_RESULT_REQ_ID)
-    assert startup_payload["success"] is True
+    assert startup_payload["success"] is (not startup_warning)
+    assert startup_payload["data"]["config_fingerprint"]
+    if resolve_failure:
+        from plugin.server.infrastructure.config_fingerprint import fingerprint_config
+
+        assert startup_payload["data"]["config_fingerprint"] == fingerprint_config(
+            {"plugin_state": {"persist_mode": "manual"}},
+        )
+    else:
+        assert isinstance(effective_configs[0], dict)
+        assert effective_configs[0]["plugin"]["id"] == "demo"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_plugin_host_records_applied_config_only_after_ready_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _ReadyCommManager(_FakeCommManager):
+        async def prepare_startup_wait(self) -> None:
+            return
+
+        async def wait_for_startup(self, timeout: float, allow_startup_error: bool = False) -> dict[str, object]:
+            del timeout, allow_startup_error
+            return {"status": "ready", "config_fingerprint": "sha256:ready"}
+
+    comm_manager = _ReadyCommManager()
+
+    class _FakeTransport:
+        downlink_endpoint = "ipc://down"
+        uplink_endpoint = "ipc://up"
+
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
+    monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: comm_manager)
+    monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: SimpleNamespace(set=lambda: None))
+    monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: _FakeProcess())
+    monkeypatch.setattr(host_module, "_refresh_child_storage_layout_env", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(host_module.state, "register_downlink_sender", lambda *_args, **_kwargs: None)
+
+    plugin_host = host_module.PluginProcessHost(
+        plugin_id="demo",
+        entry_point="plugins.demo:DemoPlugin",
+        config_path=tmp_path / "demo" / "plugin.toml",
+    )
+
+    startup_result = await plugin_host.start(startup_timeout=1.0)
+
+    assert startup_result == {"status": "ready", "config_fingerprint": "sha256:ready"}
+    assert plugin_host.applied_config_fingerprint == "sha256:ready"
+    assert plugin_host.applied_config_loaded_at
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy", ["warn", "ignore"])
+async def test_plugin_host_records_loaded_config_for_tolerated_startup_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    policy: str,
+) -> None:
+    class _WarningCommManager(_StartupErrorCommManager):
+        async def wait_for_startup(self, timeout: float, allow_startup_error: bool = False) -> dict[str, object]:
+            del timeout, allow_startup_error
+            return {
+                "status": "failed",
+                "startup_error": "lifecycle.startup failed",
+                "config_fingerprint": "sha256:loaded",
+            }
+
+    comm_manager = _WarningCommManager()
+
+    class _FakeTransport:
+        downlink_endpoint = "ipc://down"
+        uplink_endpoint = "ipc://up"
+
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
+    monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: comm_manager)
+    monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: SimpleNamespace(set=lambda: None))
+    monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: _FakeProcess())
+    monkeypatch.setattr(host_module, "_refresh_child_storage_layout_env", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(host_module.state, "register_downlink_sender", lambda *_args, **_kwargs: None)
+
+    plugin_host = host_module.PluginProcessHost(
+        plugin_id="demo",
+        entry_point="plugins.demo:DemoPlugin",
+        config_path=tmp_path / "demo" / "plugin.toml",
+    )
+
+    startup_result = await plugin_host.start(startup_timeout=1.0, startup_failure=policy)
+
+    assert startup_result["startup_error"] == "lifecycle.startup failed"
+    assert plugin_host.applied_config_fingerprint == "sha256:loaded"
+    assert plugin_host.applied_config_loaded_at
+
+
+@pytest.mark.plugin_unit
+def test_plugin_process_runner_cancels_trigger_without_run_id_before_closing_models(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import asyncio
+
+    order: list[str] = []
+    config_path = tmp_path / "demo" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo'\ntype='plugin'\n", encoding="utf-8")
+
+    class _Plugin:
+        def __init__(self, ctx) -> None:
+            self.ctx = ctx
+
+            async def dump(timeout: float = 3.0) -> dict[str, object]:
+                del timeout
+                return {}
+
+            self.config = SimpleNamespace(dump=dump)
+
+        def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
+            return {}
+
+        async def hang(self) -> None:
+            order.append("started")
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                order.append("cancelled")
+                raise
+
+    class _Sender:
+        def put(self, payload: dict[str, object], block: bool = True, timeout: float | None = None) -> None:
+            return
+
+        def put_nowait(self, payload: dict[str, object]) -> None:
+            return
+
+    class _ChildTransport:
+        def __init__(self, downlink_endpoint: str, uplink_endpoint: str, uplink_token: str) -> None:
+            del downlink_endpoint, uplink_endpoint, uplink_token
+            self.sent_trigger = False
+
+        def channel_sender(self, channel: str) -> _Sender:
+            return _Sender()
+
+        async def recv_downlink(self, timeout_ms: int = 1000):
+            if not self.sent_trigger:
+                self.sent_trigger = True
+                return (host_module.CH_CMD, {"type": "TRIGGER", "entry_id": "hang", "args": {}, "req_id": "r1"})
+            for _ in range(500):
+                if "started" in order:
+                    break
+                await asyncio.sleep(0.01)
+            return (host_module.CH_CMD, {"type": "STOP"})
+
+        def close(self) -> None:
+            return
+
+    original_cleanup = host_module._run_with_model_client_cleanup
+
+    async def _recording_cleanup(ctx, awaitable):
+        try:
+            return await original_cleanup(ctx, awaitable)
+        finally:
+            order.append("models_closed")
+
+    monkeypatch.setattr(host_module, "_setup_plugin_logger", lambda *args, **kwargs: _FakeLogger())
+    monkeypatch.setattr(host_module, "_setup_logging_interception", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_plugin_import_roots", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_current_plugin_import_root", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_plugin_vendor_path", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(DemoPlugin=_Plugin))
+    monkeypatch.setattr(host_module, "ChildTransport", _ChildTransport)
+    monkeypatch.setattr(host_module, "_run_with_model_client_cleanup", _recording_cleanup)
+
+    host_module._plugin_process_runner(
+        plugin_id="demo",
+        entry_point="tests.fake:DemoPlugin",
+        config_path=config_path,
+        downlink_endpoint="ipc://down",
+        uplink_endpoint="ipc://up",
+        uplink_token="test-uplink-token",
+    )
+
+    # A trigger without _ctx.run_id must still be unwound before model clients close.
+    assert order[:3] == ["started", "cancelled", "models_closed"]
 
 
 @pytest.mark.plugin_unit
@@ -439,7 +657,12 @@ def test_plugin_process_runner_skips_auto_work_after_failed_startup_in_fail_mode
     class _Plugin:
         def __init__(self, ctx) -> None:
             self.ctx = ctx
-            self.config = SimpleNamespace(dump_effective_sync=lambda timeout=3.0: {})
+
+            async def dump(timeout: float = 3.0) -> dict[str, object]:
+                del timeout
+                return {}
+
+            self.config = SimpleNamespace(dump=dump)
 
         def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
             return {
@@ -677,6 +900,8 @@ async def test_plugin_process_start_keeps_running_on_startup_error_by_default(
     assert getattr(comm_manager, "shutdown_timeout", None) is None
     assert getattr(plugin_host.transport, "closed", False) is False
     assert removed == []
+    assert plugin_host.applied_config_fingerprint is None
+    assert plugin_host.applied_config_loaded_at is None
 
 
 @pytest.mark.plugin_unit

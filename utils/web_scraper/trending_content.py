@@ -2198,6 +2198,14 @@ async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
         posts = normalize_neko_community_feed(payload, limit=limit)
         if not posts:
             raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
+        # The feed API ranks cards by hot score, so this first page's order is
+        # near-static within a day. Feeding Phase 1 that fixed order every
+        # round made the same candidate prefix — and the same logged top
+        # titles — reappear on every proactive cycle. Shuffle the bounded
+        # pool so each round presents a fresh slice of it; the source-history
+        # cooldown (keyed by dedupe_key, order-independent) still keeps
+        # already-delivered cards out.
+        random.shuffle(posts)
         return {
             "success": True,
             "posts": posts,

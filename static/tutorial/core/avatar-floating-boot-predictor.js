@@ -27,11 +27,25 @@
     }
 
     function isAuthoritativeStateReady() {
-        return typeof sevenDayState.isReady !== 'function' || sevenDayState.isReady();
+        const clickGuide = window.NekoClickGuideState;
+        return (typeof sevenDayState.isReady !== 'function' || sevenDayState.isReady())
+            && (!clickGuide || (typeof clickGuide.isReady === 'function'
+                ? clickGuide.isReady() : !!clickGuide.get()));
+    }
+
+    async function waitForAuthoritativeState() {
+        await Promise.all([sevenDayState.ready?.(), window.NekoClickGuideState?.ready?.()]);
     }
 
     function computePredictedRound() {
-        const guideState = loadGuideState();
+        const clickGuide = window.NekoClickGuideState;
+        const progress = loadGuideState();
+        const guideState = clickGuide?.projectSevenDay?.(progress) || progress;
+        if (clickGuide) {
+            const choice = clickGuide.get();
+            if (choice?.choice === 'click' && choice.pending
+                    && !clickGuide.isSevenDayOverride?.(guideState)) return null;
+        }
         return sevenDayState.getNextAutoRound(
             guideState,
             sevenDayState.getTodayLocalDate()
@@ -188,6 +202,7 @@
     }
 
     window.NekoAvatarFloatingBoot = {
+        waitForAuthoritativeState,
         shouldBootIntoTutorial,
         shouldSkipUserModelBoot,
         getPredictedRound,

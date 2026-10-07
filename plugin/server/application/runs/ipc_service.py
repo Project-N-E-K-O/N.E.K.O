@@ -12,8 +12,8 @@ from pydantic import ValidationError
 from plugin.logging_config import get_logger
 from plugin.server.domain import RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.runs.manager import ExportItem, get_run, update_run_from_plugin
-from plugin.server.runs.manager import append_export_item as manager_append_export_item
+from plugin.runs.manager import ExportItem, get_run, update_run_from_plugin
+from plugin.runs.manager import append_export_item as manager_append_export_item
 from plugin.settings import EXPORT_INLINE_BINARY_MAX_BYTES
 
 logger = get_logger("server.application.runs.ipc")

@@ -16,24 +16,31 @@ import dataclasses
 import hashlib
 import hmac
 import json
-import os
 import secrets
-import tempfile
 import time
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable, Literal, get_args
+from typing import Any, Iterable, Literal, TYPE_CHECKING, get_args
 from urllib.parse import quote, urlparse, urlencode
 
-import httpx
+if TYPE_CHECKING:
+    import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
+from utils.deployment import has_forwarding_metadata
 
+from plugin.server.application.plugin_cli import get_plugin_cli_service
 from plugin.logging_config import get_logger
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
-from plugin.neko_plugin_cli.public import inspect_package
+from plugin.utils.http_imports import ensure_httpx, load_httpx
+from plugin.server.infrastructure.package_download import (
+    PackageDownloadDeadline,
+    PackageSizeExceeded,
+    cleanup_download_file as _cleanup_download_file,
+    download_package_file,
+)
 from plugin.server.application.install_source import (
     InstallSourceError,
     InstallSourceManager,
@@ -43,7 +50,6 @@ from plugin.server.application.install_source import (
     get_install_source_manager,
 )
 from plugin.server.application.install_source.scanner import PluginDirectoryScanner
-from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.installation_transactions import (
@@ -65,7 +71,11 @@ from plugin.settings import (
 router = APIRouter(prefix="/market", tags=["market-bridge"])
 logger = get_logger("server.routes.market_bridge")
 
-_cli_service = PluginCliService()
+def _inspect_package_sync(package_path: Path):
+    from plugin.neko_plugin_cli.public import inspect_package
+
+    return inspect_package(package_path)
+
 
 # ─── Bridge Token（本地安全令牌）───────────────────────────────────
 # 每次服务启动时生成，防止恶意网页未经授权调用本地 API。
@@ -77,6 +87,7 @@ _tasks: dict[str, dict[str, Any]] = {}
 _task_workers: dict[str, asyncio.Task[None]] = {}
 _TASK_TTL_SECONDS = 60 * 60
 _TASK_MAX_ENTRIES = 200
+_MARKET_RELEASE_CHECK_TIMEOUT = 10.0
 
 # 短期一次性配对码；成功交换后立即消费。
 _ONE_TIME_CODES: dict[str, float] = {}
@@ -102,6 +113,15 @@ _ACCOUNT_SUMMARY_CACHE: dict[str, Any] | None = None
 # 下载限制
 _DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
 _DOWNLOAD_TIMEOUT = 120.0  # 秒
+# httpx 的超时是**每阶段**的（连接/读/写各自计时），所以一个"每次读都及时返回一点点
+# 字节"的服务器永远不会触发它——总时长必须有独立兜底。本文件里 _fetch_market_release
+# 已经为同一个理由用了 asyncio.timeout，注释就写着 "HTTPX phase timeouts alone do not
+# bound total response time"。1800s 对应 200MB 上限下约 114KB/s 的最低持续吞吐：低于
+# 这个速度的下载实际上已经停滞，而调用方本来就有 GitHub 直连的回退路径可以重试。
+_DOWNLOAD_TOTAL_TIMEOUT = 1800.0
+# Keep at most one 4 MiB batch of chunks. Progress and cancellation are still
+# checked every 64 KiB, while a 200 MiB package needs only 50 worker writes.
+_DOWNLOAD_FLUSH_BYTES = 4 * 1024 * 1024
 _ALLOWED_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
 
 # GitHub Release download mirrors exposed by the local plugin-manager UI.
@@ -183,6 +203,9 @@ def _require_local_bridge_token_access(request: Request) -> None:
     Remote Market origins are intentionally excluded here even when CORS trusts
     them; remote pages must pair through /token-exchange instead.
     """
+
+    if request.scope.get("neko.market_remote_authorized") or has_forwarding_metadata(request.headers):
+        raise HTTPException(status_code=403, detail="仅允许本地同源访问")
 
     host_header = request.headers.get("host", "")
     try:
@@ -577,6 +600,7 @@ async def _proxy_market_catalog(request: Request, upstream_path: str) -> Respons
             },
         )
 
+    httpx = await ensure_httpx()
     upstream_url = f"{base_url}/api/v1{upstream_path}"
     if request.url.query:
         upstream_url = f"{upstream_url}?{request.url.query}"
@@ -640,6 +664,18 @@ async def _proxy_market_catalog(request: Request, upstream_path: str) -> Respons
             _safe_market_request_id(upstream.headers.get("x-request-id")),
             elapsed_ms,
             _market_api_log_origin(),
+        )
+    elif upstream_path.startswith("/plugins/latest-versions"):
+        # The plugin manager's update check is the only caller. Success is
+        # logged too so "did we even ask?" is answerable after the fact, not
+        # just "why did the request fail?".
+        elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
+        logger.info(
+            "[market-update-check] latest-versions query={} status={} bytes={} elapsed_ms={}",
+            request.url.query,
+            upstream.status_code,
+            len(upstream.content),
+            elapsed_ms,
         )
     return Response(
         content=upstream.content,
@@ -711,7 +747,8 @@ async def market_status():
     返回 market_url 供前端知道 Market 地址。
     """
     try:
-        plugins_result = await _cli_service.list_local_plugins()
+        cli_service = await get_plugin_cli_service()
+        plugins_result = await cli_service.list_local_plugins()
         count = plugins_result.get("count", 0)
     except Exception:
         count = 0
@@ -735,6 +772,7 @@ _GITHUB_PROXY_PROBE_TOTAL_BUDGET = env_seconds("NEKO_MARKET_PROXY_PROBE_TOTAL_BU
 async def _measure_github_proxy_sources() -> tuple[dict[str, object], ...]:
     """Measure the fixed proxy list with a bounded number of outbound probes."""
 
+    httpx = await ensure_httpx()
     semaphore = asyncio.Semaphore(_GITHUB_PROXY_PROBE_CONCURRENCY)
 
     async def probe(source_id: str, base_url: str) -> dict[str, object]:
@@ -811,77 +849,155 @@ async def measure_github_proxy_sources() -> dict[str, object]:
     return {"sources": measured}
 
 
-async def _fetch_authoritative_market_override_release(
-    payload: MarketInstallRequest,
-) -> dict[str, object]:
-    market_id = str(payload.plugin_id or "").strip()
-    base_url = _normalized_base_url(MARKET_API_URL)
-    if not market_id or not base_url:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "market_catalog_not_configured",
-                "message": "builtin override requires a configured Market catalog",
-            },
-        )
+class _MarketCatalogError(Exception):
+    """Catalogue lookup failure; callers wrap it as HTTPException or _TaskError."""
 
-    channel = str(payload.channel or "stable").strip() or "stable"
-    url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/versions"
-    try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(10.0, connect=3.0),
-            follow_redirects=False,
-        ) as client:
-            response = await client.get(url, params={"channel": channel})
-        if 300 <= response.status_code < 400:
-            raise httpx.HTTPStatusError(
-                "Market catalog redirect rejected",
-                request=response.request,
-                response=response,
-            )
-        response.raise_for_status()
-        releases = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "code": "market_catalog_unavailable",
-                "message": "Market release metadata could not be verified",
-            },
-        ) from exc
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
-    if not isinstance(releases, list):
-        releases = []
-    requested_version = str(payload.version or "").strip()
-    release = next(
-        (
-            item
-            for item in releases
-            if isinstance(item, dict)
-            and str(item.get("version") or "").strip() == requested_version
-            and str(item.get("channel") or "stable").strip() == channel
-        ),
-        None,
+
+_MARKET_CATALOG_HTTP_STATUS = {
+    "market_catalog_not_configured": 503,
+    "market_catalog_unavailable": 502,
+    "market_release_mismatch": 409,
+}
+
+
+def _market_release_request_error(payload: MarketInstallRequest) -> str | None:
+    """Return why ``payload`` cannot be matched to a catalogue release, if at all."""
+
+    if not str(payload.plugin_id or "").strip() or not str(payload.version or "").strip():
+        return "Market 安装需要市场插件 ID 和版本"
+    channel = str(payload.channel or "").strip()
+    if channel and channel not in ("stable", "beta"):
+        return "Market 安装的发布通道只能是 stable 或 beta"
+    return None
+
+
+def _market_catalog_client() -> httpx.AsyncClient:
+    httpx = load_httpx()
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(_MARKET_RELEASE_CHECK_TIMEOUT, connect=3.0),
+        follow_redirects=False,
     )
+
+
+def _select_market_release(
+    releases: list[Any],
+    *,
+    version: str,
+    channel: str | None,
+    package_sha256: str | None = None,
+) -> dict[str, Any] | None:
+    """Pick the public, non-yanked catalog row for ``version`` / ``channel``.
+
+    ``channel=None`` matches either channel; when the same version is
+    published on both, the row carrying ``package_sha256`` wins.
+    """
+
+    candidates = [
+        item
+        for item in releases
+        if isinstance(item, dict)
+        and str(item.get("version") or "").strip() == version
+        and (channel is None or str(item.get("channel") or "stable").strip() == channel)
+        and not item.get("yanked_at")
+    ]
+    for item in candidates:
+        if package_sha256 and str(item.get("package_sha256") or "").strip().lower() == package_sha256:
+            return item
+    return candidates[0] if candidates else None
+
+
+async def _fetch_market_release(payload: MarketInstallRequest) -> dict[str, Any]:
+    """Fetch the catalogue row that authorizes ``payload``.
+
+    Shared by the builtin override preflight and the install task binding,
+    so both reach the same verdict for the same catalogue response.
+    """
+
+    request_error = _market_release_request_error(payload)
+    if request_error is not None:
+        raise _MarketCatalogError("market_release_mismatch", request_error)
+    base_url = _normalized_base_url(MARKET_API_URL)
+    if not base_url:
+        raise _MarketCatalogError("market_catalog_not_configured", "未配置插件市场")
+    market_id = str(payload.plugin_id or "").strip()
+    version = str(payload.version or "").strip()
+    channel = str(payload.channel or "").strip() or None
+    params = {"include_yanked": "false"}
+    if channel is not None:
+        params["channel"] = channel
+    httpx = await ensure_httpx()
+    url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/versions"
+    unavailable = _MarketCatalogError(
+        "market_catalog_unavailable", "暂时无法核对市场发布信息，请稍后重试",
+    )
+    try:
+        # HTTPX phase timeouts alone do not bound total response time.
+        async with asyncio.timeout(_MARKET_RELEASE_CHECK_TIMEOUT):
+            async with _market_catalog_client() as client:
+                response = await client.get(url, params=params)
+                if response.status_code in (404, 422):
+                    try:
+                        detail = response.json().get("detail")
+                    except (ValueError, AttributeError):
+                        detail = None
+                    # A missing route answers FastAPI's generic "Not Found";
+                    # an unknown or malformed plugin ID answers with its own
+                    # detail. Only the latter says the plugin is unlisted.
+                    if response.status_code == 422 or (
+                        isinstance(detail, str) and detail.strip() not in ("", "Not Found")
+                    ):
+                        raise _MarketCatalogError("market_release_mismatch", "插件未被市场公开收录")
+                    logger.warning(
+                        "Market catalogue route missing: status={} origin={}",
+                        response.status_code,
+                        base_url,
+                    )
+                    raise unavailable
+                response.raise_for_status()
+                releases = response.json()
+    except (httpx.HTTPError, ValueError, TimeoutError) as exc:
+        logger.warning("Market catalogue lookup failed: origin={} error={!r}", base_url, exc)
+        raise unavailable from exc
+    if not isinstance(releases, list):
+        raise _MarketCatalogError("market_catalog_unavailable", "市场发布信息格式无效")
+    release = _select_market_release(
+        releases,
+        version=version,
+        channel=channel,
+        package_sha256=payload.package_sha256,
+    )
+    if release is None:
+        raise _MarketCatalogError("market_release_mismatch", "市场中没有有效的对应发布版本")
+    return release
+
+
+def _market_override_release_evidence(
+    payload: MarketInstallRequest,
+    release: dict[str, Any],
+) -> dict[str, object]:
+    """Check an override request against its catalogue row; return the evidence."""
+
     canonical_package_url = str(
         payload.canonical_package_url or payload.package_url or ""
     ).strip()
-    if release is None:
-        mismatch = True
-    else:
-        mismatch = any(
-            (
-                str(release.get("package_url") or "").strip() != canonical_package_url,
-                str(release.get("package_sha256") or "").strip().lower()
-                != payload.package_sha256,
-                bool(payload.payload_hash)
-                and str(release.get("payload_hash") or "").strip()
-                != str(payload.payload_hash or "").strip(),
-                bool(payload.published_at)
-                and str(release.get("created_at") or release.get("published_at") or "").strip()
-                != str(payload.published_at or "").strip(),
-            )
+    mismatch = any(
+        (
+            str(release.get("package_url") or "").strip() != canonical_package_url,
+            str(release.get("package_sha256") or "").strip().lower()
+            != payload.package_sha256,
+            bool(payload.payload_hash)
+            and str(release.get("payload_hash") or "").strip()
+            != str(payload.payload_hash or "").strip(),
+            bool(payload.published_at)
+            and str(release.get("created_at") or release.get("published_at") or "").strip()
+            != str(payload.published_at or "").strip(),
         )
+    )
     if mismatch:
         raise HTTPException(
             status_code=409,
@@ -890,17 +1006,28 @@ async def _fetch_authoritative_market_override_release(
                 "message": "builtin override request does not match the Market catalog",
             },
         )
-
-    assert release is not None
     return {
-        "plugin_market_id": market_id,
-        "version": requested_version,
-        "channel": channel,
+        "plugin_market_id": str(payload.plugin_id or "").strip(),
+        "version": str(payload.version or "").strip(),
+        "channel": str(release.get("channel") or "stable").strip(),
         "package_url": canonical_package_url,
         "package_sha256": payload.package_sha256,
         "payload_hash": release.get("payload_hash"),
         "published_at": release.get("created_at") or release.get("published_at"),
     }
+
+
+async def _fetch_authoritative_market_override_release(
+    payload: MarketInstallRequest,
+) -> dict[str, object]:
+    try:
+        release = await _fetch_market_release(payload)
+    except _MarketCatalogError as exc:
+        raise HTTPException(
+            status_code=_MARKET_CATALOG_HTTP_STATUS[exc.code],
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    return _market_override_release_evidence(payload, release)
 
 
 async def _build_market_override_confirmation(
@@ -1153,6 +1280,12 @@ async def market_install(
     旧目录 → unpack → record → start，失败时按 rollback steps 逆序回滚。
     """
     _verify_token(token)
+    request_error = _market_release_request_error(payload)
+    if request_error is not None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "market_release_mismatch", "message": request_error},
+        )
     # ``exclude=True`` affects serialization only; Pydantic still accepts these
     # fields from request bodies. Strip all caller-provided server evidence and
     # add back only values verified during this request.
@@ -2110,6 +2243,11 @@ def _oauth_default_redirect_uri() -> str:
 
 
 def _oauth_redirect_uri_for_request(request: Request) -> str:
+    # The main service signs this public origin; the instance middleware sets
+    # the scope only after verifying a loopback method/path/origin proof.
+    public_origin = request.scope.get("neko.market_public_origin")
+    if public_origin:
+        return public_origin + _OAUTH_REDIRECT_PATH
     host = request.url.hostname or "127.0.0.1"
     port = request.url.port
     # OAuth loopback callbacks should stay on loopback even if the Host header
@@ -2178,6 +2316,7 @@ def _market_auth_http_failure_category(status_code: int) -> str:
 
 
 def _market_auth_network_failure_category(exc: httpx.HTTPError) -> str:
+    httpx = load_httpx()
     if isinstance(exc, httpx.TimeoutException):
         return "timeout"
     if isinstance(exc, httpx.ConnectError):
@@ -2605,6 +2744,7 @@ async def _exchange_oauth_code(
     code_verifier: str,
     redirect_uri: str,
 ) -> dict[str, Any]:
+    httpx = await ensure_httpx()
     started_at = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
@@ -2653,6 +2793,7 @@ async def _refresh_oauth_token(token_data: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(refresh_token, str) or not refresh_token:
         raise HTTPException(status_code=401, detail="缺少 refresh token")
 
+    httpx = await ensure_httpx()
     started_at = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
@@ -2717,6 +2858,7 @@ async def _refresh_oauth_token(token_data: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _revoke_oauth_token_best_effort(token_data: dict[str, Any]) -> None:
+    httpx = await ensure_httpx()
     tokens = [
         ("refresh_token", token_data.get("refresh_token")),
         ("access_token", token_data.get("access_token")),
@@ -2843,6 +2985,7 @@ def _market_oauth_state_message(state: MarketOAuthState) -> str:
 async def _fetch_auth_userinfo(access_token: Any) -> dict[str, Any] | None:
     if not isinstance(access_token, str) or not access_token:
         return None
+    httpx = await ensure_httpx()
     started_at = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
@@ -2995,6 +3138,7 @@ def _log_invalid_market_user_response(response: Any, started_at: float) -> None:
 async def _probe_market_user(access_token: Any) -> _MarketUserProbe:
     if not isinstance(access_token, str) or not access_token:
         return _MarketUserProbe(state="invalid_response")
+    httpx = await ensure_httpx()
     started_at = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
@@ -3096,6 +3240,7 @@ async def _report_market_install_best_effort(
     if not isinstance(install, dict):
         install = {}
 
+    httpx = await ensure_httpx()
     report_payload = {
         "plugin_id": market_plugin_id,
         "version": payload.version,
@@ -3156,6 +3301,57 @@ async def _report_market_install_best_effort(
         )
 
 
+async def _bind_market_package_hash(
+    payload: MarketInstallRequest,
+) -> tuple[MarketInstallRequest, dict[str, Any]]:
+    """Bind install bytes to a public, non-yanked Market release.
+
+    Download URLs (including user-selected proxies) remain unchanged. The
+    catalogue supplies the hash used to authorize the installed bytes and
+    the release metadata recorded for them. This runs before download and
+    before taking any plugin operation lock. Returns the bound payload and
+    the catalogue row, which later task steps reuse instead of refetching.
+    """
+    try:
+        release = await _fetch_market_release(payload)
+    except _MarketCatalogError as exc:
+        raise _TaskError(code=exc.code, message=exc.message) from exc
+    try:
+        raw_hash = release.get("package_sha256")
+        authoritative_hash = _normalize_required_sha256(raw_hash if isinstance(raw_hash, str) else None)
+    except ValueError as exc:
+        raise _TaskError(code="market_release_mismatch", message="市场中没有有效的对应发布版本") from exc
+    if authoritative_hash != payload.package_sha256:
+        raise _TaskError(code="market_release_mismatch", message="插件包 SHA256 与市场发布记录不一致")
+
+    # Provenance written to the lock and reported to /me/installs comes from
+    # the catalogue row, never from the caller. A caller payload_hash is
+    # bound to the package bytes, so disagreement is rejected. The caller's
+    # canonical URL and published_at are only replaced: the catalogue may
+    # move a release to a new URL, and some callers pair published_at with
+    # a different release row of the same plugin.
+    catalog_payload_hash = str(release.get("payload_hash") or "").strip() or None
+    requested_payload_hash = str(payload.payload_hash or "").strip()
+    if requested_payload_hash and requested_payload_hash.lower() != (catalog_payload_hash or "").lower():
+        raise _TaskError(code="market_release_mismatch", message="插件 payload hash 与市场发布记录不一致")
+    catalog_package_url = str(release.get("package_url") or "").strip() or None
+    if catalog_package_url is None:
+        raise _TaskError(code="market_release_mismatch", message="市场发布记录缺少插件包来源地址")
+    catalog_published_at = (
+        str(release.get("created_at") or release.get("published_at") or "").strip() or None
+    )
+    bound = payload.model_copy(update={
+        "version": str(payload.version or "").strip(),
+        # Callers may omit the channel; the matched row decides it.
+        "channel": str(release.get("channel") or "stable").strip(),
+        "package_sha256": authoritative_hash,
+        "payload_hash": catalog_payload_hash,
+        "canonical_package_url": catalog_package_url,
+        "published_at": catalog_published_at,
+    })
+    return bound, release
+
+
 async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
     """异步执行下载 + 校验 + 安装 / 升级流程（design §3.4）。
 
@@ -3177,12 +3373,25 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
 
     try:
         _raise_if_task_cancel_requested(task)
+        _set_task_stage(
+            task, status="pending", stage="pending", progress=0.0,
+            message="正在核对市场发布信息...",
+        )
+        try:
+            payload, market_release = await _bind_market_package_hash(payload)
+        except _TaskError:
+            _raise_if_task_cancel_requested(task)
+            raise
+        _raise_if_task_cancel_requested(task)
         if payload.mode in ("install", "override_builtin"):
             await _do_install(task, payload, log_ctx)
         elif payload.mode == "upgrade":
-            await _do_upgrade(task, payload, log_ctx)
+            await _do_upgrade(task, payload, log_ctx, market_release=market_release)
         elif payload.mode == "reinstall":
-            await _do_upgrade(task, payload, log_ctx, record_as_reinstall=True)
+            await _do_upgrade(
+                task, payload, log_ctx,
+                record_as_reinstall=True, market_release=market_release,
+            )
         else:  # pragma: no cover — Pydantic Literal already enforces this
             raise _TaskError(
                 code="invalid_mode",
@@ -3330,6 +3539,9 @@ _HUMAN_MESSAGES: dict[str, str] = {
     "override_rollback_incomplete": "内置插件升级失败，回滚未完整完成，请检查插件状态",
     "override_source_changed": "插件来源已变化，请刷新后重试",
     "override_start_failed": "Market 版本启动失败，已尝试恢复内置版本",
+    "market_release_mismatch": "安装请求与市场发布记录不一致，请刷新市场页面后重试",
+    "market_catalog_unavailable": "暂时无法核对市场发布信息，请稍后重试",
+    "market_catalog_not_configured": "未配置插件市场地址",
 }
 
 
@@ -3465,7 +3677,8 @@ async def _do_install(
         market_override = _build_market_override(payload, mode=operation)
 
         try:
-            result = await _cli_service.upload_and_install(
+            cli_service = await get_plugin_cli_service()
+            result = await cli_service.upload_and_install(
                 filename=filename,
                 package_path=str(package_path),
                 on_conflict=payload.on_conflict,
@@ -3636,12 +3849,15 @@ async def _do_upgrade(
     log_ctx: dict[str, Any],
     *,
     record_as_reinstall: bool = False,
+    market_release: dict[str, Any] | None = None,
 ) -> None:
     """Replace an installed Market plugin through the shared file transaction.
 
     Market owns artifact download, hash verification and source provenance.
     The shared replacement module owns stop, backup, deployment, restart and
     directory rollback, exactly as it does for locally imported packages.
+    ``market_release`` is the catalogue row already bound by the task; when
+    absent the builtin override check fetches it.
     """
 
     requested_plugin_id = payload.plugin_id or ""
@@ -3696,7 +3912,10 @@ async def _do_upgrade(
     authoritative_release: dict[str, object] | None = None
     if continues_builtin_override:
         try:
-            authoritative_release = await _fetch_authoritative_market_override_release(payload)
+            if market_release is None:
+                authoritative_release = await _fetch_authoritative_market_override_release(payload)
+            else:
+                authoritative_release = _market_override_release_evidence(payload, market_release)
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {}
             raise _TaskError(
@@ -3749,7 +3968,7 @@ async def _do_upgrade(
         _raise_if_task_cancel_requested(task)
 
         try:
-            inspected = await asyncio.to_thread(inspect_package, package_path)
+            inspected = await asyncio.to_thread(_inspect_package_sync, package_path)
         except Exception as exc:
             raise _TaskError(code="install_failed", message=str(exc)) from exc
         _raise_if_task_cancel_requested(task)
@@ -3825,7 +4044,8 @@ async def _do_upgrade(
         async def install_new() -> dict[str, object]:
             nonlocal source_write_attempted
             source_write_attempted = True
-            return await _cli_service.upload_and_install(
+            cli_service = await get_plugin_cli_service()
+            return await cli_service.upload_and_install(
                 filename=_extract_filename(payload.package_url),
                 package_path=str(package_path),
                 profiles_root=str(profile_dir.parent),
@@ -4242,74 +4462,39 @@ async def _download_package(url: str, task: dict[str, Any]) -> tuple[Path, str]:
 
 
 async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
-    """Download one package URL to a temp file with progress updates."""
-
     _raise_if_task_cancel_requested(task)
+    httpx = await ensure_httpx()
     started_at = time.monotonic()
-    download_dir = PluginCliPathPolicy.from_settings().package_artifacts_root / ".downloads"
-    download_dir.mkdir(parents=True, exist_ok=True)
-    fd, raw_path = tempfile.mkstemp(
-        prefix="neko-market-",
-        suffix=".neko-plugin",
-        dir=download_dir,
+    directory = (
+        PluginCliPathPolicy.from_settings().package_artifacts_root / ".downloads"
     )
-    os.close(fd)
-    package_path = Path(raw_path)
+
+    def progress(received: int, total: int | None) -> None:
+        task["downloaded_bytes"] = received
+        task["total_bytes"] = total
+        if received == 0:
+            return
+        if total:
+            task["progress"] = 0.1 + received / total * 0.6
+            task["message"] = (
+                f"正在下载: {_format_bytes(received)} / {_format_bytes(total)}"
+            )
+        else:
+            task["progress"] = min(0.65, task.get("progress", 0.1) + 0.01)
+            task["message"] = f"正在下载: {_format_bytes(received)}"
+
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(_DOWNLOAD_TIMEOUT),
-            follow_redirects=True,
-            max_redirects=5,
-        ) as client:
-            async with client.stream("GET", url) as response:
-                response.raise_for_status()
-
-                content_length = response.headers.get("content-length")
-                if content_length and int(content_length) > _DOWNLOAD_MAX_BYTES:
-                    raise ValueError(
-                        f"包文件过大: {int(content_length)} bytes "
-                        f"(最大 {_DOWNLOAD_MAX_BYTES} bytes)"
-                    )
-
-                downloaded = 0
-                total_bytes = int(content_length) if content_length else None
-                task["total_bytes"] = total_bytes
-                task["downloaded_bytes"] = 0
-
-                with package_path.open("wb") as handle:
-                    async for chunk in response.aiter_bytes(chunk_size=65536):
-                        _raise_if_task_cancel_requested(task)
-                        handle.write(chunk)
-                        downloaded += len(chunk)
-                        task["downloaded_bytes"] = downloaded
-
-                        if downloaded > _DOWNLOAD_MAX_BYTES:
-                            raise ValueError(
-                                f"下载超过大小限制: {_DOWNLOAD_MAX_BYTES} bytes"
-                            )
-
-                        if total_bytes:
-                            dl_progress = downloaded / total_bytes
-                            task["progress"] = 0.1 + dl_progress * 0.6
-                            task["message"] = (
-                                f"正在下载: {_format_bytes(downloaded)}"
-                                f" / {_format_bytes(total_bytes)}"
-                            )
-                        else:
-                            task["progress"] = min(
-                                0.65,
-                                task.get("progress", 0.1) + 0.01,
-                            )
-                            task["message"] = (
-                                f"正在下载: {_format_bytes(downloaded)}"
-                            )
-
-        return package_path
-    except asyncio.CancelledError:
-        _cleanup_download_file(package_path)
-        raise
+        return await download_package_file(
+            url,
+            directory,
+            maximum_bytes=_DOWNLOAD_MAX_BYTES,
+            phase_timeout=_DOWNLOAD_TIMEOUT,
+            total_timeout=_DOWNLOAD_TOTAL_TIMEOUT,
+            flush_bytes=_DOWNLOAD_FLUSH_BYTES,
+            report_progress=progress,
+            check_cancelled=lambda: _raise_if_task_cancel_requested(task),
+        )
     except httpx.HTTPStatusError as exc:
-        _cleanup_download_file(package_path)
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.warning(
             "[market-download] request failed "
@@ -4322,7 +4507,6 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
         )
         raise _DownloadAttemptError(f"下载失败: HTTP {exc.response.status_code}") from exc
     except httpx.TimeoutException as exc:
-        _cleanup_download_file(package_path)
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.warning(
             "[market-download] request failed "
@@ -4333,7 +4517,6 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
         )
         raise _DownloadAttemptError("下载超时") from exc
     except httpx.RequestError as exc:
-        _cleanup_download_file(package_path)
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.warning(
             "[market-download] request failed "
@@ -4344,21 +4527,26 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             _safe_url_log_origin(url),
         )
         raise _DownloadAttemptError("下载网络错误") from exc
+    except PackageDownloadDeadline as exc:
+        # asyncio.timeout 的**总时长**兜底到期。与上面的 httpx.TimeoutException 是两回事：
+        # 那个是某一阶段超时，这个是"每阶段都没超时、但整通下载拖得太久"（滴流式响应）。
+        # 必须单独接住并转成 _DownloadAttemptError，否则会落到最后的 except Exception
+        # 裸抛出去——既拿不到 GitHub 直连的回退重试，用户看到的也不是"下载超时"。
+        elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
+        logger.warning(
+            "[market-download] request failed "
+            "category=total_timeout status=unavailable request_id=unavailable "
+            "elapsed_ms={} origin={}",
+            elapsed_ms,
+            _safe_url_log_origin(url),
+        )
+        raise _DownloadAttemptError("下载超时") from exc
+    except PackageSizeExceeded as exc:
+        raise _DownloadAttemptError(
+            f"包文件过大: {exc.actual} bytes (最大 {exc.maximum} bytes)"
+        ) from exc
     except ValueError as exc:
-        _cleanup_download_file(package_path)
         raise _DownloadAttemptError(str(exc)) from exc
-    except Exception:
-        _cleanup_download_file(package_path)
-        raise
-
-
-def _cleanup_download_file(path: Path | None) -> None:
-    if path is None:
-        return
-    try:
-        path.unlink(missing_ok=True)
-    except OSError as exc:
-        logger.warning("failed to remove downloaded package {}: {}", path, exc)
 
 
 def _format_bytes(value: int) -> str:

@@ -19,7 +19,7 @@ actually comes from.
 
 import pytest
 
-from plugin.plugins.qq_auto_reply.qq_open_plat import QQOpenPlatformConnection
+from utils.connection.qq.open_platform import QQOpenPlatformConnection
 
 
 def _connection() -> QQOpenPlatformConnection:
@@ -85,3 +85,32 @@ def test_convert_event_private_message_keeps_group_id_empty():
     assert msg is not None
     assert msg["message_type"] == "private"
     assert msg["group_id"] == ""
+
+
+def test_open_platform_group_mentions_distinguish_bot_from_other_users():
+    conn = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)
+    conn._self_id = "10000"
+
+    bot_only = conn._convert_event(
+        "GROUP_AT_MESSAGE_CREATE",
+        {
+            "id": "m1",
+            "group_id": "g1",
+            "author": {"id": "u1", "username": "Alice"},
+            "content": "<@!10000> hello",
+        },
+    )
+    assert bot_only["mentioned_user_ids"] == ["10000"]
+    assert bot_only["mentions_other_user"] is False
+
+    with_other_user = conn._convert_event(
+        "GROUP_AT_MESSAGE_CREATE",
+        {
+            "id": "m2",
+            "group_id": "g1",
+            "author": {"id": "u1", "username": "Alice"},
+            "content": "<@!10000> <@!20000> hello",
+        },
+    )
+    assert with_other_user["mentioned_user_ids"] == ["10000", "20000"]
+    assert with_other_user["mentions_other_user"] is True

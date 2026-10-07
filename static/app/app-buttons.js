@@ -95,6 +95,29 @@
         }
     }
 
+    // 小剧场演绎期间普通文字、拖放和头像互动都不能开启普通回合（否则普通 TTS 与剧场对白混播，
+    // 并写进被隐藏的普通历史）。与普通语音守卫同一判定：本窗口演绎中，或其他窗口的剧场正在抑制
+    // （Electron 下剧场在聊天窗口、拖放与头像工具在 Pet 窗口；抑制随心跳传播并按 TTL 失效）。
+    function isOrdinaryChatBlockedByTheater() {
+        var theaterRuntime = window.nekoTheaterRuntime;
+        try {
+            return !!(theaterRuntime
+                && typeof theaterRuntime.blocksOrdinaryChat === 'function'
+                && theaterRuntime.blocksOrdinaryChat() === true);
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function showTheaterChatUnavailableToast() {
+        if (typeof window.showStatusToast === 'function') {
+            window.showStatusToast(
+                window.t ? window.t('theater.chatUnavailable') : '小剧场演绎期间暂不支持普通对话',
+                3500
+            );
+        }
+    }
+
     function shouldSuppressCompactHistoryDropSendForVoiceMode() {
         try {
             if (typeof window.shouldKeepVoiceComposerHidden === 'function'
@@ -1234,6 +1257,7 @@
     });
     var LOCAL_AVATAR_TOOL_ID_PATTERN = /^local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
     var LOCAL_AVATAR_TOOL_REVISION_PATTERN = /^[0-9]+-[0-9]+$/;
+    var LOCAL_AVATAR_TOOL_IMAGE_ID_PATTERN = /^img-[a-z0-9]+(?:-[a-z0-9]+)*$/;
     // The backend sends the final ack only after prompt_ephemeral has completed
     // the visible assistant turn. Keep separate fail-safes for no reply signal
     // and a started turn whose end event is lost, then allow a short grace period
@@ -1647,6 +1671,7 @@
                 'action_id', 'actionId', 'target', 'pointer', 'timestamp',
                 'text_context', 'textContext', 'intensity', 'touch_zone', 'touchZone',
                 'change_index', 'changeIndex',
+                'image_id', 'imageId',
                 'tool_revision', 'toolRevision',
                 'special_triggered', 'specialTriggered'
             ];
@@ -1752,15 +1777,41 @@
                 console.warn('[AvatarInteraction] ignored invalid local tool revision');
                 return null;
             }
-            var rawChangeIndex = getAvatarInteractionPayloadValue(
-                payload, 'change_index', 'changeIndex', null
-            );
-            if (!Number.isSafeInteger(rawChangeIndex) || rawChangeIndex < 0) {
-                console.warn('[AvatarInteraction] ignored invalid local change index');
+            normalized.tool_revision = toolRevision;
+            if (toolRevision.indexOf('3-') === 0) {
+                var hasImageId = Object.prototype.hasOwnProperty.call(payload, 'image_id');
+                var hasCamelImageId = Object.prototype.hasOwnProperty.call(payload, 'imageId');
+                if (hasImageId === hasCamelImageId
+                        || Object.prototype.hasOwnProperty.call(payload, 'change_index')
+                        || Object.prototype.hasOwnProperty.call(payload, 'changeIndex')) {
+                    console.warn('[AvatarInteraction] ignored mixed local image facts');
+                    return null;
+                }
+                var imageId = getAvatarInteractionPayloadValue(payload, 'image_id', 'imageId', null);
+                if (typeof imageId !== 'string' || imageId.length > 80
+                        || !LOCAL_AVATAR_TOOL_IMAGE_ID_PATTERN.test(imageId)) {
+                    console.warn('[AvatarInteraction] ignored invalid local image ID');
+                    return null;
+                }
+                normalized.image_id = imageId;
+            } else if (toolRevision.indexOf('2-') === 0) {
+                if (Object.prototype.hasOwnProperty.call(payload, 'image_id')
+                        || Object.prototype.hasOwnProperty.call(payload, 'imageId')) {
+                    console.warn('[AvatarInteraction] ignored mixed local image facts');
+                    return null;
+                }
+                var rawChangeIndex = getAvatarInteractionPayloadValue(
+                    payload, 'change_index', 'changeIndex', null
+                );
+                if (!Number.isSafeInteger(rawChangeIndex) || rawChangeIndex < 0) {
+                    console.warn('[AvatarInteraction] ignored invalid local change index');
+                    return null;
+                }
+                normalized.change_index = rawChangeIndex;
+            } else {
+                console.warn('[AvatarInteraction] ignored unsupported local tool revision');
                 return null;
             }
-            normalized.tool_revision = toolRevision;
-            normalized.change_index = rawChangeIndex;
         }
 
         var textContext = sanitizeAvatarInteractionTextContext(getAvatarInteractionPayloadValue(
@@ -1775,9 +1826,17 @@
             var carriesBooleanField = Object.prototype.hasOwnProperty.call(payload, booleanField.output)
                 || Object.prototype.hasOwnProperty.call(payload, booleanField.input);
             if (carriesBooleanField) {
-                var parsedBoolean = parseAvatarInteractionBool(getAvatarInteractionPayloadValue(
+                if (localTool && normalized.image_id
+                        && Object.prototype.hasOwnProperty.call(payload, booleanField.output)
+                        && Object.prototype.hasOwnProperty.call(payload, booleanField.input)) {
+                    return null;
+                }
+                var rawBoolean = getAvatarInteractionPayloadValue(
                     payload, booleanField.output, booleanField.input, null
-                ));
+                );
+                var parsedBoolean = localTool && normalized.image_id
+                    ? (typeof rawBoolean === 'boolean' ? rawBoolean : null)
+                    : parseAvatarInteractionBool(rawBoolean);
                 if (parsedBoolean === null) {
                     console.warn('[AvatarInteraction] ignored invalid boolean field:', booleanField.output);
                     return null;
@@ -1800,6 +1859,10 @@
     async function sendAvatarInteractionPayload(payload) {
         var normalized = normalizeAvatarInteractionPayload(payload);
         if (!normalized) {
+            return false;
+        }
+        if (isOrdinaryChatBlockedByTheater()) {
+            showTheaterChatUnavailableToast();
             return false;
         }
 
@@ -2100,6 +2163,17 @@
         // ----------------------------------------------------------------
         micButton.addEventListener('click', async function () {
             if (micButton.disabled || S.isRecording) return;
+            // 浮动麦克风仍可能位于胶囊之外（Electron 下在 Pet 窗口，剧场在聊天窗口）；
+            // 在任何语音 Session 状态写入前阻止任一窗口剧场期间启动。
+            if (window.nekoTheaterRuntime
+                    && typeof window.nekoTheaterRuntime.blocksOrdinaryVoice === 'function'
+                    && window.nekoTheaterRuntime.blocksOrdinaryVoice()) {
+                window.showStatusToast(
+                    window.t ? window.t('theater.voiceUnavailable') : '小剧场演绎期间暂不支持语音对话',
+                    3500
+                );
+                return;
+            }
             if (mod._textSessionStartPromise) {
                 window.showStatusToast(
                     window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...',
@@ -2481,7 +2555,7 @@
                 if (micStartMustStandDown()) return;
 
                 // Success — hide preparing toast, show ready
-                window.hideVoicePreparingToast();
+                window.hideVoicePreparingToast({ keepLocalAsrNotice: true });
 
                 setTimeout(function () {
                     window.showReadyToSpeakToast();
@@ -2646,8 +2720,8 @@
                 display: live2dContainer ? getComputedStyle(live2dContainer).display : 'undefined'
             });
 
-            if (typeof window.stopScreening === 'function') {
-                window.stopScreening();
+            if (typeof window.teardownScreenSharing === 'function') {
+                window.teardownScreenSharing();
             }
 
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -3377,6 +3451,24 @@
             var hasExtraImages = extraImageDataUrls.length > 0;
             var hasScreenshots = options.ignoreComposerAttachments === true ? false : screenshotsList.children.length > 0;
 
+            var theaterRuntime = window.nekoTheaterRuntime;
+            if (theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive()) {
+                if (options.source !== 'react-chat-window' && options.source !== 'legacy-text-button') return false;
+                if (!text) return false;
+                // 剧场启动前遗留的普通附件在界面中已隐藏，不属于本次演绎输入；仅拒绝显式附带的新图片。
+                if (hasExtraImages) {
+                    window.showStatusToast(
+                        window.t ? window.t('theater.imagesUnavailable') : '小剧场演绎暂不支持图片输入',
+                        3500
+                    );
+                    return false;
+                }
+                return theaterRuntime.handleComposerSubmit(text);
+            }
+            if (isOrdinaryChatBlockedByTheater()) {
+                showTheaterChatUnavailableToast();
+                return false;
+            }
             if (!text && !hasScreenshots && !hasExtraImages) return;
             if (isHomeTutorialInteractionLocked()) {
                 showHomeTutorialLockedToast();
@@ -3412,6 +3504,11 @@
             var items = getAvatarDropItems(payload);
             var rejected = getAvatarDropRejected(payload);
             if (!items.length && !rejected.length) return false;
+            // 必须在切换文字模式之前拦截：拖放入口不经剧场输入框，不能先停掉语音再被拒绝。
+            if (isOrdinaryChatBlockedByTheater()) {
+                showTheaterChatUnavailableToast();
+                return false;
+            }
             var gameRouteBlocksImages = !!(S && S.gameRouteActive);
             if (gameRouteBlocksImages) {
                 var blockedImages = items.filter(function (item) { return item.type === 'image'; });

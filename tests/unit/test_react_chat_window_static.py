@@ -670,8 +670,8 @@ def test_home_tutorial_input_lock_blocks_compact_capsule_input_state():
     assert "var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();" in input_lock_block
     assert "syncComposerAttachmentsVisibility(previousAttachmentsVisible);" in input_lock_block
     assert "setHomeTutorialInteractionLocked(next" not in input_lock_block
-    assert "disabled={compactCapsuleEntryLocked}" in capsule_block
-    assert "if (compactCapsuleEntryLocked) return;" in capsule_block
+    assert "disabled={compactTextEntryLocked}" in capsule_block
+    assert "if (compactTextEntryLocked) return;" in capsule_block
 
 
 def test_home_tutorial_events_lock_chat_buttons_and_collapse_compact_input():
@@ -710,7 +710,7 @@ def test_home_tutorial_events_lock_chat_buttons_and_collapse_compact_input():
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-completed');" in completed_block
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-skipped');" in skipped_block
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');" in ended_block
-    assert "disabled={composerDisabled}" in history_handle_block
+    assert "disabled={composerDisabled || theaterActive}" in history_handle_block
 
 
 def test_home_tutorial_host_wires_avatar_tool_requests():
@@ -2688,8 +2688,12 @@ def test_avatar_popup_positioning_uses_niri_physical_crop_coordinates_only_when_
         "function getButtonZone",
         1,
     )[0]
-    position_sidepanel_block = source.split("function positionSidePanel(container, anchor, options = {})", 1)[1].split(
+    position_sidepanel_block = source.split("function positionSidePanel(", 1)[1].split(
         "window.AvatarPopupUI =",
+        1,
+    )[0]
+    popup_measurement_block = source.split("function getPopupPlacementRect(", 1)[1].split(
+        "function getOverlayViewport",
         1,
     )[0]
 
@@ -2697,7 +2701,9 @@ def test_avatar_popup_positioning_uses_niri_physical_crop_coordinates_only_when_
     assert "window.__nekoNiriPetPhysicalCrop" in source
     assert "return api.isActive() ? api : null;" in source
     assert "const placementApi = niriViewport ? niriCropApi : null;" in position_popup_block
-    assert "toPlacementRect(popup.getBoundingClientRect(), placementApi)" in position_popup_block
+    assert "getPopupPlacementRect(popup, placementApi)" in position_popup_block
+    assert "makePlacementRect(popup.getBoundingClientRect())" in popup_measurement_block
+    assert "return toPlacementRect(rect, api);" in popup_measurement_block
     assert "const screenWidth = niriViewport ? niriViewport.width : window.innerWidth;" in position_popup_block
     assert "try {\n            const state = api.getState();" in source
     assert "try {\n            const virtualRect = api.toVirtualRect({" in source

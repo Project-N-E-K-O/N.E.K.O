@@ -89,6 +89,7 @@ from .messages import (
     _TYPE_CLS,
     _TYPE_TO_ROLE,
     convert_to_messages,
+    message_metadata,
     messages_from_dict,
     messages_to_dict,
 )

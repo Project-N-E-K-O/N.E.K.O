@@ -116,6 +116,7 @@ from .postgame import (  # noqa: F401
     _deliver_postgame_to_realtime,
     _finalize_game_route_state,
     _finalize_game_route_state_inner,
+    _game_voice_lease_release_needed,
     _is_gemini_realtime_session,
     _normalize_postgame_options,
     _postgame_context_request_id,
@@ -147,7 +148,10 @@ from .route_lifecycle import (  # noqa: F401
     _push_game_speech_cancel,
     _push_game_window_state_change,
     _TAKEOVER_CALLBACK_INBOX_KEY,
+    _TAKEOVER_TOKEN_KEY,
+    _clear_route_activity_flags,
     _close_takeover_callback_inbox,
+    _release_route_takeover,
     _route_heartbeat_expired,
     _route_heartbeat_timeout_seconds,
     _route_liveness_at,
@@ -207,6 +211,7 @@ from config.prompts.prompts_minigame_route import (
     get_game_recent_history_message_labels,
 )
 from ..shared_state import get_config_manager, get_session_manager
+from utils.external_route_registry import is_route_slot_taken
 from main_logic.mirror_meta import (
     MIRROR_USER_TEXT_INPUT_TYPE,
     MIRROR_USER_VOICE_TRANSCRIPT_INPUT_TYPE,
@@ -218,7 +223,6 @@ from utils.game_route_state import (
     _get_route_lock,
     _get_supersede_lock,
     _route_state_key,
-    register_voice_transcript_handler,
 )
 from utils.game_log import (
     append_game_session_debug_log as _append_game_session_debug_log,
@@ -1874,6 +1878,26 @@ async def _finalize_superseded_route_if_current(
     )
 
 
+def _deactivate_unstarted_route(state: dict, exit_reason: str) -> None:
+    """Flip a just-activated route off without running its exit flow."""
+    _clear_route_activity_flags(state)
+    state['exit_reason'] = exit_reason
+
+
+def _route_slot_owned_by_external(lanlan_name: str, mgr) -> bool:
+    """True when a non-game external route occupies this character.
+
+    The game kind is excluded: an older mini-game route is replaced by the
+    supersede flow in ``game_route_start``. Another kind keeps the slot until
+    its exit flow finishes (``is_locked``), and a takeover held by another
+    owner would make the game's own acquire fail. The slash-command entry in
+    ``main_logic/core/turn.py`` asks the same ``is_route_slot_taken``.
+    """
+    takeover_owner = getattr(mgr, "takeover_owner", None)
+    owner = takeover_owner() if callable(takeover_owner) else None
+    return is_route_slot_taken(lanlan_name, kind="game", takeover_owner=owner)
+
+
 async def _start_watch_speech_takeover(state: dict, manager) -> None:
     """Caller holds the route/supersede locks; no host resources are started yet."""
     try:
@@ -1882,14 +1906,10 @@ async def _start_watch_speech_takeover(state: dict, manager) -> None:
         # Roll back synchronously before releasing either lock. Do not launch a
         # postgame task which could later unmute a replacement route, and do not
         # report successful startup when ordinary audio could still be playing.
-        state['game_route_active'] = False
-        state['game_external_voice_route_active'] = False
-        state['game_external_text_route_active'] = False
-        state['heartbeat_enabled'] = False
-        state['exit_reason'] = 'speech_takeover_failed'
-        manager._takeover_active = False
-        manager._takeover_input_dispatcher = None
-        manager._takeover_callback_sink = None
+        _deactivate_unstarted_route(state, 'speech_takeover_failed')
+        # The token was acquired under these same locks, so a mismatch is a bug:
+        # force the release (logged as an error) rather than staying muted.
+        manager.release_takeover(state.pop(_TAKEOVER_TOKEN_KEY, None), force=True)
         _close_takeover_callback_inbox(state, manager)
         logger.warning('watch-together speech takeover failed: error_type=%s', type(exc).__name__)
         raise
@@ -1992,6 +2012,18 @@ async def game_route_start(game_type: str, request: Request):
                     "reason": "ended_before_start",
                     "state": {"game_route_active": False},
                 }
+            # Another kind of external route owns this character: refuse before
+            # touching any older game route.
+            if _route_slot_owned_by_external(
+                lanlan_name, get_session_manager().get(lanlan_name),
+            ):
+                logger.info(
+                    "🎮 route/start 被拒：角色正被其它外部路由占用: game=%s session=%s lanlan=%s",
+                    game_type,
+                    session_id,
+                    lanlan_name,
+                )
+                return {"ok": False, "reason": "route_owned_by_external"}
             # Persist takeover history on every older state object, including
             # routes that already entered postgame and are now inactive. A
             # quickly opened-and-closed successor must not make an older
@@ -2028,6 +2060,18 @@ async def game_route_start(game_type: str, request: Request):
                             new_session_id=session_id,
                         )
 
+            # Re-check after the supersede awaits above; from here to the takeover
+            # acquire below nothing awaits, so the check cannot go stale.
+            if _route_slot_owned_by_external(
+                lanlan_name, get_session_manager().get(lanlan_name),
+            ):
+                logger.info(
+                    "🎮 route/start 被拒：收尾旧局期间角色被其它外部路由占用: game=%s session=%s lanlan=%s",
+                    game_type,
+                    session_id,
+                    lanlan_name,
+                )
+                return {"ok": False, "reason": "route_owned_by_external"}
             if game_type == "soccer":
                 _enable_game_session_debug_log(game_type, session_id, lanlan_name=lanlan_name)
             _mark_game_session_debug_log_active(game_type, session_id, lanlan_name=lanlan_name)
@@ -2072,17 +2116,21 @@ async def game_route_start(game_type: str, request: Request):
                         session_id=session_id,
                         expected_state=state,
                     )
-                mgr._takeover_active = True
-                mgr._takeover_input_dispatcher = _takeover_dispatcher
-                mgr._takeover_callback_sink = None
-                if game_type == "watch-together":
-                    # The scene speaks plugin responses itself (reaction gaps and
-                    # intermissions), so respond cues go to its route inbox.
+                # Cannot raise TakeoverOwned: the re-check above refused any
+                # other owner and nothing has awaited since.
+                takeover_token = mgr.acquire_takeover("game", _takeover_dispatcher)
+                # Stored before any await so every exit path (route end,
+                # supersede, failed speech takeover) releases this exact token.
+                state[_TAKEOVER_TOKEN_KEY] = takeover_token
+                if game_type in {"watch-together", "drawing_guess"}:
+                    # These routes speak plugin responses themselves, so respond
+                    # cues go to the route inbox instead of ordinary proactive.
                     from main_logic.watch_together.live import LiveInbox
                     inbox = LiveInbox()
                     state[_TAKEOVER_CALLBACK_INBOX_KEY] = inbox
-                    mgr._takeover_callback_sink = inbox.accept
-                    await _start_watch_speech_takeover(state, mgr)
+                    mgr.set_takeover_callback_sink(takeover_token, inbox.accept)
+                    if game_type == "watch-together":
+                        await _start_watch_speech_takeover(state, mgr)
             state["game_memory_tail_count"] = _normalize_game_memory_tail_count(
                 data.get("game_memory_tail_count", data.get("gameMemoryTailCount"))
             )
@@ -3946,9 +3994,9 @@ async def route_external_voice_transcript(
 ) -> bool:
     """Route a voice transcript into the active game route, if any.
 
-    Also registered with ``utils.game_route_state`` so ``main_logic/core.py``
-    can dispatch transcripts via the generic helper without taking a
-    ``main_logic → main_routers`` import.
+    Also registered as the ``game`` kind's ``route_voice_transcript`` in
+    ``utils.external_route_registry`` so ``main_logic`` can dispatch
+    transcripts without taking a ``main_logic → main_routers`` import.
     """
     state = _get_active_game_route_state(lanlan_name, game_type)
     if not state or (expected_state is not None and state is not expected_state):
@@ -3970,10 +4018,23 @@ async def route_external_voice_transcript(
     )
 
 
-# Plug the heavy implementation into the shared dispatcher so main_logic/
-# can call ``utils.game_route_state.route_external_voice_transcript`` instead
-# of importing from ``main_routers``.
-register_voice_transcript_handler(route_external_voice_transcript)
+def is_game_route_locked(lanlan_name: str) -> bool:
+    """True while a game route occupies ``lanlan_name``'s slot.
+
+    The exit flow flips ``game_route_active`` off first and releases the
+    session takeover only after cancelling route speech and pushing the window
+    close, so the slot stays occupied while a route state still carries its
+    takeover token. The token lives on the route state (popped exactly at the
+    release point), not on the manager, so a manager replaced mid-teardown
+    cannot unlock the slot early.
+    """
+    if _get_active_game_route_state(lanlan_name) is not None:
+        return True
+    target = str(lanlan_name or "")
+    return any(
+        str(state.get("lanlan_name") or "") == target and _TAKEOVER_TOKEN_KEY in state
+        for state in list(_game_route_states.values())
+    )
 
 
 async def finalize_game_routes_for_character(old_lanlan_name: str) -> int:
@@ -5055,19 +5116,106 @@ async def cleanup_expired_sessions():
             k for k, v in list(_game_sessions.items())
             if now - v['last_activity'] > _SESSION_TIMEOUT_SECONDS
         ]
+        # One bad entry must not end this sweeper task: it also runs the
+        # heartbeat-timeout fallback for every route.
         for key in expired:
-            lanlan_name, game_type, session_id = _parse_game_session_key(key)
-            if await _close_and_remove_session(game_type, session_id, lanlan_name):
-                logger.info("🎮 清理过期游戏 session: %s", key)
+            try:
+                lanlan_name, game_type, session_id = _parse_game_session_key(key)
+                if await _close_and_remove_session(game_type, session_id, lanlan_name):
+                    logger.info("🎮 清理过期游戏 session: %s", key)
+            except Exception as e:
+                logger.warning("🎮 清理过期游戏 session 失败: key=%s err=%s", key, e, exc_info=True)
 
-        expired_routes = [
-            k for k, v in list(_game_route_states.items())
-            if (
-                not v.get("game_route_active")
-                and now - float(v.get("exit_started_at", v.get("last_activity", 0)) or 0) > _SESSION_TIMEOUT_SECONDS
+        try:
+            await _drop_expired_route_states(now)
+        except Exception as e:
+            logger.warning("🎮 清理过期游戏路由状态失败: err=%s", e, exc_info=True)
+
+
+# How many failed sweeps before a state whose release keeps failing is dropped
+# anyway (logged as an error; its token may still be held).
+_EXPIRED_ROUTE_RELEASE_MAX_ATTEMPTS = 5
+_EXPIRED_ROUTE_RELEASE_FAILURES_KEY = "_expired_release_failures"
+
+
+async def _drop_expired_route_states(now: float) -> None:
+    """Forget inactive route states whose exit started too long ago.
+
+    An exit flow stuck past the timeout may still hold its takeover token.
+    Dropping it with the state would leave the manager taken over with nobody
+    able to release it, so the token is released first -- by its own value,
+    which leaves a takeover a newer route holds untouched -- followed by the
+    rest of what the exit flow does after its release: the parked callbacks
+    are handed back (or declined if another owner holds the takeover), and
+    the voice input is resumed when this release returned it to core. If the
+    stuck flow ever continues, its own release finds no token and its voice
+    resume finds the lease already back with core.
+
+    Each state is handled on its own: a failure is logged and leaves that
+    state (and whatever token it still holds) in place for the next sweep
+    instead of dropping the token with it, and does not stop the others.
+    After ``_EXPIRED_ROUTE_RELEASE_MAX_ATTEMPTS`` failed sweeps the state is
+    dropped anyway with an error log. Whatever path drops a state, callbacks
+    still parked in its inbox are declined right before, so none is left
+    waiting for a delivery ack. The retry covers the release itself: once the
+    token is gone, a failure in the later steps (inbox handback, voice resume)
+    is not retried.
+    """
+    expired_routes = [
+        (k, v) for k, v in list(_game_route_states.items())
+        if (
+            not v.get("game_route_active")
+            and now - float(v.get("exit_started_at", v.get("last_activity", 0)) or 0) > _SESSION_TIMEOUT_SECONDS
+        )
+    ]
+    for key, state in expired_routes:
+        # An earlier key's voice resume awaits: a /route/start may have put a
+        # new state at this key meanwhile (or revived this one). Only the
+        # state found expired is handled; a newer one is never touched.
+        if _game_route_states.get(key) is not state or state.get("game_route_active"):
+            continue
+        try:
+            if state.get(_TAKEOVER_TOKEN_KEY) is not None:
+                lanlan_name = str(state.get("lanlan_name") or "")
+                mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
+                handoff = _release_route_takeover(state, mgr)
+                logger.warning(
+                    "🎮 过期游戏路由仍持有 takeover 令牌，清理前释放: key=%s handoff=%s",
+                    key,
+                    handoff,
+                )
+                # Same rule as the exit flow: a newer owner's voice lease stays.
+                resume_voice = getattr(mgr, "_resume_independent_voice_input_after_game", None)
+                if handoff and callable(resume_voice) and _game_voice_lease_release_needed(mgr):
+                    try:
+                        await resume_voice()
+                    except Exception as exc:
+                        logger.warning("🎮 清理过期游戏路由时恢复语音输入失败: key=%s err=%s", key, exc)
+        except Exception as exc:
+            failures = int(state.get(_EXPIRED_ROUTE_RELEASE_FAILURES_KEY) or 0) + 1
+            state[_EXPIRED_ROUTE_RELEASE_FAILURES_KEY] = failures
+            if failures < _EXPIRED_ROUTE_RELEASE_MAX_ATTEMPTS:
+                logger.warning(
+                    "🎮 清理过期游戏路由状态失败，下次再试: key=%s attempt=%s err=%s",
+                    key, failures, exc, exc_info=failures == 1,
+                )
+                continue
+            token_held = state.get(_TAKEOVER_TOKEN_KEY) is not None
+            logger.error(
+                "🎮 清理过期游戏路由状态连续失败 %s 次，放弃并丢弃%s: key=%s err=%s",
+                failures,
+                "（takeover 令牌可能仍被持有）" if token_held else "",
+                key,
+                exc,
+                exc_info=True,
             )
-        ]
-        for key in expired_routes:
-            state = _game_route_states.pop(key, None)
-            if state:
-                logger.info("🎮 清理过期游戏路由状态: %s", key)
+        # The same holds after this key's own voice resume.
+        if _game_route_states.get(key) is state:
+            # Decline whatever is still parked (a no-op once the inbox was
+            # closed on the normal path), so no callback is left without ack.
+            try:
+                _close_takeover_callback_inbox(state, handoff=False)
+            except Exception as close_exc:
+                logger.warning("🎮 丢弃过期游戏路由时拒收暂扣回调失败: key=%s err=%s", key, close_exc)
+            _game_route_states.pop(key, None)
+            logger.info("🎮 清理过期游戏路由状态: %s", key)

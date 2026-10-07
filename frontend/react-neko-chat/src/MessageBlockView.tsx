@@ -1,3 +1,4 @@
+import HtmlCardBlock from './HtmlCardBlock';
 import type { SyntheticEvent } from 'react';
 import SmartTextBlock from './SmartTextBlock';
 import { isMemeProxyImageUrl, swapImageToMemeLoadFailedSticker } from './memeImageFallback';
@@ -12,6 +13,7 @@ type MessageBlockViewProps = {
   block: MessageBlock;
   message: ChatMessage;
   isStreaming?: boolean;
+  interactive?: boolean;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
 
@@ -42,7 +44,12 @@ export default function MessageBlockView({
   message,
   isStreaming,
   onAction,
+  interactive = true,
 }: MessageBlockViewProps) {
+  if (block.type === 'html_card') {
+    return interactive ? <HtmlCardBlock block={block} /> : <div className="message-block message-block-text">{block.summary}</div>;
+  }
+
   if (block.type === 'text') {
     return (
       <SmartTextBlock

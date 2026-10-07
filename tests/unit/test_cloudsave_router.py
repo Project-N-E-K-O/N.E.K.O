@@ -124,7 +124,7 @@ def _make_config_manager(tmp_root: Path):
 
 
 def _write_runtime_state(cm, *, character_name="小满"):
-    from utils.config_manager import set_reserved
+    from utils.config_manager import ensure_catgirl_character_id, set_reserved
 
     characters = cm.get_default_characters()
     characters["猫娘"] = {
@@ -135,6 +135,8 @@ def _write_runtime_state(cm, *, character_name="小满"):
     set_reserved(characters["猫娘"][character_name], "avatar", "asset_source", "steam_workshop")
     set_reserved(characters["猫娘"][character_name], "avatar", "asset_source_id", "123456")
     set_reserved(characters["猫娘"][character_name], "avatar", "live2d", "model_path", "example/example.model3.json")
+    # 测试夹具模拟正常保存链路，先持久化稳定身份，避免读取迁移产生随机比较噪声。
+    ensure_catgirl_character_id(characters["猫娘"][character_name])
     cm.save_characters(characters, bypass_write_fence=True)
 
     character_memory_dir = Path(cm.memory_dir) / character_name
@@ -189,7 +191,6 @@ async def test_cloudsave_router_exposes_summary_and_character_detail():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -232,7 +233,6 @@ async def test_cloudsave_router_summary_marks_workshop_item_as_needing_resubscri
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -291,7 +291,6 @@ async def test_cloudsave_router_summary_marks_workshop_item_as_unavailable():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -341,7 +340,6 @@ async def test_cloudsave_router_summary_marks_workshop_item_as_steam_unavailable
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -416,7 +414,6 @@ async def test_cloudsave_router_summary_enriches_workshop_origin_status_for_loca
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -486,7 +483,6 @@ async def test_cloudsave_router_upload_download_and_blocking_paths():
                 steamworks=None,
                 templates=None,
                 config_manager=target_cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -509,7 +505,6 @@ async def test_cloudsave_router_upload_download_and_blocking_paths():
                 steamworks=None,
                 templates=None,
                 config_manager=target_cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -556,7 +551,6 @@ async def test_cloudsave_router_handles_not_found_and_release_failures():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -612,7 +606,6 @@ async def test_cloudsave_router_upload_rejects_invalid_overwrite_and_invalid_jso
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -661,7 +654,6 @@ async def test_cloudsave_router_download_rejects_invalid_flags_and_invalid_json(
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -728,7 +720,6 @@ async def test_cloudsave_router_download_without_overwrite_returns_conflict_befo
                 steamworks=None,
                 templates=None,
                 config_manager=target_cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -796,7 +787,6 @@ async def test_cloudsave_router_upload_overwrite_succeeds_for_diverged_character
                 steamworks=None,
                 templates=None,
                 config_manager=target_cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -861,7 +851,6 @@ async def test_cloudsave_router_download_overwrite_succeeds_for_diverged_charact
                 steamworks=None,
                 templates=None,
                 config_manager=target_cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -904,7 +893,6 @@ async def test_cloudsave_router_blocks_mutations_when_provider_is_unavailable():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -952,7 +940,6 @@ async def test_cloudsave_router_preserves_maintenance_mode_conflicts():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1044,7 +1031,6 @@ async def test_cloudsave_router_download_reload_failure_rolls_back():
                 steamworks=None,
                 templates=None,
                 config_manager=target_cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1106,7 +1092,6 @@ async def test_cloudsave_router_download_rollback_reports_notify_reload_false():
                 steamworks=None,
                 templates=None,
                 config_manager=target_cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1251,7 +1236,6 @@ async def test_cloudsave_download_does_not_report_rollback_when_no_backup_was_at
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1322,7 +1306,6 @@ def _setup_force_test_env(tmp_root, *, active_mgr=None):
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop_init,
             switch_current_catgirl_fast=_noop_any,
             init_one_catgirl=_noop_any,

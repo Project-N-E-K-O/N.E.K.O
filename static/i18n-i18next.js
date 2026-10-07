@@ -29,9 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 主动搭话新增了喵宇宙社区来源的 key；递增版本让 Electron、Docker 等长期缓存
-    // 重新拉取完整语言包，避免设置页把新 key 当字面量显示。
-    const LOCALE_VERSION = '2026-09-14-proactive-community-chat';
+    // 合并 HTTP 配对、剧场与声纹／ASR 恢复八语文案，刷新客户端缓存。
+    const LOCALE_VERSION = '2026-10-05-pr3149-http-pairing-rebase';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
@@ -392,9 +391,13 @@
         }
     }
 
+    // 服务端 uiLanguage 强制覆盖；生效时本窗口不跟随其他窗口写入的 i18nextLng。
+    let serverUiLanguageOverride = null;
+
     // 获取初始语言：uiLanguage 强制覆盖 > URL 参数 > Steam 设置 > localStorage / 浏览器设置 > 默认中文
     async function getInitialLanguage() {
         const serverLanguages = await getServerLanguagePreferences();
+        serverUiLanguageOverride = serverLanguages.uiLanguage || null;
         if (serverLanguages.uiLanguage) {
             return serverLanguages.uiLanguage;
         }
@@ -898,6 +901,21 @@
     }
 
     /**
+     * 同源独立窗口（自定义道具编辑器）收不到主窗口派发的 localechange，只能靠
+     * i18nextLng 的 storage 事件跟随主窗口语言。这是编辑器页面的显式选择：其他
+     * 页面有自己的语言入口，启动时也会写 i18nextLng，若都跟随会被任意窗口带着
+     * 切换语言；服务端 uiLanguage 覆盖生效时同样不跟随。
+     */
+    function followCrossWindowLanguage(event) {
+        if (event.key !== 'i18nextLng' || !event.newValue) return;
+        if (serverUiLanguageOverride) return;
+        if (!document.body || !document.body.classList.contains('avatar-tool-editor-page')) return;
+        const language = normalizeSupportedLanguageCode(event.newValue);
+        if (!language || language === i18next.language) return;
+        void i18next.changeLanguage(language);
+    }
+
+    /**
      * 导出正常函数（初始化成功后使用）
      */
     function exportNormalFunctions() {
@@ -929,6 +947,8 @@
             updateLive2DDynamicTexts();
             window.dispatchEvent(new CustomEvent('localechange'));
         });
+
+        window.addEventListener('storage', followCrossWindowLanguage);
 
         // 导出语言切换函数
         window.changeLanguage = function (lng) {

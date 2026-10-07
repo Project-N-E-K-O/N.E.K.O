@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import deque
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,7 +25,6 @@ class _StubManager(turn_module.TurnMixin):
         self._current_ai_turn_text = ""
         self._current_ai_turn_id = ""
         self._current_ai_turn_started_at = 0.0
-        self._plugin_bus_user_turn_ids: deque = deque(maxlen=8)
         self.session = None
         self.noted: list[str | None] = []
         self._bg: list[asyncio.Task] = []
@@ -79,7 +78,7 @@ def test_user_utterance_published_with_own_timestamp(published):
     assert call["metadata"]["is_voice"] is True
     assert before <= call["ts"] <= time.time() + 1
     assert call["metadata"]["ts"] == call["ts"]
-    assert list(stub._plugin_bus_user_turn_ids) == ["turn-user-1"]
+    assert call["message_count"] == 1
 
 
 def test_blank_user_utterance_is_not_published(published):
@@ -94,7 +93,7 @@ def test_blank_user_utterance_is_not_published(published):
     assert published == []
 
 
-def test_user_turn_id_is_registered_only_after_publish_succeeds(monkeypatch):
+def test_failed_user_publish_does_not_create_pairing_state(monkeypatch):
     calls: list[dict] = []
 
     async def _fake_failed(lanlan_name, **kwargs):
@@ -115,13 +114,12 @@ def test_user_turn_id_is_registered_only_after_publish_succeeds(monkeypatch):
 
     stub = asyncio.run(_scenario())
     assert calls, "仍然尝试发布"
-    assert list(stub._plugin_bus_user_turn_ids) == [], "发布失败不得登记轮次 id"
+    assert not hasattr(stub, "_plugin_bus_user_turn_ids")
 
 
 def test_ai_turn_publishes_whole_text_once(published):
     async def _scenario():
         stub = _StubManager()
-        stub._plugin_bus_user_turn_ids.append("turn-42")  # 同一轮的主人消息先发过
         stub._current_ai_turn_text = "喵，我在的。"
         stub._current_ai_turn_id = "turn-42"
         stub._current_ai_turn_started_at = time.time() - 2.0
@@ -138,7 +136,7 @@ def test_ai_turn_publishes_whole_text_once(published):
     assert call["content"] == "喵，我在的。"
     assert call["turn_type"] == "proactive_reply"
     assert call["conversation_id"] == "turn-42"
-    assert call["message_count"] == 2, "同一轮的主人消息已发布过，回复应标 message_count=2"
+    assert call["message_count"] == 1
     assert call["metadata"]["role"] == "cat"
     # ts 取首块（开口）时刻，不是 flush 时刻；ts_end 才是收尾时刻
     assert call["ts"] == call["metadata"]["ts"]
@@ -279,7 +277,8 @@ def test_forward_conversation_turn_keeps_producer_ts(monkeypatch):
         "lanlan_name": "YUI",
         "source": "main_logic.core",
     }) is True
-    assert records and records[0]["timestamp"] == 222.25
+    assert records and records[0]["metadata"]["ts"] == 222.25
+    assert records[0]["timestamp"] > 222.25
     assert records[0]["content"] == "我在的。"
 
 
@@ -306,3 +305,93 @@ def test_non_finite_producer_ts_falls_back_to_now():
         resolved = api_runtime._resolve_conversation_ts({"ts": bad})
         assert before <= resolved <= time.time() + 1, f"{bad} 必须回退到当前时间"
     assert api_runtime._resolve_conversation_ts({"ts": 123.5}) == 123.5
+
+
+def test_late_ai_reply_remains_visible_to_timestamp_cursor(monkeypatch):
+    """A reply can start before a user message but arrive after the cursor."""
+    from app.agent_server import api_runtime
+    from plugin.message_plane.stores import TopicStore
+    from plugin.server.messaging import plane_bridge
+
+    store = TopicStore(name="conversations", maxlen=16)
+    monkeypatch.setattr(api_runtime, "_user_plugins_enabled", lambda: True)
+
+    def publish(*, store: str, record: dict, topic: str):
+        conversation_store.publish(topic, record)
+        return True
+
+    conversation_store = store
+    monkeypatch.setattr(plane_bridge, "publish_record", publish)
+    from tests.fake_clock import patch_module_clock
+
+    arrivals = iter([15.0, 20.0])
+    patch_module_clock(monkeypatch, api_runtime, time=lambda: next(arrivals))
+    assert api_runtime._forward_conversation_turn({"content": "user", "ts": 12.0})
+    first = store.query(topic="all")
+    cursor = first[0]["index"]["timestamp"]
+    assert api_runtime._forward_conversation_turn({"content": "reply", "ts": 10.0})
+    second = store.query(topic="all", since_ts=cursor)
+    assert any(item["payload"]["content"] == "reply" for item in second)
+    reply = next(item for item in second if item["payload"]["content"] == "reply")
+    assert reply["index"]["timestamp"] == 20.0
+    assert reply["payload"]["metadata"]["ts"] == 10.0
+
+
+@pytest.mark.parametrize("proactive", [False, True])
+def test_emit_turn_end_labels_realtime_owner(published, proactive):
+    """The common realtime completion path preserves the proactive label."""
+    async def scenario():
+        stub = _StubManager()
+        stub.state = SimpleNamespace(owner=(
+            turn_module.TurnOwner.PROACTIVE if proactive else turn_module.TurnOwner.USER
+        ))
+        stub._current_ai_turn_text = "reply"
+        stub._queue_turn_end = lambda *args, **kwargs: {"data": "turn end"}
+
+        async def send(message):
+            pass
+
+        stub._send_turn_end_to_frontend = send
+        await stub._emit_turn_end(None)
+        await stub.drain()
+
+    asyncio.run(scenario())
+    assert published[0]["turn_type"] == ("proactive_reply" if proactive else "assistant_message")
+
+
+def test_proactive_label_survives_owner_change(published):
+    async def scenario():
+        stub = _StubManager()
+        stub.state = SimpleNamespace(owner=turn_module.TurnOwner.USER)
+        stub._current_ai_turn_type = "proactive_reply"
+        stub._current_ai_turn_text = "interrupted proactive reply"
+        stub._flush_ai_turn_text_to_tracker()
+        await stub.drain()
+        assert stub._current_ai_turn_type is None
+
+    asyncio.run(scenario())
+    assert published[0]["turn_type"] == "proactive_reply"
+
+
+def test_probe_keeps_since_filter_across_follow_polls(monkeypatch):
+    """Sequence deduplication must not discard the requested time filter."""
+    import sys
+
+    from scripts import plugin_conversation_probe as probe
+    from tests.fake_clock import patch_module_clock
+
+    queries = []
+
+    def query(sock, op, args, req_id, **kwargs):
+        if op == "bus.query":
+            queries.append(args)
+        return {"ok": True, "result": {"items": []}}
+
+    monkeypatch.setattr(sys, "argv", ["probe", "--follow", "--show-all", "--since-ts", "10", "--seconds", "1"])
+    monkeypatch.setattr(probe, "_query", query)
+    monkeypatch.setattr(probe, "_connect", lambda endpoint: object())
+    ticks = iter([0.0, 0.0, 2.0])
+    patch_module_clock(monkeypatch, probe, time=lambda: next(ticks), sleep=lambda seconds: None)
+    assert probe.main() == 0
+    assert len(queries) == 2
+    assert all(args["since_ts"] == 10.0 for args in queries)

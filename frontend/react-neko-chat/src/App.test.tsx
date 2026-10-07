@@ -15,7 +15,7 @@ import {
   computeCompactHistoryExitDelay,
 } from './CompactExportHistoryPanel';
 import MessageList from './MessageList';
-import { ACTIVE_AVATAR_TOOLS_STORAGE_KEY } from './avatarTools';
+import { ACTIVE_AVATAR_TOOLS_STORAGE_KEY, ACTIVE_AVATAR_TOOLS_STORAGE_KEYS } from './avatarTools';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 import compactChatStyles from './styles.css?raw';
@@ -31,6 +31,7 @@ describe('App', () => {
     COMPACT_HISTORY_HEIGHT_STORAGE_KEY,
     COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY,
     ACTIVE_AVATAR_TOOLS_STORAGE_KEY,
+    ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full,
   ];
 
   beforeEach(() => {
@@ -47,6 +48,7 @@ describe('App', () => {
     resetCompactToolWheelDetentAudioForTests();
     document.body.style.pointerEvents = '';
     document.body.classList.remove('electron-chat-window');
+    document.body.classList.remove('neko-electron-runtime');
     document.body.classList.remove('yui-guide-chat-buttons-disabled');
     document.body.classList.remove('yui-guide-standalone-input-shield-active');
   });
@@ -336,6 +338,178 @@ describe('App', () => {
     expect(onCompactMinimizeRequest).toHaveBeenCalledTimes(1);
   });
 
+  it('routes theater drafts through the dedicated callback before cat-local chat', () => {
+    const onComposerSubmit = vi.fn();
+    const onTheaterSubmit = vi.fn();
+    renderInputApp({
+      catLocalTextOnly: true,
+      theaterPresentation: {
+        active: true,
+        phase: 'awaiting_player',
+        history: [],
+        suggestedInputs: [],
+      },
+      onComposerSubmit,
+      onTheaterSubmit,
+    });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: '  推开教室门  ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(onTheaterSubmit).toHaveBeenCalledWith('推开教室门');
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+  });
+
+  it('keeps the theater draft when the dedicated callback is unavailable', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({
+      theaterPresentation: {
+        active: true,
+        phase: 'awaiting_player',
+        history: [],
+        suggestedInputs: [],
+      },
+      onComposerSubmit,
+    });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: '等待剧场宿主就绪' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue('等待剧场宿主就绪');
+  });
+
+  it('only shows theater Galgame options while the selection callback is available', () => {
+    const props = {
+      theaterPresentation: { active: true, phase: 'awaiting_player' as const, suggestedInputs: ['推开教室门'] },
+    };
+    const { container, rerender } = render(<App {...props} />);
+    expect(document.querySelector('.composer-galgame-option')).toBeNull();
+    const onTheaterSuggestedInputSelect = vi.fn();
+    rerender(<App {...props} onTheaterSuggestedInputSelect={onTheaterSuggestedInputSelect} />);
+    fireEvent.click(document.querySelector('.composer-galgame-option')!);
+    expect(onTheaterSuggestedInputSelect).toHaveBeenCalledExactlyOnceWith('推开教室门');
+    expect(container.querySelectorAll('.composer-input').length).toBeLessThanOrEqual(1);
+    rerender(<App {...props} />);
+    expect(document.querySelector('.composer-galgame-option')).toBeNull();
+  });
+
+  it.each(['evaluating', 'performing', 'ended'] as const)(
+    'locks the open theater composer during %s and preserves its draft', (phase) => {
+      const onTheaterSubmit = vi.fn();
+      const onComposerSubmit = vi.fn();
+      const props = { compactChatState: 'input' as const, onTheaterSubmit, onComposerSubmit };
+      const { rerender } = render(<App {...props} theaterPresentation={{ active: true, phase: 'awaiting_player' }} />);
+      const input = screen.getByPlaceholderText('Type a message...');
+      fireEvent.change(input, { target: { value: '留在这里等她' } });
+      rerender(<App {...props} theaterPresentation={{ active: true, phase }} />);
+
+      expect(input).toHaveAttribute('readonly');
+      expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+      fireEvent.change(input, { target: { value: '不能写入的草稿' } });
+      pressEnter(input);
+      fireEvent.submit(input.closest('form')!);
+      expect(onTheaterSubmit).not.toHaveBeenCalled();
+      expect(onComposerSubmit).not.toHaveBeenCalled();
+      expect(input).toHaveValue('留在这里等她');
+
+      rerender(<App {...props} theaterPresentation={{ active: true, phase: 'awaiting_player' }} />);
+      expect(input).not.toHaveAttribute('readonly');
+      pressEnter(input);
+      expect(onTheaterSubmit).toHaveBeenCalledExactlyOnceWith('留在这里等她');
+    },
+  );
+
+  it('keeps theater history accessible when the composer becomes disabled', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    const props = { chatSurfaceMode: 'compact' as const, compactChatState: 'input' as const };
+    const { container, rerender } = render(
+      <App {...props} theaterPresentation={{ active: true, phase: 'awaiting_player' }} />,
+    );
+    const handle = container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle');
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+    expect(handle).toBeDisabled();
+    fireEvent.click(handle!);
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+
+    rerender(<App {...props} composerDisabled theaterPresentation={{ active: true, phase: 'performing' }} />);
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+  });
+
+  it('restores a theater IME draft on blur without overwriting the ordinary draft', () => {
+    const onTheaterSubmit = vi.fn();
+    const onComposerSubmit = vi.fn();
+    const props = { compactChatState: 'input' as const, onTheaterSubmit, onComposerSubmit };
+    const { rerender } = render(<App {...props} />);
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'ordinary draft' } });
+    rerender(<App {...props} theaterPresentation={{ active: true, phase: 'awaiting_player' }} />);
+    fireEvent.change(input, { target: { value: '等待她回应' } });
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', isComposing: true });
+    fireEvent.input(input, { target: { value: '等待她回应\n' }, inputType: 'insertLineBreak' });
+    fireEvent.blur(input);
+    expect(input).toHaveValue('等待她回应');
+    expect(onTheaterSubmit).not.toHaveBeenCalled();
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    rerender(<App {...props} />);
+    expect(input).toHaveValue('ordinary draft');
+  });
+
+  it('restores the pre-theater ordinary draft only once across full and compact remounts', () => {
+    // 剧场结束后宿主的 viewProps 会一直保留这份恢复协议；full/compact 切换重挂组件时不能再次填回。
+    const ended = {
+      active: false,
+      phase: 'inactive' as const,
+      history: [],
+      suggestedInputs: [],
+      ordinaryDraftRestore: { id: 'ordinary_restore_compact_exit', text: '晚饭吃什么' },
+    };
+    const { rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" theaterPresentation={ended} />,
+    );
+    const compactInput = screen.getByPlaceholderText('Type a message...');
+    expect(compactInput).toHaveValue('晚饭吃什么');
+    fireEvent.change(compactInput, { target: { value: '' } });
+
+    rerender(<App chatSurfaceMode="full" theaterPresentation={ended} />);
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+    rerender(<App chatSurfaceMode="compact" compactChatState="input" theaterPresentation={ended} />);
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+  });
+
+  it('delivers the ordinary draft to the full surface when the theater exit restores full mode', () => {
+    const restore = { id: 'ordinary_restore_full_exit', text: '明天去哪玩' };
+    const { rerender } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        theaterPresentation={{ active: true, phase: 'awaiting_player', ordinaryDraftRestore: restore }}
+      />,
+    );
+    // 演绎期间胶囊输入框属于剧场，不能提前消费普通草稿。
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+
+    rerender(
+      <App
+        chatSurfaceMode="full"
+        theaterPresentation={{ active: false, phase: 'inactive', ordinaryDraftRestore: restore }}
+      />,
+    );
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('明天去哪玩');
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        theaterPresentation={{ active: false, phase: 'inactive', ordinaryDraftRestore: restore }}
+      />,
+    );
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+  });
+
   it('keeps the ordinary draft separate from the temporary compact cat draft', () => {
     const onComposerSubmit = vi.fn();
     const { rerender } = render(
@@ -506,7 +680,7 @@ describe('App', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull());
     expect(Array.from(toolGroup.querySelectorAll<HTMLElement>('[data-avatar-tool-id]'))
       .map(button => button.dataset.avatarToolId)).toEqual(['rps', 'fist', 'hammer']);
-    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]'))
+    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full) || '[]'))
       .toEqual(['rps', 'fist', 'hammer']);
 
     fireEvent.click(container.querySelector('[data-avatar-tool-id="rps"]') as HTMLButtonElement);
@@ -519,16 +693,16 @@ describe('App', () => {
     })));
   });
 
-  it('loads a local avatar tool into Full without exposing the create entry', async () => {
+  it('loads a local avatar tool into Full and exposes the shared create/edit entries', async () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
     const onAvatarToolStateChange = vi.fn();
     (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
-    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, JSON.stringify([localToolId]));
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, JSON.stringify([localToolId]));
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
       ok: true,
       items: [{
         id: localToolId,
-        revision: '2-123',
+        recordVersion: 2, revision: '2-123',
         name: 'Feather',
         changeMode: 'click-advance',
         defaultUrl: `/user_avatar_tools/${localToolId}/default.png?v=1`,
@@ -547,7 +721,11 @@ describe('App', () => {
         maxTools: 20,
         maxNameChars: 20,
         maxMeaningChars: 100,
-        maxChangeImages: 16,
+              maxChangeImages: 16,
+              maxImages: 17,
+              maxInteractions: 16,
+              maxLinks: 32,
+              maxDelayMs: 600000,
         maxImageBytes: 10_000_000,
         maxImagePixels: 16_000_000,
         maxAudioBytes: 10_000_000,
@@ -599,8 +777,8 @@ describe('App', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Edit quick tools' }));
       const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
       expect(dialog.querySelector(`[data-avatar-tool-library-id="${localToolId}"]`)).not.toBeNull();
-      expect(dialog.querySelector('[data-avatar-tool-create]')).toBeNull();
-      expect(dialog.querySelector('.avatar-tool-manager-modify')).toBeNull();
+      expect(dialog.querySelector('[data-avatar-tool-create]')).not.toBeNull();
+      expect(dialog.querySelector('.avatar-tool-manager-modify')).not.toBeNull();
       expect(dialog.querySelector('.avatar-tool-manager-delete')).toBeNull();
     } finally {
       vi.unstubAllGlobals();
@@ -611,10 +789,18 @@ describe('App', () => {
   it('never rewrites Full local slots from the best-effort catalog list', async () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
     const stored = JSON.stringify([localToolId, 'fist']);
-    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
-    const fetchMock = vi.fn()
-      .mockRejectedValueOnce(new Error('offline'))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, stored);
+    let listCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: false, error_code: 'record_invalid' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      listCount += 1;
+      if (listCount === 1) throw new Error('offline');
+      return new Response(JSON.stringify({
         ok: true,
         items: [],
         limits: {
@@ -622,22 +808,30 @@ describe('App', () => {
           maxNameChars: 20,
           maxMeaningChars: 100,
           maxChangeImages: 16,
+          maxImages: 17,
+          maxInteractions: 16,
+          maxLinks: 32,
+          maxDelayMs: 600000,
           maxImageBytes: 10_000_000,
           maxImagePixels: 16_000_000,
           maxAudioBytes: 10_000_000,
           maxAudioDurationMs: 60_000,
           maxTotalBytes: 100_000_000,
         },
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     try {
       render(<App chatSurfaceMode="full" />);
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+      await waitFor(() => expect(listCount).toBe(1));
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full)).toBe(stored);
 
       act(() => window.dispatchEvent(new Event('focus')));
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(listCount).toBe(2));
+      await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => (
+        String(input).endsWith(`/api/avatar-tools/${localToolId}`)
+      ))).toBe(true));
 
       // 加载成功后内存里不再渲染这个槽位……
       fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
@@ -650,9 +844,83 @@ describe('App', () => {
         .map(button => button.dataset.avatarToolId)).toEqual(['fist']);
 
       // localStorage 不回写：list_items 会跳过校验失败的道具，「不在列表里」
-      // ≠「道具不存在」，一次瞬时读失败不该永久抹掉用户的槽位。持久化只发生
-      // 在用户显式 Save 和删除时。
-      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+      // ≠「道具不存在」。详情明确是 record_invalid 而非 tool_not_found，不能
+      // 永久抹掉用户的槽位。
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full)).toBe(stored);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('clears a hidden Full slot after refresh and detail both prove the tool was deleted', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const stored = JSON.stringify([localToolId, 'fist']);
+    const limits = {
+      maxTools: 64,
+      maxNameChars: 20,
+      maxMeaningChars: 100,
+      maxChangeImages: 16,
+      maxImages: 17,
+      maxInteractions: 16,
+      maxLinks: 32,
+      maxDelayMs: 600000,
+      maxImageBytes: 8_388_608,
+      maxImagePixels: 16_000_000,
+      maxAudioBytes: 5_242_880,
+      maxAudioDurationMs: 10_000,
+      maxTotalBytes: 268_435_456,
+    };
+    const localItem = {
+      id: localToolId,
+      recordVersion: 2, revision: '2-100',
+      name: 'Feather',
+      changeMode: 'press-swap',
+      defaultUrl: `/user_avatar_tools/${localToolId}/default.png?v=1`,
+      changeUrls: [`/user_avatar_tools/${localToolId}/change-000.png?v=1`],
+    };
+    let listCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: false, error_code: 'tool_not_found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      listCount += 1;
+      return new Response(JSON.stringify({
+        ok: true,
+        items: listCount === 1 ? [localItem] : [],
+        limits,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, stored);
+    vi.stubGlobal('fetch', fetchMock);
+    const onAvatarToolStateChange = vi.fn();
+
+    try {
+      render(<App chatSurfaceMode="full" onAvatarToolStateChange={onAvatarToolStateChange} />);
+      await waitFor(() => expect(listCount).toBe(1));
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full)).toBe(stored);
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Feather' }));
+      await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        active: true,
+        toolId: localToolId,
+      })));
+
+      act(() => window.dispatchEvent(new Event('focus')));
+
+      await waitFor(() => expect(
+        JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full) || '[]'),
+      ).toEqual(['fist']));
+      expect(fetchMock.mock.calls.some(([input]) => (
+        String(input).endsWith(`/api/avatar-tools/${localToolId}`)
+      ))).toBe(true);
+      await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        active: false,
+        toolId: null,
+      })));
     } finally {
       vi.unstubAllGlobals();
     }
@@ -3503,6 +3771,45 @@ describe('App', () => {
     }
   });
 
+  it('drops the ordinary assistant preview when theater takes over the capsule', async () => {
+    const previousAssistantText = '这是进入小剧场之前残留的猫娘回复。';
+    const previousAssistantMessage = parseChatMessage({
+      id: 'assistant-before-theater',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: previousAssistantText }],
+      status: 'streaming',
+    });
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" messages={[previousAssistantMessage]} />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent?.length ?? 0).toBeGreaterThan(0);
+    });
+    const visibleOrdinaryPreview = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+    expect(previousAssistantText.startsWith(visibleOrdinaryPreview)).toBe(true);
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        messages={[previousAssistantMessage]}
+        theaterPresentation={{
+          active: true,
+          phase: 'loading',
+          history: [],
+          suggestedInputs: [],
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent(visibleOrdinaryPreview);
+    });
+  });
+
   it('keeps the compact caption moving forward when a new bubble joins the same turn instead of replaying it', async () => {
     vi.useFakeTimers();
     const firstBubbleText = '猫娘先说出来的第一段内容，紧凑输入条会逐字显示这一句。';
@@ -5750,6 +6057,145 @@ describe('App', () => {
     }
   });
 
+  it('uses the same expanded avatar tool editor from the full chat surface', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      items: [],
+      limits: {
+        maxTools: 64,
+        maxNameChars: 20,
+        maxMeaningChars: 100,
+        maxChangeImages: 16,
+        maxImages: 17,
+        maxInteractions: 16,
+        maxLinks: 32,
+        maxDelayMs: 600000,
+        maxImageBytes: 8_388_608,
+        maxImagePixels: 16_000_000,
+        maxAudioBytes: 5_242_880,
+        maxAudioDurationMs: 10_000,
+        maxTotalBytes: 268_435_456,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      render(<App chatSurfaceMode="full" />);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Edit quick tools' }));
+      const createButton = screen.getByRole('button', { name: 'Create tool' });
+      await waitFor(() => expect(createButton).not.toBeDisabled());
+      fireEvent.click(createButton);
+
+      const workspace = screen.getByRole('dialog', { name: 'Create custom tool' });
+      expect(workspace).toHaveClass('avatar-tool-editor-workspace');
+      expect(workspace.querySelector('.react-flow')).not.toBeNull();
+      expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+
+      expect(screen.getByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Create tool' }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // 编辑器窗口只 postMessage 给自己的 opener；删除还要详情接口明确回 tool_not_found 才算数。
+  // 列表请求一律失败，槽位对账不介入，只看编辑器结果这一条路径。
+  const deliverEditorDeletedResult = (localToolId: string) => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const editor = frame.contentWindow!;
+    (editor as unknown as { opener: Window }).opener = window;
+    fireEvent(window, new MessageEvent('message', {
+      origin: window.location.origin,
+      source: editor,
+      data: {
+        type: 'neko:avatar-tool-editor-result',
+        action: 'deleted',
+        toolId: localToolId,
+      },
+    }));
+  };
+  const stubDeletedToolFetch = (localToolId: string, detailErrorCode = 'tool_not_found') => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: false, error_code: detailErrorCode }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      throw new Error('offline');
+    }));
+  };
+
+  it('restores the management dialog after a standalone editor result and clears a deleted slot', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, JSON.stringify([localToolId, 'fist']));
+    stubDeletedToolFetch(localToolId);
+    try {
+      render(<App chatSurfaceMode="full" />);
+
+      expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+      deliverEditorDeletedResult(localToolId);
+
+      expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+      await waitFor(() => expect(
+        JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full) || '[]'),
+      ).toEqual(['fist']));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps a slot when the editor reports a deletion the server does not confirm', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const stored = JSON.stringify([localToolId, 'fist']);
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full, stored);
+    stubDeletedToolFetch(localToolId, 'record_invalid');
+    try {
+      render(<App chatSurfaceMode="full" />);
+      deliverEditorDeletedResult(localToolId);
+
+      expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+      await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+        `/api/avatar-tools/${localToolId}`,
+        expect.anything(),
+      ));
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEYS.full)).toBe(stored);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each(['compact', 'full'] as const)(
+    'keeps the %s management dialog closed for a standalone editor result in cat local text mode',
+    async (chatSurfaceMode) => {
+      const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+      const storageKey = ACTIVE_AVATAR_TOOLS_STORAGE_KEYS[chatSurfaceMode];
+      window.localStorage.setItem(storageKey, JSON.stringify([localToolId, 'fist']));
+      stubDeletedToolFetch(localToolId);
+      try {
+        const { rerender } = render(<App chatSurfaceMode={chatSurfaceMode} compactChatState="input" catLocalTextOnly />);
+
+        deliverEditorDeletedResult(localToolId);
+
+        await waitFor(() => expect(JSON.parse(window.localStorage.getItem(storageKey) || '[]')).toEqual(['fist']));
+        expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+
+        // Leaving the mode must not surface a dialog the hidden result queued up.
+        rerender(<App chatSurfaceMode={chatSurfaceMode} compactChatState="input" />);
+        expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it('lets Compact equip and select rps while preserving the three-slot limit', async () => {
     const onAvatarToolStateChange = vi.fn();
     const { container } = render(
@@ -5801,6 +6247,10 @@ describe('App', () => {
         maxNameChars: 20,
         maxMeaningChars: 100,
         maxChangeImages: 16,
+        maxImages: 17,
+        maxInteractions: 16,
+        maxLinks: 32,
+        maxDelayMs: 600000,
         maxImageBytes: 8_388_608,
         maxImagePixels: 16_000_000,
         maxAudioBytes: 5_242_880,
@@ -5833,9 +6283,17 @@ describe('App', () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
     const stored = JSON.stringify([localToolId, 'fist']);
     window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
-    const fetchMock = vi.fn()
-      .mockRejectedValueOnce(new Error('offline'))
-      .mockResolvedValue(new Response(JSON.stringify({
+    let listCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: false, error_code: 'record_invalid' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      listCount += 1;
+      if (listCount === 1) throw new Error('offline');
+      return new Response(JSON.stringify({
         ok: true,
         items: [],
         limits: {
@@ -5843,22 +6301,30 @@ describe('App', () => {
           maxNameChars: 20,
           maxMeaningChars: 100,
           maxChangeImages: 16,
+          maxImages: 17,
+          maxInteractions: 16,
+          maxLinks: 32,
+          maxDelayMs: 600000,
           maxImageBytes: 8_388_608,
           maxImagePixels: 16_000_000,
           maxAudioBytes: 5_242_880,
           maxAudioDurationMs: 10_000,
           maxTotalBytes: 268_435_456,
         },
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     try {
       const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(listCount).toBe(1));
       expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
 
       act(() => window.dispatchEvent(new Event('focus')));
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(listCount).toBe(2));
+      await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => (
+        String(input).endsWith(`/api/avatar-tools/${localToolId}`)
+      ))).toBe(true));
 
       // 加载成功后内存里不再渲染这个槽位……
       await openCompactInputTools();
@@ -5871,8 +6337,57 @@ describe('App', () => {
         .map(button => button.dataset.avatarToolId)).toEqual(['fist']);
 
       // localStorage 不回写：list_items 会跳过校验失败的道具，「不在列表里」
-      // ≠「道具不存在」，一次瞬时读失败不该永久抹掉用户的槽位。
+      // ≠「道具不存在」。详情明确是 record_invalid 而非 tool_not_found，不能
+      // 永久抹掉用户的槽位。
       expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('clears a restored Compact slot only after detail proves the tool was deleted', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const stored = JSON.stringify([localToolId, 'fist']);
+    const limits = {
+      maxTools: 64,
+      maxNameChars: 20,
+      maxMeaningChars: 100,
+      maxChangeImages: 16,
+      maxImages: 17,
+      maxInteractions: 16,
+      maxLinks: 32,
+      maxDelayMs: 600000,
+      maxImageBytes: 8_388_608,
+      maxImagePixels: 16_000_000,
+      maxAudioBytes: 5_242_880,
+      maxAudioDurationMs: 10_000,
+      maxTotalBytes: 268_435_456,
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: false, error_code: 'tool_not_found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true, items: [], limits }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+      await waitFor(() => expect(
+        JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]'),
+      ).toEqual(['fist']));
+      expect(fetchMock.mock.calls.some(([input]) => (
+        String(input).endsWith(`/api/avatar-tools/${localToolId}`)
+      ))).toBe(true);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -5882,7 +6397,7 @@ describe('App', () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
     const localItem = {
       id: localToolId,
-      revision: '100-200',
+      recordVersion: 2, revision: '2-200',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: `/user_avatar_tools/${localToolId}/default.png?v=1`,
@@ -5893,6 +6408,10 @@ describe('App', () => {
       maxNameChars: 20,
       maxMeaningChars: 100,
       maxChangeImages: 16,
+      maxImages: 17,
+      maxInteractions: 16,
+      maxLinks: 32,
+      maxDelayMs: 600000,
       maxImageBytes: 8_388_608,
       maxImagePixels: 16_000_000,
       maxAudioBytes: 5_242_880,
@@ -5901,7 +6420,7 @@ describe('App', () => {
     };
     const localDetail = {
       id: localToolId,
-      revision: '100-200',
+      recordVersion: 2, revision: '2-200',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultImage: {
@@ -5970,12 +6489,13 @@ describe('App', () => {
       await openCompactInputTools();
       fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
       fireEvent.click(container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement);
-      const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
+      await screen.findByRole('dialog', { name: 'Manage tools' });
       fireEvent.click(screen.getByRole('button', { name: 'Edit Feather' }));
       await screen.findByRole('dialog', { name: 'Edit custom tool' });
       fireEvent.click(screen.getByRole('button', { name: 'Delete tool' }));
 
-      await waitFor(() => expect(dialog.querySelector(`[data-avatar-tool-library-id="${localToolId}"]`)).toBeNull());
+      await screen.findByRole('dialog', { name: 'Manage tools' });
+      await waitFor(() => expect(document.querySelector(`[data-avatar-tool-library-id="${localToolId}"]`)).toBeNull());
       await waitFor(() => expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe('[]'));
       expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(true);
       expect(confirm).toHaveBeenCalledTimes(1);
@@ -5997,10 +6517,12 @@ describe('App', () => {
     };
     const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
     const hadElectronChatWindowClass = document.body.classList.contains('electron-chat-window');
+    const hadElectronRuntimeClass = document.body.classList.contains('neko-electron-runtime');
 
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 393 });
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 74 });
     document.body.classList.add('electron-chat-window');
+    document.body.classList.add('neko-electron-runtime');
     desktopWindow.__nekoDesktopCompactLayout = {
       windowBounds: { x: 976, y: 485, width: 393, height: 74 },
       workArea: { x: 0, y: 0, width: 1706, height: 1066 },
@@ -6063,6 +6585,11 @@ describe('App', () => {
         document.body.classList.add('electron-chat-window');
       } else {
         document.body.classList.remove('electron-chat-window');
+      }
+      if (hadElectronRuntimeClass) {
+        document.body.classList.add('neko-electron-runtime');
+      } else {
+        document.body.classList.remove('neko-electron-runtime');
       }
       desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
@@ -9362,6 +9889,73 @@ describe('App', () => {
     });
 
     expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
+  });
+
+  it.each([false, true])('preserves native guide input and tools across desktop outside events (wheel open: %s)', async (wheelOpen) => {
+    vi.useFakeTimers();
+    const onCompactChatStateChange = vi.fn();
+    const layer = document.createElement('div');
+    layer.className = 'click-guide-layer click-guide-native';
+    layer.style.visibility = 'hidden';
+    document.body.appendChild(layer);
+    try {
+      render(<App chatSurfaceMode="compact" compactChatState="input"
+        onCompactChatStateChange={onCompactChatStateChange} />);
+      const input = screen.getByPlaceholderText('Type a message...');
+      input.focus();
+      if (wheelOpen) fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      onCompactChatStateChange.mockClear();
+      fireEvent.blur(input);
+      fireEvent(window, new Event('blur'));
+      fireEvent(window, new CustomEvent('neko:desktop-compact-pointer-outside'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(800); });
+      expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+      expect(document.body.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', String(wheelOpen));
+      layer.remove();
+      fireEvent(window, new Event('blur'));
+      fireEvent(window, new CustomEvent('neko:desktop-compact-pointer-outside'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(800); });
+      expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
+      expect(document.body.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    } finally {
+      layer.remove();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['click-guide-card', 'click-guide-mask', 'click-guide-choice'])('keeps empty compact input open during a press and focus transfer to %s', async (className) => {
+    const onCompactChatStateChange = vi.fn();
+    const layer = document.createElement('div');
+    layer.className = className === 'click-guide-choice' ? className : 'click-guide-layer';
+    const control = document.createElement('button');
+    control.className = className;
+    layer.appendChild(control);
+    document.body.appendChild(layer);
+    try {
+      render(<App chatSurfaceMode="compact" compactChatState="input"
+        onCompactChatStateChange={onCompactChatStateChange} />);
+      screen.getByPlaceholderText('Type a message...').focus();
+      onCompactChatStateChange.mockClear();
+      fireEvent.pointerDown(control);
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+      await act(async () => {
+        control.focus();
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(document.activeElement).toBe(control);
+      expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+      layer.remove();
+      fireEvent.pointerDown(document.body);
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
+    } finally {
+      layer.remove();
+    }
   });
 
   it('returns empty compact input to subtitle state when a document-level outside pointer starts', async () => {

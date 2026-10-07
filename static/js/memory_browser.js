@@ -2153,12 +2153,10 @@
         if (!payload || typeof payload !== 'object') {
             return fallback;
         }
-        return String(
-            payload.error
-            || payload.blocking_error_message
-            || payload.error_code
-            || fallback
-        );
+        if (window.appStorageLocation && typeof window.appStorageLocation.formatError === 'function') {
+            return window.appStorageLocation.formatError(payload, fallback);
+        }
+        return fallback;
     }
 
     function getStorageBlockingReason(bootstrapPayload) {
@@ -2426,6 +2424,14 @@
 
     async function performSelectedTutorialReset() {
         const selection = resolveSelectedTutorialReset();
+        async function syncSevenDayChoice() {
+            try {
+                await window.NekoClickGuideState.refresh();
+                await window.NekoClickGuideState.update('choose', { choice: 'seven-day' });
+            } catch (error) {
+                console.warn('[MemoryBrowser] Seven-day reset committed; mode sync failed:', error);
+            }
+        }
         if (selection.type === 'home-day') {
             if (window.AvatarFloatingGuideReset && typeof window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay === 'function') {
                 await window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay(selection.day, {
@@ -2440,6 +2446,7 @@
                     source: 'memory_browser_reset_select',
                 });
             }
+            await syncSevenDayChoice();
             return;
         }
         if (selection.type === 'home-all') {
@@ -2452,6 +2459,7 @@
                     source: 'memory_browser_reset_home_all',
                 });
             }
+            await syncSevenDayChoice();
             await showTutorialResetNotice(getTutorialHomeAllResetSuccessMessage());
             return;
         }
@@ -2468,6 +2476,43 @@
                 }
             }
             await window.resetTutorialForPage(selection.pageKey);
+            if (selection.pageKey === 'all') await syncSevenDayChoice();
+        }
+    }
+
+    async function resetClickGuide() {
+        const button = document.getElementById('click-guide-reset-btn');
+        if (button) button.disabled = true;
+        try {
+            const choice = await window.NekoTutorialReactivation.open(async choice => {
+                if (choice === 'seven-day') {
+                    const reset = window.AvatarFloatingGuideReset?.resetAllAvatarFloatingGuideDays
+                        || window.resetAllAvatarFloatingGuideDays;
+                    if (!reset) throw new Error('Seven-day reset unavailable');
+                    await reset({ source: 'memory_browser_reactivate' });
+                    // The authoritative seven-day reset has committed. Its newer
+                    // resetHistory supersedes the old click mode even if this
+                    // auxiliary mode write fails; do not offer a misleading cancel.
+                    try {
+                        await window.NekoClickGuideState.refresh();
+                        await window.NekoClickGuideState.update('choose', { choice });
+                    } catch (error) {
+                        console.warn('[MemoryBrowser] Seven-day replay activated; mode sync failed:', error);
+                    }
+                    return;
+                }
+                // Commit the selected mode only after its reset succeeds.
+                await window.NekoClickGuideState.refresh();
+                await window.NekoClickGuideState.update('choose', { choice });
+            });
+            if (choice) await showTutorialResetNotice(choice === 'click'
+                ? translate('clickGuide.resetSuccess', '点击引导已重置，刷新主页即可开始。七天教程进度保持不变。')
+                : getTutorialHomeAllResetSuccessMessage());
+        } catch (error) {
+            console.error('[MemoryBrowser] Click guide reset failed:', error);
+            await showTutorialResetNotice(translate('clickGuide.saveFailed', '保存失败，请重试。'), { variant: 'error' });
+        } finally {
+            if (button) button.disabled = false;
         }
     }
 
@@ -2968,6 +3013,20 @@
             return parts.join('\n');
         }
         return String(c);
+    }
+
+    // 小剧场记忆胶囊带有来源 / 周目等元数据，只能经剧场流程维护。浏览器里只读展示，
+    // 保存时带上 source_index，由服务端原样保留胶囊。
+    const THEATER_MEMORY_SOURCE = 'theater_numeric_v2';
+
+    function isTheaterMemoryItem(item) {
+        if (!item || typeof item !== 'object') return false;
+        let metadata = item.metadata;
+        if (!metadata || typeof metadata !== 'object') {
+            const data = item.data;
+            metadata = data && typeof data === 'object' ? data.metadata : null;
+        }
+        return !!metadata && typeof metadata === 'object' && metadata.source === THEATER_MEMORY_SOURCE;
     }
 
     function setMemoryRowDeleteButtonsEnabled(enabled) {
@@ -3821,9 +3880,26 @@
             container.className = 'chat-item';
             container.setAttribute('data-chat-index', String(i));
             container.setAttribute('data-chat-row-key', getMemoryChatRowKey(msg));
-            container.setAttribute('data-role', msg.role || '');
+            container.setAttribute('data-role', msg.theater ? 'theater' : (msg.role || ''));
 
-            if (msg.role === 'system') {
+            if (msg.theater) {
+                // 剧场胶囊只读：不可编辑、不可删除，清空对话时也保留。
+                const contentWrapper = document.createElement('div');
+                contentWrapper.className = 'chat-item-content';
+                container.appendChild(contentWrapper);
+
+                const label = document.createElement('span');
+                label.className = 'memo-label';
+                label.textContent = window.t ? window.t('theater.title', '小剧场') : '小剧场';
+                contentWrapper.appendChild(label);
+
+                const bubble = document.createElement('div');
+                bubble.className = 'chat-bubble';
+                bubble.textContent = typeof msg.text === 'string'
+                    ? msg.text
+                    : extractDataContent({ content: msg.text });
+                contentWrapper.appendChild(bubble);
+            } else if (msg.role === 'system') {
                 let text = msg.text;
                 if (typeof text !== 'string') {
                     text = extractDataContent({ content: text });
@@ -4383,7 +4459,10 @@
                 if (requestId !== memoryFileRequestId) {
                     return;
                 }
-                chatData = arr.map(item => {
+                const toChatItem = item => {
+                    if (!item || typeof item !== 'object') {
+                        return null;
+                    }
                     if (item.type === 'system') {
                         return { role: 'system', text: extractDataContent(item.data) };
                     }
@@ -4398,6 +4477,14 @@
                         return { role, text: extractDataContent({ content: item.content }) };
                     }
                     return null;
+                };
+                chatData = arr.map((item, index) => {
+                    const chatItem = toChatItem(item);
+                    if (!chatItem) return null;
+                    // source_index 指向本次快照里的原始条目，服务端据此原样保留剧场胶囊。
+                    chatItem.source_index = index;
+                    chatItem.theater = isTheaterMemoryItem(item);
+                    return chatItem;
                 }).filter(Boolean);
                 renderChatEdit();
             } else {
@@ -4484,12 +4571,13 @@
             stillTargetsSavedSelection()
             && memoryEditRevision === saveContentRevision
         );
+        const savedRows = chatData.slice();
         const saveChat = chatData.map(msg => ({ ...msg }));
         // 处理备忘录为空的情况
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         const memoNone = window.t ? window.t('memory.memoNone') : '无。';
         saveChat.forEach(msg => {
-            if (msg.role === 'system') {
+            if (msg.role === 'system' && !msg.theater) {
                 let text = msg.text || '';
                 if (text.startsWith(memoPrefix)) {
                     text = text.slice(memoPrefix.length);
@@ -4513,6 +4601,11 @@
             const data = await resp.json();
             if (data.success) {
                 if (stillTargetsSavedSelection()) {
+                    // 保存后的文件与本次提交逐条对应；把 source_index 对齐到新快照，
+                    // 否则删除过条目后再次保存会让下标指向错误的原始条目。
+                    savedRows.forEach((row, index) => {
+                        row.source_index = index;
+                    });
                     currentMemoryFingerprint = typeof data.fingerprint === 'string'
                         ? data.fingerprint
                         : null;
@@ -4588,7 +4681,7 @@
             return;
         }
         // 只清空对话轮次（用户 / AI）；system＝先前对话的备忘录，一律保留
-        chatData = chatData.filter(msg => msg && msg.role !== 'human' && msg.role !== 'ai');
+        chatData = chatData.filter(msg => msg && (msg.theater || (msg.role !== 'human' && msg.role !== 'ai')));
         setMemoryDirty(true);
         exitChatItems(itemsToDissolve, function () {
             renderChatEdit();
@@ -5141,6 +5234,7 @@
     }
 
     window.resetSelectedTutorial = resetSelectedTutorial;
+    window.resetClickGuide = resetClickGuide;
     window.showTutorialResetNotice = showTutorialResetNotice;
 
 })();

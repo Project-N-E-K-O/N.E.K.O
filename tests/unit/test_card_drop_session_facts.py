@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 import main_routers.card_drop_router as C
 import main_logic.card_forge_facts as F
 from main_logic.card_forge_facts import ActiveNekoContext, build_forge_facts_payload
+from tests.fastapi_routes import iter_routes
 
 pytestmark = pytest.mark.unit
 
@@ -53,6 +54,42 @@ def _main_server_request(*, method: str = "POST", origin: str = "") -> Request:
             "headers": headers,
         }
     )
+
+
+@pytest.mark.asyncio
+async def test_facts_cloud_lookup_concurrency_and_cancellation_release_budget(monkeypatch):
+    monkeypatch.setattr(C, "_facts_cloud_budget", {"tokens": 12.0, "updated": C.time.monotonic(), "active": 0})
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: None)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    count = 0
+
+    async def lookup(base, token):
+        nonlocal count
+        count += 1
+        if count == 2:
+            entered.set()
+        await release.wait()
+        return "mismatch"
+
+    monkeypatch.setattr(C, "_request_matches_desktop_session", lookup)
+
+    def request():
+        result = _main_server_request(method="GET")
+        result.scope["headers"].append((b"authorization", b"Bearer fake"))
+        return result
+
+    tasks = [asyncio.create_task(C._facts_request_auth_state(request())) for _ in range(2)]
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    assert await C._facts_request_auth_state(request()) == "rate_limited"
+    assert count == 2
+    tasks[0].cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await tasks[0]
+    release.set()
+    assert await tasks[1] == "mismatch"
+    assert await C._facts_request_auth_state(request()) == "mismatch"
+    assert count == 3
 
 
 @pytest.mark.asyncio
@@ -110,8 +147,8 @@ def test_main_active_character_exposes_only_canonical_card_drop_routes():
 
     routes = {
         (route.path, method)
-        for route in web_app.app.routes
-        for method in getattr(route, "methods", set())
+        for route in iter_routes(web_app.app.routes)
+        for method in route.methods or set()
     }
     for method in ("GET", "POST", "OPTIONS"):
         assert ("/api/card-drop/active-character", method) in routes
@@ -625,6 +662,7 @@ def client(monkeypatch, tmp_path):
     from main_routers import community_oauth
 
     monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "https://community.example")
+    monkeypatch.setattr(C, "_facts_cloud_budget", {"tokens": 12.0, "updated": C.time.monotonic(), "active": 0})
     # Keep the suite off the developer's real credential file.
     monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
 
@@ -645,7 +683,7 @@ def client(monkeypatch, tmp_path):
     C._native_delegates.clear()
     app = FastAPI()
     app.include_router(C.router)
-    with TestClient(app, base_url="http://localhost:48911") as test_client:
+    with TestClient(app, base_url="http://localhost:48911", client=("127.0.0.1", 50000)) as test_client:
         yield test_client
     C._native_sync_tickets.clear()
     C._native_delegates.clear()
@@ -1004,25 +1042,13 @@ def test_local_credit_routes_are_retired_for_delegates(
     assert read.json() == mutate.json() == {"detail": "cloud_forge_credits_required"}
 
 
-def test_retired_credit_routes_ignore_delegate_principal_and_local_ledger(
+def test_retired_credit_routes_ignore_delegate_principal(
     client,
-    tmp_path,
     monkeypatch,
 ):
-    from main_logic import forge_credit_ledger
-
-    monkeypatch.setenv("NEKO_USER_DATA_DIR", str(tmp_path))
-    forge_credit_ledger.grant_credit(
-        {
-            "trigger_type": "emotion_combo",
-            "idem_key": "delegate-owner-isolation",
-        },
-        rarity="SR",
-    )
-    credit_id = forge_credit_ledger.list_credits()["credits"][0]["id"]
-    ledger_before = forge_credit_ledger.list_credits()
     operation_id = "33333333-3333-4333-8333-333333333333"
     card_id = "44444444-4444-4444-8444-444444444444"
+    credit_id = "22222222-2222-4222-8222-222222222222"
 
     session_a = _delegate_session()
     token_a = _issue_delegate_from_local_ui(client, monkeypatch, session_a)
@@ -1071,7 +1097,6 @@ def test_retired_credit_routes_ignore_delegate_principal_and_local_ledger(
         response.json() == {"detail": "cloud_forge_credits_required"}
         for response in responses
     )
-    assert forge_credit_ledger.list_credits() == ledger_before
 
 
 def test_retired_credit_routes_ignore_refreshed_desktop_bearer(
@@ -1079,9 +1104,6 @@ def test_retired_credit_routes_ignore_refreshed_desktop_bearer(
     tmp_path,
     monkeypatch,
 ):
-    from main_logic import forge_credit_ledger
-
-    monkeypatch.setenv("NEKO_USER_DATA_DIR", str(tmp_path))
     _write_v2_desktop_session(
         tmp_path,
         monkeypatch,
@@ -1095,15 +1117,7 @@ def test_retired_credit_routes_ignore_refreshed_desktop_bearer(
             "browser-token-after-refresh": (USER_A_ID, "oauth"),
         },
     )
-    forge_credit_ledger.grant_credit(
-        {
-            "trigger_type": "emotion_combo",
-            "idem_key": "desktop-refresh-owner",
-        },
-        rarity="R",
-    )
-    credit_id = forge_credit_ledger.list_credits()["credits"][0]["id"]
-    ledger_before = forge_credit_ledger.list_credits()
+    credit_id = "22222222-2222-4222-8222-222222222222"
     operation_id = "55555555-5555-4555-8555-555555555555"
     card_id = "66666666-6666-4666-8666-666666666666"
 
@@ -1156,7 +1170,6 @@ def test_retired_credit_routes_ignore_refreshed_desktop_bearer(
         response.json() == {"detail": "cloud_forge_credits_required"}
         for response in responses
     )
-    assert forge_credit_ledger.list_credits() == ledger_before
 
 
 def test_card_drop_capabilities_are_exact_origin_and_no_store(client):
@@ -1359,6 +1372,49 @@ def test_sync_ticket_rejects_cross_site_browser_churn(client):
     assert headerless_native.status_code == 403
     assert same_origin.status_code == 200
     assert len(C._native_sync_tickets) == len(before) + 1
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ({"logged_in": False, "snapshot": {"access_token": "t"}, "auth": {}}, True),
+        (
+            {
+                "logged_in": False,
+                "snapshot": {"access_token": "t"},
+                "auth": {},
+                "rejected": True,
+            },
+            False,
+        ),
+        ({"logged_in": False, "snapshot": None, "auth": {}}, False),
+    ],
+)
+def test_auth_status_session_saved_excludes_rejected_leftover(
+    client, monkeypatch, status, expected
+):
+    from main_routers import community_oauth
+
+    async def resolve_saved_oauth_status():
+        return status
+
+    monkeypatch.setattr(
+        community_oauth,
+        "resolve_saved_oauth_status",
+        resolve_saved_oauth_status,
+    )
+
+    response = client.get(
+        "/api/card-drop/auth-status",
+        headers={
+            "Origin": "http://localhost:48911",
+            "Sec-Fetch-Site": "same-origin",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["logged_in"] is False
+    assert response.json()["session_saved"] is expected
 
 
 def test_auth_status_rejects_cross_site_before_cloud_lookup(client, monkeypatch):
@@ -3013,6 +3069,29 @@ async def test_recoverable_bind_error_still_persists_validated_login(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_store_session_persists_the_shared_masked_profile(tmp_path, monkeypatch):
+    auth = tmp_path / "community_auth.json"
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: tmp_path / "social_session.json")
+    monkeypatch.setattr(C, "_get_client_id", lambda: None)
+
+    await C._store_session(
+        "https://community.example",
+        "new-token",
+        "new-refresh",
+        {"id": USER_A_ID, "username": "neko", "phone": "13800000000"},
+    )
+
+    saved_user = json.loads(auth.read_text(encoding="utf-8"))["user"]
+    assert saved_user == {
+        "id": USER_A_ID,
+        "display_name": "neko",
+        "email": None,
+        "phone": "138****0000",
+    }
+
+
+@pytest.mark.asyncio
 async def test_store_session_offloads_local_credential_io(monkeypatch):
     event_loop_thread = threading.get_ident()
     worker_threads: dict[str, int] = {}
@@ -3582,8 +3661,97 @@ async def test_native_session_snapshot_rejects_a_replacement_after_cloud_validat
 
     monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", validated_previous_session)
     monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: {**_delegate_session(), **replacement})
-    snapshot, _failure = await C._native_delegate_session_snapshot()
+    snapshot, failure = await C._native_delegate_session_snapshot()
     assert snapshot is None
+    # A session still exists (usually a concurrent refresh): retryable 503, not a 409 logout.
+    assert failure == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_native_session_snapshot_validates_the_cloud_once(monkeypatch):
+    from main_routers import community_oauth
+
+    calls = []
+
+    async def validated_previous_session():
+        calls.append(1)
+        return {"logged_in": True, "snapshot": _delegate_session(), "auth": {}}
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", validated_previous_session)
+    monkeypatch.setattr(
+        C, "_desktop_session_snapshot",
+        lambda: {**_delegate_session(), "access_token": "rotated-token"},
+    )
+    await C._native_delegate_session_snapshot()
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_native_session_snapshot_revalidates_a_replacement_when_asked(monkeypatch):
+    from main_routers import community_oauth
+
+    rotated = {**_delegate_session(), "access_token": "rotated-token"}
+    statuses = [
+        {"logged_in": True, "snapshot": _delegate_session(), "auth": {}},
+        {"logged_in": True, "snapshot": rotated, "auth": {}},
+    ]
+
+    async def resolved():
+        return statuses.pop(0)
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", resolved)
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: dict(rotated))
+    snapshot, failure = await C._native_delegate_session_snapshot(revalidate_replacement=True)
+    assert failure == ""
+    assert snapshot["access_token"] == "rotated-token"
+    assert statuses == []
+
+
+def test_native_delegate_handoff_survives_a_refresh_during_validation(client, monkeypatch):
+    from main_routers import community_oauth
+
+    rotated = {**_delegate_session(), "access_token": "rotated-token"}
+    statuses = [
+        {"logged_in": True, "snapshot": _delegate_session(), "auth": {}},
+        {"logged_in": True, "snapshot": rotated, "auth": {}},
+    ]
+
+    async def resolved():
+        return statuses.pop(0)
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", resolved)
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: dict(rotated))
+    response = client.get(
+        "/api/card-drop/native-delegate/handoff",
+        params={"return_to": "https://community.example/cards"},
+        headers={"Sec-Fetch-Site": "same-origin"},
+        follow_redirects=False,
+    )
+    # The handoff lands on a static page with no retry, so a token refreshed
+    # between cloud validation and the local read must be validated again.
+    assert response.status_code == 302
+    assert "#native_delegate=" in response.headers["location"]
+    assert statuses == []
+
+
+@pytest.mark.parametrize("status, expected", [
+    ({"logged_in": False, "snapshot": None}, "missing"),
+    ({"logged_in": False, "snapshot": {"access_token": "t"}}, "unavailable"),
+    ({"logged_in": False, "snapshot": {"access_token": "t"}, "rejected": True}, "missing"),
+])
+@pytest.mark.asyncio
+async def test_native_session_snapshot_treats_a_cloud_rejected_leftover_as_logout(
+    monkeypatch, status, expected,
+):
+    from main_routers import community_oauth
+
+    async def resolved():
+        return status
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", resolved)
+    snapshot, failure = await C._native_delegate_session_snapshot()
+    assert snapshot is None
+    assert failure == expected
 
 
 @pytest.mark.parametrize("missing_metadata", [

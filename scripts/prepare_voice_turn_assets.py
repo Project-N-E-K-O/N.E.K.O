@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import importlib.util
 import os
 import shutil
@@ -67,36 +68,86 @@ verify_asset = _asset_manifest.verify_asset
 require_downloadable_source = _asset_manifest.require_downloadable_source
 
 
+_HF_ORIGIN = "https://huggingface.co"
+# Same default order and overrides as scripts/prepare_embedding_model.py:
+# huggingface.co first, then the hf-mirror.com reverse proxy.
+_DEFAULT_HF_ENDPOINTS = (_HF_ORIGIN, "https://hf-mirror.com")
+
+
+def _hf_endpoints() -> list[str]:
+    """Ordered HF-compatible base URLs to try.
+
+    ``HF_ENDPOINTS`` (comma-separated) replaces the default order; a single
+    ``HF_ENDPOINT`` (the huggingface_hub convention) pins to that mirror.
+    """
+    raw = os.environ.get("HF_ENDPOINTS") or os.environ.get("HF_ENDPOINT")
+    if raw:
+        endpoints = [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
+        if endpoints:
+            return endpoints
+    return list(_DEFAULT_HF_ENDPOINTS)
+
+
+def _download_source_candidates(source: str) -> tuple[str, ...]:
+    """Return the URLs to try for ``source``, in order.
+
+    Only pinned huggingface.co sources are rewritten onto the HF endpoint list;
+    every other host is fetched as declared. Mirrors cannot substitute content:
+    the caller still verifies the pinned SHA-256 of whatever they return.
+    """
+    if not source.startswith(_HF_ORIGIN + "/"):
+        return (source,)
+    path = source[len(_HF_ORIGIN):]
+    candidates: list[str] = []
+    for endpoint in _hf_endpoints():
+        candidate = endpoint + path
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return tuple(candidates)
+
+
 def _download_verified(source: str, destination: Path, expected_sha256: str) -> None:
     temporary = destination.with_suffix(destination.suffix + ".part")
-    digest = hashlib.sha256()
-    request = urllib.request.Request(source, headers={"User-Agent": "NEKO-asset-preparer/1"})
     last_error: Exception | None = None
-    for attempt in range(3):
-        digest = hashlib.sha256()
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response, temporary.open(
-                "wb"
-            ) as output:
-                while chunk := response.read(1024 * 1024):
-                    digest.update(chunk)
-                    output.write(chunk)
-            actual = digest.hexdigest()
-            if actual.lower() != expected_sha256.lower():
-                raise AssetManifestError(
-                    f"download SHA-256 mismatch for {destination.name}: "
-                    f"expected {expected_sha256}, got {actual}"
-                )
-            os.replace(temporary, destination)
-            return
-        except AssetManifestError:
-            temporary.unlink(missing_ok=True)
-            raise
-        except (OSError, TimeoutError, URLError) as exc:
-            last_error = exc
-            temporary.unlink(missing_ok=True)
-            if attempt < 2:
-                time.sleep(1 << attempt)
+    candidates = _download_source_candidates(source)
+    for index, candidate in enumerate(candidates):
+        request = urllib.request.Request(
+            candidate, headers={"User-Agent": "NEKO-asset-preparer/1"}
+        )
+        for attempt in range(3):
+            digest = hashlib.sha256()
+            try:
+                with urllib.request.urlopen(request, timeout=60) as response, temporary.open(
+                    "wb"
+                ) as output:
+                    while chunk := response.read(1024 * 1024):
+                        digest.update(chunk)
+                        output.write(chunk)
+                actual = digest.hexdigest()
+                if actual.lower() != expected_sha256.lower():
+                    # A mirror serving different bytes is a hard failure, not a
+                    # reason to keep shopping for one that matches.
+                    raise AssetManifestError(
+                        f"download SHA-256 mismatch for {destination.name}: "
+                        f"expected {expected_sha256}, got {actual}"
+                    )
+                os.replace(temporary, destination)
+                return
+            except AssetManifestError:
+                temporary.unlink(missing_ok=True)
+                raise
+            # IncompleteRead：连接在声明的 Content-Length 之前被断开（大文件常见），
+            # 它不是 OSError，漏掉的话既不会重试也到不了下一个镜像。
+            except (OSError, TimeoutError, URLError, http.client.IncompleteRead) as exc:
+                last_error = exc
+                temporary.unlink(missing_ok=True)
+                if attempt < 2:
+                    time.sleep(1 << attempt)
+        if index + 1 < len(candidates):
+            print(
+                f"download from {candidate} failed ({last_error}); trying next source",
+                file=sys.stderr,
+            )
     raise AssetManifestError(f"cannot download {destination.name}: {last_error}") from last_error
 
 

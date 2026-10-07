@@ -40,7 +40,7 @@ const currentTitle = computed(() => {
 async function handleRefresh() {
   refreshing.value = true
   try {
-    await Promise.all([pluginStore.fetchPlugins(), pluginStore.fetchPluginStatus()])
+    await Promise.all([pluginStore.refreshLoadedPluginData(), pluginStore.fetchPluginStatus()])
     ElMessage.success(t('messages.operationSuccess'))
   } catch {
     ElMessage.error(t('messages.operationFailed'))

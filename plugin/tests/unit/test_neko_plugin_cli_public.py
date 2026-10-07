@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import inspect
+import json
 import shutil
 import zipfile
 
@@ -15,7 +16,13 @@ from plugin.neko_plugin_cli.public import (
     install_package,
     unpack_package,
 )
+from plugin.neko_plugin_cli.public.build import PluginBuilder
 from plugin.neko_plugin_cli.public.build_rules import BuildRuleSet, should_skip_path
+from plugin.server.infrastructure import packaged_metadata
+from plugin.neko_plugin_cli.public.pack_rules import (
+    PackRuleSet,
+    should_skip_path as should_skip_pack_path,
+)
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -79,6 +86,97 @@ def _make_plugin_dir(tmp_path: Path, plugin_id: str = "demo_plugin") -> Path:
     (plugin_dir / "__pycache__").mkdir()
     (plugin_dir / "__pycache__" / "module.pyc").write_bytes(b"pyc")
     return plugin_dir
+
+
+def _make_importable_plugin_dir(tmp_path: Path, plugin_id: str = "probe_plugin") -> Path:
+    """A plugin the metadata probe can really import: package, submodule and vendored dep."""
+    plugin_dir = tmp_path / plugin_id
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "plugin.toml").write_text(
+        f'[plugin]\nid = "{plugin_id}"\nname = "Probe"\nversion = "1.0.0"\n'
+        f'entry = "plugins.{plugin_id}:Demo"\n',
+        encoding="utf-8",
+    )
+    (plugin_dir / "pyproject.toml").write_text(
+        f'[project]\nname = "{plugin_id}"\nversion = "1.0.0"\ndependencies = ["probedep>=1.0"]\n',
+        encoding="utf-8",
+    )
+    _write_vendor_dist(plugin_dir, "probedep", "1.0.0")
+    (plugin_dir / "vendor" / "probedep").mkdir()
+    (plugin_dir / "vendor" / "probedep" / "__init__.py").write_text(
+        'LABEL = "from vendor"\n', encoding="utf-8",
+    )
+    (plugin_dir / "child.py").write_text('VALUE = "from child"\n', encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(
+        "import probedep\n"
+        "from .child import VALUE\n"
+        "from plugin.sdk.plugin.decorators import plugin_entry\n"
+        "class Demo:\n"
+        "    @plugin_entry(id='hello', name=VALUE + ' ' + probedep.LABEL)\n"
+        "    def hello(self): return VALUE\n",
+        encoding="utf-8",
+    )
+    return plugin_dir
+
+
+@pytest.mark.parametrize("probe_succeeds", [False, True])
+def test_root_local_metadata_named_plugin_data_survives_packaging(tmp_path, monkeypatch, probe_succeeds):
+    from plugin.neko_plugin_cli.core import metadata_probe
+
+    source = _make_importable_plugin_dir(tmp_path / "source")
+    summary = packaged_metadata.source_stat_summary(source)
+    sidecar = source / "plugin.meta.local.json"
+    sidecar.write_text(json.dumps({
+        "schema_version": packaged_metadata.PACKAGED_METADATA_SCHEMA_VERSION,
+        "sdk_version": packaged_metadata.SDK_VERSION,
+        "source_sha256": packaged_metadata.compute_source_sha256(source),
+        "source_files": summary.names,
+        "source_bytes": summary.total_bytes,
+        "build_env": packaged_metadata.build_environment(),
+        "entries_config_sha256": "",
+        "entries": [{"id": "stale"}],
+        "handlers": {"probe_plugin.stale": {"event_type": "plugin_entry", "id": "stale"}},
+        "entry_methods": {"stale": "stale"},
+    }), encoding="utf-8")
+    source_bytes = sidecar.read_bytes()
+    if not probe_succeeds:
+        def failed_probe(*_args, **_kwargs):
+            raise metadata_probe.MetadataProbeError("optional dependency missing")
+
+        monkeypatch.setattr(metadata_probe, "derive_plugin_metadata", failed_probe)
+    result = build_plugin(source, out_file=tmp_path / "built.neko-plugin")
+    extracted = tmp_path / "extracted"
+    with zipfile.ZipFile(result.package_path) as archive:
+        member = "payload/plugins/probe_plugin/" + sidecar.name
+        assert archive.read(member) == source_bytes
+        archive.extractall(extracted)
+    loaded = packaged_metadata.read_packaged_metadata(extracted / "payload/plugins/probe_plugin")
+    if probe_succeeds:
+        assert loaded is not None
+        assert "probe_plugin.hello" in loaded.handlers
+        assert "probe_plugin.stale" not in loaded.handlers
+    else:
+        assert loaded is None
+    assert sidecar.read_bytes() == source_bytes
+
+
+def test_local_metadata_named_plugin_data_is_preserved_at_every_depth():
+    name = "plugin.meta.local.json"
+    rules = BuildRuleSet(include=["*"])
+    assert not should_skip_path(Path(name), is_dir=False, rules=rules)
+    assert not should_skip_path(Path("data") / name, is_dir=False, rules=rules)
+
+
+def _assert_probed_without_bytecode(package_path: Path, plugin_ids: list[str]) -> None:
+    with zipfile.ZipFile(package_path) as archive:
+        names = archive.namelist()
+        leaked = [name for name in names if "__pycache__" in name or name.endswith((".pyc", ".pyo"))]
+        assert leaked == []
+        for plugin_id in plugin_ids:
+            # 探测真的跑成了：没有元数据的包同样不会带 .pyc，那样这条断言就是空转。
+            meta = archive.read(f"payload/plugins/{plugin_id}/plugin.meta.json").decode("utf-8")
+            assert "from child from vendor" in meta
+            assert f"payload/plugins/{plugin_id}/vendor/probedep/__init__.py" in names
 
 
 def _write_vendor_dist(plugin_dir: Path, name: str, version: str) -> None:
@@ -204,6 +302,42 @@ def test_build_rules_keep_vendored_packages_named_build_or_dist() -> None:
     assert should_skip_path(Path("vendor/dist/__init__.py"), is_dir=False, rules=rules) is False
 
 
+def test_build_and_pack_rules_skip_dependency_sync_work_dirs() -> None:
+    build_rules = BuildRuleSet()
+    pack_rules = PackRuleSet()
+
+    for name in (".vendor.staging-0a1b2c3d", ".vendor.backup-0a1b2c3d"):
+        for path, is_dir in ((Path(name), True), (Path(name, "old.py"), False)):
+            assert should_skip_path(path, is_dir=is_dir, rules=build_rules) is True
+            assert should_skip_pack_path(path, is_dir=is_dir, rules=pack_rules) is True
+    marker = Path(".vendor.backup-0a1b2c3d.pending")
+    assert should_skip_path(marker, is_dir=False, rules=build_rules) is True
+    assert should_skip_pack_path(marker, is_dir=False, rules=pack_rules) is True
+    # An in-place --clean of a linked or mounted vendor/ stages inside it.
+    for path, is_dir in (
+        (Path("vendor", ".vendor.staging-0a1b2c3d"), True),
+        (Path("vendor", ".vendor.staging-0a1b2c3d", "half.py"), False),
+    ):
+        assert should_skip_path(path, is_dir=is_dir, rules=build_rules) is True
+        assert should_skip_pack_path(path, is_dir=is_dir, rules=pack_rules) is True
+    # Only exact generated names at the plugin root: a plugin's own
+    # look-alike directory, or one nested deeper, is plugin source.
+    for kept in (
+        # Only a backup has a pending marker; this name is never generated.
+        Path(".vendor.staging-0a1b2c3d.pending"),
+        Path(".vendor.backup-notes", "data.txt"),
+        Path(".vendor.staging-assets", "data.txt"),
+        Path("assets", ".vendor.backup-0a1b2c3d", "data.txt"),
+        # Only staging is ever created inside vendor/.
+        Path("vendor", ".vendor.backup-0a1b2c3d", "data.txt"),
+        # A plugin may ship its own files in vendor/bin, as on main.
+        Path("vendor", "bin", "tool"),
+        Path("vendor", "pkg", ".vendor.staging-0a1b2c3d", "data.txt"),
+    ):
+        assert should_skip_path(kept, is_dir=False, rules=build_rules) is False
+        assert should_skip_pack_path(kept, is_dir=False, rules=pack_rules) is False
+
+
 def test_build_plugin_writes_expected_profile_and_skips_runtime_artifacts(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     vendored_build = plugin_dir / "vendor" / "build"
@@ -240,6 +374,39 @@ def test_build_plugin_writes_expected_profile_and_skips_runtime_artifacts(tmp_pa
         dependency_text = archive.read("payload/dependencies.toml").decode("utf-8")
         assert 'python_requirements = ["httpx>=0.27", "pydantic>=2.0"]' in dependency_text
         assert 'vendor_path = "plugins/demo_plugin/vendor"' in dependency_text
+
+
+def test_build_plugin_metadata_probe_leaves_no_bytecode_in_package(tmp_path: Path) -> None:
+    plugin_dir = _make_importable_plugin_dir(tmp_path)
+    package_path = tmp_path / "probe_plugin.neko-plugin"
+
+    build_plugin(plugin_dir, package_path)
+
+    _assert_probed_without_bytecode(package_path, ["probe_plugin"])
+    assert inspect_package(package_path).payload_hash_verified is True
+
+
+def test_build_bundle_metadata_probe_leaves_no_bytecode_in_package(tmp_path: Path) -> None:
+    first = _make_importable_plugin_dir(tmp_path, "probe_one")
+    second = _make_importable_plugin_dir(tmp_path, "probe_two")
+    package_path = tmp_path / "probe.neko-bundle"
+
+    build_bundle([first, second], package_path, bundle_id="probe_bundle")
+
+    _assert_probed_without_bytecode(package_path, ["probe_one", "probe_two"])
+    assert inspect_package(package_path).payload_hash_verified is True
+
+
+def test_plugin_builder_default_import_mode_leaves_no_bytecode_in_package(tmp_path: Path) -> None:
+    # 直接用 PluginBuilder() 的调用方走普通导入，探测会往暂存目录写 __pycache__；
+    # 这些字节码同样不能进包。
+    plugin_dir = _make_importable_plugin_dir(tmp_path)
+    package_path = tmp_path / "probe_plugin.neko-plugin"
+
+    PluginBuilder().build_plugin(plugin_dir, package_path)
+
+    _assert_probed_without_bytecode(package_path, ["probe_plugin"])
+    assert inspect_package(package_path).payload_hash_verified is True
 
 
 def test_build_plugin_rejects_pyproject_dependencies_without_vendor(tmp_path: Path) -> None:
@@ -863,3 +1030,67 @@ def test_build_metadata_does_not_store_absolute_source_paths(tmp_path: Path) -> 
 
     assert str(plugin_dir.resolve()) not in metadata
     assert 'paths = ["metadata_demo"]' in metadata
+
+
+def test_plugin_tree_walk_does_not_descend_into_sync_work_dirs(tmp_path, monkeypatch):
+    # A backup is retained when it holds a mount; build/pack must not walk it.
+    from plugin.neko_plugin_cli.core import build_rules
+
+    (tmp_path / ".vendor.backup-0a1b2c3d" / "deep").mkdir(parents=True)
+    (tmp_path / ".vendor.backup-0a1b2c3d.pending").touch()
+    (tmp_path / "vendor" / ".vendor.staging-1111abcd" / "deep").mkdir(parents=True)
+    (tmp_path / ".vendor.backup-notes").mkdir()
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "mod.py").write_text("x = 1", encoding="utf-8")
+    visited = []
+    real_walk = build_rules.os.walk
+
+    def walk(top, *args, **kwargs):
+        for entry in real_walk(top, *args, **kwargs):
+            visited.append(Path(entry[0]).relative_to(tmp_path))
+            yield entry
+
+    monkeypatch.setattr(build_rules.os, "walk", walk)
+    paths = build_rules.walk_plugin_tree(tmp_path)
+
+    pruned = {
+        Path(".vendor.backup-0a1b2c3d"),
+        Path("vendor", ".vendor.staging-1111abcd"),
+    }
+    assert not any(
+        path == root or root in path.parents for path in visited for root in pruned
+    )
+    assert paths == sorted(
+        path
+        for path in tmp_path.rglob("*")
+        if not any(
+            rel == root or root in rel.parents
+            for rel in [path.relative_to(tmp_path)]
+            for root in pruned
+        )
+    )
+
+
+@pytest.mark.parametrize("error", [OSError(5, "I/O error"), PermissionError(13, "denied")])
+def test_plugin_tree_walk_raises_like_rglob(tmp_path, monkeypatch, error):
+    # rglob skipped only denied directories; any other error must fail the
+    # build instead of silently dropping the subtree.
+    import os
+
+    from plugin.neko_plugin_cli.core import build_rules
+
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "ok.py").write_text("x = 1", encoding="utf-8")
+    real_scandir = os.scandir
+
+    def scandir(path="."):
+        if Path(path) == tmp_path / "broken":
+            raise error
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    if isinstance(error, PermissionError):
+        assert tmp_path / "ok.py" in build_rules.walk_plugin_tree(tmp_path)
+    else:
+        with pytest.raises(OSError):
+            build_rules.walk_plugin_tree(tmp_path)

@@ -108,10 +108,11 @@ def _build_system_config_sync() -> SystemConfigResponse:
     else:
         keys = []
 
+    resolve_value = settings.get_public_system_config_value
     config: dict[str, object] = {}
     for key in keys:
         try:
-            value = getattr(settings, key)
+            value = resolve_value(key)
         except AttributeError:
             logger.warning("skip missing system config key '{}'", key)
             continue

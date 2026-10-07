@@ -26,6 +26,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlparse
+from starlette.requests import ClientDisconnect
 
 import httpx
 from fastapi import APIRouter, Body, HTTPException, Query, Request
@@ -66,6 +67,8 @@ _native_delegates: dict[str, dict] = {}
 # 修改这两张表，整段持锁，否则并发增删会让迭代抛 RuntimeError 把请求变成 500。
 _native_sync_tickets_lock = threading.Lock()
 _native_delegates_lock = threading.Lock()
+_session_path_warning_lock = threading.Lock()
+_session_path_expand_warning_emitted = False
 
 
 class _ClientBindingConflict(Exception):
@@ -98,6 +101,37 @@ class _CloudIdentityLookup:
 class _BrowserAuth:
     state: str | None
     local_user_id: str = ""
+
+
+_facts_cloud_budget = {"tokens": 12.0, "updated": time.monotonic(), "active": 0}
+_facts_cloud_budget_lock = threading.Lock()
+
+
+def _admit_facts_cloud_lookup(peer: str) -> bool:
+    """Bound each peer and total untrusted verification work in this worker."""
+    now = time.monotonic()
+    with _facts_cloud_budget_lock:
+        budget = _facts_cloud_budget
+        budget["tokens"] = min(12.0, budget["tokens"] + max(0, now - budget["updated"]) / 5)
+        budget["updated"] = now
+        if budget["active"] >= 2 or budget["tokens"] < 1:
+            return False
+        peers = budget.setdefault("peers", {})
+        for expired in [key for key, entry in peers.items() if now - entry["updated"] >= 60]:
+            peers.pop(expired)
+        entry = peers.get(peer)
+        if entry is None:
+            if len(peers) >= 256:
+                return False
+            entry = peers[peer] = {"tokens": 3.0, "updated": now}
+        entry["tokens"] = min(3.0, entry["tokens"] + max(0, now - entry["updated"]) / 15)
+        entry["updated"] = now
+        if entry["tokens"] < 1:
+            return False
+        entry["tokens"] -= 1
+        budget["tokens"] -= 1
+        budget["active"] += 1
+        return True
 
 
 def _sync_ticket_digest(ticket: str) -> str:
@@ -355,7 +389,11 @@ def _exact_origin_matches(a: str, b: str) -> bool:
 
 
 def _local_mutation_origin_allowed(request: Request) -> bool:
-    """Allow native callers or browser requests from the local NEKO origin only."""
+    """Allow local native callers or an authorized instance's own browser."""
+    if request.scope.get("neko.instance_identity"):
+        from utils.instance_access import _same_origin
+
+        return _same_origin(request)
     origin = (request.headers.get("origin") or "").strip().rstrip("/")
     if not origin:
         return True
@@ -385,6 +423,9 @@ def _require_local_mutation_ticket(request: Request, payload: dict | None) -> No
 
 def _local_request_source_allowed(request: Request) -> bool:
     """Allow same-origin local browser calls and non-browser native clients only."""
+    if getattr(request, "scope", {}).get("neko.instance_identity"):
+        from utils.instance_access import _same_origin
+        return _same_origin(request)
     origin = (request.headers.get("origin") or "").strip().rstrip("/")
     fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
     if not origin:
@@ -407,6 +448,9 @@ def _local_request_source_allowed(request: Request) -> bool:
 
 def _local_ui_request_source_allowed(request: Request) -> bool:
     """Require browser Fetch Metadata proving a request came from this local UI."""
+    if getattr(request, "scope", {}).get("neko.instance_identity"):
+        from utils.instance_access import _same_origin
+        return _same_origin(request)
     if (request.headers.get("sec-fetch-site") or "").strip().lower() != "same-origin":
         return False
     origin = (request.headers.get("origin") or "").strip().rstrip("/")
@@ -528,9 +572,18 @@ def _legacy_social_session_path() -> Path | None:
 
 def _social_session_path() -> Path | None:
     """Return the Electron-visible session path when the desktop host supplies it."""
+    global _session_path_expand_warning_emitted
     override = (os.environ.get("NEKO_USER_DATA_DIR") or "").strip()
     if override:
-        candidate = Path(override).expanduser()
+        try:
+            candidate = Path(override).expanduser()
+        except (OSError, RuntimeError, ValueError):
+            # All readers must share the fallback, including status resolution.
+            with _session_path_warning_lock:
+                if not _session_path_expand_warning_emitted:
+                    logger.warning("card_drop: cannot expand NEKO_USER_DATA_DIR; using legacy session path")
+                    _session_path_expand_warning_emitted = True
+            return _legacy_social_session_path()
         if candidate.is_absolute():
             return candidate / _SOCIAL_SESSION_FILENAME
         logger.warning("card_drop: ignoring relative NEKO_USER_DATA_DIR")
@@ -958,6 +1011,9 @@ def _unlink_credentials(paths: list[Path]) -> bool:
 def _clear_auth() -> bool:
     auth_path = _auth_path()
     paths = ([auth_path] if auth_path is not None else []) + _social_session_paths()
+    if auth_path is not None:
+        # Cancel in-flight OAuth before its credential commit under this same lock.
+        paths.append(auth_path.parent / "community_oauth_pending.json")
     paths = list(dict.fromkeys(paths))
     if auth_path is None:
         logger.warning("card_drop: cannot resolve auth path while clearing credentials")
@@ -1160,17 +1216,15 @@ async def _store_session(
     if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
         raise _ClientBindingConflict()
 
+    from main_routers import community_oauth
+
     auth_payload = {
         "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
         "access_token": access,
         "refresh_token": refresh,
         "local_user_id": local_user_id,
         "auth_source": normalized_source,
-        "user": {
-            "id": local_user_id,
-            "display_name": user.get("display_name"),
-            "email": user.get("email"),
-        },
+        "user": community_oauth._persisted_user_profile(user, local_user_id),
         "bind": bind,
     }
     await asyncio.to_thread(
@@ -1313,7 +1367,10 @@ def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
 
 @router.get("/auth-status", summary="社区登录状态")
 async def auth_status_endpoint(request: Request):
-    if not _local_request_source_allowed(request):
+    # Source metadata alone is not identity. Use the same verified instance
+    # boundary as OAuth queries before reading or refreshing account credentials.
+    from main_routers import community_oauth
+    if await community_oauth._account_request_identity(request) is None or not _local_request_source_allowed(request):
         return JSONResponse(
             {"detail": "origin_not_allowed"},
             status_code=403,
@@ -1322,8 +1379,6 @@ async def auth_status_endpoint(request: Request):
     # Validate the bearer (and refresh OAuth sessions when necessary) before
     # telling the UI that it is logged in.  Import lazily to keep the router
     # modules' existing dependency direction intact.
-    from main_routers import community_oauth
-
     status = await community_oauth.resolve_saved_oauth_status()
     if status["logged_in"]:
         a = status["auth"]
@@ -1332,10 +1387,17 @@ async def auth_status_endpoint(request: Request):
         bind = a.get("bind") or {"bound": True, "error": None}
         return {
             "logged_in": True,
-            "user": {"display_name": u.get("display_name"), "email": u.get("email")},
+            "user": community_oauth._public_user_profile(u),
             "bind": bind,
         }
-    return {"logged_in": False, "user": None, "bind": None}
+    # 云端暂时校验不了时本地会话仍在，前端据此区分“明确登出”和“状态未知”，
+    # 不能把后者提示成去登录。
+    return {
+        "logged_in": False,
+        "user": None,
+        "bind": None,
+        "session_saved": community_oauth.status_session_saved(status),
+    }
 
 
 @router.get("/sync-ticket", summary="签发一次性社区网页登录态同步票据")
@@ -1438,32 +1500,48 @@ def _handoff_return_url(return_to: str | None, audience: str) -> str | None:
     return f"{base_parsed.scheme}://{base_parsed.netloc}{path}{query}"
 
 
-async def _native_delegate_session_snapshot() -> tuple[dict | None, str]:
-    """Refresh, validate, and load a fingerprintable desktop session."""
+async def _native_delegate_session_snapshot(
+    *, revalidate_replacement: bool = False,
+) -> tuple[dict | None, str]:
+    """Refresh, validate, and load a fingerprintable desktop session.
+
+    ``revalidate_replacement`` lets a caller that cannot retry on its own (the
+    handoff navigation lands on a static page) validate a session replaced
+    after the first cloud check once more, instead of reporting it busy.
+    """
     # Pet requests this endpoint before its separate auth-status probe. Resolve
     # OAuth first so a just-refreshed access token cannot invalidate the newly
     # issued delegate immediately after the community tab opens.
     from main_routers import community_oauth
 
-    status = await community_oauth.resolve_saved_oauth_status()
-    if not status.get("logged_in"):
-        return None, "unavailable" if status.get("snapshot") else "missing"
+    for _ in range(2 if revalidate_replacement else 1):
+        status = await community_oauth.resolve_saved_oauth_status()
+        if not status.get("logged_in"):
+            return None, (
+                "unavailable" if community_oauth.status_session_saved(status) else "missing"
+            )
 
-    snapshot = await asyncio.to_thread(_desktop_session_snapshot)
-    if snapshot is None:
-        return None, "missing"
-    verified = status.get("snapshot") or {}
-    credentials_changed = any(
-        snapshot.get(key) != verified.get(key)
-        for key in ("base_url", "access_token", "refresh_token")
-    )
-    identity_changed = any(
-        verified.get(key) and snapshot.get(key) != verified.get(key)
-        for key in ("local_user_id", "auth_source")
-    )
-    if credentials_changed or identity_changed:
-        # A local replacement after cloud validation is not itself validated.
-        return None, "missing"
+        snapshot = await asyncio.to_thread(_desktop_session_snapshot)
+        if snapshot is None:
+            return None, "missing"
+        verified = status.get("snapshot") or {}
+        credentials_changed = any(
+            snapshot.get(key) != verified.get(key)
+            for key in ("base_url", "access_token", "refresh_token")
+        )
+        identity_changed = any(
+            verified.get(key) and snapshot.get(key) != verified.get(key)
+            for key in ("local_user_id", "auth_source")
+        )
+        if not (credentials_changed or identity_changed):
+            break
+    else:
+        # A local replacement after cloud validation is not itself validated,
+        # but a session still exists -- usually a concurrent token refresh.
+        # Report it as retryable (503) rather than as a logout (409). Proof
+        # callers retry on their own instead of paying for a second cloud
+        # validation here; only the handoff opts into one revalidation.
+        return None, "unavailable"
     # A concurrent proof request may have backfilled missing identity metadata
     # for these same validated credentials. Preserve that verified enrichment.
     if _desktop_session_fingerprint(snapshot):
@@ -1553,7 +1631,11 @@ async def native_delegate_handoff_endpoint(
             status_code=400,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
-    snapshot, failure = await _native_delegate_session_snapshot()
+    # A top-level navigation cannot retry a busy 503 by itself: validate a
+    # session rotated mid-check once more before showing the static error page.
+    snapshot, failure = await _native_delegate_session_snapshot(
+        revalidate_replacement=True,
+    )
     local_user_id = (snapshot or {}).get("local_user_id") or ""
     session_fingerprint = _desktop_session_fingerprint(snapshot)
     if not snapshot or not local_user_id or not session_fingerprint:
@@ -1951,6 +2033,12 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
             status_code=lookup.status_code,
             headers=cors,
         )
+    # Platform OAuth tokens stay refused here. The browser must never hand a platform
+    # bearer to localhost -- Verse locks that down from the SPA side in
+    # ``test_web_native_handoff_never_sends_oauth_bearer_to_localhost``, and this check is
+    # the server-side half of the same boundary. The desktop adopts a community login by
+    # minting its own credentials through a silent PKCE authorize instead, so no caller
+    # needs this endpoint to accept ``oauth``.
     if lookup.identity.auth_source != "legacy":
         return JSONResponse(
             {"detail": _PLATFORM_TOKEN_SYNC_FORBIDDEN},
@@ -1979,10 +2067,12 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
         return JSONResponse({"detail": exc.detail}, status_code=409, headers=cors)
     except _InvalidIdentityResponse as exc:
         return JSONResponse({"detail": exc.detail}, status_code=502, headers=cors)
+    from main_routers import community_oauth
+
     return JSONResponse(
         {
             "ok": True,
-            "user": {"display_name": user.get("display_name"), "email": user.get("email")},
+            "user": community_oauth._public_user_profile(user),
             "bind": bind,
         },
         headers=cors,
@@ -2060,7 +2150,90 @@ async def _facts_request_auth_state(request: Request) -> str:
     supplied = _request_bearer_token(request)
     if not supplied:
         return "mismatch"
-    return await _request_matches_desktop_session(_social_base_url(), supplied)
+    snapshot = await asyncio.to_thread(_desktop_session_snapshot)
+    fingerprint = _desktop_session_fingerprint(snapshot)
+    cached = request.scope.get("neko.facts_cloud_auth")
+    if cached is not None:
+        # Middleware and route share only this request's proof. Logout, refresh,
+        # or account switching invalidates it before protected data is read.
+        return cached[1] if cached[0] == fingerprint else "mismatch"
+    # Use the ASGI peer after the server's trusted-proxy handling, never a
+    # caller-supplied token, Origin, or raw forwarding header as the bucket key.
+    peer = request.client.host if request.client else "unknown"
+    if not _admit_facts_cloud_lookup(peer):
+        return "rate_limited"
+    try:
+        state = await _request_matches_desktop_session(_social_base_url(), supplied)
+    finally:
+        with _facts_cloud_budget_lock:
+            _facts_cloud_budget["active"] -= 1
+    current = await asyncio.to_thread(_desktop_session_snapshot)
+    if _desktop_session_fingerprint(current) != fingerprint:
+        return "mismatch"
+    if state == "match":
+        # The peer bucket penalizes unverified/failed attempts, not successful
+        # users sharing a NAT. Keep charging the total cloud-work budget.
+        with _facts_cloud_budget_lock:
+            entry = _facts_cloud_budget.get("peers", {}).get(peer)
+            if entry is not None:
+                entry["tokens"] = min(3.0, entry["tokens"] + 1)
+    request.scope["neko.facts_cloud_auth"] = (fingerprint, state)
+    return state
+
+
+async def authorize_community_handoff(request: Request) -> tuple[bool, bytes | None]:
+    """Authorize exact community CORS routes without a cross-site instance cookie.
+
+    Preflight and protocol metadata disclose no account state. Mutations need
+    an existing one-use ticket; reads need a matching delegate/cloud bearer.
+    Existing routes still perform their session/scope checks and consumption.
+    """
+    paths = {
+        "/api/card-drop/social-session-init": {"POST"},
+        "/api/card-drop/sync-session": {"POST"},
+        "/api/card-drop/bind-client/approve": {"POST"},
+        "/api/card-drop/sync-session/status": {"GET"},
+        "/api/card-drop/capabilities": {"GET"},
+        "/api/card-drop/facts": {"GET"},
+        "/api/card-drop/facts/query": {"POST"},
+        "/api/card-drop/active-character": {"GET"},
+    }
+    methods = paths.get(request.url.path)
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    if not methods or not origin or not _exact_origin_matches(origin, _social_base_url()):
+        return False, None
+    request.scope["neko.community_cors_origin"] = origin
+    if request.method == "OPTIONS":
+        requested = request.headers.get("access-control-request-method", "").upper()
+        return not requested or requested in methods, None
+    if request.method not in methods:
+        return False, None
+    if request.url.path.endswith("/capabilities"):
+        return True, None
+    if request.url.path in {"/api/card-drop/social-session-init", "/api/card-drop/sync-session",
+                            "/api/card-drop/bind-client/approve"}:
+        body = bytearray()
+        try:
+            async with asyncio.timeout(30):
+                async for chunk in request.stream():
+                    body.extend(chunk)
+                    if len(body) > 16384:
+                        return False, None
+            payload = json.loads(body)
+        except (ValueError, TimeoutError, ClientDisconnect):
+            return False, None
+        if not isinstance(payload, dict):
+            return False, None
+        ticket = payload.get("sync_ticket") or payload.get("syncTicket")
+        return _sync_ticket_is_valid(ticket), bytes(body)
+    if not _request_bearer_token(request):
+        return False, None
+    state = await _facts_request_auth_state(request)
+    if state == "unavailable":
+        request.scope["neko.community_auth_unavailable"] = True
+    if state == "rate_limited":
+        request.scope["neko.community_auth_rate_limited"] = True
+    return state == "match", None
 
 
 async def _build_local_forge_facts(**kwargs):
@@ -2140,6 +2313,12 @@ async def _forge_facts_response(request: Request, *, query: dict):
     if cors is None:
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
     auth_state = await _facts_request_auth_state(request)
+    if auth_state == "rate_limited":
+        return JSONResponse(
+            {"detail": "identity_verification_rate_limited"},
+            status_code=429,
+            headers={**cors, "Retry-After": "5"},
+        )
     if auth_state == "unavailable":
         return JSONResponse(
             {"detail": "identity_verification_unavailable"},

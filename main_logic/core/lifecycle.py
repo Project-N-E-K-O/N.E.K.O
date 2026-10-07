@@ -23,11 +23,13 @@ import asyncio
 import inspect
 import json
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
+from main_logic.session_state import session_reply_in_progress
 from main_logic.provider_failure_signals import (
     CODES_REQUIRING_MSG_DETAIL,
     classify_provider_failure_text,
@@ -70,6 +72,7 @@ from .callback_render import (
 # those names here: a from-import snapshots the value at import time and the
 # facade patch would no longer reach this module's methods.
 from main_logic import core as _core_facade
+from .session_records import start_phase
 
 class LifecycleMixin:
     """Session lifecycle methods (see module docstring)."""
@@ -248,6 +251,7 @@ class LifecycleMixin:
         except (json.JSONDecodeError, TypeError):
             _parsed = None
 
+        defer_native_idle_reconnect = False
         async with self.lock:
             is_pending = False
             if expected_session is not None:
@@ -281,20 +285,73 @@ class LifecycleMixin:
             # A pending_session failure must not misclassify the main session as closed.
             if not is_pending:
                 self.session_closed_by_server = True
+
+                # Voice-session activation deliberately keeps microphone PCM
+                # local while waiting. Some native providers retire an otherwise
+                # healthy socket during that quiet interval. Keep the Core voice
+                # lease alive for this one classified condition so the first
+                # owner-authorized output can reconnect the same client before
+                # replaying. Every other provider failure retains the ordinary
+                # fail-closed teardown below.
+                capture_activation_generation = getattr(
+                    self,
+                    "_capture_voice_session_activation_generation",
+                    None,
+                )
+                activation_runtime = getattr(
+                    self,
+                    "_voice_session_activation_runtime",
+                    None,
+                )
+                voice_input_accepts_pcm = getattr(
+                    self,
+                    "_voice_input_accepts_pcm",
+                    None,
+                )
+                defer_native_idle_reconnect = bool(
+                    isinstance(_parsed, dict)
+                    and _parsed.get("code") == "API_IDLE_TIMEOUT"
+                    and expected_session is not None
+                    and getattr(self, "_voice_session_activation_factory", None)
+                    is not None
+                    and activation_runtime is not None
+                    and getattr(self, "_asr_route_mode", "blocked") == "native"
+                    and getattr(self, "_voice_lease_owner", "none") == "core"
+                    and callable(capture_activation_generation)
+                    and activation_runtime.generation
+                    == capture_activation_generation()
+                    and callable(voice_input_accepts_pcm)
+                    and voice_input_accepts_pcm()
+                )
+                if defer_native_idle_reconnect:
+                    self._native_activation_idle_reconnect_identity = (
+                        activation_runtime.generation,
+                        getattr(expected_session, "_connection_generation", None),
+                    )
         
         if is_pending:
             logger.info("⏭️ handle_connection_error: expected_session is pending_session, delegating to pending teardown")
             await self._teardown_pending_session_from_lifecycle_callback(expected_session, message)
             return
+
+        if defer_native_idle_reconnect:
+            logger.info(
+                "[%s] native provider idled while voice-session activation "
+                "owns the microphone; deferring reconnect until authorized output",
+                self.lanlan_name,
+            )
+            return
         
+        status_code = None
         if message:
             # Pre-classified structured errors from omni_realtime_client (JSON with "code")
             # Forward them directly so the frontend sees the original code.
             if _parsed and isinstance(_parsed, dict) and _parsed.get('code'):
+                status_code = _parsed.get('code')
                 # Peer disconnects use the existing recovery below, which
                 # supplies CHARACTER_DISCONNECTED with the configured name.
                 # Forwarding this marker here would show the same toast twice.
-                if _parsed.get('code') != 'CHARACTER_DISCONNECTED':
+                if status_code != 'CHARACTER_DISCONNECTED':
                     await self.send_status(message_text)
             else:
                 # Same criteria, and the same ordering, the realtime close
@@ -312,7 +369,20 @@ class LifecycleMixin:
                     status_payload["details"] = {"msg": message_text}
                 await self.send_status(json.dumps(status_payload))
         logger.info("💥 Realtime connection recovery requested.")
-        await self.disconnected_by_server(expected_session=expected_session)
+        # CHARACTER_DISCONNECTED makes a recording frontend restart the voice
+        # session 7.5s later. After the free service's daily quota is spent
+        # that restart is rejected every time (the server does not say when
+        # the window reopens), so end the session without it; the user's next
+        # manual start retries. Paid providers keep the restart: their quota
+        # wording also covers recoverable per-minute 429s.
+        free_quota_spent = (
+            status_code == 'API_QUOTA_TIME'
+            and getattr(self, 'core_api_type', '') == 'free'
+        )
+        await self.disconnected_by_server(
+            expected_session=expected_session,
+            announce_disconnect=not free_quota_spent,
+        )
     
     async def handle_repetition_detected(self):
         """Handle the repetition-detection callback: reset Focus state, notify the frontend"""
@@ -349,8 +419,11 @@ class LifecycleMixin:
         still carry a reference to the session they were bound to,
         enabling the expected_session guard to detect stale callbacks.
         """
+        self._bind_owned_output_callbacks(session)
         async def on_connection_error(message=None, session_ref=session):
-            await self.handle_connection_error(message, expected_session=session_ref)
+            await self._run_owned_lifecycle_callback(
+                session_ref, self.handle_connection_error, message, expected_session=session_ref,
+            )
         
         # OmniRealtimeClient stores as .on_connection_error
         if isinstance(session, OmniRealtimeClient):
@@ -361,7 +434,9 @@ class LifecycleMixin:
         
         if hasattr(session, 'on_silence_timeout'):
             async def on_silence_timeout(session_ref=session):
-                await self.handle_silence_timeout(expected_session=session_ref)
+                await self._run_owned_lifecycle_callback(
+                    session_ref, self.handle_silence_timeout, expected_session=session_ref,
+                )
             session.on_silence_timeout = on_silence_timeout
 
     async def _restart_message_handler_after_session_reconnect(
@@ -430,7 +505,7 @@ class LifecycleMixin:
                         # 先关（close() 会同步摘掉 socket），再有界 join —— 反过来
                         # 就是在等一个已经证明停不下来的 task。
                         try:
-                            await orphan_session.close()
+                            await self._close_owned_session(orphan_session)
                         except Exception as reap_err:
                             logger.debug(
                                 '[%s] session reconnect: orphan close failed: %s',
@@ -510,6 +585,7 @@ class LifecycleMixin:
         self._require_context_append_current_delivery = False
         self.summary_triggered_time = None
         self.initial_cache_snapshot_len = 0
+        self._primed_context_snapshot = None
         
         # Snapshot task refs, cancel, await completion, THEN clear.
         # This ensures CancelledError handlers (e.g. _cleanup_pending_session_resources)
@@ -585,7 +661,7 @@ class LifecycleMixin:
         """Close a pending session that no longer has a slot to be cleared from."""
         try:
             logger.info("🧹 清理pending_session资源...")
-            await session.close()
+            await self._close_owned_session(session)
             logger.info("✅ Pending session已关闭")
         except asyncio.CancelledError:
             raise
@@ -593,10 +669,23 @@ class LifecycleMixin:
             logger.error(f"💥 清理pending_session时出错: {e}")
 
     async def _init_renew_status(self):
+        # A reply this end cut short whose completion is the session-level
+        # callback (an independent-ASR voice reply, a proactive one) never
+        # runs it: the retired connection's output callbacks are dropped
+        # (_bind_owned_output_callbacks). Close its AI turn here, or what it
+        # said rides the next session's first turn end into the tracker as
+        # part of that reply. cross_server needs nothing: the session end
+        # closes its turn. Done before this method's first await.
+        if getattr(self, "_current_ai_turn_text", "") or getattr(
+            self, "_discarded_turn_open", False
+        ):
+            self._flush_ai_turn_text_to_tracker()
         await self._reset_preparation_state(True)
         self.session_start_time = None
         await self._cleanup_pending_session_resources()  # 关闭由 manager 持有，取消也不会丢
         self.is_hot_swap_imminent = False
+        self._turn_wrap_up_owed = False
+        self._voice_turn_wrap_up_hold = None
         # 状态机是 per-manager 的，跨 start_session/end_session 复用同一实例。
         # 若上一轮 proactive 在 PHASE1/PHASE2 中途 WS 断开、PROACTIVE_DONE 来不及
         # fire，phase/_preempted 会泄漏到新会话，堵死 can_start_proactive。
@@ -616,7 +705,10 @@ class LifecycleMixin:
         except Exception:
             return ''
 
-    async def _handle_session_start_exception(self, e: BaseException, input_mode: str, diag_start: float) -> None:
+    async def _handle_session_start_exception(
+        self, e: BaseException, input_mode: str, diag_start: float,
+        *, request_id=None, also_notify=None,
+    ) -> None:
         """Unified handling of session start failure: log, send the status code, send_session_failed, cleanup.
 
         Used by start_session's outer except, covering both the prelude
@@ -636,7 +728,7 @@ class LifecycleMixin:
                 _instr_counter("voice_setup_failed", reason=type(e).__name__[:32])
             except Exception:
                 pass  # 埋点 best-effort：instrument 不可用也不能挡失败收口流程
-        error_str = str(e)
+        error_str = str(e) or ("Session startup timed out" if isinstance(e, TimeoutError) else "")
 
         is_memory_server_error = isinstance(e, ConnectionError) and any(
             kw in error_str.lower() for kw in ["memory server", "记忆服务"]
@@ -645,6 +737,7 @@ class LifecycleMixin:
         if is_memory_server_error:
             logger.error(f"🧠 {error_str}")
             await self.send_status(json.dumps({"code": "MEMORY_SERVER_NOT_RUNNING"}))
+            self._check_start_operation()
             # Memory Server 错误不计入失败次数（这是配置问题而非网络问题）
             self.session_start_failure_count -= 1
             self._memory_error_retry_after = time.time() + self._memory_error_cooldown_seconds
@@ -660,37 +753,67 @@ class LifecycleMixin:
                     critical_message = f"⛔ Session启动连续失败{self.session_start_failure_count}次，已停止自动重试。请检查网络连接和API配置，然后刷新页面重试。"
                     logger.critical(critical_message)
                     await self.send_status(json.dumps({"code": "SESSION_START_CRITICAL", "details": {"count": self.session_start_failure_count}}))
+                    self._check_start_operation()
             else:
-                await self.send_status(json.dumps({"code": "SESSION_START_FAILED", "details": {"error": str(e), "count": self.session_start_failure_count}}))
+                await self.send_status(json.dumps({"code": "SESSION_START_FAILED", "details": {"error": error_str, "count": self.session_start_failure_count}}))
+                self._check_start_operation()
 
-            if 'WinError 10061' in error_str or 'WinError 10054' in error_str:
+            if isinstance(e, TimeoutError):
+                await self.send_status(json.dumps({"code": "CONNECTION_TIMEOUT", "details": {"error": error_str}}))
+                self._check_start_operation()
+            elif 'WinError 10061' in error_str or 'WinError 10054' in error_str:
                 if str(self.memory_server_port) in error_str or '48912' in error_str:
                     await self.send_status(json.dumps({"code": "MEMORY_SERVER_CRASHED", "details": {"port": self.memory_server_port}}))
+                    self._check_start_operation()
                 else:
                     await self.send_status(json.dumps({"code": "CONNECTION_REFUSED"}))
+                    self._check_start_operation()
             elif ('401' in error_str or 'unauthorized' in error_str.lower()
                     or 'authentication' in error_str.lower()
                     or 'incorrect api key' in error_str.lower()
                     or 'invalid_api_key' in error_str.lower()
                     or ('invalid' in error_str.lower() and 'key' in error_str.lower())):
                 await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
+                self._check_start_operation()
             elif '429' in error_str:
                 await self.send_status(json.dumps({"code": "API_RATE_LIMIT_SESSION"}))
+                self._check_start_operation()
             elif 'HTTP 503' in error_str:
                 await self.send_status(json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
+                self._check_start_operation()
+            elif classify_provider_failure_text(error_str) == 'API_QUOTA_TIME':
+                # Free servers reject a spent quota with a close frame right
+                # after the handshake, which can land inside start_session.
+                # Kept after 429 so "429 ... quota exceeded" stays a rate limit.
+                await self.send_status(json.dumps({"code": "API_QUOTA_TIME"}))
+                self._check_start_operation()
             elif 'All connection attempts failed' in error_str:
                 await self.send_status(json.dumps({"code": "LLM_CONNECTION_FAILED"}))
+                self._check_start_operation()
             else:
                 await self.send_status(json.dumps({"code": "CONNECTION_CLOSED_ABNORMAL", "details": {"error": error_str}}))
+                self._check_start_operation()
 
         # 必须在 cleanup 之前发送，因为 cleanup 会清空 websocket 引用
-        await self.send_session_failed(input_mode)
+        await self.send_session_failed(
+            input_mode, request_id=request_id, also_notify=also_notify,
+        )
+        self._check_start_operation()
+        if self._current_start_request() is not None:
+            # The frontend has a terminal result. Retirement owns the input
+            # clear, producers and physical close, and its barrier prevents the
+            # next start from using that state before handoff. Waiting for close
+            # here would extend an exhausted startup budget indefinitely.
+            self.request_end_session(by_server=True)
+            return
         # reset_starting_count=False：本函数从失败的 start_session 的 except 里调用，
         # 那次 start_session 的 finally 才是 _starting_session_count guard 的唯一所有者
         # 并会在最后递减它。若让这里的 cleanup 提前把 count 清 0，会开出一个"失败任务
         # 尚未完全收尾、但 count 已 0"的窗口，等待中的跨模式重启会据此重入，随后被
         # 失败任务残余的 cleanup（清 websocket）和 finally（减 guard）clobber（Codex P2）。
-        await self.cleanup(reset_starting_count=False)
+        self._check_start_operation()
+        await self.end_session(by_server=True, reset_starting_count=False)
+        self._check_start_operation()
         # 但 reset_starting_count=False 会让 end_session 的 inactive-early 路径跳过
         # pending_input_data.clear()（那块与 guard 释放耦合），导致本次失败启动期间缓存的
         # 输入残留、被下次成功启动的 _flush_pending_input_data() 误注入（Codex P2）。
@@ -699,6 +822,7 @@ class LifecycleMixin:
         # 不走 end_session 的 gating 改动，rebuild 路径(同样 reset_starting_count=False 但
         # 需要保留输入回放)语义不受影响。
         async with self.input_cache_lock:
+            self._check_start_operation()
             self.session_ready = False
             self.pending_input_data.clear()
             self._clear_pending_context_appends()
@@ -766,8 +890,15 @@ class LifecycleMixin:
     async def _idle_session_reset_loop(self) -> None:
         """Periodically check the user's silence duration; past the threshold, proactively
         end_session so the next message triggers fresh /new_dialog context injection.
-        Guards: responding / takeover / session starting / no activity timestamp →
-        skip this round, re-evaluate next round.
+        Guards: reply work in progress / takeover / session starting / no activity
+        timestamp → skip this round, re-evaluate next round.
+
+        Reply work is ``session_reply_in_progress`` and, on an offline session,
+        anything ``is_idle`` still counts (the same check the owed wrap-up's
+        settle waits on): a guard-paused reply has ``_is_responding`` down
+        while still live, and a reply call can still be before its begin (a
+        proactive reply's image setup) or finishing a cancelled reply's tool
+        handler. Ending the session there would cut that reply.
         """
         while True:
             try:
@@ -778,7 +909,10 @@ class LifecycleMixin:
                     continue
                 if self._takeover_active:
                     continue
-                if getattr(self.session, '_is_responding', False):
+                session = self.session
+                if session_reply_in_progress(session) or (
+                    isinstance(session, OmniOfflineClient) and not session.is_idle()
+                ):
                     continue
                 last_activity = self.last_user_activity_time
                 if last_activity is None:
@@ -851,189 +985,150 @@ class LifecycleMixin:
             logger.debug("[%s] 活动心跳 kick 失败: %s", self.lanlan_name, e)
 
     async def start_session(
-        self,
-        websocket: WebSocket,
-        new=False,
-        input_mode='audio',
-        *,
-        user_initiated=False,
-        _allow_cross_mode_restart=True,
+        self, websocket: WebSocket, new=False, input_mode='audio', *,
+        user_initiated=False, _allow_cross_mode_restart=True,
         handshake_override=_HANDSHAKE_OVERRIDE_UNSET,
         resource_optimization_override=_HANDSHAKE_OVERRIDE_UNSET,
-        request_id=None,
+        provider_preference_override=_HANDSHAKE_OVERRIDE_UNSET,
+        request_id=None, _deadline=None,
     ):
-        # user_initiated：True 仅由 websocket_router 的 start_session action 传入，
-        # 标记"用户显式点击启动"。跨模式撞车时只有用户显式请求才会等 in-flight
-        # 落定后改起目标模式；后台 proactive / greeting 的 auto-start 跨模式撞车
-        # 仍走静默 return（保持原行为，避免后台 text 启动反过来顶掉用户的语音会话）。
-        # _allow_cross_mode_restart：跨模式重启重入时置 False，把递归深度封到 1，
-        # 二次并发撞车回落静默 return 而非无界递归。
-        # Codex P2. Snapshot the start_session handshake for THIS dispatched
-        # operation, before the first await. websocket_router writes the
-        # frontend's authoritative independent-ASR toggle into one manager-level
-        # field and then fires start_session as a background task; the route
-        # decision only reads that field much later, inside
-        # _start_independent_asr_if_enabled, after many awaits. A second
-        # start_session arriving in between -- including a text one, or an older
-        # frontend whose field is absent and therefore CLEARS the override --
-        # replaced the first request's value, so that audio session selected the
-        # persisted or opposite route. Read once here, then carry it down.
         session_handshake_override = (
-            getattr(self, "_independent_asr_handshake_override", None)
-            if handshake_override is _HANDSHAKE_OVERRIDE_UNSET
-            else handshake_override
+            getattr(self, '_independent_asr_handshake_override', None)
+            if handshake_override is _HANDSHAKE_OVERRIDE_UNSET else handshake_override
         )
-        session_resource_optimization_handshake_override = (
-            getattr(
-                self,
-                "_voice_input_resource_optimization_handshake_override",
-                None,
-            )
+        session_resource_override = (
+            getattr(self, '_voice_input_resource_optimization_handshake_override', None)
             if resource_optimization_override is _HANDSHAKE_OVERRIDE_UNSET
             else resource_optimization_override
         )
-        self._start_session_seed_turn_language()
-        # 重置防刷屏标志
-        self.session_closed_by_server = False
-        self.last_audio_send_error_time = 0.0
-        # 熔断早退：达到失败上限后，所有内部 recovery 路径在此返回，
-        # 避免 stream_data / _process_stream_data_internal 每个音频包都触发
-        # 一次连接尝试导致日志被刷屏。用户显式 retry（websocket_router 的
-        # start_session action）会在那边先调 reset_session_start_circuit() 清掉。
+        session_provider_preference_handshake_override = (
+            getattr(
+                self,
+                '_independent_asr_provider_preference_handshake_override',
+                None,
+            )
+            if provider_preference_override is _HANDSHAKE_OVERRIDE_UNSET
+            else provider_preference_override
+        )
+        deadline = _deadline or (
+            asyncio.get_running_loop().time() + FRONTEND_START_SESSION_TIMEOUT_SECONDS
+        )
+        abandon_epoch = getattr(self, '_user_session_abandon_epoch', 0)
         if self._session_start_circuit_open:
-            logger.debug("Session启动熔断已跳闸，忽略本次启动请求（等用户刷新/重试）")
             return
-        # 检查是否正在启动中（in-flight 去重 / 跨模式改起，详见 helper）
         if await self._start_session_handle_inflight(
-            websocket, new, input_mode,
-            user_initiated=user_initiated,
+            websocket, new, input_mode, user_initiated=user_initiated,
             _allow_cross_mode_restart=_allow_cross_mode_restart,
-            request_id=request_id,
-            handshake_override=session_handshake_override,
-            resource_optimization_override=(
-                session_resource_optimization_handshake_override
-            ),
+            request_id=request_id, handshake_override=session_handshake_override,
+            resource_optimization_override=session_resource_override,
+            provider_preference_override=session_provider_preference_handshake_override,
+            deadline=deadline,
         ):
             return
-
-        # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
-        self._starting_session_count += 1
-        self._starting_input_mode = input_mode
-        # 干净的播放门控：清掉上一会话可能残留的 playback flag / manager 队列
-        # （前端中途断线/刷新导致 voice_play_end 丢失时尤为重要）。放在熔断早退
-        # 与 "正在启动中" 去重早退 *之后*——那些早退不会真正起新 session，提前
-        # reset 会误清掉仍在播放的旧会话门控（Codex P1）。这里已确定要起新会话。
-        self._reset_proactive_gate()
-        # 首次 start_session 起算，让 idle reset loop 永久存活
-        self._ensure_idle_session_reset_loop()
-        # rebase idle 计时基准：last_user_activity_time 是 manager 状态、跨 session 持久。
-        # idle-reset 触发 end_session 后用户再开新 session 时，如不重置就会继承超过
-        # 阈值的旧时间戳，下一轮 sweep 立刻把新 session 当成 30 min idle 再关一次。
-        # 同步刷新 proactive 路径 10s 抑制窗口（prepare_proactive_delivery），避免
-        # session 刚起来就被立刻触发主动搭话。
-        self.last_user_activity_time = time.time()
-        # CAS 落败早退标志：True 时禁止 finally 递减 guard，
-        # 防止赢家初始化期间第三个协程穿过 guard 浪费 LLM 连接。
-        _llm_concurrent_aborted = False
-        _diag_start = time.time()
-        # 预创建的 /new_dialog 任务：若 _start_session_start_llm 之前就抛异常，
-        # finally 会负责 cancel + await，避免孤儿 task 残留连接。
-        _new_dialog_task = None
-
+        operation, token = self._claim_start_operation(
+            websocket, request_id, input_mode, deadline, advance_generation=False,
+        )
+        diag_start = time.time()
+        new_dialog_task = None
         try:
-            realtime_config, core_config_snapshot = await self._start_session_prepare_runtime(
-                websocket, input_mode, new, _diag_start
-            )
-        
-            await self._start_session_reset_stream_state(
-                input_mode, realtime_config, core_config_snapshot
-            )
-        
-            await self._start_session_retire_previous()
-
-            # —— 提前发起 /new_dialog，避免被 TTS worker 线程的 dashscope
-            # import 抢 GIL 拖慢。在 gather 之前就 create_task，让 httpx 先
-            # 和 server 建好连接、收到响应；gather 时 _start_session_start_llm 只
-            # await 现成的结果即可。
-            logger.info(f"[语音会话诊断] 开始获取记忆上下文 (端口 {self.memory_server_port})")
-            _mem_start = time.time()
-            _new_dialog_task = asyncio.create_task(
-                self._start_session_fetch_new_dialog(self.lanlan_name, self.memory_server_port)
-            )
-
-            # 重置状态
-            if new:
-                await self._start_session_reset_state_for_new()
-
-            # 并行启动 TTS 和 LLM Session
-            logger.info("🚀 并行启动 TTS 和 LLM Session...")
-            start_parallel_time = time.time()
-            
-            tts_result, llm_result = await asyncio.gather(
-                self._start_session_start_tts_if_needed(),
-                self._start_session_start_llm(
-                    input_mode, core_config_snapshot, realtime_config,
-                    _new_dialog_task, _mem_start
-                ),
-                return_exceptions=True
-            )
-            
-            logger.info(f"⚡ 并行启动完成 (总用时: {time.time() - start_parallel_time:.2f}秒)")
-            tts_status = '异常' if isinstance(tts_result, Exception) else ('跳过(原生语音)' if not self.use_tts else 'OK')
-            logger.info(f"[语音会话诊断] 并行启动结果: TTS={tts_status}, LLM={'异常' if isinstance(llm_result, Exception) else 'OK'}")
-            # 检查是否有错误
-            if isinstance(tts_result, Exception):
-                logger.error(f"TTS 启动失败: {tts_result}")
-            # 并发落败分支：赢家已持有 self.session / message_handler_task，
-            # 我们不能继续走 "if self.session" 分支（会覆盖 handler task、重复
-            # send_session_started），也不能 raise（会误触发 cleanup 杀掉赢家）。
-            # 同时设置 _llm_concurrent_aborted=True 让 finally 跳过 guard 递减：
-            # 赢家尚未完成初始化，必须保持 guard 以阻止第三个协程穿过。
-            if llm_result is _START_LLM_CONCURRENT_ABORTED:
-                logger.info("[语音会话诊断] start_session 因并发 CAS 落败早退，保持 guard 关闭")
-                _llm_concurrent_aborted = True
+            # Reserve admission before the first handoff await so ingress
+            # queues behind this request instead of starting another session.
+            try:
+                await self._wait_session_handoff(deadline)
+            except Exception:
+                await self._discard_start_reservation_inputs(operation)
+                await self.send_session_failed(input_mode, request_id=request_id, also_notify=websocket)
                 return
-            if isinstance(llm_result, Exception):
-                raise llm_result  # LLM Session 失败是致命的
-            
-            # 标记 session 激活
-            if self.session:
-                await self._start_session_activate(
-                    input_mode,
-                    llm_result,
-                    _diag_start,
-                    request_id=request_id,
-                    handshake_override=session_handshake_override,
-                    resource_optimization_override=(
-                        session_resource_optimization_handshake_override
-                    ),
+            if abandon_epoch != getattr(self, '_user_session_abandon_epoch', 0):
+                await self._discard_start_reservation_inputs(operation)
+                if request_id is not None:
+                    await self.send_session_failed(input_mode, request_id=request_id, also_notify=websocket, allow_retired_operation=True)
+                return
+            self._check_start_operation()
+            # The reservation must not take state ownership away from the
+            # preceding retirement while its memory/input cleanup is running.
+            self._session_generation = operation.generation
+            async with asyncio.timeout_at(deadline):
+                # Finish the previous conversation's state/memory boundary
+                # before mutating config, input or output state for this one.
+                await self._start_session_retire_previous()
+                self._check_start_operation()
+                self._start_session_seed_turn_language()
+                self.session_closed_by_server = False
+                self.last_audio_send_error_time = 0.0
+                self._reset_proactive_gate()
+                self._ensure_idle_session_reset_loop()
+                self.last_user_activity_time = time.time()
+                realtime_config, core_config = await self._start_session_prepare_runtime(
+                    websocket, input_mode, new, diag_start,
                 )
-            else:
-                raise Exception("Session not initialized")
-        
-        except Exception as e:
-            # prelude（_cleanup_pending_session_resources / end_session / asyncio.sleep 等）
-            # 与 gather 块的错误统一走这里收口：send_session_failed + cleanup，避免前端卡在 preparing。
-            # 注意：except Exception 不会捕获 CancelledError，shutdown 路径保持原语义。
-            await self._handle_session_start_exception(e, input_mode, _diag_start)
+                await self._start_session_reset_stream_state(input_mode, realtime_config, core_config)
+                mem_start = time.time()
+                new_dialog_task = asyncio.create_task(self._start_session_fetch_new_dialog(
+                    self.lanlan_name, self.memory_server_port,
+                ))
+                if new:
+                    await self._start_session_reset_state_for_new()
+                tts_result, llm_result = await asyncio.gather(
+                    self._start_session_start_tts_if_needed(),
+                    self._start_session_start_llm(input_mode, core_config, realtime_config,
+                                                  new_dialog_task, mem_start),
+                    return_exceptions=True,
+                )
+                self._check_start_operation()
+                if isinstance(tts_result, asyncio.CancelledError):
+                    raise tts_result
+                if isinstance(tts_result, BaseException):
+                    # TTS is an optional output path. Keep the LLM session
+                    # usable and let the normal response/respawn path recover
+                    # the worker instead of turning this into session_failed.
+                    # The queue handler may have received a late __ready__
+                    # while gather was still waiting for the LLM connection.
+                    # Keep readiness owned by that handler and runtime.
+                    logger.warning("TTS startup wait failed; preserving handler readiness: %s", tts_result)
+                if isinstance(llm_result, BaseException):
+                    raise llm_result
+                if llm_result is _START_LLM_CONCURRENT_ABORTED:
+                    return
+                if self.session is None:
+                    raise RuntimeError('Session not initialized')
+                await self._start_session_activate(
+                    input_mode, llm_result, diag_start, request_id=request_id,
+                    handshake_override=session_handshake_override,
+                    resource_optimization_override=session_resource_override,
+                    provider_preference_override=session_provider_preference_handshake_override,
+                )
+                if (isinstance(tts_result, BaseException) and self.use_tts
+                        and not (self._tts_runtime_is_current(self._snapshot_tts_runtime())
+                                 and self.is_tts_pipeline_ready)):
+                    # Publication fixes recovery ownership to the new session.
+                    # Retired live workers retain capacity until physical exit.
+                    self._tts_capacity_exhausted = False
+                    self._schedule_tts_capacity_recovery()
+        except asyncio.CancelledError:
+            await self._discard_start_reservation_inputs(operation)
+            if request_id is not None:
+                await self.send_session_failed(input_mode, request_id=request_id, also_notify=websocket, allow_retired_operation=True)
+            if operation.valid:
+                self.request_end_session(by_server=True)
+            # An accepted user end revoked this operation. The manager-owned
+            # retirement drains its children and releases its resources.
+            raise
+        except Exception as exc:
+            if operation.valid and self._start_operation is operation:
+                await self._handle_session_start_exception(
+                    exc, input_mode, diag_start,
+                    request_id=request_id, also_notify=websocket,
+                )
         finally:
-            # 例外：CAS 落败早退时不递减——赢家还在初始化，若此时放开 guard，
-            # 第三个协程会穿过并再次把入口快照当作"赢家"进而覆盖掉真正的赢家。
-            # 赢家完成（成功或异常）后会通过自己的 finally 或 cleanup 清理 guard。
-            if not _llm_concurrent_aborted:
-                self._starting_session_count = max(0, self._starting_session_count - 1)
-                if self._starting_session_count == 0:
-                    self._starting_input_mode = None
-            # 保险：若 /new_dialog 预取任务早期异常后仍在跑（gather 没来得及
-            # await 它就异常退出），这里统一 cancel + await，避免 "Task exception
-            # was never retrieved" warning 和连接池泄漏。
-            if _new_dialog_task is not None and not _new_dialog_task.done():
-                _new_dialog_task.cancel()
-                try:
-                    await _new_dialog_task
-                except (asyncio.CancelledError, Exception):
-                    # Cancellation echo or the prefetch's own error — moot once this start attempt ends.
-                    pass
+            try:
+                if new_dialog_task is not None and not new_dialog_task.done():
+                    new_dialog_task.cancel()
+                    # Child cancellation is a result; cancellation of the
+                    # caller still propagates and always releases ownership.
+                    await asyncio.gather(new_dialog_task, return_exceptions=True)
+            finally:
+                self._finish_start_operation(operation, token)
 
     async def _start_session_handle_inflight(
         self,
@@ -1046,6 +1141,8 @@ class LifecycleMixin:
         request_id,
         handshake_override,
         resource_optimization_override,
+        provider_preference_override,
+        deadline=None,
     ):
         """Handle a start request that collides with an in-flight start_session.
 
@@ -1058,6 +1155,18 @@ class LifecycleMixin:
         """
         if self._starting_session_count <= 0:
             return False
+        deadline = deadline or (asyncio.get_running_loop().time() + FRONTEND_START_SESSION_TIMEOUT_SECONDS)
+        inflight_operation = getattr(self, '_start_operation', None)
+        def inflight_is_current():
+            return inflight_operation is None or (
+                inflight_operation.valid
+                and getattr(self, '_start_operation', None) is inflight_operation
+            )
+        async def fail_deduped_request():
+            if request_id is not None:
+                await self.send_session_failed(
+                    input_mode, request_id=request_id, also_notify=websocket
+                )
         # 另一路 start_session（典型是 greeting 的 auto-start）已在飞。早期实现
         # 直接静默 return，但前端的 start_session 在 await 一个 session_started
         # ack——若它撞在这里被去重，ack 永远不来，前端 15s 后超时并卡死（用户
@@ -1074,8 +1183,8 @@ class LifecycleMixin:
             # 不拿 session_ready 当谓词：它可能还残留上一个 session 的 True
             # （in-flight start 要过几个 await 才把它重置），那样循环会被直接
             # 跳过、在 in-flight 还没真正起好时就误发 started 假阳性（Codex P1）。
-            # 等待上限绑前端的 start_session 超时：超过它再补发 ack 已无意义
-            # （前端早已 reject + end_session），故以它为窗口上界兼防挂安全阀。
+            # 给有 request_id 的前端请求预留失败通知的投递时间，避免它的
+            # 15s 超时先发 end_session，误关随后才完成的会话。
             #
             # 快照本请求进入时的 voice lease 身份：等待可能长达十几秒，期间第三个
             # audio start 抢走麦克风是可能的，那时替它重跑路由会用**本请求**（已经
@@ -1088,16 +1197,20 @@ class LifecycleMixin:
             # connect，补发的 ack 仍然赶在前端超时之后（Codex P2）。
             _wait_started = time.monotonic()
             _waited = 0.0
-            while self._starting_session_count > 0 and _waited < FRONTEND_START_SESSION_TIMEOUT_SECONDS:
+            response_deadline = deadline - (0.25 if request_id is not None else 0)
+            while self._starting_session_count > 0 and asyncio.get_running_loop().time() < response_deadline:
                 await asyncio.sleep(0.05)
                 _waited += 0.05
+                if not inflight_is_current():
+                    await fail_deduped_request()
+                    return True
             # 仅当 in-flight 真正落定（count 归 0、即循环是「落定退出」而非
             # 「超时退出」）且会话确实活跃时才补发 session_started（与
             # in-flight 自身发的那条幂等，前端 resolver 一次性）。若是超时退出
             # （count 仍 >0、in-flight 没结束），self.session/is_active 在 restart
             # 流程里可能是上一个 session 残留的 True，补发会是假阳性（Codex P1），
-            # 故一律不发。也**不**发 session_failed——in-flight 可能仍在跑/或其
-            # 失败路径已通知前端，过早发 failed 会被前端当终态打断本会成功的启动。
+            # 故一律不发 started。失败通知只定向给本请求的 request_id；它不
+            # 撤销 in-flight 启动，且不会把其它窗口的请求误判为失败。
             if self._starting_session_count == 0 and self.session and self.is_active:
                 # 补发的 ack 带的是 in-flight 那次 start 的路由裁决（见
                 # send_session_started），而这条路径本身从不重跑决策。裁决对本
@@ -1110,12 +1223,15 @@ class LifecycleMixin:
                     input_mode,
                     lease_connection_id=_lease_at_request,
                     remaining_deadline_seconds=(
-                        FRONTEND_START_SESSION_TIMEOUT_SECONDS
-                        - (time.monotonic() - _wait_started)
+                        deadline - asyncio.get_running_loop().time()
                     ),
                     handshake_override=handshake_override,
                     resource_optimization_override=resource_optimization_override,
+                    provider_preference_override=provider_preference_override,
                 )
+                if not inflight_is_current():
+                    await fail_deduped_request()
+                    return True
                 # ``also_notify``：重跑若 fail-closed 会 revoke lease，把
                 # _voice_lease_connection_id 和 voice socket 一起清掉，本请求方
                 # 就不在任何一条投递面上了（self.websocket 可能是更新的窗口）。
@@ -1142,6 +1258,8 @@ class LifecycleMixin:
                     also_notify=websocket,
                     microphone_route_override="blocked" if _lease_moved else None,
                 )
+            else:
+                await fail_deduped_request()
         elif user_initiated and _allow_cross_mode_restart:
             # 跨模式撞车，且这是用户显式启动：典型是 proactive（主动搭话 /
             # greeting）自起的 text 会话还在飞，而用户此刻点了"开始语音对话"
@@ -1163,7 +1281,7 @@ class LifecycleMixin:
             # audio 误判成放弃、回到 15s 干等（CodeRabbit）。
             _abandon_epoch = self._user_session_abandon_epoch
             _waited = 0.0
-            while self._starting_session_count > 0 and _waited < _core_facade.CROSS_MODE_RESTART_WAIT_SECONDS:
+            while self._starting_session_count > 0 and _waited < _core_facade.CROSS_MODE_RESTART_WAIT_SECONDS and asyncio.get_running_loop().time() < deadline:
                 await asyncio.sleep(0.05)
                 _waited += 0.05
             # 重启前的连接校验，两个条件都要满足：
@@ -1208,6 +1326,8 @@ class LifecycleMixin:
                     request_id=request_id,
                     handshake_override=handshake_override,
                     resource_optimization_override=resource_optimization_override,
+                    provider_preference_override=provider_preference_override,
+                    _deadline=deadline,
                 )
         else:
             logger.warning("⚠️ Session正在启动中（跨模式重复请求），忽略")
@@ -1243,6 +1363,7 @@ class LifecycleMixin:
             or self.user_language
         )
 
+    @start_phase
     async def _start_session_prepare_runtime(self, websocket, input_mode, new, diag_start):
         """Bind the websocket, reload config and voice routing, and notify the
         frontend that preparation started (silent window begins).
@@ -1252,7 +1373,9 @@ class LifecycleMixin:
         """
         # 回收残留的热切换资源，防止 main + pending + new-main 叠到 >2 个 session
         await self._cleanup_pending_session_resources()
+        self._check_start_operation()
         await self._reset_preparation_state(clear_main_cache=False)
+        self._check_start_operation()
 
         logger.info(f"[语音会话诊断] 开始 start_session: input_mode={input_mode}, new={new}")
         logger.info(f"启动新session: input_mode={input_mode}, new={new}")
@@ -1267,25 +1390,30 @@ class LifecycleMixin:
 
         # 立即通知前端系统正在准备（静默期开始）
         await self.send_session_preparing(input_mode)
+        self._check_start_operation()
 
         # 会话的线路在下面这几行定死、整场不再复议，所以先给仍在飞的区域探测一个
         # 收尾窗口（启动预热的 join 可能在 DNS 解析上过期）。已落定时立即返回，
         # 正常路径零开销；等待也是 offload 的，不占事件循环。
         await self._config_manager.aensure_region_resolved()
+        self._check_start_operation()
 
         # 重新读取配置以支持热重载
         # core_api_type 从 realtime 配置获取，支持自定义 realtime API 时自动设为 'local'
         # 合并两次同步 IO：core_config.json 只 read 一次，realtime 解析复用同一份快照
         core_config_snapshot = await self._config_manager.aget_core_config()
+        self._check_start_operation()
         realtime_config = await self._config_manager.aget_model_api_config(
             'realtime', core_config=core_config_snapshot
         )
+        self._check_start_operation()
         self.core_api_type = realtime_config.get('api_type', '') or core_config_snapshot.get('CORE_API_TYPE', '')
         self.audio_api_key = core_config_snapshot['AUDIO_API_KEY']
 
         # 每次启动会话前都清理一次无效 voice_id，避免角色配置残留旧音色导致启动异常
         try:
             cleaned_count, legacy_names = await asyncio.to_thread(self._config_manager.cleanup_invalid_voice_ids)
+            self._check_start_operation()
             if cleaned_count > 0:
                 logger.info(f"🧹 start_session 前已清理 {cleaned_count} 个无效 voice_id")
             self._enqueue_voice_migration_notice(legacy_names)
@@ -1300,11 +1428,13 @@ class LifecycleMixin:
         # YUI 卡且 voice_id 为空时写入）；放在下面读 voice_id 之前，绑上本场即生效。
         try:
             await ensure_default_yui_voice_for_free_api(self._config_manager, core_config_snapshot)
+            self._check_start_operation()
         except Exception as e:
             logger.warning(f"⚠️ start_session 绑定默认 YUI 音色失败，继续启动会话: {e}")
 
         # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
         _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
+        self._check_start_operation()
         old_voice_id = self.voice_id
         self._apply_voice_id_for_route()
 
@@ -1335,13 +1465,16 @@ class LifecycleMixin:
         _conversation_model = (await self._config_manager.aget_model_api_config(
             'conversation', core_config=core_config_snapshot
         )).get('model', '')
+        self._check_start_operation()
         _vision_model = (await self._config_manager.aget_model_api_config(
             'vision', core_config=core_config_snapshot
         )).get('model', '')
+        self._check_start_operation()
         logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_conversation_model}, vision_model={_vision_model}, voice_id={self.voice_id}")
         logger.info(f"[语音会话诊断] 配置加载完成 (耗时: {time.time() - diag_start:.2f}秒)")
         return realtime_config, core_config_snapshot
 
+    @start_phase
     async def _start_session_reset_stream_state(self, input_mode, realtime_config,
                                                 core_config_snapshot):
         """Reset the TTS/input caches for the new session and resolve
@@ -1352,6 +1485,7 @@ class LifecycleMixin:
         # 永远停在 pending chunks 里。
         preserve_tts_ready = self._can_preserve_tts_ready_for_session_start()
         async with self.tts_cache_lock:
+            self._check_start_operation()
             self.tts_ready = preserve_tts_ready
             self.tts_pending_chunks.clear()
             # Session replacement invalidates the previous utterance replay ledger.
@@ -1360,6 +1494,7 @@ class LifecycleMixin:
 
         # 重置输入缓存状态
         async with self.input_cache_lock:
+            self._check_start_operation()
             self.session_ready = False
             # 注意：不清空 pending_input_data，因为可能已有数据在缓存中
 
@@ -1369,141 +1504,78 @@ class LifecycleMixin:
             core_config_snapshot,
         )
 
+    @start_phase
     async def _start_session_retire_previous(self):
-        """Tear down a still-active old session and stop a TTS thread the new
-        session will not use."""
-        async with self.lock:
-            if self.is_active:
-                logger.warning("检测到活跃的旧session，正在清理...")
-                # 释放锁后清理，避免死锁
-
-        # 如果检测到旧 session，先清理
-        if self.is_active:
-            # reset_starting_count=False：保留自己递增的 guard，防止 end_session 里
-            # 的 _starting_session_count=0 让并发第二次 start_session 穿过，产生孤儿 session。
-            await self.end_session(by_server=True, reset_starting_count=False)
-            # 等待一小段时间确保资源完全释放
-            await asyncio.sleep(0.5)
-            logger.info("旧session清理完成")
-
-        # 如果当前不需要TTS，worker 与其绑定的响应 handler 必须成对释放。
-        # handler 在启动时会捕获当时的 response queue；只关 worker 会让它
-        # 永久阻塞在旧队列，之后小游戏懒启动 TTS 时也无法消费新队列。
-        if not self.use_tts:
-            if self.tts_thread and self.tts_thread.is_alive():
-                logger.info("当前模式不需要TTS，关闭TTS线程")
-                try:
-                    self.tts_request_queue.put(("__shutdown__", None))  # 通知线程退出
-                    await asyncio.to_thread(self.tts_thread.join, 1.0)  # 等待线程结束
-                except Exception as e:
-                    logger.error(f"关闭TTS线程时出错: {e}")
-                finally:
-                    self.tts_thread = None
-            await self._stop_tts_response_handler()
+        if self.session is not None or self.is_active:
+            self.request_end_session(by_server=True, reset_starting_count=False,
+                                     preserve_pending_input=True)
+            record = self._session_retirements[-1]
+            await record.handoff_finished.wait()
+            if record.handoff_error is not None and not record.handoff_safe.is_set():
+                raise RuntimeError("Session handoff failed") from record.handoff_error
+            if record.memory_completion is not None:
+                await asyncio.shield(record.memory_completion)
 
     async def _start_session_start_tts_if_needed(self):
-        """Asynchronously start the TTS process and wait for readiness"""
+        """Wait for an owned, healthy runtime within the shared startup budget."""
+        self._check_start_operation()
+        loop = asyncio.get_running_loop()
+        start_deadline = self._current_start_deadline()
+        deadline = min(start_deadline - 0.1, loop.time() + 5.0)
         if not self.use_tts:
+            runtime = self._snapshot_tts_runtime()
+            if runtime is not None and not runtime.retired:
+                self._retire_tts_runtime(runtime)
+                await self._stop_tts_response_handler(deadline=deadline)
+                self._check_start_operation()
             return True
-
-        # 启动TTS线程
-        tts_ready = False
-        if self.tts_thread is None or not self.tts_thread.is_alive():
-            self._start_tts_thread()
-
-            # 等待TTS进程发送就绪信号（最多等待12秒）
-            has_custom_tts = self._has_custom_tts()
-            tts_type = "free-preset-TTS" if self._is_free_preset_voice else ("custom-TTS" if has_custom_tts else f"{self.core_api_type}-default-TTS")
-            logger.info(f"🎤 TTS进程已启动，等待就绪... (使用: {tts_type})")
-            logger.info("[语音会话诊断] 开始等待 TTS 就绪信号 (超时: 12秒)")
-            start_time = time.time()
-            timeout = 12.0  # 最多等待12秒
-            _last_tts_log = 0.0
-            while time.time() - start_time < timeout:
-                # worker 线程已死亡则无需继续等待
-                if not self.tts_thread.is_alive():
-                    # 抽干此刻队列：__ready__ 用于决定本次等待结果，
-                    # 其他消息（如承载 NO_RETRY 错误码的 __error__）放回队列，
-                    # 让稍后启动的 tts_response_handler 处理，避免错误码丢失。
-                    _requeue: list = []
-                    while True:
-                        try:
-                            msg = self.tts_response_queue.get_nowait()
-                        except Empty:
-                            break
-                        if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
-                            tts_ready = msg[1]
-                        else:
-                            _requeue.append(msg)
-                    for _m in _requeue:
-                        self.tts_response_queue.put(_m)
-                    if not tts_ready:
-                        logger.error("❌ TTS Worker 线程已退出，无法继续等待")
-                    break
-                remaining = timeout - (time.time() - start_time)
-                # 单次阻塞窗口封顶 2 秒，保证 worker 死亡探测与诊断日志能及时触发
-                poll_window = min(remaining, 2.0)
-                if poll_window <= 0:
-                    break
-                try:
-                    msg = await asyncio.to_thread(
-                        self.tts_response_queue.get, True, poll_window
-                    )
-                except Empty:
-                    # 每约2秒输出一次诊断日志，便于定位卡在哪一阶段
-                    _elapsed = time.time() - start_time
-                    if _elapsed - _last_tts_log >= 2.0:
-                        _last_tts_log = _elapsed
-                        logger.info(f"[语音会话诊断] TTS 就绪等待中... 已等待 {_elapsed:.1f}秒 / {timeout}秒")
+        # TTS is a recoverable output dependency. Reserve a small tail of the
+        # shared startup budget for LLM publication, and cap a slow TTS
+        # provider so it cannot turn a healthy session into session_failed.
+        if deadline <= loop.time():
+            return False
+        runtime = self._snapshot_tts_runtime()
+        if (runtime is not None and not runtime.retired
+                and getattr(self, "_tts_runtime_key", None) != self._build_tts_runtime_key()):
+            self._retire_tts_runtime(runtime)
+        await self.ensure_tts_pipeline_alive(deadline=deadline)
+        self._check_start_operation()
+        # The handler is the sole response queue consumer, including during
+        # initialization. Fallback transfers that handler to its fresh runtime.
+        while True:
+            self._check_start_operation()
+            runtime = self._snapshot_tts_runtime()
+            ready = False
+            if runtime is not None and not self._tts_runtime_is_current(runtime):
+                self._check_start_operation()
+                fallback_task = runtime.fallback_task
+                if not (
+                    fallback_task is not None
+                    and fallback_task is self.tts_handler_task
+                    and not fallback_task.done()
+                    and not fallback_task.cancelling()
+                ):
+                    raise RuntimeError("TTS runtime retired during startup")
+                # An owned fallback may wait for this worker's physical exit.
+                # Use the same bounded polling below until its successor is ready.
+            else:
+                async with self.tts_cache_lock:
+                    self._check_start_operation()
+                    if not self._tts_runtime_is_current(runtime):
+                        continue
+                    ready = bool(self.tts_ready and self.tts_thread and self.tts_thread.is_alive())
+            if ready:
+                await self._flush_tts_pending_chunks()
+                self._check_start_operation()
+                if not self._tts_runtime_is_current(runtime):
                     continue
-                if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
-                    tts_ready = msg[1]
-                    if tts_ready:
-                        logger.info(f"✅ TTS进程已就绪 (用时: {time.time() - start_time:.2f}秒)")
-                    else:
-                        logger.error("❌ TTS进程初始化失败")
-                    break
-                else:
-                    # 不是就绪信号，放回队列后退出（与旧行为一致）
-                    self.tts_response_queue.put(msg)
-                    break
-
-            if not tts_ready:
-                if time.time() - start_time >= timeout:
-                    logger.warning(f"⚠️ TTS进程就绪信号超时 ({timeout}秒)，继续执行...")
-                    logger.warning(f"[语音会话诊断] TTS 在 {timeout} 秒内未就绪，可能为 TTS 服务慢或网络问题")
-                else:
-                    logger.error("❌ TTS进程初始化失败，但继续执行...")
-
-                # The replacement worker writes readiness to a fresh queue;
-                # the handler created below will consume it and flush pending text.
-                # 自定义端点启动失败时先切保底，下面的新 handler 会接管新队列。
-                if self._activate_configured_tts_fallback("会话启动"):
-                    logger.info("🔄 自定义 TTS API 启动失败，已启动既有保底 worker")
-        else:
-            # TTS线程已存活，复用现有线程；保留上次的就绪状态（避免失败的 worker 被误标为就绪）
-            tts_ready = self.tts_ready
-            logger.info(f"🎤 TTS线程已在运行，复用现有线程 (ready={tts_ready})")
-
-        # 确保旧的 TTS handler task 已经停止，同时按其绑定 queue 校验缓存所有权。
-        if self.tts_handler_task and not self.tts_handler_task.done():
-            logger.info("🎧 Cancelling old tts_handler_task...")
-        await self._stop_tts_response_handler()
-
-        # 启动新的 TTS handler task
-        logger.info(f"🎧 Creating tts_handler_task (response_queue id={id(self.tts_response_queue):#x})")
-        self._start_tts_response_handler()
-
-        # 仅在确认为就绪时才标记可发送，避免“假就绪”导致静默
-        async with self.tts_cache_lock:
-            self.tts_ready = bool(tts_ready)
-
-        # 处理在TTS启动期间可能已经缓存的文本chunk
-        if tts_ready:
-            await self._flush_tts_pending_chunks()
-        else:
-            logger.warning("⚠️ TTS未就绪，当前回复将继续缓存，等待后续就绪信号")
-        return True
+                return True
+            if getattr(self, "_tts_capacity_exhausted", False):
+                raise RuntimeError("TTS runtime capacity exhausted")
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError("TTS runtime was not ready before startup deadline")
+            await asyncio.sleep(min(0.02, remaining))
 
     def _new_dialog_request_kwargs(self) -> dict:
         """Share explicit-locale provenance across initial and hot-swap bootstrap."""
@@ -1573,6 +1645,12 @@ class LifecycleMixin:
             enable_long_response_summary=external_tts_enabled,
         )
         session.on_proactive_done = self.handle_proactive_complete
+        # A reply whose completion is skipped is closed by whoever took it
+        # over: a displacing user reply reports it here; the owed wrap-up is
+        # paid once the session goes idle (the interrupted reply's own
+        # completion would have run it).
+        session.on_response_displaced = self._close_displaced_offline_turn
+        session.on_idle = self._on_offline_session_idle
         session.on_thinking_active = self._make_thinking_active_callback(session)
         # 和两个 realtime 构造点同一处理：句柄绑到这个 client 自己，而不是
         # 构造时刻的 self.session。handoff candidate 在被提升前既不是
@@ -1626,13 +1704,16 @@ class LifecycleMixin:
                 self.lanlan_name,
                 self.memory_server_port,
             )
-            initial_prompt += self._convert_cache_to_str(next_context)
-            initial_prompt += self._convert_cache_to_str(cached_turns)
+            # One call for both slices: a screen chain split across them is
+            # judged as one run (see _convert_cache_to_str).
+            initial_prompt += self._convert_cache_to_str(
+                list(next_context) + list(cached_turns)
+            )
             self._bind_session_lifecycle_callbacks(candidate)
-            await candidate.connect(initial_prompt, native_audio=False)
+            await self._connect_owned_session(candidate, initial_prompt, native_audio=False)
         except BaseException:
             try:
-                await candidate.close()
+                await self._close_owned_session(candidate)
             except Exception:
                 pass
             raise
@@ -1701,13 +1782,13 @@ class LifecycleMixin:
                             ):
                                 return False
                         else:
-                            interrupt = getattr(
-                                current,
-                                'handle_interruption',
-                                None,
-                            )
-                            if callable(interrupt):
-                                await interrupt()
+                            # Close the offline reply this turn interrupted
+                            # before handle_new_message clears its text; its
+                            # wrap-up is owed (see _interrupt_offline_reply)
+                            # and held by this voice turn until it ends (the
+                            # dispatch's _abandon_core_voice_turn).
+                            self._hold_owed_wrap_up_for_voice_turn(turn.turn_id)
+                            await self._interrupt_offline_reply(current)
                         if (
                             not operation_is_current()
                             or self.session is not current
@@ -1796,9 +1877,13 @@ class LifecycleMixin:
                         ):
                             return False
                     else:
-                        interrupt = getattr(current, 'handle_interruption', None)
-                        if callable(interrupt):
-                            await interrupt()
+                        # Through the helper, never a bare handle_interruption():
+                        # an interruption that claims a finished reply's
+                        # completion must also close that reply's turn. No
+                        # wrap-up is scheduled here: this user turn has not
+                        # marked its input yet, and an Offline session never
+                        # reaches this branch (the fast path above returns).
+                        await self._interrupt_offline_reply(current)
                     if (
                         not operation_is_current()
                         or self.session is not current
@@ -1927,7 +2012,7 @@ class LifecycleMixin:
                                 # OmniRealtimeClient.close() 会先同步摘掉 socket，
                                 # 所以立刻发起才是止血的那一步。
                                 try:
-                                    await orphan_session.close()
+                                    await self._close_owned_session(orphan_session)
                                 except Exception as reap_err:
                                     logger.debug(
                                         '[%s] Offline VLM handoff: orphan close failed: %s',
@@ -1977,7 +2062,7 @@ class LifecycleMixin:
                                 )
                             return False
                         try:
-                            await expected_session.close()
+                            await self._close_owned_session(expected_session)
                         except Exception as exc:
                             logger.warning(
                                 '[%s] Offline VLM handoff: old session close failed: %s',
@@ -2102,10 +2187,11 @@ class LifecycleMixin:
             finally:
                 if not promoted:
                     try:
-                        await candidate.close()
+                        await self._close_owned_session(candidate)
                     except Exception:
                         pass
 
+    @start_phase
     async def _start_session_start_llm(self, input_mode, core_config_snapshot,
                                        prepared_realtime_config,
                                        new_dialog_task, mem_start):
@@ -2131,6 +2217,7 @@ class LifecycleMixin:
         guard_max_length = self._get_text_guard_max_length()
         _lang = normalize_language_code(self.user_language, format='short')
         initial_prompt = await self._build_initial_prompt()
+        self._check_start_operation()
         next_session_context_messages = self._snapshot_next_session_context_messages()
         start_prompt_context_owner = object()
         self._mark_pending_context_appends_delivered_in_start_prompt(
@@ -2141,6 +2228,7 @@ class LifecycleMixin:
         # 等待上面预先发出的 /new_dialog 完成
         try:
             _nd_text = await new_dialog_task
+            self._check_start_operation()
             initial_prompt += (
                 _nd_text
                 + self._convert_cache_to_str(next_session_context_messages)
@@ -2187,6 +2275,7 @@ class LifecycleMixin:
         # fail-open，权威 IP 结论可能恰在这几秒内落地，这里再给一个收尾窗口，
         # 让冻结用的快照与最终结论一致。已落定时零开销。
         await self._config_manager.aensure_region_resolved()
+        self._check_start_operation()
 
         if input_mode == 'text':
             # 不复用 prepare_runtime 的快照：上面 await 过 /new_dialog 的记忆拉取
@@ -2194,6 +2283,7 @@ class LifecycleMixin:
             # 读一份**新鲜快照**，conversation 与 vision 都从它解析——两次独立的读会
             # 让保存恰好落在中间时拿到撕裂的一对（旧 conversation + 新 vision）。
             _fresh_core_config = await self._config_manager.aget_core_config()
+            self._check_start_operation()
             # 区域可能恰在记忆拉取那几秒里翻转（prepare 的落定是 Steam 兜底/超时、
             # 权威 IP 结论随后到达）：此时 prepare 阶段解析的 voice_id 属于旧区域
             # 目录，而本快照的线路是新区域。realtime 侧有按快照的配对闸门兜底
@@ -2213,9 +2303,11 @@ class LifecycleMixin:
             conversation_config = await self._config_manager.aget_model_api_config(
                 'conversation', core_config=_fresh_core_config
             )
+            self._check_start_operation()
             vision_config = await self._config_manager.aget_model_api_config(
                 'vision', core_config=_fresh_core_config
             )
+            self._check_start_operation()
             new_session = self._create_offline_vlm_client(
                 conversation_config=conversation_config,
                 vision_config=vision_config,
@@ -2230,6 +2322,7 @@ class LifecycleMixin:
             # 同上：await 记忆拉取之后必须重读，不复用 prepare_runtime 的快照
             _prev_realtime_base = str((prepared_realtime_config or {}).get('base_url') or '')
             realtime_config = await self._config_manager.aget_model_api_config('realtime')
+            self._check_start_operation()
             # 区域翻转诊断，与 text 分支对偶；realtime 的音色下发按本快照的
             # base_url 走配对闸门，错配不下发、落服务端默认（fail-safe）。
             if _prev_realtime_base != str(realtime_config.get('base_url') or ''):
@@ -2239,6 +2332,7 @@ class LifecycleMixin:
                     _prev_realtime_base, realtime_config.get('base_url'),
                 )
             nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
+            self._check_start_operation()
             new_session = OmniRealtimeClient(
                 base_url=realtime_config.get('base_url', ''),
                 api_key=realtime_config['api_key'],
@@ -2273,6 +2367,7 @@ class LifecycleMixin:
             # Apply user's noise reduction preference to the AudioProcessor
             if hasattr(new_session, '_audio_processor') and new_session._audio_processor:
                 await new_session.set_audio_noise_reduction_enabled(nr_enabled)
+                self._check_start_operation()
 
         new_session.on_tool_call = self._make_tool_call_handler(new_session)
 
@@ -2283,19 +2378,19 @@ class LifecycleMixin:
         self._bind_session_lifecycle_callbacks(new_session)
 
         try:
-            await new_session.connect(initial_prompt, native_audio=not self.use_tts)
-        except Exception:
-            try:
-                await new_session.close()
-            except Exception:
-                # Best-effort close of the half-connected session; the connect error re-raises below.
-                pass
+            await self._connect_owned_session(new_session, initial_prompt, native_audio=not self.use_tts)
+            self._check_start_operation()
+        except BaseException:
+            record = self._connection_record(new_session)
+            if record is not None:
+                self._close_connection_record(record)
             raise
 
         # 强 CAS 提升：仅在 self.session 为 None（已被 end_session 清场）
         # 或已经是自己时才赋值，确保不会覆盖任何已就位的赢家 session。
         concurrent_winner = False
         async with self.lock:
+            self._check_start_operation()
             if self.session is None or self.session is new_session:
                 self.session = new_session
                 if not self.current_speech_id:
@@ -2308,7 +2403,8 @@ class LifecycleMixin:
             self._clear_pending_context_start_prompt_marks(owner=start_prompt_context_owner)
             logger.warning("⚠️ start_llm_session: 检测到并发 start_session 已抢先建立 session，关闭本次 new_session 避免孤儿泄漏")
             try:
-                await new_session.close()
+                await self._close_owned_session(new_session)
+                self._check_start_operation()
             except Exception as _close_err:
                 logger.error(f"💥 关闭并发落败的 new_session 失败: {_close_err}")
             # 返回哨兵（而非 raise）以绕开 start_session 的通用 except：后者会调
@@ -2323,6 +2419,7 @@ class LifecycleMixin:
         # 重新 sync 一次，让 wire 上的 tools 与 registry 保持最终一致。
         try:
             await self._sync_tools_to_active_session()
+            self._check_start_operation()
         except Exception as _sync_err:
             logger.warning("⚠️ start_llm_session: post-connect tool sync failed: %s", _sync_err)
 
@@ -2332,6 +2429,7 @@ class LifecycleMixin:
         # Never emit it to stdout or a persistent logger.
         return next_context_count
 
+    @start_phase
     async def _start_session_reset_state_for_new(self):
         """Reset per-conversation caches when the caller asked for a brand-new
         dialog (``new=True``)."""
@@ -2341,12 +2439,15 @@ class LifecycleMixin:
         self.is_preparing_new_session = False
         self.summary_triggered_time = None
         self.initial_cache_snapshot_len = 0
+        self._primed_context_snapshot = None
         self.initial_next_session_context_snapshot_len = 0
         # 清空输入缓存（新对话时不需要保留旧的输入）
         async with self.input_cache_lock:
+            self._check_start_operation()
             self.pending_input_data.clear()
             self._clear_pending_context_appends(release_durable_cached=True)
 
+    @start_phase
     async def _start_session_activate(
         self,
         input_mode,
@@ -2356,11 +2457,13 @@ class LifecycleMixin:
         request_id=None,
         handshake_override=...,
         resource_optimization_override=...,
+        provider_preference_override=...,
     ):
         """Post-connect activation: flip the active flags, start the message
-        handler, reset the failure circuit, ack the frontend, and open the
-        input gate after queued context is drained."""
+        handler, drain queued context, open the input gate, and then acknowledge
+        readiness before replaying queued input as owned background work."""
         async with self.lock:
+            self._check_start_operation()
             self.is_active = True
         self.response_backend = (
             'offline_vlm'
@@ -2386,7 +2489,9 @@ class LifecycleMixin:
             input_mode,
             handshake_override=handshake_override,
             resource_optimization_override=resource_optimization_override,
+            provider_preference_override=provider_preference_override,
         )
+        self._check_start_operation()
 
         # 启动成功，重置失败计数器和熔断
         self.session_start_failure_count = 0
@@ -2396,21 +2501,30 @@ class LifecycleMixin:
         if self.is_goodbye_silent():
             self.set_goodbye_silent(False)
 
-        logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - diag_start:.2f}秒)")
-        # 通知前端 session 已成功启动。带上本次 start 的 request_id：别的窗口
-        # 若也有 start 在等，它据此认出这条不是回应自己的，从而不会用一条属于
-        # 别人的 ack 收口自己的 promise（详见 send_session_started）。
-        await self.send_session_started(input_mode, request_id=request_id)
-
         # 在 queued context 写入 session 前保持输入闸门关闭；否则第一条
         # 缓存/并发用户输入可能抢在上下文前面进入模型。
         async with self.input_cache_lock:
+            self._check_start_operation()
             await self._drain_pending_context_appends_before_ready()
+            self._check_start_operation()
             self.session_ready = True
+            flush_reservation = object()
+            self._pending_input_flush_scheduled = flush_reservation
 
-        # 处理在session启动期间可能已经缓存的输入数据
-        await self._flush_pending_input_data()
         self._consume_next_session_context_messages(next_context_count)
+
+        # Ready means the queued context is installed and the input gate can
+        # accept work. A queued text response may stream for much longer than
+        # the startup budget, so process it as owned session work after the ack.
+        logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - diag_start:.2f}秒)")
+        try:
+            await self.send_session_started(input_mode, request_id=request_id)
+            self._check_start_operation()
+        except BaseException:
+            if self._pending_input_flush_scheduled is flush_reservation:
+                self._pending_input_flush_scheduled = None
+            raise
+        self._schedule_session_input_flush(flush_reservation)
 
         # WebSocket 重连后，投递因断线积压的 agent 任务回调
         if self.pending_agent_callbacks:
@@ -2595,6 +2709,13 @@ class LifecycleMixin:
             next_session_context_messages = list(getattr(self, "next_session_context_messages", []) or [])
             self.initial_next_session_context_snapshot_len = len(next_session_context_messages)
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
+            # Snapshot the cache the same way as next_session_context_messages
+            # above: the prompt must render the state the snapshot length was
+            # taken from. Anything appended while the memory request is in
+            # flight is picked up by the swap-time slice
+            # (``initial_cache_snapshot_len:`` below), so rendering the live
+            # cache here primes those entries twice.
+            initial_cache_snapshot = list(self.message_cache_for_new_session)
             from utils.internal_http_client import get_internal_http_client
             _hs_client = get_internal_http_client()
             try:
@@ -2608,13 +2729,23 @@ class LifecycleMixin:
                 raise ConnectionError(f"❌ 记忆服务响应超时！请检查记忆服务是否正常运行 (端口 {self.memory_server_port})")
             if not resp.is_success:
                 raise ConnectionError(f"❌ 记忆服务热切换时返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
+            # Freeze exactly what is primed: a reply still streaming appends
+            # to the last cache entry in place, and the final swap must judge
+            # its increment against the text the pending session received,
+            # not against that later growth.
+            primed_context = [
+                dict(entry)
+                for entry in list(next_session_context_messages) + list(initial_cache_snapshot)
+            ]
+            self._primed_context_snapshot = primed_context
             initial_prompt += (
                 resp.text
-                + self._convert_cache_to_str(next_session_context_messages)
-                + self._convert_cache_to_str(self.message_cache_for_new_session)
+                # One call for both slices: a screen chain split across them
+                # is judged as one run (see _convert_cache_to_str).
+                + self._convert_cache_to_str(primed_context)
             )
             self._bind_session_lifecycle_callbacks(self.pending_session)
-            await self.pending_session.connect(initial_prompt, native_audio=not self.pending_use_tts)
+            await self._connect_owned_session(self.pending_session, initial_prompt, native_audio=not self.pending_use_tts)
 
             # 同主 session 路径：热切换的 pending_session 也要在 connect 后
             # 补一次 sync，覆盖 connect 期间发生的 register/unregister race。
@@ -2654,6 +2785,7 @@ class LifecycleMixin:
                 self.summary_triggered_time = datetime.now()
                 self.message_cache_for_new_session = []
                 self.initial_cache_snapshot_len = 0
+                self._primed_context_snapshot = None
                 self.initial_next_session_context_snapshot_len = 0
                 # 立即启动后台预热，不等待10秒
                 self.pending_session_warmed_up_event = asyncio.Event()
@@ -2796,7 +2928,7 @@ class LifecycleMixin:
         swap (same semantics as the extras ``_deferred``).
 
         The queue is NOT drained here — removal is deferred to promote
-        success via :meth:`_remove_swap_delivered_passive_cbs`. Selected
+        success via :meth:`_remove_swap_delivered_callbacks`. Selected
         entries are atomically marked provider-owned before this method
         returns, so enqueue coalescing, text drain, staleness sweeps, and the
         flood guard cannot retract them during the prime await. Every
@@ -2925,9 +3057,11 @@ class LifecycleMixin:
             if isinstance(cb, dict):
                 cb.pop(SWAP_PRIME_DELIVERY_CLAIM_KEY, None)
 
-    def _remove_swap_delivered_passive_cbs(self, selected: list) -> list:
-        """[Hot-swap related] Dequeue prime-injected passive callbacks at
+    def _remove_swap_delivered_callbacks(self, selected: list) -> list:
+        """[Hot-swap related] Dequeue prime-injected callback objects at
         promote success; returns the actually-removed subset (ack'd True).
+
+        Also used for callbacks paired with delivered extra-reply mirrors.
 
         Identity-based removal, same as the extras counterpart: entries a
         concurrent path consumed inside the prime→promote window (text-turn
@@ -3025,8 +3159,43 @@ class LifecycleMixin:
                 self.is_hot_swap_imminent = False
                 return
 
+        # A normal native swap may only start priming while the current input
+        # connection is between utterances.  This is a read-only preflight; the
+        # authoritative check is repeated by _begin_voice_activation_handoff
+        # after priming and again after its output pause settles.  Deferring at
+        # this point leaves the single warmed pending session and every queue in
+        # place, so a later response-complete event can retry without polling.
+        if (
+            getattr(self, "_voice_session_activation_factory", None) is not None
+            and getattr(self, "_asr_route_mode", "blocked") == "native"
+        ):
+            source_boundary = getattr(
+                getattr(self, "session", None),
+                "can_handoff_voice_input",
+                None,
+            )
+            try:
+                source_boundary_ready = bool(
+                    callable(source_boundary) and source_boundary() is True
+                )
+            except Exception as boundary_error:
+                source_boundary_ready = False
+                logger.warning(
+                    "Final Swap Sequence: native voice handoff boundary check "
+                    "failed: %s",
+                    boundary_error,
+                )
+            if not source_boundary_ready:
+                logger.info(
+                    "Final Swap Sequence: native voice input is not at a safe "
+                    "handoff boundary; deferring to a later turn completion"
+                )
+                self.is_hot_swap_imminent = False
+                return
+
         try:
             new_session = None  # 提前初始化，确保 except 块安全访问（实际赋值在 PERFORM ACTUAL HOT SWAP 段）
+            voice_handoff_ticket = None
             old_listener_cancel_timed_out = False  # 旧 listener 取消超时标志，供 except 块做 fail-close 决策
             # 已注入 pending_session 的 _selected 条目引用（队列原地保留，promote
             # 成功时才移除）；_removed_extras 是 promote 时真正移除掉的子集，仅
@@ -3037,6 +3206,12 @@ class LifecycleMixin:
             _prime_selected_extras: list = []
             _removed_extras: list = []
             _removed_cb_backed_ids: set = set()
+            _prime_extra_callbacks: list = []
+            _prime_extra_claimed: list = []
+            # Set by the cancellation exit: a session promoted before the cancel
+            # is about to be closed by the canceller, so its primed extras are
+            # not delivered even when the swap removed none of them.
+            _swap_cancelled = False
             # Passive callbacks riding this swap (voice pending session only).
             # Same deferred-removal bookkeeping as _prime_selected_extras:
             # queue untouched until promote succeeds. Injection goes through
@@ -3081,13 +3256,40 @@ class LifecycleMixin:
             incremental_next_session_context = next_session_context_messages[
                 self.initial_next_session_context_snapshot_len:
             ]
-            incremental_cache = (
-                list(incremental_next_session_context)
-                + self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
-            )
+            # Copies: a reply still streaming grows its cache entry in place,
+            # and that growth is not in the final prime rendered below.
+            incremental_cache = [
+                dict(entry)
+                for entry in (
+                    list(incremental_next_session_context)
+                    + self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
+                )
+            ]
+            # What the pending session was primed with at preparation, in
+            # prime order: next-session context snapshot, then cache snapshot,
+            # as frozen when it was rendered.
+            primed_snapshot = getattr(self, "_primed_context_snapshot", None)
+            if primed_snapshot is None:
+                primed_snapshot = (
+                    list(next_session_context_messages[
+                        :self.initial_next_session_context_snapshot_len
+                    ])
+                    + list(self.message_cache_for_new_session[
+                        :self.initial_cache_snapshot_len
+                    ])
+                )
+            primed_snapshot = list(primed_snapshot)
+            # ...and everything the final prime below adds. Late context
+            # (arriving while that prime awaits) is judged after all of it.
+            primed_context_sequence = primed_snapshot + incremental_cache
             # 1. Send incremental cache (or a heartbeat) to PENDING session for its *second* ignored response
             if incremental_cache:
-                final_prime_text = self._convert_cache_to_str(incremental_cache)
+                # Judged together with exactly what the pending session was
+                # already primed with, so a chain crossing that boundary counts.
+                final_prime_text = self._convert_cache_to_str(
+                    incremental_cache,
+                    preceding=primed_snapshot,
+                )
             else:  # Ensure session cycles a turn even if no incremental cache
                 final_prime_text = ""  # Initialize to empty string to prevent NameError
                 logger.debug(f"🔄 No incremental cache found. 缓存长度: {len(self.message_cache_for_new_session)}, 快照长度: {self.initial_cache_snapshot_len}")
@@ -3121,6 +3323,30 @@ class LifecycleMixin:
                     e for e in _selected
                     if not self._coalesce_entry_is_stale(e)
                 ]
+                # Snapshot paired objects before the provider await. A later
+                # same-id enqueue must not be acknowledged or removed for text
+                # that came from this snapshot.
+                _selected_delivery_ids = {
+                    e.get("_callback_delivery_id") for e in _selected
+                    if isinstance(e, dict) and e.get("_callback_delivery_id")
+                }
+                # Include callbacks a text turn has claimed: if that turn later
+                # fails before commit it restores them, and the swap must still
+                # be able to consume them once their mirror is delivered. Only
+                # claim (and later release) the ones nobody else holds, so the
+                # text turn's claim is never cleared from under it.
+                _prime_extra_callbacks = [
+                    cb for cb in (getattr(self, "pending_agent_callbacks", None) or [])
+                    if isinstance(cb, dict)
+                    and cb.get("_callback_delivery_id") in _selected_delivery_ids
+                    and not cb.get(DELIVERY_RETRACTED_KEY)
+                ]
+                _prime_extra_claimed = [
+                    cb for cb in _prime_extra_callbacks
+                    if not cb.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+                ]
+                for cb in _prime_extra_claimed:
+                    cb[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
                 final_prime_text += _render_pending_extra_replies_by_origin(
                     _selected,
                     lang=_lang,
@@ -3301,6 +3527,235 @@ class LifecycleMixin:
             logger.info("Final Swap Sequence: Starting actual session swap...")
             old_main_session = self.session
             old_main_message_handler_task = self.message_handler_task
+
+            begin_voice_handoff = getattr(
+                self,
+                "_begin_voice_activation_handoff",
+                None,
+            )
+            if (
+                getattr(self, "_voice_session_activation_factory", None)
+                is not None
+                and callable(begin_voice_handoff)
+            ):
+                voice_handoff_ticket = await begin_voice_handoff(
+                    self.pending_session
+                )
+                if voice_handoff_ticket is False:
+                    # Priming has already changed this pending connection's
+                    # private context.  Retire that one instance rather than
+                    # retrying the prime and duplicating callback/context
+                    # injection.  The Core handoff hook has already applied
+                    # the route-specific failure policy (native may fail-close
+                    # its source); the authoritative queues stay untouched so
+                    # recovery can prepare exactly one replacement and retry.
+                    logger.info(
+                        "Final Swap Sequence: voice activation handoff deferred; "
+                        "retiring the primed pending session for an event-driven retry"
+                    )
+                    await self._cleanup_pending_session_resources()
+                    await self._reset_preparation_state(clear_main_cache=True)
+                    self.is_hot_swap_imminent = False
+                    return
+
+            def _voice_handoff_is_current(*, allow_promoted: bool = False) -> bool:
+                if voice_handoff_ticket is None:
+                    return True
+                checker = getattr(
+                    self,
+                    "_voice_activation_handoff_is_current",
+                    None,
+                )
+                return bool(
+                    callable(checker)
+                    and checker(
+                        voice_handoff_ticket,
+                        allow_promoted=allow_promoted,
+                    )
+                )
+
+            def _settle_owned_handoff_step(step_task: asyncio.Task) -> None:
+                _ORPHAN_SESSION_REAPER_TASKS.discard(step_task)
+                if step_task.cancelled():
+                    return
+                try:
+                    step_task.exception()
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            async def _await_voice_handoff_step(
+                awaitable,
+                *,
+                stage: str,
+                allow_promoted: bool = False,
+            ):
+                if voice_handoff_ticket is None:
+                    return await awaitable
+                if not _voice_handoff_is_current(
+                    allow_promoted=allow_promoted
+                ):
+                    if inspect.iscoroutine(awaitable):
+                        awaitable.close()
+                    raise RuntimeError(
+                        f"voice activation handoff became stale before {stage}"
+                    )
+                step_task = asyncio.ensure_future(awaitable)
+                _ORPHAN_SESSION_REAPER_TASKS.add(step_task)
+                step_task.add_done_callback(_settle_owned_handoff_step)
+                remaining = max(
+                    0.0,
+                    voice_handoff_ticket.deadline
+                    - asyncio.get_running_loop().time(),
+                )
+                try:
+                    done, _pending = await asyncio.wait(
+                        {step_task},
+                        timeout=remaining,
+                    )
+                except asyncio.CancelledError:
+                    step_task.cancel()
+                    await asyncio.wait({step_task}, timeout=0.1)
+                    raise
+                if not done:
+                    step_task.cancel()
+                    settled, _pending = await asyncio.wait(
+                        {step_task},
+                        timeout=0.1,
+                    )
+                    if not settled:
+                        step_task.cancel()
+                        logger.warning(
+                            "Final Swap Sequence: %s ignored cancellation; "
+                            "retained in the owned cleanup registry",
+                            stage,
+                        )
+                    raise TimeoutError(
+                        f"voice activation handoff deadline exceeded during {stage}"
+                    )
+                result = step_task.result()
+                if not _voice_handoff_is_current(
+                    allow_promoted=allow_promoted
+                ):
+                    raise RuntimeError(
+                        f"voice activation handoff became stale after {stage}"
+                    )
+                return result
+
+            async def _abort_voice_handoff(reason: str) -> None:
+                if voice_handoff_ticket is None:
+                    return
+                abort_handoff = getattr(
+                    self,
+                    "_abort_voice_activation_handoff",
+                    None,
+                )
+                if callable(abort_handoff):
+                    await abort_handoff(
+                        voice_handoff_ticket,
+                        reason=reason,
+                    )
+
+            # Provider close implementations are not required to cooperate
+            # with cancellation.  Keep each retirement close in an owned task
+            # and wait only inside the handoff's absolute budget; a close that
+            # swallows CancelledError must never pin the swap past five seconds.
+            _replacement_close_tasks: dict[int, asyncio.Task] = {}
+
+            def _settle_owned_replacement_close(close_task: asyncio.Task) -> None:
+                _ORPHAN_SESSION_REAPER_TASKS.discard(close_task)
+                if close_task.cancelled():
+                    return
+                try:
+                    close_task.exception()
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            async def _retire_replacement_session(
+                session_to_close,
+                *,
+                stage: str,
+            ) -> None:
+                if session_to_close is None:
+                    return
+                close_task = _replacement_close_tasks.get(id(session_to_close))
+                if close_task is None:
+                    close_task = asyncio.create_task(
+                        self._close_owned_session(session_to_close)
+                    )
+                    _replacement_close_tasks[id(session_to_close)] = close_task
+                    _ORPHAN_SESSION_REAPER_TASKS.add(close_task)
+                    close_task.add_done_callback(
+                        _settle_owned_replacement_close
+                    )
+                if voice_handoff_ticket is None:
+                    try:
+                        await close_task
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as close_err:
+                        logger.debug(
+                            "Final Swap Sequence: %s close failed (ignored): %s",
+                            stage,
+                            close_err,
+                        )
+                    return
+                remaining = max(
+                    0.0,
+                    voice_handoff_ticket.deadline
+                    - asyncio.get_running_loop().time(),
+                )
+                # Even after the transaction deadline, give an ordinary close
+                # one scheduler slice before cancellation.  This is bounded
+                # cleanup (10 ms), not an extension of the handoff itself.
+                done, _pending = await asyncio.wait(
+                    {close_task},
+                    timeout=remaining if remaining > 0.0 else 0.01,
+                )
+                if not done:
+                    close_task.cancel()
+                    done, _pending = await asyncio.wait(
+                        {close_task},
+                        timeout=0.1,
+                    )
+                if not done:
+                    # A provider that swallows cancellation cannot be forcibly
+                    # killed by asyncio.  Keep the task in the module registry
+                    # for ownership/diagnostics, issue one final cancellation,
+                    # and let the handoff return on its bounded path.
+                    close_task.cancel()
+                    logger.warning(
+                        "Final Swap Sequence: %s close ignored cancellation; "
+                        "retained in the owned cleanup registry",
+                        stage,
+                    )
+                    return
+                if close_task.cancelled():
+                    return
+                try:
+                    close_task.result()
+                except Exception as close_err:
+                    logger.debug(
+                        "Final Swap Sequence: %s close failed (ignored): %s",
+                        stage,
+                        close_err,
+                    )
+
+            if voice_handoff_ticket is not None:
+                mark_irreversible = getattr(
+                    self,
+                    "_mark_voice_activation_handoff_irreversible",
+                    None,
+                )
+                if not callable(mark_irreversible) or not mark_irreversible(
+                    voice_handoff_ticket
+                ):
+                    await _abort_voice_handoff(
+                        "handoff_irreversible_rejected"
+                    )
+                    await self._cleanup_pending_session_resources()
+                    await self._reset_preparation_state(clear_main_cache=True)
+                    self.is_hot_swap_imminent = False
+                    return
             # 立即用局部变量持有新 session，并清空 self.pending_session。
             # 必须在任何 await 之前完成：后续 cancel/close 的 await 若触发
             # CancelledError，异常处理器会调 _cleanup_pending_session_resources()，
@@ -3316,17 +3771,44 @@ class LifecycleMixin:
             if old_main_message_handler_task and not old_main_message_handler_task.done():
                 old_main_message_handler_task.cancel()
                 try:
-                    await asyncio.wait_for(old_main_message_handler_task, timeout=2.0)
+                    if voice_handoff_ticket is None:
+                        listener_wait = asyncio.wait_for(
+                            old_main_message_handler_task,
+                            timeout=2.0,
+                        )
+                        await _await_voice_handoff_step(
+                            listener_wait,
+                            stage="old listener stop",
+                        )
+                    else:
+                        listener_timeout = min(
+                            2.0,
+                            max(
+                                0.0,
+                                voice_handoff_ticket.deadline
+                                - asyncio.get_running_loop().time(),
+                            ),
+                        )
+                        done, _pending = await _await_voice_handoff_step(
+                            asyncio.wait(
+                                {old_main_message_handler_task},
+                                timeout=listener_timeout,
+                            ),
+                            stage="old listener stop",
+                        )
+                        if not done:
+                            raise asyncio.TimeoutError
+                        old_main_message_handler_task.result()
                     logger.info("Final Swap Sequence: Old message handler task stopped")
                 except asyncio.TimeoutError:
                     # 旧 task 仍占着 recv()，继续往下 close() 会重演并发 recv 冲突。
                     # 关闭 new_session 防止 ws 泄漏，标记超时后中止 swap。
                     old_listener_cancel_timed_out = True
                     logger.error("Final Swap Sequence: 旧 listener 取消超时，中止热切换")
-                    try:
-                        await new_session.close()
-                    except Exception as _e:
-                        logger.debug(f"Final Swap Sequence: 超时中止时关闭 new_session 失败（可忽略）: {_e}")
+                    await _retire_replacement_session(
+                        new_session,
+                        stage="listener-timeout replacement",
+                    )
                     raise RuntimeError("旧 listener 取消超时，热切换中止")
                 except asyncio.CancelledError:
                     # 这里只允许吞"刚被 cancel 的旧 listener 抛回的取消回波"。
@@ -3340,6 +3822,8 @@ class LifecycleMixin:
                     if _swap_task is not None and _swap_task.cancelling() > 0:
                         raise
                 except Exception as e:
+                    if voice_handoff_ticket is not None:
+                        raise
                     logger.warning(f"Final Swap Sequence: Old task exited with error: {e}")
 
             _abort_if_passive_claim_retracted("before old session close")
@@ -3356,16 +3840,44 @@ class LifecycleMixin:
             if core_voice_session_lock is None:
                 core_voice_session_lock = asyncio.Lock()
                 self._core_voice_session_swap_lock = core_voice_session_lock
-            async with core_voice_session_lock:
+
+            @asynccontextmanager
+            async def _hold_core_voice_session_lock():
+                if voice_handoff_ticket is None:
+                    async with core_voice_session_lock:
+                        yield
+                else:
+                    if not _voice_handoff_is_current():
+                        raise RuntimeError(
+                            "voice activation handoff became stale before core "
+                            "voice swap lock acquisition"
+                        )
+                    async with asyncio.timeout_at(
+                        voice_handoff_ticket.deadline
+                    ):
+                        async with core_voice_session_lock:
+                            if not _voice_handoff_is_current():
+                                raise RuntimeError(
+                                    "voice activation handoff became stale after "
+                                    "core voice swap lock acquisition"
+                                )
+                            yield
+
+            async with _hold_core_voice_session_lock():
                 _abort_if_passive_claim_retracted(
                     "while waiting for core voice swap lock"
                 )
                 # ── 步骤 2：旧 task 已停，安全关闭旧 session ─────────────────────
                 if old_main_session:
                     try:
-                        await old_main_session.close()
+                        await _await_voice_handoff_step(
+                            self._close_owned_session(old_main_session),
+                            stage="old session close",
+                        )
                     except Exception as e:
                         logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
+                        if voice_handoff_ticket is not None:
+                            raise
 
                 _abort_if_passive_claim_retracted("before promote")
 
@@ -3381,17 +3893,48 @@ class LifecycleMixin:
                 # ── 步骤 3：promote 新 session ────────────────────────────────────
                 # 镜像启动侧的强 CAS：任何偏离都意味着并发 start/end_session
                 # 已接管会话，此时覆盖 self.session 会孤儿化赢家。
-                async with self.lock:
-                    _abort_if_passive_claim_retracted("while waiting for promote lock")
-                    _promote_allowed = self.session is old_main_session
-                    if _promote_allowed:
-                        self.session = new_session
+                if voice_handoff_ticket is None:
+                    async with self.lock:
+                        _abort_if_passive_claim_retracted(
+                            "while waiting for promote lock"
+                        )
+                        _promote_allowed = self.session is old_main_session
+                        if _promote_allowed:
+                            self.session = new_session
+                else:
+                    if not _voice_handoff_is_current():
+                        raise RuntimeError(
+                            "voice activation handoff became stale before "
+                            "session promote lock acquisition"
+                        )
+                    async with asyncio.timeout_at(
+                        voice_handoff_ticket.deadline
+                    ):
+                        async with self.lock:
+                            if not _voice_handoff_is_current():
+                                raise RuntimeError(
+                                    "voice activation handoff became stale after "
+                                    "session promote lock acquisition"
+                                )
+                            _abort_if_passive_claim_retracted(
+                                "while waiting for promote lock"
+                            )
+                            _promote_allowed = self.session is old_main_session
+                            if _promote_allowed:
+                                self.session = new_session
+                if voice_handoff_ticket is not None and not _voice_handoff_is_current(
+                    allow_promoted=True
+                ):
+                    raise RuntimeError(
+                        "voice activation handoff became stale during session promote"
+                    )
             if not _promote_allowed:
                 logger.warning("⚠️ Final Swap Sequence: promote 时 self.session 已被并发接管，中止 swap 并关闭 new_session")
-                try:
-                    await new_session.close()
-                except Exception as _e:
-                    logger.debug(f"Final Swap Sequence: 中止 promote 时关闭 new_session 失败（可忽略）: {_e}")
+                await _abort_voice_handoff("session_promote_rejected")
+                await _retire_replacement_session(
+                    new_session,
+                    stage="rejected promotion replacement",
+                )
                 # 队列没动过：已注入 new_session 的 _selected 仍在队列里，随
                 # 接管方纪元的下一次 hot-swap 照常投递（与 _deferred 一致）。
                 return
@@ -3417,11 +3960,28 @@ class LifecycleMixin:
                     _passive_media_outcome["rejection_observed"].wait()
                 )
                 try:
+                    media_barrier_timeout = (
+                        _PASSIVE_MEDIA_SESSION_UPDATE_ACK_TIMEOUT_S
+                    )
+                    if voice_handoff_ticket is not None:
+                        media_barrier_timeout = min(
+                            media_barrier_timeout,
+                            max(
+                                0.0,
+                                voice_handoff_ticket.deadline
+                                - asyncio.get_running_loop().time(),
+                            ),
+                        )
                     done, _pending = await asyncio.wait(
                         {session_update_ack, rejection_wait},
-                        timeout=_PASSIVE_MEDIA_SESSION_UPDATE_ACK_TIMEOUT_S,
+                        timeout=media_barrier_timeout,
                         return_when=asyncio.FIRST_COMPLETED,
                     )
+                    if not _voice_handoff_is_current(allow_promoted=True):
+                        raise RuntimeError(
+                            "voice activation handoff became stale during passive "
+                            "media readiness barrier"
+                        )
                 finally:
                     _passive_media_outcome["settled"] = True
                     # 屏障已经落地，晚到的图片拒绝回调再没有意义了。它们的闭包
@@ -3447,6 +4007,7 @@ class LifecycleMixin:
                     logger.warning(
                         "Final Swap Sequence: passive native media was rejected or its session-update barrier timed out; retiring promoted replacement before callback ACK"
                     )
+                    await _abort_voice_handoff("passive_media_barrier_failed")
                     # Retire only the listener/session this swap created.  A
                     # concurrent start_session may have replaced both manager
                     # slots while the Provider barrier above was pending; reading
@@ -3463,13 +4024,10 @@ class LifecycleMixin:
                             replacement_listener,
                             return_exceptions=True,
                         )
-                    try:
-                        await new_session.close()
-                    except Exception as close_err:
-                        logger.debug(
-                            "Final Swap Sequence: rejected passive media replacement close failed: %s",
-                            close_err,
-                        )
+                    await _retire_replacement_session(
+                        new_session,
+                        stage="passive-media replacement",
+                    )
                     # Cancellation and close both yield.  Revalidate the complete
                     # ownership pair before touching shared lifecycle state: if a
                     # winner arrived during either await, local retirement above
@@ -3538,7 +4096,7 @@ class LifecycleMixin:
                     }
             # Passive 搭车条目的对偶出队：同样按对象身份、同样只在 promote
             # 成功后。窗口期被 drain/清扫抢先消费的条目在此 no-op。
-            _removed_passive_cbs = self._remove_swap_delivered_passive_cbs(
+            _removed_passive_cbs = self._remove_swap_delivered_callbacks(
                 _prime_selected_passive_cbs
             )
             self.response_backend = (
@@ -3548,12 +4106,24 @@ class LifecycleMixin:
             )
             self._require_context_append_current_delivery = True
             next_context_count_at_promote = len(self._snapshot_next_session_context_messages())
-            await self._apply_pending_tts_route_after_swap()
+            await _await_voice_handoff_step(
+                self._apply_pending_tts_route_after_swap(),
+                stage="post-promote TTS route application",
+                allow_promoted=True,
+            )
             # The pending Omni session is now the active session. If its Core
             # provider changed, replace the independent ASR before replaying
             # cached microphone audio so one frame can never cross providers.
-            await self._reconcile_independent_asr_after_core_change()
+            await _await_voice_handoff_step(
+                self._reconcile_independent_asr_after_core_change(),
+                stage="post-promote ASR reconciliation",
+                allow_promoted=True,
+            )
+            replaced_speech_id = self.current_speech_id
             self.current_speech_id = str(uuid4())
+            # 换 session 不开新一轮：旧 session 里被 close() 截断、还没收尾的
+            # 回复仍是这一轮，它迟到的完成回调要能认出来（见 _carry_reply_turn）。
+            self._carry_reply_turn(replaced_speech_id)
             self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
             self.session_start_time = datetime.now()
@@ -3565,9 +4135,15 @@ class LifecycleMixin:
             # pending_session（已被挪走置 None）也赶不上 self.session
             # （还没赋值），导致 promote 后新 session 缺了那次注册的工具。
             try:
-                await self._sync_tools_to_active_session()
+                await _await_voice_handoff_step(
+                    self._sync_tools_to_active_session(),
+                    stage="post-promote tool reconciliation",
+                    allow_promoted=True,
+                )
             except Exception as _sync_err:
                 logger.warning("⚠️ final swap post-promote tool sync failed: %s", _sync_err)
+                if voice_handoff_ticket is not None:
+                    raise
 
             # 验证新session的WebSocket是否仍然有效（可能在swap过程中被服务器断开）
             if isinstance(self.session, OmniRealtimeClient) and not self.session.ws:
@@ -3578,9 +4154,14 @@ class LifecycleMixin:
                 self.initial_next_session_context_snapshot_len
                 + len(incremental_next_session_context)
             )
-            consumed_next_context_count = await self._prime_late_next_session_context_after_swap(
-                transferred_next_context_count,
-                next_context_count_at_promote,
+            consumed_next_context_count = await _await_voice_handoff_step(
+                self._prime_late_next_session_context_after_swap(
+                    transferred_next_context_count,
+                    next_context_count_at_promote,
+                    preceding=primed_context_sequence,
+                ),
+                stage="late context reconciliation",
+                allow_promoted=True,
             )
 
             # ── 步骤 4：启动新 listener ───────────────────────────────────────────
@@ -3593,6 +4174,42 @@ class LifecycleMixin:
                 )
             ):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
+
+            # The replacement transport and listener are now installed, and
+            # route reconciliation has completed under the ticket's one shared
+            # deadline.  Only this commit may move the activation writer to the
+            # promoted session and release its ordered output backlog.
+            if voice_handoff_ticket is not None:
+                if not _voice_handoff_is_current(allow_promoted=True):
+                    raise RuntimeError(
+                        "voice activation handoff became stale before commit"
+                    )
+                commit_voice_handoff = getattr(
+                    self,
+                    "_commit_voice_activation_handoff",
+                    None,
+                )
+                if not callable(commit_voice_handoff):
+                    raise RuntimeError(
+                        "voice activation handoff commit hook is unavailable"
+                    )
+                async with asyncio.timeout_at(voice_handoff_ticket.deadline):
+                    handoff_committed = await commit_voice_handoff(
+                        voice_handoff_ticket
+                    )
+                if handoff_committed is not True or self.session is not new_session:
+                    raise RuntimeError(
+                        "voice activation handoff commit was rejected"
+                    )
+
+            # Clear stale state only after promotion, listener installation,
+            # and any activation handoff commit have all succeeded.
+            if (
+                self.session is new_session
+                and self.message_handler_task is not None
+                and not self.message_handler_task.done()
+            ):
+                self.session_closed_by_server = False
 
             # ── 步骤 5：flush 热切换音频缓存到新 session ─────────────────────────
             # 必须在 promote 之后调用：_flush_hot_swap_audio_cache 使用 self.session
@@ -3608,16 +4225,28 @@ class LifecycleMixin:
             
 
         except asyncio.CancelledError:
+            _swap_cancelled = True
             logger.info("Final Swap Sequence: Task cancelled.")
             self.is_hot_swap_imminent = False
+            if voice_handoff_ticket is not None:
+                abort_handoff = getattr(
+                    self,
+                    "_abort_voice_activation_handoff",
+                    None,
+                )
+                if callable(abort_handoff):
+                    await abort_handoff(
+                        voice_handoff_ticket,
+                        reason="final_swap_cancelled",
+                    )
             # new_session 在 self.pending_session = None 后由局部变量持有。
             # 若 swap 在 promote 之前被取消，_cleanup_pending_session_resources 不再持有它，
             # 必须在此手动关闭，防止 ws 泄漏。
             if new_session is not None and new_session is not self.session:
-                try:
-                    await new_session.close()
-                except Exception as _e:
-                    logger.debug(f"Final Swap Sequence: CancelledError 路径关闭 new_session 失败（可忽略）: {_e}")
+                await _retire_replacement_session(
+                    new_session,
+                    stage="cancelled replacement",
+                )
             await self._cleanup_pending_session_resources()
             await self._reset_preparation_state(clear_main_cache=True)
             # 镜像 except Exception 的死会话 fail-close：取消若落在旧会话已
@@ -3645,13 +4274,24 @@ class LifecycleMixin:
         except Exception as e:
             logger.error(f"💥 Final Swap Sequence: Error: {e}")
             self.is_hot_swap_imminent = False
+            if voice_handoff_ticket is not None:
+                abort_handoff = getattr(
+                    self,
+                    "_abort_voice_activation_handoff",
+                    None,
+                )
+                if callable(abort_handoff):
+                    await abort_handoff(
+                        voice_handoff_ticket,
+                        reason="final_swap_failed",
+                    )
             await self.send_status(json.dumps({"code": "INTERNAL_UPDATE_FAILED", "details": {"error": str(e)}}))
             # 同上：new_session 若未完成 promote，需手动关闭防 ws 泄漏。
             if new_session is not None and new_session is not self.session:
-                try:
-                    await new_session.close()
-                except Exception as _e:
-                    logger.debug(f"Final Swap Sequence: 异常路径关闭 new_session 失败（可忽略）: {_e}")
+                await _retire_replacement_session(
+                    new_session,
+                    stage="failed replacement",
+                )
             await self._cleanup_pending_session_resources()
             await self._reset_preparation_state(clear_main_cache=True)
             if old_listener_cancel_timed_out:
@@ -3674,7 +4314,7 @@ class LifecycleMixin:
                             pass  # 收尸只关心"已退出"，退出方式无所谓
                     if _orphan_old_session is not None:
                         try:
-                            await _orphan_old_session.close()
+                            await self._close_owned_session(_orphan_old_session)
                         except Exception as _reap_err:
                             logger.debug(f"Final Swap Sequence: 收尸关闭旧 session 失败（可忽略）: {_reap_err}")
 
@@ -3700,17 +4340,56 @@ class LifecycleMixin:
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
         finally:
+            # Keep paired objects through all failure-recovery awaits. An extra
+            # restored by an abort is still pending; a primed extra in a
+            # surviving promoted session has actually completed this delivery,
+            # whether the swap removed it or a concurrent path (a text drain)
+            # took it out of the queue inside the prime→promote window.
+            if (
+                _prime_extra_callbacks
+                and _prime_selected_extras
+                and not _swap_cancelled
+                and new_session is not None
+                and self.session is new_session
+                and not self._swap_session_is_dead(new_session)
+            ):
+                # Nuitka 4.2.x cannot clone comprehension scopes inside this
+                # async finally block. Keep the same snapshots and ordering
+                # with ordinary loops so all desktop targets can compile it.
+                queued_extra_objects = set(map(id, self.pending_extra_replies))
+                delivered_ids = set()
+                for delivered_extra in _prime_selected_extras:
+                    if isinstance(delivered_extra, dict) and id(delivered_extra) not in queued_extra_objects:
+                        delivered_ids.add(delivered_extra.get("_callback_delivery_id"))
+                delivered_cbs = []
+                for delivered_cb in _prime_extra_callbacks:
+                    if delivered_cb.get("_callback_delivery_id") in delivered_ids:
+                        delivered_cbs.append(delivered_cb)
+                queued_cb_objects = set(map(id, self.pending_agent_callbacks))
+                queued_delivered_cbs = []
+                for delivered_cb in delivered_cbs:
+                    if id(delivered_cb) in queued_cb_objects:
+                        queued_delivered_cbs.append(delivered_cb)
+                self._remove_swap_delivered_callbacks(queued_delivered_cbs)
+                # A paired callback outside the queue is held by a text turn
+                # that drained it. Retract it so a precommit failure there does
+                # not restore it (and its mirror) after the swap delivered them.
+                for cb in delivered_cbs:
+                    if id(cb) not in queued_cb_objects:
+                        cb[DELIVERY_RETRACTED_KEY] = True
+            self._release_swap_prime_passive_claims(_prime_extra_claimed)
             self._release_swap_prime_passive_claims(_passive_sel)
             self._purge_undeliverable_callbacks()
             self.is_hot_swap_imminent = False  # Always reset this flag
             if self.final_swap_task and self.final_swap_task.done():
                 self.final_swap_task = None
 
-    async def disconnected_by_server(self, *, expected_session=None):
+    async def disconnected_by_server(self, *, expected_session=None, announce_disconnect=True):
         if expected_session is not None and expected_session is not self.session:
             logger.info("⏭️ disconnected_by_server: expected_session stale, skipping")
             return
-        await self.send_status(json.dumps({"code": "CHARACTER_DISCONNECTED", "details": {"name": self.lanlan_name}}))
+        if announce_disconnect:
+            await self.send_status(json.dumps({"code": "CHARACTER_DISCONNECTED", "details": {"name": self.lanlan_name}}))
         await self.send_session_ended_by_server()
         self.sync_message_queue.put({'type': 'system', 'data': 'API server disconnected'})
         await self.cleanup(expected_session=expected_session)
@@ -3775,270 +4454,73 @@ class LifecycleMixin:
         timeout_seconds: float = 15.0,
     ) -> bool:
         """Queue a memory barrier only while this manager is still idle."""
+        self._init_session_lifecycle_state()
         async with self.lock:
             if self.is_active or self.is_starting:
                 return False
             completion = self._queue_session_end_memory_barrier(callback)
-        await self._wait_for_session_end_memory_barrier(
-            completion,
-            callback,
-            timeout_seconds=timeout_seconds,
-        )
+            self._idle_memory_barriers.add(completion)
+            completion.add_done_callback(self._idle_memory_barriers.discard)
+        waiter = self._own_cleanup_task(self._wait_for_session_end_memory_barrier(
+            completion, callback, timeout_seconds=timeout_seconds,
+        ))
+        await asyncio.shield(waiter)
         return True
 
     async def end_session(
-        self,
-        by_server=False,
-        *,
-        expected_session=None,
-        reset_starting_count=True,
-        after_memory_settlement=None,
-        memory_settlement_timeout=15.0,
+        self, by_server=False, *, expected_session=None, reset_starting_count=True,
+        after_memory_settlement=None, memory_settlement_timeout=15.0,
         preserve_pending_input=False,
-    ):  # 与Core API断开连接
-        # 「用户/前端主动结束启动」信号：只有前端发来的 end_session / pause_session
-        # （by_server=False 且 reset_starting_count=True，见 websocket_router）才计。
-        # 内部 recovery（reset_starting_count=False）与各类 by_server=True cleanup
-        # 不算，避免把 in-flight 启动失败误判成"用户放弃"而误杀跨模式重启
-        # （见 start_session 跨模式分支的 _user_session_abandon_epoch 守卫）。放在所有
-        # 早退之前，确保 in-flight（尚未 active）期间前端 end_session 也能计上。
-        if not by_server and reset_starting_count:
-            self._user_session_abandon_epoch += 1
-        memory_barrier_completion = None
-        # Pre-check: no-side-effect guard before _init_renew_status which mutates
-        # pending/prewarm state.  A stale callback must not nuke preparation state.
-        _inactive_early = False
-        async with self.lock:
-            if not self.is_active:
-                # Stale-session guard: 即使未激活，也要确认不是过期回调，
-                # 否则会误清理新 session 正在创建的 TTS 资源
-                if expected_session is not None and expected_session is not self.session:
-                    logger.info("⏭️ end_session: expected_session stale (inactive-early), skipping")
-                    return
-                # 即使会话未完全激活（如 start_session 失败），也要清理
-                # 可能残留的 TTS 重试状态，防止污染下一次会话
-                self._reset_tts_retry_state()
-                self._audio_stream_epoch += 1
-                self._clear_audio_stream_queue("end_session_inactive")
-                self._cancel_audio_stream_worker("end_session_inactive")
-                self._reset_voice_echo_suppression_cache()
-                _inactive_early = True
-                # start_tts_if_needed 可能已启动 TTS 线程/handler，
-                # 但 is_active 尚未置 True 就失败了——快照引用以便释放锁后清理
-                _orphan_tts_handler = self.tts_handler_task
-                _orphan_tts_thread = self.tts_thread
-                _orphan_tts_rq = self.tts_request_queue
-                _orphan_tts_rsq = self.tts_response_queue
-            elif expected_session is not None and expected_session is not self.session:
-                logger.info("⏭️ end_session: expected_session stale (pre-check), skipping")
-                return
-            else:
-                # 尽早取消 TTS 延迟重试任务并清理错误码（持锁状态下），
-                # 防止 _init_renew_status 期间 respawn task 触发无效重试
-                self._reset_tts_retry_state()
-
-        # Clear the playback gate + manager queue on genuine teardown. Placed
-        # AFTER the stale-session guards above (which `return` early) so a stale/
-        # duplicate end_session callback can't reset the CURRENT live session's
-        # gate or drop its queued cues (Codex P1).
-        self._reset_proactive_gate()
-        self.clear_speech_playback_gains()
-
-        # Stale expected_session callbacks have already returned above. Invalidate
-        # ASR callbacks before any remaining teardown awaits can yield.
-        await self._close_independent_asr(next_route_mode="blocked")
-
-        if _inactive_early:
-            if reset_starting_count:
-                # 前端启动超时会在 session 尚未 active 时发送 end_session。
-                # 旧输入缓存必须在释放 start_session guard 之前清掉；释放后
-                # 新一轮启动可能已经开始缓存用户消息，旧收尾不能再碰它们。
-                async with self.input_cache_lock:
-                    self.session_ready = False
-                    self.pending_input_data.clear()
-                    self._clear_pending_context_appends()
-                async with self.lock:
-                    if expected_session is None or expected_session is self.session:
-                        self._starting_session_count = 0
-                        self._starting_input_mode = None
-            # start_tts_if_needed 可能已启动 TTS 但 is_active 未置 True（如 LLM 启动失败），
-            # 必须清理这些孤儿资源，否则线程/task 会泄漏
-            await self._teardown_tts_runtime(
-                _orphan_tts_handler, _orphan_tts_thread,
-                _orphan_tts_rq, _orphan_tts_rsq)
-            if callable(after_memory_settlement):
-                memory_barrier_completion = self._queue_session_end_memory_barrier(
-                    after_memory_settlement,
-                )
-                await self._wait_for_session_end_memory_barrier(
-                    memory_barrier_completion,
-                    after_memory_settlement,
-                    timeout_seconds=memory_settlement_timeout,
-                )
-            return
-
-        await self._init_renew_status()
-
-        _post_init_inactive = False
-        async with self.lock:
-            # Re-check after await: another task may have deactivated or swapped session.
-            if expected_session is not None and expected_session is not self.session:
-                logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
-                return
-            if not self.is_active:
-                self._audio_stream_epoch += 1
-                self._clear_audio_stream_queue("end_session_post_init_inactive")
-                self._cancel_audio_stream_worker("end_session_post_init_inactive")
-                self._reset_voice_echo_suppression_cache()
-                _post_init_inactive = True
-            else:
-                self.is_active = False
-                # 重置 _starting_session_count：如果 start_session 正在执行中（比如卡在预热），
-                # 前端超时后发来 end_session，必须解除这个 guard，否则用户手动重试会被
-                # 静默丢弃（_starting_session_count>0 → return），导致"必须重启应用才能恢复"。
-                # 但 start_session 内部自己调 end_session 清理旧 session 时必须传
-                # reset_starting_count=False，否则 guard 被清零后并发的第二次 start_session
-                # 会穿过，产生孤儿 OmniRealtimeClient（silence_check_task/ws 泄漏）。
-                if reset_starting_count:
-                    self._starting_session_count = 0
-                    self._starting_input_mode = None
-                self._audio_stream_epoch += 1
-                self._clear_audio_stream_queue("end_session")
-                self._cancel_audio_stream_worker("end_session")
-                self._reset_voice_echo_suppression_cache()
-
-                # Activity tracker：session 关闭，voice_engaged 不再可能触发。
-                self._activity_tracker.on_voice_mode(False)
-
-                # Snapshot all mutable resource refs while holding the lock,
-                # then operate only on locals to prevent killing newly created resources.
-                main_session_ref = self.session
-                message_handler_task_ref = self.message_handler_task
-                tts_handler_task_ref = self.tts_handler_task
-                tts_thread_ref = self.tts_thread
-                tts_request_queue_ref = self.tts_request_queue
-                tts_response_queue_ref = self.tts_response_queue
-
-        if _post_init_inactive:
-            if callable(after_memory_settlement):
-                memory_barrier_completion = self._queue_session_end_memory_barrier(
-                    after_memory_settlement,
-                )
-                await self._wait_for_session_end_memory_barrier(
-                    memory_barrier_completion,
-                    after_memory_settlement,
-                    timeout_seconds=memory_settlement_timeout,
-                )
-            return
-
-        logger.info("End Session: Starting cleanup...")
-        if not callable(after_memory_settlement):
-            self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
-
-        if message_handler_task_ref:
-            message_handler_task_ref.cancel()
-            try:
-                await asyncio.wait_for(message_handler_task_ref, timeout=3.0)
-            except asyncio.CancelledError:
-                # Normal cancellation echo; the timeout case is handled separately below.
-                pass
-            except asyncio.TimeoutError:
-                logger.warning("End Session: Warning: Listener task cancellation timeout.")
-            except Exception as e:
-                # 任务可能已因并发 recv() 冲突等原因提前退出，此处只是发现既成事实
-                logger.warning(f"End Session: Listener task had prior error: {e}")
-            if self.message_handler_task is message_handler_task_ref:
-                self.message_handler_task = None
-
-        if main_session_ref:
-            try:
-                logger.info("End Session: Closing connection...")
-                await main_session_ref.close()
-                logger.info("End Session: Qwen connection closed.")
-            except Exception as e:
-                logger.error(f"💥 End Session: Error during cleanup: {e}")
-            finally:
-                if self.session is main_session_ref:
-                    self.session = None
-
-        await self._teardown_tts_runtime(
-            tts_handler_task_ref, tts_thread_ref,
-            tts_request_queue_ref, tts_response_queue_ref)
-        # handler 可能在锁释放到 task 取消之间重新引入了过期错误码——
-        # 在活跃会话拆除路径（is_active 已置 False）补充一次清理。
-        # 但仅当 TTS 资源尚未被新会话替换时才重置，避免擦除新会话的状态。
-        tts_replaced_by_new_session = (
-            (self.tts_handler_task is not None and self.tts_handler_task is not tts_handler_task_ref) or
-            (self.tts_thread is not None and self.tts_thread is not tts_thread_ref)
+    ):
+        """Wait for safe handoff with bounded cleanup grace; retain slow resources."""
+        task = self.request_end_session(
+            by_server=by_server, expected_session=expected_session,
+            reset_starting_count=reset_starting_count,
+            after_memory_settlement=after_memory_settlement,
+            memory_settlement_timeout=memory_settlement_timeout,
+            preserve_pending_input=preserve_pending_input,
         )
-        if not tts_replaced_by_new_session:
-            self._reset_tts_retry_state()
-        
-        # 重置输入缓存状态
-        async with self.input_cache_lock:
-            self.session_ready = False
-            if not preserve_pending_input:
-                self.pending_input_data.clear()
-            self._clear_pending_context_appends()
-        # Release ledger entries that pointed into the retired session's queue.
-        # Prune rather than clear: a replacement session may already have
-        # staged (and recorded) attachments while this teardown was awaiting.
-        self._prune_request_staged_images()
-
-        self.last_time = None
-        if callable(after_memory_settlement):
-            # The isolation barrier is intentionally queued only after every
-            # session producer has been stopped.  Otherwise an output callback
-            # racing with teardown could enqueue old text *behind* the barrier
-            # and survive its post-settlement clear.
-            memory_barrier_completion = self._queue_session_end_memory_barrier(
-                after_memory_settlement,
-            )
-            await self._wait_for_session_end_memory_barrier(
-                memory_barrier_completion,
-                after_memory_settlement,
-                timeout_seconds=memory_settlement_timeout,
-            )
-        if not by_server:
-            await self.send_status(json.dumps({"code": "CHARACTER_LEFT", "details": {"name": self.lanlan_name}}))
-            logger.info("End Session: Resources cleaned up.")
+        await self._wait_session_end(task)
 
     async def cleanup(self, expected_websocket=None, *, expected_session=None, reset_starting_count=True):
-        """
-        Clean up session resources.
-
-        Args:
-            expected_websocket: optional, the expected websocket instance.
-                               If provided and it doesn't match the current websocket, skip cleanup.
-                               Prevents an old connection from wrongly cleaning up a new connection's resources (race protection).
-            expected_session: optional, the expected session instance.
-                             Session-level guard from lifecycle callbacks, passed through to end_session.
-            reset_starting_count: forwarded to end_session. Pass False when the
-                             caller is itself a start_session that owns the
-                             _starting_session_count guard and will decrement it
-                             in its own finally — letting cleanup reset it to 0
-                             early opens a premature-0 window where a concurrent
-                             start (e.g. the cross-mode restart wait) sees the
-                             guard freed before the failing start has fully
-                             unwound, then gets its websocket/guard clobbered by
-                             the still-running teardown (Codex P2). Same rationale
-                             as the in-start old-session cleanup at line ~5610.
-        """
-        if expected_websocket is not None and self.websocket is not None:
-            if self.websocket != expected_websocket:
-                logger.info("⏭️ cleanup 跳过：当前 websocket 已被新连接替换")
-                return
-
-        await self.end_session(by_server=True, expected_session=expected_session,
-                               reset_starting_count=reset_starting_count)
-        # 清理websocket引用，防止保留失效的连接
-        # 使用共享锁保护websocket操作，防止与initialize_character_data()中的restore竞争
-        if self.websocket_lock:
-            async with self.websocket_lock:
-                # 再次检查：只有当 websocket 仍是我们期望的那个时才清理
-                if expected_websocket is None or self.websocket == expected_websocket:
-                    self.websocket = None
-        else:
-            # 如果没有设置websocket_lock（旧代码路径），直接清理
-            if expected_websocket is None or self.websocket == expected_websocket:
+        self._init_session_lifecycle_state()
+        socket = self.websocket if expected_websocket is None else expected_websocket
+        if self.websocket is not None and self.websocket is not socket:
+            return
+        if expected_session is not None and self.session is not expected_session:
+            return
+        operation = self._start_operation
+        preserve_replacement = (
+            expected_websocket is None and operation is not None
+            and operation.valid and not operation.finished.is_set()
+            and operation.task is not asyncio.current_task()
+            and (self.session is None or self.session is operation.previous_session)
+        )
+        if (reset_starting_count and operation is not None
+                and operation.websocket is socket and not operation.finished.is_set()
+                and not preserve_replacement):
+            # Disconnect is terminal intent for this requester, unlike a
+            # targetless server-side config cleanup. Revoke before the first
+            # await so retirement owns its startup children and TTS resources.
+            operation.valid = False
+        generation = self._session_generation
+        try:
+            await self.end_session(by_server=True, expected_session=expected_session,
+                                   reset_starting_count=reset_starting_count)
+        except Exception as exc:
+            # Disconnect is terminal for this socket even when physical close
+            # failed. The retirement registry retains unsafe resources and
+            # capacity; unbinding below still obeys socket/generation identity.
+            logger.warning("Session disconnect cleanup failed: %s", exc)
+        # A microphone pause uses end_session directly. Only a matching
+        # disconnected transport may unbind the chat socket, after rechecking
+        # both the connection and conversation ownership behind the lock.
+        def unbind():
+            if (not preserve_replacement and self._session_generation == generation
+                    and self.websocket is socket):
                 self.websocket = None
+        if getattr(self, 'websocket_lock', None):
+            async with self.websocket_lock:
+                unbind()
+        else:
+            unbind()

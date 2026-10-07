@@ -1,0 +1,97 @@
+#agent-content-navigation, #agent-plugin-content, #agent-plugin-content * {
+    -webkit-app-region: no-drag;
+}
+#agent-task-hud.has-plugin-content {
+    /* Let the selected page own scrolling instead of scrolling the window chrome. */
+    overflow: hidden !important;
+}
+#agent-content-navigation {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 0 12px 8px;
+    border-bottom: 1px solid var(--neko-popup-separator, rgba(0, 0, 0, .08));
+    flex-shrink: 0;
+    cursor: default;
+}
+#agent-content-tabs {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--neko-popup-separator, #dce5ec) transparent;
+}
+#agent-content-tabs button, #agent-plugin-close {
+    border: 0;
+    border-radius: 7px;
+    height: 30px;
+    flex-shrink: 0;
+    color: var(--neko-popup-text-sub, #667582);
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    transition: background-color .15s ease, color .15s ease;
+}
+#agent-content-tabs button {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 180px;
+    padding: 0 10px;
+    font-size: 12px;
+    white-space: nowrap;
+}
+#agent-content-tabs button:hover, #agent-plugin-close:hover {
+    background: var(--neko-popup-accent-bg, rgba(42, 123, 196, .08));
+    color: var(--neko-popup-text, #333);
+}
+#agent-content-tabs button[aria-selected="true"] {
+    background: var(--neko-popup-accent-bg, rgba(42, 123, 196, .10));
+    color: var(--neko-popup-accent, #2a7bc4);
+    font-weight: 600;
+}
+#agent-content-tabs button:focus-visible, #agent-plugin-close:focus-visible {
+    outline: 2px solid var(--neko-popup-accent, #2a7bc4);
+    outline-offset: -2px;
+}
+.agent-plugin-tab-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.agent-plugin-tab-unread {
+    display: none;
+    width: 5px;
+    height: 5px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--neko-popup-accent, #2a7bc4);
+}
+.has-unread .agent-plugin-tab-unread { display: block; }
+#agent-plugin-close {
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    padding: 0;
+    font-size: 20px;
+    line-height: 1;
+}
+#agent-plugin-content {
+    display: none;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    padding: 0 14px 14px;
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    user-select: text;
+    cursor: default;
+}
+#agent-plugin-views, .agent-plugin-view { min-width: 0; width: 100%; }
+@media (prefers-reduced-motion: reduce) {
+    #agent-content-tabs button, #agent-plugin-close { transition: none; }
+}

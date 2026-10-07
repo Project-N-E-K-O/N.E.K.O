@@ -1,7 +1,12 @@
+import { modelApiMessages } from '../model-api'
+import { modelBindingsMessages } from '../model-bindings'
+
 /**
  * 中文语言包
  */
 export default {
+  modelApi: modelApiMessages['zh-CN'],
+  modelBindings: modelBindingsMessages['zh-CN'],
   development: {
     guidePurpose: "此界面不提供一键式插件开发，而是帮助开发者将已有源码一键打包为可导入的插件，并支持持续开发。",
     navTitle: "开发插件",
@@ -42,6 +47,15 @@ export default {
     removeHint: "停止插件并移除关联？源码和运行数据会保留。",
   },
   common: {
+    surfaceLanguagePending: "应用语言已更改。为保留未保存内容，此面板暂时保留原语言。",
+    surfaceApplyLanguage: "应用新语言并重新载入面板",
+    surfaceApplyLanguageConfirm: "重新载入面板会丢失其中未保存的内容。是否继续？",
+
+    languageLoading: "正在加载语言，当前界面仍可使用",
+    languageLoadFailed: "语言加载失败，已保留当前语言。",
+    languageRetry: "重试语言加载",
+    languageReload: "重新加载页面",
+
     loading: '加载中...',
     refresh: '刷新',
     search: '搜索',
@@ -142,6 +156,8 @@ export default {
     installTaskLost: '安装任务已不存在，请检查插件状态后再重试。',
     installDialogTitle: '正在安装 {name}',
     installDialogTitleUpgrade: '正在升级 {name}',
+    installFailedTitle: '安装失败：{name}',
+    installFailedTitleUpgrade: '升级失败：{name}',
     installCompleted: '安装完成',
     installCompletedUpgrade: '升级完成',
     rollbackRunning: '安装失败，正在回滚...',
@@ -157,6 +173,16 @@ export default {
       failed: '失败',
       canceled: '已取消',
     },
+    installStep: {
+      download: '下载',
+      verify: '校验',
+      install: '安装',
+      replace: '替换文件',
+      rollback: '回滚',
+      completed: '完成',
+    },
+    installDetails: '详情',
+    installDetailsHide: '收起详情',
     noDownloadUrl: '该插件没有可用的下载地址',
     pairRequired: '需要配对 Bridge Token',
     recommended: '推荐',
@@ -231,10 +257,30 @@ export default {
     packageHashMismatch: '插件包校验失败。',
     downloadFailed: '插件包下载失败。',
     marketListFetchFailed: '插件市场暂时不可用。',
+    catalogNotConfigured: '未配置插件市场地址。',
+    releaseMismatch: '安装请求与市场发布记录不一致，请刷新插件市场后重试。',
     unsafeProfilePath: '记录的包 Profile 路径不安全。',
     packageIdentityMismatch: '插件包身份与目标插件不一致。',
     confirmationChanged: '确认后插件或安装包已变化，请检查新计划后重试。',
     confirmationRequired: '安装前请确认当前升级计划。'
+  },
+  pluginUpdates: {
+    button: '检查更新',
+    buttonBusy: '检查中…',
+    title: '插件更新',
+    titleWithCount: '插件更新（{count}）',
+    checking: '正在检查更新…',
+    refresh: '刷新',
+    close: '关闭',
+    dragHint: '拖动可移动',
+    allUpToDate: '所有插件已是最新版本',
+    checkIncomplete: '部分插件未能检查到最新版本，详见「服务器日志」。',
+    update: '更新',
+    updating: '更新中…',
+    updateAll: '全部更新',
+    updateAllProgress: '正在更新 {done}/{total}',
+    updateSucceeded: '已更新：{name}',
+    manualRequired: '请到插件市场页更新此插件',
   },
   settings: {
     channel: '更新渠道',
@@ -301,6 +347,7 @@ export default {
     installFallback: '无法选择镜像源，已使用 GitHub 直连。'
   },
   plugins: {
+    configSchemaInvalid: '插件配置 Schema 无效，已使用通用配置编辑器。',
     title: '插件列表',
     name: '插件名称',
     id: '插件ID',
@@ -394,6 +441,7 @@ export default {
     addItem: '新增项',
     fieldName: '字段名',
     fieldNameRequired: '字段名不能为空',
+    readOnlyField: '此字段为只读，无法添加。',
     invalidFieldKey: '字段名不合法',
     fieldType: '字段类型',
     duplicateFieldKey: '字段名已存在，请换一个',
@@ -405,6 +453,10 @@ export default {
     disabled: '已禁用',
     autoStart: '自动启动',
     manualStart: '手动启动',
+    autoStartHint: 'N.E.K.O 启动时自动启动此插件。手动启动或停止不会改变此设置。',
+    autoStartDisabledHint: '该插件当前已禁用。开启自动启动会同时启用它，使其下次启动时运行，但不会立即启动。',
+    autoStartBlockedHint: '偏好已开启，但插件被禁用或仍待批准，下次不会自启。关闭再开启可启用并批准自启。',
+    autoStartUnsupportedDevelopment: '开发插件不会自动启动，请手动启动。',
     fetchFailed: '获取插件列表失败',
     pluginType: '类型',
     pluginTypeNormal: '插件',
@@ -546,6 +598,8 @@ export default {
       blockedLegacyPlugin: '仍安装着此插件的旧版本。请先卸载 {plugin} 再继续。',
       blockedOwnershipUnknown: '无法确认现有插件目录的所有权。请先恢复对应的安装源记录，再重试。',
       blockedInstallSourceReadOnly: '安装源记录不可用或处于只读状态。请先恢复安装源记录，再重试。',
+      installSucceeded: '安装完成，处理了 {count} 个插件。',
+      completedWithWarnings: '{plugin} 已安装，但存在警告：{reasons}',
       rollbackCompleted: '升级失败，已恢复之前的版本。',
       rollbackIncomplete: '升级失败且回滚未完整完成，请检查插件状态后再继续。',
       error: {
@@ -556,6 +610,7 @@ export default {
         pluginManifestInvalid: '插件的 plugin.toml 格式有误，请让插件作者修复后重新打包。',
         identityMismatch: '插件文件夹名称与 plugin.toml 中的 ID 不一致，请让插件作者修复安装包。',
         hashMismatch: '安装包内容与校验信息不一致，已拒绝安装，未保留任何安装改动。',
+        profileOwnershipConflict: '这个插件包的配置档目录已存在，但不属于该安装包（可能是之前安装留下的残留），已拒绝安装，未做任何改动。',
         inspectFailed: '无法检查这个插件包。请确认文件存在且是有效的 N.E.K.O 插件包，然后重试。',
         verifyFailed: '无法校验这个插件包。请重新下载，或让插件作者重新打包后再试。',
         installFailed: '无法安装这个插件包，未保留未经确认的安装改动。'
@@ -759,6 +814,9 @@ export default {
     pluginDeleted: '插件已删除',
     pluginDeletedBuiltinRestartFailed: '插件 {plugin} 已删除，但恢复的内置版本启动失败：{error}',
     startFailed: '启动失败',
+    autoStartEnabled: '已开启自动启动',
+    autoStartDisabled: '已关闭自动启动',
+    autoStartUpdateFailed: '更新自动启动设置失败',
     stopFailed: '停止失败',
     reloadFailed: '重载失败',
     buildFailed: '构建插件失败',
@@ -772,6 +830,7 @@ export default {
     serviceUnavailable: '服务不可用',
     networkError: '网络错误，请检查网络连接',
     requestTimeout: '请求超时，请稍后重试',
+    csrfBootstrapFailed: '无法获取安全令牌。如使用反向代理，请确认已将 /security/csrf-token 转发到插件服务。',
     pluginLifecycleTimeout: '插件启动或重载超时，请查看插件日志'
   },
   welcome: {

@@ -356,6 +356,26 @@
 
     function translateResponseErrorCode(code, fallbackText) {
         switch (String(code || '').trim()) {
+            case 'migration_already_pending':
+                return translate('storage.migrationAlreadyPending', '请先处理当前迁移或恢复状态，再变更存储位置。');
+            case 'selected_root_empty':
+                return translate('storage.selectedRootEmpty', '目标路径不能为空。');
+            case 'selected_root_not_absolute':
+                return translate('storage.selectedRootNotAbsolute', '目标路径必须是绝对路径。');
+            case 'selected_root_inside_project':
+                return translate('storage.selectedRootInsideProject', '目标路径不能位于项目目录内，请选择其他位置。');
+            case 'selected_root_is_file':
+            case 'selected_root_not_directory':
+                return translate('storage.selectedRootNotDirectory', '目标路径必须是文件夹，不能是文件。');
+            case 'selected_root_parent_missing':
+                return translate('storage.selectedRootParentMissing', '找不到目标路径的父目录，无法创建，请选择其他位置。');
+            case 'selected_root_parent_not_writable':
+                return translate('storage.selectedRootParentNotWritable', '目标路径的父目录不可写，无法创建，请选择其他位置。');
+            case 'selected_root_inside_cloudsave':
+            case 'selected_root_inside_staging':
+            case 'selected_root_inside_backups':
+            case 'selected_root_inside_anchor_root':
+                return translate('storage.selectedRootReserved', '目标路径位于保留的存储区域，请选择其他位置。');
             case 'cloudsave_local_state_unavailable':
                 return translate('storage.cloudsaveLocalStateUnavailable', '本机状态目录不可用，当前会话已禁用云存档。请先修复 state 路径并重启应用，再进行存储位置变更。');
             case 'directory_picker_unavailable':
@@ -381,14 +401,29 @@
             case 'selected_root_unavailable':
                 return translate('storage.selectedRootUnavailable', '原始数据路径当前仍不可用，请先恢复该路径后再重试。');
             case 'startup_release_failed':
-                return translate('storage.selectionSubmitFailed', '提交存储位置选择失败，请稍后重试。');
+                return translate('storage.startupReleaseFailed', '当前会话暂时无法解除受限启动，请重试或刷新页面后再继续。');
+            case 'storage_operation_failed':
+                return translate('storage.storageOperationFailed', '提交存储位置操作失败，未发生落盘改动，请稍后重试。');
             case 'storage_bootstrap_blocking':
                 return translate('storage.storageBootstrapBlocking', '当前存储状态仍需恢复或迁移，暂时不能继续当前会话。');
+            case 'storage_policy_rollback_failed':
+                return translate('storage.storagePolicyRollbackFailed', '写入存储位置配置失败，且未能恢复原有状态，请检查本机状态目录是否可写；若仍异常请手动确认状态文件。');
+            case 'startup_release_rollback_failed':
+                return translate('storage.startupReleaseRollbackFailed', '解除受限启动失败且未能确认原有状态已恢复，请检查或恢复状态文件。');
+            case 'restart_rollback_failed':
+                return translate('storage.restartRollbackFailed', '受控重启失败且未能确认原有状态已恢复，请检查或恢复状态文件。');
+            case 'storage_policy_write_failed':
+                return translate('storage.storagePolicyWriteFailed', '写入存储位置配置失败，已恢复原有状态，请检查本机状态目录是否可写后重试。');
+            case 'storage_state_unreadable':
+                return translate('storage.storageStateUnreadable', '写入存储位置配置失败：状态文件当前无法读取（可能不存在，或所在目录不可访问），未发生落盘改动，请稍后重试或检查本机状态目录是否可访问。');
+            case 'storage_state_invalid':
+                return translate('storage.storageStateInvalid', '存储状态文件内容损坏或格式无效，未发生落盘改动，请检查或恢复状态文件。');
             case 'target_confirmation_required':
                 return existingTargetConfirmationText();
             case 'target_not_empty':
                 return translate('storage.targetNotEmpty', '目标路径已经包含运行时数据，请确认目标目录后再继续迁移。');
             case 'target_not_writable':
+            case 'selected_root_not_writable':
                 return translate('storage.blockingTargetNotWritable', '目标路径当前不可写，无法开始迁移流程。');
             default:
                 return fallbackText || '';
@@ -1361,31 +1396,12 @@
         }
     }
 
-    var STORAGE_ERROR_DETAIL_MAX_LEN = 200;
-
-    function truncateErrorDetail(text) {
-        var trimmed = String(text || '').trim();
-        if (trimmed.length <= STORAGE_ERROR_DETAIL_MAX_LEN) return trimmed;
-        return trimmed.slice(0, STORAGE_ERROR_DETAIL_MAX_LEN) + '…';
-    }
-
     function extractResponseError(payload, fallbackText) {
         if (payload && typeof payload === 'object') {
             var rawError = typeof payload.error === 'string' ? String(payload.error).trim() : '';
             var code = String(payload.error_code || payload.blocking_error_code || '').trim();
             var codedText = translateResponseErrorCode(code, '');
             if (codedText) {
-                // startup_release_failed 这类后端会把异常细节塞进 payload.error
-                // （f"... {exc}" 风格）。完整字符串可能含路径/异常类名/栈片段，
-                // 直接展示既不友好也可能泄露内部信息。所以：
-                //   - 完整原文打到 console.warn 给开发者看
-                //   - UI 只展示翻译后的概括语 + 裁短的尾巴（≤200 字符）
-                if (code === 'startup_release_failed' && rawError && rawError !== codedText) {
-                    try {
-                        console.warn('[storage-location] startup_release_failed detail:', rawError);
-                    } catch (_) {}
-                    return codedText + ' ' + truncateErrorDetail(rawError);
-                }
                 return codedText;
             }
             // 未在 translateResponseErrorCode 命中的 error_code 走通用兜底：
@@ -2370,6 +2386,7 @@
     }
 
     window.appStorageLocation = {
+        formatError: extractResponseError,
         init: init,
         waitUntilMainUiAllowed: function () {
             return init();

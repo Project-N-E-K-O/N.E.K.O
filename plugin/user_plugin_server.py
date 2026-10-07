@@ -314,6 +314,8 @@ if __name__ == "__main__":
     sigint_lock = threading.Lock()
     force_exit_timer: threading.Timer | None = None
 
+    from plugin.server.infrastructure.mutation_auth import TRUSTED_PROXY_IPS
+
     config = uvicorn.Config(
         app,
         host=host,
@@ -321,6 +323,8 @@ if __name__ == "__main__":
         log_config=None,
         backlog=4096,
         timeout_keep_alive=30,
+        proxy_headers=True,
+        forwarded_allow_ips=TRUSTED_PROXY_IPS,
     )
     server = uvicorn.Server(config)
 

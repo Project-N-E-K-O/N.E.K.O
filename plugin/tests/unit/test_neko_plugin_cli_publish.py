@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 import subprocess
+import sys
 from pathlib import Path
 
 import httpx
@@ -781,10 +782,12 @@ def test_publish_github_rechecks_worktree_after_release_preflight(
     assert "git working tree has uncommitted changes" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("command", [["publish"], ["publish", "github"]])
 def test_publish_stops_before_release_check_when_clean_sync_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    command: list[str],
 ) -> None:
     plugin_dir, remote = _make_publish_repo(tmp_path, monkeypatch)
     calls: list[str] = []
@@ -792,6 +795,8 @@ def test_publish_stops_before_release_check_when_clean_sync_fails(
     def fail_clean_sync(args: object) -> int:
         assert getattr(args, "plugin") == str(plugin_dir)
         assert getattr(args, "clean") is True
+        assert getattr(args, "python") == sys.executable
+        assert getattr(args, "discard_backups") is False
         calls.append("sync")
         return 1
 
@@ -806,14 +811,49 @@ def test_publish_stops_before_release_check_when_clean_sync_fails(
         unexpected_release_check,
     )
 
-    exit_code = neko_plugin_cli.main(
-        ["publish", "github", str(plugin_dir)]
-    )
+    exit_code = neko_plugin_cli.main([*command, str(plugin_dir)])
 
     assert exit_code == 1
     assert calls == ["sync"]
     assert _run_git(remote, "tag", "--list") == ""
     assert "dependency sync did not pass" in capsys.readouterr().err
+
+
+def test_publish_ignores_retained_dependency_recovery_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    backup = plugin_dir / ".vendor.backup-0a1b2c3d"
+    backup.mkdir()
+    (backup / "old.py").write_text("keep", encoding="utf-8")
+    (plugin_dir / ".vendor.backup-0a1b2c3d.pending").touch()
+
+    publish_cmd._ensure_clean_worktree(plugin_dir)
+
+    # A plugin's own look-alike directory is plugin source and must be committed.
+    look_alike = plugin_dir / ".vendor.backup-notes"
+    look_alike.mkdir()
+    (look_alike / "notes.md").write_text("mine", encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        publish_cmd._ensure_clean_worktree(plugin_dir)
+
+
+def test_release_ruff_excludes_dependency_sync_work_dirs(
+    tmp_path: Path,
+    release_ruff_process: dict[str, Any],
+) -> None:
+    publish_cmd._ensure_release_ruff_passes(tmp_path)
+
+    command = release_ruff_process["calls"][0]["command"]
+    excludes = command[command.index("--exclude") + 1].split(",")
+    hex8 = "[0-9a-f]" * 8
+    assert excludes == [
+        "vendor",
+        f"./.vendor.staging-{hex8}",
+        f"./.vendor.backup-{hex8}",
+        f"./.vendor.backup-{hex8}.pending",
+    ]
 
 
 def test_publish_stops_before_tag_when_ruff_fails(

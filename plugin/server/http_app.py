@@ -33,6 +33,9 @@ from plugin.server.routes import (
     media_router,
     messages_router,
     metrics_router,
+    model_config_router,
+    model_gateway_router,
+    model_usage_router,
     plugin_cli_router,
     plugin_ui_router,
     plugins_router,
@@ -40,6 +43,7 @@ from plugin.server.routes import (
     websocket_router,
 )
 from plugin.server.routes.frontend import mount_static_files
+from plugin.server.routes.security import router as security_router
 
 _EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
 
@@ -221,6 +225,12 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        from plugin.core.model_gateway_access import model_gateway_access
+
+        model_gateway_access.revoke_all()
+        from plugin.server.routes.model_gateway import close_model_executor
+
+        await close_model_executor(app)
         stop_event.set()
         heartbeat_task.cancel()
         try:
@@ -315,9 +325,13 @@ def build_plugin_server_app(
     app.include_router(messages_router)
     app.include_router(metrics_router)
     app.include_router(config_router)
+    app.include_router(model_config_router)
+    app.include_router(model_gateway_router)
+    app.include_router(model_usage_router)
     app.include_router(logs_router)
     app.include_router(media_router)
     app.include_router(frontend_router)
+    app.include_router(security_router)
     app.include_router(websocket_router)
     app.include_router(plugin_ui_router)
     # Built-in plugin routes are optional. In AppImage/Nuitka builds,
@@ -333,5 +347,7 @@ def build_plugin_server_app(
     app.include_router(market_bridge_router)
     # Keep the Host/Origin guard outside CORS and the cache-header middleware;
     # untrusted requests must not be short-circuited before the guard runs.
+    from utils.instance_access import InstanceAccessMiddleware
+    app.add_middleware(InstanceAccessMiddleware)
     app.add_middleware(HostOriginGuardMiddleware)
     return app

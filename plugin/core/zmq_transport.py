@@ -38,9 +38,9 @@ import pickle
 import os
 import queue
 import secrets
-import sys
 import threading
 import time
+import weakref
 from pathlib import PurePath
 from typing import Any, Optional, Tuple
 
@@ -325,37 +325,22 @@ _UPLINK_CLOSE_LOCK_WAIT_S = 2.0
 # 一个存心的插件仍可以去翻自己的内存。真正的结构性解法是让插件进程不用 fork
 # （spawn/forkserver）——Windows 本来就是 spawn，所以插件代码其实已经在 spawn
 # 下跑得通了。那是个有性能代价的架构改动，不在本次范围内。
-def _scrub_inherited_host_credentials() -> None:
-    """Drop other hosts' credentials from a freshly forked child."""
-    # 用 sys.modules 而不是 import：这是 fork 之后的子进程，父进程可能正好有别的
-    # 线程持着 import 锁，在钩子里触发一次真正的 import 就可能直接死锁。而且逻辑
-    # 上也够——父进程没导入过 state，就没有可继承的东西。
-    mod = sys.modules.get("plugin.core.state")
-    state_obj = getattr(mod, "state", None) if mod is not None else None
-    hosts = getattr(state_obj, "plugin_hosts", None)
-    if not isinstance(hosts, dict):
-        return
-    for host in list(hosts.values()):
-        transport = getattr(host, "transport", None)
-        if transport is None:
-            continue
-        # 直接把值打掉，而不是只丢引用：子进程里可能还有别处引着这个对象。
-        if hasattr(transport, "_uplink_token"):
-            try:
-                transport._uplink_token = ""
-            except Exception:
-                pass
-    hosts.clear()
+# Track transports before credentials are minted, including hosts still starting.
+# Weak references do not extend socket lifetimes. The child hook runs without
+# inherited locks; only its surviving thread can mutate this registry.
+_HOST_TRANSPORTS: weakref.WeakSet[HostTransport] = weakref.WeakSet()
 
 
-# 和 plane_bridge 一样，把"注册成功了没有"记成模块状态：两个 pytest job 都跑
-# windows-latest，Windows 走 spawn，fork 行为本身在 CI 上一次都执行不到，
-# 只有这个标志能让守卫在任何平台上断言接线还在。
-_HOST_CREDENTIAL_FORK_HOOK_REGISTERED = False
+def _scrub_inherited_transport_credentials() -> None:
+    for transport in tuple(_HOST_TRANSPORTS):
+        transport.clear_inherited_credentials()
+    _HOST_TRANSPORTS.clear()
 
+
+_TRANSPORT_CREDENTIAL_FORK_HOOK_REGISTERED = False
 if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=_scrub_inherited_host_credentials)
-    _HOST_CREDENTIAL_FORK_HOOK_REGISTERED = True
+    os.register_at_fork(after_in_child=_scrub_inherited_transport_credentials)
+    _TRANSPORT_CREDENTIAL_FORK_HOOK_REGISTERED = True
 
 
 class HostTransport:
@@ -369,6 +354,7 @@ class HostTransport:
     """
 
     def __init__(self) -> None:
+        _HOST_TRANSPORTS.add(self)
         self._ctx = zmq.asyncio.Context()
         self._uplink_token = secrets.token_urlsafe(32)
 
@@ -422,6 +408,10 @@ class HostTransport:
         self.image_uplink_endpoint: str = self._img_sock.getsockopt(zmq.LAST_ENDPOINT).decode()
 
         self._closed = False
+
+    def clear_inherited_credentials(self) -> None:
+        """Erase this transport's copied credential in a forked child."""
+        self._uplink_token = ""
 
     @property
     def uplink_token(self) -> str:

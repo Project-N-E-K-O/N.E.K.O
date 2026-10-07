@@ -21,6 +21,7 @@ import json
 import base64
 import websockets
 import asyncio
+import re
 
 from urllib.parse import quote
 from utils.config_manager import get_config_manager
@@ -30,6 +31,7 @@ from .._infra import (
     AudioDoneEmitter,
     TTS_SHUTDOWN_SENTINEL,
     _resample_audio,
+    classify_server_close,
     make_audio_jitter_buffer,
     _enqueue_error,
 )
@@ -40,6 +42,12 @@ logger = get_module_logger(__name__, "Main")
 
 _QWEN_REALTIME_TTS_MODEL = "qwen3-tts-flash-realtime"
 _DASHSCOPE_DEFAULT_REALTIME_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+# Qwen TTS 家族的型号 id（qwen3-tts-flash-realtime、qwen3-tts-instruct-…、
+# 以后换代的 qwen3.x-tts-…）。TTS_MODEL 里也可能是全模态模型名（默认抄
+# REALTIME_MODEL），或者本 worker 作回落时其它厂商留下的型号（tts-1、
+# cosyvoice-v3-plus），这些都不能送进 DashScope 的 realtime TTS 端点。
+_QWEN_TTS_MODEL_PATTERN = re.compile(r"^qwen[0-9.]*-tts", re.IGNORECASE)
+
 
 def _resolve_qwen_realtime_tts_url() -> str:
     """Pick the realtime TTS WebSocket URL based on the current Qwen/Qwen Intl core config."""
@@ -53,13 +61,17 @@ def _resolve_qwen_realtime_tts_url() -> str:
         _DASHSCOPE_DEFAULT_REALTIME_WS_URL,
     )
     configured_model = str(core_config.get("TTS_MODEL") or "").strip()
-    model = configured_model if configured_model.startswith("qwen3-tts") else _QWEN_REALTIME_TTS_MODEL
+    if _QWEN_TTS_MODEL_PATTERN.match(configured_model):
+        model = configured_model
+    else:
+        model = _QWEN_REALTIME_TTS_MODEL
     return f"{base_ws_url}?model={quote(model, safe='')}"
 
 def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
     Qwen realtime TTS worker (for default voices)
-    Uses Aliyun's realtime TTS API (qwen3-tts-flash-realtime)
+    Uses Aliyun's realtime TTS API. The model comes from TTS_MODEL when it
+    names a Qwen TTS model; otherwise qwen3-tts-flash-realtime.
     
     Args:
         request_queue: multiprocess request queue receiving (speech_id, text) tuples
@@ -102,6 +114,36 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             if buffer_committed:
                 audio_done.emit(bound_speech_id)
 
+        # 同一个关闭帧会被发送方与接收任务各观察到一次；先报的那个把该轮标成被拒，
+        # 后到的只分类，core 因此把一次拒绝算成一次失败（与 _step_protocol 同构）。
+        rejected_speech_id = None
+
+        def _report_server_rejection(exc, bound_speech_id) -> bool:
+            """Forward a server refusal close as an error pinned to its own round.
+
+            DashScope refuses account-level problems (arrears is 1007 + "…account
+            is in good standing") with a bare close frame and no error event, on a
+            connection that already reported ready. Without this the round is
+            silent with nothing in the log and nothing on the frontend.
+            """
+            nonlocal rejected_speech_id
+            payload = classify_server_close(exc)
+            if payload is None:
+                return False
+            sid = str(bound_speech_id or "")
+            if not sid:
+                # 预热连接（还没有轮次）的拒绝交给 __ready__ 失败路径：没有归属
+                # 轮次也入队的话，core 会把这笔错记到此刻活着的那一轮上。
+                return False
+            if sid == rejected_speech_id:
+                return True
+            rejected_speech_id = sid
+            # marker 必须紧邻 __error__ 之前入队：core 靠它把错误钉到被拒的这一轮，
+            # 而不是此刻可能已切到下一轮的 current_speech_id。
+            response_queue.put(("__tts_sentence_failed__", sid, ""))
+            _enqueue_error(response_queue, payload)
+            return True
+
         def build_config_message(lang_hint=None):
             """Build the session.update message; lang_hint='ja' specifies Japanese, anything else uses server-side Auto."""
             session = {
@@ -138,6 +180,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 await ws.send(json.dumps(build_config_message(lang_hint)))
             except Exception as e:
                 logger.error(f"发送延迟 session.update 失败: {e}")
+                _report_server_rejection(e, current_speech_id)
                 return False
             session_configured = True
             try:
@@ -156,6 +199,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     # append 发失败时连接多半已断，调用方不能继续发 commit；
                     # 返回 False 让 sid=None/文本路径走 continue 触发重连。
                     logger.error(f"发送缓冲文本失败: {e}")
+                    _report_server_rejection(e, current_speech_id)
                     return False
             pending_text_buffer = ""
             return True
@@ -239,8 +283,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             # emit(None) 静默跳过；带参保持两个 receive task 同形。
                             _emit_audio_done(bound_speech_id)
                             response_done.set()
-                except websockets.exceptions.ConnectionClosed:
-                    pass
+                except websockets.exceptions.ConnectionClosed as exc:
+                    _report_server_rejection(exc, bound_speech_id)
                 except asyncio.CancelledError:
                     cancelled = True
                     raise
@@ -333,6 +377,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 buffer_committed = True
                             except Exception as e:
                                 logger.warning(f"提交缓冲区失败: {e}")
+                                _report_server_rejection(e, current_speech_id)
                     continue
                 
                 # 新的语音ID，重新建立连接（类似 speech_synthesis_worker 的逻辑）
@@ -399,8 +444,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                         # flush 已经把尾音投进队列，此刻本轮音频流才真正关闭
                                         _emit_audio_done(bound_speech_id)
                                         response_done.set()
-                            except websockets.exceptions.ConnectionClosed:
-                                pass
+                            except websockets.exceptions.ConnectionClosed as exc:
+                                _report_server_rejection(exc, bound_speech_id)
                             except asyncio.CancelledError:
                                 cancelled = True
                                 raise
@@ -466,6 +511,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     _record_tts_telemetry("qwen", len(tts_text))
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
+                    # 必须在下面清空 ws/current_speech_id 之前报：这是现场日志里
+                    # 那条 1007 实际走到的分支（发送侧先看见关闭）。
+                    _report_server_rejection(e, sid)
                     # 连接已关闭，标记为无效以便下次重连
                     ws = None
                     current_speech_id = None  # 清空ID以强制下次重连

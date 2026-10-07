@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from plugin.logging_config import get_logger
+from plugin.server.infrastructure.config_editor_schema import load_config_editor_schema
 from plugin.server.infrastructure.config_protected import validate_protected_fields_unchanged
 from plugin.server.infrastructure.config_paths import ensure_plugin_runtime_config
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config
@@ -23,13 +24,16 @@ def _load_plugin_resolved_config(plugin_id: str, *, config_key: str) -> dict[str
         include_effective_config=False,
         validate_schema=True,
     )
+    schema, schema_warnings = load_config_editor_schema(Path(str(resolved["manifest_path"])))
     return {
         "plugin_id": plugin_id,
+        "config_schema": schema,
         "config": resolved[config_key],
+        "config_fingerprint": resolved["config_fingerprint"],
         "last_modified": resolved["last_modified"],
         "config_path": resolved["config_path"],
         "profiles_state": resolved["profiles_state"],
-        "warnings": resolved["warnings"],
+        "warnings": [*resolved["warnings"], *schema_warnings],
     }
 
 
@@ -47,6 +51,7 @@ def load_plugin_config(plugin_id: str, *, validate: bool = True) -> dict[str, ob
         include_effective_config=True,
         validate_schema=validate,
     )
+    schema, schema_warnings = load_config_editor_schema(Path(str(resolved["manifest_path"])))
     validation_errors = resolved["schema_validation_errors"]
     if validation_errors:
         logger.warning(
@@ -57,11 +62,13 @@ def load_plugin_config(plugin_id: str, *, validate: bool = True) -> dict[str, ob
     return {
         "plugin_id": plugin_id,
         "config": resolved["effective_config"],
+        "config_fingerprint": resolved["config_fingerprint"],
+        "config_schema": schema,
         "base_config": resolved["base_config"],
         "last_modified": resolved["last_modified"],
         "config_path": resolved["config_path"],
         "profiles_state": resolved["profiles_state"],
-        "warnings": resolved["warnings"],
+        "warnings": [*resolved["warnings"], *schema_warnings],
     }
 
 

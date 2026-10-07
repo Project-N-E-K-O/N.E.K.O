@@ -93,7 +93,6 @@ async def test_cloudsave_router_exposes_steam_autocloud_configuration_payload():
                 steamworks=_make_dummy_steamworks(),
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,

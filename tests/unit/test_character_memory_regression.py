@@ -1,11 +1,12 @@
 import asyncio
 import ast
+import copy
 import importlib
 import inspect
 import json
 import os
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -76,6 +77,7 @@ def _make_role_state_for_test(session_managers: dict) -> dict:
         )
         for name, session_manager in session_managers.items()
     }
+from tests.fake_clock import patch_module_clock
 from utils.config_manager import ConfigManager
 from utils.cloudsave_runtime import (
     CLOUDSAVE_DISABLED_ENV,
@@ -109,6 +111,486 @@ def _make_config_manager(tmp_root: Path):
 def reload_module(module_name: str):
     module = importlib.import_module(module_name)
     return importlib.reload(module)
+
+
+@pytest.fixture
+def characters_clock(monkeypatch):
+    """Monotonic clock of the characters cache; ``advance`` skips write-back backoffs."""
+    import utils.config_manager.characters as characters_module
+
+    clock = SimpleNamespace(now=1000.0)
+
+    def advance(seconds=3600.0):  # default: past any write-back backoff
+        clock.now += seconds
+
+    clock.advance = advance
+    patch_module_clock(monkeypatch, characters_module, monotonic=lambda: clock.now)
+    return clock
+
+
+@pytest.mark.unit
+def test_catgirl_character_ids_are_persisted_and_duplicate_ids_are_repaired(
+    tmp_path,
+):
+    cm = _make_config_manager(tmp_path)
+    duplicate_id = "character_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    cm.save_characters(
+        {
+            "当前猫娘": "A",
+            "猫娘": {
+                "A": {"_reserved": {"character_id": duplicate_id}},
+                "B": {"_reserved": {"character_id": duplicate_id}},
+                "C": {},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+
+    migrated = cm.load_characters()
+    character_ids = [
+        migrated["猫娘"][name]["_reserved"]["character_id"]
+        for name in ("A", "B", "C")
+    ]
+
+    assert character_ids[0] == duplicate_id
+    assert len(set(character_ids)) == 3
+    assert all(value.startswith("character_") and len(value) == 42 for value in character_ids)
+    assert [
+        cm.load_characters()["猫娘"][name]["_reserved"]["character_id"]
+        for name in ("A", "B", "C")
+    ] == character_ids
+
+
+@pytest.mark.unit
+def test_catgirl_character_id_stays_stable_when_migration_write_is_temporarily_blocked(
+    tmp_path, characters_clock,
+):
+    cm = _make_config_manager(tmp_path)
+    cm.save_characters(
+        {
+            "当前猫娘": "Legacy",
+            "猫娘": {"Legacy": {}},
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+
+    with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
+        first = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
+        second = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
+
+    assert first == second
+    # 写入恢复后，缓存快路径必须先补写同一个 ID；清空缓存重读仍应保持一致。
+    characters_clock.advance()  # past the write-back backoff
+    persisted = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
+    with cm._characters_cache_lock:
+        assert cm._characters_dirty is False
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+    reloaded = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
+
+    assert persisted == first
+    assert reloaded == first
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("failure", ["mtime", "stat_missing", "read", "missing"])
+def test_dirty_character_identity_survives_subsequent_source_read_failure(
+    tmp_path, failure, characters_clock,
+):
+    cm = _make_config_manager(tmp_path)
+    cm.save_characters({"当前猫娘": "Legacy", "猫娘": {"Legacy": {}}, "主人": {}}, bypass_write_fence=True)
+    cm._characters_cache = None
+    with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
+        first = cm.load_characters()
+    assert cm._characters_dirty
+    if failure in {"mtime", "stat_missing"}:
+        error = FileNotFoundError("missing") if failure == "stat_missing" else OSError("unreadable")
+        with patch("utils.config_manager.characters._characters_file_signature", side_effect=error), \
+             patch.object(cm, "save_characters") as save:
+            loaded = cm.load_characters()
+            save.assert_not_called()
+    else:
+        error = FileNotFoundError("missing") if failure == "missing" else OSError("unreadable")
+        # A changed signature forces a re-read, which then fails.
+        with patch("utils.config_manager.characters._characters_file_signature", return_value=(-1, -1)), \
+             patch("builtins.open", side_effect=error):
+            loaded = cm.load_characters()
+    assert loaded == first
+    assert cm._characters_dirty
+    characters_clock.advance()  # past the write-back backoff
+    assert cm.load_characters() == first
+    assert not cm._characters_dirty
+
+
+@pytest.mark.unit
+def test_character_read_failure_never_persists_fallback_defaults(tmp_path):
+    """损坏的角色文件只能触发内存回退，不能被默认角色覆盖。"""  # noqa: DOCSTRING_CJK
+
+    cm = _make_config_manager(tmp_path)
+    characters_path = cm.config_dir / "characters.json"
+    characters_path.parent.mkdir(parents=True, exist_ok=True)
+    malformed_payload = '{"猫娘":'
+    characters_path.write_text(malformed_payload, encoding="utf-8")
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+        cm._characters_dirty = False
+
+    loaded = cm.load_characters()
+    loaded_again = cm.load_characters()
+
+    assert loaded == cm._characters_cache
+    assert loaded_again == loaded
+    assert all(
+        catgirl.get("_reserved", {}).get("character_id", "").startswith("character_")
+        for catgirl in loaded.get("猫娘", {}).values()
+    )
+    assert characters_path.read_text(encoding="utf-8") == malformed_payload
+    assert cm._characters_dirty is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("warm_cache", [False, True])
+def test_character_audit_rejects_unpersisted_ids_and_reuses_them_after_retry(tmp_path, warm_cache):
+    from services.theater.numeric_v2_identity import numeric_v2_character_ids
+
+    cm = _make_config_manager(tmp_path)
+    cm.save_characters({"当前猫娘": "Legacy", "猫娘": {"Legacy": {}}, "主人": {}}, bypass_write_fence=True)
+    cm._characters_cache = None
+    with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
+        if warm_cache:
+            cm.load_characters()
+        with pytest.raises(ValueError, match="numeric_character_config_unavailable"):
+            numeric_v2_character_ids(cm)
+        assert cm._characters_dirty
+        cached_id = cm._characters_cache["猫娘"]["Legacy"]["_reserved"]["character_id"]
+        # Normal chat retains the existing in-memory fallback behavior.
+        assert cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"] == cached_id
+    assert numeric_v2_character_ids(cm) == {"Legacy": cached_id}
+    assert not cm._characters_dirty
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("authoritative", [False, True])
+def test_missing_character_file_retries_dirty_identity_after_write_recovers(
+    tmp_path, authoritative, characters_clock,
+):
+    from services.theater.numeric_v2_identity import numeric_v2_character_ids
+
+    cm = _make_config_manager(tmp_path)
+    path = Path(cm.get_config_path("characters.json"))
+    assert not path.exists()
+    with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
+        first = cm.load_characters()
+        assert cm._characters_dirty and cm._characters_cache_mtime is None
+        with pytest.raises(ValueError, match="numeric_character_config_unavailable"):
+            numeric_v2_character_ids(cm)
+        assert cm.load_characters() == first
+    # A stat permission failure does not establish that the source is absent.
+    with patch(
+        "utils.config_manager.characters._characters_file_signature",
+        side_effect=PermissionError("unreadable"),
+    ), patch.object(cm, "save_characters") as save:
+        assert cm.load_characters() == first
+        with pytest.raises(ValueError, match="numeric_character_config_unavailable"):
+            numeric_v2_character_ids(cm)
+        save.assert_not_called()
+    characters_clock.advance()  # past the write-back backoff
+    assert cm.load_characters(require_authoritative=authoritative) == first
+    assert not cm._characters_dirty
+    assert json.loads(path.read_text(encoding="utf-8")) == first
+    assert numeric_v2_character_ids(cm) == {
+        name: profile["_reserved"]["character_id"] for name, profile in first["猫娘"].items()
+    }
+
+
+def _legacy_characters_under_write_fence(tmp_path: Path):
+    """A legacy card without character_id, loaded once a maintenance fence is up."""
+    from utils.cloudsave_runtime import ROOT_MODE_MAINTENANCE_READONLY, set_root_mode
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    cm.save_characters(
+        {"当前猫娘": "Legacy", "猫娘": {"Legacy": {}}, "主人": {}}, bypass_write_fence=True,
+    )
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+    set_root_mode(cm, ROOT_MODE_MAINTENANCE_READONLY)
+    return cm
+
+
+class _ForbiddenLock:
+    def __enter__(self):
+        raise AssertionError("characters slow path taken")
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def _legacy_id(characters: dict) -> str:
+    return characters["猫娘"]["Legacy"]["_reserved"]["character_id"]
+
+
+@pytest.mark.unit
+def test_selected_binding_retries_immediately_when_write_fence_lifts(tmp_path, characters_clock):
+    from utils.cloudsave_runtime import ROOT_MODE_NORMAL, set_root_mode
+
+    cm = _legacy_characters_under_write_fence(tmp_path)
+    transient_id = _legacy_id(cm.load_characters())
+    assert cm._characters_dirty
+    set_root_mode(cm, ROOT_MODE_NORMAL)
+    snapshot = cm.load_character_binding_snapshot('Legacy')
+    assert _legacy_id(snapshot) == transient_id
+    assert not cm._characters_dirty
+    persisted = json.loads(Path(cm.get_config_path('characters.json')).read_text(encoding='utf-8'))
+    assert _legacy_id(persisted) == transient_id
+
+
+@pytest.mark.unit
+def test_dirty_character_write_back_backs_off_during_a_write_fence(tmp_path, characters_clock):
+    """Reads during a maintenance window do not retry the rejected save every time."""
+    from utils.cloudsave_runtime import ROOT_MODE_NORMAL, set_root_mode
+
+    cm = _legacy_characters_under_write_fence(tmp_path)
+    path = Path(cm.get_config_path("characters.json"))
+    with patch.object(cm, "save_characters", wraps=cm.save_characters) as save:
+        character_id = _legacy_id(cm.load_characters())
+        assert save.call_count == 1 and cm._characters_dirty
+        # Served from the fast path: no reload lock, no re-read.
+        with patch.object(cm, "_characters_reload_lock", _ForbiddenLock()):
+            for _ in range(5):
+                assert _legacy_id(cm.load_characters()) == character_id
+        characters_clock.advance(29)
+        assert _legacy_id(cm.load_characters()) == character_id
+        assert save.call_count == 1
+
+        # The window expired: one retry, rejected again, and a longer wait.
+        characters_clock.advance(2)
+        assert _legacy_id(cm.load_characters()) == character_id
+        assert save.call_count == 2
+        characters_clock.advance(31)
+        assert _legacy_id(cm.load_characters()) == character_id
+        assert save.call_count == 2
+        characters_clock.advance(30)
+        assert _legacy_id(cm.load_characters()) == character_id
+        assert save.call_count == 3
+
+        # Authoritative callers still retry and still refuse an unpersisted id.
+        with pytest.raises(MaintenanceModeError):
+            cm.load_characters(require_authoritative=True)
+        assert save.call_count == 4
+
+        # The fence lifts: the next retry after the backoff persists the same id.
+        set_root_mode(cm, ROOT_MODE_NORMAL)
+        assert _legacy_id(cm.load_characters()) == character_id
+        assert save.call_count == 4 and cm._characters_dirty
+        characters_clock.advance()
+        assert _legacy_id(cm.load_characters()) == character_id
+        assert save.call_count == 5
+    assert not cm._characters_dirty
+    assert _legacy_id(json.loads(path.read_text(encoding="utf-8"))) == character_id
+    assert cm._characters_dirty_retry_at is None
+
+
+@pytest.mark.unit
+def test_dirty_character_write_back_retries_at_once_when_the_file_changes(
+    tmp_path, characters_clock,
+):
+    cm = _legacy_characters_under_write_fence(tmp_path)
+    path = Path(cm.get_config_path("characters.json"))
+    with patch.object(cm, "save_characters", wraps=cm.save_characters) as save:
+        cm.load_characters()
+        assert save.call_count == 1
+        rewritten = json.loads(path.read_text(encoding="utf-8"))
+        rewritten["猫娘"]["Bee"] = {"_reserved": {"character_id": "character_" + "2" * 32}}
+        path.write_text(json.dumps(rewritten, ensure_ascii=False), encoding="utf-8")
+
+        assert set(cm.load_characters()["猫娘"]) == {"Legacy", "Bee"}
+        assert save.call_count == 2
+
+
+@pytest.mark.unit
+def test_dirty_character_ids_survive_an_external_rewrite_without_ids(
+    tmp_path, characters_clock,
+):
+    """A rewrite that still lacks the unpersisted ids reuses them instead of minting new ones."""
+    from utils.cloudsave_runtime import ROOT_MODE_NORMAL, set_root_mode
+
+    cm = _legacy_characters_under_write_fence(tmp_path)
+    path = Path(cm.get_config_path("characters.json"))
+    character_id = _legacy_id(cm.load_characters())
+    assert cm._characters_dirty
+
+    bee_id = "character_" + "2" * 32
+    # A cloud restore or manual edit rewrites the file: Legacy still has no id
+    # and Bee is a new card that brings its own.
+    path.write_text(
+        json.dumps(
+            {
+                "当前猫娘": "Legacy",
+                "猫娘": {
+                    "Legacy": {"昵称": "edited"},
+                    "Bee": {"_reserved": {"character_id": bee_id}},
+                },
+                "主人": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    reloaded = cm.load_characters()
+    assert _legacy_id(reloaded) == character_id
+    assert reloaded["猫娘"]["Legacy"]["昵称"] == "edited"
+    assert reloaded["猫娘"]["Bee"]["_reserved"]["character_id"] == bee_id
+    # The carried id is itself an unpersisted migration that must be retried.
+    assert cm._characters_dirty
+
+    # Once writable, the carried id is the one that persists.
+    set_root_mode(cm, ROOT_MODE_NORMAL)
+    characters_clock.advance()
+    assert _legacy_id(cm.load_characters()) == character_id
+    assert not cm._characters_dirty
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert _legacy_id(persisted) == character_id
+    assert persisted["猫娘"]["Bee"]["_reserved"]["character_id"] == bee_id
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("legacy_has_disk_id", [True, False])
+def test_disk_character_ids_win_over_unpersisted_cached_ids(
+    tmp_path, characters_clock, legacy_has_disk_id,
+):
+    cm = _legacy_characters_under_write_fence(tmp_path)
+    path = Path(cm.get_config_path("characters.json"))
+    cached_id = _legacy_id(cm.load_characters())
+
+    disk_id = "character_" + "3" * 32
+    if legacy_has_disk_id:
+        # The rewritten Legacy card carries its own id: the file wins.
+        catgirls = {"Legacy": {"_reserved": {"character_id": disk_id}}, "Fresh": {}}
+    else:
+        # Another card now claims the cached id: it keeps it, and the cached id
+        # is never duplicated onto Legacy.
+        catgirls = {"Legacy": {}, "Other": {"_reserved": {"character_id": cached_id}}}
+    path.write_text(
+        json.dumps(
+            {"当前猫娘": "Legacy", "猫娘": catgirls, "主人": {}}, ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    reloaded = cm.load_characters()["猫娘"]
+    ids = {name: card["_reserved"]["character_id"] for name, card in reloaded.items()}
+    assert len(set(ids.values())) == len(ids)
+    if legacy_has_disk_id:
+        assert ids["Legacy"] == disk_id
+        assert ids["Fresh"] != cached_id
+    else:
+        assert ids["Other"] == cached_id
+        assert ids["Legacy"] != cached_id
+
+
+@pytest.mark.unit
+def test_explicit_character_save_clears_the_write_back_backoff(tmp_path, characters_clock):
+    from utils.cloudsave_runtime import ROOT_MODE_NORMAL, set_root_mode
+
+    cm = _legacy_characters_under_write_fence(tmp_path)
+    characters = cm.load_characters()
+    assert cm._characters_dirty and cm._characters_dirty_retry_at is not None
+    set_root_mode(cm, ROOT_MODE_NORMAL)
+    cm.save_characters(characters)
+
+    assert not cm._characters_dirty
+    assert cm._characters_dirty_retry_at is None
+    assert cm._characters_dirty_retry_delay == 0.0
+    assert _legacy_id(cm.load_characters()) == _legacy_id(characters)
+
+
+def _seed_only_config_manager(tmp_path: Path):
+    """Config manager whose runtime characters.json is missing but a seed exists."""
+
+    cm = _make_config_manager(tmp_path)
+    cm.project_config_dir = tmp_path / "project_seed_config"
+    seed_path = cm.project_config_dir / "characters.json"
+    seed_path.parent.mkdir(parents=True, exist_ok=True)
+    seed_path.write_text(
+        json.dumps({"当前猫娘": "Legacy", "猫娘": {"Legacy": {}}, "主人": {}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    runtime_path = Path(cm.get_runtime_config_path("characters.json"))
+    if runtime_path.exists():
+        runtime_path.unlink()
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+        cm._characters_dirty = False
+    assert Path(cm.get_config_path("characters.json")) == seed_path
+    return cm, seed_path, runtime_path
+
+
+@pytest.mark.unit
+def test_character_id_migration_from_seed_persists_only_to_runtime_config(tmp_path):
+    cm, seed_path, runtime_path = _seed_only_config_manager(tmp_path)
+    seed_bytes = seed_path.read_bytes()
+
+    loaded = cm.load_characters()
+
+    character_id = loaded["猫娘"]["Legacy"]["_reserved"]["character_id"]
+    assert character_id
+    assert seed_path.read_bytes() == seed_bytes
+    persisted = json.loads(runtime_path.read_text(encoding="utf-8"))
+    assert persisted["猫娘"]["Legacy"]["_reserved"]["character_id"] == character_id
+    assert Path(cm.get_config_path("characters.json")) == runtime_path
+    assert cm.load_characters() == loaded
+    assert not cm._characters_dirty
+
+
+@pytest.mark.unit
+def test_character_id_migration_never_writes_seed_when_runtime_config_unwritable(tmp_path):
+    from utils.config_manager import characters as characters_module
+
+    cm, seed_path, runtime_path = _seed_only_config_manager(tmp_path)
+    seed_bytes = seed_path.read_bytes()
+    real_write = characters_module.atomic_write_json
+    attempted: list[Path] = []
+
+    def refuse_write(path, *args, **kwargs):
+        attempted.append(Path(path))
+        raise OSError("runtime config unavailable")
+
+    with patch.object(characters_module, "atomic_write_json", side_effect=refuse_write):
+        first = cm.load_characters()
+        second = cm.load_characters()
+        with pytest.raises(OSError):
+            cm.load_characters(require_authoritative=True)
+
+    character_id = first["猫娘"]["Legacy"]["_reserved"]["character_id"]
+    assert second["猫娘"]["Legacy"]["_reserved"]["character_id"] == character_id
+    assert attempted and set(attempted) == {runtime_path}
+    assert seed_path.read_bytes() == seed_bytes
+    assert not runtime_path.exists()
+    assert cm._characters_dirty
+
+    with patch.object(characters_module, "atomic_write_json", side_effect=real_write) as write:
+        recovered = cm.load_characters(require_authoritative=True)
+    assert {Path(call.args[0]) for call in write.call_args_list} == {runtime_path}
+    assert recovered["猫娘"]["Legacy"]["_reserved"]["character_id"] == character_id
+    assert seed_path.read_bytes() == seed_bytes
+    persisted = json.loads(runtime_path.read_text(encoding="utf-8"))
+    assert persisted["猫娘"]["Legacy"]["_reserved"]["character_id"] == character_id
+    assert not cm._characters_dirty
 
 
 @pytest.mark.unit
@@ -167,7 +649,6 @@ async def test_rename_cancellation_during_release_runs_admission_rollback(tmp_pa
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -221,7 +702,6 @@ async def test_delete_cancellation_during_release_runs_admission_rollback(tmp_pa
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -275,7 +755,6 @@ async def test_release_false_compensation_preserves_cancellation(tmp_path, opera
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -339,7 +818,6 @@ async def test_rename_backup_setup_failure_happens_before_release(tmp_path):
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -365,6 +843,49 @@ async def test_rename_backup_setup_failure_happens_before_release(tmp_path):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_rename_theater_preflight_scans_off_the_event_loop(tmp_path):
+    """The strict theater scan parses every file; it must not block the loop under the character lock."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["Old"] = {"昵称": "Old"}
+        cm.save_characters(characters, bypass_write_fence=True)
+        loop_thread = threading.get_ident()
+        scanned_on = []
+
+        def _scan(*_args, **_kwargs):
+            scanned_on.append(threading.get_ident())
+            raise OSError("probe stops the rename here")
+
+        release_memory = AsyncMock(return_value=True)
+        with patch.object(crud, "list_numeric_v2_sessions", side_effect=_scan), patch.object(
+            crud, "release_memory_server_character", release_memory,
+        ):
+            response = await crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"}))
+
+    assert response.status_code >= 400
+    assert scanned_on and all(ident != loop_thread for ident in scanned_on)
+    release_memory.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_rename_cancellation_waits_for_config_worker_before_rollback(tmp_path):
     """A late config publish must not overwrite the cancellation rollback."""
     cm = _make_config_manager(tmp_path)
@@ -379,7 +900,6 @@ async def test_rename_cancellation_waits_for_config_worker_before_rollback(tmp_p
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -446,7 +966,6 @@ async def test_delete_cancellation_waits_for_config_worker_before_rollback(tmp_p
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -632,7 +1151,6 @@ async def test_add_cancellation_finishes_post_publish_initialization(tmp_path):
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_init_one,
@@ -1315,7 +1833,7 @@ def test_profile_rename_event_prompt_i18n_is_complete_and_first_person():
 def test_profile_rename_event_master_is_person_neutral():
     """主人改名记录进的是猫娘 persona 的 master section，读者是猫娘、
     改名的是用户。第一人称会让猫娘误以为是自己改名，所以这里去掉人称、
-    用中性陈述，既不能出现「我」也不带「你」。"""
+    用中性陈述，既不能出现「我」也不带「你」。"""  # noqa: DOCSTRING_CJK
     from config.prompts.prompts_memory import (
         PROFILE_RENAME_EVENT_FIELD_MASTER,
         PROFILE_RENAME_EVENT_TEXT_MASTER,
@@ -1363,6 +1881,173 @@ def test_master_effective_payload_rename_context_is_person_neutral(monkeypatch):
     assert "旧主人名" in context and "新主人名" in context
     assert "我" not in context
     assert "你" not in context
+
+
+def _rename_card_sync_fixture(td: str, language: str = "zh-CN"):
+    """Character config with master rename events and a persisted prompt locale."""
+    from memory.persona import PersonaManager
+
+    cm = _make_config_manager(Path(td))
+    bootstrap_local_cloudsave_environment(cm)
+    characters = cm.load_characters()
+    characters["主人"]["_reserved"] = {
+        "ai_context": {
+            "rename_events": [
+                {"type": "profile_rename", "old_name": "博士", "new_name": "IKUN"},
+                {"type": "profile_rename", "old_name": "IKUN", "new_name": "哀坤"},
+                {"type": "profile_rename", "old_name": "哀坤", "new_name": "棍母"},
+            ]
+        }
+    }
+    her_name = characters.get("当前猫娘") or next(iter(characters["猫娘"]))
+    cm.save_characters(characters)
+    locale_dir = Path(cm.memory_dir) / her_name
+    locale_dir.mkdir(parents=True, exist_ok=True)
+    locale_path = locale_dir / "prompt_locale.json"
+    locale_path.write_text(json.dumps({"language": language}), encoding="utf-8")
+
+    pm = PersonaManager()
+    pm._config_manager = cm
+    persona = {"master": {"facts": []}, "neko": {"facts": []}}
+
+    def rename_text() -> str:
+        for fact in persona["master"]["facts"]:
+            text = str(fact.get("text") or "")
+            if text.startswith(("改名记录:", "Profile Rename Record:")):
+                return text
+        return ""
+
+    return SimpleNamespace(
+        cm=cm,
+        pm=pm,
+        persona=persona,
+        her_name=her_name,
+        locale_path=locale_path,
+        rename_text=rename_text,
+    )
+
+
+@pytest.mark.unit
+def test_persona_card_sync_pins_rename_fact_to_durable_locale():
+    """Neither the process language nor language_context may rewrite a saved rename fact.
+
+    Persona refine temporarily switches the global language to the session
+    locale, while the embedding sweep and other ensure paths see the process
+    language. Both persist the persona, so the same master rename fact used to
+    flip between languages on every 30-minute pass.
+    """
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td)
+        pm, persona, her_name = fx.pm, fx.persona, fx.her_name
+        locale_path, _rename_text = fx.locale_path, fx.rename_text
+
+        with language_context("en"):
+            assert pm._sync_character_card(her_name, persona) is True
+            pinned = _rename_text()
+        with language_context("zh-CN"):
+            assert pm._sync_character_card(her_name, persona) is False
+        with language_context("en"):
+            assert pm._sync_character_card(her_name, persona) is False
+
+        assert pinned.startswith("改名记录:")
+        assert "博士、IKUN、哀坤" in pinned
+        assert "棍母" in pinned
+        assert "Profile Rename Record" not in pinned
+        assert _rename_text() == pinned
+
+        locale_path.write_text('{"language": "en"}', encoding="utf-8")
+        with language_context("zh-CN"):
+            assert pm._sync_character_card(her_name, persona) is True
+            switched = _rename_text()
+        with language_context("en"):
+            assert pm._sync_character_card(her_name, persona) is False
+
+        assert switched.startswith("Profile Rename Record:")
+        assert "博士, IKUN, 哀坤" in switched
+        assert "棍母" in switched
+        assert _rename_text() == switched
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_async_persona_card_sync_pins_rename_fact_off_the_event_loop():
+    """The async ensure path writes the same pinned sentence, reading files off the loop."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td)
+        loop_thread = threading.get_ident()
+        read_threads: list[int] = []
+        original_locale = fx.cm._read_durable_prompt_locale
+        original_load = fx.cm.load_characters
+
+        def _recording_locale(*args, **kwargs):
+            read_threads.append(threading.get_ident())
+            return original_locale(*args, **kwargs)
+
+        def _recording_load(*args, **kwargs):
+            read_threads.append(threading.get_ident())
+            return original_load(*args, **kwargs)
+
+        fx.cm._read_durable_prompt_locale = _recording_locale
+        fx.cm.load_characters = _recording_load
+
+        with language_context("en"):
+            assert await fx.pm._async_sync_character_card(fx.her_name, fx.persona) is True
+
+        assert fx.rename_text().startswith("改名记录:")
+        assert read_threads and all(t != loop_thread for t in read_threads)
+
+
+@pytest.mark.unit
+def test_persona_card_sync_reads_character_config_once():
+    """A second read could fall back to default characters and sync them over the card."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td)
+        loads = 0
+        original_load = fx.cm.load_characters
+
+        def _counting_load(*args, **kwargs):
+            nonlocal loads
+            loads += 1
+            return original_load(*args, **kwargs)
+
+        fx.cm.load_characters = _counting_load
+
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+
+        assert loads == 1
+        assert fx.rename_text().startswith("改名记录:")
+
+
+@pytest.mark.unit
+def test_persona_card_sync_skips_when_durable_locale_read_fails_transiently():
+    """A transient locale read error must skip the pass, not write the process language."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td)
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        pinned = fx.rename_text()
+        assert pinned.startswith("改名记录:")
+
+        real_open = open
+
+        def _flaky_open(path, *args, **kwargs):
+            if str(path).endswith("prompt_locale.json"):
+                raise PermissionError("sidecar locked by cloud sync")
+            return real_open(path, *args, **kwargs)
+
+        with patch("builtins.open", _flaky_open), language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is False
+
+        assert fx.rename_text() == pinned
 
 
 @pytest.mark.unit
@@ -1432,13 +2117,13 @@ async def test_character_management_and_recent_save_regression():
         async def _noop_any(*args, **kwargs):
             return None
 
-        with patch("utils.config_manager._config_manager", cm):
+        force_disable_agent = AsyncMock(return_value=True)
+        with patch("utils.config_manager._config_manager", cm), ExitStack() as stack:
             init_shared_state(
                 role_state={},
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1446,6 +2131,18 @@ async def test_character_management_and_recent_save_regression():
             )
 
             characters_router_module = reload_module("main_routers.characters_router.crud")
+            # set_current_catgirl POSTs set_agent_enabled=False to the real tool
+            # server on 127.0.0.1:48915; left unpatched, every run of this test
+            # turns off the cat paw of the N.E.K.O instance running on this
+            # machine. Patched on crud after the reload so the real function is
+            # restored for later tests sharing the loaded module.
+            stack.enter_context(
+                patch.object(
+                    characters_router_module,
+                    "force_disable_agent_for_character_switch",
+                    force_disable_agent,
+                )
+            )
             memory_router_module = reload_module("main_routers.memory_router")
             initial_name = next(iter(cm.load_characters().get("猫娘", {}).keys()))
 
@@ -1466,11 +2163,22 @@ async def test_character_management_and_recent_save_regression():
             assert add_result["success"] is True
             assert "测试角色" in cm.load_characters().get("猫娘", {})
 
-            switch_result = await characters_router_module.set_current_catgirl(
-                _DummyRequest({"catgirl_name": "测试角色"})
-            )
+            switch_lock_states = []
+            original_save_characters = cm.asave_characters
+
+            async def _tracked_save_characters(payload):
+                switch_lock_states.append(
+                    characters_router_module.character_config_mutation_lock.locked()
+                )
+                return await original_save_characters(payload)
+
+            with patch.object(cm, "asave_characters", _tracked_save_characters):
+                switch_result = await characters_router_module.set_current_catgirl(
+                    _DummyRequest({"catgirl_name": "测试角色"})
+                )
             assert switch_result["success"] is True
             assert cm.load_characters()["当前猫娘"] == "测试角色"
+            assert switch_lock_states == [True]
 
             from utils.recent_file import write_recent_payload
 
@@ -1492,17 +2200,104 @@ async def test_character_management_and_recent_save_regression():
             assert save_recent_result["success"] is True
             assert recent_path.is_file()
 
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+            from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime
+            from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+
+            numeric_runtime = NumericV2Runtime(
+                NumericV2Engine.from_mapping(numeric_v2_story()),
+                Path(cm.app_docs_dir) / "theater",
+            )
+            numeric_session = await numeric_runtime.start_session(
+                session_id="character_delete_numeric_session",
+                catgirl_binding={
+                    "character_id": cm.load_characters()["猫娘"]["测试角色"]["_reserved"]["character_id"],
+                    "catgirl_id": "catgirl:" + cm.load_characters()["猫娘"]["测试角色"]["_reserved"]["character_id"],
+                    "catgirl_name": "测试角色",
+                    "player_address": "哥哥",
+                    "profile_revision": "characters:test",
+                    "profile_hash": "sha256:test",
+                },
+                opening_performance={
+                    "narration": "开场。",
+                    "dialogue": [{"speaker_id": "active_catgirl", "text": "你好。"}],
+                    "suggested_inputs": [],
+                },
+            )
+            numeric_session_path = (
+                Path(cm.app_docs_dir)
+                / "theater"
+                / "numeric_v2"
+                / "sessions"
+                / f"{numeric_session.session.session_id}.json"
+            )
+            assert numeric_session_path.is_file()
+            numeric_archive_store = NumericV2ArchiveStore(
+                Path(cm.app_docs_dir) / "theater"
+            )
+            numeric_archive_store.write_public_archive(
+                title="角色删除档案",
+                session=numeric_session.session,
+                ending=None,
+            )
+            numeric_public_archive_path = (
+                numeric_archive_store._public_archive_path(
+                    numeric_session.session.session_id
+                )
+            )
+            assert numeric_public_archive_path.is_file()
+
             switch_back_result = await characters_router_module.set_current_catgirl(
                 _DummyRequest({"catgirl_name": initial_name})
             )
             assert switch_back_result["success"] is True
             assert cm.load_characters()["当前猫娘"] == initial_name
+            assert [call.args[0] for call in force_disable_agent.await_args_list] == [
+                "测试角色",
+                initial_name,
+            ]
+
+            original_session = numeric_session_path.read_bytes()
+            original_characters = cm.load_characters()
+            original_recent = recent_path.read_bytes()
+            delete_character_id = original_characters['猫娘']['测试角色']['_reserved']['character_id']
+            for story_id in ('numeric_v2_contract', 'already_deleted_story'):
+                numeric_archive_store.prepare_forget(story_id=story_id, character_id=delete_character_id,
+                    legacy_catgirl_name='测试角色')
+            numeric_archive_store.prepare_forget(story_id='already_deleted_story', character_id='other-character',
+                legacy_catgirl_name='另一角色')
+            # Storage maintenance already ran in this process, so the preflight's
+            # one repair attempt is a no-op and the corrupt file still blocks.
+            from services.theater import numeric_v2_maintenance
+
+            numeric_v2_maintenance._MAINTAINED_ROOTS.add(
+                str((Path(cm.app_docs_dir) / "theater").resolve())
+            )
+            for corrupt_bytes in (b"{broken-json", b"\xff"):
+                numeric_session_path.write_bytes(corrupt_bytes)
+                # 仍然整体中止（fail-closed），但以结构化 JSON 指出阻塞的剧场文件，而不是抛出裸异常。
+                blocked = await characters_router_module.delete_catgirl("测试角色")
+                assert blocked.status_code == 500
+                blocked_payload = json.loads(blocked.body)
+                assert blocked_payload["success"] is False
+                assert blocked_payload["theater_file"] == (
+                    f"numeric_v2/sessions/{numeric_session.session.session_id}.json"
+                )
+                assert cm.load_characters() == original_characters
+                assert numeric_session_path.read_bytes() == corrupt_bytes
+                assert numeric_public_archive_path.is_file()
+                assert recent_path.read_bytes() == original_recent
+            numeric_session_path.write_bytes(original_session)
 
             with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 delete_result = await characters_router_module.delete_catgirl("测试角色")
             assert delete_result["success"] is True
             assert "测试角色" not in cm.load_characters().get("猫娘", {})
             assert not (Path(cm.memory_dir) / "测试角色").exists()
+            assert not numeric_session_path.exists()
+            assert not numeric_public_archive_path.exists()
+            assert numeric_archive_store.pending_forget_story_ids(delete_character_id) == []
+            assert numeric_archive_store.pending_forget_story_ids('other-character') == ['already_deleted_story']
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert any(entry.get("character_name") == "测试角色" for entry in tombstones)
 
@@ -1526,7 +2321,6 @@ async def test_add_catgirl_rejects_unsafe_dot_profile_name():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1575,7 +2369,6 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1584,7 +2377,7 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
 
             characters = cm.load_characters()
             characters.setdefault("猫娘", {})["正常角色"] = {"昵称": "正常角色"}
-            characters.setdefault("猫娘", {})["."] = {"昵称": "坏角色"}
+            characters.setdefault("猫娘", {})["."] = {"昵称": "坏角色", "_reserved": {"character_id": "unsafe-delete-id"}}
             characters["当前猫娘"] = "正常角色"
             cm.save_characters(characters, bypass_write_fence=True)
 
@@ -1592,6 +2385,25 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
             sentinel.parent.mkdir(parents=True, exist_ok=True)
             sentinel.write_text("keep", encoding="utf-8")
 
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+
+            numeric_archive_store = NumericV2ArchiveStore(
+                Path(cm.app_docs_dir) / "theater"
+            )
+            numeric_public_archive_path = numeric_archive_store._public_archive_path(
+                "unsafe_name_archive"
+            )
+            numeric_archive_store._write(numeric_public_archive_path, {
+                "schema": "neko.theater.numeric.v2.public-archive",
+                "story_id": "unsafe_name_story",
+                "session_id": "unsafe_name_archive",
+                "character_id": "",
+                "catgirl_name": ".",
+            })
+            assert numeric_public_archive_path.is_file()
+
+            numeric_archive_store.prepare_forget(story_id='unsafe_name_story', character_id='unsafe-delete-id',
+                legacy_catgirl_name='.')
             characters_router_module = reload_module("main_routers.characters_router.crud")
             mock_notify_reload = AsyncMock(return_value=True)
             with (
@@ -1606,6 +2418,8 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
             mock_notify_reload.assert_awaited_once()
             assert "." not in cm.load_characters().get("猫娘", {})
             assert sentinel.read_text(encoding="utf-8") == "keep"
+            assert not numeric_public_archive_path.exists()
+            assert numeric_archive_store.pending_forget_story_ids('unsafe-delete-id') == []
             mock_delete_memory.assert_not_called()
 
 
@@ -1647,7 +2461,6 @@ async def test_unsafe_name_rescue_retires_the_sidecar_stores(unsafe_name):
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1733,7 +2546,6 @@ async def test_character_read_endpoints_disable_caching():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1786,7 +2598,6 @@ async def test_get_characters_preserves_profile_names_when_translating_display_f
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1809,6 +2620,114 @@ async def test_get_characters_preserves_profile_names_when_translating_display_f
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("name", ("SafeName", "."))
+async def test_delete_catgirl_keeps_receipts_when_snapshot_read_fails(tmp_path, name):
+    from main_routers.characters_router import crud
+
+    receipt_root = tmp_path / "numeric_v2" / "end_receipts"
+    receipt_root.mkdir(parents=True)
+    receipt_path = receipt_root / ("theater_end_" + "0" * 40 + ".json")
+    receipt_path.write_text("{invalid", encoding="utf-8")
+    characters = {"猫娘": {name: {"昵称": name}}, "当前猫娘": ""}
+    config_manager = SimpleNamespace(aload_characters=AsyncMock(return_value=characters))
+
+    with patch.object(crud, "get_config_manager", return_value=config_manager), \
+         patch.object(crud, "assert_cloudsave_writable"), \
+         patch.object(crud, "theater_root", return_value=tmp_path), \
+         patch.object(crud, "list_numeric_v2_sessions", return_value=[]), \
+         patch.object(crud, "list_numeric_v2_public_archives", return_value=[]), \
+         patch.object(crud, "_create_character_operation_backup_dir") as backup:
+        response = await crud.delete_catgirl(name)
+
+    assert response.status_code == 500
+    payload = json.loads(response.body)
+    assert payload["success"] is False
+    assert payload["theater_file"] == f"numeric_v2/end_receipts/{receipt_path.name}"
+    backup.assert_not_called()
+    assert receipt_path.read_text(encoding="utf-8") == "{invalid"
+    assert name in characters["猫娘"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_preflight", ("sessions", "archives", "receipts"))
+async def test_rename_catgirl_returns_json_when_numeric_preflight_fails(tmp_path, failed_preflight):
+    from main_routers.characters_router import crud
+
+    characters = {"猫娘": {"OldName": {"昵称": "OldName"}}, "当前猫娘": ""}
+    config_manager = SimpleNamespace(aload_characters=AsyncMock(return_value=characters))
+    request = SimpleNamespace(json=AsyncMock(return_value={"new_name": "NewName"}))
+    with patch.object(crud, "get_config_manager", return_value=config_manager), \
+         patch.object(crud, "get_session_manager", return_value={}), \
+         patch.object(crud, "assert_cloudsave_writable"), \
+         patch.object(crud, "theater_root", return_value=tmp_path), \
+         patch.object(crud, "list_numeric_v2_sessions", return_value=[]) as sessions, \
+         patch.object(crud, "list_numeric_v2_public_archives", return_value=[]) as archives, \
+         patch.object(crud.NumericV2ArchiveStore, "receipt_paths_for_scope", return_value=[]) as receipts:
+        failing_call, failure = {
+            "sessions": (sessions, crud.NumericV2StoreError("session read failed")),
+            "archives": (archives, OSError("archive read failed")),
+            "receipts": (receipts, crud.NumericV2ArchiveError("receipt read failed")),
+        }[failed_preflight]
+        failing_call.side_effect = failure
+        response = await crud.rename_catgirl("OldName", request)
+
+    assert response.status_code == 500
+    assert json.loads(response.body)["success"] is False
+    assert characters["猫娘"] == {"OldName": {"昵称": "OldName"}}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "file_name"),
+    (
+        ("sessions", "other_character_session.json"),
+        ("public_archives", "0" * 64 + ".json"),
+        ("end_receipts", "theater_end_" + "1" * 40 + ".json"),
+    ),
+)
+async def test_character_rename_and_delete_name_unreadable_theater_file(tmp_path, kind, file_name):
+    """An unreadable theater file of unknown owner fails closed with an actionable JSON error."""
+    from main_routers.characters_router import crud
+
+    # 损坏文件的归属只能从正文判断，所以即便该角色从未使用剧场也必须中止；
+    # 但删除和改名都要返回结构化错误，并指出剧场根目录下的具体文件。
+    bad_file = tmp_path / "numeric_v2" / kind / file_name
+    bad_file.parent.mkdir(parents=True)
+    bad_file.write_text("{broken", encoding="utf-8")
+    characters = {
+        "猫娘": {"A": {"昵称": "A", "_reserved": {"character_id": "character-a"}}},
+        "当前猫娘": "",
+    }
+    original_characters = copy.deepcopy(characters)
+    config_manager = SimpleNamespace(aload_characters=AsyncMock(return_value=characters))
+    expected_file = f"numeric_v2/{kind}/{file_name}"
+
+    with patch.object(crud, "get_config_manager", return_value=config_manager), \
+         patch.object(crud, "get_session_manager", return_value={}), \
+         patch.object(crud, "assert_cloudsave_writable"), \
+         patch.object(crud, "theater_root", return_value=tmp_path), \
+         patch.object(crud, "_create_character_operation_backup_dir") as backup:
+        delete_response = await crud.delete_catgirl("A")
+        rename_response = await crud.rename_catgirl(
+            "A",
+            SimpleNamespace(json=AsyncMock(return_value={"new_name": "B"})),
+        )
+
+    for response in (delete_response, rename_response):
+        assert response.status_code == 500
+        payload = json.loads(response.body)
+        assert payload["success"] is False
+        assert payload["theater_file"] == expected_file
+        assert expected_file in payload["error"]
+    backup.assert_not_called()
+    assert characters == original_characters
+    assert bad_file.read_text(encoding="utf-8") == "{broken"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatch):
     monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-CN")
     with TemporaryDirectory() as td:
@@ -1827,7 +2746,6 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -1853,6 +2771,10 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
                 )
             assert add_result["success"] is True
 
+            characters = cm.load_characters()
+            characters["当前猫娘"] = "旧角色"
+            cm.save_characters(characters)
+
             old_memory_dir = Path(cm.memory_dir) / "旧角色"
             old_memory_dir.mkdir(parents=True, exist_ok=True)
             (Path(cm.project_memory_dir)).mkdir(parents=True, exist_ok=True)
@@ -1874,6 +2796,33 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
             (Path(cm.project_memory_dir) / "facts_旧角色.json").write_text(
                 '[{"id":"fact-1","text":"旧记忆"}]',
                 encoding="utf-8",
+            )
+            # 构造升级前没有 character_id 的剧场档案和结束回执，验证它们进入同一改名事务。
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+            from services.theater.paths import theater_root
+
+            numeric_archive_store = NumericV2ArchiveStore(theater_root(cm))
+            legacy_receipt_id = "theater_end_" + "b" * 40
+            numeric_archive_store._write(
+                numeric_archive_store._public_archive_path("legacy_rename_session"),
+                {
+                    "schema": "neko.theater.numeric.v2.public-archive",
+                    "story_id": "legacy_rename_story",
+                    "session_id": "legacy_rename_session",
+                    "character_id": "",
+                    "catgirl_name": "旧角色",
+                },
+            )
+            numeric_archive_store._write(
+                numeric_archive_store._receipt_path(legacy_receipt_id),
+                {
+                    "schema": "neko.theater.numeric.v2.end-receipt",
+                    "receipt_id": legacy_receipt_id,
+                    "story_id": "legacy_rename_story",
+                    "session_id": "legacy_rename_session",
+                    "character_id": "",
+                    "catgirl_name": "旧角色",
+                },
             )
 
             with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
@@ -1911,6 +2860,17 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
             assert not (Path(cm.memory_dir) / "旧角色").exists()
             assert (Path(cm.memory_dir) / "新角色" / "persona.json").is_file()
             assert (Path(cm.memory_dir) / "新角色" / "facts.json").is_file()
+            renamed_character_id = saved_profile["_reserved"]["character_id"]
+            renamed_archive = numeric_archive_store._read(
+                numeric_archive_store._public_archive_path("legacy_rename_session")
+            )
+            renamed_receipt = numeric_archive_store._read(
+                numeric_archive_store._receipt_path(legacy_receipt_id)
+            )
+            assert renamed_archive["character_id"] == renamed_character_id
+            assert renamed_archive["catgirl_name"] == "新角色"
+            assert renamed_receipt["character_id"] == renamed_character_id
+            assert renamed_receipt["catgirl_name"] == "新角色"
 
             recent_payload = json.loads(
                 (Path(cm.memory_dir) / "新角色" / "recent.json").read_text(encoding="utf-8")
@@ -1945,7 +2905,6 @@ async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2071,7 +3030,6 @@ async def test_update_master_body_rename_fallback_repairs_legacy_path_name(monke
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2129,7 +3087,6 @@ async def test_rename_catgirl_rolls_back_memory_and_suppresses_switch_notice_on_
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2235,7 +3192,6 @@ async def test_rename_catgirl_returns_503_and_keeps_disk_unchanged_when_memory_r
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2339,7 +3295,6 @@ async def test_rename_catgirl_maintenance_error_preserves_original_exception_typ
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2407,7 +3362,6 @@ async def test_rename_error_rollback_finishes_when_request_is_cancelled(tmp_path
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -2471,7 +3425,6 @@ async def test_workshop_sync_imports_legacy_dotted_name_but_rejects_unsafe_names
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2550,7 +3503,6 @@ async def test_deleted_workshop_character_casefold_variant_is_not_restored_by_st
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2630,7 +3582,6 @@ async def test_workshop_sync_skips_casefold_conflicting_dotted_names():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2701,7 +3652,6 @@ async def test_delete_catgirl_skips_tombstone_state_when_cloudsave_local_state_i
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2803,7 +3753,6 @@ async def test_manual_workshop_character_sync_restores_deleted_character_and_cle
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2898,7 +3847,6 @@ async def test_manual_workshop_character_sync_clears_tombstone_for_existing_char
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -2991,7 +3939,6 @@ async def test_manual_workshop_character_sync_clears_tombstone_for_avatar_only_b
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3076,7 +4023,6 @@ async def test_manual_workshop_character_sync_keeps_tombstone_for_nonmatching_ex
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3153,7 +4099,6 @@ async def test_manual_workshop_character_sync_defers_tombstone_cleanup_after_suc
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3430,7 +4375,6 @@ async def test_sync_workshop_character_cards_skips_save_when_maintenance_fence_t
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3500,7 +4444,6 @@ async def test_sync_workshop_character_cards_preserves_persona_override_written_
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3582,7 +4525,6 @@ async def test_sync_workshop_character_cards_does_not_write_orphan_face_when_pen
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3663,7 +4605,6 @@ async def test_sync_workshop_character_cards_aborts_when_latest_catgirl_map_is_m
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3729,7 +4670,6 @@ async def test_sync_workshop_character_cards_skips_face_writes_when_maintenance_
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3799,7 +4739,6 @@ async def test_sync_workshop_character_cards_counts_errors_when_new_face_backfil
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3860,7 +4799,6 @@ async def test_sync_workshop_character_cards_counts_errors_when_existing_face_ba
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -3933,7 +4871,6 @@ async def test_sync_workshop_character_cards_uses_character_specific_preview_in_
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4008,7 +4945,6 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4118,7 +5054,6 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4187,7 +5122,6 @@ async def test_delete_catgirl_returns_error_when_memory_cleanup_fails():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4246,7 +5180,6 @@ async def test_delete_catgirl_returns_503_when_memory_handle_release_fails_befor
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4300,7 +5233,6 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4310,7 +5242,8 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
             characters_router_module = reload_module("main_routers.characters_router.crud")
 
             characters = cm.load_characters()
-            characters.setdefault("猫娘", {})["删除回滚角色"] = {"昵称": "删除回滚角色"}
+            characters.setdefault("猫娘", {})["删除回滚角色"] = {
+                "昵称": "删除回滚角色", "_reserved": {"character_id": "rollback-delete-id"}}
             cm.save_characters(characters, bypass_write_fence=True)
 
             memory_dir = Path(cm.memory_dir) / "删除回滚角色"
@@ -4319,6 +5252,27 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
                 json.dumps([{"speaker": "删除回滚角色", "content": "你好"}], ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+
+            numeric_archive_store = NumericV2ArchiveStore(
+                Path(cm.app_docs_dir) / "theater"
+            )
+            numeric_public_archive_path = numeric_archive_store._public_archive_path(
+                "character_delete_rollback_archive"
+            )
+            numeric_archive_store._write(numeric_public_archive_path, {
+                "schema": "neko.theater.numeric.v2.public-archive",
+                "story_id": "character_delete_rollback_story",
+                "session_id": "character_delete_rollback_archive",
+                "character_id": "",
+                "catgirl_name": "删除回滚角色",
+            })
+            numeric_archive_store.prepare_forget(story_id='deleted_story', character_id='rollback-delete-id',
+                legacy_catgirl_name='删除回滚角色')
+            forget_path = numeric_archive_store._forget_path('deleted_story', 'rollback-delete-id')
+            forget_before = forget_path.read_bytes()
+            deleted_before_config_save = []
 
             fake_response = type(
                 "Resp",
@@ -4334,6 +5288,7 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
 
             def _fail_primary_save(data, character_json_path=None, *, bypass_write_fence=False):
                 if not bypass_write_fence and "删除回滚角色" not in (data.get("猫娘") or {}):
+                    deleted_before_config_save.append(not forget_path.exists())
                     raise OSError("disk full")
                 return original_save_characters(
                     data,
@@ -4355,8 +5310,113 @@ async def test_delete_catgirl_rolls_back_tombstone_and_memory_when_persist_failu
             assert payload["memory_server_released"] is True
             assert "删除回滚角色" in cm.load_characters().get("猫娘", {})
             assert (memory_dir / "recent.json").is_file()
+            assert numeric_public_archive_path.is_file()
+            assert deleted_before_config_save == [True]
+            assert forget_path.read_bytes() == forget_before
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert not any(entry.get("character_name") == "删除回滚角色" for entry in tombstones)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_after_delete", [False, True])
+async def test_delete_catgirl_erases_quarantined_public_archives_inside_snapshot(fail_after_delete):
+    """Quarantined cold archives of the character and of unknown owners go with her, rollback-safe."""
+    import hashlib
+
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router.crud")
+
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})["隔离删除角色"] = {
+                "昵称": "隔离删除角色", "_reserved": {"character_id": "quarantine-delete-id"}}
+            cm.save_characters(characters, bypass_write_fence=True)
+            memory_dir = Path(cm.memory_dir) / "隔离删除角色"
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            (memory_dir / "recent.json").write_text("[]", encoding="utf-8")
+
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+
+            store = NumericV2ArchiveStore(Path(cm.app_docs_dir) / "theater")
+            quarantine_root = store.public_archive_quarantine_root
+            quarantine_root.mkdir(parents=True)
+
+            def quarantined(label: str, content: str) -> Path:
+                key = hashlib.sha256(label.encode("utf-8")).hexdigest()
+                path = quarantine_root / f"invalid-1-{'0' * 32}-{key}.json"
+                path.write_text(content, encoding="utf-8")
+                return path
+
+            own = quarantined("own", json.dumps({"story_id": "s", "character_id": "quarantine-delete-id"}))
+            legacy = quarantined("legacy", json.dumps({"character_id": "", "catgirl_name": "隔离删除角色"}))
+            unattributable = quarantined("unknown", "{broken")
+            other = quarantined("other", json.dumps({"story_id": "s", "character_id": "other-character"}))
+            erased = {path: path.read_bytes() for path in (own, legacy, unattributable)}
+            other_before = other.read_bytes()
+            erased_before_config_save = []
+
+            fake_response = type(
+                "Resp",
+                (),
+                {"status_code": 200, "json": lambda self: {"status": "success"}},
+            )()
+            fake_client = AsyncMock()
+            fake_client.__aenter__.return_value = fake_client
+            fake_client.__aexit__.return_value = False
+            fake_client.post.return_value = fake_response
+            original_save_characters = cm.save_characters
+
+            def _save_characters(data, character_json_path=None, *, bypass_write_fence=False):
+                if not bypass_write_fence and "隔离删除角色" not in (data.get("猫娘") or {}):
+                    erased_before_config_save.append(
+                        [path.exists() for path in erased] + [other.exists()]
+                    )
+                    if fail_after_delete:
+                        raise OSError("disk full")
+                return original_save_characters(
+                    data,
+                    character_json_path=character_json_path,
+                    bypass_write_fence=bypass_write_fence,
+                )
+
+            with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client), patch.object(
+                cm,
+                "save_characters",
+                side_effect=_save_characters,
+            ):
+                delete_result = await characters_router_module.delete_catgirl("隔离删除角色")
+
+            assert erased_before_config_save == [[False, False, False, True]]
+            assert other.read_bytes() == other_before
+            if fail_after_delete:
+                assert delete_result.status_code == 500
+                assert "隔离删除角色" in cm.load_characters().get("猫娘", {})
+                assert {path: path.read_bytes() for path in erased} == erased
+            else:
+                assert delete_result["success"] is True
+                assert "隔离删除角色" not in cm.load_characters().get("猫娘", {})
+                assert not any(path.exists() for path in erased)
 
 
 @pytest.mark.unit
@@ -4378,7 +5438,6 @@ async def test_delete_catgirl_rolls_back_when_notify_reload_returns_false():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4441,7 +5500,6 @@ async def test_delete_catgirl_maintenance_error_preserves_original_exception_typ
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4508,7 +5566,6 @@ def test_resolve_live2d_model_binding_keeps_manual_external_url_without_catalog_
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4556,7 +5613,6 @@ async def test_update_catgirl_l2d_marks_builtin_live2d_as_builtin():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4616,7 +5672,6 @@ async def test_character_rollback_reports_notify_reload_false_as_failure():
                 steamworks=None,
                 templates=None,
                 config_manager=cm,
-                logger=None,
                 initialize_character_data=_noop_init,
                 switch_current_catgirl_fast=_noop_any,
                 init_one_catgirl=_noop_any,
@@ -4871,7 +5926,7 @@ def test_timeindexed_dispose_and_rebuild_when_memory_dir_drifts(monkeypatch, tmp
 
     本用例验证 ``_ensure_engine_exists`` 检测到 cached vs expected 漂移
     后会 dispose 旧 engine + 用 expected 路径重建。
-    """
+    """  # noqa: DOCSTRING_CJK
     from memory.timeindex import TimeIndexedMemory
 
     class _DummyEngine:
@@ -5216,7 +6271,6 @@ async def test_early_delete_failure_tells_the_rollback_nothing_was_retired(tmp_p
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -5274,7 +6328,6 @@ async def test_rename_rollback_restores_both_sides_of_the_retirement(tmp_path):
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -5409,7 +6462,6 @@ async def test_a_raising_delete_still_tells_the_rollback_it_retired(tmp_path):
             steamworks=None,
             templates=None,
             config_manager=cm,
-            logger=None,
             initialize_character_data=_noop,
             switch_current_catgirl_fast=_noop,
             init_one_catgirl=_noop,
@@ -6049,3 +7101,182 @@ async def test_a_stale_flush_cannot_overwrite_what_the_rollback_just_restored(
         assert sidecar.read_bytes() != restored_bytes, (
             "writes never resumed after the rollback -- the fence leaked"
         )
+
+
+@contextmanager
+def _theater_preflight_crud(tmp_path):
+    """A real config manager with one extra character "Old" and a fresh crud module."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    with patch("utils.config_manager._config_manager", cm):
+        yield cm, _init_theater_preflight_crud(cm)
+
+
+def _init_theater_preflight_crud(cm):
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    init_shared_state(
+        role_state={},
+        steamworks=None,
+        templates=None,
+        config_manager=cm,
+        initialize_character_data=_noop,
+        switch_current_catgirl_fast=_noop,
+        init_one_catgirl=_noop,
+        remove_one_catgirl=_noop,
+    )
+    crud = reload_module("main_routers.characters_router.crud")
+    characters = cm.load_characters()
+    characters.setdefault("猫娘", {})["Old"] = {
+        "昵称": "Old", "_reserved": {"character_id": "character_" + "0" * 32},
+    }
+    cm.save_characters(characters, bypass_write_fence=True)
+    return crud
+
+
+def _corrupt_public_archive(cm, crud):
+    root = crud.theater_root(cm)
+    path = root / "numeric_v2" / "public_archives" / f"{'e' * 64}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"{broken-json")
+    return root, path
+
+
+async def _run_character_operation(crud, operation):
+    if operation == "rename":
+        return await crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"}))
+    return await crud.delete_catgirl("Old")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["rename", "delete"])
+async def test_character_preflight_repairs_an_unrelated_corrupt_theater_file_once(tmp_path, operation):
+    """Another character's unparseable file no longer blocks rename/delete until the theater is opened."""
+    with _theater_preflight_crud(tmp_path) as (cm, crud):
+        root, corrupt = _corrupt_public_archive(cm, crud)
+        maintain = crud.maintain_numeric_v2_storage_once
+        calls = []
+
+        def counted(*args, **kwargs):
+            calls.append(threading.get_ident())
+            return maintain(*args, **kwargs)
+
+        # The preflight passed once the operation reaches its backup step.
+        with patch.object(crud, "maintain_numeric_v2_storage_once", side_effect=counted), patch.object(
+            crud, "_create_character_operation_backup_dir", side_effect=OSError("stop after preflight"),
+        ), patch.object(
+            crud, "release_memory_server_character", AsyncMock(return_value=True),
+        ), pytest.raises(OSError, match="stop after preflight"):
+            await _run_character_operation(crud, operation)
+
+    assert len(calls) == 1 and calls[0] != threading.get_ident()
+    assert not corrupt.exists()
+    quarantined = list((root / "numeric_v2" / "quarantine_public_archives").glob("*.json"))
+    assert [path.read_bytes() for path in quarantined] == [b"{broken-json"]
+    assert "Old" in cm.load_characters()["猫娘"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["os_error", "wrapped_os_error"])
+async def test_character_preflight_never_repairs_a_transient_read_failure(tmp_path, failure):
+    from services.theater.numeric_v2_archive import NumericV2ArchiveError
+
+    if failure == "os_error":
+        error = PermissionError("locked by antivirus")
+    else:
+        error = NumericV2ArchiveError("numeric_end_receipt_read_failed")
+        error.__cause__ = PermissionError("locked by antivirus")
+    with _theater_preflight_crud(tmp_path) as (_cm, crud), patch.object(
+        crud, "maintain_numeric_v2_storage_once",
+    ) as maintain, patch.object(crud, "list_numeric_v2_sessions", side_effect=error), patch.object(
+        crud, "release_memory_server_character", AsyncMock(return_value=True),
+    ):
+        response = await crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"}))
+
+    assert response.status_code == 500
+    maintain.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_preflight_reports_the_file_when_repair_is_unavailable(tmp_path):
+    with _theater_preflight_crud(tmp_path) as (cm, crud):
+        _root, corrupt = _corrupt_public_archive(cm, crud)
+        with patch.object(
+            crud, "numeric_v2_character_ids", side_effect=ValueError("numeric_character_config_unavailable"),
+        ), patch.object(crud, "release_memory_server_character", AsyncMock(return_value=True)):
+            response = await crud.delete_catgirl("Old")
+
+    assert response.status_code == 500
+    assert json.loads(response.body)["theater_file"] == f"numeric_v2/public_archives/{corrupt.name}"
+    assert corrupt.read_bytes() == b"{broken-json"
+    assert "Old" in cm.load_characters()["猫娘"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_preflight_without_theater_data_skips_maintenance(tmp_path):
+    with _theater_preflight_crud(tmp_path) as (cm, crud), patch.object(
+        crud, "maintain_numeric_v2_storage_once",
+    ) as maintain, patch.object(
+        crud, "_create_character_operation_backup_dir", side_effect=OSError("stop after preflight"),
+    ), patch.object(
+        crud, "release_memory_server_character", AsyncMock(return_value=True),
+    ), pytest.raises(OSError, match="stop after preflight"):
+        await crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"}))
+
+    maintain.assert_not_called()
+    assert not (crud.theater_root(cm) / "numeric_v2").exists()
+
+
+@pytest.mark.unit
+def test_characters_file_signature_costs_one_stat(tmp_path):
+    """The cached read path validates the cache with a single stat syscall."""
+    from utils.config_manager.characters import _characters_file_signature
+
+    path = tmp_path / "characters.json"
+    path.write_text("{}", encoding="utf-8")
+    real_stat = os.stat
+    with patch.object(os, "stat", wraps=real_stat) as stat:
+        signature = _characters_file_signature(str(path))
+    assert stat.call_count == 1
+    expected = real_stat(path)
+    assert signature == (expected.st_mtime_ns, expected.st_size)
+    with pytest.raises(FileNotFoundError):
+        _characters_file_signature(str(tmp_path / "missing.json"))
+
+
+@pytest.mark.unit
+def test_characters_cache_sees_rewrite_that_keeps_the_same_mtime(tmp_path):
+    """A rewrite landing in the same timestamp tick must not be served from cache.
+
+    Windows updates mtimes coarsely, so a quick external rewrite (cloud sync,
+    another process, a test restoring bytes) can leave ``os.path.getmtime``
+    unchanged; keying the cache on the float mtime alone kept returning the
+    previous content.
+    """
+    cm = _make_config_manager(tmp_path)
+    cm.save_characters(
+        {
+            "当前猫娘": "A",
+            "猫娘": {"A": {"_reserved": {"character_id": "character_" + "1" * 32}}},
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+    config_path = Path(cm.get_config_path("characters.json"))
+    first = cm.load_characters()
+    assert set(first["猫娘"]) == {"A"}
+    before = os.stat(config_path)
+
+    rewritten = json.loads(config_path.read_text(encoding="utf-8"))
+    rewritten["猫娘"]["Bee"] = {"_reserved": {"character_id": "character_" + "2" * 32}}
+    config_path.write_text(json.dumps(rewritten, ensure_ascii=False), encoding="utf-8")
+    # Simulate the coarse timestamp: the new content keeps the old mtime.
+    os.utime(config_path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert os.path.getmtime(config_path) == before.st_mtime
+
+    assert set(cm.load_characters()["猫娘"]) == {"A", "Bee"}

@@ -261,3 +261,69 @@ plugin/plugins/smart_notes/
 ```
 
 必需的是 `plugin.toml` 和 `[plugin].entry` 指向的可导入 Python 模块。模块不一定非得是 `__init__.py`，只是这种布局最常见。安装包中的代码与这些可写状态分开存放。
+
+## 配置面板的 JSON Schema
+
+在插件的 `plugin.toml` 同级放置可选的 `config.schema.json`，即可为通用「配置」页提供字段名称、说明和控件类型。不需要修改 `plugin.toml` 或提供自定义 UI。文件随插件源码/安装包发布；不要放进用户的运行时配置或 profile 目录。使用打包 include 白名单时，需要包含此文件。
+
+例如，对应 `[notes]` 段的配置：
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "notes": {
+      "type": "object",
+      "title": "笔记设置",
+      "properties": {
+        "max_per_page": {
+          "type": "integer",
+          "title": "每页笔记数量",
+          "description": "每页最多显示多少条笔记。",
+          "x-title-i18n": { "zh-CN": "每页笔记数量", "en": "Notes per page" },
+          "x-description-i18n": { "zh-CN": "每页最多显示多少条笔记。", "en": "Maximum number of notes shown on a page." },
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        },
+        "auto_classify": {
+          "type": "boolean",
+          "title": "自动分类",
+          "description": "是否自动整理新建的笔记。"
+        },
+        "sort_order": {
+          "type": "string",
+          "title": "排序方式",
+          "enum": ["newest", "oldest"]
+        }
+      }
+    }
+  }
+}
+```
+
+支持的表单字段：
+
+| 关键字 | 配置面板行为 |
+| --- | --- |
+| `properties` | 描述对象中的字段；结构与实际配置路径对应。未声明的已有字段仍可编辑。 |
+| `additionalProperties` | 对象形式的子 schema 用于 `properties` 未声明的动态键，包括密码控件和预览脱敏；具名属性优先。布尔值不提供字段注释，编辑器不据此限制键的增删。 |
+| `title` / `description` | 显示名称和说明，按纯文本渲染；内部 key 保留为辅助信息。缺少标题时显示 key。 |
+| `type` | 单一 `string`、`number`、`integer`、`boolean`、`object`、`array` 分别使用对应控件；缺失时根据当前值推断。 |
+| `items` | 用一个子 schema 描述数组元素，支持嵌套对象和数组。 |
+| `enum` | 字符串、数字、布尔值的非空列表显示为下拉框，保存时保留原类型。 |
+| `minimum` / `maximum` | 数字控件的上下限；`integer` 控件只接受整数。 |
+| `maxLength` | 文本输入的最大长度。 |
+| `readOnly` | 禁用该字段及其子控件的编辑。 |
+| 字符串字段的 `writeOnly: true` | 使用密码输入框（可临时显示），并遮盖基础值提示、变更摘要和 JSON 数据视图中的非空值。保存时保留真实值；这仅用于界面遮盖，不提供加密或访问控制。 |
+| `default` | 显式添加字段或数组元素时的初始值；不是运行时默认配置。 |
+| `x-title-i18n` / `x-description-i18n` | 可选的 locale 到文本映射；标准 `title`、`description` 仍为字符串。 |
+
+多语言文本复用面板的 locale 回退顺序：当前 locale、基础语言、`en-US`、`en`、映射中的首个非空值，最后回退到 `title` / `description`。示例仅展示两种语言，插件发布时应补齐自己支持的所有语言。
+
+Schema 只提供表单展示和控件设置，**不是完整的 JSON Schema 校验器，也不是服务端权限或配置校验边界**。`required`、`pattern`、组合 schema、`$ref`、布尔 schema、类型联合及 `null` 控件不在当前表单支持范围内；不会请求 `$schema` 或 `$ref` 中的 URL。运行时合法性仍由插件校验，默认配置仍写在 `plugin.toml` / `config.example.toml` 中。
+
+打开页面不会根据 `default` 填充配置或写入 profile。仅在 schema 中声明、但配置中尚不存在的字段也会显示，编辑后才写入；对象继续按原有规则合并，数组仍整体替换。顶层 `plugin` 段仍受保护，不参与 profile 编辑。
+
+文件必须是 UTF-8 JSON、根节点为 `type: "object"`，大小不超过 256 KiB，`properties` / `items` / `additionalProperties` 嵌套深度不超过 32 层。无文件时使用旧表单；文件损坏或所支持关键字的结构无效时，接口返回警告，页面提示并回退到通用编辑器。配置查询接口的 `config_schema` 字段单独返回该元数据，不会混入 `config` 或 profile。

@@ -53,6 +53,7 @@
     <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ react_chat_asset_version }}">
     <link rel="stylesheet" href="/static/css/avatar-reaction-bubble.css?v={{ static_asset_version }}">
     <!-- 暗色模式样式 -->
+    <link rel="stylesheet" href="/static/css/agent-plugin-views.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
     <!-- 主题与界面透明度管理器（在 body 前同步恢复，避免首帧闪烁） -->
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
@@ -337,6 +338,7 @@
     <script src="/static/live2d/live2d-emotion.js?v={{ static_asset_version }}"></script>
     <script src="/static/live2d/live2d-model.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-multiscreen-drag-hint.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-touch-gestures.js?v={{ static_asset_version }}"></script>
     <script src="/static/live2d/live2d-interaction.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-popup-common.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/desktop-capture-provider.js?v={{ static_asset_version }}"></script>
@@ -346,6 +348,7 @@
     <script src="/static/avatar/avatar-ui-buttons/idle-assets-and-question.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-ui-buttons/idle-playground.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-ui-buttons/idle-actions-and-audio.js?v={{ static_asset_version }}"></script>
+    <script src="/static/avatar/avatar-ui-buttons/edge-peek-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-ui-buttons/idle-drag-and-subactions.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-ui-buttons/idle-cat-mind-observations.js?v={{ static_asset_version }}"></script>
@@ -362,6 +365,7 @@
     <script src="/static/neko-tooltip.js?v={{ static_asset_version }}"></script>
     <script src="/static/common-ui-hud.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-ui-drag.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial/click-guide/state.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/seven-day-state.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/avatar-floating-boot-predictor.js?v={{ static_asset_version }}"></script>
     <script src="/static/live2d/live2d-init.js?v={{ static_asset_version }}"></script>
@@ -423,6 +427,9 @@
     <script src="/static/app/app-audio-playback.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-widget-interaction.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-spatial-audio.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/microphone-input.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/voice-session-readiness.css?v={{ static_asset_version }}">
+    <script src="/static/app/app-voice-readiness.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-audio-capture.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-screen.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-activity-signal.js?v={{ static_asset_version }}"></script>
@@ -447,6 +454,7 @@
     <script src="/static/app/app-proactive.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-settings.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-reaction-bubble.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-plugin-views.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-agent.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-character.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-websocket.js?v={{ static_asset_version }}"></script>
@@ -477,6 +485,9 @@
     <script src="/static/app/app-react-chat-window/cat-local-chat-lexicon.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-react-chat-window/cat-local-chat.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-react-chat-window/resize-drag-and-api.js?v={{ react_chat_asset_version }}"></script>
+    <!-- 小剧场本体与选择页共用同一份消息和请求协议。 -->
+    <script src="/static/js/theater_transport.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-theater-runtime.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-chat-export.js?v={{ static_asset_version }}"></script>
 
     <script src="/static/subtitle/subtitle.js?v={{ static_asset_version }}"></script>
@@ -523,6 +534,7 @@
     <script src="/static/tutorial/avatar/reload-controller.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/round-prelude-controller.js?v={{ static_asset_version }}"></script>
     <!-- 通用教程管理器（支持所有页面） -->
+    {% include 'templates/_click_guide_scripts.html' %}
     <script src="/static/tutorial/core/universal-manager.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/avatar/floating-guide-reset.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/icebreaker/assistant-loading.js?v={{ static_asset_version }}"></script>

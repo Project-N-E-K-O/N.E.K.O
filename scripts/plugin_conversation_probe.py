@@ -206,7 +206,7 @@ def main() -> int:
         try:
             items = _fetch_page(
                 sock, store=args.store, limit=int(args.limit),
-                since_ts=since_ts if rounds == 0 else None,
+                since_ts=since_ts,
                 until_ts=None, req_id=f"q-{rounds}",
             )
         except Exception as exc:
@@ -239,7 +239,8 @@ def main() -> int:
     print(
         "\n[probe] 插件侧等价写法:\n"
         "    records = await self.bus.conversations.get(since_ts=last_ts, max_count=200)\n"
-        "    for rec in records:\n"
+        "    last_ts = max((rec.timestamp for rec in records), default=last_ts)\n"
+        "    for rec in sorted(records, key=lambda r: (r.metadata or {}).get('ts') or r.timestamp):\n"
         "        role = (rec.metadata or {}).get('role')      # master | cat\n"
         "        ts = (rec.metadata or {}).get('ts') or rec.timestamp\n"
     )

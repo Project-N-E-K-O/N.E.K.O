@@ -245,6 +245,10 @@ if _IS_MAIN_PROCESS:
         get_avatar_tool_store(_config_manager).initialize()
     except AvatarToolStoreError as exc:
         logger.warning("初始化本地 Avatar Tool 存储失败: %s", exc)
+    except Exception:
+        # 本地道具只是可选功能：意外异常不能拖垮整个服务启动。存储根已留在
+        # 待恢复状态，首次存储操作会重试恢复。
+        logger.exception("初始化本地 Avatar Tool 存储时发生意外错误")
     _config_manager.ensure_chara_directory()
 
     # CFA (反勒索防护) 感知挂载：
@@ -372,7 +376,9 @@ from main_routers.mmd_router import router as mmd_router  # noqa
 from main_routers.music_router import router as music_router  # noqa
 from main_routers.pages_router import router as pages_router  # noqa
 from main_routers.pngtuber_router import router as pngtuber_router  # noqa
+from main_routers.numeric_theater_router import router as numeric_theater_router  # noqa
 from main_routers.storage_location_router import router as storage_location_router  # noqa
+from main_routers.plugin_card_router import router as plugin_card_router  # noqa
 from main_routers.plugin_media_router import router as plugin_media_router  # noqa
 from main_routers.system_router import router as system_router  # noqa
 from main_routers.tool_router import router as tool_router  # noqa
@@ -394,6 +400,8 @@ from main_routers.community_oauth import (  # noqa
     callback_router as community_oauth_callback_router,
     router as community_oauth_router,
 )
+from main_routers.community_remote_proxy import router as community_remote_proxy_router
+app.include_router(community_remote_proxy_router)
 from main_routers.debug_router import (
     router as debug_router,
     start_watchdog as _start_debug_health_watchdog,
@@ -679,6 +687,32 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
         for key, value in request.headers.items()
         if key.lower() not in hop_by_hop_request
     }
+    # Browser cookies are signed for the public host, not this private HTTP
+    # hop. Replace any caller-supplied proof after the main entry guard passed;
+    # retain Market's independent Authorization credential unchanged.
+    from utils.instance_access import instance_key, market_internal_proof, remote_instance_identity, request_public_origin
+    from utils.deployment import has_forwarding_metadata
+    from filelock import Timeout as FileLockTimeout
+
+    headers.pop("x-neko-market-internal", None)
+    headers.pop("x-neko-market-public-origin", None)
+    body = await request.body()
+    if request.scope.get("neko.instance_identity"):
+        # This is a new authenticated service-to-service hop. The plugin's
+        # proxy middleware must observe its real loopback caller, not rewrite
+        # it using browser-supplied metadata from the preceding public hop.
+        headers = {name: value for name, value in headers.items()
+                   if not has_forwarding_metadata({name: value})}
+        public_origin = request_public_origin(request)
+        try:
+            signing_key = await asyncio.to_thread(instance_key)
+        except (OSError, ValueError, FileLockTimeout):
+            return JSONResponse(status_code=503, content={"detail": "instance_access_unavailable"})
+        if remote_instance_identity(request, key=signing_key) != request.scope["neko.instance_identity"]:
+            return JSONResponse(status_code=401, content={"detail": "instance_authorization_required"})
+        headers["x-neko-market-public-origin"] = public_origin
+        headers["x-neko-market-internal"] = market_internal_proof(
+            signing_key, request.method, "/market" + ("/" + path if path else ""), public_origin)
 
     try:
         async with httpx.AsyncClient(
@@ -687,7 +721,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
             upstream = await client.request(
                 request.method,
                 target,
-                content=await request.body(),
+                content=body,
                 headers=headers,
             )
     except httpx.HTTPError as exc:
@@ -729,6 +763,7 @@ app.include_router(workshop_router)
 app.include_router(memory_router)
 app.include_router(cloudsave_router)
 app.include_router(storage_location_router)
+app.include_router(plugin_card_router)
 app.include_router(plugin_media_router)
 # 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载
 app.include_router(websocket_router)
@@ -746,6 +781,7 @@ app.include_router(watch_together_router)
 app.include_router(drawing_guess_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
+app.include_router(numeric_theater_router)
 app.include_router(card_drop_router)  # Must precede the pages fallback router.
 app.include_router(community_oauth_router)
 app.include_router(community_oauth_callback_router)  # Exact /oauth/callback before pages.

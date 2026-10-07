@@ -1,0 +1,74 @@
+{
+  "runtime_ledger_schema_version": "theater_ledger_v2",
+  "story_revision": "shared-ledger-edge-fixture-v1",
+  "initial_ledger": {
+    "world_fact_ids": [],
+    "player_known_event_ids": [],
+    "slot_values": {},
+    "prop_states": {},
+    "revealed_clue_ids": [],
+    "flag_ids": [],
+    "open_loop_states": {},
+    "branch_commitment_ids": []
+  },
+  "events": [
+    {
+      "event_id": "event_fixture_seed",
+      "event_type": "observation",
+      "actor_id": "environment",
+      "visibility": "public",
+      "agency": "author_seed",
+      "producer_ref": "node_fixture_seed",
+      "description": "桌上的测试牌在开场时已经被看见。",
+      "modality": "actual",
+      "public_channel": "narration",
+      "public_evidence_terms": ["测试牌"]
+    },
+    {
+      "event_id": "event_fixture_commit",
+      "event_type": "action",
+      "actor_id": "player",
+      "visibility": "public",
+      "agency": "player_commit",
+      "producer_ref": "edge_fixture_commit",
+      "description": "玩家拿起测试牌并确认编号。",
+      "modality": "actual",
+      "public_channel": "player_input",
+      "public_evidence_terms": []
+    }
+  ],
+  "nodes": [
+    {
+      "node_id": "node_fixture_seed",
+      "entry_event_ids": ["event_fixture_seed"],
+      "node_state_effects": []
+    },
+    {
+      "node_id": "node_fixture_target",
+      "entry_event_ids": [],
+      "node_state_effects": []
+    }
+  ],
+  "edges": [
+    {
+      "edge_id": "edge_fixture_commit",
+      "from_node": "node_fixture_seed",
+      "to_node": "node_fixture_target",
+      "trigger": {
+        "kind": "choice",
+        "commit_event_id": "event_fixture_commit"
+      },
+      "transition_event_ids": [],
+      "state_effects": [
+        {
+          "effect_id": "effect_fixture_committed",
+          "state_kind": "fact",
+          "state_id": "fact_fixture_checked",
+          "op": "set",
+          "value": true,
+          "evidence_event_id": "event_fixture_commit"
+        }
+      ]
+    }
+  ]
+}

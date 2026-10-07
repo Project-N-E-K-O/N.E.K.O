@@ -12,7 +12,6 @@ imported directly by plugin developers.
 
 from __future__ import annotations
 
-from . import adapter, plugin
 from .shared.constants import (
     EVENT_META_ATTR,
     HOOK_META_ATTR,
@@ -32,3 +31,17 @@ __all__ = [
     "HOOK_META_ATTR",
     "PERSIST_ATTR",
 ]
+
+
+def __getattr__(name: str):
+    # ``plugin`` / ``adapter`` facades load on first access: a plugin process
+    # importing ``plugin.sdk.plugin`` should not also pay for the adapter SDK.
+    if name in ("plugin", "adapter"):
+        import importlib
+
+        return importlib.import_module(f"{__name__}.{name}")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | {"plugin", "adapter"})

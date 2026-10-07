@@ -112,7 +112,10 @@ async def test_flush_pending_input_data_routes_audio_through_bounded_queue():
     await LLMSessionManager._flush_pending_input_data(mgr)
 
     mgr._enqueue_audio_stream_data.assert_awaited_once_with(audio_msg)
-    mgr._process_stream_data_internal.assert_awaited_once_with(text_msg)
+    mgr._process_stream_data_internal.assert_awaited_once_with(
+        text_msg,
+        on_dispatch_attempted=ANY,
+    )
     assert mgr.pending_input_data == []
 
 
@@ -129,8 +132,46 @@ async def test_cancelled_pending_input_flush_restores_unprocessed_suffix_first()
     mgr._enqueue_audio_stream_data = AsyncMock()
     blocked_started = asyncio.Event()
 
-    async def process(message):
+    async def process(message, *, on_dispatch_attempted):
         if message is blocked:
+            # Model the provider boundary: cancellation after this point must
+            # leave only the untouched suffix in the cache.
+            on_dispatch_attempted()
+            blocked_started.set()
+            await asyncio.Event().wait()
+
+    mgr._process_stream_data_internal = process
+    task = asyncio.create_task(LLMSessionManager._flush_pending_input_data(mgr))
+    await blocked_started.wait()
+    mgr.pending_input_data.append(live)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Dispatch already began for blocked; cancellation cannot prove that the
+    # provider rejected it. Replaying it could duplicate an accepted turn.
+    assert mgr.pending_input_data == [suffix, live]
+    assert mgr._pending_input_flush_active is False
+
+
+async def test_cancelled_pending_input_flush_restores_current_before_dispatch():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    blocked = {"input_type": "text", "data": "blocked"}
+    suffix = {"input_type": "text", "data": "suffix"}
+    live = {"input_type": "text", "data": "live"}
+    mgr.pending_input_data = [blocked, suffix]
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.session = object()
+    mgr.is_active = True
+    mgr._enqueue_audio_stream_data = AsyncMock()
+    blocked_started = asyncio.Event()
+
+    async def process(message, *, on_dispatch_attempted):
+        if message is blocked:
+            # Preparation can suspend before the provider call. The callback
+            # is deliberately not invoked, so cancellation must restore the
+            # current item as well as the untouched suffix.
             blocked_started.set()
             await asyncio.Event().wait()
 
@@ -160,7 +201,7 @@ async def test_failed_pending_input_drops_only_current_and_continues_suffix():
     mgr._enqueue_audio_stream_data = AsyncMock()
     attempted: list[dict] = []
 
-    async def process(message):
+    async def process(message, *, on_dispatch_attempted):
         attempted.append(message)
         if message is failed:
             mgr.pending_input_data.append(live)
@@ -185,11 +226,13 @@ def _hot_swap_frame(
     samples: int = 160,
     speech_probability: float | None = 0.5,
     rnnoise_available: bool = True,
+    received_at: float = 0.0,
     captured_at: float = 0.0,
 ) -> HotSwapAudioFrame:
     return HotSwapAudioFrame(
         pcm16=b"\x01\x00" * samples,
         token=token,
+        received_at=received_at,
         captured_at=captured_at,
         speech_probability=speech_probability,
         rnnoise_available=rnnoise_available,
@@ -362,6 +405,7 @@ async def test_audio_worker_leaves_runtime_generation_validation_to_submit():
         ingress_token=frame.token,
         audio_stream_epoch=frame.audio_stream_epoch,
         ingress_sequence=frame.ingress_sequence,
+        received_at=frame.received_at,
         captured_at=frame.captured_at,
     )
     assert mgr._audio_stream_dropped_total == 0
@@ -407,6 +451,7 @@ async def test_audio_worker_does_not_wait_for_core_session_readiness():
         ingress_token=frame.token,
         audio_stream_epoch=frame.audio_stream_epoch,
         ingress_sequence=frame.ingress_sequence,
+        received_at=frame.received_at,
         captured_at=frame.captured_at,
     )
 
@@ -559,6 +604,7 @@ async def test_independent_audio_route_precedes_omni_websocket_checks():
         rnnoise_available=True,
         rnnoise_evidence=None,
         ingress_token=token,
+        received_at=ANY,
         captured_at=ANY,
     )
     mgr.session.stream_audio.assert_not_awaited()
@@ -598,6 +644,7 @@ async def test_independent_audio_route_does_not_require_omni_session_container()
         rnnoise_available=True,
         rnnoise_evidence=None,
         ingress_token=token,
+        received_at=ANY,
         captured_at=ANY,
     )
     mgr.start_session.assert_not_awaited()
@@ -606,6 +653,13 @@ async def test_independent_audio_route_does_not_require_omni_session_container()
 
 async def test_active_teardown_blocks_audio_while_independent_asr_close_waits():
     mgr = _make_routable_audio_manager(True)
+    from tests.unit.test_session_start_guard import _make_active_manager
+    for name, value in vars(_make_active_manager()).items():
+        mgr.__dict__.setdefault(name, value)
+    session = mgr.session
+    session.close = AsyncMock()
+    mgr._memory_error_retry_after = 0
+    mgr.websocket = None
     del mgr._route_microphone_audio
     mgr._init_asr_runtime_state()
     mgr._set_microphone_route("independent")
@@ -626,9 +680,9 @@ async def test_active_teardown_blocks_audio_while_independent_asr_close_waits():
     mgr._asr_runtime._asr_session = _WaitingAsr()
 
     end_task = asyncio.create_task(LLMSessionManager.end_session(mgr))
-    await close_started.wait()
+    await asyncio.wait_for(close_started.wait(), 2.0)
     try:
-        assert mgr.is_active is True
+        assert mgr.is_active is False
         assert mgr.session_ready is True
         assert mgr._asr_route_mode == "blocked"
 
@@ -637,12 +691,14 @@ async def test_active_teardown_blocks_audio_while_independent_asr_close_waits():
             {"input_type": "audio", "data": [1] * 480},
         )
 
-        mgr.session.stream_audio.assert_not_awaited()
+        session.stream_audio.assert_not_awaited()
         mgr._record_omni_microphone_audio.assert_not_called()
     finally:
         end_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await end_task
+        allow_close.set()
+        await asyncio.wait_for(mgr._session_retirements[-1].task, 2.0)
 
     assert mgr._asr_route_mode == "blocked"
 
@@ -657,6 +713,7 @@ async def test_hot_swap_flush_preserves_identity_and_detector_metadata():
             token,
             speech_probability=0.75,
             rnnoise_available=True,
+            received_at=4321.0,
             captured_at=1234.5,
         )
     )
@@ -671,10 +728,30 @@ async def test_hot_swap_flush_preserves_identity_and_detector_metadata():
         rnnoise_available=True,
         rnnoise_evidence=None,
         ingress_token=token,
+        received_at=4321.0,
         captured_at=1234.5,
     )
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
+    assert not mgr.hot_swap_audio_cache
+
+
+async def test_voice_activation_drops_pre_swap_audio_instead_of_rebinding_it():
+    mgr = _make_routable_audio_manager(True)
+    old_token = mgr._capture_ingress_token()
+    mgr.is_hot_swap_imminent = True
+    mgr._set_microphone_route("blocked")
+    mgr._set_microphone_route("native")
+    mgr._voice_session_activation_factory = object()
+    mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
+    assert mgr.hot_swap_audio_cache.append(
+        _hot_swap_frame(old_token, received_at=25.0, captured_at=100.0)
+    )
+
+    await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
+
+    mgr._route_microphone_audio.assert_not_awaited()
+    assert mgr._audio_stream_dropped_total == 1
     assert not mgr.hot_swap_audio_cache
 
 
@@ -864,6 +941,50 @@ async def test_hot_swap_queue_full_retry_rebinds_without_silent_drop():
     assert rebound.message == second_message
     assert rebound.token == mgr._capture_ingress_token()
     assert mgr._audio_stream_dropped_total == 0
+
+
+async def test_activation_queue_full_retry_drops_frame_after_route_switch():
+    mgr = _make_routable_audio_manager(True)
+    mgr._audio_stream_queue = AudioDurationQueue(
+        capacity_us=20_000,
+        max_frames=1,
+    )
+    mgr._audio_stream_worker_task = asyncio.current_task()
+    mgr._voice_session_activation_factory = object()
+    old_token = mgr._capture_ingress_token()
+    first_message = {
+        "input_type": "audio",
+        "sample_rate_hz": 16_000,
+        "data": [1] * 160,
+    }
+    stale_message = {
+        "input_type": "audio",
+        "sample_rate_hz": 16_000,
+        "data": [2] * 160,
+    }
+    mgr._audio_stream_queue.put_nowait(
+        QueuedMicFrame.from_message(first_message, token=old_token)
+    )
+    original_rebind = mgr._rebind_hot_swap_ingress_token
+    mgr._rebind_hot_swap_ingress_token = MagicMock(wraps=original_rebind)
+
+    async def switch_route_and_free_slot() -> None:
+        mgr.is_hot_swap_imminent = True
+        mgr._set_microphone_route("blocked")
+        mgr._set_microphone_route("native")
+        queued = mgr._audio_stream_queue.get_nowait()
+        assert queued.message is first_message
+        mgr._audio_stream_queue.task_done()
+
+    transition = asyncio.create_task(switch_route_and_free_slot())
+    await LLMSessionManager._enqueue_audio_stream_data(mgr, stale_message)
+    await transition
+
+    assert not mgr._ingress_token_matches(old_token)
+    assert mgr._audio_stream_queue.empty()
+    assert mgr._audio_stream_dropped_total == 1
+    assert not mgr._hot_swap_pending_sequences
+    mgr._rebind_hot_swap_ingress_token.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -1502,7 +1623,7 @@ async def test_game_takeover_clears_core_preview_and_empty_final_stays_terminal(
     mgr._set_microphone_route("independent")
     route_transcript = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "main_logic.voice_input.consumers.game.is_game_route_active",
+        "main_logic.voice_input.consumers.game.is_external_route_active",
         lambda _name: True,
     )
     monkeypatch.setattr(
@@ -2713,7 +2834,7 @@ def test_start_session_snapshots_resource_optimization_handshake_before_await():
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     start_session = functions["start_session"]
-    snapshot_name = "session_resource_optimization_handshake_override"
+    snapshot_name = "session_resource_override"
     snapshot_lines = [
         node.lineno
         for node in ast.walk(start_session)
@@ -2743,6 +2864,25 @@ def test_start_session_snapshots_resource_optimization_handshake_before_await():
     assert passes_override(
         functions["_start_session_activate"],
         "resource_optimization_override",
+    )
+
+    provider_snapshot = "session_provider_preference_handshake_override"
+    provider_snapshot_lines = [
+        node.lineno
+        for node in ast.walk(start_session)
+        if isinstance(node, ast.Name)
+        and node.id == provider_snapshot
+        and isinstance(node.ctx, ast.Store)
+    ]
+    assert provider_snapshot_lines
+    assert max(provider_snapshot_lines) < min(await_lines)
+    assert any(
+        kw.arg == "provider_preference_override"
+        and isinstance(kw.value, ast.Name)
+        and kw.value.id == provider_snapshot
+        for node in ast.walk(start_session)
+        if isinstance(node, ast.Call)
+        for kw in node.keywords
     )
 
 
@@ -3608,3 +3748,5 @@ async def test_silence_timeout_reaches_the_recorder_with_no_display_at_all():
 
     assert [json.loads(x)["type"] for x in recorder.sent] == ["auto_close_mic"]
     mgr.end_session.assert_awaited_once()
+
+pytestmark = pytest.mark.runtime

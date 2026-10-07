@@ -12,13 +12,17 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import AvatarToolItemManager, { type AvatarToolManagerAnchorRect } from './AvatarToolItemManager';
+import AvatarToolItemManager, {
+  type AvatarToolEditorResultMessage,
+  type AvatarToolManagerAnchorRect,
+} from './AvatarToolItemManager';
 import AvatarToolQuickbar from './AvatarToolQuickbar';
 import FullChatSurface from './FullChatSurface';
 import NekoTooltipLayer from './NekoTooltipLayer';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import { useLocalAvatarToolCatalog } from './avatar-tools/useLocalAvatarToolCatalog';
+import { useAvatarToolSurfaceSlots } from './avatar-tools/useAvatarToolSurfaceSlots';
 import {
   COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
   COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
@@ -37,6 +41,7 @@ import {
 } from './compactToolWheelGeometry';
 import { useFocusGlow } from './useFocusGlow';
 import { useGuideChatButtonLock } from './useGuideChatButtonLock';
+import { claimOrdinaryDraftRestore } from './theaterDraftRestore';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
   COMPACT_HISTORY_ROUTED_WHEEL_EVENT,
@@ -58,14 +63,10 @@ import {
   type GalgameOption,
   type ChoiceOption,
   type ChoicePromptSource,
+  type TheaterPresentation,
 } from './message-schema';
 import {
-  DEFAULT_ACTIVE_AVATAR_TOOL_IDS,
-  forgetPersistedAvatarToolId,
   getAvatarToolItemLabel,
-  persistActiveAvatarToolIds,
-  readPersistedActiveAvatarToolIds,
-  sanitizeAvatarToolSlots,
   type AvatarToolId,
   type AvatarToolItem,
 } from './avatarTools';
@@ -87,6 +88,7 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onComposerScreenshot?: () => void;
   onComposerRemoveAttachment?: (attachmentId: ComposerAttachment['id']) => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
+  onTheaterSubmit?: (text: string) => void;
   onAvatarInteraction?: (payload: AvatarInteractionPayload) => void;
   onAvatarToolStateChange?: (payload: AvatarToolStatePayload) => void;
   onJukeboxClick?: () => void;
@@ -94,6 +96,8 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onTranslateToggle?: () => void;
   onGalgameModeToggle?: () => void;
   onGalgameOptionSelect?: (option: GalgameOption) => void;
+  onTheaterSuggestedInputSelect?: (text: string) => void;
+  onTheaterEnd?: () => void;
   // ChoicePrompt remains part of ChatWindowSchemaProps. Keep the legacy galgame
   // callback path until the host fully migrates to the shared choice slot.
   onChoiceSelect?: (option: ChoiceOption, source: ChoicePromptSource) => void;
@@ -342,6 +346,21 @@ function getCompactToolWheelDetentDisplayRatio(offsetRatio: number): number {
 
 function getCompactToolWheelTimestamp(): number {
   return window.performance?.now?.() ?? Date.now();
+}
+
+function formatTheaterBlockText(
+  type: 'player_action' | 'narration' | 'dialogue' | 'ending',
+  text: string,
+  displayKind?: 'action' | 'scene',
+): string {
+  const normalized = text.trim();
+  if (type !== 'narration' || displayKind !== 'action' || !normalized) return normalized;
+  // 旧记录可能已经自带括号；展示层只补一层，不能改写服务端保存的原始正文。
+  const alreadyWrapped = (
+    (normalized.startsWith('（') && normalized.endsWith('）'))
+    || (normalized.startsWith('(') && normalized.endsWith(')'))
+  );
+  return alreadyWrapped ? normalized : `（${normalized}）`;
 }
 
 function createCompactToolWheelChargeState(): CompactToolWheelChargeState {
@@ -911,6 +930,7 @@ function CompactChatApp({
   galgameToggleButtonLabel = i18n('chat.galgameToggle', 'GalGame Mode'),
   galgameToggleButtonAriaLabel,
   galgameLoadingLabel = i18n('chat.galgameLoading', 'Generating options...'),
+  theaterPresentation = { active: false, phase: 'inactive' } as TheaterPresentation,
   // Retained for host API compatibility; the compact-only surface no longer
   // renders the per-message action menu, so this handler is currently unused
   // (the `_` prefix opts it out of unused-var lint).
@@ -919,6 +939,7 @@ function CompactChatApp({
   onComposerScreenshot,
   onComposerRemoveAttachment,
   onComposerSubmit,
+  onTheaterSubmit,
   onAvatarInteraction,
   onAvatarToolStateChange,
   onJukeboxClick,
@@ -929,6 +950,8 @@ function CompactChatApp({
   onTranslateToggle,
   onGalgameModeToggle,
   onGalgameOptionSelect,
+  onTheaterSuggestedInputSelect,
+  onTheaterEnd,
   choicePrompt = null,
   onChoiceSelect,
   avatarToolMenuOpenRequest = null,
@@ -948,11 +971,13 @@ function CompactChatApp({
 
   const [draft, setDraft] = useState('');
   const [catDraft, setCatDraft] = useState('');
-  const visibleDraft = catLocalTextOnly ? catDraft : draft;
+  const [theaterDraft, setTheaterDraft] = useState('');
+  const theaterActive = theaterPresentation.active === true;
+  const visibleDraft = theaterActive ? theaterDraft : (catLocalTextOnly ? catDraft : draft);
   const guideChatButtonsLocked = useGuideChatButtonLock();
-  const compactTextEntryLocked = composerDisabled || compactInputLocked || guideChatButtonsLocked;
+  const compactTextEntryLocked = composerDisabled || compactInputLocked || guideChatButtonsLocked
+    || (theaterActive && theaterPresentation.phase !== 'awaiting_player');
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
-  const [activeAvatarToolIds, setActiveAvatarToolIds] = useState<AvatarToolId[]>(readPersistedActiveAvatarToolIds);
   const [avatarToolManagerOpen, setAvatarToolManagerOpen] = useState(false);
   const [avatarToolManagerAnchorRect, setAvatarToolManagerAnchorRect] = useState<AvatarToolManagerAnchorRect | null>(null);
   const appShellRef = useRef<HTMLElement | null>(null);
@@ -1029,7 +1054,6 @@ function CompactChatApp({
   const [compactPreviewTextVisible, setCompactPreviewTextVisible] = useState('');
   const [compactSpeechVisibleLength, setCompactSpeechVisibleLength] = useState(0);
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
-  const compactCapsuleEntryLocked = compactTextEntryLocked;
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
   const [compactAssistantStreamingGap, setCompactAssistantStreamingGap] = useState<{
@@ -1087,6 +1111,7 @@ function CompactChatApp({
   // 折叠时若历史区是开的，记下「恢复后应重新打开历史区」。配合 closeCompactExportHistory
   // ({persist:false})：折叠只播收回动画、不写偏好，恢复（minimized→compact）时据此重开。
   const compactHistoryReopenAfterRestoreRef = useRef(false);
+  const theaterHistoryRestoreRef = useRef<{ open: boolean; mounted: boolean } | null>(null);
   // host 折叠取消序号上次值，用于检测「取消」事件（见下方 useLayoutEffect）。
   const prevCompactMinimizeCancelSeqRef = useRef(compactMinimizeCancelSeq);
   const compactSurfaceResizeStateRef = useRef<CompactSurfaceResizeState | null>(null);
@@ -1107,10 +1132,31 @@ function CompactChatApp({
   const lastCompactToolFanOpenRequestIdRef = useRef('');
   const lastCompactToolWheelRotateRequestIdRef = useRef('');
   const lastCompactHistoryOpenRequestIdRef = useRef('');
+  const lastTheaterDraftRestoreIdRef = useRef('');
   const lastCompactToolWheelIndexRequestIdRef = useRef('');
   const compactInputHasPayload = visibleDraft.trim().length > 0
-    || (!catLocalTextOnly && composerAttachments.length > 0);
+    || (!theaterActive && !catLocalTextOnly && composerAttachments.length > 0);
   const canSubmit = !compactTextEntryLocked && compactInputHasPayload;
+
+  useEffect(() => {
+    if (!theaterActive) {
+      setTheaterDraft('');
+      lastTheaterDraftRestoreIdRef.current = '';
+      return;
+    }
+    const restore = theaterPresentation.draftRestore;
+    if (!restore?.id || restore.id === lastTheaterDraftRestoreIdRef.current) return;
+    lastTheaterDraftRestoreIdRef.current = restore.id;
+    setTheaterDraft(restore.text);
+  }, [theaterActive, theaterPresentation.draftRestore]);
+
+  useEffect(() => {
+    if (theaterActive) return;
+    const restore = theaterPresentation.ordinaryDraftRestore;
+    // 主页面可能在演绎期间重挂 React，这里只恢复进入小剧场前保存的普通聊天草稿。
+    if (!restore || !claimOrdinaryDraftRestore(restore.id)) return;
+    setDraft(restore.text);
+  }, [theaterActive, theaterPresentation.ordinaryDraftRestore]);
   const avatarToolRuntime = useAvatarToolRuntime({
     composerHidden,
     composerDisabled,
@@ -1128,39 +1174,30 @@ function CompactChatApp({
   const effectiveAvatarToolVariant = avatarToolRuntime.effectiveVariant;
   const clearActiveAvatarToolSelection = avatarToolRuntime.clearTool;
   const handleAvatarQuickbarToolClick = avatarToolRuntime.selectTool;
+  const {
+    activeToolIds: activeAvatarToolIds,
+    saveSlots,
+    restoreDefaultsInMemory,
+    applyEditorResult,
+    deleteLocalTool,
+  } = useAvatarToolSurfaceSlots({
+    catalog: localAvatarToolCatalog,
+    activeToolId: activeAvatarToolId,
+    clearActiveTool: clearActiveAvatarToolSelection,
+    managerOpen: avatarToolManagerOpen,
+    surface: 'compact',
+  });
 
   const handleAvatarToolManagerSave = useCallback((toolIds: AvatarToolId[]) => {
-    const nextToolIds = sanitizeAvatarToolSlots(toolIds);
-    setActiveAvatarToolIds(nextToolIds);
-    persistActiveAvatarToolIds(nextToolIds);
+    saveSlots(toolIds);
     setAvatarToolManagerOpen(false);
-    if (activeAvatarToolId && !nextToolIds.includes(activeAvatarToolId)) {
-      clearActiveAvatarToolSelection();
-    }
-  }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.registry]);
+  }, [saveSlots]);
 
-  const handleLocalAvatarToolDelete = useCallback(async (toolId: `local-${string}`) => {
-    await localAvatarToolCatalog.remove(toolId);
-    // 这里读的是闭包捕获值，当前是安全的：管理器入口在快捷栏里，而快捷栏只在
-    // 没有选中道具时才展开（点道具按钮的第一下是退出选择），所以发起删除时
-    // activeAvatarToolId 必然为 null，这个判断恒为假。将来如果新增「选中状态下
-    // 直接删除」的入口，就必须改读运行时的同步当前 ID —— 但别在 render 阶段
-    // 往 ref 里写，那样会把未提交的 render 结果泄进共享状态。
-    if (activeAvatarToolId === toolId) clearActiveAvatarToolSelection();
-    setActiveAvatarToolIds(current => current.filter(candidate => candidate !== toolId));
-    forgetPersistedAvatarToolId(toolId);
-  }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.remove]);
-
-  useEffect(() => {
-    if (!avatarToolManagerOpen) return;
-    localAvatarToolCatalog.refresh().catch(() => undefined);
-  }, [avatarToolManagerOpen, localAvatarToolCatalog.refresh]);
-
-  useEffect(() => {
-    if (!activeAvatarToolId) return;
-    if (activeAvatarToolIds.includes(activeAvatarToolId as AvatarToolId)) return;
-    clearActiveAvatarToolSelection();
-  }, [activeAvatarToolIds, activeAvatarToolId, clearActiveAvatarToolSelection]);
+  const handleAvatarToolEditorResult = useCallback((result: AvatarToolEditorResultMessage) => {
+    applyEditorResult(result);
+    // 猫咪本地文字模式下道具入口整体隐藏，编辑器窗口回传的结果只落槽位，不把管理弹窗拉起来。
+    if (!catLocalTextOnly) setAvatarToolManagerOpen(true);
+  }, [applyEditorResult, catLocalTextOnly]);
 
   // Rollback draft when host signals a RESPONSE_TOO_LONG error
   // Use _rollbackKey for dedup. It changes on every rollbackLastDraft() call
@@ -1227,16 +1264,28 @@ function CompactChatApp({
     'chat.compactHistoryExport',
     'Export conversation history',
   );
-  // ChoicePrompt and galgame options share the same composer-anchored slot.
-  // The transient invite should win when both are present so we do not stack
-  // two button groups in the same compact surface.
+  // 临时邀请与 Galgame 选项复用同一块胶囊锚点区域；两者同时存在时优先显示邀请，
+  // 避免在一个紧凑输入区里叠放两组选项。
   const compactChoiceInteractionsAllowed = !composerHidden && !catLocalTextOnly;
-  const choicePromptHasOptions = compactChoiceInteractionsAllowed
+  const theaterSuggestedOptions: GalgameOption[] = theaterActive
+    && theaterPresentation.phase === 'awaiting_player'
+    && theaterDraft.trim().length === 0
+    ? (theaterPresentation.suggestedInputs ?? []).slice(0, 3).map((text, index) => ({
+        label: String.fromCharCode(65 + index),
+        text,
+      }))
+    : [];
+  const theaterOptionsVisible = compactChoiceInteractionsAllowed && theaterSuggestedOptions.length > 0
+    && typeof onTheaterSuggestedInputSelect === 'function';
+  const choicePromptHasOptions = compactChoiceInteractionsAllowed && !theaterActive
     && !!(choicePrompt && choicePrompt.options.length > 0);
   const galgameOptionsVisible =
-    compactChoiceInteractionsAllowed && galgameModeEnabled && !choicePromptHasOptions
+    compactChoiceInteractionsAllowed && !theaterActive && galgameModeEnabled && !choicePromptHasOptions
     && (galgameOptionsLoading || galgameOptions.length > 0);
-  const compactSurfaceChoicesVisible = choicePromptHasOptions || galgameOptionsVisible;
+  const galgameStyleOptionsVisible = theaterOptionsVisible || galgameOptionsVisible;
+  const visibleGalgameStyleOptions = theaterOptionsVisible ? theaterSuggestedOptions : galgameOptions;
+  const visibleGalgameStyleLoading = !theaterOptionsVisible && galgameOptionsLoading;
+  const compactSurfaceChoicesVisible = choicePromptHasOptions || galgameStyleOptionsVisible;
   const isCompactSurface = chatSurfaceMode !== 'minimized';
   // compactChatState 受控时跟随外部 prop；未受控（独立挂载 / 开发预览 main.tsx）时用
   // 内部 state 兜底，让字幕胶囊点击能真正切到输入态，而不是停在胶囊里出不来喵。
@@ -1431,6 +1480,26 @@ function CompactChatApp({
   }, [clearCompactExportHistoryUnmountTimer, messages]);
 
   useEffect(() => {
+    if (theaterActive) {
+      if (!theaterHistoryRestoreRef.current) {
+        theaterHistoryRestoreRef.current = {
+          open: compactExportHistoryOpen,
+          mounted: compactExportHistoryMounted,
+        };
+      }
+      setCompactExportControlsOpen(false);
+      setCompactExportPreviewOpen(false);
+      openCompactExportHistory({ persist: false });
+      return;
+    }
+    const previous = theaterHistoryRestoreRef.current;
+    if (!previous) return;
+    theaterHistoryRestoreRef.current = null;
+    if (previous.open) openCompactExportHistory({ persist: false });
+    else closeCompactExportHistory({ persist: false });
+  }, [theaterActive]);
+
+  useEffect(() => {
     if (!isCompactSurface) {
       compactExportHistoryGeometryStateRef.current = null;
       return;
@@ -1459,8 +1528,9 @@ function CompactChatApp({
       openCompactExportHistory({ persist: false });
       return;
     }
+    if (theaterActive) return;
     closeCompactExportHistory({ persist: false });
-  }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory]);
+  }, [closeCompactExportHistory, compactHistoryOpenRequest, openCompactExportHistory, theaterActive]);
 
   useEffect(() => () => {
     clearCompactExportHistoryUnmountTimer();
@@ -1546,12 +1616,13 @@ function CompactChatApp({
     }
   }, [compactMinimizeCancelSeq, openCompactExportHistory]);
   const handleCompactHistoryVisibilityToggle = useCallback(() => {
+    if (theaterActive) return;
     if (compactExportHistoryOpen) {
       closeCompactExportHistory();
       return;
     }
     openCompactExportHistory();
-  }, [closeCompactExportHistory, compactExportHistoryOpen, openCompactExportHistory]);
+  }, [closeCompactExportHistory, compactExportHistoryOpen, openCompactExportHistory, theaterActive]);
   const handleCompactHistoryVisibilityPress = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     event.preventDefault();
@@ -1722,7 +1793,10 @@ function CompactChatApp({
       isGuide: false,
     };
   }, [compactCaptionState]);
-  const compactMessagePreview = compactCaptionPreview || compactMessagePreviewFromMessages;
+  // 小剧场演绎统一写入历史气泡，胶囊只保留玩家输入职责，不再承担旁白或对白预览。
+  const compactMessagePreview = theaterActive
+    ? null
+    : compactCaptionPreview || compactMessagePreviewFromMessages;
   const compactMatchedSpeechPlaybackState = isSpeechPlaybackStateForCompactPreview(
     speechPlaybackState,
     compactMessagePreview,
@@ -1741,7 +1815,8 @@ function CompactChatApp({
     && !compactPreservedSpeechMatchesEndingGap;
   const compactRestoreEmptyStateAfterTurnEnd = compactSuppressAssistantFallback
     && compactAssistantStreamingGap.turnEnded;
-  const compactPreservedSpeechActive = !compactMessagePreview
+  const compactPreservedSpeechActive = !theaterActive
+    && !compactMessagePreview
     && !compactSuppressAssistantFallback
     && !!compactSpeechPreviewIdRef.current
     && !!compactSpeechPreviewTextRef.current;
@@ -4475,7 +4550,9 @@ function CompactChatApp({
     if (effectiveCompactChatState !== 'input') return;
     if (!options?.ignoreToolFan && compactInputToolFanOpen) return;
     if (draftRef.current.trim().length > 0) return;
-    if (composerAttachments.length > 0) return;
+    if (!theaterActive && composerAttachments.length > 0) return;
+    // Native guide controls live in another window, so focus cannot identify them.
+    if (!options?.ignoreFocusedShell && document.querySelector('.click-guide-layer.click-guide-native')) return;
     const activeElement = document.activeElement;
     if (
       !options?.ignoreFocusedShell
@@ -4484,7 +4561,7 @@ function CompactChatApp({
         !!compactInputShellRef.current?.contains(activeElement)
         || (
           activeElement instanceof Element
-          && !!activeElement.closest('.compact-export-history-anchor, .compact-history-visibility-handle')
+          && !!activeElement.closest('.compact-export-history-anchor, .compact-history-visibility-handle, .click-guide-layer, .click-guide-choice')
         )
       )
     ) {
@@ -4497,6 +4574,7 @@ function CompactChatApp({
     effectiveCompactChatState,
     isCompactSurface,
     requestCompactChatState,
+    theaterActive,
   ]);
 
   const scheduleCompactInputCollapse = useCallback(() => {
@@ -4523,7 +4601,7 @@ function CompactChatApp({
         || !!compactChoiceLayerRef.current?.contains(target)
         || (
           target instanceof Element
-          && !!target.closest('.compact-export-history-anchor, .compact-history-visibility-handle')
+          && !!target.closest('.compact-export-history-anchor, .compact-history-visibility-handle, .click-guide-layer, .click-guide-choice')
         )
       )
     );
@@ -4538,11 +4616,16 @@ function CompactChatApp({
       scheduleForcedCompactInputCollapse();
     };
 
-    window.addEventListener('blur', scheduleForcedCompactInputCollapse);
+    const handleWindowBlur = () => {
+      if (document.querySelector('.click-guide-layer.click-guide-native')) return;
+      scheduleForcedCompactInputCollapse();
+    };
+
+    window.addEventListener('blur', handleWindowBlur);
     document.addEventListener('pointerdown', handlePointerDown, true);
     document.addEventListener('keydown', handleKeyDown, true);
     return () => {
-      window.removeEventListener('blur', scheduleForcedCompactInputCollapse);
+      window.removeEventListener('blur', handleWindowBlur);
       document.removeEventListener('pointerdown', handlePointerDown, true);
       document.removeEventListener('keydown', handleKeyDown, true);
     };
@@ -4609,6 +4692,7 @@ function CompactChatApp({
     if (!isCompactSurface) return;
 
     const handleDesktopCompactPointerOutside = () => {
+      if (document.querySelector('.click-guide-layer.click-guide-native')) return;
       if (
         compactInputToolWheelDragActiveRef.current
         || compactInputToolWheelPointerRef.current
@@ -4717,10 +4801,11 @@ function CompactChatApp({
 
   useEffect(() => {
     if (!isCompactSurface) return;
+    if (theaterActive) return;
     if (composerAttachments.length === 0) return;
     if (effectiveCompactChatState === 'input') return;
     requestCompactChatState('input');
-  }, [composerAttachments.length, effectiveCompactChatState, isCompactSurface, requestCompactChatState]);
+  }, [composerAttachments.length, effectiveCompactChatState, isCompactSurface, requestCompactChatState, theaterActive]);
 
   useEffect(() => {
     if (!toolMenuOpen) return;
@@ -4758,14 +4843,14 @@ function CompactChatApp({
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
       if (!opened) return;
       if (activeAvatarToolIds.length === 0) {
-        setActiveAvatarToolIds([...DEFAULT_ACTIVE_AVATAR_TOOL_IDS]);
+        restoreDefaultsInMemory();
       }
       clearActiveAvatarToolSelection();
       setToolMenuOpen(opened);
       return;
     }
     setToolMenuOpen(false);
-  }, [activeAvatarToolIds.length, avatarToolMenuOpenRequest, clearActiveAvatarToolSelection, openCompactInputToolFan]);
+  }, [activeAvatarToolIds.length, avatarToolMenuOpenRequest, clearActiveAvatarToolSelection, openCompactInputToolFan, restoreDefaultsInMemory]);
 
   useEffect(() => {
     const request = compactToolFanOpenRequest;
@@ -4837,13 +4922,21 @@ function CompactChatApp({
     if (compactTextEntryLocked) return;
     if (submittingRef.current) return;
     const text = (draftOverride ?? visibleDraft).trim();
-    if (!text && (catLocalTextOnly || composerAttachments.length === 0)) return;
+    if (!text && (theaterActive || catLocalTextOnly || composerAttachments.length === 0)) return;
+    // 小剧场激活时不能回退到普通聊天；宿主回调尚未就绪时保留草稿等待重试。
+    if (theaterActive && !onTheaterSubmit) return;
     closeCompactInputToolFan();
     submittingRef.current = true;
     let shouldRefocusCompactInput = false;
     try {
-      onComposerSubmit?.({ text, submitMethod });
-      if (catLocalTextOnly) {
+      if (theaterActive) {
+        onTheaterSubmit?.(text);
+      } else {
+        onComposerSubmit?.({ text, submitMethod });
+      }
+      if (theaterActive) {
+        setTheaterDraft('');
+      } else if (catLocalTextOnly) {
         setCatDraft('');
       } else {
         setDraft('');
@@ -5090,6 +5183,7 @@ function CompactChatApp({
   const compactToolToggleActsAsSubmit = effectiveCompactChatState === 'input' && compactInputHasPayload;
   const compactToolToggleVisible = isCompactSurface
     && !composerHidden
+    && (!theaterActive || compactToolToggleActsAsSubmit)
     && (!catLocalTextOnly || compactToolToggleActsAsSubmit);
   const compactInputToolToggleButton = compactToolToggleVisible ? (
     <button
@@ -5543,7 +5637,7 @@ function CompactChatApp({
       ) : null}
     </div>
   ) : null;
-  const composerAttachmentPreviewNode = !catLocalTextOnly && composerAttachments.length > 0 ? (
+  const composerAttachmentPreviewNode = !theaterActive && !catLocalTextOnly && composerAttachments.length > 0 ? (
     <div
       className={`composer-attachment-viewport${isCompactSurface ? ' composer-attachment-viewport-compact' : ''}`}
       aria-label={composerAttachmentsAriaLabel}
@@ -5628,24 +5722,24 @@ function CompactChatApp({
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-choice-placement={isCompactSurface ? compactChoiceLayerPlacement : undefined}
     >
-      {galgameOptionsVisible ? (
+      {galgameStyleOptionsVisible ? (
         <div
-          className={`composer-galgame-slot${compactChoiceLayerOpen && galgameOptionsVisible ? ' is-open' : ''}`}
-          aria-hidden={!(compactChoiceLayerOpen && galgameOptionsVisible)}
+          className={`composer-galgame-slot${compactChoiceLayerOpen && galgameStyleOptionsVisible ? ' is-open' : ''}`}
+          aria-hidden={!(compactChoiceLayerOpen && galgameStyleOptionsVisible)}
         >
           <div
-            className={`composer-galgame-options${galgameOptionsLoading ? ' is-loading' : ''}`}
+            className={`composer-galgame-options${visibleGalgameStyleLoading ? ' is-loading' : ''}`}
             role="group"
-            aria-label={galgameToggleButtonLabel}
+            aria-label={theaterOptionsVisible ? i18n('theater.actionChoicesTitle', 'Suggested replies') : galgameToggleButtonLabel}
           >
-            {galgameOptions.length > 0
-              ? galgameOptions.slice(0, 3).map((option, index) => (
+            {visibleGalgameStyleOptions.length > 0
+              ? visibleGalgameStyleOptions.slice(0, 3).map((option, index) => (
                   <button
                     key={`${index}-${option.label}`}
                     type="button"
                     className="composer-galgame-option"
-                    disabled={composerDisabled || galgameOptionsLoading}
-                    tabIndex={compactChoiceLayerOpen && galgameOptionsVisible ? 0 : -1}
+                    disabled={composerDisabled || visibleGalgameStyleLoading}
+                    tabIndex={compactChoiceLayerOpen && galgameStyleOptionsVisible ? 0 : -1}
                     onMouseEnter={prepareComposerOptionMarquee}
                     onMouseLeave={clearComposerOptionMarquee}
                     onFocus={prepareComposerOptionMarquee}
@@ -5655,7 +5749,12 @@ function CompactChatApp({
                       submittingRef.current = true;
                       try {
                         restoreCompactExportHistoryToBottomForOutgoingMessage();
-                        onGalgameOptionSelect?.(option);
+                        if (theaterOptionsVisible) {
+                          // 小剧场推荐输入是“点击即提交”的快捷动作，不写入胶囊输入框草稿。
+                          onTheaterSuggestedInputSelect?.(option.text);
+                        } else {
+                          onGalgameOptionSelect?.(option);
+                        }
                         requestCompactChatState('default');
                       } finally {
                         requestAnimationFrame(() => { submittingRef.current = false; });
@@ -5668,7 +5767,7 @@ function CompactChatApp({
                     </span>
                   </button>
                 ))
-              : galgameOptionsLoading
+              : visibleGalgameStyleLoading
                 ? ['A', 'B', 'C'].map((label) => (
                     <button
                       key={label}
@@ -5737,12 +5836,37 @@ function CompactChatApp({
   const compactChoiceLayerNode = isCompactSurface && !catLocalTextOnly
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
     : null;
-  const compactExportHistoryMessages = compactExportHistoryOpen
-    ? messages
-    : (compactExportHistoryClosingMessages || messages);
+  const theaterHistoryMessages = useMemo<ChatMessage[]>(() => (
+    (theaterPresentation.history ?? []).map((entry, index) => ({
+      id: `theater:${entry.id}`,
+      role: entry.type === 'player_action' ? 'user' : entry.type === 'dialogue' ? 'assistant' : 'system',
+      author: entry.author || (entry.type === 'player_action'
+        ? i18n('theater.player', 'Player')
+        : entry.type === 'dialogue'
+          ? (assistantName || 'Neko')
+          : i18n('theater.narration', 'Narration')),
+      time: '',
+      status: entry.status,
+      createdAt: index,
+      blocks: [{
+        type: 'text',
+        text: formatTheaterBlockText(entry.type, entry.text, entry.displayKind),
+      }],
+    }))
+  ), [assistantName, theaterPresentation.history]);
+  const compactExportHistoryMessages = theaterActive
+    ? theaterHistoryMessages
+    : compactExportHistoryOpen
+      ? messages
+      : (compactExportHistoryClosingMessages || messages);
   const compactExportHistoryElement = isCompactSurface && compactExportHistoryMounted ? (
     <CompactExportHistoryPanel
       messages={compactExportHistoryMessages}
+      mode={theaterActive ? 'theater' : 'chat'}
+      theaterTitle={theaterPresentation.storyTitle}
+      theaterEnded={theaterPresentation.sessionEnded === true}
+      theaterError={theaterPresentation.errorMessage}
+      onTheaterEnd={onTheaterEnd}
       selectedIds={compactExportSelectedIds}
       selectedCount={compactExportSelectedCount}
       selectableCount={compactExportSelectableCount}
@@ -5779,7 +5903,7 @@ function CompactChatApp({
       aria-label={compactExportHistoryToggleLabel}
       aria-expanded={compactExportHistoryOpen}
       data-neko-tooltip={compactExportHistoryToggleLabel}
-      disabled={composerDisabled}
+      disabled={composerDisabled || theaterActive}
       data-compact-geometry-owner="surface"
       data-compact-geometry-item="historyHandle"
       data-compact-no-drag="true"
@@ -5823,7 +5947,6 @@ function CompactChatApp({
       <div
         className={`compact-chat-stage compact-chat-stage-${effectiveCompactChatState}`}
         data-compact-chat-state={effectiveCompactChatState}
-        data-compact-stage-layout="stage2"
       >
         <div
           className="compact-chat-stage-body-slot"
@@ -5841,6 +5964,7 @@ function CompactChatApp({
       ref={appShellRef}
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-chat-state={effectiveCompactChatState}
+      data-theater-active={theaterActive ? 'true' : 'false'}
       data-compact-export-history-open={isCompactSurface && compactExportHistoryOpen ? 'true' : 'false'}
       data-compact-export-controls-open={isCompactSurface && compactExportControlsVisible ? 'true' : 'false'}
       data-compact-export-preview-open={isCompactSurface && compactExportPreviewOpen ? 'true' : 'false'}
@@ -5867,9 +5991,10 @@ function CompactChatApp({
       {compactMusicPlayerMountNode}
       {compactChoiceLayerNode}
       <AvatarToolItemManager
-        open={isCompactSurface && avatarToolManagerOpen}
+        open={isCompactSurface && !catLocalTextOnly && avatarToolManagerOpen}
         activeToolIds={activeAvatarToolIds}
-        availableTools={toolIconItems}
+        availableTools={localAvatarToolCatalog.items}
+        runnableToolIds={localAvatarToolCatalog.registry.validIds}
         anchorRect={avatarToolManagerAnchorRect}
         onSave={handleAvatarToolManagerSave}
         onCancel={() => setAvatarToolManagerOpen(false)}
@@ -5879,9 +6004,10 @@ function CompactChatApp({
         onCreate={localAvatarToolCatalog.create}
         onLoadDetail={localAvatarToolCatalog.detail}
         onUpdate={localAvatarToolCatalog.update}
-        onDelete={handleLocalAvatarToolDelete}
+        onDelete={deleteLocalTool}
         catalogAuthoritativeLoaded={localAvatarToolCatalog.authoritativeLoaded}
         catalogRefreshFailed={localAvatarToolCatalog.refreshFailed}
+        onExternalEditorResult={handleAvatarToolEditorResult}
       />
       <AvatarToolVisuals model={avatarToolRuntime.visualModel} />
       <section
@@ -6005,7 +6131,9 @@ function CompactChatApp({
                           disabled={composerDisabled}
                           onChange={(event) => {
                             if (compactTextEntryLocked) return;
-                            if (catLocalTextOnly) {
+                            if (theaterActive) {
+                              setTheaterDraft(event.target.value);
+                            } else if (catLocalTextOnly) {
                               setCatDraft(event.target.value);
                             } else {
                               setDraft(event.target.value);
@@ -6121,7 +6249,9 @@ function CompactChatApp({
                             } = completeComposerEnterCycle();
 
                             if (shouldRestoreDraft) {
-                              if (catLocalTextOnly) {
+                              if (theaterActive) {
+                                setTheaterDraft(draftBeforeEnter);
+                              } else if (catLocalTextOnly) {
                                 setCatDraft(draftBeforeEnter);
                               } else {
                                 setDraft(draftBeforeEnter);
@@ -6152,7 +6282,9 @@ function CompactChatApp({
                             composerImeCommitPendingRef.current = false;
 
                             if (shouldRestoreDraft) {
-                              if (catLocalTextOnly) {
+                              if (theaterActive) {
+                                setTheaterDraft(draftBeforeEnter);
+                              } else if (catLocalTextOnly) {
                                 setCatDraft(draftBeforeEnter);
                               } else {
                                 setDraft(draftBeforeEnter);
@@ -6180,10 +6312,10 @@ function CompactChatApp({
                           data-compact-hit-region="true"
                           data-compact-hit-region-id="capsule:text"
                           data-compact-hit-region-kind="capsule-text"
-                          disabled={compactCapsuleEntryLocked}
+                          disabled={compactTextEntryLocked}
                           onClick={() => {
                             if (composerHidden) return;
-                            if (compactCapsuleEntryLocked) return;
+                            if (compactTextEntryLocked) return;
                             requestCompactChatState('input');
                           }}
                         >

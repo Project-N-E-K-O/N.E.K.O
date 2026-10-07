@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="theater.settingsTitle">小剧场设置 - Project N.E.K.O.</title>
+  <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+  <link rel="stylesheet" href="/static/css/theater_settings.css?v={{ static_asset_version }}">
+  <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
+  <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
+  <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
+  <script src="/static/app/app-prompt-shared.js?v={{ static_asset_version }}"></script>
+  <script src="/static/js/theater_transport.js?v={{ static_asset_version }}" defer></script>
+  <script src="/static/js/theater_settings.js?v={{ static_asset_version }}" defer></script>
+</head>
+<body>
+  <main class="theater-settings-shell">
+    <header class="theater-settings-bar">
+      <div><span class="theater-settings-kicker" data-i18n="theater.settingsKicker">N.E.K.O · 小剧场</span><h1 data-i18n="theater.settingsTitle">演绎设置</h1></div>
+      <div class="theater-settings-actions">
+        <button class="theater-settings-back" type="button" id="theater-settings-back" data-i18n="theater.settingsBack">返回剧本库</button>
+        <div class="neko-window-controls theater-settings-window-controls">
+          <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化"><span class="neko-window-minimize-icon"></span></button>
+          <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化"><span class="neko-window-maximize-icon"></span></button>
+          <button type="button" class="neko-window-control-btn" data-neko-window-control="close" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭"></button>
+        </div>
+      </div>
+    </header>
+    <section class="theater-settings-card" aria-labelledby="theater-settings-title">
+      <div class="theater-settings-intro"><h2 id="theater-settings-title" data-i18n="theater.settingsIntroTitle">演绎流程开关</h2><p data-i18n="theater.settingsIntroBody">按需开启检查步骤。关闭后会减少等待和模型调用，但对应的保护检查也会跳过。</p></div>
+      <div id="theater-settings-list" class="theater-settings-list" aria-live="polite"></div>
+      <p id="theater-settings-feedback" class="theater-settings-feedback" role="status"></p>
+    </section>
+  </main>
+</body>
+</html>

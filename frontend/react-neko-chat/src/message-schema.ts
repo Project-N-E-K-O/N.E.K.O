@@ -55,6 +55,23 @@ const statusBlockSchema = z.object({
 // Frontend-only "she has a topic she'd like to bring up" teaser, shown just
 // before a proactive deep-topic opener. Backend sends only the character name
 // (no LLM-context text); the dedicated TopicHintBubble renders localized copy.
+export const htmlCardBlockSchema = z.object({
+  type: z.literal('html_card'),
+  cardId: z.string().min(1),
+  pluginId: z.string().min(1),
+  targetLanlan: z.string().min(1),
+  presentation: z.enum(['chat', 'agent']).optional(),
+  html: z.string(),
+  css: z.string().default(''),
+  summary: z.string(),
+  actions: z.record(z.object({
+    entry: z.string().min(1),
+    args: z.record(z.unknown()).optional(),
+  })).default({}),
+});
+export type HtmlCard = z.infer<typeof htmlCardBlockSchema>;
+export type HtmlCardInput = z.input<typeof htmlCardBlockSchema>;
+
 const topicHintBlockSchema = z.object({
   type: z.literal('topic-hint'),
   // Trim before length check so a whitespace-only author is rejected, matching
@@ -83,6 +100,30 @@ const compactChatStateSchema = z.enum(['default', 'options', 'input']);
 const galgameOptionSchema = z.object({
   label: z.string().min(1),
   text: z.string().min(1),
+});
+
+const theaterHistoryEntrySchema = z.object({
+  id: z.string().min(1),
+  type: z.enum(['player_action', 'narration', 'dialogue', 'ending']),
+  text: z.string(),
+  author: z.string().optional(),
+  displayKind: z.enum(['action', 'scene']).optional(),
+  status: z.enum(['streaming', 'sent']).optional(),
+});
+
+const theaterPresentationSchema = z.object({
+  active: z.boolean(),
+  phase: z.enum(['inactive', 'loading', 'performing', 'awaiting_player', 'evaluating', 'ending', 'ended', 'returning_selector']),
+  storyTitle: z.string().optional(),
+  history: z.array(theaterHistoryEntrySchema).optional(),
+  suggestedInputs: z.array(z.string()).optional(),
+  busy: z.boolean().optional(),
+  sessionEnded: z.boolean().optional(),
+  errorMessage: z.string().optional(),
+  // 用量提示独立于历史消息，刷新后不伪造上一轮账单。
+  tokenUsage: z.object({ summary: z.string(), detail: z.string() }).nullable().optional(),
+  draftRestore: z.object({ id: z.string().min(1), text: z.string() }).nullable().optional(),
+  ordinaryDraftRestore: z.object({ id: z.string().min(1), text: z.string() }).nullable().optional(),
 });
 
 // Generic ChoicePrompt — composer-anchored "AI 给你出几个选项" UI 组件抽象。
@@ -156,6 +197,7 @@ export const messageBlockSchema = z.discriminatedUnion('type', [
   statusBlockSchema,
   buttonGroupBlockSchema,
   topicHintBlockSchema,
+  htmlCardBlockSchema,
 ]);
 
 const turnIdSchema = z.preprocess((value) => {
@@ -244,6 +286,7 @@ export const chatWindowPropsSchema = z.object({
   galgameToggleButtonLabel: z.string().optional(),
   galgameToggleButtonAriaLabel: z.string().optional(),
   galgameLoadingLabel: z.string().optional(),
+  theaterPresentation: theaterPresentationSchema.optional(),
   avatarToolMenuOpenRequest: avatarToolMenuOpenRequestSchema.optional(),
   compactToolFanOpenRequest: compactToolFanOpenRequestSchema.optional(),
   compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional(),
@@ -306,6 +349,18 @@ export const chatWindowPropsSchema = z.object({
     .args(galgameOptionSchema)
     .returns(z.void())
     .optional(),
+  onTheaterSubmit: z.function()
+    .args(z.string())
+    .returns(z.void())
+    .optional(),
+  onTheaterSuggestedInputSelect: z.function()
+    .args(z.string())
+    .returns(z.void())
+    .optional(),
+  onTheaterEnd: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
   // Generic ChoicePrompt（mini-game invite 等通用三选项框架）
   choicePrompt: choicePromptSchema.optional(),
   onChoiceSelect: z.function()
@@ -328,6 +383,7 @@ export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
 export type ChatSurfaceMode = z.infer<typeof chatSurfaceModeSchema>;
 export type CompactChatState = z.infer<typeof compactChatStateSchema>;
 export type GalgameOption = z.infer<typeof galgameOptionSchema>;
+export type TheaterPresentation = z.infer<typeof theaterPresentationSchema>;
 export type ChoiceOption = z.infer<typeof choiceOptionSchema>;
 export type ChoicePrompt = NonNullable<z.infer<typeof choicePromptSchema>>;
 export type ChoicePromptSource = ChoicePrompt['source'];

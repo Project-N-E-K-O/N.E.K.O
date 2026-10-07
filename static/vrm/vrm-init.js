@@ -27,6 +27,7 @@
             '/static/vrm/vrm-lipsync-formant.js',
             '/static/vrm/vrm-animation.js',
             ...(!lightweightEmbed ? [
+                '/static/avatar/avatar-touch-gestures.js',
                 '/static/vrm/vrm-interaction.js',
                 '/static/vrm/vrm-cursor-follow.js'
             ] : []),
@@ -428,6 +429,7 @@ async function initVRMModel() {
         if (window.__nekoStorageLocationStartupBarrier && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
             await window.__nekoStorageLocationStartupBarrier;
         }
+        await window.NekoAvatarFloatingBoot?.waitForAuthoritativeState?.();
         if (window.NekoAvatarFloatingBoot && typeof window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot === 'function'
             && window.NekoAvatarFloatingBoot.shouldSkipUserModelBoot()) {
             if (typeof window.NekoAvatarFloatingBoot.markUserModelBootSkipped === 'function') {

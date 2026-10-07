@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Plugins that were installed but never started by the user.
+"""Installed plugins awaiting explicit auto-start approval.
 
 A plugin's manifest declares ``plugin_runtime.auto_start`` and it defaults to
 true, so a freshly installed plugin would run its own code at the next greeting
-without the user ever having started it. Installing and running are different
-acts, and only the second one is the user's.
+without explicit auto-start approval. Installing, running manually, and
+approving future automatic launches are separate user actions.
 
 The record is deliberately a list of plugins **awaiting** approval rather than a
 list of approved ones. An approved-list needs a baseline — some moment where
@@ -28,10 +28,9 @@ set. With a pending-list, the absence of a record means "not our business", so
 the failure mode of every bug in this file is a plugin autostarting the way it
 always did.
 
-Entries are added when a plugin is newly installed and removed the first time
-the user starts or enables it — and only once that start has been durably
-recorded. Clearing before the runtime preference lands would grant autostart on
-the strength of an intent that never persisted.
+Entries are added when a plugin is newly installed and removed when the user
+enables its independent auto-start switch, after the preference is durably
+recorded. Manual start and reload leave these entries pending.
 
 The in-memory set never claims more than what is on disk: a failed write rolls
 its mutation back. Letting the two diverge is what turns a full disk into either
@@ -116,7 +115,7 @@ def _save_locked(pending: set[str]) -> bool:
 
 
 def mark_autostart_pending(plugin_id: str) -> bool:
-    """Record that ``plugin_id`` was installed but never started by the user.
+    """Record that ``plugin_id`` awaits explicit auto-start approval.
 
     Returns whether the record is durable. A caller that promotes or starts new
     code must treat ``False`` as a reason not to proceed: without the record the
@@ -144,19 +143,18 @@ def mark_autostart_pending(plugin_id: str) -> bool:
             )
             return False
         logger.info(
-            "plugin {} installed; it will not autostart until the user starts it",
+            "plugin {} installed; it will not autostart until the user enables its auto-start switch",
             normalized,
         )
         return True
 
 
 def clear_autostart_pending(plugin_id: str) -> bool:
-    """Record that the user started or enabled ``plugin_id`` themselves.
+    """Clear a pending gate after explicit approval or source cleanup.
 
-    Returns whether the approval is now durable. A caller must not report the
-    start as fully persisted on ``False``: the plugin stays pending, so it gets
-    held back from autostart again after a restart, and swallowing that leaves
-    the user with no explanation for why.
+    Returns whether the change is durable; callers must report failure when
+    the pending record could not be removed. Manual start/reload never calls
+    this helper to approve automatic launches.
     """
     normalized = str(plugin_id or "").strip()
     if not normalized:
@@ -169,21 +167,30 @@ def clear_autostart_pending(plugin_id: str) -> bool:
         if not _save_locked(pending):
             # 同上，反方向：内存说已批准而盘上还留着待批准记录的话，调用方会把这次
             # 批准当成已完成，重启后旧文件又把它拦下来，而没有人知道为什么
-            # （greptile）。回滚，让下一次启动重试这次写入。
+            # （greptile）。回滚，让下一次显式批准或清理重试这次写入。
             pending.add(normalized)
             logger.error(
-                "plugin {} was started by the user but the approval could not be "
-                "persisted; it stays pending until the next successful start",
+                "plugin {} pending approval removal could not be "
+                "persisted; it stays pending until the next successful approval or cleanup",
                 normalized,
             )
             return False
         return True
 
 
-def is_autostart_approved(plugin_id: str) -> bool:
-    """Whether ``plugin_id`` may start itself at server startup."""
+def get_autostart_pending_snapshot() -> frozenset[str]:
+    """Read once for a projection, including the compatibility failure fallback."""
     with _lock:
-        return str(plugin_id or "").strip() not in _load_locked()
+        return frozenset(_load_locked())
+
+
+def is_autostart_approved(plugin_id: str, *, strict: bool = False) -> bool:
+    """Whether the plugin may autostart; strict reads reject unknown approval."""
+    with _lock:
+        pending = _load_locked()
+        if strict and _load_failed:
+            raise OSError(f"Failed to read {PENDING_FILENAME}")
+        return str(plugin_id or "").strip() not in pending
 
 
 def _reset_cache_for_testing() -> None:

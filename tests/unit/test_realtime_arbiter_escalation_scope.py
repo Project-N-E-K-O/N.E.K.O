@@ -57,6 +57,19 @@ async def _settle(times: int = 50) -> None:
         await asyncio.sleep(0)
 
 
+class _FrozenClock:
+    """Stands in for ``loop.time`` so timeouts expire only when advanced."""
+
+    def __init__(self, now: float) -> None:
+        self._now = now
+
+    def __call__(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+
 class _Harness:
     def __init__(self) -> None:
         self.sent: list[dict] = []
@@ -232,11 +245,27 @@ async def test_two_concurrent_cancellers_cost_only_the_stuck_turn(harness):
         {"type": "response.created", "response": {"id": "resp-stuck"}}
     )
 
-    first = asyncio.create_task(harness.arbiter.cancel_current(timeout=0.05))
-    second = asyncio.create_task(harness.arbiter.cancel_current(timeout=0.05))
-    results = await asyncio.gather(first, second, return_exceptions=True)
+    # Both timeouts must fire before either escalation runs, or the second
+    # canceller never reaches the duplicate guard at all: the first
+    # escalation's teardown resolves the shared ``completed`` future and the
+    # second wait returns normally. On Python 3.11 Windows the loop clock ticks
+    # every ~15.6 ms, so on a loaded runner the two deadlines could land one
+    # tick apart and do exactly that. Freezing the clock gives both waits the
+    # same deadline; advancing it expires them in the same loop iteration.
+    loop = asyncio.get_running_loop()
+    clock = _FrozenClock(loop.time())
+    loop.time = clock
+    try:
+        first = asyncio.create_task(harness.arbiter.cancel_current(timeout=0.05))
+        second = asyncio.create_task(harness.arbiter.cancel_current(timeout=0.05))
+        await _settle()
+        assert not first.done() and not second.done()
+        clock.advance(0.05)
+        results = await asyncio.gather(first, second, return_exceptions=True)
+    finally:
+        del loop.time
 
-    assert all(isinstance(r, asyncio.TimeoutError) for r in results)
+    assert all(isinstance(r, asyncio.TimeoutError) for r in results), results
     # Both watched the same request, so at most one teardown is warranted and
     # the second must not add another.
     assert len(harness.aborted) == 1, (

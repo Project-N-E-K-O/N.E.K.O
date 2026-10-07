@@ -1269,6 +1269,9 @@
                 force: true
             }, options || {}));
         },
+        hasOtherExternalPlayback: function (owner) {
+            return Array.from(externalPlaybackOwners.keys()).some(key => key !== owner);
+        },
         holdExternalPlayback: async function (owner, options) {
             const settings = options || {};
             const ownerKey = String(owner || 'external');

@@ -16,6 +16,7 @@
 from __future__ import annotations
 import weakref
 from typing import TYPE_CHECKING, Any, AsyncIterator
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     pass
@@ -177,6 +178,17 @@ class ChatOpenAI:
             limit_value = int(token_limit)
             p[limit_field] = limit_value
         extra_body = overrides.pop("extra_body", self.extra_body)
+        if extra_body and urlsplit(str(self.base_url or '')).hostname in {
+            'router.requesty.ai', 'router.eu.requesty.ai',
+        }:
+            # Requesty documents a top-level reasoning_effort, unlike OpenRouter.
+            # Apply at request time so Focus overrides use the same wire dialect.
+            # https://docs.requesty.ai/features/reasoning
+            reasoning = extra_body.get('reasoning')
+            if isinstance(reasoning, dict) and set(reasoning) == {'effort'}:
+                extra_body = dict(extra_body)
+                extra_body.pop('reasoning')
+                p['reasoning_effort'] = extra_body.pop('reasoning_effort', reasoning['effort'])
         if extra_body:
             p["extra_body"] = extra_body
         # Tool calling: per-call overrides take priority over instance default
@@ -455,6 +467,24 @@ class ChatOpenAI:
                 extra_content=slot.get("extra_content"),
             ))
         return out
+
+    # --- model catalog ---
+
+    async def alist_models(self, *, limit: int) -> list[dict[str, str]]:
+        """List the endpoint's models via ``GET /models``, at most ``limit`` entries.
+
+        Each entry carries ``id`` and, when the endpoint reports one, ``name``.
+        """
+        models: list[dict[str, str]] = []
+        async for item in self._aclient.models.list():
+            extra = getattr(item, "model_extra", None) or {}
+            models.append({
+                "id": str(getattr(item, "id", "") or ""),
+                "name": str(extra.get("name") or ""),
+            })
+            if len(models) >= limit:
+                break
+        return models
 
     # --- resource management ---
 

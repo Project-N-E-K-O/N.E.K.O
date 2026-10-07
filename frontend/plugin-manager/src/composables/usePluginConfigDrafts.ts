@@ -1,0 +1,498 @@
+import { computed, onScopeDispose, reactive, ref, watch, type Ref } from 'vue'
+import * as api from '@/api/config'
+import {
+  configChanges,
+  configEqual,
+  configValueAt,
+  deepClone,
+  isConfigObject,
+  REPLACE_MARKER,
+  restoreConfigPath,
+  type ConfigObject,
+} from '@/utils/configEditor'
+import {
+  hasPendingReload,
+  pendingReloadRevision,
+  setPendingReload,
+  subscribePendingReload,
+} from '@/utils/pendingReload'
+import type { ConfigEditorSchema } from '@/types/configSchema'
+
+interface ProfileDraft {
+  original: ConfigObject
+  draft: ConfigObject
+  loaded: boolean
+  loading: boolean
+  error: string | null
+}
+
+export function usePluginConfigDrafts(pluginId: Readonly<Ref<string>>) {
+  const base = ref<ConfigObject>({})
+  // Form annotations from the plugin's config.schema.json; an invalid schema is reported
+  // and the generic editor is used instead.
+  const schema = ref<ConfigEditorSchema>()
+  const schemaInvalid = ref(false)
+  const effective = ref<ConfigObject>({})
+  const profiles = ref<api.PluginProfilesState | null>(null)
+  const configPath = ref<string>()
+  const lastModified = ref<string>()
+  const selected = ref<string | null>(null)
+  const records = reactive(new Map<string, ProfileDraft>())
+  const loading = ref(false)
+  const saving = ref(false)
+  // True while a profile creation or deletion may drop the record being edited; unlike a
+  // save, it cannot keep edits typed in the meantime.
+  const replacing = ref(false)
+  const error = ref<string | null>(null)
+  const ready = ref(false)
+  // True while the running host may not match the persisted configuration.
+  const pendingApplication = ref(false)
+  // The server is authoritative when this is available. `null` means the
+  // endpoint is unavailable (for example, an older backend), so the window
+  // memory hint remains the safe fallback.
+  const applicationState = ref<api.PluginConfigApplicationState | null>(null)
+  const applicationStateKnown = ref(false)
+  let generation = 0
+  let loadVersion = 0
+  const requests = new Map<string, Promise<void>>()
+
+  const persistedNames = computed(() =>
+    Object.keys(profiles.value?.config_profiles?.files || {}).sort()
+  )
+  const names = computed(() =>
+    profiles.value ? (persistedNames.value.length ? persistedNames.value : ['default']) : []
+  )
+  const active = computed(
+    () =>
+      profiles.value?.config_profiles?.active ||
+      (profiles.value && !persistedNames.value.length ? 'default' : null)
+  )
+  const current = computed(() => (selected.value ? records.get(selected.value) : undefined))
+  const changes = computed(() =>
+    current.value?.loaded ? configChanges(current.value.original, current.value.draft) : []
+  )
+  const dirty = computed(
+    () => !!current.value?.loaded && !configEqual(current.value.original, current.value.draft)
+  )
+  const anyDirty = computed(() =>
+    [...records.values()].some((r) => r.loaded && !configEqual(r.original, r.draft))
+  )
+  const canSave = computed(
+    () =>
+      ready.value &&
+      !!profiles.value &&
+      !!current.value?.loaded &&
+      !current.value.error &&
+      !loading.value &&
+      !saving.value
+  )
+  const virtualDefault = (name: string) =>
+    !!profiles.value && name === 'default' && !persistedNames.value.length
+  const dirtyCount = (name: string) => {
+    const r = records.get(name)
+    return r?.loaded ? configChanges(r.original, r.draft).length : 0
+  }
+  const valid = (id: string, epoch: number) => id === pluginId.value && epoch === generation
+  const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
+
+  // Storage is written for the plugin that performed the operation, while the
+  // in-memory flag only follows it while that plugin is still the current one.
+  function setPendingApplication(
+    pending: boolean,
+    forPluginId = pluginId.value,
+    expectedRevision?: number,
+  ) {
+    const applied = setPendingReload(forPluginId, pending, expectedRevision)
+    if (applied && forPluginId === pluginId.value) pendingApplication.value = pending
+    return applied
+  }
+
+  function applyApplicationState(
+    state: api.PluginConfigApplicationState | null,
+    forPluginId: string,
+    expectedRevision = pendingReloadRevision(forPluginId),
+  ): boolean {
+    if (
+      !state ||
+      state.plugin_id !== forPluginId ||
+      !['matched', 'pending', 'not_running', 'unknown'].includes(state.config_state)
+    ) {
+      return false
+    }
+    applicationState.value = state
+    // `unknown` is intentionally conservative: an uncertain lifecycle result
+    // must keep the reload affordance visible rather than claim success.
+    const pending = state.config_state === 'pending' || state.config_state === 'unknown'
+    const applied = setPendingApplication(pending, forPluginId, expectedRevision)
+    applicationStateKnown.value = applied
+    return applied
+  }
+
+  async function loadApplicationState(forPluginId: string): Promise<api.PluginConfigApplicationState | null> {
+    try {
+      const state = await api.getPluginConfigApplicationState(forPluginId)
+      return state && typeof state === 'object' ? state : null
+    } catch {
+      // A missing endpoint is the expected compatibility path for older
+      // servers. Network and malformed-response failures also preserve the
+      // local hint; none of them prove that the config is matched.
+      return null
+    }
+  }
+  async function loadProfile(name: string): Promise<void> {
+    if (records.get(name)?.loaded) return
+    if (requests.has(name)) return requests.get(name)!
+    const id = pluginId.value,
+      epoch = generation,
+      isVirtual = virtualDefault(name)
+    const record = reactive<ProfileDraft>({
+      original: {},
+      draft: {},
+      loaded: false,
+      loading: true,
+      error: null,
+    })
+    records.set(name, record)
+    const request = (async () => {
+      try {
+        const config = isVirtual ? {} : (await api.getPluginProfileConfig(id, name)).config || {}
+        if (!valid(id, epoch) || records.get(name) !== record) return
+        record.original = deepClone(config)
+        record.draft = deepClone(config)
+        record.loaded = true
+      } catch (err) {
+        if (valid(id, epoch) && records.get(name) === record) record.error = message(err)
+      } finally {
+        if (valid(id, epoch) && records.get(name) === record) {
+          record.loading = false
+          requests.delete(name)
+        }
+      }
+    })()
+    requests.set(name, request)
+    await request
+    if (requests.get(name) === request) requests.delete(name)
+  }
+
+  async function loadAll(discardDrafts = false): Promise<void> {
+    const id = pluginId.value,
+      epoch = generation,
+      version = ++loadVersion,
+      applicationRevision = pendingReloadRevision(id)
+    if (!id) return
+    loading.value = true
+    applicationStateKnown.value = false
+    applicationState.value = null
+    // Only a discarding reload invalidates what was loaded. A refresh that keeps drafts
+    // (such as the one after a save) keeps the previous state usable when it fails, so a
+    // retained dirty draft can still be saved again.
+    if (discardDrafts) ready.value = false
+    error.value = null
+    try {
+      const [baseResult, effectiveResult, profileResult, applicationStateResult] = await Promise.all([
+        api.getPluginEffectiveBaseConfig(id),
+        api.getPluginConfig(id),
+        api.getPluginProfilesState(id),
+        loadApplicationState(id),
+      ])
+      if (!valid(id, epoch) || version !== loadVersion) return
+      if (discardDrafts) {
+        records.clear()
+        requests.clear()
+      }
+      base.value = baseResult.config || {}
+      schema.value = baseResult.config_schema ?? undefined
+      schemaInvalid.value =
+        baseResult.warnings?.some(
+          (warning) => warning.code === 'PLUGIN_CONFIG_EDITOR_SCHEMA_INVALID'
+        ) ?? false
+      effective.value = effectiveResult.config || {}
+      profiles.value = profileResult
+      ready.value = true
+      configPath.value = baseResult.config_path || effectiveResult.config_path
+      lastModified.value = baseResult.last_modified || effectiveResult.last_modified
+      if (!selected.value || !names.value.includes(selected.value))
+        selected.value =
+          active.value && names.value.includes(active.value) ? active.value : names.value[0] || null
+      if (selected.value) await loadProfile(selected.value)
+      applyApplicationState(applicationStateResult, id, applicationRevision)
+    } catch (err) {
+      if (valid(id, epoch) && version === loadVersion) error.value = message(err)
+    } finally {
+      if (valid(id, epoch) && version === loadVersion) loading.value = false
+    }
+  }
+
+  async function selectProfile(name: string) {
+    if (saving.value || !names.value.includes(name)) return
+    selected.value = name
+    await loadProfile(name)
+  }
+  function updateDraft(value: ConfigObject | null) {
+    if (current.value?.loaded) current.value.draft = value || {}
+  }
+  function undoAll() {
+    if (current.value?.loaded) current.value.draft = deepClone(current.value.original)
+  }
+  function undoField(path: string[]) {
+    const record = current.value
+    if (!record?.loaded) return
+    let draft = restoreConfigPath(record.draft, record.original, path)
+    // Adding the first field to an explicitly empty table also wrote `__replace__`.
+    // Once that field is undone the marker is all that is left of the edit, so undo it
+    // too rather than leave a change the user never made.
+    const parent = path.slice(0, -1)
+    const table = configValueAt(draft, parent)
+    const before = configValueAt(record.original, parent)
+    if (
+      parent.length > 0 &&
+      isConfigObject(table) &&
+      Object.keys(table).length === 1 &&
+      table[REPLACE_MARKER] === true &&
+      isConfigObject(before) &&
+      Object.keys(before).length === 0
+    )
+      draft = restoreConfigPath(draft, record.original, parent)
+    record.draft = draft
+  }
+
+  // Applies a successful profile write to the local list before the follow-up refresh,
+  // so a failed refresh leaves the list, the active profile and the selection coherent.
+  // The server activates a stored profile when none was active (config_profiles_write.py).
+  function recordStoredProfile(name: string): boolean {
+    const state = profiles.value
+    if (!state) return false
+    const stored = state.config_profiles
+    profiles.value = {
+      ...state,
+      config_profiles: {
+        active: stored?.active || name,
+        files: {
+          ...(stored?.files || {}),
+          [name]:
+            stored && Object.prototype.hasOwnProperty.call(stored.files, name)
+              ? stored.files[name]!
+              : { path: '', resolved_path: null, exists: true },
+        },
+      },
+    }
+    return true
+  }
+
+  async function saveProfile(): Promise<string | null> {
+    if (!canSave.value || !selected.value || !current.value) return null
+    const id = pluginId.value,
+      epoch = generation,
+      name = selected.value,
+      record = current.value
+    const snapshot = deepClone(record.draft)
+    // Captured before the request so a later plugin switch cannot change the answer.
+    const wasActive = name === active.value
+    // Saving also activates the profile when the plugin has none, which the server
+    // does even though `make_active` is false.
+    const mayBecomeActive = active.value === null
+    saving.value = true
+    error.value = null
+    try {
+      const result = await api.upsertPluginProfileConfig(id, name, snapshot, virtualDefault(name))
+      if (!valid(id, epoch)) {
+        if (wasActive || mayBecomeActive) setPendingApplication(true, id)
+        return null
+      }
+      // Saving an earlier snapshot must not erase edits typed while it was in flight.
+      record.original = deepClone(result.config || snapshot)
+      // Storing the virtual default creates the first profile; either way the server
+      // activates it when none was active. Reflect that before the fallible refresh.
+      recordStoredProfile(name)
+      // Claim this persisted change before starting any fallible reads. Every
+      // lifecycle request dispatched before this save then loses its revision
+      // fence; a genuinely newer reload can still clear the hint. Legacy
+      // servers keep their current flag until the refreshed active profile is
+      // known, but must still advance the revision to fence older responses.
+      if (wasActive || mayBecomeActive || name === active.value)
+        setPendingApplication(applicationStateKnown.value || hasPendingReload(id), id)
+      let fallbackRevision: number | undefined
+      await loadAll()
+      if (valid(id, epoch) && !applicationStateKnown.value && applicationState.value) {
+        // A supported response lost its revision race. Re-query once to tell a
+        // pre-save lifecycle response from a reload that actually applied this
+        // save; neither case can be inferred from the local flag alone.
+        fallbackRevision = pendingReloadRevision(id)
+        const retryVersion = loadVersion
+        const state = await loadApplicationState(id)
+        if (valid(id, epoch) && retryVersion === loadVersion)
+          applyApplicationState(state, id, fallbackRevision)
+      }
+      // Only the active profile changes what the running host should be using. When
+      // the refresh worked it is authoritative; otherwise the pre-request snapshot is
+      // the only evidence left.
+      const refreshed = valid(id, epoch) && ready.value && !error.value
+      // A supported server response is authoritative, including `matched` or
+      // `not_running`. An unavailable retry uses its captured revision, while
+      // older servers retain the conservative arrival-order fallback.
+      if (!applicationStateKnown.value && (refreshed ? name === active.value : wasActive || mayBecomeActive))
+        setPendingApplication(true, id, fallbackRevision)
+      return valid(id, epoch) ? name : null
+    } catch (err) {
+      if (valid(id, epoch)) error.value = message(err)
+      return null
+    } finally {
+      if (valid(id, epoch)) saving.value = false
+    }
+  }
+
+  async function createProfile(name: string) {
+    const id = pluginId.value,
+      epoch = generation
+    saving.value = true
+    replacing.value = true
+    try {
+      // Keep the existing first-profile auto-activation behavior on the server.
+      await api.upsertPluginProfileConfig(id, name, {}, false)
+      if (!valid(id, epoch)) return
+      // Reflect the creation locally before refreshing, as deletion does: if the refresh
+      // fails, the list must still show the new profile, and the server has activated it
+      // when no profile was active (config_profiles_write.py).
+      if (recordStoredProfile(name)) selected.value = name
+      await loadAll()
+      if (valid(id, epoch) && selected.value && !records.has(selected.value))
+        await loadProfile(selected.value)
+    } finally {
+      if (valid(id, epoch)) saving.value = replacing.value = false
+    }
+  }
+  async function deleteProfile(name: string) {
+    const id = pluginId.value,
+      epoch = generation
+    const wasActive = name === active.value
+    saving.value = true
+    replacing.value = true
+    try {
+      await api.deletePluginProfileConfig(id, name)
+      // Deleting the active profile leaves the host running its configuration,
+      // so it still needs a reload; other deletions change nothing at runtime.
+      if (wasActive) setPendingApplication(true, id)
+      if (!valid(id, epoch)) return
+      records.delete(name)
+      // A read for that name may still be in flight; leaving it behind would make the next
+      // `loadProfile(name)` reuse it and end up with no record for the recreated profile.
+      requests.delete(name)
+      // Reflect the deletion locally before refreshing: if the refresh fails, the list
+      // and the selection must not keep pointing at a profile that no longer exists.
+      const state = profiles.value
+      if (state?.config_profiles) {
+        const files = { ...state.config_profiles.files }
+        delete files[name]
+        profiles.value = {
+          ...state,
+          config_profiles: {
+            ...state.config_profiles,
+            files,
+            active: state.config_profiles.active === name ? null : state.config_profiles.active,
+          },
+        }
+      }
+      if (selected.value === name)
+        selected.value =
+          active.value && names.value.includes(active.value) ? active.value : names.value[0] || null
+      await loadAll()
+      if (valid(id, epoch) && selected.value && !records.has(selected.value))
+        await loadProfile(selected.value)
+    } finally {
+      if (valid(id, epoch)) saving.value = replacing.value = false
+    }
+  }
+  async function activateProfile(name: string) {
+    const id = pluginId.value,
+      epoch = generation
+    saving.value = true
+    try {
+      const result = await api.setPluginActiveProfile(id, name)
+      // Activation always changes what the host should be running.
+      setPendingApplication(true, id)
+      if (!valid(id, epoch)) return
+      profiles.value = result
+      await loadAll()
+    } finally {
+      if (valid(id, epoch)) saving.value = false
+    }
+  }
+
+  watch(
+    pluginId,
+    () => {
+      generation++
+      loadVersion++
+      records.clear()
+      requests.clear()
+      pendingApplication.value = hasPendingReload(pluginId.value)
+      applicationState.value = null
+      applicationStateKnown.value = false
+      selected.value = null
+      profiles.value = null
+      base.value = {}
+      schema.value = undefined
+      schemaInvalid.value = false
+      effective.value = {}
+      ready.value = false
+      configPath.value = undefined
+      lastModified.value = undefined
+      saving.value = false
+      replacing.value = false
+      void loadAll()
+    },
+    { immediate: true }
+  )
+
+  // A reload or start performed outside the editor (detail header, list, context menu)
+  // must clear the warning on an already mounted editor.
+  const releasePendingSubscription = subscribePendingReload((changedId, pending) => {
+    if (changedId !== pluginId.value) return
+    pendingApplication.value = pending
+  })
+
+  onScopeDispose(() => {
+    generation++
+    loadVersion++
+    releasePendingSubscription()
+  })
+
+  return {
+    base,
+    schema,
+    schemaInvalid,
+    effective,
+    profiles,
+    configPath,
+    lastModified,
+    selected,
+    current,
+    records,
+    names,
+    active,
+    loading,
+    ready,
+    replacing,
+    saving,
+    error,
+    changes,
+    dirty,
+    anyDirty,
+    canSave,
+    pendingApplication,
+    applicationState,
+    applicationStateKnown,
+    setPendingApplication,
+    virtualDefault,
+    dirtyCount,
+    loadAll,
+    selectProfile,
+    updateDraft,
+    undoAll,
+    undoField,
+    saveProfile,
+    createProfile,
+    deleteProfile,
+    activateProfile,
+  }
+}

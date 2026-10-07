@@ -7,8 +7,8 @@ The package exposes two hooks for ``main_logic.agent_event_bus``:
   M2-j implementation is a placeholder until emotion rules are enabled.
 
 Activation requires both ``NEKO_QUOTA_DROPPER_ENABLED=1`` and
-``NEKO_SOCIAL_BASE_URL``. The default is disabled to avoid unexpected outbound
-cloud traffic.
+``NEKO_SOCIAL_BASE_URL`` and is disabled by default. The hooks make no outbound
+calls; drop decisions live in the NEKO-PC forge-dropper.
 """
 
 from main_logic.quota.dropper import on_text_message, on_utterance

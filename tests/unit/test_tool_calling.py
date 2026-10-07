@@ -415,6 +415,108 @@ async def test_offline_openai_path_runs_tool_then_text():
 
 
 @pytest.mark.asyncio
+async def test_cancelled_tool_round_does_not_start_another_provider_call():
+    """Cancellation during a tool callback must retire the whole tool loop.
+
+    The provider stream that produced the tool call has already happened, but
+    the next loop iteration must not issue another provider request (including
+    the forced-finalize fallback).
+    """
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolDefinition, ToolResult
+    from utils.llm_client import LLMStreamChunk
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+    client._openai_tools_unsupported = False
+    client._openai_tools_unsupported_with_images = False
+    client.max_tool_iterations = 3
+
+    async def cancel_in_tool(_call):
+        await client.cancel_response()
+        return ToolResult(call_id="call_1", name="lookup", output={"ok": True})
+
+    client.on_tool_call = cancel_in_tool
+    client._tool_definitions = [ToolDefinition(
+        name="lookup",
+        description="lookup",
+        parameters={"type": "object", "properties": {}},
+        handler=None,
+    )]
+    client.llm = _FakeLLM([[
+        LLMStreamChunk(
+            content="",
+            tool_call_deltas=[{
+                "index": 0,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{}"},
+            }],
+        ),
+        LLMStreamChunk(content="", finish_reason="tool_calls"),
+    ]])
+
+    generation = client._begin_response_generation()
+    messages = [{"role": "user", "content": "look it up"}]
+    async for _chunk in client._astream_with_tools(
+        messages,
+        _response_generation=generation,
+    ):
+        pass
+
+    assert len(client.llm.calls) == 1
+    assert client._response_generation_is_active(generation) is False
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stream_does_not_emit_response_done_boundary():
+    """A cancelled user turn must not send the TTS/turn-end callback."""
+    from unittest.mock import AsyncMock
+
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import HumanMessage, LLMStreamChunk, SystemMessage
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
+    client.lanlan_name = "Test"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 300
+    client.max_response_rerolls = 0
+    client.enable_response_guard = False
+    client.vision_model = ""
+    client.model = "m"
+    client.on_text_delta = AsyncMock()
+    client.on_input_transcript = None
+    client.on_response_done = AsyncMock()
+    client.on_response_discarded = None
+    client.on_status_message = None
+    client.on_repetition_detected = None
+
+    async def _cancelled_stream(_messages, **_overrides):
+        yield LLMStreamChunk(content="已经说出的半句")
+        await client.cancel_response()
+        yield LLMStreamChunk(content="不应继续送出的尾巴")
+
+    client._astream_visible_with_tools = _cancelled_stream
+
+    await client.stream_text("打断这轮")
+
+    assert client.on_text_delta.await_count == 1
+    client.on_response_done.assert_not_awaited()
+    assert client._active_response_generation is None
+    assert client._is_responding is False
+
+
+@pytest.mark.asyncio
 async def test_offline_openai_path_filters_pretool_leak_before_history():
     from utils.llm_client import LLMStreamChunk
     from main_logic.omni_offline_client import OmniOfflineClient
@@ -2372,6 +2474,228 @@ async def test_offline_genai_tools_unsupported_error_correctly_disables_path(mon
             pass
 
 
+def _tools_declining_client(astream_impl, *, max_tool_iterations=1):
+    """Bare OpenAI-compat client whose llm.astream is ``astream_impl``."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolDefinition, ToolResult
+
+    async def handler(call):
+        return ToolResult(call_id=call.call_id, name=call.name, output={})
+
+    tool_def = ToolDefinition(
+        name="noop",
+        description="noop",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+
+    class _Llm:
+        max_completion_tokens = 100
+
+        def astream(self, messages, **overrides):
+            return astream_impl(messages, **overrides)
+
+        async def aclose(self):
+            return None
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
+    client.model = "llava"
+    client.base_url = "http://127.0.0.1:11434/v1"
+    client.llm = _Llm()
+    client._tool_definitions = [tool_def]
+    client.on_tool_call = handler
+    client.max_tool_iterations = max_tool_iterations
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+    client._openai_tools_unsupported = False
+    return client
+
+
+_OLLAMA_NO_TOOLS_ERROR = (
+    "Error code: 400 - {'error': {'message': "
+    "'registry.ollama.ai/library/llava:latest does not support tools'}}"
+)
+
+
+@pytest.mark.asyncio
+async def test_offline_openai_tools_unsupported_retries_same_request_without_tools():
+    """An endpoint that rejects ``tools`` itself (Ollama llava: 400 "does not
+    support tools") gets the same request re-issued once without tools, and
+    the retry does not consume a tool iteration."""
+    from utils.llm_client import LLMStreamChunk
+
+    seen = []
+
+    async def astream(_messages, **overrides):
+        seen.append(set(overrides))
+        if len(seen) == 1:
+            raise RuntimeError(_OLLAMA_NO_TOOLS_ERROR)
+        yield LLMStreamChunk(content="看到了", finish_reason="stop")
+
+    client = _tools_declining_client(astream, max_tool_iterations=1)
+    texts = [
+        ch.content
+        async for ch in client._astream_openai_with_tools([{"role": "user", "content": "hi"}])
+        if getattr(ch, "content", None)
+    ]
+
+    assert "".join(texts) == "看到了"
+    assert len(seen) == 2
+    assert "tools" in seen[0]
+    assert "tools" not in seen[1] and "tool_choice" not in seen[1]
+    assert client._openai_tools_unsupported is True
+    # Later turns in the session no longer build a tools payload at all.
+    assert client._openai_tools_payload() is None
+
+
+@pytest.mark.asyncio
+async def test_offline_openai_tools_unsupported_is_not_retried_after_first_chunk():
+    """Once the provider has streamed anything, a failure is not silently
+    re-generated: replaying would splice two different replies together."""
+    from utils.llm_client import LLMStreamChunk
+
+    calls = []
+
+    async def astream(_messages, **overrides):
+        calls.append(1)
+        yield LLMStreamChunk(content="半句", finish_reason=None)
+        raise RuntimeError(_OLLAMA_NO_TOOLS_ERROR)
+
+    client = _tools_declining_client(astream)
+    with pytest.raises(RuntimeError):
+        async for _ in client._astream_openai_with_tools([{"role": "user", "content": "hi"}]):
+            pass
+    assert len(calls) == 1
+    assert client._openai_tools_unsupported is False
+
+
+@pytest.mark.asyncio
+async def test_offline_openai_request_specific_tools_refusal_is_not_sticky():
+    """"tool use is not supported with images" is about THIS request: retry it
+    without tools, but later text-only turns keep their tools."""
+    from utils.llm_client import LLMStreamChunk
+
+    seen = []
+
+    async def astream(_messages, **overrides):
+        seen.append(set(overrides))
+        if len(seen) == 1:
+            raise RuntimeError("Error code: 400 - tool use is not supported with images")
+        yield LLMStreamChunk(content="ok", finish_reason="stop")
+
+    client = _tools_declining_client(astream)
+    texts = [
+        ch.content
+        async for ch in client._astream_openai_with_tools([{"role": "user", "content": "hi"}])
+        if getattr(ch, "content", None)
+    ]
+
+    assert "".join(texts) == "ok"
+    assert "tools" not in seen[1]
+    assert client._openai_tools_unsupported is False
+    assert client._openai_tools_payload() is not None
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("registry.ollama.ai/library/llava:latest does not support tools", "model"),
+        ("Error 400: tools are not supported by this model", "model"),
+        ("tool use is not supported for this model", "model"),
+        ("tool use is not supported with images", "request"),
+        ("this model does not support tools with images", "request"),
+        ("tool use is not supported with images for this model", "request"),
+        ("tools are not supported in combination with response_format", "request"),
+        ("upstream overloaded", None),
+    ],
+)
+def test_classify_openai_tools_refusal(message, expected):
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    assert OmniOfflineClient._classify_openai_tools_refusal(RuntimeError(message)) == expected
+
+
+@pytest.mark.asyncio
+async def test_tools_refused_with_images_are_skipped_while_history_carries_images():
+    """"tool use is not supported with images": the picture stays in history,
+    so later turns with it skip tools up front instead of being refused again;
+    a text-only history still gets its tools."""
+    from utils.llm_client import LLMStreamChunk
+
+    seen = []
+
+    async def astream(_messages, **overrides):
+        seen.append("tools" in overrides)
+        if len(seen) == 1:
+            raise RuntimeError("Error code: 400 - tool use is not supported with images")
+        yield LLMStreamChunk(content="ok", finish_reason="stop")
+
+    client = _tools_declining_client(astream)
+    with_image = [{"role": "user", "content": [
+        {"type": "text", "text": "看"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+    ]}]
+    async for _ in client._astream_openai_with_tools(list(with_image)):
+        pass
+    assert seen == [True, False]
+    assert client._openai_tools_unsupported is False
+
+    async for _ in client._astream_openai_with_tools(with_image + [{"role": "user", "content": "再说说"}]):
+        pass
+    assert seen[2] is False  # still carries the image: no refused round-trip
+
+    async for _ in client._astream_openai_with_tools([{"role": "user", "content": "纯文本"}]):
+        pass
+    assert seen[3] is True
+
+
+@pytest.mark.asyncio
+async def test_offline_openai_unrelated_error_is_not_treated_as_tools_unsupported():
+    calls = []
+
+    async def astream(_messages, **overrides):
+        calls.append(1)
+        raise RuntimeError("Error code: 500 - upstream overloaded")
+        yield  # pragma: no cover
+
+    client = _tools_declining_client(astream)
+    with pytest.raises(RuntimeError, match="overloaded"):
+        async for _ in client._astream_openai_with_tools([{"role": "user", "content": "hi"}]):
+            pass
+    assert len(calls) == 1
+    assert client._openai_tools_unsupported is False
+
+
+@pytest.mark.asyncio
+async def test_switch_model_gives_tools_another_chance(monkeypatch):
+    """Rejecting tools is a property of the old model; a new model starts
+    with tools enabled again."""
+    import main_logic.omni_offline_client._streaming as streaming_mod
+
+    async def astream(_messages, **overrides):  # pragma: no cover - not streamed
+        yield None
+
+    client = _tools_declining_client(astream)
+    client._openai_tools_unsupported = True
+    client._model_switch_lock = None
+    client.api_key = "k"
+    client.vision_base_url = client.base_url
+    client.vision_api_key = "k"
+    client.max_response_length = 300
+    client._genai_client = None
+    client.provider_type = None
+
+    async def fake_create(model, base_url, api_key, **kwargs):
+        return client.llm
+
+    monkeypatch.setattr(streaming_mod, "create_chat_llm_async", fake_create)
+    await client.switch_model("qwen2.5:7b")
+
+    assert client._openai_tools_unsupported is False
+    assert client._openai_tools_payload() is not None
+
+
 @pytest.mark.asyncio
 async def test_offline_openai_path_persists_streamed_text_with_tool_calls():
     """OpenAI-compat 路径同 turn 先 yield text 再进 tool_calls 时，写历史的
@@ -3437,6 +3761,39 @@ def _bare_genai_client(rounds, handler, *, cap, finalize_parts=None):
 
 
 @pytest.mark.asyncio
+async def test_cancelled_genai_tool_round_does_not_start_another_provider_call(monkeypatch):
+    """The native Gemini loop obeys the same cancellation generation boundary."""
+    from main_logic.tool_calling import ToolResult
+
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
+
+    client = None
+
+    async def cancel_in_tool(_call):
+        await client.cancel_response()
+        return ToolResult(call_id="call_1", name="recall_memory", output={"ok": True})
+
+    client, calls = _bare_genai_client(
+        [[_GenaiPart(function_call=_GenaiFunctionCall("recall_memory", id_="call_1"))]],
+        cancel_in_tool,
+        cap=3,
+    )
+    client._use_genai_sdk = True
+    generation = client._begin_response_generation()
+
+    # Enter through the production router: this is the regression boundary for
+    # forwarding the private generation token into the Gemini implementation.
+    async for _chunk in client._astream_with_tools(
+        [{"role": "user", "content": "remember this"}],
+        _response_generation=generation,
+    ):
+        pass
+
+    assert calls == [0]
+    assert client._response_generation_is_active(generation) is False
+
+
+@pytest.mark.asyncio
 async def test_genai_image_budget_omission_refreshes_tool_response(monkeypatch):
     from main_logic.tool_calling import ToolCall, ToolImage, ToolResult
 
@@ -3463,6 +3820,7 @@ async def test_genai_image_budget_omission_refreshes_tool_response(monkeypatch):
         handler,
         cap=2,
     )
+    client._user_language_provider = lambda: "en"
     messages = [{"role": "user", "content": "inspect the images"}]
 
     async for _chunk in client._astream_genai_with_tools(messages):
@@ -4159,6 +4517,43 @@ async def test_realtime_apply_tools_to_session_glm_includes_turn_detection():
     assert sess.get("turn_detection") == {"type": "server_vad"}, (
         "GLM 必须同时传 turn_detection"
     )
+    assert sess.get("beta_fields") == {
+        "chat_mode": "video_passive",
+        "auto_search": True,
+    }, (
+        "GLM 局部 session.update 必须带回 beta_fields，否则服务端把 "
+        "video_passive 打回 audio，下游重连超限后关掉连接"
+    )
+
+
+def test_glm_realtime_gateway_model_keeps_allowlisted_names():
+    from main_logic.omni_realtime_client._shared import glm_realtime_gateway_model
+
+    public = "wss://open.bigmodel.cn/api/paas/v4/realtime"
+    assert glm_realtime_gateway_model("glm-realtime-air", public) == "glm-realtime-air"
+    assert glm_realtime_gateway_model("glm-realtime-flash", public) == "glm-realtime-flash"
+    assert glm_realtime_gateway_model("glm-realtime", public) == "glm-realtime"
+    assert glm_realtime_gateway_model("glm-realtime-plus", public) == "glm-realtime-air"
+    assert glm_realtime_gateway_model("  glm-realtime-plus  ", public) == "glm-realtime-air"
+
+
+def test_glm_realtime_gateway_model_leaves_custom_endpoints_alone():
+    """A proxy or self-hosted endpoint may route by ?model=; keep the configured name."""
+    from main_logic.omni_realtime_client._shared import glm_realtime_gateway_model
+
+    for url in ("wss://proxy.example.com/v4/realtime", "ws://127.0.0.1:8080/realtime", ""):
+        assert glm_realtime_gateway_model("glm-realtime-plus", url) == "glm-realtime-plus"
+
+
+@pytest.mark.asyncio
+async def test_realtime_glm_partial_update_pins_requested_model():
+    """Omitting model resets the GLM session to glm-realtime; Plus must ride every update."""
+    client, sent = _make_rt_client("glm")
+    client.model = "glm-realtime-plus"
+    await client.update_session({"tools": []})
+    sess = sent[0]["session"]
+    assert sess["model"] == "glm-realtime-plus"
+    assert "beta_fields" in sess
 
 
 @pytest.mark.asyncio
@@ -4307,6 +4702,53 @@ async def test_stream_text_summary_replaces_tail_when_overshoot_large(monkeypatc
     assert "one two three four." in last_msg
     # 越界后才出现的 tail 词不应进 history
     assert "w24" not in last_msg
+
+
+@pytest.mark.asyncio
+async def test_stream_text_summary_cancelled_while_summarizing_is_not_delivered(monkeypatch):
+    """Cancelled during the summary call: the summary never reaches TTS, and
+    history keeps the text the UI already showed, not prefix + summary."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk
+
+    async def cancelling_summarize(self, prefix, tail):
+        await self.cancel_response()
+        return "总之就这样啦"
+    monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", cancelling_summarize)
+
+    long_text = (
+        "one two three four. five, six seven eight nine ten. "
+        + " ".join(f"w{i}" for i in range(25)) + "."
+    )
+
+    async def _astream(self, messages, **overrides):
+        yield LLMStreamChunk(content=long_text)
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+    delta_calls = []
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        delta_calls.append((text, kwargs.get("ui_enabled", True), kwargs.get("tts_enabled", True)))
+
+    async def noop(*_a, **_kw):
+        pass
+
+    done = []
+    client = _build_summary_client(monkeypatch, max_response_length=4)
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = lambda: done.append(True)
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("trigger long")
+
+    assert not [c for c in delta_calls if c[0] == "总之就这样啦"]
+    ui_text = "".join(text for text, ui, _tts in delta_calls if ui)
+    assert client._conversation_history[-1].content == ui_text
+    assert "总之就这样啦" not in client._conversation_history[-1].content
+    assert done == []
 
 
 @pytest.mark.asyncio

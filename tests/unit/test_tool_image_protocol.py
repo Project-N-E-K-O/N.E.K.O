@@ -113,12 +113,12 @@ def test_merge_with_no_fields_still_normalizes_a_non_dict_output():
 # ============================================================================
 
 
-from main_routers.tool_router import (  # noqa: E402
+from main_logic.tool_calling import (  # noqa: E402
     _MAX_TOOL_IMAGES,
     _MAX_TOOL_IMAGE_B64_BYTES,
-    _parse_tool_images,
-    _tool_result_output_payload,
 )
+from main_logic.tool_calling import parse_tool_images as _parse_tool_images
+from main_logic.tool_calling import tool_result_output_payload as _tool_result_output_payload
 
 # 1x1 PNG — valid base64 that survives decode checks without needing a file.
 _TINY_PNG_B64 = (
@@ -415,6 +415,9 @@ async def test_offline_session_switches_to_the_vision_model_and_keeps_the_pixels
 @pytest.mark.asyncio
 async def test_offline_session_already_on_the_vision_model_does_not_switch():
     session = _offline_session(model="vision-1", vision_model="vision-1")
+    # "Already on the vision model" means the id AND the endpoint: this is the
+    # state switch_model(vision_model, use_vision_config=True) leaves behind.
+    session.base_url = session.vision_base_url
 
     out = await _dispatch(
         _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
@@ -422,6 +425,22 @@ async def test_offline_session_already_on_the_vision_model_does_not_switch():
     )
 
     assert session.switched == []
+    assert [image.data_b64 for image in out.images] == ["IMG"]
+
+
+@pytest.mark.asyncio
+async def test_offline_session_same_id_on_the_conversation_endpoint_still_switches():
+    # The vision slot may reuse the conversation model id on another endpoint
+    # (e.g. a local multimodal box); matching ids alone must not skip the move.
+    session = _offline_session(model="shared-1", vision_model="shared-1")
+    session.base_url = "https://chat.test/v1"
+
+    out = await _dispatch(
+        _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
+        session,
+    )
+
+    assert session.switched == [("shared-1", True)]
     assert [image.data_b64 for image in out.images] == ["IMG"]
 
 
@@ -616,7 +635,8 @@ async def test_offline_client_is_born_knowing_which_session_it_is():
         "handle_output_transcript", "handle_connection_error",
         "handle_response_complete", "handle_repetition_detected",
         "handle_response_discarded", "send_status",
-        "handle_proactive_complete",
+        "handle_proactive_complete", "_close_displaced_offline_turn",
+        "_on_offline_session_idle",
     ):
         setattr(manager, callback, lambda *a, **k: None)
 

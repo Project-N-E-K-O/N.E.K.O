@@ -15,6 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, TextIO, TypeAlias
 
+from .smart_turn_reasons import (
+    COMPLETE_REASONS,
+    EVALUATION_REASONS,
+)
+
 
 SMART_TURN_DIAGNOSTICS_ENABLED_ENV = "NEKO_SMART_TURN_DIAGNOSTICS"
 SMART_TURN_DIAGNOSTICS_PATH_ENV = "NEKO_SMART_TURN_DIAGNOSTICS_PATH"
@@ -24,12 +29,6 @@ _SCHEMA = "neko.smart_turn.runtime_diagnostics.v1"
 _ACK_TIMEOUT_SECONDS = 0.05
 _ENABLED_VALUES = frozenset({"1", "true", "yes", "on"})
 
-EvaluationReason: TypeAlias = Literal[
-    "candidate_pause",
-    "periodic_no_vad",
-    "strict_retry",
-    "unknown",
-]
 EvaluationOutcome: TypeAlias = Literal[
     "complete",
     "incomplete",
@@ -49,7 +48,6 @@ FailureStage: TypeAlias = Literal[
     "unknown",
 ]
 
-_EVALUATION_REASONS = frozenset({"candidate_pause", "periodic_no_vad", "strict_retry"})
 _EVALUATION_OUTCOMES = frozenset(
     {
         "complete",
@@ -176,7 +174,7 @@ class _JsonlSmartTurnRuntimeDiagnostics:
     def candidate(self, *, reason: str) -> None:
         self._emit(
             "candidate",
-            reason=_allowed_value(reason, _EVALUATION_REASONS),
+            reason=_allowed_value(reason, EVALUATION_REASONS),
         )
 
     def evaluation(
@@ -190,7 +188,7 @@ class _JsonlSmartTurnRuntimeDiagnostics:
     ) -> None:
         try:
             fields: dict[str, str | int | float] = {
-                "reason": _allowed_value(reason, _EVALUATION_REASONS),
+                "reason": _allowed_value(reason, EVALUATION_REASONS),
                 "outcome": _allowed_value(outcome, _EVALUATION_OUTCOMES),
                 "evaluation_ms": max(0, int(evaluation_ms)),
             }
@@ -207,7 +205,7 @@ class _JsonlSmartTurnRuntimeDiagnostics:
     def complete(self, *, reason: str) -> None:
         self._emit(
             "complete",
-            reason=_allowed_value(reason, _EVALUATION_REASONS),
+            reason=_allowed_value(reason, COMPLETE_REASONS),
         )
 
     def failure(self, *, kind: str, stage: str) -> None:

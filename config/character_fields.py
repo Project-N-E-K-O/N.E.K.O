@@ -20,6 +20,7 @@
 # - workshop: 创意工坊导入/发布流程专用，不应从外部角色卡直接透传
 CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "_reserved",
+    "character_id",
     "live2d",
     "voice_id",
     "system_prompt",
@@ -67,12 +68,15 @@ def get_character_reserved_fields() -> tuple[str, ...]:
 # 角色保留字段 schema（v2）
 # 所有系统保留字段统一收口到 `_reserved`，并按 avatar/live2d/vrm 分层。
 RESERVED_FIELD_SCHEMA = {
+    "character_id": str,
     # voice_id 兼容两形态：旧扁平串 + 声音来源统一架构的结构对象 {source,provider,ref}
     # （并查集式惰性迁移，用户设音色时逐条迁移）。否则已迁移的角色每次 load 都被
     # validate_reserved_schema 误报 _reserved.voice_id 结构异常。
     "voice_id": (str, dict),
     "system_prompt": str,
     "field_order": list,
+    # 角色稳定 id（32 位小写 hex）：新建 / 导入时生成，改名不变，存量角色在启动时补发（backfill_character_uids）。
+    "character_uid": str,
     "persona_override": {
         "preset_id": str,
         "selected_at": str,

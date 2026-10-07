@@ -6,7 +6,7 @@ Choose a path according to the audience:
 | --- | --- | --- |
 | Desktop release | End users | Electron UI plus packaged Python backend |
 | Source launcher | Contributors/local development | `uv run python launcher.py` |
-| Docker Compose | Headless/server deployment | Nginx in front of the Python services |
+| Docker Compose | Headless/server deployment | Nginx in front of the Python services; see [Low-spec server](./low-spec-server) for small hosts |
 | Standalone modules | Service isolation | Start memory, main, and agent separately |
 
 The cross-platform desktop workflow builds Windows, macOS, and Linux artifacts. Scheduled output is a **nightly prerelease**, not a stable-release promise.

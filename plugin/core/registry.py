@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover
 from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
 from plugin._types.entry_metadata import entry_contract_fields
 from plugin._types.version import SDK_VERSION
-from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
+from plugin.server.infrastructure.config_resolver import read_plugin_config_from_path, resolve_plugin_config_from_path
 from plugin.server.infrastructure.runtime_overrides import (
     get_runtime_auto_start_override,
     get_runtime_override,
@@ -59,6 +59,7 @@ from plugin.settings import (
     PLUGIN_ENABLE_DEPENDENCY_CHECK,
 )
 from plugin.utils import parse_bool_config
+from plugin.utils.path_resolution import PathResolutionCache, canonical_read_path
 
 # 从 dependency.py 导入依赖相关函数
 from plugin.core.dependency import (
@@ -329,6 +330,7 @@ def _resolve_plugin_id_conflict(
     *,
     purpose: str = "load",
     enable_rename: Optional[bool] = None,
+    read_cache: PathResolutionCache | None = None,
 ) -> Optional[str]:
     """
     检测并解决插件 ID 冲突
@@ -361,7 +363,7 @@ def _resolve_plugin_id_conflict(
     cur_path: Optional[Path] = None
     if config_path is not None:
         try:
-            cur_path = Path(config_path).resolve()
+            cur_path = canonical_read_path(Path(config_path), cache=read_cache)
         except (OSError, RuntimeError):
             cur_path = Path(config_path)
 
@@ -374,7 +376,7 @@ def _resolve_plugin_id_conflict(
         if v is None:
             return None
         try:
-            return Path(v).resolve()
+            return canonical_read_path(Path(v), cache=read_cache)
         except (OSError, RuntimeError, TypeError, ValueError):
             try:
                 return Path(v)
@@ -449,7 +451,9 @@ def register_plugin(
     plugin: PluginMeta,
     logger: Optional[Any] = None,  # loguru.Logger or logging.Logger
     config_path: Optional[Path] = None,
-    entry_point: Optional[str] = None
+    entry_point: Optional[str] = None,
+    *,
+    read_cache: PathResolutionCache | None = None,
 ) -> Optional[str]:
     """
     注册插件到注册表
@@ -488,6 +492,7 @@ def register_plugin(
         plugin_data=plugin_data,
         purpose="register",
         enable_rename=bool(PLUGIN_ENABLE_ID_CONFLICT_CHECK),
+        read_cache=read_cache,
     )
     
     # 如果返回 None，说明是重复加载，不应该注册
@@ -682,9 +687,14 @@ def _build_plugin_meta(
     # Defensive cap on plugin manifest short_description. 200 tokens — same
     # as task_executor's downstream short_description LLM-prompt cap, so the
     # value is consistent across "plugin descriptive blurb" callsites.
-    from utils.tokenize import count_tokens, truncate_to_tokens
-    if count_tokens(short_desc) > 200:
-        short_desc = truncate_to_tokens(short_desc, 200)
+    # Byte-level tokenization cannot exceed the UTF-8 byte count. Match the
+    # tokenizer fallback's surrogate handling and avoid initializing its large
+    # encoding table for descriptions that already fit this upper bound.
+    if len(short_desc.encode("utf-8", errors="surrogatepass")) > 200:
+        from utils.tokenize import count_tokens, truncate_to_tokens
+
+        if count_tokens(short_desc) > 200:
+            short_desc = truncate_to_tokens(short_desc, 200)
     passive = parse_bool_config(pdata.get("passive"), default=False)
 
     meta = PluginMeta(
@@ -1146,6 +1156,8 @@ def _parse_single_plugin_config(
     logger: Any,
     *,
     apply_user_overlays: bool = True,
+    materialize_runtime_config: bool = True,
+    read_cache: PathResolutionCache | None = None,
 ) -> Optional[PluginContext]:
     """
     解析单个插件的 TOML 配置文件。
@@ -1181,12 +1193,14 @@ def _parse_single_plugin_config(
     # 而源码指纹还是对得上的（codex）。
     try:
         if apply_user_overlays and isinstance(conf, dict):
-            resolved_conf = resolve_plugin_config_from_path(
+            resolver = resolve_plugin_config_from_path if materialize_runtime_config else read_plugin_config_from_path
+            resolved_conf = resolver(
                 str(pid),
                 config_path=toml_path,
                 base_config=conf,
                 include_effective_config=True,
                 validate_schema=True,
+                **({} if materialize_runtime_config else {"read_cache": read_cache}),
             )
             effective = resolved_conf.get("effective_config")
             if isinstance(effective, dict):
@@ -1218,7 +1232,7 @@ def _parse_single_plugin_config(
     
     # 检查重复路径
     try:
-        resolved_path = toml_path.resolve()
+        resolved_path = canonical_read_path(toml_path, cache=read_cache)
         if str(resolved_path) in processed_paths:
             logger.warning(
                 "Plugin config file {} has already been processed in this scan, skipping duplicate",

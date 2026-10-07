@@ -4,5 +4,6 @@ This collection explains significant plugin SDK changes that need migration cont
 
 - [`@llm_tool` decorator](./plugin-llm-tool-sdk)
 - [`push_message` v2](./plugin-push-message-v2)
+- [Plugin hot reload on source change](./plugin-hot-reload)
 
 For current plugin contracts, start with the [Plugin Development Guide](/plugins/) and [SDK Reference](/plugins/sdk-reference). New change notes should identify the affected API, compatibility boundary, migration path, and tests.

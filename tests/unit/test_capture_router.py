@@ -26,11 +26,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from main_routers import capture_router as capture_router_module
+from main_routers.local_access import is_direct_loopback_request
 from utils import capture_bridge
 
 
 CAPTURE_HEALTH = "/api/capture/health"
 CAPTURE_SHOT = "/api/capture/screenshot"
+COMPUTER_USE_SHOT = "/api/capture/computer-use"
 APP_WEBSOCKET_JS = Path(__file__).resolve().parents[2] / "static" / "app" / "app-websocket.js"
 
 
@@ -50,10 +52,36 @@ def _allow_loopback(monkeypatch):
     yield
 
 
-def _build_client() -> TestClient:
+def _build_client(client_host="testclient") -> TestClient:
     app = FastAPI()
     app.include_router(capture_router_module.router)
-    return TestClient(app)
+    return TestClient(app, client=(client_host, 50000))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("endpoint", [CAPTURE_SHOT, COMPUTER_USE_SHOT])
+def test_proxy_forwarded_loopback_cannot_capture_renderer(endpoint, monkeypatch):
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.setattr(capture_router_module, "_is_loopback_request", is_direct_loopback_request)
+    calls = []
+
+    async def fail_capture(*args, **kwargs):
+        calls.append(True)
+        raise AssertionError("forwarded requests must not reach renderer capture")
+
+    monkeypatch.setattr(capture_bridge, "request_capture_screenshot", fail_capture)
+    monkeypatch.setattr(capture_bridge, "request_computer_use_screenshot", fail_capture)
+    app = FastAPI()
+    app.include_router(capture_router_module.router)
+    # Reproduce nginx appending the remote peer and Uvicorn trusting the first IP.
+    with TestClient(ProxyHeadersMiddleware(app, trusted_hosts="*"), client=("127.0.0.1", 50000)) as client:
+        response = client.post(endpoint, headers={"X-Forwarded-For": "127.0.0.1, 203.0.113.9"},
+                               json={"target_id": "123", "pid": 1})
+    assert response.status_code == 403
+    assert response.json()["error"] == "loopback_only"
+    assert calls == []
 
 
 def test_capture_bridge_renderer_ignores_placeholder_target_id_before_source_match():
@@ -210,6 +238,53 @@ def test_screenshot_rejects_non_loopback(monkeypatch):
 
 
 @pytest.mark.unit
+def test_computer_use_capture_requires_renderer_and_rejects_browser_origin(monkeypatch):
+    with _build_client() as client:
+        assert client.post(COMPUTER_USE_SHOT).status_code == 503
+
+    monkeypatch.setattr(capture_router_module.capture_bridge, "has_computer_use_capture_client", lambda: True)
+    with _build_client() as client:
+        assert client.post(COMPUTER_USE_SHOT, headers={"Origin": "https://example.com"}).status_code == 403
+
+    async def _capture():
+        return {"image": "data:image/png;base64,YQ=="}
+
+    monkeypatch.setattr(capture_router_module.capture_bridge, "request_computer_use_screenshot", _capture)
+    with _build_client() as client:
+        response = client.post(COMPUTER_USE_SHOT)
+    assert response.status_code == 200
+    assert response.json()["image"] == "data:image/png;base64,YQ=="
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_computer_use_capture_releases_bridge_when_client_disconnects(monkeypatch):
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def stalled_capture():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    class DisconnectedRequest:
+        client = SimpleNamespace(host="127.0.0.1")
+        headers = {}
+
+        async def is_disconnected(self):
+            await started.wait()
+            return True
+
+    monkeypatch.setattr(capture_router_module.capture_bridge, "has_computer_use_capture_client", lambda: True)
+    monkeypatch.setattr(capture_router_module.capture_bridge, "request_computer_use_screenshot", stalled_capture)
+    response = await capture_router_module.capture_computer_use_screen(DisconnectedRequest())
+    assert response.status_code == 499
+    assert cancelled.is_set()
+
+
+@pytest.mark.unit
 def test_screenshot_validates_pid_negative():
     _register_dummy_renderer()
     with _build_client() as client:
@@ -235,7 +310,11 @@ def test_screenshot_503_without_renderer():
 
 
 @pytest.mark.unit
-def test_screenshot_success(monkeypatch):
+@pytest.mark.parametrize("deployment", [None, "NEKO_BEHIND_PROXY", "NEKO_ACTIVITY_TRACKER_REMOTE"])
+def test_screenshot_success(monkeypatch, deployment):
+    monkeypatch.setattr(capture_router_module, "_is_loopback_request", is_direct_loopback_request)
+    if deployment:
+        monkeypatch.setenv(deployment, "true")
     _register_dummy_renderer()
     image_data_url = "data:image/jpeg;base64,AAAA"
 
@@ -246,7 +325,7 @@ def test_screenshot_success(monkeypatch):
 
     monkeypatch.setattr(capture_router_module.capture_bridge, "request_capture_screenshot", _fake_request)
 
-    with _build_client() as client:
+    with _build_client("127.0.0.1") as client:
         resp = client.post(CAPTURE_SHOT, json={"target_id": 12345, "pid": 100, "title": "Game"})
     assert resp.status_code == 200
     body = resp.json()

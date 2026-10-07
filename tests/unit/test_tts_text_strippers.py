@@ -14,7 +14,7 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from utils.frontend_utils import TtsBracketStripper, TtsMarkdownStripper
+from utils.frontend_utils import TtsBracketStripper, TtsMarkdownStripper, strip_tts_muted_symbols
 
 
 # ============================================================================
@@ -345,3 +345,451 @@ def test_markdown_chained_with_bracket_image_dropped():
     out += br.feed(md.flush())
     out += br.flush()
     assert out == "前  后"
+
+
+# ---------------------------------------------------------------------------
+# strip_tts_muted_symbols：会被念出来的符号在入队前删掉
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 会被念成「百分号 / 井号 / 等于 …」的符号删掉
+        ("进度100@的人", "进度100的人"),
+        ("标签#热门", "标签热门"),
+        ("邮箱@测试", "邮箱测试"),
+        ("开心/开心了", "开心开心了"),
+        ("表情😀好", "表情好"),
+        # 复合 emoji 的变体选择符 / 零宽连接符 / 键帽组合符不留残渣
+        ("好\u2764\ufe0f呀", "好呀"),
+        ("\U0001f469\u200d\U0001f4bb写代码", "写代码"),
+        ("1\ufe0f\u20e3号", "1号"),
+        # 天城文里正常使用的零宽连接符保留
+        ("\u0915\u094d\u200d\u0937", "\u0915\u094d\u200d\u0937"),
+        ("温度≈25", "温度≈25"),
+        # 摄氏度 / 华氏度会被读成单位，保留
+        ("温度≈25℃", "温度≈25℃"),
+        ("华氏77℉", "华氏77℉"),
+        # 用度数符号拼的单位（22°C / 72°F）和单独的度数同样保留
+        ("气温22°C", "气温22°C"),
+        ("It is 72°F today", "It is 72°F today"),
+        ("转90°", "转90°"),
+        # 夹在 ASCII 字母数字之间的换成空格，免得连成另一个数 / 词
+        ("3~5天", "3 5天"),
+        ("9/28号", "9 28号"),
+        ("价格￥10$5", "价格￥10$5"),
+        ("well-known", "well known"),
+        ("A+B*C", "A+B C"),
+        # 句读标点、撇号保留
+        ("你好，世界！", "你好，世界！"),
+        ("他说：“好的。”", "他说：“好的。”"),
+        ("Hello, world! Don't.", "Hello, world! Don't."),
+        ("没有符号", "没有符号"),
+        ("", ""),
+    ],
+)
+def test_strip_tts_muted_symbols(text, expected):
+    assert strip_tts_muted_symbols(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 货币符号保留：TTS 念成「一百美元」，删掉就丢了单位
+        ("$100", "$100"),
+        ("€20", "€20"),
+        # 数字前的负号保留，零下不能变零上；夹在数字之间的仍是连接号
+        ("温度-5℃", "温度-5℃"),
+        ("-5度", "-5度"),
+        ("x = -3", "x = -3"),
+        ("3-5天", "3 5天"),
+        # 常用运算符保留，算式念得出来
+        ("±5", "±5"),
+        ("约≈3", "约≈3"),
+        ("2+2=4", "2+2=4"),
+        ("3×4", "3×4"),
+        ("10÷2", "10÷2"),
+        ("1≤x≥0≠2", "1≤x≥0≠2"),
+        # CJK 兼容单位保留
+        ("50㎡", "50㎡"),
+        ("3㎏", "3㎏"),
+        # C#、F# 这类名字保留「#」；其它位置的「#」照常删
+        ("C++ 和 C#", "C++ 和 C#"),
+        ("C#\U0001f600 dev", "C# dev"),
+        ("C#-5", "C#-5"),
+        # 负号前是 emoji 以外的被删符号时按连接号处理，与分块时一致
+        ("3@-5", "3 5"),
+        # 负号前的整段符号不接在字母数字后面时，负号保留
+        ("~-5°C", "-5°C"),
+        ("温度~-5℃", "温度-5℃"),
+        ("x = @-5", "x = -5"),
+        ("3@" + "\U0001f600" * 40 + "-5", "3 5"),
+        ("a\U0001f600-5", "a-5"),
+        ("a#@b", "a b"),
+        ("F#。", "F#。"),
+        ("第#1名", "第1名"),
+        ("a#b", "a b"),
+        # emoji 紧贴负号时：emoji 删掉，负号留下
+        ("\U0001f321\ufe0f-5°C", "-5°C"),
+        ("温度\U0001f321\ufe0f-5℃", "温度-5℃"),
+        ("temp\U0001f321\ufe0f-5°C", "temp-5°C"),
+        # 〜（U+301C）和 ~ / ～ 一样处理
+        ("好的〜", "好的"),
+        ("好的～", "好的"),
+        ("3〜5天", "3 5天"),
+        # emoji、装饰符、箭头仍然删
+        ("好的→下一步", "好的下一步"),
+        ("★重点★", "重点"),
+        # 话题标签和普通词里的 # 删掉；只有单独成词的一个字母 + # 才是名字
+        ("#ChatGPT#", " ChatGPT "),
+        ("#ChatGPT#很火", " ChatGPT很火"),
+        ("#AI#话题", " AI话题"),
+        ("tag#热门", "tag热门"),
+        ("#C#", " C "),
+        ("F#语言", "F#语言"),
+        ("用C#写", "用C#写"),
+        # 零下温度区间：第二个负号保留，和前一个数隔开
+        ("气温-10~-5℃", "气温-10 -5℃"),
+        ("气温-10～-5℃", "气温-10 -5℃"),
+        ("气温-10〜-5℃", "气温-10 -5℃"),
+        ("明天-3~-1℃", "明天-3 -1℃"),
+        # 比较号：<= >= != 换成 ≤ ≥ ≠；夹在操作数之间或挨着 = 的 < > 保留
+        ("x <= 5", "x ≤ 5"),
+        ("a >= b", "a ≥ b"),
+        ("a != b", "a ≠ b"),
+        ("x＜＝5", "x≤5"),
+        ("3<5", "3<5"),
+        ("a > b", "a > b"),
+        ("=>", "=>"),
+        ("<提示>", "提示"),
+    ],
+)
+def test_filter_keeps_symbols_that_carry_meaning(text, expected):
+    assert strip_tts_muted_symbols(text) == expected
+
+
+def test_strip_tts_muted_symbols_at_chunk_edges():
+    # 流式分块的首尾空格属于拼接用，不能吃掉。
+    assert strip_tts_muted_symbols(" 你好#") == " 你好"
+    assert strip_tts_muted_symbols("#世界 ") == "世界 "
+    # 分块正好切在两个数字之间的符号上：留空格，下一块接上时不会连成一个数。
+    assert strip_tts_muted_symbols("3~") + strip_tts_muted_symbols("5天") == "3 5天"
+    assert strip_tts_muted_symbols("@") == ""
+
+
+def _bare_tts_runtime():
+    import queue
+
+    from main_logic.core import LLMSessionManager
+    from utils.frontend_utils import TtsStreamNormalizer
+
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.tts_request_queue = queue.Queue()
+    mgr._tts_stream_normalizer = TtsStreamNormalizer()
+    mgr._tts_markdown_stripper = TtsMarkdownStripper()
+    mgr._tts_bracket_stripper = TtsBracketStripper()
+    mgr._tts_norm_speech_id = None
+    mgr._tts_normalize_enabled = False
+    mgr._remember_tts_replay_chunk = lambda *_a: None
+    mgr._remember_tts_sent_chunk = lambda *_a: None
+    mgr._remember_pending_ai_voice_echo = lambda *_a: None
+    mgr._arm_tts_soft_flush = lambda *_a: None
+    return mgr
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A percent sign changes the number's meaning and TTS reads it
+        # correctly ("50%" is "fifty percent"), like currency: kept.
+        ("降价50%", "降价50%"),
+        ("100%的", "100%的"),
+        ("3.5%", "3.5%"),
+        ("50％的人", "50％的人"),
+        # A range between percentages is a range, as between plain numbers.
+        ("50%-60%", "50% 60%"),
+        ("3%-5", "3% 5"),
+    ],
+)
+def test_percent_sign_is_kept(text: str, expected: str) -> None:
+    assert strip_tts_muted_symbols(text) == expected
+
+
+def test_percent_range_split_across_chunks_matches_unsplit() -> None:
+    mgr = _bare_tts_runtime()
+    for chunk in ("50%", "-", "60%"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert "".join(text for _, text in _drain(mgr.tts_request_queue)) == "50% 60%"
+
+
+def _drain(q):
+    items = []
+    while not q.empty():
+        items.append(q.get_nowait())
+    return items
+
+
+def test_enqueue_drops_spoken_symbols_and_symbol_only_chunks():
+    mgr = _bare_tts_runtime()
+    mgr._enqueue_tts_text_chunk("s1", "进度100@，")
+    mgr._enqueue_tts_text_chunk("s1", "#")
+    mgr._enqueue_tts_text_chunk("s1", "温度25℃")
+    assert _drain(mgr.tts_request_queue) == [("s1", "进度100，"), ("s1", "温度25℃")]
+
+
+def test_enqueue_keeps_the_gap_a_symbol_only_chunk_stood_for():
+    # 流式常把「9/28」切成 "9" / "/" / "28"：中间那块删空后不能让两边连成「928」。
+    # （「~」会先被 markdown 剥离器当删除线标记缓存，不走到这里。）
+    mgr = _bare_tts_runtime()
+    for chunk in ("9", "/", "28号"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "9"), ("s1", " 28号")]
+
+
+def test_symbol_only_chunk_between_cjk_adds_no_space():
+    mgr = _bare_tts_runtime()
+    for chunk in ("开心", "／", "开心了"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "开心"), ("s1", "开心了")]
+
+
+@pytest.mark.parametrize(
+    ("chunks", "expected"),
+    [
+        (("温度", "-", "5℃"), [("s1", "温度"), ("s1", "-5℃")]),
+        (("温度-", "5℃"), [("s1", "温度"), ("s1", "-5℃")]),
+        # A minus not followed by a digit is dropped, as before.
+        (("温度", "-", "很低"), [("s1", "温度"), ("s1", "很低")]),
+        # Between two numbers it stays a range separator, also when the sign
+        # starts the next chunk.
+        (("3", "-", "5天"), [("s1", "3"), ("s1", " 5天")]),
+        (("3", "-5天"), [("s1", "3"), ("s1", " 5天")]),
+        (("3@-", "5"), [("s1", "3 "), ("s1", "5")]),
+        (("C#-", "5"), [("s1", "C"), ("s1", "#-5")]),
+        # Symbol-only chunks before the minus count as if unsplit.
+        (("C", "#", "-", "5"), [("s1", "C"), ("s1", "#-5")]),
+        (("C#", "-", "5"), [("s1", "C"), ("s1", "#-5")]),
+        (("C#", "@", "-", "5"), [("s1", "C"), ("s1", " 5")]),
+        (("温度", "@", "-", "5℃"), [("s1", "温度"), ("s1", "-5℃")]),
+        (("x = ", "@-", "5"), [("s1", "x = "), ("s1", "-5")]),
+        # However many symbol-only chunks pile up, the verdict matches the
+        # unsplit text ("3@😀…-5" is "3 5", "a😀…-5" is "a-5").
+        (("3", "@") + ("\U0001f600",) * 40 + ("-", "5"), [("s1", "3"), ("s1", " 5")]),
+        (("a",) + ("\U0001f600",) * 40 + ("-", "5"), [("s1", "a"), ("s1", "-5")]),
+        (("a", "\U0001f600", "-", "5"), [("s1", "a"), ("s1", "-5")]),
+        (("3", "@", "-", "5"), [("s1", "3"), ("s1", " 5")]),
+        (("温度\U0001f321\ufe0f-", "5℃"), [("s1", "温度"), ("s1", "-5℃")]),
+        (("x = ", "-5"), [("s1", "x = "), ("s1", "-5")]),
+        (("温度", "-5℃"), [("s1", "温度"), ("s1", "-5℃")]),
+        # The "#" of a name split off its letter is kept ...
+        (("C", "#", " developer"), [("s1", "C"), ("s1", "# developer")]),
+        (("C", "#", "。"), [("s1", "C"), ("s1", "#。")]),
+        (("C", "#", " ", "dev"), [("s1", "C"), ("s1", "# "), ("s1", "dev")]),
+        # ... but between two letters it is still a separator.
+        (("a", "#", "b"), [("s1", "a"), ("s1", " b")]),
+        (("标签", "#", "热门"), [("s1", "标签"), ("s1", "热门")]),
+        # Symbol-only chunks after a held "#" do not settle it; the next chunk
+        # with content does, as the unsplit text would.
+        (("C", "#", "\U0001f600", " dev"), [("s1", "C"), ("s1", "# dev")]),
+        (("a", "#", "@", "b"), [("s1", "a"), ("s1", " b")]),
+        (("a", "#", "@b"), [("s1", "a"), ("s1", " b")]),
+        (("a#", "@", "b"), [("s1", "a"), ("s1", " b")]),
+        (("a#", "b"), [("s1", "a"), ("s1", " b")]),
+        (("C#", " dev"), [("s1", "C"), ("s1", "# dev")]),
+        # A lone-letter name split off its "#" across chunks.
+        (("用C", "#", "写"), [("s1", "用C"), ("s1", "#写")]),
+        (("#AI", "#", "话题"), [("s1", " AI"), ("s1", "话题")]),
+    ],
+)
+def test_minus_split_off_at_a_chunk_edge_is_reattached(chunks, expected):
+    mgr = _bare_tts_runtime()
+    for chunk in chunks:
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == expected
+
+
+def test_symbol_gap_does_not_leak_into_the_next_speech():
+    mgr = _bare_tts_runtime()
+    mgr._enqueue_tts_text_chunk("s1", "9")
+    mgr._enqueue_tts_text_chunk("s1", "/")
+    mgr._enqueue_tts_text_chunk("s2", "28")
+    assert _drain(mgr.tts_request_queue) == [("s1", "9"), ("s2", "28")]
+
+
+def test_whitespace_only_chunk_is_passed_through():
+    # 不经 normalizer 的流式 provider 靠独立的空格块分隔「9」「28」，不能丢。
+    mgr = _bare_tts_runtime()
+    for chunk in ("9", " ", "28"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "9"), ("s1", " "), ("s1", "28")]
+
+
+def test_markdown_flush_can_leave_symbol_markers_for_the_symbol_filter():
+    md = TtsMarkdownStripper()
+    md.feed("x~y(z")
+    # 默认行为不变：所有悬挂 marker 都删。
+    assert md.flush() == "yz"
+    md.feed("x~y(z")
+    # TTS 入队路径：括号仍删（否则会被括号剥离器吞掉后文），* _ ~ ` 留给符号过滤。
+    assert md.flush(keep_symbol_markers=True) == "~yz"
+
+
+def test_tilde_held_by_markdown_still_keeps_the_gap_at_turn_end():
+    # "3" / "~" / "5天"：markdown 把「~5天」当删除线缓存到收尾才放出，
+    # 收尾时也不能让「3」「5」连成「35」。
+    from types import SimpleNamespace
+
+    mgr = _bare_tts_runtime()
+    mgr.tts_thread = SimpleNamespace(is_alive=lambda: True)
+    mgr.tts_ready = True
+    mgr.tts_pending_chunks = []
+    mgr._tts_done_queued_for_turn = False
+    mgr._tts_done_pending_until_ready = False
+    mgr._cancel_tts_soft_flush = lambda: None
+    for chunk in ("3", "~", "5天"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert mgr._request_tts_done_locked() == "queued"
+    assert _drain(mgr.tts_request_queue) == [("s1", "3"), ("s1", " 5天"), (None, None)]
+
+
+def test_soft_flush_waits_while_a_name_hash_is_unresolved():
+    # A realtime provider with soft flush: "C" arms the idle timer, then "#"
+    # is held. Flushing now would synthesize "C" alone and lose "C#".
+    mgr = _bare_tts_runtime()
+    armed: list[str] = []
+    cancelled: list[bool] = []
+    mgr._arm_tts_soft_flush = lambda speech_id: armed.append(speech_id)
+    mgr._cancel_tts_soft_flush = lambda: cancelled.append(True)
+    mgr._enqueue_tts_text_chunk("s1", "C")
+    assert armed == ["s1"] and cancelled == []
+    mgr._enqueue_tts_text_chunk("s1", "#")
+    assert cancelled == [True]
+    assert armed == ["s1"]
+    mgr._enqueue_tts_text_chunk("s1", " dev")
+    assert armed == ["s1", "s1"]
+    assert _drain(mgr.tts_request_queue) == [("s1", "C"), ("s1", "# dev")]
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        ("气温-10~-5℃",),
+        ("气温-10", "~", "-5℃"),
+        ("气温-10~", "-5℃"),
+        ("气温-10~-", "5℃"),
+    ],
+)
+def test_below_zero_range_keeps_both_signs_however_it_is_split(chunks):
+    from types import SimpleNamespace
+
+    mgr = _bare_tts_runtime()
+    mgr.tts_thread = SimpleNamespace(is_alive=lambda: True)
+    mgr.tts_ready = True
+    mgr.tts_pending_chunks = []
+    mgr._tts_done_queued_for_turn = False
+    mgr._tts_done_pending_until_ready = False
+    mgr._cancel_tts_soft_flush = lambda: None
+    for chunk in chunks:
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert mgr._request_tts_done_locked() == "queued"
+    items = _drain(mgr.tts_request_queue)
+    assert items[-1] == (None, None)
+    assert "".join(text for _sid, text in items[:-1]) == "气温-10 -5℃"
+
+
+def test_held_name_hash_is_released_at_turn_end():
+    # A turn that ends on "C" / "#" has no next chunk to settle the "#":
+    # the turn-end flush must still send it, or "C#" is read as "C".
+    from types import SimpleNamespace
+
+    mgr = _bare_tts_runtime()
+    mgr.tts_thread = SimpleNamespace(is_alive=lambda: True)
+    mgr.tts_ready = True
+    mgr.tts_pending_chunks = []
+    mgr._tts_done_queued_for_turn = False
+    mgr._tts_done_pending_until_ready = False
+    mgr._cancel_tts_soft_flush = lambda: None
+    for chunk in ("C", "#", "\U0001f600"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert mgr._request_tts_done_locked() == "queued"
+    assert _drain(mgr.tts_request_queue) == [("s1", "C"), ("s1", "#"), (None, None)]
+
+
+def test_name_hash_held_by_the_turn_end_markdown_flush_is_released():
+    # The markdown stripper holds "*C#" (unmatched emphasis) until the turn
+    # ends; filtering that tail holds its trailing "#" again, and the done
+    # path must still send it before the end signal.
+    from types import SimpleNamespace
+
+    mgr = _bare_tts_runtime()
+    mgr.tts_thread = SimpleNamespace(is_alive=lambda: True)
+    mgr.tts_ready = True
+    mgr.tts_pending_chunks = []
+    mgr._tts_done_queued_for_turn = False
+    mgr._tts_done_pending_until_ready = False
+    mgr._cancel_tts_soft_flush = lambda: None
+    mgr._enqueue_tts_text_chunk("s1", "This uses *C#")
+    assert mgr._request_tts_done_locked() == "queued"
+    items = _drain(mgr.tts_request_queue)
+    assert items[-1] == (None, None)
+    spoken = "".join(text for _sid, text in items[:-1])
+    assert spoken.endswith("C#")
+
+
+def test_split_compound_emoji_leaves_no_joiner_in_the_next_chunk():
+    # 复合 emoji（人物 + 零宽连接符 + 电脑）被切成「写+人物」「零宽连接符+电脑+代码」两块：
+    # 后一块开头的零宽连接符不能单独送进 TTS。
+    mgr = _bare_tts_runtime()
+    for chunk in ("写\U0001f469", "\u200d\U0001f4bb代码"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "写"), ("s1", "代码")]
+
+
+def test_joiner_in_text_after_plain_chunk_is_kept():
+    # 天城文里正常使用的零宽连接符：上一块没有以符号结尾，不能被当成残余删掉。
+    mgr = _bare_tts_runtime()
+    for chunk in ("\u0915\u094d", "\u200d\u0937"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "\u0915\u094d"), ("s1", "\u200d\u0937")]
+
+
+def test_joiner_after_a_non_emoji_symbol_is_kept():
+    # 天城文被「@」切开：前一块以「@」结尾（不是 emoji），下一块开头的零宽连接符
+    # 属于文字本身，不能当成 emoji 残余删掉；「@」本身按词间分隔换成空格。
+    mgr = _bare_tts_runtime()
+    for chunk in ("\u0915\u094d@", "\u200d\u0937"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "\u0915\u094d "), ("s1", "\u200d\u0937")]
+
+
+def test_trailing_symbol_between_digit_chunks_keeps_the_gap():
+    # 「3@」「5」：末尾的「@」左边是数字、右边是块尾，直接换成空格，不会拼成「35」。
+    mgr = _bare_tts_runtime()
+    for chunk in ("3@", "5"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "3 "), ("s1", "5")]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 靠空格分词的文字（西里尔、希腊、天城文、韩文）：符号换成空格，词不粘在一起
+        # 汉字、假名、泰文这类不用空格分词的文字：直接删
+        ("\u043f\u043e-\u0440\u0443\u0441\u0441\u043a\u0438", "\u043f\u043e \u0440\u0443\u0441\u0441\u043a\u0438"),
+        ("\u03b1/\u03b2", "\u03b1 \u03b2"),
+        ("\u0938\u094c@\u0926\u094b", "\u0938\u094c \u0926\u094b"),
+        ("\ud55c\uad6d-\uc5b4", "\ud55c\uad6d \uc5b4"),
+        ("\u0e20\u0e32\u0e29\u0e32-\u0e44\u0e17\u0e22", "\u0e20\u0e32\u0e29\u0e32\u0e44\u0e17\u0e22"),
+        ("\u306d\u3053/\u3044\u306c", "\u306d\u3053\u3044\u306c"),
+    ],
+)
+def test_symbol_between_non_ascii_words_follows_the_script(text, expected):
+    assert strip_tts_muted_symbols(text) == expected
+
+
+def test_symbol_only_chunk_between_cyrillic_chunks_keeps_the_gap():
+    mgr = _bare_tts_runtime()
+    for chunk in ("\u043f\u043e", "-", "\u0440\u0443\u0441\u0441\u043a\u0438"):
+        mgr._enqueue_tts_text_chunk("s1", chunk)
+    assert _drain(mgr.tts_request_queue) == [("s1", "\u043f\u043e"), ("s1", " \u0440\u0443\u0441\u0441\u043a\u0438")]

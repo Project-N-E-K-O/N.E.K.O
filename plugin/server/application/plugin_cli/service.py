@@ -19,10 +19,7 @@ from plugin.logging_config import get_logger
 from plugin.neko_plugin_cli.core.install import PackageInstaller
 from plugin.neko_plugin_cli.core.models import InstalledPlugin, InstallResult
 from plugin.neko_plugin_cli.public import (
-    analyze_bundle_plugins,
     inspect_package,
-    build_bundle,
-    build_plugin,
     install_package,
 )
 from plugin.server.application.install_source import (
@@ -88,7 +85,6 @@ _UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 logger = get_logger("server.application.plugin_cli")
 plugin_registry_service = PluginRegistryService()
 
-
 async def _refresh_committed_market_install(plugin_id: str) -> str | None:
     """Refresh a fresh Market install without rolling back committed files.
 
@@ -102,7 +98,7 @@ async def _refresh_committed_market_install(plugin_id: str) -> str | None:
         # shields the complete locked operation and waits for it before
         # propagating caller cancellation. Await directly here so no orphan
         # refresh task is created.
-        await plugin_registry_service.refresh_plugin(plugin_id, force=True)
+        await plugin_registry_service.refresh_plugin(plugin_id)
     except Exception as exc:  # noqa: BLE001 - committed install stays successful.
         logger.warning(
             "post-commit Market plugin refresh failed: plugin_id={}",
@@ -421,7 +417,7 @@ class PluginCliService:
                             logger.error(
                                 "could not restore the autostart approval for "
                                 "plugin_id={} while refusing the install; it must "
-                                "be started once by hand",
+                                "have auto-start explicitly approved",
                                 done,
                             )
                     raise ServerDomainError(
@@ -471,11 +467,11 @@ class PluginCliService:
                     ):
                         # 和覆盖回滚同一个判断：这里正在处理另一个异常，改抛会把
                         # 真正的失败原因换掉。记一笔，后果有界——这个 id 上留了一条
-                        # 待批准记录，将来占用它的插件第一次要手动启动一次。
+                        # 待批准记录，将来占用它的插件需要显式批准自启动。
                         logger.error(
                             "install rollback could not restore the autostart "
                             "approval for plugin_id={}; whatever later takes that "
-                            "id must be started once by hand",
+                            "id must have auto-start explicitly approved",
                             gate_plugin_id,
                         )
                 raise
@@ -737,8 +733,8 @@ class PluginCliService:
                 ):
                     logger.error(
                         "manifestless replacement rollback could not restore the "
-                        "autostart approval for plugin_id={}; it must be started "
-                        "once by hand",
+                        "autostart approval for plugin_id={}; it needs explicit "
+                        "auto-start approval",
                         plan.plugin_id,
                     )
             source_restored = True
@@ -996,11 +992,11 @@ class PluginCliService:
                     # 只能记一笔。这里已经在处理另一个异常，改抛"批准还原失败"会
                     # 把真正的失败原因换掉，而那才是用户要看的东西（greptile 建议
                     # 传播，我不采纳这一半）。后果有界且不涉安全：恢复出来的内置
-                    # 插件这一轮不自启，用户手动启动一次就会重试这次写入。
+                    # 插件保持待批准，需要通过独立自启动开关重试批准。
                     logger.error(
                         "override rollback could not restore the autostart "
                         "approval for plugin_id={}; the restored builtin will not "
-                        "autostart until it is started once by hand",
+                        "autostart until its auto-start switch is enabled",
                         plan.plugin_id,
                     )
             raise
@@ -1451,7 +1447,10 @@ class PluginCliService:
             target_dir, _target_directory_plugin_id = self._extract_unpack_target(
                 unpack_result
             )
-            package_plugin_id = self._read_installed_plugin_toml_id(target_dir)
+            # 一次 tomllib 读+解析，同样在全局锁内、同样不该睡在事件循环上。
+            package_plugin_id = await asyncio.to_thread(
+                self._read_installed_plugin_toml_id, target_dir
+            )
 
             # Step 4 — degrade to imported when market_detail is incomplete.
             required_keys = ("plugin_market_id", "version", "package_url")
@@ -1538,15 +1537,28 @@ class PluginCliService:
                 market_detail["payload_hash"] = unpacked_payload_hash
 
             # Step 6 — record into ISM with the right semantic.
+            #
+            # record_market_* 是**同步**方法，而它们最终会走到 install_source/manager.py
+            # 的 _atomic_write —— 那里在 Windows 上撞到 PermissionError（AV / Explorer
+            # 短暂持有句柄，注释说明这是预期会发生的）会执行
+            # ``for attempt_ms in (0, 50, 100, 200): time.sleep(attempt_ms / 1000)``，
+            # 累计最多 350ms。直接调用就是让这 350ms **睡在事件循环上**，而且是在全局
+            # 插件操作锁**内部**：这期间插件服务器的所有路由（/plugins、/plugin_cli、
+            # /runs、/websocket、插件 UI 流）全部停摆。
+            #
+            # 同一个 record_market_install 在本文件 :893 早就是 to_thread 的，这里只是
+            # 补齐一致性。record_market_* 自己持 manager 的 threading.Lock，跨线程安全。
             mgr = self._require_install_source_manager()
-            root_id, directory_name = classify_plugin_path(
+            root_id, directory_name = await asyncio.to_thread(
+                classify_plugin_path,
                 target_dir,
                 builtin_root=mgr.builtin_root,
                 user_root=mgr.user_root,
             )
 
             if install_mode in ("upgrade", "reinstall"):
-                entry, ism_warnings = mgr.record_market_upgrade(
+                entry, ism_warnings = await asyncio.to_thread(
+                    mgr.record_market_upgrade,
                     root_id=root_id,
                     directory_name=directory_name,
                     plugin_id=package_plugin_id,
@@ -1555,7 +1567,8 @@ class PluginCliService:
                     profile_dir=str(unpack_result.get("profile_dir") or ""),
                 )
             else:
-                entry, ism_warnings = mgr.record_market_install(
+                entry, ism_warnings = await asyncio.to_thread(
+                    mgr.record_market_install,
                     root_id=root_id,
                     directory_name=directory_name,
                     plugin_id=package_plugin_id,
@@ -1947,6 +1960,8 @@ class PluginCliService:
         allow_development: bool = True,
         cancelled: threading.Event | None = None,
     ) -> dict[str, object]:
+        from plugin.neko_plugin_cli.core.build import build_bundle, build_plugin
+
         try:
             policy = self._path_policy()
             target_root = policy.package_artifacts_root
@@ -2502,6 +2517,8 @@ class PluginCliService:
         plugin_refs: list[dict[str, Any]] | None,
         current_sdk_version: str | None,
     ) -> dict[str, object]:
+        from plugin.neko_plugin_cli.core.bundle_analysis import analyze_bundle_plugins
+
         try:
             plugin_dirs = [
                 source.plugin_dir

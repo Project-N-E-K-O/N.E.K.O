@@ -58,6 +58,7 @@ from utils.doubao_tts import (
     doubao_tts_url,
     extract_doubao_audio_bytes,
 )
+from utils.glm_tts import GlmTtsError, GlmVoiceCloneClient
 from utils.voice_config import read_legacy_voice_id
 from utils.tts.native_voice_registry import (
     get_active_realtime_native_provider_for_ui,
@@ -709,6 +710,42 @@ async def get_voice_preview(
                 return JSONResponse({
                     'success': False,
                     'error': f'豆包语音预览失败: {str(e)}',
+                }, status_code=500)
+
+        # GLM 克隆音色（provider=='glm_tts'）试听：远端复刻音色直接作为 /audio/speech
+        # 的 voice 参数合成预览句（对偶 doubao_tts 的注册型克隆试听；避免落到下方
+        # CosyVoice/DashScope 通用分支拿着无效 API key 误合成报 401）。
+        if provider == 'glm_tts':
+            glm_api_key = _config_manager.get_tts_api_key('glm_tts')
+            if not glm_api_key:
+                return JSONResponse({
+                    'success': False,
+                    'error': 'GLM_TTS_API_KEY_MISSING',
+                    'code': 'GLM_TTS_API_KEY_MISSING',
+                }, status_code=400)
+            glm_base_url = (voice_data or {}).get('glm_base_url')
+            try:
+                glm_client = GlmVoiceCloneClient(
+                    api_key=glm_api_key,
+                    base_url=glm_base_url,
+                )
+                audio_data = await glm_client.synthesize_preview(voice_id, text)
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                logger.info(f"GLM 音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                return {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'}
+            except GlmTtsError as e:
+                logger.error(f"GLM 音色 {voice_id} 预览失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'GLM 语音预览失败: {str(e)}',
+                    'code': 'GLM_TTS_PREVIEW_FAILED',
+                }, status_code=502)
+            except Exception as e:
+                logger.error(f"GLM 音色 {voice_id} 预览异常: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'GLM 语音预览失败: {str(e)}',
+                    'code': 'GLM_TTS_PREVIEW_FAILED',
                 }, status_code=500)
 
         # vLLM-Omni 克隆音色（provider=='vllm_omni'）试听：读 voice_meta 里的参考样本

@@ -303,6 +303,27 @@ def test_secure_websocket_requires_https_same_origin():
     assert sent[0]["code"] == 1008
 
 
+def test_outer_tls_proxy_websocket_accepts_https_page_on_same_host(monkeypatch):
+    """TLS ended at a declared proxy that forwards no trusted scheme."""
+    middleware = _make(trusted_hosts="neko.example")
+
+    def connect(host, origin):
+        return _run(_drive(middleware, _scope("websocket", host, origin=origin, scheme="ws")))[0]
+
+    monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
+    assert connect("neko.example", "https://neko.example") is False
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "1")
+    assert connect("neko.example", "https://neko.example") is True
+    assert connect("neko.example:8443", "https://neko.example:8443") is True
+    # Browsers omit the default port; a proxy may still forward Host ":443".
+    assert connect("neko.example:443", "https://neko.example") is True
+    assert connect("neko.example", "https://neko.example:443") is True
+    assert connect("neko.example:80", "https://neko.example") is False
+    # Only this Host and its explicit port; never another host or port.
+    assert connect("neko.example:8443", "https://neko.example") is False
+    assert connect("neko.example", "https://other.example") is False
+
+
 def test_lifespan_scope_passes_through():
     middleware = _make()
     hit, _ = _run(

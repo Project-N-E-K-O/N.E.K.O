@@ -774,6 +774,8 @@ class _ToolingMixin:
             # GLM 文档要求："ServerVAD 时更新 tools 需同时传入 turn_detection"。
             # 此方法的调用前提是已 connect()，连接时已把 turn_detection 设成
             # server_vad —— 这里复发同样的值即可，免得服务端 reset 成默认。
+            # beta_fields 不在这里重复：update_session 对 GLM 的局部更新会
+            # 自动补上，漏掉它会让下游重连超限并关掉连接。
             await self.update_session({
                 "tools": self._tools_for_openai_realtime(),
                 "turn_detection": {"type": "server_vad"},

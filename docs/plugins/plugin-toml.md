@@ -149,6 +149,17 @@ startup_failure = "warn"
 - `auto_start` — When `true`, starts automatically with N.E.K.O; otherwise start manually from the panel
 - `priority` — Optional integer runtime ordering hint
 
+Plugin Manager's independent auto-start switch controls the saved preference.
+By default, manual Start/Stop/Reload does not change that preference. Newly
+installed plugins remain pending auto-start approval until the independent
+switch is enabled; starting or reloading them manually never grants approval.
+
+Setting `NEKO_PLUGIN_SYNC_AUTO_START_ON_TOGGLE=1` opts into legacy preference
+synchronization: manual Start/Reload saves `auto_start=true`, and Stop saves
+`auto_start=false`. The switch's "manual start/stop does not change this" hint
+therefore describes the default mode. Even in legacy mode, a pending plugin
+still requires explicit approval through the independent auto-start switch.
+
 ---
 
 ### `[plugin.i18n]` — Multi-language support
@@ -260,3 +271,67 @@ Writable state is separate from the source or installed executable directory:
 ```
 
 Only `plugin.toml` and the importable Python module named by `[plugin].entry` are required. The module does not have to be `__init__.py`, although that is the common layout. Installed package code remains separate from this writable state.
+
+## JSON Schema for the configuration panel
+
+Place an optional `config.schema.json` beside the installed plugin's `plugin.toml` to describe field names, help text, and controls on the generic Configuration tab. No manifest setting or custom UI is required. Ship this file with the plugin, not in its writable runtime/profile directory. If your package uses an include allow-list, include this file.
+
+For example, a schema for the `[notes]` section:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "notes": {
+      "type": "object",
+      "title": "Notes",
+      "properties": {
+        "max_per_page": {
+          "type": "integer",
+          "title": "Notes per page",
+          "description": "Maximum number of notes shown on a page.",
+          "x-title-i18n": { "en": "Notes per page", "zh-CN": "每页笔记数量" },
+          "x-description-i18n": { "en": "Maximum number of notes shown on a page.", "zh-CN": "每页最多显示多少条笔记。" },
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        },
+        "auto_classify": {
+          "type": "boolean",
+          "title": "Automatic classification",
+          "description": "Automatically organize new notes."
+        },
+        "sort_order": {
+          "type": "string",
+          "title": "Sort order",
+          "enum": ["newest", "oldest"]
+        }
+      }
+    }
+  }
+}
+```
+
+| Keyword | Form behavior |
+| --- | --- |
+| `properties` | Describes object fields using the actual configuration structure. Existing undeclared fields remain editable. |
+| `additionalProperties` | An object schema describes dynamic keys absent from `properties`, including password controls and preview masking. Named properties take precedence. Boolean values supply no field annotations; this editor does not enforce key admission. |
+| `title` / `description` | Plain-text label and help text. The raw key remains visible as secondary information and is the fallback label. |
+| `type` | A single `string`, `number`, `integer`, `boolean`, `object`, or `array` selects the corresponding control. Without it, the editor infers the type from the current value. |
+| `items` | One child schema for array elements, including nested objects and arrays. |
+| `enum` | A nonempty list of strings, numbers, or booleans produces a dropdown and preserves value types. |
+| `minimum` / `maximum` | Numeric control bounds; `integer` controls accept only integers. |
+| `maxLength` | Maximum text input length. |
+| `readOnly` | Disables editing of the field and its child controls. |
+| String fields with `writeOnly: true` | Uses a password input with a reveal toggle and masks non-empty values in baseline hints, change summaries, and JSON data views. Real values are retained for saving; this is display masking, not encryption or access control. |
+| `default` | Initial value when explicitly adding a field or array item; not a runtime configuration default. |
+| `x-title-i18n` / `x-description-i18n` | Optional locale-to-text maps. Standard `title` and `description` remain strings. |
+
+Translation fallback follows the panel's existing order: exact locale, primary language, `en-US`, `en`, the first nonempty map value, then `title` / `description`. The example only shows two languages; provide every language supported by your plugin when publishing.
+
+This is a form presentation contract, **not a complete JSON Schema validator or a server-side authorization/validation boundary**. `required`, `pattern`, composition, `$ref`, boolean schemas, union types, and `null` controls are not supported by this form. The host never fetches `$schema` or `$ref` URLs. Plugins remain responsible for runtime validation; keep runtime defaults in `plugin.toml` / `config.example.toml`.
+
+Opening the page never inserts schema defaults or writes a profile. Schema-only fields are shown but are only written after editing. Object merging and whole-array replacement retain existing behavior. The top-level `plugin` section remains protected and excluded from profile editing.
+
+The file must be UTF-8 JSON with an object root (`"type": "object"`), at most 256 KiB and at most 32 levels of `properties` / `items` / `additionalProperties` nesting. Missing files retain the old editor. Invalid files or malformed supported keywords produce a warning and fall back to generic editing. Configuration queries return metadata separately as `config_schema`; it never becomes part of `config` or the profile.

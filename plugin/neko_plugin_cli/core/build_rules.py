@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import os
 from fnmatch import fnmatchcase
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from plugin.utils.source_paths import (
+    VENDOR_SYNC_BACKUP_PREFIX as VENDOR_SYNC_BACKUP_PREFIX,
+    VENDOR_SYNC_GLOBS as VENDOR_SYNC_GLOBS,
+    VENDOR_SYNC_PENDING_SUFFIX as VENDOR_SYNC_PENDING_SUFFIX,
+    VENDOR_SYNC_STAGING_PREFIX as VENDOR_SYNC_STAGING_PREFIX,
+    is_vendor_sync_path,
+    is_metadata_probe_path,
+)
 
 # Built-in excludes are hard safety defaults. User rules extend them, but do
 # not replace them, so common cache/build artifacts never leak into packages.
@@ -91,6 +101,30 @@ def load_build_rules(pyproject_toml: dict[str, object] | None) -> BuildRuleSet:
     return BuildRuleSet.model_validate(build_table)
 
 
+def reraise_walk_error(error: OSError) -> None:
+    """os.walk onerror that fails like Path.rglob did: rglob skipped only
+    directories it was denied, and raised any other error (an I/O error on a
+    network filesystem), so a build or check never silently drops a subtree."""
+    if not isinstance(error, PermissionError):
+        raise error
+
+
+def walk_plugin_tree(source_dir: Path) -> list[Path]:
+    """Every path under source_dir, like sorted(source_dir.rglob("*")), but
+    without descending into sync work dirs: a backup is retained when it
+    holds a mount, and walking it could enumerate another filesystem."""
+    paths: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(source_dir, onerror=reraise_walk_error):
+        base = Path(dirpath)
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if not is_vendor_sync_path((base / name).relative_to(source_dir))
+        ]
+        paths.extend(base / name for name in (*dirnames, *filenames))
+    return sorted(paths)
+
+
 def should_skip_path(relative_path: Path, *, is_dir: bool, rules: BuildRuleSet) -> bool:
     # Matching always works on normalized archive-style relative paths so the
     # same rule semantics apply across platforms.
@@ -100,10 +134,14 @@ def should_skip_path(relative_path: Path, *, is_dir: bool, rules: BuildRuleSet) 
     dir_parts = relative_path.parts if is_dir else relative_path.parts[:-1]
     if dir_parts and dir_parts[0] in _DEFAULT_ROOT_EXCLUDE_DIR_NAMES:
         return True
+    if is_vendor_sync_path(relative_path):
+        return True
     if any(part in _DEFAULT_EXCLUDE_DIR_NAMES for part in dir_parts):
         return True
 
     if not is_dir:
+        if is_metadata_probe_path(relative_path):
+            return True
         if relative_path.name in _DEFAULT_EXCLUDE_FILE_NAMES:
             return True
         if relative_path.suffix in _DEFAULT_EXCLUDE_SUFFIXES:

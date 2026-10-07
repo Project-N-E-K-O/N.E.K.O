@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import math
 import multiprocessing
 import time
@@ -14,7 +15,10 @@ from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from typing import Any, Literal
 
+logger = logging.getLogger(__name__)
+
 from .contracts import (
+    MAX_SPEAKER_BACKEND_PCM_BYTES,
     MAX_SPEAKER_SHADOW_CANDIDATE_PCM_BYTES,
     MAX_SPEAKER_SHADOW_FRAME_PCM_BYTES,
     MAX_SPEAKER_SHADOW_RETAINED_PCM_BYTES,
@@ -127,10 +131,18 @@ class _BackendProcessHost:
         *,
         factory: SpeakerShadowBackendFactory,
         terminate_timeout_seconds: float,
+        max_pcm_bytes: int = MAX_SPEAKER_SHADOW_CANDIDATE_PCM_BYTES,
     ) -> None:
+        if (
+            type(max_pcm_bytes) is not int
+            or not 0 < max_pcm_bytes <= MAX_SPEAKER_BACKEND_PCM_BYTES
+            or max_pcm_bytes % 2
+        ):
+            raise ValueError("backend host PCM capacity is invalid")
+        self._max_pcm_bytes = max_pcm_bytes
         context = multiprocessing.get_context("spawn")
         parent_connection, child_connection = context.Pipe(duplex=True)
-        pcm_buffer = context.RawArray("B", MAX_SPEAKER_SHADOW_CANDIDATE_PCM_BYTES)
+        pcm_buffer = context.RawArray("B", max_pcm_bytes)
         process = context.Process(
             target=_backend_host_main,
             args=(factory, child_connection, pcm_buffer),
@@ -156,12 +168,14 @@ class _BackendProcessHost:
         *,
         factory: SpeakerShadowBackendFactory,
         terminate_timeout_seconds: float,
+        max_pcm_bytes: int = MAX_SPEAKER_SHADOW_CANDIDATE_PCM_BYTES,
     ) -> _BackendProcessHost:
         """Construct IPC resources and spawn outside the asyncio event loop."""
 
         host = cls(
             factory=factory,
             terminate_timeout_seconds=terminate_timeout_seconds,
+            max_pcm_bytes=max_pcm_bytes,
         )
         host.start()
         return host
@@ -202,7 +216,7 @@ class _BackendProcessHost:
         *,
         timeout_seconds: float,
     ) -> float:
-        if len(pcm16) > MAX_SPEAKER_SHADOW_CANDIDATE_PCM_BYTES:
+        if len(pcm16) > self._max_pcm_bytes:
             raise _BackendHostError("candidate PCM exceeds host buffer")
         if self._pcm_buffer is None:
             raise _BackendHostError("backend host PCM buffer is closed")
@@ -1000,6 +1014,14 @@ class SpeakerShadowRuntime:
             for threshold, blocked in would_block:
                 if blocked:
                     self._would_block_counts[threshold] += 1
+            logger.info(
+                "[voice-chain] stage=voiceprint_observation generation=%s scope=%s blocked=%s terminal=%s audio_ms=%s",
+                generation,
+                candidate.scope,
+                any(blocked for _, blocked in would_block),
+                terminal,
+                audio_ms,
+            )
             callback = self._on_observation
             if callback is None:
                 return

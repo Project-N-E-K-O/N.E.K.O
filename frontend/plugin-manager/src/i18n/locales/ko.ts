@@ -1,7 +1,12 @@
+import { modelApiMessages } from '../model-api'
+import { modelBindingsMessages } from '../model-bindings'
+
 /**
  * 한국어 언어 팩
  */
 export default {
+  modelApi: modelApiMessages['ko'],
+  modelBindings: modelBindingsMessages['ko'],
   development: {
     guidePurpose: "이 화면은 클릭 한 번으로 플러그인을 개발해 주는 기능이 아닙니다. 기존 소스를 가져올 수 있는 플러그인으로 한 번에 패키징하고 개발을 계속할 수 있도록 돕습니다.",
     navTitle: "개발 플러그인",
@@ -42,6 +47,15 @@ export default {
     removeHint: "플러그인을 중지하고 연결을 해제할까요? 소스와 실행 데이터는 유지됩니다.",
   },
   common: {
+    surfaceLanguagePending: "앱 언어가 변경되었습니다. 저장하지 않은 내용을 보호하기 위해 패널 언어를 유지합니다.",
+    surfaceApplyLanguage: "언어 적용 및 패널 새로고침",
+    surfaceApplyLanguageConfirm: "패널을 새로고침하면 저장하지 않은 내용이 손실됩니다. 계속하시겠습니까?",
+
+    languageLoading: "언어를 불러오는 중입니다. 화면은 계속 사용할 수 있습니다",
+    languageLoadFailed: "언어를 불러오지 못했습니다. 현재 언어를 유지합니다.",
+    languageRetry: "언어 다시 시도",
+    languageReload: "페이지 새로고침",
+
     loading: '로딩 중...',
     refresh: '새로고침',
     search: '검색',
@@ -142,6 +156,8 @@ export default {
     installTaskLost: '설치 작업을 찾을 수 없습니다. 플러그인 상태를 확인한 후 다시 시도하세요.',
     installDialogTitle: '{name} 설치 중',
     installDialogTitleUpgrade: '{name} 업그레이드 중',
+    installFailedTitle: '설치 실패: {name}',
+    installFailedTitleUpgrade: '업그레이드 실패: {name}',
     installCompleted: '설치 완료',
     installCompletedUpgrade: '업그레이드 완료',
     rollbackRunning: '설치 실패, 롤백 중...',
@@ -157,6 +173,16 @@ export default {
       failed: '실패',
       canceled: '취소됨',
     },
+    installStep: {
+      download: '다운로드',
+      verify: '검증',
+      install: '설치',
+      replace: '파일 교체',
+      rollback: '롤백',
+      completed: '완료',
+    },
+    installDetails: '상세',
+    installDetailsHide: '상세 닫기',
     noDownloadUrl: '다운로드 URL을 사용할 수 없음',
     pairRequired: 'Bridge Token 페어링이 필요합니다',
     recommended: '추천',
@@ -231,10 +257,30 @@ export default {
     packageHashMismatch: '플러그인 패키지 검증에 실패했습니다.',
     downloadFailed: '플러그인 패키지 다운로드에 실패했습니다.',
     marketListFetchFailed: '플러그인 Market을 일시적으로 사용할 수 없습니다.',
+    catalogNotConfigured: '플러그인 Market 주소가 설정되지 않았습니다.',
+    releaseMismatch: '설치 요청이 Market 배포 기록과 일치하지 않습니다. 플러그인 Market을 새로고침한 후 다시 시도하세요.',
     unsafeProfilePath: '기록된 패키지 Profile 경로가 안전하지 않습니다.',
     packageIdentityMismatch: '패키지 ID가 대상 플러그인과 일치하지 않습니다.',
     confirmationChanged: '확인 후 플러그인 또는 패키지가 변경되었습니다. 새 계획을 확인하세요.',
     confirmationRequired: '설치 전에 현재 업그레이드 계획을 확인하세요.'
+  },
+  pluginUpdates: {
+    button: '업데이트 확인',
+    buttonBusy: '확인 중…',
+    title: '플러그인 업데이트',
+    titleWithCount: '플러그인 업데이트 ({count})',
+    checking: '업데이트를 확인하는 중…',
+    refresh: '새로 고침',
+    close: '닫기',
+    dragHint: '드래그하여 이동',
+    allUpToDate: '모든 플러그인이 최신 상태입니다',
+    checkIncomplete: '일부 플러그인의 최신 버전을 확인하지 못했습니다. 자세한 내용은 서버 로그를 확인하세요.',
+    update: '업데이트',
+    updating: '업데이트 중…',
+    updateAll: '모두 업데이트',
+    updateAllProgress: '업데이트 중 {done}/{total}',
+    updateSucceeded: '업데이트 완료: {name}',
+    manualRequired: '이 플러그인은 마켓 페이지에서 업데이트하세요',
   },
   settings: {
     channel: '업데이트 채널',
@@ -301,6 +347,7 @@ export default {
     installFallback: '미러 소스를 선택할 수 없어 GitHub 직접 연결을 사용합니다.'
   },
   plugins: {
+    configSchemaInvalid: '플러그인 설정 스키마가 유효하지 않아 일반 설정 편집기를 표시합니다.',
     title: '플러그인 목록',
     name: '플러그인 이름',
     id: '플러그인 ID',
@@ -394,6 +441,7 @@ export default {
     addItem: '항목 추가',
     fieldName: '필드 이름',
     fieldNameRequired: '필드 이름은 필수입니다',
+    readOnlyField: '이 필드는 읽기 전용이므로 추가할 수 없습니다.',
     invalidFieldKey: '잘못된 필드 이름입니다',
     fieldType: '필드 유형',
     duplicateFieldKey: '필드 이름이 이미 존재합니다. 다른 이름을 사용하세요.',
@@ -405,6 +453,10 @@ export default {
     disabled: '비활성화됨',
     autoStart: '자동 시작',
     manualStart: '수동 시작',
+    autoStartHint: 'N.E.K.O 실행 시 이 플러그인을 자동으로 시작합니다. 수동으로 시작하거나 중지해도 이 설정은 바뀌지 않습니다.',
+    autoStartDisabledHint: '이 플러그인은 비활성화되어 있습니다. 자동 시작을 켜면 다음 실행을 위해 플러그인도 활성화되지만 지금 시작되지는 않습니다.',
+    autoStartBlockedHint: '설정은 켜져 있지만 플러그인이 비활성화되었거나 승인 대기 중이므로 다음 실행 시 자동 시작되지 않습니다. 껐다가 다시 켜면 활성화 및 자동 시작이 승인됩니다.',
+    autoStartUnsupportedDevelopment: '개발 중인 플러그인은 자동으로 시작되지 않습니다. 수동으로 시작하세요.',
     fetchFailed: '플러그인 목록을 불러오지 못했습니다',
     pluginType: '유형',
     pluginTypeNormal: '플러그인',
@@ -546,6 +598,8 @@ export default {
       blockedLegacyPlugin: '이 플러그인의 이전 버전이 아직 설치되어 있습니다. 계속하기 전에 {plugin}을(를) 제거하세요.',
       blockedOwnershipUnknown: '기존 플러그인 디렉터리의 소유권을 확인할 수 없습니다. 설치 원본 기록을 복구한 후 다시 시도하세요.',
       blockedInstallSourceReadOnly: '설치 원본 기록을 사용할 수 없거나 읽기 전용입니다. 기록을 복구한 후 다시 시도하세요.',
+      installSucceeded: '설치가 완료되었습니다. 플러그인 {count}개를 처리했습니다.',
+      completedWithWarnings: '{plugin}이(가) 설치되었지만 경고가 있습니다: {reasons}',
       rollbackCompleted: '업그레이드에 실패하여 이전 버전을 복원했습니다.',
       rollbackIncomplete: '업그레이드에 실패했고 롤백도 완료되지 않았습니다. 계속하기 전에 플러그인 상태를 확인하세요.',
       error: {
@@ -556,6 +610,7 @@ export default {
         pluginManifestInvalid: '플러그인 plugin.toml 형식이 잘못되었습니다. 작성자에게 수정 후 다시 빌드하도록 요청하세요.',
         identityMismatch: '플러그인 폴더 이름과 plugin.toml의 ID가 일치하지 않습니다. 작성자에게 패키지 수정을 요청하세요.',
         hashMismatch: '패키지 내용이 검증 정보와 일치하지 않아 설치를 거부했습니다. 설치 변경은 남지 않았습니다.',
+        profileOwnershipConflict: '이 패키지의 프로필 폴더가 이미 있지만 이 패키지 소유가 아닙니다. 이전 설치에서 남은 것일 수 있습니다. 설치하지 않았습니다.',
         inspectFailed: '이 플러그인 패키지를 검사할 수 없습니다. 파일이 존재하고 올바른 N.E.K.O 패키지인지 확인한 후 다시 시도하세요.',
         verifyFailed: '이 플러그인 패키지를 검증할 수 없습니다. 다시 다운로드하거나 작성자에게 재빌드를 요청한 후 다시 시도하세요.',
         installFailed: '이 플러그인 패키지를 설치할 수 없습니다. 확인되지 않은 설치 변경은 남지 않았습니다.'
@@ -759,6 +814,9 @@ export default {
     pluginDeleted: '플러그인이 삭제되었습니다',
     pluginDeletedBuiltinRestartFailed: '플러그인 {plugin}은(는) 삭제되었지만 복원된 내장 버전을 시작하지 못했습니다: {error}',
     startFailed: '시작에 실패했습니다',
+    autoStartEnabled: '자동 시작을 켰습니다',
+    autoStartDisabled: '자동 시작을 껐습니다',
+    autoStartUpdateFailed: '자동 시작 설정을 업데이트하지 못했습니다',
     stopFailed: '정지에 실패했습니다',
     reloadFailed: '리로드에 실패했습니다',
     buildFailed: '플러그인 패키징에 실패했습니다',
@@ -772,6 +830,7 @@ export default {
     serviceUnavailable: '서비스를 사용할 수 없습니다',
     networkError: '네트워크 오류. 연결을 확인하세요.',
     requestTimeout: '요청 시간이 초과되었습니다. 다시 시도하세요.',
+    csrfBootstrapFailed: '보안 토큰을 가져올 수 없습니다. 리버스 프록시를 사용하는 경우 /security/csrf-token이 플러그인 서버로 전달되는지 확인하세요.',
     pluginLifecycleTimeout: '플러그인 시작 또는 재시작 시간이 초과되었습니다. 플러그인 로그를 확인하세요.'
   },
   welcome: {

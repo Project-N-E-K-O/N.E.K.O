@@ -407,7 +407,7 @@ def test_music_player_reports_confirmed_state_to_backend():
     assert 'elif action == "music_playback_state":' in router_source
     assert "handle_music_playback_state(" in router_source
     superseded_gate = router_source.split(
-        "if session_id.get(lanlan_name) != this_session_id:", 1
+        "if (session_id.get(lanlan_name) != this_session_id", 1
     )[1].split("action = message.get(\"action\")", 1)[0]
     assert "if _is_music_playback_state_message(message):" in superseded_gate
     assert superseded_gate.index("_is_music_playback_state_message") < superseded_gate.index(
@@ -447,7 +447,7 @@ def test_same_track_retry_refreshes_context_and_rebuilds_loading_player():
     player_source = MUSIC_UI_PATH.read_text(encoding="utf-8")
     duplicate_path = player_source.split(
         "// 5秒去重逻辑", 1
-    )[1].split("if (isSameTrack(trackInfo) && !isPlayerInDOM())", 1)[0]
+    )[1].split("if (isSameTrack(trackInfo) && !hasLocalMusicBar())", 1)[0]
 
     assert "duplicateAudio.readyState >= 2" in duplicate_path
     assert "setMusicPlaybackContext(playbackOptions);" in duplicate_path
@@ -455,7 +455,7 @@ def test_same_track_retry_refreshes_context_and_rebuilds_loading_player():
     assert "reportMusicPlaybackState('playing', null, duplicateReportContext);" in duplicate_path
 
     fast_path = player_source.split(
-        "if (isSameTrack(trackInfo) && isPlayerInDOM()) {",
+        "if (isSameTrack(trackInfo) && hasLocalMusicBar()) {",
         1,
     )[1].split("// A single <audio> cannot identify", 1)[0]
     assert "player.audio.readyState < 2" in fast_path
@@ -472,7 +472,7 @@ def test_same_track_fast_path_rebuilds_missing_player_instance():
     player_source = MUSIC_UI_PATH.read_text(encoding="utf-8")
 
     fast_path = player_source.split(
-        "if (isSameTrack(trackInfo) && isPlayerInDOM()) {",
+        "if (isSameTrack(trackInfo) && hasLocalMusicBar()) {",
         1,
     )[1].split("// A single <audio> cannot identify", 1)[0]
     assert "if (!player) {" in fast_path

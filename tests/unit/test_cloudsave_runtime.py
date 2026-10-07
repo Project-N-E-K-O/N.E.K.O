@@ -92,7 +92,7 @@ def _make_config_manager(
 
 
 def _write_runtime_state(cm, *, character_name="小满"):
-    from utils.config_manager import set_reserved
+    from utils.config_manager import ensure_catgirl_character_id, set_reserved
 
     characters = cm.get_default_characters()
     characters["猫娘"] = {
@@ -104,6 +104,10 @@ def _write_runtime_state(cm, *, character_name="小满"):
     set_reserved(characters["猫娘"][character_name], "avatar", "asset_source", "steam_workshop")
     set_reserved(characters["猫娘"][character_name], "avatar", "asset_source_id", "123456")
     set_reserved(characters["猫娘"][character_name], "avatar", "live2d", "model_path", "example/example.model3.json")
+    # 模拟真实保存链路（新建/导入角色时即持久化 character_id），否则之后任何一次重新读盘都会补发新 ID，
+    # 使「读回内容 == 写入内容」类断言失效。跨设备指纹比较不依赖这里，见
+    # test_cloudsave_summary_matches_identical_content_despite_device_local_character_ids。
+    ensure_catgirl_character_id(characters["猫娘"][character_name])
     cm.save_characters(characters, bypass_write_fence=True)
 
     prefs_path = Path(cm.get_config_path("user_preferences.json"))
@@ -233,6 +237,23 @@ def _add_runtime_character(cm, character_name: str, *, recent_text: str) -> None
         ensure_ascii=False,
         indent=2,
     )
+
+
+def _load_characters_from_disk(cm):
+    """Drop the in-process cache so load_characters re-reads the file like a fresh process."""
+    cm._characters_cache = None
+    cm._characters_cache_mtime = None
+    return cm.load_characters()
+
+
+def _drop_persisted_character_ids(cm):
+    """Rewrite characters.json without character_id, like data saved before the id existed."""
+    from utils.config_manager import delete_reserved
+
+    characters = cm.load_characters()
+    for payload in characters["猫娘"].values():
+        delete_reserved(payload, "character_id")
+    cm.save_characters(characters, bypass_write_fence=True)
 
 
 @pytest.mark.unit
@@ -479,6 +500,69 @@ def test_bootstrap_repairs_existing_seeded_install_with_backup_and_merged_prefer
 
     merged_voice_storage = json.loads((cm.config_dir / "voice_storage.json").read_text(encoding="utf-8"))
     assert "legacy_bucket" in merged_voice_storage
+
+
+@pytest.mark.unit
+def test_legacy_repair_imports_plugin_models_into_seeded_target(tmp_path):
+    from utils.cloudsave_runtime import import_legacy_runtime_root_if_needed
+
+    cm = _make_config_manager(tmp_path / "current")
+    cm.project_config_dir = tmp_path / "empty_project_config"
+    cm.ensure_config_directory()
+    atomic_write_json(cm.config_dir / "characters.json", cm.get_default_characters())
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    shutil.copytree(cm.config_dir, legacy_root / "config")
+    # The target already scores higher under the old rules: only the new
+    # plugin-model marker should make importing the legacy file worthwhile.
+    atomic_write_json(cm.config_dir / "core_config.json", {"custom": "current"})
+    plugin_models = {
+        "schema_version": 1,
+        "slots": {"slot_a": {"model": "example", "api_key": "test-only"}},
+        "bindings": {"example_plugin": {"analysis": "slot_a"}},
+    }
+    atomic_write_json(legacy_root / "config" / "plugin_models.json", plugin_models)
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+
+    result = import_legacy_runtime_root_if_needed(cm)
+
+    assert result["migrated"] is True
+    assert result["repair_reason"] == "missing_plugin_models"
+    assert json.loads((cm.config_dir / "plugin_models.json").read_text(encoding="utf-8")) == plugin_models
+
+
+@pytest.mark.unit
+def test_legacy_repair_preserves_current_plugin_models_as_one_unit_with_backup(tmp_path):
+    from utils.cloudsave_runtime import import_legacy_runtime_root_if_needed
+
+    cm = _make_config_manager(tmp_path / "current")
+    cm.project_config_dir = tmp_path / "empty_project_config"
+    cm.ensure_config_directory()
+    atomic_write_json(cm.config_dir / "characters.json", cm.get_default_characters())
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    shutil.copytree(cm.config_dir, legacy_root / "config")
+    legacy_models = {
+        "schema_version": 1,
+        "slots": {"slot_a": {"model": "old", "api_key": "old-test-key"}},
+        "bindings": {"old_plugin": {"analysis": "slot_a"}},
+    }
+    current_models = {
+        "schema_version": 1,
+        "slots": {"slot_a": {"model": "current", "api_key": ""}},
+        "bindings": {},
+    }
+    atomic_write_json(legacy_root / "config" / "plugin_models.json", legacy_models)
+    atomic_write_json(cm.config_dir / "plugin_models.json", current_models)
+    # An unrelated missing config triggers repair of an otherwise seeded root.
+    atomic_write_json(legacy_root / "config" / "workshop_config.json", {})
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+
+    result = import_legacy_runtime_root_if_needed(cm)
+
+    assert result["migrated"] is True
+    assert json.loads((cm.config_dir / "plugin_models.json").read_text(encoding="utf-8")) == current_models
+    backup_path = Path(result["backup_path"]) / "config" / "plugin_models.json"
+    assert json.loads(backup_path.read_text(encoding="utf-8")) == current_models
+    assert json.loads((legacy_root / "config" / "plugin_models.json").read_text(encoding="utf-8")) == legacy_models
 
 
 @pytest.mark.unit
@@ -734,6 +818,123 @@ def test_runtime_root_detects_user_created_avatar_tools(tmp_path):
     (tool_dir / "record.json").write_text('{"recordVersion":2}', encoding="utf-8")
 
     assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is True
+
+
+def _make_theater_scaffolding(theater_root: Path) -> None:
+    """Recreate what lazy theater maintenance leaves behind without user data."""
+
+    for relative in (
+        "numeric_v2/packages",
+        "numeric_v2/sessions",
+        "numeric_v2/public_archives",
+        "numeric_v2/end_receipts",
+        "numeric_v2/delete_transactions",
+        "workshop/projects",
+    ):
+        (theater_root / relative).mkdir(parents=True, exist_ok=True)
+    (theater_root / "numeric_v2" / "packages" / ".imports.lock").write_text("", encoding="utf-8")
+    (theater_root / "numeric_v2" / "packages" / ".defaults_initialized").write_text("{}", encoding="utf-8")
+    (theater_root / "numeric_v2" / "sessions" / ".creates.lock").write_text("", encoding="utf-8")
+    (theater_root / "numeric_v2" / ".story_sessions-abc.tmp").write_text("{", encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_theater_scaffolding_alone_is_not_user_content(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import runtime_root_has_user_content
+
+    root = Path(cm.app_docs_dir)
+    _make_theater_scaffolding(root / "theater")
+
+    assert runtime_root_has_user_content(root, config_manager=cm) is False
+
+
+@pytest.mark.unit
+def test_theater_scaffolding_after_real_maintenance_is_not_user_content(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from services.theater.numeric_v2_maintenance import maintain_numeric_v2_storage_once
+    from services.theater.numeric_v2_registry import NumericV2PackageRegistry
+    from utils.cloudsave_runtime import runtime_root_has_user_content
+
+    root = Path(cm.app_docs_dir)
+    theater_root = root / "theater"
+    maintain_numeric_v2_storage_once(
+        theater_root,
+        NumericV2PackageRegistry(theater_root / "numeric_v2" / "packages"),
+        character_ids_by_name={},
+    )
+
+    assert theater_root.is_dir()
+    assert runtime_root_has_user_content(root, config_manager=cm) is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("relative", [
+    "numeric_v2/packages/story_a.json",
+    "numeric_v2/sessions/session_a.json",
+    "numeric_v2/story_sessions.json",
+    "numeric_v2/public_archives/archive_a.json",
+    "numeric_v2/end_receipts/receipt_a.json",
+    "numeric_v2/delete_transactions/tx/manifest.json",
+    "numeric_v2/quarantine/session_b.json",
+    "workshop/projects/project_a.json",
+])
+def test_one_theater_record_counts_as_user_content(tmp_path, relative):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import runtime_root_has_user_content
+
+    root = Path(cm.app_docs_dir)
+    _make_theater_scaffolding(root / "theater")
+    record = root / "theater" / relative
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("{}", encoding="utf-8")
+
+    assert runtime_root_has_user_content(root, config_manager=cm) is True
+
+
+@pytest.mark.unit
+def test_fresh_install_has_no_user_content_after_plain_character_load(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import runtime_root_has_user_content
+    from utils.config_manager import get_reserved
+
+    root = Path(cm.app_docs_dir)
+    assert runtime_root_has_user_content(root, config_manager=cm) is False
+
+    cm.get_character_data()
+    cm.load_characters()
+
+    # 普通读取会为默认角色生成并写回 character_id，但这不算用户内容。
+    characters_path = Path(cm.get_runtime_config_path("characters.json"))
+    persisted = json.loads(characters_path.read_text(encoding="utf-8"))
+    assert persisted["猫娘"]
+    assert all(get_reserved(payload, "character_id") for payload in persisted["猫娘"].values())
+    assert runtime_root_has_user_content(root, config_manager=cm) is False
+
+    characters = cm.load_characters()
+    first_name = next(iter(characters["猫娘"]))
+    characters["猫娘"][first_name]["user_edited_note"] = "changed"
+    cm.save_characters(characters, bypass_write_fence=True)
+    assert runtime_root_has_user_content(root, config_manager=cm) is True
+
+
+@pytest.mark.unit
+def test_characters_seeded_from_another_language_default_still_count_as_pristine(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from config import get_localized_default_characters
+    from utils.cloudsave_runtime import runtime_root_has_user_content
+
+    # 写入时的 Steam 语言可能与判定时不同。
+    with patch.object(cm, "get_default_characters", return_value=get_localized_default_characters("ru")):
+        cm.load_characters()
+
+    assert Path(cm.get_runtime_config_path("characters.json")).is_file()
+    assert runtime_root_has_user_content(Path(cm.app_docs_dir), config_manager=cm) is False
 
 
 @pytest.mark.unit
@@ -1585,6 +1786,54 @@ def test_cloudsave_summary_classifies_local_cloud_and_diverged_states(tmp_path):
     assert items_by_name["本地独有"]["available_actions"] == ["upload"]
     assert items_by_name["云端独有"]["relation_state"] == "cloud_only"
     assert items_by_name["云端独有"]["available_actions"] == ["download"]
+
+
+@pytest.mark.unit
+def test_cloudsave_summary_matches_identical_content_despite_device_local_character_ids(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+
+    from utils.cloudsave_runtime import build_cloudsave_summary, export_local_cloudsave_snapshot
+    from utils.config_manager import get_reserved
+
+    _write_runtime_state(source_cm, character_name="共同角色")
+    _write_runtime_state(target_cm, character_name="共同角色")
+    # 两台设备各自从无 ID 的旧数据升级，由 load_characters 独立补发 ID。
+    _drop_persisted_character_ids(source_cm)
+    _drop_persisted_character_ids(target_cm)
+    source_id = get_reserved(_load_characters_from_disk(source_cm)["猫娘"]["共同角色"], "character_id")
+    target_id = get_reserved(_load_characters_from_disk(target_cm)["猫娘"]["共同角色"], "character_id")
+    assert source_id and target_id and source_id != target_id
+
+    export_local_cloudsave_snapshot(source_cm)
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+    item = build_cloudsave_summary(target_cm)["items"][0]
+    assert item["character_name"] == "共同角色"
+    assert item["relation_state"] == "matched"
+    assert item["local_fingerprint"] == item["cloud_fingerprint"]
+
+
+@pytest.mark.unit
+def test_character_payload_fingerprint_ignores_only_character_id():
+    from utils.cloudsave_runtime import _build_character_payload_fingerprint
+
+    def fingerprint(payload):
+        return _build_character_payload_fingerprint(
+            character_name="小满",
+            character_payload=payload,
+            binding_payload={},
+            memory_hashes={},
+        )
+
+    # 升级前的云端快照没有 character_id，必须与升级后本地（已补身份）的指纹一致。
+    pre_upgrade = {"昵称": "小满", "_reserved": {"voice_id": "v1"}}
+    upgraded = {"昵称": "小满", "_reserved": {"voice_id": "v1", "character_id": "character_" + "a" * 32}}
+    assert fingerprint(upgraded) == fingerprint(pre_upgrade)
+    assert fingerprint({"昵称": "小满", "_reserved": {"character_id": "character_" + "b" * 32}}) == fingerprint(
+        {"昵称": "小满"}
+    )
+    assert fingerprint({"昵称": "改过", "_reserved": {"voice_id": "v1"}}) != fingerprint(pre_upgrade)
 
 
 @pytest.mark.unit
@@ -2681,6 +2930,74 @@ def test_import_cloudsave_character_unit_restores_only_target_character_and_pres
 
 
 @pytest.mark.unit
+def test_cloud_download_keeps_local_character_id_and_adopts_cloud_id_only_for_new_characters(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+
+    from utils.cloudsave_runtime import (
+        build_cloudsave_summary,
+        export_local_cloudsave_snapshot,
+        import_cloudsave_character_unit,
+    )
+    from utils.config_manager import get_reserved, normalize_character_id, set_reserved
+
+    _write_runtime_state(source_cm, character_name="共同角色")
+    _add_runtime_character(source_cm, "云端新角色", recent_text="cloud-new")
+    _add_runtime_character(source_cm, "云端撞号角色", recent_text="cloud-collision")
+    source_characters = _load_characters_from_disk(source_cm)["猫娘"]
+    source_ids = {name: get_reserved(payload, "character_id") for name, payload in source_characters.items()}
+    export_local_cloudsave_snapshot(source_cm)
+
+    _write_runtime_state(target_cm, character_name="共同角色")
+    _add_runtime_character(target_cm, "本地角色", recent_text="local-only")
+    target_characters = _load_characters_from_disk(target_cm)
+    # 本机另一个角色恰好占用了某个云端角色的身份。
+    set_reserved(target_characters["猫娘"]["本地角色"], "character_id", source_ids["云端撞号角色"])
+    target_cm.save_characters(target_characters, bypass_write_fence=True)
+    target_common_id = get_reserved(target_characters["猫娘"]["共同角色"], "character_id")
+    assert target_common_id and target_common_id != source_ids["共同角色"]
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+    import_cloudsave_character_unit(target_cm, "共同角色", overwrite=True)
+    import_cloudsave_character_unit(target_cm, "云端新角色")
+    import_cloudsave_character_unit(target_cm, "云端撞号角色")
+
+    imported = target_cm.load_characters()["猫娘"]
+    assert get_reserved(imported["共同角色"], "character_id") == target_common_id
+    assert get_reserved(imported["云端新角色"], "character_id") == source_ids["云端新角色"]
+    assert get_reserved(imported["本地角色"], "character_id") == source_ids["云端撞号角色"]
+    collision_id = get_reserved(imported["云端撞号角色"], "character_id")
+    assert normalize_character_id(collision_id) == collision_id
+    assert collision_id != source_ids["云端撞号角色"]
+
+    items = {item["character_name"]: item for item in build_cloudsave_summary(target_cm)["items"]}
+    assert items["共同角色"]["relation_state"] == "matched"
+
+
+@pytest.mark.unit
+def test_collection_download_keeps_local_character_id(tmp_path):
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+
+    from utils.cloudsave_runtime import export_cloudsave_character_unit, import_local_cloudsave_snapshot
+    from utils.config_manager import get_reserved
+
+    _write_runtime_state(source_cm, character_name="共同角色")
+    source_id = get_reserved(_load_characters_from_disk(source_cm)["猫娘"]["共同角色"], "character_id")
+    export_cloudsave_character_unit(source_cm, "共同角色")
+
+    _write_runtime_state(target_cm, character_name="共同角色")
+    target_id = get_reserved(_load_characters_from_disk(target_cm)["猫娘"]["共同角色"], "character_id")
+    assert source_id and target_id and source_id != target_id
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+    result = import_local_cloudsave_snapshot(target_cm)
+
+    assert result["snapshot_kind"] == "character_collection"
+    assert get_reserved(target_cm.load_characters()["猫娘"]["共同角色"], "character_id") == target_id
+
+
+@pytest.mark.unit
 def test_single_character_cloudsave_operations_preserve_reflections_archive(tmp_path):
     source_cm = _make_config_manager(tmp_path / "source")
     target_cm = _make_config_manager(tmp_path / "target")
@@ -3033,7 +3350,10 @@ def test_cross_device_import_overwrites_existing_runtime_without_duplicates_or_p
         conn.execute("INSERT INTO entries(content) VALUES (?)", ("target-db-entry",))
         conn.commit()
 
+    from utils.config_manager import delete_reserved, get_reserved
+
     target_characters = target_cm.load_characters()
+    target_character_id = get_reserved(target_characters["\u732b\u5a18"][character_name], "character_id")
     template_character = copy.deepcopy(next(iter(target_characters["\u732b\u5a18"].values())))
     target_characters["\u732b\u5a18"][extra_name] = template_character
     target_characters["\u5f53\u524d\u732b\u5a18"] = extra_name
@@ -3052,7 +3372,14 @@ def test_cross_device_import_overwrites_existing_runtime_without_duplicates_or_p
     import_result = import_local_cloudsave_snapshot(target_cm)
 
     assert import_result["applied_character_count"] == 1
-    assert target_cm.load_characters() == source_cm.load_characters()
+    imported_characters = target_cm.load_characters()
+    source_characters = source_cm.load_characters()
+    # 已存在于本机的角色保留本机 character_id，其余内容与云端一致。
+    assert get_reserved(imported_characters["猫娘"][character_name], "character_id") == target_character_id
+    assert get_reserved(source_characters["猫娘"][character_name], "character_id") != target_character_id
+    for characters_payload in (imported_characters, source_characters):
+        delete_reserved(characters_payload["猫娘"][character_name], "character_id")
+    assert imported_characters == source_characters
     assert not extra_memory_dir.exists()
     assert not (target_memory_dir / "settings.json").exists()
 
@@ -4211,6 +4538,27 @@ def test_runtime_root_counts_an_interrupted_avatar_transaction_as_content(tmp_pa
 
 
 @pytest.mark.unit
+def test_runtime_root_preserves_an_unconfirmed_avatar_deletion(tmp_path):
+    from utils.cloudsave_runtime import _runtime_root_has_user_content
+
+    cm = _make_config_manager(tmp_path)
+    root = Path(cm.app_docs_dir)
+    avatar_tools = root / "avatar_tools"
+    deleting = avatar_tools / ".local-12345678-1234-4123-8123-123456789abc.deleting"
+    deleting.mkdir(parents=True)
+    (deleting / "record.json").write_bytes(b"a concurrently published version")
+    assert _runtime_root_has_user_content(root) is False
+
+    marker = avatar_tools / f"{deleting.name}.unverified"
+    marker.write_bytes(b"{}")
+    assert _runtime_root_has_user_content(root) is True
+
+    marker.unlink()
+    (avatar_tools / ".local-not-a-uuid.deleting.unverified").write_bytes(b"{}")
+    assert _runtime_root_has_user_content(root) is False
+
+
+@pytest.mark.unit
 def test_transactional_entry_pattern_tracks_the_avatar_tool_store_naming():
     """Both sides must agree letter for letter, or a sole surviving copy is deleted."""
     from utils.avatar_tool_store import (
@@ -5287,3 +5635,88 @@ def test_a_broken_state_directory_still_skips_the_tombstone(monkeypatch):
     assert state["tombstones"] == []
     cm.load_cloudsave_local_state.assert_not_called()
     cm.load_character_tombstones_state.assert_not_called()
+
+
+_SEEDED_TOMBSTONES = {"participant:neko_visit:u1": {"forget_epoch": 5, "erased_epoch": 5, "forgotten_at": 1.0}}
+
+
+def _seed_keyed_bookkeeping(character_dir: Path) -> list[Path]:
+    """Seed key records + a staging file (returned: they must go) and a tombstone file (kept, stripped)."""
+    character_dir.mkdir(parents=True, exist_ok=True)
+    paths = [
+        character_dir / "idempotency_keys.json",
+        character_dir / "idempotency_staging" / ("a" * 32 + ".json"),
+    ]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+    (character_dir / "scoped_tombstones.json").write_text(json.dumps(_SEEDED_TOMBSTONES), encoding="utf-8")
+    return paths
+
+
+def _assert_tombstones_kept_without_completion(character_dir: Path) -> None:
+    # 围栏留着（清除前的旧请求仍要被挡），只去掉「已擦完」标记（重放的清除要真的再擦）
+    data = json.loads((character_dir / "scoped_tombstones.json").read_text(encoding="utf-8"))
+    assert data == {"participant:neko_visit:u1": {"forget_epoch": 5, "forgotten_at": 1.0}}
+
+
+@pytest.mark.unit
+def test_character_download_clears_keyed_write_bookkeeping(tmp_path):
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+    )
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    _write_runtime_state(source_cm, character_name="云端角色")
+    export_cloudsave_character_unit(source_cm, "云端角色")
+    _write_runtime_state(target_cm, character_name="本地角色")
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+    downloaded = _seed_keyed_bookkeeping(Path(target_cm.memory_dir) / "云端角色")
+    untouched = _seed_keyed_bookkeeping(Path(target_cm.memory_dir) / "本地角色")
+
+    import_cloudsave_character_unit(target_cm, "云端角色")
+
+    # 被改写记忆的角色：带键写入簿记一并清掉，否则会把被回滚的写入当成已完成 / 已暂存
+    assert not any(path.exists() for path in downloaded)
+    _assert_tombstones_kept_without_completion(Path(target_cm.memory_dir) / "云端角色")
+    # 别的角色不动
+    assert all(path.exists() for path in untouched)
+    untouched_tombstones = json.loads(
+        (Path(target_cm.memory_dir) / "本地角色" / "scoped_tombstones.json").read_text(encoding="utf-8")
+    )
+    assert untouched_tombstones == _SEEDED_TOMBSTONES
+
+
+@pytest.mark.unit
+def test_snapshot_import_clears_keyed_write_bookkeeping(tmp_path):
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot, import_local_cloudsave_snapshot
+
+    cm = _make_config_manager(tmp_path)
+    _write_runtime_state(cm)
+    export_local_cloudsave_snapshot(cm)
+    names = [p.name for p in Path(cm.memory_dir).iterdir() if p.is_dir()]
+    assert names
+    seeded = [path for name in names for path in _seed_keyed_bookkeeping(Path(cm.memory_dir) / name)]
+
+    import_local_cloudsave_snapshot(cm)
+
+    assert not any(path.exists() for path in seeded)
+    for name in names:
+        _assert_tombstones_kept_without_completion(Path(cm.memory_dir) / name)
+
+
+@pytest.mark.unit
+def test_keyed_write_bookkeeping_names_match_the_memory_server():
+    from app.memory_server import idempotency
+    from utils.cloudsave_runtime._shared import (
+        KEYED_WRITE_BOOKKEEPING_FILENAMES,
+        KEYED_WRITE_STAGING_DIRNAME,
+        KEYED_WRITE_TOMBSTONES_FILENAME,
+    )
+
+    # utils 不能 import app（分层）：名字在两边各写一份，这里钉住它们一致
+    assert set(KEYED_WRITE_BOOKKEEPING_FILENAMES) == {idempotency.IDEMPOTENCY_KEYS_FILENAME}
+    assert KEYED_WRITE_TOMBSTONES_FILENAME == idempotency.TOMBSTONES_FILENAME
+    assert KEYED_WRITE_STAGING_DIRNAME == idempotency.STAGING_DIRNAME
