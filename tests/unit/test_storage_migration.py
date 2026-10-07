@@ -592,6 +592,12 @@ def test_committed_policy_recovers_missing_completion_checkpoint(tmp_path, monke
     assert load_storage_policy(config_manager)["selected_root"] == str(target_root.resolve())
     assert load_storage_migration(config_manager)["status"] == "committing"
 
+    # The committed target already matches the checkpoint evidence, so the
+    # retry only finishes the checkpoint: it must not roll back and copy again.
+    def _no_second_copy(*_args, **_kwargs):
+        raise AssertionError("committed migration was copied again")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _no_second_copy)
     second = run_pending_storage_migration(config_manager)
     assert second["completed"] is True
     assert second["payload"]["status"] == STORAGE_MIGRATION_STATUS_COMPLETED
