@@ -2815,3 +2815,25 @@ async def test_an_expired_upload_leaves_another_accounts_report_unmarked(tmp_pat
     assert any(visit_id == v for visit_id, _doc in reports.calls)
     for _visit_id, doc in reports.calls:
         assert "transcript_unavailable" not in doc
+
+
+@pytest.mark.parametrize("beside", ["nothing", "corrupt_sealed"])
+async def test_a_transient_seal_failure_rearms_the_retry_only_for_a_lone_stream(tmp_path, monkeypatch, beside):
+    from main_logic.visit import recovery
+
+    v = vid(109)
+    _write_stream(tmp_path, v, _stream_records(v))
+    if beside == "corrupt_sealed":
+        (_spool_dir(tmp_path) / f"{v}.upload.json").write_text("{torn", encoding="utf-8")
+
+    def locked(*_a, **_k):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(recovery, "_seal_stream_sync", locked)
+    armed = []
+    pending = await recovery._upload_pending(
+        tmp_path, live=lambda _v: False, upload_transcript=Uploads(), submit_report=None,
+        report=recovery.RecoveryReport(), retry_later=armed.append,
+    )
+    # 只剩流水：后台会从流水重封；旁边有坏封存文件：后台重封不了，不白排一个立刻退出的重试
+    assert v in pending and armed == ([v] if beside == "nothing" else [])

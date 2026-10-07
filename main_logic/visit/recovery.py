@@ -845,7 +845,10 @@ async def _upload_pending(
             # 一份流水读写不了只跳过它自己，不能挡住其余场次的补传与举报
             logger.warning("visit recovery: cannot seal %s: %s", stream.name, exc)
             pending.add(visit_id)
-            if retry_later is not None and isinstance(exc, OSError):
+            if (retry_later is not None and isinstance(exc, OSError)
+                    and not await asyncio.to_thread(visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX).exists)):
+                # 只剩流水时交给后台：它会从流水重封。旁边还有坏的封存文件时后台不重封（遇到不可用的
+                # 封存文件就退出），留给下次启动的补录
                 retry_later(visit_id)
             continue
         if doc is not None:
