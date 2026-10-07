@@ -2692,3 +2692,29 @@ async def test_expired_state_is_kept_for_checking_a_lone_ownerless_upload(tmp_pa
     # 第一遍回收不能先删 state.json：只剩上传文件时要拿它核对身份、给无主文件补账号
     (visit_id, doc), = uploads.calls
     assert doc["own_visit_uid"] == OWN_A
+
+
+async def test_terminal_rejection_leaves_another_accounts_report_unmarked(tmp_path):
+    v = vid(104)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    sealed_doc = _sealed(v)
+    sealed = d / f"{v}.upload.json"
+    sealed.write_text(json.dumps(sealed_doc), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    other = "f" * 24
+    assert sealed_doc.get("own_visit_uid") and sealed_doc["own_visit_uid"] != other
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": other}), encoding="utf-8")
+
+    async def reject(_visit_id, _doc):
+        return "parts_out_of_range"
+
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
+    for _visit_id, doc in reports.calls:
+        assert "transcript_unavailable" not in doc        # 共用电脑上另一账号的举报不带这份转录的原因
+    on_disk = json.loads((reports_dir / f"{v}.json").read_text(encoding="utf-8")) \
+        if (reports_dir / f"{v}.json").exists() else {}
+    assert "transcript_unavailable" not in on_disk

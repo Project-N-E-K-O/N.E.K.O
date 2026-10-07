@@ -400,7 +400,7 @@ class UploadJournal:
         if doc is None:
             raise RuntimeError("upload journal has no valid header")
         _stamp_end(doc["request"], time.time() if ended_at is None else ended_at)
-        remember_anomalies(self.visit_id, doc["request"].get("anomalies"))
+        remember_anomalies(self.visit_id, doc["request"].get("anomalies"), doc.get("own_visit_uid"))
         self._sealed = True
         executor = self._executor
         try:
@@ -424,7 +424,7 @@ def _stamp_end(request: dict, ended_at: float) -> None:
 
 
 _RECENT_ANOMALIES_MAX = 64
-_recent_anomalies: "OrderedDict[str, int]" = OrderedDict()
+_recent_anomalies: "OrderedDict[str, tuple[int, str | None]]" = OrderedDict()
 """Anomaly counts of visits sealed or uploaded in this process.
 
 An uploaded transcript's files are deleted, but a report filed afterwards
@@ -433,10 +433,10 @@ transcript as well, so one lost across a restart is not lost evidence.)
 """
 
 
-def remember_anomalies(visit_id: str, count: Any) -> None:
+def remember_anomalies(visit_id: str, count: Any, owner: Any = None) -> None:
     if not isinstance(count, int) or isinstance(count, bool) or count < 0:
         return
-    _recent_anomalies[visit_id] = count
+    _recent_anomalies[visit_id] = (count, owner if isinstance(owner, str) and owner else None)
     _recent_anomalies.move_to_end(visit_id)
     while len(_recent_anomalies) > _RECENT_ANOMALIES_MAX:
         _recent_anomalies.popitem(last=False)
@@ -598,7 +598,7 @@ async def _upload(visit_id: str, doc: dict, config_dir: Path) -> UploadResult:
         memory_bridge.diag("upload_account_mismatch", visit_id=visit_id)
         return UploadResult()
     request = doc["request"]
-    remember_anomalies(visit_id, request.get("anomalies"))
+    remember_anomalies(visit_id, request.get("anomalies"), doc.get("own_visit_uid"))
     path = visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSON_SUFFIX)
     progress = _valid_progress(doc)
     if progress is None:
@@ -1491,26 +1491,52 @@ async def upload_backlog_full(config_dir: Path) -> bool:
     return await asyncio.to_thread(_pending_upload_bytes_sync, config_dir) >= VISIT_UPLOAD_PENDING_CAP_BYTES
 
 
-def _anomalies_sync(config_dir: Path, visit_id: str) -> int | None:
+def _anomalies_sync(config_dir: Path, visit_id: str) -> tuple[int, str | None] | None:
+    """``(count, own_visit_uid of the transcript)`` from the pending upload, or None when there is none."""
     spool_dir = _spool_dir(config_dir)
     doc = _load_json(visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX))
     request = doc.get("request") if isinstance(doc, dict) else None
     if isinstance(request, dict) and isinstance(request.get("anomalies"), int):
-        return max(0, request["anomalies"])
+        owner = doc.get("own_visit_uid")
+        return max(0, request["anomalies"]), owner if isinstance(owner, str) and owner else None
     try:
         with open(visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX), "rb") as handle:
-            return sum(1 for raw in handle if b'"kind":"anomaly"' in raw)
+            owner = None
+            count = 0
+            for index, raw in enumerate(handle):
+                if index == 0:
+                    try:
+                        header = json.loads(raw)
+                    except ValueError:
+                        header = None
+                    value = header.get("own_visit_uid") if isinstance(header, dict) else None
+                    owner = value if isinstance(value, str) and value else None
+                if b'"kind":"anomaly"' in raw:
+                    count += 1
+            return count, owner
     except FileNotFoundError:
         return None
 
 
-async def visit_anomalies(config_dir: Path, visit_id: str) -> int:
-    """Anomaly count of a visit: its pending upload, else what this process saw sealed / uploaded."""
+async def visit_anomalies(config_dir: Path, visit_id: str, owner: str | None = None) -> int:
+    """Anomaly count of a visit: its pending upload, else what this process saw sealed / uploaded.
+
+    With ``owner`` (the reporting account's ``own_visit_uid``), a count that
+    belongs to another known account's side of the visit (a computer shared
+    by several community accounts) is not used.
+    """
     try:
-        count = await asyncio.to_thread(_anomalies_sync, config_dir, visit_id)
+        found = await asyncio.to_thread(_anomalies_sync, config_dir, visit_id)
     except (OSError, ValueError):
-        count = None
-    return count if count is not None else _recent_anomalies.get(visit_id, 0)
+        found = None
+    if found is None:
+        found = _recent_anomalies.get(visit_id)
+    if found is None:
+        return 0
+    count, source = found
+    if owner and source and source != owner:
+        return 0
+    return count
 
 
 def _list_reports_sync(config_dir: Path) -> list[tuple[str, Any]]:

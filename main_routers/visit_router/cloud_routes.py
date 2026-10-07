@@ -242,11 +242,13 @@ async def report_visit(request: Request):
     if not account:
         return _cloud_error(cr.VisitLoginRequired())
     config_dir = Path(tu.config_dir_provider())
+    own_visit_uid = await accounts.lookup_visit_uid(account)
     doc = {
         **fields,
-        "own_visit_uid": await accounts.lookup_visit_uid(account),
+        "own_visit_uid": own_visit_uid,
         "own_account": account,
-        "anomalies": await tu.visit_anomalies(config_dir, visit_id),
+        # 共用电脑上另一账号那一侧的异常计数不算进这份举报
+        "anomalies": await tu.visit_anomalies(config_dir, visit_id, own_visit_uid),
         "app_version": cr._app_version(),
         "queued_at": time.time(),
     }

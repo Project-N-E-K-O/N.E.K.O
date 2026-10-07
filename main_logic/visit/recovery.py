@@ -924,7 +924,8 @@ async def _upload_pending(
             # 先在排队的举报里记下转录为何不可用（设计 §4.7），再删上传文件：上传文件是这场
             # 「终态拒收」唯一持久的记录，先删了、标记又没写进举报（或进程在两步之间退出），
             # 下次启动举报就不带原因交上去了。记不进举报时留着上传文件（记上 rejected），下次再记
-            if not await _mark_report_transcript_unavailable(config_dir, visit_id, terminal_reason, report):
+            if not await _mark_report_transcript_unavailable(
+                    config_dir, visit_id, terminal_reason, report, owner=_owner_or_none(doc.get("own_visit_uid"))):
                 if terminal_reason != rejected:
                     await asyncio.to_thread(_mark_sealed_rejected, path, terminal_reason, before)
                 # 本轮提交的那份由 report 上的原因补上
@@ -1112,38 +1113,49 @@ def _expired_upload_visits(deleted: Iterable[Path]) -> set[str]:
 
 
 async def _mark_report_transcript_unavailable(
-    config_dir: Path, visit_id: str, reason: str, report: RecoveryReport,
+    config_dir: Path, visit_id: str, reason: str, report: RecoveryReport, *, owner: str | None = None,
 ) -> bool:
     """Record on a queued report why its transcript will never be uploaded.
 
     The reason is also kept on ``report`` so the submission of this pass
     carries it even when the report file cannot be rewritten. Returns False
     only when the report file could not be rewritten (nothing queued, a
-    report of another visit or an existing marker count as done).
+    report of another visit or an existing marker count as done). With
+    ``owner`` (the transcript's ``own_visit_uid``), a report queued by a
+    different known account is left alone: on a computer shared by several
+    community accounts it is the other participant's report.
     """
-    report.transcript_unavailable.setdefault(visit_id, reason)
     path = visit_path(config_dir / VISIT_REPORTS_DIRNAME, visit_id, ".json")
     try:
-        await asyncio.to_thread(_mark_report_sync, path, visit_id, reason)
+        applies = await asyncio.to_thread(_mark_report_sync, path, visit_id, reason, owner)
     except (OSError, ValueError) as exc:
         # 文件里记不上：本轮提交时由 report 上的那份补上
+        report.transcript_unavailable.setdefault(visit_id, reason)
         logger.warning("visit recovery: cannot mark report %s transcript_unavailable: %s", path.name, exc)
         return False
+    if applies:
+        report.transcript_unavailable.setdefault(visit_id, reason)
     return True
 
 
-def _mark_report_sync(path: Path, visit_id: str, reason: str) -> None:
+def _mark_report_sync(path: Path, visit_id: str, reason: str, owner: str | None = None) -> bool:
+    """Write the reason into the queued report; False when that report is another known account's."""
     # 读与写在同一把逐路径锁里：读完、写之前举报被受理删除或被用户放弃，原子写会把它重新建出来，
     # 随后又被再交一次
     with path_lock(path):
         doc = _load_json(path)
+        if isinstance(doc, dict) and owner is not None and doc.get("own_visit_uid") \
+                and doc["own_visit_uid"] != owner:
+            # 共用电脑上另一账号排的举报：这份转录不是它那一侧的，不替它记原因（归属未知时照记）
+            return False
         if not _report_belongs(doc, visit_id) or doc.get("transcript_unavailable"):
             # 别场的举报（文件被复制 / 改过）不能盖上这场转录的原因
-            return
+            return True
         if not path.exists():
             # 不走这把锁的删除方：写之前再确认一次文件还在
-            return
+            return True
         _write_private_json(path, {**doc, "transcript_unavailable": reason})
+    return True
 
 
 async def _submit_reports(

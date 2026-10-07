@@ -1557,3 +1557,16 @@ async def test_a_failed_reseal_keeps_an_aged_broken_file_and_its_stream(tmp_path
     outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
     assert outcome.pending is True and outcome.retryable is True
     assert sealed.exists() and stream.exists()             # 没有按过期删掉
+
+
+
+async def test_anomaly_counts_of_another_accounts_side_are_not_used(tmp_path, servers):
+    doc = _big_doc(4, 10)
+    doc["request"]["anomalies"] = 3
+    _write_sealed(tmp_path, doc)                               # OWN 那一侧的转录
+    assert await tu.visit_anomalies(tmp_path, V1, OWN) == 3
+    assert await tu.visit_anomalies(tmp_path, V1, "b" * 24) == 0
+    assert await tu.visit_anomalies(tmp_path, V1, None) == 3   # 举报归属未知：照用
+    tu.remember_anomalies(vid(2), 5, OWN)
+    assert await tu.visit_anomalies(tmp_path, vid(2), "b" * 24) == 0
+    assert await tu.visit_anomalies(tmp_path, vid(2), OWN) == 5
