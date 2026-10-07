@@ -30,7 +30,7 @@ def hanging_client(monkeypatch):
     async def create(*_a, **_k):
         return _HangingClient()
 
-    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _Config())
+    monkeypatch.setattr(config_manager, "get_config_manager", _Config)
     monkeypatch.setattr(llm_client, "create_chat_llm_async", create)
     monkeypatch.setattr(visit_llm, "_ACLOSE_TIMEOUT_S", 0.05)
 

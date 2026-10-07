@@ -2722,7 +2722,7 @@ async def test_terminal_rejection_leaves_another_accounts_report_unmarked(tmp_pa
 
 
 async def test_an_unverified_reason_is_not_attached_to_another_accounts_report(tmp_path, monkeypatch):
-    import main_logic.visit.recovery as recovery
+    from main_logic.visit import recovery
 
     v = vid(105)
     d = _spool_dir(tmp_path)
@@ -2774,7 +2774,7 @@ async def test_a_corrupt_upload_leaves_another_accounts_report_unmarked(tmp_path
 
 
 async def test_a_transiently_unreadable_upload_rearms_the_background_retry(tmp_path, monkeypatch):
-    import main_logic.visit.recovery as recovery
+    from main_logic.visit import recovery
 
     v = vid(107)
     d = _spool_dir(tmp_path)

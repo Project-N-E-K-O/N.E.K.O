@@ -514,9 +514,21 @@ def persona_privacy_check(
     return hits
 
 
-def text_sha256(text: str) -> str:
-    """Version tag of a persona text: a confirmation must name the text the user saw."""
-    return hashlib.sha256((text or "").encode("utf-8", "surrogatepass")).hexdigest()
+_VERSIONED_FIELDS = (
+    "text", "source_card_hash", "generated_at", "edited", "private_sections", "scan_card_hash", "scan_complete",
+)
+
+
+def persona_version(doc: dict) -> str:
+    """Version tag of everything the review panel shows (all fields but ``reviewed``).
+
+    A confirmation must name the version the user saw: a regeneration that
+    happens to produce the same text still brings a new private-section list.
+    """
+    import json
+
+    payload = json.dumps({k: doc.get(k) for k in _VERSIONED_FIELDS}, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def card_hash(card: str | None) -> str:
@@ -933,8 +945,8 @@ async def _view(name: str, character_uid: str, ctx: CharacterContext) -> dict:
         "character_uid": character_uid,
         "state": persona_state(doc, character_uid),
         "text": doc["text"] if doc else None,
-        # 只确认（PUT 不带 text）时回传：确认的必须是用户看到的这一份
-        "text_sha256": text_sha256(doc["text"]) if doc else None,
+        # 只确认（PUT 不带 text）时回传：确认的必须是用户看到的这一份（正文与私人段落清单）
+        "persona_version": persona_version(doc) if doc else None,
         "edited": bool(doc and doc["edited"]),
         "reviewed": bool(doc and doc["reviewed"]),
         "generated_at": doc["generated_at"] if doc else None,
@@ -995,13 +1007,16 @@ async def put_persona(request: Request, catgirl: str = ""):
             return _error(409, "persona_generating")
         persona_store = store()
         doc = await persona_store.load(character_uid)
+        if await _hooks.resolve_char_uid(catgirl) != character_uid:
+            # 请求进来之后角色被删除（或改了名）：不再写，否则删除角色时清掉的人设文件又被建回来
+            return _error(404, "unknown_catgirl")
         if text is None:
             if doc is None:
                 return _error(409, "persona_missing")
-            seen = payload.get("text_sha256")
+            seen = payload.get("persona_version")
             if not isinstance(seen, str):
-                return _error(400, "text_sha256_required")
-            if seen != text_sha256(doc["text"]):
+                return _error(400, "persona_version_required")
+            if seen != persona_version(doc):
                 # 面板打开后人设被换过（另一个窗口重新生成 / 卡片变更触发的重生成）：用户没看过这一份
                 return _error(409, "persona_changed")
             doc = {**doc, "reviewed": True}

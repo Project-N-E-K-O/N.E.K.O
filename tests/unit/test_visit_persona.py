@@ -122,7 +122,7 @@ def _confirm(client, name="A"):
     """Confirm the persona the panel shows (``reviewed:true`` with the version it got from GET)."""
     view = client.get(f"/api/visit/persona?catgirl={name}", headers=GOOD).json()
     return client.put(f"/api/visit/persona?catgirl={name}", headers=GOOD,
-                      json={"reviewed": True, "text_sha256": view["text_sha256"]})
+                      json={"reviewed": True, "persona_version": view["persona_version"]})
 
 
 def _file(tmp_path, uid=UID_A) -> dict:
@@ -834,14 +834,41 @@ def test_confirming_needs_the_version_the_panel_showed(env):
     _generate(client)
     shown = client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()
     assert client.put("/api/visit/persona?catgirl=A", headers=GOOD,
-                      json={"reviewed": True}).json()["code"] == "text_sha256_required"
+                      json={"reviewed": True}).json()["code"] == "persona_version_required"
     # 面板打开后另一个窗口重新生成了一份
     client.portal.call(persona.store().save, UID_A, {**_file(tmp_path), "text": "你是{LANLAN_NAME}，换过的一份。"})
     resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
-                      json={"reviewed": True, "text_sha256": shown["text_sha256"]})
+                      json={"reviewed": True, "persona_version": shown["persona_version"]})
     assert resp.status_code == 409 and resp.json()["code"] == "persona_changed"
     assert _file(tmp_path)["reviewed"] is False
     assert _confirm(client).status_code == 200 and _file(tmp_path)["reviewed"] is True
+
+
+def test_a_same_text_with_a_new_private_section_list_needs_a_new_confirmation(env):
+    client, tmp_path, *_ = env
+    _generate(client)
+    shown = client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()
+    # 卡片变更触发的重生成恰好写出同样的正文，但私人段落清单换了
+    client.portal.call(persona.store().save, UID_A,
+                       {**_file(tmp_path), "private_sections": ["新扫出来的一段私人内容。"]})
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"reviewed": True, "persona_version": shown["persona_version"]})
+    assert resp.status_code == 409 and _file(tmp_path)["reviewed"] is False
+
+
+def test_a_manual_edit_is_not_saved_for_a_character_deleted_meanwhile(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    real = persona._hooks.resolve_char_uid
+    calls = []
+
+    async def deleted_after_the_first_lookup(name):
+        calls.append(name)
+        return await real(name) if len(calls) == 1 else None    # 请求进来之后角色被删除
+
+    monkeypatch.setattr(persona._hooks, "resolve_char_uid", deleted_after_the_first_lookup)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
+    assert resp.status_code == 404 and not (tmp_path / "visit_persona" / f"{UID_A}.json").exists()
 
 
 @pytest.mark.parametrize("value", ["Apartment next to Broadway", "Apartment across from Broadway"])
