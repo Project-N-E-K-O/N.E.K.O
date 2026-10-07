@@ -58,6 +58,22 @@ for (const locale of ['en', 'zh-CN']) {
     assert.strictEqual(progress.label, `${messages.storage.progressPublishConflict} E:/new/N.E.K.O/.smtx`);
   });
 
+  test(`${locale}: publish conflict keeps Windows separators consistent`, () => {
+    const { model, messages } = loadStorageLocation(locale);
+    const backslash = String.fromCharCode(92);
+    const windowsRoot = ['E:', 'new', 'N.E.K.O'].join(backslash);
+    const progress = model({
+      lifecycle_state: 'maintenance',
+      migration: {
+        status: 'rollback_required',
+        error_code: 'migration_publish_conflict',
+        target_root: windowsRoot,
+      },
+    });
+
+    assert.strictEqual(progress.label, `${messages.storage.progressPublishConflict} ${windowsRoot}${backslash}.smtx`);
+  });
+
   test(`${locale}: other failed migrations keep the generic text`, () => {
     const { model, messages } = loadStorageLocation(locale);
     const progress = model({

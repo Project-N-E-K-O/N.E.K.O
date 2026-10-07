@@ -720,23 +720,45 @@ def _remove_completed_transaction_leftover(payload: dict[str, Any] | None) -> No
         logger.warning("Failed to remove leftover storage migration transaction: %s", exc)
 
 
-def _transaction_entries_missing_from_source(
+def _transaction_entries_diverged_from_source(
     *,
     payload: dict[str, Any],
     source_root: Path,
     transaction_root: Path,
 ) -> list[str]:
-    """Entries this transaction published or staged that the source no longer has."""
+    """Entries this transaction published or staged that the source no
+    longer holds as they were copied: gone, or changed since (a file inside
+    removed or edited). The checkpoint records each entry's source manifest
+    once staged, so this is a comparison, not a guess."""
     entries = [str(entry) for entry in payload.get("published_entries") or []]
     entries.append(str(payload.get("publishing_entry") or ""))
     with suppress(OSError):
         entries.extend(child.name for child in (transaction_root / "stage").iterdir())
-    return [
-        entry_name
-        for entry_name in dict.fromkeys(entries)
-        if entry_name in MIGRATED_RUNTIME_ENTRY_NAMES
-        and not os.path.lexists(source_root / entry_name)
-    ]
+    recorded: dict[str, Any] = {}
+    staged_records = payload.get("staged_source_manifests")
+    if isinstance(staged_records, dict):
+        recorded.update({str(name): manifest for name, manifest in staged_records.items() if isinstance(manifest, dict)})
+    for entry_name, proof in copy_evidence_entries(payload.get("copied_entries")).items():
+        if isinstance(proof.get("source_manifest"), dict):
+            recorded[entry_name] = proof["source_manifest"]
+    diverged: list[str] = []
+    for entry_name in dict.fromkeys(entries):
+        if entry_name not in MIGRATED_RUNTIME_ENTRY_NAMES:
+            continue
+        source_entry = source_root / entry_name
+        if not os.path.lexists(source_entry):
+            diverged.append(entry_name)
+            continue
+        expected = recorded.get(entry_name)
+        if expected is None:
+            continue
+        try:
+            changed = _snapshot_path(source_entry) != expected
+        except StorageMigrationError:
+            changed = True
+        if changed:
+            diverged.append(entry_name)
+    return diverged
 
 
 def _ensure_transaction_parent(transaction_root: Path) -> None:
@@ -1133,6 +1155,7 @@ def run_pending_storage_migration(
                 restoring_entries=[],
                 publish_conflict_entry="",
                 resuming_v1_copy=False,
+                staged_source_manifests={},
             )
         except Exception as exc:
             logger.warning(
@@ -1266,10 +1289,11 @@ def run_pending_storage_migration(
         if os.path.lexists(transaction_root):
             # Rolling back restores the state before this migration, and that
             # state lived in the source. If the source -- or just one of the
-            # entries this transaction published or staged -- is gone, those
-            # copies may be the only ones left: keep them all and stay
-            # retryable until the source comes back or someone sorts it out.
-            missing_source_entries = _transaction_entries_missing_from_source(
+            # entries this transaction published or staged -- is gone or no
+            # longer what was copied, those copies may be the only complete
+            # ones left: keep them all and stay retryable until the source is
+            # restored or someone sorts it out.
+            missing_source_entries = _transaction_entries_diverged_from_source(
                 payload=payload,
                 source_root=source_root,
                 transaction_root=transaction_root,
@@ -1324,6 +1348,7 @@ def run_pending_storage_migration(
             # A conflict only stops the transaction it was found in; reaching
             # here means that transaction is gone and this attempt is fresh.
             publish_conflict_entry="",
+            staged_source_manifests={},
             error_code="",
             error_message="",
         )
@@ -1363,6 +1388,7 @@ def run_pending_storage_migration(
         backup_root.mkdir(parents=True)
         staged_manifests: dict[str, dict[str, int | str]] = {}
         widened_modes: dict[str, list[tuple[Path, int]]] = {}
+        staged_source_records: dict[str, dict[str, int | str]] = {}
         copied_entries: dict[str, dict[str, Any]] = {}
         entries_to_publish: list[str] = []
         original_target_entries: list[str] = []
@@ -1373,16 +1399,20 @@ def run_pending_storage_migration(
             source_snapshots[entry_name] = source_manifest
             if use_existing_target and os.path.lexists(target_entry):
                 target_manifest = _snapshot_path(target_entry)
-                if target_manifest == source_manifest:
+                if target_manifest != source_manifest:
+                    # Existing legacy/recovered entries are authoritative. They
+                    # do not prove the source copy and are not cleanup-safe.
+                    continue
+                if entry_name != "config":
                     copied_entries[entry_name] = {
                         "source_manifest": source_manifest,
                         "target_manifest": target_manifest,
                         "transaction": str(payload.get("txid") or ""),
                     }
                     continue
-                # Existing legacy/recovered entries are authoritative. They do
-                # not prove the source copy and therefore are not cleanup-safe.
-                continue
+                # An identical config still carries workshop paths bound to the
+                # source: stage and publish it like any copy so they are rebased
+                # (the target's own copy goes to the backup as usual).
             staged_entry = stage_root / entry_name
             widened_modes[entry_name] = _copy_runtime_entry(source_entry, staged_entry) or []
             staged_manifest = _snapshot_path(staged_entry)
@@ -1401,6 +1431,13 @@ def run_pending_storage_migration(
                 )
                 staged_manifest = _snapshot_path(staged_entry)
             staged_manifests[entry_name] = staged_manifest
+            staged_source_records[entry_name] = source_manifest
+            payload = _persist_migration_payload(
+                config_manager,
+                payload,
+                anchor_root=normalized_anchor_root,
+                staged_source_manifests=dict(staged_source_records),
+            )
             entries_to_publish.append(entry_name)
             if os.path.lexists(target_entry):
                 original_target_entries.append(entry_name)

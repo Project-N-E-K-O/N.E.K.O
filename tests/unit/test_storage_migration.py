@@ -1693,3 +1693,96 @@ def test_v1_copy_marker_survives_a_second_interruption(tmp_path, monkeypatch):
 
     assert result["completed"] is True, result
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "complete"
+
+
+@pytest.mark.unit
+def test_interrupted_publish_is_kept_when_a_file_inside_the_source_entry_is_gone(tmp_path, monkeypatch):
+    """source/config still exists, but the file that was copied out of it is
+    gone: the published copy is the last complete one."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, source_root, target_root = _overwrite_migration(tmp_path)
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _crash_after_publish(staged, target):
+        original_publish(staged, target)
+        raise KeyboardInterrupt("simulated process loss after publish")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", original_publish)
+    (source_root / "config" / "characters.json").unlink()
+    assert (source_root / "config").is_dir()
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "migration_source_missing"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "new"
+    backups = list((target_root / ".smtx").glob("*/backup/config/characters.json"))
+    assert [path.read_text(encoding="utf-8") for path in backups] == ["healthy"]
+
+
+@pytest.mark.unit
+def test_staged_copy_is_kept_when_its_source_entry_was_edited(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("complete", encoding="utf-8")
+    _write_memory_tree(source_root)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_copy = storage_migration_module._copy_runtime_entry
+    copies = 0
+
+    def _crash_on_second_copy(source_path, target_path):
+        nonlocal copies
+        copies += 1
+        if copies == 2:
+            raise KeyboardInterrupt("simulated process loss while staging")
+        return original_copy(source_path, target_path)
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _crash_on_second_copy)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", original_copy)
+    staged = list((target_root / ".smtx").glob("*/stage/config/characters.json"))
+    assert [path.read_text(encoding="utf-8") for path in staged] == ["complete"]
+    (source_root / "config" / "characters.json").write_text("trunc", encoding="utf-8")
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "migration_source_missing"
+    assert staged[0].read_text(encoding="utf-8") == "complete"
+
+
+@pytest.mark.unit
+def test_reused_identical_config_gets_its_workshop_paths_rebased(tmp_path):
+    import json
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    workshop = {"user_mod_folder": str(source_root / "mods")}
+    for root in (source_root, target_root):
+        (root / "config").mkdir(parents=True)
+        (root / "config" / "workshop_config.json").write_text(json.dumps(workshop), encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    rebased = json.loads((target_root / "config" / "workshop_config.json").read_text(encoding="utf-8"))
+    assert rebased["user_mod_folder"] == str((target_root / "mods").resolve())

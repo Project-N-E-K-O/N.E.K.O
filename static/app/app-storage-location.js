@@ -1084,8 +1084,12 @@
                         // The original target data lives in the transaction
                         // backup; deleting that directory would lose it.
                         var targetRoot = String(migrationPayload.target_root || '').trim();
+                        // Join with the separator the path already uses, so a
+                        // Windows path does not end up mixing both kinds.
+                        var backslash = String.fromCharCode(92);
+                        var separator = targetRoot.indexOf(backslash) >= 0 ? backslash : '/';
                         label = translate('storage.progressPublishConflict', '迁移时目标位置被其他程序重新创建，迁移已暂停，新旧数据都已保留。原来的数据在下面这个事务目录的 backup 里，请勿删除，确认后再手动处理：')
-                            + ' ' + (targetRoot ? targetRoot + '/.smtx' : '.smtx');
+                            + ' ' + (targetRoot ? targetRoot + separator + '.smtx' : '.smtx');
                     } else {
                         label = translate('storage.progressFailed', '迁移未能完成，正在等待恢复处理');
                     }
