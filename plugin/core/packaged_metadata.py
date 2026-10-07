@@ -230,6 +230,8 @@ class SourceStatSummary:
     names: list[str] = field(default_factory=list)
     newest_mtime_ns: int = 0
     total_bytes: int = 0
+    # Excludes directory mtimes, which writes beside a target also move.
+    newest_file_mtime_ns: int = 0
     untrustworthy: bool = False
 
 
@@ -252,6 +254,7 @@ def source_stat_summary(plugin_dir: Path) -> SourceStatSummary:
     for _key, _real, stat_result in files:
         newest = max(newest, stat_result.st_mtime_ns)
         total += stat_result.st_size
+    newest_file = newest
     for dir_path in dirs:
         try:
             newest = max(newest, os.stat(dir_path).st_mtime_ns)
@@ -262,6 +265,7 @@ def source_stat_summary(plugin_dir: Path) -> SourceStatSummary:
         newest_mtime_ns=newest,
         total_bytes=total,
         untrustworthy=untrustworthy,
+        newest_file_mtime_ns=newest_file,
     )
 
 

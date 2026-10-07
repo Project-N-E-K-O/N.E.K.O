@@ -1036,9 +1036,18 @@ def test_final_write_failure_does_not_repeat_hashes_and_new_cache_root_recovers(
     assert packaged_metadata.write_local_packaged_metadata(plugin_dir, before_scan=before, **_SCAN_KWARGS)
 
 
-def test_stale_schema_write_failure_backs_off_despite_root_probe(tmp_path, monkeypatch):
-    # The in-place target lives in the plugin root, so the write probe changes
-    # the root directory mtime that the source summary counts.
+def _fail_in_place_write(target, *_args, **_kwargs):
+    # Like a replace refused on Windows: the temporary file beside the target
+    # is created and removed, which moves the plugin root mtime once more.
+    leftover = target.parent / ".plugin.meta.json.tmp"
+    leftover.write_bytes(b"{}")
+    leftover.unlink()
+    raise PermissionError("plugin.meta.json is locked")
+
+
+def test_stale_schema_write_failure_backs_off_despite_root_writes(tmp_path, monkeypatch):
+    # The in-place target lives in the plugin root, so the probe and the failed
+    # write change the root directory mtime that the source summary counts.
     plugin_dir = _write_plugin(tmp_path, schema=_SCHEMA - 1)
     real_hash = packaged_metadata.compute_source_sha256
     hashes = []
@@ -1047,13 +1056,10 @@ def test_stale_schema_write_failure_backs_off_despite_root_probe(tmp_path, monke
         hashes.append(path)
         return real_hash(path)
 
-    def fail_write(*args, **kwargs):
-        raise PermissionError("plugin.meta.json is locked")
-
     monkeypatch.setattr(packaged_metadata, "compute_source_sha256", count_hash)
     before = packaged_metadata.snapshot_packaged_metadata_rebuild_tree(plugin_dir)
     assert before is not None
-    monkeypatch.setattr(packaged_metadata, "atomic_write_bytes", fail_write)
+    monkeypatch.setattr(packaged_metadata, "atomic_write_bytes", _fail_in_place_write)
     assert not packaged_metadata.refresh_stale_packaged_metadata(
         plugin_dir, before_scan=before, **_SCAN_KWARGS
     )
@@ -1062,6 +1068,23 @@ def test_stale_schema_write_failure_backs_off_despite_root_probe(tmp_path, monke
     assert len(hashes) == 2
     # A real source change still ends the backoff.
     (plugin_dir / "main.py").write_text("VALUE = 2\n", encoding="utf-8")
+    assert packaged_metadata.snapshot_packaged_metadata_rebuild_tree(plugin_dir) is not None
+
+
+def test_source_change_during_failed_write_is_not_backed_off(tmp_path, monkeypatch):
+    plugin_dir = _write_plugin(tmp_path, schema=_SCHEMA - 1)
+    before = packaged_metadata.snapshot_packaged_metadata_rebuild_tree(plugin_dir)
+    assert before is not None
+
+    def edit_then_fail(target, *args, **kwargs):
+        (plugin_dir / "main.py").write_text("VALUE = 22\n", encoding="utf-8")
+        _fail_in_place_write(target, *args, **kwargs)
+
+    monkeypatch.setattr(packaged_metadata, "atomic_write_bytes", edit_then_fail)
+    assert not packaged_metadata.refresh_stale_packaged_metadata(
+        plugin_dir, before_scan=before, **_SCAN_KWARGS
+    )
+    # The failure belongs to the tree that was hashed, not to the edited one.
     assert packaged_metadata.snapshot_packaged_metadata_rebuild_tree(plugin_dir) is not None
 
 
