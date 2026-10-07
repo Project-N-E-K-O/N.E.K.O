@@ -2748,6 +2748,7 @@ class FactStore:
         max_retries: int = 3,
         timeout: float = 60,
         extra_body=_DEFAULT_EXTRA_BODY,
+        max_tokens: int | None = None,
     ):
         """Shared LLM helper: retry on network errors + JSON errors, same
         policy as the old `extract_facts`. Returns parsed JSON or None on
@@ -2768,7 +2769,15 @@ class FactStore:
         it per model (for most providers this disables thinking); explicitly
         passing None means "send no extra_body" → the model's default behavior
         (thinking models enter thinking mode).
-        Phase D: Stage-2 signal detection explicitly passes None to enable thinking."""
+        Phase D: Stage-2 signal detection explicitly passes None to enable thinking.
+
+        max_tokens: per-call override for the ``LLM_OUTPUT_GUARD_MAX_TOKENS``
+        output guard (default None → keep the global 4096). Thinking-mode
+        callers (extra_body=None) spend most of the completion budget on
+        reasoning, which can truncate the small JSON body and force retry
+        loops (token_usage.json: memory_signal_detection hit the 4096 cap on
+        3/4 calls). Callers with thinking enabled should pass 8192 instead of
+        touching the global guard."""
         from openai import APIConnectionError, InternalServerError, RateLimitError
         from utils.llm_client import create_chat_llm_async
 
@@ -2781,7 +2790,12 @@ class FactStore:
                 _llm_kwargs = dict(
                     timeout=timeout,
                     max_retries=0,
-                    max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,
+                    # `_allm_call_with_retries.max_tokens`: per-call override;
+                    # None keeps the global LLM_OUTPUT_GUARD_MAX_TOKENS guard.
+                    max_completion_tokens=(
+                        max_tokens if max_tokens is not None
+                        else LLM_OUTPUT_GUARD_MAX_TOKENS
+                    ),
                     provider_type=api_config.get('provider_type'),
                 )
                 if extra_body is not _DEFAULT_EXTRA_BODY:
@@ -4606,6 +4620,14 @@ class FactStore:
             call_type="memory_signal_detection",
             timeout=90,
             extra_body=None,
+            # `_allm_detect_signals` → `_allm_call_with_retries(max_tokens=8192)`:
+            # thinking mode (extra_body=None, Phase D) makes qwen3.8-flash spend
+            # most of the completion budget on reasoning before emitting the
+            # small JSON body — the global 4096 guard truncated the first call
+            # of each window (token_usage.json: 3/4 calls at exactly 4096),
+            # burning retries on robust_json_loads failures. 8192 lets thinking
+            # finish; the global default stays 4096 for all non-thinking calls.
+            max_tokens=8192,
         )
         if parsed is None:
             return None
@@ -5879,12 +5901,16 @@ class FactStore:
             from utils.llm_client import create_chat_llm_async
             set_call_type("memory_recheck_fact")
             api_config = await self._config_manager.aget_model_api_config('summary')
-            from config import LLM_OUTPUT_GUARD_MAX_TOKENS
             llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
-                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
+                # `arecheck_one_legacy_fact` ("memory_recheck_fact"): same
+                # thinking-mode pattern as Stage-2 signal detection
+                # (extra_body=None), so the global 4096 guard has the same
+                # truncation risk — 8192 per `_allm_call_with_retries.max_tokens`
+                # override precedent (see that docstring).
+                max_completion_tokens=8192,
                 extra_body=None,
                 provider_type=api_config.get('provider_type'),
             )
