@@ -14,11 +14,13 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import shutil
 import stat
+import sys
 import uuid
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -189,15 +191,81 @@ def _remove_existing_path(path: Path) -> None:
             f"迁移目标包含链接或重解析点，拒绝覆盖: {path}",
         )
     if stat.S_ISDIR(path_stat.st_mode):
-        shutil.rmtree(path)
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=_retry_after_clearing_read_only)
+        else:
+            shutil.rmtree(path, onerror=_retry_after_clearing_read_only)
         return
     if stat.S_ISREG(path_stat.st_mode):
-        path.unlink()
+        try:
+            path.unlink()
+        except PermissionError:
+            _retry_after_clearing_read_only(os.unlink, str(path), None)
         return
     raise StorageMigrationError(
         "target_special_file_unsupported",
         f"迁移目标不是普通文件或目录: {path}",
     )
+
+
+def _retry_after_clearing_read_only(function: Callable[..., Any], path: str, _error: Any) -> None:
+    """Make a failed removal possible, then retry it once.
+
+    A read-only file cannot be deleted on Windows, and on POSIX an entry
+    cannot be removed from a directory without write access to it. Copies
+    keep the source's modes, so either can turn up mid-removal; stopping
+    there would leave an entry half deleted and its evidence unmatchable.
+    """
+    failed = Path(path)
+    for candidate in (failed.parent, failed):
+        with suppress(OSError):
+            candidate_stat = candidate.lstat()
+            if stat.S_ISLNK(candidate_stat.st_mode) or _stat_is_reparse(candidate_stat):
+                continue
+            extra = stat.S_IWUSR | stat.S_IRUSR
+            if stat.S_ISDIR(candidate_stat.st_mode):
+                extra |= stat.S_IXUSR
+            os.chmod(candidate, stat.S_IMODE(candidate_stat.st_mode) | extra)
+    function(path)
+
+
+def _publish_without_overwrite(staged: Path, target: Path) -> None:
+    """Move a staged entry into place, failing instead of replacing anything.
+
+    Raises ``FileExistsError`` when something already occupies ``target`` --
+    including an entry that appeared after the caller last checked.
+    """
+    if os.name == "nt":
+        # MoveFileEx without REPLACE_EXISTING refuses an existing target.
+        os.rename(staged, target)
+        return
+    if stat.S_ISDIR(staged.lstat().st_mode):
+        try:
+            # rename(2) refuses a non-empty directory or a file at the target;
+            # an empty directory holds nothing to lose.
+            os.rename(staged, target)
+        except OSError as exc:
+            if exc.errno in {errno.EEXIST, errno.ENOTEMPTY, errno.ENOTDIR, errno.EISDIR}:
+                raise FileExistsError(errno.EEXIST, "migration target already exists", str(target)) from exc
+            raise
+        return
+    try:
+        # link(2) is atomic and refuses an existing target.
+        os.link(staged, target)
+    except FileExistsError:
+        raise
+    except OSError:
+        # Filesystems without hard links (FAT, exFAT): best effort.
+        if os.path.lexists(target):
+            raise FileExistsError(errno.EEXIST, "migration target already exists", str(target))
+        os.rename(staged, target)
+        return
+    os.unlink(staged)
+
+
+def remove_runtime_entry(path: Path) -> None:
+    """Remove a real file or directory tree; links and special files raise."""
+    _remove_existing_path(path)
 
 
 def _stat_is_reparse(path_stat: os.stat_result) -> bool:
@@ -643,7 +711,9 @@ def _root_has_user_content(root: Path, *, config_manager) -> bool:
         if not root.exists() or not root.is_dir():
             return False
         try:
-            return any(root.iterdir())
+            # Dot-named entries (such as the migration transaction directory)
+            # are not user content, matching runtime_root_has_user_content.
+            return any(not child.name.startswith(".") for child in root.iterdir())
         except OSError:
             return False
 
@@ -1061,8 +1131,6 @@ def run_pending_storage_migration(
             raise StorageMigrationError("target_matches_source", "目标路径与当前路径一致，不需要执行迁移。")
         if _path_contains(source_root, target_root) or _path_contains(target_root, source_root):
             raise StorageMigrationError("paths_nested", "源路径和目标路径不能互相包含，无法安全执行迁移。")
-        if not source_root.exists() or not source_root.is_dir():
-            raise StorageMigrationError("source_root_missing", "原始数据目录不存在，无法继续迁移。")
 
         txid = str(payload.get("txid") or uuid.uuid4().hex)
         committed_policy = load_storage_policy(
@@ -1084,6 +1152,8 @@ def run_pending_storage_migration(
             # the policy already points at the target: the launcher may have
             # run services on it since. Never roll that back -- only finish
             # the checkpoint. Cleanup re-checks each entry before deleting.
+            # The retained source is not needed for this, so a deleted or
+            # unplugged source must not send the policy back to it.
             try:
                 committed_transaction_root: Path | None = _transaction_path(target_root, txid)
             except StorageMigrationError:
@@ -1137,6 +1207,11 @@ def run_pending_storage_migration(
                 error_code="",
                 error_message="",
             )
+
+        # Checked only now: rolling back an interrupted publish touches the
+        # target alone, and must not be skipped because the source is gone.
+        if not source_root.exists() or not source_root.is_dir():
+            raise StorageMigrationError("source_root_missing", "原始数据目录不存在，无法继续迁移。")
 
         payload = _persist_migration_payload(
             config_manager,
@@ -1223,14 +1298,16 @@ def run_pending_storage_migration(
             if os.path.lexists(target_entry):
                 original_target_entries.append(entry_name)
 
-        # Reusing an existing target only makes sense if it already held runtime
-        # data before this run. Decide that here, after staging (whose conflict
-        # checks give the more specific errors) and before anything is published:
-        # a failure from VERIFYING on keeps the transaction for recovery, so
-        # published entries and their backup would be stranded. The value was
-        # computed before staging; recomputing now would count the new
-        # transaction directory as content.
-        if use_existing_target and not target_has_user_content:
+        # Reusing an existing target only makes sense if it still holds runtime
+        # data. Check again here, after staging (whose conflict checks give the
+        # more specific errors) and before anything is published: the target's
+        # own entries -- the ones staging left alone -- may have gone in the
+        # meantime, and a failure from VERIFYING on keeps the transaction for
+        # recovery, so published entries and their backup would be stranded.
+        # The dot-named transaction directory does not count as content.
+        if use_existing_target and not _root_has_user_content(
+            target_root, config_manager=config_manager
+        ):
             raise StorageMigrationError(
                 "target_missing_runtime",
                 "目标路径没有可用数据，无法直接切换到现有目录。",
@@ -1271,7 +1348,24 @@ def run_pending_storage_migration(
                 if target_existed:
                     _classify_no_follow(target_entry)
                     os.replace(target_entry, backup_entry)
-                os.replace(stage_root / entry_name, target_entry)
+                try:
+                    _publish_without_overwrite(stage_root / entry_name, target_entry)
+                except FileExistsError as exc:
+                    if not target_existed:
+                        # Nothing of ours is at the target: what is there
+                        # appeared after the check above, so rollback must
+                        # leave it alone rather than delete it as ours.
+                        payload = _persist_migration_payload(
+                            config_manager,
+                            payload,
+                            anchor_root=normalized_anchor_root,
+                            publishing_entry="",
+                            publishing_target_existed=False,
+                        )
+                    raise StorageMigrationError(
+                        "target_changed_during_migration",
+                        f"迁移目标在发布期间出现了新条目，已停止迁移: {entry_name}",
+                    ) from exc
                 published_entries.append(entry_name)
                 actual_manifest = _snapshot_path(target_entry)
                 expected_manifest = staged_manifests[entry_name]

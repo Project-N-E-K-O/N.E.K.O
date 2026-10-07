@@ -532,17 +532,17 @@ def test_interrupted_publish_restores_existing_target_before_retry(tmp_path, mon
         selection_source="custom",
         confirmed_existing_target_content=True,
     )
-    original_replace = storage_migration_module.os.replace
+    original_publish = storage_migration_module._publish_without_overwrite
 
-    def _crash_after_publish(source, target):
-        original_replace(source, target)
-        if Path(source).name == "config" and Path(source).parent.name == "stage":
+    def _crash_after_publish(staged, target):
+        original_publish(staged, target)
+        if Path(staged).name == "config":
             raise KeyboardInterrupt("simulated process loss")
 
-    monkeypatch.setattr(storage_migration_module.os, "replace", _crash_after_publish)
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
     with pytest.raises(KeyboardInterrupt, match="simulated process loss"):
         run_pending_storage_migration(config_manager)
-    monkeypatch.setattr(storage_migration_module.os, "replace", original_replace)
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", original_publish)
 
     def _stop_after_recovery(*_args, **_kwargs):
         raise StorageMigrationError("stop_after_recovery", "inspect restored target")
@@ -1158,4 +1158,161 @@ def test_storage_migration_publishes_a_read_only_directory(tmp_path):
     assert (copied / "notes.json").is_file()
     # Everything but the owner write bit follows the source.
     assert copied.stat().st_mode & 0o777 == 0o755
+    assert not (target_root / ".smtx").exists()
+
+
+@pytest.mark.unit
+def test_completed_overwrite_removes_a_read_only_backup(tmp_path):
+    """The overwritten target goes to the transaction backup; a read-only file
+    in it (Windows) must not leave that whole copy behind under .smtx."""
+    import stat
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    locked = target_root / "config" / "locked.json"
+    locked.write_text("old", encoding="utf-8")
+    locked.chmod(stat.S_IREAD)
+
+    try:
+        result = run_pending_storage_migration(config_manager)
+    finally:
+        for leftover in (target_root / ".smtx").glob("*/backup/config/locked.json"):
+            leftover.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+    assert result["completed"] is True, result
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "new"
+    assert not (target_root / ".smtx").exists()
+
+
+@pytest.mark.unit
+def test_target_entry_appearing_at_publish_is_never_overwritten(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_persist = storage_migration_module._persist_migration_payload
+
+    def _persist(*args, **kwargs):
+        result = original_persist(*args, **kwargs)
+        if kwargs.get("publishing_entry") == "config" and kwargs.get("publishing_target_existed") is False:
+            # Another process creates the entry between the check and publish.
+            (target_root / "config").mkdir(parents=True, exist_ok=True)
+            (target_root / "config" / "late.json").write_text("late", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", _persist)
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "target_changed_during_migration"
+    assert (target_root / "config" / "late.json").read_text(encoding="utf-8") == "late"
+    assert not (target_root / "config" / "characters.json").exists()
+    assert not (target_root / ".smtx").exists()
+
+
+@pytest.mark.unit
+def test_reused_target_emptied_during_staging_is_not_committed(tmp_path, monkeypatch):
+    import shutil
+
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("source", encoding="utf-8")
+    _write_memory_tree(source_root)
+    (target_root / "config").mkdir(parents=True)
+    (target_root / "config" / "characters.json").write_text("target", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+    original_copy = storage_migration_module._copy_runtime_entry
+
+    def _copy_then_lose_target(source_path, target_path):
+        original_copy(source_path, target_path)
+        if Path(target_path).name == "memory":
+            # The target's own config -- skipped by staging -- disappears.
+            shutil.rmtree(target_root / "config")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _copy_then_lose_target)
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "target_missing_runtime"
+    assert not (target_root / "memory").exists()
+
+
+@pytest.mark.unit
+def test_committed_migration_finishes_without_the_retained_source(tmp_path, monkeypatch):
+    import shutil
+
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_persist = storage_migration_module._persist_migration_payload
+
+    def _fail_completed_checkpoint(*args, **kwargs):
+        if kwargs.get("status") == STORAGE_MIGRATION_STATUS_COMPLETED:
+            raise OSError("simulated checkpoint loss")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", _fail_completed_checkpoint)
+    assert run_pending_storage_migration(config_manager)["error_code"] == "migration_commit_pending"
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", original_persist)
+    # The retained source is deleted (or its drive unplugged) before relaunch.
+    shutil.rmtree(source_root)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    assert load_storage_policy(config_manager)["selected_root"] == str(target_root.resolve())
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "new"
+
+
+@pytest.mark.unit
+def test_interrupted_publish_is_rolled_back_even_without_the_source(tmp_path, monkeypatch):
+    import shutil
+
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, source_root, target_root = _overwrite_migration(tmp_path)
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _crash_after_publish(staged, target):
+        original_publish(staged, target)
+        raise KeyboardInterrupt("simulated process loss after publish")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", original_publish)
+    shutil.rmtree(source_root)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "source_root_missing"
+    # The half-published target was restored before giving up.
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
     assert not (target_root / ".smtx").exists()

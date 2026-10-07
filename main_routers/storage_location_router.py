@@ -79,6 +79,7 @@ from utils.storage_migration import (
     load_storage_migration,
     rewrite_migrated_config_paths,
     save_storage_migration,
+    remove_runtime_entry,
     snapshot_runtime_entry,
 )
 from utils.storage_policy import (
@@ -1615,7 +1616,7 @@ def _cleanup_retained_runtime_root(
     target_root: Path | str | None = None,
     copied_entries: dict | None = None,
     legacy_checkpoint: bool = False,
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], bool]:
     if not is_retained_root_cleanup_available(
         retained_path,
         current_root=current_root,
@@ -1701,21 +1702,24 @@ def _cleanup_retained_runtime_root(
         entry_name for entry_name in legacy_entries if _legacy_entry_matches(entry_name)
     ]
     for entry_name in [name for name, _proof in proved_entries] + legacy_entries:
-        entry_path = retained_path / entry_name
-        if entry_path.is_dir() and not entry_path.is_symlink():
-            shutil.rmtree(entry_path)
-        elif entry_path.exists():
-            entry_path.unlink()
+        remove_runtime_entry(retained_path / entry_name)
 
+    # The anchor root holds more than runtime data and always stays. Any other
+    # retained root goes once emptied; files the user kept in it stay put.
+    retained_root_kept = False
     if not paths_equal(retained_path, anchor_root):
-        # Only an emptied retained root goes; anything left in it stays put.
-        with suppress(OSError):
+        try:
             retained_path.rmdir()
-    return tuple(
+        except FileNotFoundError:
+            pass
+        except OSError:
+            retained_root_kept = True
+    remaining_entries = tuple(
         entry_name
         for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES
         if os.path.lexists(retained_path / entry_name)
     )
+    return remaining_entries, retained_root_kept
 
 
 async def _release_storage_startup_barrier_if_needed(*, reason: str) -> None:
@@ -1997,7 +2001,7 @@ async def _post_storage_location_retained_source_cleanup_locked(
     cleanup_checkpoint = load_storage_migration(config_manager, anchor_root=anchor_root) or {}
     try:
         # 这一步 rmtree 保留目录，同样不能在取消时把 _storage_mutation_lock 让出去
-        remaining_entries = await _run_locked_storage_job(
+        remaining_entries, retained_root_kept = await _run_locked_storage_job(
             lambda: _cleanup_retained_runtime_root(
                 retained_path,
                 current_root=current_root,
@@ -2061,9 +2065,7 @@ async def _post_storage_location_retained_source_cleanup_locked(
         "cleaned_root": expected_retained_root,
         # A non-anchor retained root is removed once emptied; other files the
         # user kept in it stay, and the UI should not claim it is gone.
-        "retained_root_kept": (
-            not paths_equal(retained_path, anchor_root) and os.path.lexists(retained_path)
-        ),
+        "retained_root_kept": retained_root_kept,
     }
 
 

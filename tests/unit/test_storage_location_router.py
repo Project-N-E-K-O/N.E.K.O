@@ -3140,6 +3140,46 @@ def _migrate_config_then_replace_target(tmp_path, replace_target):
 
 
 @pytest.mark.unit
+def test_storage_location_cleanup_removes_read_only_entries(tmp_path):
+    """A read-only file (Windows) or directory (POSIX) must not stop cleanup halfway."""
+    import stat
+
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    frozen_dir = source_root / "config" / "frozen"
+    frozen_dir.mkdir(parents=True)
+    (source_root / "config" / "a_first.json").write_text("first", encoding="utf-8")
+    (frozen_dir / "locked.json").write_text("locked", encoding="utf-8")
+    (source_root / "config" / "z_last.json").write_text("last", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (frozen_dir / "locked.json").chmod(stat.S_IREAD)
+    if os.name == "posix":
+        frozen_dir.chmod(0o555)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    try:
+        with _build_client(reloaded_manager) as client:
+            cleanup_response = client.post(
+                "/api/storage/location/retained-source/cleanup",
+                json={"retained_root": str(source_root)},
+            )
+    finally:
+        if frozen_dir.exists():
+            frozen_dir.chmod(0o755)
+            (frozen_dir / "locked.json").chmod(stat.S_IREAD | stat.S_IWRITE)
+
+    assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert not source_root.exists()
+
+
+@pytest.mark.unit
 def test_storage_location_cleanup_reports_when_other_files_keep_the_retained_root(tmp_path):
     config_manager = _make_real_config_manager(tmp_path)
     source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
