@@ -1628,7 +1628,21 @@ def _cleanup_retained_runtime_root(
     ):
         raise ValueError("保留目录当前不满足安全清理条件。")
 
-    from utils.storage.migration import _snapshot_path
+    from utils.storage.migration import (
+        StorageMigrationError,
+        _classify_no_follow,
+        _snapshot_path,
+    )
+
+    def _plain_entry_kind(path: Path) -> str | None:
+        """Return ``file``/``dir`` for a real entry, ``None`` for anything else."""
+        if not os.path.lexists(path):
+            return None
+        try:
+            kind, _entry_stat = _classify_no_follow(path)
+        except StorageMigrationError:
+            return None
+        return kind
 
     proofs = copied_entries if isinstance(copied_entries, dict) else {}
     normalized_target = normalize_runtime_root(target_root) if str(target_root or "").strip() else None
@@ -1665,14 +1679,18 @@ def _cleanup_retained_runtime_root(
 
     # The evidence proves each entry was copied completely. What is deleted is
     # the retained copy, so it must still be exactly what was copied. The
-    # target only has to still hold the entry: running the app on it since is
-    # the normal case and does not make the old copy worth keeping.
+    # target only has to still hold a real entry of the copied kind: running
+    # the app on it since is the normal case and does not make the old copy
+    # worth keeping, but a link (even a dangling one) or a different kind of
+    # entry is no longer that copy.
     for entry_name, proof in proved_entries:
         source_entry = retained_path / entry_name
         target_entry = normalized_target / entry_name
+        target_manifest = proof.get("target_manifest")
+        expected_kind = target_manifest.get("kind") if isinstance(target_manifest, dict) else None
         if (
             not os.path.lexists(source_entry)
-            or not os.path.lexists(target_entry)
+            or _plain_entry_kind(target_entry) != expected_kind
             or _snapshot_path(source_entry) != proof.get("source_manifest")
         ):
             raise ValueError(f"保留目录条目证据已变化，拒绝清理: {entry_name}")

@@ -1,6 +1,7 @@
 import asyncio
 import builtins
 import json
+import os
 import shutil
 import threading
 from pathlib import Path
@@ -3110,6 +3111,60 @@ def test_storage_location_cleanup_allows_a_target_used_since_migration(tmp_path)
     assert cleanup_response.status_code == 200, cleanup_response.json()
     assert not source_root.exists()
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "edited in the app"
+
+
+def _migrate_config_then_replace_target(tmp_path, replace_target):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    shutil.rmtree(target_root / "config")
+    replace_target(target_root / "config", tmp_path)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+    return cleanup_response, source_root
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_source_when_target_changed_kind(tmp_path):
+    def _replace_with_file(target_entry, _tmp_path):
+        target_entry.write_text("not a directory any more", encoding="utf-8")
+
+    cleanup_response, source_root = _migrate_config_then_replace_target(
+        tmp_path, _replace_with_file
+    )
+
+    assert cleanup_response.status_code == 500
+    assert (source_root / "config" / "characters.json").read_text(encoding="utf-8") == "original"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_source_when_target_is_a_dangling_link(tmp_path):
+    def _replace_with_dangling_link(target_entry, tmp_path):
+        try:
+            os.symlink(tmp_path / "gone", target_entry, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    cleanup_response, source_root = _migrate_config_then_replace_target(
+        tmp_path, _replace_with_dangling_link
+    )
+
+    assert cleanup_response.status_code == 500
+    assert (source_root / "config" / "characters.json").read_text(encoding="utf-8") == "original"
 
 
 @pytest.mark.unit

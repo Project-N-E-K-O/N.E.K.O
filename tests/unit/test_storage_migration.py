@@ -899,3 +899,114 @@ def test_storage_migration_refuses_a_linked_transaction_directory(tmp_path):
     assert result["error_code"] == "path_link_unsupported"
     assert list(external.iterdir()) == []
     assert not (target_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_target_entry_appearing_after_staging_survives_rollback(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_persist = storage_migration_module._persist_migration_payload
+
+    def _persist(*args, **kwargs):
+        if kwargs.get("status") == "verifying":
+            # Staging recorded no target config; one appears before publish.
+            (target_root / "config").mkdir(parents=True, exist_ok=True)
+            (target_root / "config" / "late.json").write_text("late", encoding="utf-8")
+        if kwargs.get("status") == "committing":
+            raise KeyboardInterrupt("simulated process loss after publish")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", _persist)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", original_persist)
+
+    # The next start recovers from the checkpoint on disk alone. The restored
+    # target now holds data, so the retry stops to ask before overwriting it.
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "target_confirmation_required"
+    assert (target_root / "config" / "late.json").read_text(encoding="utf-8") == "late"
+    assert not (target_root / "config" / "characters.json").exists()
+
+
+@pytest.mark.unit
+def test_v1_commit_pending_checkpoint_stays_classified_as_legacy(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+    from utils.storage_migration import is_legacy_unproven_checkpoint
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_persist = storage_migration_module._persist_migration_payload
+
+    def _fail_completed_checkpoint(*args, **kwargs):
+        if kwargs.get("status") == STORAGE_MIGRATION_STATUS_COMPLETED:
+            raise OSError("simulated checkpoint loss")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage_migration_module, "_persist_migration_payload", _fail_completed_checkpoint
+    )
+    assert run_pending_storage_migration(config_manager)["error_code"] == "migration_commit_pending"
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", original_persist)
+
+    # Rewrite it as the COMMITTING checkpoint a v1 build left behind.
+    v1_payload = dict(load_storage_migration(config_manager))
+    v1_payload["version"] = 1
+    for key in (
+        "copied_entries",
+        "published_entries",
+        "original_target_entries",
+        "publishing_entry",
+        "publishing_target_existed",
+        "restoring_entries",
+    ):
+        v1_payload.pop(key, None)
+    save_storage_migration(config_manager, v1_payload)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True
+    assert result["payload"]["version"] == 1
+    assert is_legacy_unproven_checkpoint(result["payload"])
+
+
+@pytest.mark.unit
+def test_leftover_completed_transaction_is_removed_on_next_launch(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    original_remove = storage_migration_module._remove_transaction
+
+    def _locked(_transaction_root):
+        raise OSError("simulated locked backup file")
+
+    monkeypatch.setattr(storage_migration_module, "_remove_transaction", _locked)
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    assert list((target_root / ".smtx").glob("*/backup/config/characters.json"))
+
+    monkeypatch.setattr(storage_migration_module, "_remove_transaction", original_remove)
+    later = run_pending_storage_migration(config_manager)
+
+    assert later["attempted"] is False
+    assert not (target_root / ".smtx").exists()

@@ -530,6 +530,29 @@ def _rollback_publish_or_require_recovery(
         ) from exc
 
 
+def _remove_completed_transaction_leftover(payload: dict[str, Any] | None) -> None:
+    """Retry removing a completed migration's transaction directory.
+
+    Completion only logs a failed removal (a file in ``backup`` may be locked
+    on Windows), and a completed checkpoint is never run again, so without
+    this the overwritten original target could stay under ``.smtx`` forever.
+    """
+    if not isinstance(payload, dict):
+        return
+    if str(payload.get("status") or "").strip().lower() != STORAGE_MIGRATION_STATUS_COMPLETED:
+        return
+    raw_target_root = str(payload.get("target_root") or "").strip()
+    txid = str(payload.get("txid") or "").strip()
+    if not raw_target_root or not txid:
+        return
+    try:
+        transaction_root = _transaction_path(normalize_runtime_root(raw_target_root), txid)
+        if os.path.lexists(transaction_root):
+            _remove_transaction(transaction_root)
+    except Exception as exc:
+        logger.warning("Failed to remove leftover storage migration transaction: %s", exc)
+
+
 def _ensure_transaction_parent(transaction_root: Path) -> None:
     parent = transaction_root.parent
     if not os.path.lexists(parent):
@@ -713,6 +736,7 @@ def run_pending_storage_migration(
         anchor_root=normalized_anchor_root,
     )
     if not is_storage_migration_pending(migration_payload):
+        _remove_completed_transaction_leftover(migration_payload)
         return {
             "attempted": False,
             "completed": False,
@@ -855,9 +879,25 @@ def run_pending_storage_migration(
             )
 
         try:
+            prior_version = int(payload.get("version") or 1)
+        except (TypeError, ValueError):
+            prior_version = 1
+        # A v1 checkpoint finished from COMMITTING carries no copy evidence.
+        # Keep it classified as v1 so retained-root cleanup can still prove
+        # entries by comparing both sides instead of refusing for good.
+        completed_version = (
+            STORAGE_MIGRATION_VERSION
+            if copied_entries or prior_version >= STORAGE_MIGRATION_VERSION
+            else prior_version
+        )
+        has_cleanup_basis = (
+            bool(copied_entries) or completed_version < STORAGE_MIGRATION_VERSION
+        )
+
+        try:
             from utils.cloudsave_runtime import ROOT_MODE_NORMAL, set_root_mode
 
-            legacy_cleanup_pending = bool(copied_entries) and is_retained_root_cleanup_available(
+            legacy_cleanup_pending = has_cleanup_basis and is_retained_root_cleanup_available(
                 source_root,
                 current_root=target_root,
                 anchor_root=normalized_anchor_root,
@@ -892,7 +932,7 @@ def run_pending_storage_migration(
                 error_message="",
                 committed_at=str(payload.get("committed_at") or completed_at),
                 completed_at=completed_at,
-                version=STORAGE_MIGRATION_VERSION,
+                version=completed_version,
                 copied_entries=copied_entries,
                 published_entries=[],
                 original_target_entries=[],
@@ -1133,10 +1173,18 @@ def run_pending_storage_migration(
                 target_entry = target_root / entry_name
                 backup_entry = backup_root / entry_name
                 target_existed = os.path.lexists(target_entry)
+                # Record what the target holds right now, not what staging saw:
+                # rollback restores from this, and an entry that appeared since
+                # would otherwise be deleted together with its backup.
+                if target_existed and entry_name not in original_target_entries:
+                    original_target_entries.append(entry_name)
+                elif not target_existed and entry_name in original_target_entries:
+                    original_target_entries.remove(entry_name)
                 payload = _persist_migration_payload(
                     config_manager,
                     payload,
                     anchor_root=normalized_anchor_root,
+                    original_target_entries=list(original_target_entries),
                     publishing_entry=entry_name,
                     publishing_target_existed=target_existed,
                 )
