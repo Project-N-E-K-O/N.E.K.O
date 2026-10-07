@@ -133,6 +133,9 @@ def _build_migration_payload(migration_checkpoint: dict[str, Any] | None, last_m
         "retained_source_root": _opt_normalize(checkpoint.get("retained_source_root")),
         "retained_source_mode": str(checkpoint.get("retained_source_mode") or "").strip(),
         "error_code": str(checkpoint.get("error_code") or "").strip(),
+        # The maintenance view names the transaction directory (.smtx/<txid
+        # prefix>) that holds the original data after a publish conflict.
+        "txid": str(checkpoint.get("txid") or "").strip(),
         "error_message": error_message,
         "last_error": error_message or _extract_last_error(last_migration_result),
     }

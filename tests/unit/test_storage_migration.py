@@ -1853,3 +1853,32 @@ def test_unreadable_source_during_recovery_stays_retryable(tmp_path, monkeypatch
     assert result["payload"]["status"] == "rollback_required"
     assert load_storage_policy(config_manager) is None
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "new"
+
+
+@pytest.mark.unit
+def test_status_migration_payload_carries_what_the_maintenance_view_reads(tmp_path, monkeypatch):
+    """The maintenance view builds its paused-migration hints from the status
+    payload's ``migration``; every field it reads must actually be there."""
+    from utils import storage_migration as storage_migration_module
+    from utils.storage.location_bootstrap import _build_migration_payload
+
+    config_manager, source_root, target_root = _overwrite_migration(tmp_path)
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _recreate_then_publish(staged, target):
+        Path(target).mkdir(parents=True, exist_ok=True)
+        (Path(target) / "newcomer.json").write_text("newcomer", encoding="utf-8")
+        original_publish(staged, target)
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _recreate_then_publish)
+    assert run_pending_storage_migration(config_manager)["error_code"] == "migration_publish_conflict"
+    checkpoint = load_storage_migration(config_manager)
+
+    migration = _build_migration_payload(checkpoint, "")
+
+    assert migration["status"] == "rollback_required"
+    assert migration["error_code"] == "migration_publish_conflict"
+    assert migration["source_root"] and migration["target_root"]
+    assert migration["txid"] == checkpoint["txid"]
+    # The prefix the view shows is the transaction directory that exists.
+    assert (target_root / ".smtx" / migration["txid"][:12] / "backup").is_dir()
