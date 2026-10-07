@@ -652,3 +652,11 @@ def test_another_accounts_rate_limited_transcript_does_not_hold_back_a_report(en
     resp = _report(client, include_transcript=True)
     # 本账号这一侧没有待传转录：举报照常立即提交
     assert resp.status_code == 200 and fake.count("/api/visit/reports") == 1
+
+
+
+def test_a_note_that_cannot_be_written_is_a_client_error(env):
+    client, fake, tmp_path, _ = env
+    raw = '{"visit_id": "%s", "reason": "harassment", "note": "rude \\ud800", "include_transcript": false}' % V1
+    resp = client.post("/api/visit/report", headers={**GOOD, "Content-Type": "application/json"}, content=raw)
+    assert resp.status_code == 400 and resp.json()["code"] == "invalid_note" and _queued(tmp_path) is None

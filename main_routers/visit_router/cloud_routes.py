@@ -221,6 +221,11 @@ def _report_fields(payload: Mapping[str, Any]) -> dict | JSONResponse:
         note = ""
     if not isinstance(note, str) or len(note) > VISIT_REPORT_NOTE_MAX_CHARS:
         return _error(400, "invalid_note")
+    try:
+        # 孤立代理字符（JSON 里的 "\ud800"）解析得出、却写不进 UTF-8 的举报文件：当场按无效备注拒，不落成 500
+        note.encode("utf-8")
+    except UnicodeEncodeError:
+        return _error(400, "invalid_note")
     include = payload.get("include_transcript")
     if not isinstance(include, bool):
         return _error(400, "include_transcript_required")
