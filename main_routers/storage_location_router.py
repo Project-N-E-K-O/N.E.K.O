@@ -33,6 +33,7 @@ import os
 import shutil
 import sys
 import inspect
+import stat
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -1691,6 +1692,13 @@ def _cleanup_retained_runtime_root(
         with tempfile.TemporaryDirectory(prefix="neko-cleanup-") as scratch:
             scratch_root = Path(scratch)
             shutil.copytree(retained_entry, scratch_root / "config", symlinks=True)
+            # copytree keeps read-only modes; the rewrite below must be able
+            # to replace workshop_config.json in this throwaway copy.
+            for scratch_dir, _dir_names, file_names in os.walk(scratch_root / "config"):
+                os.chmod(scratch_dir, stat.S_IMODE(os.stat(scratch_dir).st_mode) | stat.S_IRWXU)
+                for file_name in file_names:
+                    scratch_file = os.path.join(scratch_dir, file_name)
+                    os.chmod(scratch_file, stat.S_IMODE(os.stat(scratch_file).st_mode) | stat.S_IRUSR | stat.S_IWUSR)
             rewrite_migrated_config_paths(
                 source_root=retained_path,
                 target_root=normalized_target,
@@ -1704,13 +1712,15 @@ def _cleanup_retained_runtime_root(
     for entry_name in [name for name, _proof in proved_entries] + legacy_entries:
         remove_runtime_entry(retained_path / entry_name)
 
-    # The anchor root holds more than runtime data and always stays. Any other
-    # retained root goes once emptied; files the user kept in it stay put.
-    retained_root_kept = False
-    if not paths_equal(retained_path, anchor_root):
+    # The anchor root holds more than runtime data (state, cloud saves) and
+    # always stays. Any other retained root goes once emptied; files the user
+    # kept in it stay put.
+    retained_root_kept = paths_equal(retained_path, anchor_root)
+    if not retained_root_kept:
         try:
             retained_path.rmdir()
         except FileNotFoundError:
+            # Already gone, e.g. removed by the user meanwhile: nothing is kept.
             pass
         except OSError:
             retained_root_kept = True

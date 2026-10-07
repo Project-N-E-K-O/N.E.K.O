@@ -3280,6 +3280,48 @@ def test_storage_location_v1_cleanup_accepts_rebased_workshop_config(tmp_path):
 
 
 @pytest.mark.unit
+def test_storage_location_v1_cleanup_rebases_a_read_only_workshop_config(tmp_path):
+    """The v1 comparison rewrites a scratch copy; a read-only original must not break it."""
+    import stat
+
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    workshop_config = source_root / "config" / "workshop_config.json"
+    workshop_config.write_text(
+        json.dumps({"user_mod_folder": str(source_root / "mods")}),
+        encoding="utf-8",
+    )
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+    workshop_config.chmod(stat.S_IREAD)
+    if os.name == "posix":
+        (source_root / "config").chmod(0o555)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    try:
+        with _build_client(reloaded_manager) as client:
+            cleanup_response = client.post(
+                "/api/storage/location/retained-source/cleanup",
+                json={"retained_root": str(source_root)},
+            )
+    finally:
+        if (source_root / "config").exists():
+            (source_root / "config").chmod(0o755)
+            workshop_config.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+    assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert not (source_root / "config").exists()
+
+
+@pytest.mark.unit
 def test_storage_location_cleanup_keeps_source_when_target_changed_kind(tmp_path):
     def _replace_with_file(target_entry, _tmp_path):
         target_entry.write_text("not a directory any more", encoding="utf-8")
@@ -3537,6 +3579,8 @@ def test_storage_location_cleanup_retained_anchor_root_removes_runtime_entries_o
     cleanup_payload = cleanup_response.json()
     assert cleanup_payload["ok"] is True
     assert cleanup_payload["cleaned_root"] == str(source_root.resolve())
+    # The anchor root keeps state and cloud saves; the UI must not claim it is gone.
+    assert cleanup_payload["retained_root_kept"] is True
 
     assert source_root.exists()
     assert not (source_root / "config").exists()

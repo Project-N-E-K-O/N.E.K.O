@@ -20,7 +20,6 @@ import json
 import os
 import shutil
 import stat
-import sys
 import uuid
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -191,10 +190,8 @@ def _remove_existing_path(path: Path) -> None:
             f"迁移目标包含链接或重解析点，拒绝覆盖: {path}",
         )
     if stat.S_ISDIR(path_stat.st_mode):
-        if sys.version_info >= (3, 12):
-            shutil.rmtree(path, onexc=_retry_after_clearing_read_only)
-        else:
-            shutil.rmtree(path, onerror=_retry_after_clearing_read_only)
+        # The project pins Python 3.11, where rmtree takes ``onerror``.
+        shutil.rmtree(path, onerror=_retry_after_clearing_read_only)
         return
     if stat.S_ISREG(path_stat.st_mode):
         try:
@@ -215,7 +212,14 @@ def _retry_after_clearing_read_only(function: Callable[..., Any], path: str, _er
     cannot be removed from a directory without write access to it. Copies
     keep the source's modes, so either can turn up mid-removal; stopping
     there would leave an entry half deleted and its evidence unmatchable.
+    Only removals are retried; any other failure (say, a directory that
+    cannot be listed) is raised as it was.
     """
+    if function not in (os.unlink, os.remove, os.rmdir):
+        error = _error[1] if isinstance(_error, tuple) else _error
+        if isinstance(error, BaseException):
+            raise error
+        raise OSError(f"cannot remove {path}")
     failed = Path(path)
     for candidate in (failed.parent, failed):
         with suppress(OSError):
@@ -240,9 +244,12 @@ def _publish_without_overwrite(staged: Path, target: Path) -> None:
         os.rename(staged, target)
         return
     if stat.S_ISDIR(staged.lstat().st_mode):
+        # rename(2) silently replaces an empty directory, so reserve the name
+        # first: mkdir(2) is atomic and refuses anything already there. The
+        # rename then replaces only our own empty reservation, and fails if
+        # something was written into it meanwhile.
+        os.mkdir(target)
         try:
-            # rename(2) refuses a non-empty directory or a file at the target;
-            # an empty directory holds nothing to lose.
             os.rename(staged, target)
         except OSError as exc:
             if exc.errno in {errno.EEXIST, errno.ENOTEMPTY, errno.ENOTDIR, errno.EISDIR}:
@@ -940,6 +947,7 @@ def run_pending_storage_migration(
         nonlocal payload
         status = {
             "migration_rollback_required": STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
+            "migration_source_missing": STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
             # Keep COMMITTING so the next start decides again from the policy.
             "migration_commit_ambiguous": STORAGE_MIGRATION_STATUS_COMMITTING,
         }.get(error_code, STORAGE_MIGRATION_STATUS_PENDING)
@@ -1186,6 +1194,18 @@ def run_pending_storage_migration(
                 )
         transaction_root = _transaction_path(target_root, txid)
         _ensure_transaction_parent(transaction_root)
+        if not source_root.exists() or not source_root.is_dir():
+            if os.path.lexists(transaction_root):
+                # Rolling back restores the state before this migration, and
+                # that state lived in the source. With the source gone, the
+                # published entries and the staged copies may be the only
+                # copy left: keep them all and stay retryable until the source
+                # comes back or someone sorts it out by hand.
+                raise StorageMigrationError(
+                    "migration_source_missing",
+                    "原始数据目录不存在，迁移未完成，已保留目标与事务目录，恢复原始目录后会继续处理。",
+                )
+            raise StorageMigrationError("source_root_missing", "原始数据目录不存在，无法继续迁移。")
         if os.path.lexists(transaction_root):
             _rollback_publish_or_require_recovery(
                 payload=payload,
@@ -1207,11 +1227,6 @@ def run_pending_storage_migration(
                 error_code="",
                 error_message="",
             )
-
-        # Checked only now: rolling back an interrupted publish touches the
-        # target alone, and must not be skipped because the source is gone.
-        if not source_root.exists() or not source_root.is_dir():
-            raise StorageMigrationError("source_root_missing", "原始数据目录不存在，无法继续迁移。")
 
         payload = _persist_migration_payload(
             config_manager,
@@ -1413,8 +1428,13 @@ def run_pending_storage_migration(
             selection_source=selection_source,
         )
     except StorageMigrationError as exc:
-        _cleanup_unpublished_transaction()
-        if exc.error_code in {"migration_rollback_required", "migration_commit_ambiguous"}:
+        if exc.error_code != "migration_source_missing":
+            _cleanup_unpublished_transaction()
+        if exc.error_code in {
+            "migration_rollback_required",
+            "migration_commit_ambiguous",
+            "migration_source_missing",
+        }:
             return _finish_retryable(exc.error_code, exc.message)
         return _finish_failure(exc.error_code, exc.message)
     except Exception as exc:

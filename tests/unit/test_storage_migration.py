@@ -1292,7 +1292,9 @@ def test_committed_migration_finishes_without_the_retained_source(tmp_path, monk
 
 
 @pytest.mark.unit
-def test_interrupted_publish_is_rolled_back_even_without_the_source(tmp_path, monkeypatch):
+def test_interrupted_publish_is_kept_while_the_source_is_missing(tmp_path, monkeypatch):
+    """Without the source, the published and staged copies may be the only
+    ones left: keep everything and roll back once the source is back."""
     import shutil
 
     from utils import storage_migration as storage_migration_module
@@ -1308,11 +1310,111 @@ def test_interrupted_publish_is_rolled_back_even_without_the_source(tmp_path, mo
     with pytest.raises(KeyboardInterrupt):
         run_pending_storage_migration(config_manager)
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", original_publish)
-    shutil.rmtree(source_root)
+    parked_source = tmp_path / "parked-source"
+    shutil.move(str(source_root), str(parked_source))
 
     result = run_pending_storage_migration(config_manager)
 
-    assert result["error_code"] == "source_root_missing"
-    # The half-published target was restored before giving up.
+    assert result["error_code"] == "migration_source_missing"
+    assert result["payload"]["status"] == "rollback_required"
+    assert is_storage_migration_pending(load_storage_migration(config_manager))
+    # Nothing was rolled back or removed.
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "new"
+    backups = list((target_root / ".smtx").glob("*/backup/config/characters.json"))
+    assert [path.read_text(encoding="utf-8") for path in backups] == ["healthy"]
+
+    # Once the source is back, the next start rolls the publish back.
+    shutil.move(str(parked_source), str(source_root))
+    _stop_after_recovery(monkeypatch, storage_migration_module)
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "stop_after_recovery"
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
-    assert not (target_root / ".smtx").exists()
+
+
+@pytest.mark.unit
+def test_read_only_retry_reraises_failures_that_are_not_removals(tmp_path):
+    """rmtree also reports failed os.open/os.scandir calls; retrying those
+    with a bare path raised TypeError instead of the real error."""
+    from utils import storage_migration as storage_migration_module
+
+    original = PermissionError(13, "cannot list directory")
+    with pytest.raises(PermissionError, match="cannot list directory"):
+        storage_migration_module._retry_after_clearing_read_only(
+            os.open, str(tmp_path / "unlistable"), (PermissionError, original, None)
+        )
+
+
+@pytest.mark.unit
+def test_interrupted_staging_is_kept_while_the_source_is_missing(tmp_path, monkeypatch):
+    import shutil
+
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    _write_memory_tree(source_root)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_copy = storage_migration_module._copy_runtime_entry
+
+    def _crash_after_first_copy(source_path, target_path):
+        original_copy(source_path, target_path)
+        raise KeyboardInterrupt("simulated process loss while staging")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _crash_after_first_copy)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", original_copy)
+    assert load_storage_migration(config_manager)["status"] == "copying"
+    shutil.move(str(source_root), str(tmp_path / "parked-source"))
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "migration_source_missing"
+    staged = list((target_root / ".smtx").glob("*/stage/*"))
+    assert staged, "the staged copy must survive while the source is missing"
+
+
+@pytest.mark.unit
+def test_empty_target_directory_appearing_at_publish_is_kept(tmp_path, monkeypatch):
+    """rename(2) would silently replace an empty directory on POSIX."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_persist = storage_migration_module._persist_migration_payload
+
+    def _persist(*args, **kwargs):
+        result = original_persist(*args, **kwargs)
+        if kwargs.get("publishing_entry") == "config" and kwargs.get("publishing_target_existed") is False:
+            (target_root / "config").mkdir(parents=True, exist_ok=True)
+            if os.name == "posix":
+                (target_root / "config").chmod(0o700)
+        return result
+
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", _persist)
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "target_changed_during_migration"
+    assert (target_root / "config").is_dir()
+    assert list((target_root / "config").iterdir()) == []
+    if os.name == "posix":
+        assert (target_root / "config").stat().st_mode & 0o777 == 0o700
