@@ -700,6 +700,7 @@ async def upload_visit_transcript(visit_id: str, upload_doc: dict) -> bool | str
             # 记在进程内，后台轮次接着用它、接着补写
             await _record_owner(config_dir, visit_id, owner)
         result = await _upload(visit_id, upload_doc, config_dir)
+    _note_upload_retry_after(visit_id, result.retry_after_s)
     if result.terminal:
         # 补录删掉封存文件后，原因只剩这一份：之后才提交的附转录举报照样带上
         remember_terminal_reason(visit_id, result.terminal, owner if isinstance(owner, str) and owner else None)
@@ -1217,6 +1218,10 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
             # 账号，按 state 的账号报，交给启动补录判（隔离或重封）
             logger.warning("visit upload %s: sealed file disagrees with the visit state, left to recovery", visit_id)
             return UploadRound(pending=True, owner=state_owner)
+        if not doc.get("own_visit_uid") and state_owner:
+            # 旧版本封出来的无主文件：与启动补录一样用 state.json 记的账号补上并写回，否则谁登录都传不了
+            await _record_owner(config_dir, visit_id, state_owner)
+            doc = {**doc, "own_visit_uid": state_owner}
     # 只信本场的文件（含本版本留着不动的新版本文件）里写的账号：别场 / 坏文件写的不算，按未知处理
     doc_trusted = sealed_upload_doc_usable(doc, visit_id) or sealed_upload_doc_from_another_version(doc, visit_id)
     owner = doc.get("own_visit_uid") if doc_trusted else None
@@ -1430,6 +1435,7 @@ async def retry_visit_once(
                     _manual_retries[visit_id] = dict(report)
             elif report.get("rejected"):
                 report_pending = False
+    _note_upload_retry_after(visit_id, upload.retry_after_s)
     delays = [d for d in (upload.retry_after_s, report_retry_after) if d is not None]
     return RetryRound(pending=report_pending or upload.retryable or unreadable or visit_id in _settled_leftovers,
                       retry_after_s=max(delays) if delays else None,
@@ -1458,12 +1464,23 @@ def _reset_for_tests() -> None:
     # 上一个测试的事件循环里残留的任务可能还握着锁：换新的锁表，不跨事件循环复用
     _VISIT_LOCKS.clear()
     _not_before.clear()
+    _upload_not_before.clear()
     _wakeups.clear()
     _settled_leftovers.clear()
 
 
 _not_before: dict[str, float] = {}
 """visit_id -> monotonic time before which no background round may run (Servers ``retry_after``)."""
+
+
+_upload_not_before: dict[str, float] = {}
+"""visit_id -> monotonic time before which the transcript must not be resent (its own ``Retry-After``)."""
+
+
+def _note_upload_retry_after(visit_id: str, retry_after_s: int | None) -> None:
+    if retry_after_s:
+        _upload_not_before[visit_id] = max(_upload_not_before.get(visit_id, 0.0),
+                                           time.monotonic() + retry_after_s)
 
 
 _wakeups: dict[str, asyncio.Event] = {}
@@ -1479,11 +1496,17 @@ def restart_retry_deadline(visit_id: str) -> None:
     abandoned under a long ``retry_after`` does not hold back the next one
     for the same visit.
     """
+    # 转录自己拿到的 Retry-After 照守：每轮先传转录，不能因为来了新举报就提前重传
+    upload_floor = _upload_not_before.get(visit_id, 0.0)
+    now = time.monotonic()
     task = _workers.get(visit_id)
     if task is None or task.done():
-        _not_before.pop(visit_id, None)
+        if upload_floor > now:
+            _not_before[visit_id] = upload_floor
+        else:
+            _not_before.pop(visit_id, None)
         return
-    _not_before[visit_id] = time.monotonic() + VISIT_UPLOAD_RETRY_BACKOFF_S[0]
+    _not_before[visit_id] = max(now + VISIT_UPLOAD_RETRY_BACKOFF_S[0], upload_floor)
     event = _wakeups.get(visit_id)
     if event is not None:
         event.set()
@@ -1561,6 +1584,7 @@ def schedule_visit_retry(visit_id: str, *, config_dir: Path | None = None,
             del _workers[visit_id]
             # 唤醒事件只给在等的后台任务用：任务结束就拿掉，别随场次数一直攒着
             _wakeups.pop(visit_id, None)
+            _upload_not_before.pop(visit_id, None)
 
     task.add_done_callback(_done)
     return task

@@ -2995,3 +2995,15 @@ async def test_an_upload_callback_failing_before_its_own_scheduling_rearms_the_r
         report=recovery.RecoveryReport(), retry_later=armed.append,
     )
     assert v in pending and armed == [v]
+
+
+
+async def test_a_lone_streams_header_names_the_pending_owner(tmp_path):
+    from main_logic.visit import recovery
+
+    v = vid(119)
+    _write_stream(tmp_path, v, _stream_records(v))                       # 没有 state.json、没有封存文件
+    assert await recovery._pending_upload_owner(tmp_path, v) == OWN_A
+    other = vid(120)
+    _write_stream(tmp_path, other, [_header(v)])                         # 头行写的是别场
+    assert await recovery._pending_upload_owner(tmp_path, other) is None

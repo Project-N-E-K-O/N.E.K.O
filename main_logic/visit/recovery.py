@@ -1001,7 +1001,28 @@ async def _pending_upload_owner(config_dir: Path, visit_id: str) -> str | None:
         owner = _owner_or_none(doc.get("own_visit_uid"))
     else:
         owner = None
-    return owner if owner is not None else await _state_owner(config_dir, visit_id)
+    if owner is None:
+        owner = await _state_owner(config_dir, visit_id)
+    if owner is None:
+        # 没有可信的封存文件、state.json 也读不到：本场上传流水的头行记着占房账号
+        owner = await asyncio.to_thread(_upload_stream_owner_sync, config_dir / VISIT_SPOOL_DIRNAME, visit_id)
+    return owner
+
+
+def _upload_stream_owner_sync(spool_dir: Path, visit_id: str) -> str | None:
+    """``own_visit_uid`` named by this visit's upload stream header; None when absent or not this visit's."""
+    try:
+        with open(visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX), "rb") as handle:
+            first = handle.readline()
+    except OSError:
+        return None
+    try:
+        header = json.loads(first)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(header, dict) or header.get("kind") != "header" or header.get("visit_id") != visit_id:
+        return None
+    return _owner_or_none(header.get("own_visit_uid"))
 
 
 async def _state_owner(config_dir: Path, visit_id: str) -> str | None:

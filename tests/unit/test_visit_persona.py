@@ -1352,3 +1352,21 @@ def test_the_gate_does_not_open_with_a_persona_whose_name_moved_to_another_chara
     gate = _gate(client)
     # 不能拿原角色的人设放行：名字已不对应它
     assert gate.ok is False and gate.state == "missing"
+
+
+
+def test_a_hand_edit_is_rolled_back_when_the_name_moves_during_its_checks(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    before = _file(tmp_path)
+    real = persona._hooks.resolve_char_uid
+    calls = []
+
+    async def replaced_with_an_identical_card(name):
+        calls.append(name)
+        return await real(name) if len(calls) <= 2 else "d" * 32       # 写盘后：名字已是另一个（卡片相同的）角色
+
+    monkeypatch.setattr(persona._hooks, "resolve_char_uid", replaced_with_an_identical_card)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
+    assert resp.status_code == 409 and _file(tmp_path) == before

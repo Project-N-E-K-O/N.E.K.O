@@ -1867,3 +1867,23 @@ async def test_a_sealed_file_that_disagrees_with_the_visit_state_is_not_sent(tmp
     _write_sealed(tmp_path, _big_doc(4, 10))                               # 文件却写着 CHAR_UID
     outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
     assert outcome.pending is True and fake.count("/api/visit/transcripts") == 0
+
+
+
+async def test_an_ownerless_legacy_file_takes_the_state_owner_and_uploads(tmp_path, servers):
+    from tests.unit.visit_memory_test_helpers import make_visit
+
+    fake, _ = servers
+    await make_visit(tmp_path, V1, [], memory_enabled=False, own_uid=OWN, own_char_uid=CHAR_UID)
+    doc = _big_doc(4, 10)
+    doc["own_visit_uid"] = None                                          # 旧版本封出来的无主文件
+    _write_sealed(tmp_path, doc)
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    # 与 state.json 核对一致：用它记的账号补上，照常上传
+    assert fake.count("/api/visit/transcripts") > 0 and outcome.pending is False
+
+
+async def test_a_new_report_keeps_the_transcripts_own_retry_after(tmp_path, servers):
+    tu._note_upload_retry_after(V1, 5000)                                # 转录自己拿到的 Retry-After
+    tu.restart_retry_deadline(V1)                                        # 随后排了新举报
+    assert tu._not_before[V1] >= time.monotonic() + 4900

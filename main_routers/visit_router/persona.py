@@ -1196,6 +1196,8 @@ async def put_persona(request: Request, catgirl: str = ""):
             _note_write(character_uid)
             try:
                 changed = card_hash((await _hooks.load_context()).card(catgirl)) != card_hash(card)
+                # 名字在检查期间换成了另一个角色（卡片一字不差也算）：这份手写不是给原角色的
+                changed = changed or await _hooks.resolve_char_uid(catgirl) != character_uid
             except Exception as exc:  # noqa: BLE001 - 核对不了就当变了：宁可不存
                 logger.warning("visit persona: cannot recheck the card: %s", type(exc).__name__)
                 changed = True
