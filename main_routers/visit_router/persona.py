@@ -978,10 +978,12 @@ async def persona_gate(name: str) -> PersonaGate:
     background regeneration starts and the visit is refused
     (``state='generating'``); an edited persona stays usable.
     """
-    character_uid = await _hooks.resolve_char_uid(name)
-    if not character_uid:
-        return PersonaGate(ok=False, state="missing")
+    character_uid: str | None = None
     for _attempt in range(_GATE_ATTEMPTS):
+        # 每一轮重新按名字找角色：读的过程中原角色改了名、名字被新角色占了，不能拿原角色的人设放行
+        character_uid = await _hooks.resolve_char_uid(name)
+        if not character_uid:
+            return PersonaGate(ok=False, state="missing")
         if is_generating(character_uid):
             return PersonaGate(ok=False, state="generating", character_uid=character_uid)
         version = _write_versions.get(character_uid, 0)
@@ -1000,12 +1002,14 @@ async def persona_gate(name: str) -> PersonaGate:
                 if _write_versions.get(character_uid, 0) != version:
                     # 读卡期间人设被写过（手写确认）：手里这份已过时，按新的那份再判，别拿它触发重生成
                     continue
+                if await _hooks.resolve_char_uid(name) != character_uid:
+                    continue
                 start_regeneration(name, character_uid)
                 return PersonaGate(ok=False, state="generating", character_uid=character_uid)
         if is_generating(character_uid):
             # 读盘 / 读卡期间另一个窗口点了重新生成：手里这份已不作数
             return PersonaGate(ok=False, state="generating", character_uid=character_uid)
-        if _write_versions.get(character_uid, 0) == version:
+        if _write_versions.get(character_uid, 0) == version and await _hooks.resolve_char_uid(name) == character_uid:
             # 确认之后亲人的档案名 / 昵称可能改过：出门前按此刻的名单再替换一遍，旧确认挡不住新名字。
             # 与生成路径同一顺序：替换成的中性称呼可能比名字长，替换后再守一次 token 上限
             text = _clean_persona_text(doc["text"], ctx.family_names, _hooks.lang())

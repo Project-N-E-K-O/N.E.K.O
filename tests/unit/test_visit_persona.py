@@ -1247,7 +1247,7 @@ def test_a_regeneration_reads_the_card_of_its_own_character_after_a_rename(env, 
                 break
             await asyncio.sleep(0.01)
         gate.set()
-        await job
+        assert await job is None
 
     client.portal.call(scenario)
     # 生成用的是 UID_A 这只猫（改名后的 A2）的卡，不是新建的同名角色
@@ -1334,3 +1334,21 @@ def test_a_hand_edit_is_refused_when_the_name_now_belongs_to_another_character(e
                       json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
     assert resp.status_code == 409 and resp.json()["code"] == "catgirl_changed"
     assert _file(tmp_path) == before
+
+
+
+def test_the_gate_does_not_open_with_a_persona_whose_name_moved_to_another_character(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    _confirm(client)
+    real = persona._hooks.resolve_char_uid
+    calls = []
+
+    async def renamed_while_reading(name):
+        calls.append(name)
+        return await real(name) if len(calls) == 1 else None             # 读的过程中原角色改名、名字空出来
+
+    monkeypatch.setattr(persona._hooks, "resolve_char_uid", renamed_while_reading)
+    gate = _gate(client)
+    # 不能拿原角色的人设放行：名字已不对应它
+    assert gate.ok is False and gate.state == "missing"
