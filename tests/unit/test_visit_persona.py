@@ -1295,3 +1295,16 @@ def test_a_failed_card_recheck_leaves_the_hand_edit_unreviewed_at_most(env, monk
     # 核对不了就当卡片变了：不留下一份已确认、却没核对过卡片的手写
     assert resp.status_code == 409
     assert not (_file(tmp_path)["text"] == "你是{LANLAN_NAME}，一只爱睡觉的猫。" and _file(tmp_path)["reviewed"])
+
+
+
+def test_confirming_a_hand_edit_checks_it_against_the_current_card(env):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    # 写盘中途被打断留下的待确认手写：只按旧卡查过
+    client.portal.call(persona.store().save, UID_A, {
+        **_file(tmp_path), "text": "你是{LANLAN_NAME}，住在 Broadway 附近的猫。", "edited": True, "reviewed": False})
+    state["cards"]["A"] = "\n".join([CARD, "address: Broadway"])           # 随后卡片加了地址
+    resp = _confirm(client)
+    assert resp.status_code == 400 and resp.json()["code"] == "persona_sensitive_overlap"
+    assert _file(tmp_path)["reviewed"] is False

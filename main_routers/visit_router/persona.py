@@ -1070,6 +1070,16 @@ async def get_persona(request: Request, catgirl: str = ""):
     return await _view_response(catgirl, character_uid, ctx)
 
 
+def _scanned_sections(doc: dict | None, card: str | None) -> Sequence[str]:
+    """Scanned private sections a hand-written persona is checked against for the current ``card``."""
+    if doc is None:
+        return ()
+    if doc["scan_card_hash"] == card_hash(card):
+        return doc["private_sections"]
+    # 卡片改过：扫描清单基于旧卡，其中仍原样在当前卡里的段落照样比对（手写常发生在刚改完卡之后）
+    return [section for section in doc["private_sections"] if section in (card or "")]
+
+
 async def _view_response(name: str, character_uid: str, ctx: CharacterContext) -> JSONResponse:
     try:
         return JSONResponse(await _view(name, character_uid, ctx))
@@ -1123,6 +1133,19 @@ async def put_persona(request: Request, catgirl: str = ""):
             if seen != persona_version(doc):
                 # 面板打开后人设被换过（另一个窗口重新生成 / 卡片变更触发的重生成）：用户没看过这一份
                 return _error(409, "persona_changed")
+            if doc["edited"]:
+                # 手改的正文确认前按此刻的卡片再查一遍：它可能是写盘中途被打断留下的待确认手写，只按旧卡查过；
+                # 手改的人设门槛不再随卡片变更重生成，这里放过就会一直用下去
+                ctx = await _hooks.load_context()
+                card = ctx.card(catgirl)
+                if card is None:
+                    return _error(404, "unknown_catgirl")
+                hits = await asyncio.to_thread(
+                    persona_privacy_check, card, doc["text"], ctx.family_names, _scanned_sections(doc, card))
+                if hits:
+                    return _error(400, "persona_sensitive_overlap", hits=[hit.value for hit in hits])
+                if card_hash((await _hooks.load_context()).card(catgirl)) != card_hash(card):
+                    return _error(409, "persona_card_changed")
             doc = {**doc, "reviewed": True}
         else:
             lang = _hooks.lang()
@@ -1136,14 +1159,8 @@ async def put_persona(request: Request, catgirl: str = ""):
                 return _error(400, "persona_too_long")
             card = ctx.card(catgirl)
             # 与生成路径同一套检查：规则敏感词 + 与私人段落（规则段落 + 同一张卡扫描出的段落）的 8-gram
-            if doc is None:
-                scanned: Sequence[str] = ()
-            elif doc["scan_card_hash"] == card_hash(card):
-                scanned = doc["private_sections"]
-            else:
-                # 卡片改过：扫描清单基于旧卡，其中仍原样在当前卡里的段落照样比对（手写常发生在刚改完卡之后）
-                scanned = [section for section in doc["private_sections"] if section in (card or "")]
-            hits = await asyncio.to_thread(persona_privacy_check, card, cleaned, ctx.family_names, scanned)
+            hits = await asyncio.to_thread(
+                persona_privacy_check, card, cleaned, ctx.family_names, _scanned_sections(doc, card))
             if hits:
                 return _error(400, "persona_sensitive_overlap", hits=[hit.value for hit in hits])
             if card_hash((await _hooks.load_context()).card(catgirl)) != card_hash(card):
