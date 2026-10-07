@@ -1757,9 +1757,10 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 327382,
+  "source_bytes": 330188,
   "source_files": [
     "__init__.py",
+    "chat_schema.py",
     "config.schema.json",
     "docs/quickstart.tsx",
     "i18n/en.json",
@@ -1778,5 +1779,5 @@
     "transport.py",
     "ui/panel.tsx"
   ],
-  "source_sha256": "a27feaf08da36758703b639d252db4b1d859ae5f83b04724aa2a96124b9340a5"
+  "source_sha256": "3760d9e3ae7dbc6f7882d02e5124f051a3809a85562eff2ad1d5b53205ab777f"
 }

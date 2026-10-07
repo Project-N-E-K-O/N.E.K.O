@@ -40,6 +40,7 @@ from plugin.plugins.mcp_adapter.normalizer import MCPRequestNormalizer
 from plugin.plugins.mcp_adapter.serializer import MCPResponseSerializer
 from plugin.plugins.mcp_adapter.router import MCPRouteEngine
 from plugin.plugins.mcp_adapter.invoker import MCPPluginInvoker
+from plugin.plugins.mcp_adapter.chat_schema import portable_chat_schema
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 
 # 聊天注入（LLM tool）路径经由 POST /runs 产生运行记录，再轮询到终态后取回结果。
@@ -1406,12 +1407,12 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     def _alloc_llm_tool_name(self, tool_id: str, taken: frozenset = frozenset()) -> Optional[str]:
         """把 MCP tool_id 映射为合法且唯一的 LLM tool 名。
 
-        main_server 要求 tool 名匹配 ``[A-Za-z0-9_.\\-]{1,64}``；server/tool
+        聊天 provider 要求 tool 名匹配 ``[A-Za-z0-9_\\-]{1,64}``；server/tool
         名可能含非 ASCII 字符，统一折叠为 "_"。``taken`` 是跨插件查重得到
         的已占用名（与本插件已注册名一起参与去重），冲突时追加运行期序号。
         序号耗尽仍冲突时返回 None，由调用方跳过注入。
         """
-        base = re.sub(r"[^A-Za-z0-9_.\-]+", "_", tool_id).strip("._-")
+        base = re.sub(r"[^A-Za-z0-9_\-]+", "_", tool_id).strip("_-")
         if not base:
             base = "mcp_tool"
         base = base[:56]
@@ -1542,10 +1543,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             )
             return False
         try:
+            parameters = portable_chat_schema(
+                schema if isinstance(schema, dict) else {"type": "object", "properties": {}}
+            )
             self.register_llm_tool(
                 name=llm_name,
                 description=description or f"MCP tool '{tool_name}' from server '{server_name}'.",
-                parameters=schema if isinstance(schema, dict) else {"type": "object", "properties": {}},
+                parameters=parameters,
                 handler=self._build_chat_tool_handler(
                     tool_id=tool_id,
                     server_name=server_name,
