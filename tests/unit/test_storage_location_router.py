@@ -3139,6 +3139,77 @@ def _migrate_config_then_replace_target(tmp_path, replace_target):
 
 
 @pytest.mark.unit
+def test_storage_location_cleanup_refuses_a_linked_retained_root(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    # The retained root is swapped for a link to a directory holding the
+    # same content, so every per-entry check would pass through the link.
+    elsewhere = tmp_path / "elsewhere"
+    shutil.move(str(source_root), str(elsewhere))
+    try:
+        os.symlink(elsewhere, source_root, target_is_directory=True)
+    except OSError as exc:
+        shutil.move(str(elsewhere), str(source_root))
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code != 200
+    assert (elsewhere / "config" / "characters.json").read_text(encoding="utf-8") == "original"
+
+
+@pytest.mark.unit
+def test_storage_location_v1_cleanup_accepts_rebased_workshop_config(tmp_path):
+    """v1 rewrote workshop paths into the target; that alone must not block cleanup."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "config" / "workshop_config.json").write_text(
+        json.dumps({"user_mod_folder": str(source_root / "mods")}),
+        encoding="utf-8",
+    )
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    rebased = json.loads(
+        (target_root / "config" / "workshop_config.json").read_text(encoding="utf-8")
+    )
+    assert rebased["user_mod_folder"] == str((target_root / "mods").resolve())
+    _downgrade_to_v1_checkpoint(config_manager)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert not (source_root / "config").exists()
+
+
+@pytest.mark.unit
 def test_storage_location_cleanup_keeps_source_when_target_changed_kind(tmp_path):
     def _replace_with_file(target_entry, _tmp_path):
         target_entry.write_text("not a directory any more", encoding="utf-8")

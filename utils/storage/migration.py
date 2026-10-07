@@ -32,6 +32,7 @@ from .policy import (
     compute_anchor_root,
     normalize_runtime_root,
     paths_equal,
+    get_storage_policy_path,
     load_storage_policy,
     save_storage_policy,
 )
@@ -409,6 +410,15 @@ def _snapshot_path(path: Path) -> dict[str, int | str]:
 
 
 def _transaction_path(target_root: Path, txid: str) -> Path:
+    # The txid comes from the checkpoint on disk and the result is deleted
+    # recursively, so accept only the hex form this module generates.
+    if len(txid) < _TRANSACTION_ID_PATH_CHARS or any(
+        char not in "0123456789abcdef" for char in txid
+    ):
+        raise StorageMigrationError(
+            "transaction_id_invalid",
+            f"迁移检查点的事务编号无效: {txid!r}",
+        )
     # Only one migration runs per target at a time, so a txid prefix is enough
     # to keep an interrupted transaction apart from the next one.
     return target_root / _MIGRATION_TRANSACTION_DIR / txid[:_TRANSACTION_ID_PATH_CHARS]
@@ -809,11 +819,11 @@ def run_pending_storage_migration(
 
     def _finish_retryable(error_code: str, error_message: str) -> dict[str, Any]:
         nonlocal payload
-        status = (
-            STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED
-            if error_code == "migration_rollback_required"
-            else STORAGE_MIGRATION_STATUS_PENDING
-        )
+        status = {
+            "migration_rollback_required": STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
+            # Keep COMMITTING so the next start decides again from the policy.
+            "migration_commit_ambiguous": STORAGE_MIGRATION_STATUS_COMMITTING,
+        }.get(error_code, STORAGE_MIGRATION_STATUS_PENDING)
         payload = _persist_migration_payload(
             config_manager,
             payload,
@@ -847,13 +857,14 @@ def run_pending_storage_migration(
     def _finish_success(
         *,
         copied_entries: dict[str, dict[str, Any]],
-        transaction_root: Path,
+        transaction_root: Path | None,
         persist_policy: bool,
         selection_source: str,
     ) -> dict[str, Any]:
         nonlocal payload, policy_payload
         assert source_root is not None and target_root is not None
         if persist_policy:
+            assert transaction_root is not None
             try:
                 policy_payload = save_storage_policy(
                     config_manager,
@@ -956,10 +967,11 @@ def run_pending_storage_migration(
                 "error_code": "migration_commit_pending",
                 "error_message": "存储策略已提交，等待补齐迁移完成检查点。",
             }
-        try:
-            _remove_transaction(transaction_root)
-        except Exception as exc:
-            logger.warning("Failed to remove completed storage migration transaction: %s", exc)
+        if transaction_root is not None:
+            try:
+                _remove_transaction(transaction_root)
+            except Exception as exc:
+                logger.warning("Failed to remove completed storage migration transaction: %s", exc)
         return {
             "attempted": True,
             "completed": True,
@@ -1002,10 +1014,7 @@ def run_pending_storage_migration(
         if not source_root.exists() or not source_root.is_dir():
             raise StorageMigrationError("source_root_missing", "原始数据目录不存在，无法继续迁移。")
 
-        transaction_root = _transaction_path(
-            target_root,
-            str(payload.get("txid") or uuid.uuid4().hex),
-        )
+        txid = str(payload.get("txid") or uuid.uuid4().hex)
         committed_policy = load_storage_policy(
             config_manager,
             anchor_root=normalized_anchor_root,
@@ -1025,16 +1034,37 @@ def run_pending_storage_migration(
             # the policy already points at the target: the launcher may have
             # run services on it since. Never roll that back -- only finish
             # the checkpoint. Cleanup re-checks each entry before deleting.
+            try:
+                committed_transaction_root: Path | None = _transaction_path(target_root, txid)
+            except StorageMigrationError:
+                committed_transaction_root = None
             return _finish_success(
                 copied_entries=(
                     dict(copied_checkpoint)
                     if isinstance(copied_checkpoint, dict)
                     else {}
                 ),
-                transaction_root=transaction_root,
+                transaction_root=committed_transaction_root,
                 persist_policy=False,
                 selection_source=selection_source,
             )
+        if checkpoint_status == STORAGE_MIGRATION_STATUS_COMMITTING:
+            # Rolling back is safe only while the policy demonstrably still
+            # selects the source (or was never written). An unreadable policy
+            # or one naming another root may already be committed -- with
+            # services writing to the target -- so wait instead of guessing.
+            policy_absent = committed_policy is None and not os.path.lexists(
+                get_storage_policy_path(config_manager, anchor_root=normalized_anchor_root)
+            )
+            policy_selects_source = bool(policy_selected_root) and paths_equal(
+                policy_selected_root, source_root
+            )
+            if not (policy_absent or policy_selects_source):
+                raise StorageMigrationError(
+                    "migration_commit_ambiguous",
+                    "无法确认存储策略是否已提交，暂不回滚，等待下次启动重试。",
+                )
+        transaction_root = _transaction_path(target_root, txid)
         _ensure_transaction_parent(transaction_root)
         if os.path.lexists(transaction_root):
             _rollback_publish_or_require_recovery(
@@ -1240,7 +1270,7 @@ def run_pending_storage_migration(
         )
     except StorageMigrationError as exc:
         _cleanup_unpublished_transaction()
-        if exc.error_code == "migration_rollback_required":
+        if exc.error_code in {"migration_rollback_required", "migration_commit_ambiguous"}:
             return _finish_retryable(exc.error_code, exc.message)
         return _finish_failure(exc.error_code, exc.message)
     except Exception as exc:

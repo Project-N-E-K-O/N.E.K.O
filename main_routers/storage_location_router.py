@@ -34,6 +34,7 @@ import shutil
 import sys
 import inspect
 import subprocess
+import tempfile
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -1631,6 +1632,7 @@ def _cleanup_retained_runtime_root(
     from utils.storage.migration import (
         StorageMigrationError,
         _classify_no_follow,
+        _rewrite_migrated_runtime_config_paths,
         _snapshot_path,
     )
 
@@ -1643,6 +1645,11 @@ def _cleanup_retained_runtime_root(
         except StorageMigrationError:
             return None
         return kind
+
+    # Everything below deletes children of ``retained_path``. Through a link or
+    # junction that would reach into whatever directory it points at.
+    if _plain_entry_kind(retained_path) != "dir":
+        raise ValueError("保留目录不是普通目录（可能是链接或 junction），拒绝清理。")
 
     proofs = copied_entries if isinstance(copied_entries, dict) else {}
     normalized_target = normalize_runtime_root(target_root) if str(target_root or "").strip() else None
@@ -1695,11 +1702,27 @@ def _cleanup_retained_runtime_root(
         ):
             raise ValueError(f"保留目录条目证据已变化，拒绝清理: {entry_name}")
 
+    def _legacy_entry_matches(entry_name: str) -> bool:
+        retained_entry = retained_path / entry_name
+        retained_manifest = _snapshot_path(retained_entry)
+        target_manifest = _snapshot_path(normalized_target / entry_name)
+        if entry_name != "config" or retained_manifest["kind"] != "dir":
+            return retained_manifest == target_manifest
+        # A v1 migration rebased workshop paths under the source root onto the
+        # target while copying config, so compare the retained copy after the
+        # same rewrite instead of byte for byte.
+        with tempfile.TemporaryDirectory(prefix="neko-cleanup-") as scratch:
+            scratch_root = Path(scratch)
+            shutil.copytree(retained_entry, scratch_root / "config", symlinks=True)
+            _rewrite_migrated_runtime_config_paths(
+                source_root=retained_path,
+                target_root=normalized_target,
+                config_root=scratch_root,
+            )
+            return _snapshot_path(scratch_root / "config") == target_manifest
+
     legacy_entries = [
-        entry_name
-        for entry_name in legacy_entries
-        if _snapshot_path(retained_path / entry_name)
-        == _snapshot_path(normalized_target / entry_name)
+        entry_name for entry_name in legacy_entries if _legacy_entry_matches(entry_name)
     ]
     for entry_name in [name for name, _proof in proved_entries] + legacy_entries:
         entry_path = retained_path / entry_name

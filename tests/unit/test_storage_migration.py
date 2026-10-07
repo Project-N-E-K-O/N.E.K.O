@@ -1010,3 +1010,62 @@ def test_leftover_completed_transaction_is_removed_on_next_launch(tmp_path, monk
 
     assert later["attempted"] is False
     assert not (target_root / ".smtx").exists()
+
+
+@pytest.mark.unit
+def test_unreadable_policy_during_committing_is_not_rolled_back(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+    from utils.storage_policy import get_storage_policy_path
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+
+    def _lost_during_policy_commit(*_args, **_kwargs):
+        raise KeyboardInterrupt("simulated process loss while committing the policy")
+
+    monkeypatch.setattr(storage_migration_module, "save_storage_policy", _lost_during_policy_commit)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.undo()
+    assert load_storage_migration(config_manager)["status"] == "committing"
+
+    policy_path = get_storage_policy_path(config_manager)
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    policy_path.write_text("{not json", encoding="utf-8")
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "migration_commit_ambiguous"
+    assert result["payload"]["status"] == "committing"
+    # Nothing was rolled back while the policy could not be read.
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "new"
+    backups = list((target_root / ".smtx").glob("*/backup/config/characters.json"))
+    assert [path.read_text(encoding="utf-8") for path in backups] == ["healthy"]
+
+
+@pytest.mark.unit
+def test_malformed_transaction_id_never_reaches_the_filesystem(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    target_root.mkdir(parents=True)
+    victim = target_root.parent / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("keep", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    payload = dict(load_storage_migration(config_manager))
+    payload["txid"] = "../../victim"
+    save_storage_migration(config_manager, payload)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "transaction_id_invalid"
+    assert (victim / "keep.txt").read_text(encoding="utf-8") == "keep"
