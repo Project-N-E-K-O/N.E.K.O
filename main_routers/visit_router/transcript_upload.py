@@ -514,6 +514,8 @@ class UploadResult:
     retry_after_s: int | None = None
     login_required: bool = False
     """The owning account's Servers session is gone (not signed in / ``401``)."""
+    sent: bool = False
+    """A request to Servers was made (False: not signed in / another account, nothing sent)."""
 
     @property
     def callback_value(self) -> bool | str:
@@ -605,6 +607,10 @@ async def _upload(visit_id: str, doc: dict, config_dir: Path) -> UploadResult:
         # 只有占这个 role 的账号能上传（Servers 只认原账号）：换号 / 登出时原样保留，等原账号回来
         memory_bridge.diag("upload_account_mismatch", visit_id=visit_id)
         return UploadResult()
+    return replace(await _send_upload(visit_id, doc, config_dir, session), sent=True)
+
+
+async def _send_upload(visit_id: str, doc: dict, config_dir: Path, session: Any) -> UploadResult:
     request = doc["request"]
     remember_anomalies(visit_id, request.get("anomalies"), doc.get("own_visit_uid"))
     path = visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSON_SUFFIX)
@@ -1235,21 +1241,24 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         return await _settled_round(config_dir, visit_id, sealed, UploadResult(terminal="expired"), owner=owner)
     if not sealed_upload_doc_usable(doc, visit_id):
         # 读不出 / 结构不对 / 别的场次或别的版本的封存文件：不直接传，交给启动补录判
-        # （它能对照流水与 state.json 重封、隔离，或留给新版本）
-        return UploadRound(pending=True, owner=owner)
+        # （它能对照流水与 state.json 重封、隔离，或留给新版本）。文件里写的账号不可信，
+        # 归属按未知报（附转录的举报照旧等），免得别场文件里的账号让另一侧的举报不等就交
+        return UploadRound(pending=True)
     rejected = doc.get("rejected")
     if isinstance(rejected, str) and rejected:
         # 上一轮已终态拒收、只是原因没记进举报：不再整份重传，接着记原因、删文件
         result = UploadResult(terminal=rejected)
     else:
         result = await _upload(visit_id, doc, config_dir)
-    if aged:
+    attempted = result.sent or result.done or result.terminal is not None
+    if aged and attempted:
         # 过了保留期的转录先试传一次再判过期（与启动补录同一顺序：应用关得久，刚启动就提交的举报
-        # 不能让唯一一份转录不试就丢）。试过才记：本地准备时就出错（进度落盘失败）不算试过
+        # 不能让唯一一份转录不试就丢）。真发过请求才算试过：本地准备时出错、没登录 / 登的是别的账号
+        # 都没传，留着等原账号
         _aged_attempted.add(visit_id)
     if result.done or result.terminal is not None:
         return await _settled_round(config_dir, visit_id, sealed, result, owner=owner)
-    if aged:
+    if aged and attempted:
         memory_bridge.diag("upload_expired", visit_id=visit_id)
         return await _settled_round(config_dir, visit_id, sealed, UploadResult(terminal="expired"), owner=owner)
     return UploadRound(pending=True, retryable=True, retry_after_s=result.retry_after_s,
@@ -1541,6 +1550,9 @@ def _anomalies_sync(config_dir: Path, visit_id: str) -> tuple[int, str | None, b
         doc = _load_json(visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX))
     except (OSError, ValueError):
         # 封存文件坏了 / 一时读不了：旁边若还留着流水（封存后没删掉），计数从流水里数
+        doc = None
+    if not sealed_upload_doc_usable(doc, visit_id):
+        # 别场 / 结构不对的文件里的计数不是这一场的：按没有封存文件处理，改从流水数
         doc = None
     request = doc.get("request") if isinstance(doc, dict) else None
     if isinstance(request, dict) and isinstance(request.get("anomalies"), int):

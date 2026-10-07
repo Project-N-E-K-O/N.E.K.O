@@ -1735,3 +1735,38 @@ async def test_a_failure_before_the_request_does_not_count_as_the_aged_attempt(t
         await tu.attempt_upload(V1, config_dir=tmp_path)
     # 没真正试传过：下一轮仍要先试一次，不能直接按过期删掉
     assert V1 not in tu._aged_attempted and sealed.exists()
+
+
+
+async def test_an_invalid_sealed_file_does_not_lend_its_owner(tmp_path, servers):
+    doc = _big_doc(4, 10)
+    doc["request"]["visit_id"] = vid(9)                                 # 别场的文件，写着 OWN
+    _write_sealed(tmp_path, doc)
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    assert outcome.pending is True and outcome.owner is None
+
+
+async def test_anomalies_of_another_visits_file_are_not_used(tmp_path, servers):
+    doc = _big_doc(4, 10)
+    doc["request"]["visit_id"] = vid(9)
+    doc["request"]["anomalies"] = 7
+    _write_sealed(tmp_path, doc)
+    header = json.dumps({"kind": "header", "own_visit_uid": OWN})
+    (_spool(tmp_path) / f"{V1}.upload.jsonl").write_text(
+        "\n".join([header, '{"kind":"anomaly"}', ""]), encoding="utf-8")
+    assert await tu.visit_anomalies(tmp_path, V1, OWN) == 1
+
+
+async def test_an_aged_upload_is_kept_while_the_owner_is_signed_out(tmp_path, servers, monkeypatch):
+    _write_sealed(tmp_path, _big_doc(4, 10))
+    sealed = _spool(tmp_path) / f"{V1}.upload.json"
+    old = time.time() - 30 * 86400
+    os.utime(sealed, (old, old))
+
+    async def signed_out():
+        raise cr.VisitLoginRequired()
+
+    monkeypatch.setattr(cr, "_servers_session", signed_out)
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    # 没登录：请求没发出，不算试传过，不按过期删
+    assert outcome.pending and outcome.login_required and sealed.exists() and V1 not in tu._aged_attempted

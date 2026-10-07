@@ -1074,9 +1074,9 @@ def test_retiring_waits_for_a_regeneration_write_already_in_its_thread(env, monk
         release.set()
         await retire
         await asyncio.gather(job, return_exceptions=True)
+        assert written.is_set()                                     # 写盘确实发生过，退役等它写完
 
     client.portal.call(scenario)
-    written.wait(5)
     # 退役等在途写盘写完才删：不会被写回来
     assert not path.exists()
 
@@ -1084,3 +1084,49 @@ def test_retiring_waits_for_a_regeneration_write_already_in_its_thread(env, monk
 
 def test_a_place_after_far_from():
     assert "Broadway" in persona.extract_sensitive_tokens("address: Apartment far from Broadway", [])
+
+
+
+def test_a_scan_passage_not_copied_from_the_card_makes_the_scan_incomplete():
+    card = "她偷偷收藏了一整抽屉的旧电影票根。\n喜欢晒太阳。"
+    assert persona._parse_scan('["她偷偷收藏了一整抽屉的旧电影票根。"]', card) == (
+        ["她偷偷收藏了一整抽屉的旧电影票根。"], True)
+    sections, complete = persona._parse_scan('["她收藏了很多电影票。"]', card)        # 改写过的
+    assert complete is False and sections == ["她收藏了很多电影票。"]
+
+
+def test_a_persona_file_that_cannot_be_read_right_now_is_not_reported_missing(env, monkeypatch):
+    client, *_ = env
+    _generate(client)
+    _confirm(client)
+
+    def locked(self, uid):
+        raise persona.PersonaUnavailable("in use")
+
+    monkeypatch.setattr(persona.VisitPersonaStore, "_load_sync", locked)
+    resp = client.get("/api/visit/persona?catgirl=A", headers=GOOD)
+    assert resp.status_code == 503 and resp.json()["code"] == "persona_unavailable"
+    put = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                     json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
+    assert put.status_code == 503
+    gate = _gate(client)
+    assert gate.ok is False and gate.state == "unavailable"
+
+
+def test_a_sharing_violation_on_the_persona_file_raises_unavailable(tmp_path, monkeypatch):
+    import builtins
+
+    store = persona.VisitPersonaStore(tmp_path)
+    path = store.path(UID_A)
+    path.parent.mkdir(parents=True)
+    path.write_text("{}", encoding="utf-8")
+    real_open = builtins.open
+
+    def locked_open(file, *args, **kwargs):
+        if str(file) == str(path):
+            raise PermissionError("in use")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", locked_open)
+    with pytest.raises(persona.PersonaUnavailable):
+        store._load_sync(UID_A)

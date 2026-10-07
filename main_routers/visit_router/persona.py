@@ -570,6 +570,10 @@ def _valid_doc(doc: Any) -> bool:
     )
 
 
+class PersonaUnavailable(RuntimeError):
+    """The persona file exists but cannot be read right now (in use / permissions)."""
+
+
 class VisitPersonaStore:
     """``config_dir/visit_persona/<character_uid>.json`` files (one per character)."""
 
@@ -587,7 +591,11 @@ class VisitPersonaStore:
                 doc = json.load(handle)
         except FileNotFoundError:
             return None
-        except (OSError, ValueError, RecursionError) as exc:
+        except OSError as exc:
+            # 一时读不了（被占用 / 权限）不是没有：报成不可用，别让面板显示「未生成」、引人重新生成覆盖它
+            logger.warning("visit persona %s unreadable: %s", path.name, type(exc).__name__)
+            raise PersonaUnavailable(path.name) from None
+        except (ValueError, RecursionError) as exc:
             logger.warning("visit persona %s unreadable: %s", path.name, type(exc).__name__)
             return None
         if not _valid_doc(doc):
@@ -596,7 +604,11 @@ class VisitPersonaStore:
         return doc
 
     async def load(self, character_uid: str) -> dict | None:
-        """The stored persona, or None when missing or unreadable (both count as not generated)."""
+        """The stored persona, or None when missing or malformed (both count as not generated).
+
+        Raises :class:`PersonaUnavailable` when the file is there but cannot
+        be read right now.
+        """
         return await asyncio.to_thread(self._load_sync, character_uid)
 
     def _save_sync(self, character_uid: str, doc: dict) -> None:
@@ -654,8 +666,17 @@ def _clean_persona_text(raw: str, family_names: Sequence[str], lang: str | None)
     return truncate_to_tokens(text, VISIT_PERSONA_MAX_TOKENS).strip()
 
 
-def _parse_scan(raw: str) -> tuple[list[str], bool]:
-    """Passages of a scan reply, and whether every entry was a string (else the scan is incomplete)."""
+def _squash(text: str) -> str:
+    return re.sub(r"\s+", "", fold_text(text or ""))
+
+
+def _parse_scan(raw: str, card: str | None = None) -> tuple[list[str], bool]:
+    """Passages of a scan reply, and whether the scan is complete.
+
+    Incomplete when an entry is not a string, or (given ``card``) a passage
+    is not copied from the card (whitespace and case aside): the model
+    paraphrased or made it up, so the real passage may be missing.
+    """
     text = str(raw or "").strip()
     # 模型偶尔给 JSON 包一层 ``` 代码块：只取第一个 [ 到最后一个 ] 之间
     start, end = text.find("["), text.rfind("]")
@@ -673,6 +694,9 @@ def _parse_scan(raw: str) -> tuple[list[str], bool]:
             complete = False
             continue
         if item.strip():
+            if card is not None and _squash(item) not in _squash(card):
+                # 不是卡片原文（改写 / 编造）：照样留着比对，但原文那段可能没列出来，如实标成不完整
+                complete = False
             out.extend(_section_chunks(item.strip()))
     return out, complete
 
@@ -731,7 +755,7 @@ async def generate_visit_persona(
     try:
         scanned, entries_ok = _parse_scan(await asyncio.wait_for(
             scan_llm(build_visit_persona_private_scan_prompt(card_in, lang)), VISIT_LLM_TIMEOUT_S,
-        ))
+        ), card_in)
         # 卡片超出输入预算被截过：截掉的尾巴没被扫描，如实标成检查不完整
         scan_complete = entries_ok and len(card_in) >= len(card or "")
     except Exception as exc:  # noqa: BLE001 - 扫描失败只退回规则段落，并如实落盘「不完整」
@@ -958,7 +982,11 @@ async def persona_gate(name: str) -> PersonaGate:
         if is_generating(character_uid):
             return PersonaGate(ok=False, state="generating", character_uid=character_uid)
         version = _write_versions.get(character_uid, 0)
-        doc = await store().load(character_uid)
+        try:
+            doc = await store().load(character_uid)
+        except PersonaUnavailable:
+            # 文件在、一时读不了：既不能当没有（state=missing 引人重新生成），也不能放行
+            return PersonaGate(ok=False, state="unavailable", character_uid=character_uid)
         if doc is None or not doc["reviewed"]:
             return PersonaGate(ok=False, state=persona_state(doc, character_uid), character_uid=character_uid)
         if not doc["edited"]:
@@ -1033,7 +1061,15 @@ async def get_persona(request: Request, catgirl: str = ""):
     if isinstance(resolved, JSONResponse):
         return resolved
     character_uid, ctx = resolved
-    return JSONResponse(await _view(catgirl, character_uid, ctx))
+    return await _view_response(catgirl, character_uid, ctx)
+
+
+async def _view_response(name: str, character_uid: str, ctx: CharacterContext) -> JSONResponse:
+    try:
+        return JSONResponse(await _view(name, character_uid, ctx))
+    except PersonaUnavailable:
+        # 人设文件一时读不了（被占用）：报不可用，面板稍后重试，不显示成「未生成」
+        return _error(503, "persona_unavailable")
 
 
 @router.put("/persona")
@@ -1057,7 +1093,11 @@ async def put_persona(request: Request, catgirl: str = ""):
         if is_generating(character_uid):
             return _error(409, "persona_generating")
         persona_store = store()
-        doc = await persona_store.load(character_uid)
+        try:
+            doc = await persona_store.load(character_uid)
+        except PersonaUnavailable:
+            # 读不了就不知道盘上是哪一份：既不能按「从没生成过」新建，也不能确认，稍后再试
+            return _error(503, "persona_unavailable")
         if await _hooks.resolve_char_name(character_uid) is None:
             # 请求进来之后角色被删除：不再写，否则删除角色时清掉的人设文件又被建回来
             return _error(404, "unknown_catgirl")
@@ -1115,7 +1155,7 @@ async def put_persona(request: Request, catgirl: str = ""):
         await persona_store.save(character_uid, doc)
         _note_write(character_uid)
         _errors.pop(character_uid, None)
-    return JSONResponse(await _view(catgirl, character_uid, ctx))
+    return await _view_response(catgirl, character_uid, ctx)
 
 
 @router.post("/persona/regenerate")
