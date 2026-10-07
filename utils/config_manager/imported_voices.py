@@ -3,6 +3,7 @@
 import asyncio
 import threading
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import wraps
 from uuid import uuid4
@@ -12,6 +13,12 @@ from utils.voice_config import is_imported_voice_ref
 
 VOICE_STORAGE_LOCK = threading.RLock()
 REMOTE_VOICE_BUCKET_PREFIX = "__REMOTE_VOICES__"
+
+
+@dataclass(frozen=True)
+class ImportedVoiceWriteResult:
+    applied: bool
+    record: dict
 
 
 def voice_storage_transaction(function):
@@ -142,6 +149,7 @@ class ImportedVoiceStorageMixin:
     @voice_storage_transaction
     def update_imported_voice(
         self, local_ref, scope_id, voice_data, *, expected_operation_id=None, expected_record_revision=None,
+        return_receipt=False,
     ):
         """Update an owned record; a stale conditional refresh returns the stored winner."""
         storage = self._load_voice_storage_for_write()
@@ -158,7 +166,8 @@ class ImportedVoiceStorageMixin:
         if expected_record_revision is not None and revision != expected_record_revision:
             # Scope and operation ownership were checked first. Return only an
             # already persisted record, never the rejected upstream observation.
-            return deepcopy(found[1])
+            winner = deepcopy(found[1])
+            return ImportedVoiceWriteResult(False, winner) if return_receipt else winner
         metadata = deepcopy(found[1])
         immutable = {
             "local_ref", "scope_id", "provider", "remote_voice_id", "source",
@@ -170,15 +179,18 @@ class ImportedVoiceStorageMixin:
         metadata["_record_revision"] = revision + 1
         storage[found[0]][local_ref] = metadata
         self.save_voice_storage(storage)
-        return deepcopy(metadata)
+        saved = deepcopy(metadata)
+        return ImportedVoiceWriteResult(True, saved) if return_receipt else saved
 
     async def aupdate_imported_voice(
         self, local_ref, scope_id, voice_data, *, expected_operation_id=None, expected_record_revision=None,
+        return_receipt=False,
     ):
         return await asyncio.to_thread(
             self.update_imported_voice, local_ref, scope_id, voice_data,
             expected_operation_id=expected_operation_id,
             expected_record_revision=expected_record_revision,
+            return_receipt=return_receipt,
         )
 
     @voice_storage_transaction

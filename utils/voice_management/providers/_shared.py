@@ -62,18 +62,21 @@ async def request_json(method, url, *, mutation=False, allow_not_found=False, **
     except httpx.RequestError:
         raise VoiceManagementError("UPDATE_OUTCOME_UNKNOWN" if mutation else "UPSTREAM_UNAVAILABLE", 502) from None
     status = response.status_code
+    # HTTP diagnostics do not supply an operation-specific non-acceptance
+    # contract. Preserve stable codes while keeping mutation retry fail-closed.
+    details = {"attempt_outcome": "unknown"} if mutation else None
     if status == 404 and allow_not_found:
         return None
     if status == 401:
-        raise VoiceManagementError("AUTH_FAILED", 401)
+        raise VoiceManagementError("AUTH_FAILED", 401, details)
     if status == 403:
-        raise VoiceManagementError("PERMISSION_DENIED", 403)
+        raise VoiceManagementError("PERMISSION_DENIED", 403, details)
     if status == 429:
-        raise VoiceManagementError("RATE_LIMITED", 429)
+        raise VoiceManagementError("RATE_LIMITED", 429, details)
     if not 200 <= status < 300:
         if mutation and status >= 500:
             raise VoiceManagementError("UPDATE_OUTCOME_UNKNOWN", 502)
-        raise VoiceManagementError("UPSTREAM_UNAVAILABLE" if status >= 500 else "UPSTREAM_REJECTED", 502 if status >= 500 else 400)
+        raise VoiceManagementError("UPSTREAM_UNAVAILABLE" if status >= 500 else "UPSTREAM_REJECTED", 502 if status >= 500 else 400, details)
     try:
         result = response.json()
     except ValueError:

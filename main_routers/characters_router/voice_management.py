@@ -27,7 +27,7 @@ def _adapter(provider: object):
     return adapter
 
 
-def _error(exc: Exception):
+def _error(exc: Exception, *, details: dict | None = None):
     if isinstance(exc, ValueError) and exc.args == ("VOICE_CONTEXT_CHANGED",):
         exc = VoiceManagementError("CONTEXT_CHANGED", 409)
     elif isinstance(exc, (json.JSONDecodeError, OSError)) or (
@@ -35,6 +35,8 @@ def _error(exc: Exception):
     ):
         exc = VoiceManagementError("STORAGE_ERROR", 500)
     if isinstance(exc, VoiceManagementError):
+        if details is not None:
+            exc.details.update(details)
         return _json_no_store_response({
             "success": False, "code": exc.code, "error": exc.code, "details": exc.details,
         }, status_code=exc.status_code)
@@ -42,6 +44,7 @@ def _error(exc: Exception):
     logger.error("code=VOICE_MANAGEMENT_FAILED exception_type=%s", type(exc).__name__)
     return _json_no_store_response({
         "success": False, "code": "LOCAL_OPERATION_FAILED", "error": "LOCAL_OPERATION_FAILED",
+        "details": details or {},
     }, status_code=500)
 
 
@@ -97,6 +100,7 @@ async def _record_adapter(cm, local_ref: str):
 async def overwrite_existing_voice(
     local_ref: str, audio: UploadFile = File(...), context_token: str = Form(...)
 ):
+    cm = adapter = None
     try:
         cm = get_config_manager()
         adapter = await _record_adapter(cm, local_ref)
@@ -120,7 +124,14 @@ async def overwrite_existing_voice(
         )
         return _json_no_store_response(result)
     except Exception as exc:
-        return _error(exc)
+        # Validation failed before the service's submission boundary. Return
+        # advice from the persisted record so the same dialog can be corrected.
+        details = None
+        if not isinstance(exc, VoiceManagementError) or "attempt_outcome" not in exc.details:
+            details = await service.overwrite_result_details(adapter, cm, local_ref, token=context_token) if adapter else {
+                "attempt_outcome": "not_submitted", "voice_state": None, "state_sync": "unchanged",
+            }
+        return _error(exc, details=details)
     finally:
         await audio.close()
 

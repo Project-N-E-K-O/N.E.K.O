@@ -236,7 +236,10 @@ async def test_parallel_refresh_returns_persisted_winner(remote_record, checkpoi
             late = await asyncio.wait_for(old, timeout=5)
             assert late.status_code == 200
             expected = "processing" if stale_kind == "pending" else "completed"
-            assert late.json() == current.json()
+            assert late.json()["voice_data"] == current.json()["voice_data"]
+            assert late.json()["details"]["voice_state"] == current.json()["details"]["voice_state"]
+            assert current.json()["details"]["state_sync"] == "saved"
+            assert late.json()["details"]["state_sync"] == "unchanged"
             assert late.json()["status"] == expected
             assert late.json()["voice_data"]["remote_revision"] == revision_for(provider, "3")
             assert "_record_revision" not in late.json()["voice_data"]
@@ -295,16 +298,16 @@ async def test_refresh_commit_conflicts_do_not_claim_success(remote_record, chan
             pending.cancel()
         before = await asyncio.to_thread(storage.read_bytes)
         release.set()
-        error_type = (
-            service.VoiceManagementError if change == "config" else OSError if change == "save-failure"
-            else asyncio.CancelledError if change == "cancel" else ValueError
-        )
+        error_type = asyncio.CancelledError if change == "cancel" else service.VoiceManagementError
         with pytest.raises(error_type) as error:
             await asyncio.wait_for(pending, timeout=5)
         if change == "config":
             assert error.value.code == "CONTEXT_CHANGED"
         elif change in {"operation", "delete"}:
-            assert error.value.args == ("VOICE_CONTEXT_CHANGED",)
+            assert error.value.code == "CONTEXT_CHANGED"
+        elif change in {"read-failure", "save-failure"}:
+            assert error.value.code == "STORAGE_ERROR"
+            assert error.value.details["state_sync"] == "failed"
         assert await asyncio.to_thread(storage.read_bytes) == before
     finally:
         release.set()
@@ -534,10 +537,7 @@ async def test_reconciliation_retry_preserves_ownership_and_is_bounded(remote_re
         return await original(local_ref, scope, values, **kwargs)
 
     monkeypatch.setattr(cm, "aupdate_imported_voice", compete)
-    error_type = (
-        asyncio.CancelledError if change == "cancel" else OSError if change == "save-failure"
-        else ValueError if change == "read-failure" else service.VoiceManagementError
-    )
+    error_type = asyncio.CancelledError if change == "cancel" else service.VoiceManagementError
     with pytest.raises(error_type) as error:
         await service.refresh_overwrite_status(adapter, cm, ref, token=token)
     assert calls == 2
@@ -547,6 +547,8 @@ async def test_reconciliation_retry_preserves_ownership_and_is_bounded(remote_re
         assert error.value.code == "OPERATION_IN_PROGRESS" and error.value.status_code == 409
     elif change == "timeout":
         assert error.value.code == "UPSTREAM_TIMEOUT" and error.value.status_code == 504
+    elif change in {"read-failure", "save-failure"}:
+        assert error.value.code == "STORAGE_ERROR"
     if mutation_at_retry is not None and change != "busy":
         assert await asyncio.to_thread(storage.read_bytes) == mutation_at_retry
 

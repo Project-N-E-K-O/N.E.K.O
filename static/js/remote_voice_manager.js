@@ -30,6 +30,7 @@
                     const error = new Error(data.code || data.error || 'request_failed');
                     error.code = data.code || data.error;
                     error.status = response.status;
+                    error.details = data.details;
                     throw error;
                 }
                 return data;
@@ -150,6 +151,7 @@
         state.busy = value;
         state.panel.setAttribute('aria-busy', String(value));
         if (state.submit) state.submit.disabled = value || (state.mode === 'list' && !state.selection) || (state.mode === 'manual' && !state.id.value.trim());
+        if (state.mode === 'overwrite' && state.submit) state.submit.disabled = value || !state.overwriteAllowed || !state.audio.files.length;
         if (state.more) state.more.disabled = value;
         if (state.refreshStatus) state.refreshStatus.disabled = value;
         for (const control of state.importControls || []) control.disabled = !!state.importSubmitting;
@@ -193,6 +195,7 @@
         for (const specification of state.context ? state.context.required_fields || [] : []) {
             const spec = typeof specification === 'string' ? { key: specification, required: true } : specification;
             const field = input(spec.key, spec.key, spec.required, spec.default_value || '');
+            field.readOnly = spec.readonly === true;
             const translated = spec.label_key && root.t ? root.t(spec.label_key) : '';
             const label = translated && translated !== spec.label_key ? translated : t(spec.key);
             field.parentElement.firstChild.textContent = label;
@@ -366,6 +369,32 @@
         listView(state); refresh(state);
     }
 
+    function updateOverwriteView(state, result, error = null, sent = true) {
+        if (active !== state) return;
+        const snapshot = (error ? error.details : result && result.details)?.voice_state;
+        const valid = snapshot && snapshot.local_ref === state.localRef && Number.isInteger(snapshot.record_revision) && snapshot.record_revision >= 0;
+        if (valid && Number.isInteger(state.recordRevision) && snapshot.record_revision < state.recordRevision) return;
+        if (valid) state.recordRevision = snapshot.record_revision;
+        const status = valid ? snapshot.overwrite_status : result && result.status;
+        const pending = status === 'processing' || status === 'unknown';
+        // Only a current server snapshot may reopen submission. Missing fields
+        // (including an older server) leave an explicit query exit after sending.
+        const actions = valid && Array.isArray(snapshot.actions) ? snapshot.actions :
+            pending || error ? ['refresh'] : [];
+        state.overwriteAllowed = ['completed', 'failed'].includes(status) && actions.includes('overwrite') && !!state.context?.capabilities.overwrite;
+        if (state.submit) state.submit.hidden = !state.overwriteAllowed;
+        if (state.refreshStatus) state.refreshStatus.hidden = !actions.includes('refresh');
+        if (error) {
+            const uncertain = sent && (!valid || pending) && error.code !== 'OPERATION_IN_PROGRESS';
+            showError(state, error, uncertain);
+        } else {
+            state.status.classList.remove('remote-voice-error');
+            state.status.textContent = t(status === 'completed' ? 'completed' : status === 'failed' ? 'failed' :
+                status === 'processing' ? 'processing' : 'uncertain');
+        }
+        busy(state, state.busy);
+    }
+
     function openOverwrite(localRef, voice) {
         const state = dialog(voice.provider, 'overwrite');
         state.localRef = localRef;
@@ -374,9 +403,11 @@
         state.body.append(node('p', 'remote-voice-id', voice.remote_voice_id || localRef));
         const label = node('label', 'remote-voice-field', t('audio'));
         const audio = node('input'); audio.type = 'file'; audio.accept = 'audio/*'; label.append(audio);
+        state.audio = audio;
+        state.overwriteAllowed = !['processing', 'unknown'].includes(voice.overwrite_status);
         state.body.append(label);
         state.submit = button('overwrite', async () => {
-            if (state.busy || !audio.files.length) return;
+            if (state.busy || !state.overwriteAllowed || !audio.files.length) return;
             const operation = operations.begin(state.provider);
             busy(state, true); state.status.textContent = t('submitting');
             let sent = false;
@@ -388,29 +419,23 @@
                 sent = true;
                 const result = await operations.request(operation, '/api/characters/voices/' + encodeURIComponent(localRef) + '/overwrite', { method: 'POST', body });
                 if (active !== state || !operations.owns(operation)) return;
-                state.status.textContent = t(result.status === 'completed' ? 'completed' : result.status === 'failed' ? 'failed' : result.status === 'unknown' ? 'uncertain' : 'processing');
-                state.submit.hidden = true;
-                state.refreshStatus.hidden = result.status === 'completed' || result.status === 'failed';
+                updateOverwriteView(state, result);
                 if (typeof root.loadVoices === 'function') await root.loadVoices();
             } catch (error) {
                 if (active === state && operations.current === operation) {
-                    const uncertain = sent && (!error.status || error.status >= 500 || /uncertain/.test(error.code || ''));
-                    showError(state, error, uncertain);
-                    if (uncertain || error.code === 'OPERATION_IN_PROGRESS') {
-                        state.submit.hidden = true;
-                        state.refreshStatus.hidden = false;
-                        if (typeof root.loadVoices === 'function') await root.loadVoices();
-                    }
+                    updateOverwriteView(state, null, error, sent);
+                    if (sent && typeof root.loadVoices === 'function') await root.loadVoices();
                 }
             } finally { if (active === state && operations.current === operation) busy(state, false); }
         });
         state.submit.disabled = true;
-        audio.addEventListener('change', () => { state.submit.disabled = state.busy || !audio.files.length; });
+        audio.addEventListener('change', () => busy(state, state.busy));
         state.footer.append(state.submit);
         const refreshStatus = button('refreshStatus', () => fetchOverwriteStatus(state, localRef));
-        refreshStatus.hidden = true;
+        refreshStatus.hidden = state.overwriteAllowed;
         state.footer.append(refreshStatus);
         state.refreshStatus = refreshStatus;
+        state.submit.hidden = !state.overwriteAllowed;
     }
 
     async function fetchOverwriteStatus(state, localRef) {
@@ -424,9 +449,9 @@
             const params = new URLSearchParams({ context_token: ctx.context_token });
             const result = await operations.request(operation, '/api/characters/voices/' + encodeURIComponent(localRef) + '/overwrite_status?' + params);
             if (active !== state || !operations.owns(operation)) return;
-            state.status.textContent = t(result.status === 'completed' ? 'completed' : result.status === 'processing' ? 'processing' : result.status === 'failed' ? 'failed' : 'uncertain');
+            updateOverwriteView(state, result);
             if (typeof root.loadVoices === 'function') await root.loadVoices();
-        } catch (error) { if (active === state && operations.current === operation) showError(state, error); }
+        } catch (error) { if (active === state && operations.current === operation) updateOverwriteView(state, null, error); }
         finally {
             if (active === state && operations.current === operation) {
                 busy(state, false);

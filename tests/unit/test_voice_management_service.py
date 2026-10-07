@@ -350,7 +350,7 @@ async def test_rejected_overwrite_stays_failed_after_external_revision_change(fi
     cm, adapter, ref = await imported(fixture)
 
     async def rejected():
-        raise VoiceManagementError("UPSTREAM_REJECTED", 400)
+        raise VoiceManagementError("UPSTREAM_REJECTED", 400, {"attempt_outcome": "rejected"})
 
     adapter.on_mutation = rejected
     token = payload(adapter, cm)["context_token"]

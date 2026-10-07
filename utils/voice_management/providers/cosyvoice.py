@@ -60,13 +60,14 @@ class CosyVoiceAdapter(ImportOnlyAdapter):
         data = await request_json("POST", f"{runtime.base_url}/services/audio/tts/customization", headers={"Authorization": f"Bearer {runtime.api_key}"}, json={"model": "voice-enrollment", "input": {"action": action, **fields}}, mutation=mutation)
         if data.get("code"):
             code = str(data["code"])
+            details = {"attempt_outcome": "unknown"} if mutation else None
             if code in ("InvalidApiKey", "InvalidAuthentication"):
-                raise VoiceManagementError("AUTH_FAILED", 401)
+                raise VoiceManagementError("AUTH_FAILED", 401, details)
             if code in ("AccessDenied", "Forbidden"):
-                raise VoiceManagementError("PERMISSION_DENIED", 403)
+                raise VoiceManagementError("PERMISSION_DENIED", 403, details)
             if code in ("VoiceNotFound", "InvalidVoiceId", "InvalidVoiceID"):
-                raise VoiceManagementError("VOICE_NOT_FOUND", 404)
-            raise VoiceManagementError("UPSTREAM_REJECTED")
+                raise VoiceManagementError("VOICE_NOT_FOUND", 404, details)
+            raise VoiceManagementError("UPSTREAM_REJECTED", details=details)
         output = data.get("output")
         if not isinstance(output, dict):
             raise VoiceManagementError("UPDATE_OUTCOME_UNKNOWN" if mutation else "UPSTREAM_INVALID_RESPONSE", 502)

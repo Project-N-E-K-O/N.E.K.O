@@ -49,6 +49,121 @@ function previewHarness(storage = new Map()) {
 
 const importedPreview = { source: 'clone', origin: 'import', provider: 'cosyvoice' };
 
+function overwriteSnapshot(status, actions, revision = 1) {
+    return { local_ref: 'voice-local', operation_id: 'controlled-operation', record_revision: revision,
+        overwrite_status: status, actions };
+}
+
+async function startControlledOverwrite(h) {
+    h.window.RemoteVoiceManager.openOverwrite('voice-local', { provider: 'cosyvoice', remote_voice_id: 'remote' });
+    const input = h.panel().querySelectorAll('input')[0];
+    input.files = [new Blob(['audio'])]; input.dispatch('change');
+    h.button('overwrite').dispatch('click');
+    h.resolve(0, { ...h.ctx, provider: 'cosyvoice', capabilities: { ...h.ctx.capabilities, overwrite: true } });
+    await tick();
+    return input;
+}
+
+test('failed context fetch keeps an in-dialog query exit and releases busy controls', async () => {
+    const h = harness();
+    h.window.RemoteVoiceManager.openOverwrite('voice-local', { provider: 'cosyvoice', remote_voice_id: 'remote' });
+    const input = h.panel().querySelectorAll('input')[0];
+    input.files = [new Blob(['audio'])]; input.dispatch('change'); h.button('overwrite').dispatch('click');
+    h.requests[0].reject(new TypeError('isolated connection failure')); await tick();
+    assert.equal(h.button('overwrite').hidden, true);
+    assert.equal(h.button('refreshStatus').hidden, false);
+    assert.equal(h.button('refreshStatus').disabled, false);
+    assert.equal(h.panel().attributes['aria-busy'], 'false');
+    assert.equal(h.requests.filter(request => request.options.method === 'POST').length, 0);
+    h.button('refreshStatus').dispatch('click');
+    h.resolve(1, { ...h.ctx, capabilities: { ...h.ctx.capabilities, overwrite: true } }); await tick();
+    h.resolve(2, { success: true, status: 'failed', details: { voice_state: overwriteSnapshot('failed', ['refresh', 'overwrite']) } });
+    await tick();
+    assert.equal(h.button('overwrite').hidden, false);
+    assert.equal(input.files.length, 1);
+    h.window.RemoteVoiceManager.close();
+});
+
+test('HTTP409 unknown from a stale list offers query without another submission', async () => {
+    const h = harness();
+    await startControlledOverwrite(h);
+    h.resolve(1, { success: false, code: 'UPDATE_OUTCOME_UNKNOWN', details: {
+        attempt_outcome: 'not_submitted', state_sync: 'unchanged',
+        voice_state: overwriteSnapshot('unknown', ['refresh'], 7)
+    } }, 409);
+    await tick();
+    assert.equal(h.button('overwrite').hidden, true);
+    assert.equal(h.button('refreshStatus').hidden, false);
+    assert.equal(h.button('refreshStatus').disabled, false);
+    assert.equal(h.requests.filter(request => request.options.method === 'POST').length, 1);
+    h.window.RemoteVoiceManager.close();
+});
+
+test('persisted rejection restores overwrite inside the same dialog; save failure keeps query only', async () => {
+    for (const failedSave of [false, true]) {
+        const h = harness();
+        const input = await startControlledOverwrite(h);
+        h.resolve(1, { success: false, code: failedSave ? 'LOCAL_SAVE_FAILED_AFTER_UPDATE' : 'UPSTREAM_REJECTED', details: {
+            attempt_outcome: 'rejected', state_sync: failedSave ? 'failed' : 'saved',
+            voice_state: overwriteSnapshot(failedSave ? 'processing' : 'failed', failedSave ? ['refresh'] : ['refresh', 'overwrite'])
+        } }, failedSave ? 500 : 400);
+        await tick();
+        assert.equal(h.button('overwrite').hidden, failedSave);
+        assert.equal(h.button('refreshStatus').hidden, false);
+        assert.equal(h.button('overwrite').disabled, failedSave);
+        assert.equal(input.files.length, 1);
+        h.window.RemoteVoiceManager.close();
+    }
+});
+
+test('query terminal snapshot updates modal actions and rejects a lower local revision', async () => {
+    const h = harness();
+    await startControlledOverwrite(h);
+    h.resolve(1, { success: false, code: 'UPDATE_OUTCOME_UNKNOWN', details: {
+        voice_state: overwriteSnapshot('unknown', ['refresh'], 7)
+    } }, 409); await tick();
+    h.button('refreshStatus').dispatch('click');
+    h.resolve(2, { success: true, status: 'failed', details: {
+        voice_state: overwriteSnapshot('failed', ['refresh', 'overwrite'], 8)
+    } }); await tick();
+    assert.equal(h.button('overwrite').hidden, false);
+    assert.equal(h.button('overwrite').disabled, false);
+    h.button('refreshStatus').dispatch('click');
+    h.resolve(3, { success: true, status: 'unknown', details: {
+        voice_state: overwriteSnapshot('unknown', ['refresh'], 7)
+    } }); await tick();
+    assert.equal(h.button('overwrite').hidden, false);
+    assert.ok(h.panel().textContent.includes('voice.remote.failed'));
+    h.window.RemoteVoiceManager.close();
+});
+
+test('legacy missing overwrite details retains a query exit without trusting a refusal code', async () => {
+    const h = harness();
+    await startControlledOverwrite(h);
+    h.resolve(1, { success: false, code: 'UPSTREAM_REJECTED' }, 400); await tick();
+    assert.equal(h.button('overwrite').hidden, true);
+    assert.equal(h.button('refreshStatus').hidden, false);
+    h.window.RemoteVoiceManager.close();
+});
+
+test('server selected Doubao resource is displayed readonly and sent unchanged', async () => {
+    const h = harness();
+    h.window.RemoteVoiceManager.openImport();
+    h.resolve(0, { ...h.ctx, required_fields: [{ key: 'doubao_resource_id', required: true,
+        readonly: true, default_value: 'server-resource' }] }); await tick();
+    h.resolve(1, { success: true, voices: [] }); await tick();
+    h.button('manualEntry').dispatch('click');
+    const inputs = h.panel().querySelectorAll('input');
+    const resource = inputs.find(input => input.name === 'doubao_resource_id');
+    assert.equal(resource.readOnly, true);
+    assert.equal(resource.value, 'server-resource');
+    inputs[0].value = 'S_isolated'; inputs[0].dispatch('input');
+    h.button('import').dispatch('click');
+    assert.equal(JSON.parse(h.requests.at(-1).options.body).metadata.doubao_resource_id, 'server-resource');
+    h.resolve(2, { success: true, verification: 'verified' }); await tick();
+    h.window.RemoteVoiceManager.close();
+});
+
 test('imported preview ignores legacy audio and uses the clone synthesis deadline', async () => {
     const key = 'voice_preview_voice_1234567890abcdef1234567890abcdef';
     const h = previewHarness(new Map([[key, JSON.stringify({ version: 2, language: 'zh-CN', audioSrc: 'OLD' })]]));
@@ -471,13 +586,15 @@ test('a rejected overwrite claim retains audio and allows only an explicit retry
     file.files = [audio]; file.dispatch('change');
     h.button('overwrite').dispatch('click');
     h.resolve(0, { ...h.ctx, provider: 'cosyvoice', capabilities: { ...h.ctx.capabilities, overwrite: true } }); await tick();
-    h.resolve(1, { success: false, code: 'VOICE_STATE_CHANGED' }, 409); await tick();
+    h.resolve(1, { success: false, code: 'VOICE_STATE_CHANGED', details: {
+        attempt_outcome: 'not_submitted', state_sync: 'unchanged', voice_state: overwriteSnapshot('failed', ['overwrite'])
+    } }, 409); await tick();
     assert.ok(h.panel().textContent.includes('voice.remote.voiceStateChanged'));
     assert.equal(h.button('overwrite').hidden, false);
     assert.equal(h.button('overwrite').disabled, false);
     assert.equal(h.button('refreshStatus').hidden, true);
     assert.equal(file.files[0], audio);
-    assert.equal(h.refreshes(), 0);
+    assert.equal(h.refreshes(), 1);
     assert.equal(h.requests.length, 2);
     h.button('overwrite').dispatch('click');
     h.resolve(2, { ...h.ctx, capabilities: { ...h.ctx.capabilities, overwrite: true } }); await tick();
