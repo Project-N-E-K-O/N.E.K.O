@@ -1607,3 +1607,17 @@ async def test_a_deeply_nested_stream_header_does_not_break_the_anomaly_count(tm
     stream.parent.mkdir(parents=True, exist_ok=True)
     stream.write_text("[" * 100000 + "\n" + '{"kind":"anomaly"}\n', encoding="utf-8")
     assert await tu.visit_anomalies(tmp_path, V1, OWN) == 1
+
+
+async def test_the_recovery_callback_remembers_a_terminal_rejection(tmp_path, servers, monkeypatch):
+    doc = _big_doc(4, 10)
+    _write_sealed(tmp_path, doc)
+
+    async def rejected(_visit_id, _doc, _config_dir):
+        return tu.UploadResult(terminal="parts_out_of_range")
+
+    monkeypatch.setattr(tu, "_upload", rejected)
+    monkeypatch.setattr(tu, "schedule_visit_retry", lambda *_a, **_k: None)
+    assert await tu.upload_visit_transcript(V1, doc) == "parts_out_of_range"
+    # 补录随后删掉封存文件：之后才提交的附转录举报靠这一份带上原因
+    assert tu._terminal_reasons[V1] == ("parts_out_of_range", OWN)

@@ -1340,7 +1340,9 @@ async def visit_spool_recovery(
             remaining = [visit_path(spool_dir, visit_id, suffix) for suffix in (UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX)]
             if await asyncio.to_thread(lambda paths=remaining: any(path.exists() for path in paths)):
                 continue
-            await _mark_report_transcript_unavailable(config_dir, visit_id, "expired", report)
+            # 文件已删：归属取 state.json 记的账号（共用电脑上另一账号的举报不记）
+            await _mark_report_transcript_unavailable(
+                config_dir, visit_id, "expired", report, owner=await _state_owner(config_dir, visit_id))
             # 这场的转录不会再来了：排队的举报本轮就交，不再等它
             pending.discard(visit_id)
     except Exception as exc:  # noqa: BLE001

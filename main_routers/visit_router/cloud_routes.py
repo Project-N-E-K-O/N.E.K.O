@@ -191,7 +191,7 @@ async def visit_history(request: Request, cursor: str = ""):
 
 
 @router.get("/details/{visit_id}")
-async def visit_details(request: Request, visit_id: str, catgirl: str = "", cursor: str = ""):
+async def visit_details(request: Request, visit_id: str, cursor: str = ""):
     """One page of a visit's details (duration, usage, both transcripts aligned); passed through."""
     denied = http_denied(request)
     if denied is not None:
@@ -366,6 +366,9 @@ async def act_on_queued_report(request: Request, visit_id: str):
     # 读不了（被占用）不等于已送达：按还在处理
     current, unreadable = await tu._read_report(config_dir, visit_id)
     delivered = not unreadable and (current is None or not await tu.report_belongs_to(current, account))
+    if not delivered and outcome.unknown_visit:
+        # 又被拒：与 POST /report 同样回 404 unknown_visit，UI 照旧给「重试 / 放弃」
+        return _error(404, "unknown_visit")
     if not delivered and outcome.login_required:
         # 原账号的登录已失效：提示重新登录（文件留着，登录后照常补提）
         return _cloud_error(cr.VisitLoginRequired())

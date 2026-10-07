@@ -222,7 +222,7 @@ def test_details_pass_the_cursor_through_page_by_page(env):
                           for i in range(1200)]
     cursors, rows = [""], 0
     for _ in range(10):     # 有界：丢掉 cursor 的实现会永远停在第 1 页
-        url = f"/api/visit/details/{V1}?catgirl=A" + (f"&cursor={cursors[-1]}" if cursors[-1] else "")
+        url = f"/api/visit/details/{V1}" + (f"?cursor={cursors[-1]}" if cursors[-1] else "")
         page = client.get(url, headers=GOOD).json()
         rows += len(page["lines"])
         if "next_cursor" not in page:
@@ -329,6 +329,10 @@ def test_unknown_visit_is_404_and_kept_for_the_user(env):
     assert _queued(tmp_path)["rejected"] == "unknown_visit"
     items = client.get("/api/visit/report/queue", headers=GOOD).json()["items"]
     assert items[0]["rejected"] == "unknown_visit"
+    # 手动重试又被拒：与 POST /report 同样回 404 unknown_visit，标记照留
+    resp = client.post(f"/api/visit/report/queue/{V1}", headers=GOOD, json={"action": "retry"})
+    assert resp.status_code == 404 and resp.json()["code"] == "unknown_visit"
+    assert _queued(tmp_path)["rejected"] == "unknown_visit"
     fake.report_mode = "ok"
     resp = client.post(f"/api/visit/report/queue/{V1}", headers=GOOD, json={"action": "retry"})
     assert resp.json() == {"ok": True, "delivered": True} and _queued(tmp_path) is None

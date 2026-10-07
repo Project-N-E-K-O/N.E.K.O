@@ -689,6 +689,9 @@ async def upload_visit_transcript(visit_id: str, upload_doc: dict) -> bool | str
             # 记在进程内，后台轮次接着用它、接着补写
             await _record_owner(config_dir, visit_id, owner)
         result = await _upload(visit_id, upload_doc, config_dir)
+    if result.terminal:
+        # 补录删掉封存文件后，原因只剩这一份：之后才提交的附转录举报照样带上
+        remember_terminal_reason(visit_id, result.terminal, owner if isinstance(owner, str) and owner else None)
     # 补录只跑一轮，本进程里接着由后台检查：没传上去的接着传；传上去 / 终态结清的，补录随后删文件若被
     # 占用而失败，后台下一轮重传得 duplicate 再删（文件已删时这一轮什么也不做就退出）
     schedule_visit_retry(visit_id, config_dir=config_dir,
@@ -1108,6 +1111,8 @@ class RetryRound:
     retry_after_s: int | None = None
     login_required: bool = False
     """The queued report could not be sent: the owning account's session is gone."""
+    unknown_visit: bool = False
+    """Servers rejected the queued report again (``404 unknown_visit``) this round."""
 
 
 @dataclass(frozen=True)
@@ -1352,6 +1357,7 @@ async def retry_visit_once(
         # 附转录的举报在等转录：转录因登录失效传不上去时同样要提示重新登录
         login_required = upload.login_required and report_pending and bool(report["include_transcript"])
         report_retry_after: int | None = None
+        rejected_again = False
         if report is not None and not (upload.pending and report["include_transcript"]):
             if upload.unavailable and not report.get("transcript_unavailable"):
                 # 原因还没在举报文件里（之前没写成，或是转录先于举报结清、原因只在内存里）：先补写进文件，
@@ -1363,6 +1369,7 @@ async def retry_visit_once(
                 # 受理了，或又被拒（等用户再决定）：之前那次手动重试到此为止
                 _manual_retries.pop(visit_id, None)
             login_required = login_required or result.login_required
+            rejected_again = result.unknown_visit
             report_retry_after = result.retry_after_s
             if await finish_report(config_dir, visit_id, result, report) or (
                     result.unknown_visit and await rejection_recorded(config_dir, visit_id)):
@@ -1383,7 +1390,7 @@ async def retry_visit_once(
     delays = [d for d in (upload.retry_after_s, report_retry_after) if d is not None]
     return RetryRound(pending=report_pending or upload.retryable or unreadable or visit_id in _settled_leftovers,
                       retry_after_s=max(delays) if delays else None,
-                      login_required=login_required)
+                      login_required=login_required, unknown_visit=rejected_again)
 
 
 _workers: dict[str, asyncio.Task] = {}

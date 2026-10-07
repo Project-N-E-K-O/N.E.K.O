@@ -49,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import weakref
 import hashlib
+import json
 import os
 import re
 import time
@@ -525,8 +526,6 @@ def persona_version(doc: dict) -> str:
     A confirmation must name the version the user saw: a regeneration that
     happens to produce the same text still brings a new private-section list.
     """
-    import json
-
     payload = json.dumps({k: doc.get(k) for k in _VERSIONED_FIELDS}, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8", "surrogatepass")).hexdigest()
 
@@ -565,8 +564,6 @@ class VisitPersonaStore:
         return id_path(self.dir, character_uid, CHARACTER_UID_RE, ".json")
 
     def _load_sync(self, character_uid: str) -> dict | None:
-        import json
-
         path = self.path(character_uid)
         try:
             with open(path, encoding="utf-8") as handle:
@@ -637,8 +634,6 @@ def _clean_persona_text(raw: str, family_names: Sequence[str], lang: str | None)
 
 
 def _parse_scan(raw: str) -> list[str]:
-    import json
-
     text = str(raw or "").strip()
     # 模型偶尔给 JSON 包一层 ``` 代码块：只取第一个 [ 到最后一个 ] 之间
     start, end = text.find("["), text.rfind("]")
@@ -754,6 +749,7 @@ class PersonaHooks:
     config_dir: Callable[[], Path]
     load_context: Callable[[], Awaitable[CharacterContext]]
     resolve_char_uid: Callable[[str], Awaitable[str | None]]
+    resolve_char_name: Callable[[str], Awaitable[str | None]]
     llm: PersonaLLM
     scan_llm: PersonaLLM
     lang: Callable[[], str]
@@ -763,6 +759,7 @@ _hooks = PersonaHooks(
     config_dir=_default_config_dir,
     load_context=load_character_context,
     resolve_char_uid=local_chars.resolve_char_uid,
+    resolve_char_name=local_chars.resolve_char_name,
     llm=visit_llm.one_shot_llm(max_tokens=VISIT_PERSONA_MAX_TOKENS + 200, timeout=VISIT_LLM_TIMEOUT_S),
     scan_llm=visit_llm.one_shot_llm(max_tokens=PERSONA_SCAN_MAX_TOKENS, timeout=VISIT_LLM_TIMEOUT_S),
     lang=prompt_lang,
@@ -770,7 +767,8 @@ _hooks = PersonaHooks(
 
 
 def configure_persona(**hooks: Any) -> None:
-    """Replace hooks: ``config_dir``, ``load_context``, ``resolve_char_uid``, ``llm``, ``scan_llm``, ``lang``."""
+    """Replace hooks: ``config_dir``, ``load_context``, ``resolve_char_uid``, ``resolve_char_name``, ``llm``,
+    ``scan_llm``, ``lang``."""
     for name, value in hooks.items():
         if not hasattr(_hooks, name):
             raise TypeError(f"unknown persona hook {name!r}")
@@ -832,8 +830,9 @@ async def _regenerate(name: str, character_uid: str, started_version: int) -> No
             _errors[character_uid] = result.error or "llm_unavailable"
             return
         async with persona_lock(character_uid):
-            if await _hooks.resolve_char_uid(name) != character_uid:
-                # 生成期间角色被删除（或改了名）：不再给它写人设，否则删除角色时清掉的人设文件又被建回来
+            if await _hooks.resolve_char_name(character_uid) is None:
+                # 生成期间角色被删除：不再给它写人设，否则删除角色时清掉的人设文件又被建回来。
+                # 按 uid 判断：只是改名时人设照存（文件按 uid 存，改名不影响）
                 _errors[character_uid] = "unknown_catgirl"
                 logger.info("visit persona: character gone during regeneration, result dropped")
                 return
@@ -1007,8 +1006,8 @@ async def put_persona(request: Request, catgirl: str = ""):
             return _error(409, "persona_generating")
         persona_store = store()
         doc = await persona_store.load(character_uid)
-        if await _hooks.resolve_char_uid(catgirl) != character_uid:
-            # 请求进来之后角色被删除（或改了名）：不再写，否则删除角色时清掉的人设文件又被建回来
+        if await _hooks.resolve_char_name(character_uid) is None:
+            # 请求进来之后角色被删除：不再写，否则删除角色时清掉的人设文件又被建回来
             return _error(404, "unknown_catgirl")
         if text is None:
             if doc is None:
@@ -1032,7 +1031,13 @@ async def put_persona(request: Request, catgirl: str = ""):
                 return _error(400, "persona_too_long")
             card = ctx.card(catgirl)
             # 与生成路径同一套检查：规则敏感词 + 与私人段落（规则段落 + 同一张卡扫描出的段落）的 8-gram
-            scanned = doc["private_sections"] if doc is not None and doc["scan_card_hash"] == card_hash(card) else ()
+            if doc is None:
+                scanned: Sequence[str] = ()
+            elif doc["scan_card_hash"] == card_hash(card):
+                scanned = doc["private_sections"]
+            else:
+                # 卡片改过：扫描清单基于旧卡，其中仍原样在当前卡里的段落照样比对（手写常发生在刚改完卡之后）
+                scanned = [section for section in doc["private_sections"] if section in (card or "")]
             hits = persona_privacy_check(card, cleaned, ctx.family_names, scanned)
             if hits:
                 return _error(400, "persona_sensitive_overlap", hits=[hit.value for hit in hits])

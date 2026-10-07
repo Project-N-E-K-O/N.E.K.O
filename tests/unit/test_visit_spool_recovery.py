@@ -2794,3 +2794,24 @@ async def test_a_transiently_unreadable_upload_rearms_the_background_retry(tmp_p
         report=recovery.RecoveryReport(), retry_later=armed.append,
     )
     assert v in pending and armed == [v]
+
+
+async def test_an_expired_upload_leaves_another_accounts_report_unmarked(tmp_path):
+    v = vid(108)
+    await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_A)
+    d = _spool_dir(tmp_path)
+    sealed = d / f"{v}.upload.json"
+    sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    old = time.time() - 8 * 86400
+    os.utime(sealed, (old, old))
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": "f" * 24}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
+    # 到期放弃的是 OWN_A 那一侧的转录：另一账号排的举报不带这个原因
+    assert not sealed.exists()
+    assert any(visit_id == v for visit_id, _doc in reports.calls)
+    for _visit_id, doc in reports.calls:
+        assert "transcript_unavailable" not in doc

@@ -88,8 +88,12 @@ def env(tmp_path, monkeypatch):
     async def resolve(name):
         return state["uids"].get(name)
 
+    async def resolve_name(uid):
+        return next((name for name, u in state["uids"].items() if u == uid), None)
+
     saved = persona._hooks.__dict__.copy()
     persona.configure_persona(config_dir=lambda: tmp_path, load_context=load_context, resolve_char_uid=resolve,
+                              resolve_char_name=resolve_name,
                               llm=llm, scan_llm=scan, lang=lambda: "zh")
     monkeypatch.setattr(visit_settings, "VISIT_ENABLED", True)
     monkeypatch.setattr(visit_settings, "NEKO_VISIT_ALLOW_NONLOCAL", False)
@@ -858,14 +862,10 @@ def test_a_same_text_with_a_new_private_section_list_needs_a_new_confirmation(en
 
 def test_a_manual_edit_is_not_saved_for_a_character_deleted_meanwhile(env, monkeypatch):
     client, tmp_path, state, *_ = env
-    real = persona._hooks.resolve_char_uid
-    calls = []
+    async def deleted(_uid):
+        return None                                          # 请求进来之后角色被删除
 
-    async def deleted_after_the_first_lookup(name):
-        calls.append(name)
-        return await real(name) if len(calls) == 1 else None    # 请求进来之后角色被删除
-
-    monkeypatch.setattr(persona._hooks, "resolve_char_uid", deleted_after_the_first_lookup)
+    monkeypatch.setattr(persona._hooks, "resolve_char_name", deleted)
     resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
                       json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
     assert resp.status_code == 404 and not (tmp_path / "visit_persona" / f"{UID_A}.json").exists()
@@ -884,3 +884,33 @@ def test_a_long_scanned_passage_is_kept_whole_in_overlapping_pieces():
     # 任意 300 字的片段都完整落在某一块里（重叠 200 字以上的 8-gram 不会被块边界切开）
     for start in range(0, len(passage) - 150, 97):
         assert any(passage[start:start + 150] in p for p in pieces)
+
+
+
+def test_a_regeneration_is_kept_for_a_character_renamed_meanwhile(env):
+    client, tmp_path, state, *_ = env
+    gate = client.portal.call(_make_event)
+
+    async def slow(prompt):
+        await gate.wait()
+        return GOOD_PERSONA
+
+    persona.configure_persona(llm=slow)
+    assert client.post("/api/visit/persona/regenerate?catgirl=A", headers=GOOD, json={}).status_code == 202
+    state["uids"]["A2"] = state["uids"].pop("A")                     # 生成期间只是改了名
+    state["cards"]["A2"] = state["cards"].pop("A")
+    client.portal.call(gate.set)
+    _settle(client)
+    assert _file(tmp_path)["text"] == GOOD_PERSONA
+
+
+def test_a_hand_edit_after_a_card_change_still_checks_scanned_passages_left_in_the_card(env):
+    client, tmp_path, state, _llm, scan = env
+    secret = "她偷偷收藏了一整抽屉的旧电影票根，谁也没告诉。"
+    state["cards"]["A"] = CARD + "\n" + secret
+    scan.sections = [secret]                                         # 只有独立扫描认出它是私人内容
+    _generate(client)
+    state["cards"]["A"] += "\n又改了卡。"                              # 扫描清单基于旧卡了
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}。" + secret, "reviewed": True})
+    assert resp.status_code == 400 and resp.json()["code"] == "persona_sensitive_overlap"
