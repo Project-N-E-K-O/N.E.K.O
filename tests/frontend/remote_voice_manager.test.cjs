@@ -25,7 +25,9 @@ function previewHarness(storage = new Map()) {
         getVoicePreviewLanguage: () => 'zh-CN',
         localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
         AbortController, setTimeout: (_callback, ms) => { deadlines.push(ms); return ms; }, clearTimeout() {},
-        fetch: (url, options) => { const request = { ...deferred(), url, options }; requests.push(request); return request.promise; },
+        fetch: (url, options) => { const request = { ...deferred(), url, options }; requests.push(request); return request.promise.then(response => ({
+            ...response, headers: new Headers({ 'content-type': 'application/json' }), text: async () => JSON.stringify(response.data)
+        })); },
         safeReadResponse: async response => ({ data: response.data }),
         sleepVoiceCloneLoaderRetry: async () => {}, VOICE_CLONE_LOADER_FETCH_BACKOFF_MS: 1,
         window: {}, console: { warn() {}, error() {} },
@@ -40,7 +42,7 @@ function previewHarness(storage = new Map()) {
         },
         encodeURIComponent, Map, Set, JSON
     });
-    vm.runInContext(method, context);
+    vm.runInContext(method, context, { filename: path.join(__dirname, 'voice_preview_runtime.cjs') });
     return { context, sessions, requests, audios, audioInstances, deadlines, errors, storage,
         play: options => context.playPreview('voice_1234567890abcdef1234567890abcdef', { disabled: false }, options),
         finish: () => { for (const session of sessions.values()) context.finishVoicePreviewSession(session); },
