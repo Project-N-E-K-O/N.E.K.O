@@ -31,6 +31,8 @@ docker compose up -d
 
 `TZ` 默认是 `Asia/Shanghai`，可在 `.env` 改为任意 IANA 时区（例如 `Etc/UTC`）。升级前备份 `neko-home` 和 `logs`；严禁公开数据或私钥目录。不要用 `PLUGIN_CONFIG_ROOT`、`PLUGIN_PACKAGES_ROOT` 或 `PACKAGE_PROFILES_ROOT` 指向 `neko-home` 之外的路径，否则对应用户插件数据不会随容器持久化。
 
+首次启动前、以及把数据搬进来之后，可以在 `docker/` 下执行一次 `sudo sh preflight.sh`。它直接在宿主机运行，不拉取任何镜像：`neko-home` 或 `logs` 是符号链接时拒绝继续（Docker 会挂载链接目标，容器会接管它的属主）；目录不存在时创建；把两个目录本身（不含其中内容）的属主设为 uid/gid 1000。覆盖文件挂载了其他目录时，把覆盖文件里写的路径原样作为参数传入（相对路径与 Compose 一样按 `docker/` 解析）；路径上任何一段是符号链接都会被拒绝。
+
 ::: danger 从旧版双挂载升级
 旧版本分别挂载 `./N.E.K.O` 与 `./ssl`。不迁移就直接拉新镜像，容器会对着一个**空的**数据目录启动：服务照常运行、API Key 也会从环境变量重新生成，看上去没有异常，但人格、记忆、插件都不在。旧数据没有被删除，只是不再挂进容器。
 
@@ -120,3 +122,5 @@ docker build -f docker/Dockerfile.full -t neko-local:full .
 ```
 
 随后设置 `NEKO_IMAGE`。入口脚本生成的是自签名证书，不等于公网可信 TLS。诊断用 `docker compose ps`、`docker logs neko` 和 `curl -f http://127.0.0.1:48911/health`。
+
+在 2 核 2G 等低配云服务器上部署，请继续阅读[低配云服务器部署](./low-spec-server)：内存、磁盘、安全配置与可选的宿主机自愈看门狗。

@@ -15,6 +15,107 @@
     S.voiceInputRecoverySessionEpoch = null;
     S.voiceInputRecoveryLeaseGeneration = null;
     S.voiceInputRecoveryTimer = null;
+    S.asrAutomaticRecovery = null;
+    function matchesAutomaticRecoveryIdentity(detail) {
+        return !!detail && S.independentAsrActive === true && S.isRecording === true
+            && !S.isMicMuted && !S.gameVoiceSttGateActive
+            && Number.isSafeInteger(detail.recovery_id)
+            && detail.session_epoch != null
+            && detail.session_epoch === (S.voiceSessionEpoch ?? S.sessionEpoch)
+            && detail.lease_generation != null
+            && detail.lease_generation === S.voiceInputCurrentLeaseGeneration;
+    }
+    function matchesAutomaticRecoveryOperation(detail) {
+        const current = S.asrAutomaticRecovery;
+        return matchesAutomaticRecoveryIdentity(detail) && current != null
+            && current.state !== 'retired'
+            && current.recovery_id === detail.recovery_id
+            && current.session_epoch === detail.session_epoch
+            && current.lease_generation === detail.lease_generation
+            && current.route_generation === detail.route_generation;
+    }
+    function retireAutomaticRecovery() {
+        if (S.asrAutomaticRecovery) S.asrAutomaticRecovery.state = 'retired';
+    }
+    function handleAutomaticRecoveryStatus(code, detail) {
+        if (!matchesAutomaticRecoveryIdentity(detail)) return false;
+        const current = S.asrAutomaticRecovery;
+        if (code === 'ASR_RECOVERY_STARTED') {
+            if (current && current.session_epoch === detail.session_epoch
+                && detail.recovery_id <= current.recovery_id) return false;
+            S.asrAutomaticRecovery = { ...detail, state: 'recovering', incomplete: false };
+            // Automatic recovery has its own backend deadline. Retire the
+            // unmute timer instead of letting its four seconds block buffering.
+            clearVoiceInputRecoveryTimer();
+            S.voiceInputRecoveryGeneration += 1;
+            S.voiceInputRecoveryState = 'idle';
+            updateRecoveryStatus('recovering');
+        } else {
+            if (!matchesAutomaticRecoveryOperation(detail)) return false;
+            if (code === 'ASR_TURN_INCOMPLETE') {
+                if (current.incomplete) return false;
+                current.incomplete = true;
+                if (typeof window.showStatusToast === 'function') {
+                    const key = 'microphone.voiceInputTurnIncomplete';
+                    const translated = typeof window.t === 'function' ? window.t(key) : null;
+                    window.showStatusToast(translated && translated !== key ? translated
+                        : 'The previous sentence was not completed. Please say it again after voice input recovers.', 6000);
+                }
+            } else {
+                if (current.state !== 'recovering') return false;
+                current.state = code === 'ASR_RECOVERY_READY' ? 'ready' : 'failed';
+                updateRecoveryStatus(current.state);
+            }
+        }
+        window.dispatchEvent(new CustomEvent('asr-automatic-recovery-changed', {
+            detail: { ...S.asrAutomaticRecovery }
+        }));
+        return true;
+    }
+    mod.handleAutomaticRecoveryStatus = handleAutomaticRecoveryStatus;
+    mod.matchesAutomaticRecoveryOperation = matchesAutomaticRecoveryOperation;
+    function handleAutomaticRecoveryBlocked(detail) {
+        if (!matchesAutomaticRecoveryIdentity(detail)
+                || !Number.isSafeInteger(detail.route_generation)) return false;
+        const current = S.asrAutomaticRecovery;
+        if (current && current.session_epoch === detail.session_epoch
+                && current.lease_generation === detail.lease_generation) {
+            if (detail.recovery_id < current.recovery_id
+                    || detail.route_generation < current.route_generation) return false;
+            if (detail.recovery_id === current.recovery_id) {
+                if (!matchesAutomaticRecoveryOperation(detail)
+                        || current.state === 'ready' || current.state === 'retired') return false;
+                if (current.state === 'failed') return true;
+            }
+        }
+        // Signed lifecycle BLOCKED is itself terminal evidence. STARTED or
+        // FAILED may have missed their bounded delivery window; neither is
+        // required to retire this still-current microphone route.
+        S.asrAutomaticRecovery = {
+            ...detail, state: 'failed', buffering: false,
+            incomplete: current?.recovery_id === detail.recovery_id
+                && current.session_epoch === detail.session_epoch
+                && current.lease_generation === detail.lease_generation
+                && current.route_generation === detail.route_generation
+                && current.incomplete === true
+        };
+        clearVoiceInputRecoveryTimer();
+        S.voiceInputRecoveryGeneration += 1;
+        S.voiceInputRecoveryState = 'failed';
+        updateRecoveryStatus('failed');
+        window.dispatchEvent(new CustomEvent('asr-automatic-recovery-changed', {
+            detail: { ...S.asrAutomaticRecovery }
+        }));
+        return true;
+    }
+    mod.handleAutomaticRecoveryBlocked = handleAutomaticRecoveryBlocked;
+    window.addEventListener('mic-mute-state-changed', event => {
+        if (event.detail?.muted) retireAutomaticRecovery();
+    });
+    window.addEventListener('mic-lease-changed', event => {
+        if (event.detail?.owner !== 'core') retireAutomaticRecovery();
+    });
+    window.addEventListener('voice-input-socket-open', retireAutomaticRecovery);
     function recoveryStatusElement() {
         return document.getElementById('status-toast');
     }
@@ -31,6 +132,7 @@
     function clearVoiceInputRecoveryTimer() { if (S.voiceInputRecoveryTimer) clearTimeout(S.voiceInputRecoveryTimer); S.voiceInputRecoveryTimer = null; }
     function resetVoiceInputRecoveryState() {
         clearVoiceInputRecoveryTimer();
+        S.asrAutomaticRecovery = null;
         // Retire callbacks already queued by the previous session as well as
         // its transport identity. A hardware restart within a session must not
         // call this: it still has to wait for the current recovery verdict.
@@ -138,14 +240,14 @@
     }
 
     // 正式录音和设置页试麦共用：试麦要预判正式录音实际能听到什么，两边必须同一套处理。
-    function micCaptureAudioConstraints() {
-        if (window.nekoMicrophoneInput) return { ...window.nekoMicrophoneInput.constraints };
-        return {
+    function micCaptureAudioConstraints(targetSampleRate = window.appUtils.isMobile() ? 16000 : 48000) {
+        const base = window.nekoMicrophoneInput ? window.nekoMicrophoneInput.constraints : {
             noiseSuppression: false,
             echoCancellation: true,
-            autoGainControl: true,
             channelCount: 1
         };
+        // 16k input bypasses backend DSP; 48k input uses backend AGC.
+        return { ...base, autoGainControl: targetSampleRate === 16000 };
     }
 
     function currentVoiceInputControlState() {
@@ -261,6 +363,10 @@
         if (window.nekoVoiceCaptureReadiness && window.nekoVoiceCaptureReadiness.blocked()) return false;
         if (refreshMicLease() !== MIC_LEASE.CORE) return false;
         const state = currentVoiceInputControlState();
+        const recovery = S.asrAutomaticRecovery;
+        if (recovery && matchesAutomaticRecoveryOperation(recovery)
+            && (recovery.state === 'failed'
+                || (recovery.state === 'recovering' && recovery.buffering !== true))) return false;
         return !state.hard_muted && !state.focus_suppressed
             && !isVoiceInputRecoveryPending() && S.voiceInputRecoveryState !== 'failed';
     }
@@ -1523,7 +1629,8 @@
         mediaStream,
         startToken,
         selectedMicrophoneIdAtStart,
-        microphoneSelectionGenerationAtStart
+        microphoneSelectionGenerationAtStart,
+        captureTargetSampleRate = window.appUtils.isMobile() ? 16000 : 48000
     ) {
         // Entry gate, before ANY shared state is touched. An attempt can be
         // superseded while it is still in startMicCapture's getUserMedia (a
@@ -1736,9 +1843,8 @@
             await ownContext.audioWorklet.addModule('/static/audio-processor.js');
 
             // 根据连接类型确定目标采样率
-            const isMobile = window.appUtils.isMobile;
-            const targetSampleRate = isMobile() ? 16000 : 48000;
-            console.log(`音频采样率配置: 原始=${ownContext.sampleRate}Hz, 目标=${targetSampleRate}Hz, 移动端=${isMobile()}`);
+            const targetSampleRate = captureTargetSampleRate;
+            console.log(`音频采样率配置: 原始=${ownContext.sampleRate}Hz, 目标=${targetSampleRate}Hz`);
 
             // 创建AudioWorkletNode
             ownWorkletNode = new AudioWorkletNode(ownContext, 'audio-processor', {
@@ -2163,6 +2269,9 @@
         // getUserMedia() half of the window as well.
         micStartGeneration += 1;
         const micStartToken = micStartGeneration;
+        // Bind capture constraints, Worklet output and the wire header before
+        // permission/player awaits or selected-device fallback can interleave.
+        const captureTargetSampleRate = window.appUtils.isMobile() ? 16000 : 48000;
         pendingMicStartUiOwnerToken = micStartToken;
         // 正式录音一开始占设备就让位，不等到提交：独占式采集的驱动上，
         // probe 还开着会让正式录音的 getUserMedia 以 NotReadableError 失败。
@@ -2224,7 +2333,7 @@
             }
 
             // 获取麦克风流，使用选择的麦克风设备ID
-            const baseAudioConstraints = micCaptureAudioConstraints();
+            const baseAudioConstraints = micCaptureAudioConstraints(captureTargetSampleRate);
 
             // Attempt-local, for the same reason the audio graph is: publishing
             // the stream here put it OUTSIDE the single publish point in
@@ -2258,12 +2367,18 @@
             // 检查音频轨道状态
             const audioTracks = ownStream.getAudioTracks();
             console.log(window.t('console.audioTrackCount'), audioTracks.length);
-            console.log(window.t('console.audioTrackStatus'), audioTracks.map(track => ({
-                label: track.label,
-                enabled: track.enabled,
-                muted: track.muted,
-                readyState: track.readyState
-            })));
+            console.log(window.t('console.audioTrackStatus'), audioTracks.map(track => {
+                const settings = typeof track.getSettings === 'function'
+                    ? track.getSettings()
+                    : {};
+                return {
+                    label: track.label,
+                    enabled: track.enabled,
+                    muted: track.muted,
+                    readyState: track.readyState,
+                    autoGainControl: settings.autoGainControl
+                };
+            }));
 
             if (audioTracks.length === 0) {
                 console.error(window.t('console.noAudioTrackAvailable'));
@@ -2285,7 +2400,8 @@
                 ownStream,
                 micStartToken,
                 selectedMicrophoneIdAtStart,
-                microphoneSelectionGenerationAtStart
+                microphoneSelectionGenerationAtStart,
+                captureTargetSampleRate
             );
             if (!micStartCommitted) {
                 // Superseded or fail-closed while opening: the hardware is
@@ -2849,14 +2965,15 @@
         }
     }
 
-    function settingsMicTestConstraints(deviceId) {
-        const audio = micCaptureAudioConstraints();
+    function settingsMicTestConstraints(deviceId, targetSampleRate) {
+        const audio = micCaptureAudioConstraints(targetSampleRate);
         if (deviceId) audio.deviceId = { exact: deviceId };
         return { audio };
     }
 
     async function startSettingsMicVolumeTest() {
         const generation = ++settingsMicVolumeGeneration;
+        const captureTargetSampleRate = window.appUtils.isMobile() ? 16000 : 48000;
         const isCurrent = function () { return generation === settingsMicVolumeGeneration; };
         releaseSettingsMicVolumeProbe();
         if (isLiveMicCaptureActiveOrPending()) {
@@ -2874,14 +2991,14 @@
             const selectedMicrophoneId = S.selectedMicrophoneId;
             fellBack = false;
             try {
-                stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(selectedMicrophoneId));
+                stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(selectedMicrophoneId, captureTargetSampleRate));
             } catch (error) {
                 if (!isCurrent()) return { ok: false };
                 if (selectionGeneration !== microphoneSelectionGeneration) continue;
                 if (!selectedMicrophoneId || !isSelectedMicrophoneFallbackEligibleError(error)) throw error;
                 // 回退也可能失败：和首次请求同样先看是否过期、选择是否已变，变了就按新设备重试。
                 try {
-                    stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(null));
+                    stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(null, captureTargetSampleRate));
                 } catch (fallbackError) {
                     if (!isCurrent()) return { ok: false };
                     if (selectionGeneration !== microphoneSelectionGeneration) continue;

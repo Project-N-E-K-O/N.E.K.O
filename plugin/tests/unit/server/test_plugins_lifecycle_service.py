@@ -507,6 +507,14 @@ async def test_start_plugin_refreshes_registry_before_loading(
     handlers_backup = dict(module.state.event_handlers)
     cache_backup = copy.deepcopy(module.state._snapshot_cache)
     refresh_calls: list[str] = []
+    loop_thread = threading.current_thread()
+    capability_threads: dict[str, threading.Thread] = {}
+    for capability_name in ("create_plugin_host", "scan_plugin_metadata_isolated", "install_isolated_plugin_metadata"):
+        original = getattr(module, capability_name)
+        def track(*args, _name=capability_name, _original=original, **kwargs):
+            capability_threads[_name] = threading.current_thread()
+            return _original(*args, **kwargs)
+        monkeypatch.setattr(module, capability_name, track)
 
     try:
         with module.state.acquire_plugins_write_lock():
@@ -531,8 +539,15 @@ async def test_start_plugin_refreshes_registry_before_loading(
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
-        monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
-        monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(_FakeAdapterPlugin))
+        def host_factory(**kwargs):
+            capability_threads["create_plugin_host"] = threading.current_thread()
+            return _FakeProcessHost(**kwargs)
+        scan = _metadata_scan_for(_FakeAdapterPlugin)
+        def metadata_scan(**kwargs):
+            capability_threads["scan_plugin_metadata_isolated"] = threading.current_thread()
+            return scan(**kwargs)
+        monkeypatch.setattr(module, "create_plugin_host", host_factory)
+        monkeypatch.setattr(module, "scan_plugin_metadata_isolated", metadata_scan)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         service = module.PluginLifecycleService()
@@ -540,6 +555,10 @@ async def test_start_plugin_refreshes_registry_before_loading(
 
         assert response["success"] is True
         assert refresh_calls == ["refresh_adapter"]
+        assert set(capability_threads) == {
+            "create_plugin_host", "scan_plugin_metadata_isolated", "install_isolated_plugin_metadata"
+        }
+        assert all(thread is not loop_thread for thread in capability_threads.values())
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
@@ -1038,7 +1057,7 @@ async def test_start_plugin_persists_intent_after_success_and_migrates_resolved_
     )
     monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: resolved_plugin_id)
     monkeypatch.setattr(module, "_find_missing_python_requirements", lambda *args, **kwargs: [])
-    monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+    monkeypatch.setattr(module, "create_plugin_host", _FakeProcessHost)
     monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(type("Plugin", (), {})))
     monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
@@ -1217,7 +1236,7 @@ async def test_start_plugin_checks_python_requirements_against_vendor_paths(
     )
     monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
     monkeypatch.setattr(module, "_find_missing_python_requirements", _fake_find_missing)
-    monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+    monkeypatch.setattr(module, "create_plugin_host", _FakeProcessHost)
     monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(_FakeAdapterPlugin))
     monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
@@ -1283,7 +1302,7 @@ async def test_start_plugin_rejects_entry_directory_mismatch_before_creating_hos
             "warnings": [],
         },
     )
-    monkeypatch.setattr(module, "PluginProcessHost", _UnexpectedHost)
+    monkeypatch.setattr(module, "create_plugin_host", _UnexpectedHost)
 
     plugins_backup = copy.deepcopy(module.state.plugins)
     hosts_backup = dict(module.state.plugin_hosts)
@@ -1387,7 +1406,7 @@ async def test_start_plugin_clamps_its_startup_timeout_to_the_caller_budget(
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
-        monkeypatch.setattr(module, "PluginProcessHost", _RecordingHost)
+        monkeypatch.setattr(module, "create_plugin_host", _RecordingHost)
         inner_scan = _metadata_scan_for(_FakeAdapterPlugin)
         scan_timeouts: list[object] = []
 
@@ -1488,7 +1507,7 @@ async def test_start_plugin_uses_default_startup_timeout_when_runtime_timeout_om
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
-        monkeypatch.setattr(module, "PluginProcessHost", _RecordingHost)
+        monkeypatch.setattr(module, "create_plugin_host", _RecordingHost)
         monkeypatch.setattr(
             module,
             "scan_plugin_metadata_isolated",
@@ -1582,7 +1601,7 @@ async def test_start_plugin_rejects_invalid_runtime_startup_timeout(
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
-        monkeypatch.setattr(module, "PluginProcessHost", _RecordingHost)
+        monkeypatch.setattr(module, "create_plugin_host", _RecordingHost)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         with pytest.raises(ServerDomainError) as exc_info:
@@ -1666,7 +1685,7 @@ async def test_start_plugin_rejects_invalid_default_startup_timeout(
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
-        monkeypatch.setattr(module, "PluginProcessHost", _RecordingHost)
+        monkeypatch.setattr(module, "create_plugin_host", _RecordingHost)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         with pytest.raises(ServerDomainError) as exc_info:
@@ -1765,7 +1784,7 @@ async def test_start_plugin_defaults_startup_failure_to_warn_and_marks_degraded(
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
-        monkeypatch.setattr(module, "PluginProcessHost", _StartupWarningHost)
+        monkeypatch.setattr(module, "create_plugin_host", _StartupWarningHost)
         monkeypatch.setattr(
             module,
             "scan_plugin_metadata_isolated",
@@ -1878,7 +1897,7 @@ async def test_start_plugin_startup_failure_fail_keeps_startup_error_fatal(
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
-        monkeypatch.setattr(module, "PluginProcessHost", _StrictStartupHost)
+        monkeypatch.setattr(module, "create_plugin_host", _StrictStartupHost)
         monkeypatch.setattr(
             module,
             "scan_plugin_metadata_isolated",
@@ -1983,7 +2002,7 @@ async def test_start_plugin_does_not_map_startup_business_timeout_to_start_timeo
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
-        monkeypatch.setattr(module, "PluginProcessHost", _BusinessTimeoutHost)
+        monkeypatch.setattr(module, "create_plugin_host", _BusinessTimeoutHost)
         monkeypatch.setattr(
             module,
             "scan_plugin_metadata_isolated",
@@ -2084,7 +2103,7 @@ async def test_start_plugin_applies_runtime_startup_timeout_to_legacy_host_and_c
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
-        monkeypatch.setattr(module, "PluginProcessHost", _SlowProcessHost)
+        monkeypatch.setattr(module, "create_plugin_host", _SlowProcessHost)
         monkeypatch.setattr(
             module,
             "scan_plugin_metadata_isolated",
@@ -2193,7 +2212,7 @@ async def test_start_plugin_lets_timeout_aware_host_own_startup_timeout_cleanup(
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
-        monkeypatch.setattr(module, "PluginProcessHost", _TimeoutAwareHost)
+        monkeypatch.setattr(module, "create_plugin_host", _TimeoutAwareHost)
         monkeypatch.setattr(
             module,
             "scan_plugin_metadata_isolated",
@@ -2298,7 +2317,7 @@ async def test_start_plugin_classifies_exponent_form_startup_timeout(
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
-        monkeypatch.setattr(module, "PluginProcessHost", _ExponentTimeoutHost)
+        monkeypatch.setattr(module, "create_plugin_host", _ExponentTimeoutHost)
         monkeypatch.setattr(
             module,
             "scan_plugin_metadata_isolated",
@@ -2400,7 +2419,7 @@ async def test_start_plugin_persists_entries_preview_and_invalidates_stale_cache
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
-        monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+        monkeypatch.setattr(module, "create_plugin_host", _FakeProcessHost)
         monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(_FakeAdapterPlugin))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
@@ -2490,7 +2509,7 @@ async def test_start_plugin_logs_structured_config_warnings_from_resolver(
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
-        monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+        monkeypatch.setattr(module, "create_plugin_host", _FakeProcessHost)
         monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(_FakeAdapterPlugin))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
         monkeypatch.setattr(module, "logger", capture_logger)
@@ -2602,7 +2621,7 @@ async def test_start_plugin_allows_retry_for_load_failed_plugin(
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
-        monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+        monkeypatch.setattr(module, "create_plugin_host", _FakeProcessHost)
         monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(_FakeAdapterPlugin))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
@@ -4047,7 +4066,7 @@ async def test_start_plugin_checks_python_requirements_off_the_event_loop(
     )
     monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
     monkeypatch.setattr(module, "_find_missing_python_requirements", _fake_find_missing)
-    monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+    monkeypatch.setattr(module, "create_plugin_host", _FakeProcessHost)
     monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(_FakeAdapterPlugin))
     monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
@@ -4167,7 +4186,7 @@ async def test_start_plugin_scans_once_when_the_packaged_schema_is_stale(
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
-        monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+        monkeypatch.setattr(module, "create_plugin_host", _FakeProcessHost)
         inner_scan = _metadata_scan_for(_FakeAdapterPlugin)
         scans: list[str] = []
         scanned_handler = dict(handler, name="Scanned")
@@ -4265,7 +4284,7 @@ async def _start_packaged_adapter(
         },
     )
     monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: runtime_id)
-    monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+    monkeypatch.setattr(module, "create_plugin_host", _FakeProcessHost)
     monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
     inner_scan = _metadata_scan_for(_FakeAdapterPlugin)
     scans: list[str] = []
@@ -4342,7 +4361,7 @@ async def test_a_stale_package_is_upgraded_in_place_by_its_first_start(
     every start. The start path has just imported the tree; what it learned is
     what the packager would have written.
 
-    Mutation: drop the ``_upgrade_stale_packaged_metadata`` call.
+    Mutation: drop the ``_refresh_scanned_packaged_metadata`` call.
     """
     import json
 

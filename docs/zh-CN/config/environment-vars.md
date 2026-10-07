@@ -64,6 +64,30 @@ launcher 是前台进程：绝不守护化脱管，属主进程一消失就把�
 
 通用布尔解析通常接受 `1/true/yes/on` 与 `0/false/no/off`；`NEKO_MERGED` 自身只接受 `1/true/yes` 与 `0/false/no`。向量变量也兼容无前缀形式。
 
+## 插件自启动并发
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `NEKO_PLUGIN_AUTOSTART_CONCURRENCY` | `min(8, max(2, (os.cpu_count() or 4) // 2))` | 每批自启动中，没有声明依赖的插件的最大并发数。接受 `1`–`64` 的整数；设为 `1` 时串行自启动，每个插件单独获取操作锁。无依赖插件仍先于依赖型插件启动，不恢复旧的全局拓扑及 adapter 优先级顺序。 |
+
+默认值为 2–8；无法获取逻辑 CPU 数时按 4 个逻辑 CPU 计算，得到并发数 2。
+声明了依赖的插件会等独立插件全部启动完成，再按原有拓扑顺序串行启动。
+每批并发启动完成后释放操作锁，让排队的插件管理请求可以执行，再进入下一批。
+此设置只影响服务启动时的插件自启动，不会为禁用或尚未获批的插件开启自启动，
+也不会改变手动启动、停止时保存的偏好。
+
+请在启动 N.E.K.O 前设置变量，修改后重启运行时。无法解析为整数的值使用默认值；
+成功解析但超出 `1`–`64` 的整数会导致配置校验失败。恢复串行自启动的示例：
+
+```powershell
+$env:NEKO_PLUGIN_AUTOSTART_CONCURRENCY = "1"
+uv run python launcher.py
+```
+
+```bash
+NEKO_PLUGIN_AUTOSTART_CONCURRENCY=1 uv run python launcher.py
+```
+
 ## 仅用于 Docker 初始配置
 
 入口脚本读取 `NEKO_CORE_API_KEY`、`NEKO_CORE_API`、`NEKO_ASSIST_API`，Qwen/OpenAI/GLM/Step/Silicon/Grok/Doubao 的部分 `NEKO_ASSIST_API_KEY_*`，以及 `NEKO_MCP_TOKEN`。`NEKO_FORCE_ENV_UPDATE` 请求重新生成 `/app/config/core_config.json`。

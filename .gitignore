@@ -21,6 +21,16 @@ tests/test_inputs/
 /docker/ssl/
 /docker/logs/
 /docker/N.E.K.O/
+# 已移除的 community-2c2g 部署留下的数据目录（迁回 docker/ 前不要误提交）。
+/docker/community-2c2g/neko-home/
+/docker/community-2c2g/logs/
+# 回退时从 git 历史恢复的旧 compose 文件，只在本机使用。
+/docker/community-2c2g/docker-compose.yaml
+# 本机网关覆盖配置；可移植示例见 docs/zh-CN/deployment/low-spec-server.md。
+# 旧路径保留忽略，直到用户把文件迁出 community-2c2g。
+/docker/community-2c2g/compose.gateway.yaml
+/docker/compose.gateway.yaml
+/docker/compose.local.yaml
 
 # 忽略日志文件
 *.log

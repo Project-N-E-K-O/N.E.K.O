@@ -196,6 +196,19 @@ class BusChangeHub:
                 continue
 
 
+def _start_method_inherits_manager_proxies() -> bool:
+    """Whether children inherit this process's global response-map proxies.
+
+    Spawn and forkserver start from fresh module state, and PluginHost does
+    not pass these proxies as launch arguments. Fork retains the existing
+    shared-map behavior. An unknown context keeps the conservative fallback.
+    """
+    try:
+        return multiprocessing.get_start_method() == "fork"
+    except (RuntimeError, ValueError):
+        return True
+
+
 class GlobalState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -238,6 +251,10 @@ class GlobalState:
         self._plugin_response_event_map: Optional[Any] = None
         self._plugin_response_notify_event: Optional[Any] = None
         self._is_plugin_child_process = False
+        # True 表示响应表/事件表是本进程的普通 dict（没有 Manager）。此时
+        # _get_or_create_response_event 必须造 threading.Event 而不是 mgr.Event()，
+        # 否则它会因为拿不到 manager 而返回 None，把"事件唤醒"退化成纯短轮询。
+        self._response_maps_are_local = False
         self._plugin_comm_lock = threading.Lock()
 
         # Per-plugin downlink senders for routing plugin-to-plugin responses
@@ -672,6 +689,12 @@ class GlobalState:
                     self._plugin_comm_queue = asyncio.Queue(maxsize=MESSAGE_QUEUE_MAX)
         return self._plugin_comm_queue
 
+    def clear_inherited_plugin_references(self) -> None:
+        """Drop parent-only references without acquiring inherited locks after fork."""
+        self.plugin_hosts.clear()
+        self._plugin_downlink_senders.clear()
+        self._plugin_downlink_senders_lock = threading.Lock()
+
     def register_downlink_sender(self, plugin_id: str, sender: Any) -> None:
         """Register a comm_manager's ``send_plugin_response`` coroutine for routing."""
         pid = str(plugin_id).strip()
@@ -694,27 +717,26 @@ class GlobalState:
         with self._plugin_downlink_senders_lock:
             self._plugin_downlink_senders.pop(pid, None)
     
+    def _initialize_response_maps(self) -> None:
+        if self._is_plugin_child_process or not _start_method_inherits_manager_proxies():
+            self._plugin_response_map = {}
+            self._response_maps_are_local = True
+            if self._plugin_response_event_map is None:
+                self._plugin_response_event_map = {}
+        else:
+            if self._plugin_response_map_manager is None:
+                self._plugin_response_map_manager = multiprocessing.Manager()
+            self._plugin_response_map = self._plugin_response_map_manager.dict()
+            if self._plugin_response_event_map is None:
+                self._plugin_response_event_map = self._plugin_response_map_manager.dict()
+
     @property
     def plugin_response_map(self) -> Any:
-        """插件响应映射（跨进程共享字典）"""
+        """Shared response maps under fork, otherwise process-local maps."""
         if self._plugin_response_map is None:
             with self._plugin_comm_lock:
-                if self._plugin_response_map is None and self._is_plugin_child_process:
-                    # Plugin child without inherited proxies (spawn): only the host
-                    # writes this map, so a child-local Manager would never be fed.
-                    # Replies reach the child over ZMQ instead.
-                    self._plugin_response_map = {}
-                    if self._plugin_response_event_map is None:
-                        self._plugin_response_event_map = {}
                 if self._plugin_response_map is None:
-                    # 使用 Manager 创建跨进程共享的字典
-                    if self._plugin_response_map_manager is None:
-                        self._plugin_response_map_manager = multiprocessing.Manager()
-                    self._plugin_response_map = self._plugin_response_map_manager.dict()
-                    # Ensure event map is created on the same Manager early, so forked plugin
-                    # processes inherit the same proxies and can wait on the same Events.
-                    if self._plugin_response_event_map is None:
-                        self._plugin_response_event_map = self._plugin_response_map_manager.dict()
+                    self._initialize_response_maps()
         return self._plugin_response_map
 
     def mark_plugin_child_process(self) -> None:
@@ -756,12 +778,21 @@ class GlobalState:
             return ev
         try:
             mgr = self._plugin_response_map_manager
-            if mgr is None:
+            if mgr is None and not self._response_maps_are_local:
                 _ = self.plugin_response_map
                 mgr = self._plugin_response_map_manager
             if mgr is None:
-                return None
-            ev = mgr.Event()
+                if self._is_plugin_child_process or not self._response_maps_are_local:
+                    # 插件子进程：没人会 set 这个事件（回应走 ZMQ），交给调用方的短轮询
+                    # 后备——这是既有行为，保持不变。
+                    return None
+                # 服务器进程 + 本地表（spawn 平台，没有 Manager）：用 threading.Event。
+                # API 与 mgr.Event() 一致（set / wait / clear），而所有等待都发生在本
+                # 进程的线程池里（调用点注释原文："使用线程事件等待(在线程池中执行)"），
+                # 所以线程事件语义足够；顺带省掉每次 wait/set 到 manager 进程的往返。
+                ev = threading.Event()
+            else:
+                ev = mgr.Event()
             try:
                 event_map = self.plugin_response_event_map
                 try:
@@ -1742,18 +1773,20 @@ class GlobalState:
         with self._plugin_downlink_senders_lock:
             self._plugin_downlink_senders.clear()
         
-        # 清理响应映射和 Manager
-        if self._plugin_response_map_manager is not None:
+        # Both local maps and Manager proxies belong to this server run.
+        with self._plugin_comm_lock:
             try:
-                # Manager 的 shutdown() 方法会关闭所有共享对象
-                self._plugin_response_map_manager.shutdown()
+                if self._plugin_response_map_manager is not None:
+                    self._plugin_response_map_manager.shutdown()
+                    logger.bind(component="server").debug("Plugin response map manager shut down")
+            except Exception as e:
+                logger.bind(component="server").debug(f"Error shutting down plugin response map manager: {e}")
+            finally:
                 self._plugin_response_map = None
                 self._plugin_response_event_map = None
                 self._plugin_response_notify_event = None
                 self._plugin_response_map_manager = None
-                logger.bind(component="server").debug("Plugin response map manager shut down")
-            except Exception as e:
-                logger.bind(component="server").debug(f"Error shutting down plugin response map manager: {e}")
+                self._response_maps_are_local = False
 
     def save_frozen_state_memory(self, plugin_id: str, state_data: bytes) -> None:
         """保存插件的冻结状态到内存"""

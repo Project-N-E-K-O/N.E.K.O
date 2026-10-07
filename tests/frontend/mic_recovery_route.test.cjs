@@ -8,12 +8,169 @@ const source = fs.readFileSync(path.join(__dirname, '../../static/app/app-audio-
 const websocketSource = fs.readFileSync(path.join(__dirname, '../../static/app/app-websocket.js'), 'utf8');
 const stateSource = fs.readFileSync(path.join(__dirname, '../../static/app/app-state.js'), 'utf8');
 
+async function automaticRecoveryFixture(buffering = true) {
+    const env = loadCapture(true);
+    env.installMicrophone();
+    env.loadWebsocket();
+    env.S.voiceSessionEpoch = 12;
+    env.window.setMicMuted(false);
+    await env.window.startMicCapture();
+    const detail = { recovery_id: 1, session_epoch: 12,
+        lease_generation: env.S.voiceInputCurrentLeaseGeneration, route_generation: 7, buffering };
+    env.status('ASR_RECOVERY_STARTED', detail);
+    return { ...env, detail };
+}
+
+test('automatic recovery preserves PCM only with explicit backend buffering and retires unmute timer', async () => {
+    for (const buffering of [true, false]) {
+        const env = await automaticRecoveryFixture(buffering);
+        assert.equal(env.S.asrAutomaticRecovery.state, 'recovering');
+        assert.equal(env.recoveryTimers().length, 0);
+        env.sendFrame();
+        assert.equal(env.frames.length, buffering ? 1 : 0);
+        env.status('ASR_RECOVERY_READY', env.detail);
+        assert.equal(env.S.isMicMuted, false);
+        assert.equal(env.S.isRecording, true);
+        env.sendFrame();
+        assert.equal(env.frames.length, buffering ? 2 : 1);
+    }
+});
+
+test('automatic recovery rejects stale identities, duplicate completion, and old blocked teardown', async () => {
+    const env = await automaticRecoveryFixture();
+    const second = { ...env.detail, recovery_id: 2 };
+    env.status('ASR_RECOVERY_STARTED', second);
+    for (const stale of [{ recovery_id: 1 }, { session_epoch: 11 }, { lease_generation: -1 }, { route_generation: 6 }]) {
+        for (const code of ['ASR_RECOVERY_READY', 'ASR_RECOVERY_FAILED', 'ASR_TURN_INCOMPLETE']) {
+            env.status(code, { ...second, ...stale });
+        }
+        env.status('ASR_LIFECYCLE_STATE', { ...second, ...stale, state: 'blocked' });
+        assert.equal(env.S.asrAutomaticRecovery.state, 'recovering');
+        assert.equal(env.S.isRecording, true);
+    }
+    env.status('ASR_RECOVERY_FAILED', second);
+    env.status('ASR_RECOVERY_READY', second);
+    assert.equal(env.S.asrAutomaticRecovery.state, 'failed');
+    env.sendFrame();
+    assert.equal(env.frames.length, 0);
+    let stopped = 0;
+    env.window.stopMicCapture = () => { stopped += 1; };
+    env.status('ASR_LIFECYCLE_STATE', { ...second, state: 'blocked' });
+    assert.equal(stopped, 1, 'current failed operation still performs fatal teardown');
+});
+
+test('incomplete notice is distinct from restored connectivity and deduplicated', async () => {
+    const env = await automaticRecoveryFixture();
+    const count = env.messages.length;
+    env.status('ASR_TURN_INCOMPLETE', env.detail);
+    env.status('ASR_TURN_INCOMPLETE', env.detail);
+    assert.equal(env.messages.length, count + 1);
+    assert.match(env.messages.at(-1), /previous sentence/);
+    env.status('ASR_RECOVERY_READY', env.detail);
+    assert.equal(env.S.asrAutomaticRecovery.incomplete, true);
+    assert.equal(env.S.asrAutomaticRecovery.state, 'ready');
+    env.status('ASR_LIFECYCLE_STATE', { ...env.detail, state: 'blocked' });
+    assert.equal(env.S.isRecording, true, 'late failure cannot override successful operation');
+});
+
+test('mute, stop and game takeover retire automatic recovery without reacquiring microphone', async () => {
+    for (const operation of ['mute', 'stop', 'game']) {
+        const env = await automaticRecoveryFixture();
+        if (operation === 'mute') env.window.setMicMuted(true);
+        if (operation === 'stop') env.window.stopRecording({ notifyServer: false });
+        if (operation === 'game') {
+            env.S.gameVoiceSttGateActive = true;
+            env.window.appAudioCapture.canUploadOrdinaryMicFrame();
+        }
+        const count = env.messages.length;
+        env.status('ASR_RECOVERY_READY', env.detail);
+        env.status('ASR_RECOVERY_FAILED', env.detail);
+        assert.equal(env.messages.length, count);
+        if (operation === 'mute') assert.equal(env.S.isMicMuted, true);
+        if (operation === 'stop') assert.equal(env.S.isRecording, false);
+        assert.notEqual(env.S.asrAutomaticRecovery?.state, 'ready');
+    }
+});
+
+test('unsigned automatic statuses and old socket messages cannot affect active recording', async () => {
+    const env = await automaticRecoveryFixture();
+    for (const key of ['session_epoch', 'lease_generation', 'recovery_id']) {
+        const unsigned = { ...env.detail };
+        delete unsigned[key];
+        env.status('ASR_RECOVERY_READY', unsigned);
+        assert.equal(env.S.asrAutomaticRecovery.state, 'recovering');
+    }
+    const oldSocket = env.S.socket;
+    env.S.socket = { readyState: 1, send() {} };
+    oldSocket.onmessage({ data: JSON.stringify({ type: 'status', message: JSON.stringify({
+        code: 'ASR_RECOVERY_READY', details: env.detail
+    }) }) });
+    assert.equal(env.S.asrAutomaticRecovery.state, 'recovering');
+});
+
+test('all supported locales contain the incomplete-turn recovery message', () => {
+    for (const locale of ['en', 'ja', 'ko', 'zh-CN', 'zh-TW', 'ru', 'pt', 'es']) {
+        const content = JSON.parse(fs.readFileSync(path.join(__dirname, `../../static/locales/${locale}.json`), 'utf8'));
+        assert.ok(content.microphone.voiceInputTurnIncomplete.length > 10);
+    }
+});
+
+test('current terminal BLOCKED cleans the route when STARTED or FAILED was not delivered', async () => {
+    for (const startedDelivered of [false, true]) {
+        const env = loadCapture(true);
+        env.installMicrophone();
+        env.loadWebsocket();
+        env.S.voiceSessionEpoch = 12;
+        env.window.setMicMuted(false);
+        await env.window.startMicCapture();
+        const detail = { recovery_id: 1, session_epoch: 12,
+            lease_generation: env.S.voiceInputCurrentLeaseGeneration, route_generation: 7, buffering: true };
+        if (startedDelivered) env.status('ASR_RECOVERY_STARTED', detail);
+        env.sendFrame();
+        const sent = env.frames.length;
+        let stopped = 0;
+        env.window.stopMicCapture = () => { stopped += 1; };
+        env.status('ASR_LIFECYCLE_STATE', { ...detail, state: 'blocked' });
+        assert.equal(stopped, 1);
+        assert.equal(env.S.voiceInputRouteBlocked, true);
+        assert.equal(env.S.independentAsrActive, false);
+        assert.equal(env.S.asrAutomaticRecovery.state, 'failed');
+        env.sendFrame();
+        assert.equal(env.frames.length, sent);
+        env.status('ASR_RECOVERY_READY', detail);
+        assert.notEqual(env.S.asrAutomaticRecovery.state, 'ready');
+    }
+});
+
+test('unsigned, old socket, muted and game-owned terminal BLOCKED cannot stop the active route', async () => {
+    for (const scenario of ['unsigned', 'route', 'socket', 'mute', 'stop', 'game']) {
+        const env = await automaticRecoveryFixture();
+        let stopped = 0;
+        env.window.stopMicCapture = () => { stopped += 1; };
+        const detail = { ...env.detail, state: 'blocked' };
+        if (scenario === 'unsigned') delete detail.route_generation;
+        if (scenario === 'route') detail.route_generation += 1;
+        if (scenario === 'mute') env.window.setMicMuted(true);
+        if (scenario === 'stop') env.S.isRecording = false;
+        if (scenario === 'game') env.S.gameVoiceSttGateActive = true;
+        const socket = env.S.socket;
+        if (scenario === 'socket') env.S.socket = { readyState: 1, send() {} };
+        socket.onmessage({ data: JSON.stringify({ type: 'status', message: JSON.stringify({
+            code: 'ASR_LIFECYCLE_STATE', details: detail
+        }) }) });
+        assert.equal(stopped, 0, scenario);
+        assert.notEqual(env.S.voiceInputRouteBlocked, true, scenario);
+    }
+});
+
 function loadCapture(active, enabled = active) {
     const timers = new Map();
     const listeners = new Map();
     const messages = [];
     const controls = [];
     const frames = [];
+    const mediaConstraintCalls = [];
+    const workletSampleRates = [];
     const send = data => typeof data === 'string' ? controls.push(JSON.parse(data)) : frames.push(data);
     let timerId = 0;
     let S = {
@@ -56,11 +213,12 @@ function loadCapture(active, enabled = active) {
     vm.runInNewContext(stateSource, context);
     Object.assign(window.appState, S);
     S = window.appState;
-    vm.runInNewContext(source, context);
+    vm.runInNewContext(source, context, { filename: path.resolve(__dirname, '../../static/app/app-audio-capture.js') });
     timers.clear(); // Module startup UI timers are outside this test's scope.
     return {
-        window, S, messages, controls, frames, timers,
-        installMicrophone() {
+        window, S, messages, controls, frames, timers, mediaConstraintCalls, workletSampleRates,
+        installMicrophone({ mobile = false, beforeMediaRequest } = {}) {
+            window.appUtils.isMobile = () => mobile;
             const node = extra => Object.assign({ connect() {}, disconnect() {} }, extra);
             class FakeAudioContext {
                 constructor() {
@@ -69,7 +227,7 @@ function loadCapture(active, enabled = active) {
                 }
                 createMediaStreamSource() { return node(); }
                 createGain() { return node({ gain: { value: 1 } }); }
-                createAnalyser() { return node(); }
+                createAnalyser() { return node({ getFloatTimeDomainData(data) { data.fill(0); } }); }
                 async close() { this.state = 'closed'; }
                 async resume() { this.state = 'running'; }
             }
@@ -81,13 +239,20 @@ function loadCapture(active, enabled = active) {
             context.AudioContext = window.AudioContext = FakeAudioContext;
             context.MediaStream = FakeMediaStream;
             context.AudioWorkletNode = class {
-                constructor() { this.port = { onmessage: null, postMessage() {} }; }
+                constructor(_, __, options) {
+                    workletSampleRates.push(options.processorOptions.targetSampleRate);
+                    this.port = { onmessage: null, postMessage() {} };
+                }
                 connect() {}
                 disconnect() {}
             };
             context.fetch = async () => ({ ok: true, json: async () => ({}) });
             context.navigator.mediaDevices = {
-                getUserMedia: async () => new FakeMediaStream(),
+                getUserMedia: async constraints => {
+                    mediaConstraintCalls.push(constraints);
+                    if (beforeMediaRequest) await beforeMediaRequest(constraints, mediaConstraintCalls.length);
+                    return new FakeMediaStream();
+                },
                 enumerateDevices: async () => [],
             };
         },
@@ -105,6 +270,58 @@ function loadCapture(active, enabled = active) {
         },
     };
 }
+
+for (const mobile of [false, true]) {
+    test(`formal capture uses one gain policy and wire rate (mobile=${mobile})`, async () => {
+        const env = loadCapture(false);
+        env.S.isRecording = false;
+        env.window.appUtils.dbToLinear = () => 1;
+        env.installMicrophone({ mobile });
+        env.window.setMicMuted(false);
+        assert.equal(await env.window.startMicCapture(), true);
+        assert.equal(env.mediaConstraintCalls[0].audio.autoGainControl, mobile);
+        assert.deepEqual(env.workletSampleRates, [mobile ? 16000 : 48000]);
+        env.sendFrame();
+        assert.equal(new DataView(env.frames.at(-1)).getUint32(4, true), mobile ? 16000 : 48000);
+    });
+}
+
+test('formal device fallback keeps the gain and sample rate chosen before permission await', async () => {
+    const env = loadCapture(false);
+    env.S.isRecording = false;
+    env.S.selectedMicrophoneId = 'missing-device';
+    env.window.appUtils.dbToLinear = () => 1;
+    env.installMicrophone({ mobile: true, beforeMediaRequest(_, attempt) {
+        env.window.appUtils.isMobile = () => false;
+        if (attempt === 1) throw Object.assign(new Error('missing device'), { name: 'OverconstrainedError' });
+    } });
+    env.window.setMicMuted(false);
+    assert.equal(await env.window.startMicCapture(), true);
+    assert.equal(env.mediaConstraintCalls.length, 2);
+    assert.equal(env.mediaConstraintCalls[0].audio.deviceId.exact, 'missing-device');
+    assert.equal(env.mediaConstraintCalls[1].audio.deviceId, undefined);
+    assert.ok(env.mediaConstraintCalls.every(call => call.audio.autoGainControl === true));
+    assert.deepEqual(env.workletSampleRates, [16000]);
+    env.sendFrame();
+    assert.equal(new DataView(env.frames.at(-1)).getUint32(4, true), 16000);
+});
+
+test('settings device fallback preserves the formal mobile gain policy across permission await', async () => {
+    const env = loadCapture(false);
+    env.S.isRecording = false;
+    env.S.selectedMicrophoneId = 'missing-device';
+    env.installMicrophone({ mobile: true, beforeMediaRequest(_, attempt) {
+        env.window.appUtils.isMobile = () => false;
+        if (attempt === 1) throw Object.assign(new Error('missing device'), { name: 'NotFoundError' });
+    } });
+    const result = await env.window.appAudioCapture.startSettingsMicVolumeTest();
+    assert.equal(result.ok, true);
+    assert.equal(result.fellBack, true);
+    assert.equal(env.mediaConstraintCalls.length, 2);
+    assert.ok(env.mediaConstraintCalls.every(call => call.audio.autoGainControl === true));
+    assert.equal(env.workletSampleRates.length, 0);
+    env.window.appAudioCapture.stopSettingsMicVolumeTest();
+});
 
 test('capture owner rejection unwinds without an AudioWorklet failure notice', async () => {
     const env = loadCapture(false);

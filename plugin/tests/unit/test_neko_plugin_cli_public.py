@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import inspect
+import json
 import shutil
 import zipfile
 
@@ -17,6 +18,7 @@ from plugin.neko_plugin_cli.public import (
 )
 from plugin.neko_plugin_cli.public.build import PluginBuilder
 from plugin.neko_plugin_cli.public.build_rules import BuildRuleSet, should_skip_path
+from plugin.server.infrastructure import packaged_metadata
 from plugin.neko_plugin_cli.public.pack_rules import (
     PackRuleSet,
     should_skip_path as should_skip_pack_path,
@@ -115,6 +117,54 @@ def _make_importable_plugin_dir(tmp_path: Path, plugin_id: str = "probe_plugin")
         encoding="utf-8",
     )
     return plugin_dir
+
+
+@pytest.mark.parametrize("probe_succeeds", [False, True])
+def test_root_local_metadata_named_plugin_data_survives_packaging(tmp_path, monkeypatch, probe_succeeds):
+    from plugin.neko_plugin_cli.core import metadata_probe
+
+    source = _make_importable_plugin_dir(tmp_path / "source")
+    summary = packaged_metadata.source_stat_summary(source)
+    sidecar = source / "plugin.meta.local.json"
+    sidecar.write_text(json.dumps({
+        "schema_version": packaged_metadata.PACKAGED_METADATA_SCHEMA_VERSION,
+        "sdk_version": packaged_metadata.SDK_VERSION,
+        "source_sha256": packaged_metadata.compute_source_sha256(source),
+        "source_files": summary.names,
+        "source_bytes": summary.total_bytes,
+        "build_env": packaged_metadata.build_environment(),
+        "entries_config_sha256": "",
+        "entries": [{"id": "stale"}],
+        "handlers": {"probe_plugin.stale": {"event_type": "plugin_entry", "id": "stale"}},
+        "entry_methods": {"stale": "stale"},
+    }), encoding="utf-8")
+    source_bytes = sidecar.read_bytes()
+    if not probe_succeeds:
+        def failed_probe(*_args, **_kwargs):
+            raise metadata_probe.MetadataProbeError("optional dependency missing")
+
+        monkeypatch.setattr(metadata_probe, "derive_plugin_metadata", failed_probe)
+    result = build_plugin(source, out_file=tmp_path / "built.neko-plugin")
+    extracted = tmp_path / "extracted"
+    with zipfile.ZipFile(result.package_path) as archive:
+        member = "payload/plugins/probe_plugin/" + sidecar.name
+        assert archive.read(member) == source_bytes
+        archive.extractall(extracted)
+    loaded = packaged_metadata.read_packaged_metadata(extracted / "payload/plugins/probe_plugin")
+    if probe_succeeds:
+        assert loaded is not None
+        assert "probe_plugin.hello" in loaded.handlers
+        assert "probe_plugin.stale" not in loaded.handlers
+    else:
+        assert loaded is None
+    assert sidecar.read_bytes() == source_bytes
+
+
+def test_local_metadata_named_plugin_data_is_preserved_at_every_depth():
+    name = "plugin.meta.local.json"
+    rules = BuildRuleSet(include=["*"])
+    assert not should_skip_path(Path(name), is_dir=False, rules=rules)
+    assert not should_skip_path(Path("data") / name, is_dir=False, rules=rules)
 
 
 def _assert_probed_without_bytecode(package_path: Path, plugin_ids: list[str]) -> None:

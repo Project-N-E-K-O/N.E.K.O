@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from main_logic.voice_turn.admission import SpeechEvidence
+
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -177,6 +179,7 @@ class TranscriptEnvelope:
     turn_token: VoiceTurnToken
     provider: str
     text: str
+    evidence: SpeechEvidence | None = None
 
     @property
     def final_key(self) -> FinalKey:
@@ -229,6 +232,7 @@ class TranscriptDispatcher:
         if key not in self._reservations:
             raise RuntimeError("ASR_TRANSCRIPT_SLOT_NOT_RESERVED")
         self._pending_turns[key] = turn_token
+        self._idle.clear()
 
     def holds_accepted(self, key: FinalKey) -> bool:
         return key in self._reservations and key in self._pending_turns
@@ -289,11 +293,24 @@ class TranscriptDispatcher:
     async def wait_idle(self) -> None:
         """Await dispatch quiescence: no queued and no active envelope.
 
-        This is not "no turn in flight". Outstanding reservations are
-        excluded on purpose; see ``_set_idle_if_empty``.
+        Accepted reservations are pending delivery even while their owner
+        awaits lease release. Unaccepted reservations are excluded; see
+        ``_set_idle_if_empty``.
         """
 
         await self._idle.wait()
+
+    def when_idle(self, callback: Callable[[], None]) -> None:
+        """Run one owned terminal cleanup after accepted delivery settles.
+
+        This creates no extra waiter or delivery deadline. User cancellation
+        still invalidates this dispatcher normally; the callback must fence
+        its own runtime operation before doing anything.
+        """
+        if self._idle.is_set():
+            callback()
+        else:
+            self._idle_callback = callback
 
     def _ensure_worker(self) -> None:
         if self._worker is not None and not self._worker.done():
@@ -336,10 +353,14 @@ class TranscriptDispatcher:
             return
 
     def _set_idle_if_empty(self) -> None:
-        # Reservations are deliberately NOT part of the idle predicate. A slot
+        # Unaccepted reservations are deliberately NOT part of the idle predicate. A slot
         # is reserved at turn preparation and stays held for the whole live
         # turn, and the next turn reserves its slot while the previous final
         # is still draining. Folding reservations in here would make
         # wait_idle() unsettleable for any back-to-back session.
-        if self._queue.empty() and self._active is None:
+        if self._queue.empty() and self._active is None and not self._pending_turns:
             self._idle.set()
+            callback = getattr(self, "_idle_callback", None)
+            self._idle_callback = None
+            if callback is not None:
+                callback()

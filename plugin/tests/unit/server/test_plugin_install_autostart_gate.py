@@ -405,7 +405,10 @@ def test_metadata_is_obtained_before_the_host_process_starts(tmp_path: Path) -> 
 
     from plugin.server.application.plugins import lifecycle_service
 
-    source = inspect.getsource(lifecycle_service.PluginLifecycleService.start_plugin)
+    # 函数体现在在 _start_plugin_under_lock 里：start_plugin 只剩一层加锁的薄包装，
+    # 好让每一波自启动在持锁期间并发（见 start_plugins_batch）。
+    # 这里钉的是元数据与 host 启动的相对顺序，顺序本身没变，只是搬了个地方。
+    source = inspect.getsource(lifecycle_service.PluginLifecycleService._start_plugin_under_lock)
     metadata_at = source.find("_read_packaged_isolated_metadata")
     host_start_at = source.find("_start_host_with_timeout(")
     clamp_at = source.find("startup_timeout_value = _clamp_step_timeout(")
@@ -1479,17 +1482,24 @@ def test_the_gate_move_runs_before_registration() -> None:
     from plugin.server.application.plugins import registry_service
 
     source = inspect.getsource(registry_service._apply_discovery_record_sync)
-    resolve_at = source.find("runtime_plugin_id = target_plugin_id if source_replacement")
+    resolve_at = source.find("_resolve_plugin_id_conflict(")
     move_at = source.find("_move_autostart_gate_to_runtime_id(")
     meta_at = source.find("plugin_meta = _build_plugin_meta(")
     assert -1 not in (resolve_at, move_at, meta_at), "注册路径上没有搬迁批准位"
     assert resolve_at < move_at < meta_at, (
         "搬迁必须在运行时 id 定下来之后、登记进注册表之前"
     )
-    assert "declared_id_is_taken=_declared_id_taken_by_another_plugin(" in source, (
-        "「声明 id 是不是别人的」用的不是实时注册表——刷新开始时的快照看不见"
-        "同一轮里先注册的那个同 id 插件，搬迁会把它的待批准记录抢走"
-    )
+    import ast
+    tree = ast.parse(source)
+    move = next(node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "_move_autostart_gate_to_runtime_id")
+    assert any(keyword.arg == "declared_id_is_taken"
+               and isinstance(keyword.value, ast.Call)
+               and isinstance(keyword.value.func, ast.Name)
+               and keyword.value.func.id == "_declared_id_taken_by_another_plugin"
+               for keyword in move.keywords)
+
 
 
 def test_packaging_parses_the_manifest_without_local_overlays(
@@ -1628,7 +1638,8 @@ def test_the_scan_budget_is_computed_after_the_packaged_read() -> None:
         PluginLifecycleService,
     )
 
-    source = inspect.getsource(PluginLifecycleService.start_plugin)
+    # 同上一个测试：函数体搬到了 _start_plugin_under_lock，钳位顺序本身没变。
+    source = inspect.getsource(PluginLifecycleService._start_plugin_under_lock)
     read_at = source.find("_read_packaged_isolated_metadata,")
     clamp_at = source.find("scan_timeout = _clamp_step_timeout(")
     use_at = source.find("timeout=scan_timeout,")

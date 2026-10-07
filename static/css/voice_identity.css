@@ -487,6 +487,77 @@ input:focus-visible,
     font-size: clamp(1.45rem, 3vw, 2rem);
 }
 
+.verification-result {
+    display: grid;
+    width: min(560px, 100%);
+    margin: 22px auto 0;
+    justify-items: center;
+    padding: 24px 24px 22px;
+    border: 1px solid rgba(25, 140, 106, 0.32);
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--voice-success) 8%, var(--voice-panel));
+    box-shadow: 0 12px 30px rgba(25, 140, 106, 0.1);
+    text-align: center;
+    gap: 8px;
+}
+
+.verification-success-icon {
+    display: inline-flex;
+    width: 42px;
+    height: 42px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    color: #fff;
+    background: var(--voice-success);
+    box-shadow: 0 0 0 7px color-mix(in srgb, var(--voice-success) 16%, transparent);
+    font-size: 1.5rem;
+    font-weight: 900;
+    line-height: 1;
+}
+
+.verification-result h2 {
+    margin: 8px 0 0;
+    color: var(--voice-ink);
+    font-size: clamp(1.3rem, 2.8vw, 1.75rem);
+}
+
+.verification-score-label {
+    margin: 8px 0 0;
+    color: var(--voice-muted);
+    font-size: 0.9rem;
+    font-weight: 700;
+}
+
+.verification-score {
+    display: block;
+    color: var(--voice-success);
+    font-size: clamp(2.5rem, 8vw, 4.25rem);
+    font-variant-numeric: tabular-nums;
+    font-weight: 900;
+    letter-spacing: -0.04em;
+    line-height: 1;
+}
+
+.verification-score-help {
+    max-width: 480px;
+    margin: 2px 0 0;
+    color: var(--voice-muted);
+    font-size: 0.86rem;
+    line-height: 1.55;
+}
+
+.verification-result-status {
+    width: 100%;
+    margin: 8px 0 0;
+    padding-top: 12px;
+    border-top: 1px solid color-mix(in srgb, var(--voice-success) 24%, transparent);
+    color: var(--voice-success);
+    font-size: 0.95rem;
+    font-weight: 800;
+    line-height: 1.5;
+}
+
 
 .segment-progress {
     position: relative;
@@ -863,6 +934,10 @@ button:disabled {
         padding: 30px 20px 26px;
     }
 
+    .verification-result {
+        padding: 20px 18px 18px;
+    }
+
     .step-dot {
         width: 29px;
         height: 29px;
@@ -911,6 +986,10 @@ button:disabled {
     .voice-prompt {
         margin-top: 18px;
         padding: 14px 15px;
+    }
+
+    .verification-score {
+        font-size: clamp(2.35rem, 18vw, 3.5rem);
     }
 
     .enrollment-actions,

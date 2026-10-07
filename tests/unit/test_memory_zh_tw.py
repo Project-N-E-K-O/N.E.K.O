@@ -4307,6 +4307,7 @@ async def test_plugin_memory_query_omits_process_locale(monkeypatch):
     WeChat bridge assertion directly above.
     """
     from plugin.server.application.messages import memory_query_service
+    from plugin.utils.http_imports import load_httpx
 
     calls = []
 
@@ -4331,7 +4332,7 @@ async def test_plugin_memory_query_omits_process_locale(monkeypatch):
             return Response()
 
     monkeypatch.setattr(
-        memory_query_service.httpx,
+        load_httpx(),
         "AsyncClient",
         lambda **_kwargs: Client(),
     )

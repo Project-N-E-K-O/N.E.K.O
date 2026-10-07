@@ -68,11 +68,28 @@ services:
       - NEKO_REQUIRE_HTTPS=${NEKO_REQUIRE_HTTPS:-}
       - NEKO_COMMUNITY_WEB_CLIENT_ID=${NEKO_COMMUNITY_WEB_CLIENT_ID:-}
       - NEKO_COMMUNITY_WEB_REDIRECT_URI=${NEKO_COMMUNITY_WEB_REDIRECT_URI:-}
+      # 自有域名：留空时保持原有行为（SSL_DOMAIN 用入口脚本默认值 project-neko.online，
+      # NEKO_TRUSTED_HOSTS 回退到 SSL_DOMAIN，NEKO_TRUSTED_ORIGINS 为空）
+      - SSL_DOMAIN=${SSL_DOMAIN:-}
+      - NEKO_TRUSTED_HOSTS=${NEKO_TRUSTED_HOSTS:-}
+      - NEKO_TRUSTED_ORIGINS=${NEKO_TRUSTED_ORIGINS:-}
 
       # 强制所有运行时数据留在上述持久化挂载内，避免存储位置配置指向容器临时层
       - XDG_DATA_HOME=/home/neko/.local/share
       - NEKO_STORAGE_SELECTED_ROOT=/home/neko/.local/share/N.E.K.O
       - NEKO_STORAGE_ANCHOR_ROOT=/home/neko/.local/share/N.E.K.O
+
+    # 限制 Docker 容器日志（docker logs）体积，避免长期运行撑满磁盘；
+    # 应用文件日志在 neko-home 内，由应用自行轮转，不受此限制
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # 可选宿主看门狗（docker/watchdog/）只处理带此标签的容器；未安装看门狗时无作用
+    labels:
+      org.neko.watchdog: enabled
 
     # 网络配置
     networks:

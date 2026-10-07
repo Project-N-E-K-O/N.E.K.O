@@ -48,6 +48,28 @@ function harness({ checkGate, captureGate, accepted = true, resourceReady = true
     controller = root.createVoiceIdentityReadiness(hooks);
     return { controller, calls, elements, events, mediaEvents, hooks, root, storage, stopped: () => stopped };
 }
+test('shared microphone capture disables AGC for selected and fallback devices', async () => {
+    const calls = [];
+    const selected = trackStream();
+    await input.open({ async getUserMedia(config) { calls.push(config); return selected; } }, 'selected-device', () => true);
+    const fallback = trackStream();
+    await input.open({ async getUserMedia(config) {
+        calls.push(config);
+        if (config.audio.deviceId) {
+            const error = new Error('selected device unavailable');
+            error.name = 'OverconstrainedError';
+            throw error;
+        }
+        return fallback;
+    } }, 'missing-device', () => true);
+    assert.equal(calls.length, 3);
+    assert.equal(calls[0].audio.deviceId.exact, 'selected-device');
+    assert.equal(calls[1].audio.deviceId.exact, 'missing-device');
+    assert.equal(calls[2].audio.deviceId, undefined);
+    for (const call of calls) assert.equal(call.audio.autoGainControl, false);
+    input.stop(selected);
+    input.stop(fallback);
+});
 test('opening a selected unavailable device reports the real fallback device', async () => {
     const stream = trackStream(); const constraints = [];
     const result = await input.open({ async getUserMedia(config) { constraints.push(config); if (constraints.length === 1) { const e = new Error(); e.name = 'OverconstrainedError'; throw e; } return stream; } }, 'foreign-id', () => true);

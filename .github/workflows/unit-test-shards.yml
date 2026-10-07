@@ -174,3 +174,5 @@ jobs:
           Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
           node "$env:RUNNER_TEMP/voice-readiness-electron/node_modules/electron/cli.js" tests/frontend/voice_identity_electron.cjs
           if ($LASTEXITCODE -ne 0) { throw "Voice readiness Electron test failed ($LASTEXITCODE)." }
+          node "$env:RUNNER_TEMP/voice-readiness-electron/node_modules/electron/cli.js" tests/frontend/mic_capture_electron.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Microphone capture Electron test failed ($LASTEXITCODE)." }

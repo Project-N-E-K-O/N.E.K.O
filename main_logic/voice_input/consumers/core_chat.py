@@ -35,7 +35,7 @@ class CoreChatVoiceInputConsumer:
     on_partial_event: Callable[[VoicePartialEvent], Awaitable[None]]
     on_final_event: Callable[
         [VoiceTranscriptEvent, CoreChatTurnContext],
-        Awaitable[None],
+        Awaitable[bool | None],
     ]
     on_cancelled_event: Callable[
         [CoreChatTurnContext, str],
@@ -81,11 +81,13 @@ class CoreChatVoiceInputConsumer:
             return
         await self.on_partial_event(event)
 
-    async def on_final(self, event: VoiceTranscriptEvent) -> None:
+    async def on_final(self, event: VoiceTranscriptEvent) -> bool:
         context = self._prepared.pop(event.turn_token, None)
         if context is None:
-            return
-        await self.on_final_event(event, context)
+            return False
+        # Core has early-return paths for echo suppression, route takeover and
+        # lost prepare ownership. Only explicit submission success is useful.
+        return await self.on_final_event(event, context) is True
 
     async def on_cancelled(self, token: VoiceTurnToken, reason: str) -> None:
         context = self._prepared.pop(token, None)

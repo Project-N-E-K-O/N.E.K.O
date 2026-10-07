@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from plugin.core.state import state
-from plugin.neko_plugin_cli.core.build_rules import is_vendor_sync_path
+from plugin.utils.source_paths import is_vendor_sync_path
 from plugin.server.application.plugins import development as store
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
