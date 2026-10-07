@@ -1974,8 +1974,11 @@ Object.assign(window.Jukebox, {
       return true;
     } catch (error) {
       console.error('[Jukebox] FBX 播放失败:', error);
-      // 没接上新动画就结账，否则模型会僵在被停掉的那一帧。
-      if (Jukebox.State.idleRestorePending) {
+      // 只有本次请求仍然是最新世代时才能结账。若它已被新请求取代，那份欠账
+      // 属于接管者：这里贸然 restore 既会抢走新请求的姿势，又会把它要用的
+      // idleRestorePending 清掉，让新请求失败后无人恢复。
+      if (Jukebox.isPlaybackRequestCurrent(requestId)
+          && Jukebox.State.idleRestorePending) {
         try {
           await Jukebox.restoreIdleAnimation();
         } catch (restoreError) {
@@ -2007,13 +2010,16 @@ Object.assign(window.Jukebox, {
   },
 
   // 恢复保存的 FBX 待机动画。待机动画缺失或模型管理器不在时静默跳过。
-  restoreFbxIdleAnimation: function() {
+  // requestId 传入时按本仓库统一的世代判据作废过期恢复：加载期间若有新请求接管，
+  // 它已经决定后续姿势，旧恢复不能再把待机动作抢回来。
+  restoreFbxIdleAnimation: function(requestId) {
     var manager = window.fbxManager;
     var savedUrl = Jukebox.State.savedFbxIdleAnimationUrl;
     if (!manager || !savedUrl || typeof manager.loadAnimation !== 'function') return false;
     var pending = manager.loadAnimation(savedUrl);
     var start = function() {
-      if (typeof manager.playAnimation === 'function') manager.playAnimation();
+      if (Jukebox.isPlaybackRequestCurrent(requestId) &&
+          typeof manager.playAnimation === 'function') manager.playAnimation();
     };
     if (pending && typeof pending.then === 'function') {
       return pending.then(function() {
