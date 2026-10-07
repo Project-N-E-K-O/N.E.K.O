@@ -154,7 +154,10 @@ class CustomStaticFiles(StaticFiles):
         response = await super().get_response(path, scope)
         if path.endswith(".js"):
             response.headers["Content-Type"] = "application/javascript"
-        if _has_generated_asset_version(scope.get("query_string", b"")):
+        if path.replace("\\", "/").startswith("game/") and path.endswith(".mjs"):
+            # Relative module imports keep stable URLs, so revalidate the graph.
+            response.headers["Cache-Control"] = "no-cache"
+        elif _has_generated_asset_version(scope.get("query_string", b"")):
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 
@@ -242,6 +245,10 @@ if _IS_MAIN_PROCESS:
         get_avatar_tool_store(_config_manager).initialize()
     except AvatarToolStoreError as exc:
         logger.warning("初始化本地 Avatar Tool 存储失败: %s", exc)
+    except Exception:
+        # 本地道具只是可选功能：意外异常不能拖垮整个服务启动。存储根已留在
+        # 待恢复状态，首次存储操作会重试恢复。
+        logger.exception("初始化本地 Avatar Tool 存储时发生意外错误")
     _config_manager.ensure_chara_directory()
 
     # CFA (反勒索防护) 感知挂载：
@@ -369,7 +376,9 @@ from main_routers.mmd_router import router as mmd_router  # noqa
 from main_routers.music_router import router as music_router  # noqa
 from main_routers.pages_router import router as pages_router  # noqa
 from main_routers.pngtuber_router import router as pngtuber_router  # noqa
+from main_routers.numeric_theater_router import router as numeric_theater_router  # noqa
 from main_routers.storage_location_router import router as storage_location_router  # noqa
+from main_routers.plugin_card_router import router as plugin_card_router  # noqa
 from main_routers.plugin_media_router import router as plugin_media_router  # noqa
 from main_routers.system_router import router as system_router  # noqa
 from main_routers.tool_router import router as tool_router  # noqa
@@ -380,6 +389,8 @@ from main_routers.websocket_router import router as websocket_router  # noqa
 from main_routers.workshop_router import router as workshop_router  # noqa
 from main_routers.cookies_login_router import router as cookies_login_router  # noqa
 from main_routers.game_router import router as game_router  # noqa
+from main_routers.watch_together_router import router as watch_together_router
+from main_routers.game_router.drawing_guess import router as drawing_guess_router  # noqa
 from main_routers.card_drop_router import (  # noqa
     _facts_cors_headers as _card_drop_cors_headers,
     _local_mutation_origin_allowed as _card_drop_mutation_origin_allowed,
@@ -389,6 +400,8 @@ from main_routers.community_oauth import (  # noqa
     callback_router as community_oauth_callback_router,
     router as community_oauth_router,
 )
+from main_routers.community_remote_proxy import router as community_remote_proxy_router
+app.include_router(community_remote_proxy_router)
 from main_routers.debug_router import (
     router as debug_router,
     start_watchdog as _start_debug_health_watchdog,
@@ -431,18 +444,63 @@ def _active_character_cors_headers(request: Request) -> dict[str, str] | None:
 
 @app.post("/api/card-drop/active-character")
 async def set_card_drop_active_character(request: Request, payload: dict):
-    """Apply supplied fields, dropping avatar payloads that belong to a prior name."""
+    """Apply fields and invalidate images when character/model identity changes."""
     if not _card_drop_mutation_origin_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
     if not isinstance(payload, dict):
         return {"ok": True}
+    revision_alias = next(
+        (alias for alias in ("modelRevision", "model_revision") if alias in payload),
+        None,
+    )
+    if revision_alias is not None:
+        try:
+            incoming_revision = max(0, int(payload.get(revision_alias) or 0))
+        except (TypeError, ValueError):
+            incoming_revision = 0
+        try:
+            current_revision = max(
+                0, int(_card_drop_active_character.get("modelRevision") or 0)
+            )
+        except (TypeError, ValueError):
+            current_revision = 0
+        if incoming_revision < current_revision:
+            return {"ok": False, "stale": True}
+        _card_drop_active_character["modelRevision"] = incoming_revision
+    name_changed = False
     if "name" in payload:
         next_name = str(payload.get("name") or "")
-        if next_name != _card_drop_active_character.get("name", ""):
-            for avatar_field in ("dataUrl", "characterReferenceDataUrl"):
-                if avatar_field not in payload:
-                    _card_drop_active_character.pop(avatar_field, None)
+        name_changed = next_name != _card_drop_active_character.get("name", "")
         _card_drop_active_character["name"] = next_name
+
+    identity_changed = name_changed
+    model_type_supplied = "modelType" in payload or "model_type" in payload
+    model_key_supplied = "modelKey" in payload or "model_key" in payload
+    for stored_field, aliases in (
+        ("modelType", ("modelType", "model_type")),
+        ("modelKey", ("modelKey", "model_key")),
+    ):
+        supplied_alias = next((alias for alias in aliases if alias in payload), None)
+        if supplied_alias is None:
+            continue
+        next_value = str(payload.get(supplied_alias) or "")
+        if next_value != _card_drop_active_character.get(stored_field, ""):
+            identity_changed = True
+        _card_drop_active_character[stored_field] = next_value
+
+    if name_changed:
+        if not model_type_supplied:
+            _card_drop_active_character.pop("modelType", None)
+        if not model_key_supplied:
+            _card_drop_active_character.pop("modelKey", None)
+    elif model_type_supplied and identity_changed and not model_key_supplied:
+        # A type-only transition must not leave the prior model's key attached.
+        _card_drop_active_character.pop("modelKey", None)
+
+    if identity_changed:
+        for avatar_field in ("dataUrl", "characterReferenceDataUrl"):
+            if avatar_field not in payload:
+                _card_drop_active_character.pop(avatar_field, None)
     if "dataUrl" in payload:
         _card_drop_active_character["dataUrl"] = str(payload.get("dataUrl") or "")
     if "characterReferenceDataUrl" in payload:
@@ -481,6 +539,9 @@ async def get_card_drop_active_character(
     payload: dict[str, str] = {"name": name}
     if master_name:
         payload["master_name"] = master_name
+    if not used_fallback:
+        payload["modelType"] = _card_drop_active_character.get("modelType", "")
+        payload["modelKey"] = _card_drop_active_character.get("modelKey", "")
     if include_avatar and not used_fallback:
         payload["dataUrl"] = _card_drop_active_character.get("dataUrl", "")
         payload["characterReferenceDataUrl"] = _card_drop_active_character.get(
@@ -626,6 +687,32 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
         for key, value in request.headers.items()
         if key.lower() not in hop_by_hop_request
     }
+    # Browser cookies are signed for the public host, not this private HTTP
+    # hop. Replace any caller-supplied proof after the main entry guard passed;
+    # retain Market's independent Authorization credential unchanged.
+    from utils.instance_access import instance_key, market_internal_proof, remote_instance_identity, request_public_origin
+    from utils.deployment import has_forwarding_metadata
+    from filelock import Timeout as FileLockTimeout
+
+    headers.pop("x-neko-market-internal", None)
+    headers.pop("x-neko-market-public-origin", None)
+    body = await request.body()
+    if request.scope.get("neko.instance_identity"):
+        # This is a new authenticated service-to-service hop. The plugin's
+        # proxy middleware must observe its real loopback caller, not rewrite
+        # it using browser-supplied metadata from the preceding public hop.
+        headers = {name: value for name, value in headers.items()
+                   if not has_forwarding_metadata({name: value})}
+        public_origin = request_public_origin(request)
+        try:
+            signing_key = await asyncio.to_thread(instance_key)
+        except (OSError, ValueError, FileLockTimeout):
+            return JSONResponse(status_code=503, content={"detail": "instance_access_unavailable"})
+        if remote_instance_identity(request, key=signing_key) != request.scope["neko.instance_identity"]:
+            return JSONResponse(status_code=401, content={"detail": "instance_authorization_required"})
+        headers["x-neko-market-public-origin"] = public_origin
+        headers["x-neko-market-internal"] = market_internal_proof(
+            signing_key, request.method, "/market" + ("/" + path if path else ""), public_origin)
 
     try:
         async with httpx.AsyncClient(
@@ -634,7 +721,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
             upstream = await client.request(
                 request.method,
                 target,
-                content=await request.body(),
+                content=body,
                 headers=headers,
             )
     except httpx.HTTPError as exc:
@@ -676,6 +763,7 @@ app.include_router(workshop_router)
 app.include_router(memory_router)
 app.include_router(cloudsave_router)
 app.include_router(storage_location_router)
+app.include_router(plugin_card_router)
 app.include_router(plugin_media_router)
 # 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载
 app.include_router(websocket_router)
@@ -689,8 +777,11 @@ app.include_router(galgame_router)
 app.include_router(widget_mode_router)
 app.include_router(icebreaker_router)
 app.include_router(game_router)
+app.include_router(watch_together_router)
+app.include_router(drawing_guess_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
+app.include_router(numeric_theater_router)
 app.include_router(card_drop_router)  # Must precede the pages fallback router.
 app.include_router(community_oauth_router)
 app.include_router(community_oauth_callback_router)  # Exact /oauth/callback before pages.

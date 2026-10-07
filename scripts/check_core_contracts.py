@@ -96,8 +96,8 @@ ASR_LAYERING
 
 VOICE_INPUT_LAYERING
     The controlled transcript Registry and its consumers may depend only on
-    their own package, provider-neutral voice-turn contracts, and the narrow
-    game-route facade. They cannot import Core, ASR/provider code, PCM
+    their own package, provider-neutral voice-turn contracts, the narrow
+    game-route facade and the external-route registry. They cannot import Core, ASR/provider code, PCM
     processing, routers, or arbitrary utility modules. ASR runtime code emits
     neutral callbacks and cannot import the Core-owned Registry in reverse.
 
@@ -141,8 +141,13 @@ FACADE_MODULE_ALIAS = "_core_facade"
 OWNER_SUBMODULES = {
     "_shared",
     "callback_render",
+    "game_speech_audio_cache",
     "multimodal_turn",
     "notices",
+    "session_records",
+    "tts_records",
+    # Producer control is owned by the ASR bridge, outside the mixin MRO.
+    "voice_readiness",
 }
 MIXIN_SUPPORT_CLASSES = {
     "asr_runtime": {
@@ -151,6 +156,22 @@ MIXIN_SUPPORT_CLASSES = {
         "_HotSwapAudioFrame",
         "_HotSwapAudioBuffer",
         "_VoiceInputPipelineFailure",
+        # One-use transport handoff metadata owned by the microphone bridge.
+        "_VoiceActivationHandoff",
+    },
+    "takeover": {
+        # Ownership tokens handed out by acquire_takeover / hold_callbacks and
+        # the error a different owner gets; public API of the takeover mixin.
+        "TakeoverToken",
+        "HoldToken",
+        "TakeoverOwned",
+    },
+    "tts_runtime": {
+        # Private control-flow signal for the game-speech preload batch. It has
+        # to be a distinct type from asyncio.CancelledError so that absorbing a
+        # supersede/teardown does not also swallow a real task cancellation, and
+        # it lives next to its only raiser and catcher.
+        "_GameSpeechPreloadCancelled",
     },
 }
 PATCH_CALL_NAMES = {"setattr", "patch", "delattr"}
@@ -2640,6 +2661,7 @@ def run(root: Path) -> list[Violation]:
             "main_logic.voice_input",
             "main_logic.voice_turn.contracts",
             "utils.game_route_state",
+            "utils.external_route_registry",
         )
         # Resolve first-party roots from the repository instead of maintaining
         # a narrow allowlist. Any importable sibling package/module (plugin,
@@ -2685,7 +2707,8 @@ def run(root: Path) -> list[Violation]:
                         node.col_offset,
                         "VOICE_INPUT_LAYERING",
                         "voice_input may depend only on its own package, "
-                        "voice_turn.contracts, and utils.game_route_state "
+                        "voice_turn.contracts, utils.game_route_state and "
+                        "utils.external_route_registry "
                         f"(found {module})",
                     ))
                 targets, dynamic = _dynamic_import_target(
@@ -3302,8 +3325,11 @@ def run(root: Path) -> list[Violation]:
                 "abort",
                 "wait_transcript_idle",
                 "has_pending_transcript_delivery",
+                "pending_transcript_turn_tokens",
                 "set_speaker_verifier_factory",
                 "request_speaker_candidate_rejection",
+                "invalidate_protected_prefix",
+                "transport_connect_deadline",
                 "start",
                 "submit",
             }

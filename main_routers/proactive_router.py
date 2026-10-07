@@ -57,6 +57,10 @@ logger = get_module_logger(__name__, "Main")
 # 涉及屏幕内容采集，必须由用户本人在 UI 决定，任何 API 写入路径都要拒绝。
 _USER_OWNED_FIELDS = frozenset({
     "proactiveVisionEnabled",
+    # 串门开关与串门记忆开关：让她出门、记不记串门内容都由用户本人决定
+    # （visitVoiceEnabled 只管本地出声，不在此列）。
+    "visitEnabled",
+    "visitMemoryEnabled",
 })
 
 # 主动搭话所有可调字段（白名单子集；与 utils/preferences 的
@@ -68,6 +72,7 @@ _PROACTIVE_BOOL_FIELDS = (
     "proactiveVisionEnabled",
     "proactiveVisionChatEnabled",
     "proactiveNewsChatEnabled",
+    "proactiveCommunityChatEnabled",
     "proactiveVideoChatEnabled",
     "proactivePersonalChatEnabled",
     "proactiveMusicEnabled",
@@ -92,6 +97,7 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveChatEnabled": False,
         "proactiveVisionChatEnabled": False,
         "proactiveNewsChatEnabled": False,
+        "proactiveCommunityChatEnabled": False,
         "proactiveVideoChatEnabled": False,
         "proactivePersonalChatEnabled": False,
         "proactiveMusicEnabled": False,
@@ -102,6 +108,7 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveChatEnabled": True,
         "proactiveVisionChatEnabled": True,
         "proactiveNewsChatEnabled": True,
+        "proactiveCommunityChatEnabled": True,
         "proactiveVideoChatEnabled": True,
         "proactivePersonalChatEnabled": True,
         "proactiveMusicEnabled": True,
@@ -116,6 +123,7 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveChatEnabled": True,
         "proactiveVisionChatEnabled": False,
         "proactiveNewsChatEnabled": False,
+        "proactiveCommunityChatEnabled": False,
         "proactiveVideoChatEnabled": False,
         "proactivePersonalChatEnabled": True,
         "proactiveMusicEnabled": False,
@@ -129,6 +137,7 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveChatEnabled": True,
         "proactiveVisionChatEnabled": True,
         "proactiveNewsChatEnabled": True,
+        "proactiveCommunityChatEnabled": True,
         "proactiveVideoChatEnabled": True,
         "proactivePersonalChatEnabled": True,
         "proactiveMusicEnabled": True,
@@ -197,12 +206,10 @@ async def _readback_persisted(payload: Mapping[str, Any]) -> tuple[dict[str, Any
 
 
 def _infer_mode(settings: dict[str, Any]) -> str:
-    """Infer which preset the currently persisted fields correspond to; returns ``custom`` if none match.
+    """Infer the preset matching every currently effective proactive setting."""
 
-    Only fields explicitly listed by a preset are compared; missing fields count as a mismatch.
-    """
     for mode_name, preset in PROACTIVE_PRESETS.items():
-        if all(settings.get(k) == v for k, v in preset.items()):
+        if all(_value_matches(settings.get(k), v) for k, v in preset.items()):
             return mode_name
     return "custom"
 

@@ -124,7 +124,9 @@ def _load_from_disk() -> dict[str, RuntimeOverride]:
     try:
         from utils.config_manager import get_config_manager
 
-        cm = get_config_manager()
+        # This sidecar needs storage paths, not main-application config/avatar/
+        # memory migration. Normal config consumers still request migration.
+        cm = get_config_manager(migrate=False)
         raw = cm.load_json_config(OVERRIDES_FILENAME)
     except FileNotFoundError:
         _cache_write_blocked_by_invalid_content = False
@@ -154,7 +156,7 @@ def _save_to_disk(overrides: dict[str, RuntimeOverride]) -> None:
     try:
         from utils.config_manager import get_config_manager
 
-        cm = get_config_manager()
+        cm = get_config_manager(migrate=False)
         cm.save_json_config(OVERRIDES_FILENAME, dict(overrides))
     except Exception as exc:
         logger.error(
@@ -195,6 +197,12 @@ def _get_runtime_override_entry(plugin_id: str) -> RuntimeOverride | None:
             exc,
         )
         return None
+
+
+def get_runtime_override_entry(plugin_id: str) -> RuntimeOverride | None:
+    """Return an exact, detached snapshot of one persisted preference entry."""
+    override = _get_runtime_override_entry(plugin_id)
+    return dict(override) if isinstance(override, Mapping) else override
 
 
 def get_runtime_override(plugin_id: str) -> bool | None:
@@ -250,6 +258,37 @@ def set_runtime_override(
         else:
             new_value = {"enabled": enabled, "auto_start": auto_start}
         if _cache.get(plugin_id) == new_value:
+            return
+        candidate = dict(_cache)
+        candidate[plugin_id] = new_value
+        _ensure_cache_can_be_written()
+        _save_to_disk(candidate)
+        _cache = candidate
+
+
+def set_runtime_auto_start_override(plugin_id: str, auto_start: bool) -> None:
+    """Persist only the auto-start preference for ``plugin_id``.
+
+    An existing ``enabled`` preference (including a legacy boolean entry) is
+    preserved; when the user never toggled ``enabled`` the entry stores
+    ``auto_start`` alone so the manifest default for ``enabled`` still applies.
+    """
+    if not plugin_id:
+        return
+    global _cache
+    with _cache_lock:
+        if _cache is None:
+            _cache = _load_from_disk()
+        existing = _cache.get(plugin_id)
+        new_value: dict[str, bool]
+        if isinstance(existing, Mapping):
+            new_value = dict(existing)
+        elif isinstance(existing, bool):
+            new_value = {"enabled": existing}
+        else:
+            new_value = {}
+        new_value["auto_start"] = auto_start
+        if existing == new_value:
             return
         candidate = dict(_cache)
         candidate[plugin_id] = new_value
@@ -336,6 +375,48 @@ def clear_runtime_override(plugin_id: str) -> None:
         _ensure_cache_can_be_written()
         _save_to_disk(candidate)
         _cache = candidate
+
+
+def restore_runtime_override(
+    plugin_id: str,
+    snapshot: RuntimeOverride | None,
+    *,
+    expected_current: RuntimeOverride | None,
+) -> bool:
+    """Restore an exact snapshot only if no newer preference replaced it."""
+    if not plugin_id:
+        return False
+
+    restored: RuntimeOverride | None
+    if snapshot is None or isinstance(snapshot, bool):
+        restored = snapshot
+    elif isinstance(snapshot, Mapping):
+        restored_mapping = dict(snapshot)
+        if not restored_mapping or set(restored_mapping) - {"enabled", "auto_start"}:
+            raise ValueError("invalid runtime override snapshot")
+        if any(not isinstance(value, bool) for value in restored_mapping.values()):
+            raise ValueError("invalid runtime override snapshot")
+        restored = restored_mapping
+    else:  # pragma: no cover - guarded by the public type contract
+        raise ValueError("invalid runtime override snapshot")
+
+    global _cache
+    with _cache_lock:
+        if _cache is None:
+            _cache = _load_from_disk()
+        if _cache.get(plugin_id) != expected_current:
+            return False
+        if _cache.get(plugin_id) == restored:
+            return True
+        candidate = dict(_cache)
+        if restored is None:
+            candidate.pop(plugin_id, None)
+        else:
+            candidate[plugin_id] = restored
+        _ensure_cache_can_be_written()
+        _save_to_disk(candidate)
+        _cache = candidate
+        return True
 
 
 def reset_cache_for_testing() -> None:

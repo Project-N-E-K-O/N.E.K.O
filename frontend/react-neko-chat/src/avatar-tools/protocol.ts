@@ -158,7 +158,13 @@ export type AvatarInteractionPayload =
     actionId: 'interact';
     intensity: 'normal' | 'rapid';
     touchZone: 'ear' | 'head' | 'face' | 'body';
+  } & ({
     changeIndex: number;
+    imageId?: never;
+  } | {
+    imageId: `img-${string}`;
+    changeIndex?: never;
+  }) & {
     specialTriggered?: boolean;
   });
 
@@ -221,6 +227,14 @@ function deriveAvatarInteractionContractFacts(
   if (profile.kind === 'round-choice') {
     throw new Error('round-choice uses its dedicated host interaction facts');
   }
+  if (profile.kind === 'custom-graph') {
+    return {
+      actions: [],
+      touchZones: profile.touchZones,
+      chanceField: null,
+      requiresChangeIndex: false,
+    };
+  }
   return {
     actions: [{
       actionId: profile.actionId,
@@ -262,6 +276,20 @@ function createAvatarInteractionPayloadSchema(definition: AvatarToolDefinition) 
         });
       }
     });
+  }
+  if (definition.interaction.kind === 'custom-graph') {
+    const profile = definition.interaction;
+    const imageIds = new Set(profile.images.map(image => image.id));
+    return z.object({
+      ...avatarInteractionPayloadBaseShape,
+      toolId: z.literal(definition.id),
+      toolRevision: z.literal(profile.revision),
+      actionId: z.literal('interact'),
+      intensity: z.enum(['normal', 'rapid']),
+      touchZone: oneOfDeclaredValues(profile.touchZones, 'touchZone'),
+      imageId: z.string().refine(value => imageIds.has(value as `img-${string}`)),
+      ...(profile.chance ? { specialTriggered: z.boolean() } : {}),
+    }).strict();
   }
   const facts = deriveAvatarInteractionContractFacts(definition.interaction);
   const intensitiesByActionId = new Map(
@@ -322,16 +350,23 @@ AVATAR_TOOL_REGISTRY.forEach(({ definition }) => {
 });
 
 const toolIdProbeSchema = z.object({ toolId: z.string() }).passthrough();
-const localAvatarInteractionPayloadSchema = z.object({
+const localAvatarInteractionPayloadBaseShape = {
   ...avatarInteractionPayloadBaseShape,
   toolId: z.string().regex(LOCAL_AVATAR_TOOL_ID_PATTERN),
-  toolRevision: z.string().regex(/^\d+-\d+$/).max(128),
   actionId: z.literal('interact'),
   intensity: z.enum(['normal', 'rapid']),
   touchZone: z.enum(AVATAR_TOOL_TOUCH_ZONES),
-  changeIndex: z.number().int().nonnegative().safe(),
   specialTriggered: z.boolean().optional(),
-}).strict();
+};
+const localAvatarInteractionPayloadSchema = z.union([z.object({
+  ...localAvatarInteractionPayloadBaseShape,
+  toolRevision: z.string().regex(/^2-\d+$/).max(128),
+  changeIndex: z.number().int().nonnegative().safe(),
+}).strict(), z.object({
+  ...localAvatarInteractionPayloadBaseShape,
+  toolRevision: z.string().regex(/^3-\d+$/).max(128),
+  imageId: z.string().regex(/^img-[a-z0-9]+(?:-[a-z0-9]+)*$/).max(80),
+}).strict()]);
 function isAvatarInteractionPayload(value: unknown): value is AvatarInteractionPayload {
   const probe = toolIdProbeSchema.safeParse(value);
   if (!probe.success) return false;
@@ -494,7 +529,8 @@ export function buildAvatarInteractionPayload(
   } = commit;
   const payload = {
     ...facts,
-    ...(definition?.definitionVersion === 2 && definition.interaction.kind === 'press-release' ? {
+    ...(definition && (definition.definitionVersion === 2 && definition.interaction.kind === 'press-release'
+      || definition.definitionVersion === 3 && definition.interaction.kind === 'custom-graph') ? {
       toolRevision: definition.interaction.revision,
     } : {}),
     interactionId: createAvatarInteractionId(),

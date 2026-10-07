@@ -241,9 +241,33 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self._use_genai_sdk = _should_use_genai_sdk(self.model, self.base_url)
         self._genai_client = None  # initialized lazily inside _stream_text_genai
         self._genai_tools_unsupported = False  # set True if genai path falls back at runtime
+        # OpenAI-compat 端点明确拒收 ``tools``（例如 Ollama 上的 llava 返回
+        # 400 "does not support tools"）后置 True，本会话后续轮次不再带工具，
+        # 省掉每轮一次必然失败的请求。这是模型能力，只在换模型 / 关闭时清掉。
+        self._openai_tools_unsupported = False
+        # 端点只在请求带图时拒收 tools（"tool use is not supported with images"）。
+        self._openai_tools_unsupported_with_images = False
 
         # State management
         self._is_responding = False
+        self._response_generation = 0
+        self._interrupter_owned_generations: set[int] = set()
+        self._active_response_generation: int | None = None
+        self._completion_pending_generation: int | None = None
+        # stream_text / prompt_ephemeral calls still running (see is_idle).
+        self._reply_calls_in_flight = 0
+        # Closes of clients switch_model replaced while a reply call was in
+        # flight; the last call to return runs them (_retire_replaced_clients).
+        self._retired_client_closers: list = []
+        # Both sync and optional. on_response_displaced(kind): a user reply
+        # began over this one without an interruption and took its close over
+        # (the owner closes it). on_idle(): the last reply call returned and
+        # nothing is left in progress.
+        self.on_response_displaced: Optional[Callable[[str], Any]] = None
+        # What on_response_displaced handed back to send before this reply's
+        # first output (see _run_displaced_followup).
+        self._displaced_followup = None
+        self.on_idle: Optional[Callable[[], None]] = None
         self._conversation_history = []
         self._instructions = ""
         self._stream_task = None

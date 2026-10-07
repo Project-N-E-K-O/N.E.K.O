@@ -75,6 +75,122 @@ def test_api_key_settings(mock_page: Page, running_server: str):
 
 
 @pytest.mark.frontend
+def test_api_help_tooltips_follow_neko_theme_and_fit_viewport(
+    mock_page: Page, running_server: str
+):
+    """API explanations use the N.E.K.O card language in both themes."""
+    mock_page.set_viewport_size({"width": 1280, "height": 720})
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+    icon = mock_page.locator(".tooltip-icon").first
+    tooltip = mock_page.locator(".tooltip-content").first
+    icon.hover()
+    expect(tooltip).to_be_visible()
+
+    light = tooltip.evaluate("""
+        element => {
+            const style = getComputedStyle(element);
+            const decoration = getComputedStyle(element, '::before');
+            const rect = element.getBoundingClientRect();
+            return {
+                background: style.backgroundImage,
+                borderLeftColor: style.borderLeftColor,
+                color: style.color,
+                radius: style.borderRadius,
+                paw: decoration.backgroundImage,
+                left: rect.left,
+                right: rect.right,
+                width: rect.width,
+            };
+        }
+    """)
+    assert "linear-gradient" in light["background"]
+    assert light["borderLeftColor"] == "rgb(64, 197, 241)"
+    assert light["color"] == "rgb(54, 92, 112)"
+    assert light["radius"] == "16px"
+    assert "paw_ui.png" in light["paw"]
+    paw_response = mock_page.request.get(f"{running_server}/static/icons/paw_ui.png")
+    assert paw_response.ok
+    assert paw_response.headers["content-type"].startswith("image/png")
+    assert paw_response.body().startswith(b"\x89PNG\r\n\x1a\n")
+    assert light["left"] >= 20
+    assert light["right"] <= 1260
+    assert light["width"] <= 1240
+
+    mock_page.evaluate("document.documentElement.setAttribute('data-theme', 'dark')")
+    dark = tooltip.evaluate("""
+        element => {
+            const style = getComputedStyle(element);
+            const title = getComputedStyle(element.querySelector('strong'));
+            return {
+                background: style.backgroundImage,
+                color: style.color,
+                titleColor: title.color,
+            };
+        }
+    """)
+    assert "linear-gradient" in dark["background"]
+    assert dark["color"] == "rgb(217, 239, 248)"
+    assert dark["titleColor"] == "rgb(117, 220, 255)"
+
+    mock_page.set_viewport_size({"width": 390, "height": 720})
+    icon.hover()
+    narrow = tooltip.evaluate("""
+        element => {
+            const rect = element.getBoundingClientRect();
+            return { left: rect.left, right: rect.right, width: rect.width };
+        }
+    """)
+    assert narrow["left"] >= 20
+    assert narrow["right"] <= 370
+    assert narrow["width"] <= 350
+
+    mock_page.evaluate("window.changeLanguage('es')")
+    assist_icon = mock_page.locator(".tooltip-icon").nth(1)
+    assist_tooltip = mock_page.locator(".tooltip-content").nth(1)
+    assist_icon.scroll_into_view_if_needed()
+    assist_icon.hover()
+    expect(assist_tooltip).to_be_visible()
+    vertical = assist_tooltip.evaluate("""
+        element => {
+            const rect = element.getBoundingClientRect();
+            const scrollRegion = element.querySelector('.tooltip-scroll-content') || element;
+            return {
+                top: rect.top,
+                bottom: rect.bottom,
+                overflowY: getComputedStyle(scrollRegion).overflowY,
+                clientHeight: scrollRegion.clientHeight,
+                scrollHeight: scrollRegion.scrollHeight,
+            };
+        }
+    """)
+    assert vertical["top"] >= 20
+    assert vertical["bottom"] <= 700
+    assert vertical["overflowY"] == "auto"
+    assert vertical["scrollHeight"] > vertical["clientHeight"]
+
+    assist_tooltip.hover()
+    mock_page.wait_for_timeout(250)
+    expect(assist_tooltip).to_be_visible()
+    scroll_state = assist_tooltip.evaluate("""
+        element => {
+            const scrollRegion = element.querySelector('.tooltip-scroll-content');
+            scrollRegion.scrollTop = scrollRegion.scrollHeight;
+            return {
+                opacity: getComputedStyle(element).opacity,
+                pointerEvents: getComputedStyle(element).pointerEvents,
+                scrollTop: scrollRegion.scrollTop,
+            };
+        }
+    """)
+    assert scroll_state["opacity"] == "1"
+    assert scroll_state["pointerEvents"] == "auto"
+    assert scroll_state["scrollTop"] > 0
+
+
+@pytest.mark.frontend
 def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_server: str):
     """Collapsed custom-model headers must not borrow rounded corners from a wrapper."""
     mock_page.set_viewport_size({"width": 1280, "height": 1200})
@@ -250,6 +366,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             agent: rect(cards[6]),
             tts: rect(cards[7]),
             game: rect(cards[8]),
+            image: rect(cards[9]),
         };
     }""")
 
@@ -265,6 +382,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "agent-model-content",
         "tts-model-content",
         "game-model-content",
+        "image-model-content",
     ]
     assert desktop["titleKeys"] == [
         "api.conversationModelConfig",
@@ -276,6 +394,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "api.agentApiConfigTitle",
         "api.ttsModelConfig",
         "api.gameModelsConfig",
+        "api.imageModelConfig",
     ]
     assert desktop["summaryTypes"] == [
         "conversation",
@@ -298,6 +417,8 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "omni": "emotion",
         "agent": "tts",
         "tts": "agent",
+        "game": "image",
+        "image": "game",
     }
     assert desktop["conversation"]["top"] == desktop["vision"]["top"]
     assert desktop["conversation"]["left"] < desktop["vision"]["left"]
@@ -308,6 +429,8 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert desktop["emotion"]["top"] == desktop["omni"]["top"]
     assert desktop["agent"]["top"] == desktop["tts"]["top"]
     assert desktop["game"]["top"] > desktop["agent"]["top"]
+    assert desktop["game"]["top"] == desktop["image"]["top"]
+    assert desktop["game"]["left"] < desktop["image"]["left"]
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(350)
@@ -1866,3 +1989,154 @@ def test_saved_incapable_provider_falls_back_and_clears_stale_credentials(
     assert 'sk-stale-claude' not in (state['omniKey'] or ''), (
         f"残留凭证应被覆盖，实际 omniKey={state['omniKey']!r}"
     )
+
+
+@pytest.mark.frontend
+def test_model_id_picker_named_provider_switch_clears_only_user_switches(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    mock_page.goto(f'{running_server}/api_key')
+    expect(mock_page.locator('#loading-overlay')).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector('#conversationModelProvider option[value="openai"]', state='attached')
+    mock_page.evaluate("""() => {
+        document.getElementById('enableCustomApi').checked = true;
+        toggleCustomApi();
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('conversation');
+    }""")
+    model = mock_page.locator('#conversationModelId')
+    mock_page.select_option('#conversationModelProvider', 'openai')
+    model.fill('gpt-user-choice')
+    mock_page.evaluate("onCustomModelProviderChange('conversation')")
+    expect(model).to_have_value('gpt-user-choice')
+    mock_page.select_option('#conversationModelProvider', 'deepseek')
+    expect(model).to_have_value('')
+    expect(model).not_to_have_attribute('placeholder', 'gpt-user-choice')
+    model.fill('deepseek-user-choice')
+    mock_page.select_option('#conversationModelProvider', 'custom')
+    expect(model).to_have_value('')
+    mock_page.select_option('#conversationModelProvider', 'kimi_code')
+    mock_page.select_option('#conversationModelProvider', 'custom')
+    expect(model).to_have_value('')
+
+    mock_page.select_option('#conversationModelProvider', 'follow_assist')
+    mock_page.select_option('#conversationModelProvider', 'openai')
+    expect(model).to_have_value('')
+    for follow_mode in ['follow_core', 'follow_assist']:
+        model.fill('gpt-user-choice')
+        mock_page.select_option('#conversationModelProvider', follow_mode)
+        expect(model).to_have_value('')
+        mock_page.select_option('#conversationModelProvider', 'openai')
+    mock_page.evaluate("""() => {
+        for (const type of ['tts']) {
+            const select = document.getElementById(`${type}ModelProvider`);
+            const target = Array.from(select.options).find(option =>
+                option.value === 'minimax');
+            select.dataset.currentProvider = 'follow_core';
+            select.value = target.value;
+            document.getElementById(`${type}ModelId`).value = 'user-runtime-model';
+            onCustomModelProviderChange(type, true);
+        }
+    }""")
+    expect(mock_page.locator('#ttsModelId')).to_have_value('user-runtime-model')
+    model.fill('deepseek-user-choice')
+    mock_page.evaluate("""() => {
+        _isLoadingSavedConfig = true;
+        const select = document.getElementById('conversationModelProvider');
+        select.dataset.currentProvider = 'openai';
+        select.value = 'deepseek';
+        onCustomModelProviderChange('conversation', true);
+        _isLoadingSavedConfig = false;
+    }""")
+    expect(model).to_have_value('deepseek-user-choice')
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('api_select,follow_mode', [
+    ('assistApiSelect', 'follow_assist'), ('coreApiSelect', 'follow_core'),
+])
+def test_model_id_picker_api_switch_clears_followed_models(mock_page: Page, running_server: str, api_select, follow_mode):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    mock_page.goto(f'{running_server}/api_key')
+    expect(mock_page.locator('#loading-overlay')).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector(f'#{api_select} option[value="openai"]', state='attached')
+    mock_page.evaluate("""() => {
+        document.getElementById('enableCustomApi').checked = true;
+        toggleCustomApi();
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('conversation');
+    }""")
+    mock_page.select_option(f'#{api_select}', 'qwen')
+    mock_page.select_option('#conversationModelProvider', follow_mode)
+    model = mock_page.locator('#conversationModelId')
+    mock_page.evaluate("document.getElementById('conversationModelId').value = 'qwen-user-model'")
+    mock_page.select_option(f'#{api_select}', 'openai')
+    expect(model).to_have_value('')
+    mock_page.evaluate("document.getElementById('conversationModelId').value = 'gpt-user-model'")
+    mock_page.dispatch_event(f'#{api_select}', 'change')
+    expect(model).to_have_value('gpt-user-model')
+    mock_page.evaluate("onCustomModelProviderChange('conversation')")
+    expect(model).to_have_value('gpt-user-model')
+    mock_page.select_option(f'#{api_select}', 'qwen')
+    expect(model).to_have_value('')
+
+
+@pytest.mark.frontend
+def test_model_id_picker_filters_keywords_typed_while_loading(mock_page: Page, running_server: str):
+    """Keywords typed before the upstream model list arrives still filter it."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    pending = []
+    mock_page.route("**/api/config/list_models", lambda route: pending.append(route))
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
+    mock_page.select_option("#assistApiSelect", "qwen")
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        toggleCustomApi();
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('conversation');
+    }""")
+
+    menu = mock_page.locator("#conversationModelId-model-menu")
+    mock_page.locator("#conversationModelId ~ button").click()
+    expect(menu.locator(".api-provider-dropdown-empty")).to_be_visible()
+    mock_page.fill("#conversationModelId", "qwen3.8")
+    assert len(pending) == 1
+    assert pending[0].request.post_data_json["provider_key"] == "qwen"
+
+    pending[0].fulfill(json={"success": True, "models": [
+        {"id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash"},
+        {"id": "qwen3.8-flash", "name": "Qwen3.8 Flash"},
+        {"id": "qwen3.8-plus", "name": "Qwen3.8 Plus"},
+    ]})
+    options = menu.locator(".api-provider-dropdown-option")
+    expect(options).to_have_count(2)
+    expect(options.nth(0)).to_have_attribute("data-value", "qwen3.8-flash")
+    expect(options.nth(1)).to_have_attribute("data-value", "qwen3.8-plus")
+
+
+@pytest.mark.frontend
+def test_model_id_picker_closes_when_another_picker_input_is_clicked(mock_page: Page, running_server: str):
+    """Clicking another picker input closes the previous menu."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'true')")
+    mock_page.route('**/api/config/list_models', lambda route: route.fulfill(
+        json={'success': True, 'models': [{'id': 'qwen-test'}]},
+    ))
+    mock_page.goto(f'{running_server}/api_key')
+    expect(mock_page.locator('#loading-overlay')).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector('#assistApiSelect option[value="qwen"]', state='attached')
+    mock_page.select_option('#assistApiSelect', 'qwen')
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        toggleCustomApi();
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('conversation');
+    }""")
+    mock_page.locator('#conversationModelId ~ button').click()
+    menu = mock_page.locator('#conversationModelId-model-menu')
+    expect(menu.locator('.api-provider-dropdown-option')).to_be_visible()
+    mock_page.evaluate("""() => document.getElementById('visionModelId')
+        .dispatchEvent(new MouseEvent('click', {bubbles: true}))""")
+    expect(menu).to_be_hidden()

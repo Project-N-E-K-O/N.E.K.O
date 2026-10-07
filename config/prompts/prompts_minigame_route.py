@@ -341,6 +341,7 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "rolling_summary": "局内滚动摘要: {summary}",
         "grouped_signals": "局内信号列表: {signals}",
         "selection_priority": "筛选优先级: 优先参考局内滚动摘要和信号列表，再用完整对话/事件核对证据。",
+        "sdk_memory_submissions": "SDK 提交的可见游戏材料:",
         "full_dialogues": "本局完整对话/事件:",
     },
     "zh-TW": {
@@ -355,6 +356,7 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "rolling_summary": "局內滾動摘要: {summary}",
         "grouped_signals": "局內訊號列表: {signals}",
         "selection_priority": "篩選優先順序: 優先參考局內滾動摘要和訊號列表，再用完整對話／事件核對證據。",
+        "sdk_memory_submissions": "SDK 提交的可見遊戲材料:",
         "full_dialogues": "本局完整對話/事件:",
     },
     "en": {
@@ -369,6 +371,7 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "rolling_summary": "In-session rolling summary: {summary}",
         "grouped_signals": "In-session signal list: {signals}",
         "selection_priority": "Selection priority: prefer the in-session rolling summary and signal list, then verify evidence against the full dialogue/events.",
+        "sdk_memory_submissions": "SDK-submitted visible game material:",
         "full_dialogues": "Full dialogue/events for this session:",
     },
     "ja": {
@@ -383,6 +386,7 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "rolling_summary": "局内ローリング要約: {summary}",
         "grouped_signals": "局内シグナル一覧: {signals}",
         "selection_priority": "選別優先度: 局内ローリング要約とシグナル一覧を優先し、完全な対話/イベントで証拠を照合します。",
+        "sdk_memory_submissions": "SDK が送信した可視ゲーム情報:",
         "full_dialogues": "本局の完全な対話/イベント:",
     },
     "ko": {
@@ -397,6 +401,7 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "rolling_summary": "진행 중 롤링 요약: {summary}",
         "grouped_signals": "진행 중 신호 목록: {signals}",
         "selection_priority": "선별 우선순위: 진행 중 롤링 요약과 신호 목록을 우선 참고하고, 전체 대화/이벤트로 증거를 확인하세요.",
+        "sdk_memory_submissions": "SDK가 제출한 표시 가능한 게임 정보:",
         "full_dialogues": "이번 판 전체 대화/이벤트:",
     },
     "ru": {
@@ -411,6 +416,7 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "rolling_summary": "Rolling summary сессии: {summary}",
         "grouped_signals": "Список сигналов сессии: {signals}",
         "selection_priority": "Приоритет выбора: сначала используй rolling summary и список сигналов сессии, затем сверяй доказательства с полным диалогом/событиями.",
+        "sdk_memory_submissions": "Видимые игровые материалы, отправленные SDK:",
         "full_dialogues": "Полный диалог/события этой сессии:",
     },
     "es": {
@@ -425,6 +431,7 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "rolling_summary": "Resumen continuo de la sesión: {summary}",
         "grouped_signals": "Lista de señales de la sesión: {signals}",
         "selection_priority": "Prioridad de selección: prefiere el resumen continuo y la lista de señales de la sesión, luego verifica evidencia contra el diálogo/eventos completos.",
+        "sdk_memory_submissions": "Material visible del juego enviado por el SDK:",
         "full_dialogues": "Diálogo/eventos completos de esta sesión:",
     },
     "pt": {
@@ -439,6 +446,7 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "rolling_summary": "Resumo contínuo da sessão: {summary}",
         "grouped_signals": "Lista de sinais da sessão: {signals}",
         "selection_priority": "Prioridade de seleção: prefira o resumo contínuo e a lista de sinais da sessão, depois verifique a evidência contra o diálogo/eventos completos.",
+        "sdk_memory_submissions": "Material visível do jogo enviado pelo SDK:",
         "full_dialogues": "Diálogo/eventos completos desta sessão:",
     },
 }

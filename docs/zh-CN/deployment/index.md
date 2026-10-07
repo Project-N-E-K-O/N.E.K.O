@@ -4,7 +4,7 @@
 | --- | --- | --- |
 | 桌面发行版 | 普通用户 | Electron UI + 打包 Python 后端 |
 | 源码 launcher | 本地开发 | `uv run python launcher.py` |
-| Docker Compose | 无头/服务器 | Nginx 代理 Python 服务 |
+| Docker Compose | 无头/服务器 | Nginx 代理 Python 服务；低配机器另见[低配云服务器](./low-spec-server) |
 | 独立模块 | 隔离服务问题 | 分别启动 memory/main/agent |
 
 跨平台 workflow 构建 Windows、macOS、Linux 产物；定时输出是 **nightly 预发行版**，不是稳定版承诺。

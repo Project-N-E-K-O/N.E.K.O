@@ -347,7 +347,16 @@ class ContextAppendMixin:
         self,
         start_index: int,
         end_index: int | None = None,
+        *,
+        preceding: list[dict] | None = None,
     ) -> int:
+        """Prime next-session context that arrived after the final prime.
+
+        ``preceding`` is what the promoted session was already primed with,
+        in prime order; the late slice is judged after it (see
+        ``_convert_cache_to_str``). ``None`` falls back to the transferred
+        context prefix alone.
+        """
         consumed_count = max(0, start_index)
         session = getattr(self, "session", None)
         prime_context = getattr(session, "prime_context", None)
@@ -360,7 +369,14 @@ class ContextAppendMixin:
         if not late_context:
             return consumed_count
         try:
-            await prime_context(self._convert_cache_to_str(late_context), skipped=True)
+            late_text = self._convert_cache_to_str(
+                late_context,
+                preceding=snapshot[:consumed_count] if preceding is None else preceding,
+            )
+            # The screen-history rewrite can leave nothing of the slice (it
+            # was the rest of a chain); it still counts as consumed.
+            if late_text:
+                await prime_context(late_text, skipped=True)
         except Exception as exc:
             logger.warning(
                 "[%s] final-swap late next-session context prime failed: %s",

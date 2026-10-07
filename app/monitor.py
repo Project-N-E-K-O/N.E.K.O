@@ -32,7 +32,12 @@ import json
 import os
 import logging
 from contextlib import asynccontextmanager
-from config import MONITOR_SERVER_PORT, DEFAULT_LIVE2D_MODEL_NAME
+from config import MONITOR_SERVER_PORT, MONITOR_HOST, MONITOR_TOKEN, MONITOR_VIEWER_TOKEN, DEFAULT_LIVE2D_MODEL_NAME
+from app.monitor_auth import (
+    MonitorAuthMiddleware,
+    install_monitor_log_redaction,
+    monitor_auth_enabled,
+)
 from utils.config_manager import get_config_manager, get_reserved
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
@@ -41,7 +46,7 @@ import uvicorn
 from fastapi.templating import Jinja2Templates
 from utils.frontend_utils import find_models, find_model_config_file, find_model_directory
 from utils.workshop_utils import get_default_workshop_folder
-from utils.preferences import aload_user_preferences
+from utils.preferences import GLOBAL_CONVERSATION_KEY, aload_user_preferences
 
 # Setup logger
 from utils.logger_config import setup_logging
@@ -71,17 +76,61 @@ def get_resource_path(relative_path):
 
 templates = Jinja2Templates(directory=get_resource_path(""))
 
+_STATIC_ASSET_VERSION_CACHE = (0.0, "0")
+
+def _viewer_static_assets_ctx():
+    """Build viewer cache version without importing the full main router graph."""
+    global _STATIC_ASSET_VERSION_CACHE
+    now = asyncio.get_running_loop().time()
+    cached_at, cached_version = _STATIC_ASSET_VERSION_CACHE
+    if now - cached_at < 30.0:
+        return {"static_asset_version": cached_version}
+    from config import APP_VERSION
+    latest_mtime = 0
+    for relative_path in ("static/css/index.css", "static/css/edge-peek.css"):
+        try:
+            latest_mtime = max(latest_mtime, int(os.path.getmtime(get_resource_path(relative_path))))
+        except OSError:
+            continue
+    version = f"{APP_VERSION}-{latest_mtime or 0}"
+    _STATIC_ASSET_VERSION_CACHE = (now, version)
+    return {"static_asset_version": version}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: launch a background task that periodically cleans up
     # disconnected WebSocket clients. Replaces the deprecated
     # @app.on_event("startup") hook (FastAPI lifespan is the supported API).
+    # Redaction lives here rather than under __main__ so `uvicorn app.monitor:app`
+    # and embedded runs never write ?token= into the access log either.
+    install_monitor_log_redaction()
+    if MONITOR_VIEWER_TOKEN and not MONITOR_TOKEN:
+        logger.warning("MONITOR_VIEWER_TOKEN is ignored because MONITOR_TOKEN is empty")
     _fire_task(cleanup_disconnected_clients())
     yield
 
 
 app = FastAPI(lifespan=lifespan)
+# Gates every route except the static asset mounts once MONITOR_TOKEN is set.
+app.add_middleware(MonitorAuthMiddleware)
+
+# Viewers only need model layout; keep other preference fields off the LAN.
+_ALLOWED_VIEWER_PREFERENCE_KEYS = {
+    "model_path", "position", "scale", "rotation", "display", "viewport",
+    "camera_position", "parameters",
+}
+
+
+def _viewer_preferences_only(preferences):
+    if not isinstance(preferences, list):
+        return preferences
+    return [
+        {k: v for k, v in entry.items() if k in _ALLOWED_VIEWER_PREFERENCE_KEYS}
+        for entry in preferences
+        if isinstance(entry, dict) and entry.get("model_path") != GLOBAL_CONVERSATION_KEY
+    ]
+
 
 DEFAULT_LIVE2D_MODEL = DEFAULT_LIVE2D_MODEL_NAME
 LEGACY_DEFAULT_LIVE2D_MODELS = {
@@ -172,7 +221,7 @@ async def get_page_config(lanlan_name: str = ""):
 async def get_preferences():
     """Get user preferences consistent with the main server package."""
     preferences = await aload_user_preferences()
-    return preferences
+    return _viewer_preferences_only(preferences)
 
 @app.get('/api/live2d/emotion_mapping/{model_name}')
 def get_emotion_mapping(model_name: str):
@@ -244,7 +293,8 @@ def get_emotion_mapping(model_name: str):
 async def get_index(request: Request, lanlan_name: str):
     # lanlan_name 将从 URL 中提取，前端会通过 API 获取配置
     return templates.TemplateResponse("templates/viewer.html", {
-        "request": request
+        "request": request,
+        **_viewer_static_assets_ctx(),
     })
 
 
@@ -253,18 +303,6 @@ connected_clients = set()
 subtitle_clients = set()
 current_subtitle = ""
 should_clear_next = False
-
-def is_japanese(text):
-    import re
-    # 检测平假名、片假名、汉字
-    japanese_pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF]')
-    return bool(japanese_pattern.search(text))
-
-# 简单的日文到中文翻译（这里需要你集成实际的翻译API）
-async def translate_japanese_to_chinese(text):
-    # 为了演示，这里返回一个占位符
-    # 你需要根据实际情况实现翻译功能
-    pass
 
 async def _receive_ws_frame(websocket: WebSocket) -> dict:
     """Receive one raw ws message; convert disconnect frames to WebSocketDisconnect.
@@ -353,17 +391,8 @@ async def sync_endpoint(websocket: WebSocket, lanlan_name:str):
                         await broadcast_subtitle()
 
                 elif msg_type == "turn end":
-                    # 处理回合结束
-                    if current_subtitle:
-                        # 检查是否为日文，如果是则翻译
-                        if is_japanese(current_subtitle):
-                            translated_text = await translate_japanese_to_chinese(current_subtitle)
-                            # 翻译未实现/失败时返回 None，保留原文，避免 current_subtitle 被置空后下一轮 += 崩溃
-                            if translated_text:
-                                current_subtitle = translated_text
-                                await broadcast_subtitle_text(translated_text)
-
-                    # 清空字幕区域，准备下一条
+                    # 处理回合结束：字幕已随每个 gemini_response 增量广播，
+                    # 此处只标记清空。
                     global should_clear_next
                     should_clear_next = True
 
@@ -508,6 +537,13 @@ async def cleanup_disconnected_clients():
 if __name__ == "__main__":
     # 在打包环境中，直接传递 app 对象而不是字符串
     # The monitor server is a read-only status receiver designed to be
-    # reachable by external clients. Keep binding to 0.0.0.0 to preserve
-    # its intended use; hardening (e.g. token auth) should be additive.
-    uvicorn.run(app, host="0.0.0.0", port=MONITOR_SERVER_PORT, reload=False)
+    # reachable by external clients, so MONITOR_HOST defaults to 0.0.0.0.
+    # Set it to 127.0.0.1 for local-only use, and MONITOR_TOKEN to require
+    # authentication (see app/monitor_auth.py).
+    logger.info(
+        "Monitor listening on %s:%s; authentication %s",
+        MONITOR_HOST,
+        MONITOR_SERVER_PORT,
+        "enabled" if monitor_auth_enabled() else "disabled",
+    )
+    uvicorn.run(app, host=MONITOR_HOST, port=MONITOR_SERVER_PORT, reload=False)

@@ -915,6 +915,14 @@
         }
     }
 
+    function refreshCompactInteractionGeometry() {
+        try {
+            window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+        } catch (_) {
+            // 非紧凑窗口不提供几何桥，普通网页弹窗无需额外处理。
+        }
+    }
+
     function temporarilyHideReactChatOverlayForModal(modalConfig) {
         if (!modalConfig || modalConfig.skin !== 'autostart-retention') {
             return function noop() {};
@@ -950,6 +958,7 @@
         return new Promise((resolve) => {
             const modalConfig = config || {};
             const isAutostartRetentionSkin = modalConfig.skin === 'autostart-retention';
+            const isTheaterSkin = modalConfig.skin === 'theater';
             const isDecisionPrompt = modalConfig.type === 'decision';
             const restoreObscuredUi = temporarilyHideReactChatOverlayForModal(modalConfig);
             let settled = false;
@@ -964,6 +973,8 @@
             overlay.className = 'modal-overlay';
             if (isAutostartRetentionSkin) {
                 overlay.classList.add('modal-overlay-autostart-retention');
+            } else if (isTheaterSkin) {
+                overlay.classList.add('modal-overlay-theater');
             }
 
             // 创建对话框
@@ -971,6 +982,13 @@
             dialog.className = 'modal-dialog';
             if (isAutostartRetentionSkin) {
                 dialog.classList.add('modal-dialog-autostart-retention');
+            } else if (isTheaterSkin) {
+                dialog.classList.add('modal-dialog-theater');
+                // 公共弹窗位于 React 根节点之外，必须单独登记为透明桌面窗口的原生命中岛。
+                dialog.setAttribute('data-compact-geometry-owner', 'surface');
+                dialog.setAttribute('data-compact-geometry-item', 'theaterModal');
+                // 弹窗打开时先聚焦容器，避免程序焦点让第一个按钮误显示成已选择状态。
+                dialog.tabIndex = -1;
             }
             dialog.setAttribute('role', 'dialog');
             dialog.setAttribute('aria-modal', 'true');
@@ -1150,6 +1168,7 @@
                     if (overlay.parentNode) {
                         overlay.parentNode.removeChild(overlay);
                     }
+                    if (isTheaterSkin) refreshCompactInteractionGeometry();
                     if (isDecisionPrompt) {
                         emitDecisionPromptLifecycleEvent('neko:decision-prompt-closed', {
                             skin: modalConfig.skin || '',
@@ -1315,6 +1334,12 @@
 
             // 添加到页面
             document.body.appendChild(overlay);
+            if (isTheaterSkin) {
+                refreshCompactInteractionGeometry();
+                // 弹入动画使用 transform；动画结束后再上报一次最终命中区域，避免透明窗口沿用起始位置。
+                dialog.addEventListener('animationend', refreshCompactInteractionGeometry, { once: true });
+                window.setTimeout(refreshCompactInteractionGeometry, 320);
+            }
             if (isDecisionPrompt) {
                 emitDecisionPromptLifecycleEvent('neko:decision-prompt-opened', {
                     skin: modalConfig.skin || '',
@@ -1348,6 +1373,8 @@
                 if (input) {
                     input.focus();
                     input.select();
+                } else if (isTheaterSkin) {
+                    dialog.focus();
                 } else {
                     const primaryBtn = footer.querySelector('.modal-btn-primary');
                     const firstBtn = footer.querySelector('.modal-btn');
@@ -1398,6 +1425,8 @@
             okText: options.okText,
             cancelText: options.cancelText,
             danger: options.danger || false,
+            skin: options.skin,
+            onResolve: options.onResolve,
         });
         console.log('[showConfirm] 返回 Promise:', promise);
         return promise;
@@ -1545,7 +1574,11 @@
      * @param {string} url - 要打开的 URL
      * @param {string} windowName - 窗口名称（用于标识和重用）
      * @param {string} [features] - 窗口特性（可选，默认为标准设置窗口）
-     * @param {{navigateOnReuse?: boolean, onReuse?: Function}} [options] - 复用同名窗口时的行为
+     * @param {{navigateOnReuse?: boolean, onReuse?: Function, shouldNavigateOnReuse?: Function, preserveGeometryOnReuse?: boolean, delegateNavigationToSharedWindow?: boolean}} [options] - 复用同名窗口时的行为
+     *   - preserveGeometryOnReuse: 复用已有窗口时不按 features 重设尺寸/位置（保留用户拖动后的窗口）
+     *   - delegateNavigationToSharedWindow: navigateOnReuse 时若没有本地 handle 但同名窗口已在共享登记中活跃，
+     *     不再用 window.open(name) 直接导航（会丢掉目标页未保存内容），而是把目标 URL 以
+     *     { type: 'neko:navigate-on-reuse', url } 消息发给该窗口，由它自行确认后跳转
      * @returns {Window|null} - 返回窗口对象
      */
     window.openOrFocusWindow = function(url, windowName, features, options) {
@@ -1569,20 +1602,30 @@
                 requestOpenedWindowRestoreIfMinimized(existingWindow);
                 return existingWindow;
             }
-            if (normalizedOptions.navigateOnReuse) {
+            if (normalizedOptions.navigateOnReuse
+                && (typeof normalizedOptions.shouldNavigateOnReuse !== 'function'
+                    || normalizedOptions.shouldNavigateOnReuse(existingWindow, targetUrl) !== false)) {
                 navigateOpenedWindow(existingWindow, targetUrl, !!normalizedOptions.navigateOnReuse);
             }
-            applyOpenedWindowFeatures(existingWindow, features);
+            if (!normalizedOptions.preserveGeometryOnReuse) {
+                applyOpenedWindowFeatures(existingWindow, features);
+            }
             requestOpenedWindowRestore(existingWindow);
             existingWindow.focus();
             return existingWindow;
         }
 
-        if (!normalizedOptions.navigateOnReuse && isSharedNamedWindowActive(effectiveWindowName)) {
+        const delegateNavigation = !!(normalizedOptions.navigateOnReuse
+            && normalizedOptions.delegateNavigationToSharedWindow);
+        if ((!normalizedOptions.navigateOnReuse || delegateNavigation)
+            && isSharedNamedWindowActive(effectiveWindowName)) {
             if (typeof normalizedOptions.onReuse === 'function') {
                 normalizedOptions.onReuse();
             }
-            requestSharedNamedWindowFocus(effectiveWindowName);
+            requestSharedNamedWindowFocus(
+                effectiveWindowName,
+                delegateNavigation ? { type: 'neko:navigate-on-reuse', url: targetUrl } : undefined
+            );
             return createSharedNamedWindowProxy(effectiveWindowName);
         }
 

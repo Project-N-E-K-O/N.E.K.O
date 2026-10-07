@@ -33,6 +33,8 @@ import pytest
 
 from app.memory_server import gates, review
 
+from tests.repo_ast_cache import parse_source_file
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PACKAGE_ROOT = REPO_ROOT / "app" / "memory_server"
 GATES_PATH = PACKAGE_ROOT / "gates.py"
@@ -360,7 +362,7 @@ def test_no_module_outside_gates_names_the_maint_state_container():
     """
     offenders: list[str] = []
     for path in _iter_app_modules():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = parse_source_file(path)
         for node in ast.walk(tree):
             named = (
                 (isinstance(node, ast.Attribute) and node.attr == "_maint_state")
@@ -393,7 +395,7 @@ def _collect_mutate_defs() -> tuple[dict[str, str], dict[str, str]]:
     sync_defs: dict[str, str] = {}
     async_defs: dict[str, str] = {}
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = parse_source_file(path)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -410,7 +412,7 @@ def _collect_mutator_call_sites() -> tuple[list[str], list[str]]:
     names: list[str] = []
     unresolved: list[str] = []
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = parse_source_file(path)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue

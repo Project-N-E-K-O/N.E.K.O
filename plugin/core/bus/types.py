@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from plugin.core.bus.memory import MemoryList
     from plugin.core.bus.messages import MessageList
     from plugin.core.bus.conversations import ConversationList
+    from plugin.core.bus.frames import FrameList
 
 from plugin.core.bus.rev import dispatch_bus_change
 
@@ -102,6 +103,15 @@ class _ConversationClientProto(Protocol):
     ) -> "ConversationList": ...
 
 
+class _FramesClientProto(Protocol):
+    def get(
+        self,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        timeout: float = 5.0,
+    ) -> "FrameList": ...
+
+
 class BusHubProtocol(Protocol):
     """Bus Hub 协议，提供对各种 Bus 客户端的访问
     
@@ -111,6 +121,7 @@ class BusHubProtocol(Protocol):
         lifecycle: 生命周期客户端，用于查询生命周期事件
         memory: 内存客户端，用于查询内存数据
         conversations: 对话客户端，用于查询对话上下文
+        frames: 画面客户端，用于读取宿主最近推给模型的那几帧（有损，不是日志）
     """
     @property
     def messages(self) -> _MessageClientProto: ...
@@ -126,6 +137,9 @@ class BusHubProtocol(Protocol):
 
     @property
     def conversations(self) -> _ConversationClientProto: ...
+
+    @property
+    def frames(self) -> _FramesClientProto: ...
 
 
 class BusReplayContext(Protocol):
@@ -281,7 +295,18 @@ class BusList(BusListCore, Generic[TRecord]):
         self._plan: Optional[TraceNode] = plan
         self._cache_valid: bool = True
 
+    # 只读快照 store 的列表把它翻成 True。lazy 模式下 sort()/limit()/filter()
+    # **不在本地算**，只记计划、等物化时重放；而重放是同步调 client.get()，在
+    # 事件循环里那一调拿回的是协程（get() 自己会转发到 get_async），于是
+    # `await bus.frames.get(...)` 之后一链式就 AttributeError，还漏一个没 await
+    # 的协程。快照没有"重放到最新"的语义可言——它就是一次读到的那批——所以本地
+    # 算才是对的。_plan 仍然保留：reload_with()/reload_with_async() 直接看
+    # _plan，不看这个开关，显式刷新照旧可用。
+    _snapshot_chain: bool = False
+
     def _is_lazy_mode(self) -> bool:
+        if self._snapshot_chain:
+            return False
         return self._ctx is not None and self._plan is not None
 
     def _invalidate_cache(self) -> None:
@@ -729,6 +754,14 @@ class BusList(BusListCore, Generic[TRecord]):
                     return _as_eager(ctx.bus.events.get(**params))
                 elif bus == "lifecycle":
                     return _as_eager(ctx.bus.lifecycle.get(**params))
+                elif bus == "frames":
+                    # 只读 store，但一样要能重放：BusRpcClientBase 给每次 get()
+                    # 都挂了带 bus 名的 GetNode，所以少一个分支不是"少一个功能"，
+                    # 而是文档里写着的 frames.sort(...).limit(1) 一链式就抛
+                    # NonReplayableTraceError。conversations 同理。
+                    return _as_eager(ctx.bus.frames.get(**params))
+                elif bus == "conversations":
+                    return _as_eager(ctx.bus.conversations.get(**params))
                 raise NonReplayableTraceError(f"Unknown bus for reload: {bus!r}")
 
             if isinstance(node, UnaryNode):

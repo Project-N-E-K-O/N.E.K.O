@@ -56,13 +56,18 @@ from ._shared import (  # noqa: F401
     _coerce_payload_bool,
     _coerce_payload_float,
 )
+from .vision import game_sdk_vision_analyze  # noqa: F401
 from .char_info import (  # noqa: F401
     _extract_request_language_full,
     _absorb_request_language,
     _resolve_game_prompt_language,
+    _format_game_character_profile_prompt,
     _get_character_info,
     _get_current_character_info,
     _get_game_route_summary_llm_info,
+    _normalize_game_character_profile_value,
+    _ordered_game_character_profile_keys,
+    _replace_game_character_profile_placeholders,
 )
 from .logs import (  # noqa: F401
     _game_log_payload_flag_is_true,
@@ -266,6 +271,10 @@ from .archive import (  # noqa: F401
 from .route_lifecycle import (  # noqa: F401
     _GAME_ROUTE_ACTIVATION_LOG_LIMIT,
     _push_game_window_state_change,
+    _TAKEOVER_CALLBACK_INBOX_KEY,
+    _TAKEOVER_TOKEN_KEY,
+    _clear_route_activity_flags,
+    _close_takeover_callback_inbox,
     _GAME_ROUTE_OUTPUT_LIMIT,
     _GAME_ROUTE_HEARTBEAT_INTERVAL_SECONDS,
     _GAME_ROUTE_HEARTBEAT_TIMEOUT_SECONDS,
@@ -315,6 +324,16 @@ from .session_pool import (  # noqa: F401
     _route_session_id,
     _parse_game_session_key,
     _close_and_remove_session,
+)
+from .author_prompt import (  # noqa: F401
+    _AUTHOR_PROMPT_MODE,
+    _AUTHOR_PROMPT_ROLES,
+    _AUTHOR_PROMPT_MAX_MESSAGES,
+    _AUTHOR_PROMPT_MAX_CONTENT_CHARS,
+    _AUTHOR_PROMPT_MAX_TOTAL_CHARS,
+    _normalize_author_managed_prompt,
+    _build_author_managed_messages,
+    _run_author_managed_game_chat,
 )
 from .postgame import (  # noqa: F401
     _POSTGAME_SKIP_REASONS,
@@ -383,6 +402,7 @@ from .runtime import (  # noqa: F401
     _build_external_user_event,
     _route_external_transcript_to_game,
     route_external_voice_transcript,
+    is_game_route_locked,
     finalize_game_routes_for_character,
     route_external_stream_message,
     _compact_realtime_context_text,
@@ -393,3 +413,59 @@ from .runtime import (  # noqa: F401
     game_character,
     cleanup_expired_sessions,
 )
+
+# Plug the game route into the shared external-route hijack points. The
+# handlers are the original function objects, so the registered ``game`` kind
+# behaves exactly like the former direct imports. Input hijack still follows
+# ``is_active``; the slot stays locked (``is_locked``) until the exit flow has
+# released the takeover. There is no ``on_start_session`` (websocket_router
+# keeps its own game start branch) and no page signals.
+from utils.external_route_registry import (  # noqa: E402
+    ExternalRouteKind,
+    register_external_route_kind,
+)
+
+
+def _game_route_instance(lanlan_name: str) -> str | None:
+    """Opaque id of the active game route activation.
+
+    Read from the same state ``is_game_route_active`` sees, so an active route
+    always has an id -- even with a blank session id, which the voice identity
+    helpers skip. Without one the registry would treat every dispatch as an
+    owner change and drop the whole game's microphone audio. Each activation
+    gets its own id (``_build_route_state``), so restarting the same game and
+    session is a new owner. The fallback below only serves states built by
+    hand (tests); production states always carry the activation id.
+    """
+    state = _get_active_game_route_state(lanlan_name)
+    if state is None:
+        return None
+    activation_id = state.get("_route_activation_id")
+    if isinstance(activation_id, str) and activation_id:
+        return f"game:{activation_id}"
+    return "\x1f".join((
+        "game",
+        str(state.get("game_type") or ""),
+        str(state.get("session_id") or ""),
+        str(state.get("_sdk_route_instance_id") or ""),
+    ))
+
+
+
+def _register_external_route_kind() -> None:
+    """Register the ``game`` kind (import time; tests re-run it after restoring the registry)."""
+    register_external_route_kind(ExternalRouteKind(
+        kind="game",
+        is_active=is_game_route_active,
+        route_stream_message=route_external_stream_message,
+        on_start_session=None,
+        finalize_for_character=finalize_game_routes_for_character,
+        route_voice_transcript=route_external_voice_transcript,
+        is_locked=is_game_route_locked,
+        current_instance=_game_route_instance,
+        # Game voice uses the ordinary realtime session as its STT provider.
+        audio_passthrough=True,
+    ))
+
+
+_register_external_route_kind()

@@ -15,16 +15,20 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
+import logging
 import os
 import re
-import tempfile
+import secrets
 import threading
 import time
 import unicodedata
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 # ── LLM JSON tolerance ─────────────────────────��────────────────────────
 # LLM 经常返回带有格式瑕疵的 JSON（无引号 key、尾逗号、Python 字面值等）。
@@ -630,11 +634,24 @@ def running_on_event_loop() -> bool:
     return True
 
 
-def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
-    """Replace the target, briefly retrying Windows' "target is busy" errors."""
+def _with_busy_retry(attempt) -> None:
+    """Run ``attempt`` under the shared Windows "target is busy" backoff.
+
+    One policy, two entry points. The replacing and no-replace publishes
+    had the same loop written out twice -- same error set, same event-loop
+    rule, same delays -- so changing the policy meant changing both and
+    noticing that it had to be changed in both.
+
+    Anything that is not a BUSY error propagates on the first attempt,
+    which is already the whole rule for the no-replace publish: a
+    destination that won the race raises FileExistsError, whose winerror
+    is 183 on Windows and absent on POSIX, so it is never in the busy set.
+    A "terminal exceptions" parameter was written here and taken back
+    out after checking what it did: nothing, on either platform.
+    """
     for delay in _REPLACE_RETRY_BACKOFF_S:
         try:
-            os.replace(temp_path, target_path)
+            attempt()
             return
         except OSError as exc:
             if getattr(exc, "winerror", None) not in _REPLACE_BUSY_WINERRORS:
@@ -644,7 +661,149 @@ def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
             if running_on_event_loop():
                 raise
         time.sleep(delay)
-    os.replace(temp_path, target_path)
+    # One last go, so the caller sees the real error rather than a
+    # silent give-up.
+    attempt()
+
+
+def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
+    """Replace the target, briefly retrying Windows' "target is busy" errors."""
+    _with_busy_retry(lambda: os.replace(temp_path, target_path))
+
+
+def _publish_once(source: str, target_path: Path) -> None:
+    """One no-replace attempt, by whichever primitive the platform has."""
+    if os.name == "nt":
+        # os.rename ALREADY refuses an existing destination on Windows,
+        # which is exactly the semantics wanted here.
+        os.rename(source, target_path)
+        return
+    # POSIX rename replaces, so claim the name with a hard link -- which
+    # raises FileExistsError instead -- and drop the staged name after.
+    os.link(source, target_path)
+    try:
+        os.unlink(source)
+    except OSError:
+        # The destination is published either way; the staged name is
+        # inside a workspace that comes down with it.
+        pass
+
+
+def publish_without_replacing(
+    source: str | os.PathLike[str], target_path: Path
+) -> None:
+    """Move a file onto a name that must NOT already exist.
+
+    :func:`replace_with_busy_retry` overwrites, and a destination can
+    appear between a caller's last check and the call -- another
+    application process, or a cloud import writing back the managed file
+    it is restoring. Where an existing entry is authoritative, losing
+    that race has to mean abandoning the source: FileExistsError is
+    raised and nothing is overwritten.
+
+    A hard link would serve on Windows too, and must not be used there:
+    the source then shares an inode with the published file, so clearing
+    the read-only attribute to remove the source changes the mode of the
+    published one. Measured -- a 0o444 seed published as 0o666.
+
+    Same Windows busy window and same backoff as the replacing form --
+    literally the same, through :func:`_with_busy_retry`, rather than a
+    second copy of the error set and the delays.
+    """
+    source = str(source)
+    # FileExistsError is the destination winning: an answer, not a
+    # failure to retry around -- and it needs no special case, because
+    # it is not a busy error and the backoff only retries those.
+    _with_busy_retry(lambda: _publish_once(source, target_path))
+
+
+def replace_with_busy_retry(temp_path: str | os.PathLike[str], target_path: Path) -> None:
+    """Replace ``target_path``, briefly retrying Windows' "target is busy".
+
+    The public name for :func:`_replace_with_busy_retry`. The migration
+    path publishes through it, and a private name would have made the
+    retry semantics a convention that a rename in here could break
+    silently rather than a contract.
+    """
+    _replace_with_busy_retry(str(temp_path), target_path)
+
+
+def unlink_tolerating_replace(path: str | os.PathLike[str], *, missing_ok: bool = False) -> None:
+    """Delete a file using the bounded Windows busy retry policy."""
+    _with_busy_retry(lambda: Path(path).unlink(missing_ok=missing_ok))
+
+
+# 临时文件的创建尝试上限。名字用 32 位随机串（token_hex(4)，即 8 个十六进制字符；
+# 位数被下面的长度契约钉死，不能随意加大），2^32 的名字空间下撞名概率可以忽略，所以
+# 给一个小上界就够。它存在的意义不是「够不够用」，而是杜绝「无限重试」这种可能性本身。
+_TMP_CREATE_MAX_TRIES = 32
+
+# 与 tempfile.mkstemp 的默认口径保持一致：Windows 上加 O_BINARY，避免 CRT 层对
+# \r\n 做转换（文本编码由 Python 侧的 TextIOWrapper 负责，底层句柄必须保持二进制）。
+_TMP_OPEN_FLAGS = os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_BINARY", 0)
+
+
+def _create_exclusive_temp_file(target_dir: Path) -> tuple[int, str]:
+    """Create a temp file exclusively in the target directory; return (fd, absolute path).
+
+    Deliberately avoids ``tempfile.mkstemp``. On Windows it has a branch that,
+    when file creation raises PermissionError, retries under a fresh random
+    name as long as the directory "looks writable" (os.access reads static
+    permission bits). That loop's bound on Windows is TMP_MAX == 2147483647,
+    i.e. no bound at all.
+
+    Sandboxes and security software reliably produce exactly the combination
+    "static permissions say writable, creation is actually denied", so that
+    branch retries forever: no exception, no return, the caller hangs
+    permanently. This is why this project froze on disk writes in restricted
+    environments.
+
+    FileExistsError and Windows PermissionError on a confirmed existing
+    candidate name are retried within the fixed bound. Other creation errors
+    are raised immediately, so access denial cannot trigger an endless wait.
+    """
+    target_dir = Path(target_dir).absolute()
+    for _ in range(_TMP_CREATE_MAX_TRIES):
+        # 随机段不含点号，符合 _STALE_TMP_RE 的形状要求，能被残留清扫器认领。
+        # 固定 8 个字符（token_hex(4)），让完整 tmp 名恒为 19 字节：与改动前
+        # tempfile.mkstemp 的 8 字符随机段等长，满足「名字是常量长度、且严格短于
+        # 旧的 .<basename>.<8>.tmp」这条契约 —— test_temp_name_is_a_short_constant_shape
+        # 钉住了它，否则原本能写的长名字目标会因 ENAMETOOLONG 写不动。
+        temp_path = target_dir / f".{_TMP_OWNER_TAG}{secrets.token_hex(4)}.tmp"
+        try:
+            # O_CREAT|O_EXCL：名字必须原本不存在才能创建成功，天然防撞车、
+            # 也防符号链接抢占。0o600 与 mkstemp 的默认权限一致。
+            fd = os.open(temp_path, _TMP_OPEN_FLAGS, 0o600)
+        except FileExistsError:
+            # 极低概率的随机名撞车：换一个名字重试，这是唯一该重试的情形。
+            continue
+        except OSError as exc:
+            # Windows 对目录撞名也可能返回 EACCES；确认候选名存在才允许有界重试。
+            if isinstance(exc, PermissionError) and os.name == "nt" and os.path.lexists(temp_path):
+                continue
+            # 目录被删、磁盘满、路径过长等其他错误，直接抛出。
+            # 这里是本次修复的核心：不再重试，也就不会再出现无限循环。
+            logger.debug(
+                "[file_utils] 临时文件创建失败，本次写入放弃: dir=%s errno=%s error=%s",
+                target_dir,
+                getattr(exc, "errno", None),
+                exc,
+            )
+            raise
+        return fd, str(temp_path)
+
+    # 连续 32 次随机名全部撞车，实际不可能发生；保留这个分支是为了让函数在所有
+    # 路径上都有明确返回或抛出，而不是悄悄返回 None 让调用方解包失败。
+    logger.error(
+        "[file_utils] 连续 %s 次都无法在目标目录创建唯一临时文件: dir=%s",
+        _TMP_CREATE_MAX_TRIES,
+        target_dir,
+    )
+    raise FileExistsError(
+        errno.EEXIST,
+        f"连续 {_TMP_CREATE_MAX_TRIES} 次都无法创建唯一临时文件",
+        str(target_dir),
+    )
 
 
 def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: str = "utf-8") -> None:
@@ -653,12 +812,8 @@ def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: s
     target_path.parent.mkdir(parents=True, exist_ok=True)
     _sweep_stale_tmp_if_due(target_path)
 
-    fd, temp_path = tempfile.mkstemp(
-        # 前缀里带所有权标记：清扫器靠它证明这个 tmp 是本模块产的，而不是靠猜形状。
-        prefix=f".{_TMP_OWNER_TAG}",
-        suffix=".tmp",
-        dir=str(target_path.parent),
-    )
+    # 自建的独占创建（不用 tempfile.mkstemp），失败时立刻抛异常而不是无限重试。
+    fd, temp_path = _create_exclusive_temp_file(target_path.parent)
 
     try:
         with os.fdopen(fd, "w", encoding=encoding) as temp_file:
@@ -687,11 +842,8 @@ def atomic_write_bytes(path: str | os.PathLike[str], content: bytes) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     _sweep_stale_tmp_if_due(target_path)
 
-    fd, temp_path = tempfile.mkstemp(
-        prefix=f".{_TMP_OWNER_TAG}",
-        suffix=".tmp",
-        dir=str(target_path.parent),
-    )
+    # 自建的独占创建（不用 tempfile.mkstemp），失败时立刻抛异常而不是无限重试。
+    fd, temp_path = _create_exclusive_temp_file(target_path.parent)
 
     try:
         with os.fdopen(fd, "wb") as temp_file:

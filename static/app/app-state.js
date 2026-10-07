@@ -70,6 +70,7 @@
         // --- Audio (打断/解码) ---
         interruptedSpeechId: null,
         currentPlayingSpeechId: null,
+        currentPlayingSpeechCorrelationId: '',
         pendingDecoderReset: false,
         skipNextAudioBlob: false,
         incomingAudioBlobQueue: [],
@@ -99,6 +100,15 @@
         coreApiProvider: '',
         coreApiSupportsIndependentAsr: null,
         voiceInputResourceOptimizationEnabled: true,
+        // Persisted independent-ASR provider choice: 'auto' follows the Core
+        // route, 'faster_whisper' runs local recognition. Distinct from
+        // independentAsrProvider below, which is the provider the backend
+        // actually reported for the running session.
+        independentAsrProviderPreference: 'auto',
+        // Whether the optional local ASR dependency is installed, from
+        // /api/config/core_api. Tri-state like coreApiSupportsIndependentAsr;
+        // only an explicit true offers the local-recognition option.
+        localAsrAvailable: null,
         // 设置是否已"水合"：server GET 合并成功或用户显式改过设置后才为 true。
         // 在此之前两个 true 都只是启动默认值，不代表服务器权威偏好；
         // independentAsrEnabled 尤其不能提前进入会话握手，
@@ -113,6 +123,8 @@
         // 资源优化同样参与会话路由启动，必须独立证明该键来自 server merge、
         // 本窗口显式修改或可信的跨窗口修改，不能用启动默认值覆盖持久化选择。
         voiceInputResourceOptimizationAuthoritative: false,
+        // 独立 ASR provider 偏好同样随 start_session 握手，权威条件与上面两个一致。
+        independentAsrProviderPreferenceAuthoritative: false,
         // 跨 popup generation 保存「下次会话生效」状态与当前会话的实际 ASR
         // route。否则跨窗口设置事件更新偏好后，重渲染会把偏好误报成当前 route。
         voiceSettingsPendingUntilEpoch: null,
@@ -135,6 +147,13 @@
         gameRouteGameType: '',
         gameRouteLanlanName: '',
         gameRouteSessionId: '',
+        gameRouteInstanceId: '',
+        // Bounded, expiring route tombstones reject delayed STT-gate events
+        // after multiple rapid route generations have already closed.
+        // app-websocket prunes on record/check/open; page teardown releases
+        // the array with the rest of this state object.
+        gameRouteRecentlyEndedIdentities: [],
+        gameRouteStateRevision: 0,
         gameVoiceSttGateActive: false,
         gameVoiceSttGameType: '',
         gameVoiceSttSessionId: '',
@@ -143,6 +162,13 @@
         gameVoiceSttStopping: false,
         gameVoiceSttRestartTimer: null,
         gameVoiceSttUnsupportedNotified: false,
+        // Stable host-facing contract for mini-games. The game never derives
+        // provider routing from free/paid labels; app-websocket publishes the
+        // actual route selected by Core/independent ASR/browser fallback.
+        gameVoiceTranscriptionMode: 'unavailable',
+        gameVoiceTranscriptionProvider: '',
+        gameVoiceTranscriptionReady: false,
+        gameVoiceTranscriptionReason: 'route_inactive',
         proactiveChatWasStoppedByGameRoute: false,
 
         // --- 会话 / WebSocket ---
@@ -228,6 +254,7 @@
         proactiveVisionEnabled: false,
         proactiveVisionChatEnabled: true,
         proactiveNewsChatEnabled: false,
+        proactiveCommunityChatEnabled: false,
         proactiveVideoChatEnabled: true,
         proactivePersonalChatEnabled: false,
         proactiveMusicEnabled: true,
@@ -358,7 +385,16 @@
         var requestId = startRequestIdWindowTag + '-' + startRequestIdSeq;
         startRequestIdByOwner.set(resolve, requestId);
         S._pendingSessionStartRequestId = requestId;
-        if (mode === 'audio') lastAudioClaimSeq = startClaimSeq;
+        if (mode === 'audio') {
+            lastAudioClaimSeq = startClaimSeq;
+            // A newly owned voice session is a recovery boundary; microphone
+            // device switches and game-STT repairs do not claim a session.
+            // Do this after publishing the owner and before rejecting the old
+            // start, whose cleanup must stand down against the new owner.
+            if (window.appAudioCapture && typeof window.appAudioCapture.resetVoiceInputRecoveryState === 'function') {
+                window.appAudioCapture.resetVoiceInputRecoveryState();
+            }
+        }
         // After the slot is ours, so anything the displaced flow does on its way
         // out already sees the new owner and stands down against it.
         if (displaced) {
@@ -392,6 +428,20 @@
      */
     window.sessionStartRequestId = function (owner) {
         return (owner && startRequestIdByOwner.get(owner)) || null;
+    };
+
+    // A local retired request is different from another window's live session:
+    // observers must still synchronize the latter, including text-mode mic stop.
+    window.sessionStartNotificationIsRetired = function (response) {
+        var requestId = response && response.request_id;
+        if (typeof requestId !== 'string'
+                || !requestId.startsWith(startRequestIdWindowTag + '-')) return false;
+        return !S.sessionStartedResolver || requestId !== S._pendingSessionStartRequestId;
+    };
+
+    window.sessionStartNotificationAnswersPending = function (response) {
+        return !S.sessionStartedResolver || !S._pendingSessionStartRequestId
+            || response.request_id === S._pendingSessionStartRequestId;
     };
 
     /**
@@ -552,7 +602,7 @@
     // 使用 defineProperty 使 window.xxx 始终和 S.xxx 同步
     const proactiveKeys = [
         'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
-        'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
+        'proactiveNewsChatEnabled', 'proactiveCommunityChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
         'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
         'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
         'proactiveChatInterval', 'proactiveVisionInterval', 'avatarReactionBubbleEnabled',

@@ -14,6 +14,7 @@
     // ====== 状态 ======
     let currentCharaName = '';
     let currentModelType = '';   // 'live2d' | 'vrm' | 'mmd' | 'pngtuber'
+    let pngtuberCardFrame = null; // 制卡预览与导出共用的分层待机帧及可见边界
     let isModelLoaded = false;
     let isModelLoading = false;
     let primaryActionBusy = false;
@@ -121,6 +122,8 @@
     const EMBED_MODEL_HEIGHT_RATIO = 1.34;
     const EMBED_MODEL_CENTER_X_RATIO = 0.22;
     const EMBED_MODEL_CENTER_Y_RATIO = 0.67;
+    const embedModelLayout = window.NEKOCardMakerEmbedLayout;
+    const embedThreeFrameCache = new WeakMap();
     const autoSaveDefaultCardFace = _urlParams.get('auto_save_default') === '1';
     const closeAfterAutoSave = _urlParams.get('close_on_save') === '1';
     const fallbackDefaultOnClose = _urlParams.get('fallback_default_on_close') === '1';
@@ -573,6 +576,7 @@
     async function loadCharacterModel(type, cfg) {
         isModelLoaded = false;
         stopPreviewLoop();
+        pngtuberCardFrame = null;
         prepareHiddenModelViewport();
 
         // 先隐藏所有渲染容器
@@ -683,11 +687,53 @@
         if (lighting) {
             window.lanlan_config.lighting = lighting;
         }
-        await window.vrmManager.loadModel(modelPath);
+        await window.vrmManager.loadModel(modelPath, {
+            embed: isEmbedMode,
+            addShadow: !isEmbedMode
+        });
+        if (isEmbedMode) {
+            // The forge preview is intentionally static, like the Live2D
+            // minimal embed. Freeze the first idle pose so animated bones do
+            // not become a moving layout reference during window resizes.
+            window.vrmManager.seekVRMAAnimation?.(0, { paused: true });
+        }
         // 制卡页居中；嵌入页使用与 Live2D 对称的左侧半身构图。
         resizeModelRendererForCard('vrm');
-        if (isEmbedMode) frameThreeModelForEmbed(window.vrmManager);
+        if (isEmbedMode) frameVRMModelForEmbed(window.vrmManager);
         else centerThreeCamera(window.vrmManager);
+    }
+
+    async function loadMMDIdlePoseForEmbed(mgr) {
+        let idleAnimation = '';
+        try {
+            const response = await fetch('/api/characters');
+            if (response.ok) {
+                const characters = await response.json();
+                const character = characters?.['猫娘']?.[currentCharaName];
+                const configured = Array.isArray(character?.mmd_idle_animations)
+                    ? character.mmd_idle_animations
+                    : [character?.mmd_idle_animation];
+                idleAnimation = configured.find(path => typeof path === 'string' && path.trim()) || '';
+            }
+        } catch (error) {
+            console.warn('[CardExport] 获取 MMD 待机姿势失败，使用内置姿势:', error);
+        }
+        const fallbackAnimation = '/static/mmd/animation/wait03.vmd';
+        const candidates = [idleAnimation, fallbackAnimation]
+            .filter((path, index, values) => path && values.indexOf(path) === index);
+        for (const path of candidates) {
+            try {
+                await mgr.loadAnimation(path, { immediate: true, fadeDuration: 0 });
+                // loadAnimation applies frame zero synchronously and leaves the
+                // action paused. Mark it paused explicitly so IK/Grant and the
+                // render loop do not turn the forge pose into a moving reference.
+                mgr.pauseAnimation?.();
+                mgr.currentModel?.mesh?.updateMatrixWorld?.(true);
+                return;
+            } catch (error) {
+                console.warn('[CardExport] MMD 待机姿势加载失败:', path, error);
+            }
+        }
     }
 
     async function loadMMDModel(modelPath) {
@@ -701,20 +747,18 @@
                 throw new Error('MMDManager 未定义');
             }
         }
-        if (!window.mmdManager.core?.renderer) {
+        if (!window.mmdManager.renderer) {
             await window.mmdManager.init('mmd-canvas', 'mmd-container');
         }
         resizeModelRendererForCard('mmd');
-        await window.mmdManager.loadModel(modelPath);
+        await window.mmdManager.loadModel(modelPath, { embed: isEmbedMode });
+        if (isEmbedMode) {
+            await loadMMDIdlePoseForEmbed(window.mmdManager);
+        }
         // 制卡页居中；嵌入页使用与 Live2D/VRM 对称的左侧半身构图。
-        const mmdProxy = {
-            scene: window.mmdManager.core?.scene,
-            camera: window.mmdManager.core?.camera,
-            renderer: window.mmdManager.core?.renderer
-        };
         resizeModelRendererForCard('mmd');
-        if (isEmbedMode) frameThreeModelForEmbed(mmdProxy);
-        else centerThreeCamera(mmdProxy);
+        if (isEmbedMode) frameMMDModelForEmbed(window.mmdManager);
+        else centerThreeCamera(window.mmdManager);
     }
 
     async function loadPNGTuberModel(cfg) {
@@ -723,6 +767,19 @@
         const pngtuberConfig = Object.assign({}, cfg?.pngtuber || {});
         if (!pngtuberConfig.idle_image && cfg?.model_path) {
             pngtuberConfig.idle_image = cfg.model_path;
+        }
+        if (isEmbedMode) {
+            // The forge preview is its own coordinate system. Never seed the
+            // PNGTuber runtime with offsets or scale saved by the desktop pet.
+            Object.assign(pngtuberConfig, {
+                scale: 1,
+                offset_x: 0,
+                offset_y: 0,
+                mobile_scale: 1,
+                mobile_offset_x: 0,
+                mobile_offset_y: 0,
+                position_anchor: 'center'
+            });
         }
         assertExportablePNGTuberConfig(pngtuberConfig);
         window.lanlan_config = window.lanlan_config || {};
@@ -772,6 +829,7 @@
         resizeModelRendererForCard('pngtuber');
         await waitForPNGTuberDrawable(mgr);
         if (isEmbedMode) framePNGTuberForEmbed(mgr);
+        else preparePNGTuberCardFrame(mgr);
     }
 
     function frameLive2DModelForEmbed(mgr) {
@@ -790,24 +848,59 @@
         model.y = screen.height * EMBED_MODEL_CENTER_Y_RATIO;
     }
 
-    function frameThreeModelForEmbed(mgr) {
+    function frameVRMModelForEmbed(mgr) {
+        const model = mgr?.currentModel?.vrm?.scene || mgr?.currentModel?.scene;
+        frameThreeModelForEmbed(mgr, model);
+    }
+
+    function frameMMDModelForEmbed(mgr) {
+        frameThreeModelForEmbed(mgr, mgr?.currentModel?.mesh);
+    }
+
+    function frameThreeModelForEmbed(mgr, model) {
         const THREE = window.THREE;
-        if (!THREE || !mgr?.scene || !mgr?.camera || !mgr?.renderer) return;
+        if (!THREE || !model || !mgr?.camera || !mgr?.renderer || !embedModelLayout) return;
         try {
-            const box = new THREE.Box3().setFromObject(mgr.scene);
-            if (box.isEmpty()) return;
-            const center = box.getCenter(new THREE.Vector3());
-            const size = box.getSize(new THREE.Vector3());
+            let bounds = embedThreeFrameCache.get(model);
+            if (!bounds) {
+                model.updateMatrixWorld?.(true);
+                const box = new THREE.Box3().setFromObject(model);
+                if (box.isEmpty()) return;
+                const measuredCenter = box.getCenter(new THREE.Vector3());
+                const measuredSize = box.getSize(new THREE.Vector3());
+                bounds = {
+                    center: measuredCenter.clone(),
+                    size: measuredSize.clone()
+                };
+                embedThreeFrameCache.set(model, bounds);
+            }
+            // Reuse the first stable pose's bounds. Re-measuring a skinned
+            // model during resize makes the camera follow whichever animation
+            // frame happened to be active, which is the source of VRM/MMD
+            // model-specific drift.
+            const center = bounds.center;
+            const size = bounds.size;
             const modelHeight = size.y > 0 ? size.y : 1.5;
             const fov = mgr.camera.fov * (Math.PI / 180);
-            const distance = (modelHeight / 2) / Math.tan(fov / 2) / EMBED_MODEL_HEIGHT_RATIO;
-            const horizontalShift = Math.max(size.x, modelHeight * 0.35) * 0.72;
+            const viewport = mgr.renderer.domElement?.getBoundingClientRect?.();
+            const viewportWidth = Number(viewport?.width) || Number(mgr.renderer.domElement?.clientWidth) || window.innerWidth;
+            const viewportHeight = Number(viewport?.height) || Number(mgr.renderer.domElement?.clientHeight) || window.innerHeight;
+            const frame = embedModelLayout.resolvePerspectiveFrame(
+                viewportWidth,
+                viewportHeight,
+                size.x > 0 ? size.x : modelHeight * 0.35,
+                modelHeight,
+                fov
+            );
+            const cameraX = center.x - frame.ndcX * frame.halfViewWidth;
+            const cameraY = center.y - frame.ndcY * frame.halfViewHeight;
             const target = new THREE.Vector3(
-                center.x + horizontalShift,
-                center.y + modelHeight * 0.1,
+                cameraX,
+                cameraY,
                 center.z
             );
-            mgr.camera.position.set(target.x, target.y, center.z + Math.abs(distance));
+            mgr.camera.up?.set?.(0, 1, 0);
+            mgr.camera.position.set(cameraX, cameraY, center.z + frame.distance);
             mgr.camera.lookAt(target);
             mgr.camera.updateProjectionMatrix();
             mgr._cameraTarget?.copy?.(target);
@@ -822,10 +915,47 @@
 
     function framePNGTuberForEmbed(mgr) {
         const source = getPNGTuberDrawableSource(mgr);
-        if (!source?.style) return;
-        source.style.objectPosition = '22% 64%';
-        source.style.transformOrigin = '22% 64%';
-        source.style.transform = `scale(${EMBED_MODEL_HEIGHT_RATIO})`;
+        if (!source?.style || !embedModelLayout || !mgr?.config) return;
+        const viewportWidth = Math.max(1, window.innerWidth);
+        const viewportHeight = Math.max(1, window.innerHeight);
+        const sourceWidth = mgr.isLayeredActive?.()
+            ? Number(mgr.layeredCanvasLogicalWidth)
+            : Number(source.naturalWidth || source.width);
+        const sourceHeight = mgr.isLayeredActive?.()
+            ? Number(mgr.layeredCanvasLogicalHeight)
+            : Number(source.naturalHeight || source.height);
+        const contained = embedModelLayout.resolveContainedSize(
+            viewportWidth,
+            viewportHeight,
+            sourceWidth,
+            sourceHeight
+        );
+        const frame = embedModelLayout.resolveFrame(
+            viewportWidth,
+            viewportHeight,
+            contained.width,
+            contained.height
+        );
+        source.style.width = contained.width + 'px';
+        source.style.height = contained.height + 'px';
+        source.style.objectFit = 'contain';
+        source.style.objectPosition = 'center center';
+
+        const offsetX = frame.centerX - viewportWidth / 2;
+        const offsetY = frame.centerY - viewportHeight / 2;
+        Object.assign(mgr.config, {
+            scale: frame.scale,
+            offset_x: offsetX,
+            offset_y: offsetY,
+            mobile_scale: frame.scale,
+            mobile_offset_x: offsetX,
+            mobile_offset_y: offsetY,
+            position_anchor: 'center'
+        });
+        // PNGTuber animation calls applyTransform repeatedly. Put the forge
+        // placement into that authoritative path so breathing cannot restore
+        // desktop offsets after this function returns.
+        mgr.applyTransform?.();
     }
 
     function prepareHiddenModelViewport() {
@@ -892,13 +1022,7 @@
             return;
         }
 
-        const mgr = type === 'vrm'
-            ? window.vrmManager
-            : {
-                renderer: window.mmdManager?.core?.renderer,
-                camera: window.mmdManager?.core?.camera,
-                effect: window.mmdManager?.core?.effect || window.mmdManager?.effect
-            };
+        const mgr = type === 'vrm' ? window.vrmManager : window.mmdManager;
         const renderer = mgr?.renderer;
         if (!renderer) return;
         renderer.setPixelRatio?.(ratio);
@@ -912,7 +1036,10 @@
             mgr.camera.updateProjectionMatrix?.();
         }
         mgr.effect?.setSize?.(w, h);
-        if (isEmbedMode) frameThreeModelForEmbed(mgr);
+        if (isEmbedMode) {
+            if (type === 'vrm') frameVRMModelForEmbed(mgr);
+            else frameMMDModelForEmbed(mgr);
+        }
     }
 
     function syncEmbedModelViewport() {
@@ -1031,6 +1158,90 @@
         };
     }
 
+    function clonePNGTuberDrawable(source) {
+        const size = getDrawableSourceSize(source);
+        if (size.width <= 0 || size.height <= 0) return null;
+        try {
+            const canvas = document.createElement('canvas');
+            canvas.width = size.width;
+            canvas.height = size.height;
+            const ctx = canvas.getContext?.('2d');
+            if (!ctx?.drawImage) return null;
+            ctx.drawImage(source, 0, 0, size.width, size.height);
+            return canvas;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function getPNGTuberSourceBounds(source, sourceSize) {
+        const fullBounds = { x: 0, y: 0, width: sourceSize.width, height: sourceSize.height };
+        if (currentModelType !== 'pngtuber' || !source) return fullBounds;
+        if (currentModelType === 'pngtuber' && source === pngtuberCardFrame?.canvas) {
+            return pngtuberCardFrame.bounds;
+        }
+        if (!window.cardMakerPNGTuberManager?.isLayeredActive?.()) return fullBounds;
+        return measurePNGTuberSourceBounds(source, sourceSize);
+    }
+
+    function preparePNGTuberCardFrame(mgr) {
+        pngtuberCardFrame = null;
+        if (!mgr?.isLayeredActive?.()) return;
+        // 卡面是静态图片：保留独立的全分辨率待机帧，避免预览和导出取到
+        // 不同动画时刻。边界只在加载时测量一次，缩放/拖动不再读取像素。
+        let canvas = mgr.renderLayeredSnapshotCanvas('idle');
+        let size = getDrawableSourceSize(canvas);
+        if (size.width <= 0 || size.height <= 0) {
+            // 快照不可用时复制当前运行时画布并冻结它，避免回退路径继续逐帧
+            // 测量动态边界，同时不阻止已加载模型保存卡面。
+            canvas = clonePNGTuberDrawable(getPNGTuberDrawableSource(mgr));
+            size = getDrawableSourceSize(canvas);
+        }
+        if (size.width <= 0 || size.height <= 0) return;
+        pngtuberCardFrame = { canvas, bounds: measurePNGTuberSourceBounds(canvas, size) };
+    }
+
+    function measurePNGTuberSourceBounds(source, sourceSize) {
+        const fullBounds = {
+            x: 0,
+            y: 0,
+            width: sourceSize.width,
+            height: sourceSize.height
+        };
+        // 分层画布的 padding 同时容纳动态偏移和物理运动，不能按固定值裁掉。
+        // 只测量已固定快照的 alpha 边界，保留进入 padding 的像素。
+        try {
+            const ctx = source.getContext?.('2d');
+            const imageData = ctx?.getImageData?.(0, 0, sourceSize.width, sourceSize.height);
+            const pixels = imageData?.data;
+            if (!pixels) return fullBounds;
+            let minX = sourceSize.width;
+            let minY = sourceSize.height;
+            let maxX = -1;
+            let maxY = -1;
+            for (let y = 0; y < sourceSize.height; y += 1) {
+                for (let x = 0; x < sourceSize.width; x += 1) {
+                    if (pixels[(y * sourceSize.width + x) * 4 + 3] <= 0) continue;
+                    if (x < minX) minX = x;
+                    if (y < minY) minY = y;
+                    if (x > maxX) maxX = x;
+                    if (y > maxY) maxY = y;
+                }
+            }
+            if (maxX < minX || maxY < minY) return fullBounds;
+            return {
+                x: minX,
+                y: minY,
+                width: maxX - minX + 1,
+                height: maxY - minY + 1
+            };
+        } catch (_) {
+            // A tainted or unsupported canvas cannot be inspected safely; retain
+            // the complete source so export never loses part of the model.
+            return fullBounds;
+        }
+    }
+
     function isCrossOriginHttpUrl(value) {
         if (!value || typeof value !== 'string') return false;
         try {
@@ -1116,7 +1327,7 @@
     /**
      * 获取当前活跃模型的渲染画布
      */
-    function getModelCanvas(options = {}) {
+    function getModelCanvas() {
         if (currentModelType === 'live2d') {
             const mgr = window.live2dManager;
             if (mgr?.pixi_app?.renderer?.view) return mgr.pixi_app.renderer.view;
@@ -1133,11 +1344,7 @@
             return document.getElementById('mmd-canvas');
         }
         if (currentModelType === 'pngtuber') {
-            const mgr = window.cardMakerPNGTuberManager;
-            if (options.fullResolution && mgr?.isLayeredActive?.()) {
-                const snapshot = mgr.renderLayeredSnapshotCanvas?.();
-                if (snapshot) return snapshot;
-            }
+            if (pngtuberCardFrame) return pngtuberCardFrame.canvas;
             return getPNGTuberDrawableSource();
         }
         return null;
@@ -1158,11 +1365,13 @@
                 mgr.renderer.render(mgr.scene, mgr.camera);
             }
         } else if (currentModelType === 'mmd') {
-            const core = window.mmdManager?.core;
-            if (core?.renderer && core?.scene && core?.camera) {
-                core.renderer.render(core.scene, core.camera);
+            const mgr = window.mmdManager;
+            if (mgr?.renderer && mgr?.scene && mgr?.camera) {
+                if (mgr.useOutlineEffect && mgr.effect) mgr.effect.render(mgr.scene, mgr.camera);
+                else mgr.renderer.render(mgr.scene, mgr.camera);
             }
         } else if (currentModelType === 'pngtuber') {
+            if (pngtuberCardFrame) return;
             const mgr = window.cardMakerPNGTuberManager;
             mgr?.setSpeaking?.(false);
             if (typeof mgr?.setLayeredStateIndex === 'function' && mgr.layeredStateIndex !== 0) {
@@ -1186,18 +1395,25 @@
      * @param {number} outH  目标绘制区域高度（CSS 像素）
      */
     function drawModelWithComposition(ctx, srcCanvas, outW, outH, compositionOverride = composition) {
-        // 从源画布中裁剪出 3:4 比例的区域（cover 语义）
+        // Live2D/VRM/MMD 的渲染器本身就是 3:4 画布，保持原有 cover 语义。
+        // PNGTuber 的图片比例由用户资源决定，不能先裁成 3:4，否则宽图会被裁掉
+        // 两侧，高图会被裁掉上下；先完整保留源图，再按 contain 方式放入卡面。
         const dstAspect = outW / outH;           // ≈ 0.75 (3:4)
         const sourceSize = getDrawableSourceSize(srcCanvas);
         if (sourceSize.width <= 0 || sourceSize.height <= 0) return;
-        const srcAspect = sourceSize.width / sourceSize.height;
-        let sx = 0, sy = 0, sw = sourceSize.width, sh = sourceSize.height;
+        const sourceBounds = getPNGTuberSourceBounds(srcCanvas, sourceSize);
+        const srcAspect = sourceBounds.width / sourceBounds.height;
+        let sx = sourceBounds.x;
+        let sy = sourceBounds.y;
+        let sw = sourceBounds.width;
+        let sh = sourceBounds.height;
 
-        if (srcAspect > dstAspect) {
+        const preservePNGTuberBounds = currentModelType === 'pngtuber';
+        if (!preservePNGTuberBounds && srcAspect > dstAspect) {
             // 源更宽 → 裁两侧
             sw = sourceSize.height * dstAspect;
             sx = (sourceSize.width - sw) / 2;
-        } else {
+        } else if (!preservePNGTuberBounds) {
             // 源更高 → 裁上下
             sh = sourceSize.width / dstAspect;
             sy = (sourceSize.height - sh) / 2;
@@ -1205,8 +1421,11 @@
 
         const activeComposition = compositionOverride;
         const scale = activeComposition.scale / 100;
-        const drawW = outW * scale;
-        const drawH = outH * scale;
+        const fitScale = preservePNGTuberBounds
+            ? Math.min(outW / sourceBounds.width, outH / sourceBounds.height)
+            : 1;
+        const drawW = (preservePNGTuberBounds ? sourceBounds.width * fitScale : outW) * scale;
+        const drawH = (preservePNGTuberBounds ? sourceBounds.height * fitScale : outH) * scale;
 
         // 偏移量在 450×600 坐标系下定义，按实际尺寸等比缩放
         const ratio = outW / 450;
@@ -1556,7 +1775,7 @@
         }
         ensureRender();
 
-        const srcCanvas = getModelCanvas({ fullResolution: currentModelType === 'pngtuber' });
+        const srcCanvas = getModelCanvas();
         const srcSize = getDrawableSourceSize(srcCanvas);
         if (!srcCanvas || srcSize.width <= 0 || srcSize.height <= 0) {
             if (activeModelSourceScale !== previousSourceScale) {

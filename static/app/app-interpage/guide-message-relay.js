@@ -41,7 +41,11 @@
                     !I.isIcebreakerBridgeAction(message.action)
                     &&
                     !I.shouldBypassYuiGuideMessageDedup(message.action, message)
-                    && I.isDuplicateMessage(message.action, message.timestamp)
+                    && I.isDuplicateMessage(
+                        message.action,
+                        message.timestamp,
+                        message.lifecycleSequence
+                    )
                 ) {
                     console.log('[BroadcastChannel] 跳过重复消息:', message.action);
                     return;
@@ -191,6 +195,9 @@
                     case 'icebreaker_append_chat_message':
                     case 'icebreaker_set_choice_prompt':
                     case 'icebreaker_clear_choice_prompt':
+                    case 'icebreaker_clear_choice_prompt_source':
+                    case 'icebreaker_reset_session_state':
+                    case 'icebreaker_galgame_handoff':
                     case 'icebreaker_choice_selected':
                     case 'icebreaker_free_text_submitted': {
                         I.handleIcebreakerBridgeData(event.data);
@@ -892,6 +899,7 @@
                 action: 'idle_chat_minimized_state',
                 source: '',
                 reason: '',
+                available: true,
                 minimized: false,
                 screenRect: null,
                 timestamp: Date.now(),
@@ -908,6 +916,7 @@
                 action: 'idle_chat_compact_surface_state',
                 source: '',
                 reason: '',
+                available: true,
                 visible: false,
                 screenRect: null,
                 timestamp: Date.now(),

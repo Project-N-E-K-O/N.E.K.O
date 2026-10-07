@@ -277,6 +277,163 @@
         }
     }
 
+    // Popup entry/exit translations are presentation, not placement. Subtract
+    // their viewport vector without cancelling an in-flight CSS transition.
+    function getPopupPlacementRect(popup, api = null) {
+        const rect = makePlacementRect(popup.getBoundingClientRect());
+        const transform = window.getComputedStyle(popup).transform;
+        if (transform && transform !== 'none') {
+            const motion = new DOMMatrixReadOnly(transform);
+            let ancestors = new DOMMatrixReadOnly();
+            for (let parent = popup.parentElement; parent; parent = parent.parentElement) {
+                const parentTransform = window.getComputedStyle(parent).transform;
+                if (parentTransform && parentTransform !== 'none') {
+                    ancestors = new DOMMatrixReadOnly(parentTransform).multiply(ancestors);
+                }
+            }
+            rect.left -= ancestors.a * motion.e + ancestors.c * motion.f;
+            rect.top -= ancestors.b * motion.e + ancestors.d * motion.f;
+        }
+        return toPlacementRect(rect, api);
+    }
+
+    function getOverlayViewport() {
+        const viewport = window.visualViewport;
+        const left = viewport ? viewport.offsetLeft : 0;
+        const top = viewport ? viewport.offsetTop : 0;
+        const width = viewport && viewport.width > 0 ? viewport.width : window.innerWidth;
+        const height = viewport && viewport.height > 0 ? viewport.height : window.innerHeight;
+        return { left, top, width, height, right: left + width, bottom: top + height };
+    }
+
+    function observePopupLayout(popup, onLayout, { anchors = [] } = {}) {
+        const toolbar = popup.closest('[id$="-floating-buttons"]');
+        const viewport = window.visualViewport;
+        let panel = null;
+        let panelHeader = null;
+        let panelContent = null;
+        let buttonNodes = [];
+        let frame = null;
+        let stopped = false;
+        let buttonsDirty = false;
+        let lastSignature = '';
+        const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(queue) : null;
+
+        function signature() {
+            const view = getOverlayViewport();
+            const values = [view.left, view.top, view.width, view.height, popup.dataset.opensLeft];
+            const ownerRect = getPopupPlacementRect(popup);
+            values.push(ownerRect.left, ownerRect.top, ownerRect.width, ownerRect.height);
+            for (const element of [...anchors, ...buttonNodes, panel, panelHeader, panelContent]) {
+                if (!element || !element.isConnected) continue;
+                const rect = element.getBoundingClientRect();
+                values.push(rect.left, rect.top, rect.width, rect.height);
+            }
+            if (toolbar) values.push(window.getComputedStyle(toolbar).transform);
+            return values.join('|');
+        }
+
+        function sync() {
+            frame = null;
+            if (stopped || !popup.isConnected || popup.style.display === 'none' || popup.style.opacity === '0') return;
+            if (buttonsDirty) {
+                refreshButtons();
+                buttonsDirty = false;
+            }
+            if (signature() === lastSignature) return;
+            onLayout();
+            if (!stopped) lastSignature = signature();
+        }
+
+        function queue() {
+            if (!stopped && frame === null) frame = requestAnimationFrame(sync);
+        }
+
+        function refreshButtons() {
+            if (resizeObserver) buttonNodes.forEach(node => resizeObserver.unobserve(node));
+            buttonNodes = toolbar ? Array.from(toolbar.querySelectorAll('[id*="-btn-"], [class$="-trigger-btn"]')) : [];
+            if (resizeObserver) buttonNodes.forEach(node => resizeObserver.observe(node));
+        }
+
+        function onToolbarMutation(records) {
+            const selector = '[id*="-btn-"], [class$="-trigger-btn"]';
+            const containsButton = node => node.nodeType === 1
+                && (node.matches(selector) || node.querySelector(selector));
+            if (records.some(record => !popup.contains(record.target)
+                && [...record.addedNodes, ...record.removedNodes].some(containsButton))) {
+                buttonsDirty = true;
+                queue();
+            }
+        }
+
+        function onMotionEnd(event) {
+            if (event.target !== popup && popup.contains(event.target) && !anchors.includes(event.target)) return;
+            if (event.type === 'animationend' || event.propertyName === 'transform') queue();
+        }
+
+        // Size changes are observed directly. Descendant style changes such as
+        // microphone meters, sliders and hover backgrounds are not layout signals.
+        const geometryObserver = new MutationObserver(queue);
+        geometryObserver.observe(popup, { attributes: true, attributeFilter: ['style', 'class'] });
+        const structureObserver = new MutationObserver(onToolbarMutation);
+        if (toolbar) {
+            geometryObserver.observe(toolbar, { attributes: true, attributeFilter: ['style', 'class'] });
+            structureObserver.observe(toolbar, { childList: true, subtree: true });
+            toolbar.addEventListener('transitionend', onMotionEnd);
+            toolbar.addEventListener('animationend', onMotionEnd);
+        }
+        if (resizeObserver) [popup, ...anchors].forEach(node => resizeObserver.observe(node));
+        refreshButtons();
+        popup.addEventListener('scroll', queue, true);
+        window.addEventListener('resize', queue);
+        if (viewport) {
+            viewport.addEventListener('resize', queue);
+            viewport.addEventListener('scroll', queue);
+        }
+        queue();
+
+        return {
+            setPanel(element) {
+                if (stopped) return;
+                if (resizeObserver) [panel, panelHeader, panelContent].filter(Boolean).forEach(node => resizeObserver.unobserve(node));
+                panel = element;
+                panelHeader = panel && panel.querySelector('[data-neko-sidepanel-header]');
+                panelContent = panel && panel.querySelector('[data-neko-sidepanel-content]');
+                if (resizeObserver) [panel, panelHeader, panelContent].filter(Boolean).forEach(node => resizeObserver.observe(node));
+                queue();
+            },
+            disconnect() {
+                if (stopped) return;
+                stopped = true;
+                if (frame !== null) cancelAnimationFrame(frame);
+                geometryObserver.disconnect();
+                structureObserver.disconnect();
+                if (resizeObserver) resizeObserver.disconnect();
+                popup.removeEventListener('scroll', queue, true);
+                window.removeEventListener('resize', queue);
+                if (toolbar) {
+                    toolbar.removeEventListener('transitionend', onMotionEnd);
+                    toolbar.removeEventListener('animationend', onMotionEnd);
+                }
+                if (viewport) {
+                    viewport.removeEventListener('resize', queue);
+                    viewport.removeEventListener('scroll', queue);
+                }
+            }
+        };
+    }
+
+    function getBoxInsets(element) {
+        const style = window.getComputedStyle(element);
+        return {
+            width: toNumber(style.paddingLeft) + toNumber(style.paddingRight)
+                + toNumber(style.borderLeftWidth) + toNumber(style.borderRightWidth),
+            height: toNumber(style.paddingTop) + toNumber(style.paddingBottom)
+                + toNumber(style.borderTopWidth) + toNumber(style.borderBottomWidth),
+            borderBox: style.boxSizing === 'border-box'
+        };
+    }
+
     function formatSidePanelTransform(container, motion = 'none') {
         const scale = clampOverlayScale(container && container.dataset ? container.dataset.nekoUiScale : 1);
         const motionPart = motion && motion !== 'none' ? String(motion) : '';
@@ -322,17 +479,40 @@
 
         // ── 关键修复：先重置到默认右弹位置再测量 ──
         // 防止上一次 opensLeft 残留的 inline styles 干扰溢出检测
-        resetPopupPosition(popup);
+        let preserveDirection = options.preserveDirection === true && !!popup.dataset.opensLeft;
+        if (!preserveDirection) resetPopupPosition(popup);
+        if (buttonId === 'mic' && !placementApi) {
+            if (popup._placementMaxHeight === undefined) popup._placementMaxHeight = popup.style.maxHeight;
+            popup.style.maxHeight = popup._placementMaxHeight;
+            const viewport = getOverlayViewport();
+            const insets = getBoxInsets(popup);
+            const maxHeight = Math.max(1, toLocalCssPx(viewport.height - topMargin - bottomMargin, sidePanelScale)
+                - (insets.borderBox ? 0 : insets.height));
+            const originalMax = toNumber(window.getComputedStyle(popup).maxHeight, Infinity);
+            popup.style.maxHeight = `${Math.min(originalMax, maxHeight)}px`;
+        }
         void popup.offsetHeight; // 强制 reflow，确保测量基于默认位置
 
         // Horizontal overflow handling.
-        let popupRect = toPlacementRect(popup.getBoundingClientRect(), placementApi);
+        let popupRect = getPopupPlacementRect(popup, placementApi);
+        const viewport = niriViewport ? { left: 0, top: 0, right: screenWidth, bottom: screenHeight }
+            : (buttonId === 'mic' ? getOverlayViewport()
+                : { left: 0, top: 0, right: screenWidth, bottom: screenHeight });
+        const reservedWidth = effectiveSidePanelWidth > 0 ? gap + effectiveSidePanelWidth : 0;
+        if (preserveDirection && (popupRect.left - (popup.dataset.opensLeft === 'true' ? reservedWidth : 0) < viewport.left + topMargin
+            || popupRect.right + (popup.dataset.opensLeft === 'true' ? 0 : reservedWidth) > viewport.right - rightMargin)) {
+            preserveDirection = false;
+            resetPopupPosition(popup);
+            popupRect = getPopupPlacementRect(popup, placementApi);
+        }
         // 考虑侧面板宽度：如果 popup + gap + 侧面板一起会溢出右边缘，提前选择向左弹出
         // sidePanelWidth 是纯面板宽度（不含 gap），gap 在此处统一添加
         const effectiveRight = effectiveSidePanelWidth > 0
             ? popupRect.right + gap + effectiveSidePanelWidth
             : popupRect.right;
-        if (effectiveRight > screenWidth - rightMargin) {
+        if (preserveDirection) {
+            opensLeft = popup.dataset.opensLeft === 'true';
+        } else if (effectiveRight > viewport.right - rightMargin) {
             const button = document.getElementById(`${buttonPrefix}${buttonId}`);
             const buttonWidth = button ? button.offsetWidth : 48;
             popup.style.left = 'auto';
@@ -361,17 +541,17 @@
         popup.dataset.opensLeft = String(opensLeft);
 
         // Vertical overflow handling.
-        popupRect = toPlacementRect(popup.getBoundingClientRect(), placementApi);
+        popupRect = getPopupPlacementRect(popup, placementApi);
         const currentTop = toNumber(popup.style.top, 0);
         let nextTop = currentTop;
-        if (popupRect.bottom > screenHeight - bottomMargin) {
-            nextTop -= toLocalCssPx(popupRect.bottom - (screenHeight - bottomMargin), sidePanelScale);
+        if (popupRect.bottom > viewport.bottom - bottomMargin) {
+            nextTop -= toLocalCssPx(popupRect.bottom - (viewport.bottom - bottomMargin), sidePanelScale);
         }
         popup.style.top = `${nextTop}px`;
 
-        popupRect = toPlacementRect(popup.getBoundingClientRect(), placementApi);
-        if (popupRect.top < topMargin) {
-            popup.style.top = `${toNumber(popup.style.top, 0) + toLocalCssPx(topMargin - popupRect.top, sidePanelScale)}px`;
+        popupRect = getPopupPlacementRect(popup, placementApi);
+        if (popupRect.top < viewport.top + topMargin) {
+            popup.style.top = `${toNumber(popup.style.top, 0) + toLocalCssPx(viewport.top + topMargin - popupRect.top, sidePanelScale)}px`;
         }
 
         return { opensLeft };
@@ -425,9 +605,204 @@
         return { left, right, top, bottom, hasButtons };
     }
 
+    function getOverlayButtonRects(ownerPrefix) {
+        const prefixes = ownerPrefix ? [ownerPrefix] : ['live2d', 'vrm', 'mmd'];
+        const selector = prefixes.map(prefix =>
+            `[id^="${prefix}-btn-"], .${prefix}-trigger-btn`).join(', ');
+        return Array.from(document.querySelectorAll(selector))
+            .map(getVisibleOverlayRect).filter(Boolean);
+    }
+
+    function rectsOverlap(a, b) {
+        return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    }
+
+    function restoreSidePanelConstraints(container) {
+        for (const property of ['maxWidth', 'maxHeight', 'overflowY']) {
+            const key = '_original' + property[0].toUpperCase() + property.slice(1);
+            if (container[key] === undefined) container[key] = container.style[property];
+            else container.style[property] = container[key];
+        }
+    }
+
+    function getSidePanelMinimumHeight(container, insets, scale, naturalHeight) {
+        const header = container.querySelector('[data-neko-sidepanel-header]');
+        const body = container.querySelector('[data-neko-sidepanel-body]');
+        if (!header || !body) return Math.min(naturalHeight, 80 * scale);
+        const controls = Array.from(body.querySelectorAll('button, input, select, textarea, [role="switch"]'));
+        const controlHeight = controls.map(control => {
+            const visibleControl = control.closest('label') || control;
+            return visibleControl.getBoundingClientRect().height;
+        }).find(height => height > 1) || 0;
+        const contentHeight = Math.min(body.scrollHeight, Math.max(36, controlHeight));
+        const gap = toNumber(window.getComputedStyle(container).rowGap);
+        return (header.offsetHeight + insets.height + gap + contentHeight) * scale;
+    }
+
+    function positionAdaptiveSidePanel(container, anchor, options) {
+        const gap = Number.isFinite(options.gap) ? options.gap : 12;
+        const edge = Number.isFinite(options.edgeMargin) ? options.edgeMargin : 8;
+        const bottomSafe = Number.isFinite(options.bottomSafe) ? options.bottomSafe : 60;
+        const popup = container._popupElement || anchor;
+        const scale = getSidePanelScale(container, anchor);
+        const viewport = getOverlayViewport();
+        const owner = getPopupPlacementRect(popup);
+        const ownerVisual = popup.getBoundingClientRect();
+        const anchorVisual = anchor.getBoundingClientRect();
+        const anchorTop = anchorVisual.top + owner.top - ownerVisual.top;
+        const buttons = getOverlayButtonRects(getSidePanelOwnerPrefix(container, anchor));
+        const prefersLeft = popup.dataset.opensLeft !== 'false';
+        const mobile = typeof window.isMobileWidth === 'function'
+            ? window.isMobileWidth() : window.innerWidth <= 768;
+        const clamp = (value, min, max) => Math.max(min, Math.min(value, Math.max(min, max)));
+        const leftEdge = viewport.left + edge;
+        const rightEdge = Math.max(leftEdge + 1, viewport.right - edge);
+        const topEdge = viewport.top + edge;
+
+        container.dataset.nekoUiScale = String(scale);
+        container.dataset.niriPhysicalCropPositioned = 'false';
+        container.style.transformOrigin = 'left top';
+        container.style.transform = 'none';
+        restoreSidePanelConstraints(container);
+        const insets = getBoxInsets(container);
+        const setWidth = width => {
+            container.style.maxWidth = `${Math.max(1, width / scale - (insets.borderBox ? 0 : insets.width))}px`;
+        };
+        setWidth(rightEdge - leftEdge);
+        const naturalWidth = container.offsetWidth * scale;
+        const naturalHeight = container.offsetHeight * scale;
+        const minHeight = getSidePanelMinimumHeight(container, insets, scale, naturalHeight);
+        // Retain the existing footer clearance unless it would eliminate the
+        // header and first control. Tiny windows may use the remaining viewport.
+        const bottomEdge = Math.min(viewport.bottom - edge,
+            Math.max(viewport.bottom - bottomSafe, topEdge + minHeight));
+        const heightLimit = Math.max(1, bottomEdge - topEdge);
+        const minWidth = Math.min(naturalWidth, 240 * scale);
+        const originalHeight = toNumber(window.getComputedStyle(container).maxHeight, Infinity);
+        const measurements = new Map();
+
+        function applySizeLimits(width, height) {
+            setWidth(width);
+            const maxHeight = height / scale - (insets.borderBox ? 0 : insets.height);
+            container.style.maxHeight = `${Math.max(1, Math.min(originalHeight, maxHeight))}px`;
+        }
+
+        function measure(width, height) {
+            if (!measurements.has(width)) {
+                // Wrapping and the minimum usable height depend on width, not
+                // on the free region's height. Measure once, then fit in memory.
+                setWidth(width);
+                container.style.maxHeight = container._originalMaxHeight;
+                const rect = container.getBoundingClientRect();
+                measurements.set(width, { width: rect.width * scale, height: rect.height * scale,
+                    minHeight: getSidePanelMinimumHeight(container, insets, scale, naturalHeight) });
+            }
+            const size = measurements.get(width);
+            const minimumBoxHeight = (insets.borderBox ? 1 : insets.height + 1) * scale;
+            return { ...size, height: Math.min(size.height, Math.max(minimumBoxHeight, height)) };
+        }
+
+        function sideCandidate(left) {
+            let boundary = left ? owner.left - gap : owner.right + gap;
+            for (let attempt = 0; attempt <= buttons.length; attempt++) {
+                const available = left ? boundary - leftEdge : rightEdge - boundary;
+                if (available < minWidth - 0.5) return null;
+                const size = measure(Math.min(naturalWidth, available), heightLimit);
+                if (size.height < size.minHeight - 0.5) return null;
+                const x = left ? boundary - size.width : boundary;
+                const y = clamp(anchorTop, topEdge, bottomEdge - size.height);
+                const rect = { left: x, right: x + size.width, top: y, bottom: y + size.height };
+                const collisions = buttons.filter(button => rectsOverlap(rect, button));
+                if (!collisions.length) return { x, y, ...size, left, placement: 'side' };
+                // Move past only the buttons that this candidate actually hits.
+                boundary = left ? Math.min(...collisions.map(button => button.left - gap))
+                    : Math.max(...collisions.map(button => button.right + gap));
+            }
+            return null;
+        }
+
+        function stackedCandidate() {
+            const size = measure(naturalWidth, heightLimit);
+            const x = clamp(owner.left, leftEdge, rightEdge - size.width);
+            const blockers = [owner, ...buttons].filter(rect => x < rect.right && x + size.width > rect.left);
+            const blockedTop = Math.min(...blockers.map(rect => rect.top));
+            const blockedBottom = Math.max(...blockers.map(rect => rect.bottom));
+            const above = Math.max(0, blockedTop - gap - topEdge);
+            const below = Math.max(0, bottomEdge - blockedBottom - gap);
+            const useBelow = below >= size.height || (above < size.height && below >= above);
+            const available = useBelow ? below : above;
+            if (available < size.minHeight - 0.5) return null;
+            const fitted = measure(naturalWidth, available);
+            if (fitted.height < fitted.minHeight - 0.5) return null;
+            return { x, y: useBelow ? blockedBottom + gap : blockedTop - gap - fitted.height,
+                ...fitted, left: prefersLeft, placement: useBelow ? 'below' : 'above' };
+        }
+
+        function compactCandidate(regionBottom) {
+            // Only when neither side nor the stack is usable may the panel
+            // overlap its owner. Search free viewport regions around the actual
+            // buttons; this still keeps the close button and scroll body usable.
+            const xEdges = [leftEdge, rightEdge];
+            for (const button of buttons) {
+                xEdges.push(clamp(button.left - gap, leftEdge, rightEdge),
+                    clamp(button.right + gap, leftEdge, rightEdge));
+            }
+            const edges = [...new Set(xEdges)].sort((a, b) => a - b);
+            let best = null;
+            for (let i = 0; i < edges.length - 1; i++) {
+                for (let j = i + 1; j < edges.length; j++) {
+                    const width = Math.min(naturalWidth, edges[j] - edges[i]);
+                    if (width < Math.min(naturalWidth, 80 * scale)) continue;
+                    const x = clamp(owner.left, edges[i], edges[j] - width);
+                    const blockers = buttons.filter(rect => x < rect.right && x + width > rect.left)
+                        .sort((a, b) => a.top - b.top);
+                    let start = topEdge;
+                    const spaces = [];
+                    for (const rect of blockers) {
+                        if (rect.bottom <= topEdge || rect.top >= regionBottom) continue;
+                        spaces.push([start, Math.min(regionBottom, rect.top - gap)]);
+                        start = Math.max(start, rect.bottom + gap);
+                    }
+                    spaces.push([start, regionBottom]);
+                    for (const [top, bottom] of spaces) {
+                        if (bottom <= top) continue;
+                        const size = measure(width, bottom - top);
+                        if (size.height < size.minHeight - 0.5) continue;
+                        const y = clamp(anchorTop, top, bottom - size.height);
+                        const distance = Math.abs(x - owner.left) + Math.abs(y - anchorTop);
+                        const score = size.width * size.height - distance;
+                        if (!best || score > best.score) best = { x, y, ...size, score,
+                            left: x < owner.left, placement: 'compact' };
+                    }
+                }
+            }
+            return best;
+        }
+
+        const placement = (mobile ? stackedCandidate() : null)
+            || sideCandidate(prefersLeft) || sideCandidate(!prefersLeft)
+            || stackedCandidate() || compactCandidate(bottomEdge)
+            || compactCandidate(viewport.bottom - edge);
+        // Best effort only when the viewport cannot hold a header/control row.
+        // All ordinary candidates above enforce the measured minimum height.
+        const chosen = placement || { x: leftEdge, y: topEdge,
+            width: Math.min(naturalWidth, rightEdge - leftEdge), height: heightLimit,
+            left: prefersLeft, placement: 'compact' };
+        applySizeLimits(chosen.width, chosen.height);
+        container.style.left = `${chosen.x}px`;
+        container.style.right = 'auto';
+        container.style.top = `${chosen.y}px`;
+        container.style.overflowY = 'auto';
+        container.dataset.goLeft = String(chosen.left);
+        container.dataset.goDown = String(chosen.placement === 'below');
+        container.dataset.placement = chosen.placement;
+        applySidePanelTransform(container, 'none');
+    }
+
     /**
-     * 定位侧面板：基于 popup 的方向和位置级联定位。
-     * 核心原则：
+     * 定位侧面板：默认沿用设置菜单的级联布局；adaptivePlacement 在
+     * 当前侧不可用时尝试按钮外侧、上下空间及可滚动的紧凑布局。
+     * 默认级联布局的原则：
      *   1. 面板绝不能覆盖浮动按钮
      *   2. 方向由 positionPopup 的溢出检测决定（popup.dataset.opensLeft），不再独立猜测
      *   3. 水平锚点基于 popup 的实际位置（popupRect），不再基于按钮区域
@@ -436,7 +811,20 @@
      * container: 侧面板元素（position: fixed, 挂在 document.body）
      * anchor: 触发菜单项元素（用于垂直参考）
      */
-    function positionSidePanel(container, anchor, options = {}) {
+    function positionSidePanel(container, anchor, options = {}, checkAfterAnimation = true) {
+        const positionRevision = (container._nekoPositionRevision || 0) + 1;
+        container._nekoPositionRevision = positionRevision;
+        if (container._nekoPositionCheckTimer != null) {
+            clearTimeout(container._nekoPositionCheckTimer);
+            container._nekoPositionCheckTimer = null;
+        }
+        // Voice action panels opt in; preserve established settings layouts and
+        // the compositor-owned virtual coordinates used by Niri physical crop.
+        if (options.adaptivePlacement && !getNiriPetPhysicalCropViewport(getNiriPetPhysicalCropPlacementApi())) {
+            positionAdaptiveSidePanel(container, anchor, options);
+            return;
+        }
+        delete container.dataset.placement;
         const gap = Number.isFinite(options.gap) ? options.gap : 12;
         const edgeMargin = Number.isFinite(options.edgeMargin) ? options.edgeMargin : 8;
         const bottomSafe = Number.isFinite(options.bottomSafe) ? options.bottomSafe : 60;
@@ -449,15 +837,8 @@
         container.style.right = '';
         container.style.top = '';
         container.style.transform = 'none';
-        // 恢复原始 maxWidth（可能被上一次边缘钳制覆盖过）
-        if (container._originalMaxWidth !== undefined) {
-            container.style.maxWidth = container._originalMaxWidth;
-        }
+        restoreSidePanelConstraints(container);
         void container.offsetHeight; // 强制 reflow，基于干净状态测量尺寸
-        // 记录原始 maxWidth 供后续恢复
-        if (container._originalMaxWidth === undefined) {
-            container._originalMaxWidth = container.style.maxWidth;
-        }
 
         // ── Step 0.5：手机端特殊处理：向下展开而非向左/向右 ──
         // Electron Pet 窗口永不进入手机模式，统一走 canonical 谓词。
@@ -467,8 +848,7 @@
         const placementApi = niriViewport ? niriCropApi : null;
         const isNiriPetPhysicalCrop = !!placementApi;
         const isMobile = !isNiriPetPhysicalCrop && (typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768));
-        const goDown = isMobile;
-        container.dataset.goDown = String(goDown);
+        let goDown = isMobile;
 
         // ── Step 1：从 popup 获取方向（取代 getButtonZone 启发式） ──
         const popup = container._popupElement;
@@ -485,8 +865,20 @@
         const anchorRect = toPlacementRect(anchor.getBoundingClientRect(), placementApi);
         const screenW = niriViewport ? niriViewport.width : window.innerWidth;
         const screenH = niriViewport ? niriViewport.height : window.innerHeight;
+        if (!isNiriPetPhysicalCrop) {
+            // Bound the rendered width, including the shared UI scale.
+            const viewportWidth = Math.max(1, toLocalCssPx(screenW - edgeMargin * 2, panelScale));
+            const originalMax = parseFloat(getComputedStyle(container).maxWidth);
+            container.style.maxWidth = `${Number.isFinite(originalMax) ? Math.min(originalMax, viewportWidth) : viewportWidth}px`;
+        }
         const panelW = container.offsetWidth * panelScale;
-        const panelH = container.offsetHeight * panelScale;
+        let panelH = container.offsetHeight * panelScale;
+        const sideSpace = goLeft ? popupRect.left - gap - edgeMargin
+            : screenW - popupRect.right - gap - edgeMargin;
+        if (!isNiriPetPhysicalCrop && sideSpace < Math.min(240 * panelScale, panelW)) {
+            goDown = true;
+        }
+        container.dataset.goDown = String(goDown);
         let entryMotion = 'translateX(-6px)';
 
         // 从 popup ID 推断系统前缀，用于过滤 getButtonZone
@@ -495,27 +887,39 @@
                           : popupId.startsWith('live2d-') ? 'live2d'
                           : popupId.startsWith('mmd-') ? 'mmd' : '';
 
-        if (goDown) {
-            // 手机端：向下展开到 popup 下方
-            let panelTop = popupRect.bottom + gap;
-            let panelLeft = popupRect.left;
-
-            // 超出屏幕右边缘时限制宽度
+        function positionStackedPanel(buttonZone) {
+            let panelLeft = Math.max(edgeMargin, popupRect.left);
             if (panelLeft + panelW > screenW - edgeMargin) {
                 panelLeft = edgeMargin;
             }
-            // 超出屏幕底部时改为向上展开
-            if (panelTop + panelH > screenH - bottomSafe) {
-                panelTop = popupRect.top - gap - panelH;
+            let blockedTop = popupRect.top;
+            let blockedBottom = popupRect.bottom;
+            if (buttonZone && buttonZone.hasButtons
+                && panelLeft + panelW > buttonZone.left && panelLeft < buttonZone.right) {
+                blockedTop = Math.min(blockedTop, buttonZone.top);
+                blockedBottom = Math.max(blockedBottom, buttonZone.bottom);
             }
-            // 再次检查顶部边界
-            if (panelTop < edgeMargin) {
-                panelTop = edgeMargin;
-            }
-
+            const above = Math.max(0, blockedTop - gap - edgeMargin);
+            const below = Math.max(0, screenH - bottomSafe - blockedBottom - gap);
+            const placeBelow = below >= panelH || (above < panelH && below >= above);
+            const availableHeight = placeBelow ? below : above;
+            // Fit the content into a free region instead of clamping a tall
+            // panel across its owner. These limits are restored on reposition.
+            const style = window.getComputedStyle(container);
+            const verticalInsets = style.boxSizing === 'border-box' ? 0
+                : parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
+                    + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+            container.style.maxHeight = `${Math.max(0, toLocalCssPx(Math.min(panelH, availableHeight), panelScale) - verticalInsets)}px`;
+            container.style.overflowY = 'auto';
+            panelH = container.offsetHeight * panelScale;
+            const panelTop = placeBelow ? blockedBottom + gap : blockedTop - gap - panelH;
             container.style.left = `${panelLeft}px`;
             container.style.right = 'auto';
-            container.style.top = `${panelTop}px`;
+            container.style.top = `${Math.max(edgeMargin, panelTop)}px`;
+        }
+
+        if (goDown) {
+            positionStackedPanel(getButtonZone(ownerPrefix));
             entryMotion = 'translateY(-6px)';
         } else if (goLeft) {
             // popup 向左弹出 → 侧面板放在 popup 的左侧（更远离按钮）
@@ -574,8 +978,7 @@
             if (overlapsH && overlapsV) {
                 // 紧急修正：强制推到按钮对侧
                 if (goDown) {
-                    // 手机端：向上展开
-                    container.style.top = `${zone.top - gap - panelH}px`;
+                    positionStackedPanel(zone);
                 } else if (goLeft) {
                     container.style.left = `${edgeMargin}px`;
                     container.style.maxWidth = `${Math.max(0, toLocalCssPx(zone.left - gap - edgeMargin, panelScale))}px`;
@@ -588,6 +991,8 @@
 
         // ── Step 5：动画结束后二次验证（自愈机制）── 非手机端执行
         // 在动画完成后再次检查是否覆盖按钮，修正任何因动画/时序导致的偏差
+        // A delayed correction may remeasure once, but must not start a timer loop.
+        if (!checkAfterAnimation) return;
         const _containerRef = container;
         const _ownerPrefix = ownerPrefix;
         const _goLeft = goLeft;
@@ -595,8 +1000,10 @@
         const _gap = gap;
         const _edgeMargin = edgeMargin;
         const _screenW = screenW;
-        setTimeout(() => {
-            if (_containerRef.style.display === 'none' || _containerRef.style.opacity === '0') return;
+        container._nekoPositionCheckTimer = setTimeout(() => {
+            if (_containerRef._nekoPositionRevision !== positionRevision) return;
+            _containerRef._nekoPositionCheckTimer = null;
+            if (!_containerRef.isConnected || _containerRef.style.display === 'none' || _containerRef.style.opacity === '0') return;
             const z = getButtonZone(_ownerPrefix);
             if (!z.hasButtons) return;
             const r = _containerRef.getBoundingClientRect();
@@ -604,7 +1011,7 @@
             const oV = r.bottom > z.top && r.top < z.bottom;
             if (oH && oV) {
                 if (_goDown) {
-                    _containerRef.style.top = `${z.top - _gap - r.height}px`;
+                    positionSidePanel(_containerRef, anchor, options, false);
                 } else if (_goLeft) {
                     _containerRef.style.left = `${_edgeMargin}px`;
                     _containerRef.style.maxWidth = `${Math.max(0, toLocalCssPx(z.left - _gap - _edgeMargin, _containerRef.dataset.nekoUiScale))}px`;
@@ -626,6 +1033,8 @@
         positionSidePanel,
         applySidePanelTransform,
         formatSidePanelTransform,
+        getPopupPlacementRect,
+        observePopupLayout,
         hasVisiblePopup,
         hasVisibleSidePanel,
         hasVisibleOverlay,

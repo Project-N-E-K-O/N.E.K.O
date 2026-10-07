@@ -24,7 +24,9 @@ async def test_start_plugin_endpoint_ensures_messaging_before_start(
     monkeypatch.setattr(module, "ensure_plugin_messaging_started", _ensure_messaging, raising=False)
     monkeypatch.setattr(module.lifecycle_service, "start_plugin", _start_plugin)
 
-    result = await module.start_plugin_endpoint("sample_plugin", _="test")
+    from starlette.requests import Request
+    request = Request({"type": "http", "method": "POST", "path": "/", "headers": [], "client": ("127.0.0.1", 1)})
+    result = await module.start_plugin_endpoint("sample_plugin", request, _="test")
 
     assert result == {"success": True, "plugin_id": "sample_plugin"}
     assert calls == ["ensure", "start:sample_plugin:True"]

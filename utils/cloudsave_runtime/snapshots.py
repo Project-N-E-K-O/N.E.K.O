@@ -40,6 +40,7 @@ from .bindings import (
     _derive_character_origin_metadata,
 )
 from .bootstrap import bootstrap_local_cloudsave_environment, load_cloudsave_manifest
+from .legacy_migration import _catgirl_payload_without_character_id
 from .staging import (
     _json_canonical_dumps,
     _load_json_if_exists,
@@ -127,10 +128,12 @@ def _build_character_payload_fingerprint(
     binding_payload: Any,
     memory_hashes: dict[str, str],
 ) -> str:
+    # character_id 由每台设备独立生成，不能参与内容指纹；否则内容相同的两台设备、
+    # 或升级前上传的云端快照，都会被判成 diverged。
     fingerprint_payload = {
         "schema_version": 1,
         "character_name": str(character_name or ""),
-        "character_payload": deepcopy(character_payload) if isinstance(character_payload, dict) else {},
+        "character_payload": _catgirl_payload_without_character_id(character_payload) or {},
         "binding_payload": _stable_binding_payload_for_fingerprint(binding_payload),
         "memory_files": dict(sorted((memory_hashes or {}).items())),
     }
@@ -552,8 +555,10 @@ def _load_cloudsave_character_payloads(config_manager) -> tuple[dict[str, dict[s
     tombstone_names = _load_cloudsave_tombstone_names(config_manager)
     cloud_characters: dict[str, dict[str, Any]] = {}
 
-    characters_payload = _load_json_if_exists(config_manager.cloudsave_profiles_dir / "characters.json")
-    if isinstance(characters_payload, dict):
+    for profile_name in ("characters.json", "character_collection.json"):
+        characters_payload = _load_json_if_exists(config_manager.cloudsave_profiles_dir / profile_name)
+        if not isinstance(characters_payload, dict):
+            continue
         for character_name, character_payload in (characters_payload.get("猫娘") or {}).items():
             if character_name in tombstone_names or not isinstance(character_payload, dict):
                 continue

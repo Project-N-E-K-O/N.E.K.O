@@ -31,8 +31,9 @@ import time
 import threading
 import traceback
 from io import BytesIO
+import httpx
 from PIL import Image
-from config import get_agent_extra_body, COMPUTER_USE_MAX_TOKENS, LLM_PING_MAX_TOKENS
+from config import get_agent_extra_body, COMPUTER_USE_MAX_TOKENS, LLM_PING_MAX_TOKENS, MAIN_SERVER_PORT
 from utils.config_manager import get_config_manager
 from utils.llm_client import create_chat_llm, ChatOpenAI
 from utils.logger_config import get_module_logger
@@ -40,6 +41,7 @@ from utils.pyautogui_diagnostics import (
     classify_pyautogui_import_error,
 )
 from utils.token_tracker import set_call_type
+from utils.desktop_capture import DesktopCaptureError, capture_desktop_screenshot
 from utils.screenshot_utils import compress_screenshot
 
 logger = get_module_logger(__name__, "Agent")
@@ -60,6 +62,8 @@ except Exception:
 
 pyautogui = None
 _PYAUTOGUI_IMPORT_ERROR: Optional[Exception] = None
+_CAPTURE_BRIDGE_BACKOFF_UNTIL = 0.0
+_CAPTURE_BRIDGE_BACKOFF_SECONDS = 20.0
 
 
 def _load_pyautogui():
@@ -85,6 +89,104 @@ def _pyautogui_unavailable_reason() -> str:
 
 
 _load_pyautogui()
+
+_CUA_EXECUTION_LOCK = threading.Lock()
+
+
+def _post_capture_bridge(cancel_event: threading.Event | None) -> httpx.Response:
+    active_client: list[httpx.Client] = []
+    client_lock = threading.Lock()
+
+    def post() -> httpx.Response:
+        timeout = httpx.Timeout(28.0, connect=1.0)
+        with httpx.Client(timeout=timeout, proxy=None, trust_env=False) as client:
+            with client_lock:
+                active_client.append(client)
+            try:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise InterruptedError("Task cancelled by user")
+                return client.post(f"http://127.0.0.1:{MAIN_SERVER_PORT}/api/capture/computer-use")
+            finally:
+                with client_lock:
+                    active_client.clear()
+
+    if cancel_event is None:
+        return post()
+    if cancel_event.is_set():
+        raise InterruptedError("Task cancelled by user")
+
+    result: dict[str, Any] = {}
+    finished = threading.Event()
+
+    def run_post() -> None:
+        try:
+            result["response"] = post()
+        except Exception as exc:
+            result["error"] = exc
+        finally:
+            finished.set()
+
+    # HTTPX's read timeout is an idle timeout, so a stalled bridge must not
+    # hold the Agent's cancellation path until the HTTP request completes.
+    threading.Thread(target=run_post, daemon=True).start()
+    while not finished.wait(0.05):
+        if cancel_event.is_set():
+            with client_lock:
+                client = active_client[0] if active_client else None
+            if client is not None:
+                client.close()
+            raise InterruptedError("Task cancelled by user")
+    if cancel_event.is_set():
+        raise InterruptedError("Task cancelled by user")
+    if "error" in result:
+        raise result["error"]
+    return result["response"]
+
+
+def _capture_computer_use_frame(cancel_event: threading.Event | None = None) -> Image.Image:
+    """Use the Electron desktop bridge when present, then the native backend."""
+    global _CAPTURE_BRIDGE_BACKOFF_UNTIL
+    bridge_error = None
+    if platform.system().lower() == "linux" and time.monotonic() >= _CAPTURE_BRIDGE_BACKOFF_UNTIL:
+        try:
+            response = _post_capture_bridge(cancel_event)
+            _CAPTURE_BRIDGE_BACKOFF_UNTIL = 0.0
+            if response.status_code == 504:
+                # The bridge gives up (25s) before this client's read timeout
+                # (28s), so a stalled renderer normally surfaces here.
+                _CAPTURE_BRIDGE_BACKOFF_UNTIL = time.monotonic() + _CAPTURE_BRIDGE_BACKOFF_SECONDS
+            payload = response.json()
+            if response.status_code != 200:
+                reason = payload.get("error") if isinstance(payload, dict) else None
+                raise DesktopCaptureError(f"renderer capture unavailable: {reason or response.status_code}")
+            data_url = payload.get("image") if isinstance(payload, dict) else None
+            if not isinstance(data_url, str) or not data_url.startswith((
+                "data:image/png;base64,", "data:image/jpeg;base64,"
+            )) or len(data_url) > 10 * 1024 * 1024:
+                raise DesktopCaptureError("renderer returned an invalid image payload")
+            image_bytes = base64.b64decode(data_url.split(",", 1)[1], validate=True)
+            with Image.open(BytesIO(image_bytes)) as image:
+                image.load()
+                if image.width < 1 or image.height < 1:
+                    raise DesktopCaptureError("renderer returned an empty image")
+                return image.copy()
+        except InterruptedError:
+            raise
+        except (httpx.HTTPError, ValueError, OSError, DesktopCaptureError) as exc:
+            bridge_error = exc
+            if isinstance(exc, httpx.TimeoutException):
+                _CAPTURE_BRIDGE_BACKOFF_UNTIL = time.monotonic() + _CAPTURE_BRIDGE_BACKOFF_SECONDS
+            logger.info("[CUA] Electron capture unavailable (%s); trying native backend", type(exc).__name__)
+
+    try:
+        return capture_desktop_screenshot()
+    except Exception as exc:
+        if bridge_error is not None:
+            raise DesktopCaptureError(
+                f"Electron capture and native screenshot failed: "
+                f"{bridge_error}; {exc}"
+            ) from exc
+        raise
 
 
 # ─── Connectivity probe error classification ────────────────────────────
@@ -283,7 +385,8 @@ pyautogui.click(742, 356)
 6. Call computer.terminate(status="failure") if stuck after multiple tries.
 7. Output exactly ONE code block. No more.
 8. Do NOT repeat a failing action — try a different approach.
-9. On {platform}, use platform-appropriate shortcuts and paths.
+9. Use direct calls with literal arguments (or variables assigned literals). Do not use loops, expressions, reflection, or builtin calls.
+10. On {platform}, use platform-appropriate shortcuts and paths.
 """
 
 STEP_TEMPLATE = "# Step {step_num}:\n"
@@ -293,6 +396,81 @@ HISTORY_TEMPLATE_NON_THINKING = "## Thought:\n{thought}\n\n## Action:\n{action}\
 
 
 # ─── Response Parser ────────────────────────────────────────────────────
+
+
+_CUA_ALLOWED_METHODS = frozenset({
+    "click", "doubleClick", "rightClick", "moveTo", "dragTo",
+    "scroll", "write", "typewrite", "press", "keyDown", "keyUp",
+    "hotkey", "tripleClick", "mouseDown", "mouseUp", "hscroll", "position",
+})
+
+
+def _sanitize_generated_code(code: str) -> str:
+    """The security boundary: validate the whole AST before any action executes.
+
+    Imports only bind injected action interfaces; literal assignments are folded
+    into arguments. No generated attribute reads, builtins, or Python expressions
+    are executed, including through an alias or a container.
+    """
+    import ast
+    tree = ast.parse(code, mode="exec")
+    values = {}
+    aliases = {"pyautogui": ("pyautogui", None), "time": ("time", None)}
+    actions = []
+
+    def literal(node):
+        if isinstance(node, ast.Name) and node.id in values:
+            return values[node.id]
+        return ast.literal_eval(node)
+
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Import):
+            for item in stmt.names:
+                if item.name not in ("pyautogui", "time"):
+                    raise ValueError("unsupported import")
+                aliases[item.asname or item.name] = (item.name, None)
+            continue
+        if isinstance(stmt, ast.ImportFrom):
+            if stmt.level or stmt.module not in ("pyautogui", "time"):
+                raise ValueError("unsupported import")
+            for item in stmt.names:
+                allowed = _CUA_ALLOWED_METHODS if stmt.module == "pyautogui" else {"sleep"}
+                if item.name not in allowed:
+                    raise ValueError("unsupported imported action")
+                aliases[item.asname or item.name] = (stmt.module, item.name)
+            continue
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+            name = stmt.targets[0].id
+            if name in aliases or name.startswith("_"):
+                raise ValueError("reserved assignment target")
+            values[name] = literal(stmt.value)
+            continue
+        if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)):
+            raise ValueError("only direct action calls and literal assignments are allowed")
+        call = stmt.value
+        fn = call.func
+        if isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name):
+            target_name, imported_method = aliases.get(fn.value.id, (None, None))
+            if imported_method is not None:
+                raise ValueError("unsupported call target")
+            target_method = fn.attr
+        elif isinstance(fn, ast.Name):
+            target_name, target_method = aliases.get(fn.id, (None, None))
+        else:
+            raise ValueError("unsupported call target")
+        if not ((target_name == "pyautogui" and target_method in _CUA_ALLOWED_METHODS)
+                or (target_name == "time" and target_method == "sleep")):
+            raise ValueError("unsupported action")
+        args = [ast.parse(repr(literal(arg)), mode="eval").body for arg in call.args]
+        keywords = []
+        for kw in call.keywords:
+            if kw.arg is None:
+                raise ValueError("keyword unpacking not supported")
+            keywords.append(ast.keyword(arg=kw.arg, value=ast.parse(repr(literal(kw.value)), mode="eval").body))
+        actions.append(ast.Expr(value=ast.Call(
+            func=ast.Attribute(value=ast.Name(id=target_name, ctx=ast.Load()), attr=target_method, ctx=ast.Load()),
+            args=args, keywords=keywords)))
+    return ast.unparse(ast.fix_missing_locations(ast.Module(body=actions, type_ignores=[])))
 
 
 def parse_response(
@@ -400,26 +578,19 @@ class _ScaledPyAutoGUI:
 
     def __init__(
         self,
-        backend,
-        screen_w: int,
-        screen_h: int,
+        backend=None,
+        screen_w: int = 1920,
+        screen_h: int = 1080,
         cancel_event: Optional[threading.Event] = None,
+        held_keys: Optional[list[str]] = None,
+        held_buttons: Optional[list[str]] = None,
     ):
-        self._backend = backend
+        self._backend = backend if backend is not None else _load_pyautogui()
+        self._held_keys = held_keys if held_keys is not None else []
+        self._held_buttons = held_buttons if held_buttons is not None else []
         self._w = screen_w
         self._h = screen_h
         self._cancel_event = cancel_event
-
-    def __getattr__(self, name):
-        attr = getattr(self._backend, name)
-        if callable(attr):
-
-            def _wrapped(*args, **kwargs):
-                self._ensure_not_cancelled()
-                return attr(*args, **kwargs)
-
-            return _wrapped
-        return attr
 
     def _ensure_not_cancelled(self) -> None:
         if self._cancel_event is not None and self._cancel_event.is_set():
@@ -498,7 +669,6 @@ class _ScaledPyAutoGUI:
         tx, ty = self._extract_xy(a, kw)
         if tx is not None:
             self._smooth_move_to(tx, ty)
-            self._show_click_halo(tx, ty)
         self._ensure_not_cancelled()
         return self._backend.click(*a, **kw)
 
@@ -508,7 +678,6 @@ class _ScaledPyAutoGUI:
         tx, ty = self._extract_xy(a, kw)
         if tx is not None:
             self._smooth_move_to(tx, ty)
-            self._show_click_halo(tx, ty)
         self._ensure_not_cancelled()
         return self._backend.doubleClick(*a, **kw)
 
@@ -518,7 +687,6 @@ class _ScaledPyAutoGUI:
         tx, ty = self._extract_xy(a, kw)
         if tx is not None:
             self._smooth_move_to(tx, ty)
-            self._show_click_halo(tx, ty)
         self._ensure_not_cancelled()
         return self._backend.rightClick(*a, **kw)
 
@@ -570,8 +738,6 @@ class _ScaledPyAutoGUI:
         """Smoothly move the cursor to (x, y) with easeOutQuad tween."""
         try:
             tween = getattr(self._backend, "easeOutQuad", None)
-            if tween is None and pyautogui is not None:
-                tween = getattr(pyautogui, "easeOutQuad", None)
             self._backend.moveTo(
                 x,
                 y,
@@ -580,22 +746,12 @@ class _ScaledPyAutoGUI:
                 **({"tween": tween} if tween else {}),
             )
         except Exception:
-            # Fallback: instant move
             try:
                 self._backend.moveTo(x, y, _pause=False)
             except Exception:
                 pass
 
-    def _show_click_halo(self, x: int, y: int):
-        """Show a brief expanding-ring halo at (x, y). Windows only, via ctypes."""
-        # TODO: 光圈暂未实现。当前方案存在问题：
-        #   1. ctypes.wintypes 没有 WNDCLASS 结构体，需手动定义 WNDCLASSEXW
-        #   2. GDI 绘制需要消息循环 (PeekMessage/DispatchMessage) 才能渲染
-        #   3. 可考虑改用 UpdateLayeredWindow + 内存 DC 一次性贴图，或由 Electron 前端渲染
-        pass
-
     def _clipboard_type(self, text: str):
-        """Type text via clipboard paste — handles CJK / Unicode reliably."""
         self._ensure_not_cancelled()
         import pyperclip
 
@@ -618,10 +774,6 @@ class _ScaledPyAutoGUI:
     def write(self, *a, **kw):
         self._ensure_not_cancelled()
         text_str, a, kw = self._coerce_write_args(a, kw)
-        # Clipboard paste is only needed for non-ASCII (CJK, emoji, etc.)
-        # that pyautogui.write() cannot handle natively.
-        # For ASCII-only text, use real key simulation so it works in games
-        # and other non-text-field contexts where Ctrl+V is ignored.
         if any(ord(c) > 127 for c in text_str):
             try:
                 self._clipboard_type(text_str)
@@ -632,6 +784,87 @@ class _ScaledPyAutoGUI:
 
     def typewrite(self, *a, **kw):
         self.write(*a, **kw)
+
+    def press(self, key, *a, **kw):
+        self._ensure_not_cancelled()
+        return self._backend.press(key, *a, **kw)
+
+    def keyDown(self, key, *a, **kw):
+        self._ensure_not_cancelled()
+        result = self._backend.keyDown(key, *a, **kw)
+        self._held_keys.append(key)
+        return result
+
+    def keyUp(self, key, *a, **kw):
+        self._ensure_not_cancelled()
+        result = self._backend.keyUp(key, *a, **kw)
+        while key in self._held_keys:
+            self._held_keys.remove(key)
+        return result
+
+    def hotkey(self, *keys, **kw):
+        self._ensure_not_cancelled()
+        return self._backend.hotkey(*keys, **kw)
+
+
+    def tripleClick(self, *a, **kw):
+        kw["clicks"] = 3
+        return self.click(*a, **kw)
+
+    def mouseDown(self, *a, **kw):
+        self._ensure_not_cancelled()
+        a, kw = self._project(a, kw)
+        result = self._backend.mouseDown(*a, **kw)
+        button = kw.get("button", a[2] if len(a) > 2 else "left")
+        if button not in self._held_buttons:
+            self._held_buttons.append(button)
+        return result
+
+    def mouseUp(self, *a, **kw):
+        self._ensure_not_cancelled()
+        a, kw = self._project(a, kw)
+        result = self._backend.mouseUp(*a, **kw)
+        button = kw.get("button", a[2] if len(a) > 2 else "left")
+        if button in self._held_buttons:
+            self._held_buttons.remove(button)
+        return result
+
+    def hscroll(self, clicks, x=None, y=None, *args, **kwargs):
+        self._ensure_not_cancelled()
+        if x is not None and y is not None:
+            x, y = self._project_pair(x, y)
+        return self._backend.hscroll(clicks, x=x, y=y, *args, **kwargs)
+
+    def position(self):
+        self._ensure_not_cancelled()
+        return self._backend.position()
+
+    def release_held_keys(self):
+        # PyAutoGUI's failsafe should stop actions, but must not prevent releasing
+        # held input when cancellation occurs at a screen corner. Runs under the
+        # desktop execution lock; restore the caller's failsafe setting afterward.
+        failsafe = getattr(self._backend, "FAILSAFE", None)
+        try:
+            if failsafe is not None:
+                self._backend.FAILSAFE = False
+            for held, release, kwargs in (
+                (self._held_keys, getattr(self._backend, "keyUp", None), {}),
+                (self._held_buttons, getattr(self._backend, "mouseUp", None), {"button": None}),
+            ):
+                for item in list(held):
+                    try:
+                        if kwargs:
+                            release(button=item, _pause=False)
+                        else:
+                            release(item, _pause=False)
+                    except Exception:
+                        continue
+                    while item in held:
+                        held.remove(item)
+        finally:
+            if failsafe is not None:
+                self._backend.FAILSAFE = failsafe
+        return not self._held_keys and not self._held_buttons
 
 
 # ─── Main Adapter ───────────────────────────────────────────────────────
@@ -655,6 +888,8 @@ class ComputerUseAdapter:
         self.init_ok = False
         self._cancelled: bool = False
         self._cancel_event = threading.Event()
+        self._held_keys: list[str] = []
+        self._held_buttons: list[str] = []
         self._done_event = threading.Event()
         self._done_event.set()  # initially "done" (no task running)
         self.max_steps = max_steps
@@ -678,7 +913,6 @@ class ComputerUseAdapter:
         )
 
         # Kimi-style agent state
-        self._current_session_id: Optional[str] = None
         self.actions: List[str] = []
         self.observations: List[bytes] = []
         self.cots: List[Dict[str, str]] = []
@@ -1073,32 +1307,43 @@ class ComputerUseAdapter:
         self._cancel_event.wait(timeout=seconds)
 
     def _make_cancellable_time_module(self):
-        """Return a *time*-like namespace whose ``sleep`` is interruptible."""
+        """Provide interruptible sleep. AST validation is the security boundary;
+        this namespace and its Python function are not a standalone sandbox.
+        """
         import types
-
         fake = types.ModuleType("time")
         cancel_event = self._cancel_event
-        for attr in (
-            "monotonic",
-            "time",
-            "perf_counter",
-            "strftime",
-            "gmtime",
-            "localtime",
-            "mktime",
-        ):
-            if hasattr(time, attr):
-                setattr(fake, attr, getattr(time, attr))
-
         def _cancellable_sleep(seconds):
             cancel_event.wait(timeout=min(float(seconds), 30))
             if cancel_event.is_set():
                 raise InterruptedError("Task cancelled")
-
         fake.sleep = _cancellable_sleep
         return fake
 
-    def run_instruction(
+    def _build_exec_env(self) -> dict:
+        exec_env: dict = {"__builtins__": {}}
+        exec_env["pyautogui"] = _ScaledPyAutoGUI(
+            pyautogui,
+            self.screen_width,
+            self.screen_height,
+            cancel_event=self._cancel_event,
+            held_keys=self._held_keys,
+            held_buttons=self._held_buttons,
+        )
+        exec_env["time"] = self._make_cancellable_time_module()
+        return exec_env
+
+    def run_instruction(self, instruction: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+        # Held across the actual synchronous worker lifetime, even if its async
+        # caller times out waiting for cancellation. All adapters share the desktop.
+        if not _CUA_EXECUTION_LOCK.acquire(blocking=False):
+            return {"success": False, "error": "Computer use is still running"}
+        try:
+            return self._run_instruction(instruction, session_id)
+        finally:
+            _CUA_EXECUTION_LOCK.release()
+
+    def _run_instruction(
         self, instruction: str, session_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Execute a natural-language instruction via GUI automation.
@@ -1116,22 +1361,26 @@ class ComputerUseAdapter:
         self._cancel_event.clear()
         self._done_event.clear()
 
-        if session_id is None or session_id != self._current_session_id:
-            self.reset()
-            self._current_session_id = session_id
+        self.reset()
+        gui = self._build_exec_env()["pyautogui"]
 
         last_action = ""
         success = False
         answer = ""
 
         try:
+            if not gui.release_held_keys():
+                return {"success": False, "error": "Could not release keys from the previous run"}
             for step in range(1, self.max_steps + 1):
                 if self._cancelled:
                     logger.info("[CUA] Task cancelled by user at step %d", step)
                     return {"success": False, "error": "Task cancelled by user"}
 
                 t0 = time.monotonic()
-                shot = pyautogui.screenshot()
+                shot = _capture_computer_use_frame(self._cancel_event)
+                if self._cancelled:
+                    logger.info("[CUA] Task cancelled after capture at step %d", step)
+                    return {"success": False, "error": "Task cancelled by user"}
                 # CUA 自己抓屏做 agent 控制，需要更高分辨率读清小字 UI；不随 vision 分析
                 # 一起降到 720p，显式锁定在 1080p（quality 仍走默认）。
                 jpg_bytes = compress_screenshot(shot, target_h=1080)
@@ -1179,36 +1428,34 @@ class ComputerUseAdapter:
 
                 # ── Execute pyautogui code ───────────────────────────
                 try:
-                    exec_env: dict = {"__builtins__": __builtins__}
-                    exec_env["pyautogui"] = _ScaledPyAutoGUI(
-                        pyautogui,
-                        self.screen_width,
-                        self.screen_height,
-                        cancel_event=self._cancel_event,
-                    )
-                    exec_env["time"] = self._make_cancellable_time_module()
-                    exec_env["os"] = os
-                    exec(code, exec_env)
+                    exec_env = self._build_exec_env()
+                    exec(compile(_sanitize_generated_code(code), "<cua>", "exec"), exec_env)
                     self._interruptible_sleep(0.3)
                 except InterruptedError:
                     logger.info("[CUA] Task cancelled during exec at step %d", step)
                     return {"success": False, "error": "Task cancelled by user"}
                 except Exception as e:
-                    logger.warning(
-                        "[CUA] Exec error step %d: %s\nCode: %s", step, e, code
-                    )
+                    print(f"[CUA] Exec error step {step}: {e}\nCode: {code}")
+                    if self.cots:
+                        self.cots[-1]["action"] += f"\nExecution failed ({type(e).__name__}); the action did not complete. Use the documented direct action API."
                     self._interruptible_sleep(0.3)
             else:
                 answer = f"Reached {self.max_steps} steps without completion"
                 success = False
 
+        except InterruptedError:
+            return {"success": False, "error": "Task cancelled by user"}
         except Exception as e:
             logger.error(
                 "[CUA] run_instruction error: %s\n%s", e, traceback.format_exc()
             )
             return {"success": False, "error": str(e)}
         finally:
-            self._done_event.set()
+            try:
+                if not gui.release_held_keys():
+                    logger.warning("[CUA] Key cleanup failed; retained for retry")
+            finally:
+                self._done_event.set()
 
         return {
             "success": success,

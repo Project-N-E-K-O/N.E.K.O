@@ -137,7 +137,7 @@
             const f = this._cachedFlags;
             if (!f) return false;
             const master = !!f.agent_enabled;
-            const child = !!(f.computer_use_enabled || f.browser_use_enabled || f.user_plugin_enabled || f.openclaw_enabled || f.openfang_enabled);
+            const child = !!(f.computer_use_enabled || f.browser_use_enabled || f.user_plugin_enabled || f.openclaw_enabled);
             return master && child;
         },
 
@@ -1113,6 +1113,14 @@
                     checkbox._processing = true;
                 }
 
+                const capturePreparation = flagKey === 'computer_use_enabled' && isChecked
+                    && typeof window.prepareComputerUseCapture === 'function'
+                    ? window.prepareComputerUseCapture() : null;
+                if (flagKey === 'computer_use_enabled' && !isChecked
+                    && typeof window.releaseComputerUseCapture === 'function') {
+                    window.releaseComputerUseCapture();
+                }
+
                 try {
                     const enabled = isChecked;
                     if (enabled) {
@@ -1127,10 +1135,42 @@
                         }
 
                         if (!ok) {
+                            if (flagKey === 'computer_use_enabled'
+                                && typeof window.releaseComputerUseCapture === 'function') {
+                                window.releaseComputerUseCapture();
+                            }
                             setFloatingAgentStatus(window.t ? window.t('settings.toggles.unavailable', { name }) : `${name}\u4e0d\u53ef\u7528`);
                             checkbox.checked = false;
                             syncCheckboxUI(checkbox);
                             return;
+                        }
+                        if (flagKey === 'computer_use_enabled'
+                            && typeof window.computerUseNeedsCaptureStream === 'function'
+                            && window.computerUseNeedsCaptureStream()) {
+                            const captureReady = capturePreparation && await capturePreparation;
+                            const nativeReady = !captureReady
+                                && typeof window.computerUseNativeCaptureAvailable === 'function'
+                                && await window.computerUseNativeCaptureAvailable();
+                            if (isExpired()) return;
+                            if (!captureReady && !nativeReady) {
+                                if (typeof window.releaseComputerUseCapture === 'function') {
+                                    window.releaseComputerUseCapture();
+                                }
+                                checkbox.checked = false;
+                                syncCheckboxUI(checkbox);
+                                const captureFailure = typeof window.getComputerUseCaptureFailure === 'function'
+                                    ? window.getComputerUseCaptureFailure() : '';
+                                const portalPending = captureFailure === 'display_media_pending'
+                                    || captureFailure === 'display_media_timeout';
+                                setFloatingAgentStatus(window.t
+                                    ? window.t(portalPending
+                                        ? 'agent.status.screenSharePendingReload'
+                                        : 'agent.status.screenShareRequired')
+                                    : portalPending
+                                        ? 'Screen capture is still pending. Reload the page and try again.'
+                                        : 'Share the entire screen before enabling keyboard control');
+                                return;
+                            }
                         }
                     }
 
@@ -1164,6 +1204,10 @@
                     } catch (e) {
                         if (isExpired()) return;
                         if (enabled) {
+                            if (flagKey === 'computer_use_enabled'
+                                && typeof window.releaseComputerUseCapture === 'function') {
+                                window.releaseComputerUseCapture();
+                            }
                             checkbox.checked = false;
                             syncCheckboxUI(checkbox);
                             setFloatingAgentStatus(window.t ? window.t('settings.toggles.enableFailed', { name }) : `${name}\u5f00\u542f\u5931\u8d25`);
@@ -1438,7 +1482,7 @@
 
                         window.stopAgentTaskPolling();
 
-                        if (flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled || flags.openfang_enabled) {
+                        if (flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled) {
                             console.log('[App] \u603b\u5f00\u5173\u5173\u95ed\u4f46\u68c0\u6d4b\u5230\u5b50flag\u5f00\u542f\uff0c\u5f3a\u5236\u540c\u6b65\u5173\u95ed');
                             fetch('/api/agent/flags', {
                                 method: 'POST',
@@ -1543,7 +1587,8 @@
         // 如果轮询已经停止，跳过重复清理
         if (!agentTaskPollingInterval && !agentTaskTimeUpdateInterval && !window._agentTaskTimeUpdateInterval) {
             // 仍然确保 HUD 隐藏（幂等操作）
-            if (window.AgentHUD && window.AgentHUD.hideAgentTaskHUD) {
+            if (window.AgentHUD && window.AgentHUD.hideAgentTaskHUD &&
+            (isGoodbyeAgentUiSuppressed() || !(window.NekoPluginViews && window.NekoPluginViews.hasContent()))) {
                 window.AgentHUD.hideAgentTaskHUD();
             }
             return;
@@ -1562,7 +1607,8 @@
         }
         agentTaskPollingInterval = null;
 
-        if (window.AgentHUD && window.AgentHUD.hideAgentTaskHUD) {
+        if (window.AgentHUD && window.AgentHUD.hideAgentTaskHUD &&
+            (isGoodbyeAgentUiSuppressed() || !(window.NekoPluginViews && window.NekoPluginViews.hasContent()))) {
             window.AgentHUD.hideAgentTaskHUD();
         }
     };
@@ -1651,14 +1697,12 @@
         const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser', 'pngtuber-agent-browser']);
         const userPlugin = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin', 'pngtuber-agent-user-plugin']);
         const openclawCheckbox = getEl(['live2d-agent-openclaw', 'vrm-agent-openclaw', 'mmd-agent-openclaw', 'pngtuber-agent-openclaw']);
-        const openfangCheckbox = getEl(['live2d-agent-openfang', 'vrm-agent-openfang', 'mmd-agent-openfang', 'pngtuber-agent-openfang']);
 
         const domMaster = masterCheckbox ? masterCheckbox.checked : false;
         const domChild = (keyboardCheckbox && keyboardCheckbox.checked)
             || (browserCheckbox && browserCheckbox.checked)
             || (userPlugin && userPlugin.checked)
-            || (openclawCheckbox && openclawCheckbox.checked)
-            || (openfangCheckbox && openfangCheckbox.checked);
+            || (openclawCheckbox && openclawCheckbox.checked);
 
         const snap = window._agentStatusSnapshot;
         const machineFlags = window.agentStateMachine ? window.agentStateMachine._cachedFlags : null;
@@ -1670,8 +1714,8 @@
         if (window.agent_ui_v2_state && window.agent_ui_v2_state.optimistic) {
             const opt = window.agent_ui_v2_state.optimistic;
             if ('agent_enabled' in opt) optMaster = !!opt.agent_enabled;
-            if ('computer_use_enabled' in opt || 'browser_use_enabled' in opt || 'user_plugin_enabled' in opt || 'openclaw_enabled' in opt || 'openfang_enabled' in opt) {
-                optChild = !!opt.computer_use_enabled || !!opt.browser_use_enabled || !!opt.user_plugin_enabled || !!opt.openclaw_enabled || !!opt.openfang_enabled;
+            if ('computer_use_enabled' in opt || 'browser_use_enabled' in opt || 'user_plugin_enabled' in opt || 'openclaw_enabled' in opt) {
+                optChild = !!opt.computer_use_enabled || !!opt.browser_use_enabled || !!opt.user_plugin_enabled || !!opt.openclaw_enabled;
             }
         }
 
@@ -1682,7 +1726,7 @@
 
         if (!isUiInteractive) {
             isMasterOn = optMaster !== undefined ? optMaster : (flags && !!flags.agent_enabled);
-            isChildOn = optChild !== undefined ? optChild : (flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled || flags.openfang_enabled));
+            isChildOn = optChild !== undefined ? optChild : (flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled));
         } else {
             isMasterOn = optMaster !== undefined ? optMaster : domMaster;
             isChildOn = optChild !== undefined ? optChild : domChild;
@@ -1729,7 +1773,6 @@
             const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser', 'pngtuber-agent-browser']);
             const userPluginCheckbox = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin', 'pngtuber-agent-user-plugin']);
             const openclawCheckbox = getEl(['live2d-agent-openclaw', 'vrm-agent-openclaw', 'mmd-agent-openclaw', 'pngtuber-agent-openclaw']);
-            const openfangCheckbox = getEl(['live2d-agent-openfang', 'vrm-agent-openfang', 'mmd-agent-openfang', 'pngtuber-agent-openfang']);
 
             if (!keyboardCheckbox || !browserCheckbox) {
                 setTimeout(bindHUD, 500);
@@ -1747,10 +1790,6 @@
             if (openclawCheckbox) {
                 openclawCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
                 openclawCheckbox.addEventListener('change', checkAndToggleTaskHUD);
-            }
-            if (openfangCheckbox) {
-                openfangCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
-                openfangCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
 
             checkAndToggleTaskHUD();

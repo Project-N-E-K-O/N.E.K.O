@@ -351,7 +351,7 @@ def _mini_game_launch_url(game_type: str, lanlan_name: str, session_id: str) -> 
     return f"{url_template}{separator}{_urlencode(query)}"
 
 
-def _pick_mini_game_type(lanlan_name: str | None = None) -> str | None:
+def _pick_mini_game_type(lanlan_name: str | None = None, *, manager=None) -> str | None:
     """Pick an available mini-game type with invite copy configured.
 
     Games missing invite lines are skipped, and character-specific cooldowns are
@@ -361,6 +361,10 @@ def _pick_mini_game_type(lanlan_name: str | None = None) -> str | None:
         g for g in MINI_GAME_INVITE_AVAILABLE_GAMES
         if g in MINI_GAME_INVITE_LINES_BY_GAME
     ]
+    if 'watch-together' in candidates:
+        from main_logic.watch_together.preparation import is_available
+        if not is_available(manager):
+            candidates.remove('watch-together')
     if lanlan_name:
         candidates = [
             g for g in candidates
@@ -485,7 +489,7 @@ async def _attempt_mini_game_invite_delivery(
             and total_so_far >= max(0, MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1)
         )
 
-        game_type = _pick_mini_game_type(lanlan_name)
+        game_type = _pick_mini_game_type(lanlan_name, manager=mgr)
         if game_type is None:
             logger.warning(
                 "[%s] mini-game invite skipped: no game_type available "

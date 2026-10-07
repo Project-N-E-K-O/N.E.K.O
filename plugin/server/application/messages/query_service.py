@@ -32,6 +32,58 @@ def _b64_bytes(value: object) -> str | None:
     return encoded.decode("utf-8")
 
 
+# The part types whose inline bytes used to be copied into the record-level
+# ``binary_data`` field. Kept identical to the tuple the SDK used when it did
+# that copying, so this reader picks exactly the part the writer would have
+# picked -- the first inline media part, in wire order.
+_INLINE_MEDIA_PART_TYPES = ("image", "audio", "video")
+
+
+def _inline_binary_data_b64(record: Mapping[str, object]) -> str | None:
+    """Base64 of the record's inline bytes, legacy field first, then parts.
+
+    ``binary_data`` used to arrive pre-filled: push_message decoded the
+    canonical ``parts[].binary_base64`` back into raw bytes and attached the
+    copy to every envelope, so one image travelled the wire twice (~2.34x its
+    raw size) and blew MESSAGE_PLANE_PAYLOAD_MAX_BYTES at a third of the
+    documented ceiling. The copy is gone; this response field is not, because
+    it is public HTTP shape that the plugin-manager frontend reads. So the
+    value is now reconstructed on demand from the part that still carries it.
+
+    The legacy field is still checked first, and not merely for old records
+    already in the store: the SDK keeps emitting it for the one shape where it
+    is the ONLY carrier -- a caller passing the deprecated ``binary_data=``
+    kwarg next to an explicit ``parts=`` list, which translate_push_message
+    leaves untranslated.
+
+    Decoding and re-encoding rather than passing ``binary_base64`` straight
+    through is deliberate: it is exactly the round trip the old writer did, so
+    a non-canonical blob (odd padding, embedded newlines) still serialises to
+    the same string this endpoint returned before.
+    """
+    legacy = _b64_bytes(record.get("binary_data"))
+    if legacy is not None:
+        return legacy
+    parts = record.get("parts")
+    if not isinstance(parts, list):
+        return None
+    for part in parts:
+        if not isinstance(part, Mapping):
+            continue
+        if part.get("type") not in _INLINE_MEDIA_PART_TYPES:
+            continue
+        blob = part.get("binary_base64")
+        if not isinstance(blob, str) or not blob:
+            continue
+        try:
+            return _b64_bytes(base64.b64decode(blob, validate=False))
+        except Exception:
+            # A malformed blob is one part's problem, not the response's: the
+            # writer skipped it and kept scanning, and so does this.
+            continue
+    return None
+
+
 def _serialize_message(record: Mapping[str, object]) -> SerializedMessage:
     metadata_obj = record.get("metadata")
     metadata: dict[str, object]
@@ -69,7 +121,7 @@ def _serialize_message(record: Mapping[str, object]) -> SerializedMessage:
         "priority": priority_value if priority_value is not None else 0,
         "message_type": message_type,
         "content": record.get("content"),
-        "binary_data": _b64_bytes(record.get("binary_data")),
+        "binary_data": _inline_binary_data_b64(record),
         "binary_url": binary_url_value if isinstance(binary_url_value, str) else "",
         "metadata": metadata,
         "timestamp": timestamp_value if isinstance(timestamp_value, str) and timestamp_value else now_iso(),

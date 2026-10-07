@@ -19,6 +19,7 @@ class CoreChatTurnContext:
     token: VoiceTurnToken
     external_turn_id: str
     session_ref: object
+    source_game_route_identity: tuple[str, str, str] | None = None
 
 
 @dataclass(slots=True)
@@ -26,6 +27,7 @@ class CoreChatVoiceInputConsumer:
     """Keep Core turn cleanup precise across route and session changes."""
 
     session_ref: Callable[[], object | None]
+    game_route_identity: Callable[[], tuple[str, str, str] | None]
     on_prepare: Callable[
         [VoiceTurnToken, CoreChatTurnContext],
         Awaitable[bool],
@@ -33,7 +35,7 @@ class CoreChatVoiceInputConsumer:
     on_partial_event: Callable[[VoicePartialEvent], Awaitable[None]]
     on_final_event: Callable[
         [VoiceTranscriptEvent, CoreChatTurnContext],
-        Awaitable[None],
+        Awaitable[bool | None],
     ]
     on_cancelled_event: Callable[
         [CoreChatTurnContext, str],
@@ -64,6 +66,7 @@ class CoreChatVoiceInputConsumer:
                 f"asr-{token.ingress.session_epoch}-{token.turn_id}"
             ),
             session_ref=session_ref,
+            source_game_route_identity=self.game_route_identity(),
         )
         self._prepared[token] = context
         accepted = bool(await self.on_prepare(token, context))
@@ -78,11 +81,13 @@ class CoreChatVoiceInputConsumer:
             return
         await self.on_partial_event(event)
 
-    async def on_final(self, event: VoiceTranscriptEvent) -> None:
+    async def on_final(self, event: VoiceTranscriptEvent) -> bool:
         context = self._prepared.pop(event.turn_token, None)
         if context is None:
-            return
-        await self.on_final_event(event, context)
+            return False
+        # Core has early-return paths for echo suppression, route takeover and
+        # lost prepare ownership. Only explicit submission success is useful.
+        return await self.on_final_event(event, context) is True
 
     async def on_cancelled(self, token: VoiceTurnToken, reason: str) -> None:
         context = self._prepared.pop(token, None)

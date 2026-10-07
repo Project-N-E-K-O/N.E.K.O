@@ -16,10 +16,8 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-import secrets
 import threading
 from typing import Any
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -27,6 +25,7 @@ from fastapi.responses import JSONResponse
 from config import AUTOSTART_ALLOWED_ORIGINS, AUTOSTART_CSRF_TOKEN
 from main_logic.vmc_sender import get_vmc_sender
 from main_routers.system_router import _validate_local_mutation_request
+from utils.local_ws_guard import valid_auth_frame, websocket_origin_allowed
 from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api/vmc", tags=["vmc"])
@@ -41,6 +40,13 @@ _active_vmc_publisher: WebSocket | None = None
 _active_vmc_publisher_guard = threading.Lock()
 _publisher_generation = 0
 _pending_terminal_task: asyncio.Task[None] | None = None
+
+
+# The enable-broadcast hook that wakes browser samplers lives in
+# app/main_server/character_runtime.py, next to the connection registry it
+# broadcasts over. Reaching for it from here is a layer inversion
+# (main_routers L3 -> app L6) plus an import cycle; main_logic.vmc_sender's
+# set_vmc_enabled_callback() is the seam that lets the app layer own the wiring.
 
 
 def _claim_active_vmc_publisher(websocket: WebSocket) -> int | None:
@@ -246,39 +252,13 @@ def _invalid_json_body_response(exc: ValueError) -> JSONResponse:
 
 def _websocket_has_allowed_origin(websocket: WebSocket) -> bool:
     """Require a browser Origin from the server host or configured local hosts."""
-    raw_origin = websocket.headers.get("origin", "")
-    try:
-        parsed_origin = urlsplit(raw_origin)
-    except ValueError:
-        return False
-    if parsed_origin.scheme not in {"http", "https"} or not parsed_origin.hostname:
-        return False
-
-    request_host = websocket.url.hostname
-    if request_host and parsed_origin.hostname.lower() == request_host.lower():
-        return True
-
-    origin_host = parsed_origin.hostname.lower()
-    for allowed_origin in AUTOSTART_ALLOWED_ORIGINS:
-        try:
-            allowed_host = urlsplit(allowed_origin).hostname
-        except (TypeError, ValueError):
-            continue
-        if allowed_host and allowed_host.lower() == origin_host:
-            return True
-    return False
+    return websocket_origin_allowed(
+        websocket.headers.get("origin", ""), websocket.url.hostname, AUTOSTART_ALLOWED_ORIGINS,
+    )
 
 
 def _valid_websocket_auth(message: Any) -> bool:
-    if not isinstance(message, dict) or message.get("type") != "auth":
-        return False
-    token = message.get("csrf_token")
-    return bool(
-        isinstance(token, str)
-        and token
-        and AUTOSTART_CSRF_TOKEN
-        and secrets.compare_digest(token, AUTOSTART_CSRF_TOKEN)
-    )
+    return valid_auth_frame(message, AUTOSTART_CSRF_TOKEN)
 
 
 @router.get("/status")

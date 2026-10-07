@@ -176,7 +176,10 @@ async def voice_design(request: Request):
 
     try:
         if provider == 'cosyvoice':
-            from utils.api_config_loader import get_cosyvoice_clone_model
+            from utils.api_config_loader import (
+                get_cosyvoice_clone_model,
+                get_cosyvoice_user_preferred_model,
+            )
 
             cosyvoice_runtime = config_manager.get_cosyvoice_clone_runtime(provider)
             api_key = (cosyvoice_runtime.get('api_key') or '').strip()
@@ -189,7 +192,12 @@ async def voice_design(request: Request):
             provider_label = cosyvoice_runtime.get('provider_label') or '阿里百炼CosyVoice'
             dashscope_base_url = cosyvoice_runtime.get('base_url', '')
             storage_key = cosyvoice_runtime.get('storage_key') or api_key
-            design_model = get_cosyvoice_clone_model(provider)
+            # 音色注册会绑定 target_model（复刻音色不能跨模型使用），优先采用
+            # 用户在 TTS 端点填写的 cosyvoice-v* 模型，未填/填了别家 ID 时回退默认。
+            design_model = (
+                get_cosyvoice_user_preferred_model(provider)
+                or get_cosyvoice_clone_model(provider)
+            )
             voice_id, _preview_audio, _preview_media_type, request_id = await _cosyvoice_design_voice(
                 api_key=api_key,
                 base_url=dashscope_base_url,

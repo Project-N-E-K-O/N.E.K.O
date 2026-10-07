@@ -48,7 +48,7 @@ features:
     linkText: 工作原理
   - icon: 🤖
     title: 智能体框架
-    details: 通过已启用且就绪的 Computer Use、Browser Use、用户插件、OpenClaw 与 OpenFang 通道执行可选后台任务；支持取消单个任务或结束全部活动任务。
+    details: 通过已启用且就绪的 Computer Use、Browser Use、用户插件与 OpenClaw 通道执行可选后台任务；支持取消单个任务或结束全部活动任务。
     link: /zh-CN/architecture/agent-system
     linkText: 探索智能体
   - icon: 🔌

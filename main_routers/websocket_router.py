@@ -31,12 +31,16 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 import array
 import json
 import math
+import re
 import struct
 import sys
 import uuid
 import asyncio
 import time
 
+from utils.conversation_settings_constants import (
+    normalize_independent_asr_provider_preference_handshake,
+)
 from utils.logger_config import get_module_logger
 from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.new_character_greeting_state import has_pending as has_new_character_greeting_pending
@@ -47,7 +51,17 @@ from .shared_state import (
     get_config_manager,
     get_session_id,
 )
-from .game_router import is_game_route_active, route_external_stream_message
+# Importing game_router registers the ``game`` kind in the external-route
+# registry; the hijack points below only talk to the registry.
+from . import game_router as _game_router  # noqa: F401
+from utils.external_route_registry import (
+    RouteClaim,
+    route_external_microphone_audio,
+    route_external_start_session,
+    route_external_stream_message,
+)
+from utils.theater_activity import is_theater_active
+from utils.external_route_registry import is_external_route_active
 from utils.icebreaker_route_state import (
     finalize_icebreaker_route,
     get_active_icebreaker_route_session_id,
@@ -65,6 +79,24 @@ _VOICE_BINARY_HEADER_BYTES = 8
 # control: the sibling JSON branch below carries the same materialization and
 # is bounded separately (MIC_PCM_FRAME_TOO_LONG in the Core bridge).
 _VOICE_BINARY_MAX_DURATION_MS = 120
+
+
+def _log_voice_lifecycle_request(message, *, connection_id, is_current):
+    """Record control-message provenance without logging arbitrary client data."""
+    action = message.get("action")
+    if action not in ("start_session", "pause_session", "end_session"):
+        return
+    trace = message.get("lifecycle_trace")
+    if not (
+        isinstance(trace, str)
+        and len(trace) <= 256
+        and re.fullmatch(r"app-[a-z-]+\.js:\d{1,6}:\d{1,6}(;app-[a-z-]+\.js:\d{1,6}:\d{1,6}){0,3}", trace)
+    ):
+        trace = "unavailable"
+    logger.info(
+        "Voice lifecycle received action=%s connection=%s current=%s client_sites=%s",
+        action, connection_id, is_current, trace,
+    )
 
 
 def _decode_binary_audio_frame(payload: bytes) -> dict[str, object]:
@@ -151,9 +183,41 @@ def _is_voice_path_message(message: dict) -> bool:
     (app-websocket.js), but an ordinary user-initiated stop cannot.
     """
     action = message.get("action")
-    if action in {"voice_input_control", "pause_session"}:
+    if action in {"voice_input_control", "voice_identity_control", "pause_session"}:
         return True
     return action == "stream_data" and message.get("input_type") == "audio"
+
+
+async def _dispatch_voice_identity_control(manager, websocket, message: dict, *,
+                                           connection_id: str, owns_voice) -> None:
+    """Reply only to the requesting producer, never the display socket."""
+    details = {"event": message.get("event"), "request_id": message.get("request_id"),
+               "ok": False, "reason": "preview_owner_changed"}
+    if owns_voice():
+        try:
+            details = await manager._handle_voice_identity_control(message, connection_id=connection_id)
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling():
+                raise
+            details["reason"] = "voice_control_cancelled"
+        except Exception:
+            details["reason"] = "voice_control_failed"
+    if not owns_voice():
+        # A completed begin for a retired producer cannot leave a reservation
+        # or disclose its capability to a replacement window.
+        token = details.get("token")
+        if token:
+            from main_logic.voice_input.preview import preview_isolation_registry
+            preview_isolation_registry.release(token)
+        details = {"event": message.get("event"), "request_id": message.get("request_id"),
+                   "ok": False, "reason": "preview_owner_changed"}
+    try:
+        await websocket.send_text(json.dumps({"type": "status", "message": json.dumps({
+            "code": "VOICE_IDENTITY_CONTROL_RESULT", "details": details})}))
+    except Exception:
+        if details.get("token"):
+            from main_logic.voice_input.preview import preview_isolation_registry
+            preview_isolation_registry.release(details["token"])
 
 
 def _is_music_playback_state_message(message: dict) -> bool:
@@ -229,6 +293,90 @@ def _apply_session_language_message(manager, message: dict) -> str | None:
             render_language_setter(render_language)
 
     return render_language
+
+
+async def _decline_ordinary_input_for_theater(websocket, lanlan_name: str, input_type: str) -> None:
+    """Tell the client an ordinary text/image/avatar turn was dropped because a theater is running.
+
+    Server-side backstop for the frontend guards: another window (the Electron
+    Pet window, a concurrent ``/chat_full`` window) whose own theater runtime
+    is inactive could otherwise start an ordinary turn mid-performance, mixing
+    its TTS with the theater dialogue and writing to the hidden ordinary
+    history. Theater requests use their own HTTP routes and never reach here.
+    """
+    logger.info("[%s] theater session active: declining ordinary %s input", lanlan_name, input_type)
+    try:
+        await websocket.send_text(json.dumps({
+            "type": "status",
+            "message": json.dumps({
+                "code": "THEATER_SESSION_ACTIVE",
+                "details": {"reason": "theater_session_active", "input_type": input_type},
+            }),
+        }))
+    except Exception as exc:
+        logger.debug("[%s] theater input decline notice failed: %s", lanlan_name, exc)
+
+
+# lanlan_name -> in-flight task ending an ordinary voice session because PCM
+# kept arriving mid-theater; the frames that follow in the same burst must not
+# schedule a second teardown.
+_theater_voice_end_tasks: dict[str, asyncio.Task] = {}
+
+
+def _drop_ordinary_audio_for_theater(websocket, manager, lanlan_name: str) -> None:
+    """Drop one ordinary PCM frame while a theater runs, ending a live voice session once.
+
+    Server-side backstop for the frontend theater voice guard: a microphone
+    opened before the performance in another window (the Electron Pet floating
+    mic) keeps streaming after the theater starts, and those frames would
+    still produce ordinary turns and TTS interleaved with the theater lines.
+    The frame is dropped before it claims the voice connection or counts as
+    engagement. If an ordinary audio session is still live it is ended the
+    same way other server-side terminations end it, so the recorder that holds
+    the microphone tears it down and the user sees the theater voice notice.
+    The theater never sends PCM over this socket, so its own path is untouched.
+    """
+    pending = _theater_voice_end_tasks.get(lanlan_name)
+    if pending is not None and not pending.done():
+        return
+    if getattr(manager, "is_active", False) is not True or getattr(manager, "input_mode", None) != "audio":
+        return
+    logger.info("[%s] theater session active: ending ordinary voice session still streaming audio", lanlan_name)
+    expected_session = getattr(manager, "session", None)
+
+    async def _end() -> None:
+        try:
+            # The task runs after the frame handler returns, so the session may
+            # have been ended or replaced meanwhile. session_ended_by_server is not
+            # scoped to a session and would make the client drop whatever session
+            # is current, so notify only while the one seen above is still the live
+            # ordinary voice session; no await separates this check from the send.
+            if (
+                getattr(manager, "session", None) is not expected_session
+                or getattr(manager, "is_active", False) is not True
+                or getattr(manager, "input_mode", None) != "audio"
+            ):
+                logger.info("[%s] ordinary voice session changed before the theater teardown; leaving it", lanlan_name)
+            else:
+                notify_session_ended = getattr(manager, "send_session_ended_by_server", None)
+                if callable(notify_session_ended):
+                    await notify_session_ended()
+                if expected_session is None:
+                    await manager.end_session(by_server=True)
+                else:
+                    await manager.end_session(by_server=True, expected_session=expected_session)
+        except Exception as exc:
+            logger.warning("[%s] ending ordinary voice for theater failed: %s", lanlan_name, exc)
+        await _decline_ordinary_input_for_theater(websocket, lanlan_name, "audio")
+
+    task = _fire_task(_end())
+    _theater_voice_end_tasks[lanlan_name] = task
+
+    def _forget(done: asyncio.Task) -> None:
+        if _theater_voice_end_tasks.get(lanlan_name) is done:
+            _theater_voice_end_tasks.pop(lanlan_name, None)
+
+    task.add_done_callback(_forget)
 
 
 def _reserve_avatar_interaction_ingress(
@@ -485,6 +633,7 @@ def _handle_ws_telemetry(message: dict, *, lanlan_name: str) -> None:
 async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
+    voice_control_tasks = set()
     await websocket.accept()
     # Telemetry：WS 连接计数。**不带** lanlan_name dim —— 那是用户自定义的
     # character 名（characters_router 接受 user-controlled new_name），直接进
@@ -662,6 +811,13 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         input_mode fence below.
         """
         voice_mgr = session_manager[lanlan_name]
+        if message.get("action") == "voice_identity_control":
+            task = _fire_task(_dispatch_voice_identity_control(voice_mgr, websocket, message,
+                connection_id=str(this_session_id), owns_voice=_owns_voice_connection))
+            voice_control_tasks.add(task)
+            task.add_done_callback(voice_control_tasks.discard)
+            await asyncio.sleep(0)  # Install the PCM fence before the next buffered frame.
+            return
         if message.get("action") == "pause_session":
             # Codex P2. Lease ownership alone does not prove the live session is
             # still ours. A newer socket's text start installs ``self.session``
@@ -690,14 +846,16 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     lanlan_name,
                 )
                 return
+            logger.info(
+                "[%s] superseded recorder requested pause_session; ending its audio session",
+                lanlan_name,
+            )
             voice_mgr.active_session_is_idle = True
             # expected_session pins the identity for the gap between this check
             # and the fired task actually running. getattr-guarded like the rest
             # of this helper: narrow manager doubles do not carry every field.
-            _fire_task(
-                voice_mgr.end_session(
-                    expected_session=getattr(voice_mgr, "session", None)
-                )
+            voice_mgr.request_end_session(
+                expected_session=getattr(voice_mgr, "session", None)
             )
             return
         if message.get("action") == "voice_input_control":
@@ -739,11 +897,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 except Exception:
                     pass
             return
-        if is_game_route_active(lanlan_name):
-            await route_external_stream_message(
-                lanlan_name,
-                {"input_type": "audio", "stt_provider": "realtime"},
-            )
+        if await route_external_microphone_audio(lanlan_name):
+            return
         await voice_mgr.stream_data(message)
 
     if mgr.pending_agent_callbacks:
@@ -757,7 +912,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         # 计入活跃连接（finally 必减）。greeting_check 判定真·新会话时据此排除
         # 「并发开第二个窗口」的情形。
         _ws_active_count[lanlan_name] = _ws_active_count.get(lanlan_name, 0) + 1
+        malformed_frames = 0
         while True:
+            malformed = False
+            message = {}
+            data = None
             receive = getattr(websocket, "receive", None)
             if callable(receive):
                 ws_event = await receive()
@@ -767,28 +926,40 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 if binary_payload is not None:
                     try:
                         message = _decode_binary_audio_frame(binary_payload)
-                    except ValueError as exc:
-                        logger.warning(
-                            "[%s] dropping malformed binary audio frame: %s",
-                            lanlan_name,
-                            exc,
-                        )
-                        continue
+                    except ValueError:
+                        malformed = True
                 else:
                     data = ws_event.get("text")
-                    if not isinstance(data, str):
-                        raise ValueError("WEBSOCKET_MESSAGE_INVALID")
-                    message = json.loads(data)
+                    malformed = not isinstance(data, str)
             else:
-                # 兼容只实现 receive_text 的测试 double。
+                # Test doubles and production share exactly the same parser.
                 data = await websocket.receive_text()
-                message = json.loads(data)
+            if data is not None and not malformed:
+                try:
+                    message = json.loads(data)
+                    malformed = not isinstance(message, dict)
+                except json.JSONDecodeError:
+                    malformed = True
+            if malformed:
+                message = {}
+                malformed_frames += 1
+                # Never log the raw frame or parser error (may include user data).
+                if malformed_frames == 1:
+                    logger.warning("[%s] dropping malformed websocket frame", lanlan_name)
+            else:
+                malformed_frames = 0
+            _log_voice_lifecycle_request(
+                message,
+                connection_id=this_session_id,
+                is_current=session_id.get(lanlan_name) == this_session_id,
+            )
             # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
             if lanlan_name not in session_manager:
                 logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
                 await websocket.close()
                 break
-            if session_id.get(lanlan_name) != this_session_id:
+            if (session_id.get(lanlan_name) != this_session_id
+                    and not (malformed and (_owns_voice_connection() or _voice_identity_vacated()))):
                 # Separate connection identities: losing the global session_id
                 # (a newer window opened, or the newer window since closed and
                 # popped it) must not terminate an ongoing recording. While
@@ -823,10 +994,34 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
                     await websocket.close()
                     break
-                await session_manager[lanlan_name].send_status(json.dumps({"code": "CHARACTER_SWITCHING_TERMINAL", "details": {"name": lanlan_name}}))
+                # 「正在前往另一个终端」是说给被踢下线的这条旧连接听的。
+                # send_status 走 mgr.websocket，而它此刻已经归新窗口所有——发过去
+                # 就成了刚接走角色的那个窗口收到「角色要离开」。格式与 send_status
+                # 一致，前端按同一条 status 翻译路径显示。
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "status",
+                        "message": json.dumps({"code": "CHARACTER_SWITCHING_TERMINAL", "details": {"name": lanlan_name}}),
+                    }))
+                except Exception as send_err:
+                    logger.debug(f"CHARACTER_SWITCHING_TERMINAL 未能送达旧连接: {send_err}")
                 await websocket.close()
                 break
+            if malformed:
+                if malformed_frames >= 10:
+                    await websocket.close(code=1008)
+                    break
+                continue
             action = message.get("action")
+
+            if action == "voice_identity_control":
+                task = _fire_task(_dispatch_voice_identity_control(session_manager[lanlan_name],
+                    websocket, message, connection_id=str(this_session_id),
+                    owns_voice=_owns_voice_connection))
+                voice_control_tasks.add(task)
+                task.add_done_callback(voice_control_tasks.discard)
+                await asyncio.sleep(0)
+                continue
 
             # 处理语言设置（可以在任何消息中携带）
             render_language = _apply_session_language_message(
@@ -874,6 +1069,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     if isinstance(raw_optimization_override, bool)
                     else None
                 )
+                # Absent -> None (persisted setting decides); malformed -> "auto".
+                request_provider_preference_override = (
+                    normalize_independent_asr_provider_preference_handshake(
+                        message.get("independent_asr_provider_preference")
+                    )
+                )
                 # Handshake: the frontend rides its authoritative independent-ASR
                 # toggle along on every start_session so the route decision cannot
                 # use a stale persisted value (settings POST failed or still in
@@ -897,6 +1098,15 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     optimization_handshake_setter(
                         message.get("voice_input_resource_optimization_enabled")
                     )
+                provider_preference_handshake_setter = getattr(
+                    session_manager[lanlan_name],
+                    "set_independent_asr_provider_preference_handshake",
+                    None,
+                )
+                if callable(provider_preference_handshake_setter):
+                    provider_preference_handshake_setter(
+                        message.get("independent_asr_provider_preference")
+                    )
                 input_type = message.get("input_type", "audio")
                 # 前端每次 start_session 自带的请求标识，原样回带进
                 # session_started。多窗口下 ack 会经 voice-lease fan-out 到达
@@ -908,9 +1118,43 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 else:
                     request_id = None
                 if input_type in _SESSION_INPUT_TYPES:
-                    if is_game_route_active(lanlan_name):
+                    # The owning route decides this start (re-asked if it is
+                    # replaced while deciding); a decline, or no route, falls
+                    # through to the ordinary session path.
+                    claim, external_route = await route_external_start_session(
+                        lanlan_name,
+                        {"input_type": input_type, "request_id": request_id},
+                    )
+                    if claim is RouteClaim.CLAIMED:
+                        continue
+                    if session_id.get(lanlan_name) != this_session_id:
+                        # A newer window took the session while the route
+                        # decided; this socket must not start one. Its next
+                        # message hits the ownership check above and closes.
+                        logger.info("[%s] start_session dropped: connection superseded during route claim", lanlan_name)
+                        continue
+                    if claim is RouteClaim.UNSETTLED:
+                        # The owner kept changing while deciding: give up and
+                        # tell the requester, so its preparing state resets.
+                        # Only an addressed failure is sent: without a request
+                        # id, send_session_failed would adopt the id of whatever
+                        # start is in flight and fail that one instead.
+                        logger.info("[%s] start_session failed: external route kept changing during its claim", lanlan_name)
+                        if request_id:
+                            _fire_task(
+                                session_manager[lanlan_name].send_session_failed(
+                                    'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio',
+                                    request_id=request_id,
+                                )
+                            )
+                        continue
+                    if external_route is not None:
+                        # Default start handling for a route without
+                        # on_start_session (see ExternalRouteKind): text is
+                        # ack-only, audio starts ordinary realtime as the
+                        # route's STT provider.
                         if input_type in _TEXT_SESSION_INPUT_TYPES:
-                            logger.info("[%s] game route active: acknowledging text entry without starting ordinary text session", lanlan_name)
+                            logger.info("[%s] %s route active: acknowledging text entry without starting ordinary text session", lanlan_name, external_route.kind)
                             _fire_task(
                                 session_manager[lanlan_name].send_session_started(
                                     "text", request_id=request_id
@@ -918,11 +1162,14 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             )
                             continue
                         if input_type == "audio":
-                            logger.info("[%s] game route active: starting ordinary realtime as STT provider for game voice", lanlan_name)
+                            logger.info("[%s] %s route active: starting ordinary realtime as STT provider for route voice", lanlan_name, external_route.kind)
                             _claim_voice_input_connection()
                             if session_manager[lanlan_name]._starting_session_count == 0:
                                 session_manager[lanlan_name].reset_session_start_circuit()
-                            _fire_task(route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"}))
+                            # Announced through the registry, so a route that
+                            # ends or is replaced before this task runs is not
+                            # notified in place of the current owner.
+                            _fire_task(route_external_microphone_audio(lanlan_name))
                             _fire_task(
                                 session_manager[lanlan_name].start_session(
                                     websocket,
@@ -934,12 +1181,36 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                                     resource_optimization_override=(
                                         request_optimization_override
                                     ),
+                                    provider_preference_override=(
+                                        request_provider_preference_override
+                                    ),
                                 )
                             )
                             continue
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
                     mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
+                    if mode == "audio" and is_theater_active(lanlan_name):
+                        # Server-side backstop for the frontend theater voice guard:
+                        # decline before claiming the voice lease, then fail the
+                        # pending start on this socket so the client does not wait
+                        # for its start timeout.
+                        logger.info("[%s] theater session active: declining ordinary voice start", lanlan_name)
+                        try:
+                            await websocket.send_text(json.dumps({
+                                "type": "session_failed",
+                                "input_mode": "audio",
+                            }))
+                            await websocket.send_text(json.dumps({
+                                "type": "status",
+                                "message": json.dumps({
+                                    "code": "THEATER_SESSION_ACTIVE",
+                                    "details": {"reason": "theater_session_active"},
+                                }),
+                            }))
+                        except Exception as exc:
+                            logger.debug("[%s] theater voice decline notice failed: %s", lanlan_name, exc)
+                        continue
                     if mode == "audio":
                         _claim_voice_input_connection()
                         ensure_voice_input_authorized = getattr(
@@ -984,6 +1255,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             resource_optimization_override=(
                                 request_optimization_override
                             ),
+                            provider_preference_override=(
+                                request_provider_preference_override
+                            ),
                         )
                     )
                 else:
@@ -991,6 +1265,24 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
             elif action == "stream_data":
                 input_type = message.get("input_type")
+                if (
+                    input_type in _TEXT_SESSION_INPUT_TYPES
+                    and is_theater_active(lanlan_name)
+                    and not is_external_route_active(lanlan_name)
+                ):
+                    # Decline before stamping ingress so a dropped turn never
+                    # counts as user engagement.
+                    await _decline_ordinary_input_for_theater(websocket, lanlan_name, input_type)
+                    continue
+                if (
+                    input_type == "audio"
+                    and is_theater_active(lanlan_name)
+                    and not is_external_route_active(lanlan_name)
+                ):
+                    # External routes own their own voice and are offered input
+                    # before ordinary chat; only ordinary PCM is dropped here.
+                    _drop_ordinary_audio_for_theater(websocket, session_manager[lanlan_name], lanlan_name)
+                    continue
                 if input_type == "audio":
                     # PCM (JSON or decoded binary frame) is a voice engagement:
                     # first audio frame on this socket claims the voice input
@@ -1007,13 +1299,23 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     message,
                     lanlan_name=lanlan_name,
                 )
-                if is_game_route_active(lanlan_name):
-                    if input_type == "audio":
-                        await route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})
-                    else:
-                        handled_by_game = await route_external_stream_message(lanlan_name, message)
-                        if handled_by_game:
-                            continue
+                if input_type == "audio":
+                    if await route_external_microphone_audio(lanlan_name):
+                        continue
+                else:
+                    claim = await route_external_stream_message(lanlan_name, message)
+                    if claim is RouteClaim.UNSETTLED:
+                        # The owner kept changing: the input reached no route
+                        # and must not leak into ordinary chat, but its request
+                        # still needs a turn end or its bubble stays pending.
+                        # Only an addressed one: an unaddressed turn end (e.g.
+                        # for a screen frame) would seal an unrelated reply.
+                        logger.info("[%s] stream_data dropped: external route kept changing while handling it", lanlan_name)
+                        if message.get("request_id"):
+                            await stream_mgr._emit_agent_callback_turn_end(message.get("request_id"))
+                        continue
+                    if claim is RouteClaim.CLAIMED:
+                        continue
                 # [DIAG] 切换猫娘后语音 STT 不触发的排查：确认前端是否送达音频
                 # _input_type_dbg = message.get("input_type")
                 # _data = message.get("data")
@@ -1050,6 +1352,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             )
 
             elif action == "avatar_interaction":
+                if is_theater_active(lanlan_name):
+                    await _decline_ordinary_input_for_theater(websocket, lanlan_name, "avatar_interaction")
+                    continue
                 message = _stamp_user_input_ingress(message)
                 avatar_mgr = session_manager[lanlan_name]
                 # Validate and expose genuine engagement synchronously, before
@@ -1070,13 +1375,20 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             elif action == "end_session":
                 session_manager[lanlan_name].active_session_is_idle = False
                 end_reason = str(message.get("reason") or "").strip().lower()[:64]
+                logger.info(
+                    "[%s] frontend requested end_session (reason=%s goodbye_active=%s)",
+                    lanlan_name,
+                    end_reason or "-",
+                    bool(message.get("goodbye_active")),
+                )
                 if bool(message.get("goodbye_active")) or end_reason == "goodbye":
                     session_manager[lanlan_name].set_goodbye_silent(True, end_reason or "goodbye")
-                _fire_task(session_manager[lanlan_name].end_session())
+                session_manager[lanlan_name].request_end_session()
 
             elif action == "pause_session":
+                logger.info("[%s] frontend requested pause_session", lanlan_name)
                 session_manager[lanlan_name].active_session_is_idle = True
-                _fire_task(session_manager[lanlan_name].end_session())
+                session_manager[lanlan_name].request_end_session()
 
             elif action == "voice_input_control":
                 # Any MicLease control message engages voice input for this
@@ -1137,6 +1449,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 mark_capture_client(lanlan_name, websocket, message)
 
             elif action == "capture_bridge_response":
+                from utils.capture_bridge import resolve_capture_response
+                resolve_capture_response(lanlan_name, message)
+
+            elif action == "capture_bridge_computer_use_response":
                 from utils.capture_bridge import resolve_capture_response
                 resolve_capture_response(lanlan_name, message)
 
@@ -1319,6 +1635,18 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         # 内只有 break 才到这；break 路径上面都设过 reason；这里兜底防 NameError。
         _ws_disconnect_reason = "normal_break"
     finally:
+        control_cancellation = None
+        for task in tuple(voice_control_tasks):
+            task.cancel()
+        if voice_control_tasks:
+            from utils.asyncio_retirement import await_retirement
+            try:
+                await await_retirement(asyncio.gather(*tuple(voice_control_tasks), return_exceptions=True))
+            except asyncio.CancelledError as exc:
+                control_cancellation = exc
+        if lanlan_name in session_manager:
+            from main_logic.voice_input.preview import preview_isolation_registry
+            preview_isolation_registry.release_connection(session_manager[lanlan_name], str(this_session_id))
         # Telemetry：连接生命周期。reason 是低基数 enum，duration 进 histogram
         # 看用户实际停留时长（D2-D7 流失诊断的关键指标之一）。
         # lanlan_name 不进 dim —— 见 accept 处 ws_connect 同样原因（PII + 高基数）。
@@ -1460,3 +1788,5 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 )
             else:
                 await session_manager[lanlan_name].cleanup(expected_websocket=websocket)
+        if control_cancellation is not None:
+            raise control_cancellation

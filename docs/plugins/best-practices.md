@@ -8,7 +8,7 @@ Always return `Ok`/`Err` instead of raising exceptions in entry points:
 from plugin.sdk.plugin import Ok, Err, SdkError
 
 @plugin_entry(id="process")
-def process(self, data: str, **_):
+async def process(self, data: str, **_):
     if not data:
         return Err(SdkError("data is required"))
 
@@ -35,7 +35,7 @@ class WellOrganizedPlugin(NekoPluginBase):
 
     # --- Lifecycle ---
     @lifecycle(id="startup")
-    def on_startup(self, **_):
+    async def on_startup(self, **_):
         return Ok({"status": "ready"})
 
     # --- Private helpers ---
@@ -49,7 +49,7 @@ class WellOrganizedPlugin(NekoPluginBase):
 
     # --- Public entry points ---
     @plugin_entry(id="process")
-    def process(self, data: str, **_):
+    async def process(self, data: str, **_):
         self._validate(data)
         return Ok({"result": self._do_work(data)})
 ```
@@ -66,7 +66,7 @@ Use appropriate log levels:
 | `error` | Errors that need attention |
 | `exception` | Errors with full stack trace |
 
-Keep raw conversations, user-entered secrets, and other privacy-sensitive payloads out of persistent logs. If a temporary diagnostic must expose such content, use an explicit `print()` path and remove it after debugging; never send raw private content through `self.logger`. Prefer redacted lengths, IDs, and error types in normal logs.
+Keep raw conversations, user-entered secrets, and other privacy-sensitive payloads out of logs and process output. Prefer redacted lengths, IDs, and error types. If a diagnostic truly requires sensitive content, reproduce it with synthetic data instead of printing or logging the original payload.
 
 ```python
 self.logger.debug(f"Processing item {item_id}")
@@ -82,7 +82,7 @@ Report progress during long-running operations:
 
 ```python
 @plugin_entry(id="batch_job")
-def batch_job(self, items: list, **_):
+async def batch_job(self, items: list, **_):
     total = len(items)
     for i, item in enumerate(items):
         self._process(item)
@@ -113,7 +113,7 @@ Use `input_schema` for automatic JSON Schema validation, or `params` for Pydanti
         "required": ["email", "age"]
     }
 )
-def validated(self, email: str, age: int, **_):
+async def validated(self, email: str, age: int, **_):
     return Ok({"email": email, "age": age})
 
 # Option B: Pydantic model (auto-generates schema)
@@ -124,21 +124,23 @@ class UserInput(BaseModel):
     age: int = Field(..., ge=0, le=150)
 
 @plugin_entry(id="validated_v2", params=UserInput)
-def validated_v2(self, email: str, age: int, **_):
+async def validated_v2(self, email: str, age: int, **_):
     return Ok({"email": email, "age": age})
 ```
 
 ## Working directory
 
-Use `self.config_dir` and `self.data_path()` instead of hardcoded paths:
+Use `self.plugin_dir` only for packaged code and read-only resources. Runtime
+configuration is managed through `self.config`; persistent data and cache belong
+under the host-assigned state root:
 
 ```python
-# Plugin directory (where plugin.toml lives)
-config_file = self.config_dir / "config.json"
+# Executable directory (where plugin.toml and packaged assets live)
+manifest_path = self.plugin_dir / "plugin.toml"
 
-# Data directory (auto-created subdirectory)
-db_path = self.data_path("cache.db")       # → <plugin_dir>/data/cache.db
-logs_dir = self.data_path("logs")          # → <plugin_dir>/data/logs/
+# State directories, separate from executable code
+db_path = self.data_path("cache.db")       # → <plugin-state-root>/data/cache.db
+preview_path = self.cache_path("preview.png")  # → <plugin-state-root>/cache/preview.png
 ```
 
 ## Cross-plugin call error handling
@@ -182,6 +184,39 @@ async def on_shutdown(self, **_):
     return Ok({"status": "stopped"})
 ```
 
+## Send the CSRF token from plugin pages
+
+If your plugin ships a static page (or other browser code) that sends `POST`, `PUT`, `PATCH` or `DELETE` requests to the plugin server, such as `/runs`, `/uploads/...`, `/plugin/<id>/ui-api/...` or `/plugin/<id>/config`, start sending the instance CSRF token with this SDK release:
+
+```js
+let tokenPromise = null
+
+async function csrfHeaders() {
+  tokenPromise ??= fetch('/security/csrf-token', { credentials: 'same-origin' })
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+    .then((data) => data.csrf_token)
+  try {
+    return { 'X-CSRF-Token': await tokenPromise }
+  } catch (error) {
+    // Tokenless page writes are accepted by default: keep working, retry later.
+    tokenPromise = null
+    return {}
+  }
+}
+
+await fetch('/runs', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
+  body: JSON.stringify({ plugin_id: 'my_plugin', entry_id: 'do_work', args: {} }),
+})
+```
+
+- Pages that do not send the token keep working by default: the host only checks that the request comes from a trusted origin. Published market plugins are not broken by this change.
+- The token is an option for public deployments. When a deployer sets `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1`, pages without it get `403` with `csrf_validation_failed`.
+- If fetching the token fails, send the request without it (as in the example) instead of blocking the action; the host accepts it by default.
+- A token you send must be valid. On a `403` whose `detail.csrf_failure` is `"token"`, clear the cached token, fetch it again and retry once.
+- Hosted TSX surfaces call actions through `props.api`, which already sends the token.
+
 ## Plugin checklist
 
 Before shipping your plugin:
@@ -194,3 +229,4 @@ Before shipping your plugin:
 - [ ] Shared state is protected with locks if timers are used
 - [ ] Cross-plugin calls handle `Err` results
 - [ ] `plugin.toml` has a correct host-loading `[plugin].entry` path and SDK version constraints
+- [ ] Browser pages send `X-CSRF-Token` on write requests to the plugin server

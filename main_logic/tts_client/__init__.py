@@ -39,6 +39,7 @@ from utils.logger_config import get_module_logger
 from ._infra import (
     TTS_SHUTDOWN_SENTINEL,
     TTS_AUDIO_DONE_SENTINEL,
+    TTS_SOFT_FLUSH_SENTINEL,
     AudioDoneEmitter,
     _resample_audio,
     _parse_env_float,
@@ -79,7 +80,7 @@ from .workers.cosyvoice import (
     _cosyvoice_clone_is_selected,
     _cosyvoice_clone_resolve,
 )
-from .workers.cogtts import cogtts_tts_worker
+from .workers.cogtts import cogtts_tts_worker, _glm_clone_is_selected, _glm_clone_resolve
 from .workers.gemini import gemini_tts_worker
 from .workers.openai import (
     openai_tts_worker,
@@ -151,7 +152,7 @@ __all__ = [
     "get_tts_worker", "_get_voice_meta", "_grok_voice_id_is_xai_custom",
     "_XAI_CUSTOM_VOICE_PATTERN", "logger",
     # shared infrastructure
-    "TTS_SHUTDOWN_SENTINEL", "TTS_AUDIO_DONE_SENTINEL", "AudioDoneEmitter",
+    "TTS_SHUTDOWN_SENTINEL", "TTS_AUDIO_DONE_SENTINEL", "TTS_SOFT_FLUSH_SENTINEL", "AudioDoneEmitter",
     "_resample_audio", "_parse_env_float", "_enqueue_error",
     "_ws_is_open", "SentenceBuffer", "_AudioQueueProxy", "_non_bistream_tts_main_loop",
     "_run_sentence_tts_worker", "_record_tts_telemetry",
@@ -192,6 +193,7 @@ __all__ = [
     "_cosyvoice_clone_is_selected", "_cosyvoice_clone_resolve",
     "_mimo_is_selected", "_mimo_resolve",
     "_doubao_is_selected", "_doubao_resolve",
+    "_glm_clone_is_selected", "_glm_clone_resolve",
 ]
 
 
@@ -202,6 +204,10 @@ def _get_voice_meta(voice_id: str) -> dict | None:
     """
     if not voice_id:
         return None
+    from .remote_voice import active_imported_voice
+    imported = active_imported_voice.get()
+    if imported and imported.get('remote_voice_id') == voice_id:
+        return imported
     try:
         cm = get_config_manager()
         voices = cm.get_voices_for_current_api()
@@ -297,6 +303,9 @@ def get_tts_worker(
           None when native TTS is unsupported
     """
     cm = get_config_manager()
+    from utils.config_manager.imported_voices import is_imported_voice_ref
+    from .remote_voice import bind_imported_voice_worker, unavailable_imported_voice_worker
+
     try:
         core_cfg = cm.get_core_config() or {}
     except Exception:
@@ -306,6 +315,25 @@ def get_tts_worker(
         logger.info("TTS disabled; using dummy TTS worker")
         return dummy_tts_worker, None, None
 
+    imported_voice = None
+    dispatch_manager = cm
+    if is_imported_voice_ref(voice_id):
+        try:
+            imported_voice = cm.get_imported_voice(voice_id)
+            if imported_voice:
+                from utils.voice_management.providers import get_adapter
+                from utils.voice_management.runtime_snapshot import VoiceRuntimeSnapshot
+                imported_runtime = get_adapter(imported_voice['provider']).resolve_runtime(cm, voice_data=imported_voice)
+                if imported_runtime.scope_id != imported_voice.get('scope_id') or not imported_runtime.api_key:
+                    imported_voice = None
+                else:
+                    dispatch_manager = VoiceRuntimeSnapshot(cm, imported_runtime)
+        except Exception:
+            imported_voice = None
+        if not imported_voice:
+            legacy_metadata = _get_voice_meta(voice_id)
+            if not legacy_metadata or legacy_metadata.get('origin') == 'import':
+                return unavailable_imported_voice_worker, '', None
     tts_provider = str(core_cfg.get('TTS_PROVIDER') or core_cfg.get('ttsProvider') or '').strip().lower()
     assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
 
@@ -323,10 +351,10 @@ def get_tts_worker(
     # 改为按需惰性加载。
     _dispatch_ctx = _tts_providers.DispatchContext(
         core_config=core_cfg,
-        cm=cm,
-        voice_id=voice_id or '',
+        cm=dispatch_manager,
+        voice_id=(imported_voice['remote_voice_id'] if imported_voice else voice_id) or '',
         has_custom_voice=bool(has_custom_voice),
-        voice_meta_loader=lambda: _get_voice_meta(voice_id),
+        voice_meta_loader=lambda: imported_voice or _get_voice_meta(voice_id),
     )
     # Runtime fallback passes only the failed provider key here; all remaining
     # providers keep their established priority and selection behavior.
@@ -337,7 +365,15 @@ def get_tts_worker(
     )
     if special is not None:
         logger.info("[get_tts_worker] 命中 TTS provider: %s", special[2])
+        if imported_voice:
+            return (
+                bind_imported_voice_worker(special[0], voice_id, imported_voice),
+                special[1], special[2],
+            )
         return special
+
+    if imported_voice:
+        return unavailable_imported_voice_worker, '', None
 
     # 克隆音色 provider（MiniMax / ElevenLabs / 阿里 CosyVoice）已折入
     # tts_provider_registry（priority 30/40/50，按 voice_meta.provider 选中），
@@ -623,6 +659,27 @@ _tts_providers.register(_tts_providers.TTSProvider(
     editable_endpoint=True,
     probe_kind='http_tts',
     probe_sub_type='doubao_tts',
+    tts_dropdown_only=True,
+    tts_config_visible=False,
+))
+
+# GLM 克隆音色（voice_meta.provider=='glm_tts' 选中，priority 66 紧随 doubao）。
+# 与 doubao 的差异：合成复用 cogtts_tts_worker（/paas/v4/audio/speech 的 voice 参数
+# 官方支持复刻音色，走同一条 SSE 流式 + 水印检测路径），key 从 assistApiKeyGlm
+# （core/assist=glm 时回退 coreApiKey）解析，不引入独立 worker。is_selected 只认
+# voice_meta、不认 config——core_api_type=='glm' 的原生路径仍走 get_tts_worker 的
+# core 分支，避免本条目拦截未克隆的原生 GLM 用户。tts_dropdown_only=True /
+# tts_config_visible=False：GLM 本身已是 core/assist LLM provider，不进 TTS 下拉。
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='glm_tts',
+    kind='hosted',
+    priority=66,
+    capabilities=frozenset({'clone'}),
+    is_selected=_glm_clone_is_selected,
+    resolve=_glm_clone_resolve,
+    default_url='https://open.bigmodel.cn/api/paas/v4',
+    default_model='glm-tts-clone',
+    default_voice='',
     tts_dropdown_only=True,
     tts_config_visible=False,
 ))

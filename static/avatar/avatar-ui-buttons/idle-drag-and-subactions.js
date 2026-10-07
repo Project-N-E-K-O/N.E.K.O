@@ -61,13 +61,17 @@ let _nekoIdleDesktopChatMinimizedState = {
     screenRect: null,
     updatedAt: 0,
     sourceUpdatedAt: 0,
+    lifecycleSequence: 0,
+    lifecycleTerminal: false,
     expandedRecent: false
 };
 let _nekoIdleDesktopCompactSurfaceState = {
     visible: false,
     screenRect: null,
     updatedAt: 0,
-    sourceUpdatedAt: 0
+    sourceUpdatedAt: 0,
+    lifecycleSequence: 0,
+    lifecycleTerminal: false
 };
 let _nekoIdleDesktopChatPairMoveLastDispatchAt = 0;
 let _nekoIdleDesktopChatPairMoveLastDispatchSignature = '';
@@ -81,44 +85,79 @@ function _getNekoIdleDesktopStateSourceUpdatedAt(detail, fallbackUpdatedAt) {
     return Date.now();
 }
 
-function _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, state) {
-    const incomingSourceUpdatedAt = Number(sourceUpdatedAt);
-    const currentSourceUpdatedAt = Number(state && state.sourceUpdatedAt);
-    return Number.isFinite(incomingSourceUpdatedAt) &&
-        incomingSourceUpdatedAt > 0 &&
-        Number.isFinite(currentSourceUpdatedAt) &&
-        currentSourceUpdatedAt > 0 &&
-        incomingSourceUpdatedAt < currentSourceUpdatedAt;
+function _getNekoIdleDesktopStateLifecycleSequence(detail) {
+    const sequence = Number(detail && detail.lifecycleSequence);
+    return Number.isSafeInteger(sequence) && sequence > 0 ? sequence : 0;
 }
 
-function _isNekoIdleDesktopStateNewerThan(sourceUpdatedAt, state) {
+function _compareNekoIdleDesktopStateOrder(sourceUpdatedAt, lifecycleSequence, state) {
     const incomingSourceUpdatedAt = Number(sourceUpdatedAt);
     const currentSourceUpdatedAt = Number(state && state.sourceUpdatedAt);
-    return Number.isFinite(incomingSourceUpdatedAt) &&
-        incomingSourceUpdatedAt > 0 &&
-        (!Number.isFinite(currentSourceUpdatedAt) ||
-            currentSourceUpdatedAt <= 0 ||
-            incomingSourceUpdatedAt >= currentSourceUpdatedAt);
+    if (!Number.isFinite(incomingSourceUpdatedAt) || incomingSourceUpdatedAt <= 0) return 0;
+    if (!Number.isFinite(currentSourceUpdatedAt) || currentSourceUpdatedAt <= 0) return 1;
+    if (incomingSourceUpdatedAt !== currentSourceUpdatedAt) {
+        return incomingSourceUpdatedAt < currentSourceUpdatedAt ? -1 : 1;
+    }
+    const incomingSequence = Number(lifecycleSequence);
+    const currentSequence = Number(state && state.lifecycleSequence);
+    if (Number.isSafeInteger(incomingSequence) && incomingSequence > 0 &&
+        Number.isSafeInteger(currentSequence) && currentSequence > 0 &&
+        incomingSequence !== currentSequence) {
+        return incomingSequence < currentSequence ? -1 : 1;
+    }
+    return 0;
 }
 
-function _makeNekoIdleDesktopChatMinimizedState(minimized, screenRect, updatedAt, sourceUpdatedAt, expandedRecent) {
+function _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, lifecycleSequence, lifecycleTerminal, state) {
+    const order = _compareNekoIdleDesktopStateOrder(sourceUpdatedAt, lifecycleSequence, state);
+    if (order !== 0) return order < 0;
+    // Legacy/native producers may not carry a sequence. At equal timestamps,
+    // an accepted terminal remains authoritative until an explicitly newer
+    // sequence (or a later timestamp) proves that the target reopened.
+    return !!(state && state.lifecycleTerminal && lifecycleTerminal !== true);
+}
+
+function _isNekoIdleDesktopStateNewerThan(sourceUpdatedAt, lifecycleSequence, state) {
+    return _compareNekoIdleDesktopStateOrder(sourceUpdatedAt, lifecycleSequence, state) >= 0;
+}
+
+function _makeNekoIdleDesktopChatMinimizedState(
+    minimized,
+    screenRect,
+    updatedAt,
+    sourceUpdatedAt,
+    expandedRecent,
+    lifecycleSequence = 0,
+    lifecycleTerminal = false
+) {
     const active = !!(minimized && screenRect);
     return {
         minimized: active,
         screenRect: active ? screenRect : null,
         updatedAt: updatedAt,
         sourceUpdatedAt: sourceUpdatedAt,
+        lifecycleSequence: lifecycleSequence,
+        lifecycleTerminal: lifecycleTerminal === true,
         expandedRecent: !active && !!expandedRecent
     };
 }
 
-function _makeNekoIdleDesktopCompactSurfaceState(visible, screenRect, updatedAt, sourceUpdatedAt) {
+function _makeNekoIdleDesktopCompactSurfaceState(
+    visible,
+    screenRect,
+    updatedAt,
+    sourceUpdatedAt,
+    lifecycleSequence = 0,
+    lifecycleTerminal = false
+) {
     const active = !!(visible && screenRect);
     return {
         visible: active,
         screenRect: active ? screenRect : null,
         updatedAt: updatedAt,
-        sourceUpdatedAt: sourceUpdatedAt
+        sourceUpdatedAt: sourceUpdatedAt,
+        lifecycleSequence: lifecycleSequence,
+        lifecycleTerminal: lifecycleTerminal === true
     };
 }
 
@@ -477,6 +516,13 @@ function _getNekoIdleCat1EdgePeekButton(containerOrButton) {
 function _clearNekoIdleCat1EdgePeek(containerOrButton) {
     const button = _getNekoIdleCat1EdgePeekButton(containerOrButton);
     if (!button) return;
+    // Keep the unified edge controller in sync with the legacy visual classes.
+    // Clearing the classes without clearing controller state leaves the drag
+    // guard out of sync and can either block a later drag or allow stale lock
+    // state to survive a cancelled edge peek.
+    if (window.NekoEdgePeekController && typeof window.NekoEdgePeekController.clear === 'function') {
+        window.NekoEdgePeekController.clear(button);
+    }
     _NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES.forEach((className) => {
         button.classList.remove(className);
     });
@@ -600,6 +646,7 @@ function _applyNekoIdleCat1EdgePeek(container, placement) {
     if (!container || !button || !placement || !placement.edge) return false;
     _clearNekoIdleCat1EdgePeek(button);
     button.classList.add(`is-cat1-edge-peek-${placement.edge}`);
+    if (window.NekoEdgePeekController) window.NekoEdgePeekController.begin({ button: button, container: container, mode: 'drag-edge', edge: placement.edge, phase: 'peeking', sourceRunner: 'idle-drag-and-subactions' });
     _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton(button);
     _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
     container.style.left = `${placement.left}px`;

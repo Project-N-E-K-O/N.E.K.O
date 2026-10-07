@@ -16,7 +16,7 @@ from plugin.server.application.install_source import (
     PluginDirectoryScanner,
     set_global_manager,
 )
-from plugin.server.application.plugins import source_switch, upgrade_support
+from plugin.server.application.plugins import source_switch
 from plugin.server.application.plugins.source_switch import SourceSwitchError
 from plugin.server.domain.errors import ServerDomainError
 from plugin.core.state import state
@@ -390,11 +390,11 @@ async def test_disabled_builtin_override_with_invalid_entry_rolls_back(
         _ = strict
 
     monkeypatch.setattr(lifecycle_service.plugin_registry_service, "refresh_registry", refresh_registry)
-    monkeypatch.setattr(upgrade_support, "plugin_is_running", is_running)
-    monkeypatch.setattr(upgrade_support, "stop_plugin_for_replace", no_op)
+    monkeypatch.setattr(source_switch, "plugin_is_running_for_source_switch", is_running)
+    monkeypatch.setattr(source_switch, "stop_plugin_for_source_switch", no_op)
     monkeypatch.setattr(
-        upgrade_support,
-        "start_plugin_after_replace",
+        source_switch,
+        "start_plugin_for_source_switch",
         no_op,
     )
 
@@ -508,9 +508,9 @@ async def test_market_builtin_override_switches_or_restores_without_touching_sta
             raise RuntimeError("market start failed")
 
     monkeypatch.setattr(lifecycle_service.plugin_registry_service, "refresh_registry", refresh_registry)
-    monkeypatch.setattr(upgrade_support, "plugin_is_running", is_running)
-    monkeypatch.setattr(upgrade_support, "stop_plugin_for_replace", stop)
-    monkeypatch.setattr(upgrade_support, "start_plugin_after_replace", lambda pid, strict: start(pid))
+    monkeypatch.setattr(source_switch, "plugin_is_running_for_source_switch", is_running)
+    monkeypatch.setattr(source_switch, "stop_plugin_for_source_switch", stop)
+    monkeypatch.setattr(source_switch, "start_plugin_for_source_switch", start)
 
     try:
         service = PluginCliService()
@@ -750,8 +750,8 @@ async def test_market_builtin_override_rejects_read_only_lock_before_staging_or_
     async def stop(_plugin_id: str) -> None:
         runtime_calls.append("stop")
 
-    monkeypatch.setattr(upgrade_support, "plugin_is_running", is_running)
-    monkeypatch.setattr(upgrade_support, "stop_plugin_for_replace", stop)
+    monkeypatch.setattr(source_switch, "plugin_is_running_for_source_switch", is_running)
+    monkeypatch.setattr(source_switch, "stop_plugin_for_source_switch", stop)
     service = PluginCliService()
 
     def stage_override(**_kwargs: object) -> None:

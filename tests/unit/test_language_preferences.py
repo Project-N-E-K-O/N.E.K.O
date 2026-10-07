@@ -147,11 +147,23 @@ def run_connector(monkeypatch):
     return run
 
 
-class _LifecycleHarness(LifecycleMixin):
+from main_logic.core.tts_lifecycle import TtsLifecycleMixin
+from main_logic.core.session_lifecycle import SessionOwnershipMixin
+
+
+class _LifecycleHarness(LifecycleMixin, SessionOwnershipMixin, TtsLifecycleMixin):
     def __init__(self, *, renew=None):
         self.lock = asyncio.Lock()
         self.is_active = True
-        self.session = object()
+        async def close():
+            return None
+        self.session = SimpleNamespace(close=close)
+        self.message_handler_task = None
+        self.input_cache_lock = asyncio.Lock()
+        self.session_ready = True
+        self.pending_input_data = []
+        self.tts_thread = None
+        self._activity_tracker = SimpleNamespace(on_voice_mode=lambda value: None)
         self._starting_session_count = 0
         self._user_session_abandon_epoch = 0
         self._audio_stream_epoch = 0
@@ -161,6 +173,9 @@ class _LifecycleHarness(LifecycleMixin):
         pass
 
     def _reset_proactive_gate(self):
+        pass
+
+    def clear_speech_playback_gains(self):
         pass
 
     async def _close_independent_asr(self, **_kwargs):
@@ -178,6 +193,12 @@ class _LifecycleHarness(LifecycleMixin):
         pass
 
     def _reset_voice_echo_suppression_cache(self):
+        pass
+
+    def _clear_pending_context_appends(self):
+        pass
+
+    def _prune_request_staged_images(self):
         pass
 
 
@@ -1910,7 +1931,9 @@ async def test_partial_language_preference_response_uses_http_200(monkeypatch):
 async def test_post_init_inactive_memory_barrier_waits_outside_session_lock():
     lock_states = []
     manager = _LifecycleHarness()
-    manager._queue_session_end_memory_barrier = lambda _callback: object()
+    completion = asyncio.get_running_loop().create_future()
+    completion.set_result(None)
+    manager._queue_session_end_memory_barrier = lambda _callback: completion
 
     async def wait(_completion, _callback, *, timeout_seconds):
         assert timeout_seconds == 15.0
@@ -1950,14 +1973,13 @@ async def test_idle_memory_barrier_rechecks_start_after_lock_wait():
 @pytest.mark.asyncio
 async def test_post_init_stale_session_does_not_clear_replacement_context():
     effects = []
-    old_session = object()
     replacement_session = object()
 
     async def replace(manager):
         manager.session = replacement_session
 
     manager = _LifecycleHarness(renew=replace)
-    manager.session = old_session
+    old_session = manager.session
     manager._clear_audio_stream_queue = lambda reason: effects.append(("clear", reason))
     manager._cancel_audio_stream_worker = lambda reason: effects.append(("cancel", reason))
     manager._reset_voice_echo_suppression_cache = lambda: effects.append(("echo",))

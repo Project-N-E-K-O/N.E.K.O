@@ -633,15 +633,63 @@ async def _run_connect_and_capture_session(client):
 
 @pytest.mark.unit
 async def test_connect_qwen_manual_vad_sends_null_turn_detection():
-    """Qwen MANUAL: turn_detection=None, transcription model preserved."""
+    """Qwen MANUAL: turn_detection=None, server-side transcription left alone."""
     client = _make_manual_client(model="qwen-omni-turbo-realtime", api_type="qwen")
     session = await _run_connect_and_capture_session(client)
 
     assert session is not None, "session.update event not captured"
     assert session.get("turn_detection") is None
-    # Qwen's input_audio_transcription must remain pinned to gummy-realtime-v1
-    assert session.get("input_audio_transcription") == {"model": "gummy-realtime-v1"}
+    # DashScope enables input transcription by default (session.created already
+    # carries the transcription model) and documents it as not configurable,
+    # so the client no longer overrides it.
+    assert "input_audio_transcription" not in session
 
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("model", "vad_type"), [
+    ("qwen3.8-omni-flash-realtime", "semantic_vad"),
+    ("qwen3.5-omni-flash-realtime-2026-03-15", "semantic_vad"),
+    ("qwen3-omni-flash-realtime", "semantic_vad"),
+    # Does not answer a semantic_vad session.update; keep the old server_vad.
+    ("qwen-omni-turbo-realtime", "server_vad"),
+])
+async def test_connect_qwen_server_vad_type_follows_model(model, vad_type):
+    """Qwen SERVER_VAD: semantic_vad only for the Qwen3 omni line."""
+    client = OmniRealtimeClient(
+        base_url="wss://example.test/realtime",
+        api_key="sk-test",
+        model=model,
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="qwen",
+    )
+    session = await _run_connect_and_capture_session(client)
+
+    assert session is not None, "session.update event not captured"
+    assert session["turn_detection"]["type"] == vad_type
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("ws_url", "query_model"), [
+    ("wss://open.bigmodel.cn/api/paas/v4/realtime", "glm-realtime-air"),
+    ("wss://glm-proxy.example.test/realtime", "glm-realtime-plus"),
+])
+async def test_connect_glm_query_model_remapped_only_on_public_gateway(ws_url, query_model):
+    """The public gateway rejects Plus on ?model=; custom endpoints keep the configured name."""
+    client = OmniRealtimeClient(
+        base_url=ws_url,
+        api_key="sk-test",
+        model="glm-realtime-plus",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="glm",
+    )
+    mock_ws = AsyncMock()
+    with patch("websockets.connect", new_callable=AsyncMock) as mock_connect:
+        mock_connect.return_value = mock_ws
+        try:
+            await client.connect(instructions="You are helpful.", native_audio=True)
+        finally:
+            await client.close()
+
+    assert mock_connect.call_args.args[0] == f"{ws_url}?model={query_model}"
 
 @pytest.mark.unit
 async def test_connect_openai_manual_vad_sends_null_audio_input_turn_detection():
@@ -962,6 +1010,26 @@ async def test_connect_qwen_server_vad_preserves_payload():
     assert isinstance(td, dict)
     assert td.get("type") in ("server_vad", "semantic_vad")
     assert "threshold" in td
+
+
+# ──────────────────────────────────────────────────────────────────────
+# The silence timeout is gated on the INFERRED api_type: an empty
+# api_type on a lanlan free route still resolves to 'free', and the auto
+# mic-off has to follow that inference like the rest of the class does.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_silence_timeout_uses_inferred_free_api_type():
+    client = OmniRealtimeClient(
+        base_url="wss://www.lanlan.tech/tts",
+        api_key="sk-test",
+        model="free-realtime",
+    )
+
+    assert client._api_type == ""
+    assert client._is_free_provider is True
+    assert client._enable_silence_timeout is True
 
 
 # ──────────────────────────────────────────────────────────────────────

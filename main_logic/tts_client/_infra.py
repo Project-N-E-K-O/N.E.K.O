@@ -38,6 +38,16 @@ TTS_SHUTDOWN_SENTINEL = "__shutdown__"
 # 的 tts_response_handler 消费。
 TTS_AUDIO_DONE_SENTINEL = "__audio_done__"
 
+# 软 flush 哨兵：core 通过 request_queue.put((TTS_SOFT_FLUSH_SENTINEL, speech_id))
+# 告诉 worker「这一轮的文本停了一会儿，先把手上攒着的合成出来」。它不是收尾：
+# 不发 audio_done、不动 core 的 done 记账，之后同一 speech_id 还可能继续来文本，
+# worker 要能接着说。只发给 TTS_PROVIDER_REGISTRY 里 soft_flush=True 的 provider——
+# 不认识它的 worker 会把陌生 sid 当成新一轮，所以 core 侧按能力位过滤，不广播。
+# 背景：realtime 语音 + 自定义 TTS 时，core 只在 provider 的 response.done 才发
+# (None, None)，而某些 provider（lanlan.app 的 Gemini 代理）要把自己那份没人用的
+# 音频推完才发 done，尾句因此被 CosyVoice 一直扣着，落到用户下一轮才出声。
+TTS_SOFT_FLUSH_SENTINEL = "__soft_flush__"
+
 
 class AudioDoneEmitter:
     """One-shot per-speech "audio stream closed" signal for the frontend.
@@ -243,6 +253,53 @@ def make_audio_jitter_buffer(response_queue, initial_ms_default: float = 400,
     initial_bytes = int(initial_ms / 1000 * _TTS_OUTPUT_BYTES_PER_SECOND)
     steady_bytes = int(steady_ms / 1000 * _TTS_OUTPUT_BYTES_PER_SECOND)
     return AudioJitterBuffer(response_queue, initial_bytes, steady_bytes)
+
+# Close codes that mean "the server refused this request" rather than "the
+# connection went away". Everything else stays on the reconnect path: 1000 /
+# 1001 / 1005 are ordinary shutdown, and 1006 / 1011 / 1012 / 1013 are drops,
+# restarts and throttling that the worker recovers from by itself. Providers
+# with extra refusal codes pass them through ``extra_refusal_codes`` rather than
+# widening this set for everyone.
+SERVER_CLOSE_REFUSAL_CODES = frozenset({1007, 1008})
+# Application-defined close range: a provider putting a condition in 4xxx means
+# a deliberate rejection, not a transport event.
+SERVER_CLOSE_APPLICATION_RANGE = range(4000, 5000)
+
+
+def classify_server_close(exc, *, extra_refusal_codes=()):
+    """Turn a peer-initiated refusal close frame into a structured TTS error.
+
+    Returns None for every close the worker can recover from unnoticed: our own
+    closes, TCP-level drops (no close frame at all), and transient codes. Only a
+    frame the peer actually sent, naming a refusal code, becomes an error.
+
+    The payload deliberately carries no top-level ``code``: the message text is
+    classified in ``tts_response_handler`` (arrears / quota / rate-limit / bad
+    key …), so workers do not duplicate that keyword table.
+
+    ``exc`` is a ``websockets`` ``ConnectionClosed``; duck-typed on ``rcvd`` so
+    this helper stays importable without the websocket dependency.
+    """
+    received = getattr(exc, "rcvd", None)
+    if received is None:
+        # 没有收到关闭帧 = 链路层断的，或对端没发帧。不是拒绝。
+        return None
+    if getattr(exc, "rcvd_then_sent", None) is False:
+        # 我们先关的（sid 轮换、interrupt、shutdown），这条只是回执。
+        return None
+    code = getattr(received, "code", None)
+    refusal_codes = set(SERVER_CLOSE_REFUSAL_CODES) | set(extra_refusal_codes)
+    if not (code in refusal_codes or (isinstance(code, int) and code in SERVER_CLOSE_APPLICATION_RANGE)):
+        return None
+    reason = str(getattr(received, "reason", "") or "")
+    return {
+        "type": "error",
+        "data": {
+            "close_code": code,
+            "message": reason or f"connection closed ({code})",
+        },
+    }
+
 
 def _enqueue_error(response_queue, error_value):
     """Unified error logging and error-message enqueueing."""

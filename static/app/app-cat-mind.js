@@ -243,6 +243,9 @@
     var actionRequestLeaseGeneration = 0;
     var debugTimeline = [];
     var debugTimelineSequence = 0;
+    var latestDesktopChatMinimizedSourceAt = 0;
+    var latestDesktopChatLifecycleSequence = 0;
+    var latestDesktopChatLifecycleTerminal = false;
 
     var runtimeState = createInitialRuntimeState();
 
@@ -2615,8 +2618,60 @@
         });
     }
 
+    function acceptDesktopChatLifecycleUpdate(detail) {
+        var sourceUpdatedAt = Number(detail.timestamp);
+        if (!Number.isFinite(sourceUpdatedAt) || sourceUpdatedAt <= 0) {
+            sourceUpdatedAt = nowMs();
+        }
+        var lifecycleSequence = Number(detail.lifecycleSequence);
+        if (!Number.isSafeInteger(lifecycleSequence) || lifecycleSequence <= 0) {
+            lifecycleSequence = 0;
+        }
+        var lifecycleTerminal = detail.available === false;
+        if (latestDesktopChatMinimizedSourceAt > 0 &&
+            sourceUpdatedAt < latestDesktopChatMinimizedSourceAt) {
+            return;
+        }
+        var sameTimestamp = latestDesktopChatMinimizedSourceAt > 0 &&
+            sourceUpdatedAt === latestDesktopChatMinimizedSourceAt;
+        if (sameTimestamp && lifecycleSequence > 0 && latestDesktopChatLifecycleSequence > 0) {
+            if (lifecycleSequence < latestDesktopChatLifecycleSequence) return;
+            if (lifecycleSequence === latestDesktopChatLifecycleSequence &&
+                latestDesktopChatLifecycleTerminal && !lifecycleTerminal) {
+                return;
+            }
+        } else if (sameTimestamp && latestDesktopChatLifecycleTerminal && !lifecycleTerminal) {
+            // Compatibility with native/older producers that do not yet carry
+            // lifecycleSequence: an equal-time positive cannot overtake a terminal.
+            return;
+        }
+        if (!sameTimestamp) {
+            latestDesktopChatMinimizedSourceAt = sourceUpdatedAt;
+            latestDesktopChatLifecycleSequence = lifecycleSequence;
+        } else if (lifecycleSequence > 0 &&
+            (latestDesktopChatLifecycleSequence <= 0 || lifecycleSequence >= latestDesktopChatLifecycleSequence)) {
+            latestDesktopChatLifecycleSequence = lifecycleSequence;
+        }
+        latestDesktopChatLifecycleTerminal = lifecycleTerminal;
+        return true;
+    }
+
+    function retireDesktopChatMinimizedLifecycle() {
+        runtimeState.lastChatMinimizedRect = null;
+        runtimeState.lastChatMinimizedState = null;
+        runtimeState.lastChatIdleDocked = false;
+    }
+
     function observeDesktopChatMinimized(detail) {
         if (!detail || typeof detail !== 'object') {
+            return;
+        }
+        if (!acceptDesktopChatLifecycleUpdate(detail)) {
+            return;
+        }
+        if (detail.available === false) {
+            // 用户关闭/窗口隐藏是「目标不存在」，不是一次聊天框展开体验。
+            retireDesktopChatMinimizedLifecycle();
             return;
         }
         var rect = normalizeRect(detail.screenRect);
@@ -2688,10 +2743,31 @@
         if (!detail || typeof detail !== 'object') {
             return;
         }
+        if (detail.available === false) {
+            observeDesktopChatMinimized(detail);
+            return;
+        }
         if (detail.heartbeat) {
+            var heartbeatRestoresCompactLifecycle = detail.visible === true &&
+                !!normalizeRect(detail.screenRect) &&
+                (runtimeState.lastChatMinimizedState === false || latestDesktopChatLifecycleTerminal);
+            if (heartbeatRestoresCompactLifecycle && acceptDesktopChatLifecycleUpdate(detail)) {
+                // The first visible heartbeat may be the first delivered recovery.
+                // Advance ordering without creating a repeated window observation.
+                retireDesktopChatMinimizedLifecycle();
+            }
+            return;
+        }
+        if (!acceptDesktopChatLifecycleUpdate(detail)) {
             return;
         }
         var visible = detail.visible !== false;
+        if (visible) {
+            // A visible compact lifecycle supersedes the minimized surface
+            // without inventing a chat-expanded observation. Inactive compact
+            // tracking still advances the watermark but preserves its target.
+            retireDesktopChatMinimizedLifecycle();
+        }
         if (!visible && !detail.screenRect && !detail.left && !detail.width) {
             return;
         }

@@ -1676,6 +1676,21 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
         const expanded = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
           detail: {{ source: 'chat-window', reason: 'poll', minimized: false, timestamp }}
         }}));
+        const unavailable = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
+          detail: {{ source: 'chat-window', reason: 'window-hidden', available: false, timestamp }}
+        }}));
+        const compactUnavailable = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {{
+          detail: {{ source: 'chat-window', reason: 'pagehide', available: false, timestamp }}
+        }}));
+        const compactVisible = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {{
+          detail: {{ source: 'chat-window', reason: 'visibility-visible', available: true, visible: true, timestamp, screenRect: {{ left: 10, top: 20, width: 300, height: 160 }} }}
+        }}));
+        const compactHeartbeat = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {{
+          detail: {{ source: 'chat-window', available: true, visible: true, heartbeat: true, timestamp, screenRect: {{ left: 10, top: 20, width: 300, height: 160 }} }}
+        }}));
+        const compactInactive = (timestamp) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {{
+          detail: {{ source: 'chat-window', reason: 'compact-tracking-disabled', available: true, visible: false, timestamp }}
+        }}));
 
         // The first desktop state is still meaningful; only its repeats are heartbeats.
         expanded(1050);
@@ -1691,6 +1706,21 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
         assert.deepEqual(win.nekoCatMind.getState().fields, afterFirstMinimized);
         assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 1);
 
+        // A delayed terminal cannot erase a newer minimized snapshot and turn
+        // the next unchanged poll into a new observation.
+        unavailable(3050);
+        minimized(3125);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 1);
+
+        // The compact pagehide terminal shares the minimized lifecycle: stale
+        // copies are ignored, while a current one retires the dedupe snapshot.
+        compactUnavailable(3110);
+        minimized(3150);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 1);
+        compactUnavailable(3160);
+        minimized(3170);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 2);
+
         // The native bridge and BroadcastChannel can use different reasons
         // for the same rect. Neither a pointer sync nor its forwarded copy is
         // a new window experience.
@@ -1701,11 +1731,16 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
           detail: {{ source: 'chat-window', via: 'broadcast-channel', reason: 'pointer', minimized: true, timestamp: 3250, screenRect: {{ left: 1, top: 2, width: 80, height: 80 }} }}
         }}));
         assert.deepEqual(win.nekoCatMind.getState().fields, afterFirstMinimized);
-        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 1);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 2);
 
         // A changed rect remains a real observation, even when delivered by poll.
         minimized(4100, 4);
-        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 2);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 3);
+
+        // A genuinely newer terminal still starts a new lifecycle.
+        unavailable(4200);
+        minimized(4300, 4);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 4);
 
         expanded(5100);
         const afterFirstExpanded = win.nekoCatMind.getState().fields;
@@ -1721,13 +1756,64 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
           detail: {{ source: 'neko-pc', reason: 'idle-dock-enter', minimized: true, timestamp: 7150, screenRect: {{ left: 4, top: 2, width: 80, height: 80 }} }}
         }}));
         assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_idle_docked_near_cat').length, 1);
+        compactUnavailable(7160);
+        win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
+          detail: {{ source: 'chat-window', reason: 'idle-dock-enter', minimized: true, timestamp: 7170, screenRect: {{ left: 4, top: 2, width: 80, height: 80 }} }}
+        }}));
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_idle_docked_near_cat').length, 2);
         win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
           detail: {{ source: 'neko-pc', reason: 'idle-dock-exit', minimized: true, timestamp: 7200, screenRect: {{ left: 4, top: 2, width: 80, height: 80 }} }}
         }}));
         win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
           detail: {{ source: 'chat-window', reason: 'idle-dock-enter', minimized: true, timestamp: 7300, screenRect: {{ left: 4, top: 2, width: 80, height: 80 }} }}
         }}));
-        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_idle_docked_near_cat').length, 2);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_idle_docked_near_cat').length, 3);
+
+        // A compact reopen retires the minimized lifecycle and advances the
+        // shared watermark, so delayed pre-reopen terminal/positive copies are ignored.
+        compactVisible(8000);
+        unavailable(7900);
+        minimized(7950, 4);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 4);
+        minimized(8100, 4);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 5);
+
+        // Disabling compact tracking while minimized advances ordering but does
+        // not retire the active minimized dedupe snapshot.
+        compactInactive(8200);
+        minimized(8150, 4);
+        minimized(8300, 4);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 5);
+
+        // Millisecond timestamps alone cannot order a terminal against a
+        // delayed positive. The producer sequence keeps the old positive
+        // retired while still allowing a real reopen in that same millisecond.
+        win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {{
+          detail: {{ source: 'chat-window', available: false, timestamp: 8400, lifecycleSequence: 2 }}
+        }}));
+        win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
+          detail: {{ source: 'chat-window', minimized: true, timestamp: 8400, lifecycleSequence: 1,
+            screenRect: {{ left: 4, top: 2, width: 80, height: 80 }} }}
+        }}));
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 5);
+        win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
+          detail: {{ source: 'chat-window', minimized: true, timestamp: 8400, lifecycleSequence: 3,
+            screenRect: {{ left: 4, top: 2, width: 80, height: 80 }} }}
+        }}));
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 6);
+
+        // If the first compact recovery publication is missed, its first visible
+        // heartbeat advances the retired lifecycle without becoming an observation.
+        // Later ordinary heartbeats keep the recovered watermark stable.
+        compactUnavailable(8500);
+        expanded(8600);
+        compactHeartbeat(9000);
+        compactHeartbeat(9100);
+        minimized(8700, 4);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 6);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_compact_surface_visible').length, 1);
+        minimized(9050, 4);
+        assert.equal(win.nekoCatMind.getRecentEvents().filter((event) => event.type === 'chat_minimized_visible').length, 7);
         """
     )
 

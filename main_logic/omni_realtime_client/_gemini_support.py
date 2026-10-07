@@ -15,6 +15,7 @@
 
 from ._shared import (
     GEMINI_CANCELLED_TERMINAL_TTL_SECONDS,
+    GEMINI_TURN_IMAGE_MIME,
     Any,
     List,
     Path,
@@ -243,21 +244,39 @@ class _GeminiMixin:
                 await self.on_connection_error(error_msg)
             raise
 
-    async def _stream_audio_gemini(self, audio_chunk: bytes) -> None:
+    async def _stream_audio_gemini(
+        self,
+        audio_chunk: bytes,
+        *,
+        raise_on_error: bool = True,
+    ) -> None:
         """Send audio data to Gemini Live API."""
-        if not self._gemini_session:
+        session = self._gemini_session
+        if session is None:
+            if raise_on_error:
+                raise ConnectionError("Gemini audio session is not connected")
             return
+        connection_generation = self._connection_generation
+
+        def send_is_current() -> bool:
+            return (
+                self._gemini_session is session
+                and self._connection_generation == connection_generation
+            )
 
         try:
             # 发送实时音频输入
-            await self._gemini_session.send_realtime_input(
+            await session.send_realtime_input(
                 audio={"data": audio_chunk, "mime_type": "audio/pcm"}
             )
-            self._last_speech_time = time.time()
+            if send_is_current():
+                self._last_speech_time = time.time()
         except Exception as e:
             logger.error(f"Error sending audio to Gemini: {e}")
-            if "closed" in str(e).lower():
+            if send_is_current() and "closed" in str(e).lower():
                 self._fatal_error_occurred = True
+            if raise_on_error:
+                raise
 
     async def signal_user_activity_end(self) -> None:
         """Explicitly signal end-of-turn in MANUAL VAD mode.
@@ -283,6 +302,17 @@ class _GeminiMixin:
         if self._fatal_error_occurred:
             return
         self.note_user_turn_started()
+        voice_handoff_input_sequence = getattr(
+            self,
+            "_voice_handoff_input_sequence",
+            0,
+        )
+        # This commit is the turn boundary for both providers below. Read the
+        # owner NOW so frames streamed while the commit is in flight cannot move
+        # it, but only pin it once the boundary actually reached the provider:
+        # a commit that never went out produces no transcript, so a freeze left
+        # behind would answer for the next utterance instead.
+        pending_route_identity = self._pending_input_route_identity_commit()
         if self._is_gemini:
             if not self._gemini_session:
                 return
@@ -297,6 +327,11 @@ class _GeminiMixin:
                 logger.error(f"Error sending activity_end to Gemini: {e}")
                 if "closed" in str(e).lower():
                     self._fatal_error_occurred = True
+                return
+            self._apply_input_route_identity_commit(pending_route_identity)
+            self._note_voice_handoff_input_boundary(
+                expected_sequence=voice_handoff_input_sequence
+            )
             return
         # The committed buffer excludes the ~21ms tail soxr still holds in the
         # uplink resampler; drop it so it isn't prepended to the next turn.
@@ -317,13 +352,17 @@ class _GeminiMixin:
             priority=0,
         )
         await ticket.sent
+        self._apply_input_route_identity_commit(pending_route_identity)
+        self._note_voice_handoff_input_boundary(
+            expected_sequence=voice_handoff_input_sequence
+        )
 
     async def _gemini_send_user_turn(
         self,
         text: str,
         *,
         images_bytes: tuple[bytes, ...] = (),
-        image_mime_type: str = "image/jpeg",
+        image_mime_type: str = GEMINI_TURN_IMAGE_MIME,
         starts_user_turn: bool = True,
     ) -> None:
         """Inject one Gemini user turn and trigger a response via
@@ -494,20 +533,44 @@ class _GeminiMixin:
         """
         if (
             not self._gemini_context_manager
+            and not self._gemini_close_retry_contexts
             and getattr(self, "_gemini_proactive_submit_task", None) is None
             and getattr(self, "_gemini_external_submit_task", None) is None
         ):
             return
+        # A completed close task may have failed while the SDK context was
+        # still retained for a physical-close retry.  Do not keep awaiting the
+        # same failed task forever; the next caller must get a fresh attempt.
+        close_task = getattr(self, "_gemini_close_task", None)
+        if close_task is not None and close_task.done():
+            try:
+                close_error = close_task.exception()
+            except asyncio.CancelledError:
+                close_error = asyncio.CancelledError()
+            if (close_error is not None or self._gemini_context_manager is not None
+                    or self._gemini_close_retry_contexts):
+                self._gemini_close_task = None
         await self._own_teardown("_gemini_close_task", self._detach_for_gemini_close)
+
+    async def _retry_gemini_contexts(self, contexts) -> None:
+        """Retry captured retired SDK owners, never reread a replacement."""
+        for context, session in contexts:
+            retained = self._gemini_close_retry_contexts.get(id(context))
+            if retained is not None and retained[0] is context:
+                await self._close_gemini_context(context, session)
 
     def _detach_for_gemini_close(self):
         """Seize the context to exit, synchronously (see ``_own_teardown``)."""
 
         tool_tasks = self._advance_tool_scope()
-        return self._close_gemini_context(
+        return self._close_gemini_with_retries(
             self._gemini_context_manager,
             self._gemini_session,
             tool_tasks,
+            retired_contexts=tuple(
+                pair for pair in self._gemini_close_retry_contexts.values()
+                if pair[0] is not self._gemini_context_manager
+            ),
             proactive_submit_task=getattr(
                 self, "_gemini_proactive_submit_task", None
             ),
@@ -515,6 +578,14 @@ class _GeminiMixin:
                 self, "_gemini_external_submit_task", None
             ),
         )
+
+    async def _close_gemini_with_retries(
+        self, context, session, tool_tasks, *, retired_contexts, **submit_tasks,
+    ) -> None:
+        # All owners were captured before spawning this shielded teardown.
+        # A connection attaching during either await is never ours to close.
+        await self._close_gemini_context(context, session, tool_tasks, **submit_tasks)
+        await self._retry_gemini_contexts(retired_contexts)
 
     async def _cancel_gemini_submit_tasks(
         self,
@@ -613,12 +684,55 @@ class _GeminiMixin:
         await self._await_retired_tool_tasks(tool_tasks)
         if context is None:
             return
+        context_key = id(context)
+        retry_transport = context_key in self._gemini_close_retry_contexts
+        close_error = None
         try:
             await context.__aexit__(None, None, None)
         except Exception as e:
-            # A raised exit is still an exit that ran to its own conclusion —
-            # the references are dropped below either way, as before.
+            # A raised exit does not prove that the SDK transport physically
+            # exited. Retain that uncertainty for the session registry instead
+            # of acknowledging a safe handoff.
+            close_error = e
             logger.error(f"Error closing Gemini session: {e}")
+
+        if close_error is not None or retry_transport:
+            # google-genai's asynccontextmanager can be exhausted after a
+            # failed __aexit__; a second exit may return without touching its
+            # WebSocket. The retained AsyncSession owns the actual socket, so
+            # use its close() as the physical-release confirmation.
+            session_close = getattr(session, "close", None)
+            if not callable(session_close):
+                if close_error is None:
+                    close_error = RuntimeError(
+                        "Gemini session has no retryable close operation"
+                    )
+            else:
+                try:
+                    await session_close()
+                except Exception as e:
+                    logger.error(f"Error closing Gemini transport: {e}")
+                    if close_error is None:
+                        close_error = e
+                else:
+                    self._gemini_close_retry_contexts.pop(context_key, None)
+                    # The SDK context reported an error, but the retained
+                    # session has now confirmed the underlying transport is
+                    # closed, which is the ownership condition we need.
+                    close_error = None
+
+        if close_error is not None:
+            # Keep strong references even if a replacement overwrote the
+            # current fields while this exit awaited. A later retirement can
+            # retry the authoritative SDK transport close. The
+            # connection registry will keep its capacity slot occupied until
+            # one such retry completes successfully.
+            if self._gemini_context_manager is context:
+                logger.warning(
+                    "Gemini close failed; retaining the context for a later retry"
+                )
+            self._gemini_close_retry_contexts[context_key] = (context, session)
+            raise close_error
 
         if self._gemini_context_manager is not context:
             # A replacement session attached while the SDK exit ran. Its
@@ -738,6 +852,10 @@ class _GeminiMixin:
             connection_generation = self._connection_generation
         if not self._still_owns_connection(connection_generation):
             return
+        handoff_turn_epoch = self._current_turn_epoch
+        handoff_input_sequence = getattr(
+            self, "_voice_handoff_response_input_sequence", 0,
+        )
         external_outcome_token = getattr(
             self,
             "_gemini_external_outcome_token",
@@ -892,6 +1010,14 @@ class _GeminiMixin:
                     self._current_turn_epoch = self._turn_epoch
                     self._current_turn_host_id = self._read_host_turn_id()
                     if _is_new_turn and _can_clear_interrupted:
+                        # Only a recognized new response may claim this input.
+                        # Canceled/late content still advances the legacy epoch,
+                        # but must not borrow a successor's handoff marker.
+                        handoff_turn_epoch = self._current_turn_epoch
+                        handoff_input_sequence = getattr(
+                            self, "_voice_handoff_input_sequence", 0,
+                        )
+                        self._voice_handoff_response_input_sequence = handoff_input_sequence
                         # 新回合开始就说明旧回合已经收场：欠账作废，免得旧回合
                         # 永不终结时把下一条**合法**终结也吃掉，让 token 永远结算
                         # 不掉、会话被钉成「忙」而主动搭话彻底哑掉。
@@ -933,8 +1059,13 @@ class _GeminiMixin:
                         # after SDK transcription or a quiet gap proves this is not a canceled tail.
                         self._interrupted = False
                         # 在AI开始响应前，发送累积的用户输入
-                        if self._gemini_user_transcript and self.on_input_transcript:
-                            await self.on_input_transcript(self._gemini_user_transcript)
+                        if self._gemini_user_transcript and (
+                            self.on_input_transcript
+                            or self.on_input_transcript_with_route
+                        ):
+                            await self._deliver_input_transcript(
+                                self._gemini_user_transcript
+                            )
                             if not event_owner_is_current():
                                 return
                             self._gemini_user_transcript = ""  # 清空累积
@@ -1038,6 +1169,19 @@ class _GeminiMixin:
                         )
                     if not was_interrupted:
                         settle_event_outcome()
+                    if (
+                        not was_interrupted
+                        and not _owed_to_cancelled
+                        and not self._interrupted
+                        and handoff_turn_epoch == self._turn_epoch == self._current_turn_epoch
+                        and event_owner_is_current()
+                    ):
+                        # Gemini has no per-event turn ID. Use the existing
+                        # turn/cancellation classification and this event's
+                        # snapshot, never a marker replaced across callbacks.
+                        self._note_voice_handoff_input_boundary(
+                            expected_sequence=handoff_input_sequence,
+                        )
                     if self._skip_until_next_response:
                         self._skip_until_next_response = False
                         logger.info("Gemini: skipped response (prime_context priming)")
@@ -1067,8 +1211,10 @@ class _GeminiMixin:
                     # 被中断时也发送已累积的用户输入
                     if self._gemini_user_transcript:
                         self._gemini_user_transcript_after_interrupt = True
-                        if self.on_input_transcript:
-                            await self.on_input_transcript(self._gemini_user_transcript)
+                        if self.on_input_transcript or self.on_input_transcript_with_route:
+                            await self._deliver_input_transcript(
+                                self._gemini_user_transcript
+                            )
                             if not event_owner_is_current():
                                 return
                         self._gemini_user_transcript = ""

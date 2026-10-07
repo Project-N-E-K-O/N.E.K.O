@@ -1,3 +1,56 @@
+/*!
+ * @moeru/three-mmd - https://github.com/moeru-ai/three-mmd
+ * See THIRD_PARTY_NOTICES.md for provenance and local modifications.
+ *
+ * MIT License
+ *
+ * Copyright (c) 2010-2024 three.js authors
+ *
+ * Copyright (c) 2025 Moeru AI
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+/*!
+ * Bundled babylon-mmd 1.0.0 portions - https://github.com/noname0310/babylon-mmd
+ *
+ * MIT License
+ *
+ * Copyright (c) 2024 noname
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
 import { AddOperation, AnimationClip, Bone, BufferAttribute, BufferGeometry, Color, CustomBlending, DefaultLoadingManager, DoubleSide, DstAlphaFactor, Euler, FileLoader, FrontSide, Interpolant, Loader, LoaderUtils, MultiplyOperation, NearestFilter, NumberKeyframeTrack, OneMinusSrcAlphaFactor, Quaternion, QuaternionKeyframeTrack, RGB_ETC1_Format, RGB_ETC2_Format, RGB_PVRTC_2BPPV1_Format, RGB_PVRTC_4BPPV1_Format, RGB_S3TC_DXT1_Format, RepeatWrapping, SRGBColorSpace, ShaderLib, ShaderMaterial, Skeleton, SkinnedMesh, SrcAlphaFactor, TangentSpaceNormalMap, TextureLoader, UniformsUtils, Vector3, VectorKeyframeTrack } from "three";
 import { TGALoader } from "three/addons/loaders/TGALoader.js";
 

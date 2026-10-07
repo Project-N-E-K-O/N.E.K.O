@@ -43,6 +43,7 @@ from .shared_state import get_session_manager, get_config_manager, get_templates
 from config import TOOL_SERVER_PORT, USER_PLUGIN_BASE
 from main_logic.agent_event_bus import publish_session_event
 from main_logic.activity.system_signals import is_remote_backend_deployment
+from utils.desktop_capture import native_wayland_capture_available
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 logger = get_module_logger(__name__, "Main")
@@ -70,7 +71,6 @@ _AGENT_OFF_FLAGS = {
     "user_plugin_enabled": False,
     "openclaw_enabled": False,
     "openclaw_ready": False,
-    "openfang_enabled": False,
 }
 
 
@@ -283,8 +283,6 @@ async def update_agent_flags(request: Request):
                 forward_payload['user_plugin_enabled'] = bool(flags['user_plugin_enabled'])
             if 'openclaw_enabled' in flags:
                 forward_payload['openclaw_enabled'] = bool(flags['openclaw_enabled'])
-            if 'openfang_enabled' in flags:
-                forward_payload['openfang_enabled'] = bool(flags['openfang_enabled'])
             if forward_payload:
                 client = _get_http_client()
                 r = await client.post(f"{TOOL_SERVER_BASE}/agent/flags", json=forward_payload, timeout=0.7)
@@ -298,7 +296,6 @@ async def update_agent_flags(request: Request):
                 'browser_use_enabled': False,
                 'user_plugin_enabled': False,
                 'openclaw_enabled': False,
-                'openfang_enabled': False,
             })
             return JSONResponse({"success": False, "error": f"tool_server forward failed: {e}"}, status_code=502)
         return {"success": True, "is_free_version": _config_manager.is_agent_free()}
@@ -331,6 +328,15 @@ async def get_agent_state():
         return r.json()
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=502)
+
+
+@router.get('/computer-use/native-capture-available')
+async def get_computer_use_native_capture_available():
+    """Let a local Wayland UI fall back when screen sharing cannot start."""
+    blocked = _remote_backend_block()
+    if blocked is not None:
+        return blocked
+    return {"success": True, "available": native_wayland_capture_available()}
 
 
 @router.post('/command')
@@ -370,11 +376,10 @@ async def post_agent_command(request: Request):
                     "user_plugin_enabled": False,
                     "openclaw_enabled": False,
                     "openclaw_ready": False,
-                    "openfang_enabled": False,
                 })
         elif mgr and command == "set_flag":
             key = data.get("key")
-            if key in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled", "openclaw_enabled", "openfang_enabled"}:
+            if key in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled", "openclaw_enabled"}:
                 flag_update = {key: bool(data.get("value"))}
                 if key == "openclaw_enabled":
                     flag_update["openclaw_ready"] = False
@@ -473,6 +478,8 @@ async def redirect_plugin_dashboard(request: Request):
     else:
         user_plugin_base = await _resolve_user_plugin_base()
         target_url = f"{user_plugin_base}/ui"
+    if request.query_params.get("page") == "model-api":
+        target_url += "/model-api"
     query_params: dict[str, str] = {}
     if "v" in request.query_params:
         v = request.query_params["v"].strip()

@@ -2,19 +2,24 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+import asyncio
+
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 
+from plugin.server.application.plugin_cli import get_plugin_cli_service
 from plugin.logging_config import get_logger
-from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.mutation_auth import PluginMutationGuardedRoute
 
 router = APIRouter()
+# Package build/import changes executable plugin code and is only called by the
+# plugin manager and native CLI, so the browser token stays required here.
+mutation_router = APIRouter(route_class=PluginMutationGuardedRoute)
 logger = get_logger("server.routes.plugin_cli")
-service = PluginCliService()
 
 
 class PluginCliPluginRef(BaseModel):
@@ -27,12 +32,19 @@ class PluginCliPluginRefResponse(PluginCliPluginRef):
     label: str = ""
 
 
+class PluginCliDevelopmentRef(BaseModel):
+    registration_id: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+
+
 class PluginCliBuildRequest(BaseModel):
     mode: str = Field(default="selected", pattern="^(selected|single|bundle|all)$")
     plugin: str | None = None
     plugins: list[str] = Field(default_factory=list)
     plugin_ref: PluginCliPluginRef | None = None
     plugin_refs: list[PluginCliPluginRef] = Field(default_factory=list)
+    development_ref: PluginCliDevelopmentRef | None = None
+    development_refs: list[PluginCliDevelopmentRef] = Field(default_factory=list)
     out: str | None = None
     target_dir: str | None = None
     keep_staging: bool = False
@@ -43,10 +55,16 @@ class PluginCliBuildRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_mode_payload(self) -> "PluginCliBuildRequest":
-        if self.mode == "single" and not (self.plugin_ref or self.plugin):
+        if self.mode == "single" and not (self.plugin_ref or self.plugin or self.development_ref):
             raise ValueError("plugin_ref or plugin is required when mode=single")
-        if self.mode in {"selected", "bundle"} and not (self.plugin_refs or self.plugins):
+        if self.mode in {"selected", "bundle"} and not (self.plugin_refs or self.plugins or self.development_refs):
             raise ValueError("plugin_refs or plugins is required when mode=selected or mode=bundle")
+        if self.development_ref and self.mode != "single":
+            raise ValueError("development_ref requires mode=single")
+        if self.development_refs and self.mode not in {"selected", "bundle"}:
+            raise ValueError("development_refs requires mode=selected or mode=bundle")
+        if self.development_ref and (self.plugin or self.plugin_ref):
+            raise ValueError("A single build accepts exactly one source")
         return self
 
 
@@ -260,7 +278,7 @@ class PluginCliUploadAndInstallResponse(BaseModel):
 @router.get("/plugin-cli/plugins", response_model=PluginCliPluginListResponse)
 async def list_plugin_cli_plugins(_: str = require_admin) -> dict[str, object]:
     try:
-        return await service.list_local_plugins()
+        return await (await get_plugin_cli_service()).list_local_plugins()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -268,23 +286,43 @@ async def list_plugin_cli_plugins(_: str = require_admin) -> dict[str, object]:
 @router.get("/plugin-cli/packages", response_model=PluginCliPackageListResponse)
 async def list_plugin_cli_packages(_: str = require_admin) -> dict[str, object]:
     try:
-        return await service.list_local_packages()
+        return await (await get_plugin_cli_service()).list_local_packages()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/plugin-cli/build", response_model=PluginCliBuildResponse)
+@mutation_router.post("/plugin-cli/build", response_model=PluginCliBuildResponse)
 async def plugin_cli_build(
     payload: PluginCliBuildRequest,
+    request: Request,
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await service.build(
+        from plugin.server.application.plugin_cli.development_build import resolve_development_sources
+        from plugin.server.infrastructure.development_access import require_development_access
+
+        allow_development = bool(payload.development_ref or payload.development_refs)
+        development_unavailable = False
+        if payload.mode == "all":
+            try:
+                allow_development = bool(await asyncio.to_thread(resolve_development_sources, "all", None, []))
+            except ServerDomainError as error:
+                if error.code != "DEVELOPMENT_STORE_INVALID":
+                    raise
+                # Keep this dispatch confined to managed roots, even if the
+                # optional store is repaired before the worker starts.
+                development_unavailable = True
+        if allow_development:
+            require_development_access(request)
+        result = await (await get_plugin_cli_service()).build(
             mode=payload.mode,
             plugin=payload.plugin,
             plugins=payload.plugins,
             plugin_ref=payload.plugin_ref.model_dump() if payload.plugin_ref else None,
             plugin_refs=[item.model_dump() for item in payload.plugin_refs],
+            development_ref=payload.development_ref.model_dump() if payload.development_ref else None,
+            development_refs=[item.model_dump() for item in payload.development_refs],
+            allow_development=allow_development,
             out=payload.out,
             target_dir=payload.target_dir,
             keep_staging=payload.keep_staging,
@@ -293,6 +331,13 @@ async def plugin_cli_build(
             package_description=payload.package_description,
             version=payload.version,
         )
+        if development_unavailable:
+            failed = [*result["failed"], {
+                "plugin": "development",
+                "error": "Development registrations are unavailable; development sources were skipped",
+            }]
+            result = {**result, "failed": failed, "failed_count": len(failed), "ok": False}
+        return result
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -303,7 +348,7 @@ async def plugin_cli_inspect(
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await service.inspect(package=payload.package)
+        return await (await get_plugin_cli_service()).inspect(package=payload.package)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -314,18 +359,18 @@ async def plugin_cli_verify(
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await service.verify(package=payload.package)
+        return await (await get_plugin_cli_service()).verify(package=payload.package)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/plugin-cli/install", response_model=PluginCliInstallResponse)
+@mutation_router.post("/plugin-cli/install", response_model=PluginCliInstallResponse)
 async def plugin_cli_install(
     payload: PluginCliInstallRequest,
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await service.install(
+        return await (await get_plugin_cli_service()).install(
             package=payload.package,
             plugins_root=payload.plugins_root,
             profiles_root=payload.profiles_root,
@@ -348,7 +393,7 @@ async def plugin_cli_install_plan(
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await service.plan_install(
+        return await (await get_plugin_cli_service()).plan_install(
             package=payload.package,
             plugins_root=payload.plugins_root,
             profiles_root=payload.profiles_root,
@@ -363,7 +408,7 @@ async def plugin_cli_analyze(
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await service.analyze(
+        return await (await get_plugin_cli_service()).analyze(
             plugins=payload.plugins,
             plugin_refs=[item.model_dump() for item in payload.plugin_refs],
             current_sdk_version=payload.current_sdk_version,
@@ -375,7 +420,7 @@ async def plugin_cli_analyze(
 # ── Upload & Download ──────────────────────────────────────────────────
 
 
-@router.post("/plugin-cli/upload", response_model=PluginCliUploadResponse)
+@mutation_router.post("/plugin-cli/upload", response_model=PluginCliUploadResponse)
 async def plugin_cli_upload(
     file: UploadFile = File(...),
     _: str = require_admin,
@@ -387,7 +432,7 @@ async def plugin_cli_upload(
     """
     try:
         await file.seek(0)
-        return await service.save_uploaded_file(
+        return await (await get_plugin_cli_service()).save_uploaded_file(
             filename=file.filename or "unknown.neko-plugin",
             source_file=file.file,
         )
@@ -398,19 +443,21 @@ async def plugin_cli_upload(
         raise HTTPException(status_code=500, detail="Internal server error during upload")
 
 
-@router.delete("/plugin-cli/upload", response_model=PluginCliDiscardUploadResponse)
+@mutation_router.delete("/plugin-cli/upload", response_model=PluginCliDiscardUploadResponse)
 async def plugin_cli_discard_upload(
     package: str = Query(...),
     _: str = require_admin,
 ) -> dict[str, object]:
     """Discard one package uploaded by an abandoned local import workflow."""
     try:
-        return await service.discard_uploaded_package(package=package)
+        return await (await get_plugin_cli_service()).discard_uploaded_package(
+            package=package
+        )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
 
-@router.post("/plugin-cli/upload-and-install", response_model=PluginCliUploadAndInstallResponse)
+@mutation_router.post("/plugin-cli/upload-and-install", response_model=PluginCliUploadAndInstallResponse)
 async def plugin_cli_upload_and_install(
     file: UploadFile = File(...),
     on_conflict: str = Query(default="fail", pattern="^fail$"),
@@ -422,11 +469,11 @@ async def plugin_cli_upload_and_install(
     """
     try:
         await file.seek(0)
-        uploaded = await service.save_uploaded_file(
+        uploaded = await (await get_plugin_cli_service()).save_uploaded_file(
             filename=file.filename or "unknown.neko-plugin",
             source_file=file.file,
         )
-        return await service.upload_and_install(
+        return await (await get_plugin_cli_service()).upload_and_install(
             filename=str(uploaded["name"]),
             package_path=str(uploaded["path"]),
             on_conflict=on_conflict,
@@ -445,7 +492,9 @@ async def plugin_cli_download(
 ) -> FileResponse:
     """Download a plugin package file from the server."""
     try:
-        resolved = service.resolve_download_path(package)
+        resolved = await asyncio.to_thread(
+            (await get_plugin_cli_service()).resolve_download_path, package
+        )
         return FileResponse(
             str(resolved),
             filename=resolved.name,
@@ -458,13 +507,14 @@ async def plugin_cli_download(
 # ── Legacy route aliases (backward compatibility with existing frontend) ──
 
 
-@router.post("/plugin-cli/pack", include_in_schema=False)
+@mutation_router.post("/plugin-cli/pack", include_in_schema=False)
 async def plugin_cli_pack_legacy(
     payload: PluginCliBuildRequest,
+    request: Request,
     _: str = require_admin,
 ) -> dict[str, object]:
     """Legacy alias for /plugin-cli/build. Translates response keys."""
-    result = await plugin_cli_build(payload, _)
+    result = await plugin_cli_build(payload, request, _)
     # Translate new keys to legacy keys expected by frontend
     if isinstance(result, dict):
         translated = dict(result)
@@ -476,7 +526,7 @@ async def plugin_cli_pack_legacy(
     return result
 
 
-@router.post("/plugin-cli/unpack", include_in_schema=False)
+@mutation_router.post("/plugin-cli/unpack", include_in_schema=False)
 async def plugin_cli_unpack_legacy(
     payload: PluginCliInstallRequest,
     _: str = require_admin,
@@ -494,7 +544,7 @@ async def plugin_cli_unpack_legacy(
     return result
 
 
-@router.post("/plugin-cli/upload-and-unpack", include_in_schema=False)
+@mutation_router.post("/plugin-cli/upload-and-unpack", include_in_schema=False)
 async def plugin_cli_upload_and_unpack_legacy(
     file: UploadFile = File(...),
     on_conflict: str = Query(default="fail", pattern="^fail$"),
@@ -512,3 +562,6 @@ async def plugin_cli_upload_and_unpack_legacy(
         result = {key: value for key, value in result.items() if key != "install"}
         result["unpack"] = install
     return result
+
+
+router.include_router(mutation_router)

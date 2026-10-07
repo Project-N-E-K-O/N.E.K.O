@@ -1225,7 +1225,6 @@ async def test_restored_tutorial_routes_supply_static_asset_version_to_template(
         steamworks=None,
         templates=_DummyTemplates(),
         config_manager=SimpleNamespace(),
-        logger=None,
         initialize_character_data=None,
     )
 
@@ -2686,7 +2685,6 @@ async def test_task_executor_routes_galgame_continue_phrase_through_plugin_asses
                 "browser_use_enabled": False,
                 "user_plugin_enabled": True,
                 "openclaw_enabled": False,
-                "openfang_enabled": False,
             },
         )
 
@@ -2748,7 +2746,6 @@ async def test_task_executor_routes_galgame_mode_phrases_through_plugin_assessme
                 "browser_use_enabled": False,
                 "user_plugin_enabled": True,
                 "openclaw_enabled": False,
-                "openfang_enabled": False,
             },
         )
         companion_result = await executor.analyze_and_execute(
@@ -2758,7 +2755,6 @@ async def test_task_executor_routes_galgame_mode_phrases_through_plugin_assessme
                 "browser_use_enabled": False,
                 "user_plugin_enabled": True,
                 "openclaw_enabled": False,
-                "openfang_enabled": False,
             },
         )
 
@@ -3317,7 +3313,6 @@ async def test_task_executor_routes_openclaw_as_independent_execution_method():
     executor = object.__new__(DirectTaskExecutor)
     executor.computer_use = None
     executor.browser_use = None
-    executor.openfang = None
     executor.plugin_list = []
     executor._external_plugin_provider = None
 
@@ -3338,7 +3333,6 @@ async def test_task_executor_routes_openclaw_as_independent_execution_method():
                 "browser_use_enabled": False,
                 "user_plugin_enabled": False,
                 "openclaw_enabled": True,
-                "openfang_enabled": False,
             },
         )
 
@@ -3356,7 +3350,6 @@ async def test_task_executor_routes_openclaw_with_image_attachments():
     executor = object.__new__(DirectTaskExecutor)
     executor.computer_use = None
     executor.browser_use = None
-    executor.openfang = None
     executor.plugin_list = []
     executor._external_plugin_provider = None
 
@@ -3379,7 +3372,6 @@ async def test_task_executor_routes_openclaw_with_image_attachments():
                 "browser_use_enabled": False,
                 "user_plugin_enabled": False,
                 "openclaw_enabled": True,
-                "openfang_enabled": False,
             },
         )
 
@@ -3495,7 +3487,6 @@ async def test_task_executor_magic_intent_routes_to_openclaw_before_unified_asse
     executor = object.__new__(DirectTaskExecutor)
     executor.computer_use = None
     executor.browser_use = None
-    executor.openfang = None
     executor.plugin_list = []
     executor._external_plugin_provider = None
 
@@ -3513,7 +3504,6 @@ async def test_task_executor_magic_intent_routes_to_openclaw_before_unified_asse
                 "browser_use_enabled": False,
                 "user_plugin_enabled": False,
                 "openclaw_enabled": True,
-                "openfang_enabled": False,
             },
         )
 
@@ -3729,16 +3719,6 @@ def test_agent_llm_check_marks_browser_use_unloaded_instead_of_pending():
     assert '_set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")' in func_src
 
 
-def test_openfang_startup_capability_transitions_emit_status_snapshots():
-    source, func = _find_agent_server_function("startup", ast.AsyncFunctionDef)
-    func_src = ast.get_source_segment(source, func) or ""
-    init_src = func_src.split("async def _init_openfang_background():", 1)[1].split(
-        "_openfang_task = asyncio.create_task", 1
-    )[0]
-
-    assert init_src.count("await _emit_agent_status_update()") == 3
-
-
 def test_agent_popup_refetches_snapshot_after_openclaw_probe_settles():
     source = Path("static/js/agent_ui_v2.js").read_text(encoding="utf-8")
     popup_src = source.split(
@@ -3785,7 +3765,6 @@ def test_agent_popup_state_sync_includes_pngtuber_prefix():
         "keyboard",
         "browser",
         "user-plugin",
-        "openfang",
         "openclaw",
         "status",
     ]:
@@ -3796,7 +3775,6 @@ def test_agent_popup_state_sync_includes_pngtuber_prefix():
         "keyboard",
         "browser",
         "user-plugin",
-        "openfang",
         "openclaw",
         "status",
     ]:
@@ -3904,54 +3882,6 @@ def test_get_model_api_config_tts_custom_prefers_qwen_profile(monkeypatch):
 
 
 
-
-
-async def test_publish_analyze_and_plan_event_writes_expected_payload(monkeypatch):
-    from main_logic.agent_bridge import publish_analyze_and_plan_event
-
-    class DummyWriter:
-        def __init__(self):
-            self.buffer = b""
-
-        def write(self, data):
-            self.buffer += data
-
-        async def drain(self):
-            return None
-
-        def close(self):
-            return None
-
-        async def wait_closed(self):
-            return None
-
-    writer = DummyWriter()
-
-    async def fake_open_connection(host, port):
-        assert host == "127.0.0.1"
-        assert isinstance(port, int)
-        return object(), writer
-
-    monkeypatch.setattr("main_logic.agent_bridge.asyncio.open_connection", fake_open_connection)
-
-    messages = [{"role": "user", "content": "hello"}]
-    ok = await publish_analyze_and_plan_event(messages, "LanLan")
-    assert ok is True
-    payload = json.loads(writer.buffer.decode("utf-8").strip())
-    assert payload["type"] == "analyze_and_plan"
-    assert payload["messages"] == messages
-    assert payload["lanlan_name"] == "LanLan"
-
-
-async def test_publish_analyze_and_plan_event_returns_false_on_error(monkeypatch):
-    from main_logic.agent_bridge import publish_analyze_and_plan_event
-
-    async def fake_open_connection(_host, _port):
-        raise OSError("down")
-
-    monkeypatch.setattr("main_logic.agent_bridge.asyncio.open_connection", fake_open_connection)
-    ok = await publish_analyze_and_plan_event([], "LanLan")
-    assert ok is False
 
 
 async def test_agent_event_bus_publish_session_event_without_bridge_returns_false():

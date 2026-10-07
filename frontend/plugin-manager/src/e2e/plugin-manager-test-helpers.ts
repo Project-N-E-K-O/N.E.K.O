@@ -13,6 +13,9 @@ export function collectVueResolutionWarnings(page: Page) {
 }
 
 export async function stubCorePluginManagerApis(page: Page) {
+  await page.route('**/security/csrf-token', (route) =>
+    route.fulfill({ json: { csrf_token: 'e2e-csrf-token' } })
+  )
   await page.route('**/health', (route) => route.fulfill({ json: { status: 'ok' } }))
   await page.route('**/plugins?*', (route) => route.fulfill({ json: { plugins: [], message: '' } }))
   await page.route('**/plugin/status', (route) => route.fulfill({ json: { plugins: {} } }))

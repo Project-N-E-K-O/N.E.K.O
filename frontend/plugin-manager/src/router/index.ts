@@ -4,6 +4,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 import { i18n } from '@/i18n'
+import { watch } from 'vue'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -32,6 +33,14 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/PluginDetail.vue'),
         meta: {
           titleKey: 'plugins.pluginDetail'
+        }
+      },
+      {
+        path: 'model-api',
+        name: 'ModelApi',
+        component: () => import('@/views/ModelApi.vue'),
+        meta: {
+          titleKey: 'modelApi.title'
         }
       },
       {
@@ -79,6 +88,14 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
+        path: 'development',
+        name: 'Development',
+        component: () => import('@/views/Development.vue'),
+        meta: {
+          titleKey: 'development.title'
+        }
+      },
+      {
         path: ':pathMatch(.*)*',
         redirect: '/'
       }
@@ -101,6 +118,11 @@ router.beforeEach((to, from, next) => {
   }
 
   next()
+})
+
+watch(i18n.global.locale, () => {
+  const key = router.currentRoute.value.meta.titleKey
+  if (key) document.title = `${i18n.global.t(key as string)} - ${i18n.global.t('app.titleSuffix')}`
 })
 
 export default router

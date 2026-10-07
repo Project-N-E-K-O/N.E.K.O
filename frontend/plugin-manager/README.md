@@ -40,6 +40,12 @@ npm install
 
 ### 启动开发服务器
 
+默认 Vite 页面来源是 `http://localhost:5173`。启动插件后端前，在后端进程环境中设置
+`NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS=http://localhost:5173`，才能获取生命周期与插件包上传/安装操作的 CSRF token。
+如使用 `127.0.0.1` 或其他开发端口，填写实际完整来源；多个来源以逗号分隔。
+后端不会默认信任所有运行在 5173 的网页。此配置仅用于开发，官方 NAS/Docker 部署无需设置。
+允许列表中的网页可以读取主服务与插件服务共享的实例 token，只应添加受信任的开发页面。
+
 ```bash
 npm run dev
 ```
@@ -72,9 +78,16 @@ npm run format
 VITE_API_BASE_URL=http://localhost:48916
 ```
 
+`VITE_API_BASE_URL` controls the API base used by the browser application. To
+change the backend target used by Vite's development proxy, set
+`VITE_BACKEND_URL` instead; it defaults to `http://localhost:48916`.
+
 ### 代理配置
 
-开发环境已配置代理，将 `/api` 请求代理到插件服务器。
+开发环境只代理插件管理器实际使用的后端路由，包括 `/plugin/`、受限的
+Market 路由、`/plugins`、`/server`、`/health`、`/available`、`/ws`，以及
+Hosted UI 文档解析所需的 `/api/documents`。不会把整个 `/api` 命名空间暴露给
+开发服务器；精确列表以 `vite.config.ts` 为准。
 
 ## 功能模块
 

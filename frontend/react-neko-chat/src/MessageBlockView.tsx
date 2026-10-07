@@ -1,6 +1,7 @@
+import HtmlCardBlock from './HtmlCardBlock';
 import type { SyntheticEvent } from 'react';
 import SmartTextBlock from './SmartTextBlock';
-import { isMemeProxyImageUrl, swapImageToMemeLoadFailedSticker } from './memeImageFallback';
+import MessageImageBlock from './MessageImageBlock';
 import { normalizeExternalUrlHref, openExternalUrl } from './openExternal';
 import {
   type ChatMessage,
@@ -12,11 +13,22 @@ type MessageBlockViewProps = {
   block: MessageBlock;
   message: ChatMessage;
   isStreaming?: boolean;
+  interactive?: boolean;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
 
-function handleImageLoadError(event: SyntheticEvent<HTMLImageElement>, url: string) {
-  swapImageToMemeLoadFailedSticker(event.currentTarget, url);
+const MUSIC_COVER_PLACEHOLDER_URL = '/static/assets/music/music-cover-placeholder.png';
+
+function handleLinkThumbnailLoadError(
+  event: SyntheticEvent<HTMLImageElement>,
+  messageId: ChatMessage['id'],
+) {
+  if (typeof messageId !== 'string' || !messageId.startsWith('music-')) return;
+
+  const image = event.currentTarget;
+  const placeholderUrl = new URL(MUSIC_COVER_PLACEHOLDER_URL, window.location.href).href;
+  if (image.src === placeholderUrl) return;
+  image.src = MUSIC_COVER_PLACEHOLDER_URL;
 }
 
 export function isGuideMessage(message: ChatMessage) {
@@ -28,7 +40,12 @@ export default function MessageBlockView({
   message,
   isStreaming,
   onAction,
+  interactive = true,
 }: MessageBlockViewProps) {
+  if (block.type === 'html_card') {
+    return interactive ? <HtmlCardBlock block={block} /> : <div className="message-block message-block-text">{block.summary}</div>;
+  }
+
   if (block.type === 'text') {
     return (
       <SmartTextBlock
@@ -40,24 +57,7 @@ export default function MessageBlockView({
   }
 
   if (block.type === 'image') {
-    const isMemeProxyImage = isMemeProxyImageUrl(block.url);
-    const imageLoadingProps = isMemeProxyImage
-      ? { loading: 'eager' as const, fetchpriority: 'high' as const }
-      : { loading: 'lazy' as const };
-
-    return (
-      <figure
-        className="message-block message-block-image"
-        style={block.width && block.height ? { aspectRatio: `${block.width} / ${block.height}` } : undefined}
-      >
-        <img
-          src={block.url}
-          alt={block.alt || ''}
-          {...imageLoadingProps}
-          onError={(event) => handleImageLoadError(event, block.url)}
-        />
-      </figure>
-    );
+    return <MessageImageBlock key={block.url} block={block} interactive={interactive} />;
   }
 
   if (block.type === 'link') {
@@ -75,7 +75,13 @@ export default function MessageBlockView({
       >
         {block.thumbnailUrl ? (
           <div className="message-link-thumb">
-            <img src={block.thumbnailUrl} alt="" loading="lazy" />
+            <img
+              key={block.thumbnailUrl}
+              src={block.thumbnailUrl}
+              alt=""
+              loading="lazy"
+              onError={(event) => handleLinkThumbnailLoadError(event, message.id)}
+            />
           </div>
         ) : null}
         <div className="message-link-copy">

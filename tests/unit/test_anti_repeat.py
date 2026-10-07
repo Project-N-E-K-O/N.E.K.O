@@ -20,6 +20,8 @@ import asyncio
 import json
 import os
 import threading
+from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -970,3 +972,179 @@ def test_detached_flush_ignores_a_none_handle(tmp_path):
     store = _build_store(tmp_path)
     store.flush_staged_detached(None)
     assert not store._detached_flushes
+
+
+def test_stale_flush_is_refused_while_the_cloud_import_fence_is_closed(monkeypatch, tmp_path):
+    """A snapshot staged before a cloud import must not land on top of it.
+
+    Eviction alone cannot stop it: the snapshot's sequence is still above
+    `_written_seq`, so it takes the write lock, passes the check and writes the
+    old payload over the file the import just restored — which no later fence
+    can undo. The write barrier therefore has to live inside the flush, the way
+    `memory/anti_repeat_effects.py` already does it.
+    """
+    import memory.anti_repeat as anti_repeat_module
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    corpus = anti_repeat_module.AntiRepeatCorpus()
+    config_manager = SimpleNamespace(memory_dir=str(tmp_path))
+    corpus._config_manager = config_manager
+    (tmp_path / "Neko").mkdir()
+
+    calls: list[str] = []
+
+    @contextmanager
+    def _closed_fence(_config_manager, *, operation="write", target=""):
+        calls.append(target)
+        raise MaintenanceModeError("importing", operation=operation, target=target)
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    monkeypatch.setattr(
+        "utils.cloudsave_runtime.cloudsave_writable_transaction", _closed_fence
+    )
+
+    corpus._flush_snapshot("Neko", {"version": 1, "window": [{"stale": True}]}, 5)
+
+    # Both names must be the file this store actually writes. They read
+    # "anti_repeat.json" -- a separate literal from the write path, which had
+    # drifted -- so the first assertion pinned the drift and the second was
+    # vacuous, checking the absence of a file that could never appear.
+    assert calls == ["memory/Neko/anti_repeat_corpus.json"]
+    assert not (tmp_path / "Neko" / "anti_repeat_corpus.json").exists()
+    # The sequence must NOT advance: the write never happened.
+    assert corpus._written_seq.get("Neko", 0) == 0
+
+
+def test_a_retired_corpus_write_does_not_recreate_a_removed_directory(tmp_path):
+    """The corpus lazily creates memory/<name>/ on every write.
+
+    Fencing alone only covers snapshots staged BEFORE the eviction, so an
+    output committed while a delete or rename-away was still in flight ran once
+    the lifecycle operation released its fence and made the directory the
+    caller had just removed reappear -- with a sidecar in it, so the deleted
+    identity looked like it still had memory.
+    """
+    import shutil
+
+    corpus = _build_store(tmp_path)
+    (tmp_path / "Neko").mkdir()
+    corpus.record_output("Neko", LONG_TIGER, now=1_700_000_000.0)
+    assert (tmp_path / "Neko" / "anti_repeat_corpus.json").exists()
+
+    corpus.retire_character("Neko")
+    shutil.rmtree(tmp_path / "Neko")
+
+    corpus.record_output("Neko", LONG_TIGER, now=1_700_000_001.0)
+
+    assert not (tmp_path / "Neko").exists()
+
+
+def test_evicting_a_live_corpus_identity_does_not_retire_it(tmp_path):
+    """A cloud-save import replaces the files of a LIVE character.
+
+    Retiring it would deny it the lazy directory creation every sibling memory
+    writer gets, so a profile that ships no managed memory files would never
+    persist while the character is in active use. Eviction is also what lifts
+    an earlier retirement -- directory existence never does.
+    """
+    import shutil
+
+    corpus = _build_store(tmp_path)
+    (tmp_path / "Neko").mkdir()
+    corpus.retire_character("Neko")
+    shutil.rmtree(tmp_path / "Neko")
+    corpus.record_output("Neko", LONG_TIGER, now=1_700_000_000.0)
+    assert not (tmp_path / "Neko").exists()
+
+    corpus.evict_character("Neko")
+
+    assert "Neko" not in corpus._retired
+    corpus.record_output("Neko", LONG_TIGER, now=1_700_000_001.0)
+    assert (tmp_path / "Neko" / "anti_repeat_corpus.json").exists()
+
+
+# ── code-bearing drafts are outside anti-repeat entirely ──────
+#
+# A product decision, not a leak fix: code is rare enough in a character's
+# speech to be worth skipping the GATE for, not merely the report. Measured
+# before it was taken -- 0 of 9597 strings in the shipped corpora and 0 of 2470
+# stored assistant replies carry any code shape.
+
+
+def _tiger_with(marker: str) -> str:
+    """The corpus's own long draft, carrying one code opener.
+
+    On its OWN line: a reference definition is a leading construct, so
+    "[cfg]: /srv/token" appended mid-line is not one and must not fire.
+    """
+    return LONG_TIGER + chr(10) + marker
+
+
+CODE_MARKERS = (
+    "`x`",
+    "```",
+    "<div>",
+    "<!--",
+    "{{ a }}",
+    "${ a }",
+    "https://example.com/a",
+    "[cfg]: /srv/token",
+)
+
+
+@pytest.mark.parametrize("marker", CODE_MARKERS)
+def test_a_code_bearing_draft_is_never_ingested(tmp_path, marker):
+    s = _build_store(tmp_path)
+    s.record_output("Neko", _tiger_with(marker), is_proactive=True, now=1000.0)
+    with s._get_lock("Neko"):
+        assert s._load_unlocked("Neko") == []
+
+
+@pytest.mark.parametrize("marker", CODE_MARKERS)
+def test_a_code_bearing_draft_is_never_scored(tmp_path, marker):
+    """Scored against a corpus that HAS the same text, so a 0 means the skip.
+
+    Ingesting the clean spelling first is what stops this passing merely
+    because the corpus is empty.
+    """
+    s = _build_store(tmp_path)
+    s.record_output("Neko", LONG_TIGER, is_proactive=True, now=1000.0)
+    assert s.score_draft("Neko", LONG_TIGER, now=1000.0)[0] > 0
+    assert s.score_draft("Neko", _tiger_with(marker), now=1000.0) == (0.0, {})
+
+
+def test_the_unanswered_proactive_signal_skips_code_too(tmp_path):
+    """The third entry point. All three agree or the corpus contradicts itself."""
+    s = _build_store(tmp_path)
+    for i in range(4):
+        s.record_output("Neko", LONG_TIGER, is_proactive=True, now=1000.0 + i)
+
+    clean = s.score_unanswered_proactive_draft(
+        "Neko", LONG_TIGER, silence_since=900.0, now=1010.0
+    )
+    assert clean.triggered, "the control must fire, or the skip proves nothing"
+
+    fenced = s.score_unanswered_proactive_draft(
+        "Neko", _tiger_with("`x`"), silence_since=900.0, now=1010.0
+    )
+    assert not fenced.triggered
+    assert fenced.match_count == 0
+
+
+def test_ordinary_speech_still_reaches_all_three_entry_points(tmp_path):
+    """The dual: the skip must not swallow a character's normal punctuation.
+
+    All three, because the skip is one shared predicate: a kaomoji that only
+    the two cheap-to-write entry points were checked against would leave the
+    third free to disagree with them.
+    """
+    s = _build_store(tmp_path)
+    speech = LONG_TIGER + "（｀・ω・´）～～～ >_< 1/2"
+    for i in range(4):
+        s.record_output("Neko", speech, is_proactive=True, now=1000.0 + i)
+    with s._get_lock("Neko"):
+        assert s._load_unlocked("Neko") != []
+    assert s.score_draft("Neko", speech, now=1000.0)[0] > 0
+    assert s.score_unanswered_proactive_draft(
+        "Neko", speech, silence_since=900.0, now=1010.0
+    ).triggered

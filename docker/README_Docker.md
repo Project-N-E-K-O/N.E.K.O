@@ -2,6 +2,23 @@
 
 本文档说明如何将 N.E.K.O. 项目打包为 Docker 容器并部署。
 
+### 远程首次连接与社区账户
+
+远程网页/Windows Electron 首次输入实例 key，之后复用连接会话。默认允许明文 HTTP（`http://宿主地址:48911`、`DISABLE_SSL=1`、SSH 隧道），配对页会提示 key 与会话未加密；条件允许时优先 HTTPS（`https://宿主地址:48912`）。设置 `NEKO_REQUIRE_HTTPS=1` 可拒绝明文远程配对与凭证。浏览器只在 HTTPS 或 `localhost` 下允许麦克风，`http://IP` 访问时语音输入不可用。
+管理员运行 docker compose exec --user neko -w /app neko-main uv run python -m utils.instance_access
+配置HTTPS public origin即声明外层TLS网关：80端口关闭或仅HTTPS重定向，不可转发同Host明文请求，私有HTTP upstream不能暴露；Host相等不代表请求已加密。
+取得持久化凭证；服务不在日志打印。多服务共享存储或设置同一 NEKO_INSTANCE_ACCESS_KEY。
+外置 nginx/NAS 鉴权可叠加。匿名账户查询/API/WS 拒绝，授权后账户响应不含 Linux 路径或社区令牌。
+默认 Web OAuth 使用平台固定 relay，无需每个 Docker 域名注册回调。认证平台与 PC 配套版本、
+用户真实环境验收是 #3289 合并门槛；本机桌面与真实回环调试代理保持兼容。
+详见[访问边界与测试步骤](/design/security/community-remote-access)。
+
+### 外层反向代理与客户端地址
+
+官方 nginx 的 HTTP/HTTPS 服务代理路由追加 `X-Forwarded-For` 转发链；main、memory、agent 和插件服务只信任回环代理 `127.0.0.1,::1`，Uvicorn 从右向左跳过可信代理，使用第一个不可信地址，避免客户端伪造最左回环地址。独立的 `/security/csrf-token` 引导路由仍覆盖 XFF。容器外再套 Traefik、Cloudflare 或 ingress 时，外层代理必须正确设置客户端地址链；非回环外层上游若需进一步信任，应由运维明确配置具体可信代理地址或 nginx `set_real_ip_from` / `real_ip_header`，不要使用信任所有地址的通配符。仅限本机的资源接口及插件 UI push 拒绝转发调用；后端进程可不带转发元数据直连本机接口。
+
+主服务所有启动入口开启 Uvicorn 代理头解析，并显式仅信任 `127.0.0.1,::1`，不受 `FORWARDED_ALLOW_IPS=*` 覆盖。桌面本机调试代理报告 XFF 为回环地址时保持可用；同机 HTTP 隧道报告远程地址时，本机账户/资源守卫拒绝。`NEKO_BEHIND_PROXY=1/true/yes` 还会启用更严格的本机资源转发元数据检查；插件原生变更、开发接口、UI push 和 bridge-token 始终拒绝转发元数据。外置代理必须保留真实客户端 XFF 链，不能覆盖成回环地址；不含 XFF、只带 X-Real-IP/Forwarded 的代理不被 Uvicorn 解析为客户端身份，纯 TCP 隧道也无法靠 HTTP 元数据识别，因此远程部署仍须声明并提供实例访问认证。
+
 ## 📋 目录结构
 
 ```
@@ -9,6 +26,7 @@ docker/
 ├── Dockerfile              # Docker 镜像构建文件
 ├── docker-compose.yml      # Docker Compose 配置
 ├── .env.example           # 环境变量模板
+├── watchdog/              # 可选宿主机自愈看门狗（见下文「低配云服务器」）
 └── config/                # 配置示例（运行时不挂载此目录）
     ├── core_config.json.example
     ├── characters.json.example
@@ -43,15 +61,6 @@ docker/
 | `NEKO_MEMORY_SERVER_PORT` | 记忆服务器端口 | `48912` |
 | `NEKO_MONITOR_SERVER_PORT` | 监控服务器端口 | `48913` |
 | `NEKO_TOOL_SERVER_PORT` | 工具服务器端口 | `48915` |
-
-#### 模型配置（高级）
-
-| 环境变量 | 说明 | 默认值 |
-|---------|------|--------|
-| `NEKO_SUMMARY_MODEL` | 摘要模型 | `qwen-plus` |
-| `NEKO_CORRECTION_MODEL` | 纠错模型 | `qwen-max` |
-| `NEKO_EMOTION_MODEL` | 情感分析模型 | `qwen-turbo` |
-| `NEKO_VISION_MODEL` | 视觉模型 | `qwen3-vl-plus-2025-09-23` |
 
 ### 方式二：配置文件（高级用户）
 
@@ -182,7 +191,7 @@ docker run -d \
 
 建议将完整的用户主目录挂载到宿主机：
 
-- `/home/neko` - 配置、记忆、角色、用户插件及插件数据、插件市场 OAuth 登录状态、OpenFang 状态和 TLS 证书/私钥
+- `/home/neko` - 配置、记忆、角色、用户插件及插件数据、插件市场 OAuth 登录状态和 TLS 证书/私钥
 - `/app/logs` - 日志
 
 示例：
@@ -192,6 +201,15 @@ volumes:
   - ./neko-home:/home/neko
   - ./logs:/app/logs
 ```
+
+首次启动前、以及迁入数据之后，建议在 `docker/` 下执行一次宿主机预检（不拉取任何镜像）：
+
+```bash
+sudo sh preflight.sh                      # 默认检查 ./neko-home 和 ./logs
+sudo sh preflight.sh /覆盖文件里的/neko-home /覆盖文件里的/logs   # 覆盖文件挂载了其他目录时原样传入，相对路径按 docker/ 解析
+```
+
+它拒绝本身是、或路径中经过符号链接的挂载来源（Docker 会挂载链接目标，容器会接管它的属主），创建缺失的目录，并只把这两个目录本身的属主设为 uid/gid 1000。数据目录内部的属主由入口脚本每次启动时对齐。回归测试：`sudo bash test-preflight.sh`。
 
 ## 🔍 配置优先级
 
@@ -234,19 +252,6 @@ NEKO_MAIN_SERVER_PORT=48911
 NEKO_MEMORY_SERVER_PORT=48912
 NEKO_MONITOR_SERVER_PORT=48913
 NEKO_TOOL_SERVER_PORT=48915
-```
-
-#### 模型选择
-```bash
-NEKO_SUMMARY_MODEL=qwen-plus
-NEKO_CORRECTION_MODEL=qwen-max
-NEKO_EMOTION_MODEL=qwen-turbo
-NEKO_VISION_MODEL=qwen3-vl-plus-2025-09-23
-```
-
-#### MCP Router
-```bash
-NEKO_MCP_ROUTER_URL=http://localhost:3283
 ```
 
 ## 🐛 故障排查
@@ -301,6 +306,10 @@ A: 运行 `docker exec neko python -c "from utils.config_manager import get_conf
      - no-new-privileges:true
    read_only: true
    ```
+
+## 🪶 低配云服务器
+
+2 核 2G 等低配服务器同样使用本目录的 `docker-compose.yml`。宿主机内存（ZRAM/Swap）、磁盘、安全配置，以及可选的宿主机自愈看门狗（`docker/watchdog/`）见[低配云服务器部署](../docs/zh-CN/deployment/low-spec-server.md)。
 
 ## 📚 更多资源
 

@@ -29,7 +29,7 @@ from main_logic.omni_realtime_client import (
 )
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
-from main_logic.session_state import SessionEvent, ProactivePhase
+from main_logic.session_state import SessionEvent, ProactivePhase, session_reply_in_progress
 from main_logic.proactive_delivery import (
     PASSIVE_MEDIA_BUDGET_DEFERRED_KEY,
     PASSIVE_MEDIA_MAX_RETRIES,
@@ -47,6 +47,7 @@ from main_logic.proactive_delivery import (
 )
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
 from utils.language_utils import normalize_language_code, get_global_language_full
+from utils.desktop_capture import capture_desktop_screenshot
 from uuid import uuid4
 from ._shared import (
     _VOICE_PROACTIVE_ACK_GRACE_S,
@@ -100,7 +101,6 @@ class ProactiveMixin:
                 'user_plugin_enabled',
                 'openclaw_enabled',
                 'openclaw_ready',
-                'openfang_enabled',
             ]:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]
@@ -234,11 +234,10 @@ class ProactiveMixin:
             pass
         if is_local:
             try:
-                import pyautogui
                 from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
                 import base64 as b64mod
                 def _capture_and_compress() -> bytes:
-                    shot = pyautogui.screenshot()
+                    shot = capture_desktop_screenshot()
                     if shot.mode in ('RGBA', 'LA', 'P'):
                         shot = shot.convert('RGB')
                     return compress_screenshot(
@@ -316,6 +315,11 @@ class ProactiveMixin:
         if not self.session or not hasattr(self.session, '_conversation_history'):
             try:
                 await self.start_session(self.websocket, new=False, input_mode='text')
+            except asyncio.CancelledError as exc:
+                if not self._consume_start_retirement_cancellation(exc):
+                    raise
+                logger.info("[%s] prepare_proactive_delivery: session start cancelled", self.lanlan_name)
+                return False
             except Exception as e:
                 logger.warning("[%s] prepare_proactive_delivery: session start failed: %s", self.lanlan_name, e)
                 return False
@@ -391,9 +395,13 @@ class ProactiveMixin:
         ``None``), drop if genuine UI engagement advanced while this call waited
         for the TTS lock. Returns whether the chunk was accepted.
         """
+        if getattr(self, "_takeover_active", False):
+            return False
         if not self.use_tts:
             return True
         async with self.tts_cache_lock:
+            if getattr(self, "_takeover_active", False):
+                return False
             if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
                 logger.debug(
                     "feed_tts_chunk drop: expected_sid=%s current_sid=%s len=%d",
@@ -534,18 +542,48 @@ class ProactiveMixin:
             # (only the agent-direct-reply path in main_server.py does), so
             # without this the buffer would carry the proactive text forward
             # and contaminate the next user-initiated turn's AI message.
-            self._flush_ai_turn_text_to_tracker()
+            self._flush_ai_turn_text_to_tracker(turn_type="proactive_reply")
 
             if self.session and hasattr(self.session, '_conversation_history'):
                 # action_note 只进历史，不进 send_lanlan_response（前端不展示）
                 # 也不进 TTS。空 full_text + 非空 note 的场景目前不会发生
                 # （proactive 不允许空文本），但写法上仍然兜底拼接。
                 history_text = full_text
+                additional_kwargs = {
+                    "anti_repeat_response_id": str(commit_sid),
+                    "dialog_source": "proactive",
+                }
                 if action_note:
                     note = action_note.strip()
                     if note:
                         history_text = f"{full_text}\n{note}" if full_text else note
-                self.session._conversation_history.append(AIMessage(content=history_text))
+                        # Persist only the visible character count, never a
+                        # second copy of either the reply or the hidden note.
+                        additional_kwargs["anti_repeat_visible_text_length"] = str(
+                            len(full_text)
+                        )
+                response_id = str(commit_sid)
+                self.session._conversation_history.append(
+                    AIMessage(
+                        content=history_text,
+                        additional_kwargs=additional_kwargs,
+                    )
+                )
+                try:
+                    from memory.anti_repeat_effects import (
+                        mark_anti_repeat_response_delivered,
+                    )
+
+                    mark_anti_repeat_response_delivered(
+                        self.lanlan_name,
+                        response_id,
+                        now=publication_times[0] if publication_times else None,
+                    )
+                except Exception as _exc:  # pragma: no cover
+                    logger.debug(
+                        "[AntiRepeatEffects] delivered response link skipped: %s",
+                        type(_exc).__name__,
+                    )
                 # 本轮拿到截图（有可用 vision 模型）时，把那张截图暂存到 session
                 # （仅暂存，不作为图片写进历史），下一条用户 text 回复经 stream_text
                 # 时会把它作为前导视觉背景注入——否则对话模型只看到搭话文本，回复
@@ -1414,10 +1452,8 @@ class ProactiveMixin:
                 #      announcements.
                 # Match by the stable ``_callback_delivery_id`` stamped on both
                 # entries by ``enqueue_agent_callback``. Length-based alignment
-                # would be unsafe — ``drain_agent_callbacks_for_llm`` clears
-                # ``pending_agent_callbacks`` while leaving
-                # ``pending_extra_replies`` intact, so the queues legitimately
-                # drift apart across user turns.
+                # would be unsafe — passive callbacks never get a mirror, so the
+                # two queues are not positionally aligned.
                 # Object-identity fallback for pending_agent_callbacks: defense
                 # in depth against any future code path that appends a cb
                 # without going through ``enqueue_agent_callback`` (the only
@@ -1518,9 +1554,16 @@ class ProactiveMixin:
                     logger.debug("[%s] trigger_agent_callbacks: no websocket/session, re-queueing for later", self.lanlan_name)
                     self.pending_agent_callbacks.extend(callbacks_snapshot)
                     callbacks_snapshot[:] = []
-        except Exception as e:
+        except (asyncio.CancelledError, Exception) as e:
             logger.warning("[%s] trigger_agent_callbacks error: %s", self.lanlan_name, e)
-            self.pending_agent_callbacks.extend(callbacks_snapshot)
+            # Filter into a local before extending: filter_deliverable_callbacks
+            # rebinds self.pending_agent_callbacks, and Python binds ``.extend``
+            # to the list that is current BEFORE the argument is evaluated — so
+            # extending inline would append the survivors to an orphaned list.
+            _requeue = self.filter_deliverable_callbacks(callbacks_snapshot)
+            self.pending_agent_callbacks.extend(_requeue)
+            if isinstance(e, asyncio.CancelledError) and not self._consume_start_retirement_cancellation(e):
+                raise
         finally:
             # Runs after the except-path restore above, so the deferred tail
             # lands behind the prefix it was split from either way.
@@ -1778,6 +1821,18 @@ class ProactiveMixin:
                 ack_resolved = True
                 for cb in active_callbacks:
                     resolve_callback_delivery_ack(cb, delivered)
+                if delivered:
+                    # Publish the commit before prompt_ephemeral's remaining
+                    # awaits: cancellation must not restore this batch.
+                    delivered_ids = {
+                        cb.get("_callback_delivery_id") for cb in active_callbacks
+                        if cb.get("_callback_delivery_id")
+                    }
+                    self.pending_extra_replies = [
+                        extra for extra in self.pending_extra_replies
+                        if extra.get("_callback_delivery_id") not in delivered_ids
+                    ]
+                    callbacks_snapshot[:] = []
 
             _sid_token = _proactive_expected_sid.set(proactive_sid)
             # Text-mode playback boundary for the pacing manager: no frontend
@@ -1841,7 +1896,11 @@ class ProactiveMixin:
                 # send its own fresh teaser).
                 if topic_hint_sent:
                     await self.send_cancel_topic_hint(turn_id=proactive_sid)
-                self.pending_agent_callbacks.extend(active_callbacks)
+                # Same evaluation-order trap as the trigger_agent_callbacks
+                # except path: filter into a local first, because the filter
+                # rebinds self.pending_agent_callbacks.
+                _requeue = self.filter_deliverable_callbacks(active_callbacks)
+                self.pending_agent_callbacks.extend(_requeue)
                 return False
 
     def _is_voice_session_active_or_starting(self) -> bool:
@@ -2116,6 +2175,32 @@ class ProactiveMixin:
                 self.lanlan_name,
             )
             return
+        # A takeover controller that can speak on its own (e.g. a media scene
+        # filling gaps) receives respond cues directly; ordinary chat output is
+        # muted for the whole takeover, so queuing here would only let them age out.
+        # A callback hold (``hold_callbacks``) parks cues after the takeover was
+        # released, until its owner hands them back for ordinary delivery. The
+        # takeover sink, while installed, is asked first.
+        sinks = []
+        sink = getattr(self, "_takeover_callback_sink", None)
+        if getattr(self, "_takeover_active", False) and callable(sink):
+            sinks.append(("takeover", sink))
+        hold_sink = getattr(self, "_callback_hold_sink", None)
+        if callable(hold_sink):
+            sinks.append(("hold", hold_sink))
+        for sink_label, candidate_sink in sinks:
+            # The sink only sees the dict; carry the caller's priority like the key above.
+            callback.setdefault("priority", priority)
+            try:
+                consumed = bool(candidate_sink(callback))
+            except Exception as exc:
+                consumed = False
+                logger.warning(
+                    "[%s] %s callback sink failed: %s",
+                    self.lanlan_name, sink_label, type(exc).__name__,
+                )
+            if consumed:
+                return
         evicted_keys = self.proactive_manager.submit(
             callback, priority=priority, coalesce_key=coalesce_key
         )
@@ -2929,11 +3014,16 @@ class ProactiveMixin:
         ``pending_agent_callbacks`` outside the manager (Codex P2).
 
         Returns False while: audio is playing (frontend gate), the SM is not
-        IDLE (another proactive/greeting turn owns it), or the session is still
-        GENERATING a response (_is_responding — covers BOTH the realtime
-        response.created→voice_play_start window the playback gate can't see,
-        AND an active offline/text user response where try_start_proactive
-        would deny the claim)."""
+        IDLE (another proactive/greeting turn owns it), or the session still
+        has a reply in progress (``session_reply_in_progress``: _is_responding,
+        which covers the realtime response.created→voice_play_start window the
+        playback gate can't see, plus an offline/text reply that is live,
+        guard-paused or awaiting its completion — exactly where
+        try_start_proactive would deny the claim)."""
+        # Keep plugin respond cues under bounded/coalescing queue ownership for
+        # the whole game session, including automatic watch-together transitions.
+        if getattr(self, "_takeover_active", False):
+            return False
         if self.is_goodbye_silent():
             return False
         # Time-bounded read (NOT the raw _voice_playback_active flag): if the
@@ -2952,16 +3042,18 @@ class ProactiveMixin:
         sess = self.session
         # Both realtime AND offline sessions expose _is_responding (set while
         # generating a response — user OR proactive); realtime's
-        # is_active_response() is just a read of it. Releasing while True would
-        # have trigger deny/defer the claim (voice: is_active_response gate;
-        # text: try_start_proactive denies during _is_responding) and park the
-        # cue in pending_agent_callbacks outside the manager (Codex P2).
+        # is_active_response() is just a read of it. An offline reply paused
+        # by a guard has it down while still live, so read the same "reply in
+        # progress" check try_start_proactive denies on. Releasing while it
+        # holds would have trigger deny/defer the claim (voice:
+        # is_active_response gate; text: try_start_proactive) and park the cue
+        # in pending_agent_callbacks outside the manager (Codex P2).
         try:
-            if sess is not None and getattr(sess, "_is_responding", False):
+            if session_reply_in_progress(sess):
                 return False
         except Exception:
             # Read hiccup → treat as not-responding rather than wedging the queue.
-            logger.debug("[%s] _can_release_proactive: _is_responding check failed; treating as not-responding", self.lanlan_name)
+            logger.debug("[%s] _can_release_proactive: reply-in-progress check failed; treating as not-responding", self.lanlan_name)
         return True
 
     def _reset_proactive_gate(self) -> None:
@@ -3018,12 +3110,13 @@ class ProactiveMixin:
            retries on a text session) and retract it, letting
            ``_purge_undeliverable_callbacks`` sweep it and its paired
            ``pending_extra_replies`` entry by ``_callback_delivery_id``.
-        2. ``pending_extra_replies`` orphans: ``drain_agent_callbacks_for_llm``
-           clears ``pending_agent_callbacks`` on a text user turn but leaves the
-           paired extras behind, so a topic hook can survive as an extras-only
-           entry (callback already delivered + acked in text) and be rendered by
-           the hot-swap ``prime_context`` path. Those have no callback left to
-           ack/retract — just drop them. They are identified by
+        2. ``pending_extra_replies`` orphans: defensive. The text drain now
+           removes a rendered callback's mirror with it, so the normal path no
+           longer leaves an extras-only topic hook; any entry that still gets
+           here (e.g. a drain whose render raised, which keeps the mirror) would
+           otherwise be rendered by the hot-swap ``prime_context`` path. Those
+           have no callback left to ack/retract — just drop them. They are
+           identified by
            ``source_kind == "topic"`` (stamped by ``build_topic_hook_callback``
            and copied onto the extra by ``enqueue_agent_callback``).
 
@@ -3284,10 +3377,8 @@ class ProactiveMixin:
             # Stable delivery id so the voice inject success path can
             # precisely drop the matching extras entry from
             # ``pending_extra_replies``. Length-based alignment is unsafe:
-            # ``drain_agent_callbacks_for_llm`` clears
-            # ``pending_agent_callbacks`` while leaving
-            # ``pending_extra_replies`` intact, so the queues legitimately
-            # drift apart across user turns.
+            # passive callbacks never get a mirror, so the two queues are not
+            # positionally aligned.
             delivery_id = callback.setdefault("_callback_delivery_id", uuid4().hex)
             # Coalescing is OPT-IN and channel-agnostic: when a callback carries
             # a non-empty ``coalesce_key``, the newest cue collapses any already
@@ -3488,21 +3579,23 @@ class ProactiveMixin:
             if isinstance(callback, dict):
                 callback.pop(SWAP_PRIME_DELIVERY_CLAIM_KEY, None)
 
-    def _requeue_undelivered_callback_media(self, callbacks: list) -> None:
-        """Put media-carrying callbacks back when their turn never reached history.
+    def _requeue_undelivered_callbacks(
+        self, callbacks: list, extras_snapshot: list | None = None,
+    ) -> None:
+        """Restore drained callbacks when their turn never reached history.
 
-        The drain removes a callback the moment its text renders, which is the
-        deliberate best-effort contract for a plain passive notice. Media adds a
-        failure boundary that contract never covered: the Offline turn still has
-        to switch to its vision model, and a network/credential failure there
-        raises before anything is appended, so the callback's text AND its images
-        vanish without ever reaching the model. Restore exactly those callbacks,
-        in their original relative order, at the head of the queue.
+        Drain removes both the callback and its hot-swap mirror. Restore the
+        callbacks in their original order so failures cannot lose plain text
+        notices either. Once committed, the caller must not retry them.
 
         The delivery ack cannot be taken back once resolved, so drop the spent
         future instead: this retry is about getting the content in front of the
         model, not about re-acknowledging it to the producer.
         """
+        # A voice-start sweep cannot see callbacks held outside the queues by
+        # a text turn. Recheck the current release gate before restoring either
+        # half; drain has already released these callbacks' prompt claims.
+        self._retract_unavailable_topic_hook_snapshots(callbacks)
         queued_obj_ids = {id(callback) for callback in self.pending_agent_callbacks}
         restored = [
             callback
@@ -3516,8 +3609,27 @@ class ProactiveMixin:
         for callback in restored:
             callback.pop(DELIVERY_ACK_FUTURE_KEY, None)
         self.pending_agent_callbacks[0:0] = restored
+        # Proactive callbacks need their original mirror to remain eligible for
+        # hot-swap delivery. Passive callbacks never had one; do not invent it.
+        # Mirrors go back to the queue head, not their original slots, so their
+        # order relative to later-enqueued extras matches the callbacks above.
+        restored_ids = {
+            cb.get("_callback_delivery_id") for cb in restored
+            if cb.get("_callback_delivery_id")
+        }
+        extras = getattr(self, "pending_extra_replies", None) or []
+        queued_ids = {
+            extra.get("_callback_delivery_id") for extra in extras
+            if isinstance(extra, dict)
+        }
+        self.pending_extra_replies = [
+            extra for extra in (extras_snapshot or [])
+            if isinstance(extra, dict)
+            and extra.get("_callback_delivery_id") in restored_ids
+            and extra.get("_callback_delivery_id") not in queued_ids
+        ] + extras
         logger.info(
-            "[%s] re-queued %d callback(s) whose image turn never committed",
+            "[%s] re-queued %d callback(s) whose turn never committed",
             getattr(self, "lanlan_name", ""),
             len(restored),
         )
@@ -3528,8 +3640,9 @@ class ProactiveMixin:
     ) -> str:
         """Drain pending_agent_callbacks and format as a system context string.
 
-        Clears pending_agent_callbacks (NOT pending_extra_replies, which is
-        consumed separately by the voice-mode hot-swap path).
+        Removes the rendered callbacks from pending_agent_callbacks and, once
+        rendering succeeds, their paired pending_extra_replies mirrors (matched
+        by ``_callback_delivery_id``) so a later hot swap cannot re-prime them.
         Returns an empty string if there are no callbacks.
 
         Renders with the same grouped/source-aware logic as
@@ -3645,4 +3758,30 @@ class ProactiveMixin:
                 cb for cb in self.pending_agent_callbacks
                 if id(cb) not in delivered_obj_ids
             ]
+            # The voice-mode mirror of a callback this drain rendered has been
+            # spoken about too. Dropping only the callback half leaves the
+            # mirror for the next hot swap to re-prime, which re-announces it —
+            # the same paired prune trigger_agent_callbacks already does on the
+            # voice path (see the delivered_ids block there).
+            #
+            # Only when rendering succeeded: a render failure returns nothing to
+            # the caller, so there is no drained set to requeue. The callback
+            # half still leaves the queue (a failure that repeats on every turn
+            # must not wedge it), but the mirror stays for the hot swap, whose
+            # renderer is independent of this one.
+            delivered_delivery_ids = {
+                cb.get("_callback_delivery_id")
+                for cb in active_callbacks
+                if cb.get("_callback_delivery_id")
+            } if delivered_to_prompt else set()
+            if delivered_delivery_ids:
+                # getattr like the enqueue path above: a manager built without
+                # __init__ has no queue yet, and a raise here would replace this
+                # function's return value, silently emptying the whole drain.
+                self.pending_extra_replies = [
+                    extra
+                    for extra in (getattr(self, "pending_extra_replies", None) or [])
+                    if not isinstance(extra, dict)
+                    or extra.get("_callback_delivery_id") not in delivered_delivery_ids
+                ]
             self._release_agent_callback_prompt_claims(callbacks_snapshot)

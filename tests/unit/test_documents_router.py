@@ -24,6 +24,7 @@ from tests.unit.test_document_parser import (
     _xlsx_bytes,
 )
 from utils.document_parser import MAX_DOCUMENT_BYTES
+from tests.fastapi_routes import iter_routes
 
 
 def _client(*routers) -> TestClient:
@@ -48,7 +49,7 @@ def test_plugin_server_registers_hosted_document_parse_route():
 
     matching = [
         route
-        for route in app.routes
+        for route in iter_routes(app.routes)
         if getattr(route, "path", "") == "/api/documents/parse"
     ]
 
@@ -70,7 +71,7 @@ def test_documents_parse_rejects_untrusted_browser_origin_before_parsing(
     # Route-level coverage must not start plugin hosts, whose process-wide
     # storage-root export would leak into unrelated unit tests.
     client = TestClient(
-        build_plugin_server_app(), base_url="http://127.0.0.1:48916"
+        build_plugin_server_app(), base_url="http://127.0.0.1:48916", client=("127.0.0.1", 50000)
     )
     try:
         response = client.post(
@@ -90,7 +91,7 @@ def test_documents_parse_rejects_untrusted_browser_origin_before_parsing(
 async def test_documents_parse_rejects_untrusted_origin_before_reading_multipart_body():
     route = next(
         route
-        for route in documents_router.routes
+        for route in iter_routes(documents_router.routes)
         if getattr(route, "path", "") == "/api/documents/parse"
     )
     assert route.dependant.body_params == []
@@ -201,7 +202,7 @@ def test_documents_parse_returns_public_code_for_multipart_shape_errors():
 def test_documents_parse_allows_loopback_browser_origin():
     # Keep this at route level for the same storage-root isolation guarantee.
     client = TestClient(
-        build_plugin_server_app(), base_url="http://127.0.0.1:48916"
+        build_plugin_server_app(), base_url="http://127.0.0.1:48916", client=("127.0.0.1", 50000)
     )
     try:
         response = client.post(
@@ -229,7 +230,7 @@ def test_plugin_server_redirects_model_settings_to_main_server(monkeypatch):
     monkeypatch.setattr(config, "MAIN_SERVER_PORT", 49123)
     app = build_plugin_server_app()
     route = next(
-        route for route in app.routes if getattr(route, "path", "") == "/api_key"
+        route for route in iter_routes(app.routes) if getattr(route, "path", "") == "/api_key"
     )
 
     request = Request(
@@ -262,6 +263,12 @@ def test_plugin_server_redirects_model_settings_to_main_server(monkeypatch):
             "DOCX endpoint",
         ),
     ],
+    # Explicit ids: the fixture bytes are OOXML archives, and a zip carries a
+    # second-resolution timestamp, so pytest's auto-generated id changes from
+    # run to run (and between two workers started a second apart). That breaks
+    # --lf, breaks selecting a case by id, and made -p xdist abort outright with
+    # "different tests were collected".
+    ids=["pdf", "docx"],
 )
 def test_documents_parse_returns_neutral_document_shape(
     filename,
@@ -316,6 +323,17 @@ def test_documents_parse_returns_neutral_document_shape(
             _encrypted_pdf_bytes(),
             "encrypted_pdf_unsupported",
         ),
+    ],
+    # Same reason as above: the xlsx/pptx payloads are timestamped zips.
+    ids=[
+        "legacy_doc",
+        "macro_docm",
+        "xlsx",
+        "pptx",
+        "broken_pdf",
+        "broken_docx",
+        "scan_pdf",
+        "encrypted_pdf",
     ],
 )
 def test_documents_parse_rejects_out_of_scope_or_invalid_documents(

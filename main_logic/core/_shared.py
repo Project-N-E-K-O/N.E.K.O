@@ -58,7 +58,21 @@ _CONTEXT_APPEND_SOURCE_MAX_TOKENS = {
     "topic.hook": 1000,
     "topic.material": 1000,
     "realtime.prime": 1000,
+    # ⚠️ 用户 ban-topic 禁令块。日常语料远低于默认的 1000（实测真实中/日文
+    # 20 条满额也就 419~449 tokens），但**理论上界不是**：term 长度上限 40 字
+    # （_TERM_MAX_LEN）× 活跃条数上限 20（USER_DIRECTIVE_MAX_ACTIVE）在高 token
+    # 密度的假名上量到 1727。
+    # 越线的后果不是"少几条"那么轻：request_id 按**完整** term 集合算，于是
+    # 截断后的重试要么被去重、要么原样再追加同一份截断载荷，被截掉的那几条禁令
+    # **永远进不去**（codex）。登记一个覆盖理论上界的预算把这条 latent 路径掐掉。
+    # tests/unit/test_user_directives_midsession_inject.py 有守卫钉住
+    # 「最坏情况渲染块 ≤ 本预算」，改大上面两个常量任一个都会红。
+    "user_directives": 2000,
 }
+# ⚠️ 这张表只作用于 ``prime_context`` 那条回落路径，而那条只有
+# ``lifetime in {"current_session", "session_family"}`` 才走得到。纯
+# ``next_session`` 的 source（如 ``user_directives``）登记在这里是死配置，
+# 会让人误以为它还会经 realtime instructions 下发 —— 别加。
 _CONTEXT_APPEND_BARE_PRIME_SOURCES = frozenset({
     "game.realtime_context",
     "game.postgame",
@@ -161,10 +175,15 @@ _proactive_published_text_chunks: contextvars.ContextVar[list[str] | None] = (
     contextvars.ContextVar('_proactive_published_text_chunks', default=None)
 )
 
-# TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）
-NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED', 'TTS_CONFIG_INVALID'}
-# TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（含配额——仍允许重试）
+# TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效 / 免费服务黑白名单拦截）
+NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED', 'TTS_CONFIG_INVALID', 'API_ACCESS_DENIED'}
+# TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（配额不定时重试，但回复时的隐式重试照常）
 IMMEDIATE_REPORT_TTS_CODES = NO_RETRY_TTS_CODES | {'API_QUOTA_TIME'}
+# TTS worker 未就绪后的定时 respawn 间隔；API_RATE_LIMIT 按次翻倍，封顶到下一个常量
+TTS_RESPAWN_DELAY_SECONDS = 13
+TTS_RATE_LIMIT_MAX_RESPAWN_DELAY_SECONDS = 300
+# 限流截止时刻的容差，只给定时 respawn：asyncio 定时器可按时钟精度提前唤醒，不能被自己的截止时刻拦下
+TTS_RATE_LIMIT_DEADLINE_SLACK_SECONDS = 1.0
 
 
 _STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
@@ -253,6 +272,55 @@ class FreshScreenshot:
     b64: str = ""
     source: str = ""
     avatar_position: dict | None = None
+
+
+@dataclass(eq=False)
+class _ReplyTurn:
+    """The host turn one Offline reply was started for.
+
+    Core opens one when it hands a reply to the Offline client and binds that
+    reply's completion (and, on the text path, its discard) callback to it. A
+    callback can run long after its reply started: ``close()`` retires the
+    generation, but a reply parked in a slow tool call or a retry backoff only
+    unwinds when that await returns, and its completion still runs then
+    because nothing else closes a turn cut by a close. The shared per-turn
+    fields (``_active_text_request_id``, ``_pending_turn_meta``) may belong to
+    a newer turn by that time, so the callbacks act from this snapshot
+    instead.
+
+    ``speech_id`` is the host turn token the reply speaks under. It is mutable
+    only so that the rotations that start no turn (the hot-swap promotion, a
+    truncation recovery) can carry an open reply along (``_carry_reply_turn``).
+    ``session`` is the client the reply was handed to, attached right before
+    the hand-over. Identity only (``eq=False``): the manager compares its open
+    reply by ``is``.
+
+    ``turn_ended`` is set once the reply's turn end has gone out. A final
+    discard (RESPONSE_TOO_LONG, or a RESPONSE_LENGTH_TRUNCATED recovery) ends
+    the turn itself, and the completion that runs after it must not end it a
+    second time. Only a turn end actually sent counts: a recovery that stood
+    down before its turn end leaves the completion to close the turn.
+
+    ``taken_over`` is set once an interrupter or a displacing reply took the
+    reply's close over (``TurnMixin._close_taken_over_offline_reply``),
+    whether or not that close sent a turn end. A discard recovery still
+    running for the reply reads it: it no longer owns the shared output, and
+    its wrap-up is owed rather than run on the spot.
+    """
+
+    speech_id: str | None
+    request_id: str | None = None
+    meta: dict | None = None
+    session: Any = None
+    turn_ended: bool = False
+    taken_over: bool = False
+
+
+def _taken_over_reply_turn(kind) -> _ReplyTurn | None:
+    """The snapshot a taken-over Offline reply was handed over with
+    (``InterruptedReply.owner``), or None for an unbound reply."""
+    owner = getattr(kind, "owner", None)
+    return owner if isinstance(owner, _ReplyTurn) else None
 
 
 def _purge_closed_tool_calls(history: list, *, start: int = 0) -> int:

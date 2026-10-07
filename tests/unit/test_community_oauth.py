@@ -6,8 +6,11 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import threading
 import time
+from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -20,6 +23,22 @@ import main_routers.community_oauth as O
 
 
 USER_ID = "11111111-1111-4111-8111-111111111111"
+
+
+@pytest.fixture(autouse=True)
+def isolate_deployment_environment(monkeypatch):
+    """Keep deployment policy independent of the invoking shell environment."""
+    for name in (
+        "NEKO_BEHIND_PROXY",
+        "NEKO_ACTIVITY_TRACKER_REMOTE",
+        "ACTIVITY_TRACKER_REMOTE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _local_source_request(host: str = "127.0.0.1", headers: dict | None = None) -> SimpleNamespace:
+    """Minimal request double for local access checks."""
+    return SimpleNamespace(client=SimpleNamespace(host=host), headers=headers or {})
 
 
 @pytest.fixture
@@ -41,7 +60,7 @@ def oauth_app(tmp_path, monkeypatch):
     app.include_router(C.router)
     app.include_router(O.router)
     app.include_router(O.callback_router)
-    return TestClient(app), auth, social, pending
+    return TestClient(app, client=("127.0.0.1", 50000)), auth, social, pending
 
 
 @pytest.mark.unit
@@ -130,7 +149,7 @@ async def test_oauth_start_offloads_pending_write(tmp_path, monkeypatch):
 
     event_loop_thread = threading.get_ident()
     result = await O.oauth_start_endpoint(
-        SimpleNamespace(url=SimpleNamespace(port=48911))
+        SimpleNamespace(url=SimpleNamespace(port=48911), client=SimpleNamespace(host="127.0.0.1"), headers={})
     )
 
     assert result["auth_url"]
@@ -161,11 +180,341 @@ async def test_oauth_status_offloads_session_reads(monkeypatch):
     monkeypatch.setattr(C, "_lookup_cloud_identity", lookup_identity)
 
     event_loop_thread = threading.get_ident()
-    result = await O.oauth_status_endpoint(object())
+    result = await O.oauth_status_endpoint(_local_source_request())
 
     assert result["logged_in"] is True
     assert worker_threads
     assert all(thread_id != event_loop_thread for thread_id in worker_threads)
+
+
+@pytest.mark.unit
+async def test_oauth_status_omits_phone_from_public_profile(monkeypatch):
+    # /oauth/status 放行无 Origin 的本机进程且不验身份，手机号不能从这里读到。
+    def load_records():
+        return (
+            {"access_token": "access", "auth_source": "oauth"},
+            {
+                "user": {
+                    "display_name": "User",
+                    "email": "user@example.com",
+                    "phone": "+8613800000000",
+                }
+            },
+        )
+
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(O, "_load_oauth_status_records", load_records)
+
+    async def lookup_identity(_base, _access):
+        return C._CloudIdentityLookup(
+            C._CloudIdentity(USER_ID, "oauth", {}),
+            200,
+        )
+
+    monkeypatch.setattr(C, "_lookup_cloud_identity", lookup_identity)
+
+    result = await O.oauth_status_endpoint(_local_source_request())
+
+    assert result["logged_in"] is True
+    assert result["user"] == {"display_name": "User", "email": "user@example.com"}
+
+
+@pytest.mark.unit
+async def test_oauth_status_reports_session_paths_when_signed_out(monkeypatch, tmp_path):
+    # 宿主只有亲自拉起后端时才下发得到 NEKO_USER_DATA_DIR；attach 复用的后端会把凭证落到
+    # 自己推导的根目录。未登录时也必须回报它实际使用的文件，那正是宿主需要知道去哪等写入的时刻。
+    session_file = tmp_path / "social_session.json"
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_social_session_paths", lambda: [session_file])
+
+    async def resolve_not_logged_in():
+        return {"logged_in": False, "snapshot": {}, "auth": {}}
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve_not_logged_in)
+
+    result = await O.oauth_status_endpoint(_local_source_request())
+
+    assert result["logged_in"] is False
+    assert result["session_path"] == str(session_file)
+    assert result["session_paths"] == [str(session_file)]
+
+
+@pytest.mark.unit
+async def test_oauth_status_reports_legacy_path_holding_the_credentials(monkeypatch, tmp_path):
+    # 后端读取带回落：override 是写入目标，有效凭证可能只在旧目录。只报 override 会让
+    # 宿主去盯一份空文件，正好重现「后端说已登录、界面仍未登录」。
+    override = tmp_path / "roaming" / "social_session.json"
+    legacy = tmp_path / "local" / "social_session.json"
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_social_session_paths", lambda: [override, legacy])
+
+    async def resolve_logged_in():
+        return {
+            "logged_in": True,
+            "snapshot": {"auth_source": "oauth", "local_user_id": USER_ID},
+            "auth": {"user": {"email": "user@example.com"}},
+        }
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve_logged_in)
+
+    result = await O.oauth_status_endpoint(_local_source_request())
+
+    assert result["logged_in"] is True
+    assert result["session_path"] == str(override)
+    assert result["session_paths"] == [str(override), str(legacy)]
+
+
+@pytest.mark.unit
+async def test_oauth_status_rejects_remote_peer_before_reading_identity(monkeypatch, tmp_path):
+    # _local_request_source_allowed() 放行「不带 Origin 也不带 Sec-Fetch-Site 的原生客户端」，
+    # Docker 部署里经 nginx 转发的远程请求正好如此；那种场合不能把容器文件系统发出去。
+    session_file = tmp_path / "social_session.json"
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_social_session_paths", lambda: [session_file])
+
+    async def unexpected_resolution():
+        pytest.fail("Remote requests must not read account identity")
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", unexpected_resolution)
+    remote = await O.oauth_status_endpoint(_local_source_request("172.19.0.4"))
+    assert remote.status_code == 403
+    assert json.loads(remote.body) == {"detail": "loopback_only"}
+
+    # ::ffff: 前缀（v4-mapped）和 localhost 仍算同机
+    assert O._loopback_request_source(_local_source_request("::ffff:127.0.0.1")) is True
+    assert O._loopback_request_source(_local_source_request("localhost")) is True
+    assert O._loopback_request_source(_local_source_request("10.0.0.5")) is False
+    assert O._loopback_request_source(SimpleNamespace(client=None, headers={})) is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("headers", [
+    {"X-Forwarded-For": "127.0.0.1"},
+    {"X-Real-IP": "127.0.0.1"},
+    {"Forwarded": "for=127.0.0.1;proto=http"},
+])
+def test_desktop_account_queries_keep_forwarding_header_compatibility(
+    oauth_app, monkeypatch, headers,
+):
+    """A desktop debugging proxy must not break account display or path discovery."""
+    client, _auth, social, _pending = oauth_app
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+    from utils.deployment import uvicorn_proxy_options
+
+    client = TestClient(
+        ProxyHeadersMiddleware(client.app, trusted_hosts=uvicorn_proxy_options()["forwarded_allow_ips"]),
+        client=("127.0.0.1", 50000),
+    )
+
+    async def logged_in():
+        return {
+            "logged_in": True,
+            "snapshot": {"auth_source": "oauth", "local_user_id": USER_ID},
+            "auth": {"user": {"email": "owner@example.com", "display_name": "Owner"}},
+        }
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", logged_in)
+    for route in ("/api/card-drop/oauth/status", "/api/card-drop/auth-status"):
+        response = client.get(route, headers=headers)
+        assert response.status_code == 200
+        assert response.json()["logged_in"] is True
+        assert response.json()["user"]["email"] == "owner@example.com"
+        if route.endswith("/oauth/status"):
+            assert response.json()["session_path"] == str(social)
+
+
+@pytest.mark.unit
+def test_remote_browser_metadata_cannot_authorize_desktop_account_response(oauth_app, monkeypatch):
+    """Same-origin metadata and loopback-looking XFF are not an instance credential."""
+    client, _auth, _social, _pending = oauth_app
+    # Reuse real HTTP routing and source checks, rather than patching the guard.
+    remote_client = TestClient(client.app, client=("203.0.113.9", 50000))
+
+    async def forbidden_read():
+        pytest.fail("Rejected remote requests must not read or refresh account state")
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", forbidden_read)
+    monkeypatch.setattr(O, "_desktop_session_paths_for_host", lambda: pytest.fail("No path disclosure"))
+    response = remote_client.get("/api/card-drop/oauth/status", headers={
+        "Sec-Fetch-Site": "same-origin",
+        "X-Forwarded-For": "127.0.0.1",
+        "X-Real-IP": "127.0.0.1",
+        "Forwarded": "for=127.0.0.1",
+    })
+    assert response.status_code == 403
+    assert response.json() == {"detail": "loopback_only"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("chain", ["203.0.113.9", "203.0.113.9, 127.0.0.1"])
+def test_desktop_http_tunnel_cannot_read_account_or_session_paths(oauth_app, monkeypatch, chain):
+    """A trusted local proxy must preserve its external client's access boundary."""
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+    from utils.deployment import uvicorn_proxy_options
+
+    client, _auth, _social, _pending = oauth_app
+    tunnel_client = TestClient(
+        ProxyHeadersMiddleware(client.app, trusted_hosts=uvicorn_proxy_options()["forwarded_allow_ips"]),
+        client=("127.0.0.1", 50000),
+    )
+
+    async def forbidden_read():
+        pytest.fail("Tunnel must not read or refresh the desktop account")
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", forbidden_read)
+    monkeypatch.setattr(O, "_desktop_session_paths_for_host", lambda: pytest.fail("No path disclosure"))
+    response = tunnel_client.get("/api/card-drop/oauth/status", headers={"X-Forwarded-For": chain})
+    assert response.status_code == 403
+    assert response.json() == {"detail": "loopback_only"}
+
+
+@pytest.mark.unit
+async def test_oauth_status_proxy_deployment_rejects_even_headerless_loopback(monkeypatch, tmp_path):
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    session_file = tmp_path / "social_session.json"
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_social_session_paths", lambda: [session_file])
+
+    async def resolve_not_logged_in():
+        return {"logged_in": False, "snapshot": {}, "auth": {}}
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve_not_logged_in)
+
+    for spoofed in (
+        {},
+        {"cf-connecting-ip": "203.0.113.9"},
+        {"x-forwarded-for": "127.0.0.1"},
+        {"x-forwarded-for": "127.0.0.1, 203.0.113.9"},
+        {"x-real-ip": "127.0.0.1"},
+        {"forwarded": "for=127.0.0.1"},
+    ):
+        request = _local_source_request("127.0.0.1", spoofed)
+        assert O._loopback_request_source(request) is False, spoofed
+        result = await O.oauth_status_endpoint(request)
+        assert result.status_code == 403, spoofed
+
+    # Desktop mode trusts the peer even when a local proxy adds headers.
+    monkeypatch.delenv("NEKO_BEHIND_PROXY")
+    direct = await O.oauth_status_endpoint(_local_source_request("127.0.0.1", {"x-forwarded-for": "127.0.0.1"}))
+    assert direct["session_path"] == str(session_file)
+
+
+@pytest.mark.unit
+def test_desktop_session_paths_absolutize_and_empty_when_unresolvable(monkeypatch, tmp_path):
+    monkeypatch.setattr(C, "_social_session_paths", lambda: [])
+    assert O._desktop_session_paths_for_host() == ("", [])
+
+    def unresolvable_paths():
+        raise RuntimeError("Cannot resolve home directory")
+
+    monkeypatch.setattr(C, "_social_session_paths", unresolvable_paths)
+    assert O._desktop_session_paths_for_host() == ("", [])
+
+    # memory_dir 万一给出相对路径，也要按后端自己 open() 的口径绝对化：宿主会忽略非绝对路径。
+    monkeypatch.setattr(C, "_social_session_paths", lambda: [Path("relative/social_session.json")])
+    primary, paths = O._desktop_session_paths_for_host()
+    assert os.path.isabs(primary)
+    assert paths == [primary]
+    assert primary.endswith(os.path.join("relative", "social_session.json"))
+
+
+@pytest.mark.unit
+async def test_oauth_status_survives_path_discovery_failure(monkeypatch):
+    def unresolvable_paths():
+        raise RuntimeError("Cannot resolve home directory")
+
+    async def resolve_logged_in():
+        return {
+            "logged_in": True,
+            "snapshot": {"auth_source": "oauth", "local_user_id": USER_ID},
+            "auth": {"user": {"email": "user@example.com"}},
+        }
+
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(C, "_social_session_paths", unresolvable_paths)
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve_logged_in)
+    result = await O.oauth_status_endpoint(_local_source_request())
+    assert result["logged_in"] is True
+    assert result["user"]["email"] == "user@example.com"
+    assert result["session_path"] == ""
+    assert result["session_paths"] == []
+
+
+@pytest.mark.unit
+async def test_oauth_status_invalid_override_uses_legacy_for_reads_and_paths(monkeypatch, tmp_path):
+    legacy = tmp_path / "social_session.json"
+    original_expanduser = Path.expanduser
+
+    def expanduser(path):
+        if str(path).startswith("~neko_nonexistent_user_3289"):
+            raise RuntimeError("Cannot resolve home directory")
+        return original_expanduser(path)
+
+    # Windows expands nonexistent users lexically; reproduce the POSIX failure.
+    monkeypatch.setattr(Path, "expanduser", expanduser)
+    monkeypatch.setenv("NEKO_USER_DATA_DIR", "~neko_nonexistent_user_3289/session")
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: legacy)
+    monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    warnings = []
+    monkeypatch.setattr(C, "_session_path_expand_warning_emitted", False)
+    monkeypatch.setattr(C.logger, "warning", lambda message: warnings.append(message))
+    assert C._social_session_path() == legacy
+    assert warnings == ["card_drop: cannot expand NEKO_USER_DATA_DIR; using legacy session path"]
+    assert C._social_session_paths() == [legacy]
+    assert len(warnings) == 1
+    result = await O.oauth_status_endpoint(_local_source_request())
+    assert result["logged_in"] is False
+    assert result["session_path"] == str(legacy)
+    assert result["session_paths"] == [str(legacy)]
+
+
+@pytest.mark.unit
+def test_persisted_user_profile_masks_phone_and_public_profile_never_has_it():
+    # 回调落盘的 community_auth.json 是明文、本机还有其它读取方，只存脱敏手机号，
+    # 桌面端设置页用它在没有邮箱时显示账号；经本机路由返回的 public 版本永远不带手机号。
+    raw = {"username": "User", "email": None, "phone_number": " +8613800000000 "}
+    assert "phone" not in O._public_user_profile(raw, USER_ID)
+    profile = O._persisted_user_profile(raw, USER_ID)
+
+    assert profile == {
+        "id": USER_ID,
+        "display_name": "User",
+        "email": None,
+        "phone": "+86138****0000",
+    }
+    assert "+8613800000000" not in json.dumps(profile)
+
+    spaced = {"username": "User", "email": None, "phone": "+86 138-0000-0000"}
+    assert "phone" not in O._public_user_profile(spaced, USER_ID)
+    spaced_profile = O._persisted_user_profile(spaced, USER_ID)
+    assert spaced_profile["phone"] == "+86138****0000"
+    dumped = json.dumps(spaced_profile)
+    assert "+86 138-0000-0000" not in dumped
+    assert "8613800000000" not in dumped
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw", "masked"),
+    [
+        ("13800000000", "138****0000"),
+        ("1234567", "****67"),
+        ("+86 138 0000 0000", "+86138****0000"),
+        ("138-0000-0000", "138****0000"),
+        ("+86-138-0000-0000", "+86138****0000"),
+    ],
+)
+def test_mask_phone_hides_the_middle_digits(raw, masked):
+    assert O._mask_phone(raw) == masked
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", ["---", "", "   ", "+--"])
+def test_phone_without_digits_is_treated_as_missing(bad):
+    assert O._mask_phone(bad) is None
+    profile = O._persisted_user_profile({"username": "User", "phone": bad}, USER_ID)
+    assert "phone" not in profile
 
 
 @pytest.mark.unit
@@ -581,7 +930,50 @@ async def test_oauth_status_reports_rejected_snapshot_when_cleanup_fails(monkeyp
         "logged_in": False,
         "snapshot": snapshot,
         "auth": auth,
+        "rejected": True,
     }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("replace_social", [False, True])
+async def test_oauth_status_resolves_login_preserved_by_rejected_cleanup(
+    oauth_app, monkeypatch, replace_social,
+):
+    _client, auth, social, _pending = oauth_app
+    auth.write_text(json.dumps({"access_token": "rejected-token"}), encoding="utf-8")
+    social.write_text(json.dumps({"token": "rejected-token"}), encoding="utf-8")
+    new_auth = {
+        "access_token": "new-login-token",
+        "local_user_id": USER_ID,
+        "auth_source": "oauth",
+    }
+    validated = []
+
+    async def lookup_identity(_base, access):
+        validated.append(access)
+        if access == "rejected-token":
+            # A login may have written only the auth mirror when the older
+            # authoritative session's cloud validation comes back rejected.
+            assert C._save_auth(new_auth)
+            if replace_social:
+                assert C._save_social_session(
+                    "https://community.example", "new-login-token", None,
+                    local_user_id=USER_ID, auth_source="oauth",
+                )
+            return C._CloudIdentityLookup(None, 401, "rejected")
+        assert access == "new-login-token"
+        return C._CloudIdentityLookup(C._CloudIdentity(USER_ID, "oauth", {}), 200)
+
+    # Keep real file reads and cleanup: their successful conditional deletion
+    # is precisely what used to bypass revalidation of the surviving login.
+    monkeypatch.setattr(C, "_lookup_cloud_identity", lookup_identity)
+    status = await O.resolve_saved_oauth_status()
+
+    assert status["logged_in"] is True
+    assert status["snapshot"]["access_token"] == "new-login-token"
+    assert status["auth"] == new_auth
+    assert validated == ["rejected-token", "new-login-token"]
+    assert json.loads(auth.read_text(encoding="utf-8")) == new_auth
 
 
 @pytest.mark.unit
@@ -609,7 +1001,7 @@ async def test_oauth_logout_offloads_local_file_operations(monkeypatch):
     monkeypatch.setattr(C, "_clear_auth", record(True))
 
     event_loop_thread = threading.get_ident()
-    result = await O.oauth_logout_endpoint(object())
+    result = await O.oauth_logout_endpoint(_local_source_request())
 
     assert result == {"ok": True}
     assert len(worker_threads) == 3
@@ -675,7 +1067,7 @@ async def test_oauth_logout_revokes_against_saved_issuer(
     monkeypatch.setattr(O, "_unlink_pending", lambda: None)
     monkeypatch.setattr(C, "_clear_auth", lambda: True)
 
-    result = await O.oauth_logout_endpoint(object())
+    result = await O.oauth_logout_endpoint(_local_source_request())
 
     assert result == {"ok": True}
     assert revoked == [
@@ -844,6 +1236,9 @@ def test_oauth_callback_success_persists_social_session(oauth_app, monkeypatch):
 @pytest.mark.unit
 async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
     pending = tmp_path / "community_oauth_pending.json"
+    monkeypatch.setattr(O, "_oauth_pending_path", lambda: pending)
+    monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
+    monkeypatch.setattr(C, "_social_session_path", lambda: tmp_path / "social_session.json")
     pending.write_text(
         json.dumps(
             {
@@ -874,7 +1269,7 @@ async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
         worker_threads.append(threading.get_ident())
         return pending, json.loads(pending.read_text(encoding="utf-8"))
 
-    def unlink_pending():
+    def unlink_pending(*_args):
         worker_threads.append(threading.get_ident())
         pending.unlink(missing_ok=True)
 
@@ -891,8 +1286,10 @@ async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
     monkeypatch.setattr(O, "_oauth_guest_bind", fake_bind)
     monkeypatch.setattr(O, "_load_oauth_pending", load_pending)
     monkeypatch.setattr(O, "_unlink_pending", unlink_pending)
-    monkeypatch.setattr(C, "_save_auth", save_auth)
-    monkeypatch.setattr(C, "_save_social_session", save_social)
+    # Both records are written inside one social-session lock scope, so the
+    # callback now goes through the unlocked writers.
+    monkeypatch.setattr(C, "_save_auth_unlocked", save_auth)
+    monkeypatch.setattr(C, "_save_social_session_unlocked", save_social)
 
     event_loop_thread = threading.get_ident()
     response = await O._handle_oauth_callback("auth-code", "expected-state")
@@ -956,8 +1353,8 @@ async def test_oauth_callback_rolls_back_partial_credential_write(
     monkeypatch.setattr(O, "_exchange_oauth_code", fake_exchange)
     monkeypatch.setattr(O, "_bootstrap_session", fake_bootstrap)
     monkeypatch.setattr(O, "_oauth_guest_bind", fake_bind)
-    monkeypatch.setattr(C, "_save_auth", save_auth)
-    monkeypatch.setattr(C, "_save_social_session", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(C, "_save_auth_unlocked", save_auth)
+    monkeypatch.setattr(C, "_save_social_session_unlocked", lambda *_args, **_kwargs: False)
 
     response = await O._handle_oauth_callback("auth-code", "expected-state")
 
@@ -969,6 +1366,185 @@ async def test_oauth_callback_rolls_back_partial_credential_write(
     else:
         assert not auth.exists()
         assert not social.exists()
+
+
+@pytest.mark.unit
+def test_persist_oauth_credentials_rolls_back_the_tokens_seen_under_the_lock(
+    tmp_path,
+    monkeypatch,
+):
+    """A refresh committing before the lock owns the tokens; do not roll it back."""
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    auth.write_text(
+        json.dumps({"access_token": "old-access", "refresh_token": "old-refresh"}),
+        encoding="utf-8",
+    )
+    social.write_text(
+        json.dumps(
+            {
+                "token": "old-access",
+                "access_token": "old-access",
+                "refresh_token": "old-refresh",
+                "local_user_id": USER_ID,
+                "auth_source": "oauth",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+
+    real_lock = C._social_session_lock
+
+    @contextmanager
+    def rotating_lock(path):
+        with real_lock(path):
+            auth.write_text(
+                json.dumps(
+                    {
+                        "access_token": "rotated-access",
+                        "refresh_token": "rotated-refresh",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            social.write_text(
+                json.dumps(
+                    {
+                        "token": "rotated-access",
+                        "access_token": "rotated-access",
+                        "refresh_token": "rotated-refresh",
+                        "local_user_id": USER_ID,
+                        "auth_source": "oauth",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            yield
+
+    monkeypatch.setattr(C, "_social_session_lock", rotating_lock)
+    monkeypatch.setattr(C, "_save_social_session_unlocked", lambda *_args, **_kwargs: False)
+
+    saved = O._persist_oauth_credentials(
+        {"access_token": "new-access", "refresh_token": "new-refresh"},
+        social_base="https://community.example",
+        access_token="new-access",
+        refresh_token="new-refresh",
+        local_user_id=USER_ID,
+        auth_public_url="https://auth.example",
+        client_id="neko-servers-desktop-dev",
+    )
+
+    assert saved is False
+    # Restoring the pre-refresh snapshot would reinstate a consumed refresh
+    # token and the next refresh would die with invalid_grant.
+    assert json.loads(auth.read_text(encoding="utf-8"))["refresh_token"] == "rotated-refresh"
+    assert json.loads(social.read_text(encoding="utf-8"))["refresh_token"] == "rotated-refresh"
+
+
+@pytest.mark.unit
+def test_persist_oauth_credentials_leaves_an_untouched_social_file_alone(
+    tmp_path,
+    monkeypatch,
+):
+    """Rollback must not rewrite (and risk destroying) the social file it never modified."""
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    old_auth = {"access_token": "old-access", "refresh_token": "old-refresh"}
+    old_social = {
+        "token": "old-access",
+        "access_token": "old-access",
+        "local_user_id": USER_ID,
+        "auth_source": "oauth",
+    }
+    auth.write_text(json.dumps(old_auth), encoding="utf-8")
+    social.write_text(json.dumps(old_social), encoding="utf-8")
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_save_auth_unlocked", lambda *_args, **_kwargs: False)
+
+    social_writes = []
+    real_write = C._write_private_json
+
+    def write_private_json(path, data):
+        if path == social:
+            social_writes.append(data)
+            raise OSError("rollback must not rewrite the untouched social file")
+        real_write(path, data)
+
+    monkeypatch.setattr(C, "_write_private_json", write_private_json)
+    cleared = []
+    monkeypatch.setattr(C, "_clear_auth", lambda: cleared.append(True) or True)
+
+    saved = O._persist_oauth_credentials(
+        {"access_token": "new-access", "refresh_token": "new-refresh"},
+        social_base="https://community.example",
+        access_token="new-access",
+        refresh_token="new-refresh",
+        local_user_id=USER_ID,
+        auth_public_url="https://auth.example",
+        client_id="neko-servers-desktop-dev",
+    )
+
+    assert saved is False
+    assert social_writes == []
+    # A failed save leaves the old session byte-identical; rewriting it could
+    # fail too and make _clear_auth() delete a still-usable login.
+    assert cleared == []
+    assert json.loads(social.read_text(encoding="utf-8")) == old_social
+    assert json.loads(auth.read_text(encoding="utf-8")) == old_auth
+
+
+@pytest.mark.unit
+def test_persist_oauth_credentials_clears_credentials_when_rollback_fails(
+    tmp_path,
+    monkeypatch,
+):
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    old_auth = {"access_token": "old-access", "refresh_token": "old-refresh"}
+    auth.write_text(json.dumps(old_auth), encoding="utf-8")
+    social.write_text(
+        json.dumps(
+            {
+                "token": "old-access",
+                "access_token": "old-access",
+                "local_user_id": USER_ID,
+                "auth_source": "oauth",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+
+    real_write = C._write_private_json
+
+    def write_private_json(path, data):
+        if path == auth and data == old_auth:
+            raise OSError("restore failed")
+        real_write(path, data)
+
+    monkeypatch.setattr(C, "_write_private_json", write_private_json)
+    monkeypatch.setattr(C, "_save_social_session_unlocked", lambda *_args, **_kwargs: False)
+
+    saved = O._persist_oauth_credentials(
+        {"access_token": "new-access", "refresh_token": "new-refresh"},
+        social_base="https://community.example",
+        access_token="new-access",
+        refresh_token="new-refresh",
+        local_user_id=USER_ID,
+        auth_public_url="https://auth.example",
+        client_id="neko-servers-desktop-dev",
+    )
+
+    assert saved is False
+    # A new auth record left beside the old session reads as an active login.
+    assert not auth.exists()
+    assert not social.exists()
 
 
 @pytest.mark.unit
@@ -1025,3 +1601,84 @@ def test_legacy_login_returns_410(oauth_app):
     )
     assert response.status_code == 410
     assert response.json() == {"detail": "legacy_community_login_removed"}
+
+
+@pytest.mark.unit
+def test_rejected_snapshot_cleanup_fences_a_bind_repair(oauth_app, monkeypatch):
+    """A bind repair starting as cleanup releases its lock cannot revive auth."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    _client, auth, social, _pending = oauth_app
+    auth.write_text(json.dumps({"access_token": "rejected-token"}), encoding="utf-8")
+    social.write_text(json.dumps({"token": "rejected-token"}), encoding="utf-8")
+    cleanup_unlocked = threading.Event()
+    continue_cleanup = threading.Event()
+    repair_read = threading.Event()
+    continue_repair = threading.Event()
+    worker_ids = {}
+    real_lock = C._social_session_lock
+    real_read = C._read_json_dict
+
+    @contextmanager
+    def pause_after_cleanup_unlock(path):
+        with real_lock(path):
+            yield
+        if threading.get_ident() == worker_ids.get("cleanup"):
+            cleanup_unlocked.set()
+            assert continue_cleanup.wait(5)
+
+    def pause_after_repair_read(path):
+        data = real_read(path)
+        if path == auth and threading.get_ident() == worker_ids.get("repair"):
+            repair_read.set()
+            assert continue_repair.wait(5)
+        return data
+
+    def clear_rejected():
+        worker_ids["cleanup"] = threading.get_ident()
+        return O._clear_rejected_oauth_snapshot({"access_token": "rejected-token"})
+
+    def repair_bind():
+        worker_ids["repair"] = threading.get_ident()
+        C._persist_repaired_bind("rejected-token", {"bound": True})
+
+    monkeypatch.setattr(C, "_social_session_lock", pause_after_cleanup_unlock)
+    monkeypatch.setattr(C, "_read_json_dict", pause_after_repair_read)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        cleanup = pool.submit(clear_rejected)
+        try:
+            assert cleanup_unlocked.wait(5)
+            repair = pool.submit(repair_bind)
+            assert repair_read.wait(5)
+            continue_cleanup.set()
+            assert cleanup.result(timeout=5)
+        finally:
+            continue_cleanup.set()
+            continue_repair.set()
+        repair.result(timeout=5)
+
+    assert not social.exists()
+    assert not auth.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("current_token", ["rejected-token", "new-login-token"])
+def test_rejected_snapshot_cleanup_checks_both_session_paths(
+    oauth_app, monkeypatch, current_token,
+):
+    _client, auth, social, _pending = oauth_app
+    legacy = social.with_name("legacy_social_session.json")
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: legacy)
+    auth.write_text(json.dumps({"access_token": current_token}), encoding="utf-8")
+    social.write_text(json.dumps({"token": current_token}), encoding="utf-8")
+    legacy.write_text(json.dumps({"token": "rejected-token"}), encoding="utf-8")
+
+    assert O._clear_rejected_oauth_snapshot({"access_token": "rejected-token"})
+
+    assert not legacy.exists()
+    if current_token == "rejected-token":
+        assert not auth.exists()
+        assert not social.exists()
+    else:
+        assert json.loads(auth.read_text(encoding="utf-8"))["access_token"] == current_token
+        assert json.loads(social.read_text(encoding="utf-8"))["token"] == current_token

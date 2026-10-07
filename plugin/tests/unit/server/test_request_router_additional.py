@@ -64,6 +64,33 @@ async def test_get_request_from_queue_normalize_and_handle_request(monkeypatch: 
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("request_type", [[], {}])
+async def test_shared_zmq_returns_a_structured_error_for_non_string_request_types(
+    monkeypatch: pytest.MonkeyPatch,
+    request_type: object,
+) -> None:
+    monkeypatch.setattr(request_router_module, "build_request_handlers", lambda: {})
+    router = request_router_module.PluginRouter()
+
+    response = await router._handle_zmq_request(
+        {
+            "type": request_type,
+            "from_plugin": "demo-plugin",
+            "request_id": "request-1",
+        }
+    )
+
+    assert response == {
+        "type": "PLUGIN_TO_PLUGIN_RESPONSE",
+        "to_plugin": "demo-plugin",
+        "request_id": "request-1",
+        "result": None,
+        "error": f"unknown request type: {request_type}",
+    }
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_start_and_stop_without_zmq(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(request_router_module, "build_request_handlers", lambda: {})
     monkeypatch.setattr(request_router_module, "PLUGIN_ZMQ_IPC_ENABLED", False)

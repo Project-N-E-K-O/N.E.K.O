@@ -533,6 +533,8 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/live2d_parameter_editor",
     "/soccer_demo",
     "/badminton_demo",
+    "/drawing_guess_demo",
+    "/air_basketball",
     "/live2d_emotion_manager",
     "/vrm_emotion_manager",
     "/mmd_emotion_manager",
@@ -640,6 +642,9 @@ app.add_middleware(
 )
 # Registered after the body guard so it is the outermost ASGI middleware and
 # rejects DNS-rebinding Host values before any HTTP or WebSocket route runs.
+from utils.instance_access import InstanceAccessMiddleware
+from main_routers.card_drop_router import authorize_community_handoff
+app.add_middleware(InstanceAccessMiddleware, community_handoff_authorizer=authorize_community_handoff)
 app.add_middleware(HostOriginGuardMiddleware)
 
 
@@ -665,6 +670,7 @@ from .web_app import (  # noqa: F401
     config_router,
     cookies_login_router,
     debug_router,
+    drawing_guess_router,
     galgame_router,
     game_router,
     get_card_drop_active_character,
@@ -766,6 +772,190 @@ async def _stop_neko_servers_integration_workers() -> None:
         timeout=1.0,
     )
     _client_registration_task = None
+
+
+# Strong references to in-flight shutdown steps: a step outlives the await that
+# observes it (caller cancellation is absorbed, a deadline only cancels it), so
+# the event loop's weak task set alone could let it be collected mid-cleanup.
+_SHUTDOWN_STEP_TASKS: set[asyncio.Task[object]] = set()
+# How long a step that missed its deadline gets to finish handling the cancel.
+_SHUTDOWN_STEP_CANCEL_GRACE_SECONDS = 1.0
+# Shared waiting budget from the first caller cancellation, including grace.
+# Leave margin below the Electron signal-exit path's 10s grace window.
+_SHUTDOWN_CANCELLED_BUDGET_SECONDS = 8.0
+# Cloud Save upload has no step deadline; once shutdown is cancelled it gets
+# its own 5s upload budget plus margin, then is cancelled like any other step.
+_CLOUDSAVE_SHUTDOWN_UPLOAD_CANCELLED_BUDGET_SECONDS = 5.5
+
+
+class _ShutdownCancellationBudget:
+    """Bound asynchronous cleanup waits after the first caller cancellation."""
+
+    def __init__(self) -> None:
+        self.deadline: float | None = None
+
+    def start(self) -> None:
+        if self.deadline is None:
+            self.deadline = time.monotonic() + _SHUTDOWN_CANCELLED_BUDGET_SECONDS
+
+    def clamp(self, deadline: float | None) -> float | None:
+        if self.deadline is None:
+            return deadline
+        return self.deadline if deadline is None else min(deadline, self.deadline)
+
+
+
+def _consume_shutdown_task_result(task: asyncio.Task[object]) -> None:
+    # Retrieve the outcome so asyncio does not log "exception was never
+    # retrieved" for a step whose failure _run_shutdown_step already reported.
+    try:
+        task.exception()
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+def _forget_shutdown_step(task: asyncio.Task[object]) -> None:
+    _SHUTDOWN_STEP_TASKS.discard(task)
+    _consume_shutdown_task_result(task)
+
+
+def _log_abandoned_shutdown_step_outcome(what: str):
+    """Report how a step ended after _run_shutdown_step stopped waiting on it."""
+
+    def _report(task: asyncio.Task[object]) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning(
+                "%s failed after shutdown stopped waiting for it: %s", what, exc
+            )
+
+    return _report
+
+
+async def _run_shutdown_step(
+    factory,
+    *,
+    what: str,
+    deadline_monotonic: float | None,
+    pending_cancellation: asyncio.CancelledError | None = None,
+    cancelled_budget_seconds: float = 0.0,
+    cancellation_budget: _ShutdownCancellationBudget | None = None,
+) -> asyncio.CancelledError | None:
+    """Run one cleanup and defer caller cancellation to the end.
+
+    Shutdown is a sequence of independent cleanups (connector threads, game
+    tasks, integration workers, ZMQ bridge, Cloud Save, HTTP pools). A
+    cancellation delivered while any one of them is awaited must not skip the
+    rest, so each step absorbs it here and the caller re-raises once, after
+    everything else has run. ``except Exception`` does NOT cover this:
+    ``CancelledError`` is a ``BaseException``.
+
+    The cleanup runs in a strongly referenced child task observed through
+    ``asyncio.shield``, so cancelling ``on_shutdown`` cannot cancel the cleanup
+    it is currently waiting on. Each delivered caller cancellation is consumed
+    exactly once (``uncancel`` keeps ``cancelling()`` at zero for later steps)
+    and the first instance is returned for the caller to re-raise. A step that
+    misses its deadline is cancelled and, like ``asyncio.wait_for`` did before,
+    given a short grace period to actually stop before the next step runs; a
+    step that fails is logged. Neither is raised, because raising would drop a
+    cancellation this helper already absorbed.
+
+    ``deadline_monotonic=None`` waits for the step's own terminal state, for
+    work that cancelling the await cannot stop (a worker thread). Once the
+    caller has cancelled -- before this step or while it is awaited -- nothing
+    else would end that wait, so the step then gets ``cancelled_budget_seconds``
+    from that moment as its deadline (0 means it is not started, or is
+    cancelled right away).
+
+    When supplied, ``cancellation_budget`` is shared across the shutdown's
+    steps. Its clock starts on the first caller cancellation; both step waits
+    and cancellation grace are capped by it. Later cancellations do not reset
+    it. Exhaustion skips remaining asynchronous steps. This bounds cooperative
+    waits, not synchronous cleanup or process exit (worker threads may linger).
+    Consuming cancellation and re-raising at the end is deliberate; callers
+    must not rely on the task's ``cancelling()`` count retaining those requests.
+    """
+    if cancellation_budget is not None and pending_cancellation is not None:
+        cancellation_budget.start()
+    if deadline_monotonic is None and pending_cancellation is not None:
+        deadline_monotonic = time.monotonic() + cancelled_budget_seconds
+    if cancellation_budget is not None:
+        deadline_monotonic = cancellation_budget.clamp(deadline_monotonic)
+    if deadline_monotonic is not None and deadline_monotonic - time.monotonic() <= 0:
+        logger.warning("%s skipped: shutdown deadline already passed", what)
+        return pending_cancellation
+    try:
+        task = asyncio.create_task(factory(), name=f"shutdown:{what}")
+    except Exception as exc:
+        logger.warning("%s failed during shutdown: %s", what, exc)
+        return pending_cancellation
+    _SHUTDOWN_STEP_TASKS.add(task)
+    task.add_done_callback(_forget_shutdown_step)
+    timed_out = False
+    cancel_grace_seconds = _SHUTDOWN_STEP_CANCEL_GRACE_SECONDS
+    while not task.done():
+        remaining = None
+        if deadline_monotonic is not None:
+            remaining = deadline_monotonic - time.monotonic()
+            if remaining <= 0:
+                if timed_out:
+                    break
+                timed_out = True
+                logger.warning(
+                    "%s exceeded its shutdown deadline; cancelling it", what
+                )
+                task.cancel()
+                cancel_started = time.monotonic()
+                deadline_monotonic = (
+                    cancel_started + _SHUTDOWN_STEP_CANCEL_GRACE_SECONDS
+                )
+                if cancellation_budget is not None:
+                    deadline_monotonic = cancellation_budget.clamp(deadline_monotonic)
+                cancel_grace_seconds = max(0.0, deadline_monotonic - cancel_started)
+                continue
+        try:
+            async with asyncio.timeout(remaining):
+                await asyncio.shield(task)
+        except TimeoutError:
+            # The loop head decides between cancelling and giving up.
+            pass
+        except asyncio.CancelledError as exc:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                current.uncancel()
+                if pending_cancellation is None:
+                    pending_cancellation = exc
+                if deadline_monotonic is None:
+                    # The caller's cancel is the only thing that bounds this
+                    # wait; give the step its cancelled budget from now on.
+                    deadline_monotonic = time.monotonic() + cancelled_budget_seconds
+                if cancellation_budget is not None:
+                    cancellation_budget.start()
+                    deadline_monotonic = cancellation_budget.clamp(deadline_monotonic)
+                logger.debug(
+                    "%s observed caller cancellation; waiting for it to finish",
+                    what,
+                )
+            # Otherwise the step was cancelled (by itself or by the deadline);
+            # the task is done and the loop exits to report it below.
+        except Exception:
+            # The step itself failed; the task is done and is reported below.
+            pass
+    if not task.done():
+        logger.warning(
+            "%s did not stop within %.1fs after cancellation; moving on",
+            what,
+            cancel_grace_seconds,
+        )
+        task.add_done_callback(_log_abandoned_shutdown_step_outcome(what))
+    elif task.cancelled():
+        if not timed_out:
+            logger.warning("%s cancelled itself during shutdown", what)
+    elif (step_exc := task.exception()) is not None:
+        logger.warning("%s failed during shutdown: %s", what, step_exc)
+    return pending_cancellation
 
 
 async def _cancel_task_if_running(
@@ -913,6 +1103,17 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                     logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
 
             await initialize_character_data()
+            # 存量角色一次性补发稳定 id（character_uid）：放在 cloudsave 引导 /
+            # 启动导入之后（引导期的 seed 文件不能被改写），也放在
+            # initialize_character_data 之后（全新安装时 characters.json 由它
+            # 写出）；失败只记日志，不挡启动。
+            try:
+                from utils.character_memory import character_config_mutation_lock
+
+                async with character_config_mutation_lock:
+                    await _config_manager.abackfill_character_uids()
+            except Exception as e:
+                logger.warning("角色稳定 id 补发失败，下次启动重试: %s", e)
             await _sync_memory_server_after_startup_import(import_result)
 
             logger.info("正在初始化 Steamworks...")
@@ -1154,7 +1355,6 @@ async def on_startup():
             steamworks=steamworks,
             templates=templates,
             config_manager=_config_manager,
-            logger=logger,
             initialize_character_data=initialize_character_data,
             switch_current_catgirl_fast=switch_current_catgirl_fast,
             init_one_catgirl=init_one_catgirl,
@@ -1232,52 +1432,95 @@ async def on_startup():
 @app.on_event("shutdown")
 async def on_shutdown():
     """Clean up resources at server shutdown"""
+    global _preload_task, _game_cleanup_task, agent_event_bridge
+
     if _IS_MAIN_PROCESS:
         logger.info("正在清理资源...")
+        # 每一步隔离失败；首次调用方取消后共用 8s 等待预算（包含取消宽限）。
+        # 总预算耗尽才跳过后续异步步骤，末尾统一 re-raise 第一次取消。
+        shutdown_cancellation: asyncio.CancelledError | None = None
+        cancellation_budget = _ShutdownCancellationBudget()
         try:
             from .voice_identity_runtime import close_voice_identity_runtime
 
-            await close_voice_identity_runtime()
+            shutdown_cancellation = await _run_shutdown_step(
+                close_voice_identity_runtime,
+                what="voice identity cleanup",
+                # Registry cleanup scales with manager count and shields its
+                # internal work; preserve normal shutdown ordering by waiting.
+                deadline_monotonic=None,
+                cancelled_budget_seconds=_SHUTDOWN_CANCELLED_BUDGET_SECONDS,
+                pending_cancellation=shutdown_cancellation,
+                cancellation_budget=cancellation_budget,
+            )
         except Exception as e:
             logger.debug(f"voice identity cleanup failed: {e}")
         cleanup()
-        try:
-            # join_sync_connector_threads 内部已经 gather 并行 join，直接 await
-            await join_sync_connector_threads(3.0)
-        except Exception as e:
-            logger.debug(f"同步连接器线程清理失败: {e}", exc_info=True)
+        # join_sync_connector_threads 内部已经 gather 并行 join
+        shutdown_cancellation = await _run_shutdown_step(
+            lambda: join_sync_connector_threads(3.0),
+            what="同步连接器线程清理",
+            deadline_monotonic=time.monotonic() + 3.5,
+            pending_cancellation=shutdown_cancellation,
+            cancellation_budget=cancellation_budget,
+        )
 
         # 等待预加载任务完成（如果还在运行）
-        global _preload_task, _game_cleanup_task, agent_event_bridge
         if _preload_task:
-            try:
-                await asyncio.wait_for(_preload_task, timeout=1.0)
-            except asyncio.TimeoutError:
-                _preload_task.cancel()
+            preload_task = _preload_task
+
+            async def _drain_preload() -> None:
                 try:
-                    await _preload_task
+                    await asyncio.wait_for(preload_task, timeout=1.0)
+                except asyncio.TimeoutError:
+                    preload_task.cancel()
+                    try:
+                        await preload_task
+                    except asyncio.CancelledError:
+                        logger.debug("预加载任务清理时超时并已取消（正常关闭流程）")
                 except asyncio.CancelledError:
-                    logger.debug("预加载任务清理时超时并已取消（正常关闭流程）")
-            except asyncio.CancelledError:
-                logger.debug("预加载任务清理时已取消（正常关闭流程）")
-            except Exception as e:
-                logger.debug(
-                    f"预加载任务清理时出错（正常关闭流程）: {e}", exc_info=True
-                )
+                    logger.debug("预加载任务清理时已取消（正常关闭流程）")
+                except Exception as e:
+                    logger.debug(
+                        f"预加载任务清理时出错（正常关闭流程）: {e}", exc_info=True
+                    )
+
+            shutdown_cancellation = await _run_shutdown_step(
+                _drain_preload,
+                what="preload cleanup",
+                deadline_monotonic=time.monotonic() + 1.5,
+                pending_cancellation=shutdown_cancellation,
+                cancellation_budget=cancellation_budget,
+            )
             _preload_task = None
 
-        await _cancel_task_if_running(
-            _game_cleanup_task, name="game cleanup", timeout=1.0
+        shutdown_cancellation = await _run_shutdown_step(
+            lambda: _cancel_task_if_running(
+                _game_cleanup_task, name="game cleanup", timeout=1.0
+            ),
+            what="game cleanup",
+            deadline_monotonic=time.monotonic() + 1.5,
+            pending_cancellation=shutdown_cancellation,
+            cancellation_budget=cancellation_budget,
         )
         _game_cleanup_task = None
-        await _stop_neko_servers_integration_workers()
+        shutdown_cancellation = await _run_shutdown_step(
+            _stop_neko_servers_integration_workers,
+            what="integration workers cleanup",
+            deadline_monotonic=time.monotonic() + 2.5,
+            pending_cancellation=shutdown_cancellation,
+            cancellation_budget=cancellation_budget,
+        )
 
         # Clean up agent_event_bridge (ZMQ context/sockets/recv thread)
         if agent_event_bridge is not None:
-            try:
-                await agent_event_bridge.stop()
-            except Exception as e:
-                logger.debug(f"Agent event bridge cleanup failed: {e}", exc_info=True)
+            shutdown_cancellation = await _run_shutdown_step(
+                agent_event_bridge.stop,
+                what="agent event bridge cleanup",
+                deadline_monotonic=time.monotonic() + 5.5,
+                pending_cancellation=shutdown_cancellation,
+                cancellation_budget=cancellation_budget,
+            )
 
         # 释放 soxr ResampleStream（nanobind C 扩展），避免解释器退出时泄漏警告
         try:
@@ -1293,7 +1536,13 @@ async def on_shutdown():
 
             close_fn = getattr(language_utils, "aclose_translation_service", None)
             if callable(close_fn):
-                await close_fn()
+                shutdown_cancellation = await _run_shutdown_step(
+                    close_fn,
+                    what="translation service cleanup",
+                    deadline_monotonic=time.monotonic() + 2.0,
+                    pending_cancellation=shutdown_cancellation,
+                    cancellation_budget=cancellation_budget,
+                )
             else:
                 logger.debug(
                     "Translation service cleanup skipped: function not implemented"
@@ -1309,16 +1558,17 @@ async def on_shutdown():
         except Exception as e:
             logger.debug(f"Token usage save on shutdown failed: {e}")
 
-        # 关闭音乐爬虫连接池
+        # 关闭音乐爬虫连接池：1 秒内关不完就取消，保障服务器顺利退出
         try:
             from utils.music_crawlers import close_all_crawlers
 
-            # 【核心修改】增加 1 秒超时兜底。如果 1 秒内关不完，直接抛弃，保障服务器顺利退出
-            await asyncio.wait_for(close_all_crawlers(), timeout=1.0)
-
-        except asyncio.TimeoutError:
-            # 单独捕获超时异常，记录警告但放行
-            logger.warning("音乐爬虫连接池清理超时，已强制跳过以保证服务正常退出。")
+            shutdown_cancellation = await _run_shutdown_step(
+                close_all_crawlers,
+                what="music crawler cleanup",
+                deadline_monotonic=time.monotonic() + 1.0,
+                pending_cancellation=shutdown_cancellation,
+                cancellation_budget=cancellation_budget,
+            )
         except Exception as e:
             logger.debug(f"音乐爬虫清理失败: {e}", exc_info=True)
 
@@ -1350,19 +1600,28 @@ async def on_shutdown():
                     return character_name, False, e
 
             if releasable_names:
-                try:
-                    results = await asyncio.wait_for(
-                        asyncio.gather(
-                            *(_release_one(n) for n in releasable_names),
-                            return_exceptions=False,
-                        ),
-                        timeout=3.0,
+                results: list[tuple[str, bool, Exception | None]] | None = None
+
+                async def _release_all() -> None:
+                    nonlocal results
+                    results = list(
+                        await asyncio.gather(
+                            *(_release_one(n) for n in releasable_names)
+                        )
                     )
-                except asyncio.TimeoutError:
+
+                shutdown_cancellation = await _run_shutdown_step(
+                    _release_all,
+                    what="memory character release",
+                    deadline_monotonic=time.monotonic() + 3.0,
+                    pending_cancellation=shutdown_cancellation,
+                    cancellation_budget=cancellation_budget,
+                )
+                if results is None:
                     any_release_failed = True
                     failed_release_characters = list(releasable_names)
                     logger.warning(
-                        "Steam Auto-Cloud pre-shutdown release phase exceeded 3.0s budget; assuming all characters not fully released"
+                        "Steam Auto-Cloud pre-shutdown release phase did not complete; assuming all characters not fully released"
                     )
                     results = []
 
@@ -1397,42 +1656,69 @@ async def on_shutdown():
                 else "<unknown>",
             )
         else:
-            try:
-                upload_action_kwargs = {
-                    "reason": "main_server_shutdown_remote_upload",
-                    "budget_seconds": 5.0,
-                }
-                if steamworks is not None:
-                    upload_action_kwargs["steamworks"] = steamworks
-                remote_upload_result = await _run_cloudsave_manager_action(
-                    "upload_existing_snapshot",
-                    **upload_action_kwargs,
-                )
+            upload_action_kwargs = {
+                "reason": "main_server_shutdown_remote_upload",
+                "budget_seconds": 5.0,
+            }
+            if steamworks is not None:
+                upload_action_kwargs["steamworks"] = steamworks
+
+            async def _upload_cloudsave() -> None:
+                try:
+                    remote_upload_result = await _run_cloudsave_manager_action(
+                        "upload_existing_snapshot",
+                        **upload_action_kwargs,
+                    )
+                except CloudsaveDeadlineExceeded:
+                    # 预算超时只记录这条专属提示，避免 helper 再记录通用失败日志
+                    logger.warning(
+                        "Steam Auto-Cloud shutdown staged snapshot upload exceeded 5.0s budget; source launch may leave Steam remote snapshot unchanged"
+                    )
+                    return
+                # 结果日志放在 step 内：上传失败会被 _run_shutdown_step 吸收，step
+                # 之后再打就会在失败时也输出一条 "upload: None"
                 logger.info(
                     "Steam Auto-Cloud shutdown staged snapshot upload: %s",
                     remote_upload_result,
                 )
-            except CloudsaveDeadlineExceeded:
-                logger.warning(
-                    "Steam Auto-Cloud shutdown staged snapshot upload exceeded 5.0s budget; source launch may leave Steam remote snapshot unchanged"
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Steam Auto-Cloud shutdown staged snapshot upload failed: {e}"
-                )
+
+            # 不设截止时间：上传在 to_thread 里同步写 Steam，5s 预算由线程内部自己检查；
+            # 取消 await 停不了线程，只会让关闭在远端快照写到一半时就往下走。
+            # 关闭一旦被取消（之前或等待期间），就只再给它上传自身预算的时间，
+            # 避免卡死的 Steam 调用把关闭永远挂住，同时能完成的上传照常完成。
+            shutdown_cancellation = await _run_shutdown_step(
+                _upload_cloudsave,
+                what="Steam Auto-Cloud shutdown staged snapshot upload",
+                deadline_monotonic=None,
+                pending_cancellation=shutdown_cancellation,
+                cancellation_budget=cancellation_budget,
+                cancelled_budget_seconds=(
+                    _CLOUDSAVE_SHUTDOWN_UPLOAD_CANCELLED_BUDGET_SECONDS
+                ),
+            )
 
         current_config = get_start_config()
         if current_config.get("shutdown_memory_server_on_exit"):
             current_config["shutdown_memory_server_on_exit"] = False
-            await _request_memory_server_shutdown()
+            shutdown_cancellation = await _run_shutdown_step(
+                _request_memory_server_shutdown,
+                what="memory server shutdown request",
+                deadline_monotonic=time.monotonic() + 1.5,
+                pending_cancellation=shutdown_cancellation,
+                cancellation_budget=cancellation_budget,
+            )
 
         # 关闭内部共享 httpx 连接池（必须在 release/upload 之后，因为它们依赖此 pool）
         try:
             from utils.internal_http_client import aclose_internal_http_client
 
-            await asyncio.wait_for(aclose_internal_http_client(), timeout=1.0)
-        except asyncio.TimeoutError:
-            logger.warning("internal_http_client 清理超时，已强制跳过。")
+            shutdown_cancellation = await _run_shutdown_step(
+                aclose_internal_http_client,
+                what="internal_http_client 清理",
+                deadline_monotonic=time.monotonic() + 1.0,
+                pending_cancellation=shutdown_cancellation,
+                cancellation_budget=cancellation_budget,
+            )
         except Exception as e:
             logger.debug(f"internal_http_client 清理失败: {e}", exc_info=True)
 
@@ -1440,11 +1726,18 @@ async def on_shutdown():
         try:
             from utils.external_http_client import aclose_external_http_client
 
-            await asyncio.wait_for(aclose_external_http_client(), timeout=2.0)
-        except asyncio.TimeoutError:
-            logger.warning("external_http_client 清理超时，已强制跳过。")
+            shutdown_cancellation = await _run_shutdown_step(
+                aclose_external_http_client,
+                what="external_http_client 清理",
+                deadline_monotonic=time.monotonic() + 2.0,
+                pending_cancellation=shutdown_cancellation,
+                cancellation_budget=cancellation_budget,
+            )
         except Exception as e:
             logger.debug(f"external_http_client 清理失败: {e}", exc_info=True)
+
+        if shutdown_cancellation is not None:
+            raise shutdown_cancellation
 
 
 # 使用 FastAPI 的 app.state 来管理启动配置

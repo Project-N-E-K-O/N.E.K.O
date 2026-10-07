@@ -20,13 +20,17 @@ with its flush loop.
 """
 
 import asyncio
+import copy
+import hashlib
 import json
+import os
 import re
+import time
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
@@ -43,25 +47,49 @@ from config.prompts.prompts_memory import (
     MEMORY_UNAVAILABLE_NOTICE,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
     RECENT_HISTORY_INTRO, NO_RECENT_HISTORY,
+    get_theater_memory_context,
     _normalize_memory_prompt_lang,
 )
 from utils.frontend_utils import get_timestamp
+from utils.screen_comment_guard import project_screen_history
 from utils.language_utils import (
     get_global_language_full,
     is_supported_language_code,
     language_context,
     normalize_language_code,
 )
-from utils.llm_client import convert_to_messages
+from memory.message_sources import (
+    is_theater_episode_summary,
+    is_theater_memory_message,
+    theater_memory_episode_key,
+)
+from utils.llm_client import (
+    convert_to_messages,
+    message_metadata,
+    messages_to_dict,
+)
 from utils.time_format import format_elapsed as _format_elapsed
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
 from memory.outbox import OP_PERSIST_PROMPT_LOCALE
 from memory.persona.fusion import ExternalMemoryImportTooLargeError
+from utils.natural_expression_candidates import (
+    CandidateMinerError,
+    SourceMessage,
+    build_user_review_report,
+    normalize_language,
+)
 
 from . import gates, locale_state, outbox_infra, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
+from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from .rows import _has_human_messages
+from memory.recent import (
+    TheaterEpisodeRetracted,
+    _positive_metadata_int,
+    is_retracted_theater_episode,
+    restored_theater_history,
+)
 from .runtime import app
 
 
@@ -69,12 +97,318 @@ class HistoryRequest(BaseModel):
     input_history: str
     language: str | None = None
     render_language: str | None = None
+    # Theater archive request id; /cache accepts it only on a theater episode write.
+    idempotency_key: str | None = None
+    # Theater archive attempt number; lets a retraction fence late writes of
+    # attempts issued before the player declined the archive.
+    theater_archive_attempt: int | None = Field(default=None, ge=0)
+    # Opaque marker returned by the latest story forget. Once a story is
+    # forgotten, only writes carrying its current marker (issued after the
+    # forget completed) are stored; late writes issued before it are dropped.
+    theater_forget_marker: str | None = Field(default=None, max_length=128)
 
 
 class PromptLocalePreferenceRequest(BaseModel):
     language: str
 
 
+class TheaterMemoryForgetRequest(BaseModel):
+    story_id: str = Field(min_length=1, max_length=256)
+
+
+class TheaterEpisodeRetractRequest(BaseModel):
+    story_id: str = Field(min_length=1, max_length=256)
+    session_id: str = Field(min_length=1, max_length=256)
+    archive_through_revision: int = Field(ge=0)
+    # Identify the archive attempts to fence against late /cache writes.
+    archive_request_id: str = Field(default="", max_length=160)
+    archive_attempt: int = Field(default=0, ge=0)
+
+
+def _theater_story_event_id(lanlan_name: str, message) -> str:
+    """同一剧本在时间索引中始终使用同一个有界事件 ID。"""  # noqa: DOCSTRING_CJK
+
+    story_id, _ = theater_memory_episode_key(message)
+    digest = hashlib.sha256(
+        f"{lanlan_name}\x1f{story_id}".encode("utf-8")
+    ).hexdigest()
+    return f"theater-story-{digest}"
+
+
+def _theater_index_events(lanlan_name: str, messages: list) -> dict[str, tuple[str, list]]:
+    """把 recent 中所有剧场记忆组成按剧本聚合的时间索引事件。"""  # noqa: DOCSTRING_CJK
+
+    grouped: dict[str, list] = {}
+    for message in messages:
+        # 忘记单个剧本时，其他剧本尚未迁移的旧正文仍在 recent；重建索引必须原样保留。
+        if not is_theater_memory_message(message):
+            continue
+        story_id, _ = theater_memory_episode_key(message)
+        if story_id:
+            grouped.setdefault(story_id, []).append(message)
+    return {
+        story_id: (
+            _theater_story_event_id(lanlan_name, story_messages[-1]),
+            story_messages,
+        )
+        for story_id, story_messages in grouped.items()
+    }
+
+
+def _theater_memory_render_state(history: list):
+    """选出每个 Session 最新状态，以及每个 Story 最新周目。"""  # noqa: DOCSTRING_CJK
+
+    latest_by_episode = {
+        theater_memory_episode_key(message): message_metadata(message)
+        for message in history
+        if is_theater_memory_message(message)
+    }
+    latest_episode_by_story: dict[str, tuple[str, str]] = {}
+    latest_rank_by_story: dict[str, tuple[int, int]] = {}
+    for position, (episode_key, metadata) in enumerate(latest_by_episode.items()):
+        story_id = episode_key[0]
+        rank = (_positive_metadata_int(metadata.get("run_index")), position)
+        if rank >= latest_rank_by_story.get(story_id, (-1, -1)):
+            latest_rank_by_story[story_id] = rank
+            latest_episode_by_story[story_id] = episode_key
+    return latest_by_episode, latest_episode_by_story
+
+
+def _iter_theater_rendered_history_unbounded(history: list, *, lang: str, name: str, master: str):
+    """Yield ``(message, capsule_text)`` for the prompt renderings of recent history.
+
+    Each theater Session renders once, at its first position, from its latest
+    metadata; later messages of the same Session are skipped. Only the latest
+    run of a Story carries the story-wide run count and endings seen. Ordinary
+    messages come back with ``capsule_text=None`` for the caller to render.
+    """
+    latest_by_episode, latest_episode_by_story = _theater_memory_render_state(history)
+    rendered_episodes: set[tuple[str, str]] = set()
+    for message in history:
+        if not is_theater_memory_message(message):
+            yield message, None
+            continue
+        episode_key = theater_memory_episode_key(message)
+        if episode_key in rendered_episodes:
+            continue
+        rendered_episodes.add(episode_key)
+        metadata = latest_by_episode[episode_key]
+        is_latest_story_run = latest_episode_by_story.get(episode_key[0]) == episode_key
+        ending_titles = metadata.get("ending_titles_seen")
+        yield message, get_theater_memory_context(
+            lang,
+            name=name,
+            master=master,
+            title=str(metadata.get("story_title") or ""),
+            status=str(metadata.get("episode_status") or "paused"),
+            ending=str(metadata.get("ending_title") or ""),
+            summary=str(
+                metadata.get("episode_summary")
+                or metadata.get("ending_summary")
+                or ""
+            ),
+            run_index=_positive_metadata_int(metadata.get("run_index")),
+            story_run_count=(
+                _positive_metadata_int(metadata.get("story_run_count"))
+                if is_latest_story_run
+                else 0
+            ),
+            ending_titles=(
+                ending_titles
+                if is_latest_story_run and isinstance(ending_titles, list)
+                else []
+            ),
+        )
+
+
+def _iter_theater_rendered_history(history: list, *, lang: str, name: str, master: str):
+    """Apply a separate theater prompt allowance without dropping ordinary text."""
+    from memory.theater_budget import THEATER_MEMORY_BUDGET_TOKENS
+    from utils.tokenize import count_tokens
+
+    rendered = list(_iter_theater_rendered_history_unbounded(
+        history, lang=lang, name=name, master=master,
+    ))
+    selected = set()
+    texts = []
+    for index in range(len(rendered) - 1, -1, -1):
+        _, capsule_text = rendered[index]
+        if capsule_text is None:
+            selected.add(index)
+            continue
+        candidate = [capsule_text, *texts]
+        if count_tokens("\n".join(candidate) + "\n") <= THEATER_MEMORY_BUDGET_TOKENS:
+            selected.add(index)
+            texts = candidate
+    for index, entry in enumerate(rendered):
+        if index in selected:
+            yield entry
+
+
+class RepetitionInsightsRequest(BaseModel):
+    language: Literal["en", "es", "pt", "ru", "ja", "ko", "zh-CN", "zh-TW"]
+    assistant_message_limit: int = Field(default=100, ge=3, le=100)
+
+
+@app.post("/internal/memory/{lanlan_name}/repetition_insights")
+async def repetition_insights(lanlan_name: str, req: RepetitionInsightsRequest):
+    """Analyze persisted assistant text without models, writes, or egress."""
+    name_validation = validate_character_name(
+        lanlan_name,
+        allow_dots=True,
+        max_units=PROFILE_NAME_MAX_UNITS,
+    )
+    if name_validation.code not in {None, "reserved_route_name"}:
+        raise HTTPException(status_code=400, detail="Invalid lanlan_name")
+    # Validated on the STRIPPED form, read with the name as given. Every
+    # check above -- path separator, "..", trailing dot, reserved name,
+    # character class -- runs on the stripped value, and surrounding
+    # whitespace cannot reintroduce any of them, so reading the raw name
+    # loosens nothing.
+    #
+    # Re-stripping DOES lose the identity. The public route resolves the
+    # request to a characters.json key before calling here, and a key
+    # carrying padding was stripped straight back on arrival -- so the
+    # analysis read memory/<trimmed>/, which is an unrelated orphan when a
+    # delete left one behind. The two ends have to mean the same
+    # character.
+    if runtime.time_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized",
+        )
+
+    # Read-only is not the same as harmless while a cloud apply is running.
+    #
+    # The overwrite/import releases this character's SQLite handles and then
+    # replaces memory/<name>/ wholesale. A read arriving in that window --
+    # from a second browser tab or the Electron subtitle window -- opens the
+    # database again and CACHES the engine, and on Windows a pooled handle is
+    # enough to make the replacement fail. Nothing on this path takes the
+    # writability assertion, because nothing on it writes.
+    #
+    # 503 rather than a stale answer: the fence is short, and the panel
+    # already renders "unavailable" for this status.
+    from utils.cloudsave_runtime.fence import is_write_fence_active
+    from utils.config_manager import get_config_manager
+
+    try:
+        fenced = is_write_fence_active(get_config_manager())
+    except Exception:
+        # A fence we cannot read is not a reason to fail an analysis; the
+        # window is narrow and the pre-existing behaviour is to proceed.
+        fenced = False
+    if fenced:
+        raise HTTPException(
+            status_code=503,
+            detail="memory is being restored; try again shortly",
+        )
+
+    try:
+        language = normalize_language(req.language)
+        history = await runtime.time_manager.aretrieve_latest_assistant_texts(
+            lanlan_name,
+            req.assistant_message_limit,
+        )
+        source_messages = [
+            SourceMessage(language, content, source_line)
+            for source_line, content in enumerate(history.messages, start=1)
+        ]
+        report = await asyncio.to_thread(
+            build_user_review_report,
+            source_messages,
+        )
+    except CandidateMinerError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning(
+            "[RepetitionInsights] analysis unavailable for %s: %s",
+            lanlan_name,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="local memory analysis unavailable",
+        ) from exc
+
+    parameters = dict(report["parameters"])
+    parameters["assistant_message_limit"] = req.assistant_message_limit
+    summary = dict(report["summary"])
+    summary["source_available"] = history.source_available
+    # ``response_ids`` is positionally aligned with ``history.messages``, and
+    # the source lines the miner reports are 1-based positions into that same
+    # list, so they pick out exactly the replies it analyzed.
+    #
+    # Taking the last N instead assumed the survivors were a contiguous
+    # suffix. They are not: the budget drops the oldest message that is over
+    # its fair share, which can be an interior one, so the ids were offset --
+    # a reply that was mined went unattributed while one that was dropped got
+    # credited. The count-based form stays as the fallback for a report that
+    # predates the field.
+    aligned_ids = list(getattr(history, "response_ids", []))
+    analyzed_count = int(
+        summary.get("analyzed_message_count", summary["assistant_message_count"])
+    )
+    source_lines = summary.get("analyzed_source_lines")
+    if isinstance(source_lines, list) and source_lines:
+        window_ids = [
+            aligned_ids[position - 1]
+            for position in source_lines
+            if isinstance(position, int) and 1 <= position <= len(aligned_ids)
+        ]
+        # Partial alignment is not alignment. Anything short of one id per
+        # analyzed reply falls back to the day-scoped aggregate below, the
+        # same way a missing id already does.
+        if len(window_ids) != len(source_lines):
+            window_ids = []
+    else:
+        window_ids = aligned_ids[-analyzed_count:] if analyzed_count > 0 else []
+    # Message scope is only honest when EVERY analyzed reply is linkable. A
+    # partial set (legacy rows without the key mixed with newer ones, or ids
+    # belonging to messages the budget dropped) would let the panel label an
+    # out-of-window aggregate as "handling for the latest N replies". Anything
+    # short of full coverage falls back to the day-scoped aggregate.
+    scoped_ids = (
+        [str(response_id) for response_id in window_ids]
+        if window_ids and all(window_ids)
+        else []
+    )
+    logger.info(
+        "[RepetitionInsights] character=%s language=%s limit=%s messages=%s "
+        "analyzed=%s candidates=%s skipped=%s linked_ids=%s",
+        lanlan_name,
+        language,
+        req.assistant_message_limit,
+        summary["assistant_message_count"],
+        summary.get("analyzed_message_count", summary["assistant_message_count"]),
+        summary["candidate_count"],
+        history.skipped_row_count,
+        len(scoped_ids),
+    )
+    payload: dict[str, object] = {
+        "success": True,
+        "schema_version": report["schema_version"],
+        "artifact_type": report["artifact_type"],
+        "character_name": lanlan_name,
+        "language": language,
+        "parameters": parameters,
+        "summary": summary,
+        "candidates": report["candidates"],
+    }
+    if scoped_ids:
+        # Internal-only join keys. The public router removes these before the
+        # browser response, so runtime IDs never become UI/export data.
+        #
+        # Emitted ONLY when every analyzed reply carries one. Sending an empty
+        # list still selects the message-scoped branch in
+        # ``main_routers.memory_router``, which then reports "no linked records"
+        # forever instead of falling back to the day-scoped aggregate that does
+        # work. Assistant rows only carry the key when the writer preserved
+        # ``additional_kwargs`` end to end; the streamed cross_server path that
+        # feeds ``time_indexed_original`` today does not, so the fallback is the
+        # normal case rather than an edge case.
+        payload["_anti_repeat_response_ids"] = scoped_ids
+    return payload
 def _activate_request_language(language: str | None) -> str:
     """Resolve the locale for this request without changing the process default.
 
@@ -792,15 +1126,95 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             input_history = convert_to_messages(json.loads(request.input_history))
             if not input_history:
                 return {"status": "cached", "count": 0}
+            theater_episode_batch = (
+                len(input_history) == 1
+                and is_theater_episode_summary(input_history[0])
+            )
+            idempotency_key = str(request.idempotency_key or "").strip()
+            if len(idempotency_key) > 160:
+                return {"status": "error", "message": "idempotency_key_too_long"}
+            if idempotency_key and not theater_episode_batch:
+                # Only a theater episode write is idempotent: it upserts one
+                # capsule per Session and the key fences retracted attempts.
+                # Ordinary batches have no dedupe, so refuse rather than
+                # silently appending a retry twice.
+                return {"status": "error", "message": "idempotency_key_requires_theater_episode"}
             if _has_human_messages(input_history):
                 await gates._aclear_review_clean(lanlan_name)
             logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
             uid = str(uuid4())
+            retracted_request = False
+            theater_index_events = {}
             async with runtime._get_settle_lock(lanlan_name):
-                await runtime.recent_history_manager.update_history(input_history, lanlan_name, compress=False)
-                # store_conversation 必须在 lock 内、与 update_history 串行：和
-                # /process / /renew 路径对偶，确保单角色 db 写顺序一致。
-                await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
+                if theater_episode_batch:
+                    # 剧场完整正文由 Theater 冷档案承接；recent 只按 Session
+                    # 更新一个摘要胶囊，暂停后继续完成不会再次追加整段原文。
+                    previous_theater_history = await runtime.recent_history_manager.aget_recent_history(
+                        lanlan_name
+                    )
+                    try:
+                        stored_episode = await runtime.recent_history_manager.upsert_theater_episode(
+                            input_history[0],
+                            lanlan_name,
+                            archive_request_id=idempotency_key,
+                            archive_attempt=request.theater_archive_attempt,
+                            forget_marker=request.theater_forget_marker,
+                        )
+                    except TheaterEpisodeRetracted:
+                        # The player declined this archive (or forgot the story)
+                        # while the request was still in flight; the tombstone was
+                        # checked under the same settle lock the retraction holds.
+                        retracted_request = True
+                    else:
+                        input_history = [stored_episode]
+                        updated_theater_history = await runtime.recent_history_manager.aget_recent_history(
+                            lanlan_name
+                        )
+                        theater_index_events = _theater_index_events(
+                            lanlan_name,
+                            updated_theater_history,
+                        )
+                else:
+                    await runtime.recent_history_manager.update_history(
+                        input_history,
+                        lanlan_name,
+                        compress=False,
+                    )
+                if retracted_request:
+                    pass
+                elif theater_episode_batch:
+                    # 以 recent 为唯一热记忆基线重建剧场时间索引：
+                    # 这会同时淘汰超限周目和升级前遗留的完整正文行。
+                    try:
+                        await runtime.time_manager.areconcile_theater_conversations(
+                            theater_index_events,
+                            lanlan_name,
+                        )
+                    except Exception:
+                        try:
+                            await runtime.recent_history_manager.restore_theater_cache_snapshot(
+                                lanlan_name,
+                                previous_theater_history,
+                                updated_theater_history,
+                            )
+                        except Exception:
+                            logger.exception("[MemoryServer] 剧场时间索引失败后 recent 回滚失败")
+                        raise
+                else:
+                    # store_conversation 必须在 lock 内、与 update_history 串行：和
+                    # /process / /renew 路径对偶，确保单角色 db 写顺序一致。
+                    await runtime.time_manager.astore_conversation(
+                        uid,
+                        input_history,
+                        lanlan_name,
+                    )
+            if retracted_request:
+                logger.info(f"[MemoryServer] cache: {lanlan_name} dropped a retracted theater archive write")
+                return {"status": "retracted", "count": 0}
+            if theater_episode_batch:
+                # Theater capsules are already committed above. Ordinary
+                # reflection/correction signals must not run for this archive.
+                return {"status": "cached", "count": len(input_history)}
             # outbox 登记走锁外——它会 spawn background task 跑 LLM，长持锁会
             # 阻塞下一轮 /cache 写盘。
             await post_turn._spawn_outbox_post_turn_signals(
@@ -812,6 +1226,214 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
         except Exception as e:
             logger.error(f"[MemoryServer] cache 失败: {e}", exc_info=True)
             return {"status": "error", "message": str(e)}
+
+
+@app.get("/internal/memory/{lanlan_name}/theater/stories")
+async def list_theater_memory_stories(lanlan_name: str):
+    """Expose saved public summaries for management after a package is deleted."""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    characters = await runtime._config_manager.aload_characters()
+    if lanlan_name not in characters.get("猫娘", {}):
+        raise HTTPException(status_code=404, detail="character_not_found")
+    history = await runtime.recent_history_manager.aget_recent_history(lanlan_name)
+    latest, _ = _theater_memory_render_state(history)
+    stories = {}
+    for (story_id, _), metadata in latest.items():
+        if not story_id:
+            continue
+        story = stories.setdefault(story_id, {"story_id": story_id, "title": "", "memory_summaries": []})
+        story["title"] = str(metadata.get("story_title") or story["title"] or story_id)
+        summary = str(metadata.get("episode_summary") or metadata.get("ending_summary") or "").strip()
+        if summary:
+            story["memory_summaries"].append(summary)
+    return {"ok": True, "stories": list(stories.values())}
+
+
+async def _drop_theater_memory_reindexed(
+    lanlan_name: str,
+    current: list,
+    should_drop,
+    drop_recent,
+    operation: str,
+    remaining=None,
+):
+    """Remove theater capsules from the time index, then from recent.
+
+    The caller holds the character's settle lock and passes the recent history
+    it read under it. The recallable index goes first, so a failed recent write
+    still leaves the original summary in place. When ``drop_recent`` fails the
+    index is rebuilt from what recent actually holds: the drop may have been
+    partly persisted, and rolling back to ``current`` would put removed
+    capsules back into the recallable index.
+    """
+
+    if remaining is None:
+        remaining = [message for message in current if not should_drop(message)]
+    reconcile_result = await runtime.time_manager.areconcile_theater_conversations(
+        _theater_index_events(lanlan_name, remaining),
+        lanlan_name,
+    )
+    try:
+        removed_recent = await drop_recent()
+    except Exception:
+        try:
+            try:
+                actual = await runtime.recent_history_manager.aget_recent_history(
+                    lanlan_name,
+                )
+            except Exception:
+                logger.exception(
+                    "[MemoryServer] %s: recent re-read failed; restoring index from snapshot",
+                    operation,
+                )
+                actual = current
+            await runtime.time_manager.areconcile_theater_conversations(
+                _theater_index_events(lanlan_name, actual),
+                lanlan_name,
+            )
+        except Exception:
+            logger.exception("[MemoryServer] %s: time index rollback failed", operation)
+        raise
+    return removed_recent, reconcile_result
+
+
+@app.post("/internal/memory/{lanlan_name}/theater/forget")
+async def forget_theater_memory(
+    lanlan_name: str,
+    request: TheaterMemoryForgetRequest,
+):
+    """幂等删除指定剧本的热记忆和时间索引。"""  # noqa: DOCSTRING_CJK
+
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    story_id = request.story_id.strip()
+    if not story_id:
+        raise HTTPException(status_code=422, detail="story_id_required")
+    try:
+        async with runtime._get_settle_lock(lanlan_name):
+            # An archive request the theater timed out on may still land after
+            # this forget. Record the story tombstone first, under the settle lock
+            # /cache checks it under, so such a late write is dropped even when
+            # the rest of this forget fails and is retried.
+            # Every forget issues a fresh marker; the theater attaches it only to
+            # archive requests issued after it recorded this forget, so no write
+            # sent before the forget can carry it (no clock is compared).
+            forget_marker = await runtime.recent_history_manager.record_theater_story_forget(
+                lanlan_name,
+                story_id,
+            )
+            current = await runtime.recent_history_manager.aget_recent_history(
+                lanlan_name,
+            )
+            removed_recent, reconcile_result = await _drop_theater_memory_reindexed(
+                lanlan_name,
+                current,
+                lambda message: (
+                    is_theater_memory_message(message)
+                    and str(message_metadata(message).get("story_id") or "") == story_id
+                ),
+                lambda: runtime.recent_history_manager.forget_theater_story(
+                    story_id,
+                    lanlan_name,
+                ),
+                "theater story forget",
+            )
+        return {
+            "ok": True,
+            "removed_recent": removed_recent,
+            "removed_time_index": int(reconcile_result.get("removed") or 0),
+            "forget_marker": forget_marker,
+        }
+    except Exception as exc:
+        logger.error(
+            "[MemoryServer] 删除 %s 的剧本 %s 记忆失败: %s",
+            lanlan_name,
+            story_id,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="theater_memory_forget_failed",
+        ) from exc
+
+
+@app.post("/internal/memory/{lanlan_name}/theater/retract")
+async def retract_theater_episode(
+    lanlan_name: str,
+    request: TheaterEpisodeRetractRequest,
+):
+    """Idempotently remove the episode capsule of one declined theater archive.
+
+    The theater may time out while this server still commits the archive; when
+    the player then declines the archive, the theater calls this to take back
+    exactly that range's capsule (matched by story, session and through-revision).
+    With ``archive_request_id`` it also leaves a persistent tombstone so a /cache
+    write of any attempt up to ``archive_attempt`` that is still in flight is
+    dropped instead of resurrecting the declined summary.
+    """
+
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    story_id = request.story_id.strip()
+    session_id = request.session_id.strip()
+    through = int(request.archive_through_revision)
+    if not story_id or not session_id:
+        raise HTTPException(status_code=422, detail="theater_episode_identity_required")
+
+    def is_target(message) -> bool:
+        return is_retracted_theater_episode(message, story_id, session_id, through)
+
+    archive_request_id = request.archive_request_id.strip()
+    try:
+        async with runtime._get_settle_lock(lanlan_name):
+            if archive_request_id:
+                # The archive request may still be in flight (the theater only timed
+                # out). Record the tombstone first, under the settle lock /cache
+                # checks it under, so a late write of these attempts is dropped even
+                # when there is nothing to remove yet.
+                await runtime.recent_history_manager.record_theater_retraction(
+                    lanlan_name,
+                    story_id=story_id,
+                    session_id=session_id,
+                    archive_through_revision=through,
+                    archive_request_id=archive_request_id,
+                    archive_attempt=request.archive_attempt,
+                )
+            current = await runtime.recent_history_manager.aget_recent_history(
+                lanlan_name,
+            )
+            if not any(is_target(message) for message in current):
+                return {"ok": True, "removed_recent": 0, "removed_time_index": 0}
+            removed_recent, reconcile_result = await _drop_theater_memory_reindexed(
+                lanlan_name,
+                current,
+                is_target,
+                lambda: runtime.recent_history_manager.retract_theater_episode(
+                    story_id,
+                    session_id,
+                    through,
+                    lanlan_name,
+                ),
+                "theater episode retract",
+                remaining=restored_theater_history(current, story_id, session_id, through),
+            )
+        return {
+            "ok": True,
+            "removed_recent": removed_recent,
+            "removed_time_index": int(reconcile_result.get("removed") or 0),
+        }
+    except Exception as exc:
+        logger.error(
+            "[MemoryServer] retracting theater episode %s/%s for %s failed: %s",
+            story_id,
+            session_id,
+            lanlan_name,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="theater_memory_retract_failed",
+        ) from exc
 
 
 @app.post("/process/{lanlan_name}")
@@ -855,9 +1477,6 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
                 lanlan_name,
                 on_compress_done=review._on_compress_done,
             )
-            # 旧模块已禁用（性能不足）：
-            # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
-            # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
             await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
             # 异步事实提取（不阻塞返回，失败静默跳过）
@@ -992,6 +1611,23 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
             return {"status": "error", "message": str(e)}
 
 
+def _screen_guarded_recent_history(history):
+    """Recent history as it may be rendered into a new session's prompt.
+
+    Session renewal and restarts bring this history back as system-prompt
+    text, where the offline client's request-view projection never sees it.
+    Apply the same screen-chain rewrite here, on the structured messages
+    before they are flattened. What follows this history in the new session
+    is the user speaking, so the run at its end counts as the one before the
+    current turn (``trailing_turn``). The independent-delivery marker does
+    not survive this store, so an unmarked run is judged by position alone.
+    Known boundary: core renders its own session cache right after this
+    history and judges it separately (``NotifyMixin._convert_cache_to_str``),
+    so a chain split between the two is not joined.
+    """
+    return project_screen_history(list(history), trailing_turn=True)
+
+
 @app.get("/get_recent_history/{lanlan_name}")
 async def get_recent_history(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
@@ -1007,11 +1643,19 @@ async def get_recent_history(lanlan_name: str, language: str | None = None):
         logger.error(f"检查角色配置失败: {e}")
         return _loc(NO_RECENT_HISTORY, _lang)
 
-    history = await runtime.recent_history_manager.aget_recent_history(lanlan_name)
-    _, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
+    history = _screen_guarded_recent_history(
+        await runtime.recent_history_manager.aget_recent_history(lanlan_name)
+    )
+    master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
     result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
-    for i in history:
+    rendered_history = await asyncio.to_thread(lambda: list(_iter_theater_rendered_history(
+        history, lang=_lang, name=lanlan_name, master=master_name,
+    )))
+    for i, capsule_text in rendered_history:
+        if capsule_text is not None:
+            result += capsule_text + "\n"
+            continue
         if isinstance(i.content, str):
             content = i.content
         else:
@@ -1090,6 +1734,7 @@ class ScopedFactsWriteRequest(BaseModel):
 #: correct — the two layers must NOT share a pattern string.
 _ACTIVITY_EVENT_ID_PATTERN = r"\A[A-Za-z0-9_.:-]+\z"
 _SPEAKER_CHANNEL_PATTERN = r"\A[a-z0-9_]{1,16}\z"
+_IDEMPOTENCY_KEY_PATTERN = r"\A[A-Za-z0-9_.:-]+\z"
 
 
 class ActivityEvent(BaseModel):
@@ -1189,6 +1834,22 @@ class ScopedHistoryRequest(BaseModel):
     # the group-digest paths keep using it unchanged.
     segments: list[ScopedHistorySegment] | None = None
     language: str | None = None
+    # Optional idempotency key (both shapes). Absent: the request behaves
+    # exactly as before and the two fields below are ignored. Present: the
+    # handler switches to the generate-then-apply journal (see
+    # ``_process_scoped_history_keyed``). Same anchoring rule as
+    # ``_ACTIVITY_EVENT_ID_PATTERN`` (Rust regex: ``\A...\z``).
+    idempotency_key: str | None = Field(
+        default=None, min_length=1, max_length=128,
+        pattern=_IDEMPOTENCY_KEY_PATTERN,
+    )
+    # Diagnostics only. Never compared with anything: ordering against a
+    # forget is decided by ``subject_epochs`` alone, so neither side's clock
+    # (skew, rollback) can let a stale write through.
+    client_requested_at: float | None = None
+    # ``{MemorySubject.key: forget_epoch}`` captured by the caller when the
+    # round started; reused verbatim by every retry of the same key.
+    subject_epochs: dict[str, Annotated[int, Field(ge=0)]] | None = None
 
 
 def _resolve_trust_source(
@@ -1683,20 +2344,25 @@ def _sanitized_display_name(raw: str | None, *, context: str) -> str | None:
 
 
 async def _stamp_subject_display_name(
-    lanlan_name: str, subject, display_name: str | None,
+    lanlan_name: str, subject, display_name: str | None, *, strict: bool = False,
 ) -> None:
     """Best-effort display-name refresh after a successful scoped write.
 
     Never fails the write: the facts are already persisted, and a display
-    name is metadata the next write can supply again.
+    name is metadata the next write can supply again. ``strict`` (the keyed
+    journal) re-raises instead: there the item is only marked applied once
+    the name is persisted, and a same-key retry is the only next write.
     """
     if not display_name or runtime.persona_manager is None:
         return
     try:
+        # strict 时 persona 文件读不出会抛出（返回 False 的是没有 section / 没变化这类正常的空操作）
         await runtime.persona_manager.aupdate_subject_display_name(
-            lanlan_name, subject, display_name,
+            lanlan_name, subject, display_name, **({"strict": True} if strict else {}),
         )
     except Exception as exc:
+        if strict:
+            raise
         logger.warning(
             f"[scoped] display_name 刷新失败（忽略，写入已完成）: {exc}"
         )
@@ -1790,6 +2456,8 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             status_code=503,
             detail="memory_server not fully initialized (limited mode or startup incomplete)",
         )
+    if req.idempotency_key is not None:
+        _reject_owner_signal_on_keyed_request(req)
     if req.segments is not None:
         return await _process_scoped_history_segments(lanlan_name, req)
     if req.input_history is None or req.subject is None:
@@ -1869,6 +2537,29 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
     display_name = _sanitized_display_name(
         req.display_name, context="scoped_history",
     )
+    if req.idempotency_key is not None:
+        # 带键路径在任何写入之前分流：上面只有校验与纯计算（快照、路由），
+        # 语言状态 / 抽取 / 落盘全部交给「先生成、后应用」日志。
+        if speaker_label is None and subject.kind == "group_chat":
+            # 与下面不带键路径同一个缺省（函数体内另有同名局部 import，
+            # 这里也必须局部 import，否则是未绑定的局部名）。
+            from config.prompts.prompts_memory import get_group_digest_speaker_label
+            from utils.language_utils import get_global_language_full
+            speaker_label = get_group_digest_speaker_label(get_global_language_full())
+        return await _process_scoped_history_keyed(
+            lanlan_name,
+            req,
+            shape="single",
+            contexts=[{
+                "wire_subject": req.subject.to_domain(),
+                "subject": subject,
+                "display_name": display_name,
+                "speaker_provenance": speaker_provenance,
+                "speaker_label": speaker_label,
+                "messages": input_history,
+                "trust_state": trust_state,
+            }],
+        )
     locale_order = None
     if is_supported_language_code(req.language):
         locale_admission_order = (
@@ -2215,6 +2906,27 @@ async def _process_scoped_history_segments(
         _apply_canonical_write_routing(segment, trust_snapshot_for_request)
         _stamp_resolved_trust(segment, trust_snapshot_for_request)
 
+    if req.idempotency_key is not None:
+        # 与单 subject 形态同一分流点：此前没有任何写入。
+        return await _process_scoped_history_keyed(
+            lanlan_name,
+            req,
+            shape="segments",
+            contexts=[
+                {
+                    "wire_subject": segment["requested_subject"],
+                    "subject": segment["subject"],
+                    "display_name": segment.get("display_name"),
+                    "speaker_provenance": FactStore._speaker_provenance_of(
+                        segment,
+                    ),
+                    "trust_state": segment,
+                }
+                for segment in parsed
+            ],
+            prompt_segments=parsed,
+        )
+
     signal_facts = None
     if any(segment.get("speaker_is_owner") for segment in parsed):
         # Freeze the pre-batch view. After extraction we replay successful
@@ -2527,6 +3239,1990 @@ async def _process_scoped_history_segments(
     }
 
 
+# ── keyed /scoped_history: generate first, apply later ─────────────────────
+#
+# 带 idempotency_key 的 scoped_history（单 subject 与 segments 两形态）不走
+# 上面「抽取即落盘」的一体路径，而是：
+#   1. 整次请求持键级锁（idempotency.key_lock）；键已 done / cancelled → duplicate；
+#   2. 有暂存 → 不调 LLM；无暂存 → 调 LLM 生成，产物完整才原子写入暂存并把
+#      键记成 pending（不完整一律 502、不写暂存——否则残缺结果被永久钉住）；
+#   3. 逐项应用（语言状态 / 事实批 / 显示名），每项应用后在暂存里追加 applied；
+#      应用前逐项查清除墓碑（只比代数）；
+#   4. 全部应用完、信赖池（如有）落盘 → 键标 done、删暂存。
+# 详见 docs/design/visit-infrastructure.md §4.6。
+
+_KEYED_ITEM_LOCALE = "locale"
+_KEYED_ITEM_FACTS = "facts"
+_KEYED_ITEM_DISPLAY_NAME = "display_name"
+# 清除时键文件读不出、取消记不进去：改记在暂存文档里，重试读到就补记 cancelled
+_KEYED_STAGING_CANCELLED = "cancelled_by_forget"
+# 显示名项写入失败时同键重试的次数上限（展示用数据，不能无限期挡住整个键）
+_DISPLAY_NAME_MAX_ATTEMPTS = 3
+# 记录里字段在、值却是 null 之类：与「没有这个字段」区分开，交给校验按坏状态处理
+_MALFORMED = object()
+_SEGMENT_DROPPED_BY_FORGET = "dropped_by_forget"
+
+
+def _reject_owner_signal_on_keyed_request(req: ScopedHistoryRequest) -> None:
+    """Keyed requests carry no owner trust signals (422 otherwise).
+
+    Owner signals produce trust events whose replay safety rests on the
+    request-scoped observation chain of the unkeyed path; journaling them
+    would need per-event effect keys. The only keyed caller (visit digests)
+    always sends ``speaker_tier="none"`` without owner bits, so the keyed
+    path rejects them instead of half-supporting them.
+    """
+    if req.speaker_is_owner or any(
+        segment.speaker_is_owner for segment in (req.segments or [])
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "idempotency_key does not support speaker_is_owner: owner "
+                "trust signals are not journaled; send owner batches without "
+                "an idempotency_key"
+            ),
+        )
+
+
+def _keyed_null_trust_block() -> dict:
+    """A trust block with every key ``_trust_response_block`` reports, persisted null."""
+    return {**_trust_response_block({}, None, None), "persisted": None}
+
+
+def _keyed_fact_identity(fact: dict) -> tuple:
+    from memory.facts import _speaker_trust_fact_identity
+
+    identity = _speaker_trust_fact_identity(fact)
+    if identity is not None:
+        return identity
+    return (
+        str(fact.get("id")), fact.get("subject_kind"),
+        fact.get("subject_id"), fact.get("scope"),
+    )
+
+
+def _keyed_duplicate_response(shape: str, contexts: list[dict]) -> dict:
+    if shape == "single":
+        return {
+            "status": "processed",
+            "duplicate": True,
+            "subject": contexts[0]["subject"].as_entry_fields(),
+            "created": 0,
+            "fact_ids": [],
+            "trust": _keyed_null_trust_block(),
+            "trust_events": [],
+        }
+    return {
+        "status": "processed",
+        "duplicate": True,
+        "segments": [
+            {
+                "subject": context["subject"].as_entry_fields(),
+                "trust": _keyed_null_trust_block(),
+                "status": "ok",
+                "created": 0,
+                "dropped": 0,
+                "fact_ids": [],
+                "fact_identities": [],
+                "created_fact_identities": [],
+                "reconciled": [],
+                "trust_events": [],
+            }
+            for context in contexts
+        ],
+    }
+
+
+def _keyed_request_hash(req: ScopedHistoryRequest) -> str:
+    """Canonical hash of what a keyed request asks to be extracted.
+
+    Covers every ``input_history`` (by position), ``subject_epochs``,
+    ``language`` and the trust inputs (``speaker_id``, tier / base trust,
+    activity events, channel): the fields that decide which facts, locale
+    state and trust mutations are produced and whether they may land.
+    Display names / speaker labels are left out on purpose: they are
+    cosmetic set-to-value data a caller may legitimately refresh between
+    retries of the same batch.
+    """
+    sources = [req] if req.segments is None else list(req.segments)
+    histories = [source.input_history for source in sources]
+
+    def _trust(source) -> dict:
+        events = getattr(source, "speaker_activity_events", None) or []
+        return {
+            "speaker_id": getattr(source, "speaker_id", None),
+            "speaker_tier": getattr(source, "speaker_tier", None),
+            "speaker_base_trust": getattr(source, "speaker_base_trust", None),
+            "speaker_trust": getattr(source, "speaker_trust", None),
+            "speaker_channel": getattr(source, "speaker_channel", None),
+            "activity": [[event.id, event.count] for event in events],
+        }
+
+    payload = {
+        "histories": histories,
+        # subject 的 scope 是身份的一部分（同 kind:id 不同 scope 是两个隔离的 subject）：
+        # 同一个键换了 scope 不能当作同一个请求
+        # 按归一后的 scope 记：省略 scope 与显式写默认 scope 是同一个 subject，重试换了写法
+        # 不能被当成另一个请求
+        "scopes": [
+            source.subject.to_domain().scope if getattr(source, "subject", None) is not None else None
+            for source in sources
+        ],
+        "trust": [_trust(source) for source in sources],
+        # 只算本请求各 wire subject 的代数：应用与暂存校验只看它们，调用方多带 / 少带别的 subject
+        # 的代数不改变效果，不能让同键重试因此 422
+        "subject_epochs": {
+            wire_key: epoch for wire_key, epoch in (req.subject_epochs or {}).items()
+            if wire_key in {
+                source.subject.to_domain().key for source in sources
+                if getattr(source, "subject", None) is not None
+            }
+        },
+        # 语言决定抽取语境与暂存里的语言状态项，同属会改变效果的字段
+        "language": req.language,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _keyed_staging_items_valid(
+    staging: dict, routed_keys: list | None = None, request_epochs: dict | None = None,
+    language: str | None = None, routed_positions: object = None, *, structural_only: bool = False,
+) -> bool:
+    """Whether every journal item of a restored staging document is safe to apply.
+
+    Every segment's persisted destination (``subject``) must be a valid
+    subject that is either its own wire subject or one of ``routed_keys``
+    (the routed subjects recorded on the key when the journal was created).
+
+    Items must be objects numbered ``seq == position`` with a known kind and a
+    segment index inside ``segments``; an item not yet in ``applied`` must
+    still carry its payload (facts with one effect key each, or a display
+    name). Items already applied / dropped may have been stripped by a forget.
+
+    ``structural_only`` skips the checks bound to the retrying request (the
+    destination against the recorded routes, the locale count / language):
+    a forget uses it to tell whether a journal it keeps could ever replay.
+    """
+    from memory.scopes import MemoryScopeError, coerce_subject
+
+    from . import idempotency
+
+    segments = staging.get("segments")
+    items = staging.get("items")
+    applied = staging.get("applied")
+    if not isinstance(segments, list) or not isinstance(items, list) or not isinstance(applied, list):
+        return False
+    allowed_routes = {str(k) for k in routed_keys} if routed_keys is not None else None
+    if routed_positions is not None and not (
+        isinstance(routed_positions, list) and len(routed_positions) == len(segments)
+        and all(isinstance(k, str) for k in routed_positions)
+    ):
+        # 记录里有按位置的路由、但坏了：不能退回只看集合的核对（换掉目标再截断这份列表就能绕过），
+        # 只有真的没有这个字段的记录才用集合
+        return False
+    for position, segment in enumerate(segments):
+        # 写入目标要成形，且只能是这段自己的 wire subject 或开轮时记下的路由后 subject：
+        # 被改成别的合法 subject 的暂存会把事实写进一个不相干的记忆域
+        if not isinstance(segment, dict):
+            return False
+        try:
+            destination = coerce_subject(segment.get("subject"))
+        except (MemoryScopeError, TypeError, ValueError):
+            return False
+        if destination is None:
+            return False
+        # 没有键记录（孤儿暂存）时没有可信的路由记录可对：目标只认这段自己的 wire subject
+        permitted = (allowed_routes if allowed_routes is not None else set()) | {segment.get("wire_key")}
+        if routed_positions is not None:
+            # 按位置核对：只看整批的路由集合，两段的目标互换后仍各自「在集合里」，事实会写进彼此的记忆域
+            permitted = {routed_positions[position], segment.get("wire_key")}
+        if destination.key not in permitted and not structural_only:
+            return False
+        dropped = segment.get("dropped", 0)
+        if not isinstance(dropped, int) or isinstance(dropped, bool) or dropped < 0:
+            # 响应拼装会对它 int()：坏值会让每次同键重试都在收尾前 500
+            return False
+        if destination.scope != destination.key:
+            # 带键写入只有默认 scope：被改了 scope 的目标会写进另一个隔离的记忆域
+            return False
+        if segment.get("tombstone_keys") != [segment.get("wire_key")]:
+            # 墓碑只按这段自己的 wire key 比（见生成时的约定）：被清空 / 改掉就会漏过清除
+            return False
+    if request_epochs is not None:
+        # 暂存记下的请求代数必须与这次请求带的一致（内容哈希已覆盖请求代数），被改高了
+        # 就会放过一次中间发生的带代数清除
+        staged_epochs = staging.get("epochs")
+        wire_keys = {segment.get("wire_key") for segment in segments if isinstance(segment, dict)}
+        if not isinstance(staged_epochs, dict) or any(
+            staged_epochs.get(wire_key) != request_epochs.get(wire_key) for wire_key in wire_keys
+        ):
+            return False
+    if any(not isinstance(entry, dict) for entry in applied):
+        return False
+    seqs = [entry.get("seq") for entry in applied]
+    # 已应用记录的序号必须是范围内、互不重复的真整数：{"seq": true} 会被当成 1 跳过一项
+    if any(not isinstance(seq, int) or isinstance(seq, bool) or not 0 <= seq < len(items) for seq in seqs):
+        return False
+    if len(set(seqs)) != len(seqs):
+        return False
+    for entry in applied:
+        # 结果字段（应用时记下的事实 id 与身份）同样要成形：坏值会让响应拼装抛错（每次重试 500）
+        # 或回出伪造的 id
+        for name in ("fact_ids", "reconciled"):
+            if name in entry and not (
+                isinstance(entry[name], list) and all(
+                    (isinstance(v, str) and v) or (isinstance(v, int) and not isinstance(v, bool))
+                    for v in entry[name]
+                )
+            ):
+                return False
+        for name in ("created_fact_identities", "reconciled_fact_identities"):
+            if name in entry and not (
+                isinstance(entry[name], list) and all(
+                    isinstance(identity, list) and len(identity) == 4
+                    and all(isinstance(part, str) and part for part in identity)
+                    for identity in entry[name]
+                )
+            ):
+                return False
+    done = set(seqs)
+    key = staging.get("key")
+    if not isinstance(key, str) or not key:
+        return False
+    ordinal = 0
+    for position, item in enumerate(items):
+        if not isinstance(item, dict):
+            return False
+        seq, segment, kind = item.get("seq"), item.get("segment"), item.get("kind")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq != position:
+            return False
+        if not isinstance(segment, int) or isinstance(segment, bool) or not 0 <= segment < len(segments):
+            return False
+        if kind not in (_KEYED_ITEM_LOCALE, _KEYED_ITEM_FACTS, _KEYED_ITEM_DISPLAY_NAME):
+            return False
+        if kind == _KEYED_ITEM_FACTS:
+            # 效果键由暂存的键与全局序号确定：逐个核对，不能只看形状——改成别的行已有的
+            # 效果键会让这条事实被当成重放跳过
+            effect_keys = item.get("effect_keys")
+            if not isinstance(effect_keys, list) or effect_keys != [
+                idempotency.effect_key_for(key, ordinal + offset) for offset in range(len(effect_keys))
+            ]:
+                return False
+            ordinal += len(effect_keys)
+        if seq in done:
+            continue
+        if kind == _KEYED_ITEM_FACTS:
+            facts = item.get("facts")
+            if not isinstance(facts, list) or len(facts) != len(item["effect_keys"]):
+                return False
+            if not _restored_provenance_valid(item.get("speaker_provenance")):
+                # 说话人来源坏了会被持久化层静默忽略或字符串化，事实就丢了归属 / 挂上编出来的
+                # 标签，却照样记成已应用
+                return False
+            # 与生成后同一条要求：每条都是带非空正文的对象。坏掉的条目会被持久化静默跳过、
+            # 却照样记成已应用，这条效果就永久丢了
+            if not all(
+                isinstance(fact, dict) and isinstance(fact.get("text"), str) and fact["text"].strip()
+                for fact in facts
+            ):
+                return False
+        elif kind == _KEYED_ITEM_DISPLAY_NAME:
+            if item.get("display_name") is not None and not isinstance(item.get("display_name"), str):
+                return False
+        elif kind == _KEYED_ITEM_LOCALE:
+            # 语言项同样要成形：坏的 order 会被当成「没有序号」静默跳过却记成已应用
+            order = item.get("order")
+            # 只认受支持的语言码：不受支持的会被语言存储转成 None 落盘，清掉这个 subject
+            # 原本有效的语言，却照样记成已应用
+            if not is_supported_language_code(item.get("language")):
+                return False
+            if language is not None and not structural_only and item.get("language") != language:
+                # 另一个受支持的语言码同样不行：语言在请求哈希里，暂存只会记下这次请求的语言
+                return False
+            # 序号是开轮时预留的正的因果时间戳：0 / 负数会被语言存储静默忽略，却照样记成已应用
+            if not isinstance(order, int) or isinstance(order, bool) or order <= 0:
+                return False
+    # 语言在请求哈希里、开轮时按它给每段各预留一个语言项（受支持时），清除也只抹内容不删项：
+    # 段数对不上说明有项被整条删掉了，按它收尾会永久漏掉这一段的语言写入
+    manifest = staging.get("manifest")
+    if not (
+        isinstance(manifest, dict) and set(manifest) == {"facts", "effects", "language", "facts_segments"}
+        and all(
+            isinstance(manifest[name], int) and not isinstance(manifest[name], bool)
+            for name in ("facts", "effects")
+        )
+        and manifest["facts"] == sum(1 for item in items if item.get("kind") == _KEYED_ITEM_FACTS)
+        and manifest["effects"] == ordinal
+        and manifest["facts_segments"] == [
+            item.get("segment") for item in items if item.get("kind") == _KEYED_ITEM_FACTS
+        ]
+        and (manifest["language"] is None or is_supported_language_code(manifest["language"]))
+    ):
+        # 事实项或效果数与生成时不符：某个事实项整条丢了，按剩下的收尾会永久漏掉它
+        return False
+    # 语言项按清单里定下的语言核对（与重试请求无关，清除做局部改写前也能核）：每个没被清的段恰好
+    # 一项、语言一致；完整校验时清单语言还须等于这次请求的语言
+    staged_language = manifest["language"]
+    if not structural_only and staged_language != (language if is_supported_language_code(language) else None):
+        return False
+    if any(
+        item.get("kind") == _KEYED_ITEM_LOCALE and item.get("language") != staged_language for item in items
+    ):
+        return False
+    expected_locale = 1 if staged_language is not None else 0
+    locale_per_segment = [0] * len(segments)
+    for item in items:
+        if item.get("kind") == _KEYED_ITEM_LOCALE:
+            locale_per_segment[item["segment"]] += 1
+    if any(
+        count != expected_locale
+        # 已被清除丢弃的段可以没有语言项（重试时不再给它预留，免得把被清 subject 写回语言存储）
+        and not (count == 0 and isinstance(segments[index], dict)
+                 and segments[index].get(_SEGMENT_DROPPED_BY_FORGET) is True)
+        for index, count in enumerate(locale_per_segment)
+    ):
+        return False
+    # 每个已应用项都必须留有按类型的完成证据（应用结果或丢弃标记）：只剩 {"seq": n} 的记录
+    # 会让这一项被跳过、键照样记 done
+    kind_of = {item.get("seq"): item.get("kind") for item in items if isinstance(item, dict)}
+    for entry in applied:
+        if any(entry.get(name) is True for name in _KEYED_DROP_MARKERS):
+            continue
+        kind = kind_of.get(entry.get("seq"))
+        if kind == _KEYED_ITEM_FACTS:
+            # 空的 fact_ids 本身也是合法的应用结果，不足以证明这一项真的应用过：要专门的完成标记
+            evidence = entry.get("facts_applied") is True
+        elif kind == _KEYED_ITEM_LOCALE:
+            evidence = entry.get("locale_recorded") is True
+        else:
+            evidence = (
+                entry.get("display_name_stamped") is True
+                or entry.get("display_name_gave_up") is True
+                or isinstance(entry.get("display_name_from_request"), bool)
+            )
+        if not evidence:
+            return False
+    return True
+
+
+# 本模块给已应用事实项记的丢弃标记（与写入处一一对应）：只认这几个名字，别的字段不算完成证据
+_KEYED_DROP_MARKERS = ("dropped_tombstone", "dropped_forget", "dropped_forget_during_generation")
+_RESTORED_PROVENANCE_FIELDS = frozenset({"speaker_label", "speaker_trust", "speaker_id", "speaker_entity_id"})
+
+
+def _restored_provenance_valid(provenance) -> bool:
+    """A restored ``speaker_provenance`` has exactly the shape the route builds (or is absent)."""
+    if provenance is None:
+        return True
+    if not isinstance(provenance, dict) or not provenance or set(provenance) - _RESTORED_PROVENANCE_FIELDS:
+        return False
+    # 两条构造路径产出的 provenance 都带 label（段必填、单条请求无 label 时整个是 None），且已
+    # 清洗成去首尾空白、不超过 64 字符的形式：缺了 label 的半截归属不能照样记成已应用
+    label = provenance.get("speaker_label")
+    if not isinstance(label, str) or not label:
+        return False
+    from memory.facts import FactStore
+
+    # 两条请求路径都用同一个清洗器产出 label：不等于它的输出（夹着换行 / 方括号之类结构字符）
+    # 就是被改过的，持久化层只做截断、不会再清洗，坏 label 会原样进归属
+    if FactStore.sanitize_speaker_label(label) != label:
+        return False
+    if "speaker_trust" in provenance:
+        trust = provenance["speaker_trust"]
+        if not isinstance(trust, (int, float)) or isinstance(trust, bool) or not 0.0 <= float(trust) <= 1.0:
+            return False
+    if "speaker_id" in provenance:
+        from memory.speaker_trust import stable_speaker_id
+
+        speaker_id = provenance["speaker_id"]
+        if not isinstance(speaker_id, str) or stable_speaker_id(speaker_id) != speaker_id:
+            return False
+    elif "speaker_entity_id" in provenance:
+        return False
+    if "speaker_entity_id" in provenance:
+        entity_id = provenance["speaker_entity_id"]
+        if not isinstance(entity_id, str) or not entity_id.strip():
+            return False
+    return True
+
+
+def _keyed_staging_matches(
+    staging: dict, shape: str, contexts: list[dict], request_hash: str | None = None,
+) -> bool:
+    """Same key, same request: shape, per-position wire subjects and content agree."""
+    segments = staging.get("segments")
+    if staging.get("shape") != shape or not isinstance(segments, list):
+        return False
+    stored_hash = staging.get("request_hash")
+    # 没有内容哈希的暂存不能当通配：被截掉哈希的旧日志会被另一份内容的请求认领
+    if request_hash is not None and (not isinstance(stored_hash, str) or stored_hash != request_hash):
+        return False
+    if len(segments) != len(contexts):
+        return False
+    return all(
+        isinstance(stored, dict)
+        and stored.get("wire_key") == context["wire_subject"].key
+        for stored, context in zip(segments, contexts)
+    )
+
+
+async def _generate_keyed_facts(
+    lanlan_name: str,
+    shape: str,
+    contexts: list[dict],
+    prompt_segments: list[dict] | None,
+    *,
+    skip: set[int] = frozenset(),
+) -> tuple[list[list[dict]], list[int]]:
+    """Run the extraction LLM once; return ``(facts per context, dropped per context)``.
+
+    Fail-closed and stricter than the unkeyed path: ANY incomplete outcome
+    (terminal LLM failure, malformed / unplaceable / suspect entries, a
+    segment missing from the batch output) is a 502 and nothing is staged.
+    The unkeyed path can persist the recognised part and let the caller
+    retry the rest; here the staged result is final for the key, so a
+    partial one would be pinned forever.
+    """
+    fact_store = runtime.fact_store
+    failure = HTTPException(
+        status_code=502,
+        detail="scoped fact extraction failed; retry later",
+    )
+    if len(skip) >= len(contexts):
+        # 全部段都被清除过：一个字都不送（调用方通常已在更早处按取消收尾）
+        return [[] for _ in contexts], [0] * len(contexts)
+    if shape == "single":
+        context = contexts[0]
+        extracted = await fact_store._allm_extract_facts(
+            lanlan_name,
+            context["messages"],
+            treat_malformed_as_failure=True,
+            speaker_label=context.get("speaker_label"),
+        )
+        if extracted is None:
+            raise failure
+        if any(
+            not (
+                isinstance(fact, dict)
+                and isinstance(fact.get("text"), str)
+                and fact["text"].strip()
+            )
+            for fact in extracted
+        ):
+            raise failure
+        return [list(extracted)], [0]
+
+    # 只送没被清除的段，结果按位置映射回原来的段号；被清的段产物为空
+    live = [index for index in range(len(contexts)) if index not in skip]
+    extracted = await fact_store._allm_extract_facts_batch(
+        lanlan_name, [prompt_segments[index] for index in live],
+    )
+    if extracted is None:
+        raise failure
+    count = len(live)
+    per_segment: list[list[dict] | None] = [None] * count
+    dropped_live = [0] * count
+    for item in extracted:
+        index, facts, item_dropped, suspect = fact_store._parse_batch_segment_entry(
+            item, count,
+        )
+        if index is None or suspect:
+            raise failure
+        if per_segment[index] is None:
+            per_segment[index] = []
+        per_segment[index].extend(facts)
+        dropped_live[index] += item_dropped
+    if not extracted:
+        per_segment = [[] for _ in range(count)]
+    if any(facts is None for facts in per_segment):
+        raise failure
+    facts_all: list[list[dict]] = [[] for _ in contexts]
+    dropped = [0] * len(contexts)
+    for position, index in enumerate(live):
+        facts_all[index] = list(per_segment[position] or [])
+        dropped[index] = dropped_live[position]
+    return facts_all, dropped
+
+
+async def _reserve_keyed_locale_orders(
+    lanlan_name: str, language: str | None, contexts: list[dict], key: str | None = None,
+) -> list[int | None]:
+    """Reserve one causal locale order per subject BEFORE the LLM call.
+
+    The order is stored in the staging document and reused by every apply
+    attempt. Because it is reserved before generation, a forget that lands
+    later always ends up with a cutoff >= this order, so the locale item is
+    also rejected by the locale store's own forget cutoff, independently of
+    tombstones; and a newer unkeyed write keeps priority over a retried
+    older digest.
+
+    With ``key``, the first reservation is kept on the pending key record
+    and reused by every later attempt of that key (a generation that failed
+    before staging must not move the old request forward in causal order).
+    """
+    from . import idempotency
+
+    if not is_supported_language_code(language):
+        return [None] * len(contexts)
+    stored = None
+    forgotten: set[str] = set()
+    if key is not None:
+        try:
+            record = await idempotency.read_key(lanlan_name, key)
+            forgotten = _forgotten_keys_of(record)
+        except (idempotency.IdempotencyStateError, OSError) as exc:
+            raise HTTPException(status_code=503, detail="idempotency state unreadable; retry later") from exc
+        candidate = record.get("locale_orders") if isinstance(record, dict) else None
+        if candidate is not None:
+            if not (
+                isinstance(candidate, list) and len(candidate) == len(contexts)
+                and all(
+                    # None 只可能出现在开轮时已被清除的段上：别处的 None 是坏值，按它会静默漏掉语言写入
+                    (order is None and bool({contexts[index]["wire_subject"].key, contexts[index]["subject"].key} & forgotten))
+                    or (isinstance(order, int) and not isinstance(order, bool) and order > 0)
+                    for index, order in enumerate(candidate)
+                )
+            ):
+                # 已有一份预留、但坏了：另分一批新序号又记不上（不覆盖已有字段），每次重试都会把旧请求
+                # 往后排。按坏状态处理
+                raise idempotency.IdempotencyStateError(f"locale reservation of {key!r} is malformed")
+            stored = candidate
+    # 之前某次尝试期间已被清除的段（记录里的 forgotten_keys）不再预留：清除已删掉它的语言行，
+    # 预留会把被清 subject 重新写进 scoped_prompt_locales.json，而它的语言项注定被丢弃
+    live = [
+        index for index, context in enumerate(contexts)
+        if not ({context["wire_subject"].key, context["subject"].key} & forgotten)
+    ]
+    if stored is None:
+        allocated = locale_state.allocate_subject_prompt_locale_orders(
+            lanlan_name, [contexts[index]["subject"] for index in live],
+        )
+        admission: list[int | None] = [None] * len(contexts)
+        for index, order in zip(live, allocated):
+            admission[index] = order
+    else:
+        admission = list(stored)
+    if key is not None and stored is None:
+        # 先把分到的序号记在键上、再让预留落盘：生成失败或在两步之间崩溃时，同键重试都复用这批
+        # 序号，而不是拿到更新的序号、把旧请求排到期间别的请求写下的语言之后（覆盖掉较新的语言）
+        def _remember(old, orders=list(admission)):
+            if old is None or old.get("state") != idempotency.KEY_STATE_PENDING or old.get("locale_orders"):
+                return None
+            return {**old, "locale_orders": orders}
+
+        try:
+            await idempotency.update_key(lanlan_name, key, _remember)
+        except (idempotency.IdempotencyStateError, OSError) as exc:
+            raise HTTPException(status_code=503, detail="idempotency state unreadable; retry later") from exc
+    if key is not None:
+        # 上面的写入期间可能有清除刚把某段记进 forgotten_keys：落盘预留之前再核一次
+        try:
+            forgotten |= _forgotten_keys_of(await idempotency.read_key(lanlan_name, key))
+        except (idempotency.IdempotencyStateError, OSError) as exc:
+            raise HTTPException(status_code=503, detail="idempotency state unreadable; retry later") from exc
+        live = [
+            index for index in live
+            if not ({contexts[index]["wire_subject"].key, contexts[index]["subject"].key} & forgotten)
+        ]
+    reserve = [index for index in live if admission[index] is not None]
+    if reserve:
+        await asyncio.to_thread(
+            locale_state.reserve_subject_prompt_locale_orders,
+            lanlan_name,
+            [contexts[index]["subject"] for index in reserve],
+            orders=[admission[index] for index in reserve],
+        )
+    return [admission[index] if index in reserve else None for index in range(len(contexts))]
+
+
+async def _build_keyed_staging(
+    lanlan_name: str,
+    req: ScopedHistoryRequest,
+    *,
+    shape: str,
+    contexts: list[dict],
+    prompt_segments: list[dict] | None,
+) -> dict:
+    from . import idempotency
+
+    key = req.idempotency_key
+    orders = await _reserve_keyed_locale_orders(lanlan_name, req.language, contexts, key)
+    # 之前某次尝试期间已被清除的段（记录里的 forgotten_keys）不再送去抽取：它们的产物注定丢弃，
+    # 再把被清参与者保留的原文发给抽取模型就是又一次外送
+    forgotten = _forgotten_keys_of(await idempotency.read_key(lanlan_name, key))
+    skip = {
+        index for index, context in enumerate(contexts)
+        if {context["wire_subject"].key, context["subject"].key} & forgotten
+    }
+    facts_per_context, dropped = await _generate_keyed_facts(
+        lanlan_name, shape, contexts, prompt_segments, skip=skip,
+    )
+    segments = []
+    items: list[dict] = []
+    subject_keys: set[str] = set()
+    effect_ordinal = 0
+    for index, context in enumerate(contexts):
+        wire_key = context["wire_subject"].key
+        # 墓碑只按请求自己的 wire key 比：请求代数属于这个 key 的代数域，混入
+        # 路由后 key 的墓碑会拿两个互不相关的计数器作比较
+        tombstone_keys = [wire_key]
+        subject_keys.update(tombstone_keys)
+        segments.append({
+            "wire_key": wire_key,
+            "subject": context["subject"].as_entry_fields(),
+            "tombstone_keys": tombstone_keys,
+            "dropped": int(dropped[index]),
+        })
+        if orders[index] is not None:
+            items.append({
+                "seq": len(items),
+                "kind": _KEYED_ITEM_LOCALE,
+                "segment": index,
+                "language": req.language,
+                "order": orders[index],
+            })
+        facts = facts_per_context[index]
+        if facts:
+            effect_keys = []
+            for _fact in facts:
+                effect_keys.append(idempotency.effect_key_for(key, effect_ordinal))
+                effect_ordinal += 1
+            items.append({
+                "seq": len(items),
+                "kind": _KEYED_ITEM_FACTS,
+                "segment": index,
+                "facts": facts,
+                "effect_keys": effect_keys,
+                "speaker_provenance": context.get("speaker_provenance"),
+            })
+        if context.get("display_name"):
+            items.append({
+                "seq": len(items),
+                "kind": _KEYED_ITEM_DISPLAY_NAME,
+                "segment": index,
+                "display_name": context["display_name"],
+            })
+    request_epochs = req.subject_epochs or {}
+    return {
+        "key": key,
+        "state": idempotency.STAGING_STATE_GENERATED,
+        "shape": shape,
+        "subjects": sorted(subject_keys),
+        "epochs": {
+            subject_key: int(request_epochs[subject_key])
+            for subject_key in sorted(subject_keys)
+            if subject_key in request_epochs
+        },
+        # 只记诊断，绝不参与任何比较。
+        "client_requested_at": req.client_requested_at,
+        "created_at": time.time(),
+        "request_hash": _keyed_request_hash(req),
+        "segments": segments,
+        "items": items,
+        "applied": [],
+        # 生成时定下的事实项数与效果数：恢复时据此认出整条丢失的事实项（逐项核对看不出缺了谁）。
+        # 语言项另按每段一项核对；显示名项缺了由重试按当前请求补回，不算在内
+        "manifest": {
+            "facts": sum(1 for item in items if item["kind"] == _KEYED_ITEM_FACTS),
+            "effects": effect_ordinal,
+            "language": req.language if is_supported_language_code(req.language) else None,
+            # 各事实项生成时所属的段：改了某一项的段号（序号、效果键、各段目标都还合法）会把
+            # 这段的事实写进另一个 subject 的记忆域
+            "facts_segments": [item["segment"] for item in items if item["kind"] == _KEYED_ITEM_FACTS],
+        },
+    }
+
+
+async def _apply_keyed_item(lanlan_name: str, item: dict, segment: dict, generation) -> dict:
+    from memory.scopes import coerce_subject
+
+    subject = coerce_subject(segment["subject"])
+    kind = item.get("kind")
+    entry: dict = {"seq": item["seq"]}
+    if kind == _KEYED_ITEM_FACTS:
+        reconciled: list[dict] = []
+        created = await runtime.fact_store._apersist_new_facts(
+            lanlan_name,
+            list(item.get("facts") or []),
+            subject=subject,
+            speaker_provenance=item.get("speaker_provenance"),
+            expected_subject_generation=generation,
+            reconciled_facts=reconciled,
+            effect_keys=list(item.get("effect_keys") or []),
+        )
+        # 与 _keyed_fact_identity 同口径一律记成字符串：FactStore 保留旧版的整数 id
+        entry["fact_ids"] = [str(fact.get("id")) for fact in created if fact.get("id")]
+        entry["facts_applied"] = True
+        entry["created_fact_identities"] = [
+            list(_keyed_fact_identity(fact))
+            for fact in created
+            if isinstance(fact, dict)
+            and fact.get("id") is not None
+            and all(_keyed_fact_identity(fact))
+        ]
+        entry["reconciled"] = [
+            str(fact.get("id")) for fact in reconciled
+            if isinstance(fact, dict) and fact.get("id")
+        ]
+        entry["reconciled_fact_identities"] = [
+            list(_keyed_fact_identity(fact))
+            for fact in reconciled
+            if isinstance(fact, dict)
+            and fact.get("id")
+            and all(_keyed_fact_identity(fact))
+        ]
+    elif kind == _KEYED_ITEM_LOCALE:
+        await asyncio.to_thread(
+            locale_state.record_subject_prompt_locale,
+            lanlan_name,
+            subject,
+            item.get("language"),
+            order=item.get("order"),
+        )
+        entry["locale_recorded"] = True
+    elif kind == _KEYED_ITEM_DISPLAY_NAME:
+        # 「置为该值」天然幂等；只给已存在的 section 盖名字。
+        await _stamp_subject_display_name(
+            lanlan_name, subject, item.get("display_name"), strict=True,
+        )
+        entry["display_name_stamped"] = True
+    else:  # pragma: no cover - staging written by this module only
+        raise RuntimeError(f"unknown keyed item kind {kind!r}")
+    return entry
+
+
+def _restore_missing_display_items(staging: dict, display_names: dict[int, str | None]) -> None:
+    """Re-add the display-name item of a segment whose item is missing from a restored journal.
+
+    The display name is not part of the request identity and a restored retry
+    applies the current request's value anyway, so a journal that lost a
+    trailing display item is completed from the retry instead of finalizing
+    the key without it. Segments already dropped by a forget are left alone.
+    """
+    items = staging["items"]
+    dropped_seqs = {
+        entry.get("seq") for entry in staging.get("applied") or []
+        if isinstance(entry, dict) and any(entry.get(name) is True for name in _KEYED_DROP_MARKERS)
+    }
+    dropped_segments = {item.get("segment") for item in items if item.get("seq") in dropped_seqs}
+    dropped_segments |= {
+        index for index, segment in enumerate(staging.get("segments") or [])
+        if isinstance(segment, dict) and segment.get(_SEGMENT_DROPPED_BY_FORGET) is True
+    }
+    present = {item.get("segment") for item in items if item.get("kind") == _KEYED_ITEM_DISPLAY_NAME}
+    for index, name in sorted(display_names.items()):
+        if name and index not in present and index not in dropped_segments:
+            items.append({
+                "seq": len(items),
+                "kind": _KEYED_ITEM_DISPLAY_NAME,
+                "segment": index,
+                "display_name": name,
+            })
+
+
+async def _apply_keyed_staging(
+    lanlan_name: str,
+    key: str,
+    staging: dict,
+    generations: dict[int, int] | None = None,
+    display_names: dict[int, str | None] | None = None,
+) -> None:
+    """Apply every item not yet in ``applied``; journal each one atomically.
+
+    Tombstone rule, per item and by forget GENERATION only (never time, never
+    arrival order): when any of the item's subject keys carries a tombstone
+    whose ``forget_epoch`` exceeds the epoch the request was started with,
+    the item is dropped and journaled as ``dropped_tombstone``.
+
+    For fact items the fact store's forget generation is captured BEFORE the
+    tombstone read and passed as ``expected_subject_generation``: a forget
+    that starts after the tombstone check but before persistence bumps that
+    generation and the fact store discards the write by itself.
+
+    ``generations`` (segment index -> generation) is given only on the
+    request that generated the staging: the values were captured BEFORE the
+    LLM call, so a forget landing while the model ran (a window with no
+    staging file to cancel and, without ``forget_epoch``, no tombstone)
+    still invalidates the write, as on the unkeyed path. A retry restored
+    from an existing staging file reads the current generation: a forget
+    since then would have cancelled that staging under the key lock.
+    """
+    from memory.scopes import coerce_subject
+
+    from . import idempotency
+
+    if generations is None and display_names:
+        _restore_missing_display_items(staging, display_names)
+    applied = list(staging.get("applied") or [])
+    done_seqs = {
+        entry.get("seq") for entry in applied if isinstance(entry, dict)
+    }
+    journaled_before = {
+        entry.get("seq") for entry in applied
+        if isinstance(entry, dict) and not any(entry.get(name) is True for name in _KEYED_DROP_MARKERS)
+    }
+    epochs = staging.get("epochs") or {}
+    segments = staging.get("segments") or []
+    for item in staging.get("items") or []:
+        seq = item.get("seq")
+        if seq in done_seqs:
+            continue
+        segment = segments[item["segment"]]
+        generation = None
+        if item.get("kind") == _KEYED_ITEM_FACTS:
+            if generations is not None and item["segment"] in generations:
+                generation = generations[item["segment"]]
+            else:
+                generation = runtime.fact_store._subject_forget_generation(
+                    lanlan_name, coerce_subject(segment["subject"]),
+                )
+        tombstones = await idempotency.read_tombstones(lanlan_name)
+        tombstone_epoch = idempotency.tombstone_epoch(
+            tombstones, segment.get("tombstone_keys") or [],
+        )
+        request_epoch = epochs.get(segment.get("wire_key"), 0)
+        if isinstance(segment, dict) and segment.get(_SEGMENT_DROPPED_BY_FORGET) is True:
+            # 这段已被标成清除丢弃（比如本段事实项刚应用时 generation 变了）：同段后面的项
+            # （显示名排在事实项之后）不再写，否则会把清除刚擦掉的显示名写回去
+            entry = {"seq": seq, "dropped_forget": True}
+        elif tombstone_epoch is not None and int(request_epoch) < tombstone_epoch:
+            entry = {"seq": seq, "dropped_tombstone": True}
+        elif item.get("kind") == _KEYED_ITEM_DISPLAY_NAME:
+            if generations is None:
+                # 从暂存恢复的重试：显示名用本次请求带来的当前值，而不是暂存里的旧值——
+                # 期间可能已有更新的写入改过它，盖回旧值会倒退；不盖又会让这批永远缺名字
+                current = (display_names or {}).get(item["segment"])
+                to_apply = {**item, "display_name": current} if current else None
+                done_entry = {"seq": seq, "display_name_from_request": bool(current)}
+            else:
+                to_apply, done_entry = item, None
+            try:
+                applied_entry = (
+                    await _apply_keyed_item(lanlan_name, to_apply, segment, None)
+                    if to_apply is not None else None
+                )
+                entry = done_entry or applied_entry
+            except Exception:
+                # 显示名只是展示用：持续写不进（只读目录、磁盘满）时不能无限期挡住这个键，
+                # 连带让信赖池写入永远轮不到。重试几次仍失败就记日志、按已处理收尾
+                attempts = int(item.get("display_attempts") or 0) + 1
+                if attempts < _DISPLAY_NAME_MAX_ATTEMPTS:
+                    item["display_attempts"] = attempts
+                    await idempotency.write_staging(lanlan_name, key, staging)
+                    raise
+                logger.warning(f"[scoped_history] {lanlan_name}: 显示名写入连续失败，放弃这一项")
+                entry = {"seq": seq, "display_name_gave_up": True}
+        else:
+            entry = await _apply_keyed_item(lanlan_name, item, segment, generation)
+            if item.get("kind") == _KEYED_ITEM_FACTS and generation is not None and (
+                runtime.fact_store._subject_forget_generation(lanlan_name, coerce_subject(segment["subject"]))
+                != generation
+            ):
+                # 不带代数的清除在应用前后推进了 generation：事实层已静默丢弃这批写入。给这段打上
+                # 段级丢弃标记，信赖隔离与记忆丢弃用同一个依据
+                _mark_segments_dropped(segments, {item["segment"]})
+        applied.append(entry)
+        done_seqs.add(seq)
+        staging["applied"] = applied
+        await idempotency.write_staging(lanlan_name, key, staging)
+    if generations is None and display_names:
+        # 恢复的重试：之前尝试已写过的显示名项也按这次请求带来的当前值再盖一次（「置为该值」幂等）——
+        # 显示名不在请求身份里，键停在 pending 期间改了名字，不能就此带着旧名收尾。被清除挡下的段不盖
+        fenced = await _fenced_segments(lanlan_name, staging)
+        for item in staging.get("items") or []:
+            if (
+                item.get("kind") == _KEYED_ITEM_DISPLAY_NAME and item.get("seq") in journaled_before
+                and item.get("segment") not in fenced
+            ):
+                current = display_names.get(item["segment"])
+                if not current:
+                    continue
+                try:
+                    await _apply_keyed_item(
+                        lanlan_name, {**item, "display_name": current}, segments[item["segment"]], None,
+                    )
+                except MaintenanceModeError:
+                    raise
+                except Exception as exc:
+                    # 这里只是刷新成当前值，尽力而为：persona 一直写不进时不能让键永远到不了 done。
+                    # 之前放弃过的显示名项也照样试：persona 恢复可写后，键收尾前的重试顺手把名字补上
+                    logger.warning(f"[scoped_history] {lanlan_name}: 恢复重试刷新显示名失败，跳过: {exc}")
+
+
+def _keyed_response(
+    shape: str,
+    contexts: list[dict],
+    staging: dict,
+    trust_result,
+    trust_outcomes,
+) -> dict:
+    segment_of_seq = {
+        item.get("seq"): item.get("segment") for item in staging.get("items") or []
+    }
+    per_segment: list[dict] = [
+        {
+            "fact_ids": [],
+            "created_fact_identities": [],
+            "reconciled": [],
+            "reconciled_fact_identities": [],
+        }
+        for _ in contexts
+    ]
+    for entry in staging.get("applied") or []:
+        index = segment_of_seq.get(entry.get("seq"))
+        if index is None or not (0 <= index < len(per_segment)):
+            continue
+        for field in (
+            "fact_ids", "created_fact_identities", "reconciled",
+            "reconciled_fact_identities",
+        ):
+            per_segment[index][field].extend(entry.get(field) or [])
+    stored_segments = staging.get("segments") or []
+    if shape == "single":
+        context = contexts[0]
+        return {
+            "status": "processed",
+            "subject": context["subject"].as_entry_fields(),
+            "created": len(per_segment[0]["fact_ids"]),
+            "fact_ids": per_segment[0]["fact_ids"],
+            "trust": _trust_response_block(
+                context["trust_state"], trust_result, trust_outcomes[0],
+            ),
+            "trust_events": [],
+        }
+    return {
+        "status": "processed",
+        "segments": [
+            {
+                "subject": context["subject"].as_entry_fields(),
+                "trust": _trust_response_block(
+                    context["trust_state"], trust_result, outcome,
+                ),
+                "status": "ok",
+                "created": len(collected["fact_ids"]),
+                "dropped": int(
+                    (stored_segments[index] if index < len(stored_segments) else {})
+                    .get("dropped") or 0
+                ),
+                "fact_ids": collected["fact_ids"],
+                "fact_identities": (
+                    list(collected["created_fact_identities"])
+                    + list(collected["reconciled_fact_identities"])
+                ),
+                "created_fact_identities": list(collected["created_fact_identities"]),
+                "reconciled": [{"id": fid} for fid in collected["reconciled"]],
+                "trust_events": [],
+            }
+            for index, (context, collected, outcome) in enumerate(
+                zip(contexts, per_segment, trust_outcomes)
+            )
+        ],
+    }
+
+
+async def _process_scoped_history_keyed(
+    lanlan_name: str,
+    req: ScopedHistoryRequest,
+    *,
+    shape: str,
+    contexts: list[dict],
+    prompt_segments: list[dict] | None = None,
+) -> dict:
+    """The keyed (journaled) form of /scoped_history, both shapes."""
+    from . import idempotency
+
+    key = req.idempotency_key
+    missing_epochs = [
+        context["wire_subject"].key for context in contexts
+        if not req.subject_epochs or context["wire_subject"].key not in req.subject_epochs
+    ]
+    if missing_epochs:
+        # 缺了的代数不能当成 0：subject 只要被带代数清除过一次，之后的写入就会全部被墓碑
+        # 静默丢弃、键还记 done。带键请求必须为每个 wire subject 给出代数
+        raise HTTPException(
+            status_code=422,
+            detail="idempotency_key requires subject_epochs for every subject",
+        )
+    if any(context["wire_subject"].scope != context["wire_subject"].key for context in contexts):
+        # 墓碑、取消匹配、已擦代数都按 MemorySubject.key（kind:id）记，不含 scope：只有默认
+        # scope 下一个 key 才唯一对应一个记忆域。唯一的调用方（串门 digest）只用默认 scope
+        raise HTTPException(
+            status_code=422,
+            detail="idempotency_key requires the default subject scope",
+        )
+    # 请求身份（形态 + 各位置 wire subject）：随键记录永久保留，终态键被另一个
+    # 请求复用时不能把它当成「已处理过」吞掉
+    fingerprint = {
+        "shape": shape,
+        "wire_keys": [context["wire_subject"].key for context in contexts],
+        "content_hash": _keyed_request_hash(req),
+    }
+    # 路由后实际写入的 subject 单独记在 pending 记录上（不进请求身份：路由关系在重试
+    # 之间可能变化）。暂存还没写成时，清除只能靠它认出经路由写到被清 subject 的键
+    routed_keys = sorted({context["subject"].key for context in contexts})
+    # 每个位置各自路由到的 subject：恢复时按位置核对目标，集合核对挡不住两段目标互换
+    routed_positions = [context["subject"].key for context in contexts]
+    # 请求带的清除代数也记在 pending 记录上：暂存还没写成时，清除据此认出「清除之后才发起」
+    # 的合法请求，不把它取消（与有暂存时的 _staged_after_forget 同口径）
+    request_epochs = {
+        wire_key: int(req.subject_epochs[wire_key])
+        for wire_key in sorted({context["wire_subject"].key for context in contexts})
+        if req.subject_epochs and wire_key in req.subject_epochs
+    }
+    async with idempotency.key_lock(lanlan_name, key):
+        try:
+            record = await idempotency.read_key(lanlan_name, key)
+            # 不论什么状态，记录里有请求身份就先核对：pending 键丢了暂存时也不能
+            # 让另一个请求借这个键重新生成、再把原来的身份覆盖掉
+            stored = record.get("request") if record is not None else None
+            if stored is not None and stored != fingerprint:
+                raise HTTPException(
+                    status_code=422,
+                    detail="idempotency_key was already used for a different request",
+                )
+            if (
+                record is not None
+                and record.get("state") in idempotency.TERMINAL_KEY_STATES
+            ):
+                if stored is None:
+                    # 终态记录却没有请求身份：核对不了是不是同一个请求，不能把任意复用这个键的
+                    # 新请求当成 duplicate 吞掉
+                    raise idempotency.IdempotencyStateError("terminal key record has no request identity")
+                # 终态键收尾时没删掉的残留暂存：已经没用了，持着键锁顺手删掉，不必等下次启动清理
+                # （启动清理遇到被占的键锁会跳过它）
+                await _drop_leftover_staging(lanlan_name, key)
+                return _keyed_duplicate_response(shape, contexts)
+            staging = await idempotency.read_staging(lanlan_name, key)
+        except idempotency.IdempotencyStateError as exc:
+            logger.error(f"[scoped_history] {lanlan_name}: 幂等记录不可读: {exc}")
+            raise HTTPException(
+                status_code=503,
+                detail="idempotency state unreadable; retry later",
+            ) from exc
+        if staging is not None and staging.get(idempotency.UNREADABLE_CANCELLED_MARKER) is True:
+            # 清除时读不出、没人认领而被抹掉原文的暂存：按已取消收尾（补记 cancelled），绝不当成
+            # 「没有暂存」重新生成——那会把被清 subject 写回去
+            try:
+                await idempotency.update_key(
+                    lanlan_name, key,
+                    idempotency.transition(idempotency.KEY_STATE_CANCELLED, request=fingerprint),
+                )
+                await idempotency.delete_staging(lanlan_name, key)
+            except MaintenanceModeError:
+                raise
+            except Exception as exc:
+                logger.error(f"[scoped_history] {lanlan_name}: 补记 cancelled 失败: {exc}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="idempotency state unreadable; retry later",
+                ) from exc
+            return _keyed_duplicate_response(shape, contexts)
+        if staging is not None and not _keyed_staging_matches(
+            staging, shape, contexts, fingerprint["content_hash"],
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="idempotency_key was already used for a different request",
+            )
+        if (
+            staging is not None
+            and staging.get(_KEYED_STAGING_CANCELLED) is True
+            and not _is_cancelled_staging_marker(staging)
+        ):
+            # 带着取消标志、却不是清除写出的那种抹干净的形状：不能凭一个布尔值就把整个请求
+            # 记成取消、删掉产物，按坏暂存处理
+            logger.error(f"[scoped_history] {lanlan_name}: 暂存取消标记形状不符，拒绝处理")
+            raise HTTPException(
+                status_code=503,
+                detail="idempotency state unreadable; retry later",
+            )
+        routed_on_record = record.get("routed_keys") if isinstance(record, dict) else None
+        positions_on_record = record.get("routed_positions") if isinstance(record, dict) else None
+        if isinstance(record, dict) and (
+            ("routed_positions" in record and positions_on_record is None)
+            # 两个字段总是一起写入：有集合、没有按位置的路由同样按坏状态处理，不退回只看集合
+            or ("routed_keys" in record and "routed_positions" not in record)
+        ):
+            positions_on_record = _MALFORMED
+        if record is None:
+            # 孤儿暂存（键记录丢了 / 键文件被重置）：没有记录可对，按这次请求当下的路由逐段核对
+            # 写入目标（与暂存一致才放行），而不是只认 wire subject、把路由过的段永远 503
+            positions_on_record = routed_positions
+        if (
+            staging is not None
+            # 取消标记只留身份字段（原文已抹），由下面的分支补记 cancelled，不按条目校验
+            and staging.get(_KEYED_STAGING_CANCELLED) is not True
+            and not _keyed_staging_items_valid(
+                staging, routed_on_record if isinstance(routed_on_record, list) else None,
+                dict(req.subject_epochs or {}), req.language,
+                positions_on_record,
+            )
+        ):
+            # 暂存里的条目坏了（段号越界 / 负数、序号乱、效果键对不上……）：绝不按它应用，
+            # 负的段号会把事实写到另一个 subject 上
+            logger.error(f"[scoped_history] {lanlan_name}: 暂存条目结构损坏，拒绝应用")
+            raise HTTPException(
+                status_code=503,
+                detail="idempotency state unreadable; retry later",
+            )
+        if staging is not None and staging.get(_KEYED_STAGING_CANCELLED) is True:
+            # 清除时键文件读不出、取消只记在了暂存里：补记 cancelled 再删暂存，绝不应用
+            try:
+                await idempotency.update_key(
+                    lanlan_name,
+                    key,
+                    idempotency.transition(
+                        idempotency.KEY_STATE_CANCELLED, request=fingerprint,
+                    ),
+                )
+                await idempotency.delete_staging(lanlan_name, key)
+            except MaintenanceModeError:
+                raise
+            except Exception as exc:
+                logger.error(f"[scoped_history] {lanlan_name}: 补记 cancelled 失败: {exc}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="idempotency state unreadable; retry later",
+                ) from exc
+            return _keyed_duplicate_response(shape, contexts)
+        if staging is None and record is not None and stored is None:
+            # 已有 pending 记录却既没有请求身份、也没有暂存：没有任何证据说明这次重试与原来那次
+            # 是同一个请求（原暂存丢失前可能已应用过部分效果，序号推出的效果键会撞上）。
+            # 不能当成全新请求接手
+            logger.error(f"[scoped_history] {lanlan_name}: pending 记录缺请求身份且无暂存，拒绝接手")
+            raise HTTPException(
+                status_code=503,
+                detail="idempotency state unreadable; retry later",
+            )
+        if staging is not None and stored is None:
+            # 「暂存已写、键还没记成 pending」之间失败留下的孤儿暂存：先补一条带
+            # 请求身份的 pending 记录再应用，否则之后的 done 记录没有身份可核对
+            try:
+                await idempotency.update_key(
+                    lanlan_name,
+                    key,
+                    idempotency.transition(
+                        idempotency.KEY_STATE_PENDING,
+                        client_requested_at=req.client_requested_at,
+                        request=fingerprint,
+                        routed_keys=routed_keys,
+                        routed_positions=routed_positions,
+                        epochs=request_epochs,
+                    ),
+                )
+            except MaintenanceModeError:
+                raise
+            except Exception as exc:
+                logger.error(f"[scoped_history] {lanlan_name}: 补记 pending 失败: {exc}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="scoped history staging failed; retry with the same key",
+                ) from exc
+        generations = None
+        if staging is None:
+            # 调 LLM 之前就把带请求身份与路由后 subject 的 pending 记下：生成失败时也留有
+            # 持久记录，之后的清除能把这个键取消；否则清除之后同键重试会用清除之后的
+            # generation 重新抽取，把旧内容写回去
+            try:
+                await idempotency.update_key(
+                    lanlan_name,
+                    key,
+                    idempotency.transition(
+                        idempotency.KEY_STATE_PENDING,
+                        client_requested_at=req.client_requested_at,
+                        request=fingerprint,
+                        routed_keys=routed_keys,
+                        routed_positions=routed_positions,
+                        epochs=request_epochs,
+                    ),
+                )
+            except MaintenanceModeError:
+                raise
+            except Exception as exc:
+                logger.error(f"[scoped_history] {lanlan_name}: 预记 pending 失败: {exc}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="scoped history staging failed; retry with the same key",
+                ) from exc
+            # 之前某次尝试期间到达的清除已把全部段的 subject 记进 forgotten_keys：产物注定全部
+            # 丢弃，不必再持键锁跑一遍完整抽取。直接按取消收尾
+            try:
+                prior = await idempotency.read_key(lanlan_name, key)
+            except idempotency.IdempotencyStateError as exc:
+                raise HTTPException(
+                    status_code=503, detail="idempotency state unreadable; retry later",
+                ) from exc
+            try:
+                prior_forgotten = _forgotten_keys_of(prior)
+            except idempotency.IdempotencyStateError as exc:
+                raise HTTPException(
+                    status_code=503, detail="idempotency state unreadable; retry later",
+                ) from exc
+            if prior_forgotten and all(
+                {context["wire_subject"].key, context["subject"].key} & prior_forgotten
+                for context in contexts
+            ):
+                try:
+                    await idempotency.update_key(
+                        lanlan_name, key, idempotency.transition(idempotency.KEY_STATE_CANCELLED),
+                    )
+                except MaintenanceModeError:
+                    raise
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=503, detail="idempotency state unreadable; retry later",
+                    ) from exc
+                return _keyed_duplicate_response(shape, contexts)
+            # 与不带键路径（extract_facts）同一时机：在调 LLM 之前取各 subject 的
+            # forget generation，只留在内存里。生成期间到达的清除（此时还没有暂存
+            # 可取消，不带 forget_epoch 时也没有墓碑）会推进 generation，首次应用时
+            # 事实存储据此丢弃这次写入
+            generations = {
+                index: runtime.fact_store._subject_forget_generation(
+                    lanlan_name, context["subject"],
+                )
+                for index, context in enumerate(contexts)
+            }
+            try:
+                staging = await _build_keyed_staging(
+                    lanlan_name,
+                    req,
+                    shape=shape,
+                    contexts=contexts,
+                    prompt_segments=prompt_segments,
+                )
+            except idempotency.IdempotencyStateError as exc:
+                # 键记录里的状态坏了（比如语言序号预留）：与别处读不出幂等状态同一回应
+                raise HTTPException(
+                    status_code=503, detail="idempotency state unreadable; retry later",
+                ) from exc
+            except BaseException:
+                # 生成失败 / 被终止：生成期间到达的清除已把被清 subject 持久记在这个键的记录上
+                # （forgotten_keys），同键重试重新生成时据此丢弃那些段，不需要在这里补救
+                raise
+            # 生成期间有清除推进了某个 subject 的 forget generation：它的产物从一开始就
+            # 记为丢弃再落盘。否则「暂存已写、还没应用」之间崩溃后，重试只能读到清除之后
+            # 的 generation，会把清除之前抽出的事实当成新的写回去
+            _mark_items_forgotten_during_generation(lanlan_name, staging, contexts, generations)
+            # 本次或之前某次生成期间到达的清除（键锁被占着、它只在记录上记下被清的 subject）：
+            # 那些段的产物同样记为丢弃。前一次生成失败 / 进程被杀、这次重试才走到这里时，
+            # generation 已是清除之后的，只能靠这份持久记录认出它们
+            try:
+                forgotten_during = _forgotten_keys_of(await idempotency.read_key(lanlan_name, key))
+            except idempotency.IdempotencyStateError as exc:
+                raise HTTPException(
+                    status_code=503, detail="idempotency state unreadable; retry later",
+                ) from exc
+            if forgotten_during:
+                _drop_segments_for_keys(staging, forgotten_during)
+            try:
+                await idempotency.write_staging(lanlan_name, key, staging)
+                # 暂存落盘之后再核一次：在上面两次写入期间完成的清除，取消扫描时
+                # 还看不到这份暂存；它推进 generation 必在扫描之前，所以这里一定能看到。
+                # 此后的清除都会在键级锁下找到并取消这份暂存
+                if _mark_items_forgotten_during_generation(
+                    lanlan_name, staging, contexts, generations,
+                ):
+                    await idempotency.write_staging(lanlan_name, key, staging)
+            except MaintenanceModeError:
+                raise
+            except Exception as exc:
+                logger.error(f"[scoped_history] {lanlan_name}: 暂存落盘失败: {exc}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="scoped history staging failed; retry with the same key",
+                ) from exc
+        if generations is None:
+            # 从暂存恢复的重试同样按记录上的 forgotten_keys 丢弃被清段：清除在生成期间只记下标记、
+            # 生成落了暂存后应用失败，这时重试走的是恢复路径，不能把被清段写回去
+            try:
+                forgotten_now = _forgotten_keys_of(await idempotency.read_key(lanlan_name, key))
+            except idempotency.IdempotencyStateError as exc:
+                raise HTTPException(
+                    status_code=503, detail="idempotency state unreadable; retry later",
+                ) from exc
+            if forgotten_now & _staged_subject_keys(staging):
+                _drop_segments_for_keys(staging, forgotten_now)
+                try:
+                    await idempotency.write_staging(lanlan_name, key, staging)
+                except MaintenanceModeError:
+                    raise
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="scoped history staging failed; retry with the same key",
+                    ) from exc
+        try:
+            await _apply_keyed_staging(
+                lanlan_name, key, staging, generations,
+                {index: context.get("display_name") for index, context in enumerate(contexts)},
+            )
+        except (HTTPException, MaintenanceModeError):
+            raise
+        except Exception as exc:
+            logger.error(
+                f"[scoped_history] {lanlan_name}: 暂存应用中断（保留暂存，"
+                f"同键重试只补剩余项）: {exc}"
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="scoped history apply interrupted; retry with the same key",
+            ) from exc
+        # 带键路径没有 owner 信号（入口已 422），只可能有 activity / channel，
+        # 池内按 event id 幂等，所以每次尝试都可以照原样重放。
+        trust_states = [context["trust_state"] for context in contexts]
+        for state in trust_states:
+            state["trust_signal_events"] = ()
+        # 被清除挡下的段（墓碑、清除丢弃）记忆已擦：它的 activity / channel 也不能再进信赖池
+        try:
+            fenced = await _fenced_segments(lanlan_name, staging)
+        except idempotency.IdempotencyStateError as exc:
+            raise HTTPException(
+                status_code=503, detail="idempotency state unreadable; retry later",
+            ) from exc
+        trust_result, trust_outcomes = await _apply_trust_for_segments([
+            _without_trust_mutation(state) if index in fenced else state
+            for index, state in enumerate(trust_states)
+        ])
+        response = _keyed_response(
+            shape, contexts, staging, trust_result, trust_outcomes,
+        )
+        if trust_result is not None and not trust_result.persisted:
+            # 池未落盘：响应如实报 persisted=false 让调用方同键重试；键不标
+            # done、暂存保留——否则重试拿到 duplicate 就会丢掉这批 activity。
+            return response
+        try:
+            await idempotency.update_key(
+                lanlan_name,
+                key,
+                idempotency.transition(idempotency.KEY_STATE_DONE),
+            )
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:
+            logger.error(f"[scoped_history] {lanlan_name}: 键标 done 失败: {exc}")
+            raise HTTPException(
+                status_code=503,
+                detail="scoped history finalize failed; retry with the same key",
+            ) from exc
+        try:
+            await idempotency.delete_staging(lanlan_name, key)
+        except Exception as exc:  # noqa: BLE001 - key is done; leftover is swept by TTL
+            logger.warning(
+                f"[scoped_history] {lanlan_name}: 删除暂存失败（键已 done，"
+                f"残留由启动清理回收）: {exc}"
+            )
+        return response
+
+
+async def _fenced_segments(lanlan_name: str, staging: dict) -> set[int]:
+    """Segment indexes a forget fenced off: dropped items, a segment drop mark, or a newer tombstone."""
+    from . import idempotency
+
+    segments = staging.get("segments") or []
+    fenced = {
+        index for index, segment in enumerate(segments)
+        if isinstance(segment, dict) and segment.get(_SEGMENT_DROPPED_BY_FORGET) is True
+    }
+    dropped_seqs = {
+        entry.get("seq") for entry in staging.get("applied") or []
+        if isinstance(entry, dict) and any(entry.get(name) is True for name in _KEYED_DROP_MARKERS)
+    }
+    fenced |= {
+        item.get("segment") for item in staging.get("items") or []
+        if isinstance(item, dict) and item.get("seq") in dropped_seqs
+    }
+    try:
+        tombstones = await idempotency.read_tombstones(lanlan_name)
+        epochs = staging.get("epochs") or {}
+        for index, segment in enumerate(segments):
+            if not isinstance(segment, dict):
+                continue
+            # 只有 activity、没抽出任何条目的段从没经过墓碑检查：在这里补上
+            tombstone_epoch = idempotency.tombstone_epoch(tombstones, segment.get("tombstone_keys") or [])
+            if tombstone_epoch is not None and int(epochs.get(segment.get("wire_key"), 0)) < tombstone_epoch:
+                fenced.add(index)
+    except idempotency.IdempotencyStateError:
+        # 墓碑读不出：认不出哪些段被挡。不能把整批 activity 丢掉后照常收尾（键 done 之后同键重试
+        # 只拿 duplicate，这批信赖写入再也补不上）：上抛，由调用方回 503 等墓碑读得出再重试
+        raise
+    return fenced
+
+
+def _without_trust_mutation(state: dict) -> dict:
+    source = state.get("trust_source") or {}
+    return {
+        **state,
+        "trust_signal_events": (),
+        "trust_activity_events": (),
+        "trust_source": {**source, "channel": None},
+    }
+
+
+def _mark_items_forgotten_during_generation(
+    lanlan_name: str, staging: dict, contexts: list[dict], generations: dict[int, int] | None,
+) -> bool:
+    """Journal as dropped every item of a subject whose forget generation moved; return whether any was added."""
+    if not generations:
+        return False
+    changed = {
+        index for index, context in enumerate(contexts)
+        if index in generations
+        and runtime.fact_store._subject_forget_generation(lanlan_name, context["subject"])
+        != generations[index]
+    }
+    if not changed:
+        return False
+    applied = staging.setdefault("applied", [])
+    done = {entry.get("seq") for entry in applied if isinstance(entry, dict)}
+    added = False
+    items = staging.get("items") or []
+    for position, item in enumerate(items):
+        if (
+            item.get("segment") in changed
+            and item.get("kind") != _KEYED_ITEM_LOCALE
+            and item["seq"] not in done
+        ):
+            applied.append({"seq": item["seq"], "dropped_forget_during_generation": True})
+            # 被清 subject 的抽取原文 / 显示名一并抹掉：之后请求若中断，暂存里也不留它们
+            items[position] = _stripped_item(item)
+            added = True
+    segments = staging.get("segments")
+    if isinstance(segments, list):
+        newly = {
+            index for index in changed
+            if index < len(segments) and isinstance(segments[index], dict)
+            and segments[index].get(_SEGMENT_DROPPED_BY_FORGET) is not True
+        }
+        _mark_segments_dropped(segments, newly)
+        # 只剩语言项的段（语言项从不记丢弃）也要让调用方落盘：否则段级标记只在内存里
+        added = added or bool(newly)
+    return added
+
+
+def _fingerprint_of_staging(document: dict) -> dict | None:
+    segments = document.get("segments")
+    if not isinstance(segments, list) or not isinstance(document.get("shape"), str):
+        return None
+    return {
+        "shape": document["shape"],
+        "wire_keys": [seg.get("wire_key") for seg in segments if isinstance(seg, dict)],
+        "content_hash": document.get("request_hash"),
+    }
+
+
+async def _drop_leftover_staging(lanlan_name: str, key: str) -> None:
+    from . import idempotency
+
+    try:
+        await idempotency.delete_staging(lanlan_name, key)
+    except Exception as exc:  # noqa: BLE001 - 只是回收空间：删不掉留给启动清理，不影响 duplicate 应答
+        logger.warning(f"[scoped_history] {lanlan_name}: 终态键的残留暂存删不掉，留给启动清理: {exc}")
+
+
+def _staging_identity(document: dict) -> dict:
+    """The request identity a cancelled record of this staging gets (never empty).
+
+    A staging whose own identity fields are damaged gets a placeholder that
+    no real request matches: a same-key retry is refused with 422 instead of
+    answering 503 forever on a terminal record without an identity.
+    """
+    fingerprint = _fingerprint_of_staging(document)
+    if fingerprint is not None:
+        return fingerprint
+    return {"shape": None, "wire_keys": sorted(_staged_subject_keys(document)), "content_hash": None}
+
+
+def _staged_after_forget(
+    document: dict, subject_keys: set[str], request_subject_key: str | None, forget_epoch: int | None,
+) -> bool:
+    """Whether a staged write was started knowing this forget (so it must not be cancelled).
+
+    Only decidable for a forget with ``forget_epoch``, and only when the
+    request subject is the sole forgotten subject the staging touches (fan-out
+    subjects keep their own counters): the staging's epoch for it is at least
+    ``forget_epoch``, the same rule that lets such a write pass the tombstone.
+    """
+    if forget_epoch is None or request_subject_key is None:
+        return False
+    epochs = document.get("epochs")
+    epoch = epochs.get(request_subject_key) if isinstance(epochs, dict) else None
+    if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < forget_epoch:
+        return False
+    # 按段判断：涉及被清 subject 的每一段，它的 wire subject 都必须正是这次请求的 subject
+    # （路由后的 subject 只是同一个 wire 的落点，wire 的代数够新它就是清除之后的合法写入）。
+    # 扇出目标作为 wire 的段有它自己的代数域，比不了，按「清除之前」处理
+    segments = document.get("segments")
+    if isinstance(segments, list) and segments:
+        return all(
+            isinstance(segment, dict) and segment.get("wire_key") == request_subject_key
+            for segment in segments
+            if _segment_subject_keys(segment) & subject_keys
+        )
+    wires = document.get("wire_keys")
+    if not isinstance(wires, list):
+        return False
+    return all(str(wire) == request_subject_key for wire in wires if str(wire) in subject_keys)
+
+
+def _staged_subject_keys(document: dict) -> set[str]:
+    """Every subject key a staged journal touches: wire keys plus each segment's routed subject."""
+    staged = document.get("subjects")
+    keys = {str(s) for s in staged} if isinstance(staged, list) else set()
+    segments = document.get("segments")
+    for segment in segments if isinstance(segments, list) else []:
+        keys |= _segment_subject_keys(segment)
+    return keys
+
+
+def _segment_subject_keys(segment: object) -> set[str]:
+    if not isinstance(segment, dict):
+        return set()
+    keys = {str(segment.get("wire_key"))}
+    subject = segment.get("subject")
+    if isinstance(subject, dict) and subject.get("subject_kind") and subject.get("subject_id"):
+        keys.add(f"{subject['subject_kind']}:{subject['subject_id']}")
+    return keys
+
+
+def _items_shape_valid(items: list, segments: list) -> bool:
+    """Items numbered ``seq == position`` with a known kind and an in-range segment; every segment an object."""
+    if not all(isinstance(segment, dict) for segment in segments):
+        return False
+    for position, item in enumerate(items):
+        seq, segment = item.get("seq"), item.get("segment")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq != position:
+            return False
+        if not isinstance(segment, int) or isinstance(segment, bool) or not 0 <= segment < len(segments):
+            return False
+        if item.get("kind") not in (_KEYED_ITEM_LOCALE, _KEYED_ITEM_FACTS, _KEYED_ITEM_DISPLAY_NAME):
+            return False
+    return True
+
+
+def _applied_seqs_valid(applied: list, item_count: int) -> bool:
+    """Every applied entry is an object whose ``seq`` is a distinct in-range integer (as replay requires)."""
+    seqs = [entry.get("seq") if isinstance(entry, dict) else None for entry in applied]
+    return all(
+        isinstance(seq, int) and not isinstance(seq, bool) and 0 <= seq < item_count for seq in seqs
+    ) and len(set(seqs)) == len(seqs)
+
+
+def _drop_forgotten_segments(document: dict, subject_keys: set[str]) -> bool:
+    """Drop only the forgotten segments of a partly affected multi-segment journal.
+
+    Returns False (nothing changed) when no segment or every segment touches
+    ``subject_keys``: the whole key is cancelled then. Otherwise every
+    not-yet-applied item of an affected segment is journaled as
+    ``dropped_forget`` and every item of such a segment loses its extracted
+    content, so a retry applies only the untouched segments.
+    """
+    segments = document.get("segments")
+    if not isinstance(segments, list) or not segments:
+        return False
+    affected = {
+        index for index, segment in enumerate(segments)
+        if _segment_subject_keys(segment) & subject_keys
+    }
+    if not affected or len(affected) == len(segments):
+        return False
+    # 先看原值再补缺省：只有字段缺失才当空列表。{} / "" / null 之类坏值都按坏日志处理——
+    # 经 `or []` 或「None 当空」放过，改写副本时仍是坏值，清除就会 500
+    applied = document["applied"] if "applied" in document else []
+    items = document["items"] if "items" in document else []
+    if (
+        not isinstance(applied, list) or not isinstance(items, list)
+        or not all(isinstance(item, dict) for item in items)
+        or not _applied_seqs_valid(applied, len(items))
+        or not _items_shape_valid(items, segments)
+    ):
+        # 日志结构坏了（applied 不是列表、items 不可迭代……）：没法只丢被清段，整个键按取消
+        # 处理。辅助状态坏了不能让隐私清除每次都 500、一行都擦不掉
+        return False
+    # 在副本上改写，改完再核对：被清段的载荷坏了没关系（它会被抹掉），只有留下来的段仍能被
+    # 重试按条目重放，才保留这份日志；否则（效果键是标量……）留着只会让没被清的段永远 503，整键取消
+    rewritten = copy.deepcopy(document)
+    _rewrite_forgotten_segments(rewritten, affected)
+    if not _keyed_staging_items_valid(rewritten, structural_only=True):
+        return False
+    document.clear()
+    document.update(rewritten)
+    return True
+
+
+def _rewrite_forgotten_segments(document: dict, affected: set[int]) -> None:
+    segments = document["segments"]
+    applied = document.setdefault("applied", [])
+    items = document.get("items") or []
+    forgotten_seqs = {
+        item.get("seq") for item in items
+        if isinstance(item, dict) and item.get("segment") in affected
+        and item.get("kind") != _KEYED_ITEM_LOCALE
+    }
+    # 被清段已应用的结果（fact_ids、事实身份）对应的行已被擦除：换成丢弃记录，
+    # 重试的响应不再报出已不存在的事实
+    applied[:] = [
+        {"seq": entry.get("seq"), "dropped_forget": True}
+        if isinstance(entry, dict) and entry.get("seq") in forgotten_seqs else entry
+        for entry in applied
+    ]
+    done = {entry.get("seq") for entry in applied if isinstance(entry, dict)}
+    for position, item in enumerate(items):
+        if (
+            not isinstance(item, dict) or item.get("segment") not in affected
+            or item.get("kind") == _KEYED_ITEM_LOCALE
+        ):
+            # 语言序号项与生成期间被清时同口径保留（不含被清 subject 的内容）
+            continue
+        if item.get("seq") not in done:
+            applied.append({"seq": item.get("seq"), "dropped_forget": True})
+        # 被清 subject 的抽取原文 / 显示名不能留在磁盘上
+        items[position] = _stripped_item(item)
+    _mark_segments_dropped(segments, affected)
+
+
+def _drop_segments_for_keys(document: dict, subject_keys: set[str]) -> None:
+    """Journal every unapplied item of segments touching ``subject_keys`` as dropped, stripped.
+
+    Locale items included: replaying a persisted ``forgotten_keys`` marker, the
+    locale order was reserved after the forget and no longer proves the
+    request predates it, so applying it would recreate erased locale state.
+    """
+    segments = document.get("segments") or []
+    affected = {
+        index for index, segment in enumerate(segments)
+        if _segment_subject_keys(segment) & subject_keys
+    }
+    if not affected:
+        return
+    applied = document.setdefault("applied", [])
+    items = document.get("items")
+    items = [] if items is None else items
+    if not isinstance(applied, list) or not isinstance(items, list):
+        raise ValueError("staging journal is malformed")
+    done = {entry.get("seq") for entry in applied if isinstance(entry, dict)}
+    for position, item in enumerate(items):
+        if not isinstance(item, dict) or item.get("segment") not in affected:
+            continue
+        if item.get("seq") not in done:
+            applied.append({"seq": item.get("seq"), "dropped_forget": True})
+        if item.get("kind") != _KEYED_ITEM_LOCALE:
+            items[position] = _stripped_item(item)
+    _mark_segments_dropped(segments, affected)
+
+
+def _forgotten_keys_of(record) -> set[str]:
+    """The ``forgotten_keys`` marker of a key record (empty when absent).
+
+    It is the only durable evidence that a forget hit a key while it was
+    generating; a present but malformed value raises ``IdempotencyStateError``
+    instead of reading as "nothing forgotten", which would regenerate (and
+    write back) the forgotten subject's history.
+    """
+    from . import idempotency
+
+    if not isinstance(record, dict) or "forgotten_keys" not in record:
+        return set()
+    value = record["forgotten_keys"]
+    if not isinstance(value, list) or not all(isinstance(key, str) and key for key in value):
+        raise idempotency.IdempotencyStateError("forgotten_keys marker is malformed")
+    return set(value)
+
+
+def _mark_segments_dropped(segments: list, indexes: set[int]) -> None:
+    # 段级记下「被清除丢弃」：只剩语言项（不记丢弃）的段光看条目认不出来，恢复重试补显示名时
+    # 会把清除前的键的元数据盖到之后重建的 section 上
+    for index in indexes:
+        if isinstance(segments[index], dict):
+            segments[index][_SEGMENT_DROPPED_BY_FORGET] = True
+
+
+def _stripped_item(item: dict) -> dict:
+    # 只留响应与跳过所需的序号，以及效果键（不含内容；逐项校验靠它推算序号）
+    stripped = {"seq": item.get("seq"), "kind": item.get("kind"), "segment": item.get("segment")}
+    if item.get("kind") == _KEYED_ITEM_FACTS:
+        effect_keys = item.get("effect_keys")
+        stripped["effect_keys"] = list(effect_keys) if isinstance(effect_keys, list) else []
+    return stripped
+
+
+def _is_cancelled_staging_marker(document: dict) -> bool:
+    """Whether ``document`` has exactly the stripped shape :func:`_cancelled_staging_marker` writes."""
+    segments = document.get("segments")
+    return (
+        document.get(_KEYED_STAGING_CANCELLED) is True
+        and document.get("items") == []
+        and document.get("applied") == []
+        and isinstance(segments, list)
+        and all(isinstance(segment, dict) and set(segment) == {"wire_key"} for segment in segments)
+    )
+
+
+def _cancelled_staging_marker(document: dict) -> dict:
+    """The staging document reduced to what a retry needs to recognise its key as cancelled.
+
+    Drops every extracted product (facts, display names, the subjects'
+    fields): a forget must not leave the forgotten subject's content on disk.
+    """
+    segments = document.get("segments")
+    return {
+        "key": document.get("key"),
+        "state": document.get("state"),
+        "shape": document.get("shape"),
+        "subjects": document.get("subjects"),
+        "epochs": document.get("epochs"),
+        "created_at": document.get("created_at"),
+        "request_hash": document.get("request_hash"),
+        "segments": [
+            {"wire_key": segment.get("wire_key")}
+            for segment in (segments if isinstance(segments, list) else [])
+            if isinstance(segment, dict)
+        ],
+        "items": [],
+        "applied": [],
+        _KEYED_STAGING_CANCELLED: True,
+    }
+
+
+async def _cancel_staged_writes_for_subjects(
+    lanlan_name: str,
+    subject_keys: set[str],
+    *,
+    request_subject_key: str | None = None,
+    forget_epoch: int | None = None,
+    best_effort: bool = False,
+) -> int:
+    """Cancel every staged keyed write that touches one of ``subject_keys``.
+
+    ``best_effort`` (the pass before the erase) skips a journal or key record
+    whose handling fails and goes on with the rest; the pass after the erase
+    raises instead, so the forget is retried.
+
+    A staging started with an epoch at or above ``forget_epoch`` for the
+    request subject was issued after this forget and is left alone.
+
+    Runs after the erase, holding no other lock: each affected key's lock is
+    taken on its own (an in-flight apply of the same key finishes first; an
+    in-flight GENERATION never has a staging file yet, so a forget is never
+    blocked behind an LLM call). The key is marked ``cancelled`` before its
+    staging file is removed, so a crash in between leaves a cancelled key
+    plus a leftover file the TTL sweep removes, never a revivable journal.
+    """
+    from . import idempotency
+
+    cancelled = 0
+    async def _cancel_one_document(path, document) -> None:
+        nonlocal cancelled
+        if not isinstance(document, dict):
+            # 读不出的暂存认不出它涉及哪些 subject：没有键记录认领时按记录取消的那一遍也找不到它，
+            # 留着就可能带着被清 subject 的抽取原文、修好后还会被同键重试认领。删掉
+            if await idempotency.drop_unreadable_orphan_staging(lanlan_name, path):
+                cancelled += 1
+            return
+        key = document.get("key")
+        # 按写入时路由到的 subject 一并匹配：账号绑定关系之后变了，当前的扇出可能已不含
+        # 这份暂存的 wire subject，但它应用时写的是暂存里记下的那个 subject。
+        # subjects 索引坏了 / 缺了也照样按各段认：不能凭一个坏索引跳过，孤儿暂存之后会被
+        # 同键重试认领、把清除之前的事实写回去
+        if not subject_keys.intersection(_staged_subject_keys(document)):
+            return
+        if not isinstance(key, str) or not key or not idempotency.is_staging_path_of(lanlan_name, key, path):
+            # 内容里的键与文件名对不上：不能顺着这个不可信的键去开另一个路径的暂存。
+            # 就地把这个文件抹成取消标记（保留错位的键，同键重试读它照样 fail closed），
+            # 被清 subject 的抽取原文不留在磁盘上
+            await idempotency.scrub_misplaced_staging(
+                lanlan_name, path, _cancelled_staging_marker,
+            )
+            cancelled += 1
+            return
+        async with idempotency.key_lock(lanlan_name, key):
+            current = await idempotency.read_staging(lanlan_name, key)
+            if current is None or _staged_after_forget(
+                current, subject_keys, request_subject_key, forget_epoch,
+            ):
+                return
+            if _drop_forgotten_segments(current, subject_keys):
+                # 多段批次只有部分段涉及被清的 subject：只把这些段未应用的项记为丢弃、
+                # 抹掉它们的抽取原文，键保持 pending、暂存留着，重试照常补写其余段
+                await idempotency.write_staging(lanlan_name, key, current)
+                cancelled += 1
+                return
+            identity = _staging_identity(document)
+
+            def _cancel(old, identity=identity):
+                # 记录缺失时用暂存里的请求身份补上：取消后暂存就删了，没有身份的 cancelled 记录会让
+                # 别的请求借这个键拿到 duplicate。记录本身已有身份就沿用它——暂存的身份字段坏了时
+                # 补的是占位身份，盖掉正确的那份会让本该拿到 duplicate 的同键重试一直 422
+                stored = old.get("request") if isinstance(old, dict) else None
+                request = stored if isinstance(stored, dict) else identity
+                return idempotency.transition(idempotency.KEY_STATE_CANCELLED, request=request)(old)
+
+            try:
+                await idempotency.update_key(lanlan_name, key, _cancel)
+            except idempotency.IdempotencyStateError as exc:
+                # 键文件读不出：辅助文件坏了不能挡住隐私清除，但取消也记不进键文件。
+                # 删掉暂存的话，键文件修好后同键重试看到的是「pending、没暂存」，会按
+                # 清除之后的 generation 重新抽取写回（不带 forget_epoch 时也没有墓碑）。
+                # 改把取消记在暂存里留着：重试读到它就补记 cancelled、回 duplicate
+                logger.warning(
+                    f"[scoped_forget] {lanlan_name}: 幂等键文件不可读，取消改记在暂存里: {exc}"
+                )
+                # 只留重试认出「已取消」所需的身份字段，抽取出的事实原文与显示名一并抹掉
+                await idempotency.write_staging(lanlan_name, key, _cancelled_staging_marker(current))
+                cancelled += 1
+                return
+            await idempotency.delete_staging(lanlan_name, key)
+            cancelled += 1
+    for path, document, _mtime in await idempotency.list_staging(lanlan_name):
+        try:
+            await _cancel_one_document(path, document)
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:
+            if not best_effort:
+                raise
+            # 尽力而为的那一遍：这一份暂存出错只跳过它自己，其余照常取消（擦除后那遍再兜底）
+            logger.warning(f"[scoped_forget] {lanlan_name}: 取消暂存 {os.path.basename(path)} 失败，跳过: {exc}")
+    # 先记 pending、后写暂存：崩在两步之间的键只有记录、没有暂存，上面的扫描找不到它。
+    # 按记录里的请求身份认领，同样标 cancelled，免得之后同键重试用清除之后的
+    # generation 重新生成并写回
+    try:
+        records = await asyncio.to_thread(
+            idempotency._read_json_object, idempotency.keys_path(lanlan_name),
+        )
+    except idempotency.IdempotencyCorruptError as exc:
+        # 键文件内容坏了：所有带键请求本身就 fail closed（503），不会写入任何东西；
+        # 辅助文件坏了不能挡住隐私清除，这里只记日志、跳过认领，清除照常进行
+        logger.warning(f"[scoped_forget] {lanlan_name}: 幂等键文件已损坏，跳过 pending 认领: {exc}")
+        records = {}
+    except Exception as exc:  # noqa: BLE001
+        # 一时读不出（共享冲突退避用完、权限）：下一次同键重试可能就读得到，跳过认领的话
+        # 无暂存的 pending 键会按清除之后的 generation 重新生成、把被清内容写回。擦除前那遍
+        # 只记日志（擦除后那遍兜底）；擦除后那遍上抛，清除报错重试（墓碑已落盘，重试安全）
+        if not best_effort:
+            raise
+        logger.warning(f"[scoped_forget] {lanlan_name}: 幂等键文件一时读不出，本遍跳过 pending 认领: {exc}")
+        records = {}
+    async def _cancel_one_record(key, record) -> None:
+        nonlocal cancelled
+        if not isinstance(record, dict) or record.get("state") != idempotency.KEY_STATE_PENDING:
+            return
+        request = record.get("request")
+        wire_keys = request.get("wire_keys") if isinstance(request, dict) else None
+        wire_only = [str(k) for k in wire_keys] if isinstance(wire_keys, list) else []
+        routed = record.get("routed_keys")
+        wire_keys = wire_only + ([str(k) for k in routed] if isinstance(routed, list) else [])
+        # 上面的暂存扫描只是快照，之后才写成的暂存可能经路由写到被清的 subject，记录里
+        # 却只有 wire key：有暂存就按它记下的全部 subject（wire + 路由后）匹配，没有暂存
+        # 才退回只看 wire key。先不拿锁预读一次筛掉无关的键——无关请求可能正持着自己的
+        # 键锁等 LLM，不能让隐私清除排在它后面；相关的再在键锁下重读、复核
+        peek_unreadable = False
+        try:
+            peek = await idempotency.read_staging(lanlan_name, key)
+        except idempotency.IdempotencyStateError:
+            peek = None
+            peek_unreadable = True
+        peek_touched = _staged_subject_keys(peek) | set(wire_keys) if peek is not None else set(wire_keys)
+        if not subject_keys.intersection(peek_touched):
+            return
+        if peek is None and _staged_after_forget(
+            {"wire_keys": wire_only, "epochs": record.get("epochs") or {}},
+            subject_keys, request_subject_key, forget_epoch,
+        ):
+            # 还没有暂存、但记录里的请求代数说明它是知道这次清除之后才发起的：合法的新写入
+            return
+        def _mark_forgotten(touched: set[str]):
+            def _mark(old, touched=touched):
+                if old is None or old.get("state") != idempotency.KEY_STATE_PENDING:
+                    return None
+                # 记录里的旧值坏了（标量 / 夹着对象）只保留能用的键：辅助状态坏了不能让清除在
+                # 擦除之前就 500
+                prior = old.get("forgotten_keys")
+                if prior is None:
+                    usable: set[str] = set()
+                elif isinstance(prior, list) and all(isinstance(k, str) and k for k in prior):
+                    usable = set(prior)
+                else:
+                    # 旧标记坏了：它是「生成期间被清过」的唯一持久证据，不能丢掉了事。保守地把这个键
+                    # 记录里的全部 wire / 路由后 subject 都记上（等于当作全部被清过）
+                    request = old.get("request") if isinstance(old.get("request"), dict) else {}
+                    every = [
+                        value
+                        for source in (request.get("wire_keys"), old.get("routed_keys"))
+                        if isinstance(source, list)
+                        for value in source
+                    ]
+                    usable = {k for k in every if isinstance(k, str) and k}
+                merged = sorted(usable | touched)
+                return {**old, "forgotten_keys": merged}
+
+            return _mark
+
+        if peek is None and not peek_unreadable and idempotency.key_lock(lanlan_name, key).locked():
+            # 还没有暂存、键锁被占着：持锁的请求正在调 LLM，不排在它后面。只在记录上持久记下
+            # 被清的 subject（字符锁下原子改一条记录）：它生成完落暂存前、或生成失败 / 进程被杀
+            # 之后同键重试重新生成时，都据此丢弃这些段，不会用清除之后的 generation 写回旧内容
+            await idempotency.update_key(
+                lanlan_name, key, _mark_forgotten(subject_keys.intersection(peek_touched)),
+            )
+            cancelled += 1
+            return
+        async with idempotency.key_lock(lanlan_name, key):
+            unreadable = None
+            try:
+                staged = await idempotency.read_staging(lanlan_name, key)
+            except idempotency.IdempotencyStateError as exc:
+                staged = None
+                unreadable = exc
+            touched = _staged_subject_keys(staged) | set(wire_keys) if staged is not None else set(wire_keys)
+            if not subject_keys.intersection(touched):
+                return
+            if unreadable is not None:
+                # 记录是 pending、暂存读不出：上面按暂存内容的扫描看不到它。不能让它挡住
+                # 清除（每次都 500），也不能留着——同键重试读它只会 fail closed，修好后
+                # 又会应用。按记录认领：标 cancelled 再删掉这份坏暂存
+                logger.warning(f"[scoped_forget] {lanlan_name}: 暂存不可读，按键记录取消: {unreadable}")
+            if staged is not None and _staged_after_forget(
+                staged, subject_keys, request_subject_key, forget_epoch,
+            ):
+                # 带着这次清除之后的代数发起的新请求：它的产物是合法的新记忆，不取消
+                return
+            if staged is not None and _drop_forgotten_segments(staged, subject_keys):
+                # 同上面的暂存扫描：多段批次只丢涉及被清 subject 的段，其余段留给重试
+                await idempotency.write_staging(lanlan_name, key, staged)
+                cancelled += 1
+                return
+            if staged is None and unreadable is None and not set(wire_keys) <= subject_keys:
+                # 没有暂存（生成失败 / 进程被杀后键锁已放开）、请求里还有没被清的 subject：与键锁
+                # 被占时同一处理，只在记录上记下被清的 subject，同键重试重新生成时只丢这些段。
+                # 整键取消会让其余段的记忆永久写不进去（客户端拿到 duplicate 不会重发）
+                await idempotency.update_key(
+                    lanlan_name, key, _mark_forgotten(subject_keys.intersection(touched)),
+                )
+                cancelled += 1
+                return
+            # 不论暂存在不在都在键级锁下取消：上面那遍扫描只是快照，扫描之后才写成的
+            # 暂存（请求失败、已放开键锁）同样要取消，否则擦除之后、第二遍扫描之前的
+            # 同键重试会用清除之后的 generation 把它应用回去
+            await idempotency.update_key(
+                lanlan_name, key, idempotency.transition(idempotency.KEY_STATE_CANCELLED),
+            )
+            await idempotency.delete_staging(lanlan_name, key)
+            cancelled += 1
+    for key, record in records.items():
+        try:
+            await _cancel_one_record(key, record)
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:
+            if not best_effort:
+                raise
+            logger.warning(f"[scoped_forget] {lanlan_name}: 按记录取消键失败，跳过: {exc}")
+    return cancelled
+
+
 @app.post("/internal/memory/{lanlan_name}/scoped_context")
 async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
     # Validate before the locale lookup: it keys per-character state files by
@@ -2621,10 +5317,36 @@ async def _get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
 
 class ScopedForgetRequest(BaseModel):
     subject: MemorySubjectRequest
+    # Optional caller-side forget generation. When present, every erased
+    # subject gets a durable tombstone holding the largest epoch seen, and a
+    # keyed scoped_history whose ``subject_epochs`` for that subject is lower
+    # is dropped at apply time. Absent: no tombstone is written.
+    forget_epoch: int | None = Field(default=None, ge=0)
 
 
 @app.post("/internal/memory/{lanlan_name}/scoped_forget")
 async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
+    """Erase one subject domain; epoch-tagged forgets of a subject run one at a time.
+
+    The per-subject fence spans the completed-epoch check, the erase, both
+    cancellation passes and the completion marker: without it an older
+    forget could recheck after a newer one released its erase locks but
+    before it published its completed epoch, and erase again.
+    """
+    if req.forget_epoch is None:
+        return await _run_forget(lanlan_name, req)
+    from . import idempotency
+
+    try:
+        fence_key = req.subject.to_domain().key
+        fence_name = validate_lanlan_name(lanlan_name)
+    except Exception:  # noqa: BLE001 - 非法请求交给下面的实现照常报错
+        return await _run_forget(lanlan_name, req)
+    async with idempotency.forget_fence(fence_name, fence_key):
+        return await _run_forget(lanlan_name, req)
+
+
+async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     """Delete every stored memory of one exact (subject, scope) domain.
 
     撤回入口：删好友/退群之后，该 subject 的 facts（活跃 + 归档）、
@@ -2666,6 +5388,69 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             ),
         )
     targets = _forget_fanout_targets(subject)
+    forgotten_subject_keys = {subject.key} | {target.key for target in targets}
+    default_scope = subject.scope == subject.key
+    if req.forget_epoch is not None and not default_scope:
+        # 代数、墓碑、已擦标记都按 kind:id 记：非默认 scope 带代数会让同一 key 的另一个
+        # scope 被当成「已擦过」跳过（漏删）。带代数的清除只用于默认 scope
+        raise HTTPException(status_code=422, detail="forget_epoch requires the default subject scope")
+    fence_at_start = None
+    effective_fence = req.forget_epoch
+    if req.forget_epoch is not None:
+        # 墓碑必须先于任何擦除落盘：应用阶段「先取代数、再查墓碑」，所以
+        # 墓碑落盘之后才开始的应用必然看见它，之前已过墓碑检查的那一项则
+        # 被下面擦除推进的 forget generation 丢弃。
+        from . import idempotency
+
+        try:
+            # 代数只属于请求里这个 subject（客户端按 MemorySubject.key 各自计数）：
+            # 不抄给扇出的关联 subject，否则它们自己较小的代数会被永久挡下。
+            # 扇出目标上在飞的写入由事实存储的 forget generation 兜住
+            recorded = await idempotency.record_tombstones(
+                lanlan_name, {subject.key}, req.forget_epoch,
+            )
+            # 擦除开始前已在位的围栏（更新的清除可能已抬高它、却没擦就失败了）：本次擦除
+            # 在它之后进行，完成时一并记为已擦到这个代数
+            fence_row = recorded.get(subject.key) if isinstance(recorded, dict) else None
+            fence_at_start = fence_row.get("forget_epoch") if isinstance(fence_row, dict) else None
+            if isinstance(fence_at_start, int) and not isinstance(fence_at_start, bool) and fence_at_start > effective_fence:
+                # 取消暂存按已在位的有效围栏比，不按这次（可能是陈旧重放的）较低代数：早于围栏的
+                # 暂存都该取消
+                effective_fence = fence_at_start
+        except MaintenanceModeError:
+            raise
+        except idempotency.IdempotencyStateError as exc:
+            # 墓碑文件整体读不出：辅助文件坏了不能挡住隐私清除，照常擦除。此时所有带键
+            # 写入读墓碑同样 fail closed（503），不会有旧请求借机写回；文件修好前也不记完成标记
+            logger.warning(f"[scoped_forget] {lanlan_name}: 墓碑文件不可读，跳过墓碑照常擦除: {exc}")
+        except Exception as exc:
+            logger.error(f"[scoped_forget] {lanlan_name}: 墓碑落盘失败: {exc}")
+            raise HTTPException(
+                status_code=500,
+                detail="scoped forget failed; retry is safe and idempotent",
+            ) from exc
+        # 这个代数（或更新的）的擦除已经完成过：重放 / 迟到的旧清除不再擦一遍，否则
+        # 会把之后带着新代数合法写入的记忆一并删掉。拿到擦除事务锁之后还会再核一次
+        if await _forget_epoch_already_erased(lanlan_name, subject.key, req.forget_epoch):
+            return await _forget_duplicate_after_cancel(lanlan_name, subject, targets, effective_fence)
+    # 擦除之前先取消一遍已有的带键暂存 / 记录（此时手上没有任何别的锁，不会与
+    # 正在应用的同键请求成环）：之后同键重试只会得到 duplicate，不会在擦除完成、
+    # 下面那遍取消扫描到达之前抢先用清除之后的 generation 把旧产物写回
+    try:
+        if default_scope:
+            # 带键写入只有默认 scope：清的是别的 scope 时与它们无关，不能按 kind:id 误取消
+            await _cancel_staged_writes_for_subjects(
+                lanlan_name, forgotten_subject_keys,
+                request_subject_key=subject.key, forget_epoch=effective_fence,
+                best_effort=True,
+            )
+    except MaintenanceModeError:
+        raise
+    except Exception as exc:
+        # 擦除前这一遍只是尽力而为（逐份暂存 / 逐个键各自容错，出错的只跳过它自己）：一份读不出 / 写不进的辅助暂存不能挡住与它无关的隐私清除
+        # （包括从不用带键写入的老调用方）。真正兜底的是擦除后那一遍取消与墓碑 / generation，
+        # 那一遍失败才回错误让调用方重试
+        logger.warning(f"[scoped_forget] {lanlan_name}: 擦除前取消带键暂存未完成（擦除后再取消一遍）: {exc}")
     stats: dict = {}
     fact_forget_started: list = []
     reflection_forget_started: list = []
@@ -2690,6 +5475,13 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             )
             await lock.acquire()
             acquired_locks.append(lock)
+        # 并发的新旧清除可能都在锁外通过了上面的核对：较新的那个擦完、放锁之后，
+        # 旧的这个才拿到锁。持锁之后再核一次，免得把较新清除之后的合法写入擦掉
+        if req.forget_epoch is not None and await _forget_epoch_already_erased(
+            lanlan_name, subject.key, req.forget_epoch,
+        ):
+            # 放锁之后再跑与外层相同的那遍取消：持锁等待期间写下的清除前暂存同样要取消
+            raise _ForgetAlreadyErased(lanlan_name, subject, targets, effective_fence)
         # ALL tombstones open before ANY erase.
         for target in targets:
             await runtime.fact_store.abegin_subject_forget(lanlan_name, target)
@@ -2749,6 +5541,8 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             await runtime.fact_store.afinalize_subject_forget(
                 lanlan_name, target,
             )
+    except _ForgetAlreadyErased:
+        raise
     except Exception as exc:
         logger.error(f"[scoped_forget] {lanlan_name}: 删除失败: {exc}")
         raise HTTPException(
@@ -2773,6 +5567,50 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             for lock in reversed(acquired_locks):
                 lock.release()
             runtime._reload_lock.release()
+    # 擦除完成、上面所有锁都已放开之后，才取消涉及这些 subject 的带键暂存。
+    # 取消要拿各键的键级锁；持键级锁的应用请求在落盘时会等事实池的持久化
+    # 锁（擦除期间被本 handler 占着）。若在持有擦除事务时去等键级锁，两边
+    # 就会互等；放到这里，本 handler 等键级锁时手上没有任何别的锁，不会成环。
+    try:
+        if default_scope:
+            await _cancel_staged_writes_for_subjects(
+                lanlan_name, forgotten_subject_keys,
+                request_subject_key=subject.key, forget_epoch=effective_fence,
+            )
+    except MaintenanceModeError:
+        raise
+    except Exception as exc:
+        logger.error(f"[scoped_forget] {lanlan_name}: 取消带键暂存失败: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail="scoped forget failed; retry is safe and idempotent",
+        ) from exc
+    if req.forget_epoch is not None:
+        from . import idempotency
+
+        try:
+            # 擦除与两遍取消都完成之后才记「这个代数擦完了」
+            await idempotency.mark_tombstone_erased(
+                lanlan_name, subject.key, req.forget_epoch, covered_epoch=fence_at_start,
+            )
+        except MaintenanceModeError:
+            raise
+        except idempotency.IdempotencyStateError as exc:
+            # 墓碑文件读不出或这一行坏了：擦除已做完，但「这个代数已擦完」记不上。回 503 让
+            # 调用方重试到墓碑修好、标记落盘为止；期间这个 subject 的带键写入读墓碑同样 503
+            logger.warning(f"[scoped_forget] {lanlan_name}: 墓碑损坏，未记擦除完成: {exc}")
+            raise HTTPException(
+                status_code=503,
+                detail="scoped forget erased but its completion marker could not be recorded; retry",
+            ) from exc
+        except Exception as exc:
+            # 擦除做完了，但「这个代数已擦完」没落盘：回成功的话调用方不再重试，之后同代数
+            # 或更旧的清除重放会再擦一遍，把成功之后合法写入的记忆删掉。回错误让它重试到落盘
+            logger.error(f"[scoped_forget] {lanlan_name}: 记录擦除完成失败: {exc}")
+            raise HTTPException(
+                status_code=500,
+                detail="scoped forget failed; retry is safe and idempotent",
+            ) from exc
     return {
         "status": "forgotten",
         "subject": subject.as_entry_fields(),
@@ -2781,6 +5619,494 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         ],
         **stats,
     }
+
+
+async def _forget_epoch_already_erased(lanlan_name: str, subject_key: str, forget_epoch: int) -> bool:
+    """Whether the erase of ``forget_epoch`` (or a newer one) already completed; unreadable reads as no."""
+    from . import idempotency
+
+    try:
+        done = idempotency.erased_epoch(await idempotency.read_tombstones(lanlan_name), subject_key)
+    except idempotency.IdempotencyStateError:
+        # 读不出就照常擦（偏向多删）
+        return False
+    return done is not None and done >= forget_epoch
+
+
+class _ForgetAlreadyErased(Exception):
+    """Raised under the erase locks when the epoch turns out to be erased already."""
+
+    def __init__(self, lanlan_name, subject, targets, effective_fence) -> None:
+        super().__init__("forget epoch already erased")
+        self.args_for_cancel = (lanlan_name, subject, targets, effective_fence)
+
+
+async def _forget_duplicate_after_cancel(lanlan_name, subject, targets, effective_fence) -> dict:
+    """Answer an already-erased forget after cancelling pre-forget staging of the request subject.
+
+    The store is not erased again, but a pre-forget keyed request that arrived
+    after the original erase may have staged plaintext and crashed; pending,
+    it is never swept by the TTL. Only the request subject itself is
+    matched: a fan-out target's later keyed write carries that target's own
+    epoch, which cannot be compared to this one, and is legitimate.
+    """
+    try:
+        await _cancel_staged_writes_for_subjects(
+            lanlan_name, {subject.key},
+            request_subject_key=subject.key, forget_epoch=effective_fence,
+        )
+    except MaintenanceModeError:
+        raise
+    except Exception as exc:
+        logger.error(f"[scoped_forget] {lanlan_name}: 重复清除取消带键暂存失败: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail="scoped forget failed; retry is safe and idempotent",
+        ) from exc
+    return _forget_duplicate_response(subject, targets)
+
+
+async def _run_forget(lanlan_name: str, req: ScopedForgetRequest):
+    try:
+        return await _forget_scoped_subject(lanlan_name, req)
+    except _ForgetAlreadyErased as done:
+        return await _forget_duplicate_after_cancel(*done.args_for_cancel)
+
+
+def _forget_duplicate_response(subject, targets) -> dict:
+    return {
+        "status": "forgotten",
+        "subject": subject.as_entry_fields(),
+        "forgotten_subjects": [target.as_entry_fields() for target in targets],
+        "duplicate": True,
+    }
+
+
+def _read_json_list_for_listing(path: str) -> list:
+    """Write-free read of one JSON list file for the listing endpoint (never creates directories)."""
+    from utils.file_utils import read_json_tolerating_replace
+
+    if not os.path.exists(path):
+        return []
+    try:
+        # 扛过 Windows 上并发 os.replace 的共享冲突：不然 subject 会显示成 0 条或整个消失
+        data = read_json_tolerating_replace(path)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
+        logger.warning(f"[scoped_subjects] {os.path.basename(path)} 读取失败，按空处理: {exc}")
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _read_locale_subjects_for_listing(path: str, lanlan_name: str) -> list:
+    """Write-free read of the subjects that have a live scoped prompt-locale row."""
+    from memory.scopes import subject_from_entry
+    from utils.file_utils import read_json_tolerating_replace
+
+    if not os.path.exists(path):
+        return []
+    try:
+        data = read_json_tolerating_replace(path)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
+        logger.warning(f"[scoped_subjects] scoped_prompt_locales.json 读取失败，按空处理: {exc}")
+        return []
+    rows = data.get("subjects") if isinstance(data, dict) else None
+    live = None
+    if isinstance(rows, dict):
+        try:
+            # 已被清除、只是还留在盘上的行（清除写下 cutoff 后、改写 sidecar 前崩溃）按加载器同口径滤掉，
+            # 不然被清的 subject 会一直以 prompt_locale 出现、再清也清不掉
+            live = locale_state.live_subject_locale_keys(lanlan_name, rows)
+        except locale_state.PromptLocalePersistenceError as exc:
+            logger.warning(f"[scoped_subjects] 语言清除 cutoff 读不出，按全部列出: {exc}")
+    subjects = []
+    for key, row in (rows.items() if isinstance(rows, dict) else ()):
+        if not isinstance(key, str) or not isinstance(row, dict):
+            continue
+        if live is not None and key not in live:
+            continue
+        try:
+            parts = json.loads(key)
+        except (json.JSONDecodeError, RecursionError):
+            continue
+        if not isinstance(parts, list) or len(parts) != 3 or not all(isinstance(p, str) for p in parts):
+            continue
+        subject = subject_from_entry({"subject_kind": parts[0], "subject_id": parts[1], "scope": parts[2]})
+        if subject is not None:
+            subjects.append(subject)
+    return subjects
+
+
+def _read_staged_subjects_for_listing(directory: str) -> list:
+    """Write-free read of the subjects named by pending keyed staging journals."""
+    from memory.scopes import subject_from_entry
+
+    from .idempotency import _list_staging_sync
+
+    from .idempotency import IDEMPOTENCY_KEYS_FILENAME, TERMINAL_KEY_STATES, key_digest
+
+    # 按文件名反查键记录：已终结（done / cancelled）的键收尾时删暂存失败留下的文件没有待应用的东西，
+    # 不能列成 staged。没有记录的孤儿可能被同键重试认领，照常列；键记录读不出时全部照常列（偏向多列）
+    terminal_files: set[str] = set()
+    from utils.file_utils import read_json_tolerating_replace
+
+    try:
+        records = read_json_tolerating_replace(os.path.join(os.path.dirname(directory), IDEMPOTENCY_KEYS_FILENAME))
+    except (OSError, ValueError, RecursionError):
+        records = {}
+    if isinstance(records, dict):
+        for key, record in records.items():
+            # 只认明确的终态：状态缺失 / 坏了的记录写路径会 fail closed，暂存可能是唯一的明文，照常列出
+            state = record.get("state") if isinstance(record, dict) else None
+            if isinstance(key, str) and key and isinstance(state, str) and state in TERMINAL_KEY_STATES:
+                terminal_files.add(f"{key_digest(key)}.json")
+    subjects = []
+    for path, document, _mtime in _list_staging_sync(directory):
+        if not isinstance(document, dict) or document.get(_KEYED_STAGING_CANCELLED) is True:
+            continue
+        if os.path.basename(path) in terminal_files:
+            continue
+        segments = document.get("segments")
+        for segment in segments if isinstance(segments, list) else []:
+            if isinstance(segment, dict) and segment.get(_SEGMENT_DROPPED_BY_FORGET) is True:
+                # 已被清除丢弃的段（内容已抹）：没有待应用的记忆，不能让已清除的对象又冒出来
+                continue
+            raw = segment.get("subject") if isinstance(segment, dict) else None
+            subject = subject_from_entry(raw) if isinstance(raw, dict) else None
+            if subject is not None:
+                subjects.append(subject)
+    return subjects
+
+
+def _read_correction_subjects_for_listing(path: str) -> list:
+    """Write-free read of the subjects owning a pending persona correction (one entry per row).
+
+    Same attribution as ``PersonaManager.aforget_subject``: the subject stamp,
+    or for older unstamped rows the ``@subject/<kind>:<id>`` entity.
+    """
+    from memory.scopes import SCOPED_PERSONA_PREFIX, MemoryScopeError, MemorySubject, subject_from_entry
+    from utils.file_utils import read_json_tolerating_replace
+
+    if not os.path.exists(path):
+        return []
+    try:
+        data = read_json_tolerating_replace(path)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
+        logger.warning(f"[scoped_subjects] persona_corrections.json 读取失败，按空处理: {exc}")
+        return []
+    subjects = []
+    for correction in data if isinstance(data, list) else []:
+        if not isinstance(correction, dict):
+            continue
+        subject = subject_from_entry(correction)
+        if subject is None:
+            entity_raw = correction.get("entity")
+            entity = entity_raw.strip() if isinstance(entity_raw, str) else ""
+            if not entity.startswith(SCOPED_PERSONA_PREFIX):
+                continue
+            body = entity[len(SCOPED_PERSONA_PREFIX):]
+            kind, _, subject_id = body.partition(":")
+            scope = correction.get("scope")
+            try:
+                subject = MemorySubject.create(kind, subject_id, scope=scope if isinstance(scope, str) and scope else body)
+            except MemoryScopeError:
+                continue
+        subjects.append(subject)
+    return subjects
+
+
+def _read_persona_for_listing(path: str) -> dict:
+    """Strict, write-free persona read for the listing endpoint."""
+    from utils.file_utils import read_json_tolerating_replace
+
+    if not os.path.exists(path):
+        return {}
+    try:
+        data = read_json_tolerating_replace(path)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
+        logger.warning(f"[scoped_subjects] persona 读取失败，按无 persona 处理: {exc}")
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+_FORGET_EPOCHS_MAX_SUBJECTS = 64
+
+
+@app.get("/internal/memory/{lanlan_name}/forget_epochs")
+async def get_forget_epochs(lanlan_name: str, subject: list[str] = Query(default=[])):
+    """Current forget-epoch fence of each requested subject key (read-only).
+
+    Answers ``{"epochs": {subject_key: forget_epoch}}`` for the keys that
+    carry a tombstone; keys without one are left out. A client whose local
+    epoch counter was reset (cloud restore, new installation) raises it to
+    this value before opening a keyed write or sending a forget, so neither
+    falls below a restored tombstone. A tombstone file or row that cannot be
+    read answers 503: an unknown fence must not read as "no fence".
+    """
+    from . import idempotency
+
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if runtime._config_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    if len(subject) > _FORGET_EPOCHS_MAX_SUBJECTS or any(
+        not key or len(key) > 512 or not key.isprintable() for key in subject
+    ):
+        raise HTTPException(status_code=422, detail="invalid subject keys")
+    try:
+        tombstones = await idempotency.read_tombstones(lanlan_name)
+        epochs = {}
+        for key in dict.fromkeys(subject):
+            fence = idempotency.tombstone_epoch(tombstones, [key])
+            if fence is not None:
+                epochs[key] = fence
+    except idempotency.IdempotencyStateError as exc:
+        raise HTTPException(status_code=503, detail="forget epochs unreadable; retry later") from exc
+    return {"epochs": epochs}
+
+
+@app.get("/internal/memory/{lanlan_name}/scoped_subjects")
+async def list_scoped_subjects(lanlan_name: str, platform: str):
+    """List the scoped subjects stored for one platform (read-only).
+
+    Filters on the platform component of ``subject_id`` (its first
+    ``:``-separated segment) for every subject kind, NOT on a raw key
+    prefix: a ``participant`` id ``neko_visit:<uid>`` and a ``group_chat``
+    id ``neko_visit:<pair>`` share their prefix, and ``neko_visit_x:...``
+    must not match ``neko_visit``. Read-only: persona is read straight from
+    disk instead of through ``aensure_persona`` (which recovers and saves a
+    malformed file), and a character without a directory answers an empty
+    list without creating one. Not part of the write fence (GET is never in
+    ``_CHARACTER_SCOPED_WRITE_OPS``).
+    """
+    from memory.scopes import (
+        SCOPED_PERSONA_PREFIX,
+        entry_matches_subject,
+        persona_subject_from_section,
+        subject_from_entry,
+    )
+    from memory.subject_archive import collect_subject_last_writes
+
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if runtime._config_manager is None:
+        # 列表只直接读盘（facts / reflections / persona），只依赖配置管理器
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    platform = (platform or "").strip()
+    if not platform or ":" in platform or len(platform) > 64:
+        raise HTTPException(status_code=422, detail="invalid platform")
+    character_dir = os.path.join(
+        str(runtime._config_manager.memory_dir), lanlan_name,
+    )
+    if not await asyncio.to_thread(os.path.isdir, character_dir):
+        return {"subjects": []}
+
+    def _platform_of(subject) -> str:
+        return subject.subject_id.split(":", 1)[0]
+
+    # 直接读盘、不经各 store 的加载器：加载器取路径时会 ensure_character_dir，
+    # 本 GET 不进写入围栏，删除 / 改名与它并发时会把刚删掉的角色目录重新建出来
+    active_facts = await asyncio.to_thread(
+        _read_json_list_for_listing, os.path.join(character_dir, "facts.json"),
+    )
+    archived_facts = await asyncio.to_thread(
+        _read_json_list_for_listing, os.path.join(character_dir, "facts_archive.json"),
+    )
+    def _fact_id(fact: dict):
+        # 旧版本 / 手改文件里可能有列表、对象之类不可哈希的 id：只认字符串与整数，
+        # 其余当作没有 id，不能让一条坏数据把整个列表请求打成 500
+        fid = fact.get("id")
+        if isinstance(fid, bool) or not isinstance(fid, (str, int)):
+            return None
+        return fid
+
+    def _identity(fact: dict):
+        # 与事实层的完整身份同口径：(id, subject_kind, subject_id, scope)；
+        # 不同 subject / scope 恰好重用同一个裸 id 时不能互相吞掉
+        fid = _fact_id(fact)
+        if fid is None:
+            return None
+        parts = (fact.get("subject_kind"), fact.get("subject_id"), fact.get("scope"))
+        # 身份字段被手改成列表 / 对象之类：不可哈希，按「没有身份」处理、不参与去重
+        if any(part is not None and not isinstance(part, str) for part in parts):
+            return None
+        return (fid, *parts)
+
+    active_fact_ids = {
+        _identity(fact)
+        for fact in active_facts
+        if isinstance(fact, dict) and _identity(fact) is not None
+    }
+    # 与 load_facts_full 同口径按 id 去重：归档先写 facts_archive.json、后改
+    # facts.json，两步之间中断时同一条事实会暂时同时出现在两份文件里
+    active_rows = [fact for fact in active_facts if isinstance(fact, dict)]
+    # 活跃与否按来源文件判，不按 id：坏 id 的活跃事实也不能被当成「只剩归档」
+    active_row_refs = {id(fact) for fact in active_rows}
+    facts_full = active_rows + [
+        fact for fact in archived_facts
+        if isinstance(fact, dict)
+        and (_identity(fact) is None or _identity(fact) not in active_fact_ids)
+    ]
+    reflections_path = os.path.join(character_dir, "reflections.json")
+    from memory.reflection._shared import REFLECTION_TERMINAL_STATUSES
+
+    # 全部已存的反思都列：已终结（promoted / denied / merged …）的、以及 id 缺失 / 坏掉的
+    # 仍留在文件里、仍在 scoped_forget 的删除面上（它按 subject 删，不看 id），只剩这类
+    # 数据的 subject 也得能被找到、被清除。所以不走活跃读路径那个按 id 过滤的加载器
+    reflections = [
+        row for row in await asyncio.to_thread(_read_json_list_for_listing, reflections_path)
+        if isinstance(row, dict)
+    ]
+    persona = await asyncio.to_thread(
+        _read_persona_for_listing,
+        os.path.join(character_dir, "persona.json"),
+    )
+    locale_subjects = await asyncio.to_thread(
+        _read_locale_subjects_for_listing,
+        os.path.join(character_dir, "scoped_prompt_locales.json"),
+        lanlan_name,
+    )
+    correction_subjects = await asyncio.to_thread(
+        _read_correction_subjects_for_listing,
+        os.path.join(character_dir, "persona_corrections.json"),
+    )
+    from .idempotency import STAGING_DIRNAME
+
+    staged_subjects = await asyncio.to_thread(
+        _read_staged_subjects_for_listing, os.path.join(character_dir, STAGING_DIRNAME),
+    )
+
+    rows: dict[tuple[str, str], dict] = {}
+
+    def _row(subject) -> dict | None:
+        if _platform_of(subject) != platform:
+            return None
+        marker = (subject.key, subject.scope)
+        row = rows.get(marker)
+        if row is None:
+            row = {
+                "subject": subject,
+                "display_name": None,
+                "facts": 0,
+                "active_facts": 0,
+                "reflections": 0,
+                "active_reflections": 0,
+                "persona": False,
+                "prompt_locale": False,
+                "corrections": 0,
+                "staged": False,
+            }
+            rows[marker] = row
+        return row
+
+    for fact in facts_full:
+        if not isinstance(fact, dict):
+            continue
+        subject = subject_from_entry(fact)
+        row = _row(subject) if subject is not None else None
+        if row is None:
+            continue
+        row["facts"] += 1
+        if id(fact) in active_row_refs and not fact.get("subject_archived_at"):
+            row["active_facts"] += 1
+    for reflection in reflections:
+        if not isinstance(reflection, dict):
+            continue
+        subject = subject_from_entry(reflection)
+        row = _row(subject) if subject is not None else None
+        if row is not None:
+            row["reflections"] += 1
+            status = reflection.get("status")
+            # 状态坏了（列表 / 对象等不可哈希值）按未终结处理，不让一条坏反思把整个列表打成 500
+            if not isinstance(status, str) or status not in REFLECTION_TERMINAL_STATUSES:
+                row["active_reflections"] += 1
+    persona_entries: list[dict] = []
+    for section_key, section in persona.items():
+        if not isinstance(section, dict) or not str(section_key).startswith(
+            SCOPED_PERSONA_PREFIX,
+        ):
+            continue
+        section_subject = persona_subject_from_section(section_key, section)
+        raw_entries = section.get("facts")
+        # 一个 section 的 facts 坏了（不是列表）只当作空，不能让整个列表接口 500
+        entries = [
+            entry for entry in (raw_entries if isinstance(raw_entries, list) else [])
+            if isinstance(entry, dict)
+        ]
+        persona_entries.extend(entries)
+        # section key 不含 scope：同 kind:id 的不同 scope 条目可能住在同一个 section 里，section
+        # 元数据只记最近的写者。逐条按条目自己的 subject 戳记行，否则只剩 persona 的别的 scope 列不出来
+        for entry in entries:
+            entry_subject = subject_from_entry(entry)
+            entry_row = _row(entry_subject) if entry_subject is not None else None
+            if entry_row is not None:
+                entry_row["persona"] = True
+        if section_subject is None:
+            continue
+        has_entries = any(
+            entry_matches_subject(entry, section_subject) for entry in entries
+        )
+        display_name = section.get("display_name")
+        if not has_entries and not display_name:
+            continue
+        row = _row(section_subject)
+        if row is None:
+            continue
+        if has_entries:
+            row["persona"] = True
+        if isinstance(display_name, str) and display_name:
+            row["display_name"] = display_name
+    # 只存了语言的 subject（抽取没出事实、或带键生成中断只留下预留的语言行）同样在
+    # scoped_forget 的删除面上，得能被找到、被清除
+    for locale_subject in locale_subjects:
+        row = _row(locale_subject)
+        if row is not None:
+            row["prompt_locale"] = True
+    # 待处理的人设纠正同在删除面上（resolve 时会把已删的条目写回 persona）：只剩它们的 subject
+    # 也要能被找到、被清除
+    for correction_subject in correction_subjects:
+        row = _row(correction_subject)
+        if row is not None:
+            row["corrections"] += 1
+    # 带键请求生成后、应用第一项前崩溃留下的暂存，可能是这个 subject 唯一的数据：清除把它当删除面、
+    # 同键重试还会应用它，所以同样要能被找到
+    for staged_subject in staged_subjects:
+        row = _row(staged_subject)
+        if row is not None:
+            row["staged"] = True
+    last_writes, _no_timestamp = collect_subject_last_writes(
+        [facts_full, reflections, persona_entries],
+    )
+    subjects = []
+    for marker in sorted(rows, key=lambda m: (rows[m]["subject"].kind, m)):
+        row = rows[marker]
+        subject = row["subject"]
+        last = last_writes.get(marker)
+        subjects.append({
+            "subject_kind": subject.kind,
+            "subject_id": subject.subject_id,
+            "scope": subject.scope,
+            "display_name": row["display_name"],
+            "facts": row["facts"],
+            "reflections": row["reflections"],
+            "persona": row["persona"],
+            "prompt_locale": row["prompt_locale"],
+            "corrections": row["corrections"],
+            "staged": row["staged"],
+            "last_write_at": last[1].isoformat() if last is not None else None,
+            # 只剩归档里的事实、活跃面（事实 / 反思 / persona）一条都没有。
+            # 已终结的反思（promoted / denied …）照样列出、计入 reflections，但不算活跃面
+            "archived": (
+                row["facts"] > 0
+                and row["active_facts"] == 0
+                and row["active_reflections"] == 0
+                and not row["persona"]
+            ),
+        })
+    return {"subjects": subjects}
 
 
 # ── trust pool / identity endpoints ─────────────────────────────────────────
@@ -3734,7 +7060,16 @@ async def _new_dialog(
             time=get_timestamp(),
         )
 
-        for i in await runtime.recent_history_manager.aget_recent_history(lanlan_name):
+        recent_history = _screen_guarded_recent_history(
+            await runtime.recent_history_manager.aget_recent_history(lanlan_name)
+        )
+        rendered_history = await asyncio.to_thread(lambda: list(_iter_theater_rendered_history(
+            recent_history, lang=_lang, name=lanlan_name, master=master_name,
+        )))
+        for i, capsule_text in rendered_history:
+            if capsule_text is not None:
+                result += capsule_text + "\n"
+                continue
             if isinstance(i.content, str):
                 cleaned_content = brackets_pattern.sub('', i.content).strip()
                 result += f"{name_mapping[i.type]} | {cleaned_content}\n"

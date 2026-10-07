@@ -1153,6 +1153,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         # 串行化 chat 注入的注册/注销与 set_chat_injection 的"持久化+应用"，
         # 防止并发 toggle 交错（映射覆盖、注册途中被清理）
         self._chat_tools_lock = asyncio.Lock()
+        self._servers_config_lock = asyncio.Lock()
         # 跨插件 LLM tool 名查重缓存：(fetched_at, foreign_names)
         self._foreign_llm_names_cache: Optional[tuple[float, frozenset]] = None
         
@@ -1614,24 +1615,14 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         映射与本地注册一并作废，但不触碰别人的工具；"failed" 表示远端暂时
         不可达——保留映射供重试。
         """
-        pending = self._pending_chat_tools.pop(tool_id, None)
-        if pending is not None:
-            llm_name = str(pending.get("llm_name") or "")
-            if llm_name:
-                try:
-                    self.unregister_llm_tool(llm_name)
-                except Exception as exc:
-                    self.ctx.logger.warning(
-                        f"Failed to roll back pending chat tool '{llm_name}' (MCP tool '{tool_id}'): {exc}"
-                    )
-            return "removed"
-
-        info = self._chat_tools.get(tool_id)
+        pending = self._pending_chat_tools.get(tool_id)
+        info = pending if pending is not None else self._chat_tools.get(tool_id)
         if info is None:
             return "absent"
         llm_name = str(info.get("llm_name") or "")
         if not llm_name:
             self._chat_tools.pop(tool_id, None)
+            self._pending_chat_tools.pop(tool_id, None)
             return "absent"
         remote = await self._remote_unregister_llm_tool(llm_name)
         if remote == "failed":
@@ -1643,6 +1634,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             )
             return "failed"
         self._chat_tools.pop(tool_id, None)
+        self._pending_chat_tools.pop(tool_id, None)
         try:
             self.unregister_llm_tool(llm_name)
         except Exception as exc:
@@ -1758,10 +1750,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         # main_server 的超时，聊天端不会先于我们拿到干净的超时错误。
         deadline = asyncio.get_running_loop().time() + timeout_s
         run_args = dict(arguments) if isinstance(arguments, dict) else {}
-        # entry_timeout 覆盖 run 侧守卫超时（默认 RUN_EXECUTION_TIMEOUT）与
-        # entry 看门狗：预算 - 10s，先于聊天端轮询期限（预算 - 5s）触发取消，
-        # 避免超预算的 MCP 调用在聊天端已报超时后 run 又单独 succeeded。
-        run_args["_ctx"] = {"entry_timeout": max(timeout_s - 10.0, 5.0)}
+        # Preserve the configured MCP execution window with forwarding slack.
+        run_args["_ctx"] = {"entry_timeout": min(self._tool_timeout, max(timeout_s - 1.0, 0.1))}
         run_id: Optional[str] = None
 
         try:
@@ -1869,6 +1859,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                         "error": f"Timed out waiting for run of MCP tool '{tool_name}'",
                     }
         except (httpx.HTTPError, OSError, ValueError) as exc:
+            await self._cancel_run_best_effort(base, run_id, tool_name)
             return {
                 "status": "failed",
                 "success": False,
@@ -1876,7 +1867,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
-    async def _cancel_run_best_effort(self, base: str, run_id: str, tool_name: str) -> None:
+    async def _cancel_run_best_effort(self, base: str, run_id: Optional[str], tool_name: str) -> None:
         """轮询放弃前尽力取消 run（best-effort，吞掉一切传输错误）。"""
         if not run_id:
             return
@@ -2650,108 +2641,93 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     )
     async def set_chat_injection(self, server_name: str, inject_to_chat: bool, **_):
         """配置单个 MCP server 是否把 tools 注入聊天上下文"""
-        inject_flag = self._coerce_bool(inject_to_chat, False)
-        # 整个"持久化 + 应用"过程持锁串行：并发 enable/disable 交错会让
-        # 注册互相覆盖映射、或让 disable 在 enable 注册途中清掉它的结果。
-        # config.dump 也在锁内——回滚时重新 dump 新鲜配置再持久化，避免
-        # 并发的 add_server 被 stale dump 的删除语义误清。
-        async with self._chat_tools_lock:
-            config = await self.config.dump()
-            servers_config = config.get("mcp_servers", {})
-            server_cfg = servers_config.get(server_name)
-            if not isinstance(server_cfg, dict):
-                return Err(SdkError(f"Server '{server_name}' not found in config"))
+        async with self._servers_config_lock:
+            inject_flag = self._coerce_bool(inject_to_chat, False)
+            # 整个"持久化 + 应用"过程持锁串行：并发 enable/disable 交错会让
+            # 注册互相覆盖映射、或让 disable 在 enable 注册途中清掉它的结果。
+            # config.dump 也在锁内——回滚时重新 dump 新鲜配置再持久化，避免
+            # 并发的 add_server 被 stale dump 的删除语义误清。
+            async with self._chat_tools_lock:
+                config = await self.config.dump()
+                servers_config = config.get("mcp_servers", {})
+                server_cfg = servers_config.get(server_name)
+                if not isinstance(server_cfg, dict):
+                    return Err(SdkError(f"Server '{server_name}' not found in config"))
 
-            previous_flag = self._is_chat_injection_enabled(server_name)
-            server_cfg["inject_to_chat"] = inject_flag
-            try:
-                await self._persist_servers_config(servers_config)
-            except Exception as exc:
-                self.ctx.logger.exception(
-                    f"Failed to persist chat injection flag for MCP server '{server_name}': {exc}"
-                )
-                return Err(SdkError(f"Failed to save server config: {exc}"))
-            self._servers_config = servers_config
+                previous_flag = self._is_chat_injection_enabled(server_name)
+                server_cfg["inject_to_chat"] = inject_flag
+                try:
+                    await self._persist_servers_config(servers_config)
+                except Exception as exc:
+                    self.ctx.logger.exception(
+                        f"Failed to persist chat injection flag for MCP server '{server_name}': {exc}"
+                    )
+                    return Err(SdkError(f"Failed to save server config: {exc}"))
+                self._servers_config = servers_config
 
-            client = self._clients.get(server_name)
-            applied = 0
-            failed_tool_ids: List[str] = []
-            if client is not None:
-                for tool in client.tools:
-                    tool_id = f"mcp_{server_name}_{tool.name}"
-                    # 只处理路由索引归属本 server 的 tool_id：server/tool 拼接可能
-                    # 撞出相同 ID（如 server a_b + tool c 与 server a + tool b_c），
-                    # 路由引擎按先到先得去重，非归属方若也注册 chat 注入会转发到
-                    # 别人的 entry、注销时还会拆掉别人的注入。
-                    if self._route_engine is None or self._route_engine.get_tool_server(tool_id) != server_name:
-                        continue
-                    if inject_flag:
+                client = self._clients.get(server_name)
+                applied = 0
+                failed_tool_ids: List[str] = []
+                if inject_flag and client is not None:
+                    for tool in client.tools:
+                        tool_id = f"mcp_{server_name}_{tool.name}"
+                        if self._route_engine is None or self._route_engine.get_tool_server(tool_id) != server_name:
+                            continue
                         if tool_id in self._chat_tools or tool_id in self._pending_chat_tools:
                             continue
                         await self._register_chat_tool_local_locked(
-                            tool_id=tool_id,
-                            server_name=server_name,
-                            tool_name=tool.name,
-                            description=tool.description or f"MCP tool from {server_name}",
-                            schema=tool.input_schema,
+                            tool_id=tool_id, server_name=server_name, tool_name=tool.name,
+                            description=tool.description or f"MCP tool from {server_name}", schema=tool.input_schema,
                         )
-                    else:
+                elif not inject_flag:
+                    mapped_ids = [
+                        tid for mapping in (self._chat_tools, self._pending_chat_tools)
+                        for tid, info in mapping.items() if info.get("server_name") == server_name
+                    ]
+                    for tool_id in dict.fromkeys(mapped_ids):
                         outcome = await self._unregister_chat_tool_locked(tool_id)
                         if outcome == "removed":
                             applied += 1
                         elif outcome == "failed":
                             failed_tool_ids.append(tool_id)
-            else:
-                # server 未连接：按映射里的 server_name 扫描残留注入（如断连
-                # 时远端不可达保留下来的映射），一样走清理，不谎报已停用。
-                mapped_ids = [
-                    tid for tid, info in self._chat_tools.items()
-                    if info.get("server_name") == server_name
-                ]
-                for tool_id in mapped_ids:
-                    outcome = await self._unregister_chat_tool_locked(tool_id)
-                    if outcome == "removed":
-                        applied += 1
-                    elif outcome == "failed":
-                        failed_tool_ids.append(tool_id)
 
-            if inject_flag:
-                # 本地登记完后批量确认远端生效（一次共享截止时间）
-                applied = await self._confirm_pending_chat_tools_locked(server_name)
+                if inject_flag:
+                    # 本地登记完后批量确认远端生效（一次共享截止时间）
+                    applied = await self._confirm_pending_chat_tools_locked(server_name)
 
-            if not inject_flag and failed_tool_ids:
-                # 禁用清理未完成（远端暂时不可达等）：回滚标志让面板如实反映
-                # "仍然启用"，失败工具的映射保留供下次重试。回滚用新鲜 dump，
-                # 避免锁外并发 add/remove 的配置被 stale 删除语义误清。
-                if previous_flag != inject_flag:
-                    fresh_config = await self.config.dump()
-                    fresh_servers = fresh_config.get("mcp_servers", {})
-                    if isinstance(fresh_servers.get(server_name), dict):
-                        fresh_servers[server_name]["inject_to_chat"] = previous_flag
-                        try:
-                            await self._persist_servers_config(fresh_servers)
-                        except Exception:
-                            self.ctx.logger.exception(
-                                f"Failed to roll back chat injection flag for MCP server '{server_name}'"
-                            )
-                    self._servers_config.get(server_name, {})["inject_to_chat"] = previous_flag
-                self.ctx.logger.warning(
-                    f"Chat injection cleanup incomplete for server '{server_name}': "
-                    f"{len(failed_tool_ids)} tool(s) still active"
-                )
-                return Err(SdkError(
-                    f"Failed to disable chat injection for server '{server_name}': "
-                    f"{len(failed_tool_ids)} tool(s) still active (remote unregister not confirmed); retry later"
-                ))
+                if not inject_flag and failed_tool_ids:
+                    # 禁用清理未完成（远端暂时不可达等）：回滚标志让面板如实反映
+                    # "仍然启用"，失败工具的映射保留供下次重试。回滚用新鲜 dump，
+                    # 避免锁外并发 add/remove 的配置被 stale 删除语义误清。
+                    if previous_flag != inject_flag:
+                        fresh_config = await self.config.dump()
+                        fresh_servers = fresh_config.get("mcp_servers", {})
+                        if isinstance(fresh_servers.get(server_name), dict):
+                            fresh_servers[server_name]["inject_to_chat"] = previous_flag
+                            try:
+                                await self._persist_servers_config(fresh_servers)
+                            except Exception:
+                                self.ctx.logger.exception(
+                                    f"Failed to roll back chat injection flag for MCP server '{server_name}'"
+                                )
+                        self._servers_config.get(server_name, {})["inject_to_chat"] = previous_flag
+                    self.ctx.logger.warning(
+                        f"Chat injection cleanup incomplete for server '{server_name}': "
+                        f"{len(failed_tool_ids)} tool(s) still active"
+                    )
+                    return Err(SdkError(
+                        f"Failed to disable chat injection for server '{server_name}': "
+                        f"{len(failed_tool_ids)} tool(s) still active (remote unregister not confirmed); retry later"
+                    ))
 
-            state_text = "enabled" if inject_flag else "disabled"
-            return Ok({
-                "message": f"Chat injection {state_text} for server '{server_name}' ({applied} tool(s) updated)",
-                "server_name": server_name,
-                "inject_to_chat": inject_flag,
-                "connected": client is not None,
-                "applied": applied,
-            })
+                state_text = "enabled" if inject_flag else "disabled"
+                return Ok({
+                    "message": f"Chat injection {state_text} for server '{server_name}' ({applied} tool(s) updated)",
+                    "server_name": server_name,
+                    "inject_to_chat": inject_flag,
+                    "connected": client is not None,
+                    "applied": applied,
+                })
     
     @ui.action(label=tr("actions.addServer.label", default="Add Server"), tone="success", group="server", order=5, refresh_context=True)
     @plugin_entry(
@@ -2823,76 +2799,77 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         **_
     ):
         """添加新的 MCP server 配置"""
-        # 检查是否已存在
-        config = await self.config.dump()
-        servers_config = config.get("mcp_servers", {})
+        async with self._servers_config_lock:
+            # 检查是否已存在
+            config = await self.config.dump()
+            servers_config = config.get("mcp_servers", {})
 
-        # 验证配置
-        if transport == "stdio" and not command:
-            return Err(SdkError("Command is required for stdio transport"))
-        if transport in ("sse", "streamable-http") and not url:
-            return Err(SdkError("URL is required for sse/http transport"))
+            # 验证配置
+            if transport == "stdio" and not command:
+                return Err(SdkError("Command is required for stdio transport"))
+            if transport in ("sse", "streamable-http") and not url:
+                return Err(SdkError("URL is required for sse/http transport"))
 
-        # 构建配置
-        server_cfg = self._normalize_server_config_payload(
-            transport=transport,
-            command=command,
-            args=args,
-            url=url,
-            env=env,
-            headers=headers,
-            enabled=enabled,
-            inject_to_chat=self._coerce_bool(inject_to_chat, False),
-        )
-
-        existing_cfg = servers_config.get(name)
-        if existing_cfg is not None:
-            if self._is_same_server_config(existing_cfg, server_cfg):
-                self.ctx.logger.info(f"Server '{name}' already exists with identical config")
-                if auto_connect and enabled and name not in self._clients:
-                    adapter_config = config.get("mcp_adapter", {})
-                    timeout_val = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
-                    scheduled = self._schedule_connect_server(name, server_cfg, timeout_val)
-                    return Ok({
-                        "message": f"Server '{name}' already exists; connection {'scheduled' if scheduled else 'already pending'}",
-                        "already_exists": True,
-                        "connecting": scheduled or name in self._connect_tasks,
-                    })
-                return Ok({
-                    "message": f"Server '{name}' already exists",
-                    "already_exists": True,
-                    "connected": name in self._clients,
-                })
-            return Err(SdkError(f"Server '{name}' already exists with different config"))
-        
-        # 保存到配置
-        servers_config[name] = server_cfg
-        self.ctx.logger.info(f"Saving mcp_servers config: {list(servers_config.keys())}")
-        try:
-            await self._persist_servers_config(servers_config)
-        except Exception as exc:
-            self.ctx.logger.exception(
-                f"Failed to persist MCP server config while adding server '{name}' "
-                f"(transport={transport}): {exc}"
+            # 构建配置
+            server_cfg = self._normalize_server_config_payload(
+                transport=transport,
+                command=command,
+                args=args,
+                url=url,
+                env=env,
+                headers=headers,
+                enabled=enabled,
+                inject_to_chat=self._coerce_bool(inject_to_chat, False),
             )
-            return Err(SdkError(f"Failed to save server config: {exc}"))
+
+            existing_cfg = servers_config.get(name)
+            if existing_cfg is not None:
+                if self._is_same_server_config(existing_cfg, server_cfg):
+                    self.ctx.logger.info(f"Server '{name}' already exists with identical config")
+                    if auto_connect and enabled and name not in self._clients:
+                        adapter_config = config.get("mcp_adapter", {})
+                        timeout_val = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
+                        scheduled = self._schedule_connect_server(name, server_cfg, timeout_val)
+                        return Ok({
+                            "message": f"Server '{name}' already exists; connection {'scheduled' if scheduled else 'already pending'}",
+                            "already_exists": True,
+                            "connecting": scheduled or name in self._connect_tasks,
+                        })
+                    return Ok({
+                        "message": f"Server '{name}' already exists",
+                        "already_exists": True,
+                        "connected": name in self._clients,
+                    })
+                return Err(SdkError(f"Server '{name}' already exists with different config"))
         
-        # 缓存配置
-        self._servers_config = servers_config
-        self.ctx.logger.info(f"Server '{name}' added to config")
+            # 保存到配置
+            servers_config[name] = server_cfg
+            self.ctx.logger.info(f"Saving mcp_servers config: {list(servers_config.keys())}")
+            try:
+                await self._persist_servers_config(servers_config)
+            except Exception as exc:
+                self.ctx.logger.exception(
+                    f"Failed to persist MCP server config while adding server '{name}' "
+                    f"(transport={transport}): {exc}"
+                )
+                return Err(SdkError(f"Failed to save server config: {exc}"))
         
-        # 如果需要自动连接
-        if auto_connect and enabled:
-            adapter_config = config.get("mcp_adapter", {})
-            timeout_val = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
-            self._schedule_connect_server(name, server_cfg, timeout_val)
-            return Ok({
-                "message": f"Added server '{name}' and scheduled connection",
-                "connected": False,
-                "connecting": True,
-            })
+            # 缓存配置
+            self._servers_config = servers_config
+            self.ctx.logger.info(f"Server '{name}' added to config")
         
-        return Ok({"message": f"Added server '{name}'"})
+            # 如果需要自动连接
+            if auto_connect and enabled:
+                adapter_config = config.get("mcp_adapter", {})
+                timeout_val = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
+                self._schedule_connect_server(name, server_cfg, timeout_val)
+                return Ok({
+                    "message": f"Added server '{name}' and scheduled connection",
+                    "connected": False,
+                    "connecting": True,
+                })
+        
+            return Ok({"message": f"Added server '{name}'"})
     
     @ui.action(label=tr("actions.removeServers.label", default="Remove Server"), tone="danger", group="server", order=30, confirm=tr("actions.removeServers.confirm", default="Remove these MCP Servers?"), refresh_context=True)
     @plugin_entry(
@@ -2914,64 +2891,60 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     )
     async def remove_servers(self, server_names: List[str], **_):
         """批量移除 MCP server 配置"""
-        config = await self.config.dump()
-        servers_config = config.get("mcp_servers", {})
+        async with self._servers_config_lock:
+            config = await self.config.dump()
+            servers_config = config.get("mcp_servers", {})
         
-        removed = []
-        not_found = []
+            removed = []
+            not_found = []
         
-        for name in server_names:
-            if name not in servers_config:
-                not_found.append(name)
-                continue
-
-            self._cancel_connect_task(name)
-            self._cancel_reconnect_task(name)
-
-            # 如果已连接，先断开
-            if name in self._clients:
-                await self._unregister_mcp_tools(name)
-                client = self._clients.pop(name)
-                await client.disconnect()
-
-            # 清理该 server 的聊天注入残留（断连期间远端不可达而保留的映射、
-            # 未确认的 pending 登记等），否则移除后无法再通过开关触达它们
             async with self._chat_tools_lock:
                 mapped_ids = [
-                    tid for tid, info in self._chat_tools.items()
-                    if info.get("server_name") == name
-                ] + [
-                    tid for tid, info in self._pending_chat_tools.items()
-                    if info.get("server_name") == name
+                    tid for mapping in (self._chat_tools, self._pending_chat_tools)
+                    for tid, info in mapping.items()
+                    if info.get("server_name") in server_names
                 ]
-                for tool_id in mapped_ids:
-                    await self._unregister_chat_tool_locked(tool_id)
+                for tool_id in dict.fromkeys(mapped_ids):
+                    if await self._unregister_chat_tool_locked(tool_id) == "failed":
+                        return Err(SdkError("Failed to remove servers: chat tool cleanup incomplete; retry later"))
 
-            # 从配置中移除
-            del servers_config[name]
+            for name in server_names:
+                if name not in servers_config:
+                    not_found.append(name)
+                    continue
+
+                self._cancel_connect_task(name)
+                self._cancel_reconnect_task(name)
+                if name in self._clients:
+                    await self._unregister_mcp_tools(name)
+                    client = self._clients.pop(name)
+                    await client.disconnect()
+
+                # 从配置中移除
+                del servers_config[name]
             
-            # 清理状态
-            if name in self._server_states:
-                del self._server_states[name]
+                # 清理状态
+                if name in self._server_states:
+                    del self._server_states[name]
             
-            removed.append(name)
+                removed.append(name)
         
-        self.ctx.logger.info(f"Saving updated mcp_servers config: {list(servers_config.keys())}")
-        try:
-            await self._persist_servers_config(dict(servers_config))
-        except Exception as exc:
-            self.ctx.logger.exception(
-                "Failed to persist MCP server config while removing servers "
-                f"(requested={len(server_names)}, removed={len(removed)}): {exc}"
-            )
-            return Err(SdkError(f"Failed to save server config: {exc}"))
-        self._servers_config = servers_config
+            self.ctx.logger.info(f"Saving updated mcp_servers config: {list(servers_config.keys())}")
+            try:
+                await self._persist_servers_config(dict(servers_config))
+            except Exception as exc:
+                self.ctx.logger.exception(
+                    "Failed to persist MCP server config while removing servers "
+                    f"(requested={len(server_names)}, removed={len(removed)}): {exc}"
+                )
+                return Err(SdkError(f"Failed to save server config: {exc}"))
+            self._servers_config = servers_config
         
-        return Ok({
-            "removed": removed,
-            "not_found": not_found,
-            "message": f"Removed {len(removed)} server(s)",
-        })
+            return Ok({
+                "removed": removed,
+                "not_found": not_found,
+                "message": f"Removed {len(removed)} server(s)",
+            })
     
     @plugin_entry(
         id="call_tool",

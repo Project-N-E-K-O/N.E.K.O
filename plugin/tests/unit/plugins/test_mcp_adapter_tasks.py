@@ -52,6 +52,7 @@ def _plugin_stub(MCPAdapterPlugin):
     plugin._chat_tools = {}
     plugin._pending_chat_tools = {}
     plugin._chat_tools_lock = asyncio.Lock()
+    plugin._servers_config_lock = asyncio.Lock()
     plugin._route_engine = None
     plugin.config = _Config({})
     plugin.ctx = SimpleNamespace(logger=_Logger())

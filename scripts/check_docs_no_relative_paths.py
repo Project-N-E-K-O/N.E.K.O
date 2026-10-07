@@ -116,9 +116,18 @@ SRC_FILE_PATTERN = re.compile(
 # Targets that resolve fine and must never be flagged.
 _SAFE_PREFIXES = ("http://", "https://", "mailto:", "tel:", "#", "/")
 
+# Absolute paths on an author's machine look site-absolute (leading ``/``) but
+# VitePress cannot resolve them either, and they leak local usernames and
+# experiment directories onto the public docs site.
+LOCAL_PATH_PATTERN = re.compile(
+    r"^(?:file:|/(?:Users|home|private|tmp|var/folders|Volumes|mnt|root)/|[A-Za-z]:[\\/])"
+)
+
 
 def _classify(target: str) -> str | None:
     """Return a violation kind for an offending link target, else ``None``."""
+    if LOCAL_PATH_PATTERN.match(target):
+        return "local-path"
     if target.startswith(_SAFE_PREFIXES):
         return None
     if target.startswith(".."):

@@ -1,5 +1,16 @@
 # Docker Deployment
 
+Remote instances use built-in connection authorization: enter the instance key once,
+then use community login normally. External nginx/NAS auth can be layered on top. Local desktop
+and loopback debugging proxies remain compatible. Remote replies omit Linux paths/cloud tokens.
+The default platform relay needs no per-Docker-domain registration. Auth relay and Electron
+companion releases must ship before #3289 is ready; real Linux + Windows acceptance needs community testing.
+See [contract and tests](/design/security/community-remote-access).
+Get the key: docker compose exec --user neko -w /app neko-main uv run python -m utils.instance_access
+When NEKO_INSTANCE_PUBLIC_ORIGIN uses HTTPS, the external gateway must close port 80 or redirect it to HTTPS; never forward plaintext requests with that Host. Keep the private HTTP upstream isolated. Host matching itself does not prove TLS.
+Plain HTTP (for example `http://<NAS-IP>:48911`, `DISABLE_SSL=1`, or an SSH tunnel) is allowed by default because many self-hosted setups cannot obtain a certificate. The pairing page then warns that the key and session travel unencrypted, and the session cookie is issued without the Secure flag under a separate name. Prefer HTTPS/WSS when you can; external TLS gateways may set NEKO_INSTANCE_PUBLIC_ORIGIN. Set `NEKO_REQUIRE_HTTPS=1` to refuse plaintext remote pairing and credentials. Browsers only allow microphone access on HTTPS or `localhost`, so voice input is unavailable on `http://<IP>`; text chat still works.
+Leave NEKO_COMMUNITY_WEB_REDIRECT_URI empty for the default relay.
+
 The maintained Compose file is `docker/docker-compose.yml`. It runs N.E.K.O. behind Nginx and publishes HTTP on host port 48911 and HTTPS on 48912.
 
 ## Start a published image
@@ -12,7 +23,7 @@ cp env.template .env
 docker compose up -d
 ```
 
-Open `http://127.0.0.1:48911`. The checked-out Compose file defines the registry/proxy default. Pin `NEKO_IMAGE` or `NEKO_IMAGE_VERSION` for reproducibility. `latest` is the standard-image alias; `latest-full` is the full-image alias.
+Open `https://127.0.0.1:48912` (recommended) or `http://<host>:48911`. The checked-out Compose file defines the registry/proxy default. Pin `NEKO_IMAGE` or `NEKO_IMAGE_VERSION` for reproducibility. `latest` is the standard-image alias; `latest-full` is the full-image alias.
 
 ::: warning Initial configuration
 The entrypoint generates `/home/neko/.local/share/N.E.K.O/config/core_config.json` only when absent. API environment variables are initialization inputs, not a live universal override. Setting `NEKO_FORCE_ENV_UPDATE` explicitly regenerates and replaces that persisted bootstrap configuration; back it up first. Confirm effective values in the Web UI.
@@ -22,10 +33,12 @@ The entrypoint generates `/home/neko/.local/share/N.E.K.O/config/core_config.jso
 
 | Host path | Container path | Purpose |
 | --- | --- | --- |
-| `./neko-home` | `/home/neko` | User configuration, characters, memories, user plugins and their state, feature data, TLS certificate and private key, OpenFang runtime state |
+| `./neko-home` | `/home/neko` | User configuration, characters, memories, user plugins and their state, feature data, TLS certificate and private key |
 | `./logs` | `/app/logs` | Logs |
 
 `TZ` defaults to `Asia/Shanghai`; override it in `.env` with any IANA timezone such as `Etc/UTC`. Back up `neko-home` and `logs` before upgrades. Never expose data or private-key directories through a web server. Do not point `PLUGIN_CONFIG_ROOT`, `PLUGIN_PACKAGES_ROOT`, or `PACKAGE_PROFILES_ROOT` outside `neko-home`, or the corresponding user-plugin data will not survive container recreation.
+
+Optionally run `sudo sh preflight.sh` in `docker/` before the first start and after moving data in. It runs on the host without pulling any image: it refuses a symlinked `neko-home` or `logs` (Docker would mount the link target and the container would take ownership of it), creates missing directories, and sets the owner of each directory itself, not its contents, to uid/gid 1000. When an override file mounts other directories, pass those paths exactly as written there (relative ones resolve against `docker/`, as in Compose); any symlink along them is rejected.
 
 ::: danger Upgrading from the two-mount layout
 Earlier versions mounted `./N.E.K.O` and `./ssl` separately. Pulling a new image without migrating leaves the container with an **empty** data directory: it starts normally and API keys are regenerated from the environment, so nothing looks wrong, but characters, memories and plugins are all missing. The old data is not deleted — it is simply no longer mounted.
@@ -34,12 +47,11 @@ Order matters: `docker compose down` **removes** the container, and some state e
 
 ```bash
 # 1. Export what lives only inside the container — before it is removed.
-#    OpenFang's workspace was never mounted under the old layout. And if the host
-#    N.E.K.O/ directory is empty, you followed the old README quickstart, whose
-#    mount target (/root/Documents/N.E.K.O) never matched where the services
-#    actually write — the application data is in there too.
+#    If the host N.E.K.O/ directory is empty, you followed the old README
+#    quickstart, whose mount target (/root/Documents/N.E.K.O) never matched
+#    where the services actually write — the application data is in there too.
 #    The trailing /. copies directory *contents*, avoiding a nested N.E.K.O/N.E.K.O.
-mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
+mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl
 # Decide from what the container actually mounts, not from what the host directory
 # contains: the old README mounted ./N.E.K.O at /root/Documents/N.E.K.O, a path the
 # services never write to, so that host directory can hold files you put there while
@@ -82,22 +94,6 @@ else
     fi
     EXPORTED_APP_DATA=1
   fi
-  # OpenFang is optional only when its source directory is genuinely absent.
-  # Other inspection or copy failures can lose state and must stop the migration.
-  if ! OPENFANG_STATE=$(docker exec neko sh -c 'if [ -d /home/neko/.openfang ]; then printf present; elif [ -e /home/neko/.openfang ]; then printf invalid; else printf missing; fi'); then
-    echo "Cannot inspect OpenFang state; stop the migration." >&2
-    exit 1
-  fi
-  case "$OPENFANG_STATE" in
-    present)
-      if ! docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/; then
-        echo "OpenFang-state export failed; stop the migration before removing the container." >&2
-        exit 1
-      fi
-      ;;
-    missing) echo "(no .openfang in the container)" ;;
-    *) echo "OpenFang state is not a directory; stop the migration." >&2; exit 1 ;;
-  esac
 fi
 ```
 
@@ -149,7 +145,7 @@ Set `NEKO_IMAGE=neko-local:standard` or `neko-local:full` before `docker compose
 
 ## Proxy and diagnostics
 
-The entrypoint starts the Python services and container-local OpenFang, then configures Nginx and WebSocket routes. Its generated certificate is self-signed, not public-trust TLS. Supply a managed certificate or terminate TLS at a trusted proxy for real remote deployment.
+The entrypoint starts the Python services, then configures Nginx and WebSocket routes. Its generated certificate is self-signed, not public-trust TLS. Supply a managed certificate or terminate TLS at a trusted proxy for real remote deployment.
 
 ```bash
 docker compose ps
@@ -159,3 +155,5 @@ curl -f http://127.0.0.1:48911/health
 ```
 
 See [Environment Variables](/config/environment-vars) for variables verified in current code.
+
+Running on a 2-vCPU / 2 GB cloud server? See [Low-Spec Cloud Server](./low-spec-server) for host memory, disk, security, and the optional self-healing watchdog.

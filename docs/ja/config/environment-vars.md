@@ -10,9 +10,20 @@ Current code が明示的に読む変数だけがサポート対象です。`NEK
 | `NEKO_COMMENTER_SERVER_PORT` | 48914 | Commenter |
 | `NEKO_TOOL_SERVER_PORT` | 48915 | Agent/Tool |
 | `NEKO_USER_PLUGIN_SERVER_PORT` | 48916 | User-plugin host |
-| `NEKO_AGENT_MQ_PORT` | 48917 | Agent transport |
-| `NEKO_MAIN_AGENT_EVENT_PORT` | 48918 | Main/Agent events |
-| `NEKO_OPENFANG_PORT` | 50051 | OpenFang A2A |
+
+## Optional Monitor service
+
+| Preferred variable | Default | Description |
+| --- | --- | --- |
+| `NEKO_MONITOR_HOST` | `0.0.0.0` | Monitor の bind address（互換用に `MONITOR_HOST` も使用可能）。IPv6 は角括弧の有無どちらでも可。`::` は IPv6 のみを listen します |
+| `NEKO_MONITOR_TOKEN` | empty | 静的モデル asset を除く全 Monitor HTTP/WebSocket route 用の optional フルアクセス token。Main server が書き込む `/sync*` も含みます（`MONITOR_TOKEN` も使用可能） |
+| `NEKO_MONITOR_VIEWER_TOKEN` | empty | Viewer ページ、API、`/ws`、`/subtitle_ws` 用の optional 読み取り専用 token。`/sync*` には使えません。`NEKO_MONITOR_TOKEN` 設定時のみ有効（`MONITOR_VIEWER_TOKEN` も使用可能） |
+
+Token が空の場合は旧クライアント互換のため認証なしです。既定の open listener は信頼できる LAN だけで使い、local-only では host を `127.0.0.1` に設定してください。Token をログや source control に含めないでください。Main server は `NEKO_MONITOR_HOST` にそのまま接続し（wildcard は同じ family の loopback に変換: `0.0.0.0` → `127.0.0.1`、`::` → `[::1]`）、token を自動で送ります。
+
+Token を有効にした場合、native client は `Authorization: Bearer <token>`（または `X-Monitor-Token`）を送ります。Browser では viewer を一度 `http://<host>:<port>/<name>?token=<token>` で開きます。Monitor は address bar から token を除く redirect を返し、HttpOnly の `neko_monitor_session_<port>` cookie を設定します。Viewer リンクの共有には `NEKO_MONITOR_VIEWER_TOKEN` を使ってください。`NEKO_MONITOR_TOKEN` を含むリンクは `/sync*` への書き込み権限も与えるため、受け取った人は全 viewer に字幕やチャットを注入できます。
+
+Cookie には token ではなく 30 日有効の署名付き session が入り、viewer route のみ許可します（`/sync*` は不可）。この cookie を使う WebSocket handshake は同じ host と port からのみ受け付け、どちらかの token を変更すると無効になります。Browser は同じ host の全 port に cookie を送るため、他のローカルサービス（main server、plugin host）も受け取り、期限まで Monitor の viewer データ読み取りに再利用できます。全 session を取り消すには token を変更してください。TLS を終端する reverse proxy の背後では元の `Host` header を保持し（nginx: `proxy_set_header Host $http_host;`。保持しないとリアルタイム WebSocket が拒否されます）、proxy を uvicorn の `FORWARDED_ALLOW_IPS`（既定 `127.0.0.1`）に含めると cookie に `Secure` が付きます。
 
 Runtime では `NEKO_INSTANCE_ID`、`NEKO_AUTOSTART_CSRF_TOKEN`、`NEKO_AUTOSTART_ALLOWED_ORIGINS`、`NEKO_BEHIND_PROXY`、`NEKO_LOG_LEVEL`、`NEKO_MERGED` を使います。Storage root は `NEKO_STORAGE_SELECTED_ROOT` と `NEKO_STORAGE_ANCHOR_ROOT` です。
 
@@ -42,5 +53,31 @@ launcher は foreground プロセスです。daemon 化して親から離脱す�
 開発、サービスごとの監視、agent 障害の分離が必要な場合はマルチプロセスを使用してください。
 パッケージ版は `NEKO_MERGED=0` ですぐにロールバックできます。
 `NEKO_MERGED` 自体が受け付ける値は `1/true/yes` と `0/false/no` です。
+
+## プラグインの自動起動の並列数
+
+| 変数 | デフォルト | 説明 |
+| --- | --- | --- |
+| `NEKO_PLUGIN_AUTOSTART_CONCURRENCY` | `min(8, max(2, (os.cpu_count() or 4) // 2))` | 依存関係を宣言していないプラグインを、自動起動の各バッチで同時に開始する最大数。`1`–`64` の整数を指定できます。`1` ではプラグインごとに操作ロックを取得して順次起動します。依存関係のないプラグインが先に起動するため、従来の全体のトポロジカル順序や adapter の優先順位には戻りません。 |
+
+既定値は 2–8 です。論理 CPU 数を取得できない場合は 4 個として計算し、並列数は 2 になります。
+依存関係を宣言したプラグインは、独立したプラグインの起動がすべて完了してから、
+従来のトポロジカル順序で逐次起動します。各並列バッチの終了後に操作ロックを解放し、
+待機中のプラグイン管理リクエストを処理できるようにします。この設定はサーバーの
+自動起動だけに適用されます。無効または未承認のプラグインの自動起動を有効にしたり、
+手動で起動・停止したときの保存済み設定を変更したりするものではありません。
+
+N.E.K.O を起動する前に環境変数を設定し、変更後はランタイムを再起動してください。
+整数に変換できない値は既定値に戻ります。変換できても `1`–`64` の範囲外の場合は
+設定の検証に失敗します。順次起動に戻す例:
+
+```powershell
+$env:NEKO_PLUGIN_AUTOSTART_CONCURRENCY = "1"
+uv run python launcher.py
+```
+
+```bash
+NEKO_PLUGIN_AUTOSTART_CONCURRENCY=1 uv run python launcher.py
+```
 
 Docker entrypoint は initial `/app/config/core_config.json` の生成時だけ `NEKO_CORE_API_KEY`、`NEKO_CORE_API`、`NEKO_ASSIST_API`、一部 `NEKO_ASSIST_API_KEY_*`、`NEKO_MCP_TOKEN` を読みます。`NEKO_FORCE_ENV_UPDATE` は再生成要求です。旧 `docker/env.template` の未接続 model 変数には依存しないでください。

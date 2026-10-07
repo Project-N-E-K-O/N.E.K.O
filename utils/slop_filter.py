@@ -40,8 +40,9 @@ does not flow through here and is out of scope by construction.
 Repeat and stability semantics
 ------------------------------
 Matches are counted per rule over the original assistant history in chronological
-message / text-part / match order. The first two eligible occurrences remain
-verbatim; the third and later occurrences are rewritten. Replacement selection is
+message / text-part / match order. Occurrences below ``SLOP_REPEAT_THRESHOLD``
+remain verbatim; at the current threshold of 2 that means the first occurrence is
+left alone and the second and later ones are rewritten. Replacement selection is
 derived from stable rule and match coordinates rather than global randomness, so
 repeating a request or appending later history cannot reshuffle older rewrites.
 Fenced code, inline code, and URLs are excluded from both counting and rewriting.

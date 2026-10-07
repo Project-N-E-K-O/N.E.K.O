@@ -141,7 +141,19 @@ test('Day1 system tray intro modal combines the tray location and menu guidance'
   assert.equal(zhCn.tutorial.systray.location.alt, '系统托盘位置示意图');
   assert.equal(zhCn.tutorial.systray.menu.title, '📋 托盘菜单');
   assert.equal(zhCn.tutorial.systray.resetPosition, '重置角色位置');
-  assert.match(i18nBootstrapSource, /LOCALE_VERSION = '2026-08-16-voice-identity-one-click'/);
+  // 这条断言真正要保的是：day1 systray 教程文案落地时 locale 缓存键跟着递增过，
+  // 老客户端不会拿旧语言包把新 key 渲染成字面量。原来的写法把当时的版本串钉死，
+  // 于是每一次与 systray 无关的递增都要顺手来改这一行（#2882 就被迫改过一次），
+  // 和 tests/unit/test_window_pin_static_contracts.py 里记下的那次同款腐烂。
+  // 版本串固定是 YYYY-MM-DD- 前缀，比日期前缀即可表达“不早于本文案落地的那次递增”。
+  const localeVersionMatch = i18nBootstrapSource.match(/LOCALE_VERSION = '([^']+)'/);
+  assert.ok(localeVersionMatch, 'i18n-i18next.js 必须声明 LOCALE_VERSION');
+  const localeVersion = localeVersionMatch[1];
+  assert.match(localeVersion, /^\d{4}-\d{2}-\d{2}-/, `LOCALE_VERSION 需带日期前缀: ${localeVersion}`);
+  assert.ok(
+    localeVersion.slice(0, 10) >= '2026-07-06',
+    `LOCALE_VERSION 早于 day1 systray 文案落地的 2026-07-06-day1-systray-intro-i18n: ${localeVersion}`
+  );
 
   for (const [code, source] of Object.entries(localeSources)) {
     const locale = JSON.parse(source);

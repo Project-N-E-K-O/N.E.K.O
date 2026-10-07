@@ -145,6 +145,9 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         onComposerScreenshot: null,
         onComposerRemoveAttachment: null,
         onComposerSubmit: null,
+        onTheaterSubmit: null,
+        onTheaterSuggestedInputSelect: null,
+        onTheaterEnd: null,
         onAvatarInteraction: null,
         onAvatarToolStateChange: null,
         pendingAvatarInteractions: [],
@@ -170,6 +173,7 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         _compactToolWheelRotateRequestSeq: 0,
         _compactToolWheelIndexRequestSeq: 0,
         _galgameRequestSeq: 0,
+        pendingIcebreakerGalgameHandoffMessageId: '',
         // 通用 ChoicePrompt 框架。当前承载 mini_game_invite 与新手破冰；
         // galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
         // shape: { source, sessionId, gameType, options: [{choice,label}] } | null
@@ -336,6 +340,9 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         // to lastRestorableChatSurfaceMode rather than being persisted directly.
         if (mode !== 'compact' && mode !== 'full') return;
         if (!shouldPersistChatSurfaceModePreference()) return;
+        // 小剧场演绎期间宿主形态被临时覆盖为 compact（含退出时恢复前的中间态），这不是用户选择；
+        // 写入偏好会让刷新、关闭或崩溃后永久丢失用户原来的形态。
+        if (typeof I.isTheaterPresentationActive === 'function' && I.isTheaterPresentationActive()) return;
         try {
             localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode);
         } catch (_) {}

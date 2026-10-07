@@ -34,6 +34,7 @@
     const PNGTUBER_BREATHING_IDLE_FPS = 20;
     const PNGTUBER_ANIMATION_IDLE_FPS = 30;
     const PNGTUBER_FULL_RATE_HOLD_MS = 900;
+    let pngtuberLoadSequence = 0;
 
     function clampNumber(value, min, max, fallback) {
         const parsed = Number(value);
@@ -61,6 +62,16 @@
         return path;
     }
 
+    function assignImageSource(image, src) {
+        if (!image) return;
+        if (/^(?:https?:)?\/\//i.test(String(src || ''))) {
+            image.crossOrigin = 'anonymous';
+        } else {
+            image.removeAttribute?.('crossorigin');
+        }
+        image.src = src;
+    }
+
     function isPNGTuberPlusLayerVisible(showTalk, showBlink, speaking, blinking) {
         const value = (Number(showTalk) || 0)
             + ((Number(showBlink) || 0) * 3)
@@ -82,7 +93,7 @@
             const img = new Image();
             img.onload = () => resolve(img);
             img.onerror = reject;
-            img.src = src;
+            assignImageSource(img, src);
         });
     }
 
@@ -226,6 +237,8 @@
             this._lastPngtuberPointerX = null;
             this._lastPngtuberPointerY = null;
             this._renderingPaused = false;
+            this._loadGeneration = 0;
+            this._latestLifecycleLoadToken = 0;
         }
 
         setMouseTrackingEnabled(enabled) {
@@ -378,7 +391,7 @@
                 if (!src || seen.has(src)) return;
                 seen.add(src);
                 const img = new Image();
-                img.src = src;
+                assignImageSource(img, src);
             });
         }
 
@@ -863,7 +876,12 @@
             }
         }
 
-        async setupLayeredAdapter() {
+        async setupLayeredAdapter(options = {}) {
+            const config = options.config || this.config;
+            const isCurrentLoad = typeof options.isCurrentLoad === 'function'
+                ? options.isCurrentLoad
+                : () => true;
+            if (!isCurrentLoad()) return false;
             this.clearLayeredTimers();
             this.detachLayeredHotkeys();
             this.detachLayeredPlayEvent();
@@ -886,23 +904,29 @@
             this.layeredPointer = { x: 0, y: 0, targetX: 0, targetY: 0, active: false, at: 0, lastTime: 0 };
             this.layeredAssetVisibility = new Map();
             this.layeredAssetActionActive = false;
-            if (!this.isLayeredConfigured()) return false;
+            if (config.adapter !== 'layered_canvas_v1' || !config.layered_metadata) return false;
             try {
-                const response = await fetch(this.config.layered_metadata, { cache: 'no-cache' });
+                const response = await fetch(config.layered_metadata, { cache: 'no-cache' });
+                if (!isCurrentLoad()) return false;
                 if (!response.ok) throw new Error(`metadata ${response.status}`);
                 const metadata = await response.json();
+                if (!isCurrentLoad()) return false;
                 const layers = Array.isArray(metadata.layers) ? metadata.layers : [];
                 if (metadata.runtime !== 'layered_canvas' || layers.length === 0) {
                     throw new Error('metadata is not layered_canvas');
                 }
+                const layeredImages = new Map();
                 await Promise.all(layers.map(async (layer, index) => {
-                    const src = resolveSiblingAsset(this.config.layered_metadata, layer.image);
+                    const src = resolveSiblingAsset(config.layered_metadata, layer.image);
                     if (!src) return;
                     const img = await loadImageElement(src);
-                    this.layeredImages.set(index, img);
+                    if (!isCurrentLoad()) return;
+                    layeredImages.set(index, img);
                     layer._imageIndex = index;
                 }));
-                if (this.layeredImages.size === 0) throw new Error('no layer images loaded');
+                if (!isCurrentLoad()) return false;
+                if (layeredImages.size === 0) throw new Error('no layer images loaded');
+                this.layeredImages = layeredImages;
                 this.layeredMetadata = metadata;
                 this.layeredStateIndex = 0;
                 this.initializeLayeredToggleState(layers);
@@ -947,6 +971,7 @@
                 this.attachLayeredPointerTracking();
                 return true;
             } catch (error) {
+                if (!isCurrentLoad()) return false;
                 console.warn('[PNGTuber] layered adapter disabled, falling back to image mode:', error);
                 this.layeredMetadata = null;
                 this.layeredImages = new Map();
@@ -2401,15 +2426,25 @@
                 || (Number(a.order || 0) - Number(b.order || 0));
         }
 
-        renderLayeredSnapshotCanvas(stateName = this.state || 'idle', timestamp = performance.now()) {
+        renderLayeredSnapshotCanvas(
+            stateName = this.state || 'idle',
+            timestamp = performance.now(),
+            options = {}
+        ) {
             if (!this.isLayeredActive()) return null;
+            const logicalWidth = Math.max(1, Math.round(Number(this.layeredCanvasLogicalWidth) || 1));
+            const logicalHeight = Math.max(1, Math.round(Number(this.layeredCanvasLogicalHeight) || 1));
+            const maxEdge = Math.max(0, Number(options.maxEdge) || 0);
+            const snapshotScale = maxEdge > 0
+                ? Math.min(1, maxEdge / Math.max(logicalWidth, logicalHeight))
+                : 1;
             const canvas = document.createElement('canvas');
-            canvas.width = Math.max(1, Math.round(Number(this.layeredCanvasLogicalWidth) || 1));
-            canvas.height = Math.max(1, Math.round(Number(this.layeredCanvasLogicalHeight) || 1));
+            canvas.width = Math.max(1, Math.round(logicalWidth * snapshotScale));
+            canvas.height = Math.max(1, Math.round(logicalHeight * snapshotScale));
             const drawn = this.drawLayeredState(stateName, timestamp, {
                 canvas,
-                scaleX: 1,
-                scaleY: 1
+                scaleX: canvas.width / logicalWidth,
+                scaleY: canvas.height / logicalHeight
             });
             return drawn ? canvas : null;
         }
@@ -2509,7 +2544,7 @@
             }
             const nextSrc = src || this.config.drag_image || this.config.idle_image || DEFAULT_PLACEHOLDER;
             if (this.image && nextSrc && this.image.getAttribute('src') !== nextSrc) {
-                this.image.src = nextSrc;
+                assignImageSource(this.image, nextSrc);
             }
             this.applyTransform();
             this.updateLockIconPosition();
@@ -2532,6 +2567,11 @@
             const bounce = this.currentSpeakingBounceTransform();
             const breathing = this.currentLayeredBreathingTransform(timestamp);
             const talkingHop = this.currentTalkingHopTransform(timestamp);
+            // 记录本帧动画位移/缩放，供 getStableAnchorRect() 还原静止锚点，
+            // 让悬浮按钮等 UI 不跟随模型自主上下运动漂移。
+            this._appliedAnimOffsetY = bounce.y + breathing.y + talkingHop.y;
+            this._appliedAnimScaleX = bounce.scaleX * breathing.scaleX * talkingHop.scaleX;
+            this._appliedAnimScaleY = bounce.scaleY * breathing.scaleY * talkingHop.scaleY;
             const placement = this.getActivePlacement();
             const renderPlacement = this.getRenderPlacement(placement);
             const scaleX = this.config.mirror ? -renderPlacement.scale : renderPlacement.scale;
@@ -2543,6 +2583,10 @@
                 this.container.style.pointerEvents = modelManagerPage ? 'auto' : 'none';
             }
             const centerAnchored = modelManagerPage || this.config.position_anchor === 'center';
+            this._appliedAnimCenterAnchored = centerAnchored;
+            // 镜像时 finalScaleX 为负:right bottom 原点固定的是可见矩形的左边界,
+            // getStableAnchorRect 需要据此选择保持不动的水平边
+            this._appliedAnimMirrored = finalScaleX < 0;
             if (centerAnchored) {
                 Object.assign(this.image.style, {
                     position: 'absolute',
@@ -2666,9 +2710,9 @@
                 this.container.classList.remove('locked-hover-fade');
             }
             if (updateFloatingButtons && this._floatingButtonsContainer) {
-                const shouldHideButtons = this.isLocked
-                    || isYuiGuideFloatingToolbarSuppressed()
-                    || this._pngtuberFloatingControlsVisible === false;
+                const inTutorial = this._floatingButtonsContainer.dataset.inTutorial === 'true';
+                const shouldHideButtons = isYuiGuideFloatingToolbarSuppressed()
+                    || (!inTutorial && (this.isLocked || this._pngtuberFloatingControlsVisible === false));
                 this._floatingButtonsContainer.style.display = shouldHideButtons ? 'none' : 'flex';
             }
             if (typeof this.updateLockIconPosition === 'function') {
@@ -3175,7 +3219,9 @@
             if (!state.moved) return;
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyTransform();
-            if (this.isLayeredActive()) this.drawLayeredState();
+            // Keep motion/physics on the animation clock, even when pointer
+            // events arrive faster than the display can present frames.
+            if (this.isLayeredActive()) this.startLayeredAnimationLoop({ preserveTimeline: true });
             this.syncGlobalConfig();
             if (typeof this.updateFloatingButtonsPosition === 'function') {
                 this.updateFloatingButtonsPosition();
@@ -3355,7 +3401,7 @@
             if (!state.changed) return;
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyScale(state.initialScale * scaleChange);
-            if (this.isLayeredActive()) this.drawLayeredState();
+            if (this.isLayeredActive()) this.startLayeredAnimationLoop({ preserveTimeline: true });
         }
 
         async endTouchZoom() {
@@ -3456,6 +3502,49 @@
             this.updateLockIconPosition();
         }
 
+        // 固定锚点：从当前 image rect 中剥离呼吸/说话弹跳/talkingHop 的动画位移与缩放，
+        // 返回模型静止布局下的矩形。悬浮按钮、锁图标等 UI 用它定位，
+        // 避免跟随模型自主上下运动而漂移、难以点击。
+        getStableAnchorRect() {
+            const image = this.image || (this.ensureContainer() && this.image);
+            if (!image) return null;
+            const rect = image.getBoundingClientRect();
+            if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+            const rectRight = Number.isFinite(rect.right) ? rect.right : rect.left + rect.width;
+            const rectBottom = Number.isFinite(rect.bottom) ? rect.bottom : rect.top + rect.height;
+            const animY = Number(this._appliedAnimOffsetY) || 0;
+            const animScaleX = Number(this._appliedAnimScaleX) || 1;
+            const animScaleY = Number(this._appliedAnimScaleY) || 1;
+            const stableWidth = rect.width / animScaleX;
+            const stableHeight = rect.height / animScaleY;
+            if (this._appliedAnimCenterAnchored === false) {
+                // transform-origin: right bottom —— Y 向缩放围绕底边不动,剥离 Y 向平移即可。
+                // 水平方向:非镜像(finalScaleX>0)时右边界固定;镜像时 scale 为负,
+                // 变换后矩形从原点向右展开,固定的是左边界 rect.left。
+                const bottom = rectBottom - animY;
+                const left = this._appliedAnimMirrored ? rect.left : rectRight - stableWidth;
+                return {
+                    left,
+                    top: bottom - stableHeight,
+                    right: left + stableWidth,
+                    bottom,
+                    width: stableWidth,
+                    height: stableHeight
+                };
+            }
+            // transform-origin: center center —— 缩放围绕中心不动，中心点剥离 Y 向平移
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2 - animY;
+            return {
+                left: centerX - stableWidth / 2,
+                top: centerY - stableHeight / 2,
+                right: centerX + stableWidth / 2,
+                bottom: centerY + stableHeight / 2,
+                width: stableWidth,
+                height: stableHeight
+            };
+        }
+
         updateLockIconPosition() {
             const lockIcon = this._lockIconElement || document.getElementById('pngtuber-lock-icon');
             if (!lockIcon) return;
@@ -3465,8 +3554,10 @@
                 lockIcon.style.opacity = '0';
                 return;
             }
-            const image = this.image || (this.ensureContainer() && this.image);
-            const rect = image ? image.getBoundingClientRect() : null;
+            // 用固定锚点定位，锁图标不随模型呼吸/弹跳上下漂移
+            const rect = typeof this.getStableAnchorRect === 'function'
+                ? this.getStableAnchorRect()
+                : (this.image ? this.image.getBoundingClientRect() : null);
             if (!rect || rect.width <= 0 || rect.height <= 0) {
                 if (!window.isInTutorial) lockIcon.style.display = 'none';
                 return;
@@ -3589,12 +3680,25 @@
             }, delayMs);
         }
 
-        async load(config) {
+        async load(config, options = {}) {
+            const loadToken = Number(options.loadToken) || 0;
+            if (loadToken && loadToken < this._latestLifecycleLoadToken) return false;
+            if (loadToken) this._latestLifecycleLoadToken = loadToken;
+            const loadGeneration = ++this._loadGeneration;
+            const isCurrentLoad = () => (
+                loadGeneration === this._loadGeneration
+                && (!loadToken || loadToken === this._latestLifecycleLoadToken)
+            );
             this.detachDragListeners();
             this.clearEmotion({ render: false });
             this._modelManagerUseCurrentPlacement = false;
-            this.config = normalizeConfig(config || {});
-            await this.setupLayeredAdapter();
+            const normalizedConfig = normalizeConfig(config || {});
+            this.config = normalizedConfig;
+            window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {
+                detail: { loadToken }
+            }));
+            await this.setupLayeredAdapter({ config: normalizedConfig, isCurrentLoad });
+            if (!isCurrentLoad()) return false;
             this.ensureContainer();
             this.preloadImages();
             this.attachSpeechListeners();
@@ -3723,7 +3827,7 @@
             }
             const nextSrc = this.stateToSrc(this.state);
             if (this.image && this.image.getAttribute('src') !== nextSrc) {
-                this.image.src = nextSrc;
+                assignImageSource(this.image, nextSrc);
             }
             this.applyTransform();
             this.updateLockIconPosition();
@@ -4264,6 +4368,7 @@
                 characterMenuItems: [
                     { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
                     { id: 'pngtuber-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
+                    { id: 'theater', label: '小剧场', labelKey: 'settings.menu.theater', icon: '/static/icons/character_icon.png', action: 'navigate', url: '/theater' },
                     { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
                 ],
                 onMouseTrackingToggle: function(enabled) {
@@ -4327,6 +4432,9 @@
             }
             this._pngtuberFloatingControlsVisible = true;
             this._pngtuberControlsHover = false;
+            const baseButtonSize = 48;
+            const baseGap = 12;
+            const baseButtonWidth = 82;
 
             this.updateFloatingButtonsPosition = () => {
                 this.syncResponsiveButtonVisibility(buttonsContainer);
@@ -4341,12 +4449,12 @@
                     buttonsContainer.style.display = 'none';
                     return;
                 }
-                if (this.isLocked) {
+                if (this.isLocked && buttonsContainer.dataset.inTutorial !== 'true') {
                     buttonsContainer.style.display = 'none';
                     this.updateLockIconPosition();
                     return;
                 }
-                if (this._pngtuberFloatingControlsVisible === false) {
+                if (this._pngtuberFloatingControlsVisible === false && buttonsContainer.dataset.inTutorial !== 'true') {
                     buttonsContainer.style.display = 'none';
                     this.updateLockIconPosition();
                     return;
@@ -4354,6 +4462,8 @@
                 const isMobile = window.isMobileWidth && window.isMobileWidth();
                 if (isMobile) {
                     buttonsContainer.style.flexDirection = 'column';
+                    buttonsContainer.style.transformOrigin = 'right bottom';
+                    buttonsContainer.style.transform = 'scale(1)';
                     buttonsContainer.style.bottom = '116px';
                     buttonsContainer.style.right = '16px';
                     buttonsContainer.style.left = '';
@@ -4364,8 +4474,10 @@
                     return;
                 }
 
-                const image = this.image || (this.ensureContainer() && this.image);
-                const rect = image ? image.getBoundingClientRect() : null;
+                // 固定锚点：剥离呼吸/说话弹跳的动画位移，工具栏不随模型自主上下运动漂移
+                const rect = typeof this.getStableAnchorRect === 'function'
+                    ? this.getStableAnchorRect()
+                    : (this.image ? this.image.getBoundingClientRect() : null);
                 if (!rect || rect.width <= 0 || rect.height <= 0) {
                     buttonsContainer.style.display = 'none';
                     return;
@@ -4374,14 +4486,23 @@
                     const style = window.getComputedStyle(child);
                     return style.display !== 'none' && style.visibility !== 'hidden';
                 });
-                const buttonWidth = 82;
-                const buttonHeight = Math.max(48, visibleButtons.length * 48 + Math.max(0, visibleButtons.length - 1) * 12);
+                const baseToolbarHeight = Math.max(
+                    baseButtonSize,
+                    visibleButtons.length * baseButtonSize + Math.max(0, visibleButtons.length - 1) * baseGap
+                );
+                const targetToolbarHeight = rect.height / 2;
+                const scale = Math.max(0.5, Math.min(1, targetToolbarHeight / baseToolbarHeight));
+                const actualToolbarHeight = baseToolbarHeight * scale;
+                const actualToolbarWidth = baseButtonWidth * scale;
                 const targetX = rect.right * 0.8 + rect.left * 0.2;
-                const maxX = window.innerWidth - buttonWidth - 12;
+                const maxX = Math.max(12, window.innerWidth - actualToolbarWidth - 12);
                 const left = Math.max(12, Math.min(targetX, maxX));
-                let top = rect.top + (rect.height - buttonHeight) / 2;
-                top = Math.max(12, Math.min(window.innerHeight - buttonHeight - 12, top));
+                const maxTop = Math.max(12, window.innerHeight - actualToolbarHeight - 12);
+                let top = rect.top + (rect.height - actualToolbarHeight) / 2;
+                top = Math.max(12, Math.min(maxTop, top));
                 buttonsContainer.style.flexDirection = 'column';
+                buttonsContainer.style.transformOrigin = 'left top';
+                buttonsContainer.style.transform = `scale(${scale})`;
                 buttonsContainer.style.left = `${left}px`;
                 buttonsContainer.style.top = `${top}px`;
                 buttonsContainer.style.right = '';
@@ -4463,7 +4584,15 @@
                 this._pngtuberControlsHover = true;
                 showFloatingControls();
             };
-            const unmarkControlsHover = () => {
+            const unmarkControlsHover = (event) => {
+                // 在相邻按钮边缘移动时,mouseleave 可能因目标切换而触发;
+                // 若 relatedTarget 仍在控件区域内,说明指针没有真正离开,不取消悬停标记
+                const related = event && event.relatedTarget;
+                if (related && related !== document && related !== document.documentElement
+                    && (buttonsContainer.contains(related)
+                        || (this._lockIconElement && this._lockIconElement.contains && this._lockIconElement.contains(related)))) {
+                    return;
+                }
                 this._pngtuberControlsHover = false;
                 startHideTimer();
             };
@@ -4507,16 +4636,35 @@
                 }
             };
             const handleWindowBlur = () => clearPointerAndHideSoon();
+            // document 上 capture=true 的 mouseenter/mouseleave 会收到页面内所有元素的
+            // 进出事件;只有 target 为 document/documentElement 且 relatedTarget 为空
+            // 才是真正进出浏览器窗口,否则(如相邻按钮之间跨越边缘)忽略,避免按钮
+            // 在边缘移动时被反复判定隐藏/显示
+            const isWindowBoundaryMouseEvent = (event) => {
+                if (!event) return false;
+                const target = event.target;
+                const isDocTarget = !target || target === document || target === document.documentElement;
+                return isDocTarget && !event.relatedTarget;
+            };
             const handleDocumentMouseEnter = (event) => {
                 if (event && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
-                    handlePointerMove(event);
+                    if (isWindowBoundaryMouseEvent(event)) {
+                        handlePointerMove(event);
+                    } else {
+                        // 元素级 enter 仅刷新指针坐标,不做显示/隐藏判定
+                        this._lastPngtuberPointerX = event.clientX;
+                        this._lastPngtuberPointerY = event.clientY;
+                    }
                     return;
                 }
-                if (shouldKeepFloatingControlsVisible()) {
+                if (isWindowBoundaryMouseEvent(event) && shouldKeepFloatingControlsVisible()) {
                     showFloatingControls();
                 }
             };
-            const handleDocumentMouseLeave = () => clearPointerAndHideSoon();
+            const handleDocumentMouseLeave = (event) => {
+                if (!isWindowBoundaryMouseEvent(event)) return;
+                clearPointerAndHideSoon();
+            };
 
             const buttonConfigs = this._buttonConfigs;
             buttonConfigs.forEach((config) => {
@@ -4746,22 +4894,38 @@
     }
 
     async function loadPNGTuberAvatar(config) {
-        await hideOtherAvatarRuntimesForPNGTuber();
-        if (!window.pngtuberManager) {
-            window.pngtuberManager = new PNGTuberManager();
-        }
-        await window.pngtuberManager.load(config || {});
-        if (document.body?.classList.contains('model-manager-page')
-            && window._modelManagerCurrentAvatarType
-            && window._modelManagerCurrentAvatarType !== 'pngtuber') {
-            window.pngtuberManager.hide();
+        const loadToken = ++pngtuberLoadSequence;
+        window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {
+            detail: { loadToken }
+        }));
+        try {
+            await hideOtherAvatarRuntimesForPNGTuber();
+            if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager || null;
+            if (!window.pngtuberManager) {
+                window.pngtuberManager = new PNGTuberManager();
+            }
+            const loaded = await window.pngtuberManager.load(config || {}, { loadToken });
+            if (!loaded || loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
+            if (document.body?.classList.contains('model-manager-page')
+                && window._modelManagerCurrentAvatarType
+                && window._modelManagerCurrentAvatarType !== 'pngtuber') {
+                window.pngtuberManager.hide();
+                return window.pngtuberManager;
+            }
+            await hideOtherAvatarRuntimesForPNGTuber();
+            if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
+            window.pngtuberManager.show();
+            await hideOtherAvatarRuntimesForPNGTuber();
+            if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
+            window.dispatchEvent(new CustomEvent('pngtuber-model-loaded', {
+                detail: { loadToken }
+            }));
             return window.pngtuberManager;
+        } finally {
+            window.dispatchEvent(new CustomEvent('pngtuber-model-load-finished', {
+                detail: { loadToken }
+            }));
         }
-        await hideOtherAvatarRuntimesForPNGTuber();
-        window.pngtuberManager.show();
-        await hideOtherAvatarRuntimesForPNGTuber();
-        window.dispatchEvent(new CustomEvent('pngtuber-model-loaded'));
-        return window.pngtuberManager;
     }
 
     function playPNGTuberAnimation(target, options = {}) {

@@ -350,23 +350,139 @@ I.mod = window.appUi;
      * @param {number} [options.priority=0]  Priority level (higher = more important, won't be overwritten by lower priority)
      * @param {boolean} [options.important=false]  Whether this is an important message (same as priority=100)
      */
-    I.showStatusToast = function showStatusToast(message, duration = 3000, options = {}) {
-        const priority = options.important ? 100 : (options.priority || 0);
+    I.showStatusToast = function showStatusToast(message, duration, options = {}) {
+        if (duration == null) duration = 3000;
+        const priority = (options && options.important) ? 100 : ((options && options.priority) || 0);
+
+        const statusToast = I.S.dom.statusToast || document.getElementById('status-toast');
+        const statusElement = I.S.dom.statusElement || document.getElementById('status');
+
+        if (!statusToast) {
+            console.error(window.t('console.statusToastNotFound'));
+            return;
+        }
+        I.S.dom.statusToast = statusToast;
+        if (statusElement) I.S.dom.statusElement = statusElement;
+
+        function scheduleHide(ms) {
+            if (I.S.statusToastTimeout) clearTimeout(I.S.statusToastTimeout);
+            I.S._statusToastRemaining = ms;
+            I.S._statusToastStart = Date.now();
+            I.S.statusToastTimeout = setTimeout(hideNow, ms);
+        }
+
+        function copyStatusToastTextLegacy(value) {
+            if (!document.body || typeof document.execCommand !== 'function') return false;
+            const activeElement = document.activeElement;
+            const selectionStart = activeElement && typeof activeElement.selectionStart === 'number'
+                ? activeElement.selectionStart
+                : null;
+            const selectionEnd = activeElement && typeof activeElement.selectionEnd === 'number'
+                ? activeElement.selectionEnd
+                : null;
+            const textArea = document.createElement('textarea');
+            textArea.value = value;
+            textArea.setAttribute('readonly', '');
+            textArea.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none;';
+            document.body.appendChild(textArea);
+            let copied = false;
+            try {
+                textArea.focus({ preventScroll: true });
+                textArea.select();
+                copied = document.execCommand('copy') === true;
+            } catch (_) {
+                copied = false;
+            }
+            textArea.remove();
+            try {
+                if (activeElement && typeof activeElement.focus === 'function') {
+                    activeElement.focus({ preventScroll: true });
+                    if (selectionStart !== null
+                        && selectionEnd !== null
+                        && typeof activeElement.setSelectionRange === 'function') {
+                        activeElement.setSelectionRange(selectionStart, selectionEnd);
+                    }
+                }
+            } catch (_) {}
+            return copied;
+        }
+
+        function copyStatusToastText(value) {
+            if (!value) return Promise.resolve(false);
+            const copyWithWebClipboard = () => {
+                try {
+                    if (typeof navigator !== 'undefined'
+                        && navigator.clipboard
+                        && typeof navigator.clipboard.writeText === 'function') {
+                        return navigator.clipboard.writeText(value)
+                            .then(() => true)
+                            .catch(() => copyStatusToastTextLegacy(value));
+                    }
+                } catch (_) {}
+                return Promise.resolve(copyStatusToastTextLegacy(value));
+            };
+            try {
+                if (I.mod.api && typeof I.mod.api.copyText === 'function') {
+                    return Promise.resolve(I.mod.api.copyText(value))
+                        .then(result => result !== false ? true : copyWithWebClipboard())
+                        .catch(copyWithWebClipboard);
+                }
+            } catch (_) {
+                return copyWithWebClipboard();
+            }
+            return copyWithWebClipboard();
+        }
+
+        function showStatusToastCopyFeedback(textEl, copyRevision) {
+            if (textEl._copyFeedbackTimer) clearTimeout(textEl._copyFeedbackTimer);
+            textEl.classList.remove('status-toast-copy-success');
+            void textEl.offsetWidth;
+            textEl.classList.add('status-toast-copy-success');
+            const feedbackTimer = setTimeout(() => {
+                if (textEl._copyFeedbackTimer !== feedbackTimer) return;
+                if (statusToast._copyRevision === copyRevision) {
+                    textEl.classList.remove('status-toast-copy-success');
+                }
+                textEl._copyFeedbackTimer = null;
+            }, 450);
+            textEl._copyFeedbackTimer = feedbackTimer;
+        }
+
+        function hideNow() {
+            statusToast._copyRevision = (Number(statusToast._copyRevision) || 0) + 1;
+            if (I.S._statusToastShowTimer) { clearTimeout(I.S._statusToastShowTimer); I.S._statusToastShowTimer = null; }
+            if (I.S.statusToastTimeout) { clearTimeout(I.S.statusToastTimeout); I.S.statusToastTimeout = null; }
+            if (I.S._statusToastCleanupTimer) { clearTimeout(I.S._statusToastCleanupTimer); I.S._statusToastCleanupTimer = null; }
+            if (statusToast._toastEnter) { statusToast.removeEventListener('mouseenter', statusToast._toastEnter); statusToast._toastEnter = null; }
+            if (statusToast._toastLeave) { statusToast.removeEventListener('mouseleave', statusToast._toastLeave); statusToast._toastLeave = null; }
+            if (statusToast._toastFocusIn) { statusToast.removeEventListener('focusin', statusToast._toastFocusIn); statusToast._toastFocusIn = null; }
+            if (statusToast._toastFocusOut) { statusToast.removeEventListener('focusout', statusToast._toastFocusOut); statusToast._toastFocusOut = null; }
+            statusToast.classList.remove('show');
+            statusToast.classList.add('hide');
+            const _copyText = statusToast.querySelector('#status-toast-text');
+            if (_copyText) { _copyText.classList.remove('status-toast-copy-success'); _copyText.tabIndex = -1; _copyText.setAttribute('aria-hidden', 'true'); if (document.activeElement === _copyText) _copyText.blur(); }
+            const _cb3 = statusToast.querySelector('#status-toast-close');
+            if (_cb3) { _cb3.disabled = true; _cb3.tabIndex = -1; _cb3.setAttribute('aria-hidden','true'); }
+            I.S._statusToastCleanupTimer = setTimeout(() => { const t = statusToast.querySelector('#status-toast-text'); if (t) t.textContent = ''; Array.from(statusToast.childNodes).forEach(n => { if (n.nodeType === 3) n.textContent = ''; }); I.S._statusToastPriority = 0; I.S._statusToastCleanupTimer = null; if (I.mod.api && I.mod.api.setMouseThrough && !document.getElementById('prominent-notice-overlay')) I.mod.api.setMouseThrough(true); }, 400);
+        }
 
         if (!message || message.trim() === '') {
-            const statusToast = I.S.dom.statusToast;
-            if (statusToast) {
-                if (I.S._statusToastCleanupTimer) {
-                    clearTimeout(I.S._statusToastCleanupTimer);
-                    I.S._statusToastCleanupTimer = null;
-                }
-                statusToast.classList.remove('show');
-                statusToast.classList.add('hide');
-                I.S._statusToastCleanupTimer = setTimeout(() => {
-                    statusToast.textContent = '';
-                    I.S._statusToastCleanupTimer = null;
-                }, 300);
-            }
+            statusToast._copyRevision = (Number(statusToast._copyRevision) || 0) + 1;
+            if (I.S._statusToastShowTimer) { clearTimeout(I.S._statusToastShowTimer); I.S._statusToastShowTimer = null; }
+            if (I.S.statusToastTimeout) { clearTimeout(I.S.statusToastTimeout); I.S.statusToastTimeout = null; }
+            if (I.S._statusToastCleanupTimer) { clearTimeout(I.S._statusToastCleanupTimer); I.S._statusToastCleanupTimer = null; }
+            if (statusToast._toastEnter) { statusToast.removeEventListener('mouseenter', statusToast._toastEnter); statusToast._toastEnter = null; }
+            if (statusToast._toastLeave) { statusToast.removeEventListener('mouseleave', statusToast._toastLeave); statusToast._toastLeave = null; }
+            if (statusToast._toastFocusIn) { statusToast.removeEventListener('focusin', statusToast._toastFocusIn); statusToast._toastFocusIn = null; }
+            if (statusToast._toastFocusOut) { statusToast.removeEventListener('focusout', statusToast._toastFocusOut); statusToast._toastFocusOut = null; }
+            const _cb2 = statusToast.querySelector('#status-toast-close');
+            if (_cb2) { _cb2.disabled = true; _cb2.tabIndex = -1; _cb2.setAttribute('aria-hidden','true'); if (document.activeElement === _cb2) _cb2.blur(); }
+            const _copyText2 = statusToast.querySelector('#status-toast-text');
+            if (_copyText2) { _copyText2.classList.remove('status-toast-copy-success'); _copyText2.tabIndex = -1; _copyText2.setAttribute('aria-hidden', 'true'); if (document.activeElement === _copyText2) _copyText2.blur(); }
+            statusToast.classList.remove('show');
+            statusToast.classList.add('hide');
+            I.S._statusToastCleanupTimer = setTimeout(() => { const t = statusToast.querySelector('#status-toast-text'); if (t) t.textContent = ''; Array.from(statusToast.childNodes).forEach(n => { if (n.nodeType === 3) n.textContent = ''; }); I.S._statusToastCleanupTimer = null; if (I.mod.api && I.mod.api.setMouseThrough && !document.getElementById('prominent-notice-overlay')) I.mod.api.setMouseThrough(true); }, 400);
+            I.S._statusToastRemaining = null; I.S._statusToastStart = null;
             I.S._statusToastPriority = 0;
             return;
         }
@@ -378,63 +494,102 @@ I.mod = window.appUi;
 
         console.log(window.t('console.statusToastShow'), message, window.t('console.statusToastDuration'), duration);
 
-        const statusToast = I.S.dom.statusToast || document.getElementById('status-toast');
-        const statusElement = I.S.dom.statusElement || document.getElementById('status');
-
-        if (!statusToast) {
-            console.error(window.t('console.statusToastNotFound'));
-            return;
-        }
-        I.S.dom.statusToast = statusToast;
-        if (statusElement) {
-            I.S.dom.statusElement = statusElement;
-        }
-
-        // 清除之前的定时器
-        if (I.S.statusToastTimeout) {
-            clearTimeout(I.S.statusToastTimeout);
-            I.S.statusToastTimeout = null;
+        let textEl = statusToast.querySelector('#status-toast-text');
+        if (!textEl) { textEl = document.createElement('span'); textEl.id = 'status-toast-text'; statusToast.appendChild(textEl); }
+        let closeBtn = statusToast.querySelector('#status-toast-close');
+        if (!closeBtn) {
+            closeBtn = document.createElement('button');
+            closeBtn.id = 'status-toast-close';
+            closeBtn.type = 'button';
+            closeBtn.setAttribute('aria-label', 'close');
+            statusToast.appendChild(closeBtn);
         }
         if (I.S._statusToastCleanupTimer) {
             clearTimeout(I.S._statusToastCleanupTimer);
             I.S._statusToastCleanupTimer = null;
         }
-
-        // 更新内容
-        statusToast.textContent = message;
+        Array.from(statusToast.childNodes).forEach(n => { if (n !== textEl && n !== closeBtn && n.nodeType === 3) n.textContent = ''; });
+        const copyRevision = (Number(statusToast._copyRevision) || 0) + 1;
+        statusToast._copyRevision = copyRevision;
+        textEl.classList.remove('status-toast-copy-success');
+        textEl.textContent = message;
+        textEl.title = typeof window.t === 'function'
+            ? window.t('chat.copyToClipboard', { defaultValue: 'Copy to clipboard' })
+            : 'Copy to clipboard';
+        textEl.setAttribute('role', 'button');
+        textEl.setAttribute('aria-hidden', 'false');
+        textEl.tabIndex = 0;
+        const copyCurrentMessage = (e) => {
+            e.stopPropagation();
+            copyStatusToastText(message).then((copied) => {
+                if (copied && statusToast._copyRevision === copyRevision) {
+                    showStatusToastCopyFeedback(textEl, copyRevision);
+                }
+            });
+        };
+        textEl.onclick = (e) => {
+            copyCurrentMessage(e);
+            if (document.activeElement === textEl) textEl.blur();
+            if (statusToast._toastFocusOut) statusToast._toastFocusOut();
+        };
+        textEl.onkeydown = (e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            copyCurrentMessage(e);
+        };
+        closeBtn.disabled = false; closeBtn.tabIndex = 0; closeBtn.removeAttribute('aria-hidden');
+        closeBtn.onclick = (e) => { e.stopPropagation(); hideNow(); };
+        if (I.mod.api && I.mod.api.setMouseThrough) I.mod.api.setMouseThrough(false);
         I.S._statusToastPriority = priority;
-
-        // 确保元素可见
         statusToast.style.display = 'block';
         statusToast.style.visibility = 'visible';
-
-        // 显示气泡框
         statusToast.classList.remove('hide');
-        // 使用 setTimeout 确保样式更新
-        setTimeout(() => {
+        I.S._statusToastShowTimer = setTimeout(() => {
             statusToast.classList.add('show');
+            I.S._statusToastShowTimer = null;
             console.log(window.t('console.statusToastClassAdded'), statusToast, window.t('console.statusToastClassList'), statusToast.classList);
         }, 10);
+        if (statusToast._toastEnter) statusToast.removeEventListener('mouseenter', statusToast._toastEnter);
+        if (statusToast._toastLeave) statusToast.removeEventListener('mouseleave', statusToast._toastLeave);
+        if (statusToast._toastFocusIn) statusToast.removeEventListener('focusin', statusToast._toastFocusIn);
+        if (statusToast._toastFocusOut) statusToast.removeEventListener('focusout', statusToast._toastFocusOut);
+        statusToast._toastEnter = () => {
+            if (!I.S.statusToastTimeout) return;
+            clearTimeout(I.S.statusToastTimeout); I.S.statusToastTimeout = null;
+            const elapsed = Date.now() - (I.S._statusToastStart || Date.now());
+            const base = I.S._statusToastRemaining != null ? I.S._statusToastRemaining : duration;
+            I.S._statusToastRemaining = Math.max(0, base - elapsed);
+        };
+        statusToast._toastLeave = () => {
+            if (I.S.statusToastTimeout || statusToast.classList.contains('hide')) return;
+            if (!statusToast.matches(':hover, :focus-within')) scheduleHide(I.S._statusToastRemaining != null ? I.S._statusToastRemaining : duration);
+        };
+        statusToast._toastFocusIn = () => {
+            if (!I.S.statusToastTimeout) return;
+            clearTimeout(I.S.statusToastTimeout); I.S.statusToastTimeout = null;
+            const elapsed = Date.now() - (I.S._statusToastStart || Date.now());
+            const base = I.S._statusToastRemaining != null ? I.S._statusToastRemaining : duration;
+            I.S._statusToastRemaining = Math.max(0, base - elapsed);
+        };
+        statusToast._toastFocusOut = () => {
+            if (I.S.statusToastTimeout || statusToast.classList.contains('hide')) return;
+            if (!statusToast.matches(':hover, :focus-within')) scheduleHide(I.S._statusToastRemaining != null ? I.S._statusToastRemaining : duration);
+        };
+        statusToast.addEventListener('mouseenter', statusToast._toastEnter);
+        statusToast.addEventListener('mouseleave', statusToast._toastLeave);
+        statusToast.addEventListener('focusin', statusToast._toastFocusIn);
+        statusToast.addEventListener('focusout', statusToast._toastFocusOut);
+        if (statusToast.matches(':hover, :focus-within')) {
+            I.S._statusToastRemaining = duration;
+            I.S._statusToastStart = Date.now();
+        } else scheduleHide(duration);
 
-        // 自动隐藏
-        I.S.statusToastTimeout = setTimeout(() => {
-            statusToast.classList.remove('show');
-            statusToast.classList.add('hide');
-            I.S._statusToastCleanupTimer = setTimeout(() => {
-                statusToast.textContent = '';
-                I.S._statusToastPriority = 0;
-                I.S._statusToastCleanupTimer = null;
-            }, 300);
-        }, duration);
-
-        // 同时更新隐藏的 status 元素（保持兼容性）
         if (statusElement) {
             statusElement.textContent = message || '';
         }
     }
 
     I.mod.showStatusToast = I.showStatusToast;
-    // 全局兼容
     window.showStatusToast = I.showStatusToast;
 
     // ================================================================
@@ -564,17 +719,34 @@ I.mod = window.appUi;
             document.head.appendChild(spinStyle);
         }
 
+        // 之前一次隐藏的淡出还没走完：取消它，别把刚显示的提示又藏掉。
+        if (I._voicePreparingHideTimer) {
+            clearTimeout(I._voicePreparingHideTimer);
+            I._voicePreparingHideTimer = null;
+        }
+        toast.style.animation = '';
         toast.style.display = 'flex';
     }
 
     I.mod.showVoicePreparingToast = I.showVoicePreparingToast;
 
     // --- hideVoicePreparingToast ---
-    I.hideVoicePreparingToast = function hideVoicePreparingToast() {
+    I.hideVoicePreparingToast = function hideVoicePreparingToast(options) {
+        // 本地语音识别模型还在准备（ASR_INDEPENDENT_PREPARING 之后、PREPARED 之前）：
+        // 只有语音会话成功启动时那两处隐藏传 keepLocalAsrNotice，收起自己的
+        // 「准备中」但留下这条等待原因。其余调用（出错、拖拽拆除、会话结束……）
+        // 一律连同这条提示一起收起，不会让转圈留在已经结束的会话上。
+        if (options && options.keepLocalAsrNotice && I.S && I.S.localAsrPreparingMessage) {
+            I.showVoicePreparingToast(I.S.localAsrPreparingMessage);
+            return;
+        }
+        if (I.S) I.S.localAsrPreparingMessage = null;
         const toast = document.getElementById('voice-preparing-toast');
         if (toast) {
             toast.style.animation = 'voiceToastFadeIn 0.3s ease reverse';
-            setTimeout(() => {
+            if (I._voicePreparingHideTimer) clearTimeout(I._voicePreparingHideTimer);
+            I._voicePreparingHideTimer = setTimeout(() => {
+                I._voicePreparingHideTimer = null;
                 toast.style.display = 'none';
             }, 300);
         }

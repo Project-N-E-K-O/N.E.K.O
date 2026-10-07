@@ -34,6 +34,27 @@ def _needs_icebreaker_route_reset(request) -> bool:
     return module_name.startswith("test_icebreaker_") or request.node.get_closest_marker("icebreaker_route") is not None
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _release_repo_ast_cache():
+    """Drop the shared repo AST cache when a test module finishes.
+
+    tests/repo_ast_cache.py exists because several structural guards each walk
+    and re-parse every .py file in the repo; parsing the tree once costs about
+    5s, and test_root_state_write_lock.py alone was paying it five times.
+
+    Holding those trees is not free: a process that has scanned this repo carries
+    737 MB of RSS for them (measured). Under `-n auto` on a 4-vCPU runner, four
+    workers each retaining that for the rest of the session is memory the job
+    cannot spare. The saving comes from guards *within one module* sharing a
+    parse, so releasing at module teardown keeps all of it and lets the peak fall
+    back between modules instead of accumulating.
+    """
+    yield
+    from tests import repo_ast_cache
+
+    repo_ast_cache.clear()
+
+
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
     shared_state = sys.modules.get("main_routers.shared_state")
@@ -199,6 +220,38 @@ def _reset_game_sessions(request):
         yield
 
 
+def _reset_external_route_registry_to_import_state() -> None:
+    registry = sys.modules.get("utils.external_route_registry")
+    if registry is None:
+        return
+    registry._reset_for_tests()
+    game_router = sys.modules.get("main_routers.game_router")
+    register_game = getattr(game_router, "_register_external_route_kind", None)
+    if callable(register_game):
+        register_game()
+
+
+@pytest.fixture(autouse=True)
+def _restore_external_route_registry():
+    """Hold the external-route registry at its import-time state around every unit test.
+
+    Tests install fake kinds (or replace the ``game`` kind) to drive the
+    hijack points. The registry is process-global, so a fake ``is_active``
+    left behind would keep hijacking input in later tests. Rather than
+    restoring a snapshot, the registry is rebuilt from scratch before and
+    after each test: cleared, then the production kinds whose modules are
+    already imported register again (today only the game router). Resetting
+    on setup as well means a kind registered outside any test's own
+    setup/teardown window (e.g. by a coroutine the shared nested event loop
+    resumes late) cannot reach the next test either.
+    """
+    _reset_external_route_registry_to_import_state()
+    try:
+        yield
+    finally:
+        _reset_external_route_registry_to_import_state()
+
+
 @pytest.fixture(autouse=True)
 def _reset_icebreaker_routes(request):
     if not _needs_icebreaker_route_reset(request):
@@ -218,3 +271,111 @@ def _reset_icebreaker_routes(request):
         icebreaker_route_state._icebreaker_route_states.update(states_snapshot)
         icebreaker_route_state._icebreaker_route_locks.clear()
         icebreaker_route_state._icebreaker_route_locks.update(locks_snapshot)
+
+
+@pytest.fixture(autouse=True)
+def _reset_theater_activity():
+    """Keep the in-memory theater activity signal from leaking between tests."""
+    module = sys.modules.get("utils.theater_activity")
+    if module is not None:
+        module.clear_all_theater_activity()
+    yield
+    module = sys.modules.get("utils.theater_activity")
+    if module is not None:
+        module.clear_all_theater_activity()
+
+
+@pytest.fixture(autouse=True)
+def _reset_pending_retirements():
+    """Stop a retired character name from leaking into the next test.
+
+    The three memory stores keep their pending-retirement set at MODULE level
+    on purpose: it has to survive lazy singleton construction, which is the
+    whole reason it exists. That also means a test which retires a name poisons
+    every later test that builds one of those stores -- the name is seeded as
+    retired, and a retired name silently refuses to create its own directory,
+    so the failure surfaces as an unrelated "nothing was written" somewhere
+    else. Measured: ``retire_character_runtime_caches("Reborn")`` leaves
+    ``{"Reborn"}`` in all three sets with nothing to clear it.
+
+    Read through ``sys.modules`` so this costs nothing for the tests that never
+    touch those modules, and skip a monkeypatched stand-in that is not a plain
+    set -- ``monkeypatch`` restores that one itself.
+    """
+    yield
+    for module_name in (
+        "memory.anti_repeat_effects",
+        "memory.anti_repeat",
+        "memory.startup_greeting_history",
+    ):
+        module = sys.modules.get(module_name)
+        pending = getattr(module, "_PENDING_RETIREMENTS", None)
+        if isinstance(pending, set):
+            pending.clear()
+
+    # Same hazard, worse consequence: the rename write fence is process-wide
+    # and has no expiry, so a test that leaves one up makes every later test
+    # for that name write nothing at all. The product releases it in a
+    # ``finally``; a test that sets it by hand has no such guarantee.
+    character_memory = sys.modules.get("utils.character_memory")
+    fenced = getattr(character_memory, "_WRITE_FENCED", None)
+    if isinstance(fenced, set):
+        fenced.clear()
+
+
+def _is_theater_test_module(request) -> bool:
+    """Return whether the requesting test lives in a ``test_theater_*`` file."""
+
+    path = getattr(request.node, "path", None)
+    return path is not None and path.name.startswith("test_theater_")
+
+
+@pytest.fixture(autouse=True)
+def _enable_theater_review_modules(request, monkeypatch):
+    """Keep every optional theater module on for regression tests.
+
+    The product ships the theater module switches off by default (only the actor
+    reply runs), but the review-chain regressions were written against the
+    modules-on behaviour: they assert the second opinion, the fast review, the
+    shared rewrite budget and the output-retry contract. Enabling them here keeps
+    those tests testing what they document; tests that exercise the switches
+    themselves rebind ``aload_theater_module_options`` and still win.
+
+    Theater test files (``test_theater_*``) get the workflow imported here, so a
+    test that imports it inside the test body sees the same options whether or
+    not another module imported it first. Any other module is patched only when
+    the workflow is already loaded: importing it for every test pulls the whole
+    theater stack into modules that stub parts of ``utils``/``memory`` at import
+    time (e.g. test_timeindex_batched_read.py), which then fail with
+    ModuleNotFoundError when they happen to run first.
+    """
+
+    workflow = sys.modules.get("services.theater.numeric_v2_workflow")
+    if workflow is None:
+        if not _is_theater_test_module(request):
+            return
+        from services.theater import numeric_v2_workflow as workflow
+    from services.theater.numeric_v2_options import default_options
+
+    async def _all_on() -> dict[str, bool]:
+        # 交付校验是本轮新增的纯程序检查，既有回归不覆盖它，避免悄悄改变既有断言。
+        return {key: True for key in default_options() if key != 'review_delivery'}
+
+    monkeypatch.setattr(workflow, "aload_theater_module_options", _all_on, raising=False)
+
+
+@pytest.fixture
+def arbiter_logs_reach_caplog(monkeypatch):
+    """Let ``caplog`` see the realtime response arbiter's records for one test.
+
+    The arbiter logs under ``N.E.K.O.Main``. Importing ``main_logic.core`` runs
+    ``setup_logging``, which stops ``N.E.K.O`` propagating to root, and caplog
+    only listens on root. Opt in with
+    ``pytestmark = pytest.mark.usefixtures("arbiter_logs_reach_caplog")``.
+    """
+    from main_logic.omni_realtime_client import _response_arbiter
+
+    logger = _response_arbiter.logger
+    while logger is not None:
+        monkeypatch.setattr(logger, "propagate", True)
+        logger = logger.parent

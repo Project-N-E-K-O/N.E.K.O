@@ -86,6 +86,14 @@ describe('message-schema', () => {
     expect(parseChatWindowProps({ catLocalTextOnly: true }).catLocalTextOnly).toBe(true);
   });
 
+  it('preserves the dedicated theater submit callback', () => {
+    const onTheaterSubmit = vi.fn();
+    const props = parseChatWindowProps({ onTheaterSubmit });
+
+    props.onTheaterSubmit?.('继续演绎');
+    expect(onTheaterSubmit).toHaveBeenCalledWith('继续演绎');
+  });
+
   it('accepts chat surface mode props', () => {
     const props = parseChatWindowProps({
       chatSurfaceMode: 'compact',
@@ -188,6 +196,33 @@ describe('message-schema', () => {
     expect(firstProps.onAvatarToolStateChange).toBe(secondProps.onAvatarToolStateChange);
     expect(firstProps.onAvatarToolStateChange).not.toBe(onAvatarToolStateChange);
     expect(() => secondProps.onAvatarToolStateChange?.({ active: 'yes' } as never)).toThrow(ZodError);
+  });
+
+  it('preserves an optional character reaction without changing legacy messages', () => {
+    const base = {
+      id: 'reaction-user', role: 'user', author: 'You', time: '10:00',
+      blocks: [{ type: 'text', text: 'Hello' }],
+    };
+    expect(parseChatMessage(base).reaction).toBeUndefined();
+    for (const emoji of ['😊', '😄', '😃', '🙂', '😌', '🤔', '🧐', '💭', '❓', '👍', '✅', '🙌', '💪', '🎉', '🙏', '🤝', '😮', '👀', '⚠️', '💡', '😔', '😢', '😅', '🙇', '🥳', '✨', '🌟', '💻', '🤖', '📚', '🔧', '❤️', '⭐', '🔥', '🚀', '📌', '😂', '🤗']) {
+      expect(parseChatMessage({ ...base, reaction: { emoji, author: ' Neko ' } }).reaction)
+        .toEqual({ emoji, author: 'Neko' });
+    }
+    expect(parseChatWindowProps({ messages: [{ ...base, reaction: { emoji: '❤️', author: 'Neko' } }] })
+      .messages?.[0]?.reaction).toEqual({ emoji: '❤️', author: 'Neko' });
+  });
+
+  it.each([
+    { emoji: 'invalid', author: 'Neko' },
+    { emoji: '❤️', author: '' },
+    { emoji: '❤️', author: '   ' },
+    { emoji: '❤️' },
+    null,
+  ])('rejects malformed reactions at the schema boundary: %j', (reaction) => {
+    expect(() => parseChatMessage({
+      id: 'reaction-invalid', role: 'user', author: 'You', time: '10:00',
+      blocks: [{ type: 'text', text: 'Hello' }], reaction,
+    })).toThrow(ZodError);
   });
 
 });

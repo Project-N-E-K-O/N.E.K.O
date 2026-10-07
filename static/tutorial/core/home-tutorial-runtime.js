@@ -8,13 +8,13 @@
         'browser_use_enabled',
         'user_plugin_enabled',
         'openclaw_enabled',
-        'openfang_enabled',
     ]);
     const HOME_TUTORIAL_PROACTIVE_KEYS = Object.freeze([
         'proactiveChatEnabled',
         'proactiveVisionEnabled',
         'proactiveVisionChatEnabled',
         'proactiveNewsChatEnabled',
+        'proactiveCommunityChatEnabled',
         'proactiveVideoChatEnabled',
         'proactivePersonalChatEnabled',
         'proactiveMusicEnabled',

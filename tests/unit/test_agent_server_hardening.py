@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 """Regression tests for the agent_server hardening follow-up (post PR #2265).
 
-Covers the four pre-existing defects surfaced by review on the package split:
-1. ``_patch_usage`` raised TypeError on explicit JSON null token fields.
-2. ``plugin_execute_direct``'s ``_run_plugin`` left the registry entry stuck
+Covers the pre-existing defects surfaced by review on the package split:
+1. ``plugin_execute_direct``'s ``_run_plugin`` left the registry entry stuck
    at "running" when result parsing raised inside the inner try.
-3. ``_start_embedded_user_plugin_server`` left stale server/thread handles on
+2. ``_start_embedded_user_plugin_server`` left stale server/thread handles on
    startup failure, turning later start attempts into silent no-ops.
-4. The MCP channel failure branch logged raw ``result.error`` text instead of
+3. The MCP channel failure branch logged raw ``result.error`` text instead of
    metadata-only logging (privacy convention).
 """
 
@@ -25,60 +24,7 @@ pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# 1. _patch_usage: explicit nulls must not raise and must be zero-filled
-# ---------------------------------------------------------------------------
-
-
-def test_patch_usage_tolerates_explicit_null_token_fields():
-    from app.agent_server.channels.openfang import _patch_usage
-
-    data = {"usage": {"prompt_tokens": None, "completion_tokens": None}}
-    _patch_usage(data)
-    assert data["usage"] == {
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-    }
-
-
-def test_patch_usage_recomputes_total_from_partial_nulls():
-    from app.agent_server.channels.openfang import _patch_usage
-
-    data = {"usage": {"prompt_tokens": 3, "completion_tokens": None, "total_tokens": None}}
-    _patch_usage(data)
-    assert data["usage"] == {
-        "prompt_tokens": 3,
-        "completion_tokens": 0,
-        "total_tokens": 3,
-    }
-
-
-def test_patch_usage_fills_missing_usage_object():
-    from app.agent_server.channels.openfang import _patch_usage
-
-    data = {"usage": None}
-    _patch_usage(data)
-    assert data["usage"] == {
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-    }
-
-
-def test_patch_usage_keeps_existing_values():
-    from app.agent_server.channels.openfang import _patch_usage
-
-    data = {"usage": {"prompt_tokens": 5, "completion_tokens": 7}}
-    _patch_usage(data)
-    assert data["usage"] == {
-        "prompt_tokens": 5,
-        "completion_tokens": 7,
-        "total_tokens": 12,
-    }
-
-
-# ---------------------------------------------------------------------------
-# 2. plugin_execute_direct: parse failure must not strand status="running"
+# 1. plugin_execute_direct: parse failure must not strand status="running"
 # ---------------------------------------------------------------------------
 
 
@@ -233,3 +179,51 @@ async def test_mcp_dispatch_failure_logs_metadata_not_raw_error(
     assert "error_len" in logged
     # Raw text still reaches the local print fallback.
     assert "SECRET user text" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_embedded_plugin_server_ready_after_startup_and_stops(monkeypatch):
+    import threading
+    from app.agent_server import plugin_host, _shared
+
+    modules = _shared.Modules
+    fields = ("user_plugin_http_server", "user_plugin_http_task", "user_plugin_app", "_plugin_server_loop")
+    saved = {name: getattr(modules, name) for name in fields}
+    modules.user_plugin_http_server = None
+    modules.user_plugin_http_task = None
+    modules.user_plugin_app = MagicMock()
+    exit_event = threading.Event()
+
+    class FakeServer:
+        def __init__(self, config):
+            self.started = False
+            self.should_exit = False
+
+        async def startup(self, sockets=None):
+            # This represents lifespan completion and socket binding.
+            self.started = True
+
+        async def serve(self):
+            await self.startup()
+            await asyncio.to_thread(exit_event.wait)
+
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(
+        Config=lambda *a, **k: SimpleNamespace(), Server=FakeServer
+    ))
+    thread = None
+    try:
+        await plugin_host._start_embedded_user_plugin_server()
+        thread = modules.user_plugin_http_task
+        assert modules.user_plugin_http_server.started
+        assert thread.is_alive()
+        exit_event.set()
+        await plugin_host._stop_embedded_user_plugin_server()
+        assert not thread.is_alive()
+        assert modules.user_plugin_http_task is None
+        assert modules.user_plugin_http_server is None
+    finally:
+        exit_event.set()
+        if thread is not None:
+            await asyncio.to_thread(thread.join, 5.0)
+        for name, value in saved.items():
+            setattr(modules, name, value)

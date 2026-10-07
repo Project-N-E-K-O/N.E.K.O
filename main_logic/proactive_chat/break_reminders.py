@@ -17,6 +17,7 @@
 
 import asyncio
 from dataclasses import dataclass
+from typing import Any
 
 from config import (
     ANTI_REPEAT_INJECT_TOP_K,
@@ -34,6 +35,12 @@ from main_logic.proactive_chat.state import (
     _record_proactive_chat,
 )
 from memory.anti_repeat import get_anti_repeat_corpus
+from memory.anti_repeat_effects import (
+    KEEP_INITIAL_SIGNATURE,
+    AntiRepeatDecision,
+    build_repeat_signature,
+    record_anti_repeat_decision,
+)
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
 from utils.logger_config import get_module_logger
 from utils.tokenize import count_tokens
@@ -404,12 +411,9 @@ async def _deliver_break_reminder_via_llm(
 
     text = full_text.strip()
     silence_since_after_generation = _break_reminder_silence_since(mgr)
-    if (
-        silence_since_after_generation is not None
-        and (
-            silence_since_before_generation is None
-            or silence_since_after_generation > silence_since_before_generation
-        )
+    if silence_since_after_generation is not None and (
+        silence_since_before_generation is None
+        or silence_since_after_generation > silence_since_before_generation
     ):
         logger.info(
             "[%s] break reminder abandoned after user interaction during generation",
@@ -433,10 +437,38 @@ async def _deliver_break_reminder_via_llm(
             mgr=mgr,
         )
 
-    if (
-        unanswered_repeat_signal is not None
-        and unanswered_repeat_signal.triggered
-    ):
+    if unanswered_repeat_signal is not None and unanswered_repeat_signal.triggered:
+        repeat_signature = build_repeat_signature(
+            text,
+            unanswered_repeat_signal.repeated_terms,
+            language=lang,
+        )
+
+        def record_break_repeat_effect(
+            outcome: str,
+            *,
+            signature: Any = KEEP_INITIAL_SIGNATURE,
+        ) -> None:
+            # ``repeat_signature`` describes the INITIAL draft. An outcome the
+            # detector produced against the REGENERATED draft has to carry that
+            # draft's phrase instead, or the per-candidate handling record points
+            # at a fragment that had nothing to do with the block.
+            record_anti_repeat_decision(
+                lanlan_name,
+                AntiRepeatDecision(
+                    source="break_reminder",
+                    reasons=("unanswered_repeat",),
+                    action="regenerate",
+                    outcome=outcome,
+                    signature=(
+                        repeat_signature
+                        if signature is KEEP_INITIAL_SIGNATURE
+                        else signature
+                    ),
+                    response_id=str(proactive_sid),
+                ),
+            )
+
         instruction = _render_break_reminder_regen_instruction(
             unanswered_repeat_signal.repeated_terms,
             lang,
@@ -446,6 +478,7 @@ async def _deliver_break_reminder_via_llm(
             HumanMessage(content=f"{instruction}\n\n{begin_text}"),
         ]
         if mgr.state.is_proactive_preempted(proactive_sid):
+            record_break_repeat_effect("abandoned_user_interaction")
             return BreakReminderDeliveryResult()
         silence_since_before_regen = _break_reminder_silence_since(mgr)
         regen_text = ""
@@ -476,15 +509,14 @@ async def _deliver_break_reminder_via_llm(
             )
 
         if mgr.state.is_proactive_preempted(proactive_sid):
+            record_break_repeat_effect("abandoned_user_interaction")
             return BreakReminderDeliveryResult()
         silence_since_after_regen = _break_reminder_silence_since(mgr)
-        if (
-            silence_since_after_regen is not None
-            and (
-                silence_since_before_regen is None
-                or silence_since_after_regen > silence_since_before_regen
-            )
+        if silence_since_after_regen is not None and (
+            silence_since_before_regen is None
+            or silence_since_after_regen > silence_since_before_regen
         ):
+            record_break_repeat_effect("abandoned_user_interaction")
             logger.info(
                 "[%s] break reminder abandoned after user interaction during regen",
                 lanlan_name,
@@ -494,10 +526,12 @@ async def _deliver_break_reminder_via_llm(
             return BreakReminderDeliveryResult()
         cleaned = regen_text.strip()
         if "[PASS]" in cleaned.upper():
+            record_break_repeat_effect("break_reminder_suppressed")
             if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
             return BreakReminderDeliveryResult(repeat_suppressed=True)
         if not cleaned or count_tokens(cleaned) > PHASE2_OUTPUT_MAX_TOKENS:
+            record_break_repeat_effect("regen_failed")
             if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
             return BreakReminderDeliveryResult()
@@ -509,6 +543,14 @@ async def _deliver_break_reminder_via_llm(
             mgr=mgr,
         )
         if regen_signal is not None and regen_signal.triggered:
+            record_break_repeat_effect(
+                "break_reminder_suppressed",
+                signature=build_repeat_signature(
+                    cleaned,
+                    regen_signal.repeated_terms,
+                    language=lang,
+                ),
+            )
             logger.info(
                 "[%s] break reminder regen still repeats unanswered content; drop",
                 lanlan_name,
@@ -516,6 +558,7 @@ async def _deliver_break_reminder_via_llm(
             if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
             return BreakReminderDeliveryResult(repeat_suppressed=True)
+        record_break_repeat_effect("regen_guard_passed")
         text = cleaned
 
     # Withhold TTS until all repeat checks finish; otherwise a rejected initial

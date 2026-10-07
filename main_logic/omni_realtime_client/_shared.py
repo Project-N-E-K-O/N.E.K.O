@@ -135,6 +135,23 @@ def response_arbiter_fail_open_enabled() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+# Opt-in structural trace of the realtime wire and of the response arbiter's
+# decisions, for attributing provider lifecycle quirks from a field log. Same
+# support path as the hatch above: set it, restart, send the Main log. Read
+# once per client construction. Records carry types, ids, counts, names and
+# statuses (see ``_wire_trace``), never conversation content. The one free-text
+# exception: provider error messages, arbiter dispatch-failure exception text
+# and connection-loss reasons are included, truncated to 200 characters.
+_REALTIME_WIRE_TRACE_ENV_VAR = "NEKO_REALTIME_WIRE_TRACE"
+
+
+def realtime_wire_trace_enabled() -> bool:
+    """Read the realtime wire-trace switch. Default off."""
+
+    raw = os.getenv(_REALTIME_WIRE_TRACE_ENV_VAR, "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 # ``api_type`` carries the provider key that ``CORE_API_TYPE`` resolves to
 # ('openai', 'qwen_intl', ...), never a model-name fragment. Several wire
 # branches were written against 'gpt' — a value the config layer has never
@@ -158,6 +175,48 @@ _REALTIME_DIALECT_ALIASES = {
 # 陈旧欠账吃掉一条**合法**终结，那一轮的 external token 没人结算，
 # is_active_response() 恒真、主动搭话彻底哑。所以宁可短。
 GEMINI_CANCELLED_TERMINAL_TTL_SECONDS = 3.0
+
+# The mime a Gemini user turn's frames are sent under. One definition, because
+# it is read twice: once by the sender and once by the frame-bus publisher that
+# labels the very same bytes. Two literals would let a changed format mislabel
+# every record on the bus without anything going red.
+GEMINI_TURN_IMAGE_MIME = "image/jpeg"
+
+# GLM 的 session.update 是整包重置，不是补丁。漏掉 beta_fields 时服务端会把
+# chat_mode 从 video_passive 打回默认 audio，视频下游跟着拆掉，网关重连 3 次
+# 后回 downstream_reconnect_exceeded 并关掉 WebSocket。connect() 和之后每一次
+# 局部更新（工具同步、instructions）都必须带上同一份。
+GLM_REALTIME_BETA_FIELDS = {
+    "chat_mode": "video_passive",
+    "auto_search": True,
+}
+
+# 公开 WebSocket 的 ?model= 只放行这些名字。glm-realtime-plus 写在查询参数里
+# 会在握手后被 code 1234 / close 1003 拒绝。查询参数用已放行的型号进门，
+# 真正的型号放进 session.update。只对智谱官方网关这样改写：自定义地址（代理、
+# 自建）可能按查询参数路由，照旧用用户填的型号。
+_GLM_REALTIME_PUBLIC_HOST = "open.bigmodel.cn"
+_GLM_REALTIME_GATEWAY_MODELS = frozenset({
+    "glm-realtime",
+    "glm-realtime-air",
+    "glm-realtime-flash",
+})
+_GLM_REALTIME_GATEWAY_FALLBACK = "glm-realtime-air"
+
+
+def glm_realtime_gateway_model(model: object, base_url: object) -> str:
+    """Model name to put on the URL; remapped only for the public GLM gateway."""
+
+    name = str(model or "").strip()
+    from urllib.parse import urlparse
+
+    try:
+        host = (urlparse(str(base_url or "")).hostname or "").lower()
+    except ValueError:
+        host = ""
+    if host != _GLM_REALTIME_PUBLIC_HOST or name in _GLM_REALTIME_GATEWAY_MODELS:
+        return name
+    return _GLM_REALTIME_GATEWAY_FALLBACK
 
 
 def canonical_realtime_dialect(api_type: object) -> str:

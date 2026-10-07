@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -30,6 +31,9 @@ from plugin.server.routes import plugin_cli as plugin_cli_routes
 
 pytestmark = pytest.mark.plugin_unit
 FIXTURE_PLUGINS_ROOT = Path(__file__).resolve().parents[2] / "fixtures" / "neko_plugin_cli" / "plugins"
+# Package import routes accept tokenless calls only from a loopback native
+# client; ASGITransport already reports the client as 127.0.0.1.
+_LOCAL_BASE_URL = "http://127.0.0.1"
 
 
 def _make_plugin_dir(
@@ -120,12 +124,52 @@ def _patch_plugin_cli_settings(
     monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root or (builtin_root / "profiles"))
 
 
+def _set_imported_owner(
+    *,
+    tmp_path: Path,
+    builtin_root: Path,
+    user_root: Path,
+    directory_path: Path,
+    package_id: str,
+    profile_dir: Path | None = None,
+) -> InstallSourceManager:
+    manager = InstallSourceManager(
+        lock_path=tmp_path / "plugins.lock.json",
+        builtin_root=builtin_root,
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(builtin_root, user_root),
+    )
+    manager.record_import(
+        directory_path=directory_path,
+        package_filename=f"{package_id}.neko-plugin",
+        package_sha256="a" * 64,
+        package_id=package_id,
+        profile_dir=str(profile_dir) if profile_dir is not None else "",
+    )
+    set_global_manager(manager)
+    return manager
+
+
 class _MemoryUploadFile:
     def __init__(self) -> None:
         self.filename = "demo.neko-plugin"
 
     async def read(self) -> bytes:
         return b"demo"
+
+
+def _market_install_override(plugin_id: str) -> dict[str, object]:
+    return {
+        "channel": "market",
+        "mode": "install",
+        "market_detail": {
+            "plugin_market_id": plugin_id,
+            "version": "1.0.0",
+            "package_url": f"https://example.invalid/{plugin_id}.neko-plugin",
+            "expected_plugin_toml_id": plugin_id,
+            "published_at": "2026-09-02T00:00:00Z",
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -213,17 +257,17 @@ async def test_discard_uploaded_package_route_removes_only_requested_upload(
 ) -> None:
     packages_root = tmp_path / "packages"
     _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=packages_root)
-    selected = await plugin_cli_routes.service.save_uploaded_file(
+    selected = await (await plugin_cli_routes.get_plugin_cli_service()).save_uploaded_file(
         filename="selected.neko-plugin",
         source_file=BytesIO(b"selected"),
     )
-    preserved = await plugin_cli_routes.service.save_uploaded_file(
+    preserved = await (await plugin_cli_routes.get_plugin_cli_service()).save_uploaded_file(
         filename="preserved.neko-plugin",
         source_file=BytesIO(b"preserved"),
     )
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.delete(
             "/plugin-cli/upload",
             params={"package": str(selected["path"])},
@@ -299,7 +343,7 @@ async def test_package_entrypoints_reject_archive_bombs_before_reading_payload(
 
     monkeypatch.setattr(zipfile.ZipFile, "open", guarded_open)
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.post(endpoint, json={"package": str(package_path)})
 
     assert response.status_code == 400
@@ -353,7 +397,7 @@ async def test_plugin_cli_inspect_and_verify_routes(
     _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=tmp_path)
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         inspect_response = await client.post(
             "/plugin-cli/inspect",
             json={"package": str(package_path)},
@@ -382,7 +426,7 @@ async def test_plugin_cli_list_plugins_route_returns_shape(
     _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=tmp_path)
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.get("/plugin-cli/plugins")
 
         assert response.status_code == 200
@@ -490,7 +534,7 @@ async def test_plugin_cli_build_single_plugin_ref_routes_to_exact_user_plugin(
     )
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.post(
             "/plugin-cli/build",
             json={
@@ -544,7 +588,7 @@ async def test_plugin_cli_list_packages_route_returns_target_packages(
     _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=tmp_path)
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.get("/plugin-cli/packages")
 
         assert response.status_code == 200
@@ -593,7 +637,7 @@ async def test_plugin_cli_pack_bundle_route_uses_mode_payload(
     _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=tmp_path)
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.post(
             "/plugin-cli/pack",
             json={
@@ -633,7 +677,7 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
     )
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         analyze_response = await client.post(
             "/plugin-cli/analyze",
             json={
@@ -728,7 +772,7 @@ async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
     )
 
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.post(
             "/plugin-cli/unpack",
             json={"package": str(package_path)},
@@ -764,13 +808,23 @@ async def test_plugin_cli_install_plan_reports_matching_plugin_upgrade(
         packages_root=tmp_path,
         profiles_root=tmp_path / "profiles",
     )
+    _set_imported_owner(
+        tmp_path=tmp_path,
+        builtin_root=tmp_path / "builtin",
+        user_root=plugins_root,
+        directory_path=installed,
+        package_id="simple_plugin",
+    )
 
-    transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        response = await client.post(
-            "/plugin-cli/install-plan",
-            json={"package": str(package_path)},
-        )
+    try:
+        transport = ASGITransport(app=plugin_cli_test_app)
+        async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
+            response = await client.post(
+                "/plugin-cli/install-plan",
+                json={"package": str(package_path)},
+            )
+    finally:
+        set_global_manager(None)
 
     assert response.status_code == 200
     assert response.json()["action"] == "upgrade"
@@ -882,41 +936,58 @@ async def test_plugin_cli_route_upgrades_in_place_after_confirmation(
         packages_root=packages_root,
         profiles_root=tmp_path / "profiles",
     )
+    manager = InstallSourceManager(
+        lock_path=tmp_path / "plugins.lock.json",
+        builtin_root=tmp_path / "builtin",
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(tmp_path / "builtin", user_root),
+    )
+    set_global_manager(manager)
 
-    transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        install_response = await client.post(
-            "/plugin-cli/install",
-            json={"package": str(v1_package)},
-        )
-        assert install_response.status_code == 200, install_response.text
-        assert install_response.json()["operation"] == "install"
-        preserved_state = {
-            "config/user.toml": b"user-config",
-            "data/user.db": b"user-data",
-            "cache/user.cache": b"user-cache",
-        }
-        for relative_path, payload in preserved_state.items():
-            state_path = tmp_path / "runtime_data" / "plugins" / plugin_id / relative_path
-            state_path.parent.mkdir(parents=True, exist_ok=True)
-            state_path.write_bytes(payload)
+    try:
+        transport = ASGITransport(app=plugin_cli_test_app)
+        async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
+            install_response = await client.post(
+                "/plugin-cli/install",
+                json={"package": str(v1_package)},
+            )
+            assert install_response.status_code == 200, install_response.text
+            assert install_response.json()["operation"] == "install"
+            manager.record_import(
+                directory_path=user_root / plugin_id,
+                package_filename=v1_package.name,
+                package_sha256="a" * 64,
+                package_id=plugin_id,
+                profile_dir=str(tmp_path / "profiles" / plugin_id),
+            )
+            preserved_state = {
+                "config/user.toml": b"user-config",
+                "data/user.db": b"user-data",
+                "cache/user.cache": b"user-cache",
+            }
+            for relative_path, payload in preserved_state.items():
+                state_path = tmp_path / "runtime_data" / "plugins" / plugin_id / relative_path
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                state_path.write_bytes(payload)
 
-        plan_response = await client.post(
-            "/plugin-cli/install-plan",
-            json={"package": str(v2_package)},
-        )
-        assert plan_response.status_code == 200, plan_response.text
-        plan = plan_response.json()
-        assert plan["action"] == "upgrade"
+            plan_response = await client.post(
+                "/plugin-cli/install-plan",
+                json={"package": str(v2_package)},
+            )
+            assert plan_response.status_code == 200, plan_response.text
+            plan = plan_response.json()
+            assert plan["action"] == "upgrade"
 
-        upgrade_response = await client.post(
-            "/plugin-cli/install",
-            json={
-                "package": str(v2_package),
-                "confirm_upgrade": True,
-                "confirmation_token": plan["confirmation_token"],
-            },
-        )
+            upgrade_response = await client.post(
+                "/plugin-cli/install",
+                json={
+                    "package": str(v2_package),
+                    "confirm_upgrade": True,
+                    "confirmation_token": plan["confirmation_token"],
+                },
+            )
+    finally:
+        set_global_manager(None)
 
     assert upgrade_response.status_code == 200, upgrade_response.text
     assert upgrade_response.json()["operation"] == "upgrade"
@@ -970,31 +1041,48 @@ async def test_plugin_cli_route_preserves_replacement_operation_after_confirmati
         packages_root=packages_root,
         profiles_root=tmp_path / "profiles",
     )
+    manager = InstallSourceManager(
+        lock_path=tmp_path / "plugins.lock.json",
+        builtin_root=tmp_path / "builtin",
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(tmp_path / "builtin", user_root),
+    )
+    set_global_manager(manager)
 
-    transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        install_response = await client.post(
-            "/plugin-cli/install",
-            json={"package": str(installed_package)},
-        )
-        assert install_response.status_code == 200, install_response.text
+    try:
+        transport = ASGITransport(app=plugin_cli_test_app)
+        async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
+            install_response = await client.post(
+                "/plugin-cli/install",
+                json={"package": str(installed_package)},
+            )
+            assert install_response.status_code == 200, install_response.text
+            manager.record_import(
+                directory_path=user_root / plugin_id,
+                package_filename=installed_package.name,
+                package_sha256="a" * 64,
+                package_id=plugin_id,
+                profile_dir=str(tmp_path / "profiles" / plugin_id),
+            )
 
-        plan_response = await client.post(
-            "/plugin-cli/install-plan",
-            json={"package": str(replacement_package)},
-        )
-        assert plan_response.status_code == 200, plan_response.text
-        plan = plan_response.json()
-        assert plan["action"] == expected_operation
+            plan_response = await client.post(
+                "/plugin-cli/install-plan",
+                json={"package": str(replacement_package)},
+            )
+            assert plan_response.status_code == 200, plan_response.text
+            plan = plan_response.json()
+            assert plan["action"] == expected_operation
 
-        replacement_response = await client.post(
-            "/plugin-cli/install",
-            json={
-                "package": str(replacement_package),
-                "confirm_upgrade": True,
-                "confirmation_token": plan["confirmation_token"],
-            },
-        )
+            replacement_response = await client.post(
+                "/plugin-cli/install",
+                json={
+                    "package": str(replacement_package),
+                    "confirm_upgrade": True,
+                    "confirmation_token": plan["confirmation_token"],
+                },
+            )
+    finally:
+        set_global_manager(None)
 
     assert replacement_response.status_code == 200, replacement_response.text
     assert replacement_response.json()["operation"] == expected_operation
@@ -1015,9 +1103,9 @@ async def test_plugin_cli_install_returns_structured_rollback_details(
             details={"stage": "install", "rollback_status": "completed"},
         )
 
-    monkeypatch.setattr(plugin_cli_routes.service, "install", fail_install)
+    monkeypatch.setattr((await plugin_cli_routes.get_plugin_cli_service()), "install", fail_install)
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.post(
             "/plugin-cli/install",
             json={"package": "/packages/demo.neko-plugin"},
@@ -1067,7 +1155,7 @@ async def test_plugin_cli_install_records_uploaded_package_as_imported(
     set_global_manager(manager)
     try:
         transport = ASGITransport(app=plugin_cli_test_app)
-        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
             upload_response = await client.post(
                 "/plugin-cli/upload",
                 files={"file": (package_path.name, package_bytes, "application/octet-stream")},
@@ -1116,9 +1204,9 @@ async def test_plugin_cli_install_remains_successful_when_import_hashing_fails(
     def _hash_failure(_path: Path) -> str:
         raise OSError("package archive disappeared")
 
-    monkeypatch.setattr(plugin_cli_routes.service, "_sha256_file", _hash_failure)
+    monkeypatch.setattr((await plugin_cli_routes.get_plugin_cli_service()), "_sha256_file", _hash_failure)
     transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with AsyncClient(transport=transport, base_url=_LOCAL_BASE_URL) as client:
         response = await client.post(
             "/plugin-cli/install",
             json={
@@ -1556,3 +1644,268 @@ async def test_market_record_failure_removes_new_code_but_preserves_reused_profi
     assert not (user_root / plugin_id).exists()
     assert preserved.read_bytes() == b"do-not-delete\n"
     assert not list(packages_root.glob("*.neko-plugin"))
+
+
+@pytest.mark.asyncio
+async def test_market_fresh_install_refreshes_after_source_row_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "market_refresh_demo"
+    package_source_root = tmp_path / "package-source"
+    package_source_root.mkdir()
+    package_path = package_source_root / f"{plugin_id}.neko-plugin"
+    pack_plugin(_make_plugin_dir(tmp_path / "source", plugin_id=plugin_id), package_path)
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "user-plugins"
+    packages_root = tmp_path / "packages"
+    profiles_root = tmp_path / "profiles"
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=builtin_root,
+        user_root=user_root,
+        packages_root=packages_root,
+        profiles_root=profiles_root,
+    )
+    manager = InstallSourceManager(
+        lock_path=tmp_path / "plugins.lock.json",
+        builtin_root=builtin_root,
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(builtin_root, user_root),
+    )
+    refresh_calls: list[str] = []
+
+    async def refresh_plugin(requested_id: str) -> dict[str, object]:
+        installed_dir = user_root / plugin_id
+        source_view = manager.to_api_view(plugin_id, directory_path=installed_dir)
+        assert source_view["source"] == "market"
+        assert installed_dir.joinpath("plugin.toml").is_file()
+        refresh_calls.append(requested_id)
+        return {"success": True, "plugin": {"id": requested_id}}
+
+    monkeypatch.setattr(
+        plugin_cli_service,
+        "plugin_registry_service",
+        SimpleNamespace(refresh_plugin=refresh_plugin),
+        raising=False,
+    )
+    set_global_manager(manager)
+    try:
+        result = await PluginCliService().upload_and_install(
+            filename=package_path.name,
+            package_path=str(package_path),
+            install_source_override=_market_install_override(plugin_id),
+        )
+    finally:
+        set_global_manager(None)
+
+    assert refresh_calls == [plugin_id]
+    assert result.get("install_source_warning") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("install_mode", ["upgrade", "reinstall"])
+async def test_market_upgrade_and_reinstall_do_not_use_fresh_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    install_mode: str,
+) -> None:
+    plugin_id = f"market_no_fresh_refresh_{install_mode}"
+    package_path = tmp_path / f"{plugin_id}.neko-plugin"
+    package_path.write_bytes(b"package")
+    target_dir = tmp_path / "user-plugins" / plugin_id
+    target_dir.mkdir(parents=True)
+    (target_dir / "plugin.toml").write_text(
+        f'[plugin]\nid = "{plugin_id}"\n',
+        encoding="utf-8",
+    )
+    service = PluginCliService()
+
+    monkeypatch.setattr(
+        service,
+        "_save_package_file_sync",
+        lambda **_kwargs: {"path": str(package_path), "name": package_path.name},
+    )
+    monkeypatch.setattr(service, "_sha256_file", lambda _path: "a" * 64)
+
+    async def plan_install(**_kwargs: object) -> dict[str, object]:
+        return {"action": "upgrade"}
+
+    async def install(**_kwargs: object) -> dict[str, object]:
+        return {
+            "unpacked_plugins": [
+                {
+                    "target_dir": str(target_dir),
+                    "target_plugin_id": plugin_id,
+                }
+            ],
+            "package_id": plugin_id,
+            "profile_dir": "",
+        }
+
+    monkeypatch.setattr(service, "plan_install", plan_install)
+    monkeypatch.setattr(service, "install", install)
+
+    class _Manager:
+        builtin_root = tmp_path / "builtin"
+        user_root = target_dir.parent
+
+        def record_market_upgrade(self, **_kwargs: object):
+            return (
+                SimpleNamespace(
+                    channel="market",
+                    directory_name=plugin_id,
+                    plugin_id=plugin_id,
+                    source_detail=SimpleNamespace(
+                        version="1.0.0",
+                        package_sha256="a" * 64,
+                        payload_hash=None,
+                        published_at="2026-09-02T00:00:00Z",
+                        previous_version="0.9.0",
+                    ),
+                ),
+                [],
+            )
+
+    monkeypatch.setattr(service, "_require_install_source_manager", lambda: _Manager())
+    refresh_calls: list[str] = []
+
+    async def unexpected_refresh(requested_id: str) -> None:
+        refresh_calls.append(requested_id)
+
+    monkeypatch.setattr(
+        plugin_cli_service,
+        "_refresh_committed_market_install",
+        unexpected_refresh,
+    )
+
+    result = await service.upload_and_install(
+        filename=package_path.name,
+        package_path=str(package_path),
+        install_source_override={
+            **_market_install_override(plugin_id),
+            "mode": install_mode,
+        },
+    )
+
+    assert result["install"]["channel"] == "market"
+    assert refresh_calls == []
+
+
+@pytest.mark.asyncio
+async def test_market_fresh_refresh_failure_keeps_committed_install_and_warns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "market_refresh_warning"
+    package_source_root = tmp_path / "package-source"
+    package_source_root.mkdir()
+    package_path = package_source_root / f"{plugin_id}.neko-plugin"
+    pack_plugin(_make_plugin_dir(tmp_path / "source", plugin_id=plugin_id), package_path)
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "user-plugins"
+    packages_root = tmp_path / "packages"
+    profiles_root = tmp_path / "profiles"
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=builtin_root,
+        user_root=user_root,
+        packages_root=packages_root,
+        profiles_root=profiles_root,
+    )
+    manager = InstallSourceManager(
+        lock_path=tmp_path / "plugins.lock.json",
+        builtin_root=builtin_root,
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(builtin_root, user_root),
+    )
+
+    async def fail_refresh(_plugin_id: str) -> dict[str, object]:
+        raise RuntimeError("injected registry refresh failure")
+
+    monkeypatch.setattr(
+        plugin_cli_service,
+        "plugin_registry_service",
+        SimpleNamespace(refresh_plugin=fail_refresh),
+        raising=False,
+    )
+    set_global_manager(manager)
+    try:
+        result = await PluginCliService().upload_and_install(
+            filename=package_path.name,
+            package_path=str(package_path),
+            install_source_override=_market_install_override(plugin_id),
+        )
+    finally:
+        set_global_manager(None)
+
+    installed_dir = user_root / plugin_id
+    assert installed_dir.joinpath("plugin.toml").is_file()
+    assert manager.to_api_view(plugin_id, directory_path=installed_dir)["source"] == "market"
+    assert "registry refresh" in str(result["install_source_warning"]).lower()
+    assert "injected registry refresh failure" in str(result["install_source_warning"])
+
+
+@pytest.mark.asyncio
+async def test_market_fresh_cancellation_waits_for_post_commit_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "market_refresh_cancel"
+    package_source_root = tmp_path / "package-source"
+    package_source_root.mkdir()
+    package_path = package_source_root / f"{plugin_id}.neko-plugin"
+    pack_plugin(_make_plugin_dir(tmp_path / "source", plugin_id=plugin_id), package_path)
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "user-plugins"
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=builtin_root,
+        user_root=user_root,
+        packages_root=tmp_path / "packages",
+        profiles_root=tmp_path / "profiles",
+    )
+    manager = InstallSourceManager(
+        lock_path=tmp_path / "plugins.lock.json",
+        builtin_root=builtin_root,
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(builtin_root, user_root),
+    )
+    refresh_started = asyncio.Event()
+    release_refresh = asyncio.Event()
+
+    async def refresh_plugin(_plugin_id: str) -> dict[str, object]:
+        assert manager.to_api_view(
+            plugin_id,
+            directory_path=user_root / plugin_id,
+        )["source"] == "market"
+        refresh_started.set()
+        await release_refresh.wait()
+        return {"success": True}
+
+    monkeypatch.setattr(
+        plugin_cli_service,
+        "plugin_registry_service",
+        SimpleNamespace(refresh_plugin=refresh_plugin),
+        raising=False,
+    )
+    set_global_manager(manager)
+    try:
+        task = asyncio.create_task(
+            PluginCliService().upload_and_install(
+                filename=package_path.name,
+                package_path=str(package_path),
+                install_source_override=_market_install_override(plugin_id),
+            )
+        )
+        await asyncio.wait_for(refresh_started.wait(), timeout=5.0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release_refresh.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        set_global_manager(None)
+
+    assert (user_root / plugin_id / "plugin.toml").is_file()

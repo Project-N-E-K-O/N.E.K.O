@@ -971,6 +971,7 @@
     const GUIDE_AUDIO_DURATIONS_BY_KEY = Object.freeze({
         avatar_floating_day2_avatar_tools_intro: Object.freeze({ zh: 4400, ja: 5904, en: 4336, ko: 6060, ru: 5120 }),
         avatar_floating_day2_avatar_tools_props: Object.freeze({ zh: 13320, ja: 16144, en: 14681, ko: 14420, ru: 14942 }),
+        avatar_floating_day2_tool_wheel_rotation: Object.freeze({ zh: 8832, ja: 10893, en: 9247, ko: 11729, ru: 7915 }),
         avatar_floating_day2_galgame_choices: Object.freeze({ zh: 9800, ja: 12382, en: 9639, ko: 11755, ru: 12931 }),
         avatar_floating_day2_galgame_intro: Object.freeze({ zh: 6640, ja: 8333, en: 7262, ko: 8803, ru: 7393 }),
         avatar_floating_day2_intro: Object.freeze({ zh: 12960, ja: 17711, en: 14054, ko: 17241, ru: 16535 }),
@@ -1007,6 +1008,7 @@
         avatar_floating_day7_memory_control: Object.freeze({ zh: 13000, ja: 17162, en: 15203, ko: 16274, ru: 16666 }),
         avatar_floating_day7_memory_review: Object.freeze({ zh: 15500, ja: 20820, en: 19095, ko: 20219, ru: 17241 }),
         avatar_floating_day7_wrap: Object.freeze({ zh: 22100, ja: 23301, en: 26958, ko: 25443, ru: 25469 }),
+        day1_avatar_zoom_hint: Object.freeze({ zh: 11760, ja: 13949, en: 12460, ko: 15491, ru: 12513 }),
         day1_capsule_drag_hint: Object.freeze({ zh: 6936, ja: 11076, en: 9900, ko: 10736, ru: 10423 }),
         day1_history_handle: Object.freeze({ zh: 5580, ja: 8385, en: 5460, ko: 6792, ru: 5877 }),
         day1_screen_entry: Object.freeze({ zh: 6080, ja: 7157, en: 5172, ko: 6896, ru: 6713 }),

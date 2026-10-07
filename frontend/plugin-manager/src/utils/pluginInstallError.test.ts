@@ -10,10 +10,16 @@ describe('resolvePluginInstallErrorKey', () => {
     ['override_source_changed', 'market.overrideSourceChanged'],
     ['override_confirmation_changed', 'market.confirmationChanged'],
     ['override_confirmation_required', 'market.confirmationRequired'],
+    ['manual_takeover_confirmation_required', 'market.confirmationRequired'],
+    ['manual_takeover_plan_changed', 'market.confirmationChanged'],
+    ['manual_takeover_source_changed', 'market.confirmationChanged'],
     ['override_target_exists', 'market.autoUpgradeBlocked'],
     ['override_start_failed', 'market.overrideStartFailed'],
     ['INSTALL_SOURCE_READ_ONLY', 'market.lockWriteFailed'],
     ['PLUGIN_BUILTIN_OVERRIDE_MARKET_REQUIRED', 'market.autoUpgradeBlocked'],
+    ['market_release_mismatch', 'market.releaseMismatch'],
+    ['market_catalog_unavailable', 'market.marketListFetchFailed'],
+    ['market_catalog_not_configured', 'market.catalogNotConfigured'],
   ])('maps %s to a localized key', (code, key) => {
     expect(resolvePluginInstallErrorKey(code)).toBe(key)
   })

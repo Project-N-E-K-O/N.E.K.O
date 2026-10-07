@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
@@ -28,6 +29,18 @@ from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
 import numpy as np
 import soxr
 
+from .delivery import delivery_evidence, log_delivery_phase
+from .warmup import (
+    provider_warmup_kind,
+    provider_warmup_reason,
+    provider_warmup_snapshot,
+)
+from .worker_failure import recorded_worker_failure
+from .connection_cleanup import (
+    ConnectionRetirementError,
+    TASK_EXIT_TIMEOUT_SECONDS,
+    connection_registry,
+)
 from .provider_policy import AsrProviderPolicy
 from .transcript import SegmentAggregator
 
@@ -72,7 +85,7 @@ _OMNI_ONLY_FIELDS = frozenset(
     }
 )
 
-_RequestKind: TypeAlias = Literal["audio", "commit", "clear", "shutdown"]
+_RequestKind: TypeAlias = Literal["audio", "commit", "clear", "shutdown", "activity", "finish"]
 _EventKind: TypeAlias = Literal[
     "ready",
     "utterance_started",
@@ -80,6 +93,7 @@ _EventKind: TypeAlias = Literal[
     "final",
     "error",
     "closed",
+    "finished",
 ]
 _UtteranceKey: TypeAlias = tuple[int, int, int]
 
@@ -126,6 +140,15 @@ class RealtimeAsrSession(Protocol):
     """Stable session surface used by audio-producing callers."""
 
     @property
+    def last_failure_code(self) -> str | None: ...
+
+    @property
+    def failure_started_at(self) -> float | None: ...
+
+    @property
+    def supports_result_preserving_finish(self) -> bool: ...
+
+    @property
     def is_ready(self) -> bool: ...
 
     async def connect(
@@ -145,7 +168,15 @@ class RealtimeAsrSession(Protocol):
 
     async def signal_user_activity_end(self) -> None: ...
 
+    async def signal_local_activity(self, *, speech_active: bool) -> None: ...
+
+    def signal_local_activity_nowait(self, *, speech_active: bool) -> None: ...
+
     async def clear_audio_buffer(self) -> None: ...
+
+    async def finish_and_drain(self, *, deadline: float) -> None:
+        """Finish within an absolute loop-time deadline, or report unsupported."""
+        ...
 
     async def close(self) -> None: ...
 
@@ -159,6 +190,7 @@ class _AsrWorkerRequest:
     buffer_epoch: int = 0
     utterance_id: int | None = None
     audio: bytes = b""
+    speech_active: bool = False
 
 
 @dataclass(slots=True)
@@ -183,6 +215,10 @@ class _AsrRequestQueue(asyncio.Queue[_AsrWorkerRequest]):
         super().__init__()
         self._held_audio_bytes = 0
         self._held_audio_items = 0
+        # A worker may temporarily retire its transport while keeping queued
+        # audio. Recovery gets a time.monotonic() deadline, never a larger
+        # audio budget. This transport contract is provider-neutral.
+        self.transport_recovery_deadline = 0.0
 
     def hold_dequeued_audio(
         self,
@@ -200,7 +236,7 @@ class _AsrRequestQueue(asyncio.Queue[_AsrWorkerRequest]):
     ) -> tuple[_AsrWorkerRequest, _QueuedAudioHold | None]:
         """Atomically transfer dequeued audio into the held budget."""
 
-        request = await super().get()
+        request = await self.get()
         return request, self.hold_dequeued_audio(request)
 
     def _release_held_audio(self, audio_bytes: int) -> None:
@@ -303,6 +339,7 @@ class _SessionState(Enum):
     NEW = "new"
     CONNECTING = "connecting"
     READY = "ready"
+    FINISHING = "finishing"
     CLOSING = "closing"
     CLOSED = "closed"
     FAILED = "failed"
@@ -399,10 +436,73 @@ class _RealtimeAsrSessionImpl:
         self._closing_event = asyncio.Event()
         self._callback_close_event = asyncio.Event()
         self._connection_error_reported = False
+        # "<ASR_CODE>: <message>" of the failure that ended the session, so a
+        # failure right after "ready" still reaches connect()'s caller with
+        # its provider code instead of a generic one.
+        self._failure_error: str | None = None
+        self._last_failure_code: str | None = None
+        self._failure_started_at: float | None = None
+        self._finish_future: asyncio.Future[None] | None = None
+        self._finish_callback_failed = False
+
+    @property
+    def last_failure_code(self) -> str | None:
+        """Validated machine code; never infer recovery from a provider message."""
+        return self._last_failure_code
+
+    @property
+    def failure_started_at(self) -> float | None:
+        """Loop-time boundary including accepted-callback drain in recovery."""
+        return self._failure_started_at
+
+    @property
+    def supports_result_preserving_finish(self) -> bool:
+        return bool(
+            self._provider_policy
+            and self._provider_policy.supports_result_preserving_finish
+        )
 
     @property
     def is_ready(self) -> bool:
         return self._state is _SessionState.READY
+
+    @property
+    def transport_write_attempted(self) -> bool | None:
+        """Actual worker send entered; its result may still be unknown."""
+        evidence = getattr(self._request_queue, "_transport_delivery_evidence", None)
+        return evidence.attempted if evidence else None
+
+    def protect_audio_delivery(self) -> None:
+        """Forbid provider-managed replay once this queue owns protected audio."""
+        if self._request_queue is None:
+            raise RuntimeError("ASR_SESSION_NOT_READY: no worker queue")
+        delivery_evidence(self._request_queue).protected = True
+
+    @property
+    def transport_written_audio_bytes(self) -> int:
+        """Audio payload bytes after successful socket send, not queue admission."""
+        evidence = getattr(self._request_queue, "_transport_delivery_evidence", None)
+        return evidence.written_audio_bytes if evidence else 0
+
+    @property
+    def provider_warmup_kind(self) -> str:
+        """What a pending warm-up waits for (``"model"`` / ``"queue"``), or ``""``."""
+        return provider_warmup_kind(self._request_queue)
+
+    @property
+    def provider_warmup_reason(self) -> str:
+        """Why the provider is preparing (an ``ASR_*`` code), or ``""``."""
+        return provider_warmup_reason(self._request_queue)
+
+    @property
+    def provider_warmup_snapshot(self) -> tuple[bool, float | None]:
+        """``(pending, completed_at)`` taken together; see provider_warmup_snapshot()."""
+        return provider_warmup_snapshot(self._request_queue)
+
+    @property
+    def transport_delivery_trace_id(self) -> str | None:
+        evidence = getattr(self._request_queue, "_transport_delivery_evidence", None)
+        return evidence.trace_id if evidence else None
 
     @property
     def provider_wire_audio_ms(self) -> int:
@@ -427,6 +527,10 @@ class _RealtimeAsrSessionImpl:
 
             self._state = _SessionState.CONNECTING
             self._request_queue = _AsrRequestQueue()
+            # This session owns the queue before any worker can dispatch audio.
+            # Record definite non-delivery now; missing evidence on an unknown
+            # session implementation must still mean uncertainty to callers.
+            delivery_evidence(self._request_queue)
             self._response_queue = asyncio.Queue(maxsize=_RESPONSE_QUEUE_SIZE)
             self._callback_queue = asyncio.Queue(maxsize=_CALLBACK_QUEUE_SIZE)
             self._ready_future = asyncio.get_running_loop().create_future()
@@ -472,13 +576,31 @@ class _RealtimeAsrSessionImpl:
 
             worker_task = self._worker_task
             if self._state is not _SessionState.READY or worker_task is None:
-                raise RuntimeError("ASR_WORKER_FAILED: worker exited during connect")
-            if worker_task.done():
-                await self._fail(
-                    "ASR_WORKER_FAILED",
-                    "worker exited immediately after becoming ready",
+                recorded = recorded_worker_failure(self._request_queue)
+                raise RuntimeError(
+                    getattr(self, "_failure_error", None)
+                    or (f"{recorded[0]}: {recorded[1]}" if recorded else None)
+                    or "ASR_WORKER_FAILED: worker exited during connect"
                 )
-                raise RuntimeError("ASR_WORKER_FAILED: worker exited during connect")
+            if worker_task.done():
+                # The worker may have queued its own failure (e.g. a local
+                # model that failed to load) just before returning: keep that
+                # code instead of classifying the exit generically.
+                recorded = recorded_worker_failure(self._request_queue)
+                if recorded is not None:
+                    await self._fail(
+                        recorded[0] or "ASR_WORKER_FAILED",
+                        recorded[1] or "worker reported a provider error",
+                    )
+                else:
+                    await self._fail(
+                        "ASR_WORKER_FAILED",
+                        "worker exited immediately after becoming ready",
+                    )
+                raise RuntimeError(
+                    getattr(self, "_failure_error", None)
+                    or "ASR_WORKER_FAILED: worker exited during connect"
+                )
             if self._voice_turn_factory is not None:
                 adapter: _VoiceTurnAdapterProtocol | None = None
                 try:
@@ -614,6 +736,38 @@ class _RealtimeAsrSessionImpl:
                 return
             await self._commit_current_utterance_locked()
 
+    async def signal_local_activity(self, *, speech_active: bool) -> None:
+        """Forward observational VAD hints without sealing a logical turn."""
+        if self._provider_policy is None or not self._provider_policy.observes_local_activity:
+            return
+        async with self._operation_lock:
+            # Lock acquisition orders pauses behind preceding PCM. Once held,
+            # publish atomically: a child put Task could otherwise run after
+            # cancellation and overtake a newer synchronous resume.
+            self.signal_local_activity_nowait(speech_active=speech_active)
+
+    def signal_local_activity_nowait(self, *, speech_active: bool) -> None:
+        """Submit an observation without waiting behind PCM backpressure.
+
+        The control queue is unbounded. There is no suspension between checking
+        the owner and capturing its generation/epoch; this cannot seal or clear
+        audio and does not need the stream operation lock.
+        """
+        if (
+            self._provider_policy is None
+            or not self._provider_policy.observes_local_activity
+            or self._state is not _SessionState.READY
+            or self._closing_event.is_set()
+            or self._request_queue is None
+            or self._worker_task is None
+            or self._worker_task.done()
+        ):
+            return
+        self._request_queue.put_nowait(_AsrWorkerRequest(
+            kind="activity", generation=self._generation,
+            buffer_epoch=self._buffer_epoch, speech_active=speech_active,
+        ))
+
     async def clear_audio_buffer(self) -> None:
         async with self._operation_lock:
             if self._state is not _SessionState.READY:
@@ -646,13 +800,92 @@ class _RealtimeAsrSessionImpl:
                     utterance_id=self._utterance_id,
                 )
 
+    async def finish_and_drain(self, *, deadline: float) -> None:
+        """Explicitly finish accepted input, settle callbacks, then retire.
+
+        ``deadline`` is absolute loop time and includes lock/queue waiting.
+        Callers must fence their ingress first; this method never reconnects,
+        replays audio, or decides when a normal utterance should end.
+        """
+        if not self.supports_result_preserving_finish:
+            raise RuntimeError("ASR_FINISH_NOT_SUPPORTED")
+        if asyncio.current_task() is self._callback_task:
+            raise RuntimeError("ASR_FINISH_FROM_CALLBACK_NOT_SUPPORTED")
+        if self._state is not _SessionState.READY or self._finish_future is not None:
+            raise RuntimeError("ASR_SESSION_NOT_READY: cannot finish this session")
+        generation = self._generation
+        future = asyncio.get_running_loop().create_future()
+        self._finish_future = future
+        succeeded = False
+        try:
+            async with asyncio.timeout_at(deadline):
+                async with self._operation_lock:
+                    if self._state is not _SessionState.READY or self._generation != generation:
+                        raise RuntimeError("ASR_SESSION_NOT_READY: finish was superseded")
+                    # Includes any resampler tail and a manual-mode commit.
+                    if self._utterance_has_audio:
+                        await self._commit_current_utterance_locked()
+                    if self._state is not _SessionState.READY or self._generation != generation:
+                        raise RuntimeError("ASR_SESSION_NOT_READY: finish was superseded")
+                    assert self._request_queue is not None
+                    self._state = _SessionState.FINISHING
+                    # Unbounded control FIFO: no suspension between fencing
+                    # later writes and enqueueing behind accepted audio.
+                    self._request_queue.put_nowait(_AsrWorkerRequest(
+                        kind="finish", generation=generation,
+                        buffer_epoch=self._buffer_epoch, utterance_id=self._utterance_id,
+                    ))
+                await future
+                assert self._callback_queue is not None
+                await self._callback_queue.join()
+                if self._generation != generation or self._state is not _SessionState.FINISHING:
+                    raise RuntimeError("ASR_SESSION_NOT_READY: finish was superseded")
+                if self._finish_callback_failed:
+                    raise RuntimeError("ASR_FINISH_CALLBACK_FAILED")
+                if self._active_utterance_keys or self._committed_utterance_keys:
+                    raise RuntimeError("ASR_FINISH_INCOMPLETE")
+                succeeded = True
+        finally:
+            if not future.done():
+                future.cancel()
+            elif not future.cancelled():
+                future.exception()  # Retrieve failure even when cancellation won.
+            if not succeeded:
+                # Stop production before joining. Do not let close spend a
+                # second drain budget on callbacks whose deadline just expired.
+                self._callback_close_event.set()
+                for task in (self._worker_task, self._response_task, self._callback_task):
+                    if task is not None and task is not asyncio.current_task():
+                        task.cancel()
+            # close() synchronously fences identities before its first await;
+            # its shielded, independently bounded resource cleanup may outlive
+            # the caller's remaining budget, but no old callback can publish.
+            close_waiter = asyncio.create_task(self.close())
+            done, _ = await asyncio.wait(
+                {close_waiter},
+                timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+            )
+            if not done:
+                close_waiter.cancel()
+                await asyncio.gather(close_waiter, return_exceptions=True)
+                if succeeded:
+                    raise TimeoutError("ASR_FINISH_RETIRE_TIMEOUT")
+            else:
+                await close_waiter
+
     async def close(self) -> None:
         current = asyncio.current_task()
         if current is self._callback_task:
             self._callback_close_waiter = current
             self._callback_close_event.set()
 
+        # CLOSED is published only after retirement proof. Status callbacks can
+        # re-enter close here; waiting on the task publishing them would cycle.
         if self._state is _SessionState.CLOSED:
+            if self._request_queue is not None:
+                connection_registry(self._request_queue).raise_if_failed()
+            if self._close_task is not None and self._close_task.done():
+                await asyncio.shield(self._close_task)
             return
 
         close_task = self._close_task
@@ -663,6 +896,15 @@ class _RealtimeAsrSessionImpl:
             self._closing_event.set()
             self._state = _SessionState.CLOSING
             self._generation += 1
+            if self._request_queue is not None:
+                # close() cancels input; result-preserving finish drains first
+                # and calls close afterwards. Do not spend recovery's retirement
+                # budget waiting for a provider finish acknowledgement here.
+                connection_registry(self._request_queue).start_all()
+            if self._finish_future is not None and not self._finish_future.done():
+                self._finish_future.set_exception(
+                    RuntimeError("ASR_SESSION_NOT_READY: finish was cancelled by close")
+                )
             if self._ready_future is not None and not self._ready_future.done():
                 self._ready_future.set_exception(
                     RuntimeError("ASR_SESSION_NOT_READY: session was closed")
@@ -710,7 +952,10 @@ class _RealtimeAsrSessionImpl:
                         timeout=_WORKER_CLOSE_TIMEOUT_SECONDS,
                     )
                 except (asyncio.TimeoutError, asyncio.CancelledError):
-                    self._worker_task.cancel()
+                    if self._request_queue is not None:
+                        connection_registry(self._request_queue).start_all()
+                    if not self._worker_task.cancelling():
+                        self._worker_task.cancel()
 
             if self._callback_queue is not None:
                 drain_task = asyncio.create_task(self._callback_queue.join())
@@ -1193,12 +1438,20 @@ class _RealtimeAsrSessionImpl:
             )
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, ConnectionRetirementError):
+                # Protocol events aren't proof that a physical resource was
+                # retired. Keep the failure even when the consumer has left.
+                connection_registry(self._request_queue).record_failure(exc)
             if self._state in (
                 _SessionState.CLOSING,
                 _SessionState.CLOSED,
                 _SessionState.FAILED,
             ):
+                if not isinstance(exc, ConnectionRetirementError):
+                    connection_registry(self._request_queue).record_failure(
+                        ConnectionRetirementError("ASR_CONNECTION_RETIRE_FAILED: worker cleanup raised")
+                    )
                 return
             await self._response_queue.put(
                 _AsrWorkerEvent(
@@ -1251,8 +1504,12 @@ class _RealtimeAsrSessionImpl:
                     else:
                         await self._on_input_transcript(item.text)
             except asyncio.CancelledError:
+                if self._finish_future is not None:
+                    self._finish_callback_failed = True
                 raise
             except Exception:
+                if self._finish_future is not None:
+                    self._finish_callback_failed = True
                 logger.exception(
                     "ASR turn endpoint callback failed"
                     if item.kind == "endpoint"
@@ -1293,7 +1550,7 @@ class _RealtimeAsrSessionImpl:
             key = (event.generation, event.buffer_epoch, event.utterance_id)
             async with self._operation_lock:
                 if (
-                    self._state is not _SessionState.READY
+                    self._state not in (_SessionState.READY, _SessionState.FINISHING)
                     or event.generation != self._generation
                     or event.buffer_epoch != self._buffer_epoch
                 ):
@@ -1360,7 +1617,7 @@ class _RealtimeAsrSessionImpl:
             key = (event.generation, event.buffer_epoch, event.utterance_id)
             async with self._operation_lock:
                 if (
-                    self._state is not _SessionState.READY
+                    self._state not in (_SessionState.READY, _SessionState.FINISHING)
                     or event.generation != self._generation
                     or event.buffer_epoch != self._buffer_epoch
                 ):
@@ -1380,6 +1637,12 @@ class _RealtimeAsrSessionImpl:
                         "ASR worker returned a final for an inactive utterance"
                     )
                     return False
+                log_delivery_phase(
+                    getattr(self._request_queue, "_transport_delivery_evidence", None),
+                    phase="adapter_final_received",
+                    generation=event.generation,
+                    buffer_epoch=event.buffer_epoch,
+                )
                 if (
                     self._config.endpointing_mode == "provider"
                     and self._uses_segment_aggregation
@@ -1455,6 +1718,13 @@ class _RealtimeAsrSessionImpl:
                 event.error_message or "worker reported a provider error",
             )
             return True
+        if event.kind == "finished":
+            if self._state is _SessionState.FINISHING and self._finish_future is not None:
+                if not self._finish_future.done():
+                    self._finish_future.set_result(None)
+                return True
+            await self._fail("ASR_WORKER_FAILED", "unexpected finish acknowledgment")
+            return True
         if event.kind == "closed":
             if self._state is _SessionState.CLOSING:
                 return True
@@ -1465,43 +1735,59 @@ class _RealtimeAsrSessionImpl:
         return True
 
     async def _fail(self, error_code: str, message: str) -> None:
-        if self._state in (_SessionState.FAILED, _SessionState.CLOSED):
+        if self._state in (_SessionState.FAILED, _SessionState.CLOSING, _SessionState.CLOSED):
             return
+        if self._failure_started_at is None:
+            self._failure_started_at = asyncio.get_running_loop().time()
         self._state = _SessionState.FAILED
-        self._generation += 1
+        generation = self._generation
         self._closing_event.set()
-        await self._unload_voice_turn_adapter(context="during failure")
-        self._active_utterance_keys.clear()
-        self._committed_utterance_keys.clear()
-        self._utterance_order.clear()
-        self._pending_finals.clear()
-        self._pending_partials.clear()
-        self._clear_segment_aggregation_state()
         safe_code = (
             error_code
             if re.fullmatch(r"ASR_[A-Z0-9_]+", error_code or "")
             else "ASR_WORKER_FAILED"
         )
         safe_message = self._sanitize_error(message)
+        self._last_failure_code = safe_code
         error = f"{safe_code}: {safe_message}"
+        self._failure_error = error
         if self._ready_future is not None and not self._ready_future.done():
             self._ready_future.set_exception(RuntimeError(error))
+        if self._request_queue is not None:
+            connection_registry(self._request_queue).start_all()
         if (
             self._worker_task is not None
             and self._worker_task is not asyncio.current_task()
         ):
-            self._worker_task.cancel()
+            if not self._worker_task.cancelling():
+                self._worker_task.cancel()
+        await self._unload_voice_turn_adapter(context="during failure")
+        # Finals already accepted by the ordered response consumer must get
+        # their one chance to settle before the runtime retires this lease.
+        # New responses and audio are fenced by FAILED; queued callbacks keep
+        # the original generation until their bounded drain completes.
+        if self._callback_queue is not None and asyncio.current_task() is not self._callback_task:
+            try:
+                async with asyncio.timeout(_CALLBACK_DRAIN_TIMEOUT_SECONDS):
+                    await self._callback_queue.join()
+            except asyncio.TimeoutError:
+                logger.warning("ASR accepted callback drain timed out before failure")
+                if self._callback_task is not None:
+                    self._callback_task.cancel()
+        if self._state is not _SessionState.FAILED or self._generation != generation:
+            return  # An explicit close superseded this failure while draining.
+        self._generation += 1
+        self._active_utterance_keys.clear()
+        self._committed_utterance_keys.clear()
+        self._utterance_order.clear()
+        self._pending_finals.clear()
+        self._pending_partials.clear()
+        self._clear_segment_aggregation_state()
+        if self._finish_future is not None and not self._finish_future.done():
+            self._finish_future.set_exception(RuntimeError(error))
         try:
             await self._emit_connection_error_once(error)
         finally:
-            if self._callback_queue is not None:
-                try:
-                    await asyncio.wait_for(
-                        self._callback_queue.join(),
-                        timeout=_CALLBACK_DRAIN_TIMEOUT_SECONDS,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning("ASR callback drain timed out after failure")
             await self._shutdown()
 
     def _queued_audio_bytes(self) -> int:
@@ -1539,8 +1825,7 @@ class _RealtimeAsrSessionImpl:
         self,
         request: _AsrWorkerRequest,
     ) -> None:
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + _REQUEST_BACKPRESSURE_TIMEOUT_SECONDS
+        deadline = time.monotonic() + _REQUEST_BACKPRESSURE_TIMEOUT_SECONDS
         while (
             self._queued_audio_bytes() + len(request.audio)
             > _ACTIVE_QUEUE_MAX_AUDIO_BYTES
@@ -1548,7 +1833,13 @@ class _RealtimeAsrSessionImpl:
         ):
             if self._closing_event.is_set() or self._state is not _SessionState.READY:
                 raise RuntimeError("ASR_SESSION_NOT_READY: session is not ready")
-            remaining = deadline - loop.time()
+            remaining = deadline - time.monotonic()
+            recovery_deadline = (
+                self._request_queue.transport_recovery_deadline
+                if isinstance(self._request_queue, _AsrRequestQueue) else 0.0
+            )
+            if recovery_deadline > time.monotonic():
+                remaining = max(deadline, recovery_deadline) - time.monotonic()
             if remaining <= 0:
                 raise RuntimeError(
                     "ASR_STREAM_BACKPRESSURE: active audio queue exceeded "
@@ -1738,6 +2029,15 @@ class _RealtimeAsrSessionImpl:
             logger.exception("ASR connection error callback failed")
 
     async def _shutdown(self) -> None:
+        registry = (
+            connection_registry(self._request_queue)
+            if self._request_queue is not None
+            else None
+        )
+        # Close resources before joining tasks that can be blocked on them.
+        # Owners persist on the queue if a worker is cancelled a second time.
+        if registry is not None:
+            registry.start_all()
         current = asyncio.current_task()
         tasks = [
             task
@@ -1750,13 +2050,34 @@ class _RealtimeAsrSessionImpl:
                 task is not None
                 and task is not current
                 and task is not self._callback_close_waiter
-                and not task.done()
             )
         ]
         for task in tasks:
-            task.cancel()
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        if registry is not None:
+            try:
+                await registry.retire_all()
+            except ConnectionRetirementError as exc:
+                registry.record_failure(exc)
+            try:
+                await registry.join_tasks()
+            except ConnectionRetirementError as exc:
+                registry.record_failure(exc)
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            done, pending = await asyncio.wait(tasks, timeout=TASK_EXIT_TIMEOUT_SECONDS)
+            for task in done:
+                if not task.cancelled():
+                    error = task.exception()
+                    if isinstance(error, ConnectionRetirementError) and registry is not None:
+                        registry.record_failure(error)
+            if pending:
+                error = ConnectionRetirementError("ASR_CONNECTION_RETIRE_FAILED: session tasks did not exit")
+                if registry is not None:
+                    registry.record_failure(error)
+                raise error
+        if registry is not None:
+            registry.raise_if_failed()
 
     def _validate_language(self, language: str) -> str:
         # Kept as a private seam for future worker-specific language mapping.

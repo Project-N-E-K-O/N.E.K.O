@@ -13,7 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from utils.screen_comment_guard import project_screen_history, strip_screen_labels
+
 from ._shared import (
+    _answered_chunk,
+    _generation_check,
+    _find_by_identity,
+    _same_route,
     LLMStreamChunk,
     List,
     OnToolCallCallback,
@@ -22,6 +28,7 @@ from ._shared import (
     ToolDefinition,
     ToolLeakFilter,
     ToolResult,
+    asyncio,
     log_tool_leak_filtered,
     logger,
     parse_arguments_json,
@@ -30,10 +37,160 @@ from ._shared import (
 
 from ._genai_support import (
     _GenaiToolsUnsupported,
+    _should_use_genai_sdk,
 )
 from ._lifecycle import _suspend_dialog_slop
+from main_logic.tool_calling import (
+    _TOOL_IMAGE_TURN_MAX_B64_BYTES,
+    _TOOL_IMAGE_TURN_MAX_COUNT,
+)
+from config.prompts.prompts_sys import _loc
+from config.prompts.prompts_tool import (
+    TOOL_IMAGE_CAPTION,
+    TOOL_IMAGE_DEFAULT_CAPTION,
+    TOOL_IMAGE_HISTORY_PLACEHOLDER,
+    TOOL_IMAGE_OMITTED_WARNING,
+    TOOL_IMAGE_RECALL_HANDLE,
+    TOOL_IMAGE_RECALL_HINT,
+    normalize_tool_image_locale,
+)
+
+
+# 出现在「拒收 tools」报错里、说明只是这一次请求的组合不被支持的措辞。
+_TOOLS_REFUSAL_REQUEST_QUALIFIERS = (
+    "with image",
+    "with vision",
+    "with audio",
+    "in combination with",
+    "together with",
+    "when using",
+    "for this request",
+)
+
 
 class _ToolingMixin:
+    def _dialog_messages_for_provider(self, messages):
+        """Build the request view of ``messages``; the saved history is untouched.
+
+        First, tool-call bookkeeping the provider would reject is dropped, on
+        a copy: a round that is still executing (or was cancelled mid-batch)
+        sits in the shared history while another turn builds its request, and
+        an ``assistant(tool_calls)`` without its tool replies is a 400. This
+        comes first so the screen projection below judges the message order
+        the provider receives: a dropped tool reply no longer separates the
+        assistant messages around it.
+
+        Then screen-comment chains in assistant history are cut back to their
+        first comment, without source labels (``utils.screen_comment_guard``).
+        No user wording restores the removed comments.
+
+        Only history up to the current turn's user message is projected. What
+        this turn added after it (text already streamed to the user with its
+        tool calls, tool results, tool images) is not cut, so the model sees
+        every comment it really said and does not repeat one; only the source
+        labels are removed from it. A retry re-sends those messages too.
+        """
+        paired = self._paired_tool_rounds(messages)
+        turn_start = next(
+            (index + 1 for index in range(len(paired) - 1, -1, -1)
+             if getattr(paired[index], "type", None) == "human"),
+            len(paired),
+        )
+        hits: dict = {}
+        if turn_start < len(paired):
+            head = paired[:turn_start]
+            projected_head = project_screen_history(head, hits=hits)
+            tail = paired[turn_start:]
+            projected_tail = strip_screen_labels(tail)
+            if projected_tail is not tail:
+                hits["label"] = hits.get("label", 0) + 1
+            projected = (
+                paired if projected_head is head and projected_tail is tail
+                else list(projected_head) + list(projected_tail)
+            )
+        else:
+            projected = project_screen_history(paired, hits=hits)
+        if projected is not paired:
+            # The history is re-projected on every provider call; log a
+            # rewrite once, not on every later request that repeats it. The
+            # signature is taken over the saved messages, whose identities
+            # hold across calls (the pairing above builds fresh copies).
+            kept = {id(message) for message in projected}
+            signature = tuple(id(message) for message in messages if id(message) not in kept)
+            log = (
+                logger.debug
+                if signature == getattr(self, "_screen_quarantine_signature", None)
+                else logger.info
+            )
+            self._screen_quarantine_signature = signature
+            log(
+                "OmniOfflineClient: screen-chain request view rewrote "
+                "%d message(s) with an in-message chain, %d in a cross-message run, "
+                "%d more for labels alone",
+                hits.get("message", 0),
+                hits.get("run", 0),
+                hits.get("label", 0),
+            )
+        return projected
+
+    @staticmethod
+    def _paired_tool_rounds(messages):
+        """Keep only tool calls that have replies, and replies that have calls.
+
+        A call is answered when a ``role=tool`` message with its id follows
+        in the run of tool messages right after its assistant turn. An
+        assistant turn left with no answered call keeps its text as a plain
+        assistant message, or goes if it has none. Returns ``messages`` itself
+        when nothing needs repair.
+        """
+        repaired = []
+        changed = False
+        index = 0
+        while index < len(messages):
+            message = messages[index]
+            if isinstance(message, dict) and message.get("role") == "tool":
+                # A reply no preceding assistant turn claims.
+                changed = True
+                index += 1
+                continue
+            calls = message.get("tool_calls") if isinstance(message, dict) else None
+            is_call_turn = (
+                isinstance(message, dict)
+                and message.get("role") == "assistant"
+                and bool(calls)
+            )
+            if not is_call_turn:
+                repaired.append(message)
+                index += 1
+                continue
+            end = index + 1
+            while (
+                end < len(messages)
+                and isinstance(messages[end], dict)
+                and messages[end].get("role") == "tool"
+            ):
+                end += 1
+            call_ids = [call.get("id") for call in calls if isinstance(call, dict)]
+            replies = [
+                reply for reply in messages[index + 1:end]
+                if reply.get("tool_call_id") in call_ids
+            ]
+            answered = {reply.get("tool_call_id") for reply in replies}
+            kept_calls = [call for call in calls if isinstance(call, dict) and call.get("id") in answered]
+            if len(kept_calls) == len(calls) and len(replies) == end - index - 1:
+                repaired.extend(messages[index:end])
+            else:
+                changed = True
+                if kept_calls:
+                    repaired.append({**message, "tool_calls": kept_calls})
+                    repaired.extend(replies)
+                else:
+                    plain = {k: v for k, v in message.items() if k != "tool_calls"}
+                    if str(plain.get("content") or "").strip():
+                        repaired.append(plain)
+            index = end
+        return repaired if changed else messages
+
     def set_tools(self, tool_definitions: Optional[List[ToolDefinition]]) -> None:
         """Replace the active tool list. Takes effect on the next
         ``stream_text`` / ``prompt_ephemeral`` call. Pass ``None`` or
@@ -85,7 +242,132 @@ class _ToolingMixin:
         tools, so ``_params`` skips both ``tools`` and ``tool_choice``."""
         if not self.has_tools():
             return None
+        if getattr(self, "_openai_tools_unsupported", False):
+            return None
         return [t.to_openai_chat() for t in self._tool_definitions]
+
+    @staticmethod
+    def _messages_carry_images(messages) -> bool:
+        """Whether any message in ``messages`` has an image content part."""
+        for msg in messages or []:
+            content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if isinstance(part, dict) and part.get("type") in ("image_url", "image"):
+                    return True
+        return False
+
+    @staticmethod
+    def _classify_openai_tools_refusal(exc: BaseException) -> Optional[str]:
+        """How an endpoint refused the ``tools`` parameter, if it did.
+
+        ``"model"``: the model has no tool support at all (Ollama vision models:
+        400 "... does not support tools"), so every later request would fail
+        the same way. ``"request"``: tools were refused for something specific
+        to this request (e.g. "tool use is not supported with images"); plain
+        text turns may still use them. ``None``: not a tools refusal.
+        """
+        msg = str(exc or "").lower()
+        model_wide = "does not support tools" in msg or "does not support function" in msg
+        loose = ("tools" in msg and "not support" in msg) or (
+            "tool use" in msg and ("unsupported" in msg or "not supported" in msg)
+        )
+        if not (model_wide or loose):
+            return None
+        # 先看请求条件：带「with images / in combination with …」的拒收只针对这一种
+        # 组合，哪怕措辞是 "does not support tools" 或提到 this model，纯文本轮次
+        # 仍可用工具，不能记成会话级。
+        if any(qualifier in msg for qualifier in _TOOLS_REFUSAL_REQUEST_QUALIFIERS):
+            return "request"
+        # 措辞明确指向模型本身（"... not supported by / for this model"）也是
+        # 模型级：否则之后每轮都要先被拒一次再重发。
+        if model_wide or "this model" in msg:
+            return "model"
+        return "request"
+
+    async def _astream_declining_tools(
+        self,
+        messages,
+        overrides: dict,
+        response_generation: Optional[int] = None,
+    ):
+        """``self.llm.astream`` that survives an endpoint rejecting ``tools``.
+
+        If the request fails before the first chunk because the endpoint
+        refused ``tools``, strip ``tools`` / ``tool_choice`` from ``overrides``
+        in place (so later rounds of the caller's loop and its forced-finalize
+        call go without them too) and re-issue the same request once. Only a
+        model-wide refusal also marks the session, so later turns stop sending
+        tools; a refusal tied to this request leaves later turns alone. Any
+        other failure, or one after a chunk was already received, propagates
+        unchanged.
+        """
+        generation_is_active = _generation_check(self, response_generation)
+
+        if not generation_is_active():
+            return
+        received_any = False
+        try:
+            async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+                received_any = True
+                # No cancellation check here: the caller publishes what this
+                # request delivered on its first chunk, then checks.
+                yield chunk
+            return
+        except Exception as exc:
+            refusal = None
+            if not received_any and "tools" in overrides:
+                refusal = self._classify_openai_tools_refusal(exc)
+            if refusal is None:
+                raise
+            logger.warning(
+                "OpenAI-compat model %s declined tools (%s); retrying this "
+                "request without tools%s",
+                getattr(self, "model", None), exc,
+                " and disabling them for the session" if refusal == "model" else "",
+            )
+        if refusal == "model":
+            self._openai_tools_unsupported = True
+        elif self._messages_carry_images(messages):
+            # 带图时被拒：图片会留在会话历史里，之后只要历史还带图，每轮都会先被拒
+            # 一次再重发。记下来，带图的请求直接不带工具；纯文本历史不受影响。
+            self._openai_tools_unsupported_with_images = True
+        overrides.pop("tools", None)
+        overrides.pop("tool_choice", None)
+        if not generation_is_active():
+            return
+        async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+            # Same rule as the first attempt: the caller publishes what this
+            # request delivered on its first chunk, then checks.
+            yield chunk
+
+    @staticmethod
+    def _settle_unfinished_tool_round(messages, assistant_turn, tool_results) -> int:
+        """Keep the calls that already ran; drop the round only if none did.
+
+        A handler that returned has already had its side effects (a sent
+        message, a written file). Deleting its record would let the next
+        turn ask for it again, so the assistant turn is trimmed to the calls
+        that have results and stays paired with them. With no result at all
+        the whole round goes. Owned messages are matched by identity and put
+        back contiguously at the assistant turn's position, so a message
+        another turn appended meanwhile is neither lost nor left between a
+        ``tool_calls`` turn and its replies. An assistant turn that is no
+        longer in ``messages`` was removed with its turn by whoever trimmed
+        the history in place; put back at the end, the round would follow
+        the newer turns, so it goes with its turn. Returns the calls kept.
+        """
+        owned_ids = {id(assistant_turn)} | {id(message) for message in tool_results}
+        position = _find_by_identity(messages, -1, assistant_turn)
+        rebuilt = [message for message in messages if id(message) not in owned_ids]
+        kept = len(tool_results) if position >= 0 else 0
+        if kept:
+            # Calls run in order, so the results are a prefix of tool_calls.
+            assistant_turn["tool_calls"] = assistant_turn["tool_calls"][:kept]
+            rebuilt[position:position] = [assistant_turn, *tool_results]
+        messages[:] = rebuilt
+        return kept
 
     async def _execute_and_append_openai_tool_calls(
         self,
@@ -93,6 +375,10 @@ class _ToolingMixin:
         calls,
         assistant_text: str = "",
         assistant_reasoning: str = "",
+        tool_image_slots=None,
+        tool_bus_frames=None,
+        generation_is_active=lambda: True,
+        tool_rounds=None,
     ) -> int:
         """Run each tool call through ``on_tool_call`` and mutate
         ``messages`` in place: append one assistant turn announcing all
@@ -129,7 +415,7 @@ class _ToolingMixin:
         # tool_calls 历史中混入空 name 会被下一轮 server schema reject，
         # 整条会话连带挂掉。
         calls = [c for c in calls if (getattr(c, "name", "") or "").strip()]
-        if not calls:
+        if not calls or not generation_is_active():
             return 0
         tool_calls_dict = []
         for i, c in enumerate(calls):
@@ -157,44 +443,407 @@ class _ToolingMixin:
         }
         if assistant_reasoning:
             assistant_turn["reasoning_content"] = assistant_reasoning
-        messages.append(assistant_turn)
-        for i, c in enumerate(calls):
-            tool_call = ToolCall(
+        # Built before the round: a call that cannot even be constructed
+        # stops the turn before any tool has had a side effect.
+        tool_calls = [
+            ToolCall(
                 name=c.name,
                 arguments=parse_arguments_json(c.arguments),
                 call_id=c.id or f"call_{i}",
                 raw_arguments=c.arguments or "",
             )
-            handler = self.on_tool_call
-            if handler is None:
-                # No handler — surface a structured error back so the
-                # model can apologize / abort gracefully.
-                result = ToolResult(
-                    call_id=tool_call.call_id, name=tool_call.name,
-                    output={"error": "no on_tool_call handler bound"},
-                    is_error=True, error_message="no on_tool_call handler bound",
-                )
-            else:
-                try:
-                    with _suspend_dialog_slop():
-                        result = await handler(tool_call)
-                except Exception as e:
-                    logger.exception("OmniOfflineClient: on_tool_call '%s' raised", c.name)
+            for i, c in enumerate(calls)
+        ]
+        executed, _live = await self._run_tool_round(
+            messages,
+            assistant_turn,
+            tool_calls,
+            tool_image_slots=tool_image_slots,
+            tool_bus_frames=tool_bus_frames,
+            generation_is_active=generation_is_active,
+            log_prefix="OmniOfflineClient",
+            tool_rounds=tool_rounds,
+        )
+        return executed
+
+    async def _run_tool_round(
+        self,
+        messages,
+        assistant_turn,
+        tool_calls,
+        *,
+        tool_image_slots,
+        tool_bus_frames,
+        generation_is_active,
+        log_prefix: str,
+        tool_rounds=None,
+    ):
+        """Execute one tool round for either provider path.
+
+        Appends ``assistant_turn``, then runs each of ``tool_calls`` (built
+        by the caller, each provider path with its own ``ToolCall``) and
+        appends its ``tool`` reply. Cancellation is
+        checked before each call, never between a handler and its record:
+        once a handler returned, its side effects happened. An unfinished
+        round (cancelled or raising) is settled by
+        ``_settle_unfinished_tool_round``. Image turns are appended only for a
+        round that finished while its turn was still live, after every reply,
+        because OpenAI-compat providers reject assistant(tool_calls) -> tool
+        -> user(image) -> tool.
+
+        Returns ``(calls executed, finished while live)``. A round keeps
+        those calls in history unless its assistant turn left the history
+        meanwhile (``_settle_unfinished_tool_round``); then it is not live
+        either, though its calls still count: its text went with its turn.
+
+        ``tool_rounds``, when the caller passes one, gets ``assistant_turn``
+        as it is appended: the caller's own rounds, found by identity.
+        """
+        messages.append(assistant_turn)
+        if tool_rounds is not None:
+            tool_rounds.append(assistant_turn)
+        tool_results: list = []
+        image_results: list = []
+        round_complete = False
+        try:
+            for tool_call in tool_calls:
+                if not generation_is_active():
+                    break
+                handler = self.on_tool_call
+                if handler is None:
+                    # No handler — surface a structured error back so the
+                    # model can apologize / abort gracefully.
                     result = ToolResult(
                         call_id=tool_call.call_id, name=tool_call.name,
-                        output={"error": f"{type(e).__name__}: {e}"},
-                        is_error=True, error_message=str(e),
+                        output={"error": "no on_tool_call handler bound"},
+                        is_error=True, error_message="no on_tool_call handler bound",
                     )
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.call_id,
-                # 写入 ``name`` 让 Gemini 路径能直接用（FunctionResponse.name
-                # 必须与原 function_call name 完全一致）。OpenAI-compat 不需要
-                # 这个字段也不会因此报错——它只用 tool_call_id 关联。
-                "name": tool_call.name,
-                "content": result.output_as_json_string(),
+                else:
+                    try:
+                        with _suspend_dialog_slop():
+                            result = await handler(tool_call)
+                    except Exception as e:
+                        logger.exception("%s: on_tool_call '%s' raised", log_prefix, tool_call.name)
+                        result = ToolResult(
+                            call_id=tool_call.call_id, name=tool_call.name,
+                            output={"error": f"{type(e).__name__}: {e}"},
+                            is_error=True, error_message=str(e),
+                        )
+                tool_result_message = {
+                    "role": "tool",
+                    "tool_call_id": tool_call.call_id,
+                    # 写入 ``name`` 让 Gemini 路径能直接用（FunctionResponse.name
+                    # 必须与原 function_call name 完全一致）。OpenAI-compat 不需要
+                    # 这个字段也不会因此报错——它只用 tool_call_id 关联。
+                    "name": tool_call.name,
+                    "content": result.output_as_json_string(),
+                }
+                messages.append(tool_result_message)
+                tool_results.append(tool_result_message)
+                if getattr(result, "images", None):
+                    image_results.append((result, tool_result_message))
+            else:
+                round_complete = True
+        finally:
+            # A round that completed while its reply was live is settled too:
+            # its results may have landed after a message another turn added
+            # meanwhile, and the request view would otherwise drop the call
+            # and its result for good. Already contiguous, it stays as is.
+            kept = len(tool_results)
+            if not round_complete or not generation_is_active() or tool_results:
+                kept = self._settle_unfinished_tool_round(messages, assistant_turn, tool_results)
+        # A round that left history with its turn (kept nothing) is not live:
+        # its images would be orphaned at the end of history.
+        live = round_complete and generation_is_active() and (kept or not tool_results)
+        if live:
+            # Right after the round's last reply, not at the end: a user
+            # message another turn saved meanwhile must not come between the
+            # round and its images. Never between two replies either, which
+            # OpenAI-compat providers reject.
+            after = tool_results[-1] if tool_results else None
+            for result, tool_result_message in image_results:
+                added = self._append_tool_result_images(
+                    messages,
+                    result,
+                    slots=tool_image_slots,
+                    tool_result_message=tool_result_message,
+                    bus_frames=tool_bus_frames,
+                    insert_after=after,
+                )
+                if added is not None:
+                    after = added
+        return len(tool_results), live
+
+    # ------------------------------------------------------------------
+    # Tool image channel
+    # ------------------------------------------------------------------
+    #
+    # A tool result carries pixels in ``ToolResult.images`` when -- and only
+    # when -- ``LLMSessionManager._route_tool_images`` got a session that can
+    # look at them; a session that cannot arrives here with an empty list and
+    # an ``_image_warnings`` entry already telling the model it did not see.
+    #
+    # The picture rides a synthetic user turn appended right after the tool
+    # result, because the ``role: tool`` message body must stay a string.
+    # That turn is ONE-SHOT: it exists for the follow-up model call inside
+    # the tool loop and is swapped for a text placeholder on the way out.
+    #
+    # It has to be one-shot. ``messages`` here is usually
+    # ``_conversation_history`` itself, which has no image eviction, and
+    # ``llm_prompt_audit`` renders an image part as a short ``[image]``
+    # placeholder when counting tokens — so a frame left behind would be
+    # re-uploaded on every later request while looking free to the
+    # truncation logic.
+
+    async def prepare_for_tool_images(self) -> bool:
+        """Point this session at a model that can read a picture.
+
+        Returns whether the session can show the model a frame at all. Called
+        by ``LLMSessionManager._route_tool_images`` while a tool result is
+        being assembled, so it runs from inside a live tool loop.
+
+        The move is the one ``stream_text`` makes for a dragged-in screenshot:
+        a configured vision model wins the rest of the session, because the
+        frames stay in history and there is no way back.
+
+        It is refused when it would change which SDK the running loop speaks.
+        ``_astream_with_tools`` picks genai or OpenAI-compat once, at entry,
+        and then re-invokes the model for the tool results without asking
+        again -- flipping the answer underneath it would post genai contents
+        to an OpenAI-compat endpoint, or the reverse. Refusing degrades to
+        "she could not see it", which the caller already reports to the model.
+        """
+        vision_model = getattr(self, "vision_model", "") or ""
+        if not vision_model:
+            return False
+        # 同一个模型 id 只有在路由（URL / Key / 协议）也相同时才算「已经在视觉
+        # 槽上」；视觉槽配了另一条路由时照样要走下面的切换。
+        if vision_model == self.model and _same_route(
+            getattr(self, "vision_base_url", None),
+            getattr(self, "vision_api_key", None),
+            getattr(self, "vision_provider_type", None),
+            getattr(self, "base_url", None),
+            getattr(self, "api_key", None),
+            getattr(self, "provider_type", None),
+        ):
+            return True
+        on_genai = bool(
+            getattr(self, "_use_genai_sdk", False)
+            and not getattr(self, "_genai_tools_unsupported", False)
+        )
+        if _should_use_genai_sdk(vision_model, self.vision_base_url) != on_genai:
+            logger.warning(
+                "Tool image: not switching to vision model %s mid tool loop, "
+                "it sits on the other transport (current=%s)",
+                vision_model,
+                "genai" if on_genai else "openai-compat",
+            )
+            return False
+        try:
+            await self.switch_model(vision_model, use_vision_config=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # The conversation model is mid-turn waiting for this tool result.
+            # A vision endpoint that will not come up has to become something
+            # she can say, not an exception that turns a tool call that
+            # actually succeeded into an error result.
+            logger.warning(
+                "Tool image: switching to vision model %s failed: %s: %s",
+                vision_model, type(e).__name__, e,
+            )
+            return False
+        return True
+
+    def _tool_image_locale(self) -> str:
+        """Resolve the locale for one injected tool-image turn.
+
+        The session locale is only reachable from an instance: it arrives as
+        the ``user_language_provider`` callable the manager hands to
+        ``OmniOfflineClient.__init__``, which is why the default caption is no
+        longer a class attribute. Same guarded call as
+        ``utils.slop_filter.resolve_dialog_slop_lang`` -- a provider that
+        raises must not take down a tool loop that otherwise succeeded, and
+        ``normalize_tool_image_locale`` resolves ``None`` to the app's global
+        language.
+        """
+        provider = getattr(self, "_user_language_provider", None)
+        user_language = None
+        if callable(provider):
+            try:
+                user_language = provider()
+            except Exception as e:
+                logger.debug(
+                    "Tool image: user language provider failed (%s: %s); "
+                    "falling back to the global language",
+                    type(e).__name__, e,
+                )
+        return normalize_tool_image_locale(user_language)
+
+    def _append_tool_result_images(
+        self,
+        messages,
+        result,
+        *,
+        slots=None,
+        bus_frames=None,
+        tool_result_message=None,
+        insert_after=None,
+    ):
+        """Append one multimodal user turn carrying every image in ``result``.
+
+        No-op when the tool returned none, which is the overwhelmingly common
+        case — nothing is allocated and no slot is recorded. With
+        ``insert_after`` (a message in ``messages``, found by identity) the
+        turn goes right after it instead of at the end. Returns the turn, or
+        None when nothing was added.
+        """
+        images = getattr(result, "images", None)
+        if not images:
+            return None
+
+        # Once per turn: every string below has to come out in one language,
+        # and the provider is a live callable that could answer differently
+        # between the caption and the placeholder built from the same result.
+        lang = self._tool_image_locale()
+
+        if slots is None:
+            slots = getattr(self, "_pending_tool_image_slots", None)
+            if slots is None:
+                slots = []
+                self._pending_tool_image_slots = slots
+
+        used_count = 0
+        used_b64_bytes = 0
+        for _messages, _index, image_message, _placeholder in slots:
+            for part in image_message.get("content", []):
+                if part.get("type") != "image_url":
+                    continue
+                url = part.get("image_url", {}).get("url", "")
+                if not isinstance(url, str):
+                    continue
+                used_count += 1
+                used_b64_bytes += len(url.rsplit(",", 1)[-1])
+
+        content = []
+        omitted_count = 0
+        for img in images:
+            image_b64_bytes = len(img.data_b64)
+            if (
+                used_count >= _TOOL_IMAGE_TURN_MAX_COUNT
+                or used_b64_bytes + image_b64_bytes
+                > _TOOL_IMAGE_TURN_MAX_B64_BYTES
+            ):
+                logger.warning(
+                    "Dropping tool image beyond turn budget: tool=%s, "
+                    "used_count=%d, used_b64_bytes=%d",
+                    result.name,
+                    used_count,
+                    used_b64_bytes,
+                )
+                omitted_count += 1
+                continue
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{img.mime};base64,{img.data_b64}"},
             })
-        return len(calls)
+            # Staged, not published: this only means the pixels are in the
+            # outgoing list. The tool loop publishes them once the provider
+            # answers the request that carries them. Staged HERE rather than
+            # over ``result.images`` so the turn budget's drops never reach
+            # the bus -- an omitted image was never sent.
+            if bus_frames is not None:
+                bus_frames.append(
+                    (img.data_b64, img.mime, str(result.name or "unknown"))
+                )
+            # Keep each instruction adjacent to the image it describes.
+            # Always caption: several providers reject bare image parts.
+            instruction = (
+                img.vision_prompt.strip()
+                or _loc(TOOL_IMAGE_DEFAULT_CAPTION, lang)
+            )
+            tool_name = str(result.name or "unknown")
+            call_id = str(result.call_id or "unknown")
+            caption = _loc(TOOL_IMAGE_CAPTION, lang).format(
+                tool_name=tool_name,
+                call_id=call_id,
+                instruction=instruction,
+            )
+            content.append({"type": "text", "text": caption})
+            used_count += 1
+            used_b64_bytes += image_b64_bytes
+
+        if omitted_count:
+            result.add_image_warnings(
+                _loc(TOOL_IMAGE_OMITTED_WARNING, lang).format(
+                    count=omitted_count
+                )
+            )
+            # Tool results are serialized before image turns so that all
+            # role=tool messages stay adjacent. Refresh the matching message
+            # after annotating the result to make the omission model-visible.
+            if isinstance(tool_result_message, dict):
+                tool_result_message["content"] = result.output_as_json_string()
+
+        if not content:
+            return None
+
+        message = {"role": "user", "content": content}
+        index = len(messages)
+        if insert_after is not None:
+            after = _find_by_identity(messages, -1, insert_after)
+            if after >= 0:
+                index = after + 1
+        messages.insert(index, message)
+
+        # Remember the list too: ``prompt_ephemeral`` runs the tool loop over
+        # a scratch list rather than ``_conversation_history``, so an index
+        # alone would point into the wrong history.
+        output = result.output if isinstance(result.output, dict) else {}
+        shot_id = output.get("shot_id")
+        recall_hint = output.get("recall_hint")
+        recall_suffix = ""
+        if isinstance(shot_id, str) and shot_id.strip():
+            recall_suffix = _loc(TOOL_IMAGE_RECALL_HANDLE, lang).format(
+                shot_id=shot_id.strip()
+            )
+            if isinstance(recall_hint, str) and recall_hint.strip():
+                recall_suffix += _loc(TOOL_IMAGE_RECALL_HINT, lang).format(
+                    recall_hint=recall_hint.strip()
+                )
+        slots.append((
+            messages,
+            index,
+            message,
+            _loc(TOOL_IMAGE_HISTORY_PLACEHOLDER, lang).format(
+                tool_name=result.name,
+                recall_suffix=recall_suffix,
+            ),
+        ))
+        return message
+
+    def _release_tool_image_slots(self, slots=None) -> None:
+        """Swap every injected image turn for its text placeholder.
+
+        Called from the exit of both tool loops (``finally``, so an abandoned
+        generator still cleans up). Identity is re-checked before writing:
+        another path may have rebuilt or truncated the history underneath us,
+        and a blind index write would corrupt an unrelated message.
+        """
+        if slots is None:
+            slots = getattr(self, "_pending_tool_image_slots", None)
+        if not slots:
+            return
+        for messages, index, message, placeholder in slots:
+            try:
+                # A settled concurrent tool round or a cancelled reply commit
+                # may have shifted the turn; identity finds it again.
+                index = _find_by_identity(messages, index, message)
+                if index >= 0:
+                    messages[index] = {"role": "user", "content": placeholder}
+            except Exception as e:
+                logger.warning("Releasing a tool image slot failed (ignored): %s", e)
+        slots.clear()
 
     async def _notify_reasoning_active(self) -> None:
         """Tell the host that the model is emitting reasoning / thinking chunks, so
@@ -276,6 +925,11 @@ class _ToolingMixin:
         """
         tool_leak_filter = overrides.pop("_tool_leak_filter", None)
         tool_leak_provider = overrides.pop("_tool_leak_provider", None)
+        tool_image_slots = overrides.pop("_tool_image_slots", None)
+        tool_bus_frames = overrides.pop("_tool_bus_frames", None)
+        tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
+        tool_rounds = overrides.pop("_tool_rounds", None)
+        response_generation = overrides.pop("_response_generation", None)
         if self._use_genai_sdk and not self._genai_tools_unsupported:
             # 跟踪本轮 Gemini 路径是否已经把 text chunk yield 给上游。如果
             # 已经吐过文本，再 fallback 到 OpenAI-compat 会让用户在同一轮
@@ -288,6 +942,11 @@ class _ToolingMixin:
                     messages,
                     _tool_leak_filter=tool_leak_filter,
                     _tool_leak_provider=tool_leak_provider,
+                    _tool_image_slots=tool_image_slots,
+                    _tool_bus_frames=tool_bus_frames,
+                    _tool_frames_turn_id=tool_frames_turn_id,
+                    _tool_rounds=tool_rounds,
+                    _response_generation=response_generation,
                     **overrides,
                 ):
                     if getattr(chunk, "content", None):
@@ -324,11 +983,41 @@ class _ToolingMixin:
             messages,
             _tool_leak_filter=tool_leak_filter,
             _tool_leak_provider=tool_leak_provider,
+            _tool_image_slots=tool_image_slots,
+            _tool_bus_frames=tool_bus_frames,
+            _tool_frames_turn_id=tool_frames_turn_id,
+            _tool_rounds=tool_rounds,
+            _response_generation=response_generation,
             **overrides,
         ):
             yield chunk
 
     async def _astream_visible_with_tools(self, messages, **overrides):
+        # 槽位可以由调用方拥有。这不是可选的整洁：外层重试阶梯（stream_text /
+        # prompt_ephemeral）用同一份 _conversation_history 重跑 attempt，而下面
+        # 的 finally 会把图像轮换回文字占位符。一次可重试的失败之后，历史里
+        # assistant 的 tool_calls 和 tool 结果都还在、唯独像素没了——重试成功
+        # 的那一轮，模型会当作自己已经看过那张图。
+        #
+        # 传了 slots 的调用方负责在**自己**的 finally 里 release；没传的沿用
+        # 原行为（本函数自己建、自己清）。
+        owned_tool_image_slots = overrides.pop("_tool_image_slots", None)
+        tool_image_slots = (
+            [] if owned_tool_image_slots is None else owned_tool_image_slots
+        )
+        # 与 slots 同生命周期、同线，包括**所有权**：槽位跨 attempt 存活而这份
+        # 不存活的话，重试成功的那一轮会把像素送进 provider、总线却拿不到副本
+        # ——attempt 1 暂存的帧随那次调用一起丢了，而 attempt 2 的工具循环通常
+        # 不会再跑一次（历史里 tool_calls 和结果都在，模型直接作答）。
+        #
+        # 仍然绝不挂在 self 上：两个 tool loop 可能并存（stream_text 与
+        # prompt_ephemeral），共享一个 session 级列表会让 A 的图被 B 的请求
+        # "确认送达"。
+        owned_tool_bus_frames = overrides.pop("_tool_bus_frames", None)
+        tool_bus_frames = (
+            [] if owned_tool_bus_frames is None else owned_tool_bus_frames
+        )
+        tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
         tool_names = {
             tool.name for tool in getattr(self, "_tool_definitions", [])
             if getattr(tool, "name", None)
@@ -348,7 +1037,13 @@ class _ToolingMixin:
 
         try:
             async for chunk in self._astream_with_tools(
-                messages, _tool_leak_filter=leak_filter, _tool_leak_provider=provider, **overrides
+                messages,
+                _tool_leak_filter=leak_filter,
+                _tool_leak_provider=provider,
+                _tool_image_slots=tool_image_slots,
+                _tool_bus_frames=tool_bus_frames,
+                _tool_frames_turn_id=tool_frames_turn_id,
+                **overrides,
             ):
                 if getattr(chunk, "_tool_leak_filtered", False):
                     yield chunk
@@ -363,6 +1058,19 @@ class _ToolingMixin:
             if chunk is not None:
                 yield chunk
             raise
+        finally:
+            # Every model call that needed the pixels has happened by now: this
+            # is the join point of the genai and OpenAI-compat tool loops, and
+            # of both callers (``stream_text`` and ``prompt_ephemeral``). In a
+            # ``finally`` so an abandoned generator (GeneratorExit) still drops
+            # the base64 out of history.
+            #
+            # Skipped when the caller owns the list: for them "every model call
+            # that needed the pixels" is not true yet -- their next attempt is
+            # one, and it will read this same history. They release in their own
+            # finally, which is equally GeneratorExit-proof and one scope wider.
+            if owned_tool_image_slots is None:
+                self._release_tool_image_slots(tool_image_slots)
 
         chunk = _finalize_filter_chunk()
         if chunk is not None:
@@ -387,7 +1095,23 @@ class _ToolingMixin:
         ``self.max_tool_iterations`` total LLM calls."""
         tool_leak_filter = overrides.pop("_tool_leak_filter", None)
         tool_leak_provider = overrides.pop("_tool_leak_provider", None)
+        tool_image_slots = overrides.pop("_tool_image_slots", None)
+        tool_bus_frames = overrides.pop("_tool_bus_frames", None)
+        tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
+        tool_rounds = overrides.pop("_tool_rounds", None)
+        response_generation = overrides.pop("_response_generation", None)
+
+        generation_is_active = _generation_check(self, response_generation)
+
+        if not generation_is_active():
+            return
         tools_payload = self._openai_tools_payload()
+        if (
+            tools_payload
+            and getattr(self, "_openai_tools_unsupported_with_images", False)
+            and self._messages_carry_images(messages)
+        ):
+            tools_payload = None
         if tools_payload:
             overrides.setdefault("tools", tools_payload)
         else:
@@ -402,6 +1126,8 @@ class _ToolingMixin:
         # 封顶日志据此别谎称迭代被耗尽。
         zero_exec_break = False
         for tool_iter in range(self.max_tool_iterations):
+            if not generation_is_active():
+                return
             deltas_per_chunk: list = []
             finish_reason: Optional[str] = None
             # 累积本轮已 yield 给上游的 text，下面 finish_reason=tool_calls
@@ -413,7 +1139,31 @@ class _ToolingMixin:
             # assistant tool_calls turn 一起回填，否则部分 provider 下一轮报
             # 400（reasoning_content must be passed back）。普通端点恒为空。
             streamed_reasoning_buffer = ""
-            async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+            # 上一轮注入的工具图，本轮才谈得上"送到了"。
+            tool_frames_published = False
+            async for chunk in self._astream_declining_tools(
+                # Built here rather than inside the helper so both the first
+                # attempt and the retry-after-tools-refusal get the same view
+                # (screen-projected, tool rounds repaired).
+                self._dialog_messages_for_provider(messages),
+                overrides,
+                response_generation=response_generation,
+            ):
+                if not tool_frames_published:
+                    # 任何一个 chunk 都算数，不必等有内容的那个：astream 是惰性
+                    # 的，请求要到第一次 __anext__ 才真正发出，能拿到 chunk 就
+                    # 说明带着上一轮工具图的这次请求已经被 provider 收下。
+                    tool_frames_published = True
+                    self._publish_pending_tool_frames(
+                        tool_bus_frames, turn_id=tool_frames_turn_id
+                    )
+                if not generation_is_active():
+                    # The provider answered the request, so what it carried
+                    # was delivered even though the turn is cancelled: the
+                    # frames are published above, and callers get one empty
+                    # chunk so they publish their own pending bus copies.
+                    yield _answered_chunk()
+                    return
                 if getattr(chunk, "content", None):
                     if tool_leak_filter is not None:
                         chunk.content = self._filter_tool_leak_content(
@@ -430,6 +1180,12 @@ class _ToolingMixin:
                     # them in one LLMStreamChunk), and a reasoning tool-call turn
                     # has no visible token to show feedback otherwise (Codex P2).
                     await self._notify_reasoning_active()
+                    if not generation_is_active():
+                        # Reasoning chunks are never yielded, so callers may
+                        # not have seen this answered request yet: hand them
+                        # the empty chunk they publish on (see above).
+                        yield _answered_chunk()
+                        return
                 if chunk.tool_call_deltas:
                     deltas_per_chunk.append(chunk.tool_call_deltas)
                 if chunk.finish_reason:
@@ -458,11 +1214,16 @@ class _ToolingMixin:
                 # 永远 yield 文本 chunk —— 即便是 tool-only turn 也可能在
                 # finish_reason=tool_calls 之前 emit usage chunk 和空 content。
                 yield chunk
+            if not generation_is_active():
+                return
             # 记录本次 attempt 的最终 finish_reason，供上层 empty-completion
             # 兜底警告引用（"safety" / "length" / "content_filter" / "stop" 都
             # 可能在 content 为空时出现，是诊断 Gemini-via-OpenAI-compat 静默
             # empty 的关键线索）。
             self._last_finish_reason = finish_reason
+            if "tools" not in overrides:
+                # 端点在本轮拒收了 tools、已去掉工具重发：之后不再进工具分支。
+                tools_payload = None
             if (
                 not streamed_text_buffer
                 and not deltas_per_chunk
@@ -515,7 +1276,18 @@ class _ToolingMixin:
                     # clean replies (no think tag present).
                     assistant_text=strip_thinking_segments(streamed_text_buffer),
                     assistant_reasoning=streamed_reasoning_buffer,
+                    tool_image_slots=tool_image_slots,
+                    tool_bus_frames=tool_bus_frames,
+                    generation_is_active=generation_is_active,
+                    tool_rounds=tool_rounds,
                 )
+                if not generation_is_active():
+                    # Calls that ran before the cancellation stay in history
+                    # with their results; tell the caller the pre-tool text
+                    # is persisted so it is not committed a second time.
+                    if executed_this_round:
+                        yield _LLMStreamChunk(content="", tool_round_persisted=True)
+                    return
                 executed_tool_calls += executed_this_round
                 if executed_this_round:
                     # 通知上游 ``stream_text``：本轮的 pre-tool text + tool_calls
@@ -546,6 +1318,8 @@ class _ToolingMixin:
                     zero_exec_break = True
                     break
                 continue
+            return
+        if not generation_is_active():
             return
         if executed_tool_calls == 0:
             # 进过 tool 分支却一次都没执行成（provider 流出的 tool_call 分片
@@ -584,12 +1358,27 @@ class _ToolingMixin:
         # 积累的 tool 结果给出最终文本。否则弱模型在 finish_reason=tool_calls
         # 上死循环到封顶后整轮静默，上游只能报"未产生文本回复"，用户那边就
         # 表现为不回话。去掉 tools 后模型无法再发起调用，必须输出文本。
+        # 取消已由循环出口那一处检查挡住：从那里到这里只有同步的日志。
         final_overrides = {
             k: v for k, v in overrides.items() if k not in ("tools", "tool_choice")
         }
         final_finish_reason: Optional[str] = None
         final_prompt_tokens: Optional[int] = None
-        async for chunk in self.llm.astream(messages, **final_overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+        # 封顶后这一次请求同样带着还没被 release 的工具图（slots 要到外层
+        # finally 才换回占位符），所以它也是一个真投递点，同样要抄送。漏掉它
+        # 的话，"模型看到了但插件读不到"恰好发生在工具轮打满的那些回合上。
+        tool_frames_published = False
+        async for chunk in self.llm.astream(self._dialog_messages_for_provider(messages), **final_overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+            if not tool_frames_published:
+                tool_frames_published = True
+                self._publish_pending_tool_frames(
+                    tool_bus_frames, turn_id=tool_frames_turn_id
+                )
+            if not generation_is_active():
+                # Answered, then cancelled: publish (above), then let callers
+                # publish their pending bus copies on one empty chunk.
+                yield _answered_chunk()
+                return
             if chunk.finish_reason:
                 final_finish_reason = chunk.finish_reason
             if chunk.usage_metadata:
@@ -601,6 +1390,10 @@ class _ToolingMixin:
             # below — same fix as the main loop (Codex P2).
             if getattr(chunk, "reasoning_content", None):
                 await self._notify_reasoning_active()
+                if not generation_is_active():
+                    # Reasoning is never yielded: see the tool-loop stream.
+                    yield _answered_chunk()
+                    return
             # 与常规 tool-loop 路径一致：不向下游转发 thinking 模型的纯
             # reasoning chunk（有 reasoning_content、无 content / tool delta /
             # finish / usage）。stream_text 在首个 yield 的 chunk 上记 TTFT，

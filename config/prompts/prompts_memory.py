@@ -690,7 +690,9 @@ settings_extractor_prompt = SETTINGS_EXTRACTOR_PROMPT["zh"]
 # =====================================================================
 
 HISTORY_REVIEW_PROMPT = {
-    "zh": """请审阅%s和%s之间的对话历史记录，识别并修正以下问题：
+    "zh": """推理限制：内部思考最多四句，不要复述原文，不要列举备选方案。思考结束后立刻输出 JSON，不要把思考过程写进 explanation。
+
+请审阅%s和%s之间的对话历史记录，识别并修正以下问题：
 
 <问题1> 矛盾的部分：前后不一致的信息或观点 </问题1>
 <问题2> 冗余的部分：重复的内容或信息 </问题2>
@@ -732,7 +734,9 @@ HISTORY_REVIEW_PROMPT = {
 - 移除冗余和重复内容
 - 解决明显的矛盾
 - 保持对话的自然流畅性""",
-    "zh-TW": """請審閱%s和%s之間的對話歷史紀錄，識別並修正以下問題：
+    "zh-TW": """推理限制：內部思考最多四句，不要複述原文，不要列舉備選方案。思考結束後立刻輸出 JSON，不要把思考過程寫進 explanation。
+
+請審閱%s和%s之間的對話歷史紀錄，識別並修正以下問題：
 
 <問題1> 矛盾的部分：前後不一致的資訊或觀點 </問題1>
 <問題2> 冗餘的部分：重複的內容或資訊 </問題2>
@@ -774,7 +778,9 @@ HISTORY_REVIEW_PROMPT = {
 - 移除冗餘和重複內容
 - 解決明顯的矛盾
 - 保持對話的自然流暢性""",
-    "en": """Please review the conversation history between %s and %s, and identify and correct the following issues:
+    "en": """Reasoning limit: at most four sentences of internal thinking. Do not restate the source text and do not list alternatives. After thinking, output JSON immediately. Do not put the thinking process into explanation.
+
+Please review the conversation history between %s and %s, and identify and correct the following issues:
 
 <Issue1> Contradictions: inconsistent information or viewpoints </Issue1>
 <Issue2> Redundancy: repeated content or information </Issue2>
@@ -816,7 +822,9 @@ Notes:
 - Remove redundancy and repetition
 - Resolve obvious contradictions
 - Maintain natural flow""",
-    "ja": """以下の%sと%sの間の会話履歴を確認し、以下の問題を特定して修正してください：
+    "ja": """推論の制限：内部思考は最大4文まで。原文の復唱や代替案の列挙はしないでください。思考が終わったら直ちにJSONを出力し、思考過程を explanation に書かないでください。
+
+以下の%sと%sの間の会話履歴を確認し、以下の問題を特定して修正してください：
 
 <問題1> 矛盾する部分：前後で一貫しない情報や意見 </問題1>
 <問題2> 冗長な部分：重複した内容や情報 </問題2>
@@ -850,7 +858,9 @@ Notes:
         ...
     ]
 }""",
-    "ko": """다음 %s와 %s 사이의 대화 기록을 검토하고 다음 문제를 식별하여 수정해 주세요:
+    "ko": """추론 제한: 내부 사고는 최대 네 문장입니다. 원문을 반복하거나 대안을 나열하지 마세요. 사고가 끝나면 즉시 JSON을 출력하고, 사고 과정을 explanation에 넣지 마세요.
+
+다음 %s와 %s 사이의 대화 기록을 검토하고 다음 문제를 식별하여 수정해 주세요:
 
 <문제1> 모순되는 부분: 전후 일관성이 없는 정보나 관점 </문제1>
 <문제2> 중복된 부분: 반복되는 내용이나 정보 </문제2>
@@ -884,7 +894,9 @@ Notes:
         ...
     ]
 }""",
-    "ru": """Пожалуйста, проверьте историю диалога между %s и %s и выявите и исправьте следующие проблемы:
+    "ru": """Ограничение рассуждения: внутренние рассуждения — не больше четырёх предложений. Не пересказывайте исходный текст и не перечисляйте варианты. После рассуждения сразу выведите JSON. Не помещайте ход рассуждения в explanation.
+
+Пожалуйста, проверьте историю диалога между %s и %s и выявите и исправьте следующие проблемы:
 
 <Проблема1> Противоречия: несогласованная информация или точки зрения </Проблема1>
 <Проблема2> Избыточность: повторяющееся содержание или информация </Проблема2>
@@ -918,7 +930,9 @@ Notes:
         ...
     ]
 }""",
-    "es": """Revisa el historial de conversación entre %s y %s, e identifica y corrige contradicciones, redundancias, repeticiones, errores de persona, errores de rol y monólogo interno expuesto (contenido que en realidad es el razonamiento/análisis/estrategia de respuesta del personaje dicho en voz alta como si fuera diálogo, p. ej. "El usuario cuestiona mi identidad, debería… Estrategia: 1.… 2.…"; no es una frase realmente dicha, elimina esos mensajes por completo y conserva solo lo que el personaje dice en voz alta). Mantén el diálogo oral, natural y en personaje; prefiere eliminar antes que reescribir, preserva timestamps y no elimines registros postgame del módulo de juego si contienen resultado o interacciones importantes.
+    "es": """Límite de razonamiento: como máximo cuatro frases de pensamiento interno. No repitas el texto original ni enumeres alternativas. Al terminar, devuelve JSON de inmediato. No escribas el proceso de pensamiento en explanation.
+
+Revisa el historial de conversación entre %s y %s, e identifica y corrige contradicciones, redundancias, repeticiones, errores de persona, errores de rol y monólogo interno expuesto (contenido que en realidad es el razonamiento/análisis/estrategia de respuesta del personaje dicho en voz alta como si fuera diálogo, p. ej. "El usuario cuestiona mi identidad, debería… Estrategia: 1.… 2.…"; no es una frase realmente dicha, elimina esos mensajes por completo y conserva solo lo que el personaje dice en voz alta). Mantén el diálogo oral, natural y en personaje; prefiere eliminar antes que reescribir, preserva timestamps y no elimines registros postgame del módulo de juego si contienen resultado o interacciones importantes.
 
 [Importante] NO elimines ni fusiones la retroalimentación negativa de {MASTER_NAME} (declaraciones imperativas como "no menciones X / deja de hacer Y / no quiero oír Z") — son señales de alto valor; el sistema de memoria aguas abajo depende de ellas para evitar volver a tropezar. Manténlas textualmente aunque te parezcan "redundantes" o "repetitivas".
 
@@ -940,7 +954,9 @@ Notas:
 - Conserva la información central y el contenido importante.
 - Asegura lógica clara y coherente.
 - Elimina redundancia, repetición y contradicciones evidentes.""",
-    "pt": """Revise o histórico de conversa entre %s e %s, e identifique e corrija contradições, redundâncias, repetições, erros de pessoa, erros de papel e monólogo interno exposto (conteúdo que na verdade é o raciocínio/análise/estratégia de resposta do personagem dito em voz alta como se fosse diálogo, p. ex. "O usuário está questionando minha identidade, eu deveria… Estratégia: 1.… 2.…"; não é uma fala realmente dita, remova essas mensagens por completo e mantenha apenas o que o personagem realmente diz em voz alta). Mantenha o diálogo oral, natural e no personagem; prefira remover a reescrever, preserve timestamps e não apague registros postgame do módulo de jogo se contiverem resultado ou interações importantes.
+    "pt": """Limite de raciocínio: no máximo quatro frases de pensamento interno. Não repita o texto original nem liste alternativas. Ao terminar, retorne JSON imediatamente. Não escreva o processo de pensamento em explanation.
+
+Revise o histórico de conversa entre %s e %s, e identifique e corrija contradições, redundâncias, repetições, erros de pessoa, erros de papel e monólogo interno exposto (conteúdo que na verdade é o raciocínio/análise/estratégia de resposta do personagem dito em voz alta como se fosse diálogo, p. ex. "O usuário está questionando minha identidade, eu deveria… Estratégia: 1.… 2.…"; não é uma fala realmente dita, remova essas mensagens por completo e mantenha apenas o que o personagem realmente diz em voz alta). Mantenha o diálogo oral, natural e no personagem; prefira remover a reescrever, preserve timestamps e não apague registros postgame do módulo de jogo se contiverem resultado ou interações importantes.
 
 [Importante] NÃO remova nem mescle o feedback negativo de {MASTER_NAME} (declarações imperativas como "não mencione X / pare de fazer Y / não quero ouvir Z") — são sinais de alto valor; o sistema de memória downstream depende deles para evitar tropeçar de novo. Preserve-os literalmente mesmo que pareçam "redundantes" ou "repetitivos" para você.
 
@@ -1055,6 +1071,182 @@ NO_RECENT_HISTORY = {
     "es": "Antes de iniciar la conversación, no hay historial.\n",
     "pt": "Antes de iniciar a conversa, não há histórico.\n",
 }
+
+
+THEATER_MEMORY_CONTEXT = {
+    "zh": "{name}记得自己曾和{master}共同演绎小剧场{title}。以下内容属于虚构剧情，不代表现实经历。",
+    "zh-TW": "{name}記得自己曾和{master}共同演繹小劇場{title}。以下內容屬於虛構劇情，不代表現實經歷。",
+    "en": "{name} remembers performing the theater story {title} with {master}. The following belongs to a fictional performance, not real-life events.",
+    "ja": "{name}は{master}と小劇場{title}を演じたことを覚えています。以下は現実の出来事ではなく、架空の演目です。",
+    "ko": "{name}은(는) {master}와 함께 소극장 이야기 {title}을 연기했던 일을 기억합니다. 다음 내용은 현실의 사건이 아니라 허구의 연기입니다.",
+    "ru": "{name} помнит, как разыгрывала с {master} театральную историю {title}. Ниже описан вымышленный сюжет, а не реальные события.",
+    "es": "{name} recuerda haber interpretado con {master} la historia teatral {title}. Lo siguiente pertenece a una ficción representada, no a hechos reales.",
+    "pt": "{name} se lembra de ter encenado com {master} a história teatral {title}. O conteúdo a seguir pertence a uma ficção encenada, não a acontecimentos reais.",
+}
+
+_THEATER_MEMORY_TITLE_MARKS = (
+    ("《", "》"),
+    ("〈", "〉"),
+    ("『", "』"),
+    ("「", "」"),
+    ("“", "”"),
+    ("«", "»"),
+    ("‹", "›"),
+    ('"', '"'),
+)
+
+_THEATER_MEMORY_TITLE_WRAPPERS = {
+    "zh": ("《", "》"),
+    "zh-TW": ("《", "》"),
+    "en": ("“", "”"),
+    "ja": ("『", "』"),
+    "ko": ("《", "》"),
+    "ru": ("«", "»"),
+    "es": ("«", "»"),
+    "pt": ("“", "”"),
+}
+
+
+def _format_theater_memory_title(title: str, lang: str) -> str:
+    """只为没有成对标题符号的剧本名补充当前语言的标题符号。"""  # noqa: DOCSTRING_CJK
+
+    normalized = str(title or "").strip()
+    if not normalized:
+        return normalized
+    if any(
+        normalized.startswith(left) and normalized.endswith(right)
+        for left, right in _THEATER_MEMORY_TITLE_MARKS
+    ):
+        return normalized
+    left, right = _THEATER_MEMORY_TITLE_WRAPPERS[lang]
+    return f"{left}{normalized}{right}"
+
+
+THEATER_MEMORY_PAUSED = {
+    "zh": "这次演绎在剧情尚未结束时暂停，之后仍可从原进度继续。",
+    "zh-TW": "這次演繹在劇情尚未結束時暫停，之後仍可從原進度繼續。",
+    "en": "This performance was paused before the story ended and can continue from the same progress.",
+    "ja": "この演目は物語の途中で一時停止しており、同じ進行状況から再開できます。",
+    "ko": "이 연기는 이야기가 끝나기 전에 일시 중지되었으며 같은 진행 지점에서 이어갈 수 있습니다.",
+    "ru": "Эта постановка была приостановлена до завершения сюжета и может быть продолжена с того же места.",
+    "es": "La representación se pausó antes de terminar la historia y puede continuar desde el mismo progreso.",
+    "pt": "A encenação foi pausada antes do fim da história e pode continuar do mesmo ponto.",
+}
+
+THEATER_MEMORY_COMPLETED = {
+    "zh": "这次演绎已经完成，达成结局《{ending}》。{summary}",
+    "zh-TW": "這次演繹已經完成，達成結局《{ending}》。{summary}",
+    "en": "This performance is complete and reached the ending “{ending}”. {summary}",
+    "ja": "この演目は完結し、エンディング『{ending}』に到達しました。{summary}",
+    "ko": "이 연기는 완료되었으며 결말 《{ending}》에 도달했습니다. {summary}",
+    "ru": "Постановка завершена и достигла финала «{ending}». {summary}",
+    "es": "La representación terminó y alcanzó el final «{ending}». {summary}",
+    "pt": "A encenação foi concluída e alcançou o final “{ending}”. {summary}",
+}
+
+THEATER_MEMORY_COMPLETED_UNTITLED = {
+    "zh": "这次演绎已经完成。{summary}",
+    "zh-TW": "這次演繹已經完成。{summary}",
+    "en": "This performance is complete. {summary}",
+    "ja": "この演目は完結しました。{summary}",
+    "ko": "이 연기는 완료되었습니다. {summary}",
+    "ru": "Постановка завершена. {summary}",
+    "es": "La representación terminó. {summary}",
+    "pt": "A encenação foi concluída. {summary}",
+}
+
+THEATER_MEMORY_RUN = {
+    "zh": "这是双方第 {run_index} 次演绎这个剧本。",
+    "zh-TW": "這是雙方第 {run_index} 次演繹這個劇本。",
+    "en": "This was their performance number {run_index} of this story.",
+    "ja": "これは二人がこの物語を演じた第 {run_index} 回目です。",
+    "ko": "두 사람이 이 이야기를 연기한 {run_index}번째 기록입니다.",
+    "ru": "Это была их постановка этой истории № {run_index}.",
+    "es": "Esta fue la representación número {run_index} de esta historia.",
+    "pt": "Esta foi a encenação número {run_index} desta história.",
+}
+
+THEATER_MEMORY_STORY_HISTORY = {
+    "zh": "截至目前，双方共演绎这个剧本 {count} 次；记录过的结局包括：{endings}。",
+    "zh-TW": "截至目前，雙方共演繹這個劇本 {count} 次；記錄過的結局包括：{endings}。",
+    "en": "So far, they have performed this story {count} times; recorded endings include: {endings}.",
+    "ja": "これまで二人はこの物語を {count} 回演じ、記録された結末は次のとおりです：{endings}。",
+    "ko": "지금까지 두 사람은 이 이야기를 {count}번 연기했으며, 기록된 결말은 다음과 같습니다: {endings}.",
+    "ru": "На данный момент они разыграли эту историю {count} раз; записанные финалы: {endings}.",
+    "es": "Hasta ahora, han representado esta historia {count} veces; los finales registrados incluyen: {endings}.",
+    "pt": "Até agora, eles encenaram esta história {count} vezes; os finais registrados incluem: {endings}.",
+}
+
+THEATER_MEMORY_STORY_COUNT = {
+    "zh": "截至目前，双方共演绎这个剧本 {count} 次。",
+    "zh-TW": "截至目前，雙方共演繹這個劇本 {count} 次。",
+    "en": "So far, they have performed this story {count} times.",
+    "ja": "これまで二人はこの物語を {count} 回演じました。",
+    "ko": "지금까지 두 사람은 이 이야기를 {count}번 연기했습니다.",
+    "ru": "На данный момент они разыграли эту историю {count} раз.",
+    "es": "Hasta ahora, han representado esta historia {count} veces.",
+    "pt": "Até agora, eles encenaram esta história {count} vezes.",
+}
+
+
+def get_theater_memory_context(
+    lang: str,
+    *,
+    name: str,
+    master: str,
+    title: str,
+    status: str,
+    ending: str = "",
+    summary: str = "",
+    run_index: int = 0,
+    story_run_count: int = 0,
+    ending_titles: list[str] | None = None,
+) -> str:
+    """把可信剧场元数据渲染成自然记忆上下文，不改写演绎正文。"""  # noqa: DOCSTRING_CJK
+
+    normalized = _normalize_memory_prompt_lang(lang)
+    context = _loc(THEATER_MEMORY_CONTEXT, normalized).format(
+        name=name,
+        master=master,
+        title=_format_theater_memory_title(title, normalized),
+    )
+    run_context = ""
+    if isinstance(run_index, int) and not isinstance(run_index, bool) and run_index > 0:
+        run_context = _loc(THEATER_MEMORY_RUN, normalized).format(run_index=run_index)
+    story_context = ""
+    if (
+        isinstance(story_run_count, int)
+        and not isinstance(story_run_count, bool)
+        and story_run_count > 1
+    ):
+        normalized_endings = [
+            str(item or "").strip()
+            for item in (ending_titles or [])
+            if str(item or "").strip()
+        ]
+        if normalized_endings:
+            separator = "、" if normalized in {"zh", "zh-TW", "ja"} else ", "
+            story_context = _loc(THEATER_MEMORY_STORY_HISTORY, normalized).format(
+                count=story_run_count,
+                endings=separator.join(dict.fromkeys(normalized_endings)),
+            )
+        else:
+            story_context = _loc(THEATER_MEMORY_STORY_COUNT, normalized).format(
+                count=story_run_count,
+            )
+    if status == "completed":
+        template = THEATER_MEMORY_COMPLETED if ending else THEATER_MEMORY_COMPLETED_UNTITLED
+        state = _loc(template, normalized).format(
+            ending=ending,
+            summary=summary,
+        ).strip()
+    else:
+        state = _loc(THEATER_MEMORY_PAUSED, normalized)
+        if summary:
+            state = f"{state} {summary}".strip()
+    return "\n".join(
+        part for part in (context, run_context, story_context, state) if part
+    ).strip()
 
 
 # ---------- Locale-independent /new_dialog splitter ----------
@@ -3824,6 +4016,28 @@ SCOPED_PERSONA_SECTION_HEADER = {
         "es": "Memoria del miembro del grupo ({subject_id})",
         "pt": "Memória do membro do grupo ({subject_id})",
     },
+    # 串门（neko_visit 平台）专表：按 f"{kind}@{platform}" 选中，见
+    # get_scoped_persona_section_header。group_participant 沿用通用标题。
+    "group_chat@neko_visit": {
+        "zh": "串门记忆（{subject_id}）",
+        "zh-TW": "串門記憶（{subject_id}）",
+        "en": "Visit memory ({subject_id})",
+        "ja": "訪問の記憶（{subject_id}）",
+        "ko": "방문 기억 ({subject_id})",
+        "ru": "Память о визитах ({subject_id})",
+        "es": "Memoria de visitas ({subject_id})",
+        "pt": "Memória de visitas ({subject_id})",
+    },
+    "participant@neko_visit": {
+        "zh": "串门对象记忆（{subject_id}）",
+        "zh-TW": "串門對象記憶（{subject_id}）",
+        "en": "Visit acquaintance memory ({subject_id})",
+        "ja": "訪問で出会った相手の記憶（{subject_id}）",
+        "ko": "방문에서 만난 상대 기억 ({subject_id})",
+        "ru": "Память о знакомых по визитам ({subject_id})",
+        "es": "Memoria de conocidos de visitas ({subject_id})",
+        "pt": "Memória de conhecidos de visitas ({subject_id})",
+    },
 }
 
 
@@ -3862,7 +4076,46 @@ SCOPED_PERSONA_SECTION_HEADER_NAMED = {
         "es": "Memoria del miembro del grupo ({display_name}, {subject_id})",
         "pt": "Memória do membro do grupo ({display_name}, {subject_id})",
     },
+    "group_chat@neko_visit": {
+        "zh": "串门记忆（{display_name}，{subject_id}）",
+        "zh-TW": "串門記憶（{display_name}，{subject_id}）",
+        "en": "Visit memory ({display_name}, {subject_id})",
+        "ja": "訪問の記憶（{display_name}、{subject_id}）",
+        "ko": "방문 기억 ({display_name}, {subject_id})",
+        "ru": "Память о визитах ({display_name}, {subject_id})",
+        "es": "Memoria de visitas ({display_name}, {subject_id})",
+        "pt": "Memória de visitas ({display_name}, {subject_id})",
+    },
+    "participant@neko_visit": {
+        "zh": "串门对象记忆（{display_name}，{subject_id}）",
+        "zh-TW": "串門對象記憶（{display_name}，{subject_id}）",
+        "en": "Visit acquaintance memory ({display_name}, {subject_id})",
+        "ja": "訪問で出会った相手の記憶（{display_name}、{subject_id}）",
+        "ko": "방문에서 만난 상대 기억 ({display_name}, {subject_id})",
+        "ru": "Память о знакомых по визитам ({display_name}, {subject_id})",
+        "es": "Memoria de conocidos de visitas ({display_name}, {subject_id})",
+        "pt": "Memória de conhecidos de visitas ({display_name}, {subject_id})",
+    },
 }
+
+
+def _scoped_header_table_key(
+    tables: dict[str, dict[str, str]], subject_kind: str, subject_id: str,
+) -> str:
+    """Pick the header table key by ``(subject_kind, platform)``.
+
+    ``platform`` is the part of ``subject_id`` before the first ``':'``. A
+    ``f"{subject_kind}@{platform}"`` key wins when the table has one;
+    otherwise the plain ``subject_kind`` key is used. The kind must take part
+    in the choice: a ``participant`` and a ``group_chat`` can share the same
+    ``neko_visit:`` prefix, so a bare prefix lookup would mix them up.
+    """
+    if isinstance(subject_id, str) and ":" in subject_id:
+        platform = subject_id.split(":", 1)[0]
+        specific = f"{subject_kind}@{platform}"
+        if specific in tables:
+            return specific
+    return subject_kind
 
 
 def get_scoped_persona_section_header(
@@ -3870,14 +4123,22 @@ def get_scoped_persona_section_header(
     display_name: str | None = None,
 ) -> str:
     if display_name:
-        named = SCOPED_PERSONA_SECTION_HEADER_NAMED.get(subject_kind)
+        named = SCOPED_PERSONA_SECTION_HEADER_NAMED.get(
+            _scoped_header_table_key(
+                SCOPED_PERSONA_SECTION_HEADER_NAMED, subject_kind, subject_id,
+            )
+        )
         if named is not None:
             # str.format 只展开模板里的槽位，替换值里的花括号不会被二次
             # 解释——display_name 含 "{x}" 也不会变成注入面。
             return _loc(named, lang).format(
                 display_name=display_name, subject_id=subject_id,
             )
-    table = SCOPED_PERSONA_SECTION_HEADER.get(subject_kind)
+    table = SCOPED_PERSONA_SECTION_HEADER.get(
+        _scoped_header_table_key(
+            SCOPED_PERSONA_SECTION_HEADER, subject_kind, subject_id,
+        )
+    )
     if table is None:
         return subject_id
     return _loc(table, lang).format(subject_id=subject_id)

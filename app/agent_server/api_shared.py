@@ -65,10 +65,8 @@ from ._shared import (  # noqa: F401
     ComputerUseAdapter,
     BrowserUseAdapter,
     OpenClawAdapter,
-    OpenFangAdapter,
     TaskDeduper,
     DirectTaskExecutor,
-    get_session_manager,
     parse_computer_use_result,
     parse_browser_use_result,
     parse_plugin_result,
@@ -89,7 +87,6 @@ from ._shared import (  # noqa: F401
 
 from config import (  # noqa: F401  (tail entries keep facade parity with the old monolith namespace)
     USER_PLUGIN_SERVER_PORT,
-    OPENFANG_BASE_URL,
     TASK_ERROR_MAX_TOKENS,
     EXCEPTION_TEXT_MAX_CHARS,
     USER_NOTIFICATION_REASON_MAX_CHARS,
@@ -183,12 +180,6 @@ from .channels.openclaw import (  # noqa: F401
     _start_openclaw_enable_probe,
     _run_openclaw_enable_probe,
 )
-from .channels.openfang import (  # noqa: F401
-    _patch_openai_response,
-    _patch_usage,
-    _patch_malformed_tool_calls,
-    _extract_tool_intent_as_text,
-)
 from .channels.user_plugin import (  # noqa: F401
     _plugin_terminal_status,
     _resolve_delivery_mode,
@@ -199,4 +190,6 @@ from .channels.user_plugin import (  # noqa: F401
 
 
 app = FastAPI(title="N.E.K.O Tool Server")
+from utils.instance_access import InstanceAccessMiddleware
+app.add_middleware(InstanceAccessMiddleware)
 app.add_middleware(HostOriginGuardMiddleware)

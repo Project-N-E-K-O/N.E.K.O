@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 
 from PIL import Image
 
-from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
+from config import USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
 from main_logic.proactive_delivery import (
@@ -39,12 +39,14 @@ from main_logic.proactive_delivery import (
     CALLBACK_IMAGE_MAX_TOTAL_BYTES,
     approx_base64_decoded_bytes,
 )
+from main_logic.vmc_sender import set_vmc_enabled_callback
 from plugin.sdk.shared.core.images import (
     MAX_SOURCE_IMAGE_PIXELS,
     normalize_image_to_jpeg,
 )
 from utils.config_manager import get_reserved
 from utils.internal_http_client import get_internal_http_client
+from utils.screenshot_utils import normalize_image_for_model
 
 from ._shared import runtime
 
@@ -261,8 +263,41 @@ def _normalize_inline_image_to_jpeg_base64(encoded: str) -> str:
     return base64.b64encode(normalize_image_to_jpeg(raw)).decode("ascii")
 
 
+def _normalize_inline_image_to_model_profile(encoded: str) -> str:
+    """Re-encode an inline payload to jpeg AND to the model's size profile.
+
+    Two steps rather than one because they answer two different questions and
+    only one of them may be skipped.
+
+    ``normalize_image_to_jpeg`` is the SDK's own guarded decode: 32 MiB source
+    ceiling, 16 megapixel ceiling, EXIF orientation, alpha flattened onto
+    white, a process-wide decode gate. It RAISES on anything it cannot read,
+    which is load-bearing here -- the caller turns that into a dropped part, so
+    bytes this host could not parse never reach a provider labelled jpeg.
+
+    ``normalize_image_for_model`` then bounds the RESOLUTION. It cannot replace
+    the step above (it returns the payload unchanged on failure, which would
+    ship an unreadable part as jpeg) and the step above cannot replace it (the
+    SDK bounds the long edge at 2048, so a 2048x1536 upload is jpeg, honest,
+    and still far past the profile every other model path sends).
+
+    Cost: an image that is already inside the profile pays nothing extra --
+    ``normalize_image_for_model`` returns the same string object for a jpeg
+    within both bounds. Only an oversized one pays a second decode+encode, and
+    it needed a resample either way.
+    """
+    return normalize_image_for_model(_normalize_inline_image_to_jpeg_base64(encoded))
+
+
 async def _resolve_plugin_model_image(part: dict[str, Any]) -> str:
     """Resolve one canonical image part to the model's base64 input.
+
+    This is the MODEL half of the fork. The chat half is
+    ``_build_plugin_chat_blocks``, and the two deliberately disagree about
+    resolution: everything leaving here is bounded to the model profile
+    (``MODEL_IMAGE_MAX_WIDTH`` x ``COMPRESS_TARGET_HEIGHT``, jpeg), while the
+    chat copy keeps the plugin's original bytes. See the comment on that
+    function for why the asymmetry is the point rather than an oversight.
 
     Bounds ONE transfer at the per-image ceiling and returns the bytes that
     would actually be retained. Budget accounting is deliberately NOT done
@@ -283,12 +318,20 @@ async def _resolve_plugin_model_image(part: dict[str, Any]) -> str:
         # Returning the NORMALIZED bytes is also what lets the caller charge
         # the budget on what is retained, since jpeg can expand a png.
         return await asyncio.to_thread(
-            _normalize_inline_image_to_jpeg_base64, encoded
+            _normalize_inline_image_to_model_profile, encoded
         )
     url = part.get("url")
     if not isinstance(url, str) or not url:
         raise ValueError("plugin image part has no usable payload")
-    return await _fetch_plugin_image_base64(url)
+    fetched = await _fetch_plugin_image_base64(url)
+    # 两条分支都必须落在同一个档位上——这是本函数的契约，不是内联分支的特权。
+    # URL 图确实已经是 jpeg（SDK 上传时归一化过），所以在下游看来「已经处理过
+    # 了」，但 SDK 只把长边压到 MAX_IMAGE_EDGE=2048：实测一张插件图到这里是
+    # 2048x1536 / ~49 KiB，远在任何字节预算之下，于是一路原样送到模型，高度
+    # 1536。字节预算看不见分辨率，所以只有这里能兜住它。
+    #
+    # 归一化器对已经合规的图返回同一个字符串对象，因此这一步对小图是零成本。
+    return await asyncio.to_thread(normalize_image_for_model, fetched)
 
 
 def _browser_media_url(url: str) -> str:
@@ -366,6 +409,26 @@ def _build_plugin_chat_blocks(
 
     Images past the per-push budget are dropped; text blocks keep flowing so
     the surviving mix stays in canonical order rather than truncating the tail.
+
+    THE CHAT COPY IS NOT DOWNSCALED, and that asymmetry against
+    ``_resolve_plugin_model_image`` is deliberate. One plugin image forks here
+    into two consumers with opposite needs:
+
+    * The MODEL gets a jpeg bounded at 1280x720. Beyond that the extra pixels buy no
+      comprehension a vision model can use, while every one of them is billed,
+      rides ``_conversation_history`` for several more turns, and eats into a
+      per-request byte ceiling that rejects the whole message when crossed.
+    * The READER gets the resolution the plugin actually uploaded. A screenshot
+      of a document, a chart, a code diff is exactly the material a person
+      zooms into, and 720p is where small text stops being legible. Shrinking
+      the picture on screen would save nothing that matters -- the URL branch
+      below is a ``/media/<id>`` reference the browser fetches on its own, so
+      those bytes never touch the model request at all, and inline blocks are
+      already bounded on their own axis by ``_PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES``.
+
+    So: bound the copy that is billed and re-sent, leave the copy that is
+    merely looked at. Anyone tempted to "unify" the two paths is removing a
+    distinction, not a duplication.
     """
     blocks: list[dict[str, str]] = []
     image_count = 0
@@ -589,21 +652,9 @@ class RoleState:
       later by websocket_router / _init_character_resources respectively.
 
     Legacy fields: ``sync_shutdown_event: ThreadEvent`` and ``sync_process:
-    Thread`` are semantically gone since cross_server merged into the main event
-    loop (no separate thread anymore). Lifecycle is now managed by ``sync_task:
+    Thread`` are gone since cross_server merged into the main event loop (no
+    separate thread anymore). Lifecycle is now managed by ``sync_task:
     asyncio.Task``, with shutdown via ``task.cancel()``.
-
-    However, ``main_routers/shared_state.py``'s ``_RoleStateFieldView`` still
-    exposes dict-like views for ``sync_shutdown_event`` / ``sync_process``
-    (the public router APIs ``get_sync_shutdown_event()`` /
-    ``get_sync_process()``). The view's ``__getitem__`` uses
-    ``getattr(rs, field)`` (no default) and would raise ``AttributeError`` if
-    the field didn't exist. Keeping these two ``Optional[Any] = None``
-    placeholder fields preserves the shim's "always-empty dict" semantics:
-    ``__contains__`` sees None and returns False, ``__getitem__`` goes to
-    ``raise KeyError``, and every caller gets a consistent empty state instead
-    of a crash. The two fields are never assigned anymore; remove them once
-    it's confirmed nothing external depends on them.
     """
 
     sync_message_queue: _SyncMessageQueue
@@ -613,9 +664,6 @@ class RoleState:
     # 用 Any 而非 core.LLMSessionManager：避免 dataclass 运行时求值 annotation
     # 时踩到 forward-ref / 循环引用边界
     session_manager: Optional[Any] = None
-    # 仅为 main_routers/shared_state.py 的 legacy field-view 提供占位；永远 None
-    sync_shutdown_event: Optional[Any] = None
-    sync_process: Optional[Any] = None
 
 
 # 角色名 -> RoleState 的主存储；所有 per-k 同步资源都通过它访问
@@ -815,11 +863,48 @@ async def _broadcast_to_all_connected(event_payload: dict) -> int:
     return sum(1 for r in results if r is True)
 
 
+async def _broadcast_vmc_enabled(enabled: bool) -> None:
+    """Wake browser samplers after a non-browser client enables VMC.
+
+    The browser only starts sampling once its own ``enable()`` runs, so a
+    plugin calling ``POST /api/vmc/enable`` would otherwise leave the UDP
+    sender running with no frame source. The chat WebSocket carries this
+    one-shot control event; per-frame VMC data stays on ``/api/vmc/ws``.
+
+    Wired here rather than in ``main_routers/vmc_router.py``: the broadcast
+    target is this module's session registry, and a router (L3) importing
+    ``app`` (L6) is both a layer inversion and an import cycle — the thing
+    ``scripts/check_module_layering.py`` rejects. ``set_vmc_enabled_callback``
+    is the seam that lets the app layer own the wiring instead.
+    """
+    if not enabled:
+        return
+    try:
+        delivered = await _broadcast_to_all_connected(
+            {"type": "vmc_state_changed", "enabled": True}
+        )
+        logger.info("VMC enable broadcast delivered to %d session(s)", delivered)
+    except Exception as exc:
+        logger.warning("VMC enable broadcast failed: %s", exc)
+
+
+# Import-time registration, matching the previous behaviour in vmc_router:
+# set_vmc_enabled_callback() deliberately does not construct the VmcSender
+# singleton, so this cannot run before the config manager is ready.
+set_vmc_enabled_callback(_broadcast_vmc_enabled)
+
+
 async def _handle_agent_event(event: dict):
     """Receive agent_server events over ZeroMQ and dispatch them to core/websocket."""
     try:
         event_type = event.get("event_type")
         lanlan = event.get("lanlan_name")
+
+        if event_type == "plugin_card":
+            from main_logic.plugin_cards import deliver_plugin_card
+            default_name, _ = _select_fallback_session_manager()
+            await deliver_plugin_card(event, dict(_iter_session_managers()), default_name)
+            return
 
         if event_type == "analyze_ack":
             logger.info(
@@ -999,6 +1084,51 @@ async def _handle_agent_event(event: dict):
             if targets:
                 logger.info(
                     "[EventBus] music_play_url broadcasted to %d sessions", len(targets)
+                )
+            return
+
+        elif event_type == "jukebox_control":
+            # Jukebox control mutates one local playback runtime. Unlike generic
+            # music URL playback, an unscoped command must not fan out to every
+            # connected character session.
+            if not lanlan or not mgr:
+                logger.info(
+                    "[EventBus] jukebox_control dropped: no target session for lanlan=%s",
+                    lanlan,
+                )
+                return
+            targets = [mgr]
+            action = str(event.get("action") or "").strip().lower()
+            payload = {
+                "type": "jukebox_control",
+                "command": {
+                    "action": action,
+                    "query": event.get("query") or "",
+                    "value": event.get("value"),
+                    "mode": event.get("mode") or "",
+                },
+                "source": event.get("source") or "",
+            }
+
+            async def _send_jukebox_control(target_mgr):
+                if (
+                    target_mgr
+                    and target_mgr.websocket
+                    and hasattr(target_mgr.websocket, "send_json")
+                ):
+                    try:
+                        await target_mgr.websocket.send_json(payload)
+                    except Exception as e:
+                        logger.debug(
+                            "[EventBus] jukebox_control broadcast failed: %s", e
+                        )
+
+            await asyncio.gather(
+                *(_send_jukebox_control(t) for t in targets), return_exceptions=True
+            )
+            if targets:
+                logger.info(
+                    "[EventBus] jukebox_control broadcasted to %d sessions", len(targets)
                 )
             return
         if not mgr and event_type in ("proactive_message", "task_result"):
@@ -1783,6 +1913,15 @@ async def _init_character_resources(k: str, is_new_character: bool):
                 new_mgr.user_language = old_user_language
                 new_mgr._user_language_explicit = True
 
+            # 新 manager 的 ToolRegistry 只有内置工具：把插件等远端注册重放进来，
+            # 否则保存配置 / 改音色之后插件工具会静默消失（见 tool_router 的台账注释）。
+            try:
+                from main_routers.tool_router import replay_remote_tools
+
+                replay_remote_tools(new_mgr, k)
+            except Exception as e:
+                logger.warning(f"重放 {k} 的远端工具注册失败: {e}")
+
             # 恢复websocket引用（如果存在）
             if old_websocket:
                 new_mgr.websocket = old_websocket
@@ -1861,9 +2000,8 @@ async def _init_character_resources(k: str, is_new_character: bool):
                 cross_server.run_sync_connector(
                     rs.sync_message_queue,
                     k,
-                    f"ws://127.0.0.1:{MONITOR_SERVER_PORT}",
-                    {"bullet": False, "monitor": True},
-                    _status_cb,
+                    config={"bullet": False, "monitor": True},
+                    status_callback=_status_cb,
                     user_language_provider=(
                         lambda _name=k: _get_explicit_session_user_language(_name)
                     ),
@@ -1922,6 +2060,14 @@ def _cleanup_character_dicts(k: str):
         pass
     # 一次 del 原子清掉所有 6 个字段 —— 替代旧代码里 6 张 dict 分别 del 的对称清理
     del role_state[k]
+    # 与重建分支的 replay_remote_tools 对偶：槽位没了，该角色的 scoped 工具记录和
+    # 全局记录上的排除项也得清掉，否则之后同名的新角色（含改名成这个名字）会继承。
+    try:
+        from main_routers.tool_router import forget_role
+
+        forget_role(k)
+    except Exception as e:
+        logger.warning(f"清理 {k} 的远端工具台账失败: {e}")
 
 
 async def _unregister_character_voice_identity_manager(k: str) -> None:

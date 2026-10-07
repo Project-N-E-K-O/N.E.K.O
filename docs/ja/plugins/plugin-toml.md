@@ -68,12 +68,15 @@ auto_classify = true
 [plugin]
 id = "smart_notes"
 name = "Smart Notes"
+version = "1.2.0"
 entry = "plugin.plugins.smart_notes:SmartNotesPlugin"
 ```
 
-この 3 field は **必須** です。`id` は `^[A-Za-z0-9_-]+$` に一致し、一意でなければなりません。directory 名と揃えることを強く推奨します。不一致でも runtime load は可能ですが、profile lookup や tooling は `<plugin.id>/plugin.toml` を仮定する場合があります。`entry` は `module.path:ClassName` 形式で `NekoPluginBase` subclass を指す必要があり、`PluginRouter` は直接起動できません。
+サポート対象の check / release workflow では、この 4 フィールドが **必須** です。従来のソース探索では、不完全な manifest やディレクトリ名と ID が異なるプラグインを読み込める場合がありますが、有効なリリース package であることを意味しません。`id` は `^[A-Za-z0-9_-]+$` に一致し、一意でなければなりません。パッケージのビルドと本番環境へのインストールでは、宣言 ID、アーカイブ内のディレクトリ、インストール先、エントリーパッケージを一致させる必要があります。競合時に接尾辞付きのコピーは作成されません。`entry` は `module.path:ClassName` 形式で `NekoPluginBase` のサブクラスを指す必要があり、`PluginRouter` は直接起動できません。
 
 通常の plugin では `type = "plugin"` は default なので省略できます。Adapter package のみ `type = "adapter"` を使います。削除済みの `extension` type と `[plugin.host]` table は拒否されます。
+
+リリース間で `id` を変更しないでください。upgrade、reinstall、downgrade は実行コードだけを置き換え、実行時の `config`、`data`、`cache` は保持します。`id` を変更すると別のプラグインとして扱われます。任意の `previous_ids` は新旧 ID の同時インストールを防ぐだけで、runtime alias ではなく、旧データの移行や削除も行いません。置換操作にはユーザーの明示的な確認が必要です。
 
 ```toml
 description = "Manage your notes: search, create, organize, with AI-powered classification."
@@ -95,7 +98,7 @@ Stage 2 の最終出力は `plugin_id` と runtime `entry_id` です。どちら
 version = "1.2.0"
 ```
 
-任意です。バージョン管理やマーケットプレイス公開で使います。
+check / release workflow では必須です。バージョン管理やマーケットプレイス公開で使います。
 
 ---
 
@@ -245,7 +248,79 @@ plugin/plugins/smart_notes/
 │   └── panel.tsx
 ├── docs/                    ← ユーザーガイド（[[plugin.ui.guide]] を設定したため）
 │   └── guide.md
-└── data/                    ← 実行時データ（自動作成、self.data_path() が指す場所）
 ```
 
-必須なのは `plugin.toml` と `[plugin].entry` が指す import 可能な Python module です。一般的には `__init__.py` を使いますが、それに限定されません。
+書き込み可能な状態データは、ソースやインストール済みコードのディレクトリとは分けて保存されます。
+
+```text
+<ユーザーデータルート>/plugins/smart_notes/
+├── config/plugin.toml      ← 実際に使用される設定
+├── data/                   ← self.data_path()
+└── cache/                  ← self.cache_path()
+```
+
+必須なのは `plugin.toml` と `[plugin].entry` が指す、インポート可能な Python モジュールです。一般的には `__init__.py` を使いますが、それに限定されません。インストール済みコードは、これらの書き込み可能な状態データとは別に保存されます。
+
+## 設定パネル用 JSON Schema
+
+プラグインの `plugin.toml` と同じディレクトリに、任意の `config.schema.json` を置くと、汎用の「設定」タブに項目名、説明、入力型を指定できます。マニフェストへの追加設定やカスタム UI は不要です。書き込み可能な実行時設定や profile のディレクトリではなく、プラグインの配布ファイルに含めてください。パッケージの include 許可リストを使用する場合、このファイルも追加します。
+
+`[notes]` セクションの例：
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "notes": {
+      "type": "object",
+      "title": "ノート設定",
+      "properties": {
+        "max_per_page": {
+          "type": "integer",
+          "title": "ページあたりのノート数",
+          "description": "1 ページに表示するノートの最大数。",
+          "x-title-i18n": { "ja": "ページあたりのノート数", "en": "Notes per page" },
+          "x-description-i18n": { "ja": "1 ページに表示するノートの最大数。", "en": "Maximum number of notes shown on a page." },
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        },
+        "auto_classify": {
+          "type": "boolean",
+          "title": "自動分類",
+          "description": "新しいノートを自動的に整理します。"
+        },
+        "sort_order": {
+          "type": "string",
+          "title": "並び順",
+          "enum": ["newest", "oldest"]
+        }
+      }
+    }
+  }
+}
+```
+
+| キーワード | フォームの動作 |
+| --- | --- |
+| `properties` | 実際の設定構造に対応するオブジェクトの項目。未定義の既存項目も編集できます。 |
+| `additionalProperties` | オブジェクト形式のスキーマは `properties` にない動的キーに適用され、パスワード入力とプレビューのマスクにも使われます。名前付き項目が優先されます。真偽値は項目情報を提供せず、キーの追加や削除は制限しません。 |
+| `title` / `description` | プレーンテキストの表示名と説明。内部キーも補助情報として表示し、名前がない場合はキーを使います。 |
+| `type` | 単一の `string`、`number`、`integer`、`boolean`、`object`、`array` に対応する入力を表示します。省略時は現在値から推測します。 |
+| `items` | 配列要素の子スキーマ。ネストしたオブジェクトや配列も指定できます。 |
+| `enum` | 文字列、数値、真偽値の空でない一覧を選択肢にし、保存時の型を維持します。 |
+| `minimum` / `maximum` | 数値入力の上下限。`integer` は整数のみを受け付けます。 |
+| `maxLength` | テキスト入力の最大文字数。 |
+| `readOnly` | 項目と子コントロールの編集を無効にします。 |
+| 文字列項目の `writeOnly: true` | パスワード入力（一時表示可）を使い、基準値のヒント、変更の概要、JSON データ表示で空でない値をマスクします。保存には実際の値を使用します。表示のマスクであり、暗号化やアクセス制御ではありません。 |
+| `default` | 項目や配列要素を明示的に追加する際の初期値。実行時設定の既定値ではありません。 |
+| `x-title-i18n` / `x-description-i18n` | 任意の locale とテキストの対応表。標準の `title` と `description` は文字列のままです。 |
+
+翻訳の優先順位は、現在の locale、基本言語、`en-US`、`en`、対応表の最初の空でない値、最後に `title` / `description` です。例は 2 言語のみですが、公開時はプラグインが対応するすべての言語を用意してください。
+
+これはフォーム表示用であり、**完全な JSON Schema バリデーターやサーバー側の権限・設定検証ではありません**。`required`、`pattern`、スキーマ合成、`$ref`、真偽値スキーマ、型の配列、`null` 入力は非対応です。`$schema` や `$ref` の URL は取得しません。実行時の検証はプラグインが行い、既定値は `plugin.toml` / `config.example.toml` に定義してください。
+
+ページを開いても `default` の自動挿入や profile の書き込みは行いません。スキーマにだけ存在する項目は表示され、編集後にのみ保存されます。オブジェクトのマージと配列全体の置換は従来どおりです。最上位の `plugin` セクションは保護され、profile 編集には表示されません。
+
+ファイルは UTF-8 JSON、ルートは `"type": "object"`、最大 256 KiB、`properties` / `items` / `additionalProperties` の深さは最大 32 階層です。ファイルがない場合は従来の編集画面を使います。不正なファイルや対応キーワードの構造エラーがある場合は警告を表示し、汎用エディターに戻ります。設定 API は `config_schema` に表示情報を返し、`config` や profile には混ぜません。

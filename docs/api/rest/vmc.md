@@ -38,6 +38,11 @@ The backend converts Three.js right-handed transforms to Unity/VMC coordinates a
 - `/VMC/Ext/Bone/Pos`
 - `/VMC/Ext/Blend/Val`
 - `/VMC/Ext/Blend/Apply`
+- `/VMC/Ext/VRM` (low-frequency: sent once per model change to identify the character)
+
+Each frame carries at most 64 bones and 256 expressions. The two caps apply independently: a frame with 65 bones is truncated regardless of how many expressions it carries, and vice versa. The first-party sampler walks a fixed list of 55 humanoid bones, so only a third-party publisher posting directly to `/api/vmc/ws` can reach the bone cap; the expression cap is reachable from the browser with a model that ships hundreds of custom expressions.
+
+Extras are dropped and a warning is logged once per cap. The sampler truncates before sending, so for browser publishers the expression warning appears in the browser console; the backend's own warnings cover third-party publishers.
 
 The webpage's display position, scale, and rotation are not used as the VMC root. VMC owns an independent identity root so dragging or resizing the desktop avatar does not move the receiver's world origin.
 
@@ -81,6 +86,10 @@ All JSON fields are optional:
 
 `host` accepts an ASCII hostname or IPv4 address, `port` must be an integer from `1..65535`, and `send_rate_hz` must be an integer from `1..120`.
 
+Frames are sampled by the browser, so on a disabled-to-enabled transition the backend broadcasts `{"type": "vmc_state_changed", "enabled": true}` over the main chat WebSocket. The page then loads the full sender and starts per-frame sampling. Non-browser clients such as plugins can therefore enable output with this endpoint alone, without a manual `enable()` call in the page console. If no page is connected, the UDP sender still opens but emits no frames until one connects.
+
+Repeat calls (for example to retune `port`) do not re-broadcast, because sampling is already running.
+
 ### `POST /api/vmc/disable`
 
 Sends the terminal VMC state, closes the UDP client, and reports the disabled runtime status.
@@ -110,6 +119,10 @@ The browser must:
 
 Only one publisher may hold the process-wide lease. The server keeps one newest pending normal frame, serializes release after any in-flight frame, and expires a publisher after 10 seconds without a valid frame. Release and expression-retirement frames use `frame_ack` messages so state is not discarded before OSC transmission succeeds.
 
+The browser opens this socket with a constructor borrowed from a hidden same-origin iframe rather than with `window.WebSocket`. The desktop build's preload replaces the top-level constructor and registers the most recently created socket as the chat IPC proxy target without discriminating by URL, so a VMC socket built from it would take over the chat channel. If the probe iframe cannot be created (CSP `frame-src`, sandbox) *and* the top-level constructor does not stringify as `[native code]`, VMC refuses to connect, logs why, and stops sampling instead of reconnecting: a dead motion output is recoverable, a hijacked chat channel is not.
+
+That second test is a heuristic, not a fact about the host. An ordinary browser's constructor is normally a native binding, so a blocked iframe there costs nothing — but a host whose WebSocket is implemented in JavaScript rather than by the engine exposes readable source and reads as non-native (Node's undici `WebSocket` stringifies as `class _WebSocket extends EventTarget`). If both conditions land, the symptom is a silent dead output, recoverable by allowing same-origin frames (`frame-src 'self'`), which restores the borrow and skips the check entirely.
+
 Close codes:
 
 | Code | Meaning |
@@ -132,4 +145,5 @@ Close codes:
 - **No receiver data:** verify the destination host/port, receiver listen port, and local firewall.
 - **Unexpected send rate:** while the full-rate render loop is active, cumulative scheduling averages approximately the configured rate. A VRM that is otherwise idle is intentionally capped at about 30 Hz until animation or interaction resumes.
 - **Publisher busy:** close the other N.E.K.O. page or wait for its 10-second lease timeout.
+- **Console error about hijacking the desktop chat channel:** the page could not obtain a native WebSocket constructor: the same-origin probe iframe was blocked *and* `window.WebSocket` did not stringify as `[native code]`. That second test is a heuristic, so a browser with no preload at all can in principle land here. Either way, no frames are published until same-origin frames are allowed (`frame-src 'self'`), which restores the iframe borrow and skips the check entirely.
 - **Sampling error:** sampling is suspended to protect rendering and retried after a later backend status poll.

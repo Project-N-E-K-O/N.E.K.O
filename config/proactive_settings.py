@@ -53,12 +53,17 @@ MINI_GAME_INVITE_NEW_USER_FORCE_AT = 4
   从未玩过的人有一次确定的「被邀请」机会，不靠 10% 骰子赌。
 - 上游：_maybe_deliver_mini_game_invite force-first 分支。"""
 
-MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = ("soccer", "badminton")
+MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = (
+    "soccer",
+    "badminton",
+    "drawing_guess",
+    "air_basketball",
+    "watch-together",
+)
 """mini-game 邀请可选的 game_type 列表。
 - 命中后从该列表 random.choice 选一个，文案从
   config.prompts.prompts_proactive.MINI_GAME_INVITE_LINES_BY_GAME[game_type] 取。
-- 当前只有 soccer；badminton 后端与文案在本 PR 预埋，但实际邀请入口需要等
-  页面路由和 Electron 窗口注册在后续 PR 落地后再启用。
+- 当前支持足球、羽毛球、你画我猜、空气投篮和一起看；新增游戏时必须同时提供邀请文案与页面 URL。
 - 顺序无意义（用 random.choice）；用 tuple 防止运行期被改写。"""
 
 MINI_GAME_INVITE_COOLDOWN_CHATS = 10
@@ -78,6 +83,9 @@ MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS = 5 * 60
 MINI_GAME_LAUNCH_URL_BY_GAME: dict[str, str] = {
     'soccer': '/soccer_demo',
     'badminton': '/badminton_demo',
+    'air_basketball': '/air_basketball',
+    'watch-together': '/watch_together',
+    'drawing_guess': '/drawing_guess_demo',
 }
 """game_type → 实际打开的页面 URL。前端 `window.open(url)` 让 Electron 主进程
 ``setWindowOpenHandler`` 拦截开独立 BrowserWindow（普通浏览器是新 tab）；URL
@@ -120,3 +128,13 @@ EMOTION_ANALYSIS_MAX_TOKENS = 40
 """情感分析 LLM 的 max_completion_tokens。
 - 用途：返回情感标签 + score 等短输出。
 - 上游：LLM 输出（注意：Gemini 可能返回 markdown 包裹，留 40 token 余量）。"""
+
+
+# Reuse the existing outward emotion decision; no additional inference.
+MESSAGE_REACTION_CONFIDENCE_THRESHOLD = 0.72
+MESSAGE_REACTION_EMOJIS_BY_EMOTION = {
+    "happy": ("😊", "😄", "🥰", "✨", "🎉"),
+    "sad": ("😢", "🥺", "🤗", "💧"),
+    "surprised": ("😮", "😲", "👀", "❗"),
+    "angry": ("😤", "😠", "💢", "😾"),
+}

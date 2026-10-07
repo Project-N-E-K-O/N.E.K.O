@@ -12,9 +12,20 @@ Only variables explicitly read by current code are supported. A `NEKO_` prefix i
 | `NEKO_COMMENTER_SERVER_PORT` | 48914 | Commenter service |
 | `NEKO_TOOL_SERVER_PORT` | 48915 | Agent/tool server |
 | `NEKO_USER_PLUGIN_SERVER_PORT` | 48916 | User-plugin host |
-| `NEKO_AGENT_MQ_PORT` | 48917 | Agent message transport |
-| `NEKO_MAIN_AGENT_EVENT_PORT` | 48918 | Main/agent event transport |
-| `NEKO_OPENFANG_PORT` | 50051 | OpenFang A2A service |
+
+## Optional Monitor service
+
+| Preferred variable | Default | Description |
+| --- | --- | --- |
+| `NEKO_MONITOR_HOST` | `0.0.0.0` | Monitor bind address (`MONITOR_HOST` is accepted for compatibility). IPv6 may be written with or without brackets; `::` listens on IPv6 only |
+| `NEKO_MONITOR_TOKEN` | empty | Optional full-access token for every Monitor HTTP/WebSocket route except static model assets, including the `/sync*` routes the main server writes to (`MONITOR_TOKEN` is also accepted) |
+| `NEKO_MONITOR_VIEWER_TOKEN` | empty | Optional read-only token for viewer pages, APIs and `/ws`, `/subtitle_ws`; it cannot reach `/sync*`. Only used when `NEKO_MONITOR_TOKEN` is set (`MONITOR_VIEWER_TOKEN` is also accepted) |
+
+Monitor authentication is disabled when the token is empty for backwards compatibility. Keep the default open listener on a trusted LAN, or set the host to `127.0.0.1` for local-only use. Never include the token in logs or source control. The main server dials `NEKO_MONITOR_HOST` directly (wildcards map to the matching loopback: `0.0.0.0` → `127.0.0.1`, `::` → `[::1]`) and sends the token automatically.
+
+When the token is set, native clients send `Authorization: Bearer <token>` (or `X-Monitor-Token`). In a browser, open the viewer once as `http://<host>:<port>/<name>?token=<token>`: Monitor answers with a redirect that removes the token from the address bar and sets an HttpOnly `neko_monitor_session_<port>` cookie. Share viewer links with `NEKO_MONITOR_VIEWER_TOKEN`: a link carrying `NEKO_MONITOR_TOKEN` also grants write access to `/sync*`, so anyone holding it can inject subtitles or chat into every viewer.
+
+The cookie holds a 30-day signed session, not a token; it only grants viewer routes (never `/sync*`), WebSocket handshakes that use it must come from the same host and port, and changing either token invalidates it. Browsers send cookies to every port of the same host, so other local services (main server, plugin host) also receive it and could replay it to read Monitor viewer data until it expires; rotate a token to revoke all sessions. Behind a TLS-terminating reverse proxy, keep the original `Host` header (nginx: `proxy_set_header Host $http_host;`, otherwise realtime WebSockets are rejected) and list the proxy in uvicorn's `FORWARDED_ALLOW_IPS` (default `127.0.0.1`) so the cookie is marked `Secure`.
 
 Electron stores port overrides in `port_config.json` under `%APPDATA%\N.E.K.O` on Windows, macOS Application Support, or `$XDG_CONFIG_HOME/N.E.K.O` on Linux. Explicit environment values win.
 
@@ -64,6 +75,33 @@ record (pid, instance id, negotiated ports) next to that lock.
 Keep multi-process mode for development, independent service supervision, or
 agent-failure isolation. `NEKO_MERGED=0` is the immediate rollback for packaged
 deployments.
+
+## Plugin autostart concurrency
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `NEKO_PLUGIN_AUTOSTART_CONCURRENCY` | `min(8, max(2, (os.cpu_count() or 4) // 2))` | Maximum number of plugins without declared dependencies started concurrently in one autostart batch. Accepts integers from `1` to `64`; `1` starts plugins serially with a separate operation lock per plugin. Independent plugins still precede dependent plugins; this does not restore the former global topological/adapter-priority order. |
+
+The default is between 2 and 8; if the logical CPU count is unavailable, it uses
+4 logical CPUs to calculate the default, giving a limit of 2. Plugins with declared
+dependencies start serially in their existing topological order after the
+independent plugins finish. Each concurrent batch releases the operation lock
+before the next batch, allowing queued plugin-management requests to proceed.
+This setting applies to server autostart; it does not enable autostart for a
+disabled or unapproved plugin or change manual start/stop preferences.
+
+Set the variable before launching N.E.K.O and restart the runtime after changing
+it. Unparseable values fall back to the default; parsed integers outside `1`–`64`
+fail configuration validation. To restore serial autostart:
+
+```powershell
+$env:NEKO_PLUGIN_AUTOSTART_CONCURRENCY = "1"
+uv run python launcher.py
+```
+
+```bash
+NEKO_PLUGIN_AUTOSTART_CONCURRENCY=1 uv run python launcher.py
+```
 
 ## Realtime voice escape hatches
 

@@ -9,6 +9,7 @@ import ormsgpack
 from plugin.logging_config import logger
 
 from plugin.settings import (
+    MESSAGE_PLANE_FRAMES_STORE_MAXLEN,
     MESSAGE_PLANE_GET_RECENT_MAX_LIMIT,
     MESSAGE_PLANE_PAYLOAD_MAX_BYTES,
     MESSAGE_PLANE_STORE_MAXLEN,
@@ -27,7 +28,12 @@ from .protocol import (
     ok_response,
 )
 from .pub_server import MessagePlanePubServer
-from .stores import StoreRegistry, TopicStore
+from .stores import (
+    HOST_OWNED_STORE_NAMES,
+    StoreRegistry,
+    TopicStore,
+    build_default_store_registry,
+)
 from .validation import validate_rpc_envelope
 
 
@@ -51,10 +57,10 @@ class MessagePlaneRpcServer:
         if stores is not None:
             self._stores = stores
         else:
-            self._stores = StoreRegistry(default_store="messages")
-            # conversations 是独立的 store，用于存储对话上下文（与 messages 分离）
-            for name in ("messages", "events", "lifecycle", "runs", "export", "memory", "conversations"):
-                self._stores.register(TopicStore(name=name, maxlen=store_maxlen))
+            self._stores = build_default_store_registry(
+                maxlen=store_maxlen,
+                frames_maxlen=MESSAGE_PLANE_FRAMES_STORE_MAXLEN,
+            )
         self._pub = pub_server
         self._running = False
 
@@ -152,6 +158,15 @@ class MessagePlaneRpcServer:
             st = self._resolve_store(args)
             if st is None:
                 return err_response(req_id, "invalid store")
+            if st.name in HOST_OWNED_STORE_NAMES:
+                # 这条 op 没有调用方身份：RPC socket 是 loopback，任何插件进程连上
+                # 都能发，payload 里的 plugin_id 是自己写的。宿主自有 store 的记录
+                # 会直接变成用户听到的一句话（messages）、模型"看过的画面"
+                # （frames）或对话上下文（conversations），所以在这里一律拒绝，
+                # 而不是事后去猜哪条是伪造的。
+                #
+                # 宿主自己不受影响：它走 ingest socket（带 token），不走这条。
+                return err_response(req_id, "store is host-owned")
             topic = str(args.get("topic") or "")
             payload = args.get("payload")
             if not topic:
@@ -247,6 +262,7 @@ class MessagePlaneRpcServer:
                 source=args.get("source"),
                 kind=args.get("kind"),
                 type_=args.get("type"),
+                conversation_id=args.get("conversation_id"),
                 priority_min=args.get("priority_min"),
                 since_ts=args.get("since_ts"),
                 until_ts=args.get("until_ts"),

@@ -24,7 +24,10 @@ test('keeps the initial plugin manager payload within the cold-start budget', as
     stylesheetResponse.body(),
   ])
 
-  expect(entryBody.byteLength).toBeLessThan(750_000)
+  // Every locale's messages ship eagerly in the entry chunk, so new UI copy
+  // grows it eightfold. Raised from 750_000 for the plugin update check's copy
+  // (~7.6 KB across 8 locales); the feature's code itself is loaded lazily.
+  expect(entryBody.byteLength).toBeLessThan(760_000)
   expect(stylesheetBody.byteLength).toBeLessThan(80_000)
 })
 

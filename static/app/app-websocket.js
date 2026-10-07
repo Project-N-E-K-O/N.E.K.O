@@ -35,8 +35,11 @@
     const CAPTURE_BRIDGE_REANNOUNCE_INTERVAL_MS = 250;
     const CAPTURE_BRIDGE_REANNOUNCE_MAX_ATTEMPTS = 40;
     const CAPTURE_BRIDGE_REGION_IMAGE_MAX_CHARS = 9 * 1024 * 1024;
+    const GAME_ROUTE_ENDED_IDENTITY_LIMIT = 8;
+    const GAME_ROUTE_ENDED_IDENTITY_TTL_MS = 2 * 60 * 1000;
     let _pendingUserActivityCancelTimer = 0;
     let _pendingUserActivityCancelTurnId = null;
+    let _gameRouteReconciliationGeneration = 0;
     let _lanlanNameWaitAttempts = 0;
     let _lanlanNameWaitLastLogAt = 0;
     let _coreApiCapabilityRefreshPromise = null;
@@ -47,7 +50,382 @@
     let _musicPlayUrlClaimCleanupTimer = 0;
     let _musicPlayUrlCoordBeforeUnloadBound = false;
     let _musicPlayUrlBroadcastUnavailableWarned = false;
+    let _jukeboxControlQueue = Promise.resolve();
+    let _computerUseStream = null;
+    let _computerUseStreamPending = null;
+    let _computerUseDisplayRequestPending = null;
+    let _computerUseStreamGeneration = 0;
+    let _computerUseStreamOwnerToken = null;
+    let _computerUseCaptureFailure = '';
+    let _agentTaskReconcileTimer = null;
+    let _agentTaskReconcileInFlight = false;
+    const _agentTaskMissingCounts = new Map();
+
+    function scheduleAgentTaskReconciliation() {
+        if (_agentTaskReconcileTimer || !window._agentTaskMap) return;
+        if (!Array.from(window._agentTaskMap.values()).some(function (task) {
+            return task.status === 'running' || task.status === 'queued';
+        })) return;
+        _agentTaskReconcileTimer = setInterval(async function () {
+            var taskMap = window._agentTaskMap;
+            if (!taskMap || !Array.from(taskMap.values()).some(function (task) {
+                return task.status === 'running' || task.status === 'queued';
+            })) {
+                clearInterval(_agentTaskReconcileTimer);
+                _agentTaskReconcileTimer = null;
+                return;
+            }
+            if (_agentTaskReconcileInFlight) return;
+            _agentTaskReconcileInFlight = true;
+            try {
+                var result = await fetch('/api/agent/tasks', { cache: 'no-store' });
+                if (!result.ok) return;
+                var body = await result.json();
+                if (!body || !Array.isArray(body.tasks)) return;
+                // A WebSocket status snapshot may replace the map while the
+                // HTTP request is in flight. Reconcile the current map only.
+                taskMap = window._agentTaskMap;
+                if (!taskMap) return;
+                var serverTasks = new Map(body.tasks.filter(function (task) {
+                    return task && task.id;
+                }).map(function (task) { return [task.id, task]; }));
+                var changed = false;
+                taskMap.forEach(function (task, id) {
+                    if (task.status !== 'running' && task.status !== 'queued') {
+                        _agentTaskMissingCounts.delete(id);
+                        return;
+                    }
+                    var current = serverTasks.get(id);
+                    if (!current) {
+                        // The server is authoritative. Allow one successful
+                        // poll for registration races, then retire a task whose
+                        // terminal event and retained record were both missed.
+                        var misses = (_agentTaskMissingCounts.get(id) || 0) + 1;
+                        if (misses >= 2) {
+                            taskMap.delete(id);
+                            _agentTaskMissingCounts.delete(id);
+                            changed = true;
+                        } else {
+                            _agentTaskMissingCounts.set(id, misses);
+                        }
+                        return;
+                    }
+                    _agentTaskMissingCounts.delete(id);
+                    if (['completed', 'failed', 'cancelled'].indexOf(current.status) === -1) return;
+                    var terminalAt = Date.now();
+                    taskMap.set(id, Object.assign({}, task, current, { terminal_at: terminalAt }));
+                    changed = true;
+                    if (!window._agentTaskRemoveTimers) window._agentTaskRemoveTimers = new Map();
+                    if (window._agentTaskRemoveTimers.has(id)) clearTimeout(window._agentTaskRemoveTimers.get(id));
+                    window._agentTaskRemoveTimers.set(id, setTimeout(function () {
+                        if (window._agentTaskMap.get(id)?.terminal_at === terminalAt) {
+                            window._agentTaskMap.delete(id);
+                            if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                                var remaining = Array.from(window._agentTaskMap.values());
+                                window.AgentHUD.updateAgentTaskHUD({
+                                    success: true, tasks: remaining, total_count: remaining.length,
+                                    running_count: remaining.filter(function (item) { return item.status === 'running'; }).length,
+                                    queued_count: remaining.filter(function (item) { return item.status === 'queued'; }).length,
+                                    completed_count: remaining.filter(function (item) { return item.status === 'completed'; }).length,
+                                    failed_count: remaining.filter(function (item) { return item.status === 'failed'; }).length,
+                                    timestamp: new Date().toISOString()
+                                });
+                            }
+                            if (typeof window.checkAndToggleTaskHUD === 'function') window.checkAndToggleTaskHUD();
+                        }
+                        window._agentTaskRemoveTimers.delete(id);
+                    }, 10000));
+                });
+                _agentTaskMissingCounts.forEach(function (_count, id) {
+                    if (!taskMap.has(id)) _agentTaskMissingCounts.delete(id);
+                });
+                if (changed && window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                    var tasks = Array.from(taskMap.values());
+                    window.AgentHUD.updateAgentTaskHUD({
+                        success: true, tasks: tasks, total_count: tasks.length,
+                        running_count: tasks.filter(function (task) { return task.status === 'running'; }).length,
+                        queued_count: tasks.filter(function (task) { return task.status === 'queued'; }).length,
+                        completed_count: tasks.filter(function (task) { return task.status === 'completed'; }).length,
+                        failed_count: tasks.filter(function (task) { return task.status === 'failed'; }).length,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            } catch (_) { /* WebSocket remains primary; retry on the next tick. */ }
+            finally { _agentTaskReconcileInFlight = false; }
+        }, 5000);
+    }
+
+    window.computerUseNeedsCaptureStream = function () {
+        var provider = resolveDesktopCaptureProvider();
+        return !!(provider && provider.computerUseNeedsStream);
+    };
+    window.getComputerUseCaptureFailure = function () { return _computerUseCaptureFailure; };
+    window.computerUseNativeCaptureAvailable = async function () {
+        try {
+            var controller = new AbortController();
+            var timer = setTimeout(function () { controller.abort(); }, 1500);
+            try {
+                var response = await fetch('/api/agent/computer-use/native-capture-available', {
+                    cache: 'no-store', signal: controller.signal
+                });
+                if (!response.ok) return false;
+                var body = await response.json();
+                return body && body.success === true && body.available === true;
+            } finally { clearTimeout(timer); }
+        } catch (_) { return false; }
+    };
+
+    function releaseComputerUseCapture() {
+        _computerUseStreamGeneration += 1;
+        _computerUseStreamPending = null;
+        var provider = resolveDesktopCaptureProvider();
+        if (provider && _computerUseStreamOwnerToken
+            && typeof provider.setComputerUseStreamOwner === 'function') {
+            provider.setComputerUseStreamOwner(false, _computerUseStreamOwnerToken).catch(function () {});
+        }
+        _computerUseStreamOwnerToken = null;
+        var stream = _computerUseStream;
+        _computerUseStream = null;
+        if (stream) stream.getTracks().forEach(function (track) { track.stop(); });
+    }
+
+    async function captureComputerUseLiveStream(provider) {
+        var stream = _computerUseStream && _computerUseStream.active
+            ? _computerUseStream : S.screenCaptureStream;
+        var videoTrack = stream && stream.getVideoTracks && stream.getVideoTracks()[0];
+        var surface = videoTrack && videoTrack.getSettings
+            ? videoTrack.getSettings().displaySurface : null;
+        var selectedScreen = stream === _computerUseStream
+            || (typeof S.selectedScreenSourceId === 'string'
+                && S.selectedScreenSourceId.startsWith('screen:'));
+        if (!stream || !stream.active || !videoTrack || videoTrack.readyState !== 'live'
+            || (surface !== 'monitor' && (surface || !selectedScreen))
+            || typeof window.captureFrameFromStream !== 'function') return null;
+        // A failed display lookup or frame read means "no reusable frame", so
+        // callers still reach their fallback instead of reporting a hard error.
+        try {
+            var displayCount = typeof provider.getComputerUseDisplayCount === 'function'
+                ? await provider.getComputerUseDisplayCount() : null;
+            if (displayCount !== 1) return null;
+            var frame = await window.captureFrameFromStream(stream, 0.8, true);
+            return frame && frame.dataUrl ? await boundCaptureBridgeRegionImage(frame.dataUrl) : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    var computerUseBrokerProvider = resolveDesktopCaptureProvider();
+    if (computerUseBrokerProvider && typeof computerUseBrokerProvider.onComputerUseFrameRequest === 'function') {
+        computerUseBrokerProvider.onComputerUseFrameRequest(async function () {
+            var image = await captureComputerUseLiveStream(computerUseBrokerProvider);
+            return image ? { success: true, dataUrl: image } : { success: false };
+        });
+    }
+
+    // Called synchronously from the user's keyboard-control toggle so Chromium
+    // sees a user gesture. The portal chooser is opened once and the live stream
+    // is reused by later Agent requests.
+    window.prepareComputerUseCapture = function () {
+        var provider = resolveDesktopCaptureProvider();
+        // Only a Wayland desktop needs the authorised stream. Elsewhere the
+        // backend captures natively, so a screen-share prompt (or macOS
+        // screen-recording indicator) would be pure cost.
+        if (!provider || provider.computerUseNeedsStream !== true) {
+            _computerUseCaptureFailure = '';
+            return Promise.resolve(false);
+        }
+        if (typeof provider.captureComputerUseScreen !== 'function'
+            || !navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia
+            || (window.screen && window.screen.isExtended === true)
+            || (typeof S.selectedScreenSourceId === 'string'
+                && S.selectedScreenSourceId.startsWith('window:'))) {
+            _computerUseCaptureFailure = 'capture_unavailable_or_window_selected';
+            return Promise.resolve(false);
+        }
+        if (_computerUseStream && _computerUseStream.active) {
+            _computerUseCaptureFailure = '';
+            return Promise.resolve(true);
+        }
+        if (_computerUseStreamPending) return _computerUseStreamPending;
+        // The UI timeout cannot cancel Chromium's chooser. Wait for that
+        // request to settle before allowing another system permission prompt.
+        if (_computerUseDisplayRequestPending) {
+            _computerUseCaptureFailure = 'display_media_pending';
+            return Promise.resolve(false);
+        }
+
+        var generation = _computerUseStreamGeneration;
+        // Invoke getDisplayMedia before any await: transient user activation
+        // would otherwise be lost while querying Electron display metadata.
+        var request;
+        try {
+            request = navigator.mediaDevices.getDisplayMedia({
+                video: { displaySurface: 'monitor', frameRate: { max: 1 } },
+                audio: false
+            });
+        } catch (_) {
+            _computerUseCaptureFailure = 'display_media_request_failed';
+            return Promise.resolve(false);
+        }
+        var displayRequest = Promise.resolve(request);
+        _computerUseDisplayRequestPending = displayRequest;
+        displayRequest.then(function () {
+            if (_computerUseDisplayRequestPending === displayRequest) _computerUseDisplayRequestPending = null;
+        }, function () {
+            if (_computerUseDisplayRequestPending === displayRequest) _computerUseDisplayRequestPending = null;
+        });
+        // Chromium may leave getDisplayMedia pending without showing a portal
+        // chooser. Settle the UI, and stop any stream delivered after timeout.
+        var requestTimedOut = false;
+        var boundedRequest = new Promise(function (resolve, reject) {
+            var timer = setTimeout(function () {
+                requestTimedOut = true;
+                resolve(null);
+            }, 5000);
+            displayRequest.then(function (stream) {
+                if (requestTimedOut) {
+                    stream.getTracks().forEach(function (track) { track.stop(); });
+                    return;
+                }
+                clearTimeout(timer);
+                resolve(stream);
+            }, function (error) {
+                if (requestTimedOut) return;
+                clearTimeout(timer);
+                reject(error);
+            });
+        });
+        var pending = boundedRequest.then(async function (stream) {
+            if (!stream) {
+                _computerUseCaptureFailure = 'display_media_timeout';
+                return false;
+            }
+            var track = stream.getVideoTracks()[0];
+            var surface = track && track.getSettings ? track.getSettings().displaySurface : null;
+            var displayCount = null;
+            try {
+                displayCount = typeof provider.getComputerUseDisplayCount === 'function'
+                    ? await provider.getComputerUseDisplayCount() : null;
+            } catch (_) { /* no trusted display mapping */ }
+            if (generation !== _computerUseStreamGeneration || !track
+                || track.readyState !== 'live'
+                || (surface && surface !== 'monitor')
+                || displayCount !== 1) {
+                _computerUseCaptureFailure = displayCount !== 1
+                    ? 'single_display_required' : 'monitor_stream_unavailable';
+                stream.getTracks().forEach(function (item) { item.stop(); });
+                return false;
+            }
+            if (typeof provider.setComputerUseStreamOwner === 'function') {
+                var ownerToken = String(generation) + ':' + Date.now();
+                var ownership;
+                try {
+                    ownership = await provider.setComputerUseStreamOwner(true, ownerToken);
+                } catch (error) {
+                    stream.getTracks().forEach(function (item) { item.stop(); });
+                    throw error;
+                }
+                if (!ownership || ownership.success !== true || generation !== _computerUseStreamGeneration) {
+                    provider.setComputerUseStreamOwner(false, ownerToken).catch(function () {});
+                    _computerUseCaptureFailure = 'screen_stream_owner_unavailable';
+                    stream.getTracks().forEach(function (item) { item.stop(); });
+                    return false;
+                }
+                _computerUseStreamOwnerToken = ownerToken;
+            }
+            _computerUseStream = stream;
+            _computerUseCaptureFailure = '';
+            track.addEventListener('ended', function () {
+                if (_computerUseStream === stream) releaseComputerUseCapture();
+            }, { once: true });
+            return true;
+        }).catch(function (error) {
+            _computerUseCaptureFailure = error && error.name || 'display_media_denied';
+            return false;
+        }).finally(function () {
+            if (_computerUseStreamPending === pending) _computerUseStreamPending = null;
+        });
+        _computerUseStreamPending = pending;
+        return pending;
+    };
+    window.releaseComputerUseCapture = releaseComputerUseCapture;
+    window.addEventListener('beforeunload', releaseComputerUseCapture);
+    // 「顶替」世代。就地取消只够停住「已经在跑」的那条；还在队列里等着的那条尚未
+    // 取到任何取消世代，轮到它时会把此刻的世代当成最新的，于是在用户最后那条指令
+    // 之后又响起来——而 play 要等运行时初始化、预检、动画加载，这一响可能是好几秒。
+    // 播放类指令到达时记下当时的世代，轮到执行时对不上就整条跳过。
+    //
+    // 谁能顶替，按「绝对 / 相对」分：
+    //   stop 与 play 是绝对的——一个要静音，一个点名要这首，排在它们前面还没开跑
+    //   的播放指令一律作废；
+    //   next / previous 是相对当前曲目算的，把排在它前面那条 play 吞掉的话，它算
+    //   的就是旧位置了，所以它们只被顶替、不顶替别人。
+    // set_volume / set_mode 两头都不沾，永远不会被顺手丢掉。
+    //
+    // 放在这里而不是 Jukebox 里：转发出去的指令在拥有者窗口用的是另一套计数器，
+    // 作废判定必须留在发件的这一侧。
+    let _jukeboxSupersedeGeneration = 0;
     const MUSIC_PLAY_URL_SENDER_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+
+    function gameRouteStateRevision() {
+        var revision = Number(S.gameRouteStateRevision);
+        return Number.isFinite(revision) ? (revision >>> 0) : 0;
+    }
+
+    function advanceGameRouteStateRevision() {
+        S.gameRouteStateRevision = (gameRouteStateRevision() + 1) >>> 0;
+        return S.gameRouteStateRevision;
+    }
+
+    function pruneRecentlyEndedGameRouteIdentities() {
+        var cutoff = Date.now() - GAME_ROUTE_ENDED_IDENTITY_TTL_MS;
+        var identities = Array.isArray(S.gameRouteRecentlyEndedIdentities)
+            ? S.gameRouteRecentlyEndedIdentities
+            : [];
+        identities = identities.filter(function (identity) {
+            return identity && identity.sessionId && Number(identity.endedAt || 0) > cutoff;
+        });
+        if (identities.length > GAME_ROUTE_ENDED_IDENTITY_LIMIT) {
+            identities = identities.slice(-GAME_ROUTE_ENDED_IDENTITY_LIMIT);
+        }
+        S.gameRouteRecentlyEndedIdentities = identities;
+        return identities;
+    }
+
+    function rememberEndedGameRouteIdentity(gameType, sessionId, routeInstanceId) {
+        var normalized = {
+            gameType: String(gameType || ''),
+            sessionId: String(sessionId || ''),
+            routeInstanceId: String(routeInstanceId || ''),
+            endedAt: Date.now()
+        };
+        if (!normalized.sessionId) return;
+        var identities = pruneRecentlyEndedGameRouteIdentities().filter(function (identity) {
+            return identity.gameType !== normalized.gameType
+                || identity.sessionId !== normalized.sessionId
+                || identity.routeInstanceId !== normalized.routeInstanceId;
+        });
+        identities.push(normalized);
+        if (identities.length > GAME_ROUTE_ENDED_IDENTITY_LIMIT) {
+            identities.splice(0, identities.length - GAME_ROUTE_ENDED_IDENTITY_LIMIT);
+        }
+        S.gameRouteRecentlyEndedIdentities = identities;
+    }
+
+    function isRecentlyEndedGameRouteIdentity(gameType, sessionId, routeInstanceId) {
+        if (!sessionId) return false;
+        var incomingGameType = String(gameType || '');
+        var incomingSessionId = String(sessionId || '');
+        var incomingRouteInstanceId = String(routeInstanceId || '');
+        return pruneRecentlyEndedGameRouteIdentities().some(function (endedIdentity) {
+            if (incomingSessionId !== String(endedIdentity.sessionId || '')) return false;
+            if (incomingGameType && endedIdentity.gameType
+                    && incomingGameType !== String(endedIdentity.gameType)) return false;
+            if (!incomingRouteInstanceId) return true;
+            return !!endedIdentity.routeInstanceId
+                && incomingRouteInstanceId === String(endedIdentity.routeInstanceId);
+        });
+    }
 
     // ---- DOM element shortcuts (resolved lazily / once) ----
     function $id(id) { return document.getElementById(id); }
@@ -85,7 +463,8 @@
                     getSources: !!(dc && dc.getSources),
                     captureSourceAsDataUrl: !!(dc && dc.captureSourceAsDataUrl),
                     captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko),
-                    captureDesktopRegionAsDataUrl: !!(dc && dc.captureDesktopRegionAsDataUrl)
+                    captureDesktopRegionAsDataUrl: !!(dc && dc.captureDesktopRegionAsDataUrl),
+                    captureComputerUseScreen: !!(dc && dc.captureComputerUseScreen)
                 }
             }));
             return available;
@@ -703,6 +1082,153 @@
         dispatchMusicPlayUrlResponse(response, 'websocket');
     }
 
+    // 多窗口分发形态下同一条 WS 消息会被 RAW_MESSAGE 转发给多个窗口，chat 窗口和
+    // pet 窗口都会走到这里。谁来执行必须唯一，判据都能在本窗口内直接判定：
+    //   1. 独立点唱机窗口开着 -> 它才持有可见播放器，转发给它
+    //   2. 多窗口下的 chat 窗口 -> 让位给主窗口（它和点唱机窗口同 partition，
+    //      能听见拥有者；chat 处于 persist:neko-full-chat，听不见）
+    //   3. 其余（网页端单窗口、pet 窗口）-> 本地执行
+    function isSecondaryJukeboxControlSurface() {
+        return window.__NEKO_MULTI_WINDOW__ === true
+            && /^\/chat(?:_full)?(?:\/|$)/.test(window.location.pathname || '');
+    }
+
+    function dispatchJukeboxControl(payload, isNotSuperseded) {
+        // 归属必须在真正要执行的这一刻算，不能用入队之前的快照：排队期间独立
+        // 点唱机窗口可能刚打开（那就该转发，否则会在隐藏窗口里另起一条音轨），
+        // 也可能刚关闭（那就该本地执行，否则白等一次转发超时）。
+        var loader = window.__nekoJukeboxLoader;
+        var ownerAlive = !!(loader && typeof loader.hasControlOwner === 'function' && loader.hasControlOwner());
+        if (ownerAlive) return loader.forwardControl(payload);
+        if (!window.Jukebox || typeof window.Jukebox.executeControl !== 'function') {
+            // 分片正在加载：bootstrap.js 一落地就把带 executeControl 的惰性门面
+            // 换成了空对象，而 executeControl 定义在第五个分片里。这中间到达的
+            // 指令不该被丢掉（冷缓存/慢盘下这个窗口有几百毫秒到数秒），交给
+            // loader 等分片加载完再执行。
+            if (loader && typeof loader.load === 'function') {
+                return Promise.resolve(loader.load()).then(function (jukebox) {
+                    // 分片加载是几百毫秒到数秒的窗口，入队之前算好的两件事到这里
+                    // 都可能已经过期，都要重算。
+                    //
+                    // 顶替：这段时间里来的 stop / play 推进了顶替世代，但它那次
+                    // 就地取消对本条毫无作用 —— 分片加载期间 window.Jukebox 是
+                    // bootstrap 换上的空对象，cancelActivePlayback 还不存在，那次
+                    // 调用是静默空操作。runCommand 入口那次判定也早过去了。
+                    if (typeof isNotSuperseded === 'function' && !isNotSuperseded()) {
+                        console.log('[Jukebox] 跳过点歌台控制：分片加载期间已被后来的指令作废');
+                        return null;
+                    }
+                    // 归属：独立点唱机窗口可能刚打开并宣告归属，否则这条指令会在
+                    // 本窗口另起一条隐藏音轨。
+                    if (typeof loader.hasControlOwner === 'function' && loader.hasControlOwner()) {
+                        return loader.forwardControl(payload);
+                    }
+                    if (!jukebox || typeof jukebox.executeControl !== 'function') {
+                        console.log('[Jukebox] 跳过点歌台控制：分片加载后仍无控制入口');
+                        return null;
+                    }
+                    return jukebox.executeControl(payload);
+                });
+            }
+            console.log('[Jukebox] 跳过点歌台控制：当前窗口没有点歌台控制入口');
+            return Promise.resolve(null);
+        }
+        return window.Jukebox.executeControl(payload);
+    }
+
+    function handleJukeboxControlResponse(response) {
+        if (!response) return;
+
+        var command = response.command && typeof response.command === 'object' ? response.command : response;
+        var payload = {
+            action: command.action,
+            query: command.query || '',
+            value: command.value,
+            mode: command.mode,
+            headless: true
+        };
+
+        // 让位判据与有没有拥有者无关：同一条消息会被 RAW_MESSAGE 转给多个角色
+        // 窗口，它们都能看见同一个拥有者，于是会各转发一次、拥有者执行两遍 ——
+        // 一条 adjust_volume 被叠加，play 和切歌互相抢。只有主控制窗口能继续。
+        if (isSecondaryJukeboxControlSurface()) {
+            console.log('[Jukebox] 跳过点歌台控制：多窗口下由主窗口执行');
+            return;
+        }
+
+        var arrivalSupersedeGeneration = null;
+        // 判据只写一处，两个检查点共用：入队等待期间，以及分片加载的等待期间。
+        var isNotSuperseded = function () {
+            return arrivalSupersedeGeneration === null
+                || arrivalSupersedeGeneration === _jukeboxSupersedeGeneration;
+        };
+        var runCommand = function () {
+            // 排队期间被顶替了：整条跳过，别等轮到自己才把声音放出来。
+            if (!isNotSuperseded()) {
+                console.log('[Jukebox] 跳过点歌台控制：排队期间已被后来的指令作废');
+                return Promise.resolve();
+            }
+            return Promise.resolve(dispatchJukeboxControl(payload, isNotSuperseded)).then(function (result) {
+                console.log('[Jukebox] 点歌台控制完成:', result);
+            }).catch(function (error) {
+                console.warn('[Jukebox] 点歌台控制失败:', error);
+            });
+        };
+
+        // 取消动作排在它要取消的那个操作后面毫无意义：一条卡在慢动画加载里的
+        // play 会把后面所有指令一起堵死，而声音早就出来了。这不止 stop —— 后来的
+        // play / next / previous 同样是替换意图，用户已经不要那条在途的了。
+        //
+        // 但直接插队执行会把同一拍到达的两条颠倒（入队走的是微任务，插队是同步的），
+        // 结果变成「新的先跑、旧的后跑」。所以只把「作废在途播放」这一步就地做掉——
+        // 声音立刻停，卡住的那条也会在下一个世代检查处解开——指令本身仍然按顺序
+        // 排队执行，次序不变。
+        var normalizedControlAction = String(payload.action || '').trim().toLowerCase();
+        if (normalizedControlAction === 'stop' || normalizedControlAction === 'play') {
+            _jukeboxSupersedeGeneration += 1;
+        }
+        if (normalizedControlAction === 'play'
+            || normalizedControlAction === 'next'
+            || normalizedControlAction === 'previous') {
+            // 自增在前、取号在后，所以顶替者自己记的是新世代，不会被自己顶掉。
+            arrivalSupersedeGeneration = _jukeboxSupersedeGeneration;
+        }
+        var preemptingActions = ['stop', 'play', 'next', 'previous'];
+        if (preemptingActions.indexOf(normalizedControlAction) >= 0) {
+            // 取消也得按归属走：在途的那条 play 可能正跑在独立点唱机窗口里，
+            // 本窗口的 cancelActivePlayback 够不着它，队列里的 stop 就只能干等
+            // 一次转发超时。
+            //
+            // 两个可能的播放方都要取消，不能二选一（归属允许在指令排队期间变化），
+            // 而且必须各自包 try —— 共用一个的话前一个抛异常会把后一个整个跳过，
+            // 那正是这段代码要堵的洞。
+            var cancelLoader = window.__nekoJukeboxLoader;
+            var cancelOwnerAlive = !!(cancelLoader
+                && typeof cancelLoader.hasControlOwner === 'function'
+                && cancelLoader.hasControlOwner());
+            if (cancelOwnerAlive && typeof cancelLoader.cancelOnOwner === 'function') {
+                try {
+                    cancelLoader.cancelOnOwner(normalizedControlAction);
+                } catch (error) {
+                    console.warn('[Jukebox] 作废拥有者在途播放失败:', error);
+                }
+            }
+            if (window.Jukebox && typeof window.Jukebox.cancelActivePlayback === 'function') {
+                try {
+                    // 相对导航不静音：目标可能不存在，那时这条指令是空操作，
+                    // 不该把正在放的歌停掉。判据与顶替那套一致。
+                    window.Jukebox.cancelActivePlayback({
+                        silenceAudio: normalizedControlAction !== 'next'
+                            && normalizedControlAction !== 'previous'
+                    });
+                } catch (error) {
+                    console.warn('[Jukebox] 作废本地在途播放失败:', error);
+                }
+            }
+        }
+        _jukeboxControlQueue = _jukeboxControlQueue.then(runCommand, runCommand);
+    }
+
     function readNewUserIcebreakerStore() {
         try {
             if (typeof localStorage === 'undefined') return null;
@@ -957,22 +1483,128 @@
     }
     window.removeExternalAsrPreview = removeExternalAsrPreview;
 
+    var GAME_VOICE_TRANSCRIPTION_MODES = [
+        'backend_pending',
+        'native_core',
+        'independent_asr',
+        'browser_fallback',
+        'unavailable'
+    ];
+
+    /**
+     * Publish the actual host-owned transcription route to mini-game bridges.
+     *
+     * This is capability-based on purpose. Games must not infer their voice
+     * behavior from a free/paid label, and they never receive microphone PCM.
+     */
+    function setGameVoiceTranscriptionState(next) {
+        next = next && typeof next === 'object' ? next : {};
+        var mode = String(next.transcription_mode || next.mode || 'unavailable');
+        if (GAME_VOICE_TRANSCRIPTION_MODES.indexOf(mode) === -1) {
+            mode = 'unavailable';
+        }
+        var provider = String(next.provider || '');
+        var ready = next.ready === true;
+        var reason = String(next.reason || '');
+        var changed = S.gameVoiceTranscriptionMode !== mode
+            || S.gameVoiceTranscriptionProvider !== provider
+            || S.gameVoiceTranscriptionReady !== ready
+            || S.gameVoiceTranscriptionReason !== reason;
+        S.gameVoiceTranscriptionMode = mode;
+        S.gameVoiceTranscriptionProvider = provider;
+        S.gameVoiceTranscriptionReady = ready;
+        S.gameVoiceTranscriptionReason = reason;
+        if (changed) {
+            window.dispatchEvent(new CustomEvent(
+                'neko-game-voice-transcription-state-change',
+                {
+                    detail: {
+                        capture_owner: 'host',
+                        transcription_mode: mode,
+                        provider: provider,
+                        ready: ready,
+                        reason: reason
+                    }
+                }
+            ));
+        }
+        return {
+            capture_owner: 'host',
+            transcription_mode: mode,
+            provider: provider,
+            ready: ready,
+            reason: reason
+        };
+    }
+    mod.setGameVoiceTranscriptionState = setGameVoiceTranscriptionState;
+
+    function setBlockedGameVoiceTranscriptionState() {
+        setGameVoiceTranscriptionState({
+            transcription_mode: 'unavailable',
+            provider: S.independentAsrProvider || S.coreApiProvider || '',
+            ready: false,
+            reason: 'route_blocked'
+        });
+    }
+
     // Fail-closed voice-route teardown, shared by the two ways a route dies:
     // a runtime failure (ASR_LIFECYCLE_STATE blocked) and a STARTUP failure
     // (terminal ASR_INDEPENDENT_* codes). Startup failures can never emit
     // BLOCKED -- IndependentAsrRuntime.start cannot reach the only emitter --
     // so before this was shared they showed a toast and left the hardware
     // microphone running for the whole session.
-    function tearDownBlockedVoiceRoute() {
+    function independentAsrReasonToastText(reason) {
+        var t = window.t;
+        if (reason === 'ASR_LOCAL_MODEL_LOAD_FAILED') {
+            return t ? t('microphone.localAsrModelLoadFailed') : 'The local speech recognition model failed to load. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if it cannot be reached, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.';
+        }
+        if (reason === 'ASR_LOCAL_DEPENDENCY_MISSING') {
+            return t ? t('microphone.localAsrDependencyMissing') : 'Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.';
+        }
+        if (reason === 'ASR_PROVIDER_WARMUP_TIMEOUT') {
+            return t ? t('microphone.localAsrWarmupTimeout') : 'The local speech recognition model took too long to get ready. Voice input has stopped for this session. The first use downloads the model from HuggingFace; if the connection is slow or blocked, set the HF_ENDPOINT environment variable (for example https://hf-mirror.com) and restart, or turn off local speech recognition.';
+        }
+        if (reason === 'ASR_PROVIDER_QUEUE_TIMEOUT') {
+            return t ? t('microphone.localAsrQueueTimeout') : 'Local speech recognition waited too long in line. Voice input has stopped for this session. An earlier recognition may still be running; start a new voice session in a moment, or turn off local speech recognition if this keeps happening.';
+        }
+        return '';
+    }
 
+    function independentAsrFailureToastText(reason) {
+        var t = window.t;
+        return independentAsrReasonToastText(reason)
+            || (t ? t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.');
+    }
+
+    function clearLocalAsrPreparingNotice(options) {
+        var hadLocalNotice = Boolean(S.localAsrPreparingMessage);
+        S.localAsrPreparingMessage = null;
+        if (!hadLocalNotice && !(options && options.force)) {
+            return;
+        }
+        if (options && options.preserveVoiceToast
+                && (S.voiceStartPending === true || S._pendingSessionStartMode)) {
+            return;
+        }
+        if (typeof window.hideVoicePreparingToast === 'function') {
+            window.hideVoicePreparingToast();
+        }
+    }
+
+    function tearDownBlockedVoiceRoute() {
+    clearLocalAsrPreparingNotice({ force: true });
     removeExternalAsrPreview();
     S.independentAsrActive = false;
+    // Set the sticky bit before publishing. The host bridge reacts
+    // synchronously to the event and otherwise normalizes an active-but-
+    // unavailable route back to backend_pending for one misleading frame.
+    S.voiceInputRouteBlocked = true;
+    setBlockedGameVoiceTranscriptionState();
     // Sticky: the teardown below is skipped while
     // the game STT gate owns the hardware, and
     // BLOCKED is never re-sent, so the game-exit
     // resume path would otherwise reopen the mic
     // onto a route that is still fail-closed.
-    S.voiceInputRouteBlocked = true;
     // The route is now fail-closed. _handle_core_asr_failure
     // (main_logic/core/asr_runtime.py) pins the microphone
     // route to "blocked" and nothing re-arms it inside this
@@ -1189,6 +1821,8 @@
     function finalizeAssistantTurn(assistantTurnId, options) {
         options = options || {};
         var enableMusic = options.enableMusic !== false;
+        var reactionTarget = options.enableReactions !== false ? S.messageReactionTarget : null;
+        S.messageReactionTarget = null;
 
         var bufferedFullText = typeof window._geminiTurnFullText === 'string'
             ? window._geminiTurnFullText
@@ -1225,6 +1859,9 @@
                 });
                 var emotionResult = await Promise.race([emotionPromise, timeoutPromise]);
                 if (emotionResult && emotionResult.emotion) {
+                    if (typeof window.applyMessageReactionFromEmotion === 'function') {
+                        try { window.applyMessageReactionFromEmotion(reactionTarget, emotionResult); } catch (_) { }
+                    }
                     console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
                     if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
                     if (assistantTurnId) {
@@ -1293,6 +1930,10 @@
         );
         window._nekoAssistantTurnId = S.assistantTurnId;
         S.assistantTurnStartedAt = Date.now();
+        S.messageReactionTarget = typeof window.captureMessageReactionTarget === 'function'
+            && !(responseMeta && (responseMeta.passthrough
+                || ['proactive', 'agent_callback', 'game_route', 'new_user_icebreaker'].indexOf(responseMeta.source) >= 0))
+            ? window.captureMessageReactionTarget(resolveAssistantRequestId(requestId, responseMeta)) : null;
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
             turnId: S.assistantTurnId,
@@ -1420,6 +2061,7 @@
         S.assistantTurnCompletionSource = null;
         clearPendingAssistantTurnStart();
         S.currentPlayingSpeechId = null;
+        S.currentPlayingSpeechCorrelationId = '';
         S.interruptedSpeechId = null;
         S.pendingDecoderReset = false;
         S.skipNextAudioBlob = false;
@@ -1740,15 +2382,19 @@
      * only bypasses completed cache data; the generation fence remains a
      * defensive guard around request publication.
      */
-    function publishCoreApiCapability(provider, capability) {
+    function publishCoreApiCapability(provider, capability, localAsrAvailable) {
         var previousProvider = S.coreApiProvider || '';
         var previousCapability = S.coreApiSupportsIndependentAsr;
+        var previousLocalAsrAvailable = S.localAsrAvailable;
         S.coreApiProvider = typeof provider === 'string' ? provider : '';
         S.coreApiSupportsIndependentAsr =
             typeof capability === 'boolean' ? capability : null;
+        S.localAsrAvailable =
+            typeof localAsrAvailable === 'boolean' ? localAsrAvailable : null;
         if (
             previousProvider !== S.coreApiProvider
             || previousCapability !== S.coreApiSupportsIndependentAsr
+            || previousLocalAsrAvailable !== S.localAsrAvailable
         ) {
             try {
                 window.dispatchEvent(new CustomEvent(
@@ -1816,7 +2462,8 @@
                 typeof data.effectiveCoreApi === 'string'
                     ? data.effectiveCoreApi
                     : data.coreApi,
-                data.supportsIndependentAsr
+                data.supportsIndependentAsr,
+                data.localAsrAvailable
             );
         }).catch(function (error) {
             console.warn('[Core API] Failed to refresh ASR capability:', error);
@@ -2017,16 +2664,34 @@
     function attachStartSessionHandshake(ws) {
         var rawSend = ws.send.bind(ws);
         ws.send = function (data) {
-            if (typeof data === 'string' && data.indexOf('start_session') !== -1) {
+            if (typeof data === 'string' && /start_session|pause_session|end_session/.test(data)) {
                 try {
                     var msg = JSON.parse(data);
                     var handshakeStamped = false;
+                    if (msg && ['start_session', 'pause_session', 'end_session'].indexOf(msg.action) !== -1) {
+                        // Low-frequency diagnostics: send only bundled script names and
+                        // line numbers, never a full stack, URL, or user message.
+                        try {
+                            var sites = String(new Error().stack || '').match(/app-[a-z-]+\.js:\d{1,6}:\d{1,6}/g);
+                            if (sites) {
+                                msg.lifecycle_trace = sites.slice(0, 4).join(';');
+                                handshakeStamped = true;
+                            }
+                        } catch (_) { /* Diagnostics must not prevent sending. */ }
+                    }
                     if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.independentAsrAuthoritative === true) {
                         msg.independent_asr_enabled = S.independentAsrEnabled === true;
                         handshakeStamped = true;
                     }
                     if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.voiceInputResourceOptimizationAuthoritative === true) {
                         msg.voice_input_resource_optimization_enabled = S.voiceInputResourceOptimizationEnabled !== false;
+                        handshakeStamped = true;
+                    }
+                    if (msg && msg.action === 'start_session' && S.settingsHydrated === true
+                            && S.independentAsrProviderPreferenceAuthoritative === true) {
+                        msg.independent_asr_provider_preference =
+                            S.independentAsrProviderPreference === 'faster_whisper'
+                                ? 'faster_whisper' : 'auto';
                         handshakeStamped = true;
                     }
                     if (msg && msg.action === 'start_session') {
@@ -2054,6 +2719,56 @@
             }
             return rawSend(data);
         };
+    }
+
+    // Pull the backend VMC state after the chat socket connects, so a page that
+    // missed the one-shot vmc_state_changed broadcast still starts sampling.
+    // The status probe is a plain fetch on purpose: calling into the lazy
+    // facade would pull in the full sender on every VRM page, defeating the
+    // loader's "no VMC work until someone enables it" contract. Only a backend
+    // that reports enabled is worth waking the sender for.
+    var _vmcConnectSyncRetryArmed = false;
+
+    function _syncVmcStateOnConnect() {
+        if (!window.vrmVmcSender
+            || typeof window.vrmVmcSender.syncStatusFromBackend !== 'function') {
+            // vrm-vmc-loader.js 要等 three-ready 之后才开始拉取，聊天 WS 的
+            // onopen 有可能先到。此时不能直接放弃：本次连接周期会永远错过
+            // 恢复窗口。挂一次性监听，等 VRM 模块就绪事件再补一次探测。
+            // 非 VRM 页面不会加载门面，事件也不会来，监听器随页面闲置。
+            //
+            // 标志是模块级的，监听器也只挂一份：门面是全局单例，重连期间
+            // 再挂一份只会对同一个门面重复探测，并让 once 监听器随重连累积。
+            // 待补的那一次探测由已挂的监听器负责，因此这里直接返回。
+            if (!_vmcConnectSyncRetryArmed) {
+                _vmcConnectSyncRetryArmed = true;
+                var retryWhenFacadeReady = function () {
+                    // 先清标志再重入：若门面仍未就绪，重入会重新挂一次监听，
+                    // 否则这条恢复路径在本页面剩余生命周期内彻底失效。
+                    _vmcConnectSyncRetryArmed = false;
+                    window.removeEventListener('vrm-modules-ready', retryWhenFacadeReady);
+                    window.removeEventListener('vrm-modules-failed', retryWhenFacadeReady);
+                    _syncVmcStateOnConnect();
+                };
+                window.addEventListener('vrm-modules-ready', retryWhenFacadeReady, { once: true });
+                window.addEventListener('vrm-modules-failed', retryWhenFacadeReady, { once: true });
+            }
+            return;
+        }
+        fetch('/api/vmc/status', { credentials: 'same-origin' })
+            .then(function (response) {
+                return response.ok ? response.json() : null;
+            })
+            .then(function (data) {
+                if (!data || data.success === false || data.enabled !== true) return;
+                // Already sampling: syncStatusFromBackend() is idempotent, but
+                // skipping avoids a redundant status round-trip per reconnect.
+                if (window.__NEKO_VMC_ACTIVE__ === true) return;
+                return window.vrmVmcSender.syncStatusFromBackend();
+            })
+            .catch(function (error) {
+                console.warn('[VMC] connect-time state sync failed:', error);
+            });
     }
 
     function connectWebSocket() {
@@ -2112,6 +2827,7 @@
 
         console.log(window.t('console.websocketConnecting'), currentLanlanName, window.t('console.websocketUrl'), wsUrl);
         S.socket = new WebSocket(wsUrl);
+        if (window.nekoVoiceCaptureReadiness) window.nekoVoiceCaptureReadiness.reset();
         attachStartSessionHandshake(S.socket);
         var _thisSocket = S.socket; // 闭包捕获，供 onclose 判断是否已被替换
 
@@ -2135,6 +2851,12 @@
             window.dispatchEvent(new CustomEvent('voice-input-socket-open', {
                 detail: { socket: _thisSocket }
             }));
+
+            // Recover a VMC enable that happened while this page was away.
+            // vmc_state_changed is a one-shot broadcast, so a plugin enabling
+            // VMC before the page loaded (or during a reconnect gap) would
+            // otherwise leave the UDP sender running with no frame source.
+            _syncVmcStateOnConnect();
 
             // Warm up Agent snapshot once websocket is ready.
             Promise.all([
@@ -2170,6 +2892,7 @@
                         : activeTasks;
                     window._agentTaskMap = new Map();
                     filteredTasks.forEach(function (t) { if (t && t.id) window._agentTaskMap.set(t.id, t); });
+                    scheduleAgentTaskReconciliation();
                     var tasks = Array.from(window._agentTaskMap.values());
                     var hasRunning = tasks.some(function (t) { return t.status === 'running' || t.status === 'queued'; });
                     if (tasks.length > 0 && window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
@@ -2300,10 +3023,22 @@
                     }
                 } catch (_) {}
                 if (!lan) return; // greeting 流水线还没解析角色 → 跳过本次，下次 onopen 再来
+                _gameRouteReconciliationGeneration = (
+                    _gameRouteReconciliationGeneration + 1
+                ) >>> 0;
+                var reconciliationGeneration = _gameRouteReconciliationGeneration;
+                var routeRevisionAtRequest = gameRouteStateRevision();
                 fetch('/api/game/route/active?lanlan_name=' + encodeURIComponent(lan))
                     .then(function (resp) { return resp && resp.ok ? resp.json() : null; })
                     .then(function (data) {
                         if (!data) return;
+                        if (
+                            reconciliationGeneration !== _gameRouteReconciliationGeneration
+                            || gameRouteStateRevision() !== routeRevisionAtRequest
+                        ) {
+                            console.log('[GameWindow] 忽略晚到的重连路由快照');
+                            return;
+                        }
                         var action = data.active ? 'opened' : 'closed';
                         try {
                             window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
@@ -2311,9 +3046,61 @@
                                     action: action,
                                     lanlanName: data.lanlan_name || lan,
                                     gameType: data.game_type || '',
-                                    sessionId: data.session_id || ''
+                                    sessionId: data.session_id || '',
+                                    routeInstanceId: data.sdk_route_instance_id || ''
                                 }
                             }));
+                        } catch (_) {}
+                        // Repair appState from the authoritative snapshot too.
+                        // The dispatch above is only converted into appState by
+                        // app-game-voice-control.js, which ONLY index.html loads;
+                        // chat.html has no listener that writes S.gameRoute*, so
+                        // without this its route state stays wrong in both
+                        // directions after a reconnect or reload. Runs after the
+                        // dispatch so index.html keeps today's ordering and this
+                        // is an idempotent rewrite there.
+                        try {
+                            if (action === 'opened') {
+                                S.gameRouteActive = true;
+                                S.gameRouteGameType = data.game_type || '';
+                                S.gameRouteLanlanName = data.lanlan_name || lan;
+                                S.gameRouteSessionId = data.session_id || '';
+                                S.gameRouteInstanceId = data.sdk_route_instance_id || '';
+                                if (typeof window.stopProactiveChatSchedule === 'function') {
+                                    S.proactiveChatWasStoppedByGameRoute = !!S.proactiveChatEnabled;
+                                    window.stopProactiveChatSchedule();
+                                }
+                            } else {
+                                var reconciledWasActive = !!S.gameRouteActive;
+                                // This branch exists to compensate for a MISSED
+                                // `closed` event, so there is usually no tombstone
+                                // for the route being cleared and a late
+                                // GAME_VOICE_STT_GATE_ACTIVE would re-activate it.
+                                // Record the identity the SERVER says it finalized,
+                                // never the page's own: this read can disagree with
+                                // the socket, and tombstoning a live route rejects
+                                // its real gate for the rest of the round.
+                                advanceGameRouteStateRevision();
+                                var reconciledEnded = data.ended_route || null;
+                                if (reconciledEnded && reconciledEnded.session_id) {
+                                    rememberEndedGameRouteIdentity(
+                                        reconciledEnded.game_type || '',
+                                        reconciledEnded.session_id,
+                                        reconciledEnded.sdk_route_instance_id || ''
+                                    );
+                                }
+                                S.gameRouteActive = false;
+                                S.gameRouteGameType = '';
+                                S.gameRouteLanlanName = '';
+                                S.gameRouteSessionId = '';
+                                S.gameRouteInstanceId = '';
+                                if ((reconciledWasActive || S.proactiveChatWasStoppedByGameRoute)
+                                        && S.proactiveChatEnabled
+                                        && typeof window.scheduleProactiveChat === 'function') {
+                                    window.scheduleProactiveChat();
+                                }
+                                S.proactiveChatWasStoppedByGameRoute = false;
+                            }
                         } catch (_) {}
                     })
                     .catch(function () {});
@@ -2342,6 +3129,11 @@
                 var response = JSON.parse(event.data);
                 if (response.type === 'catgirl_switched') {
                     console.log(window.t('console.catgirlSwitchedReceived'), response);
+                }
+
+                if (response.type === 'plugin_view') {
+                    if (window.NekoPluginViews) window.NekoPluginViews.receive(response.view);
+                    return;
                 }
 
                 if (response.type === 'chat_blocks') {
@@ -2691,7 +3483,10 @@
                             detail: {
                                 requestId: resolveAssistantRequestId(response.request_id, response.meta),
                                 text: normalizedVoiceTranscript,
-                                source: 'voice'
+                                source: String(response.source || 'voice'),
+                                gameType: String(response.game_type || ''),
+                                sessionId: String(response.session_id || ''),
+                                routeInstanceId: String(response.sdk_route_instance_id || '')
                             }
                         }));
                     }
@@ -2761,7 +3556,16 @@
                     if (window.DEBUG_AUDIO) {
                         console.log(window.t('console.audioChunkHeaderReceived'), response);
                     }
-                    if (!S.assistantTurnId && S.assistantTurnAwaitingBubble) {
+                    var speechId = response.speech_id;
+                    var shouldSkip = false;
+                    var speechCorrelationId = String(response.sdk_speech_correlation_id || '');
+                    if (speechCorrelationId.indexOf('theater_speech_') === 0) {
+                        var theaterRuntime = window.nekoTheaterRuntime;
+                        shouldSkip = !theaterRuntime ||
+                            typeof theaterRuntime.allowsSpeechCorrelation !== 'function' ||
+                            !theaterRuntime.allowsSpeechCorrelation(speechCorrelationId);
+                    }
+                    if (!shouldSkip && !S.assistantTurnId && S.assistantTurnAwaitingBubble) {
                         ensureAssistantTurnStarted(
                             'audio_chunk_header_fallback',
                             response.turn_id,
@@ -2769,15 +3573,16 @@
                             response.request_id
                         );
                     }
-                    var speechId = response.speech_id;
-                    var shouldSkip = false;
+                    var playbackGain = Number(response.playback_gain);
+                    if (!Number.isFinite(playbackGain)) playbackGain = 1;
+                    playbackGain = Math.max(0, Math.min(2, playbackGain));
 
                     if (speechId && S.interruptedSpeechId && speechId === S.interruptedSpeechId) {
                         if (window.DEBUG_AUDIO) {
                             console.log(window.t('console.discardInterruptedAudio'), speechId);
                         }
                         shouldSkip = true;
-                    } else if (speechId && speechId !== S.currentPlayingSpeechId) {
+                    } else if (!shouldSkip && speechId && speechId !== S.currentPlayingSpeechId) {
                         if (S.pendingDecoderReset) {
                             console.log(window.t('console.newConversationResetDecoder'), speechId);
                             S.decoderResetPromise = (async function () {
@@ -2790,13 +3595,21 @@
                             S.pendingDecoderReset = false;
                         }
                         S.currentPlayingSpeechId = speechId;
+                        S.currentPlayingSpeechCorrelationId = String(
+                            response.sdk_speech_correlation_id || ''
+                        );
                         S.interruptedSpeechId = null;
+                    } else if (!shouldSkip && speechId && response.sdk_speech_correlation_id) {
+                        S.currentPlayingSpeechCorrelationId = String(
+                            response.sdk_speech_correlation_id
+                        );
                     }
 
                     S.pendingAudioChunkMetaQueue.push({
                         speechId: speechId || S.currentPlayingSpeechId || null,
                         turnId: resolveAssistantLifecycleTurnId(response.turn_id),
                         shouldSkip: shouldSkip,
+                        playbackGain: playbackGain,
                         epoch: S.incomingAudioEpoch,
                         receivedAt: Date.now()
                     });
@@ -2804,6 +3617,7 @@
                         speechId: speechId || S.currentPlayingSpeechId || null,
                         turnId: resolveAssistantLifecycleTurnId(response.turn_id),
                         shouldSkip: shouldSkip,
+                        playbackGain: playbackGain,
                         epoch: S.incomingAudioEpoch
                     });
                     if (window.appAudioPlayback &&
@@ -2834,6 +3648,29 @@
                         window.appAudioPlayback.noteAssistantAudioStreamClosed(response.speech_id);
                     }
 
+                // -------- game_route_speech_cancel --------
+                // Route teardown may happen after the backend has finished
+                // producing audio while the browser still has decoded or
+                // scheduled chunks. The correlation id is request-unique: a
+                // delayed cancel cannot clear newer ordinary/game speech.
+                } else if (response.type === 'game_route_speech_cancel') {
+                    var cancelledCorrelationId = String(
+                        response.sdk_speech_correlation_id || ''
+                    );
+                    if (
+                        cancelledCorrelationId
+                        && cancelledCorrelationId === S.currentPlayingSpeechCorrelationId
+                    ) {
+                        logAssistantLifecycle('ws:game_route_speech_cancel', {
+                            speechId: S.currentPlayingSpeechId || null,
+                            correlationId: cancelledCorrelationId
+                        });
+                        applyUserActivityCancel(
+                            S.currentPlayingSpeechId || null,
+                            'game_route_end'
+                        );
+                    }
+
                 // -------- cozy_audio --------
                 } else if (response.type === 'cozy_audio') {
                     console.log(window.t('console.newAudioHeaderReceived'));
@@ -2854,7 +3691,7 @@
                     var translatedMsg = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
                     if (typeof window.showStatusToast === 'function') window.showStatusToast(translatedMsg, 4000);
 
-                    if (typeof window.stopScreening === 'function') window.stopScreening();
+                    if (typeof window.teardownScreenSharing === 'function') window.teardownScreenSharing();
 
                     if (S.screenCaptureStream) {
                         S.screenCaptureStream.getTracks().forEach(function (track) { track.stop(); });
@@ -2943,7 +3780,39 @@
                         }
                     } catch (_) { }
 
+                    if (['ASR_RECOVERY_STARTED', 'ASR_RECOVERY_READY', 'ASR_RECOVERY_FAILED',
+                        'ASR_TURN_INCOMPLETE'].includes(statusCode)) {
+                        if (_thisSocket !== S.socket) return;
+                        window.appAudioCapture?.handleAutomaticRecoveryStatus(statusCode, statusDetails);
+                        return;
+                    }
+
+                    if (statusCode === 'ASR_INPUT_CONNECTING'
+                        || statusCode === 'ASR_INPUT_DELIVERY_FAILED'
+                        || statusCode === 'ASR_INPUT_DELIVERY_UNCERTAIN') {
+                        var deliveryMessages = {
+                            ASR_INPUT_CONNECTING: ['microphone.inputConnecting', 'Connecting speech recognition. Your audio is waiting to be sent.'],
+                            ASR_INPUT_DELIVERY_FAILED: ['microphone.inputDeliveryFailed', 'Your speech could not be delivered completely. Restart voice input and say it again.'],
+                            ASR_INPUT_DELIVERY_UNCERTAIN: ['microphone.inputDeliveryUncertain', 'Speech delivery was interrupted. Some audio may have been received; it will not be resent automatically.']
+                        };
+                        var deliveryMessage = deliveryMessages[statusCode];
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                window.t ? window.t(deliveryMessage[0]) : deliveryMessage[1],
+                                statusCode === 'ASR_INPUT_CONNECTING' ? 3000 : 6000
+                            );
+                        }
+                        return;
+                    }
+
                     if (statusCode === 'ASR_LIFECYCLE_STATE') {
+                        if (statusDetails?.recovery_id != null) {
+                            if (_thisSocket !== S.socket) return;
+                            const accepted = statusDetails.state === 'blocked'
+                                ? window.appAudioCapture?.handleAutomaticRecoveryBlocked(statusDetails)
+                                : window.appAudioCapture?.matchesAutomaticRecoveryOperation(statusDetails);
+                            if (!accepted) return;
+                        }
                         var lifecycleState = (statusDetails && statusDetails.state) || '';
                         var allowedLifecycleStates = [
                             'off', 'local_listen', 'prewarming', 'active',
@@ -2978,8 +3847,77 @@
                             if (lifecycleState === 'blocked') {
                                 tearDownBlockedVoiceRoute();
                                 if (typeof window.showStatusToast === 'function') {
+                                    var blockedReason = statusDetails && statusDetails.reason;
                                     window.showStatusToast(
-                                        window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.',
+                                        independentAsrFailureToastText(blockedReason),
+                                        blockedReason ? 8000 : 5000
+                                    );
+                                }
+                            }
+                            if (lifecycleState === 'deep_sleep' || lifecycleState === 'off'
+                                    || lifecycleState === 'warm_idle') {
+                                clearLocalAsrPreparingNotice();
+                            }
+                        }
+                        return;
+                    }
+
+                    if (statusCode === 'VOICE_IDENTITY_CONTROL_RESULT') {
+                        if (window.nekoVoiceCaptureReadiness) window.nekoVoiceCaptureReadiness.controlResult(statusDetails, _thisSocket);
+                        return;
+                    }
+                    if (statusCode === 'VOICE_INPUT_PREVIEW_BUSY') {
+                        if (typeof window.showStatusToast === 'function') window.showStatusToast(window.t('voiceIdentity.inputPreviewBusy'), 5000);
+                        return;
+                    }
+                    if (statusCode === 'VOICE_SESSION_ACTIVATION_STATE') {
+                        if (window.nekoVoiceCaptureReadiness && !window.nekoVoiceCaptureReadiness.activationStatus(statusDetails, _thisSocket)) return;
+                        var activationState = (statusDetails && statusDetails.state) || '';
+                        var allowedActivationStates = [
+                            'disabled', 'preparing', 'waiting', 'verifying',
+                            'replaying', 'active', 'unavailable', 'closed'
+                        ];
+                        if (allowedActivationStates.indexOf(activationState) !== -1) {
+                            var activationIdentity = [
+                                statusDetails.session_id,
+                                statusDetails.microphone_generation,
+                                statusDetails.route_generation,
+                                statusDetails.profile_revision,
+                                statusDetails.permission_revision
+                            ].join(':');
+                            var activationRevision = Number(statusDetails.revision) || 0;
+                            if (S.voiceSessionActivationIdentity === activationIdentity
+                                && activationRevision <= (S.voiceSessionActivationRevision || 0)) {
+                                return;
+                            }
+                            var previousActivationState = S.voiceSessionActivationState || '';
+                            S.voiceSessionActivationIdentity = activationIdentity;
+                            S.voiceSessionActivationRevision = activationRevision;
+                            S.voiceSessionActivationState = activationState;
+                            document.documentElement.setAttribute(
+                                'data-voice-session-activation-state',
+                                activationState
+                            );
+                            window.dispatchEvent(new CustomEvent(
+                                'voice-session-activation-changed',
+                                { detail: statusDetails }
+                            ));
+                            if (previousActivationState !== activationState
+                                && S.isRecording === true
+                                && typeof window.showStatusToast === 'function') {
+                                if (activationState === 'waiting') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('voiceIdentity.sessionWaiting') : 'Waiting for your voice to activate the conversation.',
+                                        2500
+                                    );
+                                } else if (activationState === 'active') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('voiceIdentity.sessionActive') : 'Voice conversation activated.',
+                                        2500
+                                    );
+                                } else if (activationState === 'unavailable') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('voiceIdentity.sessionUnavailable') : 'Voice activation is unavailable. Standby audio will not be uploaded.',
                                         5000
                                     );
                                 }
@@ -2988,6 +3926,14 @@
                         return;
                     }
 
+                    if (statusCode === 'VOICE_INPUT_READY') {
+                        window.dispatchEvent(new CustomEvent('voice-input-recovery-ready', { detail: statusDetails || {} }));
+                        return;
+                    }
+                    if (statusCode === 'VOICE_INPUT_RECOVERY_FAILED') {
+                        window.dispatchEvent(new CustomEvent('voice-input-recovery-failed', { detail: statusDetails || {} }));
+                        return;
+                    }
                     if (statusCode === 'VOICE_INPUT_LEASE_RESYNC_REQUIRED') {
                         // 仅采集中的窗口重发 lease 快照；非采集窗口忽略，避免多窗口互相覆盖
                         if (S.isRecording === true
@@ -3019,12 +3965,43 @@
                     }
 
                     if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0) {
+                        var statusSessionEpoch = statusDetails && statusDetails.session_epoch;
+                        if (statusSessionEpoch != null
+                                && S.voiceSessionEpoch != null
+                                && Number(statusSessionEpoch) < Number(S.voiceSessionEpoch)) {
+                            return;
+                        }
+                        if (statusCode === 'ASR_INDEPENDENT_FAILED'
+                                || statusCode === 'ASR_INDEPENDENT_PROVIDER_UNAVAILABLE') {
+                            var statusLeaseGeneration = statusDetails && statusDetails.lease_generation;
+                            if (statusLeaseGeneration == null
+                                    || S.voiceInputCurrentLeaseGeneration == null
+                                    || Number(statusLeaseGeneration)
+                                        !== Number(S.voiceInputCurrentLeaseGeneration)) {
+                                return;
+                            }
+                        }
                         var asrProvider = (statusDetails && statusDetails.provider) || '';
                         S.independentAsrProvider = asrProvider;
+                        if (statusSessionEpoch != null) {
+                            S.voiceSessionEpoch = statusSessionEpoch;
+                        }
                         if (statusCode === 'ASR_INDEPENDENT_READY') {
+                            clearLocalAsrPreparingNotice({ preserveVoiceToast: true });
+                            var wasIndependentAsrActive = S.independentAsrActive === true;
                             S.independentAsrActive = true;
                             S.voiceInputRouteBlocked = false;
-                            if (typeof window.showStatusToast === 'function') {
+                            if (S.gameRouteActive === true) {
+                                setGameVoiceTranscriptionState({
+                                    transcription_mode: 'independent_asr',
+                                    provider: asrProvider,
+                                    ready: true,
+                                    reason: 'asr_ready'
+                                });
+                            }
+                            // Background reconnect/warm-idle wake only refreshes
+                            // routing. Recovery has its own VOICE_INPUT_READY toast.
+                            if (!wasIndependentAsrActive && typeof window.showStatusToast === 'function') {
                                 window.showStatusToast(
                                     window.t ? window.t('microphone.independentAsrActive', { providerKey: asrProvider || 'unknown' }) : ('Independent ASR active: ' + asrProvider),
                                     3000
@@ -3037,9 +4014,49 @@
                             S.independentAsrActive = false;
                             // Healthy native route: nothing is fail-closed.
                             S.voiceInputRouteBlocked = false;
+                            if (S.gameRouteActive === true) {
+                                setGameVoiceTranscriptionState({
+                                    transcription_mode: 'native_core',
+                                    provider: asrProvider || S.coreApiProvider || '',
+                                    ready: true,
+                                    reason: 'native_ready'
+                                });
+                            }
                             return;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED') {
+                            return;
+                        }
+                        if (statusCode === 'ASR_INDEPENDENT_PREPARING') {
+                            var preparingText = statusDetails
+                                && statusDetails.reason === 'ASR_LOCAL_MODEL_RELOADING'
+                                ? (window.t ? window.t('microphone.localAsrReloading') : 'Reloading the local speech recognition model, please wait.')
+                                : (window.t ? window.t('microphone.localAsrPreparing') : 'Preparing local speech recognition. Please wait.');
+                            S.localAsrPreparingMessage = preparingText;
+                            if (typeof window.showVoicePreparingToast === 'function') {
+                                window.showVoicePreparingToast(preparingText);
+                            }
+                            return;
+                        }
+                        if (statusCode === 'ASR_INDEPENDENT_PREPARED') {
+                            var hadPreparingNotice = Boolean(S.localAsrPreparingMessage);
+                            clearLocalAsrPreparingNotice({ preserveVoiceToast: true });
+                            if (hadPreparingNotice && typeof window.showStatusToast === 'function') {
+                                window.showStatusToast(
+                                    window.t ? window.t('microphone.localAsrReady') : 'Local speech recognition is ready.',
+                                    3000
+                                );
+                            }
+                            return;
+                        }
+                        if (statusCode === 'ASR_INDEPENDENT_DEPENDENCY_MISSING') {
+                            tearDownBlockedVoiceRoute();
+                            if (typeof window.showStatusToast === 'function') {
+                                window.showStatusToast(
+                                    window.t ? window.t('microphone.localAsrDependencyMissing') : 'Local speech recognition needs faster-whisper, which is not installed. Voice input has stopped for this session. Install it, or turn off local speech recognition, then start a new voice session.',
+                                    5000
+                                );
+                            }
                             return;
                         }
                         // Terminal startup failure. Same fail-closed state as a
@@ -3048,6 +4065,13 @@
                         // toasts below already say the right thing.
                         tearDownBlockedVoiceRoute();
                         if (typeof window.showStatusToast === 'function') {
+                            var reasonToastText = independentAsrReasonToastText(
+                                statusDetails && statusDetails.reason
+                            );
+                            if (reasonToastText) {
+                                window.showStatusToast(reasonToastText, 8000);
+                                return;
+                            }
                             if (statusCode === 'ASR_INDEPENDENT_PROVIDER_UNAVAILABLE') {
                                 window.showStatusToast(
                                     window.t
@@ -3087,14 +4111,57 @@
                         // genuinely lack a session_id still process.
                         var endedSessionId = (statusDetails && statusDetails.session_id) || '';
                         var currentSessionId = S.gameRouteSessionId || '';
+                        var endedRouteInstanceId = (statusDetails && statusDetails.sdk_route_instance_id) || '';
+                        var currentRouteInstanceId = S.gameRouteInstanceId || '';
                         if (endedSessionId && currentSessionId && endedSessionId !== currentSessionId) {
                             console.log(`[GameVoiceSTT] 忽略过期的 GAME_ROUTE_ENDED | ended_session=${endedSessionId} current_session=${currentSessionId}`);
+                            // Ignoring the event for OUR state is right; forgetting the
+                            // identity is not. GAME_ROUTE_ENDED is only ever emitted from
+                            // route finalize, so the identity in this payload is provably
+                            // a dead route -- and without a tombstone a late STT gate for
+                            // it can strand S.gameRouteActive = true after the current
+                            // route also ends, which suppresses proactive chat and
+                            // auto-goodbye until a full open/close cycle or a reload.
+                            // The payload's OWN identity only: `|| current...` would
+                            // tombstone the live route.
+                            rememberEndedGameRouteIdentity(
+                                (statusDetails && statusDetails.game_type) || '',
+                                endedSessionId,
+                                endedRouteInstanceId
+                            );
                             return;
                         }
+                        if (
+                            (endedRouteInstanceId || currentRouteInstanceId)
+                            && endedRouteInstanceId !== currentRouteInstanceId
+                        ) {
+                            console.log(`[GameVoiceSTT] 忽略过期的 GAME_ROUTE_ENDED | ended_route=${endedRouteInstanceId} current_route=${currentRouteInstanceId}`);
+                            if (endedSessionId) {
+                                rememberEndedGameRouteIdentity(
+                                    (statusDetails && statusDetails.game_type) || '',
+                                    endedSessionId,
+                                    endedRouteInstanceId
+                                );
+                            }
+                            return;
+                        }
+                        advanceGameRouteStateRevision();
+                        rememberEndedGameRouteIdentity(
+                            (statusDetails && statusDetails.game_type) || S.gameRouteGameType || '',
+                            endedSessionId || currentSessionId,
+                            endedRouteInstanceId || currentRouteInstanceId
+                        );
                         S.gameRouteActive = false;
                         S.gameRouteGameType = '';
                         S.gameRouteLanlanName = '';
                         S.gameRouteSessionId = '';
+                        S.gameRouteInstanceId = '';
+                        setGameVoiceTranscriptionState({
+                            transcription_mode: 'unavailable',
+                            provider: '',
+                            ready: false,
+                            reason: 'route_inactive'
+                        });
                         console.log(`[GameVoiceSTT] 游戏语音路由已结束 | resume=${shouldResumeAudio} recording=${wasRecording} realtime_restore=${realtimeRestore && realtimeRestore.ok === false ? realtimeRestore.reason : 'ok'}`);
                         if (realtimeRestore && realtimeRestore.attempted && realtimeRestore.ok === false) {
                             console.warn('[GameVoiceSTT] 游戏退出后 Realtime 恢复未确认:', realtimeRestore.reason || 'unknown');
@@ -3123,14 +4190,76 @@
                     }
 
                     if (statusCode === 'GAME_VOICE_STT_GATE_ACTIVE') {
+                        var incomingSttGameType = (statusDetails && statusDetails.game_type) || '';
+                        var incomingSttSessionId = (statusDetails && statusDetails.session_id) || '';
+                        var incomingSttRouteInstanceId = (
+                            statusDetails && statusDetails.sdk_route_instance_id
+                        ) || '';
+                        var currentSttGameType = S.gameRouteGameType || '';
+                        var currentSttSessionId = S.gameRouteSessionId || '';
+                        var currentSttRouteInstanceId = S.gameRouteInstanceId || '';
+                        var staleSttGate = (
+                            S.gameRouteActive === true && (
+                                (incomingSttGameType && currentSttGameType
+                                    && incomingSttGameType !== currentSttGameType)
+                                || (incomingSttSessionId && currentSttSessionId
+                                    && incomingSttSessionId !== currentSttSessionId)
+                                || ((incomingSttRouteInstanceId || currentSttRouteInstanceId)
+                                    && incomingSttRouteInstanceId !== currentSttRouteInstanceId)
+                            )
+                        ) || (
+                            S.gameRouteActive !== true
+                            && isRecentlyEndedGameRouteIdentity(
+                                incomingSttGameType,
+                                incomingSttSessionId,
+                                incomingSttRouteInstanceId
+                            )
+                        );
+                        if (staleSttGate) {
+                            console.warn('[GameVoiceSTT] 忽略迟到的语音门禁状态:', statusDetails);
+                            return;
+                        }
                         var sttProvider = (statusDetails && statusDetails.stt_provider) || 'browser';
+                        var transcriptionMode = (statusDetails && statusDetails.transcription_mode) || (
+                            sttProvider === 'realtime' ? 'backend_pending' : 'browser_fallback'
+                        );
+                        if (GAME_VOICE_TRANSCRIPTION_MODES.indexOf(transcriptionMode) === -1) {
+                            transcriptionMode = 'unavailable';
+                        }
+                        var transcriptionProvider = (statusDetails && statusDetails.provider) || '';
+                        var transcriptionReady = !!(statusDetails && statusDetails.ready === true);
+                        advanceGameRouteStateRevision();
                         S.gameRouteActive = true;
-                        S.gameRouteGameType = (statusDetails && statusDetails.game_type) || 'soccer';
+                        S.gameRouteGameType = incomingSttGameType;
                         S.gameRouteLanlanName = (statusDetails && statusDetails.lanlan_name) || '';
-                        S.gameRouteSessionId = (statusDetails && statusDetails.session_id) || '';
-                        S.gameVoiceSttGameType = (statusDetails && statusDetails.game_type) || 'soccer';
-                        S.gameVoiceSttSessionId = (statusDetails && statusDetails.session_id) || '';
-                        console.log(`[GameVoiceSTT] 游戏语音接管已激活 | game=${S.gameVoiceSttGameType} provider=${sttProvider} recording=${!!S.isRecording} muted=${!!S.isMicMuted}`);
+                        S.gameRouteSessionId = incomingSttSessionId;
+                        S.gameRouteInstanceId = incomingSttRouteInstanceId || S.gameRouteInstanceId || '';
+                        S.gameVoiceSttGameType = incomingSttGameType;
+                        S.gameVoiceSttSessionId = incomingSttSessionId;
+                        // The route-resolution status may have arrived before
+                        // this game-takeover edge. Preserve that authoritative
+                        // verdict rather than regressing to backend_pending.
+                        if (transcriptionMode === 'backend_pending') {
+                            if (S.independentAsrActive === true) {
+                                transcriptionMode = 'independent_asr';
+                                transcriptionProvider = S.independentAsrProvider || transcriptionProvider;
+                                transcriptionReady = true;
+                            } else if (
+                                S.independentAsrProvider
+                                && S.voiceInputRouteBlocked !== true
+                            ) {
+                                transcriptionMode = 'native_core';
+                                transcriptionProvider = S.independentAsrProvider || S.coreApiProvider || transcriptionProvider;
+                                transcriptionReady = true;
+                            }
+                        }
+                        setGameVoiceTranscriptionState({
+                            transcription_mode: transcriptionMode,
+                            provider: transcriptionProvider,
+                            ready: transcriptionReady,
+                            reason: transcriptionReady ? 'route_ready' : 'route_resolving'
+                        });
+                        console.log(`[GameVoiceSTT] 游戏语音接管已激活 | game=${S.gameVoiceSttGameType} mode=${transcriptionMode} provider=${transcriptionProvider || sttProvider} ready=${transcriptionReady} recording=${!!S.isRecording} muted=${!!S.isMicMuted}`);
                         if (S._voiceSessionInitialTimer) {
                             clearTimeout(S._voiceSessionInitialTimer);
                             S._voiceSessionInitialTimer = null;
@@ -3139,13 +4268,13 @@
                             S.proactiveChatWasStoppedByGameRoute = !!S.proactiveChatEnabled;
                             window.stopProactiveChatSchedule();
                         }
-                        if (sttProvider === 'realtime') {
+                        if (['backend_pending', 'native_core', 'independent_asr'].indexOf(transcriptionMode) !== -1) {
                             if (typeof window.stopGameVoiceSttGate === 'function') {
                                 window.stopGameVoiceSttGate();
                             } else {
                                 S.gameVoiceSttGateActive = false;
                             }
-                            console.log('[GameVoiceSTT] 复用原 Realtime STT，继续发送普通麦克风音频，普通回复由后端丢弃');
+                            console.log(`[GameVoiceSTT] 使用宿主后台转写 | mode=${transcriptionMode} provider=${transcriptionProvider || 'resolving'}；继续发送普通麦克风音频，普通回复由后端丢弃`);
                             return;
                         }
                         S.gameVoiceSttGateActive = true;
@@ -3158,6 +4287,22 @@
                     }
 
                     if (statusCode === 'GAME_ROUTE_MEDIA_SKIPPED') {
+                        return;
+                    }
+
+                    if (statusCode === 'THEATER_SESSION_ACTIVE') {
+                        // 服务端兜底拒绝了普通语音启动（session_failed 已先行复位启动状态），
+                        // 或拒绝了普通文字/图片/头像互动；复用前端剧场守卫的同一文案，不显示原始错误码。
+                        var declinedInput = statusDetails && statusDetails.input_type;
+                        var declinedOrdinaryChat = !!declinedInput && declinedInput !== 'audio';
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                declinedOrdinaryChat
+                                    ? (window.t ? window.t('theater.chatUnavailable') : '小剧场演绎期间暂不支持普通对话')
+                                    : (window.t ? window.t('theater.voiceUnavailable') : '小剧场演绎期间暂不支持语音对话'),
+                                3500
+                            );
+                        }
                         return;
                     }
 
@@ -3570,6 +4715,20 @@
                         console.warn(window.t('console.unknownExpressionCommand'), response.message);
                     }
 
+                // -------- vmc_state_changed --------
+                } else if (response.type === 'vmc_state_changed') {
+                    // A plugin (or any non-browser client) enabled the backend
+                    // VMC sender. The browser owns the frame source, so wake it
+                    // here; syncStatusFromBackend() lazy-loads the real sender,
+                    // flips __NEKO_VMC_ACTIVE__ and starts its own polling.
+                    if (response.enabled === true && window.vrmVmcSender
+                        && typeof window.vrmVmcSender.syncStatusFromBackend === 'function') {
+                        Promise.resolve(window.vrmVmcSender.syncStatusFromBackend())
+                            .catch(function (error) {
+                                console.warn('[VMC] backend-enable sync failed:', error);
+                            });
+                    }
+
                 // -------- agent_status_update --------
                 } else if (response.type === 'agent_status_update') {
                     var snapshot = response.snapshot || {};
@@ -3581,6 +4740,13 @@
                     window._agentStatusSnapshot = snapshot;
                     var serverOnline = snapshot.server_online !== false;
                     var flags = snapshot.flags || {};
+                    var pendingComputerUseToggle = window.agent_ui_v2_state
+                        && window.agent_ui_v2_state.pending
+                        && window.agent_ui_v2_state.pending.has('computer_use_enabled');
+                    if (flags.computer_use_enabled === false && !pendingComputerUseToggle
+                        && _computerUseStream) {
+                        releaseComputerUseCapture();
+                    }
                     if (!('agent_enabled' in flags) && snapshot.analyzer_enabled !== undefined) {
                         flags.agent_enabled = !!snapshot.analyzer_enabled;
                     }
@@ -3592,7 +4758,7 @@
                     }
                     try {
                         var masterOn = !!flags.agent_enabled;
-                        var anyChildOn = !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled || flags.openfang_enabled);
+                        var anyChildOn = !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled);
                         if (masterOn && anyChildOn && typeof window.startAgentTaskPolling === 'function' && !isGoodbyeUiSuppressed()) {
                             window.startAgentTaskPolling();
                         }
@@ -3618,6 +4784,7 @@
                             }
                         });
                         window._agentTaskMap = newMap;
+                        scheduleAgentTaskReconciliation();
                         var tasks2 = Array.from(window._agentTaskMap.values());
                         if (tasks2.length > 0) {
                             if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
@@ -3704,6 +4871,7 @@
                             }
                         }
                         var tasks3 = Array.from(window._agentTaskMap.values());
+                        scheduleAgentTaskReconciliation();
                         var hasRunning2 = tasks3.some(function (t) { return t.status === 'running' || t.status === 'queued'; });
                         if (tasks3.length > 0 && window.AgentHUD) {
                             if (typeof window.AgentHUD.showAgentTaskHUD === 'function') {
@@ -3736,6 +4904,55 @@
                     } catch (e) {
                         console.warn('[App] 处理 agent_task_update 失败:', e);
                     }
+
+                // -------- capture_bridge_computer_use_request (full desktop) --------
+                } else if (response.type === 'capture_bridge_computer_use_request') {
+                    (async function () {
+                        var responseSocket = _thisSocket;
+                        var requestId = response.request_id || '';
+                        var sendResult = function (payload) {
+                            if (!responseSocket || responseSocket.readyState !== WebSocket.OPEN) return;
+                            payload.action = 'capture_bridge_computer_use_response';
+                            payload.request_id = requestId;
+                            responseSocket.send(JSON.stringify(payload));
+                        };
+                        try {
+                            var dc = resolveDesktopCaptureProvider();
+                            if (!dc || typeof dc.captureComputerUseScreen !== 'function') {
+                                sendResult({ success: false, error: 'unavailable' });
+                                return;
+                            }
+                            var reused = await captureComputerUseLiveStream(dc);
+                            if (reused) {
+                                sendResult({ success: true, image: reused });
+                                return;
+                            }
+                            // A Linux source enumeration may reopen the desktop
+                            // portal every step. A broker reads the already-owned
+                            // stream in Chat without enumerating sources.
+                            if (dc.sourceEnumerationMayPrompt === true
+                                && !(dc.computerUseSharedStreamBroker === true
+                                    && dc.computerUseNeedsStream === true)) {
+                                sendResult({ success: false, error: 'SCREEN_STREAM_REQUIRED' });
+                                return;
+                            }
+                            var frame = await window.invokeDesktopCaptureWithTimeout(
+                                dc, 'captureComputerUseScreen', [], 22000
+                            );
+                            if (!frame || frame.success !== true || !frame.dataUrl) {
+                                sendResult({ success: false, error: frame && frame.error || 'capture_failed' });
+                                return;
+                            }
+                            var boundedFrame = await boundCaptureBridgeRegionImage(frame.dataUrl);
+                            if (!boundedFrame) {
+                                sendResult({ success: false, error: 'image_too_large' });
+                                return;
+                            }
+                            sendResult({ success: true, image: boundedFrame });
+                        } catch (captureError) {
+                            sendResult({ success: false, error: captureError && captureError.code || 'capture_failed' });
+                        }
+                    })();
 
                 // -------- capture_bridge_region_request (interactive desktop selection) --------
                 } else if (response.type === 'capture_bridge_region_request') {
@@ -3979,6 +5196,13 @@
                         }
                     })();
 
+                // -------- system turn abandoned --------
+                // The reply to this request was interrupted: release only what was
+                // held for that request (rollback draft, last-submitted marker).
+                // Never seal a bubble here; the interrupting turn owns the current one.
+                } else if (response.type === 'system' && response.data === 'turn abandoned') {
+                    clearPendingRollbackForRequest(response.request_id);
+
                 // -------- system turn end (agent_callback — no proactive chat) --------
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
                     if (S.suppressAssistantStreamUntilNextSession) {
@@ -4023,7 +5247,7 @@
                     // 与正常 'turn end' 走同一套收尾（emotion + 字幕）。music 关闭——
                     // 主动消息不自动放歌；也不在此调 scheduleProactiveChat（见上方
                     // "skipping proactive chat schedule"），防 proactive 自触发。
-                    finalizeAssistantTurn(agentCallbackTurnId, { enableMusic: false });
+                    finalizeAssistantTurn(agentCallbackTurnId, { enableMusic: false, enableReactions: false });
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
@@ -4091,6 +5315,8 @@
 
                 // -------- session_preparing --------
                 } else if (response.type === 'session_preparing') {
+                    if (window.sessionStartNotificationIsRetired(response)
+                            || !window.sessionStartNotificationAnswersPending(response)) return;
                     console.log(window.t('console.sessionPreparingReceived'), response.input_mode);
                     if (response.input_mode !== 'text') {
                         if (typeof window.isNekoGoodbyeModeActive === 'function'
@@ -4104,11 +5330,12 @@
 
                 // -------- session_started --------
                 } else if (response.type === 'session_started') {
+                    if (window.sessionStartNotificationIsRetired(response)) return;
                     if (response.input_mode !== 'text'
                             && typeof window.isNekoGoodbyeModeActive === 'function'
                             && window.isNekoGoodbyeModeActive()) {
                         console.log('[App] ignore stale audio session_started while goodbye is active');
-                        if (typeof window.stopScreening === 'function') window.stopScreening();
+                        if (typeof window.teardownScreenSharing === 'function') window.teardownScreenSharing();
                         if (typeof window.cancelPendingSessionStart === 'function') {
                             window.cancelPendingSessionStart('Voice start cancelled by goodbye');
                         } else {
@@ -4174,9 +5401,8 @@
                     //
                     // 只 gate「收口」（清超时 + resolve），不 gate 下面的 UI 同步：
                     // 后端确实起了一个会话，文本框显隐、停麦这些对本窗口照样成立。
-                    // ack 不带标识时按「是我的」处理：后端内部路径（proactive /
-                    // greeting / 断线自恢复）不经用户请求、没有标识，而它们撞上
-                    // pending 启动的情形本就由上面的模式守卫负责。
+                    // 内部路径没有请求标识时仍同步会话 UI，但不能收口本窗口
+                    // 在途的用户请求：同模式的旧内部启动也可能迟到。
                     //
                     // 主判据是 resolver 而不是标识本身：清 resolver 的地方有十来处，
                     // 指望每一处都记得连标识一起清是靠不住的，漏一处就会留下一个陈旧
@@ -4185,7 +5411,6 @@
                     // 在等 = 本窗口没有启动在途 = 任何 ack 都按旧行为处理。
                     var _ackAnswersThisWindow = !S.sessionStartedResolver
                         || !S._pendingSessionStartRequestId
-                        || !response.request_id
                         || response.request_id === S._pendingSessionStartRequestId;
                     if (!_ackAnswersThisWindow) {
                         console.log('[App] session_started answers another start',
@@ -4195,6 +5420,23 @@
                     S.suppressAssistantStreamUntilNextSession = false;
                     S.isTextSessionActive = response.input_mode === 'text';
                     S.voiceChatActive = response.input_mode !== 'text';
+                    if (response.session_epoch != null) {
+                        S.voiceSessionEpoch = response.session_epoch;
+                    }
+                    // The session acknowledgement is the authoritative route
+                    // for this session. Clear stale independent-ASR state when
+                    // a new native realtime session replaces an old ASR one.
+                    if (_ackAnswersThisWindow
+                            && response.input_mode !== 'text'
+                            && (response.microphone_route === 'native'
+                                || response.microphone_route === 'independent')) {
+                        S.independentAsrActive = response.microphone_route === 'independent';
+                        if (response.microphone_route === 'native'
+                                && window.appAudioCapture
+                                && typeof window.appAudioCapture.resetVoiceInputRecoveryState === 'function') {
+                            window.appAudioCapture.resetVoiceInputRecoveryState();
+                        }
+                    }
                     if (_ackAnswersThisWindow) S.voiceStartPending = false;
                     // NOTE: the fail-closed latch is deliberately NOT cleared
                     // here. lifecycle.py runs _start_independent_asr_if_enabled
@@ -4322,12 +5564,16 @@
                     // acknowledged the text session at all (Codex P2). Resolve
                     // only if the slot still holds the very start we acked.
                     var _ackedResolver = _ackAnswersThisWindow ? S.sessionStartedResolver : null;
+                    var _ackedClaimSeq = window.sessionStartClaimSeq();
                     setTimeout(function () {
                         // Not gated on the resolver: a window with no pending
                         // start (chat.html) still has to drop the banner. Gated
                         // on the request guard, though -- a window still waiting
                         // for ITS ack must keep showing "preparing".
-                        if (_ackAnswersThisWindow && typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                        if (_ackAnswersThisWindow && !window.sessionStartsSince(_ackedClaimSeq)
+                                && typeof window.hideVoicePreparingToast === 'function') {
+                            window.hideVoicePreparingToast({ keepLocalAsrNotice: true });
+                        }
                         if (!_ackedResolver) return;
                         if (S.sessionStartedResolver === _ackedResolver) {
                             // Still ours: release the shared slot and its timer.
@@ -4379,6 +5625,8 @@
 
                 // -------- session_failed --------
                 } else if (response.type === 'session_failed') {
+                    if (window.sessionStartNotificationIsRetired(response)
+                            || !window.sessionStartNotificationAnswersPending(response)) return;
                     console.log(window.t('console.sessionFailedReceived'), response.input_mode);
                     // 跨模式 fail 守卫（与上方 session_started 守卫对偶）：用户的启动正在
                     // await 时，并发的后台会话（如 proactive 自起的 text）若启动失败会发
@@ -4394,7 +5642,9 @@
                             'while pending', S._pendingSessionStartMode);
                         return;
                     }
-                    if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                    if (typeof clearLocalAsrPreparingNotice === 'function') {
+                        clearLocalAsrPreparingNotice({ force: true });
+                    }
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
                     if (window.sessionTimeoutId) {
@@ -4438,7 +5688,7 @@
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
-                    if (typeof window.stopScreening === 'function') window.stopScreening();
+                    if (typeof window.teardownScreenSharing === 'function') window.teardownScreenSharing();
                     stopAssistantTextOutputOnSessionEnd('session_ended_by_server');
                     clearAssistantLifecycleOnDisconnect('session_ended_by_server');
 
@@ -4470,7 +5720,7 @@
                         if (typeof window.clearAudioQueue === 'function') await window.clearAudioQueue();
                     })();
 
-                    if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                    clearLocalAsrPreparingNotice({ force: true });
 
                     // Restore UI to idle state
                     var _mb3 = micButton();
@@ -4601,6 +5851,10 @@
                 } else if (response.type === 'music_play_url') {
                     handleMusicPlayUrlResponse(response);
 
+                // -------- jukebox control --------
+                } else if (response.type === 'jukebox_control') {
+                    handleJukeboxControlResponse(response);
+
                 // -------- repetition_warning --------
                 } else if (response.type === 'repetition_warning') {
                     console.log(window.t('console.repetitionWarningReceived'), response.name);
@@ -4667,31 +5921,58 @@
                             action: response.action || '',
                             lanlanName: response.lanlan_name || '',
                             gameType: response.game_type || '',
-                            sessionId: response.session_id || ''
+                            sessionId: response.session_id || '',
+                            routeInstanceId: response.sdk_route_instance_id || ''
                         };
                         var currentGameSessionId = S.gameRouteSessionId || '';
                         var incomingGameSessionId = detail.sessionId || '';
+                        var currentGameRouteInstanceId = S.gameRouteInstanceId || '';
+                        var incomingGameRouteInstanceId = detail.routeInstanceId || '';
                         var isStaleGameWindowEvent = detail.action === 'closed'
-                            && incomingGameSessionId
-                            && currentGameSessionId
-                            && incomingGameSessionId !== currentGameSessionId;
+                            && (
+                                (incomingGameSessionId
+                                    && currentGameSessionId
+                                    && incomingGameSessionId !== currentGameSessionId)
+                                || ((incomingGameRouteInstanceId || currentGameRouteInstanceId)
+                                    && incomingGameRouteInstanceId !== currentGameRouteInstanceId)
+                            );
                         if (isStaleGameWindowEvent) {
                             console.log(`[GameWindow] 忽略过期窗口事件 | action=${detail.action} incoming=${incomingGameSessionId} current=${currentGameSessionId}`);
+                            // Same reasoning as the GAME_ROUTE_ENDED early returns above:
+                            // `closed` is emitted only from route finalize, so this
+                            // payload names a dead route. Its own identity only.
+                            if (incomingGameSessionId) {
+                                rememberEndedGameRouteIdentity(
+                                    detail.gameType || '',
+                                    incomingGameSessionId,
+                                    incomingGameRouteInstanceId
+                                );
+                            }
                         } else if (detail.action === 'opened') {
+                            advanceGameRouteStateRevision();
+                            pruneRecentlyEndedGameRouteIdentities();
                             S.gameRouteActive = true;
-                            S.gameRouteGameType = detail.gameType || 'soccer';
+                            S.gameRouteGameType = detail.gameType || '';
                             S.gameRouteLanlanName = detail.lanlanName || '';
                             S.gameRouteSessionId = incomingGameSessionId || '';
+                            S.gameRouteInstanceId = incomingGameRouteInstanceId || '';
                             if (typeof window.stopProactiveChatSchedule === 'function') {
                                 S.proactiveChatWasStoppedByGameRoute = !!S.proactiveChatEnabled;
                                 window.stopProactiveChatSchedule();
                             }
                         } else if (detail.action === 'closed') {
+                            advanceGameRouteStateRevision();
                             var wasGameRouteActive = !!S.gameRouteActive;
+                            rememberEndedGameRouteIdentity(
+                                detail.gameType || S.gameRouteGameType || '',
+                                incomingGameSessionId || currentGameSessionId,
+                                incomingGameRouteInstanceId || currentGameRouteInstanceId
+                            );
                             S.gameRouteActive = false;
                             S.gameRouteGameType = '';
                             S.gameRouteLanlanName = '';
                             S.gameRouteSessionId = '';
+                            S.gameRouteInstanceId = '';
                             if ((wasGameRouteActive || S.proactiveChatWasStoppedByGameRoute)
                                     && S.proactiveChatEnabled
                                     && typeof window.scheduleProactiveChat === 'function') {
@@ -4705,6 +5986,7 @@
                     } catch (gwErr) {
                         console.warn('[GameWindow] dispatch failed:', gwErr);
                     }
+
                 }
 
             } catch (parseError) {
@@ -4724,6 +6006,7 @@
                 return;
             }
             console.log(window.t('console.websocketClosed'));
+            if (window.nekoVoiceCaptureReadiness) window.nekoVoiceCaptureReadiness.disconnected();
             removeExternalAsrPreview();
             // Socket teardown ends the backend ASR route; drop the route flags so
             // the mic settings hint stops reporting independent ASR as active. A
@@ -4798,7 +6081,7 @@
                 if (typeof window.clearAudioQueue === 'function') await window.clearAudioQueue();
             })();
 
-            if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+            clearLocalAsrPreparingNotice({ force: true });
 
             // Reset button states
             var _mb5 = micButton();

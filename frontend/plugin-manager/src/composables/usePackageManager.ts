@@ -27,6 +27,7 @@ import {
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 import { formatHttpError } from '@/utils/request'
 import { resolvePluginPackageErrorMessage } from '@/utils/pluginPackageError'
+import { notifyPluginInstallOutcome } from '@/utils/pluginInstallResult'
 import { usePluginPackageInstaller } from '@/composables/usePluginPackageInstaller'
 
 export type LayoutMode = PluginWorkbenchLayoutMode
@@ -121,8 +122,9 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   })
 
   const selectablePlugins = computed<SelectablePlugin[]>(() => {
+    const listPlugins = pluginStore.pluginSummariesWithStatus
     const metaById = new Map(
-      pluginStore.pluginsWithStatus.map((plugin) => {
+      listPlugins.map((plugin) => {
         const displayText = resolvePluginDisplayText(plugin, locale.value)
         return [
           plugin.id,
@@ -505,7 +507,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     pluginsLoading.value = true
     let warningShown = false
     try {
-      const syncResult = await pluginStore.syncRegistryAndFetch({ preserveMessagesOn404: true })
+      const syncResult = await pluginStore.syncRegistryAndFetchSummaries({ preserveMessagesOn404: true })
       if (syncResult.warningMessage) {
         ElMessage.warning(syncResult.warningMessage)
         // 只有注册表请求本身失败（401/403/404）时，后续插件源请求的同类失败才算重复提示；
@@ -644,12 +646,17 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
 
       if (buildMode.value === 'all') {
         let response: PluginCliBuildResponse
+        // This workbench lists managed sources; implicit API "all" also builds
+        // development archives, which belong to the protected development page.
+        const refs = targetRefs(targets)
         try {
           response = await buildPluginCli({
-            mode: 'all',
+            mode: 'selected',
+            plugin_refs: refs.length > 0 ? refs : undefined,
+            plugins: refs.length > 0 ? undefined : targets,
             target_dir: buildForm.value.target_dir || undefined,
             keep_staging: !!buildForm.value.keep_staging,
-          })
+          }, { timeout: 300_000 })
         } catch (error) {
           response = failedBuildResponse('all', error)
           setResult('build', response)
@@ -757,19 +764,30 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       return
     }
     setResult('install', response)
+    const plan = installPlan.value
+    const pluginLabel = plan?.plugin_id || plan?.directory_name || ''
+    let successMessage: string
     if (
       response.operation === 'upgrade'
       || response.operation === 'reinstall'
       || response.operation === 'downgrade'
       || response.operation === 'override_builtin'
     ) {
-      const plan = installPlan.value
-      ElMessage.success(t(`package.install.${response.operation}Succeeded`, {
-        plugin: plan?.plugin_id || plan?.directory_name || '',
-      }))
+      const successOperation = plan?.reason === 'manual_takeover'
+        ? 'manualTakeover'
+        : response.operation
+      successMessage = t(`package.install.${successOperation}Succeeded`, {
+        plugin: pluginLabel,
+      })
     } else {
-      ElMessage.success(`安装完成，处理了 ${response.installed_plugin_count} 个插件`)
+      successMessage = t('package.install.installSucceeded', {
+        count: response.installed_plugin_count,
+      })
     }
+    notifyPluginInstallOutcome(response, t, ElMessage, {
+      plugin: pluginLabel,
+      successMessage,
+    })
     await refreshPluginSources()
   }
 

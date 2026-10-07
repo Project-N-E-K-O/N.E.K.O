@@ -40,6 +40,7 @@ EXPECTED_DAY1_SCENES = [
     "day1_screen_entry",
     "day1_screen_entry_invite",
     "day1_takeover_capture_cursor",
+    "day1_avatar_zoom_hint",
     "day1_takeover_return_control",
 ]
 
@@ -47,6 +48,7 @@ EXPECTED_DAY2_SCENES = [
     "day2_tool_toggle_intro",
     "day2_avatar_tools",
     "day2_avatar_tools_props",
+    "day2_tool_wheel_rotation",
     "day2_galgame_entry",
     "day2_galgame_choices",
     "day2_wrap",
@@ -196,7 +198,15 @@ def test_day2_round_targets_compact_tool_flow_after_day_swap():
         1,
     )[0]
     avatar_tools_props_block = round_block.split("id: 'day2_avatar_tools_props'", 1)[1].split(
+        "id: 'day2_tool_wheel_rotation'",
+        1,
+    )[0]
+    tool_wheel_rotation_block = round_block.split("id: 'day2_tool_wheel_rotation'", 1)[1].split(
         "id: 'day2_galgame_entry'",
+        1,
+    )[0]
+    galgame_entry_block = round_block.split("id: 'day2_galgame_entry'", 1)[1].split(
+        "id: 'day2_galgame_choices'",
         1,
     )[0]
 
@@ -220,11 +230,32 @@ def test_day2_round_targets_compact_tool_flow_after_day_swap():
     assert "target: 'chat-avatar-tools'" in avatar_tools_props_block
     assert "cursorAction: 'click'" in avatar_tools_props_block
     assert "operation: 'show-avatar-tools-then-hide-after-narration'" in avatar_tools_props_block
+    assert "textKey: 'tutorial.avatarFloating.day2.toolWheelRotation'" in tool_wheel_rotation_block
+    assert "voiceKey: 'avatar_floating_day2_tool_wheel_rotation'" in tool_wheel_rotation_block
+    assert "persistent: 'chat-tool-toggle'" in tool_wheel_rotation_block
+    assert "target: 'chat-galgame'" in tool_wheel_rotation_block
+    assert "cursorAction: 'move'" in tool_wheel_rotation_block
+    assert "operation: 'rotate-galgame-tool-into-center'" in tool_wheel_rotation_block
+    assert "target: 'chat-galgame'" in galgame_entry_block
+    assert "cursorAction: 'hold'" in galgame_entry_block
+    assert "cursorHoldFreezePoint: true" in galgame_entry_block
+    assert "operation: 'rotate-galgame-tool-into-center'" not in galgame_entry_block
     assert "target: 'chat-tool-toggle'" in round_block
     assert "target: 'chat-avatar-tools'" in round_block
     assert "target: 'chat-galgame'" in round_block
     assert "day2_chat_tools" not in round_block
     assert "day2_galgame_games" not in round_block
+
+
+def test_day2_tool_wheel_rotation_voice_key_has_localized_audio_files():
+    source = DAY2_GUIDE_PATH.read_text(encoding="utf-8")
+    audio_file = "day2-tool-wheel-rotation.mp3"
+
+    assert f"avatar_floating_day2_tool_wheel_rotation: zhAudio('{audio_file}')" in source
+    for locale in ["zh", "ja", "ko", "en", "ru"]:
+        assert (
+            ROOT / "static" / "assets" / "tutorial" / "guide-audio" / locale / audio_file
+        ).is_file()
 
 
 def test_day3_round_keeps_intro_text_and_moves_personalization_after_day_swap():
@@ -986,8 +1017,13 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
         "id: 'day1_takeover_capture_cursor'",
         1,
     )[0]
+    avatar_zoom_hint_block = round_block.split("id: 'day1_avatar_zoom_hint'", 1)[1].split(
+        "id: 'day1_takeover_return_control'",
+        1,
+    )[0]
 
     assert "id: 'day1_intro_greeting'" in round_block
+    assert "id: 'day1_avatar_zoom_hint'" in round_block
     assert "id: 'day1_takeover_return_control'" in round_block
     assert "cursorAction: 'wobble'" not in greeting_scene_block
     assert "timelinePlayback: true" in greeting_scene_block
@@ -1013,8 +1049,18 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "cursorAction: 'wobble'" not in screen_invite_block
     assert "target: '#${p}-popup-mic [data-neko-mic-main-action-row=\"screen\"]'" in screen_invite_block
     assert "target: '#${p}-btn-screen'" not in screen_invite_block
+    assert "textKey: 'tutorial.avatarFloating.day1.avatarZoomHint'" in avatar_zoom_hint_block
+    assert "voiceKey: 'day1_avatar_zoom_hint'" in avatar_zoom_hint_block
+    assert "spotlight: false" in avatar_zoom_hint_block
+    assert "cursorAction: 'none'" in avatar_zoom_hint_block
+    assert "{ at: 0, command: 'operation.run', operation: 'cleanup', blocking: true }" in avatar_zoom_hint_block
+    assert "{ at: 0, command: 'chat.message' }" in avatar_zoom_hint_block
+    assert avatar_zoom_hint_block.index("operation: 'cleanup'") < avatar_zoom_hint_block.index("command: 'chat.message'")
 
     return_control_scene = round_block.split("id: 'day1_takeover_return_control'", 1)[1]
+    assert "{ at: 0, command: 'operation.run', operation: 'cleanup', blocking: true }" in return_control_scene
+    assert "{ at: 0, command: 'chat.message' }" in return_control_scene
+    assert return_control_scene.index("operation: 'cleanup'") < return_control_scene.index("command: 'chat.message'")
     assert "cursorAction: 'move'" in return_control_scene
     assert "cursorAction: 'wobble'" not in return_control_scene
 
@@ -1088,9 +1134,32 @@ def test_day1_takeover_restores_original_agent_switches():
     assert "this.takeoverOriginalAgentSwitches = null;" in director
     assert "async captureDay1TakeoverAgentSwitches()" in director
     assert "await director.captureDay1TakeoverAgentSwitches();" in capture_operation
+    assert "sceneId === 'day1_avatar_zoom_hint'" in cleanup_operation
+    assert "'day1-before-avatar-zoom-hint'" in cleanup_operation
     assert "sceneId === 'day1_takeover_return_control'" in cleanup_operation
-    assert "restoreDay1TakeoverAgentSwitches('day1-return-control')" in cleanup_operation
-    assert "return await this.director.restoreDay1TakeoverAgentSwitches('day1-return-control');" in cleanup_operation
+    assert "'day1-return-control'" in cleanup_operation
+    assert "this.setDay1AvatarZoomInteractionActive(false);" in cleanup_operation
+    assert "this.setDay1AvatarZoomInteractionActive(true);" in cleanup_operation
+    assert "await this.director.restoreDay1TakeoverAgentSwitches(day1RestoreReason);" in cleanup_operation
+    interaction_block = operations.split("setDay1AvatarZoomInteractionActive(active)", 1)[1].split(
+        "async runCleanup(scene)",
+        1,
+    )[0]
+    assert "director.overlay.setInteractionShieldSuppressed(isActive);" in interaction_block
+    assert "director.disableInterrupts();" in interaction_block
+    assert "director.cursor.hide();" in interaction_block
+    assert "this.setDay1AvatarZoomModelLocked(isActive);" in interaction_block
+    assert "document.documentElement.classList.toggle('yui-user-cursor-revealed', isActive);" in interaction_block
+    assert "document.body.classList.toggle('yui-user-cursor-revealed', isActive);" in interaction_block
+    assert "director.syncSystemCursorHidden(" in interaction_block
+    model_lock_block = operations.split("setDay1AvatarZoomModelLocked(active)", 1)[1].split(
+        "async runCleanup(scene)",
+        1,
+    )[0]
+    assert "this.day1AvatarZoomOriginalLive2dLocked = manager.isLocked === true;" in model_lock_block
+    assert "manager.setLocked(false, { updateFloatingButtons: false });" in model_lock_block
+    assert "manager.setLocked(this.day1AvatarZoomOriginalLive2dLocked, { updateFloatingButtons: false });" in model_lock_block
+    assert "this.day1AvatarZoomOriginalLive2dLocked = null;" in model_lock_block
     assert "setAgentFlagEnabled('computer_use_enabled', originalKeyboardControl)" in restore_block
     assert "setAgentMasterEnabled(false)" in restore_block
     assert "restoreDay1TakeoverAgentSwitches('termination_cleanup')" in director

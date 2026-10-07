@@ -40,7 +40,7 @@ class MMDInteraction {
             duration: 260,
             easingType: 'easeOutBack'
         };
-        this._snapAnimationFrameId = null;
+        this._snapCancelFrame = null;
         this._isSnappingModel = false;
         this._snapResolve = null;
 
@@ -344,13 +344,14 @@ class MMDInteraction {
 
         // 鼠标按下
         this.mouseDownHandler = (e) => {
+            if (this._touchGestures?.active && e.pointerType !== 'touch') return;
             if (!this.manager._isModelReadyForInteraction) return;
             if (this.checkLocked()) return;
             if (isYuiGuideDragLocked()) return;
 
-            if (this._snapAnimationFrameId) {
-                cancelAnimationFrame(this._snapAnimationFrameId);
-                this._snapAnimationFrameId = null;
+            if (this._snapCancelFrame) {
+                this._snapCancelFrame();
+                this._snapCancelFrame = null;
                 if (this._snapResolve) {
                     this._snapResolve(false);
                     this._snapResolve = null;
@@ -403,6 +404,7 @@ class MMDInteraction {
 
         // 鼠标移动（拖拽）
         this.dragHandler = (e) => {
+            if (this._touchGestures?.active && e.pointerType !== 'touch') return;
             if (isYuiGuideDragLocked()) {
                 if (this.isDragging) {
                     this.isDragging = false;
@@ -485,6 +487,7 @@ class MMDInteraction {
 
         // 鼠标抬起
         this.mouseUpHandler = async (e) => {
+            if (this._touchGestures?.active && e.pointerType !== 'touch') return;
             if (this.isDragging) {
                 if (this.dragMode === 'pan') {
                     this._rememberPanDragPointer(e);
@@ -581,6 +584,12 @@ class MMDInteraction {
         // 绑定事件
         // mousedown/hover/wheel 绑定到 canvas，mousemove/mouseup 绑定到 document
         // 防止拖拽经过悬浮按钮时被中断
+        this._touchGestures = window.NekoModelTouchGestures.installThree(this, {
+            getModel: () => this.manager.currentModel?.mesh,
+            setScale: scale => this.manager.currentModel.mesh.scale.setScalar(scale),
+            enabled: () => this.manager._isModelReadyForInteraction && !!this.manager.currentModel?.mesh
+                && !this.checkLocked() && !isYuiGuideDragLocked()
+        });
         canvas.addEventListener('mousedown', this.mouseDownHandler);
         document.addEventListener('mousemove', this.dragHandler);
         canvas.addEventListener('mousemove', this.mouseHoverHandler);
@@ -595,6 +604,10 @@ class MMDInteraction {
     // ═══════════════════ 清理 ═══════════════════
 
     cleanupDragAndZoom() {
+        if (this._touchGestures) {
+            this._touchGestures.dispose();
+            this._touchGestures = null;
+        }
         // document 级监听器必须无条件移除，防止 renderer 已销毁时泄漏
         if (this.dragHandler) document.removeEventListener('mousemove', this.dragHandler);
         if (this.mouseUpHandler) document.removeEventListener('mouseup', this.mouseUpHandler);
@@ -943,9 +956,9 @@ class MMDInteraction {
             return Promise.resolve(false);
         }
 
-        if (this._snapAnimationFrameId) {
-            cancelAnimationFrame(this._snapAnimationFrameId);
-            this._snapAnimationFrameId = null;
+        if (this._snapCancelFrame) {
+            this._snapCancelFrame();
+            this._snapCancelFrame = null;
             if (this._snapResolve) {
                 this._snapResolve(false);
                 this._snapResolve = null;
@@ -972,17 +985,17 @@ class MMDInteraction {
                 );
 
                 if (progress < 1) {
-                    this._snapAnimationFrameId = requestAnimationFrame(animate);
+                    this._snapCancelFrame = this._scheduleSnapFrame(animate);
                 } else {
                     mesh.position.copy(targetPosition);
                     this._isSnappingModel = false;
-                    this._snapAnimationFrameId = null;
+                    this._snapCancelFrame = null;
                     this._snapResolve = null;
                     resolve(true);
                 }
             };
 
-            this._snapAnimationFrameId = requestAnimationFrame(animate);
+            this._snapCancelFrame = this._scheduleSnapFrame(animate);
         });
     }
 
@@ -1094,12 +1107,23 @@ class MMDInteraction {
         }, 500);
     }
 
+    // 排一帧回弹动画：Electron Pet 里渲染后端切到定时器驱动时走同周期定时器
+    // （frame-pacing.requestPacedFrame），否则 rAF。返回取消函数（存到 _snapCancelFrame）。
+    _scheduleSnapFrame(callback) {
+        const pacing = window.nekoFramePacing;
+        if (pacing && typeof pacing.requestPacedFrame === 'function') {
+            return pacing.requestPacedFrame(callback);
+        }
+        const id = requestAnimationFrame(callback);
+        return () => cancelAnimationFrame(id);
+    }
+
     dispose() {
         this.cleanupDragAndZoom();
 
-        if (this._snapAnimationFrameId) {
-            cancelAnimationFrame(this._snapAnimationFrameId);
-            this._snapAnimationFrameId = null;
+        if (this._snapCancelFrame) {
+            this._snapCancelFrame();
+            this._snapCancelFrame = null;
         }
         if (this._snapResolve) {
             this._snapResolve(false);

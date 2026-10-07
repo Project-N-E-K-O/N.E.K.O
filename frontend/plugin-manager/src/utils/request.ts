@@ -1,7 +1,7 @@
 /**
  * HTTP 请求封装
  */
-import axios from 'axios'
+import axios, { AxiosError as RequestAxiosError } from 'axios'
 import type { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse, AxiosError, AxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 import { API_BASE_URL, API_TIMEOUT } from './constants'
@@ -16,10 +16,20 @@ export type ErrorDisplayRequestConfig = AxiosRequestConfig & {
   /** Suppress only the expected stopped-plugin response for panel probes. */
   suppressPluginNotRunningMessage?: boolean
   preserveMessagesOn404?: boolean
+  /** i18n key used when Axios, rather than the server, times this request out. */
+  timeoutErrorMessageKey?: string
+  /** Internal guard: a failed CSRF request is retried at most once. */
+  csrfRetryAttempted?: boolean
+  /** Bootstrap errors carry caller display options but cannot retry a mutation. */
+  csrfBootstrapFailed?: boolean
+  /** A best-effort mutation was sent without a token because bootstrap failed. */
+  csrfTokenUnavailable?: boolean
 }
 
 type HeaderBag = Record<string, unknown> & {
   delete?: (name: string) => void
+  get?: (name: string) => unknown
+  set?: (name: string, value: unknown) => void
 }
 
 function isFormDataPayload(data: unknown): data is FormData {
@@ -27,7 +37,19 @@ function isFormDataPayload(data: unknown): data is FormData {
 }
 
 function readHeader(headers: HeaderBag, name: string): unknown {
+  if (typeof headers.get === 'function') {
+    const value = headers.get(name)
+    if (value != null) return value
+  }
   return headers[name] ?? headers[name.toLowerCase()]
+}
+
+function writeHeader(headers: HeaderBag, name: string, value: string): void {
+  if (typeof headers.set === 'function') {
+    headers.set(name, value)
+    return
+  }
+  headers[name] = value
 }
 
 function deleteHeader(headers: HeaderBag, name: string): void {
@@ -91,7 +113,7 @@ export function formatHttpError(error: unknown): string {
   return !anyError?.response && error instanceof Error ? error.message : ''
 }
 
-function readErrorCode(error: AxiosError): string {
+export function readErrorCode(error: AxiosError): string {
   const headers = error.response?.headers
   if (headers && typeof headers.get === 'function') {
     const value = headers.get('X-Error-Code')
@@ -103,9 +125,11 @@ function readErrorCode(error: AxiosError): string {
   if (data && typeof data === 'object') {
     const record = data as Record<string, unknown>
     if (typeof record.code === 'string') return record.code
+    if (typeof record.error_code === 'string') return record.error_code
     if (record.detail && typeof record.detail === 'object') {
       const detail = record.detail as Record<string, unknown>
       if (typeof detail.code === 'string') return detail.code
+      if (typeof detail.error_code === 'string') return detail.error_code
     }
   }
   return ''
@@ -123,6 +147,166 @@ export function shouldSuppressErrorMessage(error: AxiosError): boolean {
     || shouldSuppressPluginNotRunningMessage(error)
 }
 
+export function isRequestTimeout(error: AxiosError): boolean {
+  return error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT'
+}
+
+let pendingHealthProbe: Promise<boolean> | null = null
+
+const CSRF_TOKEN_HEADER = 'X-CSRF-Token'
+/** Longest a mutation that does not require the token waits for bootstrap. */
+const BEST_EFFORT_TOKEN_WAIT_MS = 2000
+/** After a failed bootstrap, such mutations skip it for this long. */
+const CSRF_BOOTSTRAP_RETRY_AFTER_MS = 30000
+let csrfToken: string | null = null
+let pendingCsrfToken: Promise<string> | null = null
+let lastCsrfBootstrapFailureAt = 0
+
+function isMutationMethod(method: unknown): boolean {
+  return typeof method === 'string' && ['post', 'put', 'patch', 'delete'].includes(method.toLowerCase())
+}
+
+function requestPath(url: unknown): string {
+  if (typeof url !== 'string') return ''
+  try {
+    return new URL(url, API_BASE_URL || 'http://localhost').pathname
+  } catch {
+    return url.split(/[?#]/, 1)[0] ?? ''
+  }
+}
+
+/**
+ * Mirrors the plugin server routes that always require the token
+ * (PluginMutationGuardedRoute / require_plugin_mutation_access): lifecycle
+ * actions and plugin-cli package build/import, including legacy aliases.
+ * Without a token the server rejects these, so a failed bootstrap stops them
+ * before the request (and any package body) is sent.
+ */
+function requiresCsrfToken(config: Pick<AxiosRequestConfig, 'method' | 'url'>): boolean {
+  if (!isMutationMethod(config.method)) return false
+  const path = requestPath(config.url)
+  const method = config.method?.toLowerCase()
+  if (method === 'delete') return /^\/plugin\/[^/]+$/.test(path) || path === '/plugin-cli/upload'
+  return /^\/plugin\/[^/]+\/(?:start|stop|refresh|reload)$/.test(path)
+    || (method === 'put' && /^\/plugin\/[^/]+\/auto-start$/.test(path))
+    || /^\/plugins\/(?:refresh|reload)$/.test(path)
+    || (method === 'post'
+      && /^\/plugin-cli\/(?:upload|upload-and-install|upload-and-unpack|install|unpack|build|pack)$/.test(path))
+}
+
+/**
+ * Fetch the per-process mutation token once, sharing concurrent callers.
+ *
+ * Every mutation carries the token when it is available, so deployments that
+ * set NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN keep working. Only the routes in
+ * requiresCsrfToken() fail closed on a bootstrap failure; other mutations
+ * (plugin-page routes, read-only POSTs) are sent without it and the server
+ * decides. Shared bootstrap has its own API_TIMEOUT; lifecycle timeouts
+ * apply after it.
+ */
+function loadCsrfToken(): Promise<string> {
+  if (csrfToken) return Promise.resolve(csrfToken)
+  if (pendingCsrfToken) return pendingCsrfToken
+
+  let requestPromise: Promise<string>
+  requestPromise = axios.get<{ csrf_token?: unknown }>('/security/csrf-token', {
+    baseURL: API_BASE_URL,
+    timeout: API_TIMEOUT,
+    headers: { Accept: 'application/json' },
+  }).then((response) => {
+    const value = response.data?.csrf_token
+    if (typeof value !== 'string' || !value) {
+      throw new Error('CSRF token bootstrap response was invalid')
+    }
+    csrfToken = value
+    return value
+  }).catch((error: unknown) => {
+    lastCsrfBootstrapFailureAt = Date.now()
+    throw error
+  }).finally(() => {
+    if (pendingCsrfToken === requestPromise) pendingCsrfToken = null
+  })
+
+  pendingCsrfToken = requestPromise
+  return requestPromise
+}
+
+/** Stop waiting for the shared bootstrap when the caller cancels its request. */
+function untilCanceled<T>(promise: Promise<T>, signal: AxiosRequestConfig['signal']): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(new axios.CanceledError())
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new axios.CanceledError())
+    signal.addEventListener?.('abort', onAbort)
+    promise.then(resolve, reject).finally(() => signal.removeEventListener?.('abort', onAbort))
+  })
+}
+
+/**
+ * Token for a mutation that the server accepts without one by default.
+ *
+ * A proxy that does not forward /security/csrf-token (or a hung endpoint)
+ * must not delay such requests: wait briefly, skip bootstrap for a while
+ * after a failure, and return null so the request is sent without a token.
+ * A slow bootstrap keeps running for later callers.
+ */
+function loadCsrfTokenBestEffort(): Promise<string | null> {
+  if (csrfToken) return Promise.resolve(csrfToken)
+  if (Date.now() - lastCsrfBootstrapFailureAt < CSRF_BOOTSTRAP_RETRY_AFTER_MS) return Promise.resolve(null)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), BEST_EFFORT_TOKEN_WAIT_MS)
+  })
+  return Promise.race([loadCsrfToken().catch(() => null), timeout]).finally(() => clearTimeout(timer))
+}
+
+function isCsrfValidationFailure(error: AxiosError): boolean {
+  const headers = error.response?.headers as HeaderBag | undefined
+  // Cross-port frontends can read the JSON reason without expanding global
+  // CORS exposed headers; same-origin callers may also use the response header.
+  const data = error.response?.data as { detail?: { csrf_failure?: string } } | undefined
+  return error.response?.status === 403 && readErrorCode(error) === 'csrf_validation_failed'
+    && (data?.detail?.csrf_failure === 'token'
+      || Boolean(headers && readHeader(headers, 'X-CSRF-Failure') === 'token'))
+}
+
+function invalidateCsrfTokenIfCurrent(config: AxiosRequestConfig | undefined): void {
+  if (!csrfToken || !config?.headers) return
+  const sentToken = readHeader(config.headers as HeaderBag, CSRF_TOKEN_HEADER)
+  if (typeof sentToken === 'string' && sentToken === csrfToken) csrfToken = null
+}
+
+type HealthProbeResult = {
+  serverHealthy: boolean
+  /** Only the request that created the probe may advance the failure counter. */
+  initiatedByThisRequest: boolean
+}
+
+/** Verify the server independently of the failed request, without re-entering this interceptor. */
+export function probeServerHealth(): Promise<HealthProbeResult> {
+  if (pendingHealthProbe) {
+    return pendingHealthProbe.then((serverHealthy) => ({
+      serverHealthy,
+      initiatedByThisRequest: false,
+    }))
+  }
+  const probe = axios.get('/health', {
+    baseURL: API_BASE_URL,
+    timeout: 5000,
+  }).then((response) => response.status >= 200 && response.status < 300)
+    .catch(() => false)
+  pendingHealthProbe = probe
+  void probe.finally(() => {
+    if (pendingHealthProbe === probe) {
+      pendingHealthProbe = null
+    }
+  })
+  return probe.then((serverHealthy) => ({
+    serverHealthy,
+    initiatedByThisRequest: true,
+  }))
+}
+
 // 创建 axios 实例
 const service: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -134,7 +318,51 @@ const service: AxiosInstance = axios.create({
 
 // 请求拦截器
 service.interceptors.request.use(
-  (config: InternalAxiosRequestConfig) => {
+  async (config: InternalAxiosRequestConfig) => {
+    if (isMutationMethod(config.method) && !requiresCsrfToken(config)) {
+      // The server does not require the token here by default; send the
+      // request without it and let a later token rejection explain why. A
+      // retry after a token rejection means this deployment does require it,
+      // so wait for the full bootstrap, ignoring the short cap and cooldown.
+      const token = await untilCanceled(
+        (config as ErrorDisplayRequestConfig).csrfRetryAttempted
+          ? loadCsrfToken().catch(() => null)
+          : loadCsrfTokenBestEffort(),
+        config.signal,
+      )
+      if (token) {
+        if (!config.headers) config.headers = {} as InternalAxiosRequestConfig['headers']
+        writeHeader(config.headers as HeaderBag, CSRF_TOKEN_HEADER, token)
+      } else {
+        ;(config as ErrorDisplayRequestConfig).csrfTokenUnavailable = true
+      }
+    } else if (isMutationMethod(config.method)) {
+      let token: string
+      try {
+        token = await untilCanceled(loadCsrfToken(), config.signal)
+      } catch (cause) {
+        if (axios.isCancel(cause)) throw cause
+        // Token-required calls are fail-closed: the original request is never sent.
+        // Bootstrap is shared by concurrent callers. Create a separate error
+        // for each caller instead of mutating its shared config/display policy.
+        const source = axios.isAxiosError(cause) ? cause : undefined
+        const failureConfig = { ...config, csrfBootstrapFailed: true } as InternalAxiosRequestConfig
+        // The protected operation has not been sent. Its domain timeout label
+        // would incorrectly imply that the plugin itself timed out.
+        delete (failureConfig as ErrorDisplayRequestConfig).timeoutErrorMessageKey
+        const error = new RequestAxiosError(
+          source?.message || i18n.global.t('messages.requestFailed'),
+          source?.code,
+          failureConfig,
+          source?.request,
+          source?.response,
+        )
+        error.cause = cause instanceof Error ? cause : new Error(String(cause))
+        throw error
+      }
+      if (!config.headers) config.headers = {} as InternalAxiosRequestConfig['headers']
+      writeHeader(config.headers as HeaderBag, CSRF_TOKEN_HEADER, token)
+    }
     return stripJsonContentTypeForFormData(config)
   },
   (error: AxiosError) => {
@@ -159,6 +387,23 @@ service.interceptors.response.use(
     if (axios.isCancel(error) || error.code === 'ERR_CANCELED') {
       return Promise.reject(error)
     }
+    const requestConfig = error.config as ErrorDisplayRequestConfig | undefined
+    if (
+      isCsrfValidationFailure(error)
+      && requestConfig
+      && isMutationMethod(requestConfig.method)
+      && !requestConfig.csrfBootstrapFailed
+      && !requestConfig.csrfRetryAttempted
+    ) {
+      // A rotated token can invalidate an in-flight request. Retry exactly
+      // once, and only discard the token that this request actually sent so a
+      // newer concurrent bootstrap result cannot be clobbered.
+      invalidateCsrfTokenIfCurrent(requestConfig)
+      return service.request({
+        ...requestConfig,
+        csrfRetryAttempted: true,
+      } as ErrorDisplayRequestConfig)
+    }
     // 对于 404 错误，不输出错误日志（这是正常的，某些资源可能不存在）
     // 对于 401/403 错误，也不输出错误日志
     const status = error.response?.status
@@ -168,7 +413,21 @@ service.interceptors.response.use(
     }
 
     let message = i18n.global.t('messages.requestFailed')
-    
+    let confirmedDisconnected = false
+
+    // A failed token bootstrap (404 from a proxy without the route, 403,
+    // invalid body) is not the original operation's status: say so instead
+    // of the generic or silent 403/404 handling. Timeouts keep their message.
+    // Only a token rejection points at the bootstrap; an Origin rejection does not.
+    const tokenRejectedAfterBootstrapFailure = Boolean(requestConfig?.csrfTokenUnavailable)
+      && isCsrfValidationFailure(error)
+    if ((requestConfig?.csrfBootstrapFailed && !isRequestTimeout(error)) || tokenRejectedAfterBootstrapFailure) {
+      if (!suppressErrorMessage) {
+        ElMessage.error(i18n.global.t('messages.csrfBootstrapFailed'))
+      }
+      return Promise.reject(error)
+    }
+
     if (error.response) {
       try {
         const connectionStore = useConnectionStore()
@@ -207,20 +466,35 @@ service.interceptors.response.use(
         default:
           message = formatHttpError(error) || i18n.global.t('messages.requestFailedWithStatus', { status })
       }
+    } else if (error.request && isRequestTimeout(error)) {
+      // Axios 超时只说明当前请求未按时完成，不能据此标记服务器断连。
+      const timeoutMessageKey = (error.config as ErrorDisplayRequestConfig | undefined)
+        ?.timeoutErrorMessageKey || 'messages.requestTimeout'
+      message = i18n.global.t(timeoutMessageKey)
     } else if (error.request) {
-      // 请求已发出，但没有收到响应
-      message = i18n.global.t('messages.networkError')
+      // 只有独立健康检查也失败时，才将无响应请求归类为断网。
+      const { serverHealthy, initiatedByThisRequest } = await probeServerHealth()
+      message = serverHealthy
+        ? i18n.global.t('messages.requestFailed')
+        : i18n.global.t('messages.networkError')
+      confirmedDisconnected = !serverHealthy
+      let wasDisconnected = false
       try {
         const connectionStore = useConnectionStore()
-        const wasDisconnected = connectionStore.disconnected
-        connectionStore.markDisconnected()
-        const now = Date.now()
-        if (!suppressErrorMessage && !wasDisconnected && now - lastNetworkErrorShownAt > 15000) {
-          lastNetworkErrorShownAt = now
-          ElMessage.error(message)
+        wasDisconnected = connectionStore.disconnected
+        if (serverHealthy) {
+          connectionStore.markConnected()
+        } else if (initiatedByThisRequest) {
+          connectionStore.markDisconnected()
         }
       } catch (err) {
         console.debug('Connection store not available:', err)
+      }
+      const now = Date.now()
+      if (confirmedDisconnected && !suppressErrorMessage && !wasDisconnected
+        && now - lastNetworkErrorShownAt > 15000) {
+        lastNetworkErrorShownAt = now
+        ElMessage.error(message)
       }
     } else {
       // 其他错误
@@ -232,7 +506,7 @@ service.interceptors.response.use(
       return Promise.reject(error)
     }
     
-    if (error.request && !error.response) {
+    if (confirmedDisconnected) {
       return Promise.reject(error)
     }
 

@@ -24,21 +24,23 @@ import CompactExportHistoryPanel, {
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { i18n } from './i18n';
 import { useFocusGlow } from './useFocusGlow';
-import AvatarToolItemManager, { type AvatarToolManagerAnchorRect } from './AvatarToolItemManager';
+import AvatarToolItemManager, {
+  type AvatarToolEditorResultMessage,
+  type AvatarToolManagerAnchorRect,
+} from './AvatarToolItemManager';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import { useLocalAvatarToolCatalog } from './avatar-tools/useLocalAvatarToolCatalog';
+import { useAvatarToolSurfaceSlots } from './avatar-tools/useAvatarToolSurfaceSlots';
 import {
   getAvatarToolItemLabel,
-  persistActiveAvatarToolIds,
-  readPersistedActiveAvatarToolIds,
   resolveAvatarToolMenuIconVisual,
-  sanitizeAvatarToolSlots,
   withAvatarToolAssetVersion,
   type AvatarToolId,
   type AvatarToolItem,
 } from './avatarTools';
 import { useGuideChatButtonLock } from './useGuideChatButtonLock';
+import { claimOrdinaryDraftRestore } from './theaterDraftRestore';
 import {
   playCompactToolWheelDetentSound,
   useCompactToolWheelAudioPreload,
@@ -435,6 +437,7 @@ export default function FullChatSurface({
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
+  userName = '',
   assistantName = '',
   inputPlaceholder = i18n('chat.textInputPlaceholder', 'Type a message...'),
   sendButtonLabel = i18n('chat.send', 'Send'),
@@ -479,6 +482,7 @@ export default function FullChatSurface({
   onGalgameOptionSelect,
   choicePrompt = null,
   onChoiceSelect,
+  theaterPresentation,
   onCompactChatStateChange,
   rollbackDraft,
   _rollbackKey,
@@ -492,7 +496,6 @@ export default function FullChatSurface({
   const [catDraft, setCatDraft] = useState('');
   const visibleDraft = catLocalTextOnly ? catDraft : draft;
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
-  const [activeAvatarToolIds, setActiveAvatarToolIds] = useState<AvatarToolId[]>(readPersistedActiveAvatarToolIds);
   const [avatarToolManagerOpen, setAvatarToolManagerOpen] = useState(false);
   const [avatarToolManagerAnchorRect, setAvatarToolManagerAnchorRect] = useState<AvatarToolManagerAnchorRect | null>(null);
   // Collapse the right-side tools into an overflow menu when the composer gets
@@ -586,6 +589,18 @@ export default function FullChatSurface({
   const effectiveToolVariant = avatarToolRuntime.effectiveVariant;
   const clearAvatarTool = avatarToolRuntime.clearTool;
   const selectAvatarTool = avatarToolRuntime.selectTool;
+  const {
+    activeToolIds: activeAvatarToolIds,
+    saveSlots,
+    applyEditorResult,
+    deleteLocalTool,
+  } = useAvatarToolSurfaceSlots({
+    catalog: localAvatarToolCatalog,
+    activeToolId: activeAvatarToolId,
+    clearActiveTool: clearAvatarTool,
+    managerOpen: avatarToolManagerOpen,
+    surface: 'full',
+  });
   const configuredToolIconItems = useMemo(() => {
     const availableById = new Map(toolIconItems.map(item => [item.id, item]));
     return activeAvatarToolIds
@@ -594,26 +609,16 @@ export default function FullChatSurface({
   }, [activeAvatarToolIds, toolIconItems]);
 
   const handleAvatarToolManagerSave = useCallback((toolIds: AvatarToolId[]) => {
-    const nextToolIds = sanitizeAvatarToolSlots(toolIds);
-    setActiveAvatarToolIds(nextToolIds);
-    persistActiveAvatarToolIds(nextToolIds);
+    saveSlots(toolIds);
     setAvatarToolManagerOpen(false);
     setAvatarToolManagerAnchorRect(null);
-    if (activeAvatarToolId && !nextToolIds.includes(activeAvatarToolId as AvatarToolId)) {
-      clearAvatarTool();
-    }
-  }, [activeAvatarToolId, clearAvatarTool, localAvatarToolCatalog.registry]);
+  }, [saveSlots]);
 
-  useEffect(() => {
-    if (!avatarToolManagerOpen) return;
-    localAvatarToolCatalog.refresh().catch(() => undefined);
-  }, [avatarToolManagerOpen, localAvatarToolCatalog.refresh]);
-
-  useEffect(() => {
-    if (!activeAvatarToolId) return;
-    if (activeAvatarToolIds.includes(activeAvatarToolId as AvatarToolId)) return;
-    clearAvatarTool();
-  }, [activeAvatarToolIds, activeAvatarToolId, clearAvatarTool]);
+  const handleAvatarToolEditorResult = useCallback((result: AvatarToolEditorResultMessage) => {
+    applyEditorResult(result);
+    // 输入区隐藏或猫咪本地文字模式下道具入口不可见，编辑器回传的结果只落槽位，不拉起管理弹窗。
+    if (!catLocalTextOnly && !composerHidden) setAvatarToolManagerOpen(true);
+  }, [applyEditorResult, catLocalTextOnly, composerHidden]);
 
   // Rollback draft when host signals a RESPONSE_TOO_LONG error
   // Use _rollbackKey for dedup. It changes on every rollbackLastDraft() call
@@ -627,6 +632,14 @@ export default function FullChatSurface({
       }
     }
   }, [rollbackDraft, _rollbackKey, draft]);
+
+  useEffect(() => {
+    const restore = theaterPresentation?.ordinaryDraftRestore;
+    // full 与 compact 是独立组件并各自持有草稿；退出剧场切回 full 时由先挂载的一方消费，
+    // 已消费的 id 在模块级共享，之后的 full↔compact 切换不再重复填回。
+    if (!restore || !claimOrdinaryDraftRestore(restore.id)) return;
+    setDraft(restore.text);
+  }, [theaterPresentation?.ordinaryDraftRestore]);
 
   useEffect(() => {
     const markImage = (img: HTMLImageElement) => {
@@ -1918,6 +1931,8 @@ export default function FullChatSurface({
     if (compactInputToolFanOpen) return;
     if (draftRef.current.trim().length > 0) return;
     if (composerAttachments.length > 0) return;
+    // Native guide controls live in another window, so focus cannot identify them.
+    if (!options?.ignoreFocusedShell && document.querySelector('.click-guide-layer.click-guide-native')) return;
     if (!options?.ignoreFocusedShell && compactExportHistoryOpen) return;
     const activeElement = document.activeElement;
     if (
@@ -1927,7 +1942,7 @@ export default function FullChatSurface({
         !!compactInputShellRef.current?.contains(activeElement)
         || (
           activeElement instanceof Element
-          && !!activeElement.closest('.compact-export-history-anchor')
+          && !!activeElement.closest('.compact-export-history-anchor, .click-guide-layer, .click-guide-choice')
         )
       )
     ) {
@@ -1967,7 +1982,7 @@ export default function FullChatSurface({
         || !!compactChoiceLayerRef.current?.contains(target)
         || (
           target instanceof Element
-          && !!target.closest('.compact-export-history-anchor')
+          && !!target.closest('.compact-export-history-anchor, .click-guide-layer, .click-guide-choice')
         )
       )
     );
@@ -1982,11 +1997,16 @@ export default function FullChatSurface({
       scheduleForcedCompactInputCollapse();
     };
 
-    window.addEventListener('blur', scheduleForcedCompactInputCollapse);
+    const handleWindowBlur = () => {
+      if (document.querySelector('.click-guide-layer.click-guide-native')) return;
+      scheduleForcedCompactInputCollapse();
+    };
+
+    window.addEventListener('blur', handleWindowBlur);
     document.addEventListener('pointerdown', handlePointerDown, true);
     document.addEventListener('keydown', handleKeyDown, true);
     return () => {
-      window.removeEventListener('blur', scheduleForcedCompactInputCollapse);
+      window.removeEventListener('blur', handleWindowBlur);
       document.removeEventListener('pointerdown', handlePointerDown, true);
       document.removeEventListener('keydown', handleKeyDown, true);
     };
@@ -2042,6 +2062,7 @@ export default function FullChatSurface({
     if (!isCompactSurface) return;
 
     const handleDesktopCompactPointerOutside = () => {
+      if (document.querySelector('.click-guide-layer.click-guide-native')) return;
       resetCompactInputToolFanHoverBlock();
       closeCompactInputToolFan();
       if (effectiveCompactChatState !== 'input') return;
@@ -2270,7 +2291,7 @@ export default function FullChatSurface({
     }
   }
 
-  function submitDraft() {
+  function submitDraft(submitMethod: ComposerSubmitPayload['submitMethod'] = 'button') {
     if (composerInteractionsDisabled) return;
     if (submittingRef.current) return;
     const text = visibleDraft.trim();
@@ -2278,7 +2299,7 @@ export default function FullChatSurface({
     closeCompactInputToolFan();
     submittingRef.current = true;
     try {
-      onComposerSubmit?.({ text });
+      onComposerSubmit?.({ text, submitMethod });
       if (catLocalTextOnly) {
         setCatDraft('');
       } else {
@@ -3128,7 +3149,6 @@ export default function FullChatSurface({
       <div
         className={`compact-chat-stage compact-chat-stage-${effectiveCompactChatState}`}
         data-compact-chat-state={effectiveCompactChatState}
-        data-compact-stage-layout="stage2"
       >
         <div
           className="compact-chat-stage-body-slot"
@@ -3173,17 +3193,26 @@ export default function FullChatSurface({
       {compactChoiceLayerNode}
       <AvatarToolVisuals model={avatarToolRuntime.visualModel} />
       <AvatarToolItemManager
-        open={!composerHidden && avatarToolManagerOpen}
+        open={!composerHidden && !catLocalTextOnly && avatarToolManagerOpen}
         activeToolIds={activeAvatarToolIds}
-        availableTools={toolIconItems}
+        availableTools={localAvatarToolCatalog.items}
+        runnableToolIds={localAvatarToolCatalog.registry.validIds}
         anchorRect={avatarToolManagerAnchorRect}
         onSave={handleAvatarToolManagerSave}
         onCancel={() => {
           setAvatarToolManagerOpen(false);
           setAvatarToolManagerAnchorRect(null);
         }}
+        createLimits={localAvatarToolCatalog.limits}
+        userName={userName}
+        assistantName={assistantName}
+        onCreate={localAvatarToolCatalog.create}
+        onLoadDetail={localAvatarToolCatalog.detail}
+        onUpdate={localAvatarToolCatalog.update}
+        onDelete={deleteLocalTool}
         catalogAuthoritativeLoaded={localAvatarToolCatalog.authoritativeLoaded}
         catalogRefreshFailed={localAvatarToolCatalog.refreshFailed}
+        onExternalEditorResult={handleAvatarToolEditorResult}
       />
       <section
         className={`chat-window ${surfaceModeClassName}`}
@@ -3238,7 +3267,7 @@ export default function FullChatSurface({
           ) : null}
           <form className="composer" onSubmit={(event) => {
             event.preventDefault();
-            submitDraft();
+            submitDraft('button');
           }}>
             {isCompactSurface ? (
               <div
@@ -3316,7 +3345,7 @@ export default function FullChatSurface({
                           if (event.nativeEvent.isComposing) return;
                           if (event.key === 'Enter' && !event.shiftKey) {
                             event.preventDefault();
-                            submitDraft();
+                            submitDraft('enter');
                           }
                         }}
                       />
@@ -3405,7 +3434,7 @@ export default function FullChatSurface({
                   if (event.nativeEvent.isComposing) return;
                   if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault();
-                    submitDraft();
+                    submitDraft('enter');
                   }
                 }}
               />

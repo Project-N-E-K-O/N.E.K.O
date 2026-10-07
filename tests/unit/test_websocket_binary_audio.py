@@ -4,11 +4,13 @@ import asyncio
 import json
 import re
 import struct
+from unittest.mock import AsyncMock
 from pathlib import Path
 
 import pytest
 
 import main_routers.websocket_router as websocket_router
+from utils import external_route_registry
 from main_routers.websocket_router import _decode_binary_audio_frame
 
 
@@ -94,6 +96,9 @@ class _ProtocolManager:
 
     async def end_session(self, *_args, **_kwargs) -> None:
         self.calls.append(("end_session", None))
+
+    def request_end_session(self, **kwargs):
+        return asyncio.create_task(self.end_session(**kwargs))
 
     async def send_status(self, payload: str) -> None:
         self.statuses.append(json.loads(payload))
@@ -186,17 +191,24 @@ def _install_protocol_endpoint(
         "get_session_id",
         lambda: session_ids,
     )
-    monkeypatch.setattr(
-        websocket_router,
-        "is_game_route_active",
-        lambda _name: game_active,
-    )
-    monkeypatch.setattr(
-        websocket_router,
-        "route_external_stream_message",
-        _route_external,
+    # Replace the real ``game`` kind; the autouse registry fixture in
+    # conftest restores the import-time registration afterwards.
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="game",
+            is_active=lambda _name: game_active,
+            route_stream_message=_route_external,
+            on_start_session=None,
+            finalize_for_character=_finalize_none,
+            current_instance=lambda _name: "test-instance",
+            audio_passthrough=True,
+        )
     )
     return session_ids, route_external_calls
+
+
+async def _finalize_none(_name: str) -> int:
+    return 0
 
 
 def test_binary_audio_frame_decodes_pcm_and_sample_rate() -> None:
@@ -846,6 +858,53 @@ async def test_game_audio_route_never_claims_legacy_core_lease(
     ]
 
 
+@pytest.mark.asyncio
+async def test_deferred_stt_announcement_skips_a_route_that_ended_before_it_ran(
+    monkeypatch,
+) -> None:
+    """The default audio start announces STT in a background task; it goes
+    through the registry, so a route that ended meanwhile is not notified.
+
+    Mutation: calling the captured route's handler directly turns this red.
+    """
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket([{"action": "start_session", "input_type": "audio"}])
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+    active = {"value": True}
+    announcements = []
+
+    async def _announce(_name: str, message: dict) -> bool:
+        announcements.append(message)
+        return True
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="game",
+            is_active=lambda _name: active["value"],
+            route_stream_message=_announce,
+            on_start_session=None,
+            finalize_for_character=_finalize_none,
+            current_instance=lambda _name: "game-1",
+            audio_passthrough=True,
+        )
+    )
+    reset_circuit = manager.reset_session_start_circuit
+
+    def _route_ends_before_background_tasks_run() -> None:
+        # Runs synchronously right before the announcement task is created.
+        active["value"] = False
+        reset_circuit()
+
+    manager.reset_session_start_circuit = _route_ends_before_background_tasks_run
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+    await asyncio.gather(*list(websocket_router._ws_bg_tasks))
+
+    assert "reset_start_circuit" in [name for name, _payload in manager.calls]
+    assert announcements == []
+
+
+
 _LEASE_SYNC_MESSAGE = {
     "action": "voice_input_control",
     "event": "lease_sync",
@@ -873,6 +932,22 @@ _LEASE_RELEASE_MESSAGE = {
     "engaged": False,
 }
 _PAUSE_SESSION_MESSAGE = {"action": "pause_session"}
+
+
+_SWITCHING_TERMINAL_STATUS = {
+    "code": "CHARACTER_SWITCHING_TERMINAL",
+    "details": {"name": "Lan"},
+}
+
+
+def _statuses_sent_to(socket) -> list:
+    """Decode the status payloads a fake socket received directly."""
+    statuses = []
+    for payload in socket.sent_text:
+        frame = json.loads(payload)
+        if frame.get("type") == "status":
+            statuses.append(json.loads(frame["message"]))
+    return statuses
 
 
 class _TwoPhaseWebSocket(_EventWebSocket):
@@ -1189,10 +1264,11 @@ async def test_stale_socket_after_voice_takeover_is_closed_without_reclaim(
     call_names = [name for name, _payload in manager.calls]
     assert call_names.count("begin") == 2
     assert call_names.count("stream_data") == 1
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } in manager.statuses
+    # The kick notice goes to the socket being closed, never to the window
+    # that now owns the character.
+    assert _SWITCHING_TERMINAL_STATUS in _statuses_sent_to(stale_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(takeover_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
 
 
 @pytest.mark.asyncio
@@ -1301,10 +1377,9 @@ async def test_recording_survives_second_text_socket_and_its_text_message(
     assert superseded_pcm in stream_payloads
     assert [name for name, _payload in manager.calls].count("control") == 2
     assert manager._avatar_position is sentinel
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(recording_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(chat_socket)
 
     # The chat window's text takeover worked unchanged: text session started
     # and its text message dispatched, without ever claiming voice.
@@ -1557,10 +1632,11 @@ async def test_superseded_voice_socket_non_voice_message_is_still_closed(
     assert recording_socket.closed is True
     assert "authorize" not in [name for name, _payload in manager.calls]
     assert "start_session" not in [name for name, _payload in manager.calls]
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } in manager.statuses
+    # The kick notice goes to the socket being closed, never to the window
+    # that now owns the character.
+    assert _SWITCHING_TERMINAL_STATUS in _statuses_sent_to(recording_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(chat_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
 
     chat_socket.release.set()
     await chat_task
@@ -1614,10 +1690,9 @@ async def test_superseded_recorder_pause_ends_the_session_without_a_stale_close(
     # lost a character switch it was not part of.
     assert manager.active_session_is_idle is True
     assert recording_socket.closed is False
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(recording_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(chat_socket)
 
     call_names = [name for name, _payload in manager.calls]
     # The lease release still applies -- that is how the backend learns the
@@ -1679,10 +1754,9 @@ async def test_superseded_recorder_pause_does_not_end_a_newer_text_session(
     assert "end_session" not in call_names
     # Still not a character switch -- the recorder keeps its socket either way.
     assert recording_socket.closed is False
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(recording_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(chat_socket)
 
     chat_socket.release.set()
     await chat_task
@@ -1729,10 +1803,11 @@ async def test_pause_from_a_socket_that_lost_voice_is_still_a_character_switch(
 
     assert recording_socket.closed is True
     assert "end_session" not in [name for name, _payload in manager.calls]
-    assert {
-        "code": "CHARACTER_SWITCHING_TERMINAL",
-        "details": {"name": "Lan"},
-    } in manager.statuses
+    # The kick notice goes to the socket being closed, never to the window
+    # that now owns the character.
+    assert _SWITCHING_TERMINAL_STATUS in _statuses_sent_to(recording_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in _statuses_sent_to(takeover_socket)
+    assert _SWITCHING_TERMINAL_STATUS not in manager.statuses
 
     takeover_socket.release.set()
     await takeover_task
@@ -1804,3 +1879,555 @@ async def test_each_start_task_keeps_its_own_voice_handshake_overrides(
         (False, True),
         (True, False),
     ]
+
+
+@pytest.mark.asyncio
+async def test_start_session_forwards_normalized_provider_preference_handshake(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    shared_values: list[object] = []
+    manager.set_independent_asr_provider_preference_handshake = (
+        shared_values.append
+    )
+    websocket = _EventWebSocket(
+        [
+            {
+                "action": "start_session",
+                "input_type": "text",
+                "independent_asr_provider_preference": "faster_whisper",
+            },
+            {
+                "action": "start_session",
+                "input_type": "text",
+                "independent_asr_provider_preference": "qwen",
+            },
+            {"action": "start_session", "input_type": "text"},
+        ]
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+    deferred: list[object] = []
+    monkeypatch.setattr(websocket_router, "_fire_task", deferred.append)
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+    await asyncio.gather(*deferred)
+
+    starts = [kwargs for name, kwargs in manager.calls if name == "start_session"]
+    # Accepted value passes through, a malformed one becomes "auto", and an
+    # absent field (older frontend / non-authoritative window) stays None so
+    # the persisted setting decides.
+    assert [kwargs["provider_preference_override"] for kwargs in starts] == [
+        "faster_whisper",
+        "auto",
+        None,
+    ]
+    assert shared_values == ["faster_whisper", "qwen", None]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('text', ['{', 'null', '[]', '123', '"x"'])
+async def test_bad_json_frame_does_not_disconnect_and_valid_frame_resets_budget(monkeypatch, text):
+    manager = _ProtocolManager()
+    socket = _EventWebSocket([])
+    # Repeated bursts of nine bad frames with valid messages between them must
+    # survive; raw user data must not be passed to lifecycle logging.
+    socket.events = ([{'type': 'websocket.receive', 'text': text}] * 9
+                     + [{'type': 'websocket.receive', 'text': '{}'}]) * 2
+    socket.events.append({'type': 'websocket.disconnect', 'code': 1000})
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=socket)
+    await websocket_router.websocket_endpoint(socket, 'Lan')
+    assert not socket.closed
+    assert not any('SERVER_ERROR' in item for item in socket.sent_text)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('text_only', [False, True])
+async def test_bad_frame_budget_applies_to_both_receive_apis(monkeypatch, text_only):
+    manager = _ProtocolManager()
+    socket = _EventWebSocket([])
+    socket.events = [{'type': 'websocket.receive', 'text': 'null'}] * 20
+    codes = []
+    async def close(code=1000):
+        codes.append(code)
+        socket.closed = True
+    socket.close = close
+    if text_only:
+        async def receive_text():
+            return socket.events.pop(0)['text']
+        socket.receive = None
+        socket.receive_text = receive_text
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=socket)
+    await websocket_router.websocket_endpoint(socket, 'Lan')
+    assert codes == [1008]
+    assert len(socket.events) == 10
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owns_voice', [False, True])
+async def test_bad_frame_uses_voice_identity_and_stale_terminal_notice(monkeypatch, owns_voice):
+    manager = _ProtocolManager()
+    socket = _EventWebSocket([])
+    session_ids, _ = _install_protocol_endpoint(monkeypatch, manager=manager, websocket=socket)
+    received_claim = False
+    async def receive():
+        nonlocal received_claim
+        if not received_claim:
+            received_claim = True
+            return {'type': 'websocket.receive', 'text': json.dumps(_LEASE_SYNC_MESSAGE)}
+        if socket.events:
+            socket.events.clear()
+            old_id = session_ids['Lan']
+            session_ids['Lan'] = 'new-window'
+            manager._voice_lease_connection_id = str(old_id) if owns_voice else 'new-window'
+            return {'type': 'websocket.receive', 'text': 'null'}
+        return {'type': 'websocket.disconnect', 'code': 1000}
+    socket.receive = receive
+    await websocket_router.websocket_endpoint(socket, 'Lan')
+    assert socket.closed is (not owns_voice)
+    notices = [item for item in socket.sent_text if 'CHARACTER_SWITCHING_TERMINAL' in item]
+    assert bool(notices) is (not owns_voice)
+
+
+@pytest.mark.asyncio
+async def test_empty_external_route_registry_never_hijacks_main_socket_input(
+    monkeypatch,
+) -> None:
+    """With no registered kind, start_session and stream_data take the ordinary path."""
+    manager = _ProtocolManager()
+    text_message = {"action": "stream_data", "input_type": "text", "data": "hi"}
+    websocket = _EventWebSocket(
+        [
+            {"action": "start_session", "input_type": "audio"},
+            dict(_PCM_MESSAGE),
+            text_message,
+        ]
+    )
+    _session_ids, route_external_calls = _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+        game_active=True,
+    )
+    # Drop every kind (including the fake one just installed); conftest
+    # restores the import-time registrations afterwards.
+    external_route_registry._reset_for_tests()
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    names = [name for name, _payload in manager.calls]
+    assert route_external_calls == []
+    assert "authorize" in names
+    streamed = [payload for name, payload in manager.calls if name == "stream_data"]
+    assert any(payload.get("data") == "hi" for payload in streamed)
+
+
+@pytest.mark.asyncio
+async def test_route_with_on_start_session_decides_the_session_start(monkeypatch) -> None:
+    """A kind that registers on_start_session replaces the game-only branch."""
+    claimed: list[dict] = []
+
+    async def _claim(_name: str, message: dict) -> bool:
+        claimed.append(message)
+        return True
+
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket(
+        [{"action": "start_session", "input_type": "audio", "request_id": "req-1"}]
+    )
+    _session_ids, route_external_calls = _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=AsyncMock(return_value=False),
+            on_start_session=_claim,
+            finalize_for_character=_finalize_none,
+            current_instance=lambda _name: "visit-1",
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert claimed == [{"input_type": "audio", "request_id": "req-1"}]
+    names = [name for name, _payload in manager.calls]
+    assert "start_session" not in names
+    assert route_external_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frame", ["binary", "json"])
+@pytest.mark.parametrize(
+    ("consumed", "passthrough", "forwarded"),
+    [
+        (True, False, False),
+        (True, True, True),
+        (False, False, True),
+    ],
+    ids=["consumed-dropped", "game-style-passthrough", "not-consumed"],
+)
+async def test_route_consuming_microphone_audio_stops_pcm_unless_passthrough(
+    monkeypatch, frame, consumed, passthrough, forwarded,
+) -> None:
+    """A route that consumes the audio announcement keeps PCM out of the ordinary session.
+
+    The game kind sets ``audio_passthrough`` because it uses ordinary realtime
+    as its STT provider. Mutation: ignoring the announcement's return value
+    (the first version) turns the consumed-dropped cases red.
+    """
+    manager = _ProtocolManager()
+    if frame == "binary":
+        websocket = _EventWebSocket([])
+        websocket.events.insert(0, {
+            "type": "websocket.receive",
+            "bytes": struct.pack("<4sI2h", b"NEKO", 16_000, 1, -1),
+        })
+    else:
+        websocket = _EventWebSocket([dict(_PCM_MESSAGE)])
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+    announcements: list[dict] = []
+
+    async def _announce(_name: str, message: dict) -> bool:
+        announcements.append(message)
+        return consumed
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="game",
+            is_active=lambda _name: True,
+            route_stream_message=_announce,
+            on_start_session=None if passthrough else AsyncMock(return_value=False),
+            finalize_for_character=_finalize_none,
+            audio_passthrough=passthrough,
+            current_instance=lambda _name: "test-instance",
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert announcements == [{"input_type": "audio", "stt_provider": "realtime"}]
+    streamed = [payload for name, payload in manager.calls if name == "stream_data"]
+    assert bool(streamed) is forwarded
+
+
+def test_game_kind_keeps_its_stt_audio_passthrough() -> None:
+    from main_routers import game_router
+
+    game_router._register_external_route_kind()
+    assert external_route_registry._snapshot_for_tests()["game"].audio_passthrough is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("passthrough", "forwarded"), [(False, False), (True, True)])
+async def test_superseded_recording_socket_honours_route_audio_consumption(
+    monkeypatch, passthrough, forwarded,
+) -> None:
+    """Same rule on the superseded recording socket's narrower dispatch path."""
+    manager = _ProtocolManager()
+    superseded_pcm = {
+        "action": "stream_data",
+        "input_type": "audio",
+        "sample_rate_hz": 16_000,
+        "data": [3, -3],
+    }
+    recording_socket = _TwoPhaseWebSocket(
+        [_LEASE_SYNC_MESSAGE, _PCM_MESSAGE],
+        [superseded_pcm],
+    )
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=recording_socket)
+    recording_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(recording_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: "stream_data" in [name for name, _payload in manager.calls]
+    )
+    chat_socket = _TwoPhaseWebSocket([{"action": "ping"}], [])
+    chat_task = asyncio.create_task(
+        websocket_router.websocket_endpoint(chat_socket, "Lan")
+    )
+    await _drain_until(
+        lambda: any(json.loads(payload) == {"type": "pong"} for payload in chat_socket.sent_text)
+    )
+
+    async def _consume(_name: str, _message: dict) -> bool:
+        return True
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="game",
+            is_active=lambda _name: True,
+            route_stream_message=_consume,
+            on_start_session=None if passthrough else AsyncMock(return_value=False),
+            finalize_for_character=_finalize_none,
+            audio_passthrough=passthrough,
+            current_instance=lambda _name: "test-instance",
+        )
+    )
+    recording_socket.release.set()
+    await recording_task
+    chat_socket.release.set()
+    await chat_task
+
+    stream_payloads = [payload for name, payload in manager.calls if name == "stream_data"]
+    assert (superseded_pcm in stream_payloads) is forwarded
+
+
+@pytest.mark.asyncio
+async def test_superseded_socket_does_not_start_a_session_after_a_route_declines(
+    monkeypatch,
+) -> None:
+    """The route's start decision may suspend; a newer window can take over meanwhile.
+
+    Mutation: falling through to the ordinary start without re-checking the
+    session owner turns this red.
+    """
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket(
+        [{"action": "start_session", "input_type": "audio", "request_id": "req-1"}]
+    )
+    session_ids, _route_external_calls = _install_protocol_endpoint(
+        monkeypatch, manager=manager, websocket=websocket,
+    )
+
+    async def _decline_after_takeover(_name: str, _message: dict) -> bool:
+        await asyncio.sleep(0)
+        session_ids["Lan"] = "newer-window"
+        return False
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=AsyncMock(return_value=False),
+            on_start_session=_decline_after_takeover,
+            finalize_for_character=_finalize_none,
+            current_instance=lambda _name: "visit-1",
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert "start_session" not in [name for name, _payload in manager.calls]
+
+
+@pytest.mark.asyncio
+async def test_start_session_is_dropped_when_the_route_changed_during_its_claim(
+    monkeypatch,
+) -> None:
+    """A declining route that was replaced meanwhile does not speak for the new owner.
+
+    Mutation: dropping the post-claim route re-check turns this red.
+    """
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket(
+        [{"action": "start_session", "input_type": "audio", "request_id": "req-1"}]
+    )
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+
+    async def _decline_after_replacement(_name: str, _message: dict) -> bool:
+        await asyncio.sleep(0)
+        external_route_registry.register_external_route_kind(
+            external_route_registry.ExternalRouteKind(
+                kind="visit",
+                is_active=lambda _name: True,
+                route_stream_message=AsyncMock(return_value=False),
+                on_start_session=AsyncMock(return_value=True),
+                finalize_for_character=_finalize_none,
+                current_instance=lambda _name: "visit-2",
+            )
+        )
+        return False
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=AsyncMock(return_value=False),
+            on_start_session=_decline_after_replacement,
+            finalize_for_character=_finalize_none,
+            current_instance=lambda _name: "visit-1",
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert "start_session" not in [name for name, _payload in manager.calls]
+
+
+@pytest.mark.asyncio
+async def test_start_session_asks_the_new_instance_when_the_kind_took_over(
+    monkeypatch,
+) -> None:
+    """Same registered kind, new route instance: the old instance's decline is
+    stale, so the new instance decides (here it claims the start).
+
+    Mutation: comparing only the kind object (not its instance) turns this red.
+    """
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket(
+        [{"action": "start_session", "input_type": "audio", "request_id": "req-1"}]
+    )
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+    instance = {"id": "visit-1"}
+    asked = []
+
+    async def _decide(_name: str, _message: dict) -> bool:
+        asked.append(instance["id"])
+        if instance["id"] == "visit-1":
+            await asyncio.sleep(0)
+            instance["id"] = "visit-2"
+            return False
+        return True
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=AsyncMock(return_value=False),
+            on_start_session=_decide,
+            finalize_for_character=_finalize_none,
+            current_instance=lambda _name: instance["id"],
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert asked == ["visit-1", "visit-2"]
+    assert "start_session" not in [name for name, _payload in manager.calls]
+
+
+@pytest.mark.asyncio
+async def test_start_session_falls_through_when_the_declining_route_ended(
+    monkeypatch,
+) -> None:
+    """A route that ended while declining leaves no owner: the ordinary start runs.
+
+    Mutation: treating any owner change as "drop" turns this red.
+    """
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket(
+        [{"action": "start_session", "input_type": "audio", "request_id": "req-1"}]
+    )
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+    active = {"value": True}
+
+    async def _decline_and_end(_name: str, _message: dict) -> bool:
+        await asyncio.sleep(0)
+        active["value"] = False
+        return False
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: active["value"],
+            route_stream_message=AsyncMock(return_value=False),
+            on_start_session=_decline_and_end,
+            finalize_for_character=_finalize_none,
+            current_instance=lambda _name: "visit-1" if active["value"] else None,
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert "start_session" in [name for name, _payload in manager.calls]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_id", ["req-1", None])
+async def test_start_session_fails_to_the_requester_when_the_owner_keeps_changing(
+    monkeypatch, request_id,
+) -> None:
+    """An owner that never settles gets the start failed back with its request
+    id. A start without one gets no failure: send_session_failed would adopt
+    the id of another start in flight and fail that one instead.
+
+    Mutation: dropping the addressed failure, or sending an unaddressed one,
+    turns this red; so does starting the ordinary session instead.
+    """
+    manager = _ProtocolManager()
+    manager.send_session_failed = AsyncMock()
+    start = {"action": "start_session", "input_type": "audio"}
+    if request_id:
+        start["request_id"] = request_id
+    websocket = _EventWebSocket([start])
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+    instance = {"n": 0}
+
+    async def _decline_and_hand_over(_name: str, _message: dict) -> bool:
+        await asyncio.sleep(0)
+        instance["n"] += 1
+        return False
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=AsyncMock(return_value=False),
+            on_start_session=_decline_and_hand_over,
+            finalize_for_character=_finalize_none,
+            current_instance=lambda _name: f"visit-{instance['n']}",
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+    await asyncio.gather(*list(websocket_router._ws_bg_tasks))
+
+    assert "start_session" not in [name for name, _payload in manager.calls]
+    if request_id:
+        manager.send_session_failed.assert_awaited_once_with("audio", request_id=request_id)
+    else:
+        manager.send_session_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_id", ["req-text", None])
+async def test_stream_data_gets_a_turn_end_when_the_owner_keeps_changing(
+    monkeypatch, request_id,
+) -> None:
+    """Input that reached no route still settles its request on the frontend;
+    without a request id (e.g. a screen frame) no turn end goes out, since an
+    unaddressed one would seal an unrelated reply.
+
+    Mutation: dropping the addressed turn end, or sending an unaddressed one,
+    turns this red; so does handing the message to the ordinary chat path.
+    """
+    manager = _ProtocolManager()
+    manager._emit_agent_callback_turn_end = AsyncMock()
+    message = {"action": "stream_data", "input_type": "text", "data": "hi"}
+    if request_id:
+        message["request_id"] = request_id
+    websocket = _EventWebSocket([message])
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=websocket)
+    instance = {"n": 0}
+
+    async def _decline_and_hand_over(_name: str, _message: dict) -> bool:
+        await asyncio.sleep(0)
+        instance["n"] += 1
+        return False
+
+    external_route_registry.register_external_route_kind(
+        external_route_registry.ExternalRouteKind(
+            kind="visit",
+            is_active=lambda _name: True,
+            route_stream_message=_decline_and_hand_over,
+            on_start_session=AsyncMock(return_value=False),
+            finalize_for_character=_finalize_none,
+            current_instance=lambda _name: f"visit-{instance['n']}",
+        )
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+    await asyncio.gather(*list(websocket_router._ws_bg_tasks))
+
+    assert "stream_data" not in [name for name, _payload in manager.calls]
+    if request_id:
+        manager._emit_agent_callback_turn_end.assert_awaited_once_with(request_id)
+    else:
+        manager._emit_agent_callback_turn_end.assert_not_awaited()

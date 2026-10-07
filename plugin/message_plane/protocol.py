@@ -77,6 +77,12 @@ class BusQueryArgs(BaseModel):
     source: Optional[str] = Field(default=None, max_length=128)
     kind: Optional[str] = Field(default=None, max_length=64)
     type: Optional[str] = Field(default=None, max_length=64)
+    # ``conversation_id`` is not a payload top-level field like its neighbours
+    # here: the writer puts it in ``metadata`` and TopicStore._extract_index
+    # projects it into the index. It is declared as a filter because
+    # ConversationClient.get_by_id sends it -- and this model is extra="forbid",
+    # so an undeclared field is not "ignored", it is a BAD_ARGS rejection.
+    conversation_id: Optional[str] = Field(default=None, max_length=128)
     priority_min: Optional[int] = None
     since_ts: Optional[float] = None
     until_ts: Optional[float] = None

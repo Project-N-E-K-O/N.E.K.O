@@ -7,9 +7,10 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Literal, Optional, Union
+import re
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, StrictBool, StrictStr, TypeAdapter, ValidationError, field_validator, model_validator
 from plugin._types.plugin_types import (
     PluginType,
     SUPPORTED_PLUGIN_TYPES,
@@ -19,6 +20,43 @@ from plugin._types.plugin_types import (
 )
 
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
+_PLUGIN_INSTALL_KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+
+ModelCapability = Literal["text", "image_input", "tool_calling", "streaming"]
+PluginModelUsageId = Annotated[
+    StrictStr,
+    Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"),
+]
+
+
+class PluginModelRequirementSchema(BaseModel):
+    """One model purpose declared under ``[plugin.models.<usage_id>]``.
+
+    The usage ID is stable across user-managed model-slot changes. These
+    declarations describe requirements only; bindings and credentials belong
+    to the host configuration.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    label: StrictStr = Field(min_length=1, max_length=256)
+    description: StrictStr = Field(default="", max_length=2048)
+    required: StrictBool = True
+    capabilities: List[ModelCapability] = Field(default_factory=lambda: ["text"], strict=True)
+
+    @field_validator("label")
+    @classmethod
+    def validate_label(cls, value: str) -> str:
+        if value.strip() != value:
+            raise ValueError("label must be non-empty and unpadded")
+        return value
+
+    @field_validator("capabilities")
+    @classmethod
+    def validate_capabilities(cls, value: List[ModelCapability]) -> List[ModelCapability]:
+        if len(value) != len(set(value)):
+            raise ValueError("model capabilities must not contain duplicates")
+        return value
 
 
 class PluginAuthorSchema(BaseModel):
@@ -56,6 +94,96 @@ class PluginConfigProfilesSchema(BaseModel):
 class PluginSafetySchema(BaseModel):
     """插件安全配置 Schema"""
     sync_call_in_handler: Optional[Literal["warn", "reject"]] = None
+
+
+class PluginInstallKindSchema(BaseModel):
+    """One host-managed install action declared by a plugin manifest."""
+
+    model_config = {"extra": "forbid"}
+
+    entry_id: StrictStr
+    label: StrictStr
+    queued_message: StrictStr
+    entry_timeout: float
+
+    @field_validator("entry_id")
+    @classmethod
+    def validate_entry_id(cls, value: str) -> str:
+        if not value or value.strip() != value:
+            raise ValueError("entry_id must be non-empty and unpadded")
+        return value
+
+    @field_validator("label")
+    @classmethod
+    def validate_label(cls, value: str) -> str:
+        if not value or value.strip() != value:
+            raise ValueError("label must be non-empty and unpadded")
+        return value
+
+    @field_validator("queued_message")
+    @classmethod
+    def validate_queued_message(cls, value: str) -> str:
+        if not value or value.strip() != value:
+            raise ValueError("queued_message must be non-empty and unpadded")
+        return value
+
+    @field_validator("entry_timeout", mode="before")
+    @classmethod
+    def validate_entry_timeout(cls, value: object) -> object:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("entry_timeout must be a finite number greater than zero")
+        try:
+            timeout = float(value)
+        except (OverflowError, ValueError) as exc:
+            raise ValueError(
+                "entry_timeout must be a finite number greater than zero"
+            ) from exc
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("entry_timeout must be a finite number greater than zero")
+        return timeout
+
+
+class PluginInstallSchema(BaseModel):
+    """Declarative install capabilities under ``[plugin.install]``."""
+
+    model_config = {"extra": "forbid"}
+
+    enabled: StrictBool
+    ui_i18n_dir: Optional[StrictStr] = None
+    tutorial_enabled: StrictBool = False
+    kinds: Dict[str, PluginInstallKindSchema] = Field(default_factory=dict)
+
+    @field_validator("kinds")
+    @classmethod
+    def validate_kind_names(
+        cls,
+        value: Dict[str, PluginInstallKindSchema],
+    ) -> Dict[str, PluginInstallKindSchema]:
+        for kind in value:
+            if not _PLUGIN_INSTALL_KIND_PATTERN.fullmatch(kind):
+                raise ValueError(
+                    "install kinds must match ^[a-z][a-z0-9_]*$ without normalization"
+                )
+        return value
+
+    @field_validator("ui_i18n_dir")
+    @classmethod
+    def validate_i18n_path_string(cls, value: str | None) -> str | None:
+        if value is not None and (not value or value.strip() != value):
+            raise ValueError("ui_i18n_dir must be non-empty and unpadded")
+        return value
+
+    @model_validator(mode="after")
+    def validate_disabled_contract(self) -> "PluginInstallSchema":
+        if self.enabled:
+            return self
+        if self.kinds:
+            raise ValueError("disabled plugin install declarations must not define kinds")
+        if self.tutorial_enabled:
+            raise ValueError("disabled plugin install declarations must not enable tutorials")
+        if self.ui_i18n_dir is not None:
+            raise ValueError("disabled plugin install declarations must not define ui_i18n_dir")
+        return self
 
 
 class PluginDependencySchema(BaseModel):
@@ -96,6 +224,8 @@ class PluginSectionSchema(BaseModel):
     store: Optional[PluginStoreSchema] = None
     config_profiles: Optional[PluginConfigProfilesSchema] = None
     safety: Optional[PluginSafetySchema] = None
+    install: Optional[PluginInstallSchema] = None
+    models: Dict[PluginModelUsageId, PluginModelRequirementSchema] = Field(default_factory=dict)
     dependencies: Optional[List[PluginDependencySchema]] = None
 
     @model_validator(mode="before")
@@ -314,6 +444,22 @@ def validate_plugin_config_partial(
                 message=format_removed_plugin_host(),
                 field="plugin.host",
             )
+
+        if "models" in plugin_section:
+            try:
+                TypeAdapter(Dict[PluginModelUsageId, PluginModelRequirementSchema]).validate_python(
+                    plugin_section["models"]
+                )
+            except ValidationError as exc:
+                errors = _parse_validation_errors(exc)
+                for error in errors:
+                    suffix = error.get("loc")
+                    error["loc"] = f"plugin.models.{suffix}" if suffix else "plugin.models"
+                raise ConfigValidationError(
+                    message=errors[0]["msg"],
+                    field=errors[0]["loc"],
+                    details=errors,
+                ) from exc
         
         # 验证 plugin.id 格式（如果存在）
         plugin_id = plugin_section.get("id")
@@ -451,6 +597,11 @@ __all__ = [
     "PluginAuthorSchema",
     "PluginSdkSchema",
     "PluginStoreSchema",
+    "PluginInstallKindSchema",
+    "PluginInstallSchema",
+    "PluginModelRequirementSchema",
+    "PluginModelUsageId",
+    "ModelCapability",
     "PluginConfigProfilesSchema",
     "PluginDependencySchema",
     "PluginType",

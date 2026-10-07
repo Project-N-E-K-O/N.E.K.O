@@ -15,6 +15,252 @@ const LIVE2D_MOTION_PRIORITY = Object.freeze({
     FORCE: 3
 });
 
+// The bundled Cubism renderer uses 36 slots for a single render texture and
+// 32 slots per texture when multiple textures are used. Each 256x256 mask
+// texture costs 256 KiB, so the atlas grows with the model up to 1024 contexts
+// (8 MiB). Larger models switch to high-precision masks instead of failing.
+const LIVE2D_MAX_MASK_RENDER_TEXTURES = 32;
+const LIVE2D_MIN_MASK_RENDER_TEXTURES = 3;
+const LIVE2D_SINGLE_MASK_TEXTURE_CAPACITY = 36;
+const LIVE2D_MULTI_MASK_TEXTURE_CAPACITY = 32;
+
+// Returns null when the atlas would need more than the texture budget; the
+// caller then renders masks per drawable in high-precision mode.
+function getLive2DMaskRenderTextureCount(clippingContextCount) {
+    if (!Number.isSafeInteger(clippingContextCount) || clippingContextCount < 0) {
+        throw new TypeError(`Invalid Live2D clipping context count: ${clippingContextCount}`);
+    }
+    // Preserve the existing three-texture budget to avoid reducing mask
+    // resolution for smaller models. Add textures only when capacity requires it.
+    const renderTextureCount = Math.max(
+        LIVE2D_MIN_MASK_RENDER_TEXTURES,
+        Math.ceil(clippingContextCount / LIVE2D_MULTI_MASK_TEXTURE_CAPACITY)
+    );
+    return renderTextureCount > LIVE2D_MAX_MASK_RENDER_TEXTURES ? null : renderTextureCount;
+}
+
+// High-precision mode redraws each clipped drawable's mask into the whole of
+// texture 0 right before drawing it, so it has no context-count limit. Pin it:
+// switching back to the shared atlas would exceed the atlas capacity.
+function forceLive2DHighPrecisionMask(renderer) {
+    renderer.useHighPrecisionMask(true);
+    renderer.useHighPrecisionMask = function() {};
+    renderer.__nekoHighPrecisionMaskForced = true;
+}
+
+function setLive2DMaskLayout(context, bufferIndex, channelNo, index, count) {
+    let columns;
+    let rows;
+    if (count === 1) {
+        columns = 1;
+        rows = 1;
+    } else if (count === 2) {
+        columns = 2;
+        rows = 1;
+    } else if (count <= 4) {
+        columns = 2;
+        rows = 2;
+    } else if (count <= 9) {
+        columns = 3;
+        rows = 3;
+    } else {
+        throw new RangeError(`Unsupported Live2D masks per channel: ${count}`);
+    }
+
+    context._bufferIndex = bufferIndex;
+    context._layoutChannelNo = channelNo;
+    context._layoutBounds.x = (index % columns) / columns;
+    context._layoutBounds.y = Math.floor(index / columns) / rows;
+    context._layoutBounds.width = 1 / columns;
+    context._layoutBounds.height = 1 / rows;
+}
+
+// Correct the bundled SDK's remainder distribution, which leaves contexts
+// unassigned at counts such as 94 and 95 with three textures.
+function setupLive2DMaskLayoutBounds(usingClipCount) {
+    const contexts = this._clippingContextListForMask;
+    const renderTextureCount = this._renderTextureCount;
+    if (!Array.isArray(contexts) || !Number.isSafeInteger(renderTextureCount)
+        || renderTextureCount < 1) {
+        throw new Error('Live2D clipping manager is not initialized.');
+    }
+
+    if (usingClipCount === 0) {
+        // The SDK passes zero for high-precision mode, where masks are drawn
+        // individually and may reuse the full texture. An entirely inactive
+        // frame returns from setupClippingContext before calling this method.
+        contexts.forEach((context) => setLive2DMaskLayout(context, 0, 0, 0, 1));
+        this.__nekoActiveClippingContextCount = 0;
+        return;
+    }
+
+    const capacity = renderTextureCount === 1
+        ? LIVE2D_SINGLE_MASK_TEXTURE_CAPACITY
+        : LIVE2D_MULTI_MASK_TEXTURE_CAPACITY * renderTextureCount;
+    if (!Number.isSafeInteger(usingClipCount) || usingClipCount < 0
+        || usingClipCount > capacity || usingClipCount > contexts.length) {
+        throw new RangeError(
+            `Unsupported active Live2D clipping context count: ${usingClipCount} `
+            + `(capacity: ${capacity}, available: ${contexts.length}).`
+        );
+    }
+
+    // setupClippingContext counts active contexts, but its drawing loop visits
+    // the entire list, including inactive entries. Reserve a stable slot for
+    // every context so inactive entries cannot alias active masks or move their
+    // slots when bounds disappear and return. Texture capacity is also sized
+    // from this full list in configureLive2DClipping.
+    const layoutCount = contexts.length;
+    if (layoutCount > capacity) {
+        throw new RangeError(`Live2D clipping context count exceeds capacity: ${layoutCount}`);
+    }
+    const countPerTexture = Math.ceil(layoutCount / renderTextureCount);
+    const texturesWithOneLess = countPerTexture * renderTextureCount - layoutCount;
+    let contextIndex = 0;
+
+    for (let bufferIndex = 0; bufferIndex < renderTextureCount; bufferIndex++) {
+        const countForTexture = countPerTexture
+            - (bufferIndex >= renderTextureCount - texturesWithOneLess ? 1 : 0);
+        const countPerChannel = Math.floor(countForTexture / 4);
+        const channelsWithOneMore = countForTexture % 4;
+
+        for (let channelNo = 0; channelNo < 4; channelNo++) {
+            const countForChannel = countPerChannel
+                + (channelNo < channelsWithOneMore ? 1 : 0);
+            for (let slotIndex = 0; slotIndex < countForChannel; slotIndex++) {
+                setLive2DMaskLayout(
+                    contexts[contextIndex++],
+                    bufferIndex,
+                    channelNo,
+                    slotIndex,
+                    countForChannel
+                );
+            }
+        }
+    }
+
+    if (contextIndex !== layoutCount) {
+        throw new Error(
+            `Live2D clipping layout assigned ${contextIndex} of ${layoutCount} contexts.`
+        );
+    }
+    this.__nekoActiveClippingContextCount = usingClipCount;
+}
+
+// Number.MIN_VALUE is positive. Recalculate bounds with negative infinity so
+// drawables whose vertices are entirely in negative model space remain tight.
+function calculateLive2DClippedDrawBounds(model, clippingContext) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (const drawableIndex of clippingContext._clippedDrawableIndexList) {
+        const vertexCount = model.getDrawableVertexCount(drawableIndex);
+        const vertices = model.getDrawableVertices(drawableIndex);
+        for (let vertexIndex = 0; vertexIndex < vertexCount * 2; vertexIndex += 2) {
+            const x = vertices[vertexIndex];
+            const y = vertices[vertexIndex + 1];
+            if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+        }
+    }
+
+    if (minX === Infinity) {
+        clippingContext._allClippedDrawRect.x = 0;
+        clippingContext._allClippedDrawRect.y = 0;
+        clippingContext._allClippedDrawRect.width = 0;
+        clippingContext._allClippedDrawRect.height = 0;
+        clippingContext._isUsing = false;
+        return;
+    }
+
+    clippingContext._allClippedDrawRect.x = minX;
+    clippingContext._allClippedDrawRect.y = minY;
+    clippingContext._allClippedDrawRect.width = maxX - minX;
+    clippingContext._allClippedDrawRect.height = maxY - minY;
+    clippingContext._isUsing = true;
+}
+
+function patchLive2DRendererProfile(renderer) {
+    const profile = renderer?._rendererProfile;
+    if (!profile || profile.__nekoBufferBindingFixApplied
+        || typeof profile.save !== 'function') return;
+
+    const originalSave = profile.save;
+    const originalSaveSource = Function.prototype.toString.call(originalSave);
+    const hasBundledBindingBug = /_lastArrayBufferBinding\s*=\s*this\.gl\.getParameter\(\s*this\.gl\.ELEMENT_ARRAY_BUFFER_BINDING\s*\)/
+        .test(originalSaveSource);
+    if (!hasBundledBindingBug) return;
+
+    profile.save = function() {
+        const gl = this.gl;
+        const arrayBufferBinding = gl
+            ? gl.getParameter(gl.ARRAY_BUFFER_BINDING)
+            : undefined;
+        originalSave.call(this);
+        if (gl) {
+            // The bundled save() leaves the element binding in the array field.
+            this._lastElementArrayBufferBinding = this._lastArrayBufferBinding;
+            this._lastArrayBufferBinding = arrayBufferBinding;
+        }
+    };
+    profile.__nekoBufferBindingFixApplied = true;
+}
+
+// setClippingMaskBufferSize() releases the clipping manager and builds a new
+// one, which would drop the per-instance fixes above. It also never hands the
+// new manager the GL context, so the call breaks rendering once started.
+function patchLive2DClippingManagerRebuild(renderer) {
+    if (renderer.__nekoClippingRebuildPatched
+        || typeof renderer.setClippingMaskBufferSize !== 'function') return;
+
+    const originalSetClippingMaskBufferSize = renderer.setClippingMaskBufferSize;
+    renderer.setClippingMaskBufferSize = function(size) {
+        const previousManager = this._clippingManager;
+        originalSetClippingMaskBufferSize.call(this, size);
+        const manager = this._clippingManager;
+        if (!manager || manager === previousManager) return;
+        if (this.gl) manager.setGL(this.gl);
+        configureLive2DClipping(this);
+    };
+    renderer.__nekoClippingRebuildPatched = true;
+}
+
+function configureLive2DClipping(renderer) {
+    const manager = renderer?._clippingManager;
+    if (!manager) return;
+
+    const contextCount = typeof manager.getClippingMaskCount === 'function'
+        ? manager.getClippingMaskCount()
+        : manager._clippingContextListForMask?.length;
+    const renderTextureCount = getLive2DMaskRenderTextureCount(contextCount);
+
+    if (manager._maskTexture?.textures) {
+        throw new Error('Cannot reconfigure Live2D clipping after mask texture allocation.');
+    }
+
+    if (renderTextureCount === null) {
+        console.warn(
+            `Live2D 模型有 ${contextCount} 个遮罩上下文，超过遮罩图集容量`
+            + `（${LIVE2D_MAX_MASK_RENDER_TEXTURES * LIVE2D_MULTI_MASK_TEXTURE_CAPACITY}），`
+            + '改用高精度遮罩逐个绘制。'
+        );
+        manager._renderTextureCount = 1;
+        forceLive2DHighPrecisionMask(renderer);
+    } else {
+        manager._renderTextureCount = renderTextureCount;
+    }
+    manager.setupLayoutBounds = setupLive2DMaskLayoutBounds;
+    manager.calcClippedDrawTotalBounds = calculateLive2DClippedDrawBounds;
+    manager.__nekoClippingFixApplied = true;
+    patchLive2DRendererProfile(renderer);
+    patchLive2DClippingManagerRebuild(renderer);
+}
+
 Live2DManager.prototype.hasActiveActionMotion = function(model = this.currentModel) {
     if (
         model === this.currentModel
@@ -161,6 +407,9 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this._activeMotionParamIds = null;
     this._actionMotionRequestPendingModel = null;
     this._simpleMotionActive = false;
+    if (typeof this._cancelTouchSetExpressionRestore === 'function') {
+        this._cancelTouchSetExpressionRestore();
+    }
     this._transientExpressionGeneration = (this._transientExpressionGeneration || 0) + 1;
     this._transientExpressionTask = null;
     this._activeTransientExpression = false;
@@ -233,6 +482,10 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
         ticker && ticker.stop && ticker.stop();
     } catch (_) {}
 
+    if (typeof this.clearLive2DPeek === 'function') {
+        this.clearLive2DPeek('model-removed', { restore: false });
+    }
+
     try {
         stage && stage.removeAllListeners && stage.removeAllListeners();
     } catch (_) {}
@@ -270,6 +523,9 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     } catch (_) {}
 
     this.currentModel = null;
+    if (typeof this.syncLive2DEffectiveInputLock === 'function') {
+        this.syncLive2DEffectiveInputLock();
+    }
     this._lastLoadedModelPath = null;
     if (typeof this._resetDerivedModelMetadata === 'function') {
         this._resetDerivedModelMetadata();
@@ -1669,7 +1925,9 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
                 scheduleIdleMotion(1000, { replace: true });
                 return;
             }
-            if (!motionManager.playing) {
+            const hasConfiguredIdle = Array.isArray(this._userIdleAnimations)
+                && this._userIdleAnimations.length > 0;
+            if (!motionManager.playing || hasConfiguredIdle) {
                 Promise.resolve(this._playIdleMotion(motionManager)).catch((e) => {
                     console.warn('[Live2D] 播放 Idle motion 失败:', e);
                 });
@@ -1710,8 +1968,10 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
                 console.warn('[Live2D] motionFinish 后清理 motion 参数失败:', e);
             }
         }
-        const randomDelay = 1000 + Math.random() * 2000;
-        scheduleIdleMotion(randomDelay);
+        const hasConfiguredIdle = Array.isArray(this._userIdleAnimations)
+            && this._userIdleAnimations.length > 0;
+        const delay = hasConfiguredIdle ? 0 : 1000 + Math.random() * 2000;
+        scheduleIdleMotion(delay);
     };
     model.internalModel.events.on('motionFinish', this._idleMotionFinishHandler);
 
@@ -1800,8 +2060,10 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         const indexes = getRandomizedIndexes(group.length);
         for (const idx of indexes) {
             const motion = group[idx];
-            if (filter && !filter(motion)) continue;
-            const file = getMotionFile(motion);
+            // Loaded Cubism motion instances generally do not retain their source
+            // path, so fall back to the definition at the same runtime index.
+            const file = getMotionFile(motion) || getRegisteredMotionFile(groupName, idx);
+            if (filter && !filter(motion, file)) continue;
             if (await startTrackedMotion(groupName, idx, file)) return true;
         }
         return false;
@@ -1815,19 +2077,42 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
             console.warn('[Live2D] motionGroups 不可用或 PreviewAll 组不存在，跳过用户待机动作');
         } else {
             const group = motionGroups.PreviewAll;
-            const startedUserIdle = await startTrackedGroupMotion('PreviewAll', group, (motion) => {
-                const motionFile = getMotionFile(motion);
+            const isConfiguredIdle = (motion, file) => {
+                const motionFile = file || getMotionFile(motion);
                 return motionFile && idleAnimations.includes(motionFile.split('/').pop());
-            });
-            if (startedUserIdle) {
-                return;
-            }
-            if (Array.isArray(group) && group.length > 0) {
-                const available = group.filter((motion) => {
-                    const motionFile = getMotionFile(motion);
-                    return motionFile && idleAnimations.includes(motionFile.split('/').pop());
-                });
-                if (available.length > 0) {
+            };
+            const available = Array.isArray(group)
+                ? group.filter((motion, index) => isConfiguredIdle(
+                    motion,
+                    getRegisteredMotionFile('PreviewAll', index)
+                ))
+                : [];
+            if (available.length > 0) {
+                const currentGroup = motionManager.state?.currentGroup;
+                const currentIndex = motionManager.state?.currentIndex;
+                const currentFile = getRegisteredMotionFile(currentGroup, currentIndex);
+                if (motionManager.playing
+                    && currentGroup === 'PreviewAll'
+                    && currentFile
+                    && idleAnimations.includes(currentFile.split('/').pop())) {
+                    return;
+                }
+                if (typeof this.hasActiveActionMotion === 'function'
+                    && this.hasActiveActionMotion(expectedModel)) {
+                    return;
+                }
+                if (motionManager.playing
+                    && Number(motionManager.state?.currentPriority || 0) <= LIVE2D_MOTION_PRIORITY.IDLE
+                    && typeof motionManager.stopAllMotions === 'function') {
+                    motionManager.stopAllMotions();
+                }
+                const startedUserIdle = await startTrackedGroupMotion(
+                    'PreviewAll', group, isConfiguredIdle
+                );
+                if (startedUserIdle) {
+                    return;
+                }
+                if (isCurrentIdleRequest()) {
                     console.warn('[Live2D] 用户保存的待机动作启动失败，回退到默认 Idle');
                 }
             }
@@ -1896,19 +2181,14 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         this.modelName = null;
     }
 
-    // 配置渲染纹理数量以支持更多蒙版
-    if (model.internalModel && model.internalModel.renderer && model.internalModel.renderer._clippingManager) {
-        model.internalModel.renderer._clippingManager._renderTextureCount = 3;
-        if (typeof model.internalModel.renderer._clippingManager.initialize === 'function') {
-            model.internalModel.renderer._clippingManager.initialize(
-                model.internalModel.coreModel,
-                model.internalModel.coreModel.getDrawableCount(),
-                model.internalModel.coreModel.getDrawableMasks(),
-                model.internalModel.coreModel.getDrawableMaskCounts(),
-                3
-            );
-        }
-        console.log('渲染纹理数量已设置为3');
+    // 在模型加入舞台、mask framebuffer 延迟创建之前校正 vendor clipping。
+    // 不可再次调用 initialize()：该版本会向已有映射追加重复项。
+    if (model.internalModel?.renderer?._clippingManager) {
+        configureLive2DClipping(model.internalModel.renderer);
+        console.log(
+            'Live2D 遮罩缓冲区已配置:',
+            model.internalModel.renderer._clippingManager.getRenderTextureCount()
+        );
     }
 
     // 根据画质设置调整渲染分辨率，不改动 Live2D 图集贴图。

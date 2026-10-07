@@ -1,5 +1,15 @@
 # Docker デプロイ
 
+リモートinstanceはkeyを初回入力し、通常のcommunity loginを利用します。
+外部nginx/NAS認証は併用できます。ローカルdesktopとloopbackデバッグproxyは互換です。
+リモート応答にLinuxパス/cloud tokenを含めません。platform relayはDocker domainごとの登録不要です。
+認証基盤とElectron対応版公開が#3289 merge条件で、Linux+Windows実機はcommunityが検証します。
+[契約と検証手順](/design/security/community-remote-access)。
+key取得: docker compose exec --user neko -w /app neko-main uv run python -m utils.instance_access
+NEKO_INSTANCE_PUBLIC_ORIGIN に HTTPS を指定する場合、外部ゲートウェイの80番ポートは閉じるかHTTPSへのリダイレクトのみ許可し、同じHostの平文要求を転送しないでください。内部HTTP upstreamは隔離してください。Host一致だけではTLSを証明できません。
+証明書を用意できない自己ホスト環境が多いため、平文HTTP（`http://<NAS-IP>:48911`、`DISABLE_SSL=1`、SSHトンネル等）は既定で許可されます。この場合ペアリング画面はkeyとセッションが暗号化されないことを警告し、セッションcookieは別名・Secureなしで発行されます。可能ならHTTPS/WSSを使い、外部TLS gatewayではNEKO_INSTANCE_PUBLIC_ORIGINを設定します。`NEKO_REQUIRE_HTTPS=1` で平文のリモートペアリングと認証情報を拒否できます。ブラウザはHTTPSまたは`localhost`でのみマイクを許可するため、`http://<IP>` では音声入力は使えません（テキストチャットは利用可）。
+NEKO_COMMUNITY_WEB_REDIRECT_URIは既定で空にしてplatform relayを使います。
+
 保守対象 Compose は `docker/docker-compose.yml`。Nginx を前段にして host 48911=HTTP、48912=HTTPS です。
 
 ```bash
@@ -10,11 +20,11 @@ cp env.template .env
 docker compose up -d
 ```
 
-`http://127.0.0.1:48911` を開きます。再現性には `NEKO_IMAGE` / `NEKO_IMAGE_VERSION` を pin。`latest` は standard、`latest-full` は full alias です。
+`https://127.0.0.1:48912`（推奨）または `http://<host>:48911` を開きます。再現性には `NEKO_IMAGE` / `NEKO_IMAGE_VERSION` を pin。`latest` は standard、`latest-full` は full alias です。
 
 Entrypoint は `/app/config/core_config.json` がない時、または `NEKO_FORCE_ENV_UPDATE` 指定時だけ初期 config を生成します。API env は live universal override ではありません。
 
-Persistent mounts は `./neko-home` → `/home/neko`（設定、データ、TLS 証明書と秘密鍵、OpenFang runtime state）、`./logs` → `/app/logs`。更新前に backup し、data/private key を公開しません。
+Persistent mounts は `./neko-home` → `/home/neko`（設定、データ、TLS 証明書と秘密鍵）、`./logs` → `/app/logs`。更新前に backup し、data/private key を公開しません。
 
 ::: danger 旧 2 マウント構成からの移行
 旧版は `./N.E.K.O` と `./ssl` を別々に mount していました。移行せずに新しい image を pull すると、container は**空の** data directory で起動します。サービスは正常に立ち上がり API key も環境変数から再生成されるため一見問題なく見えますが、キャラクター・記憶・plugin が全て存在しない状態です。旧 data は削除されておらず、mount されなくなっただけです。
@@ -23,12 +33,11 @@ Persistent mounts は `./neko-home` → `/home/neko`（設定、データ、TLS 
 
 ```bash
 # 1. container 内にしかないものを先に export（削除前に必ず実行）。
-#    旧レイアウトでは OpenFang の workspace を mount していませんでした。また host 側の
-#    N.E.K.O/ が空の場合は旧 README の quickstart のケースで、その mount 先
+#    host 側の N.E.K.O/ が空の場合は旧 README の quickstart のケースで、その mount 先
 #    （/root/Documents/N.E.K.O）はサービスの実際の書き込み先と一致していなかったため、
 #    アプリケーション data も container 内にあります。
 #    末尾の /. は directory の中身をコピーする指定で、N.E.K.O/N.E.K.O のようなネストを防ぎます。
-mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
+mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl
 # 判断は「host 側 directory の中身」ではなく「container が実際に何を mount しているか」で
 # 行います：旧 README は ./N.E.K.O を /root/Documents/N.E.K.O に mount しており、そこは
 # サービスが書き込まない path なので、その host directory に自分で置いた file があっても
@@ -49,11 +58,6 @@ else
     docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
     EXPORTED_APP_DATA=1
   fi
-  # OpenFang state はその次で、致命的ではありません：一度も初期化していない container
-  # には該当 directory がなく、docker cp は存在しない SRC_PATH で失敗します。上の
-  # 重要な export が済んだ後にそれで中断させてはいけません。
-  docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/ \
-    || echo "（container に .openfang がないか export に失敗しました。上の application data には影響しません）"
 fi
 ```
 

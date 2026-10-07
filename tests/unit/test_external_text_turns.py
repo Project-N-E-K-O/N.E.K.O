@@ -25,6 +25,9 @@ _SERVER_RESPONSE_ID_LIMIT = arbiter_module._SERVER_RESPONSE_ID_LIMIT
 RealtimeResponseArbiter = arbiter_module.RealtimeResponseArbiter
 
 
+pytestmark = pytest.mark.usefixtures("arbiter_logs_reach_caplog")
+
+
 async def _wait_for_arbiter_source(
     arbiter: RealtimeResponseArbiter,
     source: str | None,
@@ -2946,6 +2949,8 @@ async def test_concurrent_transport_abort_closes_detached_socket_once():
     socket = FakeSocket()
     client.ws = socket
     client._fatal_error_occurred = False
+    client._is_gemini = False
+    client._retired_websockets = []
 
     await asyncio.gather(
         client._abort_failed_transport("first"),
@@ -3903,6 +3908,7 @@ async def test_a_vad_boundary_that_expired_while_parked_still_disqualifies():
     # request.
     sent = []
     aborted = []
+    transport_aborted = asyncio.Event()
     arbiter = None
 
     async def send(event):
@@ -3917,6 +3923,7 @@ async def test_a_vad_boundary_that_expired_while_parked_still_disqualifies():
 
     async def abort(reason):
         aborted.append(reason)
+        transport_aborted.set()
 
     arbiter = RealtimeResponseArbiter(send, abort_transport=abort)
     # An announced-but-unidentified automatic response holds the lane.
@@ -3937,15 +3944,19 @@ async def test_a_vad_boundary_that_expired_while_parked_still_disqualifies():
         response_started_timeout=0.15,
         cancel_timeout=0.05,
     )
-    await asyncio.sleep(0.01)
+    await _wait_for_arbiter_source(arbiter, "external_asr")
+    assert not sent, "the request must still be parked before the VAD expiry"
 
     # The backstop gives up while the request is still parked. This is the one
     # epoch bump that does not interrupt the current request, which is why it
     # is the only one the wider window changes.
     arbiter._server_vad_pending_expired()
 
-    with pytest.raises(Exception):
-        await asyncio.wait_for(ticket.done, 1.0)
+    # Wait for the arbiter's actual abort, not a short outer timeout that can
+    # cancel the ticket before the worker runs on a busy Windows CI host.
+    await asyncio.wait_for(transport_aborted.wait(), 10.0)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(ticket.done), 10.0)
     assert aborted, (
         "the automatic response the backstop gave up on is not this request's "
         "to adopt"
@@ -4126,7 +4137,7 @@ async def test_the_item_ack_wait_reports_what_it_spent(caplog):
 
     arbiter = RealtimeResponseArbiter(send)
     with caplog.at_level(
-        logging.INFO, logger="main_logic.omni_realtime_client._response_arbiter"
+        logging.INFO, logger=arbiter_module.logger.name
     ):
         ticket = await arbiter.enqueue(
             source="external_asr",

@@ -1,5 +1,29 @@
 # Create your first plugin with the N.E.K.O Plugin CLI
 
+## Develop with an installed N.E.K.O application
+
+For an existing valid plugin source folder, you do not need to clone the main repository or run a source checkout of the backend:
+
+Development-directory APIs are available only to the local desktop application and loopback web pages. Remote LAN pages and reverse-proxy access are not supported yet.
+
+Development archives are stored separately and downloaded through the local development page. They do not appear in the ordinary package list. Removing a registration or disabling developer mode preserves the local-only download restriction. Downloaded files can be installed through the normal import flow.
+
+1. Open the plugin manager, select **Developer mode** below **Server logs** in the sidebar, and enable its switch.
+2. Choose **Load unpacked plugin** and select the folder containing `plugin.toml`. In a browser, enter an absolute folder path on the **backend machine**; uploading a browser-local folder does not provide in-place development.
+3. Validate the name, ID, version, entry point and path, then load. Failed startup keeps the registration and error so you can fix the source and retry.
+4. Edit in your own editor and click **Reload**. Entry code and plugin submodules are read again. Restart the plugin after changing dependencies too.
+5. Click **Build package** and download the `.neko-plugin` file. Import it into another clean N.E.K.O installation to verify distribution. A stopped plugin can also be packaged.
+
+The folder name must match the entry package name, and the plugin ID must not conflict with another source. Existing dependency declarations and `vendor/` rules apply; dependencies are not installed automatically. Use **Change folder** after moving source. Changing the plugin ID requires removing the old association and registering again.
+
+Disabling developer mode stops development plugins and retains their associations. Start them manually after restarting the application. **Remove association** stops the plugin and keeps its source and runtime data. A failed stop does not count as successful removal.
+
+Do not edit source during a build: detected changes require a retry. Existing packaging exclusions apply and do not guarantee removal of every secret. Successful packaging is separate from functional testing and market review.
+
+Before packaging, the source folder name must also match the plugin ID: the existing package format installs into that directory. If they differ, rename the folder, update its entry/imports, and rebind it before retrying. Packaging does not rewrite your source.
+
+The CLI tutorial below covers source-based scaffolding, checks and release automation.
+
 This page confirms that the Plugin CLI included with N.E.K.O works, then uses it to create a Hello World plugin that you can run and continue developing immediately.
 
 Plugins under development live directly in `N.E.K.O/plugin/plugins/`. You will finish with a `hello_world` project containing example code, configuration, tests, code checks, and GitHub release workflows.
@@ -110,7 +134,7 @@ Unless the storage location or related environment variables have been changed, 
 
 The root `plugin.toml` is the plugin manifest. `config/plugin.toml` in user data is that user's runtime configuration. On first use, N.E.K.O copies `config.example.toml` to the runtime configuration path; it does not overwrite an existing configuration.
 
-When an end user installs a `.neko-plugin` package using the default paths, the installed code and runtime directories are together under `<user data root>/plugins/hello_world/`. This guide is about source development, so only edit `N.E.K.O/plugin/plugins/hello_world/`; N.E.K.O manages user data.
+Installed package code and writable runtime state are stored separately. This guide is about source development, so only edit `N.E.K.O/plugin/plugins/hello_world/`; N.E.K.O manages the installed and user-data locations.
 
 If the destination already exists, the CLI stops without overwriting it. Choose a new directory or inspect the existing one before continuing.
 
@@ -260,6 +284,24 @@ Continue editing `plugin/plugins/hello_world/`. After each change:
 3. Trigger **Hello** again to verify the change.
 
 Reload stops the current plugin and starts it again from the saved source. Daily development does not require building or repeatedly importing an installation package. If you add or remove a plugin or change `plugin.toml`, refresh the plugin list first.
+
+### Automatic hot reload
+
+Set `NEKO_PLUGIN_HOT_RELOAD=true` before starting N.E.K.O. and the plugin server watches every plugin source directory (built-in roots, installed roots, and development-mode registrations). When a `*.py` or `plugin.toml` file stops changing for the debounce window, the running plugin is reloaded automatically — no button click needed:
+
+```bash
+# PowerShell
+$env:NEKO_PLUGIN_HOT_RELOAD = "true"; uv run python launcher.py
+# bash
+NEKO_PLUGIN_HOT_RELOAD=true uv run python launcher.py
+```
+
+Details worth knowing:
+
+- Only **running** plugins are reloaded; a plugin you stopped stays stopped. The one exception: if an automatic reload stopped the plugin and then failed to start it (for example a bad import), your next save retries the start. Any manual Start/Stop/Reload, uninstall or reinstall cancels that retry.
+- The manifest, entry point and source syntax are checked before the reload. A broken edit keeps the current instance running and logs a warning; the next save retries.
+- The debounce window (`NEKO_PLUGIN_HOT_RELOAD_DEBOUNCE`, default 1.5s) absorbs multi-file saves; the poll interval is `NEKO_PLUGIN_HOT_RELOAD_INTERVAL` (default 1.0s).
+- Auto reloads take the same lock as the manual button. If you are mid-operation, the auto reload waits up to the debounce window for the lock, then defers by one debounce window and retries instead of interrupting.
 
 ## 10. Build only when you are ready to deliver
 

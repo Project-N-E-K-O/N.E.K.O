@@ -18,7 +18,6 @@ N.E.K.O. port probing and health-check utilities.
 
 Capabilities:
 - probe /health and verify the N.E.K.O fingerprint
-- single-instance startup lock (delegated to ``utils.single_instance``)
 - detection of Hyper-V reserved port ranges on Windows
 """
 
@@ -202,50 +201,3 @@ def is_port_in_excluded_range(port: int, excluded: list[tuple[int, int]] | None 
     if excluded is None:
         excluded = get_hyperv_excluded_ranges()
     return any(lo <= port <= hi for lo, hi in excluded)
-
-
-# ---------------------------------------------------------------------------
-#  启动锁
-# ---------------------------------------------------------------------------
-
-def acquire_startup_lock() -> bool:
-    """Back-compat façade over :mod:`utils.single_instance`.
-
-    The old implementation lived here as a Windows named mutex plus a POSIX
-    ``flock``, and it disagreed with itself in three ways worth recording, since
-    they are the reason it could not be the basis of a uniqueness *proof*:
-
-    * Inverted failure polarity. A Windows mutex failure returned "go ahead"
-      while any POSIX ``OSError`` returned "somebody else is running" — and the
-      mutex lived in the ``Global\\`` namespace, which a non-elevated interactive
-      user usually cannot create, so the most common desktop configuration had
-      no lock at all.
-    * Inconsistent scope: machine-wide on Windows, per-user ``$TMPDIR`` on
-      macOS, shared ``/tmp`` on Linux (where the second user could not even open
-      the first user's lock file).
-    * It unlinked the lock file on release, which hands a third contender a
-      fresh inode while a second one is still waiting on the old one.
-
-    Uniqueness now lives in one place, and it publishes the winner's identity
-    instead of only saying "taken". This wrapper stays because ``launcher.py``
-    re-exports it and existing tests patch it by name.
-    """
-    from utils import single_instance
-
-    try:
-        handle = single_instance.acquire_single_instance(
-            instance_id=os.environ.get("NEKO_INSTANCE_ID", ""),
-        )
-    except OSError:
-        # Not being able to consult the lock is "unknown", and unknown must not
-        # become "somebody else is running" — that would be an unclearable
-        # refusal to start on a full disk or a read-only home.
-        return True
-    return handle is not None
-
-
-def release_startup_lock() -> None:
-    """Release the single-instance lock (best effort, idempotent)."""
-    from utils import single_instance
-
-    single_instance.release_single_instance()

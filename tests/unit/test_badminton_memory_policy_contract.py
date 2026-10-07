@@ -164,8 +164,17 @@ async def test_badminton_external_transcript_meta_uses_badminton_prefix(monkeypa
         }
     )
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    # ``_route_external_transcript_to_game`` re-checks route ownership after the
+    # mirror await, so the state this fixture builds has to actually BE the
+    # active badminton route -- otherwise everything below the recheck is
+    # skipped and the assertions below have nothing to read.
+    monkeypatch.setitem(
+        gr_runtime._game_route_states,
+        gr_runtime._route_state_key("Lan", "badminton"),
+        state,
+    )
 
-    async def fake_run_game_chat(game_type, session_id, event):
+    async def fake_run_game_chat(game_type, session_id, event, **_route_kwargs):
         return {"line": "ok", "control": {}, "game_type": game_type, "session_id": session_id}
 
     _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)

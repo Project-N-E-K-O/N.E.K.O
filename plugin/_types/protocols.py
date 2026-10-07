@@ -480,7 +480,7 @@ class PluginContextProtocol(Protocol):
     # ==================== Bus Hub ====================
     @property
     def bus(self) -> "BusHubProtocol":
-        """总线Hub，提供 memory/messages/events/lifecycle/conversations 客户端
+        """总线Hub，提供 memory/messages/events/lifecycle/conversations/frames 客户端
         
         Example:
             # 获取消息
@@ -497,6 +497,9 @@ class PluginContextProtocol(Protocol):
             
             # 获取对话上下文
             conversations = ctx.bus.conversations.get_by_id(conversation_id)
+
+            # 获取宿主最近推给模型的那几帧（有损，不是日志）
+            frames = ctx.bus.frames.get(max_count=4)
         """
         ...
 

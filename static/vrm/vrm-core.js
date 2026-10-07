@@ -31,6 +31,7 @@ class VRMCore {
         this.targetFPS = this.performanceMode === 'low' ? 30 : (this.performanceMode === 'medium' ? 45 : 60);
         this.frameTime = 1000 / this.targetFPS;
         this.lastFrameTime = 0;
+        this._preferenceSaveQueue = Promise.resolve();
     }
 
     static _vrmUtilsCache = null;
@@ -477,6 +478,10 @@ class VRMCore {
         this._ensureThreeReady();
         const THREE = window.THREE;
         const embed = options && options.embed === true;
+        const resizeMode = String(options?.resizeMode || 'host-window');
+        if (!['fixed', 'host-window'].includes(resizeMode)) {
+            throw new Error(`不支持的 VRM resizeMode: ${resizeMode}`);
+        }
 
         this.manager.container = document.getElementById(containerId);
         this.manager.canvas = document.getElementById(canvasId);
@@ -522,6 +527,10 @@ class VRMCore {
         // the torso is still visible. Start wider and let the interaction module
         // expand further only when the animated bounds actually need it.
         this.manager.camera = new THREE.PerspectiveCamera(34, width / height, 0.05, 2000);
+        // Embedded renderers let their host own framing (including clipping).
+        // Reset on every camera initialization; never inherit a previous host's
+        // policy when a manager is reused for the desktop renderer.
+        this.manager._externalCameraFraming = embed;
         this.manager.camera.position.set(0, 1.1, 1.5);
         this.manager.camera.lookAt(0, 0.9, 0);
 
@@ -658,6 +667,12 @@ class VRMCore {
         this.manager.scene.add(bottomLight);
         this.manager.bottomLight = bottomLight;
 
+        // Embedded mini-game renderers are resized by the official Avatar host.
+        // Keeping the engine listener-free prevents a second window policy from
+        // racing container/fixed sizing. The main application keeps the existing
+        // host-window behavior because it remains the default.
+        if (resizeMode === 'fixed') return;
+
         // 使用 Core 模块专用的 handlers 数组
         if (!this.manager._coreWindowHandlers) {
             this.manager._coreWindowHandlers = [];
@@ -726,6 +741,7 @@ class VRMCore {
 
     async loadModel(modelUrl, options = {}, managerLoadToken = null) {
         const THREE = window.THREE;
+        const embed = options.embed === true;
         if (!THREE) {
             const errorMsg = window.t ? window.t('vrm.error.threeNotLoadedForModel') : 'Three.js库未加载，无法加载VRM模型';
             throw new Error(errorMsg);
@@ -862,6 +878,11 @@ class VRMCore {
             // 检测 VRM 模型版本（0.0 或 1.0）
             this.vrmVersion = this.detectVRMVersion(vrm, gltf);
             const versionDefaultRotation = await this.applyVRM0CompatibilityRotation(vrm);
+            // 在用户旋转应用前记录加载器对局部正面的判断，重新加载存档也保持一致。
+            if (this.vrmVersion === '1.0' && window.VRMOrientationDetector) {
+                vrm.userData = vrm.userData || {};
+                vrm.userData.orientationFlipped = window.VRMOrientationDetector.detectNeedsRotation(vrm);
+            }
 
             // 计算模型的边界框，用于确定合适的初始大小
             const box = new THREE.Box3().setFromObject(vrm.scene);
@@ -870,7 +891,8 @@ class VRMCore {
 
             // 获取保存的用户偏好设置
             let preferences = null;
-            try {
+            if (!embed) {
+                try {
                 // 添加超时保护（5秒超时）
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -955,8 +977,9 @@ class VRMCore {
                         return false;
                     });
                 }
-            } catch (error) {
-                console.error('[VRM Core] 获取用户偏好设置失败:', error);
+                } catch (error) {
+                    console.error('[VRM Core] 获取用户偏好设置失败:', error);
+                }
             }
 
             if (preferences) {
@@ -1056,7 +1079,7 @@ class VRMCore {
             
             const hasSavedRotation = VRMCore._isFiniteRotation(savedRotation);
             
-            if (!hasSavedRotation && typeof this.saveUserPreferences === 'function') {
+            if (!embed && !hasSavedRotation && typeof this.saveUserPreferences === 'function') {
                 // 标准化位置为普通对象 {x, y, z}
                 // 始终从 vrm.scene 获取当前位置，确保 z 值有效
                 // （旧版偏好设置可能只有 x 和 y，没有 z 值）
@@ -1220,7 +1243,12 @@ class VRMCore {
             this.applyQualitySettings(window.renderQuality || 'medium');
 
             if (this.manager.controls) {
-                this.manager.controls.target.set(0, center.y, 0);
+                // 相机恢复流程已确定存档或默认观察目标，控制器必须使用同一目标。
+                if (this.manager._cameraTarget?.isVector3) {
+                    this.manager.controls.target.copy(this.manager._cameraTarget);
+                } else {
+                    this.manager.controls.target.set(0, center.y, 0);
+                }
                 this.manager.controls.update();
             }
 
@@ -1397,12 +1425,18 @@ class VRMCore {
      * @param {object} position - 位置 {x, y, z}
      * @param {object} scale - 缩放 {x, y, z}
      * @param {object} rotation - 旋转 {x, y, z}（可选）
-     * @param {object} display - 显示器信息（可选）
+     * @param {object|Promise<object|null>} display - 显示器信息或正在查询的信息（可选）
      * @param {object} viewport - 视口尺寸 {width, height}（可选，用于跨分辨率归一化）
      * @returns {Promise<boolean>} 是否保存成功
      */
     async saveUserPreferences(modelPath, position, scale, rotation, display, viewport, cameraPosition) {
         try {
+            const displaySnapshot = display && typeof display.then === 'function'
+                ? display : display && { screenX: display.screenX, screenY: display.screenY };
+            const displayRequest = Promise.resolve(displaySnapshot).catch(error => {
+                console.warn('[VRM Core] 获取显示器信息失败:', error);
+                return null;
+            });
             // 观看模式只读：viewer 不应把本地拖动覆盖到全局模型布局（也避免向 monitor 的只读端点 POST 触发 405）
             if (window.isViewerMode) {
                 return false;
@@ -1429,23 +1463,14 @@ class VRMCore {
 
             const preferences = {
                 model_path: modelPath,
-                position: position,
-                scale: scale
+                position: { x: position.x, y: position.y, z: position.z },
+                scale: { x: scale.x, y: scale.y, z: scale.z }
             };
 
             // 如果有旋转信息，添加到偏好中
             if (rotation && typeof rotation === 'object' &&
                 Number.isFinite(rotation.x) && Number.isFinite(rotation.y) && Number.isFinite(rotation.z)) {
-                preferences.rotation = rotation;
-            }
-
-            // 如果有显示器信息，添加到偏好中（用于多屏幕位置恢复）
-            if (display && typeof display === 'object' &&
-                Number.isFinite(display.screenX) && Number.isFinite(display.screenY)) {
-                preferences.display = {
-                    screenX: display.screenX,
-                    screenY: display.screenY
-                };
+                preferences.rotation = { x: rotation.x, y: rotation.y, z: rotation.z };
             }
 
             // 如果有视口信息，添加到偏好中（用于跨分辨率缩放归一化）
@@ -1466,32 +1491,55 @@ class VRMCore {
                     y: cameraPosition.y,
                     z: cameraPosition.z
                 };
-            }
-            
-            // 添加超时保护（5秒超时）
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000);
-            
-            let response;
-            try {
-                response = await fetch('/api/config/preferences', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(preferences),
-                    signal: controller.signal
-                });
-                
-                clearTimeout(timeoutId);
-            } catch (error) {
-                clearTimeout(timeoutId);
-                if (error.name === 'AbortError') {
-                    console.warn('[VRM Core] 保存偏好设置请求超时（5秒）');
-                    throw new Error('请求超时');
+                for (const key of ['qx', 'qy', 'qz', 'qw', 'targetX', 'targetY', 'targetZ']) {
+                    if (Number.isFinite(cameraPosition[key])) {
+                        preferences.camera_position[key] = cameraPosition[key];
+                    }
                 }
-                throw error;
             }
+            
+            // 显示器查询未完成也先占据写入顺序，所有调用入口共用队列。
+            // 已完成的交互快照不会因后续模型切换而丢失。
+            const write = async () => {
+                let displayTimer;
+                let displayInfo;
+                try {
+                    // Electron 查询无响应时仍保存姿态，不能让元数据堵住后续写入。
+                    displayInfo = await Promise.race([displayRequest, new Promise(resolve => {
+                        displayTimer = setTimeout(() => resolve(null), 1000);
+                    })]);
+                } finally {
+                    clearTimeout(displayTimer);
+                }
+                if (displayInfo && Number.isFinite(displayInfo.screenX) && Number.isFinite(displayInfo.screenY)) {
+                    preferences.display = { screenX: displayInfo.screenX, screenY: displayInfo.screenY };
+                }
+                return this._saveUserPreferencesRequest(preferences);
+            };
+            const request = this._preferenceSaveQueue.then(write, write);
+            this._preferenceSaveQueue = request.catch(() => {});
+            return await request;
+        } catch (error) {
+            console.error('[VRM] 保存用户偏好失败:', error);
+            return false;
+        }
+    }
+
+    async _saveUserPreferencesRequest(preferences) {
+        let timeoutId;
+        try {
+            if (window.isViewerMode) return false;
+            // 5 秒超时覆盖请求和响应体读取，避免停滞响应阻塞保存队列。
+            const controller = new AbortController();
+            timeoutId = setTimeout(() => controller.abort(), 5000);
+            const response = await fetch('/api/config/preferences', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(preferences),
+                signal: controller.signal
+            });
 
             if (!response.ok) {
                 let errorText = '';
@@ -1504,6 +1552,7 @@ class VRMCore {
                         errorText = await response.text();
                     }
                 } catch (e) {
+                    if (e.name === 'AbortError') throw e;
                     errorText = response.statusText || '未知错误';
                 }
                 throw new Error(`保存偏好设置失败: ${response.status} ${response.statusText}${errorText ? ` - ${errorText}` : ''}`);
@@ -1511,6 +1560,7 @@ class VRMCore {
 
             // 安全解析 JSON，避免空响应体或非 JSON 响应导致异常被吞掉
             const result = await response.json().catch((parseError) => {
+                if (parseError.name === 'AbortError') throw parseError;
                 const statusText = response.statusText || '';
                 const truncatedStatusText = statusText.length > 50 ? statusText.substring(0, 50) + '...' : statusText;
                 console.warn(`[VRM Core] 保存偏好设置响应解析失败: ${response.status} ${truncatedStatusText}`, parseError);
@@ -1519,8 +1569,13 @@ class VRMCore {
             
             return result.success || false;
         } catch (error) {
+            if (error.name === 'AbortError') {
+                console.warn('[VRM Core] 保存偏好设置请求超时（5秒）');
+            }
             console.error('[VRM] 保存用户偏好失败:', error);
             return false;
+        } finally {
+            clearTimeout(timeoutId);
         }
     }
 

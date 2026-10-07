@@ -15,9 +15,10 @@
 
 """Runtime ports, environment overrides, instance identity, and local origins."""
 
+import ipaddress
 import json
 import os
-import platform
+import sys
 import uuid
 
 from .application import logger
@@ -25,13 +26,17 @@ from .application import logger
 # 从 Electron userData 目录读取端口覆盖配置（由前端端口设置窗口写入）
 def _read_port_overrides() -> dict:
     try:
-        system = platform.system()
-        if system == "Windows":
+        # 用 sys.platform 而不是 platform.system()：后者在 Windows 上会走
+        # platform.uname() -> win32_ver() -> _syscmd_ver()，**spawn 一个
+        # `cmd /c ver` 子进程**。实测首调 54 ms，杀软介入时观测到 224 ms。
+        # 这个模块被 config 包顶层 import，坐在 launcher 启动链的最前面。
+        # sys.platform 是解释器常量，零成本，三分支判据完全等价。
+        if sys.platform == "win32":
             appdata = os.environ.get("APPDATA") or os.path.join(
                 os.path.expanduser("~"), "AppData", "Roaming"
             )
             base = os.path.join(appdata, "N.E.K.O")
-        elif system == "Darwin":
+        elif sys.platform == "darwin":
             base = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "N.E.K.O")
         else:
             base = os.path.join(
@@ -152,15 +157,42 @@ def _build_local_allowed_origins(port: int, *, extra_origins: tuple[str, ...] = 
     origins.extend(extra_origins)
     return tuple(dict.fromkeys(origins))
 
+
+def _read_monitor_host() -> str:
+    """Monitor bind address; uvicorn needs bare IPv6 literals, so drop brackets."""
+    return _read_str_env("MONITOR_HOST", "0.0.0.0").strip("[]")
+
+
+def _monitor_dial_host(bind_host: str) -> str:
+    """Map Monitor's bind address to a URL host the local main server can dial.
+
+    Wildcards (any spelling, e.g. ``::0``) map to the loopback of the same
+    family: asyncio sets IPV6_V6ONLY on AF_INET6 listeners, so a ``::`` bind
+    accepts no IPv4.
+    """
+    try:
+        address = ipaddress.ip_address(bind_host)
+    except ValueError:
+        return bind_host
+    if address.is_unspecified:
+        return "[::1]" if address.version == 6 else "127.0.0.1"
+    return f"[{address}]" if address.version == 6 else str(address)
+
+
 # 服务器端口配置
 MAIN_SERVER_PORT = _read_port_env("MAIN_SERVER_PORT", 48911)
 MEMORY_SERVER_PORT = _read_port_env("MEMORY_SERVER_PORT", 48912)
 MONITOR_SERVER_PORT = _read_port_env("MONITOR_SERVER_PORT", 48913)
+# Optional Monitor bind/auth settings.  Keep the historical LAN-facing bind as
+# the default and leave authentication opt-in for backwards compatibility.
+MONITOR_HOST = _read_monitor_host()
+MONITOR_TOKEN = _read_str_env("MONITOR_TOKEN", "")
+MONITOR_VIEWER_TOKEN = _read_str_env("MONITOR_VIEWER_TOKEN", "")
 COMMENTER_SERVER_PORT = _read_port_env("COMMENTER_SERVER_PORT", 48914)
 TOOL_SERVER_PORT = _read_port_env("TOOL_SERVER_PORT", 48915)
 USER_PLUGIN_SERVER_PORT = _read_port_env("USER_PLUGIN_SERVER_PORT", 48916)
-AGENT_MQ_PORT = _read_port_env("AGENT_MQ_PORT", 48917)
-MAIN_AGENT_EVENT_PORT = _read_port_env("MAIN_AGENT_EVENT_PORT", 48918)
+
+MONITOR_SYNC_URL = f"ws://{_monitor_dial_host(MONITOR_HOST)}:{MONITOR_SERVER_PORT}"
 USER_PLUGIN_BASE = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
 
 
@@ -201,17 +233,14 @@ def resolve_user_plugin_base() -> str:
             return f"http://127.0.0.1:{port}"
     return USER_PLUGIN_BASE.rstrip("/")
 
-# OpenFang Agent 执行后端端口 (由 Electron 并行启动，端口写入 port_config.json)
-OPENFANG_PORT = _read_port_env("OPENFANG_PORT", 50051)
-OPENFANG_BASE_URL = f"http://127.0.0.1:{OPENFANG_PORT}"
-
 # 实例 ID：同一次启动的所有服务共享。
 # launcher 会在拉起子进程前写入 NEKO_INSTANCE_ID 环境变量。
 # 若源码直跑绕过 launcher，则每次导入使用随机回退值，确保 /health
 # 始终返回有效 id。
 INSTANCE_ID = os.getenv("NEKO_INSTANCE_ID") or uuid.uuid4().hex
 AUTOSTART_CSRF_TOKEN = os.getenv("NEKO_AUTOSTART_CSRF_TOKEN") or INSTANCE_ID
+AUTOSTART_EXPLICIT_ALLOWED_ORIGINS = _read_list_env("AUTOSTART_ALLOWED_ORIGINS")
 AUTOSTART_ALLOWED_ORIGINS = _build_local_allowed_origins(
     MAIN_SERVER_PORT,
-    extra_origins=_read_list_env("AUTOSTART_ALLOWED_ORIGINS"),
+    extra_origins=AUTOSTART_EXPLICIT_ALLOWED_ORIGINS,
 )

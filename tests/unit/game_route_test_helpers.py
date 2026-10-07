@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
+from main_logic.core.takeover import TakeoverMixin
 from main_routers import game_router
 from main_routers.game_router import badminton_scores as gr_scores
 from main_routers.game_router import runtime as gr_runtime
+from utils import game_route_state
 
 
 def gr_patch_all(monkeypatch, name, value, raising=True):
@@ -34,10 +36,17 @@ def gr_patch_all(monkeypatch, name, value, raising=True):
 def reset_game_route_state():
     sessions_snapshot = dict(gr_runtime._game_sessions)
     routes_snapshot = dict(gr_runtime._game_route_states)
+    end_tombstones_snapshot = dict(gr_runtime._game_route_end_tombstones)
     badminton_score_sessions_snapshot = dict(gr_scores._badminton_recent_score_sessions)
     gr_runtime._game_sessions.clear()
     gr_runtime._game_route_states.clear()
+    gr_runtime._game_route_end_tombstones.clear()
     gr_scores._badminton_recent_score_sessions.clear()
+    # asyncio primitives bind to the loop once contended.  pytest creates
+    # isolated loops, so retaining a registry entry across tests can make an
+    # otherwise-correct concurrency test await a lock owned by a closed loop.
+    game_route_state._route_state_locks.clear()
+    game_route_state._route_supersede_locks.clear()
     try:
         yield
     finally:
@@ -45,8 +54,32 @@ def reset_game_route_state():
         gr_runtime._game_sessions.update(sessions_snapshot)
         gr_runtime._game_route_states.clear()
         gr_runtime._game_route_states.update(routes_snapshot)
+        gr_runtime._game_route_end_tombstones.clear()
+        gr_runtime._game_route_end_tombstones.update(end_tombstones_snapshot)
         gr_scores._badminton_recent_score_sessions.clear()
         gr_scores._badminton_recent_score_sessions.update(badminton_score_sessions_snapshot)
+        game_route_state._route_state_locks.clear()
+        game_route_state._route_supersede_locks.clear()
+
+
+class TakeoverManagerDouble(TakeoverMixin):
+    """Manager double that carries the real takeover API.
+
+    Takeover state is only written through ``TakeoverMixin``, so doubles that
+    go through route start / rollback / end need the real methods; any other
+    attribute a test needs is passed as a keyword.
+    """
+
+    def __init__(self, *, lanlan_name="Lan", **attrs):
+        self.lanlan_name = lanlan_name
+        self._takeover_token = None
+        self._takeover_active = False
+        self._takeover_input_dispatcher = None
+        self._takeover_callback_sink = None
+        self._callback_hold_sink = None
+        self._callback_hold_token = None
+        for name, value in attrs.items():
+            setattr(self, name, value)
 
 
 def mark_game_started(state, elapsed_ms=12_000):

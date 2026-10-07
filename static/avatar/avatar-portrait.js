@@ -1,6 +1,6 @@
 /**
  * Avatar Portrait
- * 从当前已加载的 Live2D / VRM / MMD 模型中提取头像裁剪图。
+ * 从当前已加载的 Live2D / VRM / MMD / PNGTuber 模型中提取头像裁剪图。
  *
  * 设计目标：
  * 1. 不重建模型，不侵入现有渲染循环
@@ -28,6 +28,9 @@
         // 'portrait' - 立绘模式（全身或大半身）
         cropMode: 'headshot'
     });
+    const PNGTUBER_IMAGE_LOAD_TIMEOUT_MS = 15000;
+    const PNGTUBER_SOURCE_MAX_EDGE = 2048;
+    const VISIBILITY_ANALYSIS_MAX_EDGE = 256;
 
     function clamp(value, min, max) {
         return Math.min(max, Math.max(min, value));
@@ -59,6 +62,7 @@
 
     function normalizeModelType(modelType) {
         const raw = String(modelType || global.lanlan_config?.model_type || '').toLowerCase();
+        if (raw === 'pngtuber') return 'pngtuber';
         if (raw === 'vrm') return 'vrm';
         if (raw === 'mmd') return 'mmd';
         if (raw === 'live2d') return 'live2d';
@@ -73,6 +77,129 @@
         if (global.vrmManager?.currentModel?.vrm?.scene) return 'vrm';
         if (global.live2dManager?.getCurrentModel?.()) return 'live2d';
         return 'live2d';
+    }
+
+    function getPNGTuberDrawableSize(drawable) {
+        if (!drawable) return { width: 0, height: 0 };
+        const isImage = isPNGTuberImageElement(drawable);
+        return {
+            width: isImage
+                ? finiteOr(drawable.naturalWidth, 0) || finiteOr(drawable.width, 0) || finiteOr(drawable.clientWidth, 0)
+                : finiteOr(drawable.width, 0) || finiteOr(drawable.clientWidth, 0),
+            height: isImage
+                ? finiteOr(drawable.naturalHeight, 0) || finiteOr(drawable.height, 0) || finiteOr(drawable.clientHeight, 0)
+                : finiteOr(drawable.height, 0) || finiteOr(drawable.clientHeight, 0)
+        };
+    }
+
+    function isPNGTuberImageElement(drawable) {
+        return !!drawable && (
+            String(drawable.tagName || '').toLowerCase() === 'img'
+            || (typeof global.HTMLImageElement !== 'undefined' && drawable instanceof global.HTMLImageElement)
+        );
+    }
+
+    function isVisiblePNGTuberDrawable(drawable) {
+        if (!drawable) return false;
+        const size = getPNGTuberDrawableSize(drawable);
+        if (!size.width || !size.height) return false;
+        if (drawable.hidden || drawable.classList?.contains?.('hidden')) return false;
+        if (drawable.style?.display === 'none') return false;
+        if (typeof global.getComputedStyle === 'function') {
+            const style = global.getComputedStyle(drawable);
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+        }
+        return true;
+    }
+
+    function isReadyPNGTuberDrawable(drawable) {
+        if (!drawable) return false;
+        const size = getPNGTuberDrawableSize(drawable);
+        return !!(size.width && size.height);
+    }
+
+    function getPNGTuberCaptureDrawable(manager, options = {}) {
+        const allowHidden = options.allowHidden === true;
+        if (manager && typeof manager.ensureContainer === 'function') {
+            try {
+                manager.ensureContainer();
+            } catch (_) {}
+        }
+        if (isVisiblePNGTuberDrawable(manager?.image)) return manager.image;
+        const container = global.document?.getElementById?.('pngtuber-container');
+        const drawables = container?.querySelectorAll?.('canvas.pngtuber-layered-canvas, img.pngtuber-image');
+        const candidates = Array.from(drawables || []);
+        const visibleDrawable = candidates.find(isVisiblePNGTuberDrawable);
+        if (visibleDrawable) return visibleDrawable;
+        if (!allowHidden) return null;
+
+        // The model manager temporarily hides the desktop avatar while it covers the
+        // main window. Community forging still needs an off-screen snapshot of the
+        // loaded model, so visibility must not be a prerequisite for capture.
+        // Preserve a still-loading image as well: prepare() owns waiting for its
+        // load/error event before dimensions are required.
+        if (!isPNGTuberImageElement(manager?.image) && isReadyPNGTuberDrawable(manager?.image)) {
+            return manager.image;
+        }
+        if (isPNGTuberImageElement(manager?.image)) return manager.image;
+        const loadingImage = candidates.find(isPNGTuberImageElement);
+        if (loadingImage) return loadingImage;
+        return candidates.find(isReadyPNGTuberDrawable) || null;
+    }
+
+    function waitForPNGTuberDrawable(drawable) {
+        if (!isPNGTuberImageElement(drawable)) return Promise.resolve();
+        if (drawable.complete) {
+            if (drawable.naturalWidth > 0 && drawable.naturalHeight > 0) {
+                return Promise.resolve();
+            }
+            return Promise.reject(createError('PNGTuber 图片加载失败'));
+        }
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            let timeoutId = null;
+            const cleanup = () => {
+                drawable.removeEventListener?.('load', onLoad);
+                drawable.removeEventListener?.('error', onError);
+                if (timeoutId !== null) {
+                    (global.clearTimeout || clearTimeout)(timeoutId);
+                    timeoutId = null;
+                }
+            };
+            const onLoad = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                if (drawable.naturalWidth > 0 && drawable.naturalHeight > 0) {
+                    resolve();
+                } else {
+                    reject(createError('PNGTuber 图片加载失败'));
+                }
+            };
+            const onError = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                reject(createError('PNGTuber 图片加载失败'));
+            };
+            const onTimeout = () => {
+                if (settled) return;
+                settled = true;
+                timeoutId = null;
+                cleanup();
+                reject(createError('PNGTuber 图片加载超时'));
+            };
+            drawable.addEventListener?.('load', onLoad, { once: true });
+            drawable.addEventListener?.('error', onError, { once: true });
+            timeoutId = (global.setTimeout || setTimeout)(onTimeout, PNGTUBER_IMAGE_LOAD_TIMEOUT_MS);
+
+            // Avoid missing a load/error event fired between the initial complete
+            // check and listener registration.
+            if (drawable.complete) {
+                if (drawable.naturalWidth > 0 && drawable.naturalHeight > 0) onLoad();
+                else onError();
+            }
+        });
     }
 
     function getCanvasMetrics(canvas) {
@@ -506,7 +633,7 @@
         };
     }
 
-    function hasVisiblePixelsInCrop(canvas, rect) {
+    function hasVisiblePixelsInCrop(canvas, rect, options = {}) {
         if (!canvas || !rect) return false;
         const width = Math.max(1, Math.min(canvas.width, Math.round(rect.width)));
         const height = Math.max(1, Math.min(canvas.height, Math.round(rect.height)));
@@ -515,9 +642,15 @@
         const safeWidth = Math.max(1, Math.min(width, canvas.width - x));
         const safeHeight = Math.max(1, Math.min(height, canvas.height - y));
 
+        const requireAny = options.requireAny === true;
+        const analysisScale = requireAny
+            ? 1
+            : Math.min(1, VISIBILITY_ANALYSIS_MAX_EDGE / Math.max(safeWidth, safeHeight));
+        const analysisWidth = Math.max(1, Math.round(safeWidth * analysisScale));
+        const analysisHeight = Math.max(1, Math.round(safeHeight * analysisScale));
         const analysisCanvas = document.createElement('canvas');
-        analysisCanvas.width = safeWidth;
-        analysisCanvas.height = safeHeight;
+        analysisCanvas.width = analysisWidth;
+        analysisCanvas.height = analysisHeight;
 
         let ctx = null;
         try {
@@ -537,22 +670,22 @@
                 safeHeight,
                 0,
                 0,
-                safeWidth,
-                safeHeight
+                analysisWidth,
+                analysisHeight
             );
-            imageData = ctx.getImageData(0, 0, safeWidth, safeHeight).data;
+            imageData = ctx.getImageData(0, 0, analysisWidth, analysisHeight).data;
         } catch (_) {
             return true;
         }
 
-        const stepX = Math.max(1, Math.floor(safeWidth / 18));
-        const stepY = Math.max(1, Math.floor(safeHeight / 18));
+        const stepX = requireAny ? 1 : Math.max(1, Math.floor(analysisWidth / 18));
+        const stepY = requireAny ? 1 : Math.max(1, Math.floor(analysisHeight / 18));
         let visibleCount = 0;
         let sampleCount = 0;
 
-        for (let py = 0; py < safeHeight; py += stepY) {
-            for (let px = 0; px < safeWidth; px += stepX) {
-                const idx = (py * safeWidth + px) * 4;
+        for (let py = 0; py < analysisHeight; py += stepY) {
+            for (let px = 0; px < analysisWidth; px += stepX) {
+                const idx = (py * analysisWidth + px) * 4;
                 const alpha = imageData[idx + 3];
                 const r = imageData[idx];
                 const g = imageData[idx + 1];
@@ -560,11 +693,12 @@
                 sampleCount += 1;
                 if (alpha > 8 && (r < 250 || g < 250 || b < 250 || alpha > 24)) {
                     visibleCount += 1;
+                    if (requireAny) return true;
                 }
             }
         }
 
-        return sampleCount > 0 && (visibleCount / sampleCount) >= 0.03;
+        return !requireAny && sampleCount > 0 && (visibleCount / sampleCount) >= 0.03;
     }
 
     function hasVisiblePixelsInCanvas(canvas) {
@@ -575,6 +709,16 @@
             width: canvas.width,
             height: canvas.height
         });
+    }
+
+    function hasAnyVisiblePixelInCanvas(canvas) {
+        if (!canvas) return false;
+        return hasVisiblePixelsInCrop(canvas, {
+            x: 0,
+            y: 0,
+            width: canvas.width,
+            height: canvas.height
+        }, { requireAny: true });
     }
 
     function createOutputCanvas(width, height) {
@@ -1608,8 +1752,83 @@
         };
     }
 
+    function getPNGTuberAdapter() {
+        return {
+            type: 'pngtuber',
+            getContext() {
+                const manager = global.pngtuberManager;
+                const drawable = getPNGTuberCaptureDrawable(manager, { allowHidden: true });
+                const canRenderLayeredSnapshot = typeof manager?.renderLayeredSnapshotCanvas === 'function';
+                if (!manager || (!drawable && !canRenderLayeredSnapshot)) {
+                    throw createError('当前没有可用的 PNGTuber 模型');
+                }
+                return { manager, drawable, canvas: drawable };
+            },
+            async prepare(ctx) {
+                ctx.drawable = getPNGTuberCaptureDrawable(ctx.manager, { allowHidden: true }) || ctx.drawable;
+                if (ctx.drawable) {
+                    await waitForPNGTuberDrawable(ctx.drawable);
+                }
+            },
+            renderSource(ctx, options = {}) {
+                const layeredSnapshot = typeof ctx.manager.renderLayeredSnapshotCanvas === 'function'
+                    ? ctx.manager.renderLayeredSnapshotCanvas(undefined, undefined, {
+                        maxEdge: PNGTUBER_SOURCE_MAX_EDGE
+                    })
+                    : null;
+                const drawable = layeredSnapshot || ctx.drawable;
+                const size = getPNGTuberDrawableSize(drawable);
+                if (!drawable || !size.width || !size.height) {
+                    throw createError('PNGTuber 画面尚未就绪，无法提取头像');
+                }
+                const containPortrait = options.cropMode === 'portrait';
+                const padding = containPortrait ? clamp(finiteOr(options.padding, 0), 0, 0.45) : 0;
+                const contentRatio = 1 - (padding * 2);
+                const desiredWidth = containPortrait
+                    ? Math.max(1, finiteOr(options.width, DEFAULTS.width))
+                    : size.width;
+                const desiredHeight = containPortrait
+                    ? Math.max(1, finiteOr(options.height, DEFAULTS.height))
+                    : size.height;
+                const sourceScale = Math.min(
+                    1,
+                    PNGTUBER_SOURCE_MAX_EDGE / Math.max(desiredWidth, desiredHeight)
+                );
+                const sourceWidth = Math.max(1, Math.round(desiredWidth * sourceScale));
+                const sourceHeight = Math.max(1, Math.round(desiredHeight * sourceScale));
+                const canvas = createOutputCanvas(sourceWidth, sourceHeight);
+                const context = canvas.getContext('2d');
+                if (!context) throw createError('无法创建 PNGTuber 导出画布');
+                const drawableScale = Math.min(
+                    (sourceWidth * contentRatio) / size.width,
+                    (sourceHeight * contentRatio) / size.height
+                );
+                const drawWidth = size.width * drawableScale;
+                const drawHeight = size.height * drawableScale;
+                const drawX = (sourceWidth - drawWidth) * 0.5;
+                const drawY = (sourceHeight - drawHeight) * 0.5;
+                try {
+                    context.drawImage(drawable, drawX, drawY, drawWidth, drawHeight);
+                } catch (error) {
+                    throw createCanvasExportError(error);
+                }
+                if (!hasAnyVisiblePixelInCanvas(canvas)) {
+                    throw createError('PNGTuber 画面尚未就绪，无法提取头像');
+                }
+                return {
+                    canvas,
+                    cropRectCss: { x: 0, y: 0, width: sourceWidth, height: sourceHeight },
+                    cropRectPixels: { x: 0, y: 0, width: sourceWidth, height: sourceHeight },
+                    sourceCanvas: canvas,
+                    modelType: 'pngtuber'
+                };
+            }
+        };
+    }
+
     function getAdapter(modelType) {
         const normalizedType = normalizeModelType(modelType);
+        if (normalizedType === 'pngtuber') return getPNGTuberAdapter();
         if (normalizedType === 'vrm') return getVrmAdapter();
         if (normalizedType === 'mmd') return getMmdAdapter();
         return getLive2DAdapter();
@@ -1619,7 +1838,7 @@
         const finalOptions = { ...DEFAULTS, ...options };
         const adapter = getAdapter(finalOptions.modelType);
         const context = adapter.getContext();
-        adapter.prepare(context);
+        await adapter.prepare(context);
 
         if (typeof adapter.renderSource === 'function') {
             const renderedSource = adapter.renderSource(context, finalOptions);

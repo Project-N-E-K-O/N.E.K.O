@@ -112,7 +112,11 @@ function createHarness() {
     function gate() {
         return JSON.parse(JSON.stringify(window.NekoCatMindYarnObservationAdapter.getGateSnapshot()));
     }
-    return { window, emit, emitMinimized, flushOneRaf, observations, runTimers, gate };
+    function stableRect(coordinateSpace = 'screen') {
+        const rect = vm.runInContext(`_nekoCatMindStableYarnRectBySpace[${JSON.stringify(coordinateSpace)}] || null`, context);
+        return rect ? JSON.parse(JSON.stringify(rect)) : null;
+    }
+    return { window, emit, emitMinimized, flushOneRaf, observations, runTimers, gate, stableRect };
 }
 
 const FAR_RECT = { left: 0, top: 120, width: 40, height: 40 };
@@ -343,4 +347,330 @@ test('stale active drag releases its gate without synthesizing completion', () =
         yarnSettling: false,
     });
     assert.equal(harness.observations().length, 0);
+});
+
+test('unavailable terminal immediately releases an active yarn drag without completion', () => {
+    const harness = createHarness();
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'poll',
+        screenRect: FAR_RECT,
+        timestamp: 1000,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'self-ball-drag-move',
+        screenRect: NEAR_RECT,
+        timestamp: 1100,
+    });
+    assert.equal(harness.gate().yarnDragActive, true);
+    assert.equal(harness.gate().yarnSettling, false);
+    assert.match(harness.gate().sessionId, /^yarn-drag:/);
+
+    harness.emitMinimized({
+        available: false,
+        minimized: false,
+        reason: 'chat-user-closed',
+        screenRect: null,
+        timestamp: 1200,
+    });
+
+    assert.deepEqual(harness.gate(), {
+        yarnDragActive: false,
+        yarnSettling: false,
+    });
+    assert.equal(harness.observations().length, 0);
+
+    harness.flushOneRaf();
+    harness.flushOneRaf();
+    harness.runTimers();
+    assert.equal(harness.observations().length, 0, 'late callbacks must not synthesize completion');
+});
+
+test('compact surface unavailable terminal immediately releases the yarn gate', () => {
+    const harness = createHarness();
+    harness.emit('neko:chat-yarn-user-drag', {
+        available: true,
+        phase: 'start',
+        sessionId: 'compact-pagehide',
+        coordinateSpace: 'screen',
+        screenRect: FAR_RECT,
+        timestamp: 1000,
+    });
+    assert.equal(harness.gate().yarnDragActive, true);
+
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: false,
+        visible: false,
+        reason: 'pagehide',
+        screenRect: null,
+        timestamp: 1100,
+    });
+
+    assert.deepEqual(harness.gate(), {
+        yarnDragActive: false,
+        yarnSettling: false,
+    });
+    harness.flushOneRaf();
+    harness.flushOneRaf();
+    harness.runTimers();
+    assert.equal(harness.observations().length, 0);
+});
+
+test('delayed unavailable terminal cannot clear a newer active or settling yarn session', () => {
+    const harness = createHarness();
+    const emitPhase = (phase, screenRect, timestamp) => {
+        harness.emit('neko:chat-yarn-user-drag', {
+            available: true,
+            phase,
+            sessionId: 'reopened-yarn',
+            coordinateSpace: 'screen',
+            moved: phase !== 'start',
+            screenRect,
+            timestamp,
+        });
+    };
+    const staleUnavailable = {
+        available: false,
+        visible: false,
+        reason: 'delayed-pagehide',
+        screenRect: null,
+        timestamp: 1000,
+    };
+
+    emitPhase('start', FAR_RECT, 2000);
+    emitPhase('move', NEAR_RECT, 2100);
+    harness.emit('neko:idle-chat-compact-surface-state', staleUnavailable);
+    assert.deepEqual(harness.gate(), {
+        yarnDragActive: true,
+        yarnSettling: false,
+        sessionId: 'reopened-yarn',
+    });
+
+    emitPhase('end', NEAR_RECT, 2200);
+    assert.equal(harness.gate().yarnSettling, true);
+    harness.emit('neko:idle-chat-compact-surface-state', staleUnavailable);
+    assert.equal(harness.gate().yarnSettling, true);
+    harness.flushOneRaf();
+    harness.flushOneRaf();
+
+    assert.equal(harness.observations().length, 1);
+    assert.equal(harness.observations()[0].detail.sessionId, 'reopened-yarn');
+});
+
+test('delayed unavailable terminal cannot erase a newer stable rect before an end-only drag', () => {
+    const harness = createHarness();
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'pre-hide-poll',
+        screenRect: FAR_RECT,
+        timestamp: 500,
+    });
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: true,
+        visible: true,
+        reason: 'visibility-visible',
+        screenRect: { left: 200, top: 80, width: 320, height: 64 },
+        timestamp: 2000,
+    });
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: false,
+        visible: false,
+        reason: 'delayed-pagehide',
+        screenRect: null,
+        timestamp: 1000,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'self-ball-wayland-drag-stop',
+        screenRect: NEAR_RECT,
+        timestamp: 3000,
+    });
+    harness.flushOneRaf();
+    harness.flushOneRaf();
+
+    assert.equal(harness.observations().length, 1);
+    assert.equal(harness.observations()[0].detail.startedFarFromCat, true);
+    assert.equal(harness.observations()[0].detail.endedNearCat, true);
+});
+
+test('positive yarn updates older than the lifecycle terminal stay retired', () => {
+    const harness = createHarness();
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'poll',
+        screenRect: FAR_RECT,
+        timestamp: 1000,
+    });
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: false,
+        visible: false,
+        reason: 'pagehide',
+        screenRect: null,
+        timestamp: 2000,
+    });
+    assert.equal(harness.stableRect(), null);
+
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'delayed-poll',
+        screenRect: FAR_RECT,
+        timestamp: 1500,
+    });
+    harness.emit('neko:chat-yarn-user-drag', {
+        available: true,
+        phase: 'start',
+        sessionId: 'delayed-start',
+        coordinateSpace: 'screen',
+        screenRect: FAR_RECT,
+        timestamp: 1600,
+    });
+
+    assert.equal(harness.stableRect(), null);
+    assert.deepEqual(harness.gate(), {
+        yarnDragActive: false,
+        yarnSettling: false,
+    });
+});
+
+test('compact heartbeat does not advance the native yarn drag watermark', () => {
+    const harness = createHarness();
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'poll',
+        screenRect: FAR_RECT,
+        timestamp: 1000,
+    });
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: true,
+        visible: true,
+        heartbeat: true,
+        screenRect: { left: 20, top: 20, width: 300, height: 160 },
+        timestamp: 5000,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'self-ball-wayland-drag-stop',
+        screenRect: NEAR_RECT,
+        timestamp: 2000,
+    });
+    harness.flushOneRaf();
+    harness.flushOneRaf();
+
+    assert.equal(harness.observations().length, 1);
+    assert.equal(harness.observations()[0].detail.startedFarFromCat, true);
+    assert.equal(harness.observations()[0].detail.endedNearCat, true);
+});
+
+test('minimized geometry polls do not advance the native yarn drag watermark', () => {
+    const harness = createHarness();
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'poll',
+        screenRect: FAR_RECT,
+        timestamp: 1000,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'poll',
+        screenRect: FAR_RECT,
+        timestamp: 5000,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'self-ball-wayland-drag-stop',
+        screenRect: NEAR_RECT,
+        timestamp: 2000,
+    });
+    harness.flushOneRaf();
+    harness.flushOneRaf();
+
+    assert.equal(harness.observations().length, 1);
+    assert.equal(harness.observations()[0].detail.startedFarFromCat, true);
+    assert.equal(harness.observations()[0].detail.endedNearCat, true);
+});
+
+test('a reopened lifecycle still rejects drag phases older than its last terminal', () => {
+    const harness = createHarness();
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'poll',
+        screenRect: FAR_RECT,
+        timestamp: 1000,
+    });
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: false,
+        timestamp: 2000,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'poll',
+        screenRect: FAR_RECT,
+        timestamp: 3000,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'self-ball-wayland-drag-stop',
+        screenRect: NEAR_RECT,
+        timestamp: 1500,
+    });
+    harness.flushOneRaf();
+    harness.flushOneRaf();
+
+    assert.equal(harness.observations().length, 0);
+    assert.deepEqual(harness.stableRect(), FAR_RECT);
+});
+
+test('yarn lifecycle sequence orders same-millisecond terminal and reopen updates', () => {
+    const harness = createHarness();
+    harness.emit('neko:idle-chat-compact-surface-state', {
+        available: false,
+        timestamp: 6000,
+        lifecycleSequence: 2,
+    });
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'delayed-poll',
+        screenRect: FAR_RECT,
+        timestamp: 6000,
+        lifecycleSequence: 1,
+    });
+    assert.equal(harness.stableRect(), null);
+
+    harness.emitMinimized({
+        available: true,
+        minimized: true,
+        reason: 'reopen-poll',
+        screenRect: FAR_RECT,
+        timestamp: 6000,
+        lifecycleSequence: 3,
+    });
+    assert.deepEqual(harness.stableRect(), FAR_RECT);
+
+    harness.emit('neko:chat-yarn-user-drag', {
+        available: true,
+        phase: 'start',
+        sessionId: 'same-millisecond-reopen',
+        coordinateSpace: 'screen',
+        screenRect: FAR_RECT,
+        timestamp: 6000,
+        lifecycleSequence: 3,
+    });
+    assert.equal(harness.gate().yarnDragActive, true,
+        'a drag carrying the accepted reopen sequence supersedes the terminal watermark');
 });

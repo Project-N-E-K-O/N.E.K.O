@@ -670,8 +670,8 @@ def test_home_tutorial_input_lock_blocks_compact_capsule_input_state():
     assert "var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();" in input_lock_block
     assert "syncComposerAttachmentsVisibility(previousAttachmentsVisible);" in input_lock_block
     assert "setHomeTutorialInteractionLocked(next" not in input_lock_block
-    assert "disabled={compactCapsuleEntryLocked}" in capsule_block
-    assert "if (compactCapsuleEntryLocked) return;" in capsule_block
+    assert "disabled={compactTextEntryLocked}" in capsule_block
+    assert "if (compactTextEntryLocked) return;" in capsule_block
 
 
 def test_home_tutorial_events_lock_chat_buttons_and_collapse_compact_input():
@@ -710,7 +710,7 @@ def test_home_tutorial_events_lock_chat_buttons_and_collapse_compact_input():
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-completed');" in completed_block
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-skipped');" in skipped_block
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');" in ended_block
-    assert "disabled={composerDisabled}" in history_handle_block
+    assert "disabled={composerDisabled || theaterActive}" in history_handle_block
 
 
 def test_home_tutorial_host_wires_avatar_tool_requests():
@@ -828,12 +828,27 @@ def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
         ".compact-export-preview-message.is-system .compact-export-preview-bubble {",
         ".compact-export-preview-meta",
     )
+    link_anchor_block = css_block(
+        styles,
+        ".compact-export-history-anchor:has(.compact-export-history-content > .message-block-link) {",
+        ".compact-export-history-bubble:has(> .compact-export-history-content > .message-block-link)",
+    )
+    active_inline_size_marker = "--compact-export-history-active-inline-size:"
+    assert active_inline_size_marker in link_anchor_block
+    active_inline_size = link_anchor_block.split(active_inline_size_marker, 1)[1].split(";", 1)[0]
 
     assert "--compact-export-history-width-ratio:" in anchor_block
     assert "--compact-export-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));" in anchor_block
     assert "--compact-export-history-inline-size: min(" in anchor_block
     assert "calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio))" in anchor_block
-    assert "width: var(--compact-export-history-inline-size);" in anchor_block
+    assert "--compact-export-history-active-inline-size: var(--compact-export-history-inline-size);" in anchor_block
+    assert "width: var(--compact-export-history-active-inline-size);" in anchor_block
+    assert "min(" in active_inline_size
+    assert (
+        "max(var(--compact-export-history-inline-size), var(--compact-export-link-history-min-inline-size))"
+        in active_inline_size
+    )
+    assert "var(--compact-export-history-max-inline-size)" in active_inline_size
     assert "--compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));" in anchor_block
     assert "--compact-export-preview-min-height: 360px;" in anchor_block
     assert "--compact-export-preview-max-height: 78vh;" in anchor_block
@@ -1595,6 +1610,147 @@ def test_galgame_history_excludes_tutorial_guide_messages():
     assert history_block.index("if (!m) continue;") < history_block.index("if (isYuiGuideChatMessage(m)) continue;")
 
 
+def test_galgame_history_excludes_new_user_icebreaker_messages():
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    history_block = react_host.split("function getRecentGalgameMessageHistory()", 1)[1].split(
+        "function pickAcceptLanguage",
+        1,
+    )[0]
+
+    assert "function isNewUserIcebreakerChatMessage(message)" in react_host
+    assert "if (isNewUserIcebreakerChatMessage(m))" in history_block
+    assert "if (!collected.length) return [];" in history_block
+    append_block = react_host.split("function appendMessage(message)", 1)[1].split(
+        "function updateMessage",
+        1,
+    )[0]
+    assert "normalized.role === 'user' || isNewUserIcebreakerChatMessage(normalized)" in append_block
+    assert "invalidatePendingGalgameRequest();" in append_block
+
+
+def test_completed_icebreaker_handoff_seeds_galgame_once():
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    react_host_runtime = read_js_parts(
+        APP_REACT_CHAT_WINDOW_PATH.directory,
+        encoding="utf-8",
+        contract_view=False,
+    )
+
+    history_source = "function isNewUserIcebreakerChatMessage(message)" + react_host_runtime.split(
+        "function isNewUserIcebreakerChatMessage(message)",
+        1,
+    )[1].split("function pickAcceptLanguage", 1)[0]
+    history_block = history_source.split("function getRecentGalgameMessageHistory()", 1)[1]
+    assert "icebreakerHandoffMessageId" in history_block
+    assert "String(m.id || '') === icebreakerHandoffMessageId" in history_block
+    assert "m.role === 'assistant'" in history_block
+
+    handoff_listener = react_host.split(
+        "window.addEventListener('neko:icebreaker-galgame-handoff'",
+        1,
+    )[1].split("function isNewUserIcebreakerTurnEndEvent", 1)[0]
+    assert "clearIcebreakerChoicePrompt(String(detail.sessionId));" in handoff_listener
+    assert "waitForAssistantBubblesFlushed(4000)" in handoff_listener
+    assert "rememberIcebreakerGalgameHandoff(messageId)" in handoff_listener
+    assert "pendingIcebreakerGalgameHandoffMessageId !== messageId" in handoff_listener
+    assert "fetchPendingIcebreakerGalgameHandoffOrLatest()" in handoff_listener
+    append_block = react_host.split("function appendMessage(message)", 1)[1].split(
+        "function updateMessage",
+        1,
+    )[0]
+    assert "!isYuiGuideChatMessage(normalized)" in append_block
+    assert "clearedIcebreakerHandoff" in append_block
+    assert "|| clearedIcebreakerHandoff" in append_block
+    clear_source_block = react_host.split("function clearChoicePromptBySource(source, reason)", 1)[1].split(
+        "function clearIcebreakerChoicePrompt",
+        1,
+    )[0]
+    assert "hasPendingHandoff" in clear_source_block
+    assert "state.pendingIcebreakerGalgameHandoffMessageId = '';" in clear_source_block
+
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node is required to verify the completed icebreaker handoff history")
+    script = f"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const context = {{}};
+vm.createContext(context);
+vm.runInContext(`
+var I = {{ GALGAME_HISTORY_LIMIT: 6, state: {{ messages: [] }} }};
+function isYuiGuideChatMessage() {{ return false; }}
+${{{json.dumps(history_source)}}}
+`, context);
+
+const handoff = {{
+    id: 'icebreaker-assistant-final',
+    role: 'assistant',
+    blocks: [{{ type: 'text', text: 'final handoff' }}],
+    icebreaker: {{ source: 'new_user_icebreaker', handoff: true }}
+}};
+const ordinaryBefore = {{
+    id: 'ordinary-before',
+    role: 'assistant',
+    blocks: [{{ type: 'text', text: 'old ordinary history' }}]
+}};
+const icebreakerBefore = {{
+    id: 'icebreaker-user-before',
+    role: 'user',
+    blocks: [{{ type: 'text', text: 'old scripted history' }}]
+}};
+const ordinaryAfter = {{
+    id: 'ordinary-after',
+    role: 'user',
+    blocks: [{{ type: 'text', text: 'newer turn' }}]
+}};
+context.I.state.messages = [ordinaryBefore, icebreakerBefore, handoff];
+assert.equal(JSON.stringify(vm.runInContext('getRecentGalgameMessageHistory()', context)), '[]');
+assert.equal(
+    JSON.stringify(vm.runInContext("getRecentGalgameMessageHistory({{ icebreakerHandoffMessageId: 'wrong' }})", context)),
+    '[]'
+);
+assert.equal(
+    JSON.stringify(vm.runInContext("getRecentGalgameMessageHistory({{ icebreakerHandoffMessageId: 'icebreaker-assistant-final' }})", context)),
+    '[{{"role":"assistant","text":"final handoff"}}]'
+);
+context.I.state.messages.push(ordinaryAfter);
+assert.equal(
+    JSON.stringify(vm.runInContext("getRecentGalgameMessageHistory({{ icebreakerHandoffMessageId: 'icebreaker-assistant-final' }})", context)),
+    '[]'
+);
+"""
+    result = run_node_script(
+        node_path,
+        script,
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_galgame_turn_end_listener_ignores_new_user_icebreaker():
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    guard_block = react_host.split("function isNewUserIcebreakerTurnEndEvent(event)", 1)[1].split(
+        "window.addEventListener('neko-assistant-turn-end'",
+        1,
+    )[0]
+    listener_block = react_host.split(
+        "window.addEventListener('neko-assistant-turn-end', function (event)",
+        1,
+    )[1].split("\n        });", 1)[0]
+
+    assert "detail.meta" in guard_block
+    assert "meta.source === 'new_user_icebreaker'" in guard_block
+    assert "meta.kind === 'new_user_icebreaker'" in guard_block
+    assert "meta.event" in guard_block
+    assert "source === 'new_user_icebreaker'" in guard_block
+    assert "if (isNewUserIcebreakerTurnEndEvent(event)) return;" in listener_block
+
+
 def test_galgame_option_template_follows_interface_language():
     react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
@@ -1670,7 +1826,9 @@ def test_icebreaker_reset_clears_prompt_by_source_without_session_match():
         1,
     )[0]
     assert "if (normalizedSource !== 'new_user_icebreaker') return false;" in reset_block
-    assert "state.choicePrompt.source !== normalizedSource" in reset_block
+    assert "state.choicePrompt.source === normalizedSource" in reset_block
+    assert "hasPendingHandoff" in reset_block
+    assert "state.pendingIcebreakerGalgameHandoffMessageId = '';" in reset_block
     assert "clearChoicePromptBySource:', normalizedSource, reason || ''" in reset_block
     assert "state.choicePrompt = null;" in reset_block
     assert "invalidatePendingGalgameRequest();" in reset_block
@@ -1916,6 +2074,17 @@ def test_moved_drag_suppresses_trailing_release_click():
 def test_minimized_yarn_drag_reports_forced_release_as_cancel():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
+    dispatch_block = script.split("function dispatchMinimizedYarnDragPhase", 1)[1].split(
+        "function isCompactDragSurfaceTarget",
+        1,
+    )[0]
+    start_block = script.split("function startDrag", 1)[1].split(
+        "function updateDrag",
+        1,
+    )[0]
+    assert "lifecycleSequence: dragState.yarnLifecycleSequence" in dispatch_block
+    assert "yarnLifecycleSequence: getCurrentIdleChatLifecycleSequence()" in start_block
+
     stop_block = script.split("function stopDrag(options)", 1)[1].split(
         "function bindDragging()",
         1,
@@ -1927,6 +2096,17 @@ def test_minimized_yarn_drag_reports_forced_release_as_cancel():
         1,
     )[0]
     assert "suppressClick: true" in touch_cancel_block
+
+
+def test_react_chat_host_exports_compact_lifecycle_restore_api():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    host_block = script.rsplit("Object.assign(window.reactChatWindowHost", 1)[1].split(
+        "delete window.__appReactChatWindowParts",
+        1,
+    )[0]
+
+    assert "republishCompactSurfaceLayoutChange: republishCompactSurfaceLayoutChange" in host_block
+    assert "scheduleCompactMinimizeBallTracking: scheduleCompactMinimizeBallTracking" in host_block
 
 
 def test_compact_minimize_targets_inline_yarn_ball_button_center():
@@ -2508,8 +2688,12 @@ def test_avatar_popup_positioning_uses_niri_physical_crop_coordinates_only_when_
         "function getButtonZone",
         1,
     )[0]
-    position_sidepanel_block = source.split("function positionSidePanel(container, anchor, options = {})", 1)[1].split(
+    position_sidepanel_block = source.split("function positionSidePanel(", 1)[1].split(
         "window.AvatarPopupUI =",
+        1,
+    )[0]
+    popup_measurement_block = source.split("function getPopupPlacementRect(", 1)[1].split(
+        "function getOverlayViewport",
         1,
     )[0]
 
@@ -2517,7 +2701,9 @@ def test_avatar_popup_positioning_uses_niri_physical_crop_coordinates_only_when_
     assert "window.__nekoNiriPetPhysicalCrop" in source
     assert "return api.isActive() ? api : null;" in source
     assert "const placementApi = niriViewport ? niriCropApi : null;" in position_popup_block
-    assert "toPlacementRect(popup.getBoundingClientRect(), placementApi)" in position_popup_block
+    assert "getPopupPlacementRect(popup, placementApi)" in position_popup_block
+    assert "makePlacementRect(popup.getBoundingClientRect())" in popup_measurement_block
+    assert "return toPlacementRect(rect, api);" in popup_measurement_block
     assert "const screenWidth = niriViewport ? niriViewport.width : window.innerWidth;" in position_popup_block
     assert "try {\n            const state = api.getState();" in source
     assert "try {\n            const virtualRect = api.toVirtualRect({" in source
@@ -3027,3 +3213,64 @@ def test_text_mode_screenshot_payload_always_tags_interaction_request():
     assert "if (text)" not in screenshot_block
     assert "msg.request_id = requestId" not in screenshot_block
     assert "request_id: requestId" in text_block
+
+
+def test_deferred_enter_submission_requests_auto_collapse_once_before_queue_flush():
+    script = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    public_send_block = script.split("async function sendTextPayload(rawText, options)", 1)[1].split(
+        "mod.sendTextPayload = sendTextPayload",
+        1,
+    )[0]
+    deferral_block = public_send_block.split("if (options.skipAvatarInteractionDeferral !== true", 1)[1].split(
+        "return sendTextPayloadInternal",
+        1,
+    )[0]
+
+    assert "var deferredOptions = Object.assign({}, options);" in deferral_block
+    assert "requestChatAutoCollapseAfterAcceptedEnter(deferredOptions, deferredOptions.requestId)" in deferral_block
+    assert "deferredOptions.autoCollapseAfterEnterRequested = true;" in deferral_block
+    assert "queueDeferredTextSubmission(text, deferredOptions);" in deferral_block
+    assert deferral_block.index("requestChatAutoCollapseAfterAcceptedEnter") < deferral_block.index(
+        "queueDeferredTextSubmission"
+    )
+
+    internal_send_block = script.split("async function sendTextPayloadInternal(rawText, options)", 1)[1].split(
+        "function shouldAppendLegacyUserMessage()",
+        1,
+    )[0]
+    assert "if (options.autoCollapseAfterEnterRequested !== true)" in internal_send_block
+    assert "requestChatAutoCollapseAfterAcceptedEnter(options, requestId);" in internal_send_block
+
+
+def test_special_enter_submission_paths_request_auto_collapse_only_after_acceptance():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    submit_block = script.split("function handleComposerSubmit(payload)", 1)[1].split(
+        "function prepareCompactHistoryDropSubmit",
+        1,
+    )[0]
+
+    helper_block = script.split("function requestAutoCollapseAfterAcceptedEnter(detail)", 1)[1].split(
+        "function handleComposerSubmit(payload)",
+        1,
+    )[0]
+    assert "detail.submitMethod !== 'enter'" in helper_block
+    assert "window.nekoChatWindow.requestAutoCollapseAfterEnter({ requestId: detail.requestId });" in helper_block
+
+    cat_block = submit_block.split("if (typeof isCatLocalChatActive", 1)[1].split(
+        "var hasAttachments",
+        1,
+    )[0]
+    assert "if (submitCatLocalChatText(detail))" in cat_block
+    assert "requestAutoCollapseAfterAcceptedEnter(detail);" in cat_block
+    assert cat_block.index("submitCatLocalChatText(detail)") < cat_block.index(
+        "requestAutoCollapseAfterAcceptedEnter(detail)"
+    )
+
+    icebreaker_block = submit_block.split(
+        "if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker')",
+        1,
+    )[1].split("if (typeof state.onComposerSubmit", 1)[0]
+    assert "requestAutoCollapseAfterAcceptedEnter(detail);" in icebreaker_block
+    assert icebreaker_block.index("dispatchHostEvent('icebreaker-free-text-submit'") < icebreaker_block.index(
+        "requestAutoCollapseAfterAcceptedEnter(detail)"
+    )

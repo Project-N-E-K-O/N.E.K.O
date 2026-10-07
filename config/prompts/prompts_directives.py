@@ -78,6 +78,8 @@ ban-topic regex vs. negative-keyword scan
 from __future__ import annotations
 
 import re
+import threading
+import unicodedata
 from typing import List, Tuple
 
 from config.prompts._locale import normalize_prompt_locale, prompt_locale_fallback_key
@@ -555,6 +557,184 @@ _ZH_TRAILING_FILLERS = (
     "就", "的事", "的", "这个", "這個", "这事", "這事",
     "这话题", "這話題", "这件事", "這件事",
 )
+
+# ---------------------------------------------------------------------------
+# 语义为空的 term —— 存，但不拿去做出口硬拦截
+# ---------------------------------------------------------------------------
+# "别再讲这个了" 在语法上**有**宾语，正则照抓不误，抽出来的 term 是 ``这个``
+# —— 一个所指完全依赖上下文、脱离那一轮就没有任何意义的伪宾语。
+#
+# ⚠️ 危害是**不对称**的，这条表的存在理由全在这个不对称上：
+#   · 注入 prompt 那一侧无害。``- 这个`` 只是一行模型无法执行的噪音，而抽取
+#     侧对这类 term 的处理是被既有测试成片钉死的既定行为（繁简一致、复合词
+#     守卫的主用例都拿 ``这件事`` 当载体），不该由本条顺手改掉。
+#   · 但主动搭话的出口硬闸做的是**子串匹配**（generation._proactive_directive_hits）。
+#     ``这个`` 是汉语最高频的词之一，一旦入库，几乎每一条主动搭话都会命中被
+#     drop —— 表现为主动搭话整体静默，持续到 TTL 过期（递增后最长 30 天），
+#     而用户今天还没有任何界面能看到、更别说删掉这一条。
+#
+# 所以判据落在**消费侧**而不是抽取侧：软约束照旧全量注入（模型有上下文，多一行
+# 噪音无妨），硬拦截跳过这批词。谁放大了危害就在谁那里收口。
+#
+# ⚠️ 这一维是**闭集**，跟 ``就`` 那种开集词尾不同：纯指代词是有限的功能词，不是
+# 内容词。所以这里可以枚举，而 _ZH_TRAILING_FILLERS 那批只能靠事后比对。
+# 判据是"这个词单独拿出来指代什么" —— ``这个`` 什么都不指，``加班`` 指加班。
+# 反过来说，只有 term **整体**等于这些词才跳过；``这个项目`` 有实义中心词，照拦。
+# ⚠️ 这张表**不需要** 'zh-TW' 键，与 PROMPT_ZH_TW 门管的那类表不是一回事：
+# 它不是给 ``_loc`` 查表渲染的 prompt 模板（那种表缺 zh-TW 会让繁中用户拿到
+# 英文），而是一份判据词表，消费侧 ``is_semantically_empty_term`` 拿的是所有
+# locale 的**并集**做匹配、从不按 locale 查键。繁体字形（這個 / 那個 / 這件事）
+# 就内联在 'zh' 这一项里，繁中用户照样命中。开一个 'zh-TW' 键反而会造出
+# "同一批词分两处维护、改一边忘另一边"的漂移面——这个模块为此吃过四次亏
+# （见 _ZH_NEG 那段"派生不手抄"的注释）。
+# ⚠️ **人称代词与指代词是同一维，不是两维**。判据（"单独拿出来指代什么"）对
+# ``我`` / ``me`` / ``我们`` 的答案与对 ``这个`` 的完全一样：它们指向说话现场的
+# 参与者，不指向任何话题内容。而危害比指代词那批**更大** —— ``别再提我了`` /
+# ``stop talking about me`` 恰恰是这功能最自然的用法之一，抽出来的 term 就是
+# ``me``，实测让三条最普通的英文主动搭话草稿（"Hey, let me know how the build
+# went!" 等）3/3 全被 drop，词边界在这里救不了场（``me`` 本身就是完整的词）。
+# 那正是这张表当初为 ``it`` → ``favorite`` 建立时要挡的同一类 P1，而 TTL 递增
+# 之后中招代价从 3 天变成最长 30 天。
+_SEMANTICALLY_EMPTY_TERMS_BY_LOCALE: dict[str, frozenset[str]] = {  # noqa: PROMPT_ZH_TW  # 判据词表非渲染模板，繁体字形内联在 zh 项
+    "zh": frozenset({
+        "这个", "這個", "那个", "那個", "这些", "這些", "那些",
+        "这事", "這事", "那事", "这件事", "這件事", "那件事", "那件事",
+        "这话题", "這話題", "那话题", "那話題",
+        "这个话题", "這個話題", "那个话题", "那個話題",
+        "这种事", "這種事", "那种事", "那種事",
+        "这样的事", "這樣的事", "这类事", "這類事",
+        "刚才的事", "剛才的事", "刚刚的事", "剛剛的事",
+        "这一切", "這一切", "那一切",
+        # 人称 / 反身 / 领属。单字的（我 / 你 / 他）够不到 _TERM_MIN_LEN=2，
+        # 抽取侧本来就存不下，不列进来当噪音。
+        "我们", "我們", "咱们", "咱們", "你们", "你們",
+        "他们", "他們", "她们", "她們", "它们", "它們",
+        "自己", "我自己", "你自己", "他自己", "她自己", "自个儿", "自個兒",
+        "我的", "你的", "他的", "她的", "我们的", "我們的", "你们的", "你們的",
+    }),
+    "en": frozenset({
+        "this", "that", "these", "those", "it", "them",
+        "this thing", "that thing", "this topic", "that topic",
+        "this stuff", "that stuff", "this one", "that one",
+        "the topic", "the subject", "anything", "everything", "all this",
+        # 人称 / 反身 / 领属（"i" 是单字符，够不到 _TERM_MIN_LEN）
+        "me", "you", "we", "us", "him", "her", "he", "she",
+        "my", "your", "our", "his", "hers", "its", "their", "theirs",
+        "mine", "yours", "ours",
+        "myself", "yourself", "yourselves", "ourselves",
+        "himself", "herself", "itself", "themselves", "oneself",
+    }),
+    "ja": frozenset({
+        "これ", "それ", "あれ", "この話", "その話", "あの話",
+        "この件", "その件", "あの件", "こんな話", "そんな話",
+        "この話題", "その話題",
+        # 人称 / 反身。単漢字（私 / 僕 / 君 / 俺）は _TERM_MIN_LEN に届かない。
+        "わたし", "あたし", "ぼく", "おれ", "あなた", "きみ", "おまえ", "お前",
+        "自分", "自分自身", "私たち", "僕たち", "俺たち", "わたしたち",
+        "あなたたち", "君たち", "私自身",
+    }),
+    "ko": frozenset({
+        "이거", "그거", "저거", "이것", "그것", "저것",
+        "이 얘기", "그 얘기", "이 이야기", "그 이야기",
+        "이 일", "그 일", "이 주제", "그 주제",
+        # 인칭 / 재귀
+        "우리", "우리들", "저희", "너희", "당신", "그들", "그녀",
+        "자기", "자신", "자기자신", "제가", "저는",
+    }),
+    "ru": frozenset({
+        "это", "то", "этом", "этому", "об этом", "эту тему", "эта тема",
+        # Личные / возвратные / притяжательные
+        "мы", "вы", "он", "она", "они", "оно",
+        "меня", "тебя", "нас", "вас", "его", "её", "ее", "их",
+        "мне", "тебе", "нам", "вам", "себя", "себе",
+        "мой", "твой", "наш", "ваш", "свой", "моя", "твоя", "наша", "ваша",
+    }),
+    "es": frozenset({
+        "esto", "eso", "aquello", "este tema", "ese tema", "esta cosa",
+        # Personales / reflexivos / posesivos
+        "yo", "tú", "tu", "él", "el", "ella", "ellos", "ellas",
+        "nosotros", "nosotras", "vosotros", "vosotras", "usted", "ustedes",
+        "mí", "mi", "ti", "te", "nos", "su", "sus",
+        "mío", "mía", "tuyo", "tuya", "suyo", "suya",
+        "mí mismo", "sí mismo", "ti mismo",
+    }),
+    "pt": frozenset({
+        "isso", "isto", "aquilo", "esse tema", "este tema", "essa coisa",
+        # Pessoais / reflexivos / possessivos
+        "eu", "tu", "ele", "ela", "eles", "elas", "nós", "vós",
+        "você", "vocês", "mim", "ti", "si", "me", "te", "nos", "vos",
+        "meu", "minha", "teu", "tua", "seu", "sua", "nosso", "nossa",
+        "dele", "dela", "si mesmo", "mim mesmo",
+    }),
+}
+
+# 所有 locale 的并集。⚠️ 与抽取本身一样按**并集**判，不按命中 locale 分表：
+# 混合语言输入是这个模块明确支持的路径（"stop saying 这个"），而这批词跨语言
+# 不存在同形歧义 —— 它们在任何一种语言里都是纯指代词，没有哪个是别的语言的
+# 实义内容词。（``_TRIM_TRAIL_TOKENS_BY_LOCALE`` 必须分表是因为 ``唄`` 那类
+# 同码位歧义，这里没有那个问题。）
+# ⚠️ 建集时就 NFC 归一，别只归一查询侧：源码字面量本身可能以分解形式存进文件
+# （编辑器 / 剪贴板差异），那样查询侧再怎么归一也对不上。两侧同一形式才闭合。
+_SEMANTICALLY_EMPTY_TERMS = frozenset(
+    unicodedata.normalize("NFC", t)
+    for terms in _SEMANTICALLY_EMPTY_TERMS_BY_LOCALE.values() for t in terms
+)
+
+
+def term_needs_case_sensitive_match(term: str) -> bool:
+    """Whether a term must be matched case-sensitively: a name spelled like a pronoun.
+
+    English writes ``the US`` / the films ``Us`` and ``Her`` with capitals and
+    the pronouns ``us`` / ``her`` without, so case is the one local signal that
+    separates the two. Same criterion ``_trim_term`` already uses to keep
+    ``Never Please`` intact while still stripping a trailing ``please``.
+
+    ⚠️ **Only for terms that actually collide with the table.** Widening this to
+    "any capitalized term" costs far more than it buys: ``Work`` (an IME
+    capitalizing the first letter, or just a sentence-initial capture) would
+    then stop matching ``work`` / ``WORK`` in a draft, a fresh miss on the
+    ordinary path — while the collision this exists for is confined to terms
+    whose casefold is in ``_SEMANTICALLY_EMPTY_TERMS``. Pinned by
+    ``test_matcher_is_case_insensitive``.
+
+    Complementary to ``is_semantically_empty_term`` — for a term whose casefold
+    is in the table, exactly one of the two is true (lowercase → exempt from the
+    hard gate, capitalized → gated but matched case-sensitively). Terms outside
+    the table get False from both and follow the ordinary path.
+    """
+    normalized = unicodedata.normalize("NFC", term.strip())
+    if not any(ch.isupper() for ch in normalized):
+        return False
+    return normalized.casefold() in _SEMANTICALLY_EMPTY_TERMS
+
+
+def is_semantically_empty_term(term: str) -> bool:
+    """Whether a term is a bare referent that means nothing outside its own turn.
+
+    Consumers use this to decide whether a directive term is specific enough to
+    hard-block output on. It is deliberately NOT applied at extraction time —
+    see the table's comment for why the two sides differ.
+
+    ⚠️ Capitalized terms are never exempt. ``stop talking about US`` (the
+    country) and the films ``Us`` / ``Her`` all yield terms whose casefold lands
+    on a pronoun in the table; exempting them means the hard gate skips a topic
+    the user explicitly banned, which is strictly worse than before the pronoun
+    entries existed. The proactive gate pairs this with a case-sensitive match
+    for such terms, so ``US`` no longer matches the ``us`` in "Want us to…" —
+    fixing only this half would silence proactive chat wholesale instead.
+
+    ⚠️ NFC first. Accented Spanish/Portuguese entries (``él`` / ``mí`` / ``você``)
+    can reach the store decomposed (``e`` + combining acute) from an IME or a
+    pasted string, which is a different codepoint sequence from the composed
+    form written in the table above — the lookup would silently miss and the
+    pronoun would go back to hard-blocking every draft. The proactive gate
+    normalizes for the same reason (``generation._normalize_for_match``); this
+    predicate has to agree with it or the two disagree on the same term.
+    """
+    normalized = unicodedata.normalize("NFC", term.strip())
+    if any(ch.isupper() for ch in normalized):
+        return False
+    return normalized.casefold() in _SEMANTICALLY_EMPTY_TERMS
 
 # 话题里允许出现的**一个单位**。四条 zh 模板共用一份，别再各写各的。
 #
@@ -1449,6 +1629,27 @@ def _is_japanese_sentence_match(
     # / ``別提おもてなし。`` 里假名前面还是假名，接完照样不匹配（实测）。
     return bool(_JA_GRAMMAR_RE.search(stem + term))
 
+# ⚠️⚠️ 每条模板的**话题捕获组都不许以空白起头**：非 zh 模板写成
+# ``((?!\s).{1,N}?)``，zh 模板 2 在捕获组开头放同一个 ``(?!\s)``，zh 模板 3 的前导
+# 空白只跟在 ``我`` 后面。
+# 这条管的是纯空白 / 长空白串上的耗时。话题的字符类（``.`` / zh 的单字分支）也吃
+# 空格，于是空白串里的**每个**位置都是一个候选起点，每个起点又要把 lazy 捕获从 1
+# 扩到 N、每扩一次都让后面的 ``\s*`` 扫到串尾——整体 O(n²)，常数是 N。实测修之前
+# ``extract_directives(" " * 3000)`` 要 3.6 秒（另一台机器 7.8 秒），而这条路径是
+# 每条用户消息同步跑的、输入没有长度上限。加上这道零宽判据之后，空白里的起点一步
+# 就失败，同样的输入 1 毫秒以内，n 翻倍耗时也只翻倍。
+# 命中上的差别只在「空白起头」这一种切法：
+#   · 话题里有正文时，从空白起头的切法和从第一个非空白字起头的切法**结尾相同**，
+#     term 过 _trim_term 之后一样，只是命中起点右移；
+#   · 例外是话题有**最小单位数**的模板（zh 模板 2 至少 2 个单位）：前导空白能占掉一个
+#     单位，``" 钱这事别提了"`` 以前捕获 ``" 钱"``、剥成 1 个字被长度下限丢掉，现在从
+#     ``钱`` 起头、捕获到 ``钱这事``——和不带空白的原句结果一样；
+#   · 整段话题都是空白的切法（``" 짜증나 듣기 싫어"`` 的第一个空格、
+#     ``"no hables de "`` 句尾那个空格）以前会**占住**这段命中、term 剥成空串再丢掉，
+#     等于首尾多一个空格就改了结果。现在这类输入跟去掉那个空格的版本结果一样。
+#   · zh 模板 2 的 ``关于`` temper 只管第一个单位，前导空格曾经能把它绕过去
+#     （``" 关于工作别提了"`` 多存一条 ``关于工作``），现在一并挡住。
+# 这些变化由 tests/unit/test_directive_regex_whitespace.py 钉住。
 _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     # ---------- zh ----------
     # 别/不要/不许/不准 + （再）+ 动词 + 对象
@@ -1469,6 +1670,9 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # 当成助词（"别再提拿捏。" → 宾语 "拿"、助词 "捏"），削到 1 字后撞长度下限、
      # 整条指令消失。1 字宾语本来也只能产出 1 字 term 必被丢，抬下限只赚不亏。
      + _ZH_TOPIC_SEPARATOR
+     # ⚠️ ``(?!\s)`` 放在无宾语前视之前，理由同模板 3：动词后的横向空白每吐回一个空格，
+     # 前视就先扫完后面的空白，``"别提" + " " * 8000 + "x"`` 72ms、二次方。
+     + r"(?!\s)"
      + _ZH_OBJECTLESS_AHEAD
      + "(" + _zh_topic(2, 40) + r")" + _ZH_FINAL_PARTICLES + r"?(?:[，。！？；,.!?;]|\s*$)"),
     # X + 这个? + 别(再)+ 提
@@ -1503,7 +1707,9 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # 一部分——``我们的事别提了。`` 会被削成 ``我们``、``前女友的事别提了。`` 被削成
      # ``前女友``（base 两条都完整；codex P2）。存下 ``我们`` 意味着让模型回避用户
      # 本人而不是那件事，代价方向完全反了。模板 4 保留它，那里由句首的 ``关于`` 锚定。
-     r"(?!(?<=关)于)(?!(?<=關)於)("
+     # ⚠️ 捕获组开头的 ``(?!\s)``：话题不许空白起头，见 _PATTERNS_RAW 开头。上面那串
+     # 原子化管的是「怎么切」，这一道管的是「从哪起」，两道都要。
+     r"(?!(?<=关)于)(?!(?<=關)於)((?!\s)"
      # ⚠️ 话题和触发词之间也只收横向空白：上一行会被当成前置话题接下来——
      # ``工作正常`` 换行 ``別提了。`` 存下 ``工作正常``（codex P2）。和另外四处
      # 同一条判据：一条指令不跨行。
@@ -1530,8 +1736,11 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      + _ZH_HSPACE + r"(?:了)?(?:[，。！？；,.!?;]|"
      + _ZH_HSPACE_ONE + f"(?!{_ZH_HSPACE}[{_ZH_LINE_SEP}])" + r"|$)"),
     # 不想/不愿 + 聊/讨论 + X — 同上：terminator 不要 \s，否则多词 NP 被切
+    # ⚠️ 前导空白只跟在 ``我`` 后面（``我 不想聊…``）。原先是 ``(?:我)?`` 后接一段
+    # 横向空白，没有 ``我`` 时它只是把句首空白算进命中，却让空白串里的每个位置都成了
+    # 起点、每个起点都扫到串尾（``" " * 6000`` 0.3 秒，二次方）。见 _PATTERNS_RAW 开头。
     ("zh", "ban_topic",
-     r"(?:我)?" + _ZH_HSPACE
+     r"(?:我" + _ZH_HSPACE + r")?"
      + r"(?:" + "|".join(_ZH_RELUCTANCE) + r")"
      + _ZH_HSPACE + r"(?:再)?" + _ZH_HSPACE
      + _ZH_VERBS_PLAIN
@@ -1540,6 +1749,10 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # ⚠️ 本模板也**不吃** ``的事``（模板 1/2/4 已经各撤过一次，同一个理由）：它是
      # 领属加名物化，可以是名字本身的一部分——``我沒心情聊我們的事。`` 会存成
      # ``我們``，让模型回避用户本人而不是那件事（codex P2）。``了`` 保留，它是纯语气。
+     # ⚠️ 话题不许空白起头的 ``(?!\s)`` 要放在无宾语前视**之前**：那道前视在每个位置都会
+     # 先扫完后面的空白，排在它后面的话，动词后面那段横向空白每吐回一个空格就多扫一遍，
+     # ``"我不想聊" + " " * n + "x"`` 仍是二次方。两者都是零宽、判的是同一个位置，顺序不改命中。
+     + r"(?!\s)"
      + _ZH_OBJECTLESS_AHEAD
      # ⚠️ ``了`` 之前的空白也只收横向：和句末助词那一格同一条判据（一条指令不跨行）。
      # 这一格不是 codex 报的，是把结构守卫从「捕获组之前」放宽到**整条模板**之后
@@ -1602,54 +1815,86 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      r"(?:talking\s+about|talk\s+about|saying|say|mentioning|mention|"
      r"bringing\s+up|bring\s+up|going\s+on\s+about|"
      r"calling\s+me\s+a|calling\s+me|call\s+me\s+a|call\s+me)\s+"
-     r"(.{1,40}?)"
+     r"((?!\s).{1,40}?)"
      r"(?:\s+(?:again|anymore|any\s+more|please|ever|already|now|"
      r"forever|today|tonight|right\s+now|in\s+(?:front|public))"
      r"|[,.!?;]|$)"),
     # X + is off limits / off the table / not a topic
+    # ⚠️ 捕获末尾的 ``(?<!\s)``：本条以 lazy 捕获开头，前缀里每个非空白字都是起点，捕获每往
+    # 后面的空白里伸一格，``\s+`` 就扫一遍剩下的空白（``"no hables" + " " * 8000`` 12~22ms）。
+    # 以空白结尾的捕获在这里是白试：``\s+`` 反正会把剩下的空白吃完，``is`` 落在同一个位置，
+    # 结果和更短的那个一样，而 lazy 总是先试更短的——所以这道判据不改命中。
     ("en", "ban_topic",
-     r"(.{1,30}?)\s+is\s+(?:off[\s\-]?limits|off\s+the\s+table|a\s+(?:no[\s\-]?go|forbidden)\s+topic)"
+     r"((?!\s).{1,30}?(?<!\s))\s+is\s+(?:off[\s\-]?limits|off\s+the\s+table|a\s+(?:no[\s\-]?go|forbidden)\s+topic)"
      r"(?:[\s,.!?;]|$)"),
     # I don't want to talk/hear about X
     # X 是 NP 可能含空格（"my ex girlfriend"）。terminator 用 filler-word /
     # 标点 / 句尾，否则 lazy ``.{1,40}?`` 在第一个空格就切断成 "my"（codex P1）。
     ("en", "ban_topic",
      r"i\s+(?:don'?t|do\s+not|really\s+don'?t)\s+(?:want\s+to|wanna)\s+"
-     r"(?:talk|hear|discuss|think)\s+(?:about|of)\s+(.{1,40}?)"
+     r"(?:talk|hear|discuss|think)\s+(?:about|of)\s+((?!\s).{1,40}?)"
      r"(?:\s+(?:anymore|any\s+more|again|ever|already|right\s+now|today|tonight|please)"
      r"|[,.!?;]|$)"),
     # drop the X / leave X alone (subject)
     ("en", "ban_topic",
-     r"(?:drop|leave\s+alone)\s+(?:the\s+|that\s+)?(.{1,30}?)\s+"
+     r"(?:drop|leave\s+alone)\s+(?:the\s+|that\s+)?((?!\s).{1,30}?)\s+"
      r"(?:topic|subject|thing|stuff|already)(?:[\s,.!?;]|$)"),
 
     # ---------- ja ----------
+    # ⚠️ ja / ko 模板**捕获组之后**的 ``\s*`` 一律写成原子组 ``(?>\s*)``，理由和
+    # zh 那边一样：两个 ``\s*`` 中间只隔着可选组（``(?:は)?`` / ``(?:이|가)?``）时，
+    # 同一串空白可以被它们任意瓜分，再乘上 lazy 捕获组本身也吃空格，就是组合爆炸。
+    # 实测（修之前）：ko 第三条在 ``" " * 320`` 上 1.2 秒；ja 第二条在
+    # ``"もう" + " " * 320 + "x"`` 上 142 秒。
+    # 这和 _PATTERNS_RAW 开头那道「捕获不许空白起头」是两回事：那道只挡住空白里的
+    # 起点，话题从正文起头之后（``"x" + " " * n``）照样会在后面的空白里瓜分，得靠这里。
+    # 只有一个 ``\s*`` 的（ja 第三条、ko 第二条）也原子化：没有瓜分，但非原子的
+    # ``\s*`` 失败后会逐个吐回空格、每吐一个再试一次触发词，白白多扫一遍。
+    # 原子化不改变命中：这些 ``\s*`` 后面紧跟的东西（可选组、触发词）没有一个能以空白
+    # 开头，所以任何一种成功的瓜分，都等价于「每个 ``\s*`` 把眼前的空白吃干净」那一种，
+    # 而 greedy 回溯本来就先试这一种——原子化只是砍掉了注定失败的那些重试。
+    # 捕获组**之前**的 ``もう\s*`` / ``이제\s*`` 保持原样：捕获不许空白起头之后，它吐回
+    # 空格的每一次重试都在捕获的第一个字上一步失败，不再有代价。
     # X + のこと/について + は + もう + 言わないで/やめて/しないで
     ("ja", "ban_topic",
-     r"(.{1,40}?)\s*(?:のこと|の話|について|に関して|っていう話)\s*"
-     r"(?:は)?\s*(?:もう|二度と|これ以上)?\s*"
+     r"((?!\s).{1,40}?)(?>\s*)(?:のこと|の話|について|に関して|っていう話)(?>\s*)"
+     r"(?:は)?(?>\s*)(?:もう|二度と|これ以上)?(?>\s*)"
      r"(?:言わないで|話さないで|しないで|やめて|止めて|よして|聞きたくない|触れないで)"),
     # もう + X + (の話) + (は) + 嫌だ/聞きたくない
     ("ja", "ban_topic",
-     r"もう\s*(.{1,40}?)\s*(?:のこと|の話)?\s*(?:は)?\s*"
+     r"もう\s*((?!\s).{1,40}?)(?>\s*)(?:のこと|の話)?(?>\s*)(?:は)?(?>\s*)"
      r"(?:嫌|いや|聞きたくない|話したくない|やめて)"),
     # X + って + 呼ばないで / 言わないで
     ("ja", "ban_topic",
-     r"(.{1,30}?)\s*(?:って|とは|なんて)\s*"
+     r"((?!\s).{1,30}?)(?>\s*)(?:って|とは|なんて)(?>\s*)"
      r"(?:呼ばないで|言わないで|呼ぶな|言うな)"),
 
     # ---------- ko ----------
+    # ⚠️ 模板 1 / 3 里话题两侧的 ``\s*`` 全部**原子化**，理由同 zh 模板 2/4：lazy
+    # 话题 ``.{1,N}?`` 也匹配空格，``\s*(?:이|가)?\s*`` 这种「两个 ``\s*`` 夹一个可选
+    # 组」又能任意瓜分同一串空白，于是在哪切变成三次方。实测模板 3 上
+    # ``extract_directives(" " * 480)`` 要 7 秒，模板 1 上 ``" " * 39 + "말" + " " * 480``
+    # 要 1.6 秒，而这条路径是每条用户消息同步跑的（记录前不截断、不 strip）。
+    # 原子化不改变命中：这几个 ``\s*`` 后面紧跟的都是**不以空白开头**的字面量（助词
+    # 或触发词），任何成功匹配里它们本来就得吃满整串空白。
+    # ⚠️ ko 模板没有「``\s*`` 紧贴一个含 ``\s`` 的终结符字符类」那种位置（zh 模板 2
+    # 动词后的 ``\s*(?:了)?`` 不能原子化就是因为它）；以后给 ko 加终结符类时要留意。
+    # 触发词内部的 ``하지\s*마`` / ``듣기\s*싫`` 两侧都是字面量，不会参与瓜分，不用动。
+    # 模板 2 捕获后的 ``\s*`` 也原子化了（只有一个、没有瓜分，但非原子的会逐个吐回空格再试触发词，
+    # 见 ja 段开头）；三条模板的话题都不许空白起头（``(?!\s)``，见 _PATTERNS_RAW 开头）。
     # X + (에 대해|얘기|이야기) + (는)? + 그만 / 하지 마 / 꺼내지 마
     ("ko", "ban_topic",
-     r"(.{1,40}?)\s*(?:에\s*대해서?|얘기|이야기|소리|말)\s*(?:는|은)?\s*"
+     r"((?!\s).{1,40}?)(?>\s*)(?:에\s*대해서?|얘기|이야기|소리|말)(?>\s*)(?:는|은)?(?>\s*)"
      r"(?:그만|하지\s*마(?:세요|십시오)?|꺼내지\s*마(?:세요)?|관두|치워)"),
     # 다시는 + X + 말하지 마 / 꺼내지 마
     ("ko", "ban_topic",
-     r"(?:다시는|두\s*번\s*다시|이제)\s*(.{1,40}?)\s*"
-     r"(?:말하지|꺼내지|언급하지)\s*마(?:세요|십시오)?"),
+     r"(?:다시는|두\s*번\s*다시|이제)\s*((?!\s).{1,40}?)(?>\s*)"
+     r"(?:말하지|꺼내지|언급하지)(?>\s*)마(?:세요|십시오)?"),
     # X + (이|가)? + 듣기 싫다 / 짜증나
+    # ⚠️ 两个 ``(?>\s*)`` 不能退回 ``\s*``：话题从正文起头之后，后面的空白串会被它们
+    # 三次方地瓜分（见 ja 段开头）。
     ("ko", "ban_topic",
-     r"(.{1,30}?)\s*(?:이|가)?\s*(?:듣기\s*싫|말하기\s*싫|짜증나|지긋지긋)"),
+     r"((?!\s).{1,30}?)(?>\s*)(?:이|가)?(?>\s*)(?:듣기\s*싫|말하기\s*싫|짜증나|지긋지긋)"),
 
     # ---------- ru ----------
     # не говори / хватит про / прекрати + (preposition)? + X
@@ -1662,32 +1907,36 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      r"перестань\s+(?:говорить|обсуждать|упоминать|называть\s+меня)|"
      r"прекрати\s+(?:говорить|обсуждать|упоминать|называть\s+меня))\s+"
      r"(?:про\s+|обо?\s+|о\s+)?"  # 可选介词
-     r"(.{1,40}?)"
+     r"((?!\s).{1,40}?)"
      r"(?:\s+(?:больше|никогда|пожалуйста|снова|опять|вообще|сегодня)"
      r"|[,.!?;]|$)"),
     # о X + больше + не говори
     ("ru", "ban_topic",
-     r"(?:обо|об|о)\s+(.{1,30}?)\s+больше\s+не\s+(?:говори|упоминай)"),
+     r"(?:обо|об|о)\s+((?!\s).{1,30}?)\s+больше\s+не\s+(?:говори|упоминай)"),
     # я не хочу + (говорить|слышать) + о X — 同 en 的 filler-word terminator，
     # 支持 "моей бывшей" 这种多词短语。
     ("ru", "ban_topic",
-     r"я\s+не\s+хочу\s+(?:говорить|слышать|обсуждать)\s+(?:обо|об|о)\s+(.{1,40}?)"
+     r"я\s+не\s+хочу\s+(?:говорить|слышать|обсуждать)\s+(?:обо|об|о)\s+((?!\s).{1,40}?)"
      r"(?:\s+(?:больше|никогда|пожалуйста|снова|опять|вообще|сегодня)"
      r"|[,.!?;]|$)"),
 
     # ---------- es ----------
     # no hables / no menciones / deja de hablar + (de|sobre) + X
+    # ⚠️ 触发词后的 ``\s+`` 和捕获前的 ``\s*`` 都是原子组：介词缺席时两者中间只隔着
+    # 可选组，同一串空白有 n 种切法。话题不许空白起头之后，``"no hables" + " " * n``
+    # 没了空白话题这条快速出口，每种切法都会试到（n=8000 0.33 秒）。介词组本身不原子化，
+    # ``"no hables de"`` 还要能退回去把 ``de`` 当话题。pt 第一条同理。
     ("es", "ban_topic",
      r"(?:no\s+(?:hables|menciones|digas|sigas\s+hablando|me\s+llames)|"
      r"deja\s+de\s+(?:hablar|mencionar|llamarme)|"
-     r"para\s+de\s+(?:hablar|mencionar))\s+"
-     r"(?:de|sobre|acerca\s+de)?\s*(.{1,40}?)"
+     r"para\s+de\s+(?:hablar|mencionar))(?>\s+)"
+     r"(?:de|sobre|acerca\s+de)?(?>\s*)((?!\s).{1,40}?)"
      r"(?:\s+(?:más|nunca|jamás|otra\s+vez|de\s+nuevo|por\s+favor|porfa|hoy|ahora)"
      r"|[,.!?;]|$)"),
     # no quiero + (oír|hablar|saber) + (de|nada de) + X — 同 en/ru
     ("es", "ban_topic",
      r"no\s+quiero\s+(?:oír|hablar|saber|escuchar)\s+(?:nada\s+)?(?:de|sobre)\s+"
-     r"(.{1,40}?)"
+     r"((?!\s).{1,40}?)"
      r"(?:\s+(?:más|nunca|jamás|otra\s+vez|de\s+nuevo|por\s+favor|porfa|hoy|ahora)"
      r"|[,.!?;]|$)"),
 
@@ -1696,24 +1945,58 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     ("pt", "ban_topic",
      r"(?:não\s+(?:fale|mencione|diga|continue\s+falando|me\s+chame)|"
      r"pare\s+de\s+(?:falar|mencionar|me\s+chamar)|"
-     r"deix[ea]\s+de\s+(?:falar|mencionar))\s+"  # deixe de / deixa de（codex P2）
-     r"(?:de|sobre|a\s+respeito\s+de)?\s*(.{1,40}?)"
+     r"deix[ea]\s+de\s+(?:falar|mencionar))(?>\s+)"  # deixe de / deixa de（codex P2）
+     r"(?:de|sobre|a\s+respeito\s+de)?(?>\s*)((?!\s).{1,40}?)"
      r"(?:\s+(?:mais|nunca|jamais|de\s+novo|outra\s+vez|por\s+favor|hoje|agora)"
      r"|[,.!?;]|$)"),
     # não quero + (ouvir|falar|saber) + (de|sobre|nada de) + X — 同 en/ru
     ("pt", "ban_topic",
      r"não\s+quero\s+(?:ouvir|falar|saber|escutar)\s+(?:nada\s+)?(?:de|sobre)\s+"
-     r"(.{1,40}?)"
+     r"((?!\s).{1,40}?)"
      r"(?:\s+(?:mais|nunca|jamais|de\s+novo|outra\s+vez|por\s+favor|hoje|agora)"
      r"|[,.!?;]|$)"),
 ]
 
 
-# 编译期一次性 compile，运行时直接复用。
-DIRECTIVE_PATTERNS: List[Tuple[str, str, "re.Pattern[str]"]] = [
-    (locale, kind, re.compile(raw, re.IGNORECASE | re.UNICODE))
-    for locale, kind, raw in _PATTERNS_RAW
-]
+# 惰性 compile，不在 import 时做。
+#
+# 这 21 条模板里有 4 条各约 51 KB 正则源码，合计 209 KB；模块级 compile 实测
+# 294-298 ms。而这个模块坐在 memory_server 的 eager 导入链上
+# （app/__init__.py -> app/runtime_bindings.py -> memory.user_directives），
+# memory_server 又是 merged 模式下第一个被 import 的 app 模块。uvicorn 先
+# await lifespan.startup() 再 create_server()，所以这段时间全花在**端口还不存在**
+# 的阶段——用户那边是 connection-refused，不是"慢"。
+#
+# 真正需要它的是用户开口之后的指令抽取。改成首次访问时才编译，并在
+# utils/module_warmup.py 的预热表里登记，服务 ready 之后由后台线程提前编好，
+# 首次真实抽取也不用等——与那几个 LLM SDK 的处理同构。
+_DIRECTIVE_PATTERNS_CACHE: List[Tuple[str, str, "re.Pattern[str]"]] | None = None
+_DIRECTIVE_PATTERNS_LOCK = threading.Lock()
+
+
+def _directive_patterns() -> List[Tuple[str, str, "re.Pattern[str]"]]:
+    global _DIRECTIVE_PATTERNS_CACHE
+
+    cached = _DIRECTIVE_PATTERNS_CACHE
+    if cached is None:
+        with _DIRECTIVE_PATTERNS_LOCK:
+            if _DIRECTIVE_PATTERNS_CACHE is None:
+                # 整列表建好再赋值：别的线程要么看到 None、要么看到完整的一份，
+                # 不会读到编译到一半的列表。
+                _DIRECTIVE_PATTERNS_CACHE = [
+                    (locale, kind, re.compile(raw, re.IGNORECASE | re.UNICODE))
+                    for locale, kind, raw in _PATTERNS_RAW
+                ]
+            cached = _DIRECTIVE_PATTERNS_CACHE
+    return cached
+
+
+def __getattr__(name: str) -> object:
+    # DIRECTIVE_PATTERNS 是这个模块的公开名字（测试和外部都按名字取），保持可用；
+    # 只是取它的那一刻才付编译代价。PEP 562 对 `from ... import X` 同样生效。
+    if name == "DIRECTIVE_PATTERNS":
+        return _directive_patterns()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def extract_directives(text: str) -> List[Tuple[str, str, str]]:
@@ -1738,7 +2021,7 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
     # 过滤器就只看得到第一条那个**不重叠**的区间，于是 ``股票就`` 逃过一劫（codex P2）。
     out: List[Tuple[str, str, str]] = []
     spans: List[Tuple[int, int]] = []
-    for locale, kind, pat in DIRECTIVE_PATTERNS:
+    for locale, kind, pat in _directive_patterns():
         # 同上：不手写 startswith("zh")，走公共的 fallback-family 判定。
         zh_family = prompt_locale_fallback_key(locale) == "zh"
         # ⚠️ 不能直接 finditer：日文守卫否掉一条命中之后，那整段区间已经被消费掉了，
@@ -2707,3 +2990,16 @@ def scan_negative_keywords(message: str, lang: str = "zh") -> bool:
         if kw.lower() in lower:
             return True
     return False
+
+
+# `from ... import *` 不经过 __getattr__。没有 __all__ 时 Python 直接枚举模块全局量，
+# 于是 DIRECTIVE_PATTERNS 改成惰性之后会从通配导入里**静默消失**，下游再用就是
+# NameError（codex）。声明 __all__ 把它显式列回去：有 __all__ 时 import * 逐名
+# getattr，惰性访问器照常触发。
+#
+# 其余名字按"此刻实际存在的公开全局量"原样算出来，而不是手写一张清单——这个模块
+# 没有 __all__ 时的历史行为就是"所有不以下划线开头的模块级名字"，手写会顺手收窄
+# 通配面，而收窄了谁也不会发现。必须留在文件末尾，globals() 才是全的。
+__all__ = sorted(
+    {name for name in globals() if not name.startswith("_")} | {"DIRECTIVE_PATTERNS"}
+)

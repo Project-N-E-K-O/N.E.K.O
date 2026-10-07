@@ -16,6 +16,11 @@
     const I = window.__appReactChatWindowParts || (window.__appReactChatWindowParts = {});
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
 
+    function getCurrentIdleChatLifecycleSequence() {
+        var sequence = Number(window.__nekoIdleChatLifecycleSequence);
+        return Number.isSafeInteger(sequence) && sequence > 0 ? sequence : 0;
+    }
+
     function dispatchMinimizedYarnDragPhase(phase, dragState, shell) {
         if (!dragState || !dragState.minimizedYarn || !shell || typeof window.dispatchEvent !== 'function') return;
         var rect = shell.getBoundingClientRect();
@@ -27,6 +32,7 @@
                 source: 'react-chat-window',
                 coordinateSpace: 'viewport',
                 moved: dragState.moved === true,
+                lifecycleSequence: dragState.yarnLifecycleSequence,
                 screenRect: {
                     left: rect.left,
                     top: rect.top,
@@ -60,6 +66,7 @@
             compactSurface: compactSurface,
             moved: false,
             minimizedYarn: !!(I.minimized && !I.isElectronChatWindow()),
+            yarnLifecycleSequence: getCurrentIdleChatLifecycleSequence(),
             yarnSessionId: `react-yarn:${Date.now()}:${(I.yarnDragSequence = (I.yarnDragSequence || 0) + 1)}`
         };
 
@@ -511,8 +518,46 @@
             I.clearChoicePromptBySource('new_user_icebreaker', 'new-user-icebreaker-reset');
         });
 
-        // Refresh option list whenever an assistant turn finishes streaming.
-        window.addEventListener('neko-assistant-turn-end', function () {
+        window.addEventListener('neko:icebreaker-galgame-handoff', function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object'
+                ? event.detail
+                : {};
+            var messageId = String(detail.messageId || '');
+            if (!messageId) return;
+            if (detail.sessionId) {
+                I.clearIcebreakerChoicePrompt(String(detail.sessionId));
+            }
+            I.rememberIcebreakerGalgameHandoff(messageId);
+            if (!I.state.galgameModeEnabled) return;
+            var overlay = I.getOverlay();
+            if (!overlay || overlay.hidden) return;
+            var seqAtSchedule = I.state._galgameRequestSeq;
+            I.waitForAssistantBubblesFlushed(4000).then(function () {
+                if (!I.state.galgameModeEnabled) return;
+                if (I.state._galgameRequestSeq !== seqAtSchedule) return;
+                var overlayNow = I.getOverlay();
+                if (!overlayNow || overlayNow.hidden) return;
+                if (I.state.pendingIcebreakerGalgameHandoffMessageId !== messageId) return;
+                I.fetchPendingIcebreakerGalgameHandoffOrLatest();
+            });
+        });
+
+        function isNewUserIcebreakerTurnEndEvent(event) {
+            var detail = event && event.detail && typeof event.detail === 'object'
+                ? event.detail
+                : {};
+            if (detail.source === 'new_user_icebreaker') return true;
+            var meta = detail.meta && typeof detail.meta === 'object' ? detail.meta : {};
+            if (meta.source === 'new_user_icebreaker' || meta.kind === 'new_user_icebreaker') {
+                return true;
+            }
+            var metaEvent = meta.event && typeof meta.event === 'object' ? meta.event : {};
+            return metaEvent.source === 'new_user_icebreaker';
+        }
+
+        // Refresh option list whenever an ordinary assistant turn finishes streaming.
+        window.addEventListener('neko-assistant-turn-end', function (event) {
+            if (isNewUserIcebreakerTurnEndEvent(event)) return;
             if (!I.state.galgameModeEnabled) return;
             // Skip when the chat overlay is hidden — otherwise galgame mode's
             // default-on flag would spam /api/galgame/options (and summary-tier
@@ -708,7 +753,13 @@
         });
 
         window.addEventListener('localechange', function () {
-            I.state.viewProps = I.createBaseViewProps();
+            var currentProps = I.ensureViewProps();
+            I.state.viewProps = Object.assign({}, currentProps, I.createBaseViewProps());
+            if (currentProps.theaterPresentation && currentProps.theaterPresentation.active === true) {
+                // Refresh translated labels without dropping the active theater
+                // projection or unlocking an evaluating/ending turn.
+                I.state.viewProps.composerDisabled = currentProps.composerDisabled;
+            }
             I.renderWindow();
         });
 
@@ -917,6 +968,17 @@
         setOnComposerSubmit: function (handler) {
             I.state.onComposerSubmit = typeof handler === 'function' ? handler : null;
         },
+        setOnTheaterSubmit: function (handler) {
+            I.state.onTheaterSubmit = typeof handler === 'function' ? handler : null;
+            I.renderWindow();
+        },
+        setOnTheaterSuggestedInputSelect: function (handler) {
+            I.state.onTheaterSuggestedInputSelect = typeof handler === 'function' ? handler : null;
+            I.renderWindow();
+        },
+        setOnTheaterEnd: function (handler) {
+            I.state.onTheaterEnd = typeof handler === 'function' ? handler : null;
+        },
         prepareCompactHistoryDropSubmit: I.prepareCompactHistoryDropSubmit,
         setOnAvatarInteraction: function (handler) {
             I.state.onAvatarInteraction = typeof handler === 'function' ? handler : null;
@@ -952,6 +1014,8 @@
         },
         isGalgameModeEnabled: function () { return !!I.state.galgameModeEnabled; },
         getChatSurfaceMode: function () { return I.getCurrentChatSurfaceMode(); },
+        republishCompactSurfaceLayoutChange: I.republishCompactSurfaceLayoutChange,
+        scheduleCompactMinimizeBallTracking: I.scheduleCompactMinimizeBallTracking,
         refreshGalgameOptions: I.fetchGalgameOptionsForLatestTurn,
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: I.setMiniGameInvitePrompt,

@@ -1,6 +1,7 @@
 import clsx from 'clsx';
 import { i18n } from './i18n';
 import MessageBlockView, { isGuideMessage } from './MessageBlockView';
+import MessageReactions from './MessageReactions';
 import TopicHintBubble, { isTopicHintMessage } from './TopicHintBubble';
 import {
   type ChatMessage,
@@ -69,7 +70,7 @@ export default function MessageBubble({
         data-guide-message={isGuideMessage(message) ? 'true' : undefined}
         data-message-sort-key={message.sortKey ?? ''}
       >
-        <div className="system-chip">
+        <div className={clsx("system-chip", { "system-chip-card": message.blocks.some(block => block.type === "html_card") })}>
           <span className="system-chip-time">{message.time}</span>
           {message.author ? (
             // Where this came from. A plugin may phrase its text in the
@@ -133,6 +134,7 @@ export default function MessageBubble({
             />
           ))}
         </div>
+        <MessageReactions message={message} />
         {message.actions && message.actions.length > 0 ? (
           <div className="message-inline-actions">
             {message.actions.map((action) => (

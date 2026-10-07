@@ -22,6 +22,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from memory.hybrid_recall import (
@@ -286,6 +287,135 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
         ids = [r["id"] for r in res["results"]]
         self.assertIn("good", ids)
         self.assertNotIn("bad", ids)
+
+    async def test_disputed_reflection_drops_out_of_recall(self):
+        """A net-negative reflection must not survive into recall results."""
+        # ⚠️ 用**真实落盘 schema** 的行，不是手工塞 score 的合成行。
+        # reflections.json 里根本没有 ``score`` 键（evidence 是 reinforcement /
+        # disputation 两个累加器，score 一律读时折算）。上面那条
+        # ``test_hard_filter_drops_negative_score`` 塞了 score 所以一直绿，但它
+        # 证明不了生产行为——真实数据上 ``score is None``，那道过滤整条空转，
+        # 被用户反驳到负分的反思照样被召回、原文注入 context，跟 system prompt
+        # 里的 ban 指令正面打架。这条按真实形状钉住。
+        now_iso = datetime.now().isoformat()
+        reflections = [
+            {
+                "id": "disputed", "text": "博士最喜欢的游戏是 The Witness",
+                "status": "confirmed",
+                "reinforcement": 0.0, "disputation": 2.0,
+                "disp_last_signal_at": now_iso,
+            },
+        ]
+        res = await self._run("博士 游戏", [], reflections)
+        self.assertNotIn("disputed", [r["id"] for r in res["results"]])
+
+    async def test_ignored_reflection_is_not_treated_as_disputed(self):
+        """⚠️ Silence is not objection: a merely-ignored row must stay recallable."""
+        # ``evidence_score`` 转负不止一条路。用户对 surfaced 反思**沉默**时，
+        # post_turn 按 'ignored' 记 reinforcement += -0.2；AI 一次抛 7 条、用户
+        # 当轮没接话，这 7 条就全成了 rein=-0.2 / disp=0 的负分行。按净分一刀切
+        # 会把它们当场从召回里抹掉（对抗审查实测存量里 17.8% 的活跃 reflection
+        # 属于这一类），而两周后用户主动问"我上个月在忙什么"，那批正是该被召回
+        # 的东西。判据必须带上 disputation>0，才等于 _hard_filter 那句
+        # "user has been disputing this more than confirming it"。
+        now_iso = datetime.now().isoformat()
+        reflections = [{
+            "id": "ignored_only", "text": "博士最喜欢的游戏是 The Witness",
+            "status": "confirmed",
+            "reinforcement": -0.2, "disputation": 0.0,
+            "rein_last_signal_at": now_iso,
+        }]
+        res = await self._run("博士 游戏", [], reflections)
+        self.assertIn("ignored_only", [r["id"] for r in res["results"]])
+
+    async def test_reinforced_reflection_survives_recall(self):
+        """Control: same missing score key, net-positive evidence, still recalled."""
+        # 少了这条，上面那条用"把所有 reflection 都过滤掉"也能通过。
+        now_iso = datetime.now().isoformat()
+        reflections = [
+            {
+                "id": "reinforced", "text": "博士最喜欢的游戏是 The Witness",
+                "status": "confirmed",
+                "reinforcement": 2.0, "disputation": 0.0,
+                "rein_last_signal_at": now_iso,
+            },
+        ]
+        res = await self._run("博士 游戏", [], reflections)
+        self.assertIn("reinforced", [r["id"] for r in res["results"]])
+
+    async def test_evidence_free_reflection_still_recalled(self):
+        """A row with no evidence fields at all (net 0) must not be dropped."""
+        # 钉住"只多丢负分行"这条单调性：改动之前 score=None 放行，改动之后
+        # 算出 0.0 仍然放行。
+        reflections = [
+            {"id": "plain", "text": "博士最喜欢的游戏是 The Witness",
+             "status": "confirmed"},
+        ]
+        res = await self._run("博士 游戏", [], reflections)
+        self.assertIn("plain", [r["id"] for r in res["results"]])
+
+    async def test_fact_rows_are_not_evidence_scored(self):
+        """The fact tier is outside the evidence system and must stay untouched."""
+        # facts.json 没有 reinforcement / disputation 字段，也没有写入方给它们
+        # 派信号；给 fact 盖一个恒 0 的 score 是噪音，而 ``evidence_score`` 对
+        # ``protected`` 行返回 +inf —— 那个语义该由将来真加字段的那次改动显式
+        # 决定，不该从这里顺手泛化过去。
+        facts = [{"id": "f_protected", "text": "博士养了只猫", "protected": True}]
+        tagged = _tag_tier(facts, "fact")
+        self.assertNotIn("score", tagged[0])
+        # 且 protected fact 不会被 hard_filter 当 persona 丢掉之外的理由影响：
+        # 这里只断言没有被本次改动加上 score 键。
+
+    async def test_stale_score_key_is_recomputed_not_kept(self):
+        """A stale on-row score snapshot must be overwritten by the live value."""
+        # 手工编辑 / 历史迁移可能留下 score 键，那个值不带衰减、算不准；唯一
+        # 权威是按当前时间现算。写成 setdefault 的话这条会红。
+        now_iso = datetime.now().isoformat()
+        rows = [{
+            "id": "stale", "text": "...", "status": "confirmed",
+            "score": 99.0,  # 陈旧快照
+            "reinforcement": 0.0, "disputation": 3.0,
+            "disp_last_signal_at": now_iso,
+        }]
+        tagged = _tag_tier(rows, "reflection")
+        self.assertLess(tagged[0]["score"], 0.0)
+
+    async def test_tagging_only_ever_drops_rows_never_resurrects_one(self):
+        """``_tag_tier`` must be monotone against a bare ``_hard_filter``."""
+        # ⚠️ 这条钉的是**方向**。``disputation <= 0`` 那支一度写的是
+        # ``d.pop('score', None)``，理由是"回落到不按分过滤，与改动前一致"——
+        # 但改动前 _tag_tier 根本不碰这个键，所以"一致"要求的是不碰而不是删：
+        # 盘上带着陈旧 ``score: -5.0`` 的行原样会被 _hard_filter 丢掉，pop 之后
+        # 反而活了下来，与那句单调性注释正相反。
+        # 只断言 stale_neg 被丢是不够的（把 pop 换成任何别的写法都能过），
+        # 用集合包含关系直接编码"只减不增"。
+        from memory.recall import MemoryRecallReranker
+
+        def _rows():
+            return [
+                {"id": "stale_neg", "text": "陈旧负分", "status": "confirmed",
+                 "score": -5.0},
+                {"id": "silent", "text": "用户没接话", "status": "confirmed",
+                 "reinforcement": -0.2, "disputation": 0.0},
+                {"id": "disputed", "text": "被反驳过", "status": "confirmed",
+                 "reinforcement": 0.0, "disputation": 3.0,
+                 "disp_last_signal_at": datetime.now().isoformat()},
+            ]
+
+        baseline = {
+            r["id"] for r in MemoryRecallReranker._hard_filter(_rows())
+        }
+        tagged = {
+            r["id"] for r in MemoryRecallReranker._hard_filter(
+                _tag_tier(_rows(), "reflection")
+            )
+        }
+        # 前提：裸过滤本来就丢 stale_neg（否则这条测不到任何东西）
+        self.assertNotIn("stale_neg", baseline)
+        self.assertLessEqual(tagged, baseline)
+        # 而"沉默"那类（rein 负、disp=0）必须仍然活着 —— 单调性不能靠一刀切
+        # 多杀来满足，那会把实测 17.8% 的活跃 reflection 一起抹掉。
+        self.assertIn("silent", tagged)
 
     async def test_hard_filter_drops_suppressed(self):
         facts = [

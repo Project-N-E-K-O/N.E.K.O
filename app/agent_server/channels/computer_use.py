@@ -24,7 +24,6 @@ from utils.result_parser import (
     _phrase as _rp_phrase,
     _get_lang as _rp_lang,
 )
-from brain.agent_session import get_session_manager
 
 from .. import _shared
 from .._shared import logger
@@ -43,7 +42,7 @@ async def _run_computer_use_task(
     instruction: str,
 ) -> None:
     """Run a computer-use task in a thread pool; emit results directly via ZeroMQ."""
-    # Telemetry：按 agent 类型计使用量（cua/browser/plugin/openclaw/openfang），
+    # Telemetry：按 agent 类型计使用量（cua/browser/plugin/openclaw），
     # 看哪类 agent 真被用、用多少。best-effort 不阻塞 agent 执行。
     try:
         from utils.instrument import counter as _ic
@@ -82,8 +81,7 @@ async def _run_computer_use_task(
             info["error"] = cu_detail
             logger.error("[ComputerUse] Task %s aborted: %s", task_id, cu_detail)
         else:
-            session_id = info.get("session_id")
-            future = loop.run_in_executor(None, _shared.Modules.computer_use.run_instruction, instruction, session_id)
+            future = loop.run_in_executor(None, _shared.Modules.computer_use.run_instruction, instruction)
             res = await future
             if res is None:
                 logger.debug("[ComputerUse] run_instruction returned None, treating as success")
@@ -271,14 +269,8 @@ async def dispatch(
         # 检查重复
         dup, matched = await _is_duplicate_task(result.task_description, lanlan_name)
         if not dup:
-            # Session management for multi-turn CUA tasks
-            sm = get_session_manager()
-            cu_session = sm.get_or_create(None, "cua")
-            cu_session.add_task(result.task_description)
-
             ti = _spawn_task("computer_use", {"instruction": result.task_description, "screenshot": None})
             ti["lanlan_name"] = lanlan_name
-            ti["session_id"] = cu_session.session_id
             ti["_trigger_user_fingerprint"] = trigger_user_msg_sig
             _set_internal_correction_context(ti, result)
             _task_tracker.record_assigned(
@@ -286,7 +278,7 @@ async def dispatch(
                 desc=result.task_description or "",
             )
             # task_description 是用户/LLM 原文，不写进 logger；本地 print 兜底
-            logger.info(f"[ComputerUse] Scheduled task {ti['id']} (session={cu_session.session_id[:8]}, desc_len={len(result.task_description or '')})")
+            logger.info(f"[ComputerUse] Scheduled task {ti['id']} (desc_len={len(result.task_description or '')})")
             print(f"[ComputerUse] task {ti['id']} description: {(result.task_description or '')[:120]}")
             try:
                 await _emit_main_event(
@@ -298,7 +290,6 @@ async def dispatch(
                         "type": ti.get("type"),
                         "start_time": ti.get("start_time"),
                         "params": ti.get("params", {}),
-                        "session_id": cu_session.session_id,
                     },
                 )
             except Exception as e:

@@ -1,6 +1,11 @@
 (function () {
   'use strict';
 
+  // Official N.E.K.O mini-game audio implementation. Games may stay silent,
+  // but any mini-game that emits BGM, SFX, or attached media must use the
+  // public NekoMiniGame audio capability instead of constructing this class
+  // or unmanaged Audio/WebAudio playback directly.
+  //
   // 游戏音频配置规则：
   // - 音频配置归各游戏自己维护，不做一个全项目游戏音频总配置文件。
   // - 各游戏使用统一配置形状：{ bgm: {...}, sfx: {...} }。
@@ -32,6 +37,9 @@
   const DEFAULT_FADE_MS = 800;
   const DEFAULT_BGM_STORAGE_KEY = 'neko.gameAudio.bgmVolume';
   const DEFAULT_SFX_STORAGE_KEY = 'neko.gameAudio.sfxVolume';
+  const DEFAULT_MAX_PRELOAD_ENTRIES = 128;
+  const DEFAULT_MAX_PLAYLIST_HISTORY = 64;
+  const DEFAULT_MAX_END_WAITERS = 32;
   const PLAYLIST_ID_PREFIX = 'playlist:';
 
   function clamp01(value, fallback) {
@@ -44,6 +52,33 @@
     const numberValue = Number(value);
     if (!Number.isFinite(numberValue)) return fallback;
     return Math.max(0, numberValue);
+  }
+
+  function boundedPositiveInteger(value, fallback, maximum) {
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue) || numberValue <= 0) return fallback;
+    return Math.max(1, Math.min(Math.floor(numberValue), maximum));
+  }
+
+  function evictOldestAudio(cache, maximum) {
+    while (cache.size >= maximum) {
+      const oldestKey = cache.keys().next().value;
+      if (oldestKey === undefined) break;
+      const audio = cache.get(oldestKey);
+      if (audio) disposeAudio(audio);
+      cache.delete(oldestKey);
+    }
+  }
+
+  function rememberBounded(map, key, value, maximum) {
+    if (!key) return;
+    map.delete(key);
+    map.set(key, value);
+    while (map.size > maximum) {
+      const oldestKey = map.keys().next().value;
+      if (oldestKey === undefined) break;
+      map.delete(oldestKey);
+    }
   }
 
   function decibelsToMultiplier(value, fallback = 1) {
@@ -211,6 +246,21 @@
       this.loopPlaylist = options.loopPlaylist !== false;
       this.onError = typeof options.onError === 'function' ? options.onError : null;
       this.mix = normalizeVolumeMix(options.mix);
+      this.maxPreloadEntries = boundedPositiveInteger(
+        options.maxPreloadEntries,
+        DEFAULT_MAX_PRELOAD_ENTRIES,
+        512
+      );
+      this.maxPlaylistHistory = boundedPositiveInteger(
+        options.maxPlaylistHistory,
+        DEFAULT_MAX_PLAYLIST_HISTORY,
+        256
+      );
+      this.maxEndWaiters = boundedPositiveInteger(
+        options.maxEndWaiters,
+        DEFAULT_MAX_END_WAITERS,
+        64
+      );
 
       this.volume = options.volume !== undefined
         ? clamp01(options.volume, DEFAULT_BGM_VOLUME)
@@ -369,6 +419,11 @@
     waitForEnd(options = {}) {
       if (this.destroyed || !this.currentAudio) return Promise.resolve(false);
       return new Promise((resolve) => {
+        if (this.endWaiters.length >= this.maxEndWaiters) {
+          const oldest = this.endWaiters.shift();
+          if (oldest?.timer) globalThis.clearTimeout?.(oldest.timer);
+          oldest?.resolve(false);
+        }
         const waiter = { resolve, timer: null };
         const timeoutMs = Math.max(0, Number(options.timeoutMs || 0) || 0);
         if (timeoutMs > 0) {
@@ -428,7 +483,12 @@
       const nextAudio = this._createAudio(track);
       this.currentAudio = nextAudio;
       this.currentTrack = track;
-      this.lastTrackBySignature.set(this.currentSignature, track);
+      rememberBounded(
+        this.lastTrackBySignature,
+        this.currentSignature,
+        track,
+        this.maxPlaylistHistory
+      );
 
       this._applyVolume(nextAudio, previousAudio ? 0 : 1, track, volumeOptions);
 
@@ -458,6 +518,7 @@
 
     _preloadTrack(track) {
       if (!track || !track.src || this.preloadCache.has(track.src)) return;
+      evictOldestAudio(this.preloadCache, this.maxPreloadEntries);
       const audio = this.audioFactory(track.src, track);
       audio.preload = track.preload || 'auto';
       audio.volume = 0;
@@ -597,7 +658,12 @@
         : (src) => new Audio(src);
       this.random = typeof options.random === 'function' ? options.random : Math.random;
       this.persistVolume = options.persistVolume !== false;
-      this.maxConcurrent = Math.max(1, Number(options.maxConcurrent || 12) || 12);
+      this.maxConcurrent = boundedPositiveInteger(options.maxConcurrent, 12, 64);
+      this.maxPreloadEntries = boundedPositiveInteger(
+        options.maxPreloadEntries,
+        DEFAULT_MAX_PRELOAD_ENTRIES,
+        512
+      );
       this.onError = typeof options.onError === 'function' ? options.onError : null;
       this.mix = normalizeVolumeMix(options.mix);
       this.volume = options.volume !== undefined
@@ -656,7 +722,13 @@
 
     _getBaseAudio(track) {
       if (!track || !track.src) return null;
-      if (this.baseCache.has(track.src)) return this.baseCache.get(track.src);
+      if (this.baseCache.has(track.src)) {
+        const cached = this.baseCache.get(track.src);
+        this.baseCache.delete(track.src);
+        this.baseCache.set(track.src, cached);
+        return cached;
+      }
+      evictOldestAudio(this.baseCache, this.maxPreloadEntries);
       const audio = this.audioFactory(track.src, track);
       audio.preload = track.preload || 'auto';
       audio.volume = 0;
@@ -725,6 +797,11 @@
         : (src) => new Audio(src);
       this.onError = typeof options.onError === 'function' ? options.onError : null;
       this.mix = normalizeVolumeMix(options.mix);
+      this.maxPreloadEntries = boundedPositiveInteger(
+        options.maxPreloadEntries,
+        DEFAULT_MAX_PRELOAD_ENTRIES,
+        512
+      );
       this.volume = options.volume !== undefined
         ? clamp01(options.volume, DEFAULT_BGM_VOLUME)
         : DEFAULT_BGM_VOLUME;
@@ -1003,6 +1080,7 @@
 
     _preloadTrack(track) {
       if (!track || !track.src || this.preloadCache.has(track.src)) return;
+      evictOldestAudio(this.preloadCache, this.maxPreloadEntries);
       const audio = this.audioFactory(track.src, track);
       audio.preload = track.preload || 'auto';
       audio.volume = 0;

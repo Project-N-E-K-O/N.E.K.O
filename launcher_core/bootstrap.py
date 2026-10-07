@@ -21,8 +21,6 @@ from __future__ import annotations
 
 import sys
 import os
-import io  # noqa: F401  (re-exported by the root launcher facade)
-import signal  # noqa: F401  (re-exported by the root launcher facade)
 
 # Preserve the historical root launcher.py path after moving this code.
 _IMPLEMENTATION_FILE = __file__
@@ -51,8 +49,8 @@ def _configure_stdio_utf8() -> None:
             pass
 
 
-# 模块级立即 reconfigure 一次：即使 launcher 被作为 module import（比如
-# tests/unit/test_cloudsave_startup_flow.py 里 8 处 import launcher），也
+# 模块级立即 reconfigure 一次：即使 launcher / launcher_core.runtime 被作为
+# module import（比如测试里 `from launcher_core import runtime`），也
 # 能保证 Windows 下中文 log 不崩。stream.reconfigure 幂等，
 # _bootstrap_launcher_runtime 里再调一次只是 no-op。
 _configure_stdio_utf8()
@@ -133,6 +131,20 @@ if IS_FROZEN:
 else:
     # 运行在正常 Python 环境
     bundle_dir = os.path.dirname(os.path.abspath(__file__))
+
+
+def _pin_project_root_first() -> None:
+    """Put the bundle / repository root first on ``sys.path``.
+
+    ``plugin/`` doubles as an import root for user-plugin processes and holds
+    a sibling ``config`` package, and plugin hosts insert plugin ``vendor/``
+    dirs at index 0. Without this the launcher's (or a spawned child's)
+    top-level ``config`` / ``utils`` imports could resolve to one of those.
+    """
+    root = os.path.abspath(bundle_dir)
+    while root in sys.path:
+        sys.path.remove(root)
+    sys.path.insert(0, root)
 
 
 def _configure_ssl_cert_bundle() -> None:

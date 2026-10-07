@@ -42,6 +42,7 @@ Design notes:
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 # Comma / 中文逗号 / 顿号 / 分号 / 空白都视为昵称字段分隔符。
 _NICKNAME_SPLIT_RE = re.compile(r"[,，;；、\s]+")
@@ -56,6 +57,16 @@ _LATIN_ALIAS_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 # 息地把 BM25/记忆召回的 recall 砍光。漏掉一个真单字别名是次要损失，比起
 # 把每条 fact 都腌一遍完全可接受。
 _MIN_STOP_NAME_LEN = 2
+
+
+@lru_cache(maxsize=256)
+def _latin_boundary_re(name: str) -> "re.Pattern[str]":
+    pattern = (
+        r"(?<![A-Za-z0-9_])"
+        + re.escape(name)
+        + r"(?![A-Za-z0-9_])"
+    )
+    return re.compile(pattern, flags=re.IGNORECASE)
 
 
 def split_nickname_aliases(raw) -> list[str]:
@@ -165,12 +176,7 @@ def strip_stop_names(text: str, stop_names: list[str] | None) -> str:
         if not n or len(n) < _MIN_STOP_NAME_LEN:
             continue
         if _LATIN_ALIAS_RE.fullmatch(n):
-            pattern = (
-                r"(?<![A-Za-z0-9_])"
-                + re.escape(n)
-                + r"(?![A-Za-z0-9_])"
-            )
-            out = re.sub(pattern, ' ', out, flags=re.IGNORECASE)
+            out = _latin_boundary_re(n).sub(' ', out)
         else:
             out = out.replace(n, ' ')
     return out

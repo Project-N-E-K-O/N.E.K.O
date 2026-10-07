@@ -1019,3 +1019,102 @@ async def test_mcp_connect_server_coerces_string_flags_and_rolls_back_on_tool_re
     assert observed["timeout"] == 12.5
     assert observed["disconnected"] is True
     assert "fetch" not in plugin._clients
+
+
+@pytest.mark.asyncio
+async def test_chat_disable_cleans_removed_and_pending_tools(monkeypatch):
+    from types import SimpleNamespace
+    plugin = MCPAdapterPlugin(_Ctx())
+    cfg = {"example": {"transport": "stdio", "command": "demo", "inject_to_chat": True}}
+    plugin.ctx._effective_config["mcp_servers"] = cfg
+    plugin._servers_config = cfg
+    plugin._clients["example"] = SimpleNamespace(tools=[])
+    plugin._chat_tools["removed"] = {"server_name": "example", "llm_name": "old"}
+    plugin._pending_chat_tools["pending"] = {"server_name": "example", "llm_name": "pending"}
+    cleaned = []
+
+    async def remote(name):
+        cleaned.append(name)
+        return "removed"
+
+    monkeypatch.setattr(plugin, "_remote_unregister_llm_tool", remote)
+    monkeypatch.setattr(plugin, "unregister_llm_tool", lambda name: None)
+    result = await plugin.set_chat_injection("example", False)
+    assert isinstance(result, Ok)
+    assert cleaned == ["old", "pending"]
+    assert not plugin._chat_tools and not plugin._pending_chat_tools
+
+
+@pytest.mark.asyncio
+async def test_remove_batch_keeps_servers_when_chat_cleanup_fails(monkeypatch):
+    plugin = MCPAdapterPlugin(_Ctx())
+    cfg = {name: {"transport": "stdio", "command": "demo"} for name in ("first", "second")}
+    plugin.ctx._effective_config["mcp_servers"] = cfg
+    plugin._servers_config = cfg
+    plugin._pending_chat_tools["second_tool"] = {"server_name": "second", "llm_name": "pending"}
+
+    async def remote(name):
+        return "failed"
+
+    monkeypatch.setattr(plugin, "_remote_unregister_llm_tool", remote)
+    result = await plugin.remove_servers(["first", "second"])
+    assert isinstance(result, Err)
+    assert set(plugin._servers_config) == {"first", "second"}
+    assert "second_tool" in plugin._pending_chat_tools
+
+
+@pytest.mark.asyncio
+async def test_chat_poll_transport_error_cancels_run_and_preserves_mcp_timeout(monkeypatch):
+    import httpx
+    import plugin.plugins.mcp_adapter as module
+    plugin = MCPAdapterPlugin(_Ctx())
+    captured = []
+    canceled = []
+
+    def respond(request):
+        if request.method == "POST":
+            import json
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json={"run_id": "run-1"})
+        raise httpx.ReadError("connection lost", request=request)
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(respond)))
+
+    async def cancel(base, run_id, tool_name):
+        canceled.append(run_id)
+
+    monkeypatch.setattr(plugin, "_cancel_run_best_effort", cancel)
+    result = await plugin._execute_chat_tool_via_run(entry_id="tool", server_name="example", tool_name="tool", arguments={})
+    assert result["success"] is False
+    assert canceled == ["run-1"]
+    assert captured[0]["args"]["_ctx"]["entry_timeout"] == 60
+
+
+@pytest.mark.asyncio
+async def test_add_server_waits_for_toggle_config_transaction(monkeypatch):
+    import copy
+    plugin = MCPAdapterPlugin(_Ctx())
+    plugin.ctx._effective_config["mcp_servers"] = {"example": {"transport": "stdio", "command": "demo", "inject_to_chat": True}}
+    plugin._servers_config = copy.deepcopy(plugin.ctx._effective_config["mcp_servers"])
+    entered = asyncio.Event()
+    resume = asyncio.Event()
+    original = plugin.ctx.update_own_config
+
+    async def update(updates, timeout=10.0):
+        if "new" not in updates["mcp_servers"]:
+            entered.set()
+            await resume.wait()
+        return await original(updates, timeout)
+
+    monkeypatch.setattr(plugin.ctx, "update_own_config", update)
+    toggle = asyncio.create_task(plugin.set_chat_injection("example", False))
+    await entered.wait()
+    add = asyncio.create_task(plugin.add_server(name="new", transport="stdio", command="demo", auto_connect=False))
+    await asyncio.sleep(0)
+    assert not add.done()
+    resume.set()
+    results = await asyncio.gather(toggle, add)
+    assert all(isinstance(result, Ok) for result in results)
+    assert set(plugin.ctx._effective_config["mcp_servers"]) == {"example", "new"}
+    assert plugin.ctx._effective_config["mcp_servers"]["example"]["inject_to_chat"] is False

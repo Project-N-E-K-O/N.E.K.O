@@ -23,9 +23,6 @@ Agent Server は ZeroMQ を介して、非同期のセッション・タスク�
 | `GET` | `/browser_use/availability` | Browser Use の依存関係/モデル準備状態 |
 | `POST` | `/browser_use/run` | ブラウザー指示を 1 件実行。`instruction` が必須 |
 | `GET` | `/openclaw/availability` | OpenClaw/QwenPaw capability チェック |
-| `GET` | `/openfang/availability` | OpenFang capability チェック |
-| `POST` | `/openfang/run` | 追跡対象の OpenFang タスクを開始 |
-| `POST` | `/openfang/sync_config` | OpenFang ランタイム設定を更新 |
 | `GET` | `/mcp/availability` | 互換応答。MCP は `brain/` から削除済みで、ここでは常に利用不可 |
 | `POST` | `/plugin/execute` | ユーザープラグイン entry を直接スケジュール。`plugin_id` は必須、`entry_id`、`args`、キャラクター/会話 ID は任意 |
 | `GET` | `/tasks` | タスクレジストリのスナップショット一覧 |
@@ -59,7 +56,6 @@ Agent Server は ZeroMQ を介して、非同期のセッション・タスク�
 | Computer Use | スクリーンショットに基づくマウス/キーボード操作 |
 | Browser Use | 任意の `browser-use` 依存関係によるブラウザー自動化 |
 | OpenClaw | OpenClaw/QwenPaw スタンドアロン agent チャネルへの委譲 |
-| OpenFang | OpenFang スタンドアロン agent チャネルへの委譲 |
 | ユーザープラグイン | プラグインランタイム経由の直接実行 |
 
 MCP 呼び出しは `brain/` から削除され、インストール可能な MCP 連携は `plugin/plugins/mcp_adapter/` にあります。

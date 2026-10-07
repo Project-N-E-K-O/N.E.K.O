@@ -8,7 +8,7 @@
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js?v={{ static_asset_version|default('0', true) }}"></script>
     <script src="/static/common_dialogs.js"></script>
-    <link rel="stylesheet" href="/static/css/voice_clone.css">
+    <link rel="stylesheet" href="/static/css/voice_clone.css?v={{ static_asset_version|default('0', true) }}">
     <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version|default('0', true) }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
@@ -42,6 +42,7 @@
             <div class="voice-register-main">
                 <div class="field-row">
                     <label for="voiceProvider" data-i18n="voice.providerLabel">语音克隆服务商</label>
+                    <div class="remote-voice-provider-controls">
                     <select id="voiceProvider" class="api-provider-select">
                         <option value="cosyvoice" data-i18n="voice.provider.cosyvoice">阿里百炼 CosyVoice</option>
                         <option value="cosyvoice_intl" data-i18n="voice.provider.cosyvoice_intl">阿里国际版 CosyVoice</option>
@@ -50,8 +51,11 @@
                         <option value="elevenlabs" data-i18n="voice.provider.elevenlabs">ElevenLabs</option>
                         <option value="mimo" data-i18n="voice.provider.mimo">MiMo（小米）</option>
                         <option value="doubao_tts" data-i18n="voice.provider.doubao_tts">豆包语音(火山引擎)</option>
+                        <option value="glm_tts" data-i18n="voice.provider.glm_tts">智谱GLM声音复刻</option>
                         <option value="vllm_omni" data-i18n="voice.provider.vllm_omni">vLLM-Omni（本地克隆）</option>
                     </select>
+                    <button type="button" id="importExistingVoice" class="btn remote-voice-entry" hidden data-i18n="voice.remote.title">导入已有音色</button>
+                    </div>
                 </div>
                 <div id="provider-notice" class="alibaba-api-notice" style="display: none;">
                     <span data-i18n="voice.alibabaApiRequired">此功能只支持特定语音模型，请在API密钥设置页中保存对应API Key（不要求启用辅助API）或配置本地语音服务器</span>
@@ -193,6 +197,7 @@
     </div>
     <script src="/static/js/voice_display_utils.js"></script>
     <script src="/static/js/voice_clone.js?v={{ static_asset_version|default('0', true) }}"></script>
+    <script src="/static/js/remote_voice_manager.js?v={{ static_asset_version|default('0', true) }}"></script>
     <script src="/static/js/voice_silence_remover.js"></script>
 
     <!-- API未设置提示弹窗 -->

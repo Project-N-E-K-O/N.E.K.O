@@ -575,8 +575,17 @@ server {
     # 取消客户端请求体大小限制
     client_max_body_size 0;
 
+    # CSRF bootstrap must reach the same plugin backend as lifecycle mutations.
+    # Preserve the public authority and overwrite proxy metadata for NAS access.
+    location = /security/csrf-token {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
     # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
-    location ~ ^/(ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
+    location ~ ^/(api/model-config(?:/|$)|ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
         proxy_pass http://127.0.0.1:48916;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -695,8 +704,17 @@ server {
     # 取消客户端请求体大小限制
     client_max_body_size 0;
 
+    # CSRF bootstrap must reach the same plugin backend as lifecycle mutations.
+    # Preserve the public authority and overwrite proxy metadata for NAS access.
+    location = /security/csrf-token {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
     # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
-    location ~ ^/(ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
+    location ~ ^/(api/model-config(?:/|$)|ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
         proxy_pass http://127.0.0.1:48916;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -1039,60 +1057,6 @@ setup_dependencies() {
 }
 
 # 7. 服务启动优化
-# ── OpenFang (Rust A2A agent daemon) ──────────────────────────
-start_openfang_daemon() {
-    if ! command -v openfang &>/dev/null; then
-        echo "⚠️ OpenFang binary not found, skipping OpenFang daemon"
-        return 0
-    fi
-    echo "🚀 Starting OpenFang A2A daemon..."
-    cd /app
-
-    # OpenFang 工作目录（~neko/.openfang）
-    local OF_HOME="/home/neko/.openfang"
-    local OF_CONFIG="$OF_HOME/config.toml"
-
-    if [ ! -f "$OF_CONFIG" ]; then
-        echo "   Initializing OpenFang workspace..."
-        runuser -u neko -- openfang init 2>&1 || {
-            echo "⚠️ OpenFang init failed (non-critical)"
-        }
-        # 首次初始化时清除预装 agent（默认用 Groq 但用户无 key → 刷 heartbeat WARN）
-        if [ -d "$OF_HOME/agents" ]; then
-            echo "   Removing pre-installed agents (no Groq API key configured)..."
-            rm -rf "$OF_HOME/agents"
-        fi
-    fi
-
-    # 确保 A2A 协议已启用（N.E.K.O 通过 A2A 接口与 OpenFang 通信）
-    if [ -f "$OF_CONFIG" ]; then
-        if ! grep -q '^\s*\[a2a\]' "$OF_CONFIG" 2>/dev/null; then
-            echo "   Enabling A2A protocol in OpenFang config..."
-            printf '\n[a2a]\nenabled = true\n' >> "$OF_CONFIG"
-        fi
-    fi
-
-    local OF_PORT="${OPENFANG_PORT:-50051}"
-    echo "   Starting openfang daemon (API listen: 127.0.0.1:${OF_PORT})..."
-    OPENFANG_LISTEN="127.0.0.1:${OF_PORT}" runuser -u neko -- openfang start &
-    local of_pid=$!
-    PIDS+=("$of_pid")
-    echo "     OpenFang daemon PID: $of_pid"
-
-    # 等待健康检查
-    local of_retries=15
-    while [ $of_retries -gt 0 ]; do
-        if curl -sf "http://127.0.0.1:${OF_PORT}/api/health" >/dev/null 2>&1; then
-            echo "✅ OpenFang daemon is healthy"
-            return 0
-        fi
-        sleep 2
-        of_retries=$((of_retries - 1))
-    done
-    echo "⚠️ OpenFang health check timed out (continuing anyway)"
-    return 0
-}
-
 start_services() {
     echo "🚀 Starting N.E.K.O. services..."
     cd /app
@@ -1305,7 +1269,7 @@ warn_legacy_layout() {
             echo "         cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl"
             echo "     · 空 —— 此前跟的是旧版 README，其挂载目标从来对不上服务的实际"
             echo "       写入位置，数据只存在于旧容器里。若那个容器已被重建或删除，"
-            echo "       这部分数据无法找回；OpenFang 状态同理。"
+            echo "       这部分数据无法找回。"
             ;;
     esac
     echo "   详见 README「从旧版本升级」一节。全新安装可忽略本提示。"
@@ -1361,7 +1325,7 @@ main() {
     # 1000 的条目都改掉。与其想办法处理，不如直接不收 —— 想把数据放到别的磁盘，
     # 该在 compose 里把 neko-home 挂到那个位置，而不是在里面做软链。
     for _state_dir in /home/neko/.local /home/neko/.local/share \
-                      /home/neko/.local/share/N.E.K.O /home/neko/.openfang; do
+                      /home/neko/.local/share/N.E.K.O; do
         if [ -L "$_state_dir" ]; then
             echo "❌ $_state_dir 是符号链接，数据目录不支持这样放"
             echo "   启动时的属主修复会顺着它改到 /home/neko 之外的宿主路径上。"
@@ -1372,9 +1336,9 @@ main() {
     done
     unset _state_dir
 
-    mkdir -p /home/neko/.local/share/N.E.K.O /home/neko/.openfang
+    mkdir -p /home/neko/.local/share/N.E.K.O
     if ! chown -h 1000:1000 /home/neko /home/neko/.local /home/neko/.local/share \
-        || ! find /home/neko/.local/share/N.E.K.O /home/neko/.openfang \
+        || ! find /home/neko/.local/share/N.E.K.O \
                \( ! -uid 1000 -o ! -gid 1000 \) -exec chown -h 1000:1000 {} + ; then
         echo "❌ 无法把数据目录的属主改为 1000:1000（容器内的 neko）"
         echo "   宿主机的挂载可能不允许改属主 —— NFS 带 root_squash、CIFS 没带"
@@ -1383,8 +1347,23 @@ main() {
         exit 1
     fi
 
-    # 启动 OpenFang A2A 守护进程（编译在镜像中的 Rust 二进制）
-    start_openfang_daemon
+    # ./logs 挂载点：宿主机上不存在时 Docker 会以 root 创建一个空目录，镜像里给
+    # /app/logs 的属主就被盖掉了，DEBUG 级 dev 日志和后备日志目录随之写不进去。
+    # 只在它为空时改挂载点本身（不递归）：宿主侧的 ./logs 若是指向别处的符号链接，
+    # Docker 挂的是链接目标，容器里的 -L 识别不出来；限定空目录就不会去改一个已有
+    # 内容的宿主目录（比如 /var/log）的属主。已有内容时交给管理员处理：宿主侧的
+    # docker/preflight.sh 看得见符号链接，由它确认之后再改。
+    # 主日志在数据目录里，这里失败不影响服务，所以只警告不退出。
+    if [ -d /app/logs ] && [ ! -L /app/logs ] && [ -z "$(ls -A /app/logs 2>/dev/null)" ]; then
+        chown -h 1000:1000 /app/logs 2>/dev/null \
+            || echo "⚠️ 无法把 /app/logs 的属主改为 1000:1000，DEBUG 日志可能无法写入"
+    elif [ -d /app/logs ] && [ "$(stat -c '%u' /app/logs 2>/dev/null)" != 1000 ]; then
+        echo "⚠️ /app/logs 非空且属主不是 1000，DEBUG 日志和后备日志可能无法写入。"
+        echo "   在宿主机仓库根目录执行预检（会拒绝符号链接，只改目录本身）："
+        echo "       sudo sh docker/preflight.sh"
+        echo "   覆盖文件改过挂载路径时，按覆盖文件里写的原样传入两个路径："
+        echo "       sudo sh docker/preflight.sh <neko-home 路径> <logs 路径>"
+    fi
 
     # 放在服务启动前打印：此时前面的初始化日志已经刷完，这条不会被淹掉
     warn_legacy_layout

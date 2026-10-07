@@ -22,6 +22,7 @@ def test_streaming_manual_provider_requires_smart_turn() -> None:
         max_segment_ms=None,
         warm_transport_ms=25_000,
         replay_policy="preconnect_only",
+        supports_result_preserving_finish=True,
     )
 
 
@@ -31,6 +32,11 @@ def test_provider_endpoint_is_the_logical_turn_authority() -> None:
     assert policy.endpoint_authority == "provider"
     assert policy.smart_turn_required is False
     assert policy.replay_policy == "provider_managed"
+
+
+def test_qwen_provider_endpoint_can_observe_local_activity_for_fallback() -> None:
+    assert resolve_provider_policy("qwen", "provider").observes_local_activity is True
+    assert resolve_provider_policy("openai", "provider").observes_local_activity is False
 
 
 @pytest.mark.parametrize("provider_key", ["glm", "gemini"])

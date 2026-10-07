@@ -18,6 +18,7 @@ from ._shared import (
     Any,
     Callable,
     Dict,
+    GEMINI_TURN_IMAGE_MIME,
     OMNI_WS_FRAME_LIMIT_BYTES,
     Optional,
     VisualDeliveryMode,
@@ -77,9 +78,29 @@ def _proactive_text_instruction(language: str, *, has_vision: bool) -> str:
 
 
 class _ResponseMixin:
+    def get_conversation_turn_type(self) -> str:
+        """Classify delivered content by its provider response ownership."""
+        if getattr(self, "_is_gemini", False):
+            owner = getattr(self, "_gemini_proactive_outcome_owner", None)
+            proactive = bool(
+                owner is not None
+                and len(owner) > 4
+                and owner[0] == getattr(self, "_connection_generation", None)
+                and owner[1] is getattr(self, "_gemini_session", None)
+                and owner[2] == getattr(self, "_proactive_inject_outcome_token", None)
+                and owner[4] == getattr(self, "_tool_scope_generation", 0)
+            )
+        else:
+            # Captured when accepted start evidence opens the response. It
+            # survives terminal bookkeeping before a final transcript flush.
+            proactive = getattr(self, "_current_response_source", None) == "proactive"
+        return "proactive_reply" if proactive else "assistant_message"
+
     def _ensure_response_arbiter(self) -> RealtimeResponseArbiter:
         arbiter = getattr(self, "_response_arbiter", None)
         if arbiter is None:
+            trace_enabled = bool(getattr(self, "_wire_trace_enabled", False))
+            wire_trace = getattr(self, "_wire_trace", None)
             arbiter = RealtimeResponseArbiter(
                 self.send_event,
                 abort_transport=getattr(self, "_abort_failed_transport", None),
@@ -89,6 +110,13 @@ class _ResponseMixin:
                     self,
                     "_realtime_protocol_capabilities",
                     STRICT_REALTIME_PROTOCOL_CAPABILITIES,
+                ),
+                trace=trace_enabled,
+                trace_tag=getattr(wire_trace, "client_tag", None),
+                trace_generation=(
+                    (lambda: getattr(self, "_connection_generation", None))
+                    if trace_enabled
+                    else None
                 ),
             )
             self._response_arbiter = arbiter
@@ -329,7 +357,9 @@ class _ResponseMixin:
         active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
         if active_pause_id == stable_turn_id:
             self._external_voice_turn_pause_id = None
-        arbiter.resume_dispatch()
+        arbiter.allow_ticket_while_paused(ticket)
+        if active_pause_id in (None, stable_turn_id):
+            arbiter.resume_dispatch()
         try:
             await ticket.sent
         except asyncio.CancelledError:
@@ -347,7 +377,7 @@ class _ResponseMixin:
                 and getattr(self, "_external_voice_turn_pause_id", None)
                 == active_pause_id
             ):
-                arbiter.pause_dispatch()
+                arbiter.pause_dispatch(active_pause_id)
         return ticket
 
     def get_multimodal_turn_delivery(self) -> MultimodalTurnDelivery:
@@ -412,6 +442,7 @@ class _ResponseMixin:
         *,
         turn_id: str,
         visual_still_owned=None,
+        source: str | None = None,
     ):
         """Submit one atomic raw-image + external-ASR user turn.
 
@@ -432,6 +463,19 @@ class _ResponseMixin:
         stable_turn_id = str(turn_id or "").strip()
         if not stable_turn_id:
             raise ValueError("external voice turn_id must not be empty")
+        # This turn's channel label, fixed before ANY await below.
+        #
+        # The caller passes ``MultimodalTurn.source`` -- the value frozen with
+        # these very frames, and the only one that truly belongs to this turn.
+        # The live fallback is read here too, for the same reason: trimming,
+        # the arbiter queue and the SDK send are all awaits, and _transport
+        # overwrites _latest_image_source on every staged frame. Reading it at
+        # the publish point reads the channel the session moved on to. The
+        # frames would be right and the label wrong -- and a plugin filtering
+        # the bus by source is exactly who gets the wrong ones.
+        frame_source = str(
+            source or getattr(self, "_latest_image_source", "") or "unknown"
+        )
         staged_images, images_bytes = self._normalize_multimodal_turn_images(
             images
         )
@@ -449,12 +493,20 @@ class _ResponseMixin:
                 TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
             )
             if _notice:
-                logger.warning(
-                    "Gemini multimodal turn over the %d-byte aggregate budget: "
-                    "%d -> %d image(s) (sampled=%s compressed=%s dropped=%d)",
+                # 这条路没有 on_status_message，本来就只落日志——但级别要跟着
+                # user_visible 走：归一化是每回合都会发生的例行事，用 warning 打
+                # 等于把日志淹掉；真丢了图才是 warning 级的事。
+                _emit = (
+                    logger.warning if _notice.get("user_visible") else logger.info
+                )
+                _emit(
+                    "Gemini multimodal turn fitted for the %d-byte aggregate "
+                    "budget: %d -> %d image(s) "
+                    "(normalized=%s sampled=%s compressed=%s dropped=%d)",
                     TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
                     _notice["original_count"],
                     _notice["final_count"],
+                    _notice.get("normalized"),
                     _notice["sampled"],
                     _notice["compressed"],
                     _notice["dropped"],
@@ -489,6 +541,8 @@ class _ResponseMixin:
                 clean,
                 images_bytes=images_bytes,
                 visual_still_owned=visual_still_owned,
+                turn_id=stable_turn_id,
+                source=frame_source,
             )
             return None
         if self.ws is None or self._fatal_error_occurred:
@@ -604,6 +658,28 @@ class _ResponseMixin:
         # 那是**提交之后**才拒，需要一次未经确认的补偿删除（见 issue #2982），
         # 比在提交前把帧摘掉贵得多。丢帧只降级成纯文本，话照送。
         arbiter = self._ensure_response_arbiter()
+        # send_event's boolean is the only place the transport ever says "these
+        # bytes left the socket", and the arbiter drops it on the floor
+        # (_send_queued_event awaits the sender and ignores what it returns).
+        # So ``ticket.sent`` resolving is not by itself proof that the item was
+        # written: a retired ws or an earlier fatal error makes send_event
+        # return False and dispatch carries on regardless. The frames bus may
+        # only carry frames the provider actually received, so keep this turn's
+        # own write result and publish on that.
+        item_delivered = False
+
+        async def _send_turn_event(event: Dict[str, Any]):
+            nonlocal item_delivered
+            written = await self.send_event(
+                event,
+                pre_send=_downgrade_if_visual_ownership_lost,
+            )
+            # The same sender carries response.create; only the item event says
+            # anything about frames.
+            if event is item_event:
+                item_delivered = bool(written)
+            return written
+
         ticket = await arbiter.enqueue(
             source="external_asr_multimodal",
             events_before_response=(item_event,),
@@ -621,16 +697,16 @@ class _ResponseMixin:
             # 第三处，也是最后一处：arbiter 交给传输之后，send_event 还要等
             # _send_semaphore；那段等待里所有权同样可能翻转，而 payload 是拿到
             # 信号量之后才序列化的。用 main(#2837) 引入的每-ticket event_sender
-            # 把同一个降级函数送进那个临界区，序列化自然会带上结果。
-            event_sender=lambda _ev: self.send_event(
-                _ev,
-                pre_send=_downgrade_if_visual_ownership_lost,
-            ),
+            # 把同一个降级函数送进那个临界区（见上面的 _send_turn_event），
+            # 序列化自然会带上结果。
+            event_sender=_send_turn_event,
         )
         active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
         if active_pause_id == stable_turn_id:
             self._external_voice_turn_pause_id = None
-        arbiter.resume_dispatch()
+        arbiter.allow_ticket_while_paused(ticket)
+        if active_pause_id in (None, stable_turn_id):
+            arbiter.resume_dispatch()
         try:
             await ticket.sent
         except asyncio.CancelledError:
@@ -643,8 +719,217 @@ class _ResponseMixin:
                 and getattr(self, "_external_voice_turn_pause_id", None)
                 == active_pause_id
             ):
-                arbiter.pause_dispatch()
+                arbiter.pause_dispatch(active_pause_id)
+        # Only here, and only on the path where ``ticket.sent`` resolved without
+        # raising. Everything that could still have removed or rewritten a frame
+        # has already run against this very dict -- both ownership downgrades
+        # strip input_image parts in place, send_event's recompression rewrites
+        # the survivors in place -- and nothing mutates it afterwards. So the
+        # parts left in ``item_event`` are exactly the pictures the provider
+        # got. Publishing any earlier would put frames on the bus that were
+        # never sent, which is the one thing this bus must never do.
+        #
+        # Read the bytes out HERE, synchronously, and hand only that snapshot
+        # to the background publish. Two separate reasons, and both have to
+        # hold at once:
+        #
+        #   * The publish may not sit in this turn's return path.
+        #     publish_session_event_threadsafe hands a cross-thread publish to
+        #     the bridge's owner loop through an un-timed
+        #     run_coroutine_threadsafe, so a stalled bridge would hold up a
+        #     turn the provider has already taken. _transport's ambient-frame
+        #     publish settled this same question the same way.
+        #   * A task that read ``item_event`` later would read it after this
+        #     turn let go of the loop, and whatever ran in between would
+        #     silently become "what the provider got". The extraction is the
+        #     part that must stay here; only the publish moves off.
+        if item_delivered:
+            self._schedule_turn_frame_publish(
+                self._delivered_multimodal_frames(item_event),
+                turn_id=stable_turn_id,
+                source=frame_source,
+            )
         return ticket
+
+    def _delivered_multimodal_frames(
+        self,
+        item_event: Dict[str, Any],
+    ) -> list[tuple[str, str]]:
+        """Read a delivered turn's surviving frames out of the item it sent.
+
+        The WebSocket half of the independent-ASR frame publish; Gemini's is
+        ``_gemini_delivered_frames``. It matters on its own because these
+        frames never pass through ``stream_image``: an external-ASR turn hands
+        the sampled frames and the transcript to the provider as one item, and
+        that mode also arms the raw-visual fence, so ``stream_image`` refuses
+        every ambient frame -- between the two of them, these turns are the
+        only frame channel a plugin can see at all.
+
+        Reads the item that was sent rather than the caller's staged images on
+        purpose. A turn that lost visual ownership had its ``input_image``
+        parts stripped out of this dict, and an oversized one had them
+        recompressed -- or the oldest ones dropped -- in place. The staged
+        copies are therefore neither the right pictures nor the right set.
+
+        Synchronous, and it has to stay that way. The caller runs this in the
+        context that owns ``item_event``, where nothing else can be touching
+        it, and hands the returned snapshot -- never the dict -- to the
+        background publish. Deferring the read into that task would publish
+        whatever a later turn happened to leave in the dict, and "only what the
+        provider got" would stop being true with nothing going red.
+        """
+
+        item = item_event.get("item")
+        content = item.get("content") if isinstance(item, dict) else None
+        if not isinstance(content, list):
+            return []
+        frames: list[tuple[str, str]] = []
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "input_image":
+                continue
+            url = part.get("image_url")
+            if not isinstance(url, str) or not url.startswith("data:"):
+                continue
+            header, _, payload = url.partition(",")
+            if not payload:
+                continue
+            # "data:image/jpeg;base64" -> "image/jpeg". Read the mime back out
+            # instead of assuming JPEG: recompression rewrites the payload but
+            # keeps whatever prefix the part was built with.
+            mime = header[len("data:"):].split(";", 1)[0].strip() or "image/jpeg"
+            frames.append((mime, payload))
+        return frames
+
+    def _schedule_turn_frame_publish(
+        self,
+        frames: list[tuple[str, str]],
+        *,
+        turn_id: Optional[str],
+        source: str,
+    ) -> Optional[asyncio.Task]:
+        """Hand one turn's already-extracted frames to the bus, off that turn.
+
+        Fire-and-forget, the same shape ``_transport`` uses for ambient frames
+        and for the same reason: the publish can end up on another loop
+        (``publish_session_event_threadsafe`` forwards a cross-thread call
+        through an un-timed ``run_coroutine_threadsafe``), and a stalled bridge
+        must never be able to stall a turn the provider already accepted.
+        Copying a frame is not a reason to slow down or fail a delivery that
+        already succeeded, so the scheduling itself is guarded too.
+
+        ``frames`` must already be a snapshot taken by the caller, and so
+        must ``source``. Handing live state here -- the outgoing item, a
+        staging list, ``_latest_image_source`` -- would let a later turn
+        rewrite it before the task runs.
+
+        Returns the task so callers that need to join it (tests, teardown) can;
+        nothing on the turn path awaits it.
+        """
+
+        if not frames:
+            return None
+        try:
+            return self._fire_frame_copy(
+                self._publish_turn_frames_task(
+                    frames,
+                    turn_id=turn_id,
+                    # Passed in, never read here. This runs AFTER the send
+                    # await, and _latest_image_source is live session state
+                    # that the next staged frame overwrites -- sampling at
+                    # this point files the turn's pictures under whatever
+                    # channel the session moved on to while it waited. The
+                    # caller froze it with the turn; see submit_multimodal_turn.
+                    source=source,
+                )
+            )
+        except Exception as exc:
+            logger.debug(
+                "frames bus publish not scheduled for turn %s: %s", turn_id, exc
+            )
+            return None
+
+    async def _publish_turn_frames_task(
+        self,
+        frames: list[tuple[str, str]],
+        *,
+        turn_id: Optional[str],
+        source: str,
+    ) -> None:
+        """Run one turn's frame publish in the background. Never raises.
+
+        The outer of the two layers. ``_publish_turn_frames`` already swallows
+        a publisher that fails mid-loop, but the function-local bus import and
+        everything else ahead of that loop sit outside it, and an escape here
+        would surface as an unretrieved task exception instead of as the failed
+        turn it must never become.
+        """
+
+        try:
+            await self._publish_turn_frames(frames, turn_id=turn_id, source=source)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug(
+                "frames bus publish failed for turn %s: %s", turn_id, exc
+            )
+
+    async def _publish_turn_frames(
+        self,
+        frames: list[tuple[str, str]],
+        *,
+        turn_id: Optional[str],
+        source: str,
+    ) -> int:
+        """Hand one delivered turn's frames to the plugin bus. Never raises.
+
+        Shared by both external-ASR routes -- the WebSocket item and the Gemini
+        SDK turn -- so the two cannot drift into publishing different record
+        shapes for what is, from a plugin's side, the same event.
+
+        ``source`` is passed in rather than read off the session here: this
+        runs in a background task, and every field of the record has to be the
+        one that was true at delivery.
+        """
+
+        # Function-local import: agent_event_bus pulls in pyzmq, and the
+        # realtime client sits on the startup import chain.
+        from main_logic.agent_event_bus import (
+            publish_provider_frame_observed_best_effort,
+        )
+
+        # The capture channel staging recorded ("screen" / "camera"). The
+        # sampled frames of one utterance come off that same channel, and there
+        # is no per-frame source to read here, so this is the honest label
+        # rather than a category invented at this layer.
+        published = 0
+        for mime, image_b64 in frames:
+            # No captured_at and no generation: the only per-frame clock this
+            # layer can reach (_latest_image_captured_at) is time.monotonic(),
+            # while the store indexes captured_at as a wall clock -- a monotonic
+            # reading there would file every frame near the epoch. The forwarder
+            # stamps arrival time instead, and turn_id is what ties these frames
+            # to the turn they were sent with. The character name comes off the
+            # session: frames/all is shared, so without it a plugin cannot tell
+            # one character's pictures from another's.
+            try:
+                if await publish_provider_frame_observed_best_effort(
+                    getattr(self, "lanlan_name", None),
+                    image_base64=image_b64,
+                    source=source,
+                    turn_id=turn_id,
+                    mime=mime,
+                ):
+                    published += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # One failure means the bus itself is unreachable; retrying the
+                # remaining frames would only repeat it.
+                logger.debug(
+                    "frames bus publish failed for turn %s: %s", turn_id, exc
+                )
+                break
+        return published
 
     async def _cancel_gemini_proactive_submit(
         self,
@@ -731,16 +1016,35 @@ class _ResponseMixin:
             # 隔离针对的是**上一轮**（主动搭话）那一轮，所以它必须在上一轮的
             # scope 下跑完；跑完之后这一轮才真正开始。
             self.note_user_turn_started()
+            preparation_arbiter = None
+            preparation_token = None
             try:
                 if not self._is_gemini:
                     arbiter = self._ensure_response_arbiter()
                     self._external_voice_turn_pause_id = stable_turn_id
-                    arbiter.pause_dispatch()
-                    await arbiter.cancel_current()
+                    preparation_token = arbiter.begin_turn_preparation(stable_turn_id)
+                    preparation_arbiter = arbiter
+                    # Only cancel something the provider is already acting on.
+                    # Independent ASR cuts one spoken sentence into several
+                    # turns, so this prepare routinely lands while the
+                    # *previous* turn's reply is still parked before its first
+                    # send. Cancelling that is not barge-in: nothing is being
+                    # said over the user, and the turn it discards is a
+                    # complete sentence that then never gets answered at all.
+                    # Leave it queued -- the lane is serial, and this turn's
+                    # own ticket is priority 0.
+                    if arbiter.has_live_response or (
+                        arbiter.current_source is not None
+                        and arbiter.current_source != "external_asr"
+                    ):
+                        await arbiter.cancel_current(reason="external_asr_prepare")
                 await self.handle_interruption()
             except BaseException:
                 self.abandon_external_voice_turn(stable_turn_id)
                 raise
+            finally:
+                if preparation_arbiter is not None:
+                    preparation_arbiter.end_turn_preparation(preparation_token)
         return self._connection_generation != connection_generation
 
     def _consume_cancelled_terminal(self) -> bool:
@@ -862,13 +1166,17 @@ class _ResponseMixin:
             None,
         )
         if quarantine_task is not None and quarantine_task is not asyncio.current_task():
-            await asyncio.shield(quarantine_task)
-            if (
-                quarantine_task.done()
-                and getattr(self, "_gemini_external_quarantine_task", None)
-                is quarantine_task
-            ):
-                self._gemini_external_quarantine_task = None
+            try:
+                await asyncio.shield(quarantine_task)
+            except Exception:
+                # The retained SDK owner must close successfully before we
+                # reconnect; retry it rather than replaying the old exception.
+                await self._close_gemini()
+            finally:
+                if (quarantine_task.done() and getattr(self, "_gemini_external_quarantine_task", None) is quarantine_task):
+                    self._gemini_external_quarantine_task = None
+        if getattr(self, "_fatal_error_occurred", False) and getattr(self, "_gemini_session", None) is not None:
+            await self._close_gemini()
         if getattr(self, "_gemini_session", None) is None:
             instructions = str(getattr(self, "instructions", "") or "")
             if instructions:
@@ -940,9 +1248,19 @@ class _ResponseMixin:
         *,
         images_bytes: tuple[bytes, ...] = (),
         visual_still_owned=None,
+        turn_id: Optional[str] = None,
+        source: str | None = None,
     ) -> None:
         """Submit one external-ASR turn through the owned Gemini lifecycle."""
 
+        # Same rule as submit_multimodal_turn: fix the channel label before
+        # this function's own first await (_await_gemini_external_quarantine).
+        # The text-only entry carries neither a source nor frames, so the
+        # publish below never fires for it; the fallback only keeps that path
+        # readable.
+        frame_source = str(
+            source or getattr(self, "_latest_image_source", "") or "unknown"
+        )
         submit_task = asyncio.current_task()
         # 上一轮 external turn 可能还没等到终结事件：重叠发声时 B 的 prepare 会跑
         # 在 A 的 SDK send **之前**，那一刻还没有 token 可隔离，于是 prepare 里的
@@ -1017,6 +1335,50 @@ class _ResponseMixin:
             if not accepted and not quarantined:
                 # 同步发送失败（provider 直接拒）才立刻结算：那一轮确实没被收下。
                 self._settle_gemini_external_turn(outcome_token)
+        # 第四个投递点的 Gemini 半边。放在 try/finally **之后**：CancelledError
+        # 在上面重新抛出（provider 可能已经收下，但我们无从确认），
+        # 同步发送失败则 accepted 为假 —— 两种“没送成”都到不了这里。
+        #
+        # 这条路非覆盖不可，不是对称性洁癖：独立 ASR 会武装 raw-visual
+        # fence，stream_image 于是拒掉每一张环境帧，这一轮就成了整个会话唯一的
+        # 画面通道。少了它，跑独立 ASR 的 Gemini 用户每句话都在把画面推给
+        # provider，而插件那侧的 frames 总线是空的。
+        #
+        # Encoded here and published in the background, the same split the
+        # WebSocket half makes: this turn's return must not wait on a bus hop
+        # that may cross loops with no timeout, and the bytes that reach the
+        # bus must be the ones read in the context that owned them.
+        if accepted and images_bytes:
+            self._schedule_turn_frame_publish(
+                self._gemini_delivered_frames(images_bytes),
+                source=frame_source,
+                # Empty is not an identity: the text-only Gemini route reaches
+                # _submit_external_gemini_turn without one, and a blank turn_id
+                # on the record would still read as "these frames belong
+                # together".
+                turn_id=str(turn_id or "") or None,
+            )
+
+    def _gemini_delivered_frames(
+        self,
+        images_bytes: tuple[bytes, ...],
+    ) -> list[tuple[str, str]]:
+        """Encode a delivered Gemini external-ASR turn's frames for the bus.
+
+        Reads ``images_bytes`` rather than an outgoing event because this route
+        never builds one: the frames go to the SDK as raw bytes, so this tuple
+        IS what was handed over -- after the budget ladder ran, and after the
+        ownership recheck emptied it on a turn that lost its frames.
+        """
+
+        return [
+            # The same constant ``_gemini_send_user_turn`` sends under, not a
+            # second literal: a changed format would otherwise mislabel every
+            # record on the bus with nothing going red.
+            (GEMINI_TURN_IMAGE_MIME, base64.b64encode(image).decode("ascii"))
+            for image in images_bytes
+            if image
+        ]
 
     async def submit_external_voice_turn(self, text: str, *, turn_id: str) -> None:
         """Submit external ASR text through the Provider-appropriate path."""
@@ -2157,6 +2519,11 @@ class _ResponseMixin:
                     bypass_rate_limit=True,
                     cache_latest=False,
                     event_id=visual_event_id,
+                    # 与下面 external-description 那一支同源：这是主动搭话/问候
+                    # 那一轮附的图，用户根本不知道有这么一轮。漏了这个参数就落成
+                    # 默认值，帧抄送里按 "proactive" 过滤的插件会漏掉 native
+                    # provider 这条路。
+                    source="proactive",
                 )
             except asyncio.CancelledError:
                 _remove_visual_rejection_handler()

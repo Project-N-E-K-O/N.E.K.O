@@ -110,6 +110,12 @@ _SOCCER_LLM_VISIBLE_SNAPSHOT_DROP_KEYS = frozenset({
 })
 
 
+_DRAWING_GUESS_LLM_VISIBLE_DROP_KEYS = frozenset({
+    "user_draw_answer",
+    "userDrawAnswer",
+})
+
+
 def _sanitize_game_visible_line(text: Any) -> str:
     """Keep only natural player-visible speech; strip game route metadata leaks."""
     lines: list[str] = []
@@ -147,6 +153,22 @@ def _sanitize_soccer_llm_visible_snapshot(value: Any) -> Any:
     return value
 
 
+def _sanitize_drawing_guess_llm_visible_snapshot(value: Any) -> Any:
+    """Detach drawing state while removing the answer hidden from the AI."""
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_drawing_guess_llm_visible_snapshot(item)
+            for key, item in value.items()
+            if key not in _DRAWING_GUESS_LLM_VISIBLE_DROP_KEYS
+        }
+    if isinstance(value, list):
+        return [
+            _sanitize_drawing_guess_llm_visible_snapshot(item)
+            for item in value
+        ]
+    return value
+
+
 def _build_game_llm_visible_event(game_type: str, event: Any) -> Any:
     """Build the event copy sent to the main game LLM without internal route fields."""
     if not isinstance(event, dict):
@@ -157,6 +179,9 @@ def _build_game_llm_visible_event(game_type: str, event: Any) -> Any:
         for key, value in event.items()
         if key not in _GAME_LLM_VISIBLE_EVENT_TOP_LEVEL_DROP_KEYS
     }
+    normalized_game_type = str(game_type or "").strip().lower().replace("-", "_")
+    if normalized_game_type == "drawing_guess":
+        return _sanitize_drawing_guess_llm_visible_snapshot(visible_event)
     if _normalize_game_memory_type(game_type) != "soccer":
         return visible_event
 

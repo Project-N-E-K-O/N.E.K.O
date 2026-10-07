@@ -1,6 +1,7 @@
 @import './base.css';
 @import './styles/variables.css';
 @import './styles/common.css';
+@import './styles/motion.css';
 
 /* 重置样式，确保全屏布局 */
 * {

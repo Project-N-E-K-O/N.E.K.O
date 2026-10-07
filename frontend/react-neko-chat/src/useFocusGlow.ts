@@ -11,19 +11,59 @@ const CAP = 1.0; // FOCUS_CHARGE_CAP
 const DECAY = 0.02; // per second while charge < ENTER
 const DECAY_ACTIVATED = 0.01; // per second while charge >= ENTER (slower → more persistent)
 
+// The glow is a blurred box-shadow, so every visual update is a repaint. Drive it
+// from a fixed-rate timer instead of rAF or a CSS keyframe: both of those follow
+// the display refresh rate (120/144/260Hz) and rAF additionally stops whenever the
+// compositor stops producing frames for the page. Chromium does not throttle
+// timers of a visible page that merely lost focus (and the Electron chat windows
+// run with backgroundThrottling disabled), so the breathing keeps its full rate
+// while another window has focus.
+export const FOCUS_GLOW_FPS = 30;
+const FRAME_MS = 1000 / FOCUS_GLOW_FPS;
+export const FOCUS_BREATH_PERIOD_MS = 3400;
+
+// CSS `ease-in-out` = cubic-bezier(0.42, 0, 0.58, 1), solved for y at time x.
+function easeInOut(x: number): number {
+  let lo = 0;
+  let hi = 1;
+  let t = x;
+  for (let i = 0; i < 16; i += 1) {
+    const u = 1 - t;
+    const bx = 3 * u * u * t * 0.42 + 3 * u * t * t * 0.58 + t * t * t;
+    if (bx < x) lo = t;
+    else hi = t;
+    t = (lo + hi) / 2;
+  }
+  const u = 1 - t;
+  return 3 * u * t * t + t * t * t;
+}
+
+// 0 at the trough, 1 at the peak. Matches the former 0% / 50% / 100% keyframes
+// with ease-in-out on each half.
+function breathAt(elapsedMs: number): number {
+  const phase = (elapsedMs % FOCUS_BREATH_PERIOD_MS) / FOCUS_BREATH_PERIOD_MS;
+  return easeInOut(phase < 0.5 ? phase * 2 : 2 - phase * 2);
+}
+
 /**
  * Drive the Focus edge glow from the streamed charge. Sets, on `ref`'s element:
  *   --focus-glow            intensity 0..1 (the brightness the CSS scales)
+ *   --focus-breath          breathing phase 0..1 while breathing
  *   data-focus-glow="true"  while charge >= ONSET (glow visible)
  *   data-focus-breathing    while charge >= ENTER (breathing + the jump)
- * Updates via requestAnimationFrame WITHOUT React re-renders. The rAF loop idles
- * itself once the charge has fully decayed and restarts on the next push.
+ * Updates at most FOCUS_GLOW_FPS times per second WITHOUT React re-renders. With
+ * no charge there is no timer and no animated style at all; the loop restarts on
+ * the next push.
  */
 export function useFocusGlow(ref: RefObject<HTMLElement | null>): void {
   useEffect(() => {
     let setpoint = 0; // last charge from the backend
     let atMs = 0; // its wall-clock stamp (ms)
-    let raf = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let breathStartMs: number | null = null;
+    const reducedMotion = typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-reduced-motion: reduce)')
+      : null;
 
     const liveCharge = (): number => {
       if (setpoint <= 0) return 0;
@@ -36,16 +76,21 @@ export function useFocusGlow(ref: RefObject<HTMLElement | null>): void {
       return Math.max(0, setpoint - DECAY * rem);
     };
 
+    // Skip identical writes so a settled value does not invalidate style.
+    const setVar = (el: HTMLElement, name: string, value: string) => {
+      if (el.style.getPropertyValue(name) !== value) el.style.setProperty(name, value);
+    };
+
     const clear = (el: HTMLElement) => {
+      breathStartMs = null;
       el.style.removeProperty('--focus-glow');
+      el.style.removeProperty('--focus-breath');
       el.removeAttribute('data-focus-glow');
       el.removeAttribute('data-focus-breathing');
     };
 
-    // Apply the glow for a live charge. Returns false once fully decayed (the
-    // rAF loop can then idle). rAF-independent — also called synchronously on
-    // each push so the glow is correct even when rAF is throttled (backgrounded
-    // window), with rAF only smoothing the decay between pushes.
+    // Apply the glow for a live charge. Returns whether another frame is needed:
+    // the charge is still decaying, or the activated glow is breathing.
     const render = (el: HTMLElement, charge: number): boolean => {
       if (charge < ONSET) {
         clear(el);
@@ -58,59 +103,67 @@ export function useFocusGlow(ref: RefObject<HTMLElement | null>): void {
       const intensity = breathing
         ? 0.6 + ((charge - ENTER) / (CAP - ENTER)) * 0.4
         : ((charge - ONSET) / (ENTER - ONSET)) * 0.5;
-      el.style.setProperty('--focus-glow', intensity.toFixed(3));
-      el.setAttribute('data-focus-glow', 'true');
-      if (breathing) el.setAttribute('data-focus-breathing', 'true');
-      else el.removeAttribute('data-focus-breathing');
+      setVar(el, '--focus-glow', intensity.toFixed(3));
+      if (el.getAttribute('data-focus-glow') !== 'true') el.setAttribute('data-focus-glow', 'true');
+      if (!breathing) {
+        breathStartMs = null;
+        el.style.removeProperty('--focus-breath');
+        el.removeAttribute('data-focus-breathing');
+        return true; // sub-ENTER charge always keeps decaying toward 0
+      }
+      if (el.getAttribute('data-focus-breathing') !== 'true') el.setAttribute('data-focus-breathing', 'true');
+      const decaying = setpoint >= ENTER && charge > ENTER;
+      if (reducedMotion?.matches) {
+        breathStartMs = null;
+        el.style.removeProperty('--focus-breath');
+        return decaying;
+      }
+      const now = Date.now();
+      if (breathStartMs === null) breathStartMs = now;
+      setVar(el, '--focus-breath', breathAt(now - breathStartMs).toFixed(3));
       return true;
     };
 
+    // React detaches the ref before this effect's cleanup runs, so remember the
+    // element that was last styled in order to clear it on unmount.
+    let styledEl: HTMLElement | null = null;
+
     const tick = () => {
+      timer = null;
       const el = ref.current;
+      if (el) styledEl = el;
       const charge = liveCharge();
-      if (!el) {
-        // No element (transient mount/unmount): keep waiting only while there is
-        // still charge to show; once it has decayed to 0, idle instead of
-        // spinning rAF forever on a permanently-null ref.
-        if (charge <= 0) {
-          raf = 0;
-          return;
-        }
-        raf = requestAnimationFrame(tick);
-        return;
-      }
-      if (!render(el, charge)) {
-        raf = 0; // fully decayed — stop until the next push
-        return;
-      }
-      // Activated glow floors at the ENTER baseline (its breathing is a pure CSS
-      // keyframe, not driven by rAF); once charge has decayed to that floor the
-      // intensity is constant, so idle the loop instead of re-writing the same
-      // --focus-glow every frame. onCharge() restarts it on the next push.
-      // Sub-ENTER charges keep decaying toward 0 and idle via render() above.
-      if (setpoint >= ENTER && charge <= ENTER) {
-        raf = 0;
-        return;
-      }
-      raf = requestAnimationFrame(tick);
+      // No element (transient mount/unmount): keep waiting only while there is
+      // still charge to show.
+      const more = el ? render(el, charge) : charge > 0;
+      if (more) timer = setTimeout(tick, FRAME_MS);
+    };
+
+    const wake = () => {
+      if (timer !== null) return;
+      tick();
     };
 
     const onCharge = (e: Event) => {
       const d = (e as CustomEvent<{ charge?: number; atMs?: number }>).detail || {};
       setpoint = Math.max(0, Math.min(CAP, Number(d.charge) || 0));
       atMs = Number(d.atMs) || Date.now();
-      const el = ref.current;
-      if (el) render(el, liveCharge()); // immediate, rAF-independent
-      if (!raf) raf = requestAnimationFrame(tick); // restart an idled loop for the decay
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      tick(); // apply immediately, then keep the capped loop alive if needed
     };
 
     window.addEventListener('neko-focus-charge', onCharge);
-    if (ref.current) render(ref.current, liveCharge());
-    raf = requestAnimationFrame(tick);
+    reducedMotion?.addEventListener?.('change', wake);
+    tick();
     return () => {
       window.removeEventListener('neko-focus-charge', onCharge);
-      if (raf) cancelAnimationFrame(raf);
-      const el = ref.current;
+      reducedMotion?.removeEventListener?.('change', wake);
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      const el = ref.current ?? styledEl;
       if (el) clear(el);
     };
   }, [ref]);

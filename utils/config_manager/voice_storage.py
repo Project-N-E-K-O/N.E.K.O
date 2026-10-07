@@ -23,6 +23,7 @@ from copy import deepcopy
 
 from config import DEFAULT_CONFIG_DATA
 from utils.doubao_tts import DOUBAO_VOICE_STORAGE_KEY
+from utils.glm_tts import GLM_VOICE_STORAGE_KEY
 from utils.tts.native_voice_registry import (
     is_free_lanlan_app_route,
     is_saveable_native_voice,
@@ -32,9 +33,14 @@ from utils.voice_config import read_legacy_voice_id
 from ._shared import _as_bool, logger
 from .persona_payload import _DEPRECATED_FREE_YUI_VOICE_IDS
 from .reserved_schema import get_reserved, set_reserved
+from .imported_voices import (
+    ImportedVoiceStorageMixin,
+    is_imported_voice_ref,
+    voice_storage_transaction,
+)
 
 
-class VoiceStorageMixin:
+class VoiceStorageMixin(ImportedVoiceStorageMixin):
     """Voice storage buckets, validation and cleanup."""
 
     # --- Voice storage helpers ---
@@ -131,7 +137,15 @@ class VoiceStorageMixin:
         - mimo: ASSIST_API_KEY_MIMO
         - doubao_tts: ttsModelApiKey only when the active TTS provider is doubao_tts,
           then the dedicated Doubao Speech keybook entry
+        - glm_tts: ASSIST_API_KEY_GLM (assist GLM keybook entry; core/assist=glm
+          falls back to coreApiKey via the core_config snapshot)
         """
+        if provider == 'glm_tts':
+            core_config = self.get_core_config()
+            key = (core_config.get('ASSIST_API_KEY_GLM') or '').strip()
+            if '***' in key:
+                return None
+            return key or None
         if provider == 'cosyvoice':
             core_config = self.get_core_config()
             if self._is_vllm_omni_tts_selected(core_config):
@@ -376,6 +390,24 @@ class VoiceStorageMixin:
                 result.append(bucket)
         return result
 
+    def _get_glm_tts_storage_keys(self) -> list[str]:
+        """Return the list of voice_storage keys for the current GLM API key.
+
+        Dual to :meth:`_get_doubao_tts_storage_keys`: GLM cloned voices live in a
+        ``__GLM_TTS__{suffix}`` bucket keyed by the GLM API key, and a GLM clone
+        is selected by ``voice_meta.provider`` at dispatch (see
+        ``workers/cogtts.py``), so the bucket merges into the current-API voice
+        list regardless of which core/TTS provider is otherwise active."""
+        voice_storage = self.load_voice_storage()
+        result = []
+        key = self.get_tts_api_key('glm_tts')
+        if key:
+            suffix = key[-8:] if len(key) >= 8 else key
+            bucket = f'{GLM_VOICE_STORAGE_KEY}{suffix}'
+            if bucket in voice_storage:
+                result.append(bucket)
+        return result
+
     def _get_vllm_omni_storage_keys(self) -> list[str]:
         """Return the list of voice_storage keys for vLLM-Omni cloned voices.
 
@@ -401,6 +433,8 @@ class VoiceStorageMixin:
             return 'mimo'
         if storage_key.startswith(DOUBAO_VOICE_STORAGE_KEY):
             return 'doubao_tts'
+        if storage_key.startswith(GLM_VOICE_STORAGE_KEY):
+            return 'glm_tts'
         if storage_key.startswith('__ELEVENLABS__'):
             return 'elevenlabs'
         if storage_key.startswith('__MINIMAX_INTL__'):
@@ -533,6 +567,15 @@ class VoiceStorageMixin:
                         vdata['provider'] = 'doubao_tts'
                     result[vid] = vdata
 
+        # 合并 GLM 克隆音色（dual to doubao_tts；__GLM_TTS__{suffix} 桶 + voice_meta 选中）
+        for glm_key in self._get_glm_tts_storage_keys():
+            glm_voices = voice_storage.get(glm_key, {})
+            for vid, vdata in glm_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = 'glm_tts'
+                    result[vid] = vdata
+
         # 合并 vLLM-Omni 克隆音色（dual to MiMo；vLLM-Omni 克隆走固定 __VLLM_OMNI__ 桶
         # + voice_meta 选中，与 MiMo 同构。差异：vLLM-Omni 是本地服务无 API key，桶名固定）
         for vllm_key in self._get_vllm_omni_storage_keys():
@@ -542,6 +585,10 @@ class VoiceStorageMixin:
                     if isinstance(vdata, dict) and 'provider' not in vdata:
                         vdata['provider'] = 'vllm_omni'
                     result[vid] = vdata
+
+        result.update(self._imported_voices_from_storage(
+            voice_storage, include_inactive=for_listing,
+        ))
 
         if for_listing:
             # UI 试听列表不需要 MiMo 克隆的参考样本 base64（可达 MB）——剥掉，避免把大 blob
@@ -554,6 +601,7 @@ class VoiceStorageMixin:
 
         return result
 
+    @voice_storage_transaction
     def save_voice_for_current_api(self, voice_id, voice_data):
         """Save a voice for the current AUDIO_API_KEY"""
         core_config = self.get_core_config()
@@ -562,19 +610,20 @@ class VoiceStorageMixin:
         if not audio_api_key:
             raise ValueError("未配置 AUDIO_API_KEY")
 
-        voice_storage = self.load_voice_storage()
+        voice_storage = self._load_voice_storage_for_write()
         if audio_api_key not in voice_storage:
             voice_storage[audio_api_key] = {}
 
         voice_storage[audio_api_key][voice_id] = voice_data
         self.save_voice_storage(voice_storage)
 
+    @voice_storage_transaction
     def save_voice_for_api_key(self, api_key: str, voice_id: str, voice_data: dict):
         """Save a voice for the given API key (used when cloning with the actual API key instead of AUDIO_API_KEY)"""
         if not api_key:
             raise ValueError("API Key 不能为空")
 
-        voice_storage = self.load_voice_storage()
+        voice_storage = self._load_voice_storage_for_write()
         if api_key not in voice_storage:
             voice_storage[api_key] = {}
 
@@ -662,9 +711,12 @@ class VoiceStorageMixin:
                 return existing
         return None
 
+    @voice_storage_transaction
     def delete_voice_for_current_api(self, voice_id):
         """Delete the given voice under the current TTS config (including standalone-provider voices)"""
-        voice_storage = self.load_voice_storage()
+        if is_imported_voice_ref(voice_id) and self.delete_imported_voice(voice_id):
+            return True
+        voice_storage = self._load_voice_storage_for_write()
 
         # 先检查带前缀的独立服务商存储（含 vLLM-Omni 固定桶 __VLLM_OMNI__）
         for storage_key in list(voice_storage.keys()):
@@ -674,6 +726,7 @@ class VoiceStorageMixin:
                 or storage_key.startswith('__ELEVENLABS__')
                 or storage_key.startswith('__MIMO__')
                 or storage_key.startswith(DOUBAO_VOICE_STORAGE_KEY)
+                or storage_key.startswith(GLM_VOICE_STORAGE_KEY)
                 or storage_key.startswith('__COSYVOICE_INTL__')
                 or storage_key.startswith('__VLLM_OMNI__')
             ) and voice_id in voice_storage.get(storage_key, {}):
@@ -760,6 +813,10 @@ class VoiceStorageMixin:
         voice_id = str(voice_id or '').strip()
         if not voice_id:
             return True
+
+        if is_imported_voice_ref(voice_id):
+            if self.get_imported_voice(voice_id, include_inactive=True):
+                return self.get_imported_voice(voice_id) is not None
 
         if voice_id.startswith('eleven:'):
             return len(voice_id) > len('eleven:')
@@ -918,6 +975,10 @@ class VoiceStorageMixin:
         s = str(voice_id or '').strip()
         if not s:
             return ''
+        if is_imported_voice_ref(s):
+            metadata = self.get_imported_voice(s, include_inactive=True)
+            if metadata:
+                return {'source': 'clone', 'provider': metadata['provider'], 'ref': s}
         from utils.voice_config import to_legacy_voice_id
         vc = self.normalize_voice_id_to_config(s)
         # Round-trip guard: only migrate to the structured object when it reads back to
@@ -1021,6 +1082,10 @@ class VoiceStorageMixin:
             # cleanup 不在此把有效条目压成对象（守住「不 bulk sweep」，迁移只在用户设音色时发生）。
             voice_id = read_legacy_voice_id(get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',)))
             if not voice_id:
+                continue
+            # An unavailable account is not a missing library entry. Preserve
+            # the binding until the user explicitly deletes or replaces it.
+            if is_imported_voice_ref(voice_id):
                 continue
             # 已废弃的免费 YUI 预设音色：先平移到现役 yui_cn，再 continue 跳过后续
             # invalid 判定（新值在 free_voices 白名单内本就合法），保住默认 YUI 音色
