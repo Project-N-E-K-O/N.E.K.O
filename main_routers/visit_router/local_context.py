@@ -32,8 +32,10 @@ from utils.language_utils import get_global_language_full
 # 昵称一栏常见的分隔写法：中英文逗号、顿号、斜杠、分号、空白（与 memory.stop_names 的拆法一致，
 # 另认斜杠）。「Alice Ally」是两个称呼，单独出现的「Alice」也要替换
 _NICKNAME_SPLIT_RE = re.compile(r"[,，、/;；\s]+")
-# 多词档案名（「Alice Smith」「约翰·史密斯」）：整名之外，每个词也单独算亲人名，只写名或姓也要替换
-_PROFILE_NAME_SPLIT_RE = re.compile(r"[\s·・]+")
+# 音译档案名（「约翰·史密斯」）：整名之外，间隔号拆出的每段也单独算亲人名，只写名或姓也要替换。
+# 空白分隔的拉丁名（「Will Smith」）不拆：脱敏按 casefold 整词匹配，拆出的 Will / May / Brown 这类
+# 常用词会把人设里每个 will / brown 都换掉；只写名的情况由用户在昵称栏补上
+_PROFILE_NAME_SPLIT_RE = re.compile(r"[·・]+")
 _NAME_PART_MIN_CHARS = 2
 
 

@@ -1007,10 +1007,18 @@ def test_a_hand_edit_is_checked_against_the_card_as_it_is_when_saved(env, monkey
 
 
 
-def test_each_word_of_a_multiword_profile_name_is_a_family_name():
+def test_each_part_of_a_transliterated_profile_name_is_a_family_name():
     from main_routers.visit_router.local_context import family_names_of
 
-    names = family_names_of({"档案名": "Alice Smith", "昵称": ""})
-    assert names[0] == "Alice Smith" and "Alice" in names and "Smith" in names
-    assert "约翰" in family_names_of({"档案名": "约翰·史密斯"})
+    assert family_names_of({"档案名": "约翰·史密斯"}) == ("约翰·史密斯", "约翰", "史密斯")
     assert family_names_of({"档案名": "张三"}) == ("张三",)
+
+
+def test_a_space_separated_profile_name_is_not_split_into_common_words():
+    from main_logic.visit.sanitize import redact_outbound
+    from main_routers.visit_router.local_context import family_names_of
+
+    names = family_names_of({"档案名": "Will Smith"})
+    assert names == ("Will Smith",)
+    # 拆成 Will 会把人设里的普通词 will 一起换掉
+    assert redact_outbound("I will tell you.", family_names=names, replacement="[F]") == "I will tell you."
