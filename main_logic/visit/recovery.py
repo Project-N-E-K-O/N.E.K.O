@@ -989,9 +989,15 @@ async def _pending_upload_owner(config_dir: Path, visit_id: str) -> str | None:
             _load_json, visit_path(config_dir / VISIT_SPOOL_DIRNAME, visit_id, UPLOAD_JSON_SUFFIX))
     except (OSError, ValueError):
         doc = None
-    # 只信属于本场的文件（含本版本留着不动的新版本文件）：别场 / 坏掉而一时删不掉的文件里写的账号不算
-    trusted = isinstance(doc, dict) and (_sealed_doc_belongs(doc, visit_id) or _sealed_doc_unrecognized(doc, visit_id))
-    owner = _owner_or_none(doc.get("own_visit_uid")) if trusted else None
+    # 只信属于本场的文件：别场 / 坏掉而一时删不掉的文件里写的账号不算。本版本的文件还要与 state.json
+    # 核对（角色 / 账号对不上的是被拒的文件，按 state 记的账号算）；新版本文件本版本核对不了，信它自己写的
+    if isinstance(doc, dict) and _sealed_doc_belongs(doc, visit_id):
+        matches, state_owner = await _sealed_matches_state(config_dir, visit_id, doc)
+        owner = _owner_or_none(doc.get("own_visit_uid")) if matches else state_owner
+    elif isinstance(doc, dict) and _sealed_doc_unrecognized(doc, visit_id):
+        owner = _owner_or_none(doc.get("own_visit_uid"))
+    else:
+        owner = None
     return owner if owner is not None else await _state_owner(config_dir, visit_id)
 
 

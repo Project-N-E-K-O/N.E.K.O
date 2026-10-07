@@ -1813,3 +1813,29 @@ async def test_an_aged_file_of_another_visit_settles_without_its_owner(tmp_path,
     outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
     # 别场文件里写的账号不算：按未知结清，排着的举报照记「过期」
     assert outcome.owner is None and tu._terminal_reasons[V1] == ("expired", None)
+
+
+
+async def test_a_new_report_does_not_inherit_the_abandoned_ones_retry_after(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    fake.report_mode = "503"
+    slept = []
+    waiting = asyncio.Event()
+
+    async def sleep(seconds):
+        slept.append(round(seconds))
+        if len(slept) == 1:
+            waiting.set()
+            await asyncio.sleep(3600)                                    # 正按旧举报的 retry_after 长等
+
+    monkeypatch.setattr(tu, "_sleep", sleep)
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    task = tu.schedule_visit_retry(V1, initial_delay_s=86400)           # 旧举报拿到很长的 retry_after
+    await waiting.wait()
+    assert await tu.delete_report(tmp_path, V1)                         # 用户放弃了它
+    fake.report_mode = "ok"
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False, queued_at=time.time() + 1))
+    await asyncio.wait_for(task, 5)
+    # 新的一份不再等旧的一天：被叫醒后只等第一档退避就交
+    assert slept[0] == 86400 and slept[1] <= tu.VISIT_UPLOAD_RETRY_BACKOFF_S[0]
+    assert fake.count("/api/visit/reports") == 1 and await tu.load_report(tmp_path, V1) is None

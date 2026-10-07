@@ -756,6 +756,8 @@ def _queue_report_sync(path: Path, doc: dict) -> None:
 async def queue_report(config_dir: Path, doc: dict) -> None:
     """Write a new queued report (before any request is sent); raises if one is queued already."""
     await asyncio.to_thread(_queue_report_sync, report_path(config_dir, doc["visit_id"]), doc)
+    # 新的一份举报：上一份（已放弃 / 已受理）拿到的 retry_after 不再适用
+    restart_retry_deadline(doc["visit_id"])
 
 
 def _valid_report(doc: Any, visit_id: str) -> bool:
@@ -1448,11 +1450,48 @@ def _reset_for_tests() -> None:
     # 上一个测试的事件循环里残留的任务可能还握着锁：换新的锁表，不跨事件循环复用
     _VISIT_LOCKS.clear()
     _not_before.clear()
+    _wakeups.clear()
     _settled_leftovers.clear()
 
 
 _not_before: dict[str, float] = {}
 """visit_id -> monotonic time before which no background round may run (Servers ``retry_after``)."""
+
+
+_wakeups: dict[str, asyncio.Event] = {}
+"""visit_id -> event that cuts a waiting worker's sleep short (its deadline was replaced)."""
+
+
+def restart_retry_deadline(visit_id: str) -> None:
+    """New work for ``visit_id`` (a newly queued report): the old ``retry_after`` no longer applies.
+
+    The old deadline is dropped; a worker already waiting on it is woken and
+    waits the first backoff step instead (not at once: the caller is about
+    to make its own attempt, which then defers it as usual). A report
+    abandoned under a long ``retry_after`` does not hold back the next one
+    for the same visit.
+    """
+    task = _workers.get(visit_id)
+    if task is None or task.done():
+        _not_before.pop(visit_id, None)
+        return
+    _not_before[visit_id] = time.monotonic() + VISIT_UPLOAD_RETRY_BACKOFF_S[0]
+    event = _wakeups.get(visit_id)
+    if event is not None:
+        event.set()
+
+
+async def _wait(visit_id: str, seconds: float) -> None:
+    """Sleep ``seconds``, or less when :func:`restart_retry_deadline` replaces the deadline meanwhile."""
+    event = _wakeups.setdefault(visit_id, asyncio.Event())
+    event.clear()
+    sleeper = asyncio.ensure_future(_sleep(seconds))
+    waker = asyncio.ensure_future(event.wait())
+    try:
+        await asyncio.wait({sleeper, waker}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in (sleeper, waker):
+            task.cancel()
 
 
 def _defer(visit_id: str, delay_s: float) -> None:
@@ -1468,7 +1507,7 @@ async def _retry_loop(visit_id: str, config_dir: Path | None) -> None:
         if deadline is not None:
             wait = deadline - time.monotonic()
             if wait > 0:
-                await _sleep(wait)
+                await _wait(visit_id, wait)
             if _not_before.get(visit_id, deadline) != deadline:
                 # 等待期间又被推后（手动重试拿到了更长的 retry_after）：按新时间再等
                 continue

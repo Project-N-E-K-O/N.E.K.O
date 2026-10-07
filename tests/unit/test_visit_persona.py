@@ -1184,3 +1184,9 @@ def test_the_gate_keeps_the_token_cap_after_redacting_new_names(env, monkeypatch
     gate = _gate(client)
     assert gate.ok is True and "阿喵" not in gate.text
     assert count_tokens(gate.text) <= persona.VISIT_PERSONA_MAX_TOKENS
+
+
+
+def test_a_copula_after_a_chat_app_keyword_marks_the_handle():
+    assert "alicefoo" in persona.extract_sensitive_tokens("WeChat is alicefoo", [])
+    assert persona.extract_sensitive_tokens("my phone is broken", []) == []     # phone 不加：普通叙述
