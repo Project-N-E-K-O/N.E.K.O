@@ -2527,6 +2527,7 @@
         "progressCopying": "Migrating runtime data",
         "progressFailed": "Migration did not complete. Waiting for recovery handling",
         "progressSourceMissing": "The original data directory, or data inside it, is missing. The migration is paused and data on both sides has been kept as it is. Restore the original data directory, then restart:",
+        "progressPublishConflict": "Another program recreated a target entry during the migration. The migration is paused and both old and new data have been kept. The original data is in the backup folder of the transaction directory below; do not delete it, check it and then sort it out by hand:",
         "progressPending": "Closing",
         "progressPreflight": "Checking the target location and preparing migration",
         "progressRebindPreflight": "Preparing to reconnect the original storage location",

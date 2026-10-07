@@ -1080,6 +1080,12 @@
                         // the user which directory that is instead of "waiting".
                         label = translate('storage.progressSourceMissing', '原始数据目录或其中的数据不见了，迁移已暂停，新旧两边的数据都原样保留。请把原始数据目录恢复原样后重启：')
                             + ' ' + String(migrationPayload.source_root || '').trim();
+                    } else if (migrationPayload && migrationPayload.error_code === 'migration_publish_conflict') {
+                        // The original target data lives in the transaction
+                        // backup; deleting that directory would lose it.
+                        var targetRoot = String(migrationPayload.target_root || '').trim();
+                        label = translate('storage.progressPublishConflict', '迁移时目标位置被其他程序重新创建，迁移已暂停，新旧数据都已保留。原来的数据在下面这个事务目录的 backup 里，请勿删除，确认后再手动处理：')
+                            + ' ' + (targetRoot ? targetRoot + '/.smtx' : '.smtx');
                     } else {
                         label = translate('storage.progressFailed', '迁移未能完成，正在等待恢复处理');
                     }

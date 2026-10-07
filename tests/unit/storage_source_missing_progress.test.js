@@ -44,6 +44,20 @@ for (const locale of ['en', 'zh-CN']) {
     assert.strictEqual(progress.label, `${messages.storage.progressSourceMissing} D:/Documents/N.E.K.O`);
   });
 
+  test(`${locale}: publish conflict points at the transaction directory`, () => {
+    const { model, messages } = loadStorageLocation(locale);
+    const progress = model({
+      lifecycle_state: 'maintenance',
+      migration: {
+        status: 'rollback_required',
+        error_code: 'migration_publish_conflict',
+        target_root: 'E:/new/N.E.K.O',
+      },
+    });
+
+    assert.strictEqual(progress.label, `${messages.storage.progressPublishConflict} E:/new/N.E.K.O/.smtx`);
+  });
+
   test(`${locale}: other failed migrations keep the generic text`, () => {
     const { model, messages } = loadStorageLocation(locale);
     const progress = model({

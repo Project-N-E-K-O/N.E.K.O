@@ -271,6 +271,30 @@ def _publish_without_overwrite(staged: Path, target: Path) -> None:
     os.unlink(staged)
 
 
+def _move_entry_keeping_mode(source: Path, destination: Path) -> None:
+    """``os.replace`` an entry to another parent directory, keeping its mode.
+
+    On POSIX, moving a directory to a different parent needs write access to
+    the directory itself (to update ``..``). A read-only directory -- one a
+    previous migration published with the source's mode -- borrows owner
+    write access for the move and gets its mode back afterwards.
+    """
+    source_stat = source.lstat()
+    mode = stat.S_IMODE(source_stat.st_mode)
+    borrowed = stat.S_ISDIR(source_stat.st_mode) and not mode & stat.S_IWUSR
+    if borrowed:
+        os.chmod(source, mode | stat.S_IWUSR)
+    try:
+        os.replace(source, destination)
+    except BaseException:
+        if borrowed:
+            with suppress(OSError):
+                os.chmod(source, mode)
+        raise
+    if borrowed:
+        os.chmod(destination, mode)
+
+
 def remove_runtime_entry(path: Path) -> None:
     """Remove a real file or directory tree; links and special files raise."""
     _remove_existing_path(path)
@@ -618,7 +642,7 @@ def _rollback_interrupted_publish(
                 mark_restoring(entry_name)
                 restoring_entries.add(entry_name)
             _remove_existing_path(target_entry)
-            os.replace(backup_entry, target_entry)
+            _move_entry_keeping_mode(backup_entry, target_entry)
             continue
         if target_existed:
             if entry_name in restoring_entries and os.path.lexists(target_entry):
@@ -1107,6 +1131,8 @@ def run_pending_storage_migration(
                 publishing_entry="",
                 publishing_target_existed=False,
                 restoring_entries=[],
+                publish_conflict_entry="",
+                resuming_v1_copy=False,
             )
         except Exception as exc:
             logger.warning(
@@ -1170,7 +1196,9 @@ def run_pending_storage_migration(
         # v1 copied straight into the target. A v1 run that stopped in COPYING
         # left only its own partial copy there: never reuse it as an existing
         # target, overwrite it (replaced entries still go to the backup).
-        resuming_v1_copy = (
+        # The first v2 attempt rewrites version and status, so the finding is
+        # kept in the checkpoint: a second interruption must not lose it.
+        resuming_v1_copy = payload.get("resuming_v1_copy") is True or (
             checkpoint_version < STORAGE_MIGRATION_VERSION
             and checkpoint_status == STORAGE_MIGRATION_STATUS_COPYING
         )
@@ -1292,6 +1320,10 @@ def run_pending_storage_migration(
             started_at=str(payload.get("started_at") or _utc_now_iso()),
             source_root=str(source_root),
             target_root=str(target_root),
+            resuming_v1_copy=resuming_v1_copy,
+            # A conflict only stops the transaction it was found in; reaching
+            # here means that transaction is gone and this attempt is fresh.
+            publish_conflict_entry="",
             error_code="",
             error_message="",
         )
@@ -1422,7 +1454,7 @@ def run_pending_storage_migration(
                 )
                 if target_existed:
                     _classify_no_follow(target_entry)
-                    os.replace(target_entry, backup_entry)
+                    _move_entry_keeping_mode(target_entry, backup_entry)
                 try:
                     _publish_without_overwrite(stage_root / entry_name, target_entry)
                 except FileExistsError as exc:

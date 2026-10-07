@@ -2527,6 +2527,7 @@
         "progressCopying": "실행 데이터를 이전하는 중",
         "progressFailed": "이전이 완료되지 않았습니다. 복구 처리를 기다리는 중",
         "progressSourceMissing": "원래 데이터 디렉터리 또는 그 안의 데이터가 없습니다. 이전을 일시 중지했으며 양쪽 데이터는 모두 그대로 두었습니다. 원래 데이터 디렉터리를 복원한 뒤 다시 시작해 주세요:",
+        "progressPublishConflict": "이전 중에 다른 프로그램이 대상 항목을 다시 만들었습니다. 이전을 일시 중지했으며 이전 데이터와 새 데이터를 모두 보존했습니다. 원래 데이터는 아래 트랜잭션 디렉터리의 backup에 있습니다. 삭제하지 말고 확인한 뒤 직접 처리해 주세요:",
         "progressPending": "종료 중",
         "progressPreflight": "대상 위치를 사전 점검하고 이전을 준비하는 중",
         "progressRebindPreflight": "원래 저장 위치를 다시 연결하기 위한 사전 점검 중",

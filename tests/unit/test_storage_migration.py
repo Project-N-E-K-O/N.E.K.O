@@ -1595,3 +1595,101 @@ def test_interrupted_v1_copy_is_overwritten_not_reused(tmp_path):
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "complete"
     assert (target_root / "config" / "core_config.json").is_file()
     assert "config" in result["payload"]["copied_entries"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix", reason="directory write bits only gate rename on POSIX")
+def test_overwriting_a_read_only_target_directory_succeeds(tmp_path):
+    """A previous migration published a read-only directory; moving it into
+    the backup must not fail every later migration onto that target."""
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    (target_root / "config").chmod(0o555)
+
+    try:
+        result = run_pending_storage_migration(config_manager)
+    finally:
+        for leftover in (target_root / ".smtx").glob("*/backup/config"):
+            leftover.chmod(0o755)
+        if (target_root / "config").exists():
+            (target_root / "config").chmod(0o755)
+
+    assert result["completed"] is True, result
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "new"
+
+
+@pytest.mark.unit
+def test_publish_conflict_marker_does_not_outlive_its_transaction(tmp_path, monkeypatch):
+    import shutil
+
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _recreate_then_publish(staged, target):
+        Path(target).mkdir(parents=True, exist_ok=True)
+        (Path(target) / "newcomer.json").write_text("newcomer", encoding="utf-8")
+        original_publish(staged, target)
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _recreate_then_publish)
+    assert run_pending_storage_migration(config_manager)["error_code"] == "migration_publish_conflict"
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", original_publish)
+    # The user sorts the conflict out by removing the transaction directory.
+    shutil.rmtree(target_root / ".smtx")
+
+    # The fresh attempt is interrupted after publishing ...
+    def _crash_after_publish(staged, target):
+        original_publish(staged, target)
+        raise KeyboardInterrupt("simulated process loss after publish")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", original_publish)
+
+    # ... and is rolled back as usual, not mistaken for the old conflict.
+    _stop_after_recovery(monkeypatch, storage_migration_module)
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "stop_after_recovery"
+    assert (target_root / "config" / "newcomer.json").read_text(encoding="utf-8") == "newcomer"
+
+
+@pytest.mark.unit
+def test_v1_copy_marker_survives_a_second_interruption(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("complete", encoding="utf-8")
+    (target_root / "config").mkdir(parents=True)
+    (target_root / "config" / "characters.json").write_text("comp", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+    v1_payload = dict(load_storage_migration(config_manager))
+    v1_payload["version"] = 1
+    v1_payload["status"] = "copying"
+    save_storage_migration(config_manager, v1_payload)
+    original_copy = storage_migration_module._copy_runtime_entry
+
+    def _interrupt(source_path, target_path):
+        original_copy(source_path, target_path)
+        raise KeyboardInterrupt("simulated process loss while staging")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", original_copy)
+    interrupted = load_storage_migration(config_manager)
+    assert interrupted["version"] == 2 and interrupted["status"] == "copying"
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "complete"
