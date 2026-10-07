@@ -1600,3 +1600,10 @@ async def test_a_failed_reseal_keeps_the_owner_from_the_stream(tmp_path, servers
 
     monkeypatch.setattr(tu, "reseal_orphan_stream", failed)
     assert (await tu.attempt_upload(V1, config_dir=tmp_path)).owner == OWN
+
+
+async def test_a_deeply_nested_stream_header_does_not_break_the_anomaly_count(tmp_path, servers):
+    stream = _spool(tmp_path) / f"{V1}.upload.jsonl"
+    stream.parent.mkdir(parents=True, exist_ok=True)
+    stream.write_text("[" * 100000 + "\n" + '{"kind":"anomaly"}\n', encoding="utf-8")
+    assert await tu.visit_anomalies(tmp_path, V1, OWN) == 1

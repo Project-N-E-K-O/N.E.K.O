@@ -104,6 +104,7 @@ PERSONA_SCAN_MAX_TOKENS = 2000
 
 _PRIVATE_SECTIONS_MAX = 256
 _SECTION_MAX_CHARS = 2000
+_SECTION_CHUNK_OVERLAP = 200
 _TOKEN_MIN_CHARS = 2
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -124,7 +125,7 @@ _KEYWORD_VALUE = r"(?P<value>[^\n，。、！？；：,;:!?()（）\[\]【】<>�
 # 同样可以不带分隔（「微信号小雨」）；只说「微信 / 手机 / 电话 / 邮箱」时要有分隔（冒号 / 是 / 为），
 # 或值像号码 / 账号（以数字、字母、+、# 开头）：「手机游戏」「电话会议」「微信群」不收
 _CJK_KEYWORD_VALUE_RE = re.compile(
-    r"(?:(?P<kw>住址|地址|家住|住在|位于|位於)\s*[:：是为為在]?[ \t]*"
+    r"(?:(?P<kw>住址|地址|家住|住在|位于|位於)\s*(?P<sep>[:：是为為在])?[ \t]*"
     r"|(?P<kw5>微信号|微訊號|qq号|手机号|手機號|电话号码?|電話號碼?)\s*[:：是为為]?[ \t]*"
     r"|(?P<kw4>微信|微訊|手机|手機|电话|電話|邮箱|郵箱)"
     r"(?:\s*[:：]\s*|\s*[是为為]\s*|\s*(?=[A-Za-z0-9+#@])))" + _KEYWORD_VALUE,
@@ -145,6 +146,17 @@ _LATIN_KEYWORD_VALUE_RE = re.compile(
     r"|(?P<kw3>address)\s+(?=(?-i:[A-Z])))" + _KEYWORD_VALUE,
     re.IGNORECASE,
 )
+# 中文地址关键词不带分隔时（「住在一起」「地址保密」「家住得离公司很近」），值要有地址形态才收：路名 /
+# 小区等后缀、行政区划后缀、门牌号或数字。带冒号或「是 / 为 / 在」分隔时整段收
+_CJK_ADDRESS_KEYWORDS = frozenset({"住址", "地址", "家住", "住在", "位于", "位於"})
+_CJK_REGION_RE = re.compile("[" + chr(0x4E00) + "-" + chr(0x9FFF) + "]{2}(?:省|市|区|區|县|縣|镇|鎮|村|乡|鄉)")
+
+
+def _cjk_address_form(value: str) -> bool:
+    return bool(_ROAD_CORE_RE.search(value) or _ESTATE_CORE_RE.search(value)
+                or _CJK_REGION_RE.search(value) or any(ch.isdigit() for ch in value))
+
+
 # 地址类关键词：值在逗号处停下，同一行逗号后面的片段（「address: Apt 4, 12 Main Street」）也要找街名
 _ADDRESS_KEYWORDS = frozenset({"住址", "地址", "家住", "住在", "位于", "位於", "address"})
 # 像账号的词：带 @ 或 _、字母与数字混写、驼峰、或连字符连着的词（「@alicefoo」「mimi_cat」「cat2024」
@@ -250,6 +262,8 @@ def _unnumbered_streets(segment: str) -> list[str]:
 _PLACE_PREPOSITIONS = frozenset({
     "in", "on", "at", "near", "by", "off", "behind", "beside", "opposite", "along", "across", "next",
 })
+# 两词介词的末词（「next to」「close to」「across from」「away from」）：与前一个词一起才算
+_PLACE_PREPOSITION_TAILS = {"to": frozenset({"next", "close"}), "from": frozenset({"across", "away"})}
 
 
 def _qualified_places(words: list[str]) -> list[str]:
@@ -259,9 +273,10 @@ def _qualified_places(words: list[str]) -> list[str]:
     for i in range(1, len(cleaned)):
         word, before = cleaned[i], cleaned[i - 1].lower()
         after = cleaned[i + 1] if i + 1 < len(cleaned) else ""
+        two_word = i >= 2 and cleaned[i - 2].lower() in _PLACE_PREPOSITION_TAILS.get(before, ())
         if (word[:1].isupper() and len(word) >= _TOKEN_MIN_CHARS
                 and word.lower() not in _STREET_STOPWORDS | _GENERIC_DWELLING_WORDS
-                and before in _PLACE_PREPOSITIONS | _GENERIC_DWELLING_WORDS
+                and (before in _PLACE_PREPOSITIONS | _GENERIC_DWELLING_WORDS or two_word)
                 and not after[:1].isupper()):
             out.append(word)
     return out
@@ -369,11 +384,13 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
             value = m.group("value").strip().rstrip(".,!?;:").rstrip()
             if not value:
                 continue
+            keyword = (m.group("kw") or "").lower()
+            if keyword in _CJK_ADDRESS_KEYWORDS and not m.groupdict().get("sep") and not _cjk_address_form(value):
+                continue
             found.append(value)
             found.extend(_place_cores(value, _ROAD_CORE_RE))
             found.extend(_latin_phrases(value))
             found.extend(_street_names(value))
-            keyword = (m.group("kw") or "").lower()
             is_address = keyword in _ADDRESS_KEYWORDS or m.groupdict().get("kw2") or m.groupdict().get("kw3")
             if not is_address:
                 # 联系方式的值会把前后的叙述一起吞进来（「wechat @alicefoo likes cats」「wechat: usually
@@ -497,6 +514,11 @@ def persona_privacy_check(
     return hits
 
 
+def text_sha256(text: str) -> str:
+    """Version tag of a persona text: a confirmation must name the text the user saw."""
+    return hashlib.sha256((text or "").encode("utf-8", "surrogatepass")).hexdigest()
+
+
 def card_hash(card: str | None) -> str:
     """``sha256`` of the raw card text (detects card edits after the persona was made)."""
     return hashlib.sha256((card or "").encode("utf-8", "surrogatepass")).hexdigest()
@@ -613,7 +635,20 @@ def _parse_scan(raw: str) -> list[str]:
     items = json.loads(text[start:end + 1])
     if not isinstance(items, list):
         raise ValueError("scan reply is not a JSON list")
-    return [str(item).strip()[:_SECTION_MAX_CHARS] for item in items if isinstance(item, str) and item.strip()]
+    out = []
+    for item in items:
+        if isinstance(item, str) and item.strip():
+            out.extend(_section_chunks(item.strip()))
+    return out
+
+
+def _section_chunks(section: str) -> list[str]:
+    """A passage cut into ``_SECTION_MAX_CHARS`` pieces that overlap, so no part of it is dropped."""
+    if len(section) <= _SECTION_MAX_CHARS:
+        return [section]
+    # 相邻两块重叠一段：跨块边界的 8-gram 仍完整落在某一块里
+    step = _SECTION_MAX_CHARS - _SECTION_CHUNK_OVERLAP
+    return [section[i:i + _SECTION_MAX_CHARS] for i in range(0, len(section) - _SECTION_CHUNK_OVERLAP, step)]
 
 
 def _merge_sections(*groups: Iterable[str]) -> tuple[list[str], bool]:
@@ -898,6 +933,8 @@ async def _view(name: str, character_uid: str, ctx: CharacterContext) -> dict:
         "character_uid": character_uid,
         "state": persona_state(doc, character_uid),
         "text": doc["text"] if doc else None,
+        # 只确认（PUT 不带 text）时回传：确认的必须是用户看到的这一份
+        "text_sha256": text_sha256(doc["text"]) if doc else None,
         "edited": bool(doc and doc["edited"]),
         "reviewed": bool(doc and doc["reviewed"]),
         "generated_at": doc["generated_at"] if doc else None,
@@ -961,6 +998,12 @@ async def put_persona(request: Request, catgirl: str = ""):
         if text is None:
             if doc is None:
                 return _error(409, "persona_missing")
+            seen = payload.get("text_sha256")
+            if not isinstance(seen, str):
+                return _error(400, "text_sha256_required")
+            if seen != text_sha256(doc["text"]):
+                # 面板打开后人设被换过（另一个窗口重新生成 / 卡片变更触发的重生成）：用户没看过这一份
+                return _error(409, "persona_changed")
             doc = {**doc, "reviewed": True}
         else:
             lang = _hooks.lang()

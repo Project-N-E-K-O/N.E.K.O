@@ -118,6 +118,13 @@ def _generate(client, name="A"):
     return client.get(f"/api/visit/persona?catgirl={name}", headers=GOOD).json()
 
 
+def _confirm(client, name="A"):
+    """Confirm the persona the panel shows (``reviewed:true`` with the version it got from GET)."""
+    view = client.get(f"/api/visit/persona?catgirl={name}", headers=GOOD).json()
+    return client.put(f"/api/visit/persona?catgirl={name}", headers=GOOD,
+                      json={"reviewed": True, "text_sha256": view["text_sha256"]})
+
+
 def _file(tmp_path, uid=UID_A) -> dict:
     return json.loads((tmp_path / "visit_persona" / f"{uid}.json").read_text(encoding="utf-8"))
 
@@ -245,7 +252,7 @@ def test_gate_refuses_missing_and_unreviewed(env):
     _generate(client)
     gate = _gate(client)
     assert gate.ok is False and gate.state == "unreviewed"
-    client.put("/api/visit/persona?catgirl=A", headers=GOOD, json={"reviewed": True})
+    _confirm(client)
     gate = _gate(client)
     assert gate.ok and gate.state == "ready" and gate.text == _file(tmp_path)["text"]
 
@@ -253,7 +260,7 @@ def test_gate_refuses_missing_and_unreviewed(env):
 def test_card_change_without_edit_regenerates_and_requires_review(env):
     client, tmp_path, state, llm, _scan = env
     _generate(client)
-    client.put("/api/visit/persona?catgirl=A", headers=GOOD, json={"reviewed": True})
+    _confirm(client)
     calls = len(llm.prompts)
     state["cards"]["A"] = CARD + "\n新加了一句：喜欢看雨。"
     gate = _gate(client)
@@ -263,7 +270,7 @@ def test_card_change_without_edit_regenerates_and_requires_review(env):
     doc = _file(tmp_path)
     assert doc["source_card_hash"] == persona.card_hash(state["cards"]["A"]) and doc["reviewed"] is False
     assert _gate(client).ok is False
-    client.put("/api/visit/persona?catgirl=A", headers=GOOD, json={"reviewed": True})
+    _confirm(client)
     assert _gate(client).ok
 
 
@@ -287,7 +294,7 @@ def test_edited_persona_survives_a_card_change(env):
 def test_persona_is_keyed_by_character_uid(env):
     client, tmp_path, state, *_ = env
     _generate(client)
-    client.put("/api/visit/persona?catgirl=A", headers=GOOD, json={"reviewed": True})
+    _confirm(client)
     # 改名：同一个 character_uid 换了名字，读到的还是同一份文件
     state["cards"]["A2"] = state["cards"].pop("A")
     state["uids"]["A2"] = state["uids"].pop("A")
@@ -513,7 +520,7 @@ def test_a_regeneration_started_while_an_edit_holds_the_lock_does_not_overwrite_
 def test_gate_refuses_when_regeneration_starts_while_it_reads(env, monkeypatch):
     client, *_ = env
     _generate(client)
-    client.put("/api/visit/persona?catgirl=A", headers=GOOD, json={"reviewed": True})
+    _confirm(client)
     real = persona._hooks.load_context
 
     async def read_then_click():
@@ -530,7 +537,7 @@ def test_gate_refuses_when_regeneration_starts_while_it_reads(env, monkeypatch):
 def test_gate_rereads_a_persona_written_while_it_reads(env, monkeypatch):
     client, tmp_path, *_ = env
     _generate(client)
-    client.put("/api/visit/persona?catgirl=A", headers=GOOD, json={"reviewed": True})
+    _confirm(client)
     real = persona._hooks.load_context
     written = []
 
@@ -645,7 +652,7 @@ def test_hyphenated_contact_handles_stand_alone():
 def test_gate_does_not_regenerate_over_an_edit_saved_while_it_reads_the_card(env, monkeypatch):
     client, tmp_path, state, *_ = env
     _generate(client)
-    client.put("/api/visit/persona?catgirl=A", headers=GOOD, json={"reviewed": True})
+    _confirm(client)
     state["cards"]["A"] = CARD + "\n新加了一句：喜欢看雨。"            # 卡片变了，人设没手改过
     real = persona._hooks.load_context
     hand = "你是{LANLAN_NAME}，读卡时刚确认的手写人设。"
@@ -804,3 +811,49 @@ def test_a_regeneration_does_not_save_for_a_character_deleted_meanwhile(env):
     client.portal.call(gate.set)
     _settle(client)
     assert not (tmp_path / "visit_persona" / f"{UID_A}.json").exists()
+
+
+
+@pytest.mark.parametrize("card", [
+    "她和主人住在一起，每天早上一起喝咖啡。",
+    "地址保密，不能说。",
+    "她家住得离公司很近。",
+])
+def test_an_undelimited_chinese_address_keyword_needs_an_address_shaped_value(card):
+    assert persona.extract_sensitive_tokens(card, []) == []
+
+
+def test_chinese_address_values_with_an_address_shape_or_a_delimiter_are_kept():
+    assert "桂花路" in persona.extract_sensitive_tokens("我们住在桂花路。", [])
+    assert "杭州西湖区" in persona.extract_sensitive_tokens("家住杭州西湖区。", [])
+    assert "秘密基地" in persona.extract_sensitive_tokens("地址：秘密基地。", [])
+
+
+def test_confirming_needs_the_version_the_panel_showed(env):
+    client, tmp_path, *_ = env
+    _generate(client)
+    shown = client.get("/api/visit/persona?catgirl=A", headers=GOOD).json()
+    assert client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"reviewed": True}).json()["code"] == "text_sha256_required"
+    # 面板打开后另一个窗口重新生成了一份
+    client.portal.call(persona.store().save, UID_A, {**_file(tmp_path), "text": "你是{LANLAN_NAME}，换过的一份。"})
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"reviewed": True, "text_sha256": shown["text_sha256"]})
+    assert resp.status_code == 409 and resp.json()["code"] == "persona_changed"
+    assert _file(tmp_path)["reviewed"] is False
+    assert _confirm(client).status_code == 200 and _file(tmp_path)["reviewed"] is True
+
+
+@pytest.mark.parametrize("value", ["Apartment next to Broadway", "Apartment across from Broadway"])
+def test_a_place_after_a_two_word_preposition(value):
+    assert "Broadway" in persona.extract_sensitive_tokens(f"address: {value}", [])
+
+
+def test_a_long_scanned_passage_is_kept_whole_in_overlapping_pieces():
+    passage = "".join(chr(0x4E00 + i % 500) for i in range(4500))
+    pieces = persona._parse_scan(json.dumps([passage], ensure_ascii=False))
+    assert all(len(p) <= persona._SECTION_MAX_CHARS for p in pieces)
+    assert pieces[-1].endswith(passage[-50:])
+    # 任意 300 字的片段都完整落在某一块里（重叠 200 字以上的 8-gram 不会被块边界切开）
+    for start in range(0, len(passage) - 150, 97):
+        assert any(passage[start:start + 150] in p for p in pieces)

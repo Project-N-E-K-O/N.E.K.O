@@ -278,7 +278,7 @@ async def _submit_new_report(config_dir: Path, doc: dict) -> JSONResponse:
             return JSONResponse({"queued": True}, status_code=202)
         try:
             upload = await tu.attempt_upload(visit_id, config_dir=config_dir)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             # 举报已落盘：上传的进度记账出错（磁盘满等）不能变成 500，留给后台重试
             logger.warning("visit report %s: upload attempt failed: %s", visit_id, type(exc).__name__)
             tu.schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=_after_attempt(None))

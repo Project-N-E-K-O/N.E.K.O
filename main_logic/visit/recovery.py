@@ -762,8 +762,14 @@ async def _upload_pending(
     upload_transcript: UploadTranscript | None,
     submit_report: SubmitReport | None,
     report: RecoveryReport,
+    retry_later: Callable[[str], Any] | None = None,
 ) -> set[str]:
-    """Retry pending uploads; return the visit ids whose upload is still pending."""
+    """Retry pending uploads; return the visit ids whose upload is still pending.
+
+    ``retry_later(visit_id)`` re-arms the in-process retry for a visit whose
+    files could not be read or written right now (the upload callback, which
+    normally does that, is not reached for it).
+    """
     spool_dir = config_dir / VISIT_SPOOL_DIRNAME
     pending: set[str] = set()
     sealed = set(await VisitSpool.list_visit_ids(config_dir, (UPLOAD_JSON_SUFFIX,)))
@@ -839,6 +845,8 @@ async def _upload_pending(
             # 一份流水读写不了只跳过它自己，不能挡住其余场次的补传与举报
             logger.warning("visit recovery: cannot seal %s: %s", stream.name, exc)
             pending.add(visit_id)
+            if retry_later is not None and isinstance(exc, OSError):
+                retry_later(visit_id)
             continue
         if doc is not None:
             sealed.add(visit_id)
@@ -862,6 +870,9 @@ async def _upload_pending(
         except OSError as exc:
             logger.warning("visit recovery: pending upload %s unreadable: %s", path.name, exc)
             pending.add(visit_id)
+            if retry_later is not None:
+                # 一时读不了（Windows 共享冲突）：本轮的 pending 随返回丢掉，不交给后台就要等下次启动
+                retry_later(visit_id)
             continue
         except ValueError:
             doc = False
@@ -1082,7 +1093,8 @@ async def _submit_report(
             logger.warning("visit recovery: report %s accepted but cannot delete it: %s", path.name, exc)
 
 
-_REPORT_IDENTITY = ("visit_id", "own_account", "own_visit_uid", "queued_at")
+REPORT_IDENTITY = ("visit_id", "own_account", "own_visit_uid", "queued_at")
+"""Fields that tell one queued report from a later one for the same visit."""
 
 
 def _unlink_same_report_locked(path: Path, submitted: dict) -> None:
@@ -1091,7 +1103,7 @@ def _unlink_same_report_locked(path: Path, submitted: dict) -> None:
             current = _load_json(path)
         except (OSError, ValueError):
             return
-        if isinstance(current, dict) and all(current.get(k) == submitted.get(k) for k in _REPORT_IDENTITY):
+        if isinstance(current, dict) and all(current.get(k) == submitted.get(k) for k in REPORT_IDENTITY):
             path.unlink(missing_ok=True)
 
 
@@ -1210,6 +1222,7 @@ async def visit_spool_recovery(
     summary_llm: SummaryLLM | None = None,
     family_names: Iterable[str] = (),
     submit_report: SubmitReport | None = None,
+    retry_later: Callable[[str], Any] | None = None,
     resume_diary_commit: ResumeDiaryCommit | None = None,
     void_pending: VoidPending | None = None,
     lifecycle_guard: LifecycleGuard | None = None,
@@ -1225,7 +1238,9 @@ async def visit_spool_recovery(
     spool is still held open for appends counts as live as well (its runtime
     may already be unregistered while its writes are queued). ``spawn_background`` routes the
     digest / summary commits through the character's visit background-task
-    entry. ``summary_llm`` is required for last-visit summaries (without it
+    entry. ``retry_later(visit_id)`` (``schedule_visit_retry``) re-arms the
+    background upload retry of a visit whose files were transiently
+    unreadable. ``summary_llm`` is required for last-visit summaries (without it
     they wait for a later pass). ``lifecycle_guard`` is the clearing
     endpoints' rename / delete guard, held while forgets are replayed. The
     other callbacks are optional and their
@@ -1307,7 +1322,7 @@ async def visit_spool_recovery(
             logger.warning("visit recovery: visit %s skipped: %r", visit_id, exc)
     pending = await _upload_pending(
         config_dir, live=in_flight, upload_transcript=upload_transcript,
-        submit_report=submit_report, report=report,
+        submit_report=submit_report, report=report, retry_later=retry_later,
     )
     try:
         # 补传试过之后，仍没传上去、已过 7 天的待传转录才放弃。没有上传回调时一份都没试过：

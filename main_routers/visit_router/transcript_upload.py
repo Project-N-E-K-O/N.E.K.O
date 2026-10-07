@@ -71,7 +71,12 @@ from config.visit_settings import (
 )
 from main_logic.visit import memory_bridge
 from main_logic.visit.memory_commit import SIDE_RANK
-from main_logic.visit.recovery import build_upload_doc, reseal_orphan_stream, sealed_upload_doc_usable
+from main_logic.visit.recovery import (
+    REPORT_IDENTITY,
+    build_upload_doc,
+    reseal_orphan_stream,
+    sealed_upload_doc_usable,
+)
 from main_logic.visit.spool import UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX
 from main_logic.visit.subjects import path_lock
 from main_routers.visit_router import accounts
@@ -800,7 +805,7 @@ def same_report(a: Mapping[str, Any] | None, b: Mapping[str, Any] | None) -> boo
     """Whether two loaded copies are the same queued report (not a later one for the same visit)."""
     return (
         a is not None and b is not None
-        and all(a.get(k) == b.get(k) for k in ("visit_id", "own_account", "own_visit_uid", "queued_at"))
+        and all(a.get(k) == b.get(k) for k in REPORT_IDENTITY)
     )
 
 
@@ -1365,7 +1370,8 @@ async def retry_visit_once(
                 # 读不了（被占用）同样当作文件还在
                 current, still_unreadable = await _read_report(config_dir, visit_id)
                 report_pending = result.accepted and (still_unreadable or same_report(current, report))
-            elif manual and report.get("rejected") and result.attempted and not result.login_required:
+            elif (manual and report.get("rejected") and result.attempted and not result.login_required
+                  and not result.unknown_visit):
                 # 用户手动重试、请求发出去了且这回没被拒（网络 / 5xx）：回到普通的排队重试。
                 # 没发出去（未登录 / 换了账号）或登录失效时拒收标记照留
                 if await set_report_rejected(config_dir, visit_id, None, expect=report):
@@ -1512,7 +1518,7 @@ def _anomalies_sync(config_dir: Path, visit_id: str) -> tuple[int, str | None] |
                 if index == 0:
                     try:
                         header = json.loads(raw)
-                    except ValueError:
+                    except (ValueError, RecursionError):
                         header = None
                     value = header.get("own_visit_uid") if isinstance(header, dict) else None
                     owner = value if isinstance(value, str) and value else None

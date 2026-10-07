@@ -2733,8 +2733,6 @@ async def test_an_unverified_reason_is_not_attached_to_another_accounts_report(t
     other = "f" * 24
     (reports_dir / f"{v}.json").write_text(
         json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": other}), encoding="utf-8")
-    real_mark = recovery._mark_report_sync
-
     def unreadable(*_a, **_k):
         raise OSError("in use")                              # 核对归属时读不了举报
 
@@ -2745,7 +2743,7 @@ async def test_an_unverified_reason_is_not_attached_to_another_accounts_report(t
 
     reports = Reports()
     await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
-    monkeypatch.setattr(recovery, "_mark_report_sync", real_mark)
+    assert any(visit_id == v for visit_id, _doc in reports.calls), "目标举报必须提交"
     for _visit_id, doc in reports.calls:
         assert "transcript_unavailable" not in doc          # 提交前复核：属于另一账号的举报不带原因
 
@@ -2772,3 +2770,27 @@ async def test_a_corrupt_upload_leaves_another_accounts_report_unmarked(tmp_path
         assert "transcript_unavailable" not in doc
     if (reports_dir / f"{v}.json").exists():
         assert "transcript_unavailable" not in json.loads((reports_dir / f"{v}.json").read_text(encoding="utf-8"))
+
+
+
+async def test_a_transiently_unreadable_upload_rearms_the_background_retry(tmp_path, monkeypatch):
+    import main_logic.visit.recovery as recovery
+
+    v = vid(107)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    (d / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    real_load = recovery._load_json
+
+    def locked(path):
+        if path.name == f"{v}.upload.json":
+            raise PermissionError("in use")                   # Windows 共享冲突
+        return real_load(path)
+
+    monkeypatch.setattr(recovery, "_load_json", locked)
+    armed = []
+    pending = await recovery._upload_pending(
+        tmp_path, live=lambda _v: False, upload_transcript=Uploads(), submit_report=None,
+        report=recovery.RecoveryReport(), retry_later=armed.append,
+    )
+    assert v in pending and armed == [v]

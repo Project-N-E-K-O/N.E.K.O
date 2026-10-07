@@ -131,8 +131,10 @@ def visit_enabled() -> bool:
 async def require_visit_enabled(connection: HTTPConnection) -> None:
     """Router dependency: the start / join endpoints do not exist while the switch is off.
 
-    HTTP answers 404 like an unknown route; a WebSocket is refused before
-    ``accept`` with 4404 (the transport iframe's terminal close code).
+    HTTP answers 404 like an unknown route; a WebSocket handshake is refused
+    before ``accept`` (the server answers HTTP 403, so the page sees an
+    abnormal close 1006 rather than a close code). Nothing can open the
+    transport page while the switch is off: rooms cannot be created.
     """
     if visit_enabled():
         return
