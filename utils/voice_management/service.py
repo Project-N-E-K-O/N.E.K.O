@@ -101,8 +101,12 @@ async def overwrite_result_details(
         if (runtime.api_key and capabilities.overwrite and record.get("can_overwrite")
                 and status in {"completed", "failed"} and not (lock and lock.locked())):
             actions.append("overwrite")
+        if (runtime.api_key and status in {"processing", "unknown"}
+                and record.get("overwrite_submission_phase") == "prepared"):
+            actions.append("recover")
         return {"local_ref": local_ref, "operation_id": record.get("overwrite_operation_id"),
                 "record_revision": record.get("_record_revision", 0),
+                "submission_phase": record.get("overwrite_submission_phase"),
                 "overwrite_status": status, "actions": actions}
 
     try:
@@ -335,8 +339,9 @@ async def overwrite_remote_voice(
                 local_ref, runtime.scope_id, {
                     "overwrite_status": "processing", "overwrite_operation_id": operation_id,
                     "overwrite_previous_revision": previous_revision,
+                    "overwrite_submission_phase": "prepared", "overwrite_terminal_reason": None,
                 }, expected_operation_id=record.get("overwrite_operation_id") or "",
-                expected_record_revision=latest.get("_record_revision", 0),
+                expected_record_revision=latest.get("_record_revision", 0), return_receipt=True,
             ))
             try:
                 claimed = await asyncio.shield(claim)
@@ -348,18 +353,45 @@ async def overwrite_remote_voice(
                         await asyncio.shield(claim)
                     except asyncio.CancelledError:
                         continue
-                claimed = claim.result()
-                claim_owned = claimed.get("overwrite_operation_id") == operation_id
+                receipt = claim.result()
+                claimed = receipt.record
+                claim_owned = receipt.applied and claimed.get("overwrite_operation_id") == operation_id
                 claim_revision = claimed.get("_record_revision", 0)
                 raise
             # A rejected conditional write returns the stored winner. Only a
             # persisted new owner permits the provider mutation or cleanup.
-            claim_owned = claimed.get("overwrite_operation_id") == operation_id
+            receipt = claimed
+            claimed = receipt.record
+            claim_owned = receipt.applied and claimed.get("overwrite_operation_id") == operation_id
             claim_revision = claimed.get("_record_revision", 0)
             if not claim_owned:
                 raise VoiceManagementError("VOICE_STATE_CHANGED", 409)
             await _check_context(adapter, cm, runtime, voice_data=record)
+            from .overwrite_recovery import transition_with_context
+
+            submission = asyncio.create_task(transition_with_context(
+                adapter, cm, runtime, claimed, action="submit",
+            ))
+            try:
+                permission = await asyncio.shield(submission)
+            except asyncio.CancelledError:
+                # A cancelled waiter cannot assume the permission write stopped.
+                # Join the atomic transition before selecting cleanup evidence.
+                while not submission.done():
+                    try:
+                        await asyncio.shield(submission)
+                    except asyncio.CancelledError:
+                        continue
+                permission = submission.result()
+                if permission.applied:
+                    mutation_started = True
+                    claim_revision = permission.record["_record_revision"]
+                raise
+            if not permission.applied:
+                raise VoiceManagementError("VOICE_STATE_CHANGED", 409)
             mutation_started = True
+            claim_revision = permission.record["_record_revision"]
+            await _check_context(adapter, cm, runtime, voice_data=record)
 
         try:
             updated = await adapter.overwrite(
@@ -377,8 +409,11 @@ async def overwrite_remote_voice(
                         "overwrite_status": status, "overwrite_operation_id": operation_id,
                     }, expected_operation_id=operation_id, expected_record_revision=claim_revision, return_receipt=True))
                     sync = StateSync.SAVED if receipt.applied else StateSync.UNCHANGED
-                except (ValueError, OSError):
+                except ValueError as conflict:
                     # Never recreate a deleted record or overwrite a new owner.
+                    sync = (StateSync.UNCHANGED if conflict.args == ("VOICE_CONTEXT_CHANGED",)
+                            else StateSync.FAILED)
+                except OSError:
                     sync = StateSync.FAILED
             if isinstance(exc, VoiceManagementError):
                 exc.details.update(attempt_outcome=outcome.value, state_sync=sync.value)

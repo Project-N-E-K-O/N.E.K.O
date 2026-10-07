@@ -154,6 +154,8 @@
         if (state.mode === 'overwrite' && state.submit) state.submit.disabled = value || !state.overwriteAllowed || !state.audio.files.length;
         if (state.more) state.more.disabled = value;
         if (state.refreshStatus) state.refreshStatus.disabled = value;
+        if (state.recoverPrepared) state.recoverPrepared.disabled = value || !state.recoverySnapshot;
+        if (state.reopenOverwrite) state.reopenOverwrite.disabled = value || !state.overwriteAllowed;
         for (const control of state.importControls || []) control.disabled = !!state.importSubmitting;
         if (state.mode === 'list' && state.empty) state.empty.hidden = value || state.rows.children.length > 0;
     }
@@ -376,6 +378,7 @@
         if (valid && Number.isInteger(state.recordRevision) && snapshot.record_revision < state.recordRevision) return;
         if (valid) state.recordRevision = snapshot.record_revision;
         const status = valid ? snapshot.overwrite_status : result && result.status;
+        state.currentOverwriteStatus = status;
         const pending = status === 'processing' || status === 'unknown';
         // Only a current server snapshot may reopen submission. Missing fields
         // (including an older server) leave an explicit query exit after sending.
@@ -384,6 +387,12 @@
         state.overwriteAllowed = ['completed', 'failed'].includes(status) && actions.includes('overwrite') && !!state.context?.capabilities.overwrite;
         if (state.submit) state.submit.hidden = !state.overwriteAllowed;
         if (state.refreshStatus) state.refreshStatus.hidden = !actions.includes('refresh');
+        state.recoverySnapshot = valid && pending && actions.includes('recover') &&
+            typeof snapshot.operation_id === 'string' && snapshot.operation_id
+            ? { operation_id: snapshot.operation_id, record_revision: snapshot.record_revision } : null;
+        if (state.recoverPrepared) state.recoverPrepared.hidden = !state.recoverySnapshot;
+        if (state.recoveryHint) state.recoveryHint.hidden = !state.recoverySnapshot;
+        if (state.reopenOverwrite) state.reopenOverwrite.hidden = !state.overwriteAllowed;
         if (error) {
             const uncertain = sent && (!valid || pending) && error.code !== 'OPERATION_IN_PROGRESS';
             showError(state, error, uncertain);
@@ -393,6 +402,58 @@
                 status === 'processing' ? 'processing' : 'uncertain');
         }
         busy(state, state.busy);
+    }
+
+    function recoveryControls(state) {
+        state.recoveryHint = node('p', 'remote-voice-hint', t('recoverPreparedHint'));
+        state.recoveryHint.hidden = true;
+        state.body.append(state.recoveryHint);
+        state.recoverPrepared = button('recoverPrepared', () => recoverPreparedOverwrite(state));
+        state.recoverPrepared.hidden = true;
+        state.recoverPrepared.disabled = true;
+        state.footer.append(state.recoverPrepared);
+    }
+
+    async function recoverPreparedOverwrite(state) {
+        if (active !== state || state.busy || !state.recoverySnapshot) return;
+        const expected = state.recoverySnapshot;
+        const operation = operations.begin(state.provider);
+        let recovered = false;
+        busy(state, true); state.status.textContent = t('recoveringPrepared');
+        try {
+            // Refresh account/project context before using the advisory action.
+            const ctx = await context(state, operation);
+            if (!ctx || active !== state || !operations.owns(operation) || state.recoverySnapshot !== expected) return;
+            const result = await operations.request(operation,
+                '/api/characters/voices/' + encodeURIComponent(state.localRef) + '/recover_overwrite', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ context_token: ctx.context_token, ...expected })
+                });
+            if (active !== state || !operations.owns(operation)) return;
+            updateOverwriteView(state, result);
+            const snapshot = result.details?.voice_state;
+            // A successful local transition can outlive the subsequent record
+            // read. Keep a query exit without inventing an unlocked snapshot.
+            if (!snapshot && state.refreshStatus) state.refreshStatus.hidden = false;
+            recovered = result.recovered === true && snapshot?.local_ref === state.localRef &&
+                snapshot.operation_id === expected.operation_id && snapshot.record_revision > expected.record_revision &&
+                snapshot.record_revision === state.recordRevision && snapshot.overwrite_status === 'failed';
+            if (recovered) state.status.textContent = t('preparedRecovered');
+            if (typeof root.loadVoices === 'function') await root.loadVoices();
+        } catch (error) {
+            if (active === state && operations.current === operation) {
+                updateOverwriteView(state, null, error, false);
+                if (!error.details?.voice_state) state.status.textContent = t('recoveryUncertain');
+            }
+        } finally {
+            if (active === state && operations.current === operation) {
+                busy(state, false);
+                if (recovered) {
+                    const next = state.reopenOverwrite && !state.reopenOverwrite.hidden ? state.reopenOverwrite : state.audio;
+                    if (next) next.focus();
+                }
+            }
+        }
     }
 
     function openOverwrite(localRef, voice) {
@@ -436,6 +497,7 @@
         state.footer.append(refreshStatus);
         state.refreshStatus = refreshStatus;
         state.submit.hidden = !state.overwriteAllowed;
+        recoveryControls(state);
     }
 
     async function fetchOverwriteStatus(state, localRef) {
@@ -467,6 +529,13 @@
         state.body.append(node('p', 'remote-voice-id', voice.remote_voice_id || localRef));
         state.refreshStatus = button('refreshStatus', () => fetchOverwriteStatus(state, localRef));
         state.footer.append(state.refreshStatus);
+        state.reopenOverwrite = button('overwriteAgain', () => {
+            if (active !== state || state.busy || !state.overwriteAllowed) return;
+            openOverwrite(localRef, { ...voice, overwrite_status: state.currentOverwriteStatus });
+        });
+        state.reopenOverwrite.hidden = true;
+        state.footer.append(state.reopenOverwrite);
+        recoveryControls(state);
         fetchOverwriteStatus(state, localRef);
     }
 

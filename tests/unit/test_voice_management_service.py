@@ -499,7 +499,8 @@ async def test_configuration_change_after_claim_records_failed_without_remote_su
     async def change_after_commit(local_ref, scope, values, **kwargs):
         saved = await original(local_ref, scope, values, **kwargs)
         if values.get("overwrite_status") == "processing":
-            claimed.append(saved["overwrite_operation_id"])
+            claimed.append(saved.record["overwrite_operation_id"] if kwargs.get("return_receipt")
+                           else saved["overwrite_operation_id"])
             cm.key = "switched-after-local-claim"
         return saved
 
