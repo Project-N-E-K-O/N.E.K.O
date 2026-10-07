@@ -6,6 +6,7 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const { createVoiceManagerServer } = require('./remote_voice_manager_server.cjs');
 const { verifyVoiceRaces } = require('./remote_voice_manager_races.cjs');
+const { verifyManagementSettings } = require('./remote_voice_management_settings.cjs');
 const { createPageDiagnostics, closeTestServer } = require('./remote_voice_page_diagnostics.cjs');
 const diagnostics = createPageDiagnostics('electron');
 const scratch = diagnostics.directory;
@@ -144,23 +145,13 @@ app.whenReady().then(async () => {
     win.setSize(1120, 880);
     const races = await verifyVoiceRaces({ run, waitFor, state });
     await win.loadURL(origin + '/api_key');
-    await waitFor("document.getElementById('doubaoVoiceManagementAccessKey') && document.getElementById('doubaoVoiceManagementAccessKey').dataset.maskedSecret==='true'");
-    assert.equal(await run("getRealKey(document.getElementById('doubaoVoiceManagementAccessKey'))"), '__NEKO_SECRET_MASKED__');
-    assert.equal(await run("document.getElementById('doubaoVoiceManagementSecretKey').dataset.realKey"), '');
-    await run("document.getElementById('doubaoVoiceManagementProjectName').value='Controlled Project';document.getElementById('api-key-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));true;");
-    await waitFor("document.getElementById('warning-modal').style.display==='flex'");
-    await run("confirmApiKeyChange();true;");
-    await waitFor("!document.getElementById('main-content').inert && document.getElementById('status').textContent.length>0");
-    assert.equal(state.settings.length, 1);
-    assert.equal(state.settings[0].doubaoVoiceManagementAccessKey, '__NEKO_SECRET_MASKED__');
-    assert.equal(state.settings[0].doubaoVoiceManagementSecretKey, '__NEKO_SECRET_MASKED__');
-    assert.equal(state.settings[0].doubaoVoiceManagementProjectName, 'Controlled Project');
+    const managementSettings = await verifyManagementSettings({ run, waitFor, state });
     diagnostics.assertClean();
     const result = { electron: process.versions.electron, chromium: process.versions.chrome,
         actualProductAssets: true, controlledApiOnly: true, importWithoutBinding: true, localReferenceBinding: true,
-        ...races,
+        ...races, ...managementSettings,
         originalRemoteIdVisible: true, manualImport: true, uncertainUpdateNoRetry: true, explicitStatusRefresh: true,
-        keyboardImeAndFocus: true, narrowWindow: true, tutorialDeferredAndResumed: true, maskedManagementCredentialRoundTrip: true,
+        keyboardImeAndFocus: true, narrowWindow: true, tutorialDeferredAndResumed: true,
         listScreenshot, manualScreenshot, narrowScreenshot };
     console.log(JSON.stringify(result, null, 2));
     await finish(0, result);

@@ -1006,6 +1006,15 @@ async function clearVoiceIds() {
 function renderKeyBook(registry, providers) {
     const container = document.getElementById('key-book-inputs');
     if (!container) return;
+    // Provider/locale refreshes rebuild these inputs too. Preserve local edits
+    // and masked-secret state; loadCurrentApiKey still applies server values.
+    const managementSnapshot = [];
+    for (const [field, , secret] of DOUBAO_VOICE_MANAGEMENT_FIELDS) {
+        const input = document.getElementById(field);
+        if (input) managementSnapshot.push({ field, secret,
+            value: secret ? getRealKey(input) : input.value,
+            displayMask: input.dataset.maskedDisplay || '' });
+    }
     container.innerHTML = '';
 
     Object.keys(registry).forEach(providerKey => {
@@ -1038,6 +1047,12 @@ function renderKeyBook(registry, providers) {
             container.appendChild(createDoubaoVoiceManagementSettings());
         }
     });
+    for (const { field, secret, value, displayMask } of managementSnapshot) {
+        const input = document.getElementById(field);
+        if (!input) continue;
+        if (secret) setMaskedInput(input, value, displayMask);
+        else input.value = value;
+    }
 }
 
 const DOUBAO_VOICE_MANAGEMENT_FIELDS = [

@@ -3,6 +3,7 @@
 const { chromium } = require(process.env.NEKO_TEST_PLAYWRIGHT_MODULE || 'playwright');
 const { createVoiceManagerServer } = require('./remote_voice_manager_server.cjs');
 const { verifyVoiceRaces } = require('./remote_voice_manager_races.cjs');
+const { verifyManagementSettings } = require('./remote_voice_management_settings.cjs');
 const { createPageDiagnostics, closeTestServer } = require('./remote_voice_page_diagnostics.cjs');
 const assert = require('node:assert/strict');
 const path = require('node:path');
@@ -113,10 +114,13 @@ process.on('uncaughtException', error => { void finish(error); });
         assert.equal(await page.locator('#importExistingVoice').isHidden(), true);
         const races = await verifyVoiceRaces({ run: code => page.evaluate(code),
             waitFor: expression => page.waitForFunction(expression), state });
+        await page.goto('http://127.0.0.1:' + server.address().port + '/api_key');
+        const managementSettings = await verifyManagementSettings({ run: code => page.evaluate(code),
+            waitFor: expression => page.waitForFunction(expression), state });
         diagnostics.assertClean();
         result = { browser: await browser.version(), actualProductAssets: true, controlledApiOnly: true,
             explicitImport: true, rawIdAndAvailablePreview: true, paginatedSearch: true, manualRequiredFields: true, noImplicitBinding: true,
-            ...races,
+            ...races, ...managementSettings,
             tutorialDeferredAndResumed: true, keyboardFocus: true, narrowViewport: true, unsupportedProviderHidden: true, listScreenshot, manualScreenshot, screenshot };
         console.log(JSON.stringify(result, null, 2));
 })().then(() => finish(), error => finish(error));
