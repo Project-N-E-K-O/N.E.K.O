@@ -95,7 +95,11 @@ def test_new_models_use_existing_dialect_constants():
 
 
 def test_memory_thinking_extra_body_only_for_unbounded_models():
+    from config import LLM_OUTPUT_GUARD_MAX_TOKENS
     from config import providers as P
+
+    # The SiliconFlow budget is documented as "same as the shared guard".
+    assert P.EXTRA_BODY_SILICON_MEMORY_THINKING["thinking_budget"] == LLM_OUTPUT_GUARD_MAX_TOKENS
 
     assert P.memory_thinking_extra_body("deepseek-flash") == P.EXTRA_BODY_DEEPSEEK_MEMORY_THINKING
     assert (
