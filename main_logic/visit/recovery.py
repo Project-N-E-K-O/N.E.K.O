@@ -848,6 +848,8 @@ async def _upload_pending(
                            visit_id)
         # 转录补传与 finalized 无关：流水还在、上传文件没写成，就从流水构建
         try:
+            # 封存失败时流水会被当坏文件删掉：先从流水头取占房账号，state.json 读不到时原因按它记
+            stream_owner = await asyncio.to_thread(_upload_stream_owner_sync, spool_dir, visit_id)
             doc = await asyncio.to_thread(_seal_stream_sync, spool_dir, visit_id, reseal_reason, owner, char_uid)
         except (OSError, ValueError, TypeError, OverflowError) as exc:
             # 一份流水读写不了只跳过它自己，不能挡住其余场次的补传与举报
@@ -869,7 +871,7 @@ async def _upload_pending(
             # 流水坏了、也没有有效的封存文件：这场转录再也传不上去，排队的举报记下原因
             # （归属取 state.json 记的账号：共用电脑上另一账号的举报不记）
             await _mark_report_transcript_unavailable(
-                config_dir, visit_id, "corrupt", report, owner=_owner_or_none(owner))
+                config_dir, visit_id, "corrupt", report, owner=_owner_or_none(owner) or stream_owner)
     for visit_id in sorted(sealed):
         if live(visit_id):
             # 在飞场次的转录还没传：它排队的举报也不能先交

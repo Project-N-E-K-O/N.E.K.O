@@ -30,7 +30,7 @@ class FakeServers:
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
         self.limit = 1024 * 1024
-        self.transcript_mode = "ok"         # ok | 503 | 429 | budget | parts | not_started | not_started_final
+        self.transcript_mode = "ok"         # ok | 503 | 429 | budget | parts | not_participant | unknown_visit | not_started | not_started_final
         self.report_mode = "ok"             # ok | 503 | 429 | network | 404
         self.fail_parts: set[int] = set()   # 这些块回 503（模拟中途断）
         self.groups: dict[tuple[str, str], dict] = {}
@@ -108,6 +108,10 @@ class FakeServers:
             return httpx.Response(413, json={"code": "transcript_budget_exceeded"})
         if mode == "parts":
             return httpx.Response(400, json={"code": "parts_out_of_range"})
+        if mode == "not_participant":
+            return httpx.Response(403, json={"code": "not_participant"})
+        if mode == "unknown_visit":
+            return httpx.Response(404, json={"code": "unknown_visit"})
         if mode in ("not_started", "not_started_final"):
             return httpx.Response(409, json={"code": "visit_not_started", "final": mode == "not_started_final"})
         if len(request.content) > self.limit:

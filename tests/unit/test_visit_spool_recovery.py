@@ -3023,3 +3023,20 @@ async def test_recovery_does_not_mark_a_transcript_free_report(tmp_path):
     await recovery._mark_report_transcript_unavailable(tmp_path, v, "expired", report)
     assert "transcript_unavailable" not in json.loads(path.read_text(encoding="utf-8"))
     assert v not in report.transcript_unavailable
+
+
+
+async def test_a_corrupt_streams_header_owner_guards_another_accounts_report(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+
+    v = vid(122)
+    _write_stream(tmp_path, v, [{**_header(v), "transport": 42}, {"kind": "line"}])   # 头行归属有效、其余坏了
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": "f" * 24}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
+    # 没有 state.json：归属按流水头的 OWN_A 记，另一账号的举报不带「corrupt」
+    for _visit_id, doc in reports.calls:
+        assert "transcript_unavailable" not in doc

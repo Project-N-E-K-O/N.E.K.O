@@ -1391,3 +1391,15 @@ def test_confirming_is_refused_when_the_name_moves_during_the_check(env, monkeyp
                       json={"reviewed": True, "persona_version": view["persona_version"]})
     assert resp.status_code == 409 and resp.json()["code"] == "catgirl_changed"
     assert _file(tmp_path)["reviewed"] is False
+
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_a_persona_file_with_a_non_finite_timestamp_counts_as_malformed(tmp_path, value):
+    store = persona.VisitPersonaStore(tmp_path)
+    path = store.path(UID_A)
+    path.parent.mkdir(parents=True)
+    doc = {"text": "x", "source_card_hash": "0" * 64, "generated_at": value, "edited": False, "reviewed": False,
+           "private_sections": [], "scan_card_hash": "0" * 64, "scan_complete": False}
+    path.write_text(json.dumps(doc), encoding="utf-8")                  # JSON 里的 NaN / Infinity
+    assert store._load_sync(UID_A) is None

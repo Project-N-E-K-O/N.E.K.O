@@ -102,6 +102,9 @@ REPORT_FIELDS = (
 TERMINAL_UPLOAD_REPLIES: frozenset[tuple[int, str]] = frozenset({
     (413, "transcript_budget_exceeded"),
     (400, "parts_out_of_range"),
+    # 上传前已核对登录账号就是转录的占房账号：Servers 仍说不是本房这个 role / 没签发过这一场，重传不会变
+    (403, "not_participant"),
+    (404, "unknown_visit"),
 })
 """Upload rejections that never change on retry (plus ``409 visit_not_started{final:true}``)."""
 
@@ -1285,6 +1288,8 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
     if aged and attempted:
         memory_bridge.diag("upload_expired", visit_id=visit_id)
         return await _settled_round(config_dir, visit_id, sealed, UploadResult(terminal="expired"), owner=owner)
+    # 转录自己拿到的 Retry-After 记在上传截止表里（端点的同步尝试、重试轮次都经这里）
+    _note_upload_retry_after(visit_id, result.retry_after_s, owner)
     return UploadRound(pending=True, retryable=True, retry_after_s=result.retry_after_s,
                        login_required=result.login_required, owner=owner)
 
@@ -1437,7 +1442,6 @@ async def retry_visit_once(
                     _manual_retries[visit_id] = dict(report)
             elif report.get("rejected"):
                 report_pending = False
-    _note_upload_retry_after(visit_id, upload.retry_after_s, upload.owner)
     delays = [d for d in (upload.retry_after_s, report_retry_after) if d is not None]
     return RetryRound(pending=report_pending or upload.retryable or unreadable or visit_id in _settled_leftovers,
                       retry_after_s=max(delays) if delays else None,

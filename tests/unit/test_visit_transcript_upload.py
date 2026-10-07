@@ -1901,3 +1901,23 @@ async def test_a_transcript_free_report_is_not_marked_with_a_transcript_reason(t
     await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
     await tu.mark_report_transcript_unavailable(tmp_path, V1, "expired")
     assert "transcript_unavailable" not in await tu.load_report(tmp_path, V1)
+
+
+
+@pytest.mark.parametrize("mode", ["not_participant", "unknown_visit"])
+async def test_permanent_upload_rejections_are_terminal(tmp_path, servers, mode):
+    fake, _ = servers
+    fake.transcript_mode = mode
+    doc = _big_doc(4, 10)
+    _write_sealed(tmp_path, doc)
+    # 上传前已核对登录账号就是占房账号：Servers 仍拒，重传不会变，按终态结清
+    assert await tu.upload_visit_transcript(V1, doc) == mode
+
+
+async def test_a_synchronous_attempt_records_the_transcripts_retry_after(tmp_path, servers):
+    fake, _ = servers
+    fake.transcript_mode = "429"
+    _write_sealed(tmp_path, _big_doc(4, 10))
+    await tu.attempt_upload(V1, config_dir=tmp_path)
+    # 端点里的同步尝试拿到的 Retry-After 也记进上传截止表：放弃举报再新排一份也不会提前重传
+    assert tu.upload_deferred_s(V1, OWN) > 70

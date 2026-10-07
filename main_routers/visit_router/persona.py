@@ -50,6 +50,7 @@ import asyncio
 import weakref
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -563,7 +564,8 @@ def _valid_doc(doc: Any) -> bool:
     return (
         isinstance(doc["text"], str)
         and isinstance(doc["source_card_hash"], str) and _HASH_RE.fullmatch(doc["source_card_hash"]) is not None
-        and (generated_at is None or (isinstance(generated_at, (int, float)) and not isinstance(generated_at, bool)))
+        and (generated_at is None or (isinstance(generated_at, (int, float)) and not isinstance(generated_at, bool)
+                                      and math.isfinite(generated_at)))
         and all(isinstance(doc[k], bool) for k in ("edited", "reviewed", "scan_complete"))
         and isinstance(sections, list) and all(isinstance(s, str) for s in sections)
         and isinstance(doc["scan_card_hash"], str) and _HASH_RE.fullmatch(doc["scan_card_hash"]) is not None
