@@ -1118,3 +1118,40 @@ async def test_add_server_waits_for_toggle_config_transaction(monkeypatch):
     assert all(isinstance(result, Ok) for result in results)
     assert set(plugin.ctx._effective_config["mcp_servers"]) == {"example", "new"}
     assert plugin.ctx._effective_config["mcp_servers"]["example"]["inject_to_chat"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirmed, cleanup_fails", [(0, False), (1, False), (1, True)])
+async def test_failed_enable_reports_error_and_rolls_back_partial_injection(monkeypatch, confirmed, cleanup_fails):
+    from types import SimpleNamespace
+    plugin = MCPAdapterPlugin(_Ctx())
+    cfg = {"example": {"transport": "stdio", "command": "demo", "inject_to_chat": False}}
+    plugin.ctx._effective_config["mcp_servers"] = cfg
+    plugin._servers_config = cfg
+    plugin._clients["example"] = SimpleNamespace(tools=[
+        SimpleNamespace(name=name, description="demo", input_schema={}) for name in ("a", "b")
+    ])
+    plugin._route_engine = SimpleNamespace(get_tool_server=lambda tid: "example")
+
+    async def register(**kwargs):
+        tid = kwargs["tool_id"]
+        plugin._pending_chat_tools[tid] = {"server_name": "example", "llm_name": tid}
+
+    async def confirm(server_name):
+        for index, (tid, info) in enumerate(list(plugin._pending_chat_tools.items())):
+            if index < confirmed:
+                plugin._chat_tools[tid] = info
+        plugin._pending_chat_tools.clear()
+        return confirmed
+
+    async def remote(name):
+        return "failed" if cleanup_fails else "removed"
+
+    monkeypatch.setattr(plugin, "_register_chat_tool_local_locked", register)
+    monkeypatch.setattr(plugin, "_confirm_pending_chat_tools_locked", confirm)
+    monkeypatch.setattr(plugin, "_remote_unregister_llm_tool", remote)
+    monkeypatch.setattr(plugin, "unregister_llm_tool", lambda name: None)
+    result = await plugin.set_chat_injection("example", True)
+    assert isinstance(result, Err)
+    assert plugin.ctx._effective_config["mcp_servers"]["example"]["inject_to_chat"] is cleanup_fails
+    assert bool(plugin._chat_tools) is cleanup_fails

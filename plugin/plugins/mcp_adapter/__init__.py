@@ -2668,11 +2668,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 client = self._clients.get(server_name)
                 applied = 0
                 failed_tool_ids: List[str] = []
+                expected_tool_ids: set[str] = set()
                 if inject_flag and client is not None:
                     for tool in client.tools:
                         tool_id = f"mcp_{server_name}_{tool.name}"
                         if self._route_engine is None or self._route_engine.get_tool_server(tool_id) != server_name:
                             continue
+                        expected_tool_ids.add(tool_id)
                         if tool_id in self._chat_tools or tool_id in self._pending_chat_tools:
                             continue
                         await self._register_chat_tool_local_locked(
@@ -2692,8 +2694,36 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                             failed_tool_ids.append(tool_id)
 
                 if inject_flag:
-                    # 本地登记完后批量确认远端生效（一次共享截止时间）
+                    expected_tool_ids.update(
+                        tid for tid, info in self._pending_chat_tools.items()
+                        if info.get("server_name") == server_name
+                    )
                     applied = await self._confirm_pending_chat_tools_locked(server_name)
+                    unconfirmed = expected_tool_ids - self._chat_tools.keys()
+                    if unconfirmed:
+                        # A failed enable must surface an error. When enabling
+                        # from disabled, remove the partial registration before
+                        # reverting the switch; preserve retry state on failure.
+                        rollback_flag = previous_flag
+                        if not previous_flag:
+                            mapped_ids = [
+                                tid for mapping in (self._chat_tools, self._pending_chat_tools)
+                                for tid, info in mapping.items()
+                                if info.get("server_name") == server_name
+                            ]
+                            for tool_id in dict.fromkeys(mapped_ids):
+                                if await self._unregister_chat_tool_locked(tool_id) == "failed":
+                                    rollback_flag = True
+                        server_cfg["inject_to_chat"] = rollback_flag
+                        try:
+                            await self._persist_servers_config(servers_config)
+                        except Exception as exc:
+                            self.ctx.logger.exception(f"Failed to roll back chat injection: {exc}")
+                            return Err(SdkError("Chat injection confirmation and config rollback failed; retry later"))
+                        return Err(SdkError(
+                            f"Failed to enable chat injection for server '{server_name}': "
+                            f"{len(unconfirmed)} tool(s) not confirmed; retry later"
+                        ))
 
                 if not inject_flag and failed_tool_ids:
                     # 禁用清理未完成（远端暂时不可达等）：回滚标志让面板如实反映
