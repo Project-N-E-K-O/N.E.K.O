@@ -120,6 +120,14 @@ async def test_tag_last_turn_keys_prompt_and_reply():
     assert s.key_of(s.history[1]) == (5, 1) and s.key_of(s.history[2]) == (6, 0)
 
 
+async def test_tag_last_turn_leaves_an_already_keyed_reply_alone():
+    s = await _session()
+    s.history.extend([HumanMessage(content="q"), AIMessage(content="a")])
+    sp.tag_last_turn(s, prompt_key=(5, 1), reply_key=(6, 0))
+    sp.tag_last_turn(s, prompt_key=(7, 1), reply_key=(8, 0))      # 空 prompt：stream_text 什么都没追加
+    assert s.key_of(s.history[1]) == (5, 1) and s.key_of(s.history[2]) == (6, 0)
+
+
 async def test_trim_keeps_system_and_newest():
     s = await _session()
     for k in range(50):

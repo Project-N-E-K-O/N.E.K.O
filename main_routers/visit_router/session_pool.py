@@ -217,7 +217,9 @@ def tag_last_turn(session: VisitSession, *, prompt_key: SortKey | None, reply_ke
 
     history = session.history
     idx = len(history) - 1
-    if reply_key is not None and idx >= 0 and isinstance(history[idx], AIMessage):
+    # 只给还没有键的消息打标：stream_text 遇到空 prompt 什么都不追加，末尾那条是上一轮已登记的回复
+    if (reply_key is not None and idx >= 0 and isinstance(history[idx], AIMessage)
+            and session.key_of(history[idx]) is None):
         session.tag(history[idx], reply_key)
         idx -= 1
     if prompt_key is not None:

@@ -54,8 +54,6 @@ from bisect import bisect_left
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-
-import regex
 from typing import (
     Annotated,
     Any,
@@ -67,6 +65,7 @@ from typing import (
     Union,
 )
 
+import regex
 from pydantic import (
     AfterValidator,
     BaseModel,
