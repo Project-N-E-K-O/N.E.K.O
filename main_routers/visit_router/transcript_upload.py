@@ -1577,9 +1577,13 @@ async def visit_anomalies(config_dir: Path, visit_id: str, owner: str | None = N
     except (OSError, ValueError):
         pending = None
     found = pending[:2] if pending is not None else None
-    if found is None or (pending[2] and visit_id in _recent_anomalies):
-        # 没有待传文件，或只能从流水数（流水可能少写了几行）：本进程封存时记下的计数是完整的，优先用它
-        found = _recent_anomalies.get(visit_id, found)
+    recent = _recent_anomalies.get(visit_id)
+    if found is None:
+        found = recent
+    elif pending[2] and recent is not None and (not recent[1] or not found[1] or recent[1] == found[1]):
+        # 只能从流水数（流水可能少写了几行）：本进程封存时记下的同一侧计数是完整的，优先用它。
+        # 记下的是另一账号那一侧的（共用电脑）就不拿来盖这份流水
+        found = recent
     if found is None:
         return 0
     count, source = found

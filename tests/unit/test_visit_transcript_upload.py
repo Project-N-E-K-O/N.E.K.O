@@ -1706,3 +1706,15 @@ async def test_the_count_recorded_at_seal_wins_over_a_short_stream(tmp_path, ser
         header + "\n" + '{"kind":"anomaly"}' + "\n", encoding="utf-8")       # 流水少写了几行
     tu.remember_anomalies(V1, 3, OWN)                                       # 封存时记下的完整计数
     assert await tu.visit_anomalies(tmp_path, V1, OWN) == 3
+
+
+
+async def test_another_accounts_recorded_count_does_not_replace_this_stream(tmp_path, servers):
+    other = "b" * 24
+    header = json.dumps({"kind": "header", "own_visit_uid": other})
+    stream = _spool(tmp_path) / f"{V1}.upload.jsonl"
+    stream.parent.mkdir(parents=True, exist_ok=True)
+    stream.write_text("\n".join([header, '{"kind":"anomaly"}', '{"kind":"anomaly"}', ""]), encoding="utf-8")
+    tu.remember_anomalies(V1, 5, OWN)                                       # 另一账号那一侧封存时记的
+    # B 自己的流水里有 2 条：不能被 A 的计数盖掉（随后归属比对还会把它清零）
+    assert await tu.visit_anomalies(tmp_path, V1, other) == 2
