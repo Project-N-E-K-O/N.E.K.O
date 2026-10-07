@@ -6,15 +6,52 @@ const { verifyVoiceRaces } = require('./remote_voice_manager_races.cjs');
 const { createPageDiagnostics, closeTestServer } = require('./remote_voice_page_diagnostics.cjs');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const diagnostics = createPageDiagnostics('chromium');
+const { server, state } = createVoiceManagerServer();
+let browser, page, result, finishing;
+const scratch = diagnostics.directory;
+function bounded(operation, milliseconds, label) {
+    let timer;
+    return Promise.race([operation, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label + ' timed out')), milliseconds);
+    })]).finally(() => clearTimeout(timer));
+}
+function finish(error) {
+    const explicitFailure = arguments.length > 0;
+    const cause = explicitFailure ? (error instanceof Error ? error : new Error(String(error))) : undefined;
+    if (explicitFailure) diagnostics.error(cause);
+    if (finishing) return finishing;
+    finishing = (async () => {
+        clearTimeout(watchdog);
+        let failure = cause;
+        if (cause && page) await bounded(page.screenshot({ path: path.join(scratch, 'failure.png'), timeout: 2000 }), 2000, 'Failure screenshot')
+            .catch(captureError => diagnostics.log('screenshot-error', captureError));
+        const cleanup = await Promise.allSettled([
+            bounded(Promise.resolve().then(() => browser && browser.close()), 5000, 'Browser cleanup'),
+            bounded(closeTestServer(server), 5000, 'HTTP cleanup')
+        ]);
+        for (const item of cleanup) if (item.status === 'rejected') {
+            const cleanupError = item.reason instanceof Error ? item.reason : new Error(String(item.reason));
+            diagnostics.error(cleanupError); failure ||= cleanupError;
+        }
+        await new Promise(resolve => setImmediate(resolve));
+        try { diagnostics.assertClean(); }
+        catch (lateError) { failure ||= lateError; }
+        diagnostics.finish(result, failure);
+        if (failure) console.error(failure);
+        process.exitCode = failure ? 1 : 0;
+        if (cleanup.some(item => item.status === 'rejected')) process.exit(1);
+    })();
+    return finishing;
+}
+const watchdog = setTimeout(() => { void finish(new Error('REMOTE_VOICE_CHROMIUM_TIMEOUT')); }, 60000);
+process.on('unhandledRejection', error => { void finish(error); });
+process.on('uncaughtException', error => { void finish(error); });
 (async () => {
-    const diagnostics = createPageDiagnostics('chromium');
-    const { server, state } = createVoiceManagerServer();
-    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     const channel = process.env.NEKO_TEST_BROWSER_CHANNEL;
-    let browser, page, result, failure;
-    const scratch = diagnostics.directory;
-    try {
         browser = await chromium.launch({ headless: true, ...(channel ? { channel } : {}) });
+        if (finishing) { await bounded(browser.close(), 5000, 'Late browser cleanup'); return; }
         const context = await browser.newContext({ viewport: { width: 1120, height: 850 } });
         page = await context.newPage();
         page.on('pageerror', error => diagnostics.error(error));
@@ -82,14 +119,4 @@ const path = require('node:path');
             ...races,
             tutorialDeferredAndResumed: true, keyboardFocus: true, narrowViewport: true, unsupportedProviderHidden: true, listScreenshot, manualScreenshot, screenshot };
         console.log(JSON.stringify(result, null, 2));
-    } catch (error) {
-        failure = error;
-        if (page) await page.screenshot({ path: path.join(scratch, 'failure.png') }).catch(screenshotError => diagnostics.log('screenshot-error', screenshotError));
-        throw error;
-    } finally {
-        const cleanup = await Promise.allSettled([browser && browser.close(), closeTestServer(server)]);
-        for (const item of cleanup) if (item.status === 'rejected') diagnostics.error(item.reason);
-        diagnostics.finish(result, failure || cleanup.find(item => item.status === 'rejected')?.reason);
-        if (!failure) diagnostics.assertClean();
-    }
-})().catch(error => { console.error(error); process.exitCode = 1; });
+})().then(() => finish(), error => finish(error));

@@ -6,7 +6,8 @@ from copy import deepcopy
 import pytest
 
 from tests.unit.test_voice_management_service import fixture, imported, payload
-from utils.voice_management.overwrite_recovery import recover_prepared_overwrite, transition_with_context
+from utils.voice_management.overwrite_recovery import recover_prepared_overwrite
+from utils.voice_management.service import transition_with_context
 from utils.voice_management.types import VoiceManagementError
 
 
@@ -86,17 +87,17 @@ async def test_stale_recovery_cannot_clear_new_owner(fixture):
 
 @pytest.mark.asyncio
 async def test_context_change_at_atomic_boundary_prevents_transition(fixture, monkeypatch):
-    from utils.voice_management import overwrite_recovery
+    from utils.voice_management import service
 
     cm, adapter, ref, record = await prepared(fixture)
-    original = overwrite_recovery.transition_with_context
+    original = service.transition_with_context
 
     async def changed_context(adapter, cm, runtime, record, *, action):
         cm.management_secret = "changed"
         return await original(adapter, cm, runtime, record, action=action)
 
     token = payload(adapter, cm)["context_token"]
-    monkeypatch.setattr(overwrite_recovery, "transition_with_context", changed_context)
+    monkeypatch.setattr(service, "transition_with_context", changed_context)
     before = deepcopy(cm.storage)
     with pytest.raises(VoiceManagementError) as error:
         await recover_prepared_overwrite(

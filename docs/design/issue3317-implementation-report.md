@@ -15,6 +15,7 @@
 | 第二轮恢复 | 仅 `prepared` 可条件恢复；提交前必须原子获得 `submission_possible` 正回执 | 可能提交和历史无阶段记录不可恢复；JSON 仅承诺单后端进程 |
 
 恢复协议和服务商证据表见同目录 `remote-voice-overwrite-recovery.md`。
+实施后的第 8 节审查、补充修复及最终复验见同目录 `issue3317-review-report.md`。
 恢复保留本地音色引用、角色绑定、账号、项目、资源归属及旧操作终结证据。
 前端提供显式再次覆盖入口，不自动提交。
 

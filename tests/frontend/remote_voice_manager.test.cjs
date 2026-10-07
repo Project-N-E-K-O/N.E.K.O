@@ -721,6 +721,6 @@ test('a confirmed failed overwrite is reported as failed and cannot be mistaken 
     h.resolve(1, { success: true, status: 'failed' }); await tick();
     assert.ok(h.panel().textContent.includes('voice.remote.failed'));
     assert.equal(h.button('overwrite').hidden, true);
-    assert.equal(h.button('refreshStatus').hidden, true);
+    assert.equal(h.button('refreshStatus').hidden, false);
     assert.equal(h.refreshes(), 1);
 });

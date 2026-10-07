@@ -3,37 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import re
 
-from utils.config_manager.imported_voices import VOICE_STORAGE_LOCK
-
 from .types import VoiceManagementError
-
-
-async def transition_with_context(adapter, cm, runtime, record, *, action):
-    """Check context and transition under the same single-process storage lock."""
-    from .service import context_token
-
-    def commit():
-        with VOICE_STORAGE_LOCK:
-            current = adapter.resolve_runtime(cm, voice_data=record)
-            if not hmac.compare_digest(context_token(current), context_token(runtime)):
-                raise VoiceManagementError("CONTEXT_CHANGED", 409)
-            return cm.transition_imported_voice_overwrite(
-                record["local_ref"], runtime.scope_id, action=action,
-                expected_operation_id=record["overwrite_operation_id"],
-                expected_record_revision=record.get("_record_revision", 0),
-            )
-
-    return await asyncio.to_thread(commit)
 
 
 async def recover_prepared_overwrite(
     adapter, cm, local_ref, *, token, operation_id, record_revision,
 ):
     """Retire only an explicitly identified, still-prepared operation."""
-    from .service import _check_context, _runtime, overwrite_result_details, public_voice_data
+    from .service import (
+        _check_context, _runtime, overwrite_result_details, public_voice_data, transition_with_context,
+    )
     from .types import AttemptOutcome, StateSync
 
     state_sync = StateSync.UNCHANGED

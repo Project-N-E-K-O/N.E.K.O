@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from functools import wraps
 from weakref import WeakValueDictionary
 
+from utils.config_manager.imported_voices import VOICE_STORAGE_LOCK
+
 from .types import AttemptOutcome, RemoteVoice, StateSync, VoiceManagementAdapter, VoiceManagementError, VoiceRuntime
 
 _CONTEXT_SECRET = secrets.token_bytes(32)
@@ -79,13 +81,17 @@ async def overwrite_result_details(
     adapter, cm, local_ref: str, *, token: str,
     attempt_outcome: AttemptOutcome = AttemptOutcome.NOT_SUBMITTED,
     state_sync: StateSync = StateSync.UNCHANGED,
+    strict_context: bool = False,
 ) -> dict:
     """Project a current persisted snapshot, independently of this request's result.
 
     Actions are advice, never mutation permission. A missing/invalid context or
     unreadable record deliberately produces no snapshot instead of a ready voice.
     """
+    context_changed = False
+
     def read():
+        nonlocal context_changed
         record = cm.get_imported_voice(local_ref, include_inactive=True)
         if not record:
             return None
@@ -93,6 +99,7 @@ async def overwrite_result_details(
         if (not isinstance(token, str) or not hmac.compare_digest(context_token(runtime), token)
                 or record.get("scope_id") != runtime.scope_id
                 or record.get("provider") != runtime.provider):
+            context_changed = True
             return None
         capabilities = adapter.capabilities_for(runtime)
         status = record.get("overwrite_status") or "completed"
@@ -113,6 +120,11 @@ async def overwrite_result_details(
         snapshot = await asyncio.to_thread(read)
     except Exception:
         snapshot = None
+    if strict_context and context_changed:
+        raise VoiceManagementError("CONTEXT_CHANGED", 409, {
+            "attempt_outcome": AttemptOutcome(attempt_outcome).value,
+            "state_sync": StateSync(state_sync).value, "voice_state": None,
+        })
     return {"attempt_outcome": AttemptOutcome(attempt_outcome).value, "voice_state": snapshot,
             "state_sync": StateSync(state_sync).value}
 
@@ -145,12 +157,10 @@ def _overwrite_feedback(*, mutation: bool):
                 adapter, cm, local_ref, token=token,
                 attempt_outcome=AttemptOutcome.ACCEPTED if mutation else AttemptOutcome.NOT_SUBMITTED,
                 state_sync=details.get("state_sync", StateSync.SAVED),
+                strict_context=True,
             ))
-            if details["voice_state"] is None:
-                # A successful local write does not authorize feedback/actions
-                # in a context that changed while the provider was responding.
-                raise VoiceManagementError("CONTEXT_CHANGED", 409, details)
-            result["status"] = details["voice_state"]["overwrite_status"]
+            if details["voice_state"] is not None:
+                result["status"] = details["voice_state"]["overwrite_status"]
             return result
         return feedback
     return decorate
@@ -186,6 +196,22 @@ async def _check_context(adapter: VoiceManagementAdapter, cm, runtime: VoiceRunt
     current = await asyncio.to_thread(adapter.resolve_runtime, cm, voice_data=voice_data)
     if not hmac.compare_digest(context_token(current), context_token(runtime)):
         raise VoiceManagementError("CONTEXT_CHANGED", 409)
+
+
+async def transition_with_context(adapter, cm, runtime, record, *, action):
+    """Check context and transition under the same single-process storage lock."""
+    def commit():
+        with VOICE_STORAGE_LOCK:
+            current = adapter.resolve_runtime(cm, voice_data=record)
+            if not hmac.compare_digest(context_token(current), context_token(runtime)):
+                raise VoiceManagementError("CONTEXT_CHANGED", 409)
+            return cm.transition_imported_voice_overwrite(
+                record["local_ref"], runtime.scope_id, action=action,
+                expected_operation_id=record["overwrite_operation_id"],
+                expected_record_revision=record.get("_record_revision", 0),
+            )
+
+    return await asyncio.to_thread(commit)
 
 
 def _remote_id(value: object) -> str:
@@ -367,8 +393,6 @@ async def overwrite_remote_voice(
             if not claim_owned:
                 raise VoiceManagementError("VOICE_STATE_CHANGED", 409)
             await _check_context(adapter, cm, runtime, voice_data=record)
-            from .overwrite_recovery import transition_with_context
-
             submission = asyncio.create_task(transition_with_context(
                 adapter, cm, runtime, claimed, action="submit",
             ))
@@ -431,12 +455,22 @@ async def overwrite_remote_voice(
         except VoiceManagementError as exc:
             exc.details["attempt_outcome"] = AttemptOutcome.ACCEPTED.value
             raise
+        except (OSError, ValueError) as exc:
+            context_changed = isinstance(exc, ValueError) and exc.args == ("VOICE_CONTEXT_CHANGED",)
+            raise VoiceManagementError("CONTEXT_CHANGED" if context_changed else "STORAGE_ERROR",
+                                       409 if context_changed else 500, {
+                "attempt_outcome": "accepted", "state_sync": "unchanged",
+            }) from exc
         if updated.voice_id != remote_id:
             try:
                 receipt = await cm.aupdate_imported_voice(local_ref, runtime.scope_id, {"overwrite_status": "unknown"},
                                                          expected_operation_id=operation_id, expected_record_revision=claim_revision,
                                                          return_receipt=True)
             except Exception as exc:
+                if isinstance(exc, ValueError) and exc.args == ("VOICE_CONTEXT_CHANGED",):
+                    raise VoiceManagementError("CONTEXT_CHANGED", 409, {
+                        "attempt_outcome": "unknown", "state_sync": "unchanged",
+                    }) from exc
                 raise VoiceManagementError("LOCAL_SAVE_FAILED_AFTER_UPDATE", 500, {
                     "attempt_outcome": "unknown", "state_sync": "failed",
                 }) from exc
@@ -466,6 +500,10 @@ async def overwrite_remote_voice(
                                                     expected_operation_id=operation_id,
                                                     expected_record_revision=claim_revision, return_receipt=True)
         except Exception as exc:
+            if isinstance(exc, ValueError) and exc.args == ("VOICE_CONTEXT_CHANGED",):
+                raise VoiceManagementError("CONTEXT_CHANGED", 409, {
+                    "attempt_outcome": "accepted", "state_sync": "unchanged",
+                }) from exc
             raise VoiceManagementError("LOCAL_SAVE_FAILED_AFTER_UPDATE", 500, {
                 "attempt_outcome": "accepted", "state_sync": "failed",
             }) from exc

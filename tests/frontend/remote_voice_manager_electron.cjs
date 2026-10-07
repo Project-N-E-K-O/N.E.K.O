@@ -15,18 +15,36 @@ const { server, state } = createVoiceManagerServer();
 let win;
 let finished = false;
 app.on('window-all-closed', () => {});
+function bounded(operation, milliseconds, label) {
+    let timer;
+    return Promise.race([operation, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label + ' timed out')), milliseconds);
+    })]).finally(() => clearTimeout(timer));
+}
 async function finish(code, result, error) {
+    let failure = code ? (error instanceof Error ? error : new Error(String(error))) : undefined;
+    if (code) diagnostics.error(failure);
     if (finished) return;
     finished = true;
     clearTimeout(watchdog);
-    if (error) {
-        console.error(error);
-        if (win && !win.isDestroyed()) await screenshot('failure').catch(captureError => diagnostics.log('screenshot-error', captureError));
+    if (failure) {
+        console.error(failure);
+        if (win && !win.isDestroyed()) await bounded(screenshot('failure'), 2000, 'Failure screenshot').catch(captureError => diagnostics.log('screenshot-error', captureError));
     }
-    if (win && !win.isDestroyed()) win.destroy();
-    try { await closeTestServer(server); }
-    catch (cleanupError) { diagnostics.error(cleanupError); code = 1; }
-    diagnostics.finish(result, error || (code ? new Error('Electron test cleanup failed') : undefined));
+    try { if (win && !win.isDestroyed()) win.destroy(); }
+    catch (reason) {
+        const cleanupError = reason instanceof Error ? reason : new Error(String(reason));
+        diagnostics.error(cleanupError); failure ||= cleanupError; code = 1;
+    }
+    try { await bounded(closeTestServer(server), 5000, 'HTTP cleanup'); }
+    catch (reason) {
+        const cleanupError = reason instanceof Error ? reason : new Error(String(reason));
+        diagnostics.error(cleanupError); failure ||= cleanupError; code = 1;
+    }
+    await new Promise(resolve => setImmediate(resolve));
+    try { diagnostics.assertClean(); }
+    catch (lateError) { failure ||= lateError; code = 1; }
+    diagnostics.finish(result, failure);
     app.exit(code);
 }
 const watchdog = setTimeout(() => { void finish(2, undefined, new Error('REMOTE_VOICE_ELECTRON_TIMEOUT')); }, 60000);

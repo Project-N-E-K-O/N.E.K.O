@@ -29,7 +29,7 @@ async def recover(cm, adapter, ref):
 async def test_recovery_winner_fences_resumed_old_task(fixture, monkeypatch, new_operation):
     cm, adapter, ref = await imported(fixture)
     prepared, release = asyncio.Event(), asyncio.Event()
-    original = overwrite_recovery.transition_with_context
+    original = service.transition_with_context
     first = True
 
     async def blocked(adapter, cm, runtime, record, *, action):
@@ -40,7 +40,7 @@ async def test_recovery_winner_fences_resumed_old_task(fixture, monkeypatch, new
             await release.wait()
         return await original(adapter, cm, runtime, record, action=action)
 
-    monkeypatch.setattr(overwrite_recovery, "transition_with_context", blocked)
+    monkeypatch.setattr(service, "transition_with_context", blocked)
     old = asyncio.create_task(overwrite(cm, adapter, ref))
     try:
         await asyncio.wait_for(prepared.wait(), timeout=5)
@@ -77,7 +77,7 @@ async def test_recovery_winner_fences_resumed_old_task(fixture, monkeypatch, new
 async def test_submission_winner_rejects_recovery_while_old_task_waits(fixture, monkeypatch):
     cm, adapter, ref = await imported(fixture)
     submitted, release = asyncio.Event(), asyncio.Event()
-    original = overwrite_recovery.transition_with_context
+    original = service.transition_with_context
 
     async def blocked(adapter, cm, runtime, record, *, action):
         receipt = await original(adapter, cm, runtime, record, action=action)
@@ -86,7 +86,7 @@ async def test_submission_winner_rejects_recovery_while_old_task_waits(fixture, 
             await release.wait()
         return receipt
 
-    monkeypatch.setattr(overwrite_recovery, "transition_with_context", blocked)
+    monkeypatch.setattr(service, "transition_with_context", blocked)
     old = asyncio.create_task(overwrite(cm, adapter, ref))
     try:
         await asyncio.wait_for(submitted.wait(), timeout=5)

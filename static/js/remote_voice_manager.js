@@ -373,6 +373,7 @@
 
     function updateOverwriteView(state, result, error = null, sent = true) {
         if (active !== state) return;
+        if (error?.code === 'CONTEXT_CHANGED') state.context = null;
         const snapshot = (error ? error.details : result && result.details)?.voice_state;
         const valid = snapshot && snapshot.local_ref === state.localRef && Number.isInteger(snapshot.record_revision) && snapshot.record_revision >= 0;
         if (valid && Number.isInteger(state.recordRevision) && snapshot.record_revision < state.recordRevision) return;
@@ -382,8 +383,7 @@
         const pending = status === 'processing' || status === 'unknown';
         // Only a current server snapshot may reopen submission. Missing fields
         // (including an older server) leave an explicit query exit after sending.
-        const actions = valid && Array.isArray(snapshot.actions) ? snapshot.actions :
-            pending || error ? ['refresh'] : [];
+        const actions = valid && Array.isArray(snapshot.actions) ? snapshot.actions : ['refresh'];
         state.overwriteAllowed = ['completed', 'failed'].includes(status) && actions.includes('overwrite') && !!state.context?.capabilities.overwrite;
         if (state.submit) state.submit.hidden = !state.overwriteAllowed;
         if (state.refreshStatus) state.refreshStatus.hidden = !actions.includes('refresh');
@@ -394,7 +394,7 @@
         if (state.recoveryHint) state.recoveryHint.hidden = !state.recoverySnapshot;
         if (state.reopenOverwrite) state.reopenOverwrite.hidden = !state.overwriteAllowed;
         if (error) {
-            const uncertain = sent && (!valid || pending) && error.code !== 'OPERATION_IN_PROGRESS';
+            const uncertain = sent && (!valid || pending) && !['OPERATION_IN_PROGRESS', 'CONTEXT_CHANGED'].includes(error.code);
             showError(state, error, uncertain);
         } else {
             state.status.classList.remove('remote-voice-error');
@@ -419,11 +419,13 @@
         const expected = state.recoverySnapshot;
         const operation = operations.begin(state.provider);
         let recovered = false;
+        let sent = false;
         busy(state, true); state.status.textContent = t('recoveringPrepared');
         try {
             // Refresh account/project context before using the advisory action.
             const ctx = await context(state, operation);
             if (!ctx || active !== state || !operations.owns(operation) || state.recoverySnapshot !== expected) return;
+            sent = true;
             const result = await operations.request(operation,
                 '/api/characters/voices/' + encodeURIComponent(state.localRef) + '/recover_overwrite', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -443,7 +445,10 @@
         } catch (error) {
             if (active === state && operations.current === operation) {
                 updateOverwriteView(state, null, error, false);
-                if (!error.details?.voice_state) state.status.textContent = t('recoveryUncertain');
+                const definiteFailure = ['CONTEXT_CHANGED', 'VOICE_STATE_CHANGED', 'VOICE_NOT_FOUND',
+                    'CONFIG_MISSING', 'MANAGEMENT_CONFIG_MISSING', 'AUTH_FAILED', 'PERMISSION_DENIED',
+                    'INVALID_METADATA', 'INVALID_JSON', 'OVERWRITE_UNSUPPORTED'].includes(error.code);
+                if (sent && !error.details?.voice_state && !definiteFailure) state.status.textContent = t('recoveryUncertain');
             }
         } finally {
             if (active === state && operations.current === operation) {
@@ -513,7 +518,11 @@
             if (active !== state || !operations.owns(operation)) return;
             updateOverwriteView(state, result);
             if (typeof root.loadVoices === 'function') await root.loadVoices();
-        } catch (error) { if (active === state && operations.current === operation) updateOverwriteView(state, null, error); }
+        } catch (error) {
+            if (active === state && operations.current === operation) {
+                updateOverwriteView(state, null, error, false);
+            }
+        }
         finally {
             if (active === state && operations.current === operation) {
                 busy(state, false);

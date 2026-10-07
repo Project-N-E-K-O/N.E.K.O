@@ -14,19 +14,26 @@ function bounded(operation, milliseconds, label) {
     })]).finally(() => clearTimeout(timer));
 }
 function finish(error) {
+    const explicitFailure = arguments.length > 0;
+    const cause = explicitFailure ? (error instanceof Error ? error : new Error(String(error))) : undefined;
+    // Record failures before the ownership guard, including a second error during cleanup.
+    if (explicitFailure) diagnostics.error(cause);
     if (finishing) return finishing;
     finishing = (async () => {
         clearTimeout(watchdog);
-        let failure = error;
-        if (error && page) await page.screenshot({ path: path.join(diagnostics.directory, 'failure.png'), timeout: 2000 })
+        let failure = cause;
+        if (cause && page) await bounded(page.screenshot({ path: path.join(diagnostics.directory, 'failure.png'), timeout: 2000 }), 2000, 'Failure screenshot')
             .catch(captureError => diagnostics.log('screenshot-error', captureError));
         const cleanup = await Promise.allSettled([
             bounded(Promise.resolve().then(() => { controlled.server.closeAllConnections(); return controlled.close(); }), 5000, 'HTTP cleanup')
             , bounded(Promise.resolve().then(() => browser && browser.close()), 5000, 'Browser cleanup')
         ]);
         for (const item of cleanup) if (item.status === 'rejected') {
-            diagnostics.error(item.reason); failure ||= item.reason;
+            const cleanupError = item.reason instanceof Error ? item.reason : new Error(String(item.reason));
+            diagnostics.error(cleanupError); failure ||= cleanupError;
         }
+        // Node reports unhandled rejections after this turn's promise callbacks.
+        await new Promise(resolve => setImmediate(resolve));
         try { diagnostics.assertClean(); }
         catch (lateError) { failure ||= lateError; }
         diagnostics.finish(result, failure);
