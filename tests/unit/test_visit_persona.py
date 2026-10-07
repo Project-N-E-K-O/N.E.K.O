@@ -878,7 +878,7 @@ def test_a_place_after_a_two_word_preposition(value):
 
 def test_a_long_scanned_passage_is_kept_whole_in_overlapping_pieces():
     passage = "".join(chr(0x4E00 + i % 500) for i in range(4500))
-    pieces = persona._parse_scan(json.dumps([passage], ensure_ascii=False))
+    pieces, _complete = persona._parse_scan(json.dumps([passage], ensure_ascii=False))
     assert all(len(p) <= persona._SECTION_MAX_CHARS for p in pieces)
     assert pieces[-1].endswith(passage[-50:])
     # 任意 300 字的片段都完整落在某一块里（重叠 200 字以上的 8-gram 不会被块边界切开）
@@ -974,9 +974,20 @@ def test_a_gate_that_keeps_meeting_writes_does_not_report_generating(env, monkey
 
 
 
-def test_a_scan_reply_with_non_string_entries_counts_as_failed():
-    with pytest.raises(ValueError):
-        persona._parse_scan('[{"section": "她偷偷收藏了一整抽屉的旧电影票根。"}]')
+def test_a_scan_reply_with_non_string_entries_is_incomplete_but_keeps_its_passages():
+    sections, complete = persona._parse_scan('["她偷偷收藏了一整抽屉的旧电影票根。", {"section": "另一段"}]')
+    # 认不出的条目让检查如实标成不完整；认得出的段落照样留着参与比对
+    assert complete is False and sections == ["她偷偷收藏了一整抽屉的旧电影票根。"]
+    assert persona._parse_scan('["一段"]') == (["一段"], True)
+
+
+def test_a_partly_malformed_scan_still_guards_its_passages_and_reports_incomplete(env):
+    client, tmp_path, state, _llm, scan = env
+    secret = "她偷偷收藏了一整抽屉的旧电影票根，谁也没告诉。"
+    state["cards"]["A"] = "\n".join([CARD, secret])
+    scan.sections = [secret, {"section": "格式不对的一条"}]
+    view = _generate(client)
+    assert view["scan_complete"] is False and secret in _file(tmp_path)["private_sections"]
 
 
 def test_a_hand_edit_is_checked_against_the_card_as_it_is_when_saved(env, monkeypatch):

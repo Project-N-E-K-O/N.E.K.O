@@ -650,7 +650,8 @@ def _clean_persona_text(raw: str, family_names: Sequence[str], lang: str | None)
     return truncate_to_tokens(text, VISIT_PERSONA_MAX_TOKENS).strip()
 
 
-def _parse_scan(raw: str) -> list[str]:
+def _parse_scan(raw: str) -> tuple[list[str], bool]:
+    """Passages of a scan reply, and whether every entry was a string (else the scan is incomplete)."""
     text = str(raw or "").strip()
     # 模型偶尔给 JSON 包一层 ``` 代码块：只取第一个 [ 到最后一个 ] 之间
     start, end = text.find("["), text.rfind("]")
@@ -660,14 +661,16 @@ def _parse_scan(raw: str) -> list[str]:
     if not isinstance(items, list):
         raise ValueError("scan reply is not a JSON list")
     out = []
+    complete = True
     for item in items:
         if not isinstance(item, str):
-            # 不是约定的字符串列表（如 [{"section": ...}]）：按扫描失败处理，如实落 scan_complete:false，
-            # 不能悄悄丢掉这些段落还报「检查完整」
-            raise ValueError("scan reply has a non-string entry")
+            # 不是约定的字符串（如 {"section": ...}）：认不出它列的是哪段，如实标成检查不完整；
+            # 同一回复里认得出的段落照样留着参与比对
+            complete = False
+            continue
         if item.strip():
             out.extend(_section_chunks(item.strip()))
-    return out
+    return out, complete
 
 
 def _section_chunks(section: str) -> list[str]:
@@ -722,11 +725,11 @@ async def generate_visit_persona(
     names = list(family_names)
     card_in = truncate_to_tokens(card or "", PERSONA_CARD_MAX_TOKENS)
     try:
-        scanned = _parse_scan(await asyncio.wait_for(
+        scanned, entries_ok = _parse_scan(await asyncio.wait_for(
             scan_llm(build_visit_persona_private_scan_prompt(card_in, lang)), VISIT_LLM_TIMEOUT_S,
         ))
         # 卡片超出输入预算被截过：截掉的尾巴没被扫描，如实标成检查不完整
-        scan_complete = len(card_in) >= len(card or "")
+        scan_complete = entries_ok and len(card_in) >= len(card or "")
     except Exception as exc:  # noqa: BLE001 - 扫描失败只退回规则段落，并如实落盘「不完整」
         logger.warning("visit persona: private-section scan failed: %s", type(exc).__name__)
         scanned, scan_complete = [], False
