@@ -3087,8 +3087,15 @@ class _TransportMixin:
                     # omit it entirely — the helper handles all three.
                     err_obj = event.get('error') if isinstance(event.get('error'), dict) else {}
                     err_event_id = err_obj.get('event_id') or event.get('event_id')
+                    err_item_id = err_obj.get('item_id')
+                    if not isinstance(err_item_id, str) or not err_item_id:
+                        err_item_id = None
                     self._route_inject_rejection(err_event_id, error_msg)
-                    self._response_arbiter.notify_error(err_event_id, error_msg)
+                    self._response_arbiter.notify_error(
+                        err_event_id,
+                        error_msg,
+                        item_id=err_item_id,
+                    )
 
                     # 致命性判定只看语义字段，绝不看回显的 event_id（见
                     # _error_classification_text 的注释）。日志、路由和
@@ -3343,6 +3350,8 @@ class _TransportMixin:
                         )
                 elif event_type == "conversation.item.created":
                     self._response_arbiter.notify_item_created(event)
+                elif event_type == "conversation.item.deleted":
+                    self._response_arbiter.notify_item_deleted(event)
                 elif event_type == "response.done":
                     # No further function call can name this response, so its
                     # tool batch may answer as soon as its own calls settle.

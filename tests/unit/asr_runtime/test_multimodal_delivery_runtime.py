@@ -601,6 +601,54 @@ async def test_provider_admission_rejection_submits_the_transcript_as_text() -> 
 
 
 @pytest.mark.unit
+async def test_admission_rejection_does_not_submit_text_after_the_route_leaves_core() -> None:
+    from main_logic.omni_realtime_client._response_arbiter import (
+        ResponseAdmissionRejected,
+    )
+
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="direct_atomic"
+    )
+
+    async def leave_core_then_reject(*_args, **_kwargs):
+        runtime._voice_lease_owner = "game"
+        raise ResponseAdmissionRejected("response dispatch admission rejected")
+
+    runtime.session.submit_multimodal_turn = AsyncMock(
+        side_effect=leave_core_then_reject
+    )
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    admission_token = runtime._asr_runtime._capture_turn_token(
+        runtime._asr_lifecycle
+    )
+    admission_turn_id = (
+        f"asr-{admission_token.ingress.session_epoch}-{admission_token.turn_id}"
+    )
+    runtime._begin_core_multimodal_turn(admission_turn_id, admission_token)
+    admission_record = runtime._core_multimodal_turns[admission_turn_id]
+    assert runtime._stage_independent_visual_frame(
+        "frame-of-this-turn",
+        source="screen",
+        request_id="screen-1",
+        captured_at=admission_record.started_at,
+    )
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(
+            turn_token=admission_token,
+            provider="openai",
+            text="这句话不能消失",
+        )
+    )
+
+    runtime.session.submit_multimodal_turn.assert_awaited_once()
+    runtime.session.submit_external_voice_turn.assert_not_awaited()
+
+
+@pytest.mark.unit
 async def test_independent_visual_sync_failure_blocks_raw_images_without_stopping_asr() -> None:
     runtime = _Runtime()
     call_order: list[str] = []
