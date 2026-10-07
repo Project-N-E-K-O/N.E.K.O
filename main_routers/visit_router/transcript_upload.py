@@ -1320,6 +1320,15 @@ def visit_lock(visit_id: str) -> asyncio.Lock:
     return lock
 
 
+async def _upload_round(visit_id: str, config_dir: Path, now: float | None) -> UploadRound:
+    try:
+        return await attempt_upload(visit_id, config_dir=config_dir, now=now)
+    except (OSError, ValueError) as exc:
+        # 上传的本地记账出错（磁盘满等）：转录这一轮算没传上去，但不附转录的举报照样提交
+        logger.warning("visit upload %s: attempt failed: %s", visit_id, type(exc).__name__)
+        return UploadRound(pending=True, retryable=True)
+
+
 async def retry_visit_once(
     visit_id: str, *, config_dir: Path | None = None, now: float | None = None, manual: bool = False,
     owner: str | None = None, expect: Mapping[str, Any] | None = None,
@@ -1338,12 +1347,7 @@ async def retry_visit_once(
     visit_id = require_visit_id(visit_id)
     config_dir = Path(config_dir_provider() if config_dir is None else config_dir)
     async with visit_lock(visit_id):
-        try:
-            upload = await attempt_upload(visit_id, config_dir=config_dir, now=now)
-        except (OSError, ValueError) as exc:
-            # 上传的本地记账出错（磁盘满等）：转录这一轮算没传上去，但不附转录的举报照样提交
-            logger.warning("visit upload %s: attempt failed: %s", visit_id, type(exc).__name__)
-            upload = UploadRound(pending=True, retryable=True)
+        upload = await _upload_round(visit_id, config_dir, now)
         # 举报文件暂时读不了（同一次读取的结果）：当成还有事没办完，worker 别退出，等能读了再提交 / 补记
         report, unreadable = await _read_report(config_dir, visit_id)
         upload = upload.for_report(report)
@@ -1529,7 +1533,11 @@ async def upload_backlog_full(config_dir: Path) -> bool:
 def _anomalies_sync(config_dir: Path, visit_id: str) -> tuple[int, str | None] | None:
     """``(count, own_visit_uid of the transcript)`` from the pending upload, or None when there is none."""
     spool_dir = _spool_dir(config_dir)
-    doc = _load_json(visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX))
+    try:
+        doc = _load_json(visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX))
+    except (OSError, ValueError):
+        # 封存文件坏了 / 一时读不了：旁边若还留着流水（封存后没删掉），计数从流水里数
+        doc = None
     request = doc.get("request") if isinstance(doc, dict) else None
     if isinstance(request, dict) and isinstance(request.get("anomalies"), int):
         owner = doc.get("own_visit_uid")

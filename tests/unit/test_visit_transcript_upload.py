@@ -1683,3 +1683,14 @@ async def test_a_transient_read_after_resealing_does_not_expire_the_transcript(t
     monkeypatch.setattr(tu, "_load_json", load)
     outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
     assert outcome.pending and outcome.retryable and sealed.exists()
+
+
+
+async def test_an_unreadable_sealed_upload_falls_back_to_its_stream_for_anomalies(tmp_path, servers):
+    sealed = _spool(tmp_path) / f"{V1}.upload.json"
+    sealed.parent.mkdir(parents=True, exist_ok=True)
+    sealed.write_text("{broken", encoding="utf-8")
+    header = json.dumps({"kind": "header", "own_visit_uid": OWN})
+    (_spool(tmp_path) / f"{V1}.upload.jsonl").write_text(
+        header + "\n" + '{"kind":"anomaly"}' + "\n" + '{"kind":"anomaly"}' + "\n", encoding="utf-8")
+    assert await tu.visit_anomalies(tmp_path, V1, OWN) == 2

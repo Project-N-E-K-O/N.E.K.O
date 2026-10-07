@@ -32,6 +32,9 @@ from utils.language_utils import get_global_language_full
 # 昵称一栏常见的分隔写法：中英文逗号、顿号、斜杠、分号、空白（与 memory.stop_names 的拆法一致，
 # 另认斜杠）。「Alice Ally」是两个称呼，单独出现的「Alice」也要替换
 _NICKNAME_SPLIT_RE = re.compile(r"[,，、/;；\s]+")
+# 多词档案名（「Alice Smith」「约翰·史密斯」）：整名之外，每个词也单独算亲人名，只写名或姓也要替换
+_PROFILE_NAME_SPLIT_RE = re.compile(r"[\s·・]+")
+_NAME_PART_MIN_CHARS = 2
 
 
 @dataclass(frozen=True)
@@ -65,7 +68,11 @@ def family_names_of(master: Mapping[str, Any] | None) -> tuple[str, ...]:
         raw = master.get(key)
         if not isinstance(raw, str):
             continue
-        parts = [raw] if key == "档案名" else _NICKNAME_SPLIT_RE.split(raw)
+        if key == "档案名":
+            parts = [raw, *(p for p in _PROFILE_NAME_SPLIT_RE.split(raw.strip())
+                            if len(p.strip()) >= _NAME_PART_MIN_CHARS)]
+        else:
+            parts = _NICKNAME_SPLIT_RE.split(raw)
         for part in parts:
             name = part.strip()
             if name and name not in out:

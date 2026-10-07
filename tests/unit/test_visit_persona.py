@@ -1004,3 +1004,13 @@ def test_a_hand_edit_is_checked_against_the_card_as_it_is_when_saved(env, monkey
     resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
                       json={"text": "你是{LANLAN_NAME}，号码 13800138000。", "reviewed": True})
     assert resp.status_code == 400 and resp.json()["code"] == "persona_sensitive_overlap"
+
+
+
+def test_each_word_of_a_multiword_profile_name_is_a_family_name():
+    from main_routers.visit_router.local_context import family_names_of
+
+    names = family_names_of({"档案名": "Alice Smith", "昵称": ""})
+    assert names[0] == "Alice Smith" and "Alice" in names and "Smith" in names
+    assert "约翰" in family_names_of({"档案名": "约翰·史密斯"})
+    assert family_names_of({"档案名": "张三"}) == ("张三",)

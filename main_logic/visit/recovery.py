@@ -969,6 +969,23 @@ async def _upload_pending(
     return pending
 
 
+async def _pending_upload_owner(config_dir: Path, visit_id: str) -> str | None:
+    """Owner of the visit's pending transcript: ``state.json``, else the sealed upload itself.
+
+    A sealed upload is self-contained (its state may be gone or unreadable,
+    or it may come from a newer version and be kept as is).
+    """
+    owner = await _state_owner(config_dir, visit_id)
+    if owner is not None:
+        return owner
+    try:
+        doc = await asyncio.to_thread(
+            _load_json, visit_path(config_dir / VISIT_SPOOL_DIRNAME, visit_id, UPLOAD_JSON_SUFFIX))
+    except (OSError, ValueError):
+        return None
+    return _owner_or_none(doc.get("own_visit_uid")) if isinstance(doc, dict) else None
+
+
 async def _state_owner(config_dir: Path, visit_id: str) -> str | None:
     """``own_uid`` recorded in the visit's ``state.json``; None when absent or unreadable."""
     try:
@@ -1073,7 +1090,7 @@ async def _submit_report(
     if transcript_gated and doc.get("include_transcript") is not False:
         # 转录还没传上去：附转录的举报等它；明确不附转录的举报不受转录上传的闸。待传的转录属于另一个
         # 已知账号时（共用电脑）不是这份举报那一侧的转录，不等它
-        transcript_owner = await _state_owner(config_dir, visit_id)
+        transcript_owner = await _pending_upload_owner(config_dir, visit_id)
         report_owner = doc.get("own_visit_uid")
         if not (transcript_owner and report_owner and report_owner != transcript_owner):
             return

@@ -2851,3 +2851,20 @@ async def test_another_accounts_pending_upload_does_not_hold_back_a_report(tmp_p
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
     # 待传的是 OWN_A 那一侧的转录：另一账号的附转录举报不等它
     assert [visit_id for visit_id, _doc in reports.calls] == [v]
+
+
+
+async def test_the_report_gate_reads_the_owner_from_the_upload_when_state_is_gone(tmp_path):
+    v = vid(111)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    newer = {**_sealed(v), "v": 99, "own_visit_uid": OWN_A}           # 新版本写的、本版本留着不动
+    (d / f"{v}.upload.json").write_text(json.dumps(newer), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": "f" * 24}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
+    # 没有 state.json：归属从封存文件里取，另一账号的附转录举报不等这份
+    assert [visit_id for visit_id, _doc in reports.calls] == [v]
