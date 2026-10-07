@@ -914,3 +914,12 @@ def test_a_hand_edit_after_a_card_change_still_checks_scanned_passages_left_in_t
     resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
                       json={"text": "你是{LANLAN_NAME}。" + secret, "reviewed": True})
     assert resp.status_code == 400 and resp.json()["code"] == "persona_sensitive_overlap"
+
+
+@pytest.mark.parametrize("length", [2000, 2001, 3800, 4000, 5600, 5601, 9200])
+def test_section_chunks_always_reach_the_end_with_the_full_overlap(length):
+    passage = "".join(chr(0x4E00 + i % 500) for i in range(length))
+    pieces = persona._section_chunks(passage)
+    assert pieces[0] == passage[:persona._SECTION_MAX_CHARS] and pieces[-1].endswith(passage[-50:])
+    for a, b in zip(pieces, pieces[1:]):
+        assert len(a) == persona._SECTION_MAX_CHARS and a[-persona._SECTION_CHUNK_OVERLAP:] == b[:persona._SECTION_CHUNK_OVERLAP]
