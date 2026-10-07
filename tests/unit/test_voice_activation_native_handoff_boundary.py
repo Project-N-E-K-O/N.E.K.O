@@ -130,7 +130,10 @@ async def test_manual_commit_closes_only_the_input_sequence_it_committed() -> No
     client._response_arbiter = type(
         "Arbiter",
         (),
-        {"enqueue": AsyncMock(return_value=ticket)},
+        {
+            "enqueue": AsyncMock(return_value=ticket),
+            "response_source_for": lambda self, response_id: None,
+        },
     )()
     client._note_voice_handoff_input_open()
 
