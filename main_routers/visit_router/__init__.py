@@ -19,7 +19,8 @@ paths; :data:`router` (``prefix='/api/visit'``) includes them. Two groups:
 
 * start / join a visit -- the transport WS and the visit persona (and, with
   the runtime, rooms / join / accept / invite preview): behind the
-  ``NEKO_VISIT_ENABLED`` release switch (404, the WS refused with 4404);
+  ``NEKO_VISIT_ENABLED`` release switch (404; the WS handshake is refused
+  before ``accept``);
 * data management -- memory, history, details, reports (and, with the
   runtime, state / transcript / debrief): always available, so users can
   still export, clear or report after the switch was turned off.

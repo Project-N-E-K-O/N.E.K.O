@@ -446,9 +446,17 @@ def split_card_sections(card: str | None) -> list[str]:
     return out
 
 
-def rule_private_sections(card: str | None, family_names: Iterable[str]) -> list[str]:
-    """Sections containing ``{MASTER_NAME}``, a family name or a sensitive token."""
-    keys = [fold_text(t) for t in extract_sensitive_tokens(card, family_names)]
+def rule_private_sections(
+    card: str | None, family_names: Iterable[str], *, tokens: Sequence[str] | None = None,
+) -> list[str]:
+    """Sections containing ``{MASTER_NAME}``, a family name or a sensitive token.
+
+    ``tokens``: :func:`extract_sensitive_tokens` of the same card, when the
+    caller already has them (the extraction is the expensive part).
+    """
+    if tokens is None:
+        tokens = extract_sensitive_tokens(card, family_names)
+    keys = [fold_text(t) for t in tokens]
     out = []
     for section in split_card_sections(card):
         folded = fold_text(_norm(section))
@@ -465,7 +473,9 @@ class PrivacyHit:
     value: str
 
 
-def sensitive_token_hits(card: str | None, text: str, family_names: Iterable[str]) -> list[str]:
+def sensitive_token_hits(
+    card: str | None, text: str, family_names: Iterable[str], *, tokens: Sequence[str] | None = None,
+) -> list[str]:
     """Rule-1 tokens of ``card`` that occur in ``text`` (matching on :func:`fold_text` keys).
 
     Family names are checked by the whole-word redaction itself (``text`` is
@@ -477,7 +487,7 @@ def sensitive_token_hits(card: str | None, text: str, family_names: Iterable[str
     name_keys = {fold_text(n.strip()) for n in names}
     folded = fold_text(_norm(text))
     hits = []
-    for token in extract_sensitive_tokens(card, names):
+    for token in extract_sensitive_tokens(card, names) if tokens is None else tokens:
         key = fold_text(token)
         if key in name_keys:
             continue
@@ -505,10 +515,17 @@ def _same_number(a: str, b: str) -> bool:
 def persona_privacy_check(
     card: str | None, text: str, family_names: Iterable[str], scanned_sections: Iterable[str],
 ) -> list[PrivacyHit]:
-    """Both automatic checks of a (redacted) persona against its card; empty = clean."""
+    """Both automatic checks of a (redacted) persona against its card; empty = clean.
+
+    CPU-bound (dozens of regular expressions over the whole card, tens of
+    milliseconds on a long card): async callers run it in a worker thread.
+    """
     names = list(family_names)
-    hits = [PrivacyHit("token", t) for t in sensitive_token_hits(card, text, names)]
-    sections = [*rule_private_sections(card, names), *(s for s in scanned_sections if isinstance(s, str))]
+    tokens = extract_sensitive_tokens(card, names)
+    hits = [PrivacyHit("token", t) for t in sensitive_token_hits(card, text, names, tokens=tokens)]
+    sections = [
+        *rule_private_sections(card, names, tokens=tokens), *(s for s in scanned_sections if isinstance(s, str)),
+    ]
     gram = find_peer_ngram(text, sections, VISIT_PEER_NGRAM_N)
     if gram is not None:
         hits.append(PrivacyHit("section", " ".join(gram)))
@@ -658,6 +675,13 @@ def _section_chunks(section: str) -> list[str]:
     return [section[i:i + _SECTION_MAX_CHARS] for i in range(0, len(section) - _SECTION_CHUNK_OVERLAP, step)]
 
 
+def _private_section_list(
+    card: str | None, family_names: Sequence[str], scanned: Iterable[str] = (),
+) -> tuple[list[str], bool]:
+    """The persisted private-section list: rule sections plus scanned ones (CPU-bound)."""
+    return _merge_sections(rule_private_sections(card, family_names), scanned)
+
+
 def _merge_sections(*groups: Iterable[str]) -> tuple[list[str], bool]:
     """Deduplicated sections, capped at ``_PRIVATE_SECTIONS_MAX``; the flag tells whether some were cut."""
     out: list[str] = []
@@ -712,10 +736,11 @@ async def generate_visit_persona(
         text = _clean_persona_text(raw, names, lang)
         if not text:
             return PersonaResult(error="llm_unavailable")
-        hits = persona_privacy_check(card, text, names, scanned)
+        # 整张卡跑几十个正则，长卡一次几十毫秒：不能在事件循环上算
+        hits = await asyncio.to_thread(persona_privacy_check, card, text, names, scanned)
         if not hits:
             digest = card_hash(card)
-            sections, cut = _merge_sections(rule_private_sections(card, names), scanned)
+            sections, cut = await asyncio.to_thread(_private_section_list, card, names, scanned)
             if cut:
                 # 清单放不下：面板上看不全「不会带出门」的段落，如实标成检查不完整
                 logger.warning("visit persona: private-section list capped at %d", _PRIVATE_SECTIONS_MAX)
@@ -926,7 +951,8 @@ async def persona_gate(name: str) -> PersonaGate:
         if _write_versions.get(character_uid, 0) == version:
             return PersonaGate(ok=True, state="ready", character_uid=character_uid, text=doc["text"])
         # 读的过程中人设被写过（手写确认 / 重生成落盘）：按新的那份再判一次
-    return PersonaGate(ok=False, state="generating", character_uid=character_uid)
+    # 连着几次都碰上写入：并没有在生成，按「待确认」拒，引导去面板看最新的那份（「generating」会让前端一直等）
+    return PersonaGate(ok=False, state="unreviewed", character_uid=character_uid)
 
 
 # ── 路由 ───────────────────────────────────────────────────────────────
@@ -1038,7 +1064,7 @@ async def put_persona(request: Request, catgirl: str = ""):
             else:
                 # 卡片改过：扫描清单基于旧卡，其中仍原样在当前卡里的段落照样比对（手写常发生在刚改完卡之后）
                 scanned = [section for section in doc["private_sections"] if section in (card or "")]
-            hits = persona_privacy_check(card, cleaned, ctx.family_names, scanned)
+            hits = await asyncio.to_thread(persona_privacy_check, card, cleaned, ctx.family_names, scanned)
             if hits:
                 return _error(400, "persona_sensitive_overlap", hits=[hit.value for hit in hits])
             if doc is None:
@@ -1047,7 +1073,8 @@ async def put_persona(request: Request, catgirl: str = ""):
                 doc = {
                     "text": cleaned, "source_card_hash": digest, "generated_at": None,
                     "edited": True, "reviewed": True,
-                    "private_sections": _merge_sections(rule_private_sections(card, ctx.family_names))[0],
+                    "private_sections": (await asyncio.to_thread(
+                        _private_section_list, card, ctx.family_names))[0],
                     "scan_card_hash": digest, "scan_complete": False,
                 }
             else:

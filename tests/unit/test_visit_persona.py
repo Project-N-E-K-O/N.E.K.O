@@ -923,3 +923,46 @@ def test_section_chunks_always_reach_the_end_with_the_full_overlap(length):
     assert pieces[0] == passage[:persona._SECTION_MAX_CHARS] and pieces[-1].endswith(passage[-50:])
     for a, b in zip(pieces, pieces[1:]):
         assert len(a) == persona._SECTION_MAX_CHARS and a[-persona._SECTION_CHUNK_OVERLAP:] == b[:persona._SECTION_CHUNK_OVERLAP]
+
+
+def test_privacy_checks_run_off_the_event_loop(env, monkeypatch):
+    import threading
+
+    client, *_ = env
+    loop_thread = client.portal.call(_current_thread)
+    real = persona.persona_privacy_check
+    seen = []
+
+    def recording(*args, **kwargs):
+        seen.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(persona, "persona_privacy_check", recording)
+    _generate(client)                                                   # 生成路径
+    client.put("/api/visit/persona?catgirl=A", headers=GOOD,           # 手写路径
+               json={"text": "你是{LANLAN_NAME}，一只爱睡觉的猫。", "reviewed": True})
+    # 整张卡跑几十个正则：都在工作线程里算，不占事件循环
+    assert len(seen) >= 2 and loop_thread not in seen
+
+
+async def _current_thread():
+    import threading
+
+    return threading.get_ident()
+
+
+def test_a_gate_that_keeps_meeting_writes_does_not_report_generating(env, monkeypatch):
+    client, *_ = env
+    _generate(client)
+    _confirm(client)
+    real_load = persona.VisitPersonaStore.load
+
+    async def load_while_written(self, uid):
+        doc = await real_load(self, uid)
+        persona._note_write(uid)                                        # 每次读盘都碰上另一个窗口的写入
+        return doc
+
+    monkeypatch.setattr(persona.VisitPersonaStore, "load", load_while_written)
+    gate = _gate(client)
+    # 并没有在生成：按待确认拒，前端引导去面板，而不是一直等「生成中」
+    assert gate.ok is False and gate.state == "unreviewed" and not persona.is_generating(UID_A)

@@ -395,6 +395,9 @@ class UploadJournal:
 
         Idempotent; None when the journal was never opened. Called by
         finalize (before ``state.json.finalized``) and by the shutdown hook.
+        Nothing is uploaded here: once the runtime is unregistered (``is_live``
+        false) the caller must call :func:`schedule_visit_retry`, otherwise a
+        report queued during the visit waits for the next start's recovery.
         ``ended_at`` (default: now) is the finalize time: a quiet tail after
         the last record still counts toward the duration. Crash recovery,
         which has no finalize time, uses the last record instead.
@@ -1252,7 +1255,7 @@ async def _settled_round(
     # 已结清（传上去、过期，或终态原因已记进举报）但封存文件 / 封存时没删掉的流水还在（被占用）：转录不再挡
     # 举报，但这一轮仍要重来清理，否则它们一直占着待上传容量。原因没记进举报而有意留着的那份不算
     # （它带 rejected 标记）
-    stream = sealed.with_name(sealed.name[: -len(UPLOAD_JSON_SUFFIX)] + UPLOAD_JSONL_SUFFIX)
+    stream = visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSONL_SUFFIX)
     leftover = False
     if unmarked is None:
         stream_gone = await _drop_settled_files(visit_id, stream)
@@ -1458,6 +1461,10 @@ async def _retry_loop(visit_id: str, config_dir: Path | None) -> None:
 def schedule_visit_retry(visit_id: str, *, config_dir: Path | None = None,
                          initial_delay_s: float = 0.0) -> asyncio.Task:
     """Upload / report retries of ``visit_id`` in the background (one task per visit).
+
+    A worker exits at once while the visit is live, so a visit's runtime
+    calls this after it has sealed its journal and unregistered (reports
+    queued during the visit are sent from here).
 
     ``initial_delay_s``: the caller just made an attempt; no background round
     runs before this long (at least the Servers ``retry_after``). It also

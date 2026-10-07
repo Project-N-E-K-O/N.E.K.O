@@ -51,15 +51,18 @@ async def one_shot(prompt: str, *, max_tokens: int, timeout: float, model_type: 
     model = (api_cfg or {}).get("model")
     if not model:
         raise VisitLLMUnavailable("model not configured")
-    llm = await create_chat_llm_async(
-        model,
-        (api_cfg or {}).get("base_url"),
-        (api_cfg or {}).get("api_key"),
-        provider_type=(api_cfg or {}).get("provider_type"),
-        max_completion_tokens=max_tokens,
-        timeout=timeout,
-        max_retries=1,
-    )
+    try:
+        llm = await create_chat_llm_async(
+            model,
+            (api_cfg or {}).get("base_url"),
+            (api_cfg or {}).get("api_key"),
+            provider_type=(api_cfg or {}).get("provider_type"),
+            max_completion_tokens=max_tokens,
+            timeout=timeout,
+            max_retries=1,
+        )
+    except Exception as exc:  # noqa: BLE001 - 客户端建不起来与没配同样处理：调用方只认 VisitLLMUnavailable
+        raise VisitLLMUnavailable(f"client unavailable: {type(exc).__name__}") from None
     try:
         # 调用方已按 token 预算截断输入（角色卡 / 记录块）
         resp = await llm.ainvoke([HumanMessage(content=prompt)])  # noqa: LLM_INPUT_BUDGET

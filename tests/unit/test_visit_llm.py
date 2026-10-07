@@ -43,3 +43,16 @@ async def test_a_stalled_close_does_not_outlive_the_call_timeout(hanging_client)
         # 调用超时被取消后，卡住的 aclose 也要在限时内放手（外层 2 s 只是防测试挂死）
         await asyncio.wait_for(asyncio.wait_for(call, 0.05), 2.0)
     assert loop.time() - started < 1.0
+
+
+async def test_a_client_that_cannot_be_built_is_reported_as_unavailable(monkeypatch):
+    import utils.config_manager as config_manager
+    import utils.llm_client as llm_client
+
+    async def broken(*_a, **_k):
+        raise ValueError("unknown provider")
+
+    monkeypatch.setattr(config_manager, "get_config_manager", _Config)
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", broken)
+    with pytest.raises(visit_llm.VisitLLMUnavailable):
+        await visit_llm.one_shot("hi", max_tokens=10, timeout=1.0)
