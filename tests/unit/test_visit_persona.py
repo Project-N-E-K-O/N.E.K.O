@@ -1187,6 +1187,7 @@ def test_the_gate_keeps_the_token_cap_after_redacting_new_names(env, monkeypatch
 
 
 
-def test_a_copula_after_a_chat_app_keyword_marks_the_handle():
-    assert "alicefoo" in persona.extract_sensitive_tokens("WeChat is alicefoo", [])
-    assert persona.extract_sensitive_tokens("my phone is broken", []) == []     # phone 不加：普通叙述
+def test_a_copula_after_a_contact_keyword_is_not_a_separator():
+    # 「is」后的普通词（ok / great）收成敏感词会按子串误挡人设（book、okay）；纯字母账号交给独立扫描
+    assert persona.extract_sensitive_tokens("WeChat is ok", []) == []
+    assert persona.extract_sensitive_tokens("my phone is broken", []) == []

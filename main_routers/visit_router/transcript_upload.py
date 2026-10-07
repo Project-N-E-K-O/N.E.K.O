@@ -1551,6 +1551,8 @@ def schedule_visit_retry(visit_id: str, *, config_dir: Path | None = None,
     def _done(t: asyncio.Task) -> None:
         if _workers.get(visit_id) is t:
             del _workers[visit_id]
+            # 唤醒事件只给在等的后台任务用：任务结束就拿掉，别随场次数一直攒着
+            _wakeups.pop(visit_id, None)
 
     task.add_done_callback(_done)
     return task

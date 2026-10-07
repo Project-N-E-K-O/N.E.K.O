@@ -1839,3 +1839,20 @@ async def test_a_new_report_does_not_inherit_the_abandoned_ones_retry_after(tmp_
     # 新的一份不再等旧的一天：被叫醒后只等第一档退避就交
     assert slept[0] == 86400 and slept[1] <= tu.VISIT_UPLOAD_RETRY_BACKOFF_S[0]
     assert fake.count("/api/visit/reports") == 1 and await tu.load_report(tmp_path, V1) is None
+
+
+
+async def test_a_finished_worker_leaves_no_wakeup_event_behind(tmp_path, servers, monkeypatch):
+    fake, _ = servers
+    fake.report_mode = "503"
+    calls = []
+
+    async def sleep(seconds):
+        calls.append(seconds)
+        fake.report_mode = "ok"
+
+    monkeypatch.setattr(tu, "_sleep", sleep)
+    await tu.queue_report(tmp_path, _report_doc(include_transcript=False))
+    await asyncio.wait_for(tu.schedule_visit_retry(V1, initial_delay_s=5), 5)
+    await asyncio.sleep(0)                                               # 让 done 回调跑完
+    assert calls and V1 not in tu._wakeups
