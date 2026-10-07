@@ -1169,8 +1169,9 @@
     /**
      * 判断一条状态消息是否属于「API Key 被拒绝」。
      *
-     * 结构化错误对象（{code, details}）由 translateStatusMessage 按 code 直接
-     * 翻译；这里只在消息仅带文本时作为回退使用。
+     * translateStatusMessage 会对所有输入先调用本函数，结构化错误对象
+     * （{code, details}）也包括在内：命中则直接返回 API_KEY_REJECTED，
+     * 未命中才按 code 走 errors.<code> 翻译。
      *
      * @param {string|object} message - 错误文本或结构化错误对象
      * @returns {boolean}

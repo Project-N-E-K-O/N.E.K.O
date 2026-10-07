@@ -1952,25 +1952,36 @@ Object.assign(window.Jukebox, {
       return false;
     }
 
-    try {
-      if (typeof window.fbxManager.loadAnimation === 'function') {
-        if (!Jukebox.State.savedFbxIdleAnimationUrl && window.fbxManager.currentAnimationUrl) {
-          Jukebox.State.savedFbxIdleAnimationUrl = window.fbxManager.currentAnimationUrl;
-        }
-        Jukebox.stopFBX(true); // skipIdleRestore = true
-        await window.fbxManager.loadAnimation(fbxPath);
-        if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
-        if (typeof window.fbxManager.playAnimation === 'function') {
-          window.fbxManager.playAnimation();
-        }
-        Jukebox.State.isVMDPlaying = true;
-        console.log('[Jukebox] FBX 动画已播放:', fbxPath);
-        return true;
-      }
-      console.warn('[Jukebox] FBX Manager 不支持 loadAnimation，跳过动画');
+    var fbxManager = window.fbxManager;
+    if (typeof fbxManager.loadAnimation !== 'function'
+        || typeof fbxManager.playAnimation !== 'function') {
+      console.warn('[Jukebox] FBX Manager 缺少 loadAnimation/playAnimation，跳过动画');
       return false;
+    }
+
+    try {
+      if (!Jukebox.State.savedFbxIdleAnimationUrl && fbxManager.currentAnimationUrl) {
+        Jukebox.State.savedFbxIdleAnimationUrl = fbxManager.currentAnimationUrl;
+      }
+      Jukebox.stopFBX(true); // skipIdleRestore = true：这一下欠下的待机由下面结清
+      await fbxManager.loadAnimation(fbxPath);
+      if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
+      fbxManager.playAnimation();
+      Jukebox.State.isVMDPlaying = true;
+      // 起播方清账：新动画确实接上了，待机欠账不用再还。
+      Jukebox.State.idleRestorePending = false;
+      console.log('[Jukebox] FBX 动画已播放:', fbxPath);
+      return true;
     } catch (error) {
       console.error('[Jukebox] FBX 播放失败:', error);
+      // 没接上新动画就结账，否则模型会僵在被停掉的那一帧。
+      if (Jukebox.State.idleRestorePending) {
+        try {
+          await Jukebox.restoreIdleAnimation();
+        } catch (restoreError) {
+          console.warn('[Jukebox] FBX 待机恢复失败:', restoreError);
+        }
+      }
       return false;
     }
   },
@@ -1986,9 +1997,13 @@ Object.assign(window.Jukebox, {
       }
     }
     Jukebox.State.isVMDPlaying = false;
-    if (!skipIdleRestore && Jukebox.State.savedFbxIdleAnimationUrl) {
-      Jukebox.restoreFbxIdleAnimation();
+    if (skipIdleRestore) {
+      // 记账口径与 stopVMD 同构：停了却没恢复待机，因为「马上要接一段新动画」。
+      // 接上了由起播方清掉，接不上（加载失败 / 被新请求取代）由补发方结清。
+      Jukebox.State.idleRestorePending = true;
+      return;
     }
+    Jukebox.restoreIdleAnimation();
   },
 
   // 恢复保存的 FBX 待机动画。待机动画缺失或模型管理器不在时静默跳过。
