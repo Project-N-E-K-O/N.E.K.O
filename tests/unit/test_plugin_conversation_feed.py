@@ -8,15 +8,18 @@ the whole sentence (``assistant_message`` / ``proactive_reply``); both carry
 from __future__ import annotations
 
 import asyncio
+import queue
+import re
 import time
 from types import SimpleNamespace
 
 import pytest
 
 from main_logic.core import turn as turn_module
+from main_logic.core.proactive import ProactiveMixin
 
 
-class _StubManager(turn_module.TurnMixin):
+class _StubManager(turn_module.TurnMixin, ProactiveMixin):
     """Carries only what the publish path touches; no real session manager."""
 
     def __init__(self) -> None:
@@ -25,6 +28,12 @@ class _StubManager(turn_module.TurnMixin):
         self._current_ai_turn_text = ""
         self._current_ai_turn_id = ""
         self._current_ai_turn_started_at = 0.0
+        self._current_ai_turn_client_owned = False
+        self.emotion_pattern = re.compile("<(.*?)>")
+        self.sync_message_queue = queue.Queue()
+        self._active_text_request_id = None
+        self.websocket = None
+        self.websocket_lock = None
         self.session = None
         self.noted: list[str | None] = []
         self._bg: list[asyncio.Task] = []
@@ -171,6 +180,7 @@ def test_offline_ephemeral_turn_is_not_published_twice(published):
         stub = _StubManager()
         stub.session = object.__new__(OmniOfflineClient)  # 只做 isinstance 判定
         stub._current_ai_turn_text = "喵，这条由客户端自己发。"
+        stub._current_ai_turn_client_owned = True
         token = turn_module._proactive_expected_sid.set("turn-ephemeral")
         try:
             turn_module.TurnMixin._flush_ai_turn_text_to_tracker(
@@ -395,3 +405,121 @@ def test_probe_keeps_since_filter_across_follow_polls(monkeypatch):
     assert probe.main() == 0
     assert len(queries) == 2
     assert all(args["since_ts"] == 10.0 for args in queries)
+
+
+@pytest.mark.parametrize("kind", ["response", "agent_callback"])
+def test_offline_proactive_close_from_other_context_does_not_duplicate(published, kind):
+    """The interruption caller does not inherit the proactive task's context."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    async def scenario():
+        stub = _StubManager()
+        stub.session = object.__new__(OmniOfflineClient)
+        stub.state = SimpleNamespace(owner=turn_module.TurnOwner.PROACTIVE)
+        stub._queue_turn_end = lambda *args, **kwargs: {"data": "turn end"}
+        stub._queue_agent_callback_turn_end = lambda *args: {"data": "callback end"}
+
+        async def produce():
+            token = turn_module._proactive_expected_sid.set("offline-proactive")
+            try:
+                await stub.send_lanlan_response("committed partial reply")
+            finally:
+                turn_module._proactive_expected_sid.reset(token)
+
+        await asyncio.create_task(produce())
+        assert turn_module._proactive_expected_sid.get() is None
+        assert stub._current_ai_turn_client_owned is True
+        stub._close_interrupted_offline_turn(kind)
+        await stub.drain()
+        assert stub._current_ai_turn_client_owned is False
+        assert stub.noted == ["committed partial reply"]
+        # The same offline session's next ordinary turn must still be published.
+        stub.state.owner = turn_module.TurnOwner.USER
+        await stub.send_lanlan_response("ordinary reply")
+        stub._flush_ai_turn_text_to_tracker()
+        await stub.drain()
+
+    asyncio.run(scenario())
+    assert [record["content"] for record in published] == ["ordinary reply"]
+
+
+@pytest.mark.parametrize("delivered", [True, False])
+def test_real_voice_nudge_labels_next_reply_without_sm_claim(published, delivered):
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    async def scenario():
+        stub = _StubManager()
+        session = object.__new__(OmniRealtimeClient)
+        stub.session = session
+        stub.state = SimpleNamespace(owner=turn_module.TurnOwner.USER)
+        stub.is_active = True
+        stub.user_language = "en"
+        stub._takeover_active = False
+        stub.is_hot_swap_imminent = False
+        stub._voice_proactive_inject_lock = asyncio.Lock()
+        stub.is_goodbye_silent = lambda: False
+        stub._independent_asr_user_turn_active = lambda: False
+        session._proactive_inject_awaiting_outcome = False
+
+        async def inject(**kwargs):
+            if delivered:
+                await asyncio.create_task(stub.send_lanlan_response("voice nudge reply"))
+            return delivered
+
+        session.prompt_ephemeral = inject
+        assert await stub.trigger_voice_proactive_nudge() is delivered
+        assert getattr(stub, "_plugin_bus_voice_proactive", None) is None
+        if not delivered:
+            await stub.send_lanlan_response("ordinary reply after rejected nudge")
+        stub._flush_ai_turn_text_to_tracker()
+        await stub.drain()
+
+    asyncio.run(scenario())
+    assert published[0]["turn_type"] == ("proactive_reply" if delivered else "assistant_message")
+
+
+def test_user_timestamp_can_preserve_transcript_arrival(published):
+    async def scenario():
+        stub = _StubManager()
+        stub._publish_user_utterance_to_plugin_bus("transcript", is_voice_source=True, ts=123.5)
+        await stub.drain()
+
+    asyncio.run(scenario())
+    assert published[0]["metadata"]["ts"] == 123.5
+
+
+@pytest.mark.parametrize("rejected", [False, True])
+def test_real_voice_callback_injection_marks_or_clears_next_reply(published, rejected):
+    from main_logic.core import LLMSessionManager
+    from tests.unit.test_proactive_sm_integration import _make_mgr, _make_voice_sess
+
+    async def scenario():
+        reject_handler = None
+
+        async def inject(instruction, **kwargs):
+            nonlocal reject_handler
+            reject_handler = kwargs["on_rejected"]
+
+        session = _make_voice_sess(inject=inject)
+        mgr = _make_mgr(session=session)
+        mgr.pending_agent_callbacks = [{"status": "completed", "summary": "task complete"}]
+        assert await LLMSessionManager.trigger_agent_callbacks(mgr) is True
+        assert mgr._plugin_bus_voice_proactive[0] is session
+        if rejected:
+            reject_handler("response_already_active")
+            assert mgr._plugin_bus_voice_proactive is None
+        # Run the actual first-chunk publisher on the same manager that injected.
+        minimal = _StubManager()
+        for field in (
+            "emotion_pattern", "sync_message_queue", "_active_text_request_id",
+            "websocket", "websocket_lock", "_current_ai_turn_text", "_bg", "noted",
+        ):
+            setattr(mgr, field, getattr(minimal, field))
+        mgr._fire_task = lambda coro: mgr._bg.append(asyncio.create_task(coro))
+        mgr._note_ai_turn = lambda *, text=None: mgr.noted.append(text)
+        await turn_module.TurnMixin.send_lanlan_response(mgr, "callback or ordinary reply")
+        mgr._flush_ai_turn_text_to_tracker()
+        await asyncio.gather(*mgr._bg)
+
+    asyncio.run(scenario())
+    assert published[0]["turn_type"] == ("assistant_message" if rejected else "proactive_reply")

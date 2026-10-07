@@ -88,6 +88,8 @@ class TurnMixin:
         self._current_ai_turn_id = ''
         self._current_ai_turn_started_at = 0.0
         self._current_ai_turn_type = None
+        self._current_ai_turn_client_owned = False
+        self._plugin_bus_voice_proactive = None
         self._discarded_turn_open = False
 
         await self.send_user_activity()
@@ -352,16 +354,21 @@ class TurnMixin:
                 else "assistant_message"
             )
         ai_text = self._current_ai_turn_text
+        if not ai_text:
+            self._plugin_bus_voice_proactive = None
         turn_id = getattr(self, "_current_ai_turn_id", "")
         started_at = float(getattr(self, "_current_ai_turn_started_at", 0.0) or 0.0)
+        client_owned = getattr(self, "_current_ai_turn_client_owned", False)
         self._note_ai_turn(text=ai_text or None)
         self._current_ai_turn_text = ''
         self._discarded_turn_open = False
         self._current_ai_turn_id = ''
         self._current_ai_turn_started_at = 0.0
         self._current_ai_turn_type = None
+        self._current_ai_turn_client_owned = False
         self._publish_ai_message_to_plugin_bus(
             ai_text, turn_type, turn_id=turn_id, started_at=started_at,
+            client_owned=client_owned,
         )
 
     def _publish_ai_message_to_plugin_bus(
@@ -371,6 +378,7 @@ class TurnMixin:
         *,
         turn_id: str = "",
         started_at: float = 0.0,
+        client_owned: bool = False,
     ) -> None:
         """Publish one finished AI turn to the plugin conversation bus.
 
@@ -387,15 +395,9 @@ class TurnMixin:
         cleaned = str(text or "").strip()
         if not cleaned:
             return
-        # 离线客户端的 prompt_ephemeral 轮自己会把这轮的 instruction + reply 抄到
-        # 总线（它是该轮副本的拥有者）；这些调用方在整轮期间钉住
-        # _proactive_expected_sid，据此跳过，避免同一句话出现两条。
-        # 实时链路的 proactive 没有别的发布者，所以只对离线客户端生效——用轮次
-        # 身份而不是文本判断，之后独立轮次里一模一样的回复不会被误删。
-        if (
-            _proactive_expected_sid.get() is not None
-            and isinstance(getattr(self, "session", None), OmniOfflineClient)
-        ):
+        # Snapshot at the first chunk: interruption/session close can flush from
+        # a different task, whose context no longer carries the proactive sid.
+        if client_owned:
             return
         try:
             finished_at = time.time()
@@ -1042,6 +1044,8 @@ class TurnMixin:
             self._current_ai_turn_id = ""
             self._current_ai_turn_started_at = 0.0
             self._current_ai_turn_type = None
+            self._current_ai_turn_client_owned = False
+            self._plugin_bus_voice_proactive = None
             self._discarded_turn_open = False
             self._active_text_request_id = None
             return
@@ -1295,6 +1299,8 @@ class TurnMixin:
             self._current_ai_turn_text = ''
             self._current_ai_turn_id = ''
             self._current_ai_turn_started_at = 0.0
+            self._current_ai_turn_type = None
+            self._current_ai_turn_client_owned = False
             if self.sync_message_queue:
                 self.sync_message_queue.put({
                     'type': 'system',
@@ -1397,6 +1403,10 @@ class TurnMixin:
                     # 文本处理跟 send_lanlan_response 内部保持一致（剥表情标签）。
                     if not self._current_ai_turn_text:
                         self._current_ai_turn_started_at = time.time()
+                        self._current_ai_turn_client_owned = (
+                            _proactive_expected_sid.get() is not None
+                            and isinstance(getattr(self, "session", None), OmniOfflineClient)
+                        )
                     self._current_ai_turn_id = str(recovery_turn_id or '')
                     self._current_ai_turn_text += self.emotion_pattern.sub('', body_text)
 
@@ -1548,7 +1558,7 @@ class TurnMixin:
             await self.send_audio_done(self.current_speech_id)
 
     def _publish_user_utterance_to_plugin_bus(
-        self, text: Optional[str], *, is_voice_source: bool
+        self, text: Optional[str], *, is_voice_source: bool, ts: float | None = None
     ) -> None:
         """Publish one verbatim user utterance to the plugin bus's user-context bucket.
 
@@ -1573,7 +1583,7 @@ class TurnMixin:
         # 插件总线（conversations store）：主人侧原话，与 _publish_ai_message_to_plugin_bus
         # 成对；语音时间为转写到达时刻，不保证跨角色的实际说话顺序。
         try:
-            published_at = time.time()
+            published_at = time.time() if ts is None else ts
             # Speech ids remain diagnostic context; each record is one message.
             user_turn_id = str(getattr(self, "current_speech_id", "") or "")
             self._fire_task(publish_conversation_turn_observed_best_effort(
@@ -2237,7 +2247,9 @@ class TurnMixin:
                 # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
                 # bucket。文本路径在 _process_stream_data_internal 已自行调用，
                 # 这里只覆盖语音路径，避免非语音复用路径重复发布。
-                self._publish_user_utterance_to_plugin_bus(transcript, is_voice_source=True)
+                self._publish_user_utterance_to_plugin_bus(
+                    transcript, is_voice_source=True, ts=_transcript_arrival_ts,
+                )
 
                 # 与文本路径（_process_stream_data_internal）对偶：dispatch 已
                 # 同步跑完 ban-topic 抽取 + 落盘，本轮真抽到新指令就把禁令块写进
@@ -2495,9 +2507,16 @@ class TurnMixin:
             if not self._current_ai_turn_text:
                 # 轮次开始：记下她"开口"的时刻，flush 时用它做插件总线的时间戳。
                 self._current_ai_turn_started_at = time.time()
+                pending_proactive = getattr(self, "_plugin_bus_voice_proactive", None)
+                voice_proactive = bool(pending_proactive and pending_proactive[0] is self.session)
+                self._plugin_bus_voice_proactive = None
+                self._current_ai_turn_client_owned = (
+                    _proactive_expected_sid.get() is not None
+                    and isinstance(getattr(self, "session", None), OmniOfflineClient)
+                )
                 self._current_ai_turn_type = (
                     "proactive_reply"
-                    if getattr(getattr(self, "state", None), "owner", None) is TurnOwner.PROACTIVE
+                    if voice_proactive or getattr(getattr(self, "state", None), "owner", None) is TurnOwner.PROACTIVE
                     else "assistant_message"
                 )
             self._current_ai_turn_text += text_clean

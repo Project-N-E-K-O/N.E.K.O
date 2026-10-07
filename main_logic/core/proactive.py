@@ -153,11 +153,20 @@ class ProactiveMixin:
                 language or self.user_language,
                 format='full',
             ) or 'en'
-            delivered = await session.prompt_ephemeral(
-                language=_lang,
-                user_turn_active=self._independent_asr_user_turn_active,
-                session_owned=lambda: self.is_active and self.session is session,
-            )
+            marker = (session, object())
+            self._plugin_bus_voice_proactive = marker
+            try:
+                delivered = await session.prompt_ephemeral(
+                    language=_lang,
+                    user_turn_active=self._independent_asr_user_turn_active,
+                    session_owned=lambda: self.is_active and self.session is session,
+                )
+            except BaseException:
+                if self._plugin_bus_voice_proactive is marker:
+                    self._plugin_bus_voice_proactive = None
+                raise
+            if not delivered and self._plugin_bus_voice_proactive is marker:
+                self._plugin_bus_voice_proactive = None
         if delivered:
             logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)
         else:
@@ -924,6 +933,8 @@ class ProactiveMixin:
                     "media_done": False,
                 }
 
+                bus_marker = None
+
                 def _on_voice_inject_rejected(
                     error_msg: str,
                     *,
@@ -935,6 +946,8 @@ class ProactiveMixin:
                 ) -> bool:
                     if _state["rejected"] or _state["acknowledged"]:
                         return False
+                    if getattr(self, "_plugin_bus_voice_proactive", None) is bus_marker:
+                        self._plugin_bus_voice_proactive = None
                     self._clear_voice_delivery_committed(voice_commit_snapshot)
                     # A newer cue with the same coalesce key can supersede a
                     # callback after this local delivery snapshot was checked
@@ -1371,11 +1384,15 @@ class ProactiveMixin:
                     }
                     if events_before_text:
                         inject_kwargs["events_before_text"] = events_before_text
+                    bus_marker = (voice_sess, object())
+                    self._plugin_bus_voice_proactive = bus_marker
                     await voice_sess.inject_text_and_request_response(
                         instruction,
                         **inject_kwargs,
                     )
                 except NotImplementedError:
+                    if self._plugin_bus_voice_proactive is bus_marker:
+                        self._plugin_bus_voice_proactive = None
                     # Defensive fallback. As of now every realtime provider
                     # (OpenAI / GLM / Step / free / GPT / Qwen / Grok via
                     # conversation.item.create, Gemini via send_client_content)
@@ -1395,7 +1412,13 @@ class ProactiveMixin:
                         self.lanlan_name, len(voice_snapshot),
                     )
                     return False
+                except asyncio.CancelledError:
+                    if getattr(self, "_plugin_bus_voice_proactive", None) is bus_marker:
+                        self._plugin_bus_voice_proactive = None
+                    raise
                 except Exception as exc:
+                    if getattr(self, "_plugin_bus_voice_proactive", None) is bus_marker:
+                        self._plugin_bus_voice_proactive = None
                     # WS error / fatal / response_already_active race — keep cbs
                     # in the queue so the next phase-idle hook retries them.
                     if native_media_prefix_committed:
