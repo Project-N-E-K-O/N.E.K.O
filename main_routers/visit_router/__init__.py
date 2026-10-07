@@ -25,13 +25,15 @@ paths; :data:`router` (``prefix='/api/visit'``) includes them. Two groups:
   runtime, state / transcript / debrief): always available, so users can
   still export, clear or report after the switch was turned off.
 
-Nothing here is mounted on the app until PR-09b includes :data:`router` in
-``web_app.py``.
+Importing the package registers the ``neko_visit`` external route kind
+(:func:`runtime.register_visit_route_kind`); it only matters once something
+imports it. Nothing here is mounted on the app until PR-09b includes
+:data:`router` in ``web_app.py``.
 """
 
 from fastapi import APIRouter, Depends
 
-from main_routers.visit_router import cloud_routes, memory_routes, persona, transport_ws
+from main_routers.visit_router import cloud_routes, memory_routes, persona, runtime, transport_ws
 from main_routers.visit_router.local_guard import require_visit_enabled
 
 router = APIRouter(prefix="/api/visit")
@@ -44,5 +46,7 @@ router.include_router(persona.router, dependencies=_gated)
 # 数据管理：不受总闸影响
 router.include_router(memory_routes.router)
 router.include_router(cloud_routes.router)
+
+runtime.register_visit_route_kind()
 
 __all__ = ["router"]

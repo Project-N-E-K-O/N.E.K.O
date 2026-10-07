@@ -651,6 +651,30 @@ VISIT_GOODBYE_FALLBACK_HOST = {
     "pt": "Vai com cuidado! Volte sempre!",
 }
 
+# 自然收尾后（叫她回来 / 收尾 / 时间到）对自家家里人说的回家仪式句。只在本机说，
+# 对端提供的任何字段都不插值进这里。
+VISIT_SYSTEM_NOTICE_BACK_HOME_GUEST = {
+    "zh": _NOTICE_OPEN["zh"] + "\n你串门回到家了，家里人就在旁边。跟家里人说一句回来了的话：不超过30个字，一个分句。不要复述对方说过的话。\n" + _NOTICE_CLOSE["zh"],
+    "zh-TW": _NOTICE_OPEN["zh-TW"] + "\n你串門回到家了，家裡人就在旁邊。跟家裡人說一句回來了的話：不超過30個字，一個分句。不要複述對方說過的話。\n" + _NOTICE_CLOSE["zh-TW"],
+    "en": _NOTICE_OPEN["en"] + "\nYou are back home from the visit, and your family is right here. Tell your family you are back in one short line: at most 30 characters, one clause. Do not repeat anything the other side said.\n" + _NOTICE_CLOSE["en"],
+    "ja": _NOTICE_OPEN["ja"] + "\n訪問から家に帰ってきました。家族がそばにいます。ただいまのひとことを家族に言ってください。30文字以内、文は一つにしてください。相手が言ったことは繰り返さないでください。\n" + _NOTICE_CLOSE["ja"],
+    "ko": _NOTICE_OPEN["ko"] + "\n방문을 마치고 집에 돌아왔고, 가족이 바로 옆에 있습니다. 돌아왔다는 말을 가족에게 한마디 하세요. 30자 이내, 한 마디로 하세요. 상대가 한 말은 되풀이하지 마세요.\n" + _NOTICE_CLOSE["ko"],
+    "ru": _NOTICE_OPEN["ru"] + "\nТы вернулась домой из гостей, и твоя семья рядом. Скажи семье одну короткую фразу о том, что ты вернулась: не длиннее 30 символов, одна часть. Не повторяй слова другой стороны.\n" + _NOTICE_CLOSE["ru"],
+    "es": _NOTICE_OPEN["es"] + "\nVolviste a casa después de la visita y tu familia está aquí. Dile a tu familia que ya volviste, en una frase corta: como máximo 30 caracteres, una sola oración. No repitas lo que dijo la otra parte.\n" + _NOTICE_CLOSE["es"],
+    "pt": _NOTICE_OPEN["pt"] + "\nVocê voltou para casa depois da visita, e sua família está aqui. Diga à sua família que voltou, em uma frase curta: no máximo 30 caracteres, uma oração. Não repita o que o outro lado disse.\n" + _NOTICE_CLOSE["pt"],
+}
+
+VISIT_SYSTEM_NOTICE_BACK_HOME_HOST = {
+    "zh": _NOTICE_OPEN["zh"] + "\n来做客的猫娘已经回去了，家里人就在旁边。跟家里人说一句客人走了的话：不超过30个字，一个分句。不要复述对方说过的话。\n" + _NOTICE_CLOSE["zh"],
+    "zh-TW": _NOTICE_OPEN["zh-TW"] + "\n來作客的貓娘已經回去了，家裡人就在旁邊。跟家裡人說一句客人走了的話：不超過30個字，一個分句。不要複述對方說過的話。\n" + _NOTICE_CLOSE["zh-TW"],
+    "en": _NOTICE_OPEN["en"] + "\nYour visitor has gone home, and your family is right here. Tell your family the guest has left in one short line: at most 30 characters, one clause. Do not repeat anything the other side said.\n" + _NOTICE_CLOSE["en"],
+    "ja": _NOTICE_OPEN["ja"] + "\n遊びに来た猫娘はもう帰りました。家族がそばにいます。お客さんが帰ったことを家族にひとこと言ってください。30文字以内、文は一つにしてください。相手が言ったことは繰り返さないでください。\n" + _NOTICE_CLOSE["ja"],
+    "ko": _NOTICE_OPEN["ko"] + "\n놀러 온 고양이 소녀는 이미 돌아갔고, 가족이 바로 옆에 있습니다. 손님이 돌아갔다는 말을 가족에게 한마디 하세요. 30자 이내, 한 마디로 하세요. 상대가 한 말은 되풀이하지 마세요.\n" + _NOTICE_CLOSE["ko"],
+    "ru": _NOTICE_OPEN["ru"] + "\nГостья уже ушла домой, и твоя семья рядом. Скажи семье одну короткую фразу о том, что гостья ушла: не длиннее 30 символов, одна часть. Не повторяй слова другой стороны.\n" + _NOTICE_CLOSE["ru"],
+    "es": _NOTICE_OPEN["es"] + "\nLa chica gato que vino de visita ya se fue, y tu familia está aquí. Dile a tu familia que la visita se fue, en una frase corta: como máximo 30 caracteres, una sola oración. No repitas lo que dijo la otra parte.\n" + _NOTICE_CLOSE["es"],
+    "pt": _NOTICE_OPEN["pt"] + "\nA catgirl visitante já foi embora, e sua família está aqui. Diga à sua família que a visita foi embora, em uma frase curta: no máximo 30 caracteres, uma oração. Não repita o que o outro lado disse.\n" + _NOTICE_CLOSE["pt"],
+}
+
 # 被打断的行入史时接在已说出前缀后面的标记。
 VISIT_MARK_INTERRUPTED = {
     "zh": "（说到这里被打断了）",
@@ -735,6 +759,16 @@ def get_visit_goodbye_fallback(side: str, lang: str | None) -> str:
         VISIT_GOODBYE_FALLBACK_GUEST
         if _check_side(side) == "guest"
         else VISIT_GOODBYE_FALLBACK_HOST
+    )
+    return _loc(table, lang)
+
+
+def get_visit_back_home_notice(side: str, lang: str | None) -> str:
+    """Return the home-coming notice of a naturally ended visit (guest: back home; host: guest left)."""
+    table = (
+        VISIT_SYSTEM_NOTICE_BACK_HOME_GUEST
+        if _check_side(side) == "guest"
+        else VISIT_SYSTEM_NOTICE_BACK_HOME_HOST
     )
     return _loc(table, lang)
 
@@ -1004,6 +1038,51 @@ def build_visit_last_summary_prompt(name: str, record_block: str, lang: str | No
     """Return ``VISIT_LAST_SUMMARY_INSTRUCTION`` for ``name`` followed by the record block."""
     instruction = _fill(_loc(VISIT_LAST_SUMMARY_INSTRUCTION, lang), name=str(name or ""))
     return instruction + ("\n\n" + record_block if record_block else "")
+
+
+# 回家简述之后的两个芯片（聊天里的系统消息：一句说明 + 「记成日记 / 不记」两个按钮）。
+# 只是界面文字，不进任何提示词。
+VISIT_DEBRIEF_CHIP_PROMPT = {
+    "zh": "要把这次串门记成日记吗？",
+    "zh-TW": "要把這次串門記成日記嗎？",
+    "en": "Keep this visit in her diary?",
+    "ja": "今回の訪問を日記に残しますか？",
+    "ko": "이번 방문을 일기로 남길까요?",
+    "ru": "Записать этот визит в дневник?",
+    "es": "¿Guardar esta visita en su diario?",
+    "pt": "Guardar esta visita no diário dela?",
+}
+
+VISIT_DEBRIEF_CHIP_DIARY = {
+    "zh": "记成日记",
+    "zh-TW": "記成日記",
+    "en": "Keep as diary",
+    "ja": "日記に残す",
+    "ko": "일기로 남기기",
+    "ru": "Записать в дневник",
+    "es": "Guardar en el diario",
+    "pt": "Guardar no diário",
+}
+
+VISIT_DEBRIEF_CHIP_FORGET = {
+    "zh": "不记",
+    "zh-TW": "不記",
+    "en": "Don't keep",
+    "ja": "残さない",
+    "ko": "남기지 않기",
+    "ru": "Не записывать",
+    "es": "No guardar",
+    "pt": "Não guardar",
+}
+
+
+def get_visit_debrief_chip_labels(lang: str | None) -> tuple[str, str, str]:
+    """Return ``(prompt, diary label, forget label)`` of the debrief chips."""
+    return (
+        _loc(VISIT_DEBRIEF_CHIP_PROMPT, lang),
+        _loc(VISIT_DEBRIEF_CHIP_DIARY, lang),
+        _loc(VISIT_DEBRIEF_CHIP_FORGET, lang),
+    )
 
 
 def get_visit_debrief_fallback(lang: str | None) -> str:

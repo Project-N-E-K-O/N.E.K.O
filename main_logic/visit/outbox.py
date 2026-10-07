@@ -134,6 +134,7 @@ __all__ = [
     "PAUSE_PEER_ABSENT",
     "PAUSE_PEER_AWAY",
     "OutboundFrame",
+    "OutboxReservation",
     "VisitOutbox",
     "InboxResult",
     "InboxSequencer",
@@ -189,6 +190,37 @@ class OutboundFrame:
     def to_ws(self) -> dict:
         """The transport WS message ``{'type': 'send', 'cmd', 'payload'}`` (section 4.3)."""
         return {"type": "send", "cmd": self.cmd, "payload": copy.deepcopy(self.payload)}
+
+
+class OutboxReservation:
+    """Bytes of the in-flight budget held for one reliable payload (:meth:`VisitOutbox.reserve`).
+
+    Either consumed by ``VisitOutbox.send(..., reservation=...)`` or given
+    back with :meth:`release` (idempotent; use it in ``finally``).
+    """
+
+    __slots__ = ("_outbox", "nbytes", "_open")
+
+    def __init__(self, outbox: "VisitOutbox", nbytes: int) -> None:
+        self._outbox = outbox
+        self.nbytes = nbytes
+        self._open = True
+
+    @property
+    def held(self) -> bool:
+        """True until released or consumed."""
+        return self._open
+
+    def release(self) -> None:
+        """Give the bytes back (no-op once released or consumed)."""
+        if self._open:
+            self._open = False
+            self._outbox._release_reservation(self)
+
+    def _consume(self, outbox: "VisitOutbox") -> None:
+        if outbox is not self._outbox:
+            raise ValueError("reservation belongs to another outbox")
+        self.release()
 
 
 @dataclass(eq=False)
@@ -306,6 +338,7 @@ class VisitOutbox:
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._last_write: Optional[concurrent.futures.Future] = None
         self.write_errors = 0
+        self._reserved_bytes = 0
 
     # ------------------------------------------------------------------
     # 查询
@@ -322,17 +355,36 @@ class VisitOutbox:
 
     @property
     def pending_bytes(self) -> int:
-        """Encoded bytes of all unacked reliable items (queued or transmitted)."""
-        return sum(item.nbytes for item in self._unacked.values())
+        """Encoded bytes of all unacked reliable items (queued or transmitted) plus held reservations."""
+        return sum(item.nbytes for item in self._unacked.values()) + self._reserved_bytes
 
     def try_reserve(self, nbytes: int) -> bool:
         """Whether ``nbytes`` more fit under ``VISIT_OUTBOX_PENDING_MAX_BYTES``.
 
         A check, not a hold: call :meth:`send` right after it, without
         awaiting in between. A human line that does not fit is refused by the
-        caller with ``status{VISIT_E_BUSY}`` (section 4.2 ``text``).
+        caller with ``status{VISIT_E_BUSY}`` (section 4.2 ``text``). A caller
+        that has to await between the check and the send uses :meth:`reserve`.
         """
         return self.pending_bytes + max(0, int(nbytes)) <= self._pending_max
+
+    def reserve(self, nbytes: int) -> Optional["OutboxReservation"]:
+        """Hold ``nbytes`` of the in-flight budget; None when they do not fit.
+
+        The held bytes count in :attr:`pending_bytes` until the reservation
+        is released or consumed by ``send(..., reservation=...)``, so other
+        lines cannot take them while the holder awaits (section 4.5
+        ``stream_data``: reserve, persist, then enqueue). Releasing is
+        idempotent; a consumed reservation releases nothing.
+        """
+        size = max(0, int(nbytes))
+        if not self.try_reserve(size):
+            return None
+        self._reserved_bytes += size
+        return OutboxReservation(self, size)
+
+    def _release_reservation(self, reservation: "OutboxReservation") -> None:
+        self._reserved_bytes = max(0, self._reserved_bytes - reservation.nbytes)
 
     def encoded_size(self, msg: Mapping[str, Any]) -> tuple[int, int]:
         """``(pieces, bytes)`` of ``msg`` as it would go on the wire, for ``try_reserve``.
@@ -474,8 +526,12 @@ class VisitOutbox:
         self._backpressure = bool(on)
 
     def send(self, msg: Mapping[str, Any], *, now: Optional[float] = None,
-             final_piece: bool = False) -> int:
+             final_piece: bool = False, reservation: Optional["OutboxReservation"] = None) -> int:
         """Queue one section 4.2 payload; return its ``seq`` (0 for unsequenced types).
+
+        ``reservation`` (from :meth:`reserve` on this outbox) is consumed when
+        the payload is queued: its bytes stop counting once the item's own
+        bytes do. It stays held when the payload is rejected.
 
         The outbox is authoritative for these fields and overwrites them:
         ``seq`` of reliable types; ``leave.last_seq`` (``seq - 1``);
@@ -532,6 +588,8 @@ class VisitOutbox:
         pieces, nbytes = wire_size(text, visit_id=self.visit_id)
         if pieces > VISIT_PIECES_MAX:
             raise ValueError("payload exceeds VISIT_PIECES_MAX pieces; fit it first")
+        if reservation is not None:
+            reservation._consume(self)
         self._next_seq += 1
         item = _Item(t=t, cmd=cmd, payload=json.loads(text), enq_at=now, seq=seq,
                      nbytes=nbytes, pieces=pieces, ln=ln)
@@ -1225,9 +1283,13 @@ class InboxSequencer:
             return False
         return self._last_ack_at is None or now - self._last_ack_at >= self._coalesce_s
 
-    def poll_ack(self, now: float) -> Optional[int]:
-        """Return the ``seq`` for an ``ack`` to send now (and mark it sent), or None."""
-        if not self.ack_due(now):
+    def poll_ack(self, now: float, *, force: bool = False) -> Optional[int]:
+        """Return the ``seq`` for an ``ack`` to send now (and mark it sent), or None.
+
+        ``force`` skips the coalescing window (an owed ``ack`` still goes out
+        right before the channel closes).
+        """
+        if not (self._ack_pending if force else self.ack_due(now)):
             return None
         self._ack_pending = False
         self._last_ack_at = now

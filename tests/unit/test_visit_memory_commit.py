@@ -506,7 +506,7 @@ async def test_shutdown_budget_covers_the_whole_commit_including_the_lock(tmp_pa
 
 def test_a_single_line_over_the_summary_budget_is_truncated():
     line = {"lp": 0, "side": "host", "from": "peer_human", "ts": 1.0, "text": "很长的一句话。" * 4000}
-    block = memory_commit._record_block_within_budget([line], "zh", 200)
+    block = memory_commit.record_block_within_budget([line], "zh", 200)
     assert count_tokens(block) <= 200 + 16
 
 

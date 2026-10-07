@@ -620,7 +620,13 @@ async def last_summary_handoff(
         pass
 
 
-def _record_block_within_budget(lines: Sequence[Mapping[str, Any]], lang: str | None, budget: int) -> str:
+def record_block_within_budget(lines: Sequence[Mapping[str, Any]], lang: str | None, budget: int) -> str:
+    """``VISIT_RECORD_BLOCK`` of the newest whole lines whose rendering fits ``budget`` tokens (oldest first).
+
+    Shared by the last-visit summary and the debrief summary: lines are taken
+    from the newest backwards until the budget is used up; a single newest
+    line that alone exceeds it is shortened instead of sent whole.
+    """
     ordered = sorted(lines, key=line_order_key)
     rendered = [
         f"{get_visit_speaker_header(line['from'], lang)} {line.get('text') or ''}"
@@ -778,7 +784,7 @@ async def _summary_locked(
         await _mark_summary_done(spool, own_char_uid)
         return True
     block = await asyncio.to_thread(
-        _record_block_within_budget, lines, lang, VISIT_LAST_SUMMARY_INPUT_MAX_TOKENS,
+        record_block_within_budget, lines, lang, VISIT_LAST_SUMMARY_INPUT_MAX_TOKENS,
     )
     prompt = build_visit_last_summary_prompt(own_char, block, lang)
     try:
@@ -807,3 +813,4 @@ async def _summary_locked(
         )
     await _mark_summary_done(spool, own_char_uid)
     return True
+
