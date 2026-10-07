@@ -4,7 +4,7 @@ const { chromium } = require(process.env.NEKO_TEST_PLAYWRIGHT_MODULE || 'playwri
 const { createVoiceManagerServer } = require('./remote_voice_manager_server.cjs');
 const { verifyVoiceRaces } = require('./remote_voice_manager_races.cjs');
 const { verifyManagementSettings } = require('./remote_voice_management_settings.cjs');
-const { createPageDiagnostics, closeTestServer } = require('./remote_voice_page_diagnostics.cjs');
+const { createPageDiagnostics, observeBrowserConsoleErrors, closeTestServer } = require('./remote_voice_page_diagnostics.cjs');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const diagnostics = createPageDiagnostics('chromium');
@@ -57,6 +57,7 @@ process.on('uncaughtException', error => { void finish(error); });
         page = await context.newPage();
         page.on('pageerror', error => diagnostics.error(error));
         page.on('console', message => diagnostics.log(message.type(), message.text()));
+        await observeBrowserConsoleErrors(page, diagnostics);
         await page.goto('http://127.0.0.1:' + server.address().port + '/voice_clone?lanlan_name=Test');
         await page.waitForFunction(() => document.getElementById('voiceProvider').value === 'cosyvoice' && !document.getElementById('importExistingVoice').hidden && !document.getElementById('importExistingVoice').disabled);
         // Activate before the tutorial's delayed overlay can intercept the pointer.

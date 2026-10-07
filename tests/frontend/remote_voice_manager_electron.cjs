@@ -69,6 +69,8 @@ app.whenReady().then(async () => {
         if (method === 'Runtime.exceptionThrown') {
             const detail = params.exceptionDetails;
             diagnostics.error(new Error(detail.exception?.description || detail.text));
+        } else if (method === 'Runtime.consoleAPICalled' && params.type === 'error') {
+            diagnostics.consoleError(params.args);
         }
     });
     const runtimeCapture = win.webContents.debugger.sendCommand('Runtime.enable');

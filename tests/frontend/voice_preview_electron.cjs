@@ -64,6 +64,8 @@ app.whenReady().then(async () => {
         if (method === 'Runtime.exceptionThrown') {
             const detail = params.exceptionDetails;
             diagnostics.error(new Error(detail.exception?.description || detail.text));
+        } else if (method === 'Runtime.consoleAPICalled' && params.type === 'error') {
+            diagnostics.consoleError(params.args);
         }
     });
     // Runtime.enable waits for the first document in a hidden window; load concurrently.
@@ -77,7 +79,7 @@ app.whenReady().then(async () => {
         const observer = new MutationObserver(check); observer.observe(document.body,{subtree:true,childList:true,attributes:true,characterData:true}); check();
     })`);
     await waitFor("typeof playPreview === 'function' && typeof window.t === 'function' && document.querySelector('[data-voice-id=\"preview-body\"]')");
-    const scenarios = await verifyPreviewBodyRaces({ run, transport: controlled, page: true });
+    const scenarios = await verifyPreviewBodyRaces({ run, transport: controlled, page: true, diagnostics });
     diagnostics.assertClean();
     result = { electron: process.versions.electron, actualProductTemplate: true, controlledHttpTransport: true, ...scenarios };
     console.log(JSON.stringify(result));

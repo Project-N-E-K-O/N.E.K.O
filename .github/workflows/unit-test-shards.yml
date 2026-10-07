@@ -142,7 +142,7 @@ jobs:
           node --test tests/frontend/asr_input_delivery_status.test.cjs
           node --test tests/frontend/mic_recovery_route.test.cjs
           node --test tests/frontend/voice_preparing_toast.test.cjs
-          node --test tests/frontend/remote_voice_manager.test.cjs tests/frontend/voice_manager_review.test.cjs tests/frontend/api_key_secret_masking.test.cjs
+          node --test tests/frontend/remote_voice_manager.test.cjs tests/frontend/voice_manager_review.test.cjs tests/frontend/api_key_secret_masking.test.cjs tests/frontend/remote_voice_page_diagnostics.test.cjs
           node --test tests/frontend/voice_preview.test.cjs
           node --test tests/frontend/voice_recovery.test.cjs
           node --test tests/frontend/computer_use_capture_lifecycle.test.cjs

@@ -2,7 +2,7 @@
 const assert = require('node:assert/strict');
 const { bounded } = require('./voice_preview_server.cjs');
 
-async function verifyPreviewBodyRaces({ run, transport, page = false }) {
+async function verifyPreviewBodyRaces({ run, transport, page = false, diagnostics }) {
     await run(`(() => {
         window.__previewAudios = []; window.__previewNotices = []; window.__previewDeadlines = [];
         window.__previewReadCount = 0; window.__previewReadWaiters = [];
@@ -94,6 +94,9 @@ async function verifyPreviewBodyRaces({ run, transport, page = false }) {
     // Both permitted clone attempts time out during body reads: do not accept
     // either partial result or silently extend the existing retry count.
     await run('localStorage.clear(); window.__previewStart("exhausted"); true');
+    const assertTimeoutLog = diagnostics?.expectConsoleError(args => args.length === 2 &&
+        args[0].value === 'Preview error:' && args[1].className === 'DOMException' &&
+        args[1].description?.startsWith('AbortError:'));
     for (let index = 5; index <= 6; index++) {
         await transport.request(index);
         await bounded(run('window.__previewWaitRead(' + (index + 1) + ')'), 'exhausted body read starts');
@@ -101,6 +104,7 @@ async function verifyPreviewBodyRaces({ run, transport, page = false }) {
         await transport.assertClosed(index);
     }
     await bounded(run('window.__previewPending.then(() => true)'), 'exhausted timeout settles');
+    if (assertTimeoutLog) assertTimeoutLog();
     assert.deepEqual(await snapshot(), { audio: 2, notices: 1, cache: null, sessions: 0 });
     assert.equal(transport.requests.length, 7);
 

@@ -2,7 +2,7 @@
 const { chromium } = require(process.env.NEKO_TEST_PLAYWRIGHT_MODULE || 'playwright');
 const { createVoicePreviewServer } = require('./voice_preview_server.cjs');
 const { verifyPreviewBodyRaces } = require('./voice_preview_races.cjs');
-const { createPageDiagnostics } = require('./remote_voice_page_diagnostics.cjs');
+const { createPageDiagnostics, observeBrowserConsoleErrors } = require('./remote_voice_page_diagnostics.cjs');
 const path = require('node:path');
 
 const controlled = createVoicePreviewServer();
@@ -56,11 +56,12 @@ process.on('uncaughtException', error => { void finish(error); });
     page = await browser.newPage();
     page.on('pageerror', error => diagnostics.error(error));
     page.on('console', message => diagnostics.log(message.type(), message.text()));
+    await observeBrowserConsoleErrors(page, diagnostics);
     await page.goto('http://127.0.0.1:' + controlled.server.address().port + '/voice_clone?lanlan_name=Test');
     await page.waitForFunction(() => typeof playPreview === 'function' && typeof window.t === 'function' && document.querySelector('[data-voice-id="preview-body"]'));
     const run = code => page.evaluate(code);
     const waitFor = code => page.waitForFunction(code);
-    const scenarios = await verifyPreviewBodyRaces({ run, transport: controlled, page: true });
+    const scenarios = await verifyPreviewBodyRaces({ run, transport: controlled, page: true, diagnostics });
     diagnostics.assertClean();
     result = { browser: await browser.version(), actualProductTemplate: true, controlledHttpTransport: true, ...scenarios };
     console.log(JSON.stringify(result));

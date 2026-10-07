@@ -1,7 +1,7 @@
 'use strict';
 const { chromium } = require(process.env.NEKO_TEST_PLAYWRIGHT_MODULE || 'playwright');
 const { createRecoveryServer, verifyRecoveryPage } = require('./voice_recovery_races.cjs');
-const { createPageDiagnostics } = require('./remote_voice_page_diagnostics.cjs');
+const { createPageDiagnostics, observeBrowserConsoleErrors } = require('./remote_voice_page_diagnostics.cjs');
 const path = require('node:path');
 
 const controlled = createRecoveryServer();
@@ -55,6 +55,7 @@ process.on('uncaughtException', error => { void finish(error); });
     page = await browser.newPage();
     page.on('pageerror', error => diagnostics.error(error));
     page.on('console', message => diagnostics.log(message.type(), message.text()));
+    await observeBrowserConsoleErrors(page, diagnostics);
     await page.goto('http://127.0.0.1:' + controlled.server.address().port + '/voice_clone?lanlan_name=Test');
     await page.waitForFunction(() => typeof window.t === 'function' && typeof RemoteVoiceManager === 'object' && document.querySelector('[data-voice-id]'));
     const run = code => page.evaluate(code);
