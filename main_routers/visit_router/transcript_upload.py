@@ -771,7 +771,13 @@ def _valid_report(doc: Any, visit_id: str) -> bool:
         isinstance(doc, dict) and doc.get("visit_id") == visit_id
         and doc.get("reason") in REPORT_REASONS and isinstance(doc.get("include_transcript"), bool)
         and any(isinstance(doc.get(k), str) and doc.get(k) for k in ("own_account", "own_visit_uid"))
+        # queued_at 是举报的身份字段之一：NaN 与自己都不相等，同一份举报会被认成换了一份
+        and _finite_or_absent(doc.get("queued_at"))
     )
+
+
+def _finite_or_absent(value: Any) -> bool:
+    return value is None or (isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value))
 
 
 async def load_report(config_dir: Path, visit_id: str) -> dict | None:
@@ -1218,6 +1224,10 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         doc = None
     if sealed_upload_doc_usable(doc, visit_id):
         matches, state_owner = await sealed_upload_doc_matches_state(config_dir, visit_id, doc)
+        if matches is None:
+            # state.json 在、却一时读不了 / 读不懂：核对做不了，不能当核对通过就传，这一轮留着
+            logger.warning("visit upload %s: visit state unreadable, upload deferred", visit_id)
+            return UploadRound(pending=True, retryable=True)
         if not matches:
             # 本场格式、却与 state.json 记的角色 / 账号对不上（复制来的 / 别的账号的文件）：不传、不信它写的
             # 账号，按 state 的账号报，交给启动补录判（隔离或重封）
@@ -1385,7 +1395,13 @@ async def retry_visit_once(
     visit_id = require_visit_id(visit_id)
     config_dir = Path(config_dir_provider() if config_dir is None else config_dir)
     async with visit_lock(visit_id):
-        upload = await _upload_round(visit_id, config_dir, now)
+        deferred = upload_deferred_s(visit_id)
+        if deferred > 0:
+            # 转录自己的 Retry-After 还没到（手动重试也一样）：这一轮不重传，按待传、剩余时间后再来
+            upload = UploadRound(pending=True, retryable=True, retry_after_s=math.ceil(deferred),
+                                 owner=_upload_deadline_owner.get(visit_id))
+        else:
+            upload = await _upload_round(visit_id, config_dir, now)
         # 举报文件暂时读不了（同一次读取的结果）：当成还有事没办完，worker 别退出，等能读了再提交 / 补记
         report, unreadable = await _read_report(config_dir, visit_id)
         upload = upload.for_report(report)

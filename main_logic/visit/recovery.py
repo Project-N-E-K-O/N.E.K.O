@@ -1050,13 +1050,22 @@ async def _drop_corrupt_sealed(spool_dir: Path, visit_id: str) -> bool:
     return True
 
 
-async def sealed_upload_doc_matches_state(config_dir: Path, visit_id: str, doc: dict) -> tuple[bool, str | None]:
+async def sealed_upload_doc_matches_state(
+    config_dir: Path, visit_id: str, doc: dict,
+) -> tuple[bool | None, str | None]:
     """``(matches, state owner)``: whether a usable sealed document agrees with the visit's ``state.json``.
 
     Its character id, and its account when both name one, must be the ones
-    the state records; ``(True, None)`` without a readable state.
+    the state records; ``(True, None)`` when the visit has no state.
+    ``(None, None)`` when the state exists but cannot be read or validated
+    right now: the check could not be made (unlike startup recovery, which
+    treats that like no state).
     """
-    return await _sealed_matches_state(config_dir, visit_id, doc)
+    try:
+        state = await VisitSpool(config_dir, visit_id).read_state()
+    except (OSError, ValueError):
+        return None, None
+    return _doc_matches_state(state, doc)
 
 
 async def _sealed_matches_state(config_dir: Path, visit_id: str, doc: dict) -> tuple[bool, str | None]:
@@ -1072,6 +1081,10 @@ async def _sealed_matches_state(config_dir: Path, visit_id: str, doc: dict) -> t
         state = await VisitSpool(config_dir, visit_id).read_state()
     except (OSError, ValueError):
         return True, None
+    return _doc_matches_state(state, doc)
+
+
+def _doc_matches_state(state: dict | None, doc: dict) -> tuple[bool, str | None]:
     if not state:
         return True, None
     char_uid = _owner_or_none(state.get("own_char_uid"))

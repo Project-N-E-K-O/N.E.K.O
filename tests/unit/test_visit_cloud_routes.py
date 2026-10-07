@@ -288,6 +288,7 @@ def test_report_with_transcript_waits_for_the_upload(env):
     assert resp.status_code == 202 and fake.count("/api/visit/reports") == 0
     assert _queued(tmp_path) is not None
     fake.transcript_mode = "ok"
+    tu._upload_not_before.clear()                                        # Retry-After 已过
     client.portal.call(tu.retry_visit_once, V1)
     assert fake.transcript_seen_at_report == [True] and _queued(tmp_path) is None
 

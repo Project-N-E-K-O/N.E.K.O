@@ -484,8 +484,22 @@ async def test_report_waits_for_its_transcript_then_goes(tmp_path, servers):
     assert (await tu.retry_visit_once(V1)).pending is True
     assert fake.count("/api/visit/reports") == 0
     fake.transcript_mode = "ok"
+    tu._upload_not_before.clear()                                        # Retry-After 已过
     assert (await tu.retry_visit_once(V1)).pending is False
     assert fake.transcript_seen_at_report == [True]
+
+
+async def test_a_retry_round_does_not_resend_before_the_transcripts_retry_after(tmp_path, servers):
+    fake, _ = servers
+    fake.transcript_mode = "429"
+    _write_sealed(tmp_path, _big_doc(4, 10))
+    await tu.queue_report(tmp_path, _report_doc())
+    await tu.retry_visit_once(V1)
+    sent = fake.count("/api/visit/transcripts")
+    fake.transcript_mode = "ok"
+    outcome = await tu.retry_visit_once(V1, manual=True)                 # 用户手动点重试
+    # Retry-After 还没到：这一轮不重传，按剩余时间待重试
+    assert fake.count("/api/visit/transcripts") == sent and outcome.pending and outcome.retry_after_s >= 70
 
 
 async def test_report_without_transcript_ignores_the_upload_gate(tmp_path, servers):
@@ -1921,3 +1935,24 @@ async def test_a_synchronous_attempt_records_the_transcripts_retry_after(tmp_pat
     await tu.attempt_upload(V1, config_dir=tmp_path)
     # 端点里的同步尝试拿到的 Retry-After 也记进上传截止表：放弃举报再新排一份也不会提前重传
     assert tu.upload_deferred_s(V1, OWN) > 70
+
+
+
+async def test_an_unreadable_visit_state_defers_the_upload(tmp_path, servers, monkeypatch):
+    from main_logic.visit.spool import VisitSpool
+
+    fake, _ = servers
+    _write_sealed(tmp_path, _big_doc(4, 10))
+
+    async def locked(self):
+        raise PermissionError("state in use")
+
+    monkeypatch.setattr(VisitSpool, "read_state", locked)
+    outcome = await tu.attempt_upload(V1, config_dir=tmp_path)
+    # 核对做不了就不传：不能当核对通过
+    assert outcome.pending and outcome.retryable and fake.count("/api/visit/transcripts") == 0
+
+
+def test_a_queued_report_with_a_non_finite_timestamp_is_malformed():
+    assert tu._valid_report(_report_doc(queued_at=float("nan")), V1) is False
+    assert tu._valid_report(_report_doc(), V1) is True
