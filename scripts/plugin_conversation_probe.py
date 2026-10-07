@@ -157,7 +157,7 @@ def main() -> int:
     ap.add_argument("--seconds", type=float, default=0.0, help="跟读时长；0=不限")
     ap.add_argument("--show-all", action="store_true", help="跟读时也打印已有的旧记录")
     ap.add_argument("--self-test", action="store_true",
-                    help="本机起一个内存总线并塞两条对话，自检脚本链路（不需要宿主）")
+                    help="本机起一个内存总线并塞三条对话，自检脚本链路（不需要宿主）")
     args = ap.parse_args()
 
     if args.self_test:
@@ -248,7 +248,7 @@ def main() -> int:
 
 
 def _self_test() -> int:
-    """Start an in-memory bus, seed two turns, then read them back."""
+    """Start an in-memory bus, seed three records, then read them back."""
     import threading
 
     from plugin.message_plane.rpc_server import MessagePlaneRpcServer
