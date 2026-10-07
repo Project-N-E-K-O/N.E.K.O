@@ -95,11 +95,11 @@
         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
       ],
-      "conversation_model": "qwen3.8-flash",
+      "conversation_model": "qwen3.8-omni-flash",
       "summary_model": "qwen3.8-flash",
       "correction_model": "qwen3.8-flash",
       "emotion_model": "qwen3.7-flash",
-      "vision_model": "qwen3.8-flash",
+      "vision_model": "qwen3.8-omni-flash",
       "agent_model": "qwen3.8-flash"
     },
     "openai": {

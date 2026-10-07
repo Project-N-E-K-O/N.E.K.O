@@ -163,7 +163,10 @@ class ChatOpenAI:
             p["temperature"] = self.temperature
         # Provider-aware routing of token-limit field:
         #   Anthropic SDK / Anthropic-compat endpoints → max_tokens
-        #   Everyone else (OpenAI / OpenAI-compat / Gemini-compat / etc.) → max_completion_tokens
+        #   OpenAI-compat endpoints → whatever config.providers registers for the
+        #   host (DeepSeek / GLM / SiliconFlow silently ignore
+        #   max_completion_tokens, so they get max_tokens); unknown hosts keep
+        #   max_completion_tokens.
         # Per-call overrides take precedence over instance attrs so concurrent
         # callers on the same client don't corrupt each other's budgets.
         token_limit = overrides.pop("max_completion_tokens", None)
@@ -174,7 +177,11 @@ class ChatOpenAI:
         limit_field: str | None = None
         limit_value: int | None = None
         if token_limit:
-            limit_field = "max_tokens" if self._is_anthropic() else "max_completion_tokens"
+            if self._is_anthropic():
+                limit_field = "max_tokens"
+            else:
+                from config.providers import get_token_limit_field
+                limit_field = get_token_limit_field(self.base_url)
             limit_value = int(token_limit)
             p[limit_field] = limit_value
         extra_body = overrides.pop("extra_body", self.extra_body)

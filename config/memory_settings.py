@@ -634,22 +634,26 @@ MEMORY_LIVENESS_MAX_ATTEMPTS = 5
 - 5 跟 `MEMORY_RECHECK_MAX_ATTEMPTS` 同口径——按 40s 一轮算 3 分钟级窗口，
   跨过偶发 transient failure 够用；再多就属于真正 poison。"""
 
-MEMORY_REVIEW_OUTPUT_MAX_TOKENS = 8192
-"""历史审阅单独的 max_completion_tokens。
+MEMORY_THINKING_OUTPUT_MAX_TOKENS = 8192
+"""记忆系统里有意开思考的调用共用的输出额度。
 
-审阅显式 ``extra_body=None``，不套用工厂为 Qwen 准备的 ``enable_thinking: false``，
-推理 token 和 ``corrected_dialogue`` JSON 共用这一额度。共享护栏
-``LLM_OUTPUT_GUARD_MAX_TOKENS``（4096）会被默认开思考的纠错模型在 JSON
-写完前打满。8192 给思考链留头寸。
+适用：历史审阅、Stage-2 信号检测、refine、persona correction / 外部融合、
+reflection 合成 / 反驳判定 / promote 合并。这些调用不套用工厂的关思考
+extra_body（走原生思考，或 ``config.providers.memory_thinking_extra_body`` 给的
+压档形式），推理 token 和 JSON 正文共用这一额度。共享护栏
+``LLM_OUTPUT_GUARD_MAX_TOKENS``（4096）会被默认开思考的模型在 JSON 写完前打满
+（#3319：qwen3.8-flash 的信号检测精确顶格 4096、正文为空）。8192 给思考链留头寸；
+光抬额度不够，信号检测和审阅的提示词另带思考长度限制。
 
 不抬全局护栏：``max_completion_tokens`` 超过模型自身输出上限时，不少兼容端点
-会在请求时直接 400。摘要、去重、persona 等短 JSON 仍用 4096。"""
+会在请求时直接 400。所以 ``memory.thinking_llm`` 遇到这种 400 会退回 4096 重发
+一次。摘要、去重、recheck 等不开思考的短 JSON 仍用 4096。"""
 
 MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS = 3
 """历史审阅因输出 token 耗尽而暂停前的连续失败次数。
 
 - 只统计 provider 明确返回 ``length`` / ``max_tokens``，或空正文且输出 token
-  已触及 ``MEMORY_REVIEW_OUTPUT_MAX_TOKENS`` 的调用；网络、429、普通 JSON 错误仍走
+  已触及本次实际请求额度的调用；网络、429、普通 JSON 错误仍走
   ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 的通用 fingerprint 退避。
 - 达到 3 次后按角色暂停 review。新增消息不会解禁；只有当前 review 上下文 token
   数严格低于失败期间的最小值（通常由 recent compression 造成）才清零恢复。"""

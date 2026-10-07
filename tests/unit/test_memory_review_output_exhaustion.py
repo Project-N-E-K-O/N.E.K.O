@@ -20,18 +20,20 @@ def _history(length: int) -> list:
 
 
 def test_review_response_detects_explicit_output_limit():
-    from memory.recent import _review_response_hit_output_limit
+    from config import MEMORY_THINKING_OUTPUT_MAX_TOKENS
+    from memory.thinking_llm import response_hit_output_limit
 
     response = SimpleNamespace(
         content="partial json",
         response_metadata={"finish_reason": "length", "token_usage": {}},
     )
 
-    assert _review_response_hit_output_limit(response) is True
+    assert response_hit_output_limit(response, MEMORY_THINKING_OUTPUT_MAX_TOKENS) is True
 
 
 def test_review_response_does_not_treat_short_empty_response_as_output_limit():
-    from memory.recent import _review_response_hit_output_limit
+    from config import MEMORY_THINKING_OUTPUT_MAX_TOKENS
+    from memory.thinking_llm import response_hit_output_limit
 
     response = SimpleNamespace(
         content="",
@@ -41,28 +43,28 @@ def test_review_response_does_not_treat_short_empty_response_as_output_limit():
         },
     )
 
-    assert _review_response_hit_output_limit(response) is False
+    assert response_hit_output_limit(response, MEMORY_THINKING_OUTPUT_MAX_TOKENS) is False
 
 
 def test_review_response_detects_empty_response_at_review_output_cap():
-    from config import MEMORY_REVIEW_OUTPUT_MAX_TOKENS
-    from memory.recent import _review_response_hit_output_limit
+    from config import MEMORY_THINKING_OUTPUT_MAX_TOKENS
+    from memory.thinking_llm import response_hit_output_limit
 
     response = SimpleNamespace(
         content="",
         response_metadata={
-            "token_usage": {"output_tokens": MEMORY_REVIEW_OUTPUT_MAX_TOKENS},
+            "token_usage": {"output_tokens": MEMORY_THINKING_OUTPUT_MAX_TOKENS},
         },
     )
 
-    assert _review_response_hit_output_limit(response) is True
+    assert response_hit_output_limit(response, MEMORY_THINKING_OUTPUT_MAX_TOKENS) is True
 
 
 
 def test_review_response_detects_empty_response_at_fallback_cap():
     """After the lower-cap retry, exhaustion is judged against that cap."""
-    from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-    from memory.recent import _review_response_hit_output_limit
+    from config import LLM_OUTPUT_GUARD_MAX_TOKENS, MEMORY_THINKING_OUTPUT_MAX_TOKENS
+    from memory.thinking_llm import response_hit_output_limit
 
     response = SimpleNamespace(
         content="",
@@ -71,8 +73,8 @@ def test_review_response_detects_empty_response_at_fallback_cap():
         },
     )
 
-    assert _review_response_hit_output_limit(response) is False
-    assert _review_response_hit_output_limit(
+    assert response_hit_output_limit(response, MEMORY_THINKING_OUTPUT_MAX_TOKENS) is False
+    assert response_hit_output_limit(
         response, LLM_OUTPUT_GUARD_MAX_TOKENS,
     ) is True
 
@@ -94,6 +96,26 @@ def test_review_llm_leaves_thinking_on_model_default():
         assert manager._get_review_llm() is sentinel
 
     assert factory.call_args.kwargs["extra_body"] is None
+
+
+def test_review_llm_bounds_deepseek_thinking():
+    """DeepSeek's native thinking overruns the review cap; review asks for low effort."""
+    from config.providers import EXTRA_BODY_DEEPSEEK_MEMORY_THINKING
+    from memory.recent import CompressedRecentHistoryManager
+
+    manager = object.__new__(CompressedRecentHistoryManager)
+    manager._config_manager = MagicMock()
+    manager._config_manager.get_model_api_config.return_value = {
+        "model": "deepseek-flash",
+        "base_url": "https://api.deepseek.com/v1",
+        "api_key": "test",
+        "provider_type": "openai",
+    }
+
+    with patch("memory.recent.create_chat_llm", return_value=object()) as factory:
+        manager._get_review_llm()
+
+    assert factory.call_args.kwargs["extra_body"] == EXTRA_BODY_DEEPSEEK_MEMORY_THINKING
 
 
 @pytest.mark.asyncio

@@ -571,7 +571,7 @@ class CorrectionsMixin:
             # ── LLM (锁外) ──
             try:
                 from utils.token_tracker import set_call_type
-                from utils.llm_client import create_chat_llm_async
+                from memory.thinking_llm import ainvoke_thinking
                 set_call_type("memory_correction")
                 api_config = await self._config_manager.aget_model_api_config('correction')
                 # timeout: 见 MEMORY_LLM_HARD_TIMEOUT_SECONDS（上游转发
@@ -580,21 +580,15 @@ class CorrectionsMixin:
                 # thinking——后果不可逆（persona pollution）。LLM 在 data
                 # lock 外，不阻塞 /process 路径上的 arecord_mentions /
                 # aapply_signal。
-                # max_retries=0: 禁 SDK 自动重试（这里没业务 retry，单次即终态）。
-                # extra_body=None: 显式开 thinking。
-                from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS, LLM_OUTPUT_GUARD_MAX_TOKENS
-                llm = await create_chat_llm_async(
-                    api_config['model'],
-                    api_config['base_url'], api_config['api_key'],
-                    timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
-                    max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
-                    extra_body=None,
-                    provider_type=api_config.get('provider_type'),
+                # 这里没业务 retry，单次即终态；显式开 thinking，额度与回退见
+                # memory.thinking_llm。
+                # correction prompt built from PERSONA_MERGE_POOL_MAX_TOKENS-capped entity pool.
+                from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
+                resp, _ = await ainvoke_thinking(
+                    api_config, prompt,
+                    timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,
+                    call_label=f"{name} memory_correction",
                 )
-                try:
-                    resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # correction prompt built from PERSONA_MERGE_POOL_MAX_TOKENS-capped entity pool.
-                finally:
-                    await llm.aclose()
                 raw = resp.content
                 if raw.startswith("```"):
                     raw = raw.replace("```json", "").replace("```", "").strip()

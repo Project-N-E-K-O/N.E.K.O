@@ -202,7 +202,6 @@ class SynthesisMixin:
             losing side returns [] without polluting the caller's view.
         """
         from config.prompts.prompts_memory import get_reflection_prompt
-        from utils.llm_client import create_chat_llm_async
 
         from memory.scopes import coerce_subject
         memory_subject = coerce_subject(subject)
@@ -317,23 +316,17 @@ class SynthesisMixin:
             # 120s hard cap，client 必须 ≤110s）。开 thinking 后输出多字段
             # JSON ontology 比简单分类长，吃满 110 也算合理。LLM 在锁外
             # 不阻塞同角色其他 reflection 写。
-            # max_retries=0: 禁 SDK 自动重试（无业务 retry，单次即终态，外层
-            # try/except 兜底返回 []）。
-            # extra_body=None: 显式开 thinking——synth 是创意+结构化合成，
-            # 思考能改善 ontology 字段的一致性和 reflection text 的质量。
-            from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS, LLM_OUTPUT_GUARD_MAX_TOKENS
-            llm = await create_chat_llm_async(
-                api_config['model'],
-                api_config['base_url'], api_config['api_key'],
-                timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
-                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
-                extra_body=None,
-                provider_type=api_config.get('provider_type'),
+            # 无业务 retry，单次即终态，外层 try/except 兜底返回 []。
+            # 显式开 thinking——synth 是创意+结构化合成，思考能改善 ontology
+            # 字段的一致性和 reflection text 的质量；额度与回退见 memory.thinking_llm。
+            # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
+            from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
+            from memory.thinking_llm import ainvoke_thinking
+            resp, _ = await ainvoke_thinking(
+                api_config, prompt,
+                timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,
+                call_label=f"{lanlan_name} memory_reflection",
             )
-            try:
-                resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
-            finally:
-                await llm.aclose()
             raw = resp.content.strip()
             if raw.startswith("```"):
                 raw = raw.replace("```json", "").replace("```", "").strip()

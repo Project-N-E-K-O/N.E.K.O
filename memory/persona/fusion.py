@@ -74,7 +74,6 @@ from config import (
     EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS,
     EXTERNAL_IMPORT_PERSONA_MASTER_MAX_TOKENS,
     EXTERNAL_IMPORT_PERSONA_NEKO_MAX_TOKENS,
-    LLM_OUTPUT_GUARD_MAX_TOKENS,
     MEMORY_LLM_HARD_TIMEOUT_SECONDS,
 )
 from config.prompts.prompts_memory import (
@@ -303,7 +302,7 @@ class ExternalFusionMixin:
         the reflection promote-merge LLM shape: correction tier + thinking + single
         shot (max_retries=0) + robust JSON parse.
         """
-        from utils.llm_client import create_chat_llm_async
+        from memory.thinking_llm import ainvoke_thinking
 
         # names（避免物化：master 缺名用中性占位，不抄 rendering 的 '主人' 兜底）
         try:
@@ -354,33 +353,23 @@ class ExternalFusionMixin:
         # 丢掉前端重试所需的 partial 元数据（Codex P2）。
         try:
             api_config = await self._config_manager.aget_model_api_config("correction")
-            llm = await create_chat_llm_async(
-                api_config["model"],
-                api_config["base_url"],
-                api_config["api_key"],
-                timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,
-                max_retries=0,
-                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,
-                extra_body=None,
-                provider_type=api_config.get("provider_type"),
-            )
         except Exception as exc:
             logger.warning(f"[PersonaFusion] {name}/{entity} 融合 LLM 构造失败: {exc}")
             return None
         try:
-            # noqa 理由：cand_text 已 truncate_to_tokens 到 EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS
-            resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET
+            # cand_text 已 truncate_to_tokens 到 EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS；
+            # 显式开 thinking，额度与回退见 memory.thinking_llm。
+            resp, _ = await ainvoke_thinking(
+                api_config, prompt,
+                timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,
+                call_label=f"{name}/{entity} persona_external_fusion",
+            )
         except Exception as exc:
+            # 构造、调用任一步抛错都收敛成 None：异常绕过 ExternalMemoryFusionError
+            # 会让端点返 generic 500 而非 external_import_partial，丢掉前端重试所需
+            # 的 partial 元数据（Codex P2）。关闭失败由 helper 吞掉，不会盖掉结果。
             logger.warning(f"[PersonaFusion] {name}/{entity} 融合 LLM 调用失败: {exc}")
             return None
-        finally:
-            # aclose is cleanup: a close failure must not mask the call outcome —
-            # a finally exception would replace the return None / valid resp and
-            # propagate past ExternalMemoryFusionError into a generic 500 (Codex P2).
-            try:
-                await llm.aclose()
-            except Exception as exc:
-                logger.warning(f"[PersonaFusion] {name}/{entity} 融合 LLM 关闭失败: {exc}")
 
         raw = resp.content if hasattr(resp, "content") else str(resp)
         return self._parse_fusion_response(raw)

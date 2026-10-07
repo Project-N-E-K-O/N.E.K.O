@@ -78,6 +78,14 @@ EXTRA_BODY_OPENROUTER = {"reasoning": {"effort": "none"}}
 # OpenRouter: effort none→low（开思考但取最低努力档）。
 EXTRA_BODY_OPENROUTER_THINKING = {"reasoning": {"effort": "low"}}
 
+# OpenRouter 上的 Gemini 3.5 起思考不能关：发 effort=none 直接 400
+# "Reasoning is mandatory for this endpoint and cannot be disabled."。
+# minimal 实测思考 0 token，作为 none 的替代；凝神照样翻成 low。
+# 实测（2026-10-07）：google/gemini-3.5-flash / 3.6-flash / 3.8-flash 拒 none；
+# 3.1-flash-lite / 3-flash-preview 仍接受 none，留在 EXTRA_BODY_OPENROUTER。
+EXTRA_BODY_OPENROUTER_MINIMAL = {"reasoning": {"effort": "minimal"}}
+EXTRA_BODY_OPENROUTER_MINIMAL_THINKING = {"reasoning": {"effort": "low"}}
+
 # MiniMax 的 reasoning_split 只控制思考的「输出格式」，不是 on/off 开关：M2.x 始终
 # 内部推理、无法关闭；True=思考走独立 reasoning_details 字段，False/省略=思考以 <think>
 # 标签嵌进 content。凝神保持 True（不收录进下方 _THINKING_ENABLE_FORM 即「不翻」）：
@@ -125,6 +133,10 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "qwen3.7-flash": EXTRA_BODY_OPENAI,
     "qwen3.7-flash-2026-07-15": EXTRA_BODY_OPENAI,
     "qwen3.8-flash": EXTRA_BODY_OPENAI,
+    # 全模态非实时版（实时版带 -realtime 后缀，走 WebSocket，不经这张表）：
+    # 协议跟普通文本模型一样，只是输入多了音视频，输出只有文本；默认开思考，
+    # enable_thinking=False 生效（实测 2026-10-07）。
+    "qwen3.8-omni-flash": EXTRA_BODY_OPENAI,
     # GLM 系列
     "glm-4.5-air": EXTRA_BODY_CLAUDE,
     "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
@@ -188,12 +200,16 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "gemini-3-flash-preview": EXTRA_BODY_GEMINI_3,
     "gemini-3.1-flash-lite": EXTRA_BODY_GEMINI_3,
     "gemini-3.5-flash": EXTRA_BODY_GEMINI_3,
+    "gemini-3.6-flash": EXTRA_BODY_GEMINI_3,
+    "gemini-3.8-flash": EXTRA_BODY_GEMINI_3,
     # OpenRouter 格式 (provider/model) — OpenRouter 使用统一的 reasoning 参数
     "google/gemini-2.5-flash": EXTRA_BODY_OPENROUTER,
     "google/gemini-2.5-flash-lite": EXTRA_BODY_OPENROUTER,
     "google/gemini-3-flash-preview": EXTRA_BODY_OPENROUTER,
     "google/gemini-3.1-flash-lite": EXTRA_BODY_OPENROUTER,
-    "google/gemini-3.5-flash": EXTRA_BODY_OPENROUTER,
+    "google/gemini-3.5-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
+    "google/gemini-3.6-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
+    "google/gemini-3.8-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
     "qwen/qwen3.5-9b": EXTRA_BODY_OPENROUTER,
 }
 
@@ -231,6 +247,7 @@ _THINKING_ENABLE_FORM: dict[int, dict] = {
     id(EXTRA_BODY_GEMINI): EXTRA_BODY_GEMINI_THINKING,
     id(EXTRA_BODY_GEMINI_3): EXTRA_BODY_GEMINI_3_THINKING,
     id(EXTRA_BODY_OPENROUTER): EXTRA_BODY_OPENROUTER_THINKING,
+    id(EXTRA_BODY_OPENROUTER_MINIMAL): EXTRA_BODY_OPENROUTER_MINIMAL_THINKING,
 }
 
 # model → 凝神 extra_body，与 MODELS_EXTRA_BODY_MAP 同源派生（共用 model 列表，不会
@@ -255,7 +272,8 @@ def focus_extra_body(model: str) -> dict | None:
       - thinking.type: disabled -> enabled              (GLM / Kimi / Doubao / Claude / free)
       - thinking_budget: 0 -> 800 (low fixed budget)    (Gemini 2.5)
       - thinking_level low (kept minimal), include_thoughts->True (Gemini 3)
-      - reasoning.effort: none -> low                   (OpenRouter)
+      - reasoning.effort: none|minimal -> low           (OpenRouter; minimal
+        for Gemini 3.5+ there, which rejects none)
       - reasoning_effort: none|minimal -> low           (OpenAI native; the
         floor differs per model, low is the one both generations accept)
       - reasoning_effort: low kept (cannot disable)     (Step flash / step-5-preview)
@@ -271,6 +289,40 @@ def focus_extra_body(model: str) -> dict | None:
     # (Gemini's thinking_config); a caller mutating the result must not poison
     # the registry. Cheap — focus_extra_body runs once per focus turn.
     return copy.deepcopy(enabled) if enabled else None
+
+
+# 记忆系统里有意开思考的后台调用（审阅、信号检测、refine、反思合成…）默认不发
+# extra_body，让模型走原生思考。下面这些模型的原生思考没有边：输出上限压不住，
+# 或者思考量大到撞超时，所以显式压一档。实测（2026-10-07，同一条信号检测提示词）：
+#   - DeepSeek 官方：默认思考 5.4k~6.5k token；reasoning_effort=low 降到 2.0k~2.4k
+#     （minimal 反而 3.4k~4.2k，不稳定，不用）。思考默认就开，不必再发 thinking。
+#   - 硅基流动：max_tokens 只封正文，不发参数时思考跑到请求超时；必须
+#     enable_thinking + thinking_budget 才封得住（只发 thinking_budget 会让 DeepSeek
+#     系直接不思考）。预算取共享输出护栏同值。
+# 不在表里的模型保持原样（返回 None = 不发 extra_body = 原生思考）。
+EXTRA_BODY_DEEPSEEK_MEMORY_THINKING = {"reasoning_effort": "low"}
+EXTRA_BODY_SILICON_MEMORY_THINKING = {"enable_thinking": True, "thinking_budget": 4096}
+
+MODELS_MEMORY_THINKING_EXTRA_BODY: dict[str, dict] = {
+    "deepseek-flash": EXTRA_BODY_DEEPSEEK_MEMORY_THINKING,
+    "deepseek-v4-flash": EXTRA_BODY_DEEPSEEK_MEMORY_THINKING,
+    "deepseek-v4-flash-vision-exp": EXTRA_BODY_DEEPSEEK_MEMORY_THINKING,
+    "deepseek-v4-pro": EXTRA_BODY_DEEPSEEK_MEMORY_THINKING,
+    "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_SILICON_MEMORY_THINKING,
+    "deepseek-ai/DeepSeek-V4-Flash": EXTRA_BODY_SILICON_MEMORY_THINKING,
+    "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_SILICON_MEMORY_THINKING,
+    "Qwen/Qwen3.5-122B-A10B": EXTRA_BODY_SILICON_MEMORY_THINKING,
+}
+
+
+def memory_thinking_extra_body(model: str) -> dict | None:
+    """extra_body for a memory call that deliberately keeps thinking on.
+
+    ``None`` means "send no extra_body" (the model's native thinking), which is
+    what those call sites did before; only models whose native thinking cannot
+    be bounded by the output cap get an explicit, lower-effort form here."""
+    body = MODELS_MEMORY_THINKING_EXTRA_BODY.get(model or "")
+    return copy.deepcopy(body) if body else None
 
 
 def leaks_thinking_in_content(model: str) -> bool:
@@ -325,6 +377,15 @@ class CacheProviderConfig:
     auto_cache: bool = True
     cache_price: float = 0.10
     creation_price: float = 0.10
+    # OpenAI 兼容请求里输出上限用哪个字段。各家对两个字段的语义不一致
+    # （实测 2026-10-07，开思考）：
+    #   - max_completion_tokens：OpenAI 新规范，封「思考 + 正文」总量。
+    #     DeepSeek 官方 / GLM 官方 / 硅基流动不认，**静默忽略**，上限形同虚设。
+    #   - max_tokens：老字段。DeepSeek / GLM 当总量上限用；DashScope、Doubao、
+    #     硅基只拿它封正文，思考不受限；OpenAI 新模型直接 400。
+    # 所以默认留在 max_completion_tokens，只有不认它的厂商改发 max_tokens。
+    # 两个字段不能同时发：Doubao / Gemini / OpenAI 会 400。
+    token_limit_field: str = "max_completion_tokens"
 
     # 兼容测试里 config["xxx"] 字典式访问
     def __getitem__(self, key: str) -> Any:
@@ -401,6 +462,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         requires_header=False,
         min_cache_tokens=1024,
         cached_token_field="cached_tokens",
+        token_limit_field="max_tokens",
     ),
     "step": CacheProviderConfig(
         provider_id="step",
@@ -421,6 +483,18 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         requires_header=False,
         min_cache_tokens=1024,
         cached_token_field="prompt_cache_hit_tokens",
+        token_limit_field="max_tokens",
+    ),
+    "deepseek": CacheProviderConfig(
+        provider_id="deepseek",
+        name="DeepSeek",
+        base_url="https://api.deepseek.com/v1",
+        base_url_pattern="api.deepseek.com",
+        cache_mode="auto",
+        requires_header=False,
+        min_cache_tokens=64,
+        cached_token_field="prompt_cache_hit_tokens",
+        token_limit_field="max_tokens",
     ),
     "gemini": CacheProviderConfig(
         provider_id="gemini",
@@ -503,3 +577,15 @@ def get_cache_kwargs(base_url: str | None) -> dict[str, Any]:
         "default_headers": headers,
         "enable_cache_control": provider.requires_body_flag,
     }
+
+
+def get_token_limit_field(base_url: str | None) -> str:
+    """Return the output-cap field an OpenAI-compatible endpoint honours.
+
+    Unknown endpoints keep ``max_completion_tokens`` (the OpenAI spec field);
+    see ``CacheProviderConfig.token_limit_field`` for the providers that ignore
+    it. Anthropic-protocol clients do not consult this."""
+    provider = resolve_cache_provider(base_url)
+    if provider is None:
+        return "max_completion_tokens"
+    return provider.token_limit_field

@@ -450,7 +450,6 @@ class SurfacingMixin:
             detect_prompt_language_with_ascii_fallback,
             get_global_language_full,
         )
-        from utils.llm_client import create_chat_llm_async
 
         if not confirmed or not user_messages:
             return []
@@ -477,21 +476,14 @@ class SurfacingMixin:
             # reflection"——drain 模式下每批最多 20 条 user msg × 多条
             # confirmed reflection，思考能改善误判（防止把 user 的反讽 / 情景
             # 转换误标为否定）。完全后台无锁，没人等结果，安全开 thinking。
-            # max_retries=0: 禁 SDK 自动重试，失败 cursor 不推进自然下轮重试。
-            # extra_body=None: 显式开 thinking。
-            from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-            llm = await create_chat_llm_async(
-                api_config['model'],
-                api_config['base_url'], api_config['api_key'],
-                timeout=90, max_retries=0,
-                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
-                extra_body=None,
-                provider_type=api_config.get('provider_type'),
+            # 不做 SDK 自动重试，失败 cursor 不推进自然下轮重试；显式开 thinking，
+            # 额度与回退见 memory.thinking_llm。
+            # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
+            from memory.thinking_llm import ainvoke_thinking
+            resp, _ = await ainvoke_thinking(
+                api_config, prompt, timeout=90,
+                call_label="memory_rebuttal_check",
             )
-            try:
-                resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
-            finally:
-                await llm.aclose()
             raw = resp.content.strip()
             if raw.startswith("```"):
                 raw = raw.replace("```json", "").replace("```", "").strip()
