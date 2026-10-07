@@ -263,8 +263,8 @@ def _unnumbered_streets(segment: str) -> list[str]:
 _PLACE_PREPOSITIONS = frozenset({
     "in", "on", "at", "near", "by", "off", "behind", "beside", "opposite", "along", "across", "next",
 })
-# 两词介词的末词（「next to」「close to」「across from」「away from」）：与前一个词一起才算
-_PLACE_PREPOSITION_TAILS = {"to": frozenset({"next", "close"}), "from": frozenset({"across", "away"})}
+# 两词介词的末词（「next to」「close to」「across from」「away from」「far from」）：与前一个词一起才算
+_PLACE_PREPOSITION_TAILS = {"to": frozenset({"next", "close"}), "from": frozenset({"across", "away", "far"})}
 
 
 def _qualified_places(words: list[str]) -> list[str]:

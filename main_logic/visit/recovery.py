@@ -1354,6 +1354,11 @@ async def visit_spool_recovery(
         # 不能没试就放弃，但也不能让敏感转录无限期留着、附转录的举报永远等下去——最多再留一个
         # 保留期（按原来的年龄算，共 2 倍），之后同样按到期放弃
         expiry_now = sweep_now if upload_transcript is not None else sweep_now - VISIT_SPOOL_RETENTION_DAYS * 86400
+        # 归属在删之前取：自带归属的封存文件一删，state.json 又读不到时就无从得知是哪个账号的
+        upload_owners = {
+            visit_id: await _pending_upload_owner(config_dir, visit_id)
+            for visit_id in await VisitSpool.list_visit_ids(config_dir, (UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX))
+        }
         swept = await VisitSpool.sweep(config_dir, expiry_now, is_live=live, uploads="only")
         report.swept += len(swept)
         # 放弃的待传转录：它排队的举报随后照常提交（设计 §4.7），先在举报文件里记下
@@ -1365,9 +1370,9 @@ async def visit_spool_recovery(
             remaining = [visit_path(spool_dir, visit_id, suffix) for suffix in (UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX)]
             if await asyncio.to_thread(lambda paths=remaining: any(path.exists() for path in paths)):
                 continue
-            # 文件已删：归属取 state.json 记的账号（共用电脑上另一账号的举报不记）
-            await _mark_report_transcript_unavailable(
-                config_dir, visit_id, "expired", report, owner=await _state_owner(config_dir, visit_id))
+            # 归属取删之前从封存文件 / state.json 记下的（共用电脑上另一账号的举报不记）
+            owner = upload_owners.get(visit_id) or await _state_owner(config_dir, visit_id)
+            await _mark_report_transcript_unavailable(config_dir, visit_id, "expired", report, owner=owner)
             # 这场的转录不会再来了：排队的举报本轮就交，不再等它
             pending.discard(visit_id)
     except Exception as exc:  # noqa: BLE001

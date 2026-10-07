@@ -2907,3 +2907,24 @@ async def test_the_report_gate_ignores_the_owner_of_a_file_from_another_visit(tm
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
     # 别场文件里写的 A 不算：按 state.json 的 B，B 的附转录举报照旧等
     assert reports.calls == []
+
+
+
+async def test_an_expired_self_contained_upload_keeps_its_owner_for_the_report(tmp_path):
+    v = vid(115)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    sealed = d / f"{v}.upload.json"
+    sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")       # 自带 A 的归属，没有 state.json
+    old = time.time() - 8 * 86400
+    os.utime(sealed, (old, old))
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": "f" * 24}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
+    # 到期放弃的是 A 的转录（归属在删之前取）：另一账号的举报不带这个原因
+    assert not sealed.exists()
+    assert [visit_id for visit_id, _doc in reports.calls] == [v]
+    assert all("transcript_unavailable" not in doc for _visit_id, doc in reports.calls)

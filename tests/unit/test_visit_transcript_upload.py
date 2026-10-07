@@ -1718,3 +1718,20 @@ async def test_another_accounts_recorded_count_does_not_replace_this_stream(tmp_
     tu.remember_anomalies(V1, 5, OWN)                                       # 另一账号那一侧封存时记的
     # B 自己的流水里有 2 条：不能被 A 的计数盖掉（随后归属比对还会把它清零）
     assert await tu.visit_anomalies(tmp_path, V1, other) == 2
+
+
+
+async def test_a_failure_before_the_request_does_not_count_as_the_aged_attempt(tmp_path, servers, monkeypatch):
+    _write_sealed(tmp_path, _big_doc(4, 10))
+    sealed = _spool(tmp_path) / f"{V1}.upload.json"
+    old = time.time() - 30 * 86400
+    os.utime(sealed, (old, old))
+
+    async def setup_failed(*_a, **_k):
+        raise PermissionError("progress file in use")                # 请求还没发出就出错
+
+    monkeypatch.setattr(tu, "_upload", setup_failed)
+    with pytest.raises(PermissionError):
+        await tu.attempt_upload(V1, config_dir=tmp_path)
+    # 没真正试传过：下一轮仍要先试一次，不能直接按过期删掉
+    assert V1 not in tu._aged_attempted and sealed.exists()

@@ -1237,16 +1237,16 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         # 读不出 / 结构不对 / 别的场次或别的版本的封存文件：不直接传，交给启动补录判
         # （它能对照流水与 state.json 重封、隔离，或留给新版本）
         return UploadRound(pending=True, owner=owner)
-    if aged:
-        # 过了保留期的转录先试传一次再判过期（与启动补录同一顺序：应用关得久，刚启动就提交的举报
-        # 不能让唯一一份转录不试就丢）
-        _aged_attempted.add(visit_id)
     rejected = doc.get("rejected")
     if isinstance(rejected, str) and rejected:
         # 上一轮已终态拒收、只是原因没记进举报：不再整份重传，接着记原因、删文件
         result = UploadResult(terminal=rejected)
     else:
         result = await _upload(visit_id, doc, config_dir)
+    if aged:
+        # 过了保留期的转录先试传一次再判过期（与启动补录同一顺序：应用关得久，刚启动就提交的举报
+        # 不能让唯一一份转录不试就丢）。试过才记：本地准备时就出错（进度落盘失败）不算试过
+        _aged_attempted.add(visit_id)
     if result.done or result.terminal is not None:
         return await _settled_round(config_dir, visit_id, sealed, result, owner=owner)
     if aged:

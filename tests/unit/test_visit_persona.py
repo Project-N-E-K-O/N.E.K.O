@@ -1079,3 +1079,8 @@ def test_retiring_waits_for_a_regeneration_write_already_in_its_thread(env, monk
     written.wait(5)
     # 退役等在途写盘写完才删：不会被写回来
     assert not path.exists()
+
+
+
+def test_a_place_after_far_from():
+    assert "Broadway" in persona.extract_sensitive_tokens("address: Apartment far from Broadway", [])
