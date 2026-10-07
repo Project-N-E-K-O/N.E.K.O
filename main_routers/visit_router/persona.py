@@ -878,8 +878,11 @@ def _note_write(character_uid: str) -> None:
 
 async def _regenerate(name: str, character_uid: str, started_version: int) -> None:
     try:
+        # 按 uid 找角色此刻的名字再读卡：发起之后改了名、又新建了同名角色时，不能拿新角色的卡写进旧角色的人设。
+        # 先读卡片快照、后查名字：两步之间又改了名时，新名字在旧快照里找不到，按角色不在处理，不会读到别人的卡
         ctx = await _hooks.load_context()
-        card = ctx.card(name)
+        current = await _hooks.resolve_char_name(character_uid)
+        card = ctx.card(current) if current is not None else None
         if card is None:
             _errors[character_uid] = "unknown_catgirl"
             return
@@ -1101,6 +1104,7 @@ async def put_persona(request: Request, catgirl: str = ""):
         except PersonaUnavailable:
             # 读不了就不知道盘上是哪一份：既不能按「从没生成过」新建，也不能确认，稍后再试
             return _error(503, "persona_unavailable")
+        previous = doc
         if await _hooks.resolve_char_name(character_uid) is None:
             # 请求进来之后角色被删除：不再写，否则删除角色时清掉的人设文件又被建回来
             return _error(404, "unknown_catgirl")
@@ -1160,6 +1164,15 @@ async def put_persona(request: Request, catgirl: str = ""):
                 doc = {**doc, "text": cleaned, "edited": True, "reviewed": True}
         await persona_store.save(character_uid, doc)
         _note_write(character_uid)
+        if text is not None and card_hash((await _hooks.load_context()).card(catgirl)) != card_hash(card):
+            # 写盘期间卡片又改了（改卡不走人设锁）：这份手写只按旧卡查过，撤回、恢复成原来那份。
+            # 写盘之后才改的卡属于「手改过的人设不随卡片变化」，不在此列
+            if previous is None:
+                await persona_store.retire(character_uid)
+            else:
+                await persona_store.save(character_uid, previous)
+            _note_write(character_uid)
+            return _error(409, "persona_card_changed")
         _errors.pop(character_uid, None)
     return await _view_response(catgirl, character_uid, ctx)
 

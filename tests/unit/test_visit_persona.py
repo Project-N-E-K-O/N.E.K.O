@@ -1191,3 +1191,64 @@ def test_a_copula_after_a_contact_keyword_is_not_a_separator():
     # 「is」后的普通词（ok / great）收成敏感词会按子串误挡人设（book、okay）；纯字母账号交给独立扫描
     assert persona.extract_sensitive_tokens("WeChat is ok", []) == []
     assert persona.extract_sensitive_tokens("my phone is broken", []) == []
+
+
+
+def test_a_hand_edit_saved_while_the_card_changes_is_rolled_back(env, monkeypatch):
+    client, tmp_path, state, *_ = env
+    _generate(client)
+    before = _file(tmp_path)
+    real_save = persona.VisitPersonaStore.save
+    saves = []
+
+    async def save_while_the_card_changes(self, uid, doc):
+        saves.append(doc["text"])
+        await real_save(self, uid, doc)
+        if len(saves) == 1:
+            state["cards"]["A"] = CARD + "\naddress: Broadway"                # 写盘期间卡片加了地址
+
+    monkeypatch.setattr(persona.VisitPersonaStore, "save", save_while_the_card_changes)
+    resp = client.put("/api/visit/persona?catgirl=A", headers=GOOD,
+                      json={"text": "你是{LANLAN_NAME}，住在 Broadway 附近的猫。", "reviewed": True})
+    # 只按旧卡查过的手写不能留下：撤回成原来那份
+    assert resp.status_code == 409 and resp.json()["code"] == "persona_card_changed"
+    assert _file(tmp_path) == before
+
+
+def test_a_regeneration_reads_the_card_of_its_own_character_after_a_rename(env, monkeypatch):
+    client, tmp_path, state, llm, _scan = env
+    gate = client.portal.call(_make_event)
+    prompts = []
+
+    async def slow(prompt):
+        prompts.append(prompt)
+        await gate.wait()
+        return GOOD_PERSONA
+
+    persona.configure_persona(llm=slow)
+    real_load = persona._hooks.load_context
+    renamed = []
+
+    async def rename_then_load():
+        if not renamed:
+            renamed.append(True)
+            state["uids"]["A2"] = state["uids"].pop("A")                    # A 改名为 A2
+            state["cards"]["A2"] = state["cards"].pop("A")
+            state["uids"]["A"] = "c" * 32                                    # 又新建了一个叫 A 的角色
+            state["cards"]["A"] = "你是{LANLAN_NAME}，另一只完全不同的猫，喜欢下雨天。"
+        return await real_load()
+
+    monkeypatch.setattr(persona._hooks, "load_context", rename_then_load)
+
+    async def scenario():
+        job = persona.start_regeneration("A", UID_A)
+        for _ in range(200):
+            if prompts:
+                break
+            await asyncio.sleep(0.01)
+        gate.set()
+        await job
+
+    client.portal.call(scenario)
+    # 生成用的是 UID_A 这只猫（改名后的 A2）的卡，不是新建的同名角色
+    assert "完全不同的猫" not in prompts[0] and "橘色猫娘" in prompts[0]
