@@ -152,20 +152,16 @@ deduplication policy.
 
 ## Recorded cleanup target (not a release guarantee)
 
-The current source still carries TODO/deprecation text that names v0.9 as a
-target. Treat that label as migration metadata, not as proof that a released
-v0.9 has removed the compatibility layer. The pending cleanup consists of:
+The source no longer carries the `TODO(v0.9)` marker for `description`: the
+legacy alias has been removed from `plugin/core/context.py` and
+`plugin/server/application/messages/query_service.py`, and the in-repo call
+sites were migrated first (plugin call sites are found by the static v1
+checker). The remaining cleanup consists of:
 
 * Removing all legacy `push_message` parameters listed above.
 * Removing the legacy fields synthesised on the wire payload (`message_type`,
-  `content`, `binary_data`, `binary_url`, `mime`, `description`, `unsafe`,
-  `delivery`, `reply`).
-* Removing `description` everywhere it currently lingers — it has no semantic
-  consumer in v2, only surfaces as a human label in legacy log lines and
-  the `query_service` response.  Marked with `TODO(v0.9)` in
-  `plugin/core/context.py` and
-  `plugin/server/application/messages/query_service.py` so the cleanup PR
-  can grep for the marker; plugin call sites are found by the static v1 checker.
+  `content`, `binary_data`, `binary_url`, `mime`, `unsafe`, `delivery`,
+  `reply`). `description` is already gone.
 * Removing the legacy event-bus event shape (`proactive_message` event type
   itself stays, but its `media_parts` / `visibility` / `ai_behavior`
   fields become the only schema; `delivery_mode` becomes derived).

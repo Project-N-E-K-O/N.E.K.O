@@ -332,14 +332,16 @@ class SteamWorkshop(object):
         published_files_ctype = c_uint64 * max_items
         published_files = published_files_ctype()
 
-        # TODO: We might need to add an exception check here to catch any errors while
-        # writing to the 'pvecPublishedFileIds' array.
+        # Steamworks writes at most max_items ids into the caller-owned array;
+        # a short write leaves the trailing slots as their zero-initialised
+        # value. The count is clamped so the crop below can never index past
+        # the array.
         actual_item_count = self.steam.Workshop_GetSubscribedItems(published_files, max_items)
-        # According to sdk's example, it is possible for numItems to be greater than maxEntries so we crop.
+        if not isinstance(actual_item_count, int) or actual_item_count < 0:
+            actual_item_count = 0
         if actual_item_count > max_items:
-            published_files = published_files[:max_items]
-
-        return published_files
+            actual_item_count = max_items
+        return list(published_files[:actual_item_count])
 
 
     def GetItemState(self, published_file_id: int) -> EItemState:

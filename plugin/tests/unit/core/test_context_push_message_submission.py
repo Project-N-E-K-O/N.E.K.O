@@ -514,7 +514,7 @@ def test_inline_image_is_not_duplicated_into_the_legacy_binary_data_field(
     assert payload["binary_url"] is None
     assert payload["content"] == "look"
     assert payload["message_type"] == "proactive_notification"
-    assert payload["description"] == ""
+    assert "description" not in payload
     assert payload["delivery"] == "proactive"
     assert payload["reply"] is True
     assert payload["unsafe"] is False
@@ -537,7 +537,6 @@ def test_inline_image_is_not_duplicated_into_the_legacy_binary_data_field(
         "binary_data",
         "binary_url",
         "mime",
-        "description",
         "unsafe",
         "delivery",
         "reply",

@@ -6462,10 +6462,11 @@ def test_jukebox_stale_match_refreshes_before_reporting_failure(mock_page: Page)
 
 @pytest.mark.frontend
 def test_jukebox_fbx_reports_that_no_animation_started(mock_page: Page):
-    """Codex P2: playFBX returned true while its implementation is a TODO.
+    """playFBX must report False whenever no animation actually started.
 
-    playSong then cleared the idle debt as if a replacement animation had taken
-    over, leaving the avatar on the interrupted dance's last frame.
+    A bare manager without ``loadAnimation`` plays nothing, so returning True
+    would let playSong clear the idle debt as if a replacement animation had
+    taken over, leaving the avatar on the interrupted dance's last frame.
     """
     setup_headless_jukebox_page(mock_page)
 
