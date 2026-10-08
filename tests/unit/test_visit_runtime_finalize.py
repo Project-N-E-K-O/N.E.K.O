@@ -215,7 +215,13 @@ async def test_handoff_never_waits_past_the_absolute_deadline(tmp_path, monkeypa
             await asyncio.sleep(0.3)
             assert hh.resubmitted == []
         clock.advance(5)
-        await wait_for(lambda: hh.resubmitted)            # 到点一律重投，从不丢弃
+        for _ in range(100):                               # 仍在报进度：只有绝对期限能让它交还
+            for seg in segments:
+                await rtm.on_page_signal("Host", {"speech_id": seg.speech_id, "played_ms": 100, "ended": False})
+            if hh.resubmitted:
+                break
+            await asyncio.sleep(0.05)
+        assert hh.resubmitted                              # 到点一律重投，从不丢弃
     finally:
         for g in gates:
             g.set()

@@ -143,6 +143,7 @@ async def test_busy_refusal_has_no_side_effects(tmp_path, monkeypatch):
     rt = host.rt
     rt.outbox.reserve = lambda nbytes: None
     turns = rt.room.cat_turns_since_human
+    own_sends = len(rt.room._own_text_sends)
     line = rt._line
     try:
         await rtm.route_stream_message("Host", {"input_type": "text", "data": "长长的一段话",
@@ -150,6 +151,7 @@ async def test_busy_refusal_has_no_side_effects(tmp_path, monkeypatch):
         assert host.host.statuses[-1] == ("VISIT_E_BUSY", {"visit_id": rt.visit_id, "request_id": "r9"})
         assert host.host.user_inputs == []
         assert rt.room.cat_turns_since_human == turns
+        assert len(rt.room._own_text_sends) == own_sends and rt.room._last_human_key is None
         assert rt._line is line and not line.speaker.done          # 正在说的那行没被打断
         assert not [r for r in rt.journal.lines() if r["from"] == "own_human"]
     finally:

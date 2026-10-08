@@ -479,15 +479,17 @@ async def test_ready_goes_out_only_after_the_host_is_ready_to_receive(tmp_path, 
 
     def spy(msg, **kw):
         if msg.get("t") == "ready":
-            seen["state"] = (hrt.session is not None, hrt.room is not None and hrt.room.phase == "active",
-                             hrt.spool is not None and hrt.spool.is_open, hrt.activated, hrt.journal.is_open)
+            seen.setdefault("count", 0)
+            seen["count"] += 1
+            seen.setdefault("state", (hrt.session is not None, hrt.room is not None and hrt.room.phase == "active",
+                             hrt.spool is not None and hrt.spool.is_open, hrt.activated, hrt.journal.is_open))
         return real_send(msg, **kw)
 
     hrt.outbox.send = spy
     try:
         assert host.clients == []
         await hrt.accept(True)
-        assert seen["state"] == (True, True, True, True, True)
+        assert seen["state"] == (True, True, True, True, True) and seen["count"] == 1
         assert len(host.clients) == 1
         await wait_for(lambda: guest.rt.activated)
         assert len(guest.clients) == 1
