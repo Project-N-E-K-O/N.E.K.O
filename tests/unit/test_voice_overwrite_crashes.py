@@ -172,4 +172,17 @@ def test_crash_restart_preserves_submission_evidence_and_identity(tmp_path, stag
             assert retried["code"] == "UPDATE_OUTCOME_UNKNOWN"
             assert state["accepted"] == expected_count
             assert persisted(tmp_path)["overwrite_operation_id"] == op
+        if stage in {"converted", "sending"}:
+            refreshed = run(tmp_path, url, "refresh")
+            assert refreshed["result"]["status"] == "unknown"
+            assert "abandon" in refreshed["result"]["details"]["voice_state"]["actions"]
+            abandoned = run(tmp_path, url, "abandon")
+            assert abandoned["result"]["abandoned"]
+            assert persisted(tmp_path)["overwrite_operation_id"] == op
+            assert persisted(tmp_path)["overwrite_terminal_reason"] == "user_abandoned_unknown"
+            assert state["accepted"] == 0
+            retried = run(tmp_path, url, "overwrite")
+            assert retried["result"]["status"] == "completed"
+            assert persisted(tmp_path)["overwrite_operation_id"] != op
+            assert state["accepted"] == 1
         assert persisted(tmp_path)["local_ref"] == ref

@@ -247,7 +247,8 @@ async def test_refresh_does_not_credit_a_revision_that_existed_before_overwrite(
     result = await service.overwrite_remote_voice(adapter, cm, ref, token=token, audio=b"audio", filename="v.wav")
     assert result["status"] == "processing"
     refreshed = await service.refresh_overwrite_status(adapter, cm, ref, token=token)
-    assert refreshed["status"] == "processing"
+    # No live owner and a ready unchanged revision remain uncertain, not completed.
+    assert refreshed["status"] == "unknown"
     adapter.remote = replace(adapter.remote, metadata={"remote_revision": "3"})
     assert (await service.refresh_overwrite_status(adapter, cm, ref, token=token))["status"] == "completed"
 

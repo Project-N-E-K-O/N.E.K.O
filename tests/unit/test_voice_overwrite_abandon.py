@@ -97,11 +97,22 @@ async def test_abandon_rechecks_remote_revision_and_readiness(fixture, revision,
 
 
 @pytest.mark.asyncio
-async def test_processing_never_gets_abandon_action(fixture):
+@pytest.mark.parametrize("phase", [None, "submission_possible", "prepared"])
+@pytest.mark.parametrize("remote_status", ["ready", "processing"])
+async def test_orphan_processing_requires_query_and_keeps_prepared_separate(fixture, phase, remote_status):
     cm, adapter, ref, record = await unknown(fixture, False)
-    cm.update_imported_voice(ref, record["scope_id"], {"overwrite_status": "processing"})
+    cm.update_imported_voice(ref, record["scope_id"], {
+        "overwrite_status": "processing", "overwrite_submission_phase": phase,
+    })
+    adapter.remote = replace(adapter.remote, status=remote_status)
     result = await service.refresh_overwrite_status(adapter, cm, ref, token=payload(adapter, cm)["context_token"])
-    assert "abandon" not in result["details"]["voice_state"]["actions"]
+    assert result["status"] == ("unknown" if phase != "prepared" and remote_status == "ready" else "processing")
+    actions = result["details"]["voice_state"]["actions"]
+    assert ("abandon" in actions) == (phase != "prepared" and remote_status == "ready")
+    if "abandon" in actions:
+        await abandon(cm, adapter, ref, cm.get_imported_voice(ref))
+        assert cm.get_imported_voice(ref)["overwrite_status"] == "failed"
+    assert adapter.mutations == []
 
 
 @pytest.mark.asyncio
@@ -180,3 +191,16 @@ async def test_unreadable_feedback_does_not_invent_unlocked_actions(fixture, mon
     assert result["details"]["state_sync"] == "saved"
     assert result["details"]["attempt_outcome"] == "unknown"
     assert original(ref)["overwrite_terminal_reason"] == "user_abandoned_unknown"
+
+
+@pytest.mark.asyncio
+async def test_abandon_recheck_normalizes_even_permissive_adapter_revision(fixture):
+    cm, adapter, ref, record = await unknown(fixture)
+    # A permissive adapter must not bypass the common metadata size/type gate.
+    adapter.compare_revisions = lambda current, previous: 0
+    adapter.remote = replace(adapter.remote, metadata={"remote_revision": 1})
+    original = adapter.compare_revisions
+    adapter.compare_revisions = lambda current, previous: None if current is None else original(current, previous)
+    with pytest.raises(VoiceManagementError, match="VOICE_STATE_CHANGED"):
+        await abandon(cm, adapter, ref, record)
+    assert cm.get_imported_voice(ref) == record

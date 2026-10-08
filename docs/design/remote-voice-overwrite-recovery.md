@@ -97,3 +97,14 @@ remain subject to operation/revision CAS; a later overwrite creates a new owner.
 Query errors, missing records, new owners, account changes and storage failures
 cannot silently unlock the record. Direct overwrite and deletion remain protected
 until abandonment has actually persisted.
+
+### Restarted processing records
+
+A successful refresh can also project an orphaned `processing` record as
+`unknown` when its phase is `submission_possible` or absent, there is no held
+per-voice request lock, and the remote voice is ready at exactly the previous
+revision. This grants only the same explicit abandonment advice, never automatic
+retry or proof of non-acceptance. Prepared records retain their dedicated recovery
+path; remote processing observations retain pending protection. Advanced remote
+revisions still reconcile normally. The abandonment recheck uses `_voice_metadata`
+normalization, matching refresh's string/type/size evidence gate.

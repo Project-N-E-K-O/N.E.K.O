@@ -659,6 +659,14 @@ async def _reconcile_overwrite_status(
             # proof of freshness, including after a local CAS conflict.
             raise VoiceManagementError("UPDATE_OUTCOME_UNKNOWN", 409)
         floor = revision
+        # A restarted/retired request may leave processing on disk without a
+        # live owner. Keep prepared recovery separate; possible submissions
+        # remain uncertain and require explicit user risk acceptance.
+        if (status == "processing"
+                and record.get("overwrite_submission_phase") in {None, "submission_possible"}
+                and remote.status in {"ready", "completed", "OK"}
+                and adapter.compare_revisions(revision, previous) == 0):
+            status = "unknown"
         # Reconciliation may settle only an unresolved operation. A later external
         # revision cannot turn a known rejection into success (or undo completion).
         if status in {"processing", "unknown"}:

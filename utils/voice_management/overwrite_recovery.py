@@ -47,7 +47,7 @@ async def abandon_unknown_overwrite(
 ):
     """Explicitly accept duplicate-submission risk; never claim remote rejection."""
     from .service import (
-        _check_context, _runtime, _OVERWRITE_LOCKS, public_voice_data, transition_with_context,
+        _check_context, _runtime, _OVERWRITE_LOCKS, _voice_metadata, public_voice_data, transition_with_context,
     )
     from .types import AttemptOutcome
 
@@ -79,7 +79,7 @@ async def abandon_unknown_overwrite(
                 remote = await adapter.get_voice(runtime, record["remote_voice_id"])
                 await _check_context(adapter, cm, runtime, voice_data=record)
                 if (remote is None or remote.status not in {"ready", "completed", "OK"}
-                        or adapter.compare_revisions(remote.metadata.get("remote_revision"),
+                        or adapter.compare_revisions(_voice_metadata(remote.metadata).get("remote_revision"),
                                                      record.get("overwrite_previous_revision")) != 0):
                     raise VoiceManagementError("VOICE_STATE_CHANGED", 409)
                 receipt = await evidence.write(transition_with_context(adapter, cm, runtime, record, action="abandon"))

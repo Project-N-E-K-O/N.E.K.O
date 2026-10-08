@@ -91,7 +91,15 @@ async def run(directory, url, stage, action):
     ref = record["local_ref"]
     token = service.context_token(runtime)
     try:
-        if action == "recover":
+        if action == "refresh":
+            result = await service.refresh_overwrite_status(adapter, cm, ref, token=token)
+        elif action == "abandon":
+            from utils.voice_management.overwrite_recovery import abandon_unknown_overwrite
+            result = await abandon_unknown_overwrite(
+                adapter, cm, ref, token=token, operation_id=record["overwrite_operation_id"],
+                record_revision=record["_record_revision"],
+            )
+        elif action == "recover":
             from utils.voice_management.overwrite_recovery import recover_prepared_overwrite
             result = await recover_prepared_overwrite(
                 adapter, cm, ref, token=token, operation_id=record["overwrite_operation_id"],

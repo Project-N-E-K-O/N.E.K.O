@@ -335,3 +335,20 @@ Electron 41.2.0 的真实音色页面分别通过新解锁与原准备恢复场�
 Ruff、异步阻塞、API 路径、i18n 同步、文档链接与 diff 检查通过。
 全套 pytest 退出阶段出现既有 token tracker 向已关闭输出写日志的诊断，不影响 776 项断言或退出码。
 未重新运行全仓库或真实账号合成验收；新 head 的 CI 与 review 以远端状态为准。
+
+## 2026-10-08：崩溃遗留 processing 与 revision 再校验
+
+接受 [提交阶段崩溃反馈](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3325#discussion_r4218449784)：
+在没有活跃音色锁、phase 为 submission_possible 或历史缺失、远端 ready 且版本等于覆盖前版本时，
+refresh 将孤立 processing 写成 unknown，并给出绑定新记录版本的显式 abandon 动作。
+prepared 仍由原恢复入口处理；远端 processing、不一致版本及活跃请求保持保护，版本前进仍正常结算。
+没有将“锁不存在”或 ready 解释为未受理证据，仅提供用户确认重复提交风险的出口。
+
+同时接受 [CodeRabbit revision 规范化建议](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3325#pullrequestreview-5455996470)：
+abandon 再查询统一经过 _voice_metadata 的字符串/长度门禁，和 refresh 校验口径相同。
+
+相关 Python 777 项通过，Ruff、异步阻塞、文档和 diff 检查通过。
+真实子进程测试在 converted / sending 两个终止点增加重启后 refresh → abandon → 再覆盖断言：
+解锁前 provider accepted 为 0，解锁本身不提交，重新覆盖后为 1，引用保留而新操作 ID 替换旧 owner。
+六组 phase/远端状态组合保留 prepared 和处理中远端保护；宽松 adapter 回归确认整数 revision 不能绕过公共规范化。
+本轮没有修改前端、locale 或 provider 错误码分类；新 head CI 需独立核验。
