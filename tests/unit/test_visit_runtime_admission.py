@@ -704,3 +704,103 @@ async def test_session_created_while_ending_is_still_closed(tmp_path, monkeypatc
     finally:
         gate.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_second_start_during_the_reservation_is_refused(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    gate, reached = asyncio.Event(), asyncio.Event()
+
+    async def slow_account():
+        reached.set()
+        await gate.wait()
+        return "acct"
+
+    monkeypatch.setattr(rtm, "_local_account", slow_account)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    first = asyncio.ensure_future(start_side(side, clock=clock, wall=wall))
+    await asyncio.wait_for(reached.wait(), 5)
+    slot = visit_route_state.get_visit_route_state("Host")
+    assert slot is not None and rtm.get_runtime("Host") is None
+    assert rtm.is_visit_route_locked("Host")             # 占位即上锁：运行时还没登记也算
+    with pytest.raises(rtm.VisitRefused) as refused:
+        await rtm.start_visit("Host", "host", crop="upper", invite_code=None, visit_id="Y" * 22,
+                              host=side.host, deps=side.deps, clock=clock, wall=wall)
+    assert refused.value.status == 409 and refused.value.body["reason"] == "already_visiting"
+    assert visit_route_state.get_visit_route_state("Host") is slot   # 第一场的占位没被换掉
+    gate.set()
+    rt = await first
+    try:
+        assert rt.slot is slot and rtm.get_runtime("Host") is rt
+    finally:
+        await teardown(side, clock=clock)
+
+
+def test_the_vp8_fallback_applies_to_the_next_livekit_visit_only(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(rtm, "_vp8_next_visit", True)
+    livekit = SimpleNamespace(transport="livekit")
+    nxt = SimpleNamespace(creds=livekit, _livekit_codec=None)
+    assert rtm.VisitRuntime._codec(nxt) == "vp8"
+    assert rtm._vp8_next_visit is False
+    assert rtm.VisitRuntime._codec(nxt) == "vp8"           # 本场续期 / 重连沿用
+    later = SimpleNamespace(creds=livekit, _livekit_codec=None)
+    assert rtm.VisitRuntime._codec(later) == "vp9"
+    trtc = SimpleNamespace(creds=SimpleNamespace(transport="trtc"), _livekit_codec=None)
+    monkeypatch.setattr(rtm, "_vp8_next_visit", True)
+    assert rtm.VisitRuntime._codec(trtc) == "h264" and rtm._vp8_next_visit is True   # TRTC 不消耗
+
+
+async def test_ending_while_the_journal_opens_does_not_reopen_the_wait(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = rt.journal.open
+
+    async def slow_open(**kw):
+        reached.set()
+        await gate.wait()
+        await real_open(**kw)
+
+    rt.journal.open = slow_open
+    joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
+    await asyncio.wait_for(reached.wait(), 5)
+    rt.request_finalize("route_end")
+    await settle()
+    gate.set()
+    await joining
+    await _finished(rt)
+    assert rt.phase == "ended"
+    assert not side.host.frames_of("visit_state_change", "invite_ready")
+
+
+async def test_ending_while_the_peer_name_is_cleaned_installs_no_peer(tmp_path, monkeypatch, clocks):
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_clean = rt._clean_peer_name
+
+    async def slow_clean(*args):
+        reached.set()
+        await gate.wait()
+        return await real_clean(*args)
+
+    rt._clean_peer_name = slow_clean
+    try:
+        await rt.on_transport_state({"state": "connected", "peer_present": True})
+        hello = asyncio.ensure_future(rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(), nbytes=900))
+        await asyncio.wait_for(reached.wait(), 5)
+        rt.request_finalize("route_end")
+        await settle()
+        gate.set()
+        await hello
+        await _finished(rt)
+        assert rt.peer is None and rt.phase == "ended"
+        assert not side.host.frames_of("visit_invite")
+    finally:
+        gate.set()
+        await teardown(side, wire=wire, clock=clocks[0])

@@ -412,7 +412,9 @@ async def test_character_switch_and_replaced_manager(tmp_path, monkeypatch):
         await guest.rt.tick()
         assert guest.rt.finalize_reason == "manager_replaced"
         await finish(guest.rt, clock)
-        assert [p["reason"] for p in wire.sent["guest"] if p.get("t") == "leave"] == ["error"]
+        # host 已在收尾、可能来不及回 ack：同一条 leave 会按 seq 重传，但只有这一条
+        leaves = [p for p in wire.sent["guest"] if p.get("t") == "leave"]
+        assert {p["reason"] for p in leaves} == {"error"} and len({p["seq"] for p in leaves}) == 1
     finally:
         for g in gates:
             g.set()
@@ -580,4 +582,4 @@ async def test_background_tasks_follow_a_rename_of_an_idle_character(monkeypatch
         assert "旧名字" not in rtm._uid_by_name
     finally:
         gate.set()
-        await task
+        await asyncio.gather(task)

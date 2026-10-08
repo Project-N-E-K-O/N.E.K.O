@@ -60,7 +60,7 @@ async def test_family_turn_wait_covers_a_reply_that_starts_late(monkeypatch):
     started = time.monotonic()
     await _host(session).wait_turn_idle(5.0, start_window=1.0)
     elapsed = time.monotonic() - started
-    await turn
+    await asyncio.gather(turn)
     assert 0.35 <= elapsed < 1.0                      # 等到这一轮真正结束
 
 

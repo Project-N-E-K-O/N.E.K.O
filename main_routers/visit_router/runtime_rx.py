@@ -241,9 +241,13 @@ class ReceiveMixin:
             return
         from main_logic.visit.subjects import derive_short_code
 
+        display = await self._clean_peer_name(claims.display_name, claims.sub)
+        if self.finalizing or self.peer is not None:
+            # 读本机名字期间这场已被结束（或另一条 hello 先装好了对端）：不再装对端、不发邀请
+            return
         self.peer = PeerInfo(
             uid=claims.sub, vid=claims.vid, char_tag=claims.char_tag, raw_display=claims.display_name,
-            display=await self._clean_peer_name(claims.display_name, claims.sub),
+            display=display,
             short_id=derive_short_code(claims.sub), video=caps.get("video") is True,
             lang=m.get("lang") if isinstance(m.get("lang"), str) else None,
             crop=caps.get("crop") if caps.get("crop") in ("upper", "full") else "upper", jti=claims.jti,

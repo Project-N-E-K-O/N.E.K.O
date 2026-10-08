@@ -299,9 +299,14 @@ def is_visit_route_active(lanlan_name: str) -> bool:
 
 
 def is_visit_route_locked(lanlan_name: str) -> bool:
-    """Registry ``is_locked``: the slot is taken until the exit flow completed."""
-    rt = _runtimes.get(str(lanlan_name or ""))
-    return rt is not None
+    """Registry ``is_locked``: the slot is taken until the exit flow completed.
+
+    Also true for a reservation whose runtime is not registered yet
+    (``start_visit`` between the slot and the runtime), so a second start of
+    the same character is refused instead of replacing the slot.
+    """
+    name = str(lanlan_name or "")
+    return name in _runtimes or get_visit_route_state(name) is not None
 
 
 def _character_uid_of(lanlan_name: str) -> Optional[str]:
@@ -509,6 +514,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
         # 凭证与能力门
         self.grant: Optional[cr.VisitGrant] = None
+        self._livekit_codec: Optional[str] = None
         self._creds_task: Optional[asyncio.Task] = None
         self.preflight_ok: Optional[bool] = None
         self.video_ok = False
@@ -668,9 +674,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
     def _codec(self) -> str:
         creds = self.creds
+        global _vp8_next_visit
         if creds is not None and creds.transport == "trtc":
             return "h264"
-        return "vp8" if _vp8_next_visit else "vp9"
+        if self._livekit_codec is None:
+            # 上一场软编过载只影响下一场：这一场取走标记，续期 / 重连沿用同一个选择
+            self._livekit_codec = "vp8" if _vp8_next_visit else "vp9"
+            _vp8_next_visit = False
+        return self._livekit_codec
 
     def _credentials_message(self, *, refresh: bool) -> dict:
         creds = self.grant.current  # type: ignore[union-attr]
@@ -807,7 +818,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.joined = True
         self._join_deadline = None
         creds = self.creds
-        if creds is None:
+        if creds is None or self.finalizing:
             return
         # 进入本场：先写上传头，之后的每一行、用量与异常都追加在它后面
         try:
@@ -817,6 +828,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             )
         except Exception as exc:  # noqa: BLE001 - 上传流水建不起来：转录少一份，串门照常
             logger.warning("visit %s: upload journal not opened: %s", self.visit_id[:6], type(exc).__name__)
+        if self.finalizing:
+            # 写上传头期间这场已被结束：不再把阶段翻回等待
+            return
         if self.side == "host":
             # 等客：只受邀请期限约束；观察到对端入房时由 liveness 延长
             from config.visit_settings import VISIT_INVITE_WAIT_S
@@ -1690,7 +1704,7 @@ async def start_visit(
     vid = visit_id or secrets.token_urlsafe(16)
     # 锁检查与占位之间没有 await：查完立刻占位，别的路由插不进来；占位之后它必为真，不能再查
     if is_external_route_locked(name):
-        reason = "already_visiting" if name in _runtimes else "route_owned"
+        reason = "already_visiting" if name in _runtimes or get_visit_route_state(name) else "route_owned"
         raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": reason})
     slot = activate_visit_route(name, phase=PHASE_PENDING, visit_id=vid)
     try:
