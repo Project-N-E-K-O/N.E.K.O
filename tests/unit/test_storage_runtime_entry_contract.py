@@ -155,14 +155,32 @@ def _scan_state_children(tree: ast.Module) -> set[str]:
             if isinstance(target, ast.Name)
         }
         for node in ast.walk(scope):
+            # The parts after the runtime root, however the path is built:
+            # root / "state" / name, os.path.join(root, "state", name),
+            # root.joinpath("state", name), or "state/name" in one string.
+            parts: list[ast.AST] = []
             chain = _division_chain(node)
-            if len(chain) < 3 or not _is_runtime_root(chain[0], aliases):
-                continue
-            if _string_value(chain[1], constants) != "state":
-                continue
-            child = _string_value(chain[2], constants)
-            if child:
-                found.add(_first_segment(child))
+            if len(chain) >= 2 and _is_runtime_root(chain[0], aliases):
+                parts = chain[1:]
+            elif isinstance(node, ast.Call):
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if name in {"join", "joinpath"}:
+                    args = list(node.args)
+                    if isinstance(func, ast.Attribute) and name == "joinpath":
+                        args = [func.value, *args]
+                    for index, arg in enumerate(args[:-1]):
+                        if _is_runtime_root(arg, aliases):
+                            parts = args[index + 1:]
+                            break
+            segments: list[str] = []
+            for part in parts:
+                value = _string_value(part, constants)
+                if value is None:
+                    break
+                segments.extend(segment for segment in value.replace("\\", "/").split("/") if segment)
+            if len(segments) >= 2 and segments[0] == "state":
+                found.add(segments[1])
     return found
 
 
@@ -248,3 +266,25 @@ def test_every_runtime_dir_under_state_is_migrated():
         "Add each as \"state/<name>\" to MIGRATED_RUNTIME_ENTRY_NAMES in "
         "utils/storage/migration.py."
     )
+
+
+@pytest.mark.unit
+def test_state_child_scan_sees_every_way_a_path_is_built():
+    tree = ast.parse(
+        "import os
+"
+        "def f(cm):
+"
+        "    base = cm.app_docs_dir
+"
+        "    a = base / 'state' / 'by_division'
+"
+        "    b = os.path.join(base, 'state', 'by_join')
+"
+        "    c = base.joinpath('state', 'by_joinpath')
+"
+        "    d = base / 'state/in_one_string'
+"
+    )
+
+    assert _scan_state_children(tree) == {"by_division", "by_join", "by_joinpath", "in_one_string"}
