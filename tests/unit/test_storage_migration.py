@@ -2064,7 +2064,7 @@ def test_recovery_removes_its_own_empty_reservation(tmp_path, monkeypatch):
 def test_recovery_removes_its_own_hard_link_to_the_staged_file(tmp_path, monkeypatch):
     """A file is published by linking it in, then unlinking the staged name."""
     config_manager, target_root = _start_migration_into_empty_target(tmp_path, memory_as_file=True)
-    _crash_while_publishing(monkeypatch, config_manager, lambda staged, target: os.link(staged, target))
+    _crash_while_publishing(monkeypatch, config_manager, os.link)
 
     retry = run_pending_storage_migration(config_manager)
 
