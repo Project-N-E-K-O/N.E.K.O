@@ -2270,15 +2270,21 @@ def _snapshot_server_descendants(servers) -> list | None:
         try:
             launcher = psutil.Process()
             server_pids.add(launcher.pid)
-            for child in launcher.children():
-                if _process_exe(child) not in own_exes:
-                    continue
-                descendants.append(child)
-                descendants.extend(child.children(recursive=True))
-        except psutil.NoSuchProcess:
-            pass
+            launcher_children = launcher.children()
         except (psutil.Error, OSError, ValueError):
             return None
+        for child in launcher_children:
+            if _process_exe(child) not in own_exes:
+                continue
+            try:
+                host_descendants = child.children(recursive=True)
+            except psutil.NoSuchProcess:
+                # This host exited meanwhile; the others still count.
+                continue
+            except (psutil.Error, OSError, ValueError):
+                return None
+            descendants.append(child)
+            descendants.extend(host_descendants)
         servers = []
     for server in servers:
         proc = server.get('process')

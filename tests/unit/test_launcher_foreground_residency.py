@@ -1442,3 +1442,31 @@ def test_merged_mode_snapshots_the_launchers_plugin_hosts_only(tmp_path):
         _kill_quietly(psutil, host, grandchild_pid)
         other.kill()
         other.wait(timeout=10)
+
+
+
+@pytest.mark.unit
+def test_merged_mode_keeps_the_other_hosts_when_one_exits_during_the_scan(monkeypatch):
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    hosts = [subprocess.Popen([_INTERPRETER, "-c", "import time; time.sleep(120)"]) for _ in range(2)]
+    exited_pid = hosts[0].pid
+    real_children = psutil.Process.children
+
+    def _children(self, recursive=False):
+        if recursive and self.pid == exited_pid:
+            raise psutil.NoSuchProcess(self.pid)
+        return real_children(self, recursive=recursive)
+
+    monkeypatch.setattr(psutil.Process, "children", _children)
+    try:
+        descendants = runtime._snapshot_server_descendants([{"name": "Main", "process": None}])
+        ownership = {process.pid: own for process, own in descendants}
+        assert exited_pid not in ownership
+        assert ownership.get(hosts[1].pid) is True
+    finally:
+        monkeypatch.undo()
+        for host in hosts:
+            host.kill()
+            host.wait(timeout=10)
