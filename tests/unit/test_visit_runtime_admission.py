@@ -1566,6 +1566,7 @@ async def test_lines_recorded_before_the_first_join_reach_the_journal(tmp_path, 
 
 async def test_an_overrun_outbox_cleanup_is_handed_to_stop_all(tmp_path, monkeypatch):
     monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
+    monkeypatch.setattr(rtm, "_SHUTDOWN_ROOM_CANCEL_S", 5.0)  # 实时余量放宽（线程池 flush + 删文件，另一场也在关）
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
     stuck = asyncio.Event()
@@ -1647,14 +1648,56 @@ async def test_the_journal_never_starts_after_its_earliest_buffered_line(tmp_pat
     rt = await start_side(side, clock=clock, wall=wall)
     Wire().attach(rt, None, HOST_VID)
     await through_gate(rt)
+    rt._on_usage({"llm_input_tokens": 5})                     # 入房前的用量记录（更早），不拉开始时间
+    wall.advance(10)
     await rt.record_line("own_cat", side="host", lp=1, ln="h:1", text="开场", truncated=False)
-    early = rt._journal_backlog[0]["ts"]
+    early = [r for r in rt._journal_backlog if r.get("kind") == "line"][0]["ts"]
     wall.advance(30)                                          # 30 s 后才报入房
     await rt.on_transport_state({"state": "joined", "peer_present": False})
     await wait_for(lambda: rt.journal.is_open)
-    assert rt.journal._started_at <= early                    # 开始时间不晚于最早那条：流水里没有 ts < started_at
+    assert rt.journal._started_at == early                    # 取最早那句台词：不晚于它，也不被更早的用量拉前
     rt.request_finalize("route_end")
     await _finished(rt)
+
+
+async def test_lines_buffered_before_a_join_that_never_comes_are_still_sealed(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    await rt.record_line("own_cat", side="host", lp=1, ln="h:1", text="开场", truncated=False)
+    assert rt._journal_opening is None and rt._journal_backlog  # 只在积压里
+    rt.request_finalize("relay_lost")                         # 一直没等来入房报告就收尾
+    await _finished(rt)
+    assert rt.journal.sealed
+    assert [r["text"] for r in rt.journal.lines()] == ["开场"]  # 收尾时补写上传头，攒下的那句照样封存
+
+
+async def test_a_cancelled_ready_handler_still_finishes_the_guest_activation(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    grt = guest.rt
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = grt._open_spool
+
+    async def slow_open(subjects):
+        await real_open(subjects)
+        reached.set()
+        await gate.wait()
+
+    grt._open_spool = slow_open
+    try:
+        readying = asyncio.ensure_future(grt.on_ready())      # 收到主人的 ready
+        await asyncio.wait_for(reached.wait(), 5)
+        readying.cancel()                                     # 收包处理被取消（连接断开等）
+        await asyncio.gather(readying, return_exceptions=True)
+        gate.set()
+        await wait_for(lambda: grt.ready_exchanged, timeout=5)  # 激活照样走完，这场照常开始
+        assert not grt.finalizing
+    finally:
+        gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
 
 
 async def test_a_channel_close_that_overruns_is_retired_before_sealing(tmp_path, monkeypatch):

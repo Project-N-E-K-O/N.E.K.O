@@ -956,19 +956,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         # 进入本场：先写上传头，之后的每一行、用量与异常都追加在它后面。独立任务：
         # 收尾 / 关机封存之前先等它写完（否则封存时流水还没装好、封存成空操作）。只写一次：
         # 连接被顶替后新连接再次首次入房时沿用这一份
-        opening = self._journal_opening
-        if opening is None:
-            # 对端 hello 先于入房报告、已开口：积压里的行比此刻早。开始时间不晚于最早那条，
-            # 流水里不会出现 ts < started_at（补录按最后一条算 ended_at 时也不会早于开始）
-            started_at = min([self.wall()] + [float(r["ts"]) for r in self._journal_backlog
-                                              if isinstance(r.get("ts"), (int, float))
-                                              and not isinstance(r.get("ts"), bool)])
-            opening = self._journal_opening = asyncio.ensure_future(self.journal.open(
-                role=self.side, own_visit_uid=creds.visit_uid, own_char_uid=self.character_uid,
-                transport=creds.transport, started_at=started_at, app_version=cr._app_version(),
-            ))
-            # 上传头一落盘就补记等待期间攒下的行 / 用量 / 异常（写失败时 is_open 为假，什么都不做）
-            opening.add_done_callback(lambda _t: self._flush_journal_backlog())
+        opening = self._start_journal()
         # 写上传头有界：磁盘卡住时收包循环不能一直挂着（入房期限仍在走，到点按 relay_lost 结束）
         await asyncio.wait([opening], timeout=_JOURNAL_OPEN_MAX_S)
         self._first_join_gen = None
@@ -1007,6 +995,32 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self.liveness.wait_deadline = now + VISIT_PEER_LOST_S
             self._set_phase(PHASE_JOINING)
             await self.push(PHASE_JOINING, transport=creds.transport, cross_region=creds.cross_region)
+
+    def _start_journal(self) -> asyncio.Future:
+        """Start writing the upload header (once); later calls return the same task."""
+        opening = self._journal_opening
+        if opening is None:
+            creds = self.creds
+            # 对端 hello 先于入房报告、已开口：积压里的台词比此刻早。开始时间不晚于最早那句，
+            # 流水里不会出现台词 ts < started_at（补录按最后一条算 ended_at 时也不会早于开始）。
+            # 只看台词：入房前的用量 / 异常记录不把开始时间往前拉（duration_s 不多算入房前的空档）
+            started_at = min([self.wall()] + [float(r["ts"]) for r in self._journal_backlog
+                                              if r.get("kind") == "line" and isinstance(r.get("ts"), (int, float))
+                                              and not isinstance(r.get("ts"), bool)])
+            opening = self._journal_opening = asyncio.ensure_future(self.journal.open(
+                role=self.side, own_visit_uid=creds.visit_uid, own_char_uid=self.character_uid,
+                transport=creds.transport, started_at=started_at, app_version=cr._app_version(),
+            ))
+            # 上传头一落盘就补记等待期间攒下的行 / 用量 / 异常（写失败时 is_open 为假，什么都不做）
+            opening.add_done_callback(lambda _t: self._flush_journal_backlog())
+        return opening
+
+    def _start_journal_for_backlog(self) -> None:
+        # 对端 hello 先到、这场已开口，却一直没等来本侧的入房报告就收尾：上传头还没开始写，
+        # 攒下的那几句只在积压里。此刻开始写上传头，之后照常封存（关机时照常放弃并留给补录）
+        if (self._journal_opening is None and self._journal_backlog and self.creds is not None
+                and not self.journal.sealed):
+            self._start_journal()
 
     def _on_peer_presence(self, present: bool, vendor_reason: Any, now: float) -> None:
         if present:
@@ -1282,6 +1296,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.side != "guest" or self.ready_exchanged or self._activation is not None or self.finalizing:
             return
         self.liveness.on_ready(self.clock())
+        # ready 已收下（期限已撤、序号已确认，不会再来一次）：激活是运行时自己的任务，收包处理被取消也照样走完，
+        # 否则这场既不开始、也没有期限能结束它。收尾时随运行时一起取消
+        readying = self.spawn(self._ready_flow(), name="ready")
+        await asyncio.shield(readying)
+
+    async def _ready_flow(self) -> None:
         # 在收包循环里同步激活（之后的台词要有 room 才能处理），所以必须有上限：卡住就结束，不拖住心跳与 leave
         try:
             await asyncio.wait_for(self.activate(), VISIT_ACTIVATION_ALLOWANCE_S)
@@ -1858,6 +1878,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         seal_deadline = loop.time() + _SEAL_MAX_S
         # 已接纳的亲人发言还在落盘（对端先走 / 传输已断时关闭通道不等预留）：先等它记进转录，与封存共用一个期限
         await self.settle_family_records(_SEAL_MAX_S)
+        self._start_journal_for_backlog()
         await self._settle_journal_open()
         if self._header_pending():
             # 上传头还在写：seal() 这时什么都不封（会立即返回 None）。封存、spool finalize、记忆提交
@@ -2119,6 +2140,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         await self.settle_family_records(left(_SHUTDOWN_TASK_WAIT_S))
         # 封存之前先收掉接收通道：之后 iframe 还送来的可靠整句不会被收下、回 ack，却落在封存之后
         unregister_transport_session(self.transport)
+        self._start_journal_for_backlog()
         await self._settle_journal_open(left(_SHUTDOWN_TASK_WAIT_S))
         self._flush_journal_backlog()
         sealed = False
@@ -2170,9 +2192,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         # outbox 与隔离会话同时关，共用剩余预算
         await asyncio.gather(asyncio.wait([outbox_closing], timeout=left(_SHUTDOWN_TASK_WAIT_S)),
                              self.close_session(left(_SHUTDOWN_TASK_WAIT_S)))
-        if not outbox_closing.done():
+        cleanup = self.outbox.close_task
+        if cleanup is not None and not cleanup.done():
             logger.warning("visit %s: outbox still closing at shutdown", self.visit_id[:6])
-            self._keep_background(outbox_closing)
+            # 与 teardown 同一个登记：stop_all 末尾先限时等它删掉文件，到点才取消
+            _outbox_cleanups.add(cleanup)
+            cleanup.add_done_callback(_outbox_cleanups.discard)
         unregister_transport_session(self.transport)
         slot = get_visit_route_state(self.lanlan_name)
         if slot is self.slot:
@@ -2479,6 +2504,8 @@ async def stop_all(reason: str = "shutdown") -> None:
         detached = [t for t in _detached if not t.done()]
         detached += [t for bucket in list(_visit_bg_tasks.values()) for t in list(bucket) if not t.done()]
         detached += [t for t in _room_cancels if not t.done()]
+        # 关机途中才登记的 outbox 清理（各场 shutdown() 自己的）也在这里收
+        detached += [t for t in _outbox_cleanups if not t.done()]
         for task in detached:
             task.cancel()
         if detached:
