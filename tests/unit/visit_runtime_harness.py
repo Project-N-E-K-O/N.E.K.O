@@ -169,6 +169,7 @@ class FakeHost:
         self.takeover_error: Optional[Exception] = None
         self.events: list[str] = []
         self.mirror_error: Optional[Exception] = None
+        self.dead_worker_prefix: Optional[tuple[str, ...]] = None
 
     def is_current(self) -> bool:
         return self.current
@@ -226,6 +227,8 @@ class FakeHost:
             return None
         stream = FakeStream(self, request_id, on_enqueued)
         stream.metadata = metadata
+        if self.dead_worker_prefix and request_id.startswith(self.dead_worker_prefix):
+            stream.closed = True           # TTS worker 已关：push / finish 都收不下
         self.streams.append(stream)
         return stream
 

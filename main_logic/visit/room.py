@@ -530,6 +530,17 @@ class VisitRoom:
         self._maybe_finalize_anomalies(eff)
         return eff
 
+    def check_lp(self, lp: Any) -> Optional[str]:
+        """Range / large-regression check of a UI-only event's ``lp`` (``typing``); never moves the clock.
+
+        Returns the violation code (counted as one anomaly) or ``None``.
+        """
+        if not self._lp_in_range(lp):
+            return self._count_anomaly("lp_out_of_range")
+        if lp < self.max_lp_seen - VISIT_LP_REGRESS_MAX:
+            return self._count_anomaly("lp_regress")
+        return None
+
     def violation_effects(self, kind: str) -> RoomEffects:
         """Effects of a violation :meth:`observe_lp` already counted (the cutoff included, no second count)."""
         eff = RoomEffects(violation=kind)

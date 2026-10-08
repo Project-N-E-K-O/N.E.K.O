@@ -850,3 +850,80 @@ async def test_soft_decoder_anomalies_are_counted_without_the_streak(tmp_path, m
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_line_rejected_as_an_overlap_is_dropped_whole(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+
+    def delta(ln, lp):
+        return {"t": "line_delta", "v": 1, "ln": ln, "i": 0, "lp": lp, "txt": "嗯", "sp": "c", "ad": "hc",
+                "rt": "", "wu": False}
+
+    try:
+        before = len(host.host.frames)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=delta("g:60", 60), nbytes=200)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=delta("g:61", 60), nbytes=200)   # 同 lp 又开一行
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:61", "lp": 60, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
+            "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "交叠的那行", "truncated": False, "i_done": 1,
+        }, nbytes=200)
+        lines = [f["line_id"] for f in host.host.frames[before:] if str(f.get("type")).startswith("visit_line")]
+        assert "g:61" not in lines and "g:60" in lines
+        assert not [r for r in rt.journal.lines() if r["text"] == "交叠的那行"]
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_abort_and_typing_with_a_bad_lp_are_dropped_as_anomalies(tmp_path, monkeypatch):
+    from config.visit_settings import VISIT_LP_MAX_JUMP
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        before, anomalies = len(host.host.frames), rt.journal._anomalies
+        far = rt.room.max_lp_seen + VISIT_LP_MAX_JUMP + 100
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "line_abort", "v": 1, "ln": "g:95", "lp": far, "i_done": 0, "reason": "human_interrupt"},
+            nbytes=200)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=3, payload={"t": "typing", "v": 1, "lp": far + 1, "sp": "c"},
+                         nbytes=200)
+        types = [f.get("type") for f in host.host.frames[before:]]
+        assert "visit_line_abort" not in types and "visit_typing" not in types
+        assert rt.journal._anomalies == anomalies + 2
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_family_input_waits_until_ready_is_queued(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    hrt = host.rt
+    seen = {}
+    real_send = hrt.outbox.send
+
+    def spy(msg, **kw):
+        if msg.get("t") == "ready" and "status" not in seen:
+            # ready 入队前一刻：激活已完成、阶段已是 active，亲人这时打的字必须被拒
+            seen["phase"] = hrt.phase
+        return real_send(msg, **kw)
+
+    real_activate = hrt._activate
+
+    async def activate_then_type():
+        await real_activate()
+        await rtm.route_stream_message("Host", {"input_type": "text", "data": "抢在 ready 前面",
+                                                "source": "neko_visit:guest_cat"})
+        seen["status"] = host.host.status_codes()[-1] if host.host.statuses else None
+
+    hrt.outbox.send = spy
+    hrt._activate = activate_then_type
+    try:
+        await hrt.accept(True)
+        assert seen["status"] == "VISIT_INPUT_REFUSED_NOT_READY"
+        assert not [p for p in wire.sent["host"] if p.get("t") == "text" and p.get("sp") == "h"]
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)

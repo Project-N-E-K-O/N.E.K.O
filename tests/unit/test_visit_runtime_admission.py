@@ -892,3 +892,68 @@ async def test_preconditions_are_checked_again_after_the_account_lookup(tmp_path
         await start_side(side, clock=clock, wall=wall)
     assert refused.value.body["reason"] == "voice_session_active"
     assert visit_route_state.get_visit_route_state("Host") is None and rtm.get_runtime("Host") is None
+
+
+async def test_a_slow_journal_open_is_awaited_before_sealing(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = rt.journal.open
+
+    async def slow_open(**kw):
+        reached.set()
+        await gate.wait()
+        await real_open(**kw)
+
+    rt.journal.open = slow_open
+    joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
+    await asyncio.wait_for(reached.wait(), 5)
+    rt.request_finalize("route_end")
+    asyncio.get_running_loop().call_later(0.9, gate.set)      # 比关机预算里的等待更久
+    await _finished(rt)
+    await asyncio.gather(joining)
+    assert rt.journal.sealed
+    assert not list((side.config_dir / "visit_spool").glob("*.upload.jsonl"))
+
+
+async def test_joined_before_the_sdk_gate_passed_does_not_count(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    try:
+        await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+        assert await rt.issue_credentials() is not None
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 能力门 ③ 还没报
+        assert rt.joined is False and not side.host.frames_of("visit_state_change", "invite_ready")
+        await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
+        await rt.on_transport_state({"state": "joined", "peer_present": False})
+        assert rt.joined is True and rt.phase == "invite_ready"
+    finally:
+        await teardown(side, clock=clock)
+
+
+async def test_the_accept_deadline_starts_when_verification_finishes(tmp_path, monkeypatch, clocks):
+    from config.visit_settings import VISIT_ACCEPT_TIMEOUT_S
+
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    clock = clocks[0]
+    real = side.deps.fetch_pubkeys
+
+    async def slow_pubkeys():
+        clock.advance(40)                                    # 核验读公钥花了 40 s
+        return await real()
+
+    side.deps.fetch_pubkeys = slow_pubkeys
+    try:
+        await rt.on_transport_state({"state": "connected", "peer_present": True})
+        await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(), nbytes=900)
+        assert rt.phase == "awaiting_accept"
+        assert rt._accept_deadline - clock() > VISIT_ACCEPT_TIMEOUT_S - 1   # 亲人仍有完整的接待时间
+    finally:
+        await teardown(side, wire=wire, clock=clock)

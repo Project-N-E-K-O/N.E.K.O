@@ -2356,3 +2356,25 @@ def test_registering_the_same_session_again_keeps_its_socket():
     finally:
         tw._reset_for_tests()
     assert link.conn is conn and not conn.retired and not conn.closed
+
+
+def test_a_downlink_write_that_never_drains_retires_the_socket(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(tw, "SEND_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(tw, "CLOSE_LOCK_WAIT_S", 0.05)
+
+    class _StuckWS(_RecordingWS):
+        async def send_text(self, text):
+            await asyncio.Event().wait()            # iframe 不读了：写永远不返回
+
+    async def scenario():
+        ws = _StuckWS()
+        conn = tw._Connection(websocket=ws, reattach=False)
+        ok = await asyncio.wait_for(conn.send_json({"type": "media", "publish": True}), 1)
+        await asyncio.sleep(0.2)
+        return ok, ws.closed_with
+
+    ok, closed_with = asyncio.run(scenario())
+    assert ok is False                              # 接待 / 激活 / 泵不再卡在这一次写上
+    assert closed_with == tw.CLOSE_SEND_FAILED      # 退役这条 socket，iframe 走正常重连

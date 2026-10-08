@@ -103,6 +103,9 @@ AUTH_TIMEOUT_S = 5.0
 CLOSE_LOCK_WAIT_S = 2.0
 """A close waits at most this long for an in-flight send before closing anyway."""
 
+SEND_TIMEOUT_S = 5.0
+"""One downlink write may take at most this long; a socket that does not drain is retired (1011)."""
+
 CLOSE_BAD_REQUEST = 4400
 CLOSE_UNAUTHORIZED = 4403
 CLOSE_UNKNOWN_VISIT = 4404
@@ -371,8 +374,10 @@ class _Connection:
             if self.closed or self.retired:
                 return False
             try:
-                await self.websocket.send_text(text)
-            except Exception as exc:  # noqa: BLE001 - 断开中的 socket：当作未送达
+                # 有界：iframe 不读了（背压）就当这条 socket 写不出去，退役它让 iframe 重连，
+                # 别让接待 / 激活 / 泵卡在一次写上
+                await asyncio.wait_for(self.websocket.send_text(text), SEND_TIMEOUT_S)
+            except Exception as exc:  # noqa: BLE001 - 断开中 / 写超时的 socket：当作未送达
                 logger.warning("visit transport: %s downlink not written, dropping the socket: %s",
                                msg.get("type"), type(exc).__name__)
                 # 写不出去的 socket 不能留着：stop 失败用终态 4404（iframe 不再重连、不再领凭证入房），

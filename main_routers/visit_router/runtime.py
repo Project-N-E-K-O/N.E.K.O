@@ -579,6 +579,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._shutdown_started = False
         self._closing_task: Optional[asyncio.Task] = None
         self._journal_opening: Optional[asyncio.Task] = None
+        self._sdk_ok = False
 
         self._init_rx()
         self._init_talk()
@@ -778,6 +779,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return
         self.video_ok = caps.get("video_ok") is True
         self.codecs = list(caps.get("codecs") or [])
+        self._sdk_ok = True
         if not self.joined and self._join_deadline is None:
             # 能力门通过不代表入房成功：25 s 内没报 joined 按 relay_lost 结束，不发邀请码
             self._join_deadline = self.clock() + VISIT_SELF_RECONNECT_S
@@ -823,8 +825,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
     async def _on_first_join(self, now: float) -> None:
         creds = self.creds
-        if creds is None or self.finalizing:
-            # 还没下发凭证的连接报的入房不算：等真正入房的那一次再做首次入房的事
+        if creds is None or not self._sdk_ok or self.finalizing:
+            # 还没下发凭证 / 能力门 ③ 还没过的连接报的入房不算：等真正入房的那一次再做首次入房的事
             return
         self.joined = True
         self._join_deadline = None
@@ -1494,10 +1496,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
         return self.joined and is_transport_attached(self.visit_id, self.side)
 
-    async def _settle_journal_open(self) -> None:
+    async def _settle_journal_open(self, timeout: Optional[float] = None) -> None:
+        # 正常收尾等它写完（本地建一个文件，没有上限也不会久等）；关机按预算限时，没写完就随进程退出
         opening = self._journal_opening
         if opening is not None and not opening.done():
-            await asyncio.wait([opening], timeout=_SHUTDOWN_TASK_WAIT_S)
+            await asyncio.wait([opening], timeout=timeout)
 
     async def seal_and_finalize(self, reason: str) -> None:
         """Seal ``.upload.json`` first, then ``state.json.finalized`` (§3.2.6 item 22 step 3)."""
@@ -1627,7 +1630,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             await asyncio.wait_for(self.close_current_line("visit_end"), _SHUTDOWN_TASK_WAIT_S)
         except Exception as exc:  # noqa: BLE001 - 收不完也照样封存
             logger.warning("visit %s: line not closed at shutdown: %r", self.visit_id[:6], exc)
-        await self._settle_journal_open()
+        await self._settle_journal_open(_SHUTDOWN_TASK_WAIT_S)
         try:
             self.sealed_doc = await self.journal.seal("shutdown", ended_at=self.wall())
         except Exception as exc:  # noqa: BLE001

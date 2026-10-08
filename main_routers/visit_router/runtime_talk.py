@@ -616,7 +616,8 @@ class TalkMixin:
             await self.status("VISIT_INPUT_REFUSED_WRAPUP", request_id=request_id)
             return True
         room = self.room
-        if room is None or not self.activated or self.phase in WAITING_PHASES:
+        if room is None or not self.activated or not self.ready_exchanged or self.phase in WAITING_PHASES:
+            # ready 入队之前发出的句子序号会排在 ready 前面，对端按未激活收下又丢掉
             await self.status("VISIT_INPUT_REFUSED_NOT_READY", request_id=request_id)
             return True
         if room.phase == "wrap_up":
@@ -765,10 +766,20 @@ class TalkMixin:
         if stream is not None and handoff is not None:
             handoff.attach_speech(name, stream.speech_id)
         if stream is not None:
-            stream.push(text)
-            stream.finish()
-            if handoff is not None:
-                handoff.mark_queued(name, est)
+            pushed = stream.push(text)
+            finished = stream.finish() if pushed else False
+            if pushed and finished is True:
+                if handoff is not None:
+                    handoff.mark_queued(name, est)
+            else:
+                # TTS 收不下（worker 已关）：这一段不会有播放进度，交还不等它；本场之后也不再开语音流
+                self.voice.fallen_back = True
+                try:
+                    stream.abort()
+                except Exception:  # noqa: BLE001
+                    pass
+                if handoff is not None:
+                    handoff.skip(name)
         elif handoff is not None:
             if self.voice.tts_on:
                 handoff.skip(name)

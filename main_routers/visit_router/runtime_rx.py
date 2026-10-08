@@ -93,6 +93,7 @@ class ReceiveMixin:
         self._line_quota: dict[str, bool] = {}
         self._ln_by_key: dict[tuple, str] = {}
         self._deltas = LineDeltaAssembler()
+        self._rejected_lines: dict[str, None] = {}
         self._peer_lp: dict[str, int] = {}
         self.last_peer_goodbye = ""
 
@@ -268,6 +269,7 @@ class ReceiveMixin:
             lang=m.get("lang") if isinstance(m.get("lang"), str) else None,
             crop=caps.get("crop") if caps.get("crop") in ("upper", "full") else "upper", jti=claims.jti,
         )
+        now = self.clock()  # 核验与读名字都 await 过：期限从核验完成这一刻算
         self.liveness.on_peer_verified(now)
         self._set_phase(PHASE_AWAITING)
         creds = self.creds
@@ -350,18 +352,24 @@ class ReceiveMixin:
             # 同一行重复的 i、已收口的行、换了 lp 的分片……：不转发；协议异常的计一次
             if self._deltas.anomalies > before:
                 self._count_anomaly("line_delta")
+                if ln not in self._peer_lines:
+                    self._reject_line(ln)  # 新行一开口就违约（交叠等）：整行作废
             return
         meta = self._peer_lines.get(ln)
         if m.get("i") == 0 and meta is None:
             ad_side, ad_kind = decode_addressee(m.get("ad"))
             meta = {"sp": m.get("sp"), "ad": m.get("ad"), "rt": m.get("rt") or "", "wu": bool(m.get("wu")),
                     "lp": lp}
-            self._remember_peer_line(ln, meta)
-            self.apply_effects(self.room.on_incoming_start(IncomingLineStart(
+            eff = self.room.on_incoming_start(IncomingLineStart(
                 ref=LineRef(ln, lp, self.peer_side), speaker="human" if m.get("sp") == "h" else "cat",
                 addressee_side=ad_side, addressee_kind=ad_kind, reply_to=self._ref_of(meta["rt"]),
                 goodbye=meta["wu"],
-            ), now))
+            ), now)
+            self.apply_effects(eff)
+            if eff.violation is not None:
+                self._reject_line(ln)  # room 没收下这一行（交叠等）：整行作废
+                return
+            self._remember_peer_line(ln, meta)
         meta = meta or {"sp": "c", "ad": None, "rt": "", "wu": False, "lp": lp}
         ad_side, ad_kind = decode_addressee(meta.get("ad"))
         await self.host.send_frame({
@@ -371,6 +379,14 @@ class ReceiveMixin:
             "addressee": {"side": ad_side, "kind": ad_kind}, "goodbye": bool(meta.get("wu")),
             "ts": self.wall(), "paced": "audio",
         })
+
+    def _reject_line(self, ln: Any) -> None:
+        """Drop a peer line whole: no more deltas on screen, its ``text`` kept out of transcript and history."""
+        key = str(ln)
+        self._rejected_lines[key] = None
+        while len(self._rejected_lines) > 256:
+            self._rejected_lines.pop(next(iter(self._rejected_lines)))
+        self._deltas.drop(key)
 
     def _lp_rejected(self, violation: Optional[str]) -> bool:
         """``observe_lp`` refused the message: record it and apply the protocol-violation cutoff."""
@@ -415,6 +431,8 @@ class ReceiveMixin:
         if self.room is None:
             return
         ln = m.get("ln")
+        if self._lp_rejected(self.room.observe_lp(m.get("lp"), ln=ln)):
+            return
         self.apply_effects(self.room.on_incoming_abort(ln, now, m.get("reason")))
         await self.host.send_frame({
             "type": "visit_line_abort", "visit_id": self.visit_id, "line_id": ln,
@@ -422,6 +440,9 @@ class ReceiveMixin:
         })
 
     async def _rx_typing(self, m: dict, from_vid: str, now: float) -> None:
+        # typing 只是界面提示：校验 lp 的范围与大幅回退，但不推进本侧时钟
+        if self.room is not None and self._lp_rejected(self.room.check_lp(m.get("lp"))):
+            return
         kind = "human" if m.get("sp") == "h" else "cat"
         await self.host.send_frame({
             "type": "visit_typing", "visit_id": self.visit_id,
@@ -438,6 +459,8 @@ class ReceiveMixin:
         if self._lp_rejected(self.room.observe_lp(lp, ln=ln, reliable=True, closes_line=True)):
             return
         self._deltas.close(m)  # 收口：之后到的该行分片一律不再上屏
+        if str(ln) in self._rejected_lines:
+            return  # 开口时就被 room 拒掉的行（违约已记）：收口这条也不进转录与历史
         if not self._line_admitted(ln, from_vid, now):
             # 超速：已回 ack（不让对端重传到 delivery_failed），但不上屏、不入史、不进转录、不触发回复
             return

@@ -628,3 +628,21 @@ async def test_shutdown_stops_the_channel_close_of_a_visit_already_ending(tmp_pa
         for g in gates:
             g.set()
         await teardown(guest, wire=wire, clock=clock)
+
+
+async def test_a_home_stream_the_tts_worker_refuses_falls_back_to_text(tmp_path, monkeypatch):
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    hh = host.host
+    hh.dead_worker_prefix = ("visit-ritual",)                # 仪式句开流成功但 worker 已关
+    try:
+        hh.sink({"source_kind": "plugin", "text": "回调"})
+        host.rt.request_finalize("recall")
+        await finish(host.rt, clock)
+        assert host.rt.voice.fallen_back is True                 # 之后不再开语音流
+        assert not [s for s in hh.streams if s.request_id.startswith("visit-debrief")]
+        clock.advance(30)
+        await wait_for(lambda: hh.resubmitted)                   # 不必等兜底期限
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
