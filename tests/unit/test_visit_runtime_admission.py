@@ -1203,3 +1203,50 @@ async def test_a_first_join_whose_socket_was_replaced_meanwhile_does_not_count(t
     finally:
         gate.set()
         await teardown(side, clock=clock)
+
+
+async def test_a_replacement_page_must_pass_its_own_sdk_gate_before_joining(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    try:
+        await through_gate(rt)                                 # 第一条连接过了能力门 ③，还没入房就断了
+        rt.transport.on_page_lost(clock())
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 新连接先报入房
+        assert rt.joined is False and rt.phase != "invite_ready"
+        await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
+        assert rt.joined is True and rt.phase == "invite_ready"
+    finally:
+        await teardown(side, clock=clock)
+
+
+async def test_a_successor_join_during_a_stale_first_join_is_kept(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = rt.journal.open
+
+    async def slow_open(**kw):
+        reached.set()
+        await gate.wait()
+        await real_open(**kw)
+
+    rt.journal.open = slow_open
+    try:
+        joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
+        await asyncio.wait_for(reached.wait(), 5)
+        rt.transport.on_page_attached(clock())                # 旧连接被顶替
+        await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 新连接只报这一次
+        gate.set()
+        await asyncio.gather(joining)
+        await wait_for(lambda: rt.joined and rt.phase == "invite_ready")         # 旧的那次结束后补做新连接的入房
+    finally:
+        gate.set()
+        await teardown(side, clock=clock)

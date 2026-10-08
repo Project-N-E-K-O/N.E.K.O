@@ -600,6 +600,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._sdk_ok = False
         self._pending_join: Optional[dict] = None
         self._page_gen = 0
+        self._first_join_gen: Optional[int] = None
 
         self._init_rx()
         self._init_talk()
@@ -805,6 +806,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._preflight_deadline = None
         self._sdk_deadline = None
         self._join_deadline = None
+        self._sdk_ok = False  # 能力门 ③ 按连接：新连接要自己再报一次
         self._page_gen += 1
 
     async def on_sdk_caps(self, caps: dict) -> None:
@@ -844,6 +846,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             reconnected = self.liveness.self_disconnected_at is not None
             self.liveness.on_self_connected(now)
             self.outbox.resume(now, reason=PAUSE_SELF_RECONNECT)
+            if self._first_join_gen is not None and self._first_join_gen != self._page_gen:
+                # 旧连接的首次入房还在写上传头、它的连接已经没了：新连接这次报告先记下，旧的那次结束后补做
+                self._pending_join = dict(msg)
+                return
             if not self.joined:
                 if self.creds is not None and not self._sdk_ok:
                     # 入房报告比能力门 ③ 先到（iframe 一次入房只报一次）：记下，能力门过了再补做
@@ -879,7 +885,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return
         self.joined = True
         self._join_deadline = None
-        gen = self._page_gen
+        gen = self._first_join_gen = self._page_gen
         # 进入本场：先写上传头，之后的每一行、用量与异常都追加在它后面。独立任务：
         # 收尾 / 关机封存之前先等它写完（否则封存时流水还没装好、封存成空操作）。只写一次：
         # 连接被顶替后新连接再次首次入房时沿用这一份
@@ -890,6 +896,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 transport=creds.transport, started_at=self.wall(), app_version=cr._app_version(),
             ))
         await asyncio.wait([opening])
+        self._first_join_gen = None
         if not opening.cancelled() and opening.exception() is not None:
             # 上传流水建不起来：转录少一份，串门照常
             logger.warning("visit %s: upload journal not opened: %s", self.visit_id[:6],
@@ -898,8 +905,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             # 写上传头期间这场已被结束：不再把阶段翻回等待
             return
         if gen != self._page_gen:
-            # 写上传头期间报入房的那条连接没了 / 被顶替：这次入房不算，等新连接自己入房再报
+            # 写上传头期间报入房的那条连接没了 / 被顶替：这次入房不算；新连接期间报过的入房这时补做
             self.joined = False
+            pending, self._pending_join = self._pending_join, None
+            if pending is not None:
+                await self.on_transport_state(pending)
             return
         now = self.clock()  # 写上传头 await 过：等待期限从这一刻算
         if self.side == "host":
