@@ -753,3 +753,78 @@ async def test_native_visual_sync_failure_keeps_raw_images_blocked() -> None:
 
     assert runtime._asr_route_mode == "native"
     assert call_order == ["sync", "block"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("delete_result", ["confirmed", "pause_cleared", "rejected"])
+async def test_confirmed_rollback_controls_core_text_fallback(delete_result) -> None:
+    from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
+
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime.session.get_multimodal_turn_delivery = MagicMock(return_value="direct_atomic")
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    assert runtime._stage_independent_visual_frame(
+        "raw-frame", source="screen", request_id="screen-1", captured_at=record.started_at
+    )
+    admitted = True
+    delete_written = asyncio.Event()
+    sent = []
+
+    async def send(event):
+        nonlocal admitted
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            admitted = False
+        elif event["type"] == "conversation.item.delete":
+            delete_written.set()
+
+    arbiter = RealtimeResponseArbiter(send)
+
+    async def submit_multimodal(text, images, **kwargs):
+        ticket = await arbiter.enqueue(
+            source="external_asr",
+            events_before_response=({
+                "type": "conversation.item.create",
+                "item": {"id": "committed-item", "role": "user", "content": []},
+            },),
+            response_event={"type": "response.create"},
+            admission_check=lambda: admitted,
+        )
+        await ticket.sent
+
+    runtime.session.submit_multimodal_turn = AsyncMock(side_effect=submit_multimodal)
+    dispatch = asyncio.create_task(runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(turn_token=token, provider="openai", text="这句话不能消失")
+    ))
+    try:
+        await asyncio.wait_for(delete_written.wait(), 1.0)
+        runtime.session.submit_external_voice_turn.assert_not_awaited()
+        if delete_result == "rejected":
+            delete = next(event for event in sent if event["type"] == "conversation.item.delete")
+            arbiter.notify_error(delete["event_id"], "item delete rejected")
+        else:
+            if delete_result == "pause_cleared":
+                admitted = True
+            arbiter.notify_item_deleted(
+                {"type": "conversation.item.deleted", "item_id": "committed-item"}
+            )
+        if delete_result == "rejected":
+            with pytest.raises(RuntimeError, match="delete was rejected"):
+                await asyncio.wait_for(dispatch, 1.0)
+            runtime.session.submit_external_voice_turn.assert_not_awaited()
+        else:
+            await asyncio.wait_for(dispatch, 1.0)
+            runtime.session.submit_external_voice_turn.assert_awaited_once()
+            assert "这句话不能消失" in runtime.session.submit_external_voice_turn.await_args.args
+        assert all(event["type"] != "response.create" for event in sent)
+    finally:
+        if not dispatch.done():
+            dispatch.cancel()
+            await asyncio.gather(dispatch, return_exceptions=True)
+        await arbiter.shutdown()

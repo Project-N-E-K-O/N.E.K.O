@@ -92,7 +92,7 @@ _STUCK_RELEASE_NOTIFY_TIMEOUT = 2.0
 # One budget for every compensating ``conversation.item.delete`` and the
 # confirmation that follows. This wait also runs on the sole queue consumer,
 # so it shares the stuck-release ceiling instead of a session-start bound.
-_ITEM_DELETE_CONFIRM_TIMEOUT = 2.0
+_ITEM_DELETE_CONFIRM_TIMEOUT = _STUCK_RELEASE_NOTIFY_TIMEOUT
 _EXTERNAL_ASR_PREPARE_CANCEL_REASON = "external_asr_prepare"
 # Check for orphaned pauses after this interval. A provider-neutral owner
 # probe can extend a live utterance's pause; the absolute bound still recovers
@@ -241,6 +241,7 @@ class _QueuedResponse:
     # is narrower than ``events_before_response``: a later prefix event may
     # still be unsent when admission is invalidated.
     committed_item_ids: list[str] = field(default_factory=list, compare=False)
+    committed_item_id_unknown: bool = field(default=False, compare=False)
     # Evidence this request collected for itself, so both the terminal path
     # and the started-timeout path judge an adoption from the same facts.
     adoption: _AdoptionEvidence = field(
@@ -2948,6 +2949,8 @@ class RealtimeResponseArbiter:
     def _snapshot_committed_item_ids(
         self, queued: _QueuedResponse
     ) -> list[str] | None:
+        if queued.committed_item_id_unknown:
+            return None
         item_ids = list(queued.committed_item_ids)
         if (
             queued.expected_item_id
@@ -2999,6 +3002,14 @@ class RealtimeResponseArbiter:
                 remaining,
             )
         except asyncio.TimeoutError:
+            # Cancelling a transport write does not establish that the socket
+            # is usable. Fail closed even with the fail-open escape hatch;
+            # later tickets must not reuse this stalled connection.
+            await self._escalate(
+                "conversation item delete write timed out",
+                observed=queued,
+                transport_write_failed=True,
+            )
             raise RuntimeError(
                 "conversation item delete confirmation timed out"
             ) from None
@@ -3055,9 +3066,10 @@ class RealtimeResponseArbiter:
             and started.exception() is None
         ):
             return False
-        return bool(
-            queued.admission_check is not None and not queued.admission_check()
-        )
+        # This helper is reached only after admission already rejected the
+        # commit. A successor may release its pause during the delete wait;
+        # that cannot make a fully rolled-back transcript unsafe to resubmit.
+        return True
 
     async def _compensate_rejected_commit(self, queued: _QueuedResponse) -> None:
         """Delete every committed item, then fail this turn.
@@ -3245,6 +3257,10 @@ class RealtimeResponseArbiter:
                     and item_id not in queued.committed_item_ids
                 ):
                     queued.committed_item_ids.append(item_id)
+                elif event.get("type") == "conversation.item.create" and not (
+                    isinstance(item_id, str) and item_id
+                ):
+                    queued.committed_item_id_unknown = True
             if self._trace and queued.events_before_response:
                 self._trace_decision(
                     "dispatch",

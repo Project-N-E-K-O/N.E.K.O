@@ -4625,3 +4625,87 @@ async def test_an_empty_top_level_id_still_reads_the_nested_one():
         "terminal finalize the current turn"
     )
     assert client._current_response_id == "resp-new"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unknown_first", [False, True])
+async def test_mixed_id_committed_batch_does_not_degrade(unknown_first):
+    sent = []
+    admitted = True
+    items = [{"id": "known-item"}, {}]
+    if unknown_first:
+        items.reverse()
+
+    async def send(event):
+        nonlocal admitted
+        sent.append(dict(event))
+        if len(sent) == 2:
+            admitted = False
+        if event["type"] == "conversation.item.delete":
+            arbiter.notify_item_deleted(
+                {"type": "conversation.item.deleted", "item_id": event["item_id"]}
+            )
+
+    arbiter = RealtimeResponseArbiter(send)
+    try:
+        ticket = await arbiter.enqueue(
+            source="external_asr",
+            events_before_response=tuple(
+                {"type": "conversation.item.create", "item": {**item, "role": "user", "content": []}}
+                for item in items
+            ),
+            response_event={"type": "response.create"},
+            expected_item_id="known-item",
+            admission_check=lambda: admitted,
+        )
+        with pytest.raises(RuntimeError, match="ids could not be determined") as excinfo:
+            await asyncio.wait_for(ticket.sent, 0.5)
+        assert not isinstance(excinfo.value, ResponseAdmissionRejected)
+        assert [event["type"] for event in sent] == [
+            "conversation.item.create", "conversation.item.create"
+        ]
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_open", [False, True])
+async def test_stalled_delete_write_drops_connection(monkeypatch, fail_open):
+    monkeypatch.setattr(arbiter_module, "_ITEM_DELETE_CONFIRM_TIMEOUT", 0.02)
+    admitted = True
+    sent = []
+    aborted = []
+
+    async def send(event):
+        nonlocal admitted
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            admitted = False
+        elif event["type"] == "conversation.item.delete":
+            await asyncio.Event().wait()
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort, fail_open=fail_open)
+    try:
+        ticket = await arbiter.enqueue(
+            source="external_asr",
+            events_before_response=({
+                "type": "conversation.item.create",
+                "item": {"id": "committed-item", "role": "user", "content": []},
+            },),
+            response_event={"type": "response.create"},
+            admission_check=lambda: admitted,
+        )
+        with pytest.raises(RuntimeError, match="timed out"):
+            await asyncio.wait_for(ticket.sent, 0.5)
+        assert aborted == ["conversation item delete write timed out"]
+        later = await arbiter.enqueue(source="later-turn")
+        with pytest.raises(ConnectionError):
+            await later.sent
+        assert [event["type"] for event in sent] == [
+            "conversation.item.create", "conversation.item.delete"
+        ]
+    finally:
+        await arbiter.shutdown()
