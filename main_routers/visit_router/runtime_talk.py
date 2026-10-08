@@ -122,6 +122,7 @@ class TalkMixin:
         self._llm_failures = 0
         self._handoff_stamps: dict[str, float] = {}
         self._last_tail_ms = 0
+        self._session_closing: Optional[asyncio.Future] = None
 
     # ── 小工具 ───────────────────────────────────────────────────────
 
@@ -869,9 +870,17 @@ class TalkMixin:
         session = self.session
         if session is None:
             return
-        closing = asyncio.ensure_future(close_visit_session(session))
-        closing.add_done_callback(lambda t: t.cancelled() or t.exception())  # 失败只是少关一次，取走异常
-        await asyncio.wait([closing], timeout=timeout)
+        closing = self._session_closing
+        if closing is None:
+            # 只关一次：正常收尾卡住后关机再来，等的是同一个关闭任务，不对同一个 client 并发再关
+            closing = self._session_closing = asyncio.ensure_future(close_visit_session(session))
+            closing.add_done_callback(lambda t: t.cancelled() or t.exception())  # 失败只是少关一次，取走异常
+        try:
+            await asyncio.wait([closing], timeout=timeout)
+        except asyncio.CancelledError:
+            if not closing.done():
+                self._keep_background(closing)  # 调用方被取消：关闭照样在后台走完
+            raise
         if not closing.done():
             logger.warning("visit %s: isolated session still closing; continuing", self.visit_id[:6])
             self._keep_background(closing)

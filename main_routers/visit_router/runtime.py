@@ -613,6 +613,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.sealed_doc: Optional[dict] = None
         self.spool_lines = 0
         self._terminated = False
+        self._ended_published = False
         self._room_cancel_sent = False
         self._room_cancel_task: Optional[asyncio.Task] = None
         self._handback_started = False
@@ -1534,6 +1535,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit %s: channel close did not finish: %r", self.visit_id[:6], exc)
         await self._flush_display(_DISPLAY_FLUSH_S)  # 告别句等整句先上屏，再发「已结束」
+        self._ended_published = True  # 之后收尾中补到的整句只进转录，不再往页面补气泡
         await self.push(PHASE_ENDED, reason=reason, peer_reason=self.peer_reason)
         if self.status_code is not None:
             await self.status(self.status_code, reason=self.status_details.get("reason"),
@@ -2123,6 +2125,7 @@ async def stop_all(reason: str = "shutdown") -> None:
         if detached:
             await asyncio.wait(detached, timeout=_SHUTDOWN_TASK_WAIT_S)
     finally:
+        _stop_gen += 1  # stop_all 进行中才开始、它结束后才醒的入场：代数已变，同样不登记
         _stopping = False
 
 

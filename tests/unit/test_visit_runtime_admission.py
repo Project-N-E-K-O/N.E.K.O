@@ -1077,6 +1077,78 @@ async def test_a_session_that_will_not_close_does_not_keep_the_visit_registered(
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_an_admission_that_wakes_after_stop_all_finished_does_not_register(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    first = make_side(tmp_path / "a", "host", clock=clock, wall=wall)
+    rt = await start_side(first, clock=clock, wall=wall)
+    held = asyncio.Event()
+    real_shutdown = rt.shutdown
+
+    async def slow_shutdown():
+        await held.wait()
+        await real_shutdown()
+
+    rt.shutdown = slow_shutdown
+    gate, reached = asyncio.Event(), asyncio.Event()
+
+    async def slow_account():
+        reached.set()
+        await gate.wait()
+        return "acct"
+
+    second = make_side(tmp_path / "b", "guest", clock=clock, wall=wall, name="Nana")
+    stopping = asyncio.ensure_future(rtm.stop_all("shutdown"))
+    try:
+        await wait_for(lambda: rtm._stopping)
+        monkeypatch.setattr(rtm, "_local_account", slow_account)
+        starting = asyncio.ensure_future(start_side(second, invite_code=INVITE, clock=clock, wall=wall))   # stop_all 进行中才开始
+        await asyncio.wait_for(reached.wait(), 5)
+        held.set()
+        await asyncio.wait_for(stopping, 5)                   # stop_all 先结束
+        assert not rtm._stopping
+        gate.set()                                            # 它结束之后入场才查完账号
+        with pytest.raises(rtm.VisitRefused):
+            await asyncio.wait_for(starting, 5)
+        assert rtm.get_runtime("Nana") is None
+    finally:
+        held.set()
+        gate.set()
+        await teardown(first, clock=clock)
+        await teardown(second, clock=clock)
+
+
+async def test_the_isolated_session_is_closed_once_even_when_teardown_is_cancelled(tmp_path, monkeypatch):
+    from main_routers.visit_router import session_pool
+
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    release = asyncio.Event()
+    closes = []
+
+    async def close_visit_session(session):
+        closes.append(session)
+        while not release.is_set():                           # 关不掉、也不理取消
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    monkeypatch.setattr(session_pool, "close_visit_session", close_visit_session)
+    try:
+        caller = asyncio.ensure_future(rt.close_session(5))
+        await asyncio.sleep(0.05)
+        caller.cancel()                                       # 收尾任务被关机取消
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert rt._session_closing in rtm._detached           # 没关完的交给后台
+        await rt.close_session(0.05)                          # 关机再关一次：等同一个关闭任务
+        assert len(closes) == 1
+    finally:
+        release.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_single_joined_report_ahead_of_the_sdk_gate_is_replayed(tmp_path, monkeypatch, clocks):
     patch_admission(monkeypatch)
     clock, wall = clocks
@@ -1651,6 +1723,12 @@ async def test_late_text_whose_speaker_changed_since_its_first_piece_is_not_reco
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:98", "i": 0, "lp": lp + 2, "txt": "半截", "sp": "c", "ad": "hc",
             "rt": "", "wu": False}, nbytes=200)                # 页面上开出半截气泡
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "line_delta", "v": 1, "ln": "g:99", "i": 0, "lp": lp + 3, "txt": "又一行", "sp": "c", "ad": "hc",
+            "rt": "", "wu": False}, nbytes=200)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "line_delta", "v": 1, "ln": "g:100", "i": 0, "lp": lp + 4, "txt": "晚了", "sp": "c", "ad": "hc",
+            "rt": "", "wu": False}, nbytes=200)
         before = len(host.host.frames)
         stuck = asyncio.Event()
 
@@ -1677,11 +1755,23 @@ async def test_late_text_whose_speaker_changed_since_its_first_piece_is_not_reco
             "rt": "", "wu": False, "final": True, "txt": "半截补成整句", "truncated": False, "i_done": 1,
         }, nbytes=200)
         assert [r for r in rt.journal.lines() if r["text"] == "半截补成整句"]
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:99", "lp": lp + 2, "seq": seq + 3, "sp": "c", "ad": "hc",
+            "rt": "", "wu": False, "final": True, "txt": "占了别人的 lp", "truncated": False, "i_done": 1,
+        }, nbytes=200)                                        # 收口的 lp 与开口时不一致：整行作废
+        rt._ended_published = True                            # 「已结束」已经发出
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:100", "lp": lp + 4, "seq": seq + 4, "sp": "c", "ad": "hc",
+            "rt": "", "wu": False, "final": True, "txt": "已结束之后补到", "truncated": False, "i_done": 1,
+        }, nbytes=200)
+        assert [r for r in rt.journal.lines() if r["text"] == "已结束之后补到"]   # 照样进转录
         await settle()
         frames = host.host.frames[before:]
         aborted = {f.get("line_id") for f in frames if f.get("type") == "visit_line_abort"}
-        assert {"g:96", "g:97"} <= aborted                    # 不一致的那两行：撤掉半截气泡
+        assert {"g:96", "g:97", "g:99"} <= aborted             # 被拒的行：撤掉半截气泡
         assert [f for f in frames if f.get("type") == "visit_line" and f.get("line_id") == "g:98"]   # 整句收口
+        assert not [f for f in frames if f.get("line_id") == "g:100"
+                    and f.get("type") in ("visit_line", "visit_line_abort")]   # 「已结束」之后不再往页面补
         stuck.set()
     finally:
         await teardown(host, guest, wire=wire, clock=clock)

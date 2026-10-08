@@ -169,7 +169,8 @@ class ReceiveMixin:
         # text{final}）必须先进转录，结束之后就不再处理台词了
         for item in res.deliver:
             if self.finalizing and item.get("t") != "ack":
-                # 收尾中只把补到的整句记进转录，不上屏、不入史、不触发回复；ack 照常处理（leave 要等它确认）
+                # 收尾中补到的整句只记进转录、收口页面上已开出的半截气泡，不入史、不触发回复；
+                # ack 照常处理（leave 要等它确认）
                 if item.get("t") == "text":
                     await self._record_late_text(item, from_vid, now)
                 continue
@@ -457,15 +458,23 @@ class ReceiveMixin:
         ln, lp = m.get("ln"), m.get("lp")
         if self.room is None or not self.activated:
             return  # 接待前的台词照样不收（与 _dispatch 的闸门一致）
+        self._deltas.close(m)  # 收口：之后到的该行分片一律不再上屏
+        # 分片已开出半截气泡、而「已结束」还没发：这一行要在页面上收口（整句补全或撤掉）
+        show = self._peer_lines.pop(ln, None) is not None and not self._ended_published
+
+        def drop_bubble() -> None:
+            if show:
+                self._post_display({"type": "visit_line_abort", "visit_id": self.visit_id, "line_id": ln,
+                                    "i_done": 0, "reason": "rejected", "ts": self.wall()})
+
         # 与 _rx_text 记账前同一套校验：lp 范围 / 回退、一个 lp 只属于一行、行的文本配额
         if self._lp_rejected(self.room.observe_lp(lp, ln=ln, reliable=True, closes_line=True)):
+            drop_bubble()
             return
         if self._lp_reused(ln, lp) or str(ln) in self._rejected_lines:
-            return
+            return  # 这两种行的分片从一开始就没上屏
         sp = "human" if m.get("sp") == "h" else "cat"
         ad_side, ad_kind = decode_addressee(m.get("ad"))
-        self._deltas.close(m)  # 收口：之后到的该行分片一律不再上屏
-        opened = self._peer_lines.pop(ln, None) is not None  # 分片已开出半截气泡
         if self.room.incoming_meta_mismatch(IncomingLineDone(
             ref=LineRef(str(ln), lp, self.peer_side), truncated=m.get("truncated") is True,
             tail_ms=m.get("tail_ms", 0), goodbye=m.get("wu") is True, speaker=sp, addressee_side=ad_side,
@@ -473,17 +482,15 @@ class ReceiveMixin:
         )):
             # 收口与开口声明的元数据不一致（与 room 的 line_meta_mismatch 同一判据）：说话人等记不准，不进转录
             self._count_anomaly("line_meta_mismatch")
-            if opened:
-                self._post_display({"type": "visit_line_abort", "visit_id": self.visit_id, "line_id": ln,
-                                    "i_done": 0, "reason": "rejected", "ts": self.wall()})
+            drop_bubble()
             return
         if not self._line_admitted(ln, from_vid, now):
-            return  # 与正常收口同一份配额决定：分片时已判超速的行，收尾中补到也不进转录
+            return  # 与正常收口同一份配额决定：分片时已判超速的行（分片也没上屏），收尾中补到也不进转录
         # 缓存完整的帧形状：页面重载时 GET /state 按它重放（收件人 / 回复 / 告别 / i_done）
         frame = self._peer_line_frame(m, str(ln), lp)
         await self.record_line(f"peer_{sp}", side=self.peer_side, lp=lp, ln=str(ln), text=str(m.get("txt") or ""),
                                truncated=m.get("truncated") is True)
-        if opened:
+        if show:
             # 页面上已开出半截气泡：用整句收口（不入史、不触发回复）
             self._post_display(frame)
 
