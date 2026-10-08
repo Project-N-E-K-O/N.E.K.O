@@ -71,11 +71,18 @@ def terminate(process):
     # uv owns a child Python process: terminate the full tree, not just its waiter.
     if process.poll() is None:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                           check=True, capture_output=True)
+            result = subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                                    capture_output=True, timeout=5)
+            try:
+                # A command error is harmless only if the owned process really
+                # exited. Barrier readers separately require EOF from the tree.
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                result.check_returncode()
+                raise
         else:
             os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=5)
+            process.wait(timeout=5)
 
 
 def wait_barrier(process, stage):

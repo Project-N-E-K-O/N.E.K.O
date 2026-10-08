@@ -253,3 +253,24 @@ AccessDenied；七种情形均维持 unknown，查询无新版本证据不解锁
 它们展示交互和只读属性，不证明真实服务商兼容性；资源 DOM 的 readOnly 实测从
 false 变为 true。图片保存在 `/docs/images/issue3317/`，PR 描述使用提交固定链接。
 准备状态响应只展示服务端提供 recover 动作时的界面，不作为远端恢复能力证据。
+
+## Windows 全量 CI 终止辅助函数修复（2026-10-08）
+
+受审 head 为 `a3f39af17f1a59f531781378340d873684b962f4`。
+运行 `37713709913` 的 Unit pytest (Windows) 为 35045 passed、155 skipped、
+1 failed；唯一失败是崩溃回归的 accepted 场景，`taskkill /T /F` 返回 128，
+尚未到达恢复结果断言。其它分片、Chromium/Electron 页面和静态检查均通过。
+日志未展示该命令 stderr，不能确认远端机器的具体进程退出时序。
+
+本地原始五个阶段均通过。确定性注入则证明辅助函数的误判：先真正终止 uv/Python
+进程树，再将命令结果设为 128，旧逻辑仍抛 CalledProcessError，即使拥有的进程
+已退出且 stdout 已 EOF。修复后核验有界的实际进程退出，只有核验成功才允许命令
+非零；进程仍存活时继续抛命令错误，命令返回 0 但进程未退出则抛 TimeoutExpired。
+命令本身也设置期限，原有 barrier reader 的 join/EOF 断言继续检查子进程残留。
+
+三个新增 Windows 回归使用真实进程、管道和终止，分别覆盖“已退出但命令非零”及
+“仍存活且命令返回 0/128”；仅注入命令回执，不模拟进程退出或放宽原五阶段的提交
+次数、存储状态与身份断言。旧辅助函数下新增用例 1 failed、2 passed；修复后原始
+五阶段及新增三项共 8 passed，辅助模块行/分支合计覆盖率 86.16%。定向 Ruff 和
+diff 检查通过，GitNexus impact 为 LOW，三个直接调用点均在同一测试模块。
+没有改产品代码、恢复边界、CI 筛选或已有 skip/xfail；远端全量结果另行核验。
