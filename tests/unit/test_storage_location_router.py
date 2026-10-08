@@ -4032,3 +4032,32 @@ def test_storage_location_cleanup_reports_a_renamed_entry_it_cannot_put_back(tmp
     assert response.status_code == 409, response.json()
     assert response.json()["remaining_entries"] == ["memory"]
     assert (leftover / "recent.json").is_file()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_records_its_result_when_the_request_is_cancelled(tmp_path, monkeypatch):
+    """The client disconnects while the cleanup worker runs: the worker still
+    finishes, and what it did must be recorded, or the checkpoint keeps
+    pointing at a retained root that is already gone."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+
+    async def _worker_finishes_then_request_is_cancelled(job):
+        await asyncio.to_thread(job)
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(
+        storage_location_router_module, "_run_locked_storage_job", _worker_finishes_then_request_is_cancelled
+    )
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    try:
+        with _build_client(reloaded_manager) as client:
+            client.post(
+                "/api/storage/location/retained-source/cleanup",
+                json={"retained_root": str(source_root)},
+            )
+    except BaseException:  # the cancellation surfaces through the test client
+        pass
+
+    assert not source_root.exists()
+    checkpoint = load_storage_migration(_make_real_config_manager(tmp_path))
+    assert checkpoint["retained_source_mode"] == "cleaned"

@@ -2130,35 +2130,6 @@ async def _post_storage_location_retained_source_cleanup_locked(
     current_root = normalize_runtime_root(config_manager.app_docs_dir)
     anchor_root = compute_anchor_root(config_manager, current_root=current_root)
     cleanup_checkpoint = load_storage_migration(config_manager, anchor_root=anchor_root) or {}
-    try:
-        # 这一步 rmtree 保留目录，同样不能在取消时把 _storage_mutation_lock 让出去
-        remaining_entries, retained_root_kept = await _run_locked_storage_job(
-            lambda: _cleanup_retained_runtime_root(
-                retained_path,
-                current_root=current_root,
-                anchor_root=anchor_root,
-                target_root=notice.get("target_root") or "",
-                copied_entries=cleanup_checkpoint.get("copied_entries"),
-                legacy_checkpoint=is_legacy_unproven_checkpoint(cleanup_checkpoint),
-            )
-        )
-    except Exception as exc:
-        response.status_code = 500
-        return {
-            "ok": False,
-            "error_code": "retained_source_cleanup_failed",
-            "error": f"清理旧数据保留目录失败: {exc}",
-        }
-
-    if remaining_entries:
-        response.status_code = 409
-        return {
-            "ok": False,
-            "error_code": "retained_source_cleanup_incomplete",
-            "error": "旧数据目录仍含缺少复制证据的运行时条目，已保留供人工确认。",
-            "retained_root": expected_retained_root,
-            "remaining_entries": list(remaining_entries),
-        }
 
     def _persist_cleanup_result() -> None:
         # 迁移检查点和 root_state 两次落盘放同一个 job：中间插一个 await 就能造出
@@ -2189,7 +2160,44 @@ async def _post_storage_location_retained_source_cleanup_locked(
             # best-effort：清理本身已经做完了，标记没落上不该把整个请求判失败
             pass
 
-    await _run_locked_storage_job(_persist_cleanup_result)
+    def _cleanup_and_record() -> tuple[tuple[str, ...], bool]:
+        # Deleting and recording the result are one job: _run_locked_storage_job
+        # lets the worker finish when the request is cancelled but then raises,
+        # so a separate second job would never run and leave the checkpoint
+        # pointing at a retained root that is already gone.
+        remaining, kept = _cleanup_retained_runtime_root(
+            retained_path,
+            current_root=current_root,
+            anchor_root=anchor_root,
+            target_root=notice.get("target_root") or "",
+            copied_entries=cleanup_checkpoint.get("copied_entries"),
+            legacy_checkpoint=is_legacy_unproven_checkpoint(cleanup_checkpoint),
+        )
+        if not remaining:
+            _persist_cleanup_result()
+        return remaining, kept
+
+    try:
+        # 这一步 rmtree 保留目录，同样不能在取消时把 _storage_mutation_lock 让出去
+        remaining_entries, retained_root_kept = await _run_locked_storage_job(_cleanup_and_record)
+    except Exception as exc:
+        response.status_code = 500
+        return {
+            "ok": False,
+            "error_code": "retained_source_cleanup_failed",
+            "error": f"清理旧数据保留目录失败: {exc}",
+        }
+
+    if remaining_entries:
+        response.status_code = 409
+        return {
+            "ok": False,
+            "error_code": "retained_source_cleanup_incomplete",
+            "error": "旧数据目录仍含缺少复制证据的运行时条目，已保留供人工确认。",
+            "retained_root": expected_retained_root,
+            "remaining_entries": list(remaining_entries),
+        }
+
 
     return {
         "ok": True,
