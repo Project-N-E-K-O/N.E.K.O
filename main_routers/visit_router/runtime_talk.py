@@ -856,16 +856,25 @@ class TalkMixin:
         """
         await self.host.wait_turn_idle(_HOME_TURN_WAIT_S, start_window=_HOME_TURN_START_S)
 
-    async def close_session(self) -> None:
+    async def close_session(self, timeout: float) -> None:
+        """Close the isolated session's client, waiting at most ``timeout``.
+
+        Not ``wait_for``: that waits for the cancelled close to actually end,
+        and a client whose own cancellation drain hangs would hold teardown
+        forever. Past ``timeout`` the close is left running in the background
+        (``_keep_background``) so it can still release its HTTP connections.
+        """
         from main_routers.visit_router.session_pool import close_visit_session
 
         session = self.session
         if session is None:
             return
-        try:
-            await close_visit_session(session)
-        except Exception:  # noqa: BLE001
-            pass
+        closing = asyncio.ensure_future(close_visit_session(session))
+        closing.add_done_callback(lambda t: t.cancelled() or t.exception())  # 失败只是少关一次，取走异常
+        await asyncio.wait([closing], timeout=timeout)
+        if not closing.done():
+            logger.warning("visit %s: isolated session still closing; continuing", self.visit_id[:6])
+            self._keep_background(closing)
 
 
 async def _stream_bounded(session: Any, prompt: str, timeout: float) -> None:

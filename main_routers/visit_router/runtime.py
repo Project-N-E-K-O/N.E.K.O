@@ -324,6 +324,7 @@ def _character_uid_of(lanlan_name: str) -> Optional[str]:
 
 
 _uid_by_name: dict[str, str] = {}
+"""Last known ``character_uid`` of a name that started a visit (background-task lookup by name)."""
 
 _resolving_names: set[object] = set()
 """Background tasks whose character name is still being resolved (the lifecycle guard is conservative)."""
@@ -333,6 +334,9 @@ _pending_visits: set[tuple[str, str]] = set()
 
 _stop_gen = 0
 """Bumped by ``stop_all``: a ``start_visit`` that was still awaiting when it ran does not register."""
+
+_stopping = False
+"""True while ``stop_all`` runs: a ``start_visit`` arriving meanwhile is refused (it would not be stopped)."""
 
 
 def has_visit_background_tasks(lanlan_name: str) -> bool:
@@ -650,6 +654,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     @property
     def finalizing(self) -> bool:
         return self._exit_task is not None or self._terminated
+
+    def _keep_background(self, task: asyncio.Future) -> None:
+        _keep_detached(task)
 
     def _set_phase(self, phase: str) -> None:
         self.phase = phase
@@ -1740,11 +1747,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             except Exception:  # noqa: BLE001
                 pass
             self.takeover_token = None
-        try:
-            # 客户端关不掉（取消排空 / HTTP 关闭卡住）也照样注销：不能让这个角色一直锁在已结束的场次里
-            await asyncio.wait_for(self.close_session(), _SESSION_CLOSE_S)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("visit %s: isolated session not closed: %r", self.visit_id[:6], exc)
+        # 客户端关不掉（取消排空 / HTTP 关闭卡住）也照样注销：不能让这个角色一直锁在已结束的场次里
+        await self.close_session(_SESSION_CLOSE_S)
         self.speech_router.clear()
         if self._pump_task is not None:
             self._pump_task.cancel()
@@ -1838,11 +1842,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._stop_display()
         # 正常收尾由关闭通道 / teardown 做的两件事，关机路径也要做（各自限时，不超关机预算）：
         # .outbox.jsonl 带正文，不能比这场活得久；隔离会话的客户端要关掉它自己的任务与 HTTP 连接
-        for cleanup in (self.outbox.close(), self.close_session()):
-            try:
-                await asyncio.wait_for(cleanup, _SHUTDOWN_TASK_WAIT_S)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("visit %s: shutdown cleanup incomplete: %r", self.visit_id[:6], exc)
+        try:
+            await asyncio.wait_for(self.outbox.close(), _SHUTDOWN_TASK_WAIT_S)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("visit %s: shutdown cleanup incomplete: %r", self.visit_id[:6], exc)
+        await self.close_session(_SHUTDOWN_TASK_WAIT_S)
         unregister_transport_session(self.transport)
         slot = get_visit_route_state(self.lanlan_name)
         if slot is self.slot:
@@ -1917,6 +1921,12 @@ def _detach(coro: Awaitable[Any]) -> asyncio.Task:
     return task
 
 
+def _keep_detached(task: asyncio.Future) -> None:
+    """Track an already running task that outlives its runtime (``stop_all`` cancels it too)."""
+    _detached.add(task)
+    task.add_done_callback(_detached.discard)
+
+
 def _make_inbox() -> Any:
     from main_logic.watch_together.live import LiveInbox
 
@@ -1986,9 +1996,9 @@ async def start_visit(
         if failure is not None:
             raise VisitRefused(409, {"reason": failure})
         account = await _local_account()
-        if _stop_gen != stop_gen:
-            # 入场途中 stop_all 已经跑过（它只看得到已登记的运行时）：不再登记、不再起传输
-            raise VisitRefused(409, {"reason": "busy"})
+        if _stop_gen != stop_gen or _stopping:
+            # 入场途中 stop_all 跑过 / 正在跑（它只看得到已登记的运行时）：不再登记、不再起传输
+            raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "shutdown"})
         # 查账号期间（还没登记运行时、输入还不归串门）语音会话 / 热切换可能已经起来、manager 也可能被换掉：再查一次
         if not host.is_current():
             raise VisitRefused(409, {"reason": "busy"})
@@ -2099,17 +2109,21 @@ async def end_visit(lanlan_name: str, visit_id: str, reason: str) -> tuple[int, 
 
 async def stop_all(reason: str = "shutdown") -> None:
     """Shutdown hook (PR-09b, within ``VISIT_SHUTDOWN_BUDGET_S``): files first, never a ``leave``."""
-    global _stop_gen
+    global _stop_gen, _stopping
     _stop_gen += 1  # 还挂在入场途中的 start_visit 醒来后看到它就不登记
-    runtimes = list(_runtimes.values())
-    if runtimes:
-        await asyncio.gather(*(rt.shutdown() for rt in runtimes), return_exceptions=True)
-    # 脱离运行时的后台任务（账号映射补写、交还回调）也一并停掉，不留给事件循环销毁
-    detached = [t for t in _detached if not t.done()]
-    for task in detached:
-        task.cancel()
-    if detached:
-        await asyncio.wait(detached, timeout=_SHUTDOWN_TASK_WAIT_S)
+    _stopping = True  # stop_all 进行中新到的入场同样拒绝
+    try:
+        runtimes = list(_runtimes.values())
+        if runtimes:
+            await asyncio.gather(*(rt.shutdown() for rt in runtimes), return_exceptions=True)
+        # 脱离运行时的后台任务（账号映射补写、交还回调、没关完的会话）也一并停掉，不留给事件循环销毁
+        detached = [t for t in _detached if not t.done()]
+        for task in detached:
+            task.cancel()
+        if detached:
+            await asyncio.wait(detached, timeout=_SHUTDOWN_TASK_WAIT_S)
+    finally:
+        _stopping = False
 
 
 async def visit_sweep_loop() -> None:

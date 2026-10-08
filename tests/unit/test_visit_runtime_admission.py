@@ -1016,20 +1016,62 @@ async def test_an_admission_still_awaiting_when_stop_all_runs_does_not_register(
         await teardown(side, clock=clock)
 
 
+async def test_an_admission_during_stop_all_is_refused_as_shutdown(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    gate, reached = asyncio.Event(), asyncio.Event()
+
+    async def slow_account():
+        reached.set()
+        await gate.wait()
+        return "acct"
+
+    try:
+        monkeypatch.setattr(rtm, "_stopping", True)           # stop_all 正在跑时新到的入场
+        with pytest.raises(rtm.VisitRefused) as refused:
+            await start_side(side, clock=clock, wall=wall)
+        assert refused.value.body["reason"] == "shutdown"
+        monkeypatch.setattr(rtm, "_stopping", False)
+        monkeypatch.setattr(rtm, "_local_account", slow_account)
+        starting = asyncio.ensure_future(start_side(side, clock=clock, wall=wall))
+        await asyncio.wait_for(reached.wait(), 5)
+        monkeypatch.setattr(rtm, "_stopping", True)           # 查账号期间 stop_all 开始（代数还没变也拦）
+        gate.set()
+        with pytest.raises(rtm.VisitRefused) as refused:
+            await asyncio.wait_for(starting, 5)
+        assert refused.value.body["reason"] == "shutdown"
+        assert rtm.get_runtime("Host") is None
+    finally:
+        gate.set()
+        monkeypatch.setattr(rtm, "_stopping", False)
+        await teardown(side, clock=clock)
+
+
 async def test_a_session_that_will_not_close_does_not_keep_the_visit_registered(tmp_path, monkeypatch):
+    from main_routers.visit_router import session_pool
+
     monkeypatch.setattr(rtm, "_SESSION_CLOSE_S", 0.2)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
     stuck = asyncio.Event()
+    real_close = session_pool.close_visit_session
 
-    async def close_session():
-        await stuck.wait()                                    # 客户端关不掉
+    async def close_visit_session(session):
+        if session is not rt.session:
+            return await real_close(session)
+        while not stuck.is_set():                             # 取消排空卡住：吞掉取消、继续等
+            try:
+                await stuck.wait()
+            except asyncio.CancelledError:
+                continue
 
-    rt.close_session = close_session
+    monkeypatch.setattr(session_pool, "close_visit_session", close_visit_session)
     try:
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 10)
         assert rtm.get_runtime("Host") is None                # 照样注销，这个角色不会一直锁着
+        assert [t for t in rtm._detached if not t.done()]     # 没关完的交给后台继续关
     finally:
         stuck.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1606,6 +1648,10 @@ async def test_late_text_whose_speaker_changed_since_its_first_piece_is_not_reco
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:97", "i": 0, "lp": lp + 1, "txt": "猫", "sp": "c", "ad": "hc",
             "rt": "", "wu": False}, nbytes=200)                # 开口不是告别
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "line_delta", "v": 1, "ln": "g:98", "i": 0, "lp": lp + 2, "txt": "半截", "sp": "c", "ad": "hc",
+            "rt": "", "wu": False}, nbytes=200)                # 页面上开出半截气泡
+        before = len(host.host.frames)
         stuck = asyncio.Event()
 
         async def slow_close(*args, **kwargs):
@@ -1626,6 +1672,16 @@ async def test_late_text_whose_speaker_changed_since_its_first_piece_is_not_reco
         }, nbytes=200)
         assert rt.sequencer.contiguous_seq == seq + 1
         assert not [r for r in rt.journal.lines() if r["text"] == "收口改成告别"]   # 与 room 同一判据（含 wu）
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:98", "lp": lp + 2, "seq": seq + 2, "sp": "c", "ad": "hc",
+            "rt": "", "wu": False, "final": True, "txt": "半截补成整句", "truncated": False, "i_done": 1,
+        }, nbytes=200)
+        assert [r for r in rt.journal.lines() if r["text"] == "半截补成整句"]
+        await settle()
+        frames = host.host.frames[before:]
+        aborted = {f.get("line_id") for f in frames if f.get("type") == "visit_line_abort"}
+        assert {"g:96", "g:97"} <= aborted                    # 不一致的那两行：撤掉半截气泡
+        assert [f for f in frames if f.get("type") == "visit_line" and f.get("line_id") == "g:98"]   # 整句收口
         stuck.set()
     finally:
         await teardown(host, guest, wire=wire, clock=clock)

@@ -464,6 +464,8 @@ class ReceiveMixin:
             return
         sp = "human" if m.get("sp") == "h" else "cat"
         ad_side, ad_kind = decode_addressee(m.get("ad"))
+        self._deltas.close(m)  # 收口：之后到的该行分片一律不再上屏
+        opened = self._peer_lines.pop(ln, None) is not None  # 分片已开出半截气泡
         if self.room.incoming_meta_mismatch(IncomingLineDone(
             ref=LineRef(str(ln), lp, self.peer_side), truncated=m.get("truncated") is True,
             tail_ms=m.get("tail_ms", 0), goodbye=m.get("wu") is True, speaker=sp, addressee_side=ad_side,
@@ -471,19 +473,19 @@ class ReceiveMixin:
         )):
             # 收口与开口声明的元数据不一致（与 room 的 line_meta_mismatch 同一判据）：说话人等记不准，不进转录
             self._count_anomaly("line_meta_mismatch")
+            if opened:
+                self._post_display({"type": "visit_line_abort", "visit_id": self.visit_id, "line_id": ln,
+                                    "i_done": 0, "reason": "rejected", "ts": self.wall()})
             return
         if not self._line_admitted(ln, from_vid, now):
             return  # 与正常收口同一份配额决定：分片时已判超速的行，收尾中补到也不进转录
-        txt = str(m.get("txt") or "")
-        truncated = m.get("truncated") is True
-        # 不上屏，但缓存完整的帧形状：页面重载时 GET /state 按它重放（收件人 / 回复 / 告别 / i_done）
-        self.visit_line_payload(
-            ln=str(ln), lp=lp, side=self.peer_side, kind=sp, ad_side=ad_side, ad_kind=ad_kind,
-            reply_to=str(m.get("rt") or ""), goodbye=m.get("wu") is True, text=txt, truncated=truncated,
-            i_done=m.get("i_done", 0),
-            trunc_reason=m.get("trunc_reason") if isinstance(m.get("trunc_reason"), str) else None,
-        )
-        await self.record_line(f"peer_{sp}", side=self.peer_side, lp=lp, ln=str(ln), text=txt, truncated=truncated)
+        # 缓存完整的帧形状：页面重载时 GET /state 按它重放（收件人 / 回复 / 告别 / i_done）
+        frame = self._peer_line_frame(m, str(ln), lp)
+        await self.record_line(f"peer_{sp}", side=self.peer_side, lp=lp, ln=str(ln), text=str(m.get("txt") or ""),
+                               truncated=m.get("truncated") is True)
+        if opened:
+            # 页面上已开出半截气泡：用整句收口（不入史、不触发回复）
+            self._post_display(frame)
 
     def _lp_reused(self, ln: Any, lp: Any) -> bool:
         """A second peer line claiming an ``lp`` another of its lines already holds: rejected whole.
@@ -625,13 +627,19 @@ class ReceiveMixin:
         if m.get("wu") is True and sp == "cat":
             # 要拼进本侧下一轮 prompt：按收件侧再清洗、按告别句上限截（对端可能不守 LineSpeaker 的上限）
             self.last_peer_goodbye = clamp_peer_line(txt)[:VISIT_GOODBYE_MAX_CHARS]
-        self._post_display(self.visit_line_payload(
-            ln=ln, lp=lp, side=self.peer_side, kind=sp, ad_side=ad_side, ad_kind=ad_kind,
-            reply_to=str(m.get("rt") or ""), goodbye=m.get("wu") is True, text=txt, truncated=truncated,
-            i_done=m.get("i_done", 0), trunc_reason=trunc_reason,
-        ))
+        self._post_display(self._peer_line_frame(m, ln, lp))
         if reply is not None or say_goodbye:
             self.apply_effects(RoomEffects(reply=reply, say_goodbye=say_goodbye))
+
+    def _peer_line_frame(self, m: dict, ln: Any, lp: int) -> dict:
+        """The ``visit_line`` frame of a peer's final ``text`` (also cached for the ``GET /state`` replay)."""
+        ad_side, ad_kind = decode_addressee(m.get("ad"))
+        return self.visit_line_payload(
+            ln=ln, lp=lp, side=self.peer_side, kind="human" if m.get("sp") == "h" else "cat",
+            ad_side=ad_side, ad_kind=ad_kind, reply_to=str(m.get("rt") or ""), goodbye=m.get("wu") is True,
+            text=str(m.get("txt") or ""), truncated=m.get("truncated") is True, i_done=m.get("i_done", 0),
+            trunc_reason=m.get("trunc_reason") if isinstance(m.get("trunc_reason"), str) else None,
+        )
 
     # ── leave ────────────────────────────────────────────────────────
 
