@@ -26,6 +26,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 @pytest.mark.parametrize("endpoint,field", [
     ("https://api.deepseek.com/v1", "max_tokens"),
     ("https://open.bigmodel.cn/api/paas/v4", "max_tokens"),
+    ("https://api.z.ai/api/paas/v4", "max_tokens"),
     ("https://api.siliconflow.cn/v1", "max_tokens"),
     ("https://dashscope.aliyuncs.com/compatible-mode/v1", "max_completion_tokens"),
     ("https://ark.cn-beijing.volces.com/api/v3", "max_completion_tokens"),

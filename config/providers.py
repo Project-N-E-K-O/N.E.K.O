@@ -464,6 +464,19 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         cached_token_field="cached_tokens",
         token_limit_field="max_tokens",
     ),
+    # 智谱国际站（Z.ai）：与 open.bigmodel.cn 同一套 API，同样静默忽略
+    # max_completion_tokens（实测 2026-10-08，glm-5.1 上限 300 实出 1,434）。
+    "glm_intl": CacheProviderConfig(
+        provider_id="glm_intl",
+        name="Z.ai GLM (Intl)",
+        base_url="https://api.z.ai/api/paas/v4",
+        base_url_pattern="api.z.ai",
+        cache_mode="auto",
+        requires_header=False,
+        min_cache_tokens=1024,
+        cached_token_field="cached_tokens",
+        token_limit_field="max_tokens",
+    ),
     "step": CacheProviderConfig(
         provider_id="step",
         name="阶跃星辰 Step",
