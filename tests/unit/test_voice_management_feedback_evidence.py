@@ -411,8 +411,12 @@ async def test_query_deadline_does_not_mean_its_local_write_stopped(client, monk
         assert await asyncio.to_thread(storage.read_bytes) == before
         details = response.json()["details"]
         assert details["state_sync"] == "unknown"
-        assert details["voice_state"]["overwrite_status"] == "processing"
-        assert details["voice_state"]["actions"] == ["refresh"]
+        # The query budget is exhausted: feedback cannot start another disk
+        # read. Physical-write protection is checked against the actual record.
+        assert details["voice_state"] is None
+        pending = await asyncio.to_thread(cm.get_imported_voice, ref, include_inactive=True)
+        assert pending["overwrite_status"] == "processing"
+        assert pending["overwrite_submission_phase"] == "submission_possible"
         with pytest.raises(VoiceManagementError) as blocked:
             await service.overwrite_remote_voice(adapter, cm, ref,
                 token=token, audio=b"second", filename="sample.wav")

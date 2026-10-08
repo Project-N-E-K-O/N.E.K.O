@@ -123,9 +123,12 @@ async def test_cancelled_permission_waiter_joins_write_and_keeps_unknown(fixture
     try:
         assert await asyncio.to_thread(persisted.wait, 5)
         old.cancel()
-        release.set()
         with pytest.raises(asyncio.CancelledError):
-            await old
+            await asyncio.wait_for(old, 1)
+        settlements = tuple(service._CANCELLED_SUBMISSIONS)
+        assert len(settlements) == 1
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*settlements), 5)
         record = cm.get_imported_voice(ref)
         assert record["overwrite_submission_phase"] == "submission_possible"
         assert record["overwrite_status"] == "unknown"
@@ -138,6 +141,7 @@ async def test_cancelled_permission_waiter_joins_write_and_keeps_unknown(fixture
         if not old.done():
             old.cancel()
         await asyncio.gather(old, return_exceptions=True)
+        await asyncio.gather(*tuple(service._CANCELLED_SUBMISSIONS), return_exceptions=True)
 
 
 @pytest.mark.asyncio

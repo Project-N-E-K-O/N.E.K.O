@@ -19,6 +19,9 @@ from .types import AttemptOutcome, RemoteVoice, StateSync, VoiceManagementAdapte
 
 _CONTEXT_SECRET = secrets.token_bytes(32)
 _OVERWRITE_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+# Retain only abandoned permission settlements, never provider submissions.
+_CANCELLED_SUBMISSIONS: set[asyncio.Task] = set()
+_FEEDBACK_TIMEOUT = 2.0
 _IMPORT_FIELDS = frozenset({"clone_model", "doubao_resource_id", "ref_language"})
 _VOICE_METADATA_FIELDS = _IMPORT_FIELDS | frozenset({
     "minimax_base_url", "elevenlabs_base_url", "dashscope_base_url",
@@ -82,6 +85,7 @@ async def overwrite_result_details(
     attempt_outcome: AttemptOutcome = AttemptOutcome.NOT_SUBMITTED,
     state_sync: StateSync = StateSync.UNCHANGED,
     strict_context: bool = False,
+    deadline: float | None = None,
 ) -> dict:
     """Project a current persisted snapshot, independently of this request's result.
 
@@ -91,16 +95,14 @@ async def overwrite_result_details(
     context_changed = False
 
     def read():
-        nonlocal context_changed
         record = cm.get_imported_voice(local_ref, include_inactive=True)
         if not record:
-            return None
+            return None, False
         runtime = adapter.resolve_runtime(cm, voice_data=record)
         if (not isinstance(token, str) or not hmac.compare_digest(context_token(runtime), token)
                 or record.get("scope_id") != runtime.scope_id
                 or record.get("provider") != runtime.provider):
-            context_changed = True
-            return None
+            return None, True
         capabilities = adapter.capabilities_for(runtime)
         status = record.get("overwrite_status") or "completed"
         actions = ["refresh"] if runtime.api_key and capabilities.details else []
@@ -114,12 +116,19 @@ async def overwrite_result_details(
         return {"local_ref": local_ref, "operation_id": record.get("overwrite_operation_id"),
                 "record_revision": record.get("_record_revision", 0),
                 "submission_phase": record.get("overwrite_submission_phase"),
-                "overwrite_status": status, "actions": actions}
+                "overwrite_status": status, "actions": actions}, False
 
-    try:
-        snapshot = await asyncio.to_thread(read)
-    except Exception:
-        snapshot = None
+    loop = asyncio.get_running_loop()
+    deadline = min(deadline, loop.time() + _FEEDBACK_TIMEOUT) if deadline is not None else loop.time() + _FEEDBACK_TIMEOUT
+    snapshot = None
+    if deadline > loop.time():
+        try:
+            async with asyncio.timeout_at(deadline):
+                snapshot, context_changed = await asyncio.to_thread(read)
+        except Exception:
+            # A late thread result cannot supply state or context evidence for
+            # this response. In particular, a timeout is not CONTEXT_CHANGED.
+            context_changed = False
     if strict_context and context_changed:
         raise VoiceManagementError("CONTEXT_CHANGED", 409, {
             "attempt_outcome": AttemptOutcome(attempt_outcome).value,
@@ -140,6 +149,7 @@ class _OverwriteEvidence:
 
     attempt_outcome: AttemptOutcome = AttemptOutcome.NOT_SUBMITTED
     state_sync: StateSync = StateSync.UNCHANGED
+    projection_deadline: float | None = None
 
     async def write(self, coroutine):
         self.state_sync = StateSync.UNKNOWN
@@ -183,6 +193,7 @@ def _overwrite_feedback(function):
                 adapter, cm, local_ref, token=token,
                 attempt_outcome=evidence.attempt_outcome, state_sync=evidence.state_sync,
                 strict_context=True,
+                deadline=evidence.projection_deadline,
             ))
             if details["voice_state"] is not None:
                 result["status"] = details["voice_state"]["overwrite_status"]
@@ -198,11 +209,41 @@ def _overwrite_feedback(function):
             error.details.update(await overwrite_result_details(
                 adapter, cm, local_ref, token=token,
                 attempt_outcome=evidence.attempt_outcome, state_sync=evidence.state_sync,
+                deadline=evidence.projection_deadline,
             ))
             if error is exc:
                 raise
             raise error from exc
     return feedback
+
+
+async def _settle_cancelled_submission(adapter, cm, runtime, submission, local_ref, operation_id):
+    """Consume a late permission receipt without reviving its provider call.
+
+    The request releases its async lock immediately. Physical IO may continue;
+    only the same operation/revision may subsequently be marked unknown.
+    """
+    try:
+        permission = await submission
+        if not permission.applied:
+            return
+
+        def commit():
+            with VOICE_STORAGE_LOCK:
+                current = adapter.resolve_runtime(cm, voice_data=permission.record)
+                if not hmac.compare_digest(context_token(current), context_token(runtime)):
+                    return
+                cm.update_imported_voice(
+                    local_ref, runtime.scope_id, {"overwrite_status": "unknown"},
+                    expected_operation_id=operation_id,
+                    expected_record_revision=permission.record["_record_revision"], return_receipt=True,
+                )
+
+        await asyncio.to_thread(commit)
+    except (Exception, asyncio.CancelledError):
+        # Failure leaves the persisted pending marker protected. This settlement
+        # cannot prove non-submission or authorize another provider attempt.
+        pass
 
 
 async def management_context(adapter: VoiceManagementAdapter, cm, *, local_ref: str | None = None) -> dict:
@@ -439,17 +480,14 @@ async def overwrite_remote_voice(
             try:
                 permission = await asyncio.shield(submission)
             except asyncio.CancelledError:
-                # A cancelled waiter cannot assume the permission write stopped.
-                # Join the atomic transition before selecting cleanup evidence.
-                while not submission.done():
-                    try:
-                        await asyncio.shield(submission)
-                    except asyncio.CancelledError:
-                        continue
-                permission = submission.result()
-                if permission.applied:
-                    mutation_started = True
-                    claim_revision = permission.record["_record_revision"]
+                # Transfer only local settlement. Do not join stalled IO or run
+                # the outer not-submitted cleanup against an unresolved write.
+                settlement = asyncio.create_task(_settle_cancelled_submission(
+                    adapter, cm, runtime, submission, local_ref, operation_id,
+                ))
+                _CANCELLED_SUBMISSIONS.add(settlement)
+                settlement.add_done_callback(_CANCELLED_SUBMISSIONS.discard)
+                claim_owned = False
                 raise
             if not permission.applied:
                 raise VoiceManagementError("VOICE_STATE_CHANGED", 409)
@@ -577,6 +615,9 @@ async def refresh_overwrite_status(
         if not deadline.expired():
             raise
         raise VoiceManagementError("UPSTREAM_TIMEOUT", 504) from None
+    finally:
+        # Feedback shares the original query budget, including its error path.
+        evidence.projection_deadline = deadline.when()
 
 
 async def _reconcile_overwrite_status(
