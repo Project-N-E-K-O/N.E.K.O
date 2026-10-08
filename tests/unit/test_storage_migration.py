@@ -1,5 +1,6 @@
 import os
 import stat
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -2167,3 +2168,77 @@ def test_publish_conflict_is_found_again_after_a_process_exit(tmp_path, monkeypa
     assert (target_root / "config" / "newcomer.json").read_text(encoding="utf-8") == "newcomer"
     backups = list((target_root / ".smtx").glob("*/backup/config/characters.json"))
     assert [backup.read_text(encoding="utf-8") for backup in backups] == ["healthy"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix", reason="the hard-link fallback is the POSIX file path")
+def test_file_publish_without_hard_links_prefers_the_no_replace_rename(tmp_path, monkeypatch):
+    """Without hard links, an O_EXCL reservation is replaceable by rename(2)
+    after another process has written into it; use the atomic no-replace
+    rename whenever the system offers one."""
+    import errno
+
+    from utils import storage_migration as storage_migration_module
+
+    staged = tmp_path / "staged.json"
+    staged.write_text("staged", encoding="utf-8")
+    target = tmp_path / "target.json"
+    calls = []
+
+    def _no_hard_links(_source, _destination):
+        raise OSError(errno.EPERM, "hard links unsupported")
+
+    def _no_replace(source, destination):
+        calls.append((Path(source), Path(destination)))
+        os.rename(source, destination)
+        return True
+
+    def _no_reservation(*_args, **_kwargs):
+        raise AssertionError("the O_EXCL reservation is only the last resort")
+
+    monkeypatch.setattr(storage_migration_module.os, "link", _no_hard_links)
+    monkeypatch.setattr(storage_migration_module, "_rename_no_replace", _no_replace)
+    monkeypatch.setattr(storage_migration_module.os, "open", _no_reservation)
+
+    storage_migration_module._publish_without_overwrite(staged, target)
+
+    assert calls == [(staged, target)]
+    assert target.read_text(encoding="utf-8") == "staged"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="renameat2/renamex_np")
+def test_native_no_replace_rename_refuses_an_existing_target(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    source = tmp_path / "source.json"
+    source.write_text("source", encoding="utf-8")
+    target = tmp_path / "target.json"
+    target.write_text("newcomer", encoding="utf-8")
+
+    try:
+        storage_migration_module._rename_no_replace(source, target)
+    except FileExistsError:
+        pass
+    else:
+        if storage_migration_module._native_no_replace_rename() is None:
+            pytest.skip("no native no-replace rename in this libc")
+        raise AssertionError("an existing target must be refused")
+    assert target.read_text(encoding="utf-8") == "newcomer"
+
+    target.unlink()
+    assert storage_migration_module._rename_no_replace(source, target) is True
+    assert target.read_text(encoding="utf-8") == "source"
+    assert not source.exists()
+
+
+@pytest.mark.unit
+def test_no_replace_rename_reports_unsupported_systems(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    monkeypatch.setattr(storage_migration_module, "_native_no_replace_rename", lambda: None)
+    source = tmp_path / "source.json"
+    source.write_text("source", encoding="utf-8")
+
+    assert storage_migration_module._rename_no_replace(source, tmp_path / "target.json") is False
+    assert source.read_text(encoding="utf-8") == "source"

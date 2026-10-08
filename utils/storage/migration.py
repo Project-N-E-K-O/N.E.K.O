@@ -14,12 +14,15 @@
 
 from __future__ import annotations
 
+import ctypes
 import errno
+import functools
 import hashlib
 import json
 import os
 import shutil
 import stat
+import sys
 import uuid
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -269,6 +272,59 @@ def _retry_after_clearing_read_only(function: Callable[..., Any], path: str, _er
     function(path)
 
 
+_AT_FDCWD = -100
+_LINUX_RENAME_NOREPLACE = 0x1
+_DARWIN_RENAME_EXCL = 0x4
+# What renameat2/renamex_np report when the filesystem cannot honour the flag.
+_NO_REPLACE_UNSUPPORTED_ERRNOS = frozenset(
+    {errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, getattr(errno, "EOPNOTSUPP", errno.ENOTSUP)}
+)
+
+
+@functools.lru_cache(maxsize=1)
+def _native_no_replace_rename() -> Callable[[bytes, bytes], int] | None:
+    try:
+        if sys.platform.startswith("linux"):
+            libc = ctypes.CDLL(None, use_errno=True)
+            renameat2 = getattr(libc, "renameat2", None)
+            if renameat2 is None:
+                return None
+            renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            renameat2.restype = ctypes.c_int
+            return lambda source, target: renameat2(
+                _AT_FDCWD, source, _AT_FDCWD, target, _LINUX_RENAME_NOREPLACE
+            )
+        if sys.platform == "darwin":
+            libc = ctypes.CDLL(None, use_errno=True)
+            renamex_np = getattr(libc, "renamex_np", None)
+            if renamex_np is None:
+                return None
+            renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+            renamex_np.restype = ctypes.c_int
+            return lambda source, target: renamex_np(source, target, _DARWIN_RENAME_EXCL)
+    except (OSError, AttributeError):
+        return None
+    return None
+
+
+def _rename_no_replace(source: Path, target: Path) -> bool:
+    """Rename atomically, refusing an existing target, where the system can.
+
+    Returns ``False`` when neither the OS nor the filesystem offers such a
+    rename, and raises ``FileExistsError`` when ``target`` already exists.
+    """
+    rename = _native_no_replace_rename()
+    if rename is None:
+        return False
+    if rename(os.fsencode(source), os.fsencode(target)) == 0:
+        return True
+    error = ctypes.get_errno()
+    if error in _NO_REPLACE_UNSUPPORTED_ERRNOS:
+        return False
+    # OSError picks the subclass from errno: EEXIST raises FileExistsError.
+    raise OSError(error, os.strerror(error), str(source), None, str(target))
+
+
 def _publish_without_overwrite(staged: Path, target: Path) -> None:
     """Move a staged entry into place, failing instead of replacing anything.
 
@@ -298,9 +354,15 @@ def _publish_without_overwrite(staged: Path, target: Path) -> None:
     except FileExistsError:
         raise
     except OSError:
-        # Filesystems without hard links (FAT, exFAT): reserve the name with
-        # O_EXCL, which is atomic and refuses anything already there, then
-        # replace only that empty reservation.
+        # Filesystems without hard links (FAT, exFAT): a rename that refuses
+        # an existing target, where the kernel offers one for this
+        # filesystem (Linux renameat2, macOS renamex_np).
+        if _rename_no_replace(staged, target):
+            return
+        # Last resort: reserve the name with O_EXCL, which is atomic and
+        # refuses anything already there, then replace that reservation.
+        # A writer that opens the reservation in the instant before the
+        # rename would lose its write; nothing atomic is left to use here.
         os.close(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
         os.rename(staged, target)
         return
