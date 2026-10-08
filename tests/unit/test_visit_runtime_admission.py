@@ -1041,3 +1041,44 @@ def test_a_second_runtime_of_the_same_visit_does_not_take_over_its_registration(
     assert rtm.get_runtime_by_visit("V" * 22) is second
     rtm._unregister(second)
     assert not rtm.is_visit_live("V" * 22)
+
+
+async def test_a_pending_joined_report_dies_with_its_page(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    try:
+        await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+        assert await rt.issue_credentials() is not None
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 记下，等能力门
+        rt.transport.on_page_lost(clock())                                         # 这条连接没报断线就没了
+        await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
+        assert rt.joined is False and not side.host.frames_of("visit_state_change", "invite_ready")
+    finally:
+        await teardown(side, clock=clock)
+
+
+async def test_the_guest_wait_starts_after_the_journal_header_is_written(tmp_path, monkeypatch, clocks):
+    from config.visit_settings import VISIT_PEER_LOST_S
+
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "guest", clock=clock, wall=wall)
+    rt = await start_side(side, invite_code=INVITE, clock=clock, wall=wall)
+    Wire().attach(rt, None, GUEST_VID)
+    await through_gate(rt)
+    real_open = rt.journal.open
+
+    async def slow_open(**kw):
+        clock.advance(20)                                   # 磁盘慢：写上传头花了 20 s
+        await real_open(**kw)
+
+    rt.journal.open = slow_open
+    try:
+        await rt.on_transport_state({"state": "joined", "peer_present": True})
+        assert rt.phase == "joining"
+        assert rt.liveness.wait_deadline - clock() > VISIT_PEER_LOST_S - 1   # 仍有完整的等对端时间
+    finally:
+        await teardown(side, clock=clock)

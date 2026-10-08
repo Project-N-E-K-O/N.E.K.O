@@ -57,6 +57,7 @@ from utils.visit_wire import LineDeltaAssembler, decode_msg, proto_compatible
 logger = get_module_logger(__name__, "Main")
 
 _DISPLAY_BACKLOG_MAX = 64
+_DISPLAY_QUEUE_MAX = 256
 """Queued display frames above which subtitle pieces / typing are dropped (final lines never)."""
 
 GATE_PASS = frozenset({"hello", "ready", "leave", "hb", "ack"})
@@ -402,6 +403,10 @@ class ReceiveMixin:
         if droppable and len(self._display) >= _DISPLAY_BACKLOG_MAX:
             self.display_dropped += 1
             return
+        if len(self._display) >= _DISPLAY_QUEUE_MAX:
+            # 页面长时间不收：最旧的先丢（页面重连后由 GET /state 的转录补回）
+            self._display.popleft()
+            self.display_dropped += 1
         self._display.append(frame)
         if self._display_task is None or self._display_task.done():
             self._display_task = self.spawn(self._drain_display())
@@ -409,6 +414,13 @@ class ReceiveMixin:
     async def _drain_display(self) -> None:
         while self._display:
             await self.host.send_frame(self._display.popleft())
+
+    def _stop_display(self) -> None:
+        """The visit ended: drop what is still queued for the page and stop sending it."""
+        self._display.clear()
+        task = self._display_task
+        if task is not None and not task.done():
+            task.cancel()
 
     def _reject_line(self, ln: Any) -> None:
         """Drop a peer line whole: no more deltas on screen, its ``text`` kept out of transcript and history."""

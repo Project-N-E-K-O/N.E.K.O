@@ -1101,3 +1101,31 @@ async def test_the_upload_record_is_taken_before_a_slow_spool_write(tmp_path, mo
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_the_display_queue_is_bounded_and_dropped_when_the_visit_ends(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_send = host.host.send_frame
+
+    async def slow_send(payload):
+        if payload.get("type") == "visit_line":
+            await stuck.wait()                               # 只有显示队列这一路卡住
+        return await real_send(payload)
+
+    host.host.send_frame = slow_send
+    try:
+        for i in range(400):
+            rt._post_display({"type": "visit_line", "line_id": f"g:{i}"})   # 整句也不能无限堆
+        assert len(rt._display) <= 256
+        task = rt._display_task
+        rt.request_finalize("route_end")
+        await finish(rt, clock)
+        await settle()
+        assert not rt._display and task.cancelled()          # 场次结束：队列清空、发帧任务停掉
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)

@@ -448,6 +448,8 @@ class _Transport(VisitTransportSession):
 
     def on_page_lost(self, now: float) -> None:
         super().on_page_lost(now)
+        # 记下的入房报告属于断掉的那条连接：新连接要自己入房、自己报
+        self._rt._pending_join = None
         self._rt.kick()
 
     def on_page_rejoined(self, now: float) -> None:
@@ -868,6 +870,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.finalizing:
             # 写上传头期间这场已被结束：不再把阶段翻回等待
             return
+        now = self.clock()  # 写上传头 await 过：等待期限从这一刻算
         if self.side == "host":
             # 等客：只受邀请期限约束；观察到对端入房时由 liveness 延长
             from config.visit_settings import VISIT_INVITE_WAIT_S
@@ -1607,6 +1610,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.speech_router.clear()
         if self._pump_task is not None:
             self._pump_task.cancel()
+        self._stop_display()
         unregister_transport_session(self.transport)
         slot = get_visit_route_state(self.lanlan_name)
         if slot is self.slot:
@@ -1692,6 +1696,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             task.cancel()
         if self._pump_task is not None:
             self._pump_task.cancel()
+        self._stop_display()
         unregister_transport_session(self.transport)
         slot = get_visit_route_state(self.lanlan_name)
         if slot is self.slot:
