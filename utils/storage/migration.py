@@ -1905,7 +1905,7 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
         if entry_name not in V1_MIGRATED_RUNTIME_ENTRY_NAMES
         and entry_name not in copied_entries
         and entry_parents_are_real_directories(source_root, entry_name)
-        and os.path.lexists(source_root / entry_name)
+        and _entry_exists(source_root / entry_name)
     ]
     copied: list[str] = []
     skipped: list[str] = []
@@ -2010,7 +2010,7 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
         and entry_name not in copied_entries
         and entry_name not in skipped
         and entry_name not in candidates
-        and os.path.lexists(source_root / entry_name)
+        and _entry_exists(source_root / entry_name)
     ]
     if turned_up:
         _persist_migration_payload(

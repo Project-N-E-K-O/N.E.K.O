@@ -4701,3 +4701,29 @@ def test_storage_location_cleanup_does_not_trust_a_target_reached_through_a_link
     assert response.status_code == 409, response.json()
     assert "state/game_scores" in response.json()["remaining_entries"]
     assert (source_root / "state" / "game_scores" / "badminton_scores.db").read_bytes() == b"scores"
+
+
+@pytest.mark.unit
+def test_v1_catch_up_is_not_marked_done_while_an_old_entry_cannot_be_looked_up(tmp_path, monkeypatch):
+    """The old root's entry cannot be looked up right now (no access): it may
+    well be there, so the catch-up must try again on a later launch instead
+    of being recorded as done without it."""
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    original_lstat = os.lstat
+
+    def _lstat(path, *args, **kwargs):
+        if Path(path) == source_root / "pngtuber":
+            raise PermissionError(13, "access denied", str(path))
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module.os, "lstat", _lstat)
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    monkeypatch.undo()
+
+    assert not load_storage_migration(_make_real_config_manager(tmp_path)).get("v1_catch_up_completed_at")
+
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+
+    assert (target_root / "pngtuber" / "set" / "idle.png").read_bytes() == b"png"
