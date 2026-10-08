@@ -114,8 +114,9 @@ async def test_an_unreadable_map_is_not_replaced(cfg, monkeypatch):
         raise PermissionError("locked by another process")
 
     monkeypatch.setattr(accounts, "open", busy, raising=False)
-    with pytest.raises(accounts.AccountMapDeferred):     # 写不成要报出来（调用方据此补写），不是「已记过」的 False
+    with pytest.raises(accounts.AccountMapDeferred) as caught:  # 写不成要报出来（调用方据此补写），不是「已记过」的 False
         await accounts.record_account_visit_uid("u2", UID_2)
+    assert "PermissionError" in str(caught.value)       # 底层原因留着，分得清暂时冲突与一直失败
     monkeypatch.undo()
     monkeypatch.setattr(accounts, "config_dir_provider", lambda: cfg)
     assert await accounts.lookup_visit_uid("u1") == UID_1                 # u1 的映射没被只含 u2 的表覆盖

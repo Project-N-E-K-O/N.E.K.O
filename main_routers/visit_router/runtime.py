@@ -805,7 +805,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             # 有界：本地记账卡住（文件锁 / 磁盘）不能让这场停在 pending、一直占着路由
             await asyncio.wait_for(self.deps.record_account(creds.account, creds.visit_uid), _ACCOUNT_RECORD_S)
         except Exception as exc:  # noqa: BLE001 - 映射写不进不挡串门（凭证已签发、配额已扣），后台补写
-            logger.warning("visit %s: account mapping not recorded: %s", self.visit_id[:6], type(exc).__name__)
+            logger.warning("visit %s: account mapping not recorded: %r", self.visit_id[:6], exc)
             # 转录 / 举报上传按这张映射认账号：没写成就一直补写，写成之前上传只是排队等着
             _detach(_retry_record_account(self.deps, creds.account, creds.visit_uid, self.visit_id))
         if self.side == "host" and not creds.invite_code:
@@ -2216,7 +2216,7 @@ async def _retry_record_account(deps: "RuntimeDeps", account: Any, visit_uid: An
             await asyncio.wait_for(deps.record_account(account, visit_uid), _ACCOUNT_RECORD_S * 4)
             return
         except Exception as exc:  # noqa: BLE001
-            logger.warning("visit %s: account mapping retry failed: %s", visit_id[:6], type(exc).__name__)
+            logger.warning("visit %s: account mapping retry failed: %r", visit_id[:6], exc)
 
 
 def _detach(coro: Awaitable[Any]) -> asyncio.Task:
