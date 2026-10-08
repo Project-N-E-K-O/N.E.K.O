@@ -2424,6 +2424,10 @@ async def stop_all(reason: str = "shutdown") -> None:
                     task.cancel()
 
         await asyncio.gather(*(rt.shutdown() for rt in runtimes), settle_orphan_cancels(), return_exceptions=True)
+        # 某一场的 shutdown() 半路出错、没走到它自己的撤销等待：剩下没完成的一并取消，不留给事件循环销毁
+        # （正常路径下这时都已完成，这一步什么都不做）
+        for task in [t for t in _room_cancels if not t.done()]:
+            task.cancel()
         # 脱离运行时的后台任务（账号映射补写、交还回调、没关完的会话）也一并停掉，不留给事件循环销毁
         # 按角色登记的后台写入（digest、最后总结、延后的 spool 收尾、启动补录）同样停掉：没写完的留给下次启动补录
         detached = [t for t in _detached if not t.done()]

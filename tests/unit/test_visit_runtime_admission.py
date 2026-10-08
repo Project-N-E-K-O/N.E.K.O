@@ -1364,7 +1364,8 @@ async def test_stop_all_waits_for_orphan_room_cancels_alongside_the_shutdowns(tm
 
 
 async def test_stop_all_leaves_a_registered_visits_own_room_cancel_to_its_shutdown(tmp_path, monkeypatch, clocks):
-    monkeypatch.setattr(rtm, "_SHUTDOWN_ROOM_CANCEL_S", 0.3)
+    # 孤儿路径会在 0.5 s 掐断它（能区分新旧行为）；shutdown 自己的等待最早 0.4 + 0.5 = 0.9 s 才到点，余量 0.3 s
+    monkeypatch.setattr(rtm, "_SHUTDOWN_ROOM_CANCEL_S", 0.5)
     side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
     done = []
 
@@ -1384,6 +1385,28 @@ async def test_stop_all_leaves_a_registered_visits_own_room_cancel_to_its_shutdo
     rt.shutdown = slow_shutdown
     await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
     assert done == [rt.visit_id]                              # 没被当成孤儿提前掐断
+
+
+async def test_stop_all_cancels_a_room_cancel_whose_shutdown_failed_early(tmp_path, monkeypatch, clocks):
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+
+    async def never_answers(visit_id, **kwargs):
+        await asyncio.sleep(30)
+
+    rt.deps.cancel_room = never_answers
+    rt._cancel_room_once()                                    # 这一场自己发出的撤销
+    pending = rt._room_cancel_task
+
+    async def broken_shutdown():
+        raise RuntimeError("shutdown broke early")            # 没走到它自己的撤销等待
+
+    rt.shutdown = broken_shutdown
+    try:
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
+        await asyncio.sleep(0)
+        assert pending.cancelled()                            # 没人等也没人取消的那份由 stop_all 收掉
+    finally:
+        pending.cancel()
 
 
 async def test_a_late_spool_after_stop_all_is_left_to_recovery(tmp_path, monkeypatch):
