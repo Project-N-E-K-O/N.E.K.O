@@ -1322,12 +1322,14 @@ async def test_a_line_whose_llm_ignores_cancellation_still_reaches_the_transcrip
         await rtm.on_page_signal("Host", {"speech_id": host.host.streams[0].speech_id, "played_ms": 60000,
                                           "ended": False})
         await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "line_delta"])
-        llm = rt._line.llm_task
+        line = rt._line
+        llm = line.llm_task
         real_cancel = llm.cancel
-        llm.cancel = lambda *a, **k: False                    # LLM 协程不肯停
+        llm.cancel = lambda *a, **k: False                    # LLM 协程不肯停（还占着会话锁）
         rt.interrupt_line("human_interrupt")
         await wait_for(lambda: [r for r in rt.journal.lines() if r["from"] == "own_cat" and r["truncated"]],
                        timeout=3)                             # 已发出的那行照样进转录
+        await wait_for(lambda: line.task.done(), timeout=3)   # 这一行的任务本身也收得了尾，不卡在入史等锁上
         llm.cancel = real_cancel
     finally:
         pause.set()

@@ -598,9 +598,8 @@ class TalkMixin:
             text = f"{text}{get_visit_mark_interrupted(self.lang)}"
         if not text.strip():
             return
-        async with session.turn_lock:
-            append_visit_message(session, AIMessage(content=text), sort_key(line.header.lp, self.side))
-            trim_visit_history(session)
+        # 与对端句子入史一样另起任务排队等锁：不肯停的 LLM 还占着锁时，这一行的收尾不能跟着卡住
+        self._history_add(line.header.ln, AIMessage(content=text), sort_key(line.header.lp, self.side))
 
     # ── 亲人打字（host）──────────────────────────────────────────────
 
