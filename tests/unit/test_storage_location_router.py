@@ -3844,8 +3844,10 @@ def test_storage_location_v1_cleanup_keeps_entries_v1_never_migrated(tmp_path):
             json={"retained_root": str(source_root)},
         )
 
-    assert cleanup_response.status_code == 200, cleanup_response.json()
-    assert cleanup_response.json()["retained_root_kept"] is True
+    # Reported, not deleted: until the catch-up has run, pngtuber is data
+    # still to be copied over, and the root must not count as cleaned.
+    assert cleanup_response.status_code == 409, cleanup_response.json()
+    assert cleanup_response.json()["remaining_entries"] == ["pngtuber"]
     assert (source_root / "pngtuber" / "Alice" / "idle.png").read_bytes() == b"png"
     assert not (source_root / "config").exists()
 
@@ -4808,3 +4810,66 @@ def test_storage_location_cleanup_rechecks_the_live_config_before_each_deletion(
     assert response.status_code == 409, response.json()
     assert "workshop" in response.json()["remaining_entries"]
     assert (source_root / "workshop" / "mods" / "item.txt").is_file()
+
+
+@pytest.mark.unit
+def test_v1_cleanup_keeps_reporting_entries_the_catch_up_has_not_handled_yet(tmp_path):
+    """The catch-up has not completed (it failed, or has not run yet): what v1
+    did not know is still in the old root. Cleaning the v1 entries must not
+    record the root as cleaned, which would end the catch-up for good."""
+    source_root, _target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["pngtuber"]
+    assert (source_root / "pngtuber" / "set" / "idle.png").is_file()
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] != "cleaned"
+
+
+@pytest.mark.unit
+def test_v1_cleanup_after_a_failed_catch_up_leaves_it_to_finish_on_the_next_launch(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+
+    def _copy_fails(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_and_verify_entry", _copy_fails)
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    monkeypatch.undo()
+
+    response = _cleanup_request(tmp_path, source_root)
+    assert response.status_code == 409, response.json()
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] != "cleaned"
+
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+
+    assert (target_root / "pngtuber" / "set" / "idle.png").read_bytes() == b"png"
+
+
+@pytest.mark.unit
+def test_v1_catch_up_names_an_entry_whose_new_copy_changed_while_others_were_copied(tmp_path, monkeypatch):
+    """pngtuber went live and was checked; a sync client then edited it while
+    watch_together was copied. Its recorded target manifest is stale."""
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (source_root / "watch_together").mkdir()
+    (source_root / "watch_together" / "library.json").write_text("{}", encoding="utf-8")
+    original_copy = storage_migration_module._copy_and_verify_entry
+
+    def _copy_while_the_earlier_target_changes(source_path, staged_path, **kwargs):
+        result = original_copy(source_path, staged_path, **kwargs)
+        if Path(source_path).name == "watch_together":
+            (target_root / "pngtuber" / "set" / "idle.png").write_bytes(b"edited in the new root")
+        return result
+
+    monkeypatch.setattr(storage_migration_module, "_copy_and_verify_entry", _copy_while_the_earlier_target_changes)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert "pngtuber" not in checkpoint["copied_entries"]
+    assert checkpoint["v1_catch_up_skipped"] == ["pngtuber"]

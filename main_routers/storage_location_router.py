@@ -93,6 +93,7 @@ from utils.storage_migration import (
     record_retained_root_removal_started,
     source_entries_referenced_by_config,
     v1_catch_up_skipped_entries,
+    v1_catch_up_unfinished_entries,
     rewrite_migrated_config_paths,
     root_has_user_content,
     save_storage_migration,
@@ -2289,7 +2290,12 @@ async def _post_storage_location_retained_source_cleanup_locked(
             target_root=notice.get("target_root") or "",
             copied_entries=cleanup_checkpoint.get("copied_entries"),
             legacy_checkpoint=is_legacy_unproven_checkpoint(cleanup_checkpoint),
-            catch_up_skipped=v1_catch_up_skipped_entries(cleanup_checkpoint),
+            # Left behind by the catch-up, or not handled by it yet: reported,
+            # never deleted, and the root is not recorded as cleaned.
+            catch_up_skipped=[
+                *v1_catch_up_skipped_entries(cleanup_checkpoint),
+                *v1_catch_up_unfinished_entries(cleanup_checkpoint),
+            ],
             # A retained root found gone later counts as cleaned only once a
             # cleanup really got to removing it.
             before_root_removal=partial(record_retained_root_removal_started, config_manager, anchor_root=anchor_root),

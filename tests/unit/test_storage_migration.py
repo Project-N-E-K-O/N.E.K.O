@@ -3843,3 +3843,63 @@ def test_a_reused_target_entry_that_was_a_link_all_along_is_still_reused(tmp_pat
     result = run_pending_storage_migration(config_manager)
 
     assert result["completed"] is True, result
+
+
+@pytest.mark.unit
+def test_a_reused_identical_target_entry_edited_before_commit_stops_the_migration(tmp_path, monkeypatch):
+    """memory matched the source and was reused, its manifest taken as copy
+    evidence; a sync client then edited it. That evidence must not survive."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    for root in (source_root, target_root):
+        (root / "config").mkdir(parents=True)
+        (root / "config" / "characters.json").write_text("same", encoding="utf-8")
+        (root / "memory").mkdir()
+        (root / "memory" / "facts.json").write_text("same facts", encoding="utf-8")
+    (source_root / "pngtuber").mkdir()
+    (source_root / "pngtuber" / "idle.png").write_bytes(b"png")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_reused_memory_edited(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
+        if Path(target).name == "pngtuber":
+            (target_root / "memory" / "facts.json").write_text("edited by a sync client", encoding="utf-8")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_reused_memory_edited)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "target_changed_during_migration"
+
+
+@pytest.mark.unit
+def test_a_live_config_that_cannot_be_looked_up_references_every_entry(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    (config_root / "workshop_config.json").write_text("{}", encoding="utf-8")
+    original_lstat = os.lstat
+
+    def _lstat(path, *args, **kwargs):
+        if Path(path).name == "workshop_config.json":
+            raise PermissionError(13, "access denied", str(path))
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module.os, "lstat", _lstat)
+
+    referenced = storage_migration_module.source_entries_referenced_by_config(
+        config_root=config_root, source_root=tmp_path / "old"
+    )
+
+    assert referenced == set(storage_migration_module.MIGRATED_RUNTIME_ENTRY_NAMES)

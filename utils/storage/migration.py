@@ -890,8 +890,13 @@ def _source_entries_referenced_by_config(*, config_root: Path, source_root: Path
     counts as pointing at every entry.
     """
     workshop_config_path = config_root / "workshop_config.json"
-    if not os.path.lexists(workshop_config_path):
+    try:
+        os.lstat(workshop_config_path)
+    except (FileNotFoundError, NotADirectoryError):
         return set()
+    except OSError:
+        # Not knowing what it says is not knowing it points nowhere.
+        return set(MIGRATED_RUNTIME_ENTRY_NAMES)
     try:
         payload = read_json(workshop_config_path)
     except Exception:
@@ -1938,6 +1943,7 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
     copied: list[str] = []
     skipped: list[str] = []
     copied_source_fingerprints: dict[str, str] = {}
+    copied_target_fingerprints: dict[str, str] = {}
     # Set when user data could not be put anywhere but the transaction.
     keep_transaction = False
     if candidates:
@@ -2018,6 +2024,7 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
                 )
                 copied.append(entry_name)
                 copied_source_fingerprints[entry_name] = fingerprint
+                copied_target_fingerprints[entry_name] = _metadata_fingerprint(target_entry, across_move=True)
         finally:
             if keep_transaction:
                 # Forget the id, too: the finished-checkpoint leftover
@@ -2031,12 +2038,16 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
                     _remove_transaction(transaction_root)
                 except Exception as exc:
                     logger.warning("Failed to remove the v1 catch-up transaction: %s", exc)
-    # Copied earlier, then changed in the old root while later entries were
-    # copied: the new root holds an older copy, so it is not proof and the
+    # Copied earlier, then changed while later entries were copied -- in the
+    # old root (the new root holds an older copy) or in the new one (the
+    # recorded target manifest no longer describes it): not proof, so the
     # old data is named instead.
     for entry_name in list(copied):
         try:
-            unchanged = _metadata_fingerprint(source_root / entry_name) == copied_source_fingerprints[entry_name]
+            unchanged = _metadata_fingerprint(source_root / entry_name) == copied_source_fingerprints[entry_name] and (
+                _metadata_fingerprint(target_root / entry_name, across_move=True)
+                == copied_target_fingerprints[entry_name]
+            )
         except StorageMigrationError:
             unchanged = False
         if not unchanged:
@@ -2076,6 +2087,20 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
         v1_catch_up_skipped=skipped,
     )
     return copied
+
+
+def v1_catch_up_unfinished_entries(payload: dict[str, Any] | None) -> list[str]:
+    """Entries a v1 checkpoint's catch-up has not handled yet.
+
+    Until it completes, every entry v1 did not know may still be waiting in
+    the old root: cleanup reports them rather than treating the root as
+    done, which would also end the catch-up for good.
+    """
+    if not isinstance(payload, dict) or not is_legacy_unproven_checkpoint(payload):
+        return []
+    if str(payload.get("v1_catch_up_completed_at") or "").strip():
+        return []
+    return [name for name in MIGRATED_RUNTIME_ENTRY_NAMES if name not in V1_MIGRATED_RUNTIME_ENTRY_NAMES]
 
 
 def v1_catch_up_skipped_entries(payload: dict[str, Any] | None) -> list[str]:
@@ -2599,6 +2624,9 @@ def run_pending_storage_migration(
         # What each reused entry was when it was taken as is: replaced by
         # something else since (a link, say), it is no longer that entry.
         reused_target_kinds: dict[str, str | None] = {}
+        # Reused because it matched the source, its manifest becomes copy
+        # evidence: edited since, that evidence would be stale.
+        identical_target_fingerprints: dict[str, str] = {}
         if use_existing_target:
             # Entries only the target has never enter the loop below, yet are
             # kept just the same.
@@ -2654,6 +2682,7 @@ def run_pending_storage_migration(
                         "target_manifest": target_manifest,
                         "transaction": str(payload.get("txid") or ""),
                     }
+                    identical_target_fingerprints[entry_name] = _metadata_fingerprint(target_entry)
                     continue
                 # An identical config still carries workshop paths bound to the
                 # source: stage and publish it like any copy so they are rebased
@@ -2739,6 +2768,19 @@ def run_pending_storage_migration(
                         "path_link_unsupported",
                         f"沿用的目标条目的上级在迁移期间变成了链接或 junction，已停止迁移: {entry_name}",
                     )
+                identical_fingerprint = identical_target_fingerprints.get(entry_name)
+                if identical_fingerprint is not None:
+                    try:
+                        identical_unchanged = (
+                            _metadata_fingerprint(target_root / entry_name) == identical_fingerprint
+                        )
+                    except StorageMigrationError:
+                        identical_unchanged = False
+                    if not identical_unchanged:
+                        raise StorageMigrationError(
+                            "target_changed_during_migration",
+                            f"沿用的目标条目在迁移期间被改动，已停止迁移: {entry_name}",
+                        )
                 if classify_entry_no_follow(target_root / entry_name) != reused_target_kinds.get(entry_name):
                     # Replaced since it was taken as is (by a link, say): what
                     # is there now is not the entry that was reused.
