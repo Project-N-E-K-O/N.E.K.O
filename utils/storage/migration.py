@@ -484,15 +484,15 @@ def _holds_only_own_publish_reservation(
         return is_own_reservation and not any(target.iterdir())
     if not stat.S_ISREG(target_stat.st_mode):
         return False
-    if target_stat.st_size == 0:
-        return is_own_reservation
     staged_stat = staged.lstat()
-    if (target_stat.st_dev, target_stat.st_ino) != (staged_stat.st_dev, staged_stat.st_ino):
-        return False
-    # Our hard link -- but the file was visible under the target name, and a
-    # write through it would change both names alike: it is still ours only
-    # while it holds exactly what was staged.
-    return expected_manifest is None or _snapshot_path(target) == expected_manifest
+    if (target_stat.st_dev, target_stat.st_ino) == (staged_stat.st_dev, staged_stat.st_ino):
+        # Our hard link (an empty staged file included) -- but the file was
+        # visible under the target name, and a write through it would change
+        # both names alike: it is still ours only while it holds exactly what
+        # was staged.
+        return expected_manifest is None or _snapshot_path(target) == expected_manifest
+    # Otherwise only an empty file can be ours: the O_EXCL reservation.
+    return target_stat.st_size == 0 and is_own_reservation
 
 
 def _move_entry_keeping_mode(source: Path, destination: Path) -> None:

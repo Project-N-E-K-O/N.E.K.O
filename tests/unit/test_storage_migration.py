@@ -1995,13 +1995,13 @@ def test_migration_requires_confirmation_when_target_only_holds_entries_added_la
     assert saved.read_bytes() == b"existing"
 
 
-def _start_migration_into_empty_target(tmp_path, *, memory_as_file=False):
+def _start_migration_into_empty_target(tmp_path, *, memory_as_file=False, memory_file_content=b"memory file"):
     config_manager = _make_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir
     target_root = tmp_path / "target-selected" / "N.E.K.O"
     source_root.mkdir(parents=True)
     if memory_as_file:
-        (source_root / "memory").write_bytes(b"memory file")
+        (source_root / "memory").write_bytes(memory_file_content)
     else:
         (source_root / "memory").mkdir()
         (source_root / "memory" / "facts.json").write_bytes(b"{}")
@@ -2089,6 +2089,23 @@ def test_recovery_removes_its_own_empty_reservation(tmp_path, monkeypatch):
 
     assert stopped["error_code"] == "stop_after_recovery"
     assert not os.path.lexists(target_root / "memory")
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="Windows publishes without a reservation or link")
+def test_recovery_removes_its_own_hard_link_to_an_empty_staged_file(tmp_path, monkeypatch):
+    """Linked in, then stopped before the staged name was removed: an empty
+    file at the target with the staged file's inode is ours, not a stray
+    empty file without a recorded reservation."""
+    config_manager, target_root = _start_migration_into_empty_target(
+        tmp_path, memory_as_file=True, memory_file_content=b""
+    )
+    _crash_while_publishing(monkeypatch, config_manager, lambda staged, target, _reserved: os.link(staged, target))
+
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["completed"] is True, retry
+    assert (target_root / "memory").read_bytes() == b""
 
 
 @pytest.mark.unit
