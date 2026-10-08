@@ -1063,6 +1063,32 @@ async def test_stop_all_abandons_a_header_left_to_a_deferred_seal(tmp_path, monk
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_stop_all_abandons_the_header_even_before_the_deferred_seal_starts(tmp_path, monkeypatch):
+    from main_logic.visit import local_chars
+
+    host, guest, wire, clock, gate = await _bring_up_with_a_pending_header(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+
+    async def stuck_resolve(uid):
+        await stuck.wait()                                    # 磁盘卡住：读角色名也卡着，后台链还没进 _seal_after_header
+        return "Host"
+
+    try:
+        opening = rt._journal_opening
+        monkeypatch.setattr(local_chars, "resolve_char_name", stuck_resolve)
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(rt), 10)
+        assert not opening.done()
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)  # 取消落在读角色名那一步
+        await wait_for(lambda: opening.done(), timeout=2)
+        assert opening.cancelled() and rt.journal._open_abandoned
+    finally:
+        stuck.set()
+        gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_late_seal_is_the_one_seal_of_the_visit(tmp_path, monkeypatch):
     import threading
 

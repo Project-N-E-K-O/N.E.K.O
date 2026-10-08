@@ -1714,8 +1714,17 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             # 现在就按 uid 登记（不等上传头落盘）：这段后台收尾会写 spool 与串门记忆，跑完之前角色不能改名 / 删除。
             # 它不设上限地等写盘：磁盘一直卡着时，这个角色在本进程内都改不了名、删不掉（守卫宁可保守）
             gen = _stop_gen
-            spawn_visit_background(self.character_uid,
-                                   lambda: self._seal_after_header(opening, reason, ended_at, gen))
+            chain = spawn_visit_background(self.character_uid,
+                                           lambda: self._seal_after_header(opening, reason, ended_at, gen))
+
+            def on_chain_done(task: asyncio.Task) -> None:
+                # stop_all 取消这条后台链（不管落在哪一步，包括还在读角色名、_seal_after_header 都没进入时）：
+                # 运行时已注销，没有别人再替它收掉写上传头的任务，与关机路径一样放弃并取消，
+                # 不让它在事件循环销毁时走「等写盘结束」那条路把关机挂住
+                if task.cancelled() and not opening.done():
+                    self._abandon_journal_open(opening)
+
+            chain.add_done_callback(on_chain_done)
 
     def _abandon_journal_open(self, opening: asyncio.Future) -> None:
         # abandon_open 之后写上传头的任务被取消就立刻结束（不再等卡住的写盘），事件循环这一层不会被它挂住；
@@ -1731,14 +1740,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         opening.cancel()
 
     async def _seal_after_header(self, opening: asyncio.Future, reason: str, ended_at: float, gen: int) -> None:
-        try:
-            await asyncio.wait([opening])
-        except asyncio.CancelledError:
-            # stop_all 取消这条后台链：运行时已注销，没有别人再替它收掉写上传头的任务，与关机路径一样放弃并取消，
-            # 不让它在事件循环销毁时走「等写盘结束」那条路把关机挂住
-            if not opening.done():
-                self._abandon_journal_open(opening)
-            raise
+        await asyncio.wait([opening])  # 被取消时由 spawn 处的 done 回调放弃写上传头
         # 上传头没写成（异常在这里取走）：没有流水可封存，spool 照样收尾
         header_ok = not opening.cancelled() and opening.exception() is None
         await self._seal_late_journal(reason, ended_at, header_ok=header_ok, gen=gen)
