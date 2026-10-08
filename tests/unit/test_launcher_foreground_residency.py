@@ -410,10 +410,16 @@ def test_a_failed_refresh_makes_the_teardown_snapshot_unknown(monkeypatch):
 def test_a_successful_refresh_clears_the_unknown_state(monkeypatch):
     from launcher_core import runtime
 
+    class _Running:
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr(runtime, "SERVERS", [{"name": "Main", "process": _Running()}])
     snapshots = iter([None, []])
     monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: next(snapshots))
     monkeypatch.setattr(runtime, "_running_descendants", [])
     monkeypatch.setattr(runtime, "_running_descendants_known", True)
+    monkeypatch.setattr(runtime, "_uninspected_servers", set())
 
     runtime._refresh_running_descendants()
     runtime._refresh_running_descendants()
@@ -1712,3 +1718,24 @@ def test_uncertainty_ends_once_every_missed_server_is_inspected_alive(monkeypatc
     runtime._refresh_running_descendants()
 
     assert runtime._running_descendants_known is True
+
+
+
+@pytest.mark.unit
+def test_uncertainty_from_a_scan_without_tracked_servers_does_not_clear(monkeypatch):
+    """Merged mode tracks no server process; a failed scan there cannot be
+    "re-inspected alive", so later successful scans must not clear it."""
+    from launcher_core import runtime
+
+    monkeypatch.setattr(runtime, "SERVERS", [{"name": "Main", "process": None}])
+    snapshots = iter([None, [], []])
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: next(snapshots))
+    monkeypatch.setattr(runtime, "_running_descendants", [])
+    monkeypatch.setattr(runtime, "_running_descendants_known", True)
+    monkeypatch.setattr(runtime, "_uninspected_servers", set())
+
+    runtime._refresh_running_descendants()
+    runtime._refresh_running_descendants()
+    runtime._refresh_running_descendants()
+
+    assert runtime._running_descendants_known is False

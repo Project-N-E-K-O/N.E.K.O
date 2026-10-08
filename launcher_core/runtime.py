@@ -122,6 +122,7 @@ _running_descendants_known = True
 # uncertainty ends only once each is inspected again while alive; one that
 # exits first may have left an orphan no later snapshot can reach.
 _uninspected_servers: set = set()
+_UNTRACKED_SCAN = "<launcher>"
 _expected_launcher_shutdown = False
 _existing_neko_services: set[str] = set()  # 已有 N.E.K.O 实例占用的端口键
 _partial_or_mixed_existing_backend = False
@@ -2439,7 +2440,10 @@ def _refresh_running_descendants() -> None:
     except Exception:
         snapshot = None
     if snapshot is None:
-        _uninspected_servers |= live_before
+        # With no tracked server process (merged mode), the scan itself was
+        # rooted at the launcher: nothing can be "seen alive again" to end the
+        # uncertainty, so it stays until teardown.
+        _uninspected_servers |= live_before or {_UNTRACKED_SCAN}
         _running_descendants_known = False
         return
     live_after = _live_server_names()
