@@ -85,4 +85,24 @@ for (const locale of ['en', 'zh-CN']) {
 
     assert.strictEqual(progress.label, messages.storage.progressFailed);
   });
+
+  test(`${locale}: an unconfirmed commit shows as paused, not as running`, () => {
+    const { model, messages } = loadStorageLocation(locale);
+    const progress = model({
+      lifecycle_state: 'maintenance',
+      migration: { status: 'committing', error_code: 'migration_commit_ambiguous' },
+    });
+
+    assert.strictEqual(progress.hasError, true);
+    assert.strictEqual(progress.percent, 100);
+    assert.strictEqual(progress.label, messages.storage.progressCommitAmbiguous);
+  });
+
+  test(`${locale}: a commit in progress still shows as running`, () => {
+    const { model, messages } = loadStorageLocation(locale);
+    const progress = model({ lifecycle_state: 'maintenance', migration: { status: 'committing' } });
+
+    assert.strictEqual(progress.hasError, false);
+    assert.strictEqual(progress.label, messages.storage.progressCommitting);
+  });
 }

@@ -2528,6 +2528,7 @@
         "progressFailed": "La migración no se completó. Esperando el proceso de recuperación",
         "progressSourceMissing": "Falta el directorio de datos original o parte de sus datos. La migración está en pausa y los datos de ambos lados se han conservado tal cual. Restaura el directorio de datos original y reinicia:",
         "progressPublishConflict": "Otro programa volvió a crear una entrada de destino durante la migración. La migración está en pausa y se han conservado los datos antiguos y nuevos. Los datos originales están en la carpeta backup del directorio de transacción indicado abajo; no lo elimines, revísalo y resuélvelo manualmente:",
+        "progressCommitAmbiguous": "No se pudo confirmar si la nueva ubicación de almacenamiento ya está en vigor (el archivo de política de almacenamiento no se puede leer o está dañado). La migración está en pausa y se han conservado tal cual los datos antiguos y nuevos. Reinicia la aplicación para volver a intentarlo; si sigue ocurriendo, revisa el archivo de política de almacenamiento en la carpeta state del directorio de datos.",
         "progressPending": "Cerrando",
         "progressPreflight": "Verificación previa del destino y preparación de la migración",
         "progressRebindPreflight": "Verificación previa para volver a conectar la ubicación de almacenamiento original",

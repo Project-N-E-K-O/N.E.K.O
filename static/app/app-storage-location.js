@@ -1022,7 +1022,14 @@
             || ''
         ).trim();
         var isRebindOnly = restartMode === 'rebind_only';
-        var hasError = lifecycleState === 'recovery_required' || migrationStage === 'failed' || migrationStage === 'rollback_required';
+        var migrationErrorCode = String(
+            statusPayload && statusPayload.migration && statusPayload.migration.error_code || ''
+        ).trim();
+        // The commit could not be confirmed (unreadable policy): the stage
+        // stays committing so the next start decides again, but nothing is
+        // running until then.
+        var commitAmbiguous = migrationStage === 'committing' && migrationErrorCode === 'migration_commit_ambiguous';
+        var hasError = lifecycleState === 'recovery_required' || migrationStage === 'failed' || migrationStage === 'rollback_required' || commitAmbiguous;
         var percent = 14;
         var activeIndex = 0;
         var label = translate('storage.progressWaitingShutdown', '正在关闭');
@@ -1056,9 +1063,14 @@
                     label = translate('storage.progressVerifying', '正在校验迁移结果');
                     break;
                 case 'committing':
-                    percent = 86;
                     activeIndex = 2;
-                    label = translate('storage.progressCommitting', '正在提交新的存储位置');
+                    if (commitAmbiguous) {
+                        percent = 100;
+                        label = translate('storage.progressCommitAmbiguous', '无法确认新的存储位置是否已经生效（存储策略文件无法读取或已损坏），迁移已暂停，新旧两边的数据都原样保留。请重启应用重试；如果仍然如此，请检查数据目录下 state 文件夹里的存储策略文件。');
+                    } else {
+                        percent = 86;
+                        label = translate('storage.progressCommitting', '正在提交新的存储位置');
+                    }
                     break;
                 case 'retaining_source':
                     percent = 94;
