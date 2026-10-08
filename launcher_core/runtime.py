@@ -110,6 +110,7 @@ _cleanup_done = False
 # teardown step; read only to decide whether a migration restart is safe.
 # None means they could not be determined.
 _teardown_descendants: list | None = None
+_teardown_snapshot_taken = False
 _expected_launcher_shutdown = False
 _existing_neko_services: set[str] = set()  # 已有 N.E.K.O 实例占用的端口键
 _partial_or_mixed_existing_backend = False
@@ -1364,6 +1365,9 @@ def run_merged_servers() -> int:
                     unexpected_exit = _completed_merged_server(tasks) or "unknown server exit"
                     _begin_merged_shutdown(reason="server_exit")
 
+            # The plugin hosts are still running here; the ordered shutdown
+            # below stops them before cleanup_servers is ever reached.
+            _take_teardown_snapshot_once()
             failures = await _shutdown_merged_servers_in_order(servers_by_name, tasks)
             if startup_error is not None:
                 raise startup_error
@@ -2379,6 +2383,23 @@ def _descendants_block_storage_restart(allow_storage_restart: bool) -> bool:
     return _settle_surviving_descendants(_teardown_descendants)
 
 
+def _take_teardown_snapshot_once() -> None:
+    """Record the servers' descendants before the first teardown step.
+
+    Called by whichever teardown starts first -- merged mode's ordered
+    shutdown stops the plugin hosts before cleanup_servers runs, and a
+    subprocess a host started is no longer found through it afterwards.
+    """
+    global _teardown_descendants, _teardown_snapshot_taken
+    if _teardown_snapshot_taken:
+        return
+    _teardown_snapshot_taken = True
+    try:
+        _teardown_descendants = _snapshot_server_descendants(list(_iter_servers_for_shutdown()))
+    except Exception:
+        _teardown_descendants = None
+
+
 def cleanup_servers():
     """Clean up all server processes"""
     global _cleanup_done
@@ -2387,15 +2408,11 @@ def cleanup_servers():
             return
         _cleanup_done = True
 
-    global _teardown_descendants
     try:
         # Before the first teardown step, while every server still runs --
         # but inside the try, so an interruption here cannot skip teardown
         # or leave _cleanup_complete unset.
-        try:
-            _teardown_descendants = _snapshot_server_descendants(list(_iter_servers_for_shutdown()))
-        except Exception:
-            _teardown_descendants = None
+        _take_teardown_snapshot_once()
         _teardown_print("\n正在关闭服务器...")
         for server in _iter_servers_for_shutdown():
             proc = server.get('process')

@@ -4103,3 +4103,22 @@ def test_storage_location_cleanup_keeps_the_copy_when_the_target_changes_kind_me
     assert response.status_code == 409, response.json()
     assert response.json()["remaining_entries"] == ["memory"]
     assert (source_root / "memory" / "recent.json").is_file()
+
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_restores_past_an_empty_reservation(tmp_path):
+    """A restore stopped between reserving the name with an empty directory
+    and moving the entry in: the entry must still come back."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    leftover = source_root / ".neko-cleanup-memory-0123456789ab"
+    (source_root / "memory").rename(leftover)
+    (leftover / "recent.json").write_text("changed since", encoding="utf-8")
+    (source_root / "memory").mkdir()
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "recent.json").read_text(encoding="utf-8") == "changed since"
+    assert not list(source_root.glob(".neko-cleanup-*"))

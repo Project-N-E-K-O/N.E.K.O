@@ -1687,7 +1687,19 @@ def run_pending_storage_migration(
         if _path_contains(source_root, target_root) or _path_contains(target_root, source_root):
             raise StorageMigrationError("paths_nested", "源路径和目标路径不能互相包含，无法安全执行迁移。")
 
-        txid = str(payload.get("txid") or uuid.uuid4().hex)
+        txid = str(payload.get("txid") or "").strip()
+        if not txid:
+            # A v1 checkpoint has no transaction id. Record the new one before
+            # any transaction directory exists: a later launch must find this
+            # attempt's .smtx/<id> again rather than invent another id and
+            # strand the staged copies and backups under the first.
+            txid = uuid.uuid4().hex
+            payload = _persist_migration_payload(
+                config_manager,
+                payload,
+                anchor_root=normalized_anchor_root,
+                txid=txid,
+            )
         committed_policy = load_storage_policy(
             config_manager,
             anchor_root=normalized_anchor_root,

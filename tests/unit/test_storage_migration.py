@@ -2891,3 +2891,40 @@ def test_recovery_keeps_a_hard_link_written_through_before_recovery(tmp_path, mo
     run_pending_storage_migration(config_manager)
 
     assert (target_root / "memory").read_bytes() == b"memory file + written since"
+
+
+
+@pytest.mark.unit
+def test_v1_checkpoint_keeps_the_transaction_id_it_is_given(tmp_path, monkeypatch):
+    """A v1 checkpoint has no txid. The one an upgraded attempt uses must be
+    in the checkpoint before its transaction exists, or the next launch
+    looks under another id and strands the first attempt's copies."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    v1_payload = dict(load_storage_migration(config_manager))
+    v1_payload["version"] = 1
+    v1_payload.pop("txid", None)
+    save_storage_migration(config_manager, v1_payload)
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _crash_after_publish(staged, target):
+        original_publish(staged, target)
+        raise KeyboardInterrupt("simulated process loss")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.undo()
+
+    txid = load_storage_migration(config_manager).get("txid")
+    assert txid
+    assert [path.name for path in (target_root / ".smtx").iterdir()] == [txid[:12]]
+
+    _stop_after_recovery(monkeypatch, storage_migration_module)
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "stop_after_recovery"
+    # The interrupted publish was found and rolled back: the original target is back.
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
+    assert not (target_root / ".smtx").exists()

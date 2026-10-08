@@ -1654,8 +1654,17 @@ def _restore_private_cleanup_leftovers(retained_path: Path) -> None:
     for entry_name, private in _private_cleanup_leftovers(retained_path):
         if classify_entry_no_follow(private) is None:
             continue
+        entry = retained_path / entry_name
+        # Putting a directory back without a no-replace rename first reserves
+        # the name with an empty directory; a restore stopped right there
+        # leaves that empty reservation in the way. An empty directory holds
+        # nothing to keep, so it gives way to the real entry.
+        if classify_entry_no_follow(entry) == "dir":
+            with suppress(OSError):
+                if not any(entry.iterdir()):
+                    entry.rmdir()
         try:
-            move_entry_without_overwrite(private, retained_path / entry_name)
+            move_entry_without_overwrite(private, entry)
         except OSError as exc:
             logger.warning("Retained root cleanup could not put %s back from %s: %s", entry_name, private.name, exc)
 

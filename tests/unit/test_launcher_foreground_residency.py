@@ -260,6 +260,7 @@ def test_migration_restart_goes_ahead_after_main_exits_on_its_own(monkeypatch):
         monkeypatch.setattr(runtime, "SERVERS", servers)
         monkeypatch.setattr(runtime, "_cleanup_done", False)
         monkeypatch.setattr(runtime, "_teardown_descendants", None)
+        monkeypatch.setattr(runtime, "_teardown_snapshot_taken", False)
 
         runtime.cleanup_servers()
 
@@ -280,9 +281,39 @@ def test_descendants_are_taken_before_the_first_teardown_step():
 
     source = inspect.getsource(runtime.cleanup_servers)
     teardown_try = source.index("    try:\n")
-    snapshot = source.index("_teardown_descendants = _snapshot_server_descendants(")
+    snapshot = source.index("_take_teardown_snapshot_once()")
     first_teardown = source.index("for server in _iter_servers_for_shutdown():")
     assert teardown_try < snapshot < first_teardown
+
+
+@pytest.mark.unit
+def test_merged_mode_takes_the_snapshot_before_its_ordered_shutdown():
+    """Merged mode stops the plugin hosts in its ordered shutdown, before
+    cleanup_servers; the snapshot must come first or their subprocesses are
+    no longer found."""
+    import inspect
+
+    from launcher_core import runtime
+
+    source = inspect.getsource(runtime.run_merged_servers)
+    assert source.index("_take_teardown_snapshot_once()") < source.index(
+        "await _shutdown_merged_servers_in_order(servers_by_name, tasks)"
+    )
+
+
+@pytest.mark.unit
+def test_the_teardown_snapshot_is_taken_only_once(monkeypatch):
+    from launcher_core import runtime
+
+    snapshots = iter([["first"], ["second"]])
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: next(snapshots))
+    monkeypatch.setattr(runtime, "_teardown_snapshot_taken", False)
+    monkeypatch.setattr(runtime, "_teardown_descendants", None)
+
+    runtime._take_teardown_snapshot_once()
+    runtime._take_teardown_snapshot_once()
+
+    assert runtime._teardown_descendants == ["first"]
 
 
 # Spawning the base interpreter keeps a Windows venv's python.exe stub out of
