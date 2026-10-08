@@ -99,6 +99,44 @@ async def test_main_turn_interruption_goes_through_the_turn_closing_helper():
     assert used == [session]                          # 走管理器的收口方法：被打断的这一轮会被关掉
 
 
+async def test_the_interrupted_turns_wrap_up_is_held_until_the_visit_hands_back():
+    session = _Session(responding=True)
+    settled = []
+
+    class _Mgr:
+        def __init__(self):
+            self.session = session
+            self._reply_setup_depth = 0
+            self._turn_wrap_up_owed = False
+
+        async def _interrupt_offline_reply(self, sess):
+            assert self._reply_setup_depth == 1           # 打断之前就按住：被打断的任务一结束也不会结
+            sess._is_responding = False
+            self._turn_wrap_up_owed = True                # 打断接管了收尾：欠下一笔
+            return True
+
+        async def _settle_owed_turn_wrap_up(self):
+            if self._reply_setup_depth > 0:               # 与真实实现一样：按住时不结
+                return
+            settled.append(True)
+            self._turn_wrap_up_owed = False
+
+        def _fire_task(self, coro):
+            return asyncio.ensure_future(coro)
+
+    mgr = _Mgr()
+    host = ManagerHost("Host", mgr)
+    assert await host.interrupt_main_turn(1.0) is True
+    await mgr._settle_owed_turn_wrap_up()                 # 准入期间会话空闲：不补跑（不换代、不放回调）
+    assert settled == [] and mgr._reply_setup_depth == 1
+    host.release_turn_wrap_up()                           # 串门交还普通对话
+    await asyncio.sleep(0)
+    assert settled == [True] and mgr._reply_setup_depth == 0
+    mgr._reply_setup_depth = 1                            # 这时亲人打字那一轮按住了它自己的一份
+    host.release_turn_wrap_up()                           # 只放一次：不能把别人的那一份也扣掉
+    assert mgr._reply_setup_depth == 1
+
+
 async def test_family_turn_wait_covers_a_reply_that_starts_late(monkeypatch):
     monkeypatch.setattr(host_port, "_TURN_IDLE_POLL_S", 0.02)
     session = _Session(responding=False)

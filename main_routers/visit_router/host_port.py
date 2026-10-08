@@ -57,7 +57,16 @@ class VisitHost(Protocol):
         """Why a visit cannot start now (``voice_session_active`` / ``goodbye_silent`` / ``busy``), or None."""
 
     async def interrupt_main_turn(self, timeout: float) -> bool:
-        """Stop a reply the ordinary session is producing; False when it did not settle in time."""
+        """Stop a reply the ordinary session is producing; False when it did not settle in time.
+
+        The wrap-up the interrupted reply owes (renewal check, final swap,
+        queued agent callbacks) is held from here until
+        :meth:`release_turn_wrap_up`: it must not run while the visit is
+        being admitted.
+        """
+
+    def release_turn_wrap_up(self) -> None:
+        """The visit handed the session back: settle the wrap-up held by ``interrupt_main_turn`` (once)."""
 
     async def send_frame(self, payload: dict) -> bool:
         """One display-socket frame (``visit_*``); False when it could not be written."""
@@ -123,6 +132,7 @@ class ManagerHost:
     def __init__(self, lanlan_name: str, mgr: Any) -> None:
         self.lanlan_name = lanlan_name
         self._mgr = mgr
+        self._wrap_up_held = False
 
     @classmethod
     def for_character(cls, lanlan_name: str) -> Optional["ManagerHost"]:
@@ -162,6 +172,7 @@ class ManagerHost:
         deadline = time.monotonic() + timeout
         # 离线会话：打断会接管这条回复的收尾（它自己的完成回调不再跑），必须走管理器的
         # _interrupt_offline_reply 把这一轮关掉，否则下一条普通回复会并进这一轮
+        self._hold_turn_wrap_up()
         interrupt_reply = getattr(self._mgr, "_interrupt_offline_reply", None)
         if callable(interrupt_reply):
             interrupting = asyncio.ensure_future(interrupt_reply(session))
@@ -185,6 +196,36 @@ class ManagerHost:
         while getattr(session, "_is_responding", False) and time.monotonic() < deadline:
             await asyncio.sleep(_TURN_IDLE_POLL_S)
         return not getattr(session, "_is_responding", False)
+
+    def _hold_turn_wrap_up(self) -> None:
+        """Hold the interrupted reply's owed wrap-up for the whole visit (``_with_owed_wrap_up_held``'s counter).
+
+        Paid only when the visit hands the session back: run during the
+        admission, it could start a final swap (``manager_replaced``) or
+        release queued agent callbacks before the takeover.
+        """
+        if self._wrap_up_held or not hasattr(self._mgr, "_reply_setup_depth"):
+            return
+        self._mgr._reply_setup_depth = getattr(self._mgr, "_reply_setup_depth", 0) + 1
+        self._wrap_up_held = True
+
+    def release_turn_wrap_up(self) -> None:
+        if not self._wrap_up_held:
+            return
+        self._wrap_up_held = False
+        mgr = self._mgr
+        mgr._reply_setup_depth = max(0, getattr(mgr, "_reply_setup_depth", 0) - 1)
+        settle = getattr(mgr, "_settle_owed_turn_wrap_up", None)
+        if not getattr(mgr, "_turn_wrap_up_owed", False) or not callable(settle):
+            return
+        fire = getattr(mgr, "_fire_task", None)
+        try:
+            if callable(fire):
+                fire(settle())
+            else:
+                asyncio.ensure_future(settle())
+        except Exception as exc:  # noqa: BLE001 - 结不清就留给下一次普通输入 / 会话空闲
+            logger.warning("visit: owed turn wrap-up not settled: %s", type(exc).__name__)
 
     async def send_frame(self, payload: dict) -> bool:
         ws = getattr(self._mgr, "websocket", None)

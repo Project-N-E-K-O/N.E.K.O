@@ -203,6 +203,9 @@ class FakeHost:
         self.events.append("release_takeover")
         return True
 
+    def release_turn_wrap_up(self) -> None:
+        self.events.append("release_turn_wrap_up")
+
     async def interrupt_ordinary_speech(self) -> None:
         return None
 

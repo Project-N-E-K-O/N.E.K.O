@@ -625,6 +625,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._ended_published = False
         self._room_cancel_sent = False
         self._room_cancel_task: Optional[asyncio.Task] = None
+        self._room_cancel_at = 0.0
         self._handback_started = False
         self._files_done = False
         self._shutdown_started = False
@@ -664,6 +665,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     @property
     def finalizing(self) -> bool:
         return self._exit_task is not None or self._terminated
+
+    def _release_turn_wrap_up(self) -> None:
+        release = getattr(self.host, "release_turn_wrap_up", None)
+        if callable(release):
+            try:
+                release()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit %s: turn wrap-up not released: %s", self.visit_id[:6], type(exc).__name__)
 
     def _keep_background(self, task: asyncio.Future) -> None:
         _keep_detached(task)
@@ -1354,10 +1363,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.finalizing:
             chain_pending = self._files_deferred and not self._deferred_files_done
             if self._files_done and not chain_pending and self._seal_settled() and not self._shutdown_started \
-                    and not _stopped_since(self._files_gen) and not self._spool_finalized and self.spool is not None:
+                    and not self._spool_finalized and self.spool is not None:
                 # 收尾封存时 spool 还没挂上：晚到的这份自己关掉、标 finalized
                 reason = self.finalize_reason or "route_end"
-                spawn_visit_background(self.character_uid, lambda: self._finalize_spool(reason))
+                spawn_visit_background(self.character_uid, lambda: self._finalize_late_spool(reason))
             return
         self.room = VisitRoom(self.side, peer_crop=peer.crop, rng=self.deps.rng,
                               reply_gap_s=self.deps.reply_gap_s)
@@ -1646,6 +1655,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._room_cancel_sent = True
         self._room_cancel_task = self.spawn(self.deps.cancel_room(
             self.visit_id, invite_expires_at=creds.invite_expires_at, account=creds.account))
+        self._room_cancel_at = asyncio.get_running_loop().time()
 
     def transport_alive(self) -> bool:
         from main_routers.visit_router.transport_ws import is_transport_attached
@@ -1705,11 +1715,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         """
         try:
             if header_ok:
-                self._flush_journal_backlog()
-                # 走 _start_seal：这一场只有一个封存 future，关机 / teardown 看到的是同一次写盘
-                sealing = self._start_seal(reason, ended_at=ended_at)
-                await asyncio.wait([sealing])
-                self._take_seal(sealing)
+                try:
+                    self._flush_journal_backlog()
+                    # 走 _start_seal：这一场只有一个封存 future，关机 / teardown 看到的是同一次写盘
+                    sealing = self._start_seal(reason, ended_at=ended_at)
+                    await asyncio.wait([sealing])
+                    self._take_seal(sealing)
+                except Exception as exc:  # noqa: BLE001 - 封存出错也照常往下：已挂上的 spool 照样收
+                    logger.warning("visit %s: late seal failed: %s", self.visit_id[:6], type(exc).__name__)
                 # 封存失败也排一次：上传重试会从留下的 .upload.jsonl 重封，不必等下次启动
                 try:
                     self.deps.schedule_upload(self.visit_id)
@@ -1793,6 +1806,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             await spool.update_state(**changes)
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit %s: spool not finalized at shutdown: %s", self.visit_id[:6], type(exc).__name__)
+
+    async def _finalize_late_spool(self, reason: str) -> None:
+        # 在后台任务里再看 stop_all：派生之后它先解析角色名，这段时间里进程可能已经开始关机
+        if _stopped_since(self._files_gen):
+            return
+        await self._finalize_spool(reason)
 
     async def _finalize_spool(self, reason: str) -> None:
         if self.spool is not None and not self._spool_finalized:
@@ -1884,6 +1903,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             except Exception:  # noqa: BLE001
                 pass
             self.takeover_token = None
+        # 准入时按住的、被打断那一轮欠下的收尾（可能换代、放出排队的回调）：等退出流程（仪式句、简述）
+        # 全部用完这个管理器之后才结清；准入失败 / 没接管成的路径也在这里放开
+        self._release_turn_wrap_up()
         # 客户端关不掉（取消排空 / HTTP 关闭卡住）也照样注销：不能让这个角色一直锁在已结束的场次里
         await self.close_session(_SESSION_CLOSE_S)
         self.speech_router.clear()
@@ -1951,11 +1973,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                     if t is not None and not t.done()]
         for task in inflight:
             task.cancel()
+        if self.peer is None:
+            # 没配上对的 host 房间：邀请码与配额占用别留到过期（不发 leave，但房间要取消）；
+            # 最先起，与后面每一步并行
+            self._cancel_room_once()
         if inflight:
             await asyncio.wait(inflight, timeout=left(_SHUTDOWN_TASK_WAIT_S))
-        if self.peer is None:
-            # 没配上对的 host 房间：邀请码与配额占用别留到过期（不发 leave，但房间要取消）；先起，与封存并行
-            self._cancel_room_once()
         # 先收口本侧在说的那一行：它的 text{final} 与用量要在封存之前进上传流水
         try:
             await asyncio.wait_for(self.close_current_line("visit_end"), left(_SHUTDOWN_TASK_WAIT_S))
@@ -1992,11 +2015,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             except Exception:  # noqa: BLE001
                 pass
             self.takeover_token = None
+        self._release_turn_wrap_up()
         cancel = self._room_cancel_task
         if cancel is not None and not cancel.done():
-            # 撤销房间是对外请求（邀请码与配额占用）：从关机开始算至少给它 _SHUTDOWN_ROOM_CANCEL_S，
-            # 前面的步骤把总预算用完了也一样（它一开始就在跑，总预算 > 这个保底，正常不超预算）
-            floor = started + _SHUTDOWN_ROOM_CANCEL_S - loop.time()
+            # 撤销房间是对外请求（邀请码与配额占用）：从它派生那一刻算至少给它 _SHUTDOWN_ROOM_CANCEL_S，
+            # 前面的步骤把总预算用完了也一样（它与那些步骤并行，正常不超预算）
+            floor = self._room_cancel_at + _SHUTDOWN_ROOM_CANCEL_S - loop.time()
             await asyncio.wait([cancel], timeout=max(left(_SHUTDOWN_ROOM_CANCEL_S), floor, 0.0))
         for task in list(self._tasks):
             task.cancel()

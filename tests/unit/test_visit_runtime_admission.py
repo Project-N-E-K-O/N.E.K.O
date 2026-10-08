@@ -1313,9 +1313,25 @@ async def test_a_failing_deferred_chain_still_hands_late_spools_over(tmp_path, m
             raise RuntimeError("boom")
 
         rt._start_seal = broken_start_seal
-        with pytest.raises(RuntimeError):
-            await rt._seal_late_journal("route_end", rt.wall(), header_ok=True)
+        await rt._seal_late_journal("route_end", rt.wall(), header_ok=True)   # 封存出错不漏出后台任务
         assert rt._deferred_files_done                        # 链中途出错也置位：之后挂上的 spool 有人收
+        assert rt._spool_finalized                            # 已挂上的这份照常收
+    finally:
+        rt.__dict__.pop("_start_seal", None)                  # 还原：teardown 的收尾走真的封存
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_the_held_turn_wrap_up_is_released_when_the_visit_ends(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(rt), 10)
+        events = host.host.events
+        assert "release_turn_wrap_up" in events
+        assert events.index("release_turn_wrap_up") > events.index("release_takeover")   # 交还普通对话之后才结清
+        outputs = [i for i, e in enumerate(events) if e.startswith("output:visit-")]
+        assert outputs and events.index("release_turn_wrap_up") > max(outputs)   # 仪式句、简述都用完管理器之后
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
