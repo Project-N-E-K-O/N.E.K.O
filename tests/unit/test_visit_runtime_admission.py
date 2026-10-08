@@ -1700,6 +1700,75 @@ async def test_a_cancelled_ready_handler_still_finishes_the_guest_activation(tmp
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_line_arriving_during_a_background_activation_waits_for_it(tmp_path, monkeypatch):
+    from main_routers.visit_router import runtime_rx
+
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    grt = guest.rt
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = grt._open_spool
+    handled: list[dict] = []
+
+    async def slow_open(subjects):
+        await real_open(subjects)
+        reached.set()
+        await gate.wait()
+
+    async def text_handler(rt, m, from_vid, now):
+        handled.append(m)
+
+    grt._open_spool = slow_open
+    monkeypatch.setitem(runtime_rx._HANDLERS, "text", text_handler)
+    try:
+        readying = asyncio.ensure_future(grt.on_ready())
+        await asyncio.wait_for(reached.wait(), 5)
+        readying.cancel()                                     # 收下 ready 的那次处理被取消，激活在后台继续
+        await asyncio.gather(readying, return_exceptions=True)
+        dropped = grt.gate_dropped
+        dispatching = asyncio.ensure_future(grt._dispatch({"t": "text"}, HOST_VID, clock()))  # 重连后主人的开场台词
+        await settle()
+        assert not dispatching.done()                         # 等激活做完，不当早到的丢掉
+        gate.set()
+        await asyncio.wait_for(dispatching, 5)
+        assert handled and grt.gate_dropped == dropped
+    finally:
+        gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_only_buffered_lines_start_a_journal_at_the_end(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    rt._on_usage({"llm_input_tokens": 5})                     # 入房前只记过用量，没有台词
+    assert rt._journal_backlog
+    rt.request_finalize("relay_lost")
+    await _finished(rt)
+    assert rt._journal_opening is None and not rt.journal.sealed  # 不为它生成一份零台词的转录
+
+
+async def test_buffered_usage_is_not_stamped_before_the_journal_start(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    rt._on_usage({"llm_input_tokens": 5})                     # 比台词早的用量
+    wall.advance(10)
+    await rt.record_line("own_cat", side="host", lp=1, ln="h:1", text="开场", truncated=False)
+    await rt.on_transport_state({"state": "joined", "peer_present": False})
+    await wait_for(lambda: rt.journal.is_open and not rt._journal_backlog)
+    start = rt.journal._started_at
+    stamped = [r["ts"] for r in rt.journal._records if r.get("kind") in ("usage", "anomaly")]
+    assert stamped and all(ts >= start for ts in stamped)     # 补写的用量不早于开始时间
+    rt.request_finalize("route_end")
+    await _finished(rt)
+
+
 async def test_a_channel_close_that_overruns_is_retired_before_sealing(tmp_path, monkeypatch):
     monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)

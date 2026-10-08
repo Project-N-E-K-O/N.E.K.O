@@ -640,6 +640,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._closing_task: Optional[asyncio.Task] = None
         self._journal_opening: Optional[asyncio.Task] = None
         self._journal_backlog: list[dict] = []
+        self._journal_started_at: Optional[float] = None
         self._sdk_ok = False
         self._pending_join: Optional[dict] = None
         self._page_gen = 0
@@ -1007,6 +1008,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             started_at = min([self.wall()] + [float(r["ts"]) for r in self._journal_backlog
                                               if r.get("kind") == "line" and isinstance(r.get("ts"), (int, float))
                                               and not isinstance(r.get("ts"), bool)])
+            self._journal_started_at = started_at
             opening = self._journal_opening = asyncio.ensure_future(self.journal.open(
                 role=self.side, own_visit_uid=creds.visit_uid, own_char_uid=self.character_uid,
                 transport=creds.transport, started_at=started_at, app_version=cr._app_version(),
@@ -1018,8 +1020,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     def _start_journal_for_backlog(self) -> None:
         # 对端 hello 先到、这场已开口，却一直没等来本侧的入房报告就收尾：上传头还没开始写，
         # 攒下的那几句只在积压里。此刻开始写上传头，之后照常封存（关机时照常放弃并留给补录）
-        if (self._journal_opening is None and self._journal_backlog and self.creds is not None
-                and not self.journal.sealed):
+        if (self._journal_opening is None and self.creds is not None and not self.journal.sealed
+                and any(r.get("kind") == "line" for r in self._journal_backlog)):
             self._start_journal()
 
     def _on_peer_presence(self, present: bool, vendor_reason: Any, now: float) -> None:
@@ -1783,6 +1785,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         header_ok = not opening.cancelled() and opening.exception() is None
         await self._seal_late_journal(reason, ended_at, header_ok=header_ok, gen=gen)
 
+    def _not_before_start(self, ts: Any) -> float:
+        # 入房前攒下的用量 / 异常可能早于上传头的开始时间（开始时间只看台词）：补写时夹到开始时间，
+        # 流水里没有早于 started_at 的记录（补录按最后一条算 ended_at 也不会早于开始）
+        start = self._journal_started_at
+        return float(ts) if start is None else max(float(ts), start)
+
     def _backlog_stream_records(self) -> list[dict]:
         """The buffered records in the upload stream's own format (written after the header at shutdown)."""
         from main_routers.visit_router.transcript_upload import USAGE_KEYS
@@ -1798,9 +1806,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 delta = {k: int(v) for k, v in (record.get("d") or {}).items()
                          if k in USAGE_KEYS and isinstance(v, int) and not isinstance(v, bool) and v > 0}
                 if delta:
-                    records.append({"kind": "usage", "ts": float(record["ts"]), "d": delta})
+                    records.append({"kind": "usage", "ts": self._not_before_start(record["ts"]), "d": delta})
             elif kind == "anomaly":
-                records.append({"kind": "anomaly", "ts": float(record["ts"])})
+                records.append({"kind": "anomaly", "ts": self._not_before_start(record["ts"])})
         return records
 
     def _flush_journal_backlog(self) -> None:
@@ -1828,9 +1836,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             kind = record.pop("kind")
             try:
                 if kind == "usage":
-                    self.journal.note_usage(record["d"], ts=record["ts"])
+                    self.journal.note_usage(record["d"], ts=self._not_before_start(record["ts"]))
                 elif kind == "anomaly":
-                    self.journal.note_anomaly(ts=record["ts"])
+                    self.journal.note_anomaly(ts=self._not_before_start(record["ts"]))
                 else:
                     self.journal.book_line(**record)
             except Exception as exc:  # noqa: BLE001
