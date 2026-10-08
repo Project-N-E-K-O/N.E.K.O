@@ -2402,3 +2402,45 @@ def test_unreadable_config_references_every_entry(tmp_path):
     )
 
     assert referenced == set(storage_migration_module.MIGRATED_RUNTIME_ENTRY_NAMES)
+
+
+@pytest.mark.unit
+def test_source_written_after_staging_is_not_published(tmp_path, monkeypatch):
+    """A write to the source after its copy was taken must stop the
+    migration, not publish the copy from before it."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, source_root, target_root = _overwrite_migration(tmp_path)
+    original_copy = storage_migration_module._copy_runtime_entry
+
+    def _copy_then_source_changes(source_path, target_path):
+        widened = original_copy(source_path, target_path)
+        (Path(source_path) / "characters.json").write_text("newer", encoding="utf-8")
+        return widened
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _copy_then_source_changes)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "verification_failed"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
+    assert (source_root / "config" / "characters.json").read_text(encoding="utf-8") == "newer"
+
+
+@pytest.mark.unit
+def test_metadata_fingerprint_sees_added_and_rewritten_files(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    entry = tmp_path / "memory"
+    (entry / "nested").mkdir(parents=True)
+    (entry / "nested" / "facts.json").write_bytes(b"{}")
+    before = storage_migration_module._metadata_fingerprint(entry)
+    assert storage_migration_module._metadata_fingerprint(entry) == before
+
+    (entry / "nested" / "facts.json").write_bytes(b'{"a": 1}')
+    rewritten = storage_migration_module._metadata_fingerprint(entry)
+    (entry / "nested" / "new.json").write_bytes(b"{}")
+
+    assert rewritten != before
+    assert storage_migration_module._metadata_fingerprint(entry) != rewritten

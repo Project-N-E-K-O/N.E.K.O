@@ -681,6 +681,30 @@ def _source_entries_referenced_by_config(*, config_root: Path, source_root: Path
     return referenced
 
 
+def _metadata_fingerprint(path: Path) -> str:
+    """Digest of an entry's metadata, without reading any file.
+
+    Writing, creating, removing or renaming anything inside changes a size or
+    an mtime, so comparing two fingerprints tells whether the entry was
+    touched in between -- far cheaper than another content manifest.
+    """
+    records: list[tuple[str, int, int, int]] = []
+    pending = [(path, "")]
+    while pending:
+        current, relative = pending.pop()
+        current_stat = current.lstat()
+        is_dir = stat.S_ISDIR(current_stat.st_mode)
+        records.append(
+            (relative, current_stat.st_mode, 0 if is_dir else current_stat.st_size, current_stat.st_mtime_ns)
+        )
+        if is_dir and not _stat_is_reparse(current_stat):
+            with os.scandir(current) as iterator:
+                for child in iterator:
+                    pending.append((Path(child.path), f"{relative}/{child.name}"))
+    records.sort()
+    return hashlib.sha256(json.dumps(records, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def _snapshot_path(path: Path) -> dict[str, int | str]:
     if not os.path.lexists(path):
         return {
@@ -1660,9 +1684,14 @@ def run_pending_storage_migration(
         original_target_entries: list[str] = []
         original_target_modes: dict[str, int] = {}
         identical_entries: dict[str, dict[str, Any]] = {}
+        source_fingerprints: dict[str, str] = {}
         for entry_name in existing_entries:
             source_entry = source_root / entry_name
             target_entry = target_root / entry_name
+            # Taken before anything reads the entry, and compared once all
+            # entries are staged: a write in between (a sync client, say)
+            # would otherwise publish the copy taken before it.
+            source_fingerprints[entry_name] = _metadata_fingerprint(source_entry)
             source_manifest = _snapshot_path(source_entry)
             source_snapshots[entry_name] = source_manifest
             if use_existing_target and os.path.lexists(target_entry):
@@ -1709,6 +1738,17 @@ def run_pending_storage_migration(
             entries_to_publish.append(entry_name)
             if os.path.lexists(target_entry):
                 original_target_entries.append(entry_name)
+
+        for entry_name in entries_to_publish:
+            try:
+                unchanged = _metadata_fingerprint(source_root / entry_name) == source_fingerprints[entry_name]
+            except OSError:
+                unchanged = False
+            if not unchanged:
+                raise StorageMigrationError(
+                    "verification_failed",
+                    f"迁移期间原始数据被修改，已停止迁移，原始数据未受影响：{entry_name}。",
+                )
 
         # Identical entries become copy evidence, so cleanup may delete their
         # source copy -- except where the target's own config, kept as it is
