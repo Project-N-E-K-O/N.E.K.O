@@ -200,3 +200,24 @@ async def test_no_diary_chip_when_nothing_reached_the_spool(tmp_path, monkeypatc
         for g in gates:
             g.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_the_debrief_turn_sees_only_its_bounded_record(tmp_path, monkeypatch):
+    host, guest, wire, clock, gates = await _visit_with_lines(tmp_path, monkeypatch)
+    host.replies.queue = [["我回来啦。"], ["聊得很开心。"]]
+    client = host.clients[0]
+    try:
+        host.rt.request_finalize("recall")                   # 自然收尾：仪式句也走一轮 LLM
+        await finish(host.rt, clock)
+        system = client._conversation_history[0].content
+        debrief_seen = client.seen[-1]                       # 最后一轮 = 简述
+        assert debrief_seen == [system]                      # 不带近期历史，只有指令 + 有预算的记录块
+        ritual_seen = client.seen[-2]
+        assert len(ritual_seen) > 1                          # 仪式句照常带着这场的历史
+        left = [getattr(m, "content", "") for m in client._conversation_history]
+        assert "我回来啦。" not in left and "聊得很开心。" not in left        # 两轮都不留在历史里
+        assert left[0] == system and len(left) >= len(ritual_seen)            # 简述轮把原历史原样放回
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)

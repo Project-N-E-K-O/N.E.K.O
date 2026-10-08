@@ -126,7 +126,9 @@ _PUMP_IDLE_S = 0.25
 _INTERRUPT_MAIN_TURN_S = 3.0
 _CLOSE_WAIT_S = VISIT_LEAVE_GAP_GRACE_S * 2 + 2.0
 _HANDOFF_POLL_S = 0.25
-_SHUTDOWN_TASK_WAIT_S = 1.0
+# 关机总预算 VISIT_SHUTDOWN_BUDGET_S：等在飞任务、收口当前行各 0.5 s，取消未配对房间 1 s，余下给封存
+_SHUTDOWN_TASK_WAIT_S = 0.5
+_SHUTDOWN_ROOM_CANCEL_S = 1.0
 _VOICE_STATUS_THROTTLE_S = 5.0
 
 # ═════════════════════════════════════════════════════════════════════
@@ -571,6 +573,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.spool_lines = 0
         self._terminated = False
         self._room_cancel_sent = False
+        self._room_cancel_task: Optional[asyncio.Task] = None
         self._handback_started = False
 
         self._init_rx()
@@ -1100,8 +1103,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.side != "guest" or self.ready_exchanged or self._activation is not None or self.finalizing:
             return
         self.liveness.on_ready(self.clock())
+        # 在收包循环里同步激活（之后的台词要有 room 才能处理），所以必须有上限：卡住就结束，不拖住心跳与 leave
         try:
-            await self.activate()
+            await asyncio.wait_for(self.activate(), VISIT_ACTIVATION_ALLOWANCE_S)
+        except asyncio.TimeoutError:
+            logger.warning("visit %s: activation exceeded its allowance", self.visit_id[:6])
+            self.request_finalize("llm_error")
+            return
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit %s: activation failed: %r", self.visit_id[:6], exc)
             self.request_finalize("llm_error")
@@ -1424,8 +1432,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 self._cancel_room_once()
         finally:
             try:
-                # 对端的 leave 还欠着 ack（peer_left 收尾）：先送出，免得对方白等补传窗口
-                await self.flush(force_ack=True)
+                # 对端的 leave 还欠着 ack（peer_left / 两侧同时收尾）：直接送出（本侧 leave 完成后队列不再出帧），
+                # 免得对方白等补传窗口
+                ack = self.sequencer.poll_ack(self.clock(), force=True)
+                if ack is not None and ack > 0:
+                    await self.transport.send(self.outbox.final_ack_frame(ack, now=self.clock()).to_ws())
             except Exception:  # noqa: BLE001
                 pass
             try:
@@ -1445,8 +1456,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.side != "host" or creds is None or self._room_cancel_sent:
             return
         self._room_cancel_sent = True
-        self.spawn(self.deps.cancel_room(self.visit_id, invite_expires_at=creds.invite_expires_at,
-                                         account=creds.account))
+        self._room_cancel_task = self.spawn(self.deps.cancel_room(
+            self.visit_id, invite_expires_at=creds.invite_expires_at, account=creds.account))
 
     def transport_alive(self) -> bool:
         from main_routers.visit_router.transport_ws import is_transport_attached
@@ -1572,6 +1583,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             task.cancel()
         if inflight:
             await asyncio.wait(inflight, timeout=_SHUTDOWN_TASK_WAIT_S)
+        # 先收口本侧在说的那一行：它的 text{final} 与用量要在封存之前进上传流水
+        try:
+            await asyncio.wait_for(self.close_current_line("visit_end"), _SHUTDOWN_TASK_WAIT_S)
+        except Exception as exc:  # noqa: BLE001 - 收不完也照样封存
+            logger.warning("visit %s: line not closed at shutdown: %r", self.visit_id[:6], exc)
         try:
             self.sealed_doc = await self.journal.seal("shutdown", ended_at=self.wall())
         except Exception as exc:  # noqa: BLE001
@@ -1592,6 +1608,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             except Exception:  # noqa: BLE001
                 pass
             self.takeover_token = None
+        if self.peer is None:
+            # 没配上对的 host 房间：邀请码与配额占用别留到过期（不发 leave，但房间要取消）
+            self._cancel_room_once()
+        cancel = self._room_cancel_task
+        if cancel is not None and not cancel.done():
+            await asyncio.wait([cancel], timeout=_SHUTDOWN_ROOM_CANCEL_S)
         for task in list(self._tasks):
             task.cancel()
         if self._pump_task is not None:

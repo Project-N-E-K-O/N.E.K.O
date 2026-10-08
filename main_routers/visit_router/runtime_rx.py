@@ -313,7 +313,7 @@ class ReceiveMixin:
     async def _rx_wrap_up(self, m: dict, from_vid: str, now: float) -> None:
         if self.room is None:
             return
-        if self.room.observe_lp(m.get("lp"), reliable=True) is not None:
+        if self._lp_rejected(self.room.observe_lp(m.get("lp"), reliable=True)):
             return
         ph = m.get("ph")
         if ph == "done":
@@ -325,7 +325,7 @@ class ReceiveMixin:
         if self.room is None:
             return
         ln, lp = m.get("ln"), m.get("lp")
-        if self.room.observe_lp(lp, ln=ln) is not None:
+        if self._lp_rejected(self.room.observe_lp(lp, ln=ln)):
             return
         if not self._line_admitted(ln, from_vid, now):
             # 这一行没拿到 text 配额：整行不上屏（增量也不发），与超速的 text 同一个结果
@@ -350,6 +350,13 @@ class ReceiveMixin:
             "addressee": {"side": ad_side, "kind": ad_kind}, "goodbye": bool(meta.get("wu")),
             "ts": self.wall(), "paced": "audio",
         })
+
+    def _lp_rejected(self, violation: Optional[str]) -> bool:
+        """``observe_lp`` refused the message: record it and apply the protocol-violation cutoff."""
+        if violation is None:
+            return False
+        self.apply_effects(self.room.violation_effects(violation))
+        return True
 
     def _line_admitted(self, ln: Any, from_vid: str, now: float) -> bool:
         """The ``RateChannel.TEXT`` decision of one peer line, taken once (first delta, or its text)."""
@@ -407,7 +414,7 @@ class ReceiveMixin:
         if self.room is None:
             return
         ln, lp = m.get("ln"), m.get("lp")
-        if self.room.observe_lp(lp, ln=ln, reliable=True, closes_line=True) is not None:
+        if self._lp_rejected(self.room.observe_lp(lp, ln=ln, reliable=True, closes_line=True)):
             return
         if not self._line_admitted(ln, from_vid, now):
             # 超速：已回 ack（不让对端重传到 delivery_failed），但不上屏、不入史、不进转录、不触发回复
@@ -425,7 +432,7 @@ class ReceiveMixin:
             reply_to=self._ref_of(m.get("rt")), trunc_reason=trunc_reason,
         ), now)
         if eff.violation == "line_meta_mismatch":
-            self.journal.note_anomaly()
+            self.apply_effects(eff)  # 记异常，并让连续违约的收尾生效
             return
         txt = str(m.get("txt") or "")
         speaker_from = "peer_cat" if sp == "cat" else "peer_human"
@@ -439,9 +446,7 @@ class ReceiveMixin:
             reply_to=str(m.get("rt") or ""), goodbye=m.get("wu") is True, text=txt, truncated=truncated,
             i_done=m.get("i_done", 0), trunc_reason=trunc_reason,
         ))
-        if eff.violation is not None:
-            self.journal.note_anomaly()
-        self.apply_effects(eff)
+        self.apply_effects(eff)  # 违约由 apply_effects 统一记一次异常
 
     # ── leave ────────────────────────────────────────────────────────
 

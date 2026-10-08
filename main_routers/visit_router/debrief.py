@@ -144,7 +144,9 @@ async def run_debrief(rt: Any, *, input_stamp: float) -> None:
     text: Optional[str] = None
     if lines:
         block = await build_debrief_record(lines, rt.lang)
-        raw = await rt.one_shot_turn(build_visit_debrief_prompt(block, rt.lang), timeout=VISIT_CEREMONY_TIMEOUT_S)
+        # 输入只用有预算的整场记录：不再带隔离会话里的近期历史（重复、超预算、对端原文出了数据块）
+        raw = await rt.one_shot_turn(build_visit_debrief_prompt(block, rt.lang), timeout=VISIT_CEREMONY_TIMEOUT_S,
+                                     without_history=True)
         text = await clean_summary(raw, family_names=tuple(rt.family_names), neutral_term=rt.neutral_term,
                                    peer_lines=peer_lines)
     if not text:

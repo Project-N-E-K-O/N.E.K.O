@@ -734,6 +734,18 @@ class VisitOutbox:
             if seq != item.seq and other.emitted and seq not in self._urgent:
                 self._urgent.append(seq)
 
+    def final_ack_frame(self, seq: int, now: Optional[float] = None) -> OutboundFrame:
+        """A standalone ``ack`` frame for the last owed ack when the channel closes.
+
+        Bypasses the queue: :meth:`due` releases nothing once :meth:`leave_done`
+        holds, but the peer's own ``leave`` may still be waiting for this ack.
+        """
+        text = encode_msg({"t": "ack", "v": 1, "seq": int(seq)})
+        pieces, nbytes = wire_size(text, visit_id=self.visit_id)
+        item = _Item(t="ack", cmd=cmd_of("ack"), payload=json.loads(text), enq_at=self._now(now),
+                     nbytes=nbytes, pieces=pieces)
+        return self._frame(item, retransmit=False)
+
     def leave_done(self, now: Optional[float] = None) -> bool:
         """True once ``leave`` is acked, or ``VISIT_LEAVE_GAP_GRACE_S`` passed since it was sent.
 

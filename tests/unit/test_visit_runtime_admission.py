@@ -773,7 +773,7 @@ async def test_ending_while_the_journal_opens_does_not_reopen_the_wait(tmp_path,
     rt.request_finalize("route_end")
     await settle()
     gate.set()
-    await joining
+    await asyncio.gather(joining)
     await _finished(rt)
     assert rt.phase == "ended"
     assert not side.host.frames_of("visit_state_change", "invite_ready")
@@ -797,10 +797,38 @@ async def test_ending_while_the_peer_name_is_cleaned_installs_no_peer(tmp_path, 
         rt.request_finalize("route_end")
         await settle()
         gate.set()
-        await hello
+        await asyncio.gather(hello)
         await _finished(rt)
         assert rt.peer is None and rt.phase == "ended"
         assert not side.host.frames_of("visit_invite")
     finally:
         gate.set()
         await teardown(side, wire=wire, clock=clocks[0])
+
+
+async def test_a_stalled_guest_activation_ends_the_visit_within_the_allowance(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "VISIT_ACTIVATION_ALLOWANCE_S", 0.3)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    stall = asyncio.Event()
+
+    async def hang(*args, **kwargs):
+        await stall.wait()
+
+    guest.deps.create_session = hang
+    try:
+        started = asyncio.get_running_loop().time()
+        # 收包循环里同步激活：卡住也不能无限挂着（外层 3 s 只为让测试本身不挂死）
+        await asyncio.wait_for(guest.rt.on_ready(), 3)
+        assert asyncio.get_running_loop().time() - started < 2.0
+        assert guest.rt.finalize_reason == "llm_error" and not guest.rt.activated
+    finally:
+        stall.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_shutdown_cancels_the_room_of_an_unpaired_host(tmp_path, monkeypatch, clocks):
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    assert side.cancelled == []
+    await asyncio.wait_for(rtm.stop_all("shutdown"), 3)
+    assert len(side.cancelled) == 1 and side.cancelled[0][0] == rt.visit_id
+    assert "leave" not in wire.sent_types("host")

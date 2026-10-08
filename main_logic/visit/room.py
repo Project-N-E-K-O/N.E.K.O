@@ -530,6 +530,12 @@ class VisitRoom:
         self._maybe_finalize_anomalies(eff)
         return eff
 
+    def violation_effects(self, kind: str) -> RoomEffects:
+        """Effects of a violation :meth:`observe_lp` already counted (the cutoff included, no second count)."""
+        eff = RoomEffects(violation=kind)
+        self._maybe_finalize_anomalies(eff)
+        return eff
+
     def record_valid_message(self) -> None:
         """A well-formed known message arrived: reset the consecutive streak."""
         self.violation_streak = 0

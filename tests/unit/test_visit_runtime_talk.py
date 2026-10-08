@@ -568,3 +568,154 @@ async def test_a_rate_limited_peer_line_shows_none_of_its_deltas(tmp_path, monke
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_shutdown_seals_the_line_in_progress_into_the_transcript(tmp_path, monkeypatch):
+    import json
+
+    pause = asyncio.Event()
+    host, guest, wire, clock, wall = await bring_up(
+        tmp_path, monkeypatch, host_replies=Replies(queue=[["说到一半。", "后半", pause, "句。"]]),
+        guest_replies=Replies(gate=asyncio.Event()))
+    host.host.auto_play = False
+    rt = host.rt
+    try:
+        await wait_for(lambda: host.host.streams and host.host.streams[0].pushed)
+        await rtm.on_page_signal("Host", {"speech_id": host.host.streams[0].speech_id, "played_ms": 60000,
+                                          "ended": False})
+        await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "line_delta"])
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 3)
+        doc = json.loads((host.config_dir / "visit_spool" / f"{rt.visit_id}.upload.json").read_text(encoding="utf-8"))
+        own = [ln for ln in doc["request"]["lines"] if ln.get("speaker") == "own_cat" or ln.get("from") == "own_cat"]
+        assert own and own[-1]["text"].startswith("说到一半") and own[-1].get("truncated") is True
+    finally:
+        pause.set()
+        await teardown(guest, wire=wire, clock=clock)
+
+
+async def test_an_overlapping_peer_line_counts_as_one_anomaly(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        for ln, lp in (("g:60", 60), ("g:61", 61)):          # 旧行还没收口就开了新行
+            await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+                "t": "line_delta", "v": 1, "ln": ln, "i": 0, "lp": lp, "txt": "嗯", "sp": "c", "ad": "hc",
+                "rt": "", "wu": False}, nbytes=200)
+        before = rt.journal._anomalies
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:61", "lp": 61, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
+            "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "嗯", "truncated": False, "i_done": 1,
+        }, nbytes=200)
+        assert rt.journal._anomalies == before + 1
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_family_line_reserves_room_for_the_final_of_the_line_it_cuts(tmp_path, monkeypatch):
+    pause = asyncio.Event()
+    host, guest, wire, clock, wall = await bring_up(
+        tmp_path, monkeypatch, host_replies=Replies(queue=[["说到一半。", "后半", pause, "句。"]]),
+        guest_replies=Replies(gate=asyncio.Event()))
+    host.host.auto_play = False
+    rt = host.rt
+    asked = []
+    sizes = []
+    real_reserve, real_size = rt.outbox.reserve, rt.outbox.encoded_size
+
+    def reserve(nbytes):
+        asked.append(nbytes)
+        return real_reserve(nbytes)
+
+    def encoded_size(payload):
+        out = real_size(payload)
+        sizes.append((payload.get("sp"), out[1]))
+        return out
+
+    rt.outbox.reserve = reserve
+    rt.outbox.encoded_size = encoded_size
+    try:
+        await wait_for(lambda: host.host.streams and host.host.streams[0].pushed)
+        await rtm.on_page_signal("Host", {"speech_id": host.host.streams[0].speech_id, "played_ms": 60000,
+                                          "ended": False})
+        await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "line_delta"])
+        await rtm.route_stream_message("Host", {"input_type": "text", "data": "等一下",
+                                                "source": "neko_visit:guest_cat"})
+        family = [n for sp, n in sizes if sp == "h"][0]
+        cut = [n for sp, n in sizes if sp == "c"][0]
+        assert asked == [family + cut] and cut > 0          # 被打断那行的 final 一并预留
+    finally:
+        pause.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_repeated_lp_violations_end_the_visit(tmp_path, monkeypatch):
+    from config.visit_settings import VISIT_ANOMALY_FINALIZE_COUNT, VISIT_LP_MAX_JUMP
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        before = rt.journal._anomalies
+        for i in range(VISIT_ANOMALY_FINALIZE_COUNT):
+            far = rt.room.max_lp_seen + VISIT_LP_MAX_JUMP + 100 + i     # 跳得太远：lp_out_of_range
+            await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+                "t": "line_delta", "v": 1, "ln": f"g:{300 + i}", "i": 0, "lp": far, "txt": "嗯", "sp": "c",
+                "ad": "hc", "rt": "", "wu": False}, nbytes=200)
+            if rt.exit_task is not None:
+                break
+        assert rt.finalize_reason == "peer_protocol_violation"
+        assert rt.journal._anomalies - before >= VISIT_ANOMALY_FINALIZE_COUNT - 1
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_repeated_line_meta_mismatches_end_the_visit(tmp_path, monkeypatch):
+    from config.visit_settings import VISIT_ANOMALY_FINALIZE_COUNT
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    rt.limiter._recv_bps = 10 ** 9
+    for st in rt.limiter._senders.values():
+        st.recv_bytes.rate = st.recv_bytes.capacity = st.recv_bytes.tokens = 10 ** 9
+        st.recv_msgs.rate = st.recv_msgs.capacity = st.recv_msgs.tokens = 10 ** 9
+        st.text.rate = st.text.capacity = st.text.tokens = 10 ** 9
+    rt.limiter._recv_msgs_per_s = 10 ** 9
+    try:
+        n = VISIT_ANOMALY_FINALIZE_COUNT + 2
+        for i in range(n):                                    # 先把这些行都按「人类」开口
+            await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+                "t": "line_delta", "v": 1, "ln": f"g:{400 + i}", "i": 0, "lp": 400 + i, "txt": "嗯", "sp": "h",
+                "ad": "hc", "rt": "", "wu": False}, nbytes=200)
+        for i in range(n):
+            ln, lp = f"g:{400 + i}", 400 + i
+            # 收口改成猫娘：同一行两种解释，按协议异常丢弃；连续这样就按协议违约结束
+            await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+                "t": "text", "v": 1, "ln": ln, "lp": lp, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
+                "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "嗯", "truncated": False, "i_done": 1,
+            }, nbytes=200)
+            if rt.exit_task is not None:
+                break
+        assert rt.finalize_reason == "peer_protocol_violation"
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_the_owed_ack_still_goes_out_after_our_leave_completed(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        monkeypatch.setattr(rt.outbox, "leave_done", lambda now=None: True)   # 本侧 leave 已确认 / 宽限到点
+        owed = {"seq": 7}
+        monkeypatch.setattr(rt.sequencer, "poll_ack", lambda now, force=False: owed.pop("seq", None))
+        await rt._close_channel("peer_left")
+        acks = [p for p in wire.sent["host"] if p.get("t") == "ack"]
+        assert acks and acks[-1]["seq"] == 7                    # 对端的 leave 不用白等补传窗口
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)

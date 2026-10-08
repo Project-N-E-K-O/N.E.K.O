@@ -433,6 +433,27 @@ class TalkMixin:
             "goodbye": h.wu, "ts": self.wall(), "paced": piece.paced,
         }))
 
+    def _final_payload(self, h: Any, text: str, *, truncated: bool, reason: Optional[str], tail_ms: int) -> dict:
+        payload = {
+            "t": "text", "v": 1, "ln": h.ln, "lp": h.lp, "sp": "c", "ad": h.ad, "rt": h.rt, "wu": h.wu,
+            "final": True, "txt": clamp_text_utf8(text), "truncated": truncated, "i_done": 0,
+            "tail_ms": max(0, min(int(tail_ms), 12000)),
+        }
+        if truncated and reason:
+            payload["trunc_reason"] = reason
+        if h.lang:
+            payload["lang"] = h.lang
+        return fit_text_to_wire(payload, visit_id=self.visit_id)
+
+    def _interrupted_final_bytes(self) -> int:
+        """Bytes of the ``text{final}`` the own line in progress would queue if a human cut it now."""
+        line = self._line
+        if line is None or line.speaker is None or line.speaker.done:
+            return 0
+        payload = self._final_payload(line.header, line.speaker.released_text, truncated=True,
+                                      reason="human_interrupt", tail_ms=0)
+        return self.outbox.encoded_size(payload)[1]
+
     def _on_line_done(self, line: _LineRun, result: LineResult) -> None:
         """The line ended: queue its ``text{final}`` now (before anything queued later) and book it."""
         line.result = result
@@ -441,17 +462,8 @@ class TalkMixin:
         reason = result.trunc_reason
         if line.llm_error is not None and not result.text and not truncated:
             truncated, reason = True, "llm_error"
-        payload = {
-            "t": "text", "v": 1, "ln": h.ln, "lp": h.lp, "sp": "c", "ad": h.ad, "rt": h.rt, "wu": h.wu,
-            "final": True, "txt": clamp_text_utf8(result.text), "truncated": truncated, "i_done": 0,
-            "tail_ms": max(0, min(int(result.tail_ms), 12000)),
-        }
-        if truncated and reason:
-            payload["trunc_reason"] = reason
-        if h.lang:
-            payload["lang"] = h.lang
+        payload = self._final_payload(h, result.text, truncated=truncated, reason=reason, tail_ms=result.tail_ms)
         try:
-            payload = fit_text_to_wire(payload, visit_id=self.visit_id)
             self.outbox.send(payload, now=self.clock())
         except ValueError as exc:
             logger.warning("visit %s: text{final} not queued: %s", self.visit_id[:6], exc)
@@ -654,7 +666,8 @@ class TalkMixin:
             "final": True, "txt": text, "truncated": False, "i_done": 0,
         }, visit_id=self.visit_id)
         _pieces, nbytes = self.outbox.encoded_size(payload)
-        reservation = self.outbox.reserve(nbytes)
+        # 人类行会立即打断本侧在说的那一行，它的 text{final} 会先入队：一并预留，免得挤占这句的额度
+        reservation = self.outbox.reserve(nbytes + self._interrupted_final_bytes())
         if reservation is None:
             return None
         ref = LineRef(ln, lp, self.side)
@@ -699,14 +712,23 @@ class TalkMixin:
             return
         await self.speak_home_segment("ritual", text, kind="visit_ritual")
 
-    async def one_shot_turn(self, prompt: str, *, timeout: float) -> Optional[str]:
-        """One extra turn of the isolated session (ritual / debrief); None on failure."""
+    async def one_shot_turn(self, prompt: str, *, timeout: float, without_history: bool = False) -> Optional[str]:
+        """One extra turn of the isolated session (ritual / debrief); None on failure.
+
+        ``without_history``: the turn sees only the system instructions and
+        ``prompt`` (the debrief brings its own bounded record of the visit).
+        """
+        from utils.llm_client import SystemMessage
+
         session = self.session
         if session is None:
             return None
         chunks: list[str] = []
         async with session.turn_lock:
-            before = {id(m) for m in session.history}
+            saved = list(session.history)
+            before = {id(m) for m in saved}
+            if without_history:
+                session.history[:] = [m for m in saved if isinstance(m, SystemMessage)]
             session.set_sink(chunks.append)
             try:
                 await asyncio.wait_for(session.client.stream_text(prompt), timeout)
@@ -715,7 +737,11 @@ class TalkMixin:
                 return None
             finally:
                 session.set_sink(None)
-                _drop_new_messages(session, before)
+                if without_history:
+                    session.history[:] = saved
+                    session.forget_untracked()
+                else:
+                    _drop_new_messages(session, before)
         text = strip_emotion_tags("".join(chunks)).strip()
         return text or None
 
