@@ -50,7 +50,7 @@ from main_routers.visit_router.runtime_common import (
     side_of_ln,
 )
 from utils.logger_config import get_module_logger
-from utils.visit_wire import decode_msg, proto_compatible
+from utils.visit_wire import LineDeltaAssembler, decode_msg, proto_compatible
 
 logger = get_module_logger(__name__, "Main")
 
@@ -92,6 +92,7 @@ class ReceiveMixin:
         self._peer_lines: dict[str, dict] = {}
         self._line_quota: dict[str, bool] = {}
         self._ln_by_key: dict[tuple, str] = {}
+        self._deltas = LineDeltaAssembler()
         self._peer_lp: dict[str, int] = {}
         self.last_peer_goodbye = ""
 
@@ -120,6 +121,9 @@ class ReceiveMixin:
         except ValueError:
             self._count_anomaly("malformed")
             return
+        for kind in msg.pop("_soft_anomalies", None) or ():
+            # 解码层已把字段改成合法值、消息照常处理：只计数，不算进连续违约
+            self._count_anomaly(str(kind), streak=False)
         t = msg.get("t")
         if self.peer is None and t != "hello":
             # 核验之前只看 hello；其余的（含 ack）对端在核验后会重发 / 再回
@@ -341,6 +345,12 @@ class ReceiveMixin:
         if not self._line_admitted(ln, from_vid, now):
             # 这一行没拿到 text 配额：整行不上屏（增量也不发），与超速的 text 同一个结果
             return
+        before = self._deltas.anomalies
+        if not self._deltas.feed(m):
+            # 同一行重复的 i、已收口的行、换了 lp 的分片……：不转发；协议异常的计一次
+            if self._deltas.anomalies > before:
+                self._count_anomaly("line_delta")
+            return
         meta = self._peer_lines.get(ln)
         if m.get("i") == 0 and meta is None:
             ad_side, ad_kind = decode_addressee(m.get("ad"))
@@ -427,6 +437,7 @@ class ReceiveMixin:
         ln, lp = m.get("ln"), m.get("lp")
         if self._lp_rejected(self.room.observe_lp(lp, ln=ln, reliable=True, closes_line=True)):
             return
+        self._deltas.close(m)  # 收口：之后到的该行分片一律不再上屏
         if not self._line_admitted(ln, from_vid, now):
             # 超速：已回 ack（不让对端重传到 delivery_failed），但不上屏、不入史、不进转录、不触发回复
             return

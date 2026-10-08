@@ -578,6 +578,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._files_done = False
         self._shutdown_started = False
         self._closing_task: Optional[asyncio.Task] = None
+        self._journal_opening: Optional[asyncio.Task] = None
 
         self._init_rx()
         self._init_talk()
@@ -821,19 +822,23 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.kick()
 
     async def _on_first_join(self, now: float) -> None:
-        self.joined = True
-        self._join_deadline = None
         creds = self.creds
         if creds is None or self.finalizing:
+            # 还没下发凭证的连接报的入房不算：等真正入房的那一次再做首次入房的事
             return
-        # 进入本场：先写上传头，之后的每一行、用量与异常都追加在它后面
-        try:
-            await self.journal.open(
-                role=self.side, own_visit_uid=creds.visit_uid, own_char_uid=self.character_uid,
-                transport=creds.transport, started_at=self.wall(), app_version=cr._app_version(),
-            )
-        except Exception as exc:  # noqa: BLE001 - 上传流水建不起来：转录少一份，串门照常
-            logger.warning("visit %s: upload journal not opened: %s", self.visit_id[:6], type(exc).__name__)
+        self.joined = True
+        self._join_deadline = None
+        # 进入本场：先写上传头，之后的每一行、用量与异常都追加在它后面。独立任务：
+        # 收尾 / 关机封存之前先等它写完（否则封存时流水还没装好、封存成空操作）
+        opening = self._journal_opening = asyncio.ensure_future(self.journal.open(
+            role=self.side, own_visit_uid=creds.visit_uid, own_char_uid=self.character_uid,
+            transport=creds.transport, started_at=self.wall(), app_version=cr._app_version(),
+        ))
+        await asyncio.wait([opening])
+        if not opening.cancelled() and opening.exception() is not None:
+            # 上传流水建不起来：转录少一份，串门照常
+            logger.warning("visit %s: upload journal not opened: %s", self.visit_id[:6],
+                           type(opening.exception()).__name__)
         if self.finalizing:
             # 写上传头期间这场已被结束：不再把阶段翻回等待
             return
@@ -1489,8 +1494,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
         return self.joined and is_transport_attached(self.visit_id, self.side)
 
+    async def _settle_journal_open(self) -> None:
+        opening = self._journal_opening
+        if opening is not None and not opening.done():
+            await asyncio.wait([opening], timeout=_SHUTDOWN_TASK_WAIT_S)
+
     async def seal_and_finalize(self, reason: str) -> None:
         """Seal ``.upload.json`` first, then ``state.json.finalized`` (§3.2.6 item 22 step 3)."""
+        await self._settle_journal_open()
         try:
             self.sealed_doc = await self.journal.seal(reason, ended_at=self.wall())
         except Exception as exc:  # noqa: BLE001 - 封存失败：流水留着给下次启动补录
@@ -1616,6 +1627,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             await asyncio.wait_for(self.close_current_line("visit_end"), _SHUTDOWN_TASK_WAIT_S)
         except Exception as exc:  # noqa: BLE001 - 收不完也照样封存
             logger.warning("visit %s: line not closed at shutdown: %r", self.visit_id[:6], exc)
+        await self._settle_journal_open()
         try:
             self.sealed_doc = await self.journal.seal("shutdown", ended_at=self.wall())
         except Exception as exc:  # noqa: BLE001
@@ -1762,6 +1774,10 @@ async def start_visit(
         if failure is not None:
             raise VisitRefused(409, {"reason": failure})
         account = await _local_account()
+        # 查账号期间（还没登记运行时、输入还不归串门）语音会话 / 热切换可能已经起来：再查一次
+        failure = host.precondition_failure()
+        if failure is not None:
+            raise VisitRefused(409, {"reason": failure})
         if account is None:
             raise VisitRefused(409, {"code": "VISIT_LOGIN_REQUIRED"})
         if cr.banned_recently(account):

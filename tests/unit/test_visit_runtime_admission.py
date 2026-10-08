@@ -832,3 +832,63 @@ async def test_shutdown_cancels_the_room_of_an_unpaired_host(tmp_path, monkeypat
     await asyncio.wait_for(rtm.stop_all("shutdown"), 3)
     assert len(side.cancelled) == 1 and side.cancelled[0][0] == rt.visit_id
     assert "leave" not in wire.sent_types("host")
+
+
+async def test_ending_while_the_journal_opens_still_seals_it(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = rt.journal.open
+
+    async def slow_open(**kw):
+        reached.set()
+        await gate.wait()
+        await real_open(**kw)
+
+    rt.journal.open = slow_open
+    joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
+    await asyncio.wait_for(reached.wait(), 5)
+    rt.request_finalize("route_end")
+    asyncio.get_running_loop().call_later(0.1, gate.set)      # 封存之前写完上传头
+    await _finished(rt)
+    await asyncio.gather(joining)
+    assert rt.journal.sealed                                   # 不留一份没封存的 .upload.jsonl
+    assert not list((side.config_dir / "visit_spool").glob("*.upload.jsonl"))
+
+
+async def test_a_joined_report_before_credentials_does_not_count_as_entering(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    try:
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 凭证还没下发
+        assert rt.joined is False
+        await through_gate(rt)
+        await rt.on_transport_state({"state": "joined", "peer_present": False})
+        assert rt.joined is True and rt.phase == "invite_ready"
+        await settle()
+        assert side.host.frames_of("visit_state_change", "invite_ready")
+    finally:
+        await teardown(side, clock=clock)
+
+
+async def test_preconditions_are_checked_again_after_the_account_lookup(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+
+    async def account_while_voice_starts():
+        side.host.precondition = "voice_session_active"       # 查账号期间语音会话起来了
+        return "acct"
+
+    monkeypatch.setattr(rtm, "_local_account", account_while_voice_starts)
+    with pytest.raises(rtm.VisitRefused) as refused:
+        await start_side(side, clock=clock, wall=wall)
+    assert refused.value.body["reason"] == "voice_session_active"
+    assert visit_route_state.get_visit_route_state("Host") is None and rtm.get_runtime("Host") is None

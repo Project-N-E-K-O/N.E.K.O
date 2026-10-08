@@ -800,3 +800,53 @@ async def test_a_valid_early_wrap_up_resets_the_violation_streak(tmp_path, monke
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_replayed_or_late_line_deltas_are_not_forwarded(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+
+    def delta(i, txt):
+        return {"t": "line_delta", "v": 1, "ln": "g:70", "i": i, "lp": 70, "txt": txt, "sp": "c", "ad": "hc",
+                "rt": "", "wu": False}
+
+    try:
+        before = len(host.host.frames)
+        anomalies = rt.journal._anomalies
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=delta(0, "原本的"), nbytes=200)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=delta(0, "改写的"), nbytes=200)   # 同一个 i 重放
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:70", "lp": 70, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
+            "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "原本的", "truncated": False, "i_done": 1,
+        }, nbytes=200)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=delta(1, "收口之后"), nbytes=200)  # 已收口
+        shown = [f["text"] for f in host.host.frames[before:] if f.get("type") == "visit_line_delta"]
+        assert shown == ["原本的"]
+        assert rt.journal._anomalies == anomalies + 1          # 重放计一次异常；收口后的晚到静默丢
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_soft_decoder_anomalies_are_counted_without_the_streak(tmp_path, monkeypatch):
+    from config.visit_settings import VISIT_ANOMALY_FINALIZE_COUNT
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        rt.room.violation_streak = VISIT_ANOMALY_FINALIZE_COUNT - 1    # 再来一次连续违约就收尾
+        journal, room, streak = rt.journal._anomalies, rt.room.anomalies_total, rt.room.violation_streak
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:80", "lp": 80, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
+            "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "你好", "truncated": False, "i_done": 0,
+            "tail_ms": 999999,
+        }, nbytes=200)
+        assert rt.journal._anomalies == journal + 1 and rt.room.anomalies_total == room + 1
+        assert rt.room.violation_streak <= streak                # 消息本身照常处理，不算进连续违约
+        assert rt.exit_task is None
+        assert [r for r in rt.journal.lines() if r["text"] == "你好"]
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
