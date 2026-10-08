@@ -913,8 +913,8 @@ async def test_shutdown_with_a_header_still_writing_does_not_finalize_the_spool(
         state = await rt.spool.read_state()
         assert not (state or {}).get("finalized")             # 留给下次启动补录
         assert rt._sealing is None                            # 关机没调 seal()，不留一个 None 的封存缓存
-        gate.set()                                            # 上传头之后落盘：后台链照样封存
-        await wait_for(lambda: rt.journal.sealed and rt.sealed_doc is not None, timeout=5)
+        assert rt.journal._open_abandoned                     # 写上传头被取消时不再等卡住的写盘
+        assert not rtm.has_visit_background_tasks("Host")     # 不起不设上限的后台封存链（进程才退得出去）
     finally:
         gate.set()
         await teardown(host, guest, wire=wire, clock=clock)

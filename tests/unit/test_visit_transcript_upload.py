@@ -130,6 +130,31 @@ async def _recover(tmp_path, monkeypatch, submit=None):
 # ── 流水与封存 ─────────────────────────────────────────────────────────
 
 
+async def test_an_abandoned_open_stops_at_once_when_cancelled(tmp_path, servers):
+    import threading
+
+    journal = tu.UploadJournal(tmp_path, V1)
+    release = threading.Event()
+    real_open = journal._open_sync
+
+    def slow_open(data):
+        release.wait(10)                                      # 建流水时磁盘卡住
+        return real_open(data)
+
+    journal._open_sync = slow_open
+    opening = asyncio.ensure_future(journal.open(role="host", own_visit_uid=OWN, own_char_uid=CHAR_UID,
+                                                 transport="trtc", started_at=1000.0, app_version="1.2"))
+    try:
+        await asyncio.sleep(0.05)
+        journal.abandon_open()                                # 关机
+        opening.cancel()
+        done, _ = await asyncio.wait([opening], timeout=0.5)
+        assert done                                           # 不等卡住的写盘，进程才退得出去
+    finally:
+        release.set()
+        await asyncio.sleep(0.1)
+
+
 async def test_a_second_seal_while_the_first_is_writing_waits_for_the_same_write(tmp_path, servers):
     import threading
 

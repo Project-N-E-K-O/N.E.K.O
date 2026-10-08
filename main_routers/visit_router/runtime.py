@@ -1682,6 +1682,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if opening is None or opening.done():
             return
         await asyncio.wait([opening], timeout=_JOURNAL_OPEN_MAX_S if timeout is None else timeout)
+        if not opening.done() and self._shutdown_started:
+            # 关机：不起不设上限的后台封存链；写上传头的任务被事件循环取消时也不再等卡住的写盘，
+            # 进程才退得出去。留在磁盘上的流水由下次启动补录
+            self.journal.abandon_open()
+            return
         if not opening.done():
             reason = self.finalize_reason or "shutdown"
             ended_at = self.wall()  # 收尾这一刻：磁盘卡多久不该算进这场的时长

@@ -208,6 +208,7 @@ class UploadJournal:
         self._executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._sealed = False
         self._seal_write: asyncio.Future | None = None
+        self._open_abandoned = False
         self._failed_writes = 0
 
     @property
@@ -308,8 +309,9 @@ class UploadJournal:
             self._fd = await asyncio.shield(opening)
         except BaseException:
             # 被取消时线程里的建文件可能还在跑：等它结束（等的过程中再被取消也照等），关掉拿到的 fd、
-            # 删掉只写了头的流水，之后才撤销登记——否则重试轮次会把一份仍开着的流水当成孤立文件重封
-            while not opening.done():
+            # 删掉只写了头的流水，之后才撤销登记——否则重试轮次会把一份仍开着的流水当成孤立文件重封。
+            # 关机时（abandon_open）不等：进程马上退出，本进程没有重试轮次，留下的流水由下次启动补录
+            while not opening.done() and not self._open_abandoned:
                 try:
                     await asyncio.shield(opening)
                 except asyncio.CancelledError:
@@ -365,6 +367,14 @@ class UploadJournal:
             raise ValueError("bad line side / speaker")
         self._records.append({"kind": "line", "lp": int(lp), "side": side, "from": speaker, "ts": float(ts),
                               "text": str(text), "truncated": bool(truncated)})
+
+    def abandon_open(self) -> None:
+        """Shutdown: a cancelled :meth:`open` stops at once instead of waiting for the stalled create.
+
+        The process is about to exit; whatever the writer thread leaves on
+        disk is a stream the startup recovery seals.
+        """
+        self._open_abandoned = True
 
     def _book(self, *, lp: int, side: str, speaker: str, ts: float, text: str, truncated: bool) -> dict:
         """Validate one final line and add it to the in-memory copy; returns the record to write."""
