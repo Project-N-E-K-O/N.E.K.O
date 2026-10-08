@@ -2242,3 +2242,51 @@ def test_no_replace_rename_reports_unsupported_systems(tmp_path, monkeypatch):
 
     assert storage_migration_module._rename_no_replace(source, tmp_path / "target.json") is False
     assert source.read_text(encoding="utf-8") == "source"
+
+
+def _link_directory(link: Path, target: Path) -> None:
+    if os.name == "nt":
+        import subprocess
+
+        created = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, text=True
+        )
+        if created.returncode != 0:
+            pytest.skip(f"junction creation is unavailable: {created.stderr}")
+    else:
+        os.symlink(target, link, target_is_directory=True)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("linked_dir", ["backup", "stage", "transaction"])
+def test_recovery_refuses_linked_transaction_directories(tmp_path, monkeypatch, linked_dir):
+    """Rollback must not move or delete entries through a linked transaction directory."""
+    import shutil
+
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _crash_after_publish(staged, target):
+        original_publish(staged, target)
+        raise KeyboardInterrupt("simulated process loss")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.undo()
+
+    (transaction_root,) = (target_root / ".smtx").iterdir()
+    external = tmp_path / "external"
+    real = transaction_root if linked_dir == "transaction" else transaction_root / linked_dir
+    shutil.copytree(real, external)
+    (external / "config").mkdir(exist_ok=True)
+    (external / "config" / "sentinel.txt").write_text("keep", encoding="utf-8")
+    shutil.rmtree(real)
+    _link_directory(real, external)
+
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "migration_rollback_required"
+    assert (external / "config" / "sentinel.txt").read_text(encoding="utf-8") == "keep"

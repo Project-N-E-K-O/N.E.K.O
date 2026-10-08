@@ -713,6 +713,21 @@ def _remove_transaction(transaction_root: Path) -> None:
         transaction_root.parent.rmdir()
 
 
+def _ensure_transaction_dirs_not_linked(transaction_root: Path) -> None:
+    """Refuse a transaction whose own directories were replaced by links.
+
+    Rollback moves entries out of ``backup`` and deletes from ``stage``;
+    through a link or junction either would reach into another directory.
+    Only the shared ``.smtx`` parent is checked elsewhere.
+    """
+    for path in (transaction_root, transaction_root / "stage", transaction_root / "backup"):
+        if os.path.lexists(path) and classify_entry_no_follow(path) != "dir":
+            raise StorageMigrationError(
+                "migration_rollback_required",
+                f"迁移事务目录不是普通目录（可能是链接或 junction），已原样保留等待人工处理: {path}",
+            )
+
+
 def _rollback_interrupted_publish(
     *,
     payload: dict[str, Any],
@@ -727,6 +742,7 @@ def _rollback_interrupted_publish(
     a marked entry without a backup is already restored, while an unmarked one
     has really lost its backup.
     """
+    _ensure_transaction_dirs_not_linked(transaction_root)
     backup_root = transaction_root / "backup"
     restoring_entries = {
         str(entry) for entry in payload.get("restoring_entries") or []
@@ -1484,6 +1500,7 @@ def run_pending_storage_migration(
         _ensure_transaction_parent(transaction_root)
         source_root_present = source_root.exists() and source_root.is_dir()
         if os.path.lexists(transaction_root):
+            _ensure_transaction_dirs_not_linked(transaction_root)
             # Rolling back restores the state before this migration, and that
             # state lived in the source. If the source -- or just one of the
             # entries this transaction published or staged -- is gone or no
