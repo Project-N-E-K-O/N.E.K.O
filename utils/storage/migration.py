@@ -78,6 +78,19 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     "card_faces",
     "jukebox",
     "avatar_tools",
+    "pngtuber",
+    "watch_together",
+    # Downloaded RapidOCR runtimes and models: moved so OCR keeps working at
+    # the new root without downloading them again.
+    "runtimes",
+)
+
+# Top-level runtime directories the app recreates by itself. They are not
+# migrated (logs follow the new root from the first start), and cleaning a
+# non-anchor retained root removes them so the old root can go entirely.
+REGENERABLE_RUNTIME_ENTRY_NAMES = (
+    "logs",
+    "plugin-runtime",
 )
 
 _WINDOWS_IO_REPARSE_TAG_NAME_SURROGATE = 0x20000000

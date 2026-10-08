@@ -1943,3 +1943,31 @@ def test_failed_checkpoint_never_drops_a_non_empty_backup(tmp_path):
     )
 
     assert (backup_entry / "characters.json").read_text(encoding="utf-8") == "original"
+
+
+@pytest.mark.unit
+def test_storage_migration_moves_pngtuber_watch_together_and_runtimes(tmp_path):
+    """#3336: these held user data / downloads but were left in the old root."""
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "pngtuber" / "Alice").mkdir(parents=True)
+    (source_root / "pngtuber" / "Alice" / "idle.png").write_bytes(b"png")
+    (source_root / "watch_together" / "objects").mkdir(parents=True)
+    (source_root / "watch_together" / "library.sqlite3").write_bytes(b"sqlite")
+    (source_root / "runtimes" / "galgame_plugin" / "RapidOCR").mkdir(parents=True)
+    (source_root / "runtimes" / "galgame_plugin" / "RapidOCR" / "model.onnx").write_bytes(b"onnx")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    assert (target_root / "pngtuber" / "Alice" / "idle.png").read_bytes() == b"png"
+    assert (target_root / "watch_together" / "library.sqlite3").read_bytes() == b"sqlite"
+    assert (target_root / "runtimes" / "galgame_plugin" / "RapidOCR" / "model.onnx").is_file()
+    assert {"pngtuber", "watch_together", "runtimes"} <= set(result["payload"]["copied_entries"])

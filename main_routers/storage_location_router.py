@@ -67,6 +67,7 @@ from utils.storage_location_bootstrap import (
 )
 from utils.storage_migration import (
     MIGRATED_RUNTIME_ENTRY_NAMES,
+    REGENERABLE_RUNTIME_ENTRY_NAMES,
     STORAGE_MIGRATION_STATUS_COMPLETED,
     STORAGE_MIGRATION_STATUS_FAILED,
     StorageMigrationError,
@@ -1742,6 +1743,17 @@ def _cleanup_retained_runtime_root(
     # kept in it stay put.
     retained_root_kept = paths_equal(retained_path, anchor_root)
     if not retained_root_kept:
+        # Directories the app recreates (old logs, plugin install records)
+        # would otherwise keep the old root alive. Only here: the anchor
+        # root's logs may still be written by a run started without the
+        # launcher.
+        for entry_name in REGENERABLE_RUNTIME_ENTRY_NAMES:
+            if classify_entry_no_follow(retained_path / entry_name) is None:
+                continue
+            try:
+                remove_runtime_entry(retained_path / entry_name)
+            except (StorageMigrationError, OSError) as exc:
+                logger.warning("Retained root cleanup kept %s: %s", entry_name, exc)
         try:
             retained_path.rmdir()
         except FileNotFoundError:

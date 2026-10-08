@@ -3249,6 +3249,38 @@ def test_storage_location_cleanup_removes_read_only_entries(tmp_path):
 
 
 @pytest.mark.unit
+def test_storage_location_cleanup_removes_regenerable_dirs_from_a_non_anchor_root(tmp_path):
+    """Old logs and plugin install records must not keep the old root alive."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (source_root / "logs").mkdir()
+    (source_root / "logs" / "old.log").write_text("old", encoding="utf-8")
+    (source_root / "plugin-runtime" / "plugin-installs").mkdir(parents=True)
+    (source_root / "plugin-runtime" / "plugin-installs" / "task.json").write_text("{}", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert cleanup_response.json()["retained_root_kept"] is False
+    assert not source_root.exists()
+
+
+@pytest.mark.unit
 def test_storage_location_cleanup_reports_when_other_files_keep_the_retained_root(tmp_path):
     config_manager = _make_real_config_manager(tmp_path)
     source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
@@ -3623,6 +3655,9 @@ def test_storage_location_cleanup_retained_anchor_root_removes_runtime_entries_o
     (source_root / "state" / "storage_policy.json").write_text("{}", encoding="utf-8")
     (source_root / "cloudsave").mkdir(parents=True, exist_ok=True)
     (source_root / "cloudsave" / "manifest.json").write_text("{}", encoding="utf-8")
+    # A run started without the launcher may still write logs here.
+    (source_root / "logs").mkdir(parents=True, exist_ok=True)
+    (source_root / "logs" / "current.log").write_text("live", encoding="utf-8")
 
     create_pending_storage_migration(
         config_manager,
@@ -3658,6 +3693,7 @@ def test_storage_location_cleanup_retained_anchor_root_removes_runtime_entries_o
     assert not (source_root / "memory").exists()
     assert (source_root / "state" / "storage_migration.json").exists()
     assert (source_root / "cloudsave" / "manifest.json").read_text(encoding="utf-8") == "{}"
+    assert (source_root / "logs" / "current.log").read_text(encoding="utf-8") == "live"
 
     migration_payload = load_storage_migration(reloaded_manager)
     assert migration_payload["retained_source_root"] == ""
