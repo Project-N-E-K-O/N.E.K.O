@@ -1596,6 +1596,21 @@ async def test_lines_buffered_before_a_shutdown_reach_the_stream_left_for_recove
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_bad_buffered_record_does_not_break_the_shutdown(tmp_path, monkeypatch):
+    host, guest, wire, clock, gate = await _bring_up_with_a_pending_header(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        rt._journal_backlog.append({"kind": "line", "lp": "not-a-number", "side": "host", "speaker": "own_cat",
+                                    "ts": None, "text": "坏记录", "truncated": False})
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
+        assert rt.journal._open_abandoned                     # 转换失败也照样放弃
+        assert rt._journal_opening.done()                     # 并且取消了写上传头
+        assert rtm.get_runtime("Host") is None                # 关机后面的步骤都走到了
+    finally:
+        gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_the_spool_is_finalized_only_once(tmp_path, monkeypatch):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt

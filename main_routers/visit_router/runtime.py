@@ -1692,7 +1692,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             # 关机：不起不设上限的后台封存链，并主动取消写上传头的任务（abandon_open 之后它被取消就立刻结束，
             # 不再等卡住的写盘），事件循环这一层不会被它挂住。注意线程池的写盘线程不是 daemon：磁盘一直卡着时，
             # 解释器退出仍会等它（所有走线程池写盘的地方都一样）。留在磁盘上的流水由下次启动补录
-            self.journal.abandon_open(self._backlog_stream_records())
+            try:
+                self.journal.abandon_open(self._backlog_stream_records())
+            except Exception as exc:  # noqa: BLE001 - 转换失败也照样放弃并取消：关机后面的步骤一定要走到
+                logger.warning("visit %s: buffered records not kept at shutdown: %s", self.visit_id[:6],
+                               type(exc).__name__)
+                self.journal.abandon_open()
             self._journal_backlog = []
             opening.cancel()
             return

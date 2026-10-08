@@ -398,8 +398,10 @@ class UploadJournal:
         try:
             for data in tail:
                 _write_all(fd, data)
-        except OSError:
-            pass
+        except OSError as exc:
+            # 补录出来的转录会缺这些行：留一条日志，事后查得到
+            logger.warning("visit upload: buffered records not written after an abandoned open: %s",
+                           type(exc).__name__)
         finally:
             with contextlib.suppress(OSError):
                 os.close(fd)
