@@ -911,6 +911,9 @@ async def test_shutdown_with_a_header_still_writing_does_not_finalize_the_spool(
         assert not rt._spool_finalized                        # seal() 立即返回 None 不算封存完成
         state = await rt.spool.read_state()
         assert not (state or {}).get("finalized")             # 留给下次启动补录
+        assert rt._sealing is None                            # 关机没调 seal()，不留一个 None 的封存缓存
+        gate.set()                                            # 上传头之后落盘：后台链照样封存
+        await wait_for(lambda: rt.journal.sealed and rt.sealed_doc is not None, timeout=5)
     finally:
         gate.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1136,6 +1139,105 @@ async def test_a_late_line_recorded_after_ended_was_sent_is_not_shown(tmp_path, 
                     and f.get("line_id") == "g:120"]          # 「已结束」之后不再往页面补
         stuck.set()
     finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_spool_attached_after_the_deferred_files_finished_is_finalized(tmp_path, monkeypatch):
+    from main_routers.visit_router import transcript_upload
+
+    monkeypatch.setattr(rtm, "_JOURNAL_OPEN_MAX_S", 0.1)
+    monkeypatch.setattr(rtm, "VISIT_ACTIVATION_ALLOWANCE_S", 0.2)
+    header_gate = asyncio.Event()
+    real_open = transcript_upload.UploadJournal.open
+
+    async def slow_open(self, **kw):
+        await header_gate.wait()
+        await real_open(self, **kw)
+
+    monkeypatch.setattr(transcript_upload.UploadJournal, "open", slow_open)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    hrt = host.rt
+    spool_gate, reached = asyncio.Event(), asyncio.Event()
+    real_open_spool = hrt._open_spool
+
+    async def stubborn_open(subjects):
+        reached.set()
+        while not spool_gate.is_set():
+            try:
+                await spool_gate.wait()
+            except asyncio.CancelledError:
+                continue
+        await real_open_spool(subjects)
+
+    hrt._open_spool = stubborn_open
+    try:
+        accepting = asyncio.ensure_future(hrt.accept(True))
+        await asyncio.wait_for(reached.wait(), 5)
+        hrt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(hrt), 10)
+        header_gate.set()                                     # 推迟的封存链先跑完（这时还没有 spool）
+        await wait_for(lambda: hrt._deferred_files_done, timeout=5)
+        assert not hrt._spool_finalized
+        spool_gate.set()                                      # spool 之后才挂上：没人会再收它，自己收尾
+        await wait_for(lambda: hrt._spool_finalized, timeout=5)
+        accepting.cancel()
+    finally:
+        header_gate.set()
+        spool_gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_nothing_reaches_the_page_once_ended_was_decided(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        before = len(host.host.frames)
+        rt._ended_published = True
+        rt._post_display({"type": "visit_line", "visit_id": rt.visit_id, "line_id": "after-ended"})
+        await settle()
+        assert not rt._display                                # 所有入口统一挡住
+        assert not [f for f in host.host.frames[before:] if f.get("line_id") == "after-ended"]
+    finally:
+        rt._ended_published = False
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_shutdown_stays_within_its_total_budget(tmp_path, monkeypatch):
+    import threading
+
+    from main_routers.visit_router import session_pool
+
+    monkeypatch.setattr(rtm, "VISIT_SHUTDOWN_BUDGET_S", 0.6)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    release = threading.Event()
+    stuck = asyncio.Event()
+    real_seal = rt.journal._seal_sync
+
+    def slow_seal(doc):
+        release.wait(10)
+        real_seal(doc)
+
+    async def slow_close_line(*args, **kwargs):
+        await stuck.wait()
+
+    async def slow_outbox_close():
+        await stuck.wait()
+
+    async def slow_session_close(session):
+        await stuck.wait()
+
+    rt.journal._seal_sync = slow_seal
+    rt.close_current_line = slow_close_line
+    rt.outbox.close = slow_outbox_close
+    monkeypatch.setattr(session_pool, "close_visit_session", slow_session_close)
+    try:
+        started = asyncio.get_running_loop().time()
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # 每一步都卡住
+        assert asyncio.get_running_loop().time() - started < 1.1   # 总时长受总预算约束，不是各步上限相加（1.5 s）
+    finally:
+        release.set()
+        stuck.set()
         await teardown(host, guest, wire=wire, clock=clock)
 
 

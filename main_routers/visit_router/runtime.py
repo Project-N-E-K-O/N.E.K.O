@@ -67,6 +67,7 @@ from config.visit_settings import (
     VISIT_MEMORY_DEFAULT,
     VISIT_REPLY_GAP_S,
     VISIT_SELF_RECONNECT_S,
+    VISIT_SHUTDOWN_BUDGET_S,
     VISIT_SPOOL_DIRNAME,
     VISIT_SWEEP_INTERVAL_S,
     VISIT_TIME_UP_WRAP_UP_S,
@@ -126,7 +127,8 @@ _PUMP_IDLE_S = 0.25
 _INTERRUPT_MAIN_TURN_S = 3.0
 _CLOSE_WAIT_S = VISIT_LEAVE_GAP_GRACE_S * 2 + 2.0
 _HANDOFF_POLL_S = 0.25
-# 关机总预算 VISIT_SHUTDOWN_BUDGET_S：等在飞任务、收口当前行各 0.5 s，取消未配对房间 1 s，余下给封存
+# 关机总预算 VISIT_SHUTDOWN_BUDGET_S：每一步各有上限（_SHUTDOWN_TASK_WAIT_S），且都截到总期限的剩余；
+# 撤销未配对房间一开始就起、与封存并行，最后最多再等 _SHUTDOWN_ROOM_CANCEL_S
 _SHUTDOWN_TASK_WAIT_S = 0.5
 _JOURNAL_OPEN_MAX_S = 10.0
 _SESSION_CLOSE_S = 5.0
@@ -615,6 +617,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._sealing: Optional[asyncio.Future] = None
         self._spool_finalized = False
         self._files_deferred = False
+        self._deferred_files_done = False
         self.spool_lines = 0
         self._terminated = False
         self._ended_published = False
@@ -1347,7 +1350,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.host.park_proactive()
         await self._open_spool(subjects)
         if self.finalizing:
-            if self._files_done and not self._files_deferred and self._seal_settled() \
+            chain_pending = self._files_deferred and not self._deferred_files_done
+            if self._files_done and not chain_pending and self._seal_settled() and not self._shutdown_started \
                     and not self._spool_finalized and self.spool is not None:
                 # 收尾封存时 spool 还没挂上：晚到的这份自己关掉、标 finalized
                 reason = self.finalize_reason or "route_end"
@@ -1547,10 +1551,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             await asyncio.wait_for(asyncio.shield(closing), _CLOSE_WAIT_S)
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit %s: channel close did not finish: %r", self.visit_id[:6], exc)
-        if not await self._flush_display(_DISPLAY_FLUSH_S):  # 告别句等整句先上屏，再发「已结束」
+        flushed = await self._flush_display(_DISPLAY_FLUSH_S)  # 告别句等整句先上屏，再发「已结束」
+        self._ended_published = True  # 从这里起不再往显示队列放帧（收尾中补到的整句只进转录）
+        if not flushed:
             # 页面卡着送不完：停掉显示队列（转录由 GET /state 重放），「已结束」不和它并发写、不排在它后面
             await self._retire_display(_DISPLAY_FLUSH_S)
-        self._ended_published = True  # 之后收尾中补到的整句只进转录，不再往页面补气泡
         await self.push(PHASE_ENDED, reason=reason, peer_reason=self.peer_reason)
         if self.status_code is not None:
             await self.status(self.status_code, reason=self.status_details.get("reason"),
@@ -1706,6 +1711,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self._files_deferred and not self._shutdown_started and not _stopped_since(gen):
             await self._finalize_spool(reason)
             self._spawn_memory_commits()
+        self._deferred_files_done = True  # 之后才挂上的 spool 由激活那边自己收尾
 
     async def seal_and_finalize(self, reason: str) -> bool:
         """Seal ``.upload.json`` first, then ``state.json.finalized`` (§3.2.6 item 22 step 3).
@@ -1897,7 +1903,18 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     # ── 关机 ─────────────────────────────────────────────────────────
 
     async def shutdown(self) -> None:
-        """``stop_all``: no ``leave`` (the pages are already gone), files first, takeover released."""
+        """``stop_all``: no ``leave`` (the pages are already gone), files first, takeover released.
+
+        Every wait is capped by its own step limit and by what is left of
+        ``VISIT_SHUTDOWN_BUDGET_S``; whatever has not finished by then is left
+        to the startup recovery.
+        """
+        loop = asyncio.get_running_loop()
+        budget_end = loop.time() + VISIT_SHUTDOWN_BUDGET_S
+
+        def left(cap: float) -> float:
+            return max(0.0, min(cap, budget_end - loop.time()))
+
         # 先置终态：挂起中的凭证 / 激活醒来看到 finalizing 就不再接管、不再建会话
         self._terminated = True
         self._shutdown_started = True
@@ -1926,44 +1943,50 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         for task in inflight:
             task.cancel()
         if inflight:
-            await asyncio.wait(inflight, timeout=_SHUTDOWN_TASK_WAIT_S)
+            await asyncio.wait(inflight, timeout=left(_SHUTDOWN_TASK_WAIT_S))
+        if self.peer is None:
+            # 没配上对的 host 房间：邀请码与配额占用别留到过期（不发 leave，但房间要取消）；先起，与封存并行
+            self._cancel_room_once()
         # 先收口本侧在说的那一行：它的 text{final} 与用量要在封存之前进上传流水
         try:
-            await asyncio.wait_for(self.close_current_line("visit_end"), _SHUTDOWN_TASK_WAIT_S)
+            await asyncio.wait_for(self.close_current_line("visit_end"), left(_SHUTDOWN_TASK_WAIT_S))
         except Exception as exc:  # noqa: BLE001 - 收不完也照样封存
             logger.warning("visit %s: line not closed at shutdown: %r", self.visit_id[:6], exc)
-        await self._settle_journal_open(_SHUTDOWN_TASK_WAIT_S)
+        await self._settle_journal_open(left(_SHUTDOWN_TASK_WAIT_S))
         self._flush_journal_backlog()
-        header_pending = self._header_pending()
-        sealing = self._start_seal("shutdown")  # 退出流程已经在封存：等同一个，不再封第二次
-        await asyncio.wait([sealing], timeout=_SHUTDOWN_TASK_WAIT_S)
-        # 上传头还在写时 seal() 立即返回 None：那不是封存完成，spool 不能标 finalized
-        sealed = sealing.done() and not header_pending
-        if sealed:
-            self._take_seal(sealing)
+        sealed = False
+        if self._header_pending():
+            # 上传头还在写：不调 seal()（它这时什么都不封、只会返回 None，还会被当成这一场的封存缓存下来）；
+            # 上传头落盘后的后台链会封存，spool 留给下次启动补录
+            logger.warning("visit %s: upload header still writing at shutdown", self.visit_id[:6])
         else:
-            # 磁盘卡住：写盘在线程里照样落地；spool 不标 finalized（顺序是先封存后 finalized），下次启动补录
-            logger.warning("visit %s: upload seal still writing at shutdown", self.visit_id[:6])
+            sealing = self._start_seal("shutdown")  # 退出流程已经在封存：等同一个，不再封第二次
+            await asyncio.wait([sealing], timeout=left(_SHUTDOWN_TASK_WAIT_S))
+            sealed = sealing.done()
+            if sealed:
+                self._take_seal(sealing)
+            else:
+                # 磁盘卡住：写盘在线程里照样落地；spool 不标 finalized（顺序是先封存后 finalized），下次启动补录
+                logger.warning("visit %s: upload seal still writing at shutdown", self.visit_id[:6])
         if self.spool is not None and sealed and not self._spool_finalized:
             self._spool_finalized = True
             # 关机预算内限时：写盘卡住就不等了（线程里的写照样落地，没落地的由下次启动补录）
             closing = asyncio.ensure_future(self._finalize_spool_at_shutdown(self.spool))
             closing.add_done_callback(lambda t: t.cancelled() or t.exception())
-            await asyncio.wait([closing], timeout=_SHUTDOWN_TASK_WAIT_S)
+            await asyncio.wait([closing], timeout=left(_SHUTDOWN_TASK_WAIT_S))
             if not closing.done():
                 logger.warning("visit %s: spool still finalizing at shutdown", self.visit_id[:6])
+                self._keep_background(closing)
         if self.takeover_token is not None:
             try:
                 self.host.release_takeover(self.takeover_token)
             except Exception:  # noqa: BLE001
                 pass
             self.takeover_token = None
-        if self.peer is None:
-            # 没配上对的 host 房间：邀请码与配额占用别留到过期（不发 leave，但房间要取消）
-            self._cancel_room_once()
         cancel = self._room_cancel_task
         if cancel is not None and not cancel.done():
-            await asyncio.wait([cancel], timeout=_SHUTDOWN_ROOM_CANCEL_S)
+            # 撤销房间是对外请求：总预算用完也至少给它 _SHUTDOWN_ROOM_CANCEL_S（它从一开始就在跑）
+            await asyncio.wait([cancel], timeout=max(left(_SHUTDOWN_ROOM_CANCEL_S), 0.0))
         for task in list(self._tasks):
             task.cancel()
         if self._pump_task is not None:
@@ -1971,11 +1994,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._stop_display()
         # 正常收尾由关闭通道 / teardown 做的两件事，关机路径也要做（各自限时，不超关机预算）：
         # .outbox.jsonl 带正文，不能比这场活得久；隔离会话的客户端要关掉它自己的任务与 HTTP 连接
-        try:
-            await asyncio.wait_for(self.outbox.close(), _SHUTDOWN_TASK_WAIT_S)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("visit %s: shutdown cleanup incomplete: %r", self.visit_id[:6], exc)
-        await self.close_session(_SHUTDOWN_TASK_WAIT_S)
+        outbox_closing = asyncio.ensure_future(self.outbox.close())
+        outbox_closing.add_done_callback(lambda t: t.cancelled() or t.exception())
+        # outbox 与隔离会话同时关，共用剩余预算
+        await asyncio.gather(asyncio.wait([outbox_closing], timeout=left(_SHUTDOWN_TASK_WAIT_S)),
+                             self.close_session(left(_SHUTDOWN_TASK_WAIT_S)))
+        if not outbox_closing.done():
+            logger.warning("visit %s: outbox still closing at shutdown", self.visit_id[:6])
+            self._keep_background(outbox_closing)
         unregister_transport_session(self.transport)
         slot = get_visit_route_state(self.lanlan_name)
         if slot is self.slot:

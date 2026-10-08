@@ -67,6 +67,24 @@ async def test_main_turn_interruption_that_ignores_cancellation_is_abandoned_in_
         await asyncio.sleep(0.05)
 
 
+async def test_main_turn_interruption_is_cancelled_with_its_caller():
+    cancelled = asyncio.Event()
+
+    class _Slow(_Session):
+        async def handle_interruption(self) -> None:
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+    caller = asyncio.ensure_future(_host(_Slow(responding=True)).interrupt_main_turn(5.0))
+    await asyncio.sleep(0.05)
+    caller.cancel()                                   # 串门作废：凭证任务被取消
+    await asyncio.gather(caller, return_exceptions=True)
+    await asyncio.wait_for(cancelled.wait(), 1)       # 打断任务跟着取消，不再去打断亲人的对话
+
+
 async def test_family_turn_wait_covers_a_reply_that_starts_late(monkeypatch):
     monkeypatch.setattr(host_port, "_TURN_IDLE_POLL_S", 0.02)
     session = _Session(responding=False)

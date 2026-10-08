@@ -413,8 +413,8 @@ class ReceiveMixin:
         behind it. Over ``_DISPLAY_BACKLOG_MAX`` queued frames, droppable
         ones (subtitle pieces, typing) are dropped; final lines never are.
         """
-        if self._terminated:
-            return  # 这场已收尾（显示队列已清）：晚到的帧不再往页面送
+        if self._terminated or self._ended_published:
+            return  # 「已结束」已发出 / 这场已收尾：晚到的帧不再往页面送
         if droppable and len(self._display) >= _DISPLAY_BACKLOG_MAX:
             self.display_dropped += 1
             return
@@ -468,7 +468,7 @@ class ReceiveMixin:
             return  # 接待前的台词照样不收（与 _dispatch 的闸门一致）
         self._deltas.close(m)  # 收口：之后到的该行分片一律不再上屏
         # 分片已开出半截气泡、而「已结束」还没发：这一行要在页面上收口（整句补全或撤掉）
-        show = self._peer_lines.pop(ln, None) is not None and not self._ended_published
+        show = self._peer_lines.pop(ln, None) is not None
 
         def drop_bubble() -> None:
             if show:
@@ -498,9 +498,9 @@ class ReceiveMixin:
         frame = self._peer_line_frame(m, str(ln), lp)
         await self.record_line(f"peer_{sp}", side=self.peer_side, lp=lp, ln=str(ln), text=str(m.get("txt") or ""),
                                truncated=m.get("truncated") is True)
-        if show and not self._ended_published:
-            # 页面上已开出半截气泡：用整句收口（不入史、不触发回复）；上面等写盘期间「已结束」
-            # 可能已经发出，那时就不再往页面补
+        if show:
+            # 页面上已开出半截气泡：用整句收口（不入史、不触发回复）；等写盘期间「已结束」已发出的话，
+            # _post_display 自己会挡掉
             self._post_display(frame)
 
     def _lp_reused(self, ln: Any, lp: Any) -> bool:

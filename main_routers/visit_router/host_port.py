@@ -162,7 +162,11 @@ class ManagerHost:
         deadline = time.monotonic() + timeout
         interrupting = asyncio.ensure_future(session.handle_interruption())
         interrupting.add_done_callback(lambda t: t.cancelled() or t.exception())
-        await asyncio.wait([interrupting], timeout=timeout)
+        try:
+            await asyncio.wait([interrupting], timeout=timeout)
+        except asyncio.CancelledError:
+            interrupting.cancel()  # 串门已作废：不再去打断亲人正在进行的对话
+            raise
         if not interrupting.done():
             interrupting.cancel()
             logger.warning("visit: main turn interruption did not finish in time")
