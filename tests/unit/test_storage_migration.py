@@ -2801,3 +2801,93 @@ def test_anchor_cleanup_stays_available_for_an_entry_left_under_its_private_name
     assert _available()
     (anchor_root / ".neko-cleanup-memory-0123456789ab").rename(anchor_root / ".neko-cleanup-notanentry-0123456789ab")
     assert not _available()
+
+
+
+@pytest.mark.unit
+def test_policy_that_cannot_be_looked_up_is_not_taken_as_absent(tmp_path, monkeypatch):
+    """A policy file an ACL hides is not "never written": it may already
+    select the target, so the publish must not be rolled back."""
+    from utils import storage_migration as storage_migration_module
+    from utils.storage_policy import get_storage_policy_path
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+
+    def _lost_during_policy_commit(*_args, **_kwargs):
+        raise KeyboardInterrupt("simulated process loss while committing the policy")
+
+    monkeypatch.setattr(storage_migration_module, "save_storage_policy", _lost_during_policy_commit)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.undo()
+
+    policy_path = get_storage_policy_path(config_manager)
+    original_lstat = os.lstat
+
+    def _lstat(path, *args, **kwargs):
+        if Path(path) == policy_path:
+            raise PermissionError(13, "access denied", str(path))
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "load_storage_policy", lambda *_a, **_k: None)
+    monkeypatch.setattr(os, "lstat", _lstat)
+    try:
+        result = run_pending_storage_migration(config_manager)
+    finally:
+        monkeypatch.undo()
+
+    assert result["error_code"] == "migration_commit_ambiguous"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "new"
+
+
+@pytest.mark.unit
+def test_reused_target_entry_appearing_before_publish_is_not_replaced(tmp_path, monkeypatch):
+    """Reusing a target makes its entries authoritative: one a sync client
+    creates after staging must not be swapped for the source copy."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    for root in (source_root, target_root):
+        (root / "config").mkdir(parents=True)
+        (root / "config" / "characters.json").write_text("same", encoding="utf-8")
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "facts.json").write_text("source", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+    original_persist = storage_migration_module._persist_migration_payload
+
+    def _target_entry_appears_at_verifying(*args, **kwargs):
+        if kwargs.get("status") == storage_migration_module.STORAGE_MIGRATION_STATUS_VERIFYING:
+            (target_root / "memory").mkdir(exist_ok=True)
+            (target_root / "memory" / "facts.json").write_text("synced in", encoding="utf-8")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", _target_entry_appears_at_verifying)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "target_changed_during_migration"
+    assert (target_root / "memory" / "facts.json").read_text(encoding="utf-8") == "synced in"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="Windows publishes without a reservation or link")
+def test_recovery_keeps_a_hard_link_written_through_before_recovery(tmp_path, monkeypatch):
+    """Linked in, the staged name not yet removed, then written to through
+    the target: both names show the write, so only the staged manifest can
+    show the file is no longer the staged copy."""
+    config_manager, target_root = _start_migration_into_empty_target(tmp_path, memory_as_file=True)
+    _crash_while_publishing(monkeypatch, config_manager, os.link)
+    with open(target_root / "memory", "ab") as stream:
+        stream.write(b" + written since")
+
+    run_pending_storage_migration(config_manager)
+
+    assert (target_root / "memory").read_bytes() == b"memory file + written since"

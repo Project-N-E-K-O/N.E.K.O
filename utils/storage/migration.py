@@ -404,7 +404,26 @@ def _publish_without_overwrite(staged: Path, target: Path) -> None:
     os.unlink(staged)
 
 
-def _holds_only_own_publish_reservation(target: Path, staged: Path) -> bool:
+def _path_is_absent(path: Path) -> bool:
+    """``True`` only when ``path`` is known not to exist.
+
+    ``os.path.lexists`` also says ``False`` when the lookup itself fails (an
+    ACL, a locked volume); that must not pass for "never written".
+    """
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _holds_only_own_publish_reservation(
+    target: Path,
+    staged: Path,
+    expected_manifest: dict | None = None,
+) -> bool:
     """Whether an interrupted publish left nothing but its own traces at ``target``.
 
     While the staged copy is still in place the final move never happened,
@@ -432,7 +451,12 @@ def _holds_only_own_publish_reservation(target: Path, staged: Path) -> bool:
     if target_stat.st_size == 0:
         return True
     staged_stat = staged.lstat()
-    return (target_stat.st_dev, target_stat.st_ino) == (staged_stat.st_dev, staged_stat.st_ino)
+    if (target_stat.st_dev, target_stat.st_ino) != (staged_stat.st_dev, staged_stat.st_ino):
+        return False
+    # Our hard link -- but the file was visible under the target name, and a
+    # write through it would change both names alike: it is still ours only
+    # while it holds exactly what was staged.
+    return expected_manifest is None or _snapshot_path(target) == expected_manifest
 
 
 def _move_entry_keeping_mode(source: Path, destination: Path) -> None:
@@ -933,7 +957,9 @@ def _rollback_interrupted_publish(
             return (
                 not was_published
                 and os.path.lexists(staged_entry)
-                and not _holds_only_own_publish_reservation(target_entry, staged_entry)
+                and not _holds_only_own_publish_reservation(
+                    target_entry, staged_entry, staged_target_manifests.get(entry_name)
+                )
             )
 
         # Moved in but not yet recorded as published (the checkpoint write
@@ -1702,7 +1728,7 @@ def run_pending_storage_migration(
             # selects the source (or was never written). An unreadable policy
             # or one naming another root may already be committed -- with
             # services writing to the target -- so wait instead of guessing.
-            policy_absent = committed_policy is None and not os.path.lexists(
+            policy_absent = committed_policy is None and _path_is_absent(
                 get_storage_policy_path(config_manager, anchor_root=normalized_anchor_root)
             )
             policy_selects_source = bool(policy_selected_root) and paths_equal(
@@ -1948,11 +1974,21 @@ def run_pending_storage_migration(
         )
 
         published_entries: list[str] = []
+        target_entries_at_staging = set(original_target_entries)
         try:
             for entry_name in entries_to_publish:
                 target_entry = target_root / entry_name
                 backup_entry = backup_root / entry_name
                 target_existed = os.path.lexists(target_entry)
+                if use_existing_target and target_existed and entry_name not in target_entries_at_staging:
+                    # Reusing a target makes its entries authoritative; one
+                    # that appeared after staging (a sync client) must not be
+                    # replaced by the source copy and then dropped with the
+                    # backup. Stop instead; nothing is published yet for it.
+                    raise StorageMigrationError(
+                        "target_changed_during_migration",
+                        f"沿用的目标在迁移期间出现了新条目，已停止迁移: {entry_name}",
+                    )
                 # Record what the target holds right now, not what staging saw:
                 # rollback restores from this, and an entry that appeared since
                 # would otherwise be deleted together with its backup.

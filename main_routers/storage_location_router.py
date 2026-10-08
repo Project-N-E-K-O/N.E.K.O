@@ -1769,7 +1769,11 @@ def _cleanup_retained_runtime_root(
     def _target_still_present(entry_name: str) -> bool:
         return classify_entry_no_follow(normalized_target / entry_name) is not None
 
-    def _delete_if_still_matching(entry_name: str, matches: Callable[[Path], bool]) -> None:
+    def _delete_if_still_matching(
+        entry_name: str,
+        matches: Callable[[Path], bool],
+        target_ok: Callable[[], bool],
+    ) -> None:
         entry = retained_path / entry_name
         if classify_entry_no_follow(entry) is None:
             # A link or special file: putting it back later could turn it
@@ -1788,7 +1792,7 @@ def _cleanup_retained_runtime_root(
             # The target is checked again last: comparing a large entry takes
             # a while, and the target must still be there when its retained
             # copy goes.
-            still_matches = matches(private) and _target_still_present(entry_name)
+            still_matches = matches(private) and target_ok()
         except (StorageMigrationError, OSError):
             # Unreadable now (an app writing to the target, a locked file).
             still_matches = False
@@ -1814,9 +1818,16 @@ def _cleanup_retained_runtime_root(
             _delete_if_still_matching(
                 entry_name,
                 lambda path, expected=source_manifest: snapshot_runtime_entry(path) == expected,
+                # Still the recorded kind, not merely present: a directory
+                # replaced by a file meanwhile is no longer the copy.
+                lambda name=entry_name, recorded=proof: _target_still_holds_copy(name, recorded),
             )
     for entry_name in legacy_entries:
-        _delete_if_still_matching(entry_name, lambda path, name=entry_name: _matches_target(name, path))
+        _delete_if_still_matching(
+            entry_name,
+            lambda path, name=entry_name: _matches_target(name, path),
+            lambda name=entry_name: _target_still_present(name),
+        )
 
     # The anchor root holds more than runtime data (state, cloud saves) and
     # always stays. Any other retained root goes once emptied; files the user

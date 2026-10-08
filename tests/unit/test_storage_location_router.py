@@ -4082,3 +4082,24 @@ def test_storage_location_cleanup_keeps_the_copy_when_the_target_vanishes_meanwh
     assert response.status_code == 409, response.json()
     assert response.json()["remaining_entries"] == ["memory"]
     assert (source_root / "memory" / "recent.json").is_file()
+
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_the_copy_when_the_target_changes_kind_meanwhile(tmp_path, monkeypatch):
+    """The target directory was replaced by a file while the retained copy
+    was compared: that file is not the copy the evidence describes."""
+    import shutil
+
+    def _target_replaced_by_a_file(source_root, _checked_path, manifest):
+        target_memory = source_root.parents[1] / "target-selected" / "N.E.K.O" / "memory"
+        if target_memory.is_dir():
+            shutil.rmtree(target_memory)
+            target_memory.write_text("not the copy", encoding="utf-8")
+        return manifest
+
+    source_root, response = _cleanup_with_snapshot_hook(tmp_path, monkeypatch, _target_replaced_by_a_file)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "recent.json").is_file()
