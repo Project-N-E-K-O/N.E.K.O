@@ -55,8 +55,42 @@ def _mentions_runtime_root(node: ast.AST) -> bool:
     return False
 
 
+# Calls that return the same path they are given, in another form.
+_SAME_PATH_FUNCTIONS = {
+    "Path",
+    "PurePath",
+    "PosixPath",
+    "WindowsPath",
+    "PurePosixPath",
+    "PureWindowsPath",
+    "str",
+    "fspath",
+    "abspath",
+    "normpath",
+    "realpath",
+    "expanduser",
+}
+_SAME_PATH_METHODS = {"resolve", "absolute", "expanduser"}
+
+
+def _unwrap_same_path(node: ast.AST) -> ast.AST | None:
+    """The path ``node`` merely wraps (``Path(x)``, ``x.resolve()``); else ``None``."""
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+    if name in _SAME_PATH_FUNCTIONS and len(node.args) == 1:
+        return node.args[0]
+    if name in _SAME_PATH_METHODS and isinstance(func, ast.Attribute) and not node.args:
+        return func.value
+    return None
+
+
 def _is_runtime_root(node: ast.AST, aliases: set[str]) -> bool:
     """Whether ``node`` evaluates to the runtime root itself (not a child or parent)."""
+    wrapped = _unwrap_same_path(node)
+    if wrapped is not None:
+        return _is_runtime_root(wrapped, aliases)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         return False
     # A join is a path below the root, like a division: it merely mentions
@@ -158,6 +192,9 @@ def _parts_after_runtime_root(node: ast.AST, aliases: set[str]) -> list[ast.AST]
         if name == "join" and node.args:
             base = _parts_after_runtime_root(node.args[0], aliases)
             return None if base is None else [*base, *node.args[1:]]
+        wrapped = _unwrap_same_path(node)
+        if wrapped is not None:
+            return _parts_after_runtime_root(wrapped, aliases)
     if _is_runtime_root(node, aliases):
         return []
     return None
@@ -323,6 +360,11 @@ def test_state_child_scan_sees_every_way_a_path_is_built():
         "cm.app_docs_dir.joinpath('state', 'new_child')",
         "os.path.join(cm.app_docs_dir, 'state', 'new_child')",
         "cm.app_docs_dir.joinpath('state').joinpath('new_child')",
+        "Path(cm.app_docs_dir / 'state') / 'new_child'",
+        "Path(os.path.join(cm.app_docs_dir, 'state')) / 'new_child'",
+        "Path(cm.app_docs_dir) / 'state' / 'new_child'",
+        "Path(cm.app_docs_dir).resolve() / 'state' / 'new_child'",
+        "(cm.app_docs_dir / 'state').resolve() / 'new_child'",
     ],
 )
 def test_a_path_joined_straight_from_app_docs_dir_is_scanned_below_the_root(expression):
