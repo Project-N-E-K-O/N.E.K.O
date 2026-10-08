@@ -707,8 +707,24 @@ def _rollback_interrupted_publish(
         target_existed = entry_name in original_entries
         if entry_name == publishing_entry and not was_published:
             target_existed = bool(payload.get("publishing_target_existed"))
+        # The staged copy still being there means the final move never
+        # happened, so what sits at the target now is not that copy.
+        staged_entry = transaction_root / "stage" / entry_name
+        unfinished_publish = not was_published and os.path.lexists(staged_entry)
+        foreign_at_target = unfinished_publish and not _holds_only_own_publish_reservation(
+            target_entry, staged_entry
+        )
 
         if target_existed and os.path.lexists(backup_entry):
+            if foreign_at_target:
+                # The original is in the backup and something new took its
+                # place -- the conflict the publish step records, reached
+                # here when recording it failed or the process stopped.
+                # Restoring would delete the newcomer; keep both.
+                raise StorageMigrationError(
+                    "migration_publish_conflict",
+                    f"迁移目标在发布期间被重新创建，原目标已在事务备份中，等待人工处理: {entry_name}",
+                )
             if mark_restoring is not None and entry_name not in restoring_entries:
                 mark_restoring(entry_name)
                 restoring_entries.add(entry_name)
@@ -732,12 +748,7 @@ def _rollback_interrupted_publish(
             # from its mode, which the move may have widened before stopping.
             _restore_original_mode(entry_name, target_entry)
             continue
-        staged_entry = transaction_root / "stage" / entry_name
-        if (
-            not was_published
-            and os.path.lexists(staged_entry)
-            and not _holds_only_own_publish_reservation(target_entry, staged_entry)
-        ):
+        if foreign_at_target:
             # Interrupted between reserving the name and moving the copy in,
             # and something was written there since: leave it, as a publish
             # that fails on a newcomer does.
@@ -760,6 +771,8 @@ def _rollback_publish_or_require_recovery(
     transaction backup. ``migration_rollback_required`` keeps the checkpoint
     active so the next start tries the rollback again instead of treating the
     migration as finished.
+    A publish conflict found on the way passes through unchanged: it needs a
+    person, not another rollback attempt.
     """
     try:
         _rollback_interrupted_publish(
@@ -769,7 +782,7 @@ def _rollback_publish_or_require_recovery(
             mark_restoring=mark_restoring,
         )
     except StorageMigrationError as exc:
-        if exc.error_code == "migration_rollback_required":
+        if exc.error_code in {"migration_rollback_required", "migration_publish_conflict"}:
             raise
         raise StorageMigrationError(
             "migration_rollback_required",

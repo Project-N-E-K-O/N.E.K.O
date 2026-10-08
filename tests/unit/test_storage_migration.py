@@ -2111,3 +2111,59 @@ def test_rollback_restores_the_mode_of_a_read_only_target_directory(tmp_path, mo
 
     assert retry["error_code"] == "stop_after_recovery"
     assert restored_mode == read_only_mode
+
+
+def _recreate_target_at_publish(monkeypatch, storage_migration_module, *, then):
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _recreate_then_publish(staged, target):
+        Path(target).mkdir(parents=True, exist_ok=True)
+        (Path(target) / "newcomer.json").write_text("newcomer", encoding="utf-8")
+        if then == "crash":
+            raise KeyboardInterrupt("simulated process loss")
+        original_publish(staged, target)
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _recreate_then_publish)
+
+
+@pytest.mark.unit
+def test_publish_conflict_survives_a_failed_conflict_checkpoint_write(tmp_path, monkeypatch):
+    """Rollback must not restore the backup over a newcomer just because the
+    conflict could not be written down."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    _recreate_target_at_publish(monkeypatch, storage_migration_module, then="publish")
+    original_persist = storage_migration_module._persist_migration_payload
+
+    def _persist(*args, **kwargs):
+        if kwargs.get("publish_conflict_entry"):
+            raise OSError("state directory full")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", _persist)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "migration_publish_conflict"
+    assert (target_root / "config" / "newcomer.json").read_text(encoding="utf-8") == "newcomer"
+    backups = list((target_root / ".smtx").glob("*/backup/config/characters.json"))
+    assert [backup.read_text(encoding="utf-8") for backup in backups] == ["healthy"]
+
+
+@pytest.mark.unit
+def test_publish_conflict_is_found_again_after_a_process_exit(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    _recreate_target_at_publish(monkeypatch, storage_migration_module, then="crash")
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.undo()
+
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "migration_publish_conflict"
+    assert (target_root / "config" / "newcomer.json").read_text(encoding="utf-8") == "newcomer"
+    backups = list((target_root / ".smtx").glob("*/backup/config/characters.json"))
+    assert [backup.read_text(encoding="utf-8") for backup in backups] == ["healthy"]
