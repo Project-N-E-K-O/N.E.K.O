@@ -130,6 +130,7 @@ _HANDOFF_POLL_S = 0.25
 _SHUTDOWN_TASK_WAIT_S = 0.5
 _JOURNAL_OPEN_MAX_S = 10.0
 _SESSION_CLOSE_S = 5.0
+_SEAL_MAX_S = 10.0
 _DISPLAY_FLUSH_S = 2.0
 _ACCOUNT_RECORD_S = 3.0
 _ACCOUNT_RETRY_DELAYS_S = (1.0, 5.0, 30.0, 120.0, 600.0)
@@ -1336,6 +1337,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.session = await self.deps.create_session(self.lanlan_name, self.side,
                                                       instructions=instructions, lang=self.lang)
         if self.finalizing:
+            if self._terminated:
+                # 激活拖过了收尾的等待、teardown 关会话时它还不在：晚到的客户端自己关掉
+                self._close_session_in_background()
             return
         self.host.park_proactive()
         await self._open_spool(subjects)
@@ -1515,9 +1519,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 logger.warning("visit %s: callback hold failed: %s", self.visit_id[:6], type(exc).__name__)
             try:
                 self.host.release_takeover(self.takeover_token)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - token 留着：teardown 再试一次
                 logger.warning("visit %s: takeover release failed: %s", self.visit_id[:6], type(exc).__name__)
-            self.takeover_token = None
+            else:
+                self.takeover_token = None
         if self.activated:
             self.handoff = inbox_handoff.InboxHandoff(self.visit_id, finalize_at=self.clock(), clock=self.clock)
         # ④ 回家仪式句（亲人先开口则放弃）；可选步骤：失败不挡后面的封存与交还
@@ -1562,8 +1567,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self._files_done:
             return
         self._files_done = True
-        await self.seal_and_finalize(reason)
-        self._spawn_memory_commits()
+        if await self.seal_and_finalize(reason):
+            self._spawn_memory_commits()
 
     async def _close_channel(self, reason: str) -> None:
         """Drain (normal ends), ``leave``, its resend window; then stop the iframe and drop the transport."""
@@ -1672,20 +1677,58 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit %s: late upload journal not sealed: %s", self.visit_id[:6], type(exc).__name__)
 
-    async def seal_and_finalize(self, reason: str) -> None:
-        """Seal ``.upload.json`` first, then ``state.json.finalized`` (§3.2.6 item 22 step 3)."""
+    async def seal_and_finalize(self, reason: str) -> bool:
+        """Seal ``.upload.json`` first, then ``state.json.finalized`` (§3.2.6 item 22 step 3).
+
+        The seal waits at most ``_SEAL_MAX_S``: a stalled disk must not keep
+        the visit registered and its route locked. Past that the rest (spool
+        finalize, memory commits, upload) follows the seal in the background,
+        in the same order, and this returns False.
+        """
         await self._settle_journal_open()
         self._flush_journal_backlog()  # 上传头在等待中落盘：积压的记录先补进去再封存
-        try:
-            self.sealed_doc = await self.journal.seal(reason, ended_at=self.wall())
-        except Exception as exc:  # noqa: BLE001 - 封存失败：流水留着给下次启动补录
-            logger.warning("visit %s: upload not sealed: %s", self.visit_id[:6], type(exc).__name__)
+        sealing = self._start_seal(reason)
+        await asyncio.wait([sealing], timeout=_SEAL_MAX_S)
+        if not sealing.done():
+            logger.warning("visit %s: upload seal still writing; finishing it in the background", self.visit_id[:6])
+            self._keep_background(asyncio.ensure_future(self._finalize_after_seal(sealing, reason)))
+            return False
+        self._take_seal(sealing)
+        await self._finalize_spool(reason)
+        return True
+
+    def _start_seal(self, reason: str) -> asyncio.Future:
+        sealing = asyncio.ensure_future(self.journal.seal(reason, ended_at=self.wall()))
+        sealing.add_done_callback(lambda t: t.cancelled() or t.exception())  # 结果由 _take_seal 取
+        return sealing
+
+    def _take_seal(self, sealing: asyncio.Future) -> None:
+        if sealing.cancelled() or sealing.exception() is not None:
+            # 封存失败：流水留着给下次启动补录
+            logger.warning("visit %s: upload not sealed: %s", self.visit_id[:6],
+                           "cancelled" if sealing.cancelled() else type(sealing.exception()).__name__)
+            return
+        self.sealed_doc = sealing.result()
+
+    async def _finalize_spool(self, reason: str) -> None:
         if self.spool is not None:
             try:
                 await self.spool.close()
                 await self.spool.update_state(finalized=reason)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: spool not finalized: %s", self.visit_id[:6], type(exc).__name__)
+
+    async def _finalize_after_seal(self, sealing: asyncio.Future, reason: str) -> None:
+        """The seal outlived the exit flow: finish what follows it, in order, once it lands."""
+        await asyncio.wait([sealing])
+        self._take_seal(sealing)
+        await self._finalize_spool(reason)
+        self._spawn_memory_commits()
+        if self.journal.sealed:
+            try:
+                self.deps.schedule_upload(self.visit_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit %s: upload not scheduled: %s", self.visit_id[:6], type(exc).__name__)
 
     def _spawn_memory_commits(self) -> None:
         spool = self.spool
@@ -1811,11 +1854,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: line not closed at shutdown: %r", self.visit_id[:6], exc)
         await self._settle_journal_open(_SHUTDOWN_TASK_WAIT_S)
         self._flush_journal_backlog()
-        try:
-            self.sealed_doc = await self.journal.seal("shutdown", ended_at=self.wall())
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("visit %s: upload not sealed at shutdown: %s", self.visit_id[:6], type(exc).__name__)
-        if self.spool is not None:
+        sealing = self._start_seal("shutdown")
+        await asyncio.wait([sealing], timeout=_SHUTDOWN_TASK_WAIT_S)
+        sealed = sealing.done()
+        if sealed:
+            self._take_seal(sealing)
+        else:
+            # 磁盘卡住：封存在后台写完；spool 不标 finalized（顺序是先封存后 finalized），下次启动补录
+            logger.warning("visit %s: upload seal still writing at shutdown", self.visit_id[:6])
+            self._keep_background(sealing)
+        if self.spool is not None and sealed:
             try:
                 await self.spool.close()
                 changes: dict[str, Any] = {"finalized": "shutdown"}

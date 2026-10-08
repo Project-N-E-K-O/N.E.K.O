@@ -708,6 +708,97 @@ async def test_session_created_while_ending_is_still_closed(tmp_path, monkeypatc
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_session_created_after_teardown_is_closed_in_the_background(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "VISIT_ACTIVATION_ALLOWANCE_S", 0.2)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    hrt = host.rt
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_create = host.deps.create_session
+
+    async def stubborn_create(*args, **kwargs):
+        reached.set()
+        while not gate.is_set():                              # 吞掉取消：拖过收尾的等待
+            try:
+                await gate.wait()
+            except asyncio.CancelledError:
+                continue
+        return await real_create(*args, **kwargs)
+
+    host.deps.create_session = stubborn_create
+    try:
+        accepting = asyncio.ensure_future(hrt.accept(True))
+        await asyncio.wait_for(reached.wait(), 5)
+        hrt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(hrt), 10)            # teardown 没等到它就注销了
+        assert not host.clients
+        gate.set()                                            # 这时会话才建好
+        await wait_for(lambda: host.clients and host.clients[0].closed, timeout=5)   # 自己在后台关掉
+        accepting.cancel()
+    finally:
+        gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_stalled_seal_does_not_keep_the_visit_registered(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(rtm, "_SEAL_MAX_S", 0.2)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    release = threading.Event()
+    real_seal = rt.journal._seal_sync
+    order: list[str] = []
+
+    def slow_seal(doc):
+        release.wait(10)                                      # 写 .upload.json 时磁盘卡住
+        real_seal(doc)
+        order.append("sealed")
+
+    real_finalize = rt._finalize_spool
+
+    async def finalize_spool(reason):
+        order.append("finalized")
+        await real_finalize(reason)
+
+    rt.journal._seal_sync = slow_seal
+    rt._finalize_spool = finalize_spool
+    try:
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(rt), 10)
+        assert rtm.get_runtime("Host") is None                # 照样注销、释放占位
+        await asyncio.sleep(0.3)                              # 让后台的收尾链跑起来
+        assert "finalized" not in order                       # 封存没写完：spool 先不标 finalized
+        release.set()
+        await wait_for(lambda: "finalized" in order, timeout=5)
+        assert order == ["sealed", "finalized"]               # 后台仍按先封存后 finalized 的顺序
+        assert rt.journal.sealed
+    finally:
+        release.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_failed_takeover_release_is_retried_by_teardown(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    real_release = host.host.release_takeover
+    calls = []
+
+    def release_takeover(token):
+        calls.append(token)
+        if len(calls) == 1:
+            raise RuntimeError("release failed")              # 收尾第一次释放失败
+        return real_release(token)
+
+    host.host.release_takeover = release_takeover
+    try:
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(rt), 10)
+        assert len(calls) == 2 and host.host.released == [calls[0]]   # teardown 拿着同一个 token 再试成功
+    finally:
+        host.host.release_takeover = real_release
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_second_start_during_the_reservation_is_refused(tmp_path, monkeypatch, clocks):
     patch_admission(monkeypatch)
     gate, reached = asyncio.Event(), asyncio.Event()
@@ -1059,7 +1150,8 @@ async def test_a_session_that_will_not_close_does_not_keep_the_visit_registered(
 
     async def close_visit_session(session):
         if session is not rt.session:
-            return await real_close(session)
+            await real_close(session)
+            return
         while not stuck.is_set():                             # 取消排空卡住：吞掉取消、继续等
             try:
                 await stuck.wait()

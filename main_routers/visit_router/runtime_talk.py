@@ -857,6 +857,17 @@ class TalkMixin:
         """
         await self.host.wait_turn_idle(_HOME_TURN_WAIT_S, start_window=_HOME_TURN_START_S)
 
+    def _close_session_in_background(self) -> asyncio.Future:
+        """Start closing the isolated session once (later callers wait for the same close)."""
+        from main_routers.visit_router.session_pool import close_visit_session
+
+        closing = self._session_closing
+        if closing is None:
+            closing = self._session_closing = asyncio.ensure_future(close_visit_session(self.session))
+            closing.add_done_callback(lambda t: t.cancelled() or t.exception())  # 失败只是少关一次，取走异常
+            self._keep_background(closing)
+        return closing
+
     async def close_session(self, timeout: float) -> None:
         """Close the isolated session's client, waiting at most ``timeout``.
 
@@ -865,25 +876,14 @@ class TalkMixin:
         forever. Past ``timeout`` the close is left running in the background
         (``_keep_background``) so it can still release its HTTP connections.
         """
-        from main_routers.visit_router.session_pool import close_visit_session
-
-        session = self.session
-        if session is None:
+        if self.session is None:
             return
-        closing = self._session_closing
-        if closing is None:
-            # 只关一次：正常收尾卡住后关机再来，等的是同一个关闭任务，不对同一个 client 并发再关
-            closing = self._session_closing = asyncio.ensure_future(close_visit_session(session))
-            closing.add_done_callback(lambda t: t.cancelled() or t.exception())  # 失败只是少关一次，取走异常
-        try:
-            await asyncio.wait([closing], timeout=timeout)
-        except asyncio.CancelledError:
-            if not closing.done():
-                self._keep_background(closing)  # 调用方被取消：关闭照样在后台走完
-            raise
+        # 只关一次：正常收尾卡住后关机再来，等的是同一个关闭任务，不对同一 client 并发再关
+        closing = self._close_session_in_background()
+        # 关闭任务一起就登记在后台：调用方被取消 / 到点都不影响它关完（stop_all 时一并收）
+        await asyncio.wait([closing], timeout=timeout)
         if not closing.done():
             logger.warning("visit %s: isolated session still closing; continuing", self.visit_id[:6])
-            self._keep_background(closing)
 
 
 async def _stream_bounded(session: Any, prompt: str, timeout: float) -> None:
