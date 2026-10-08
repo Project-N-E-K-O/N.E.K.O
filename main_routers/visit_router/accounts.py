@@ -113,7 +113,10 @@ def _record_sync(path: Path, account: str, visit_uid: str) -> bool:
         except _MapUnreadable as exc:
             # 暂时读不了：不拿只有这一个账号的表覆盖它（其余账号的映射会丢）；报给调用方，由它稍后补写。
             # 带上底层原因：共享冲突这类会自己好，PermissionError / 目录只读会一直失败，排查时要分得清
-            cause = type(exc.__cause__).__name__ if exc.__cause__ is not None else "unknown"
+            # Windows 上文件被占用（WinError 32）与权限拒绝（WinError 5）都是 PermissionError：errno / winerror 一并写上
+            c = exc.__cause__
+            cause = (f"{type(c).__name__}(errno={getattr(c, 'errno', None)}, winerror={getattr(c, 'winerror', None)})"
+                     if c is not None else "unknown")
             raise AccountMapDeferred(f"visit accounts map unreadable: {cause}") from exc
         except _MapCorrupt:
             # 内容坏了、读不出任何映射：原文件改名留底，再从这个账号重新记起；改名都做不到就报给调用方稍后补写
