@@ -275,9 +275,11 @@ def _retry_after_clearing_read_only(function: Callable[..., Any], path: str, _er
 _AT_FDCWD = -100
 _LINUX_RENAME_NOREPLACE = 0x1
 _DARWIN_RENAME_EXCL = 0x4
-# What renameat2/renamex_np report when the filesystem cannot honour the flag.
+# What renameat2/renamex_np report when the filesystem cannot honour the flag,
+# plus EPERM, which a seccomp filter (containers, sandboxes) returns for a
+# blocked renameat2. A real permission problem fails the fallback as well.
 _NO_REPLACE_UNSUPPORTED_ERRNOS = frozenset(
-    {errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, getattr(errno, "EOPNOTSUPP", errno.ENOTSUP)}
+    {errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, getattr(errno, "EOPNOTSUPP", errno.ENOTSUP), errno.EPERM}
 )
 
 
@@ -336,6 +338,10 @@ def _publish_without_overwrite(staged: Path, target: Path) -> None:
         os.rename(staged, target)
         return
     if stat.S_ISDIR(staged.lstat().st_mode):
+        # A no-replace rename refuses even an empty directory, leaving no
+        # window at all, where the kernel offers one for this filesystem.
+        if _rename_no_replace(staged, target):
+            return
         # rename(2) silently replaces an empty directory, so reserve the name
         # first: mkdir(2) is atomic and refuses anything already there. The
         # rename then replaces only our own empty reservation, and fails if
@@ -855,13 +861,18 @@ def _rollback_interrupted_publish(
         # The staged copy still being there means the final move never
         # happened, so what sits at the target now is not that copy.
         staged_entry = transaction_root / "stage" / entry_name
-        unfinished_publish = not was_published and os.path.lexists(staged_entry)
-        foreign_at_target = unfinished_publish and not _holds_only_own_publish_reservation(
-            target_entry, staged_entry
-        )
+
+        def foreign_at_target() -> bool:
+            # Evaluated only where it decides something: an original target
+            # still in place may not even be listable, and is never touched.
+            return (
+                not was_published
+                and os.path.lexists(staged_entry)
+                and not _holds_only_own_publish_reservation(target_entry, staged_entry)
+            )
 
         if target_existed and os.path.lexists(backup_entry):
-            if foreign_at_target:
+            if foreign_at_target():
                 # The original is in the backup and something new took its
                 # place -- the conflict the publish step records, reached
                 # here when recording it failed or the process stopped.
@@ -893,7 +904,7 @@ def _rollback_interrupted_publish(
             # from its mode, which the move may have widened before stopping.
             _restore_original_mode(entry_name, target_entry)
             continue
-        if foreign_at_target:
+        if foreign_at_target():
             # Interrupted between reserving the name and moving the copy in,
             # and something was written there since: leave it, as a publish
             # that fails on a newcomer does.

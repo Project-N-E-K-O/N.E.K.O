@@ -2444,3 +2444,74 @@ def test_metadata_fingerprint_sees_added_and_rewritten_files(tmp_path):
 
     assert rewritten != before
     assert storage_migration_module._metadata_fingerprint(entry) != rewritten
+
+
+@pytest.mark.unit
+def test_rollback_leaves_an_untouched_original_target_unlisted(tmp_path, monkeypatch):
+    """Stopped before the original target moved into the backup: that target
+    is never touched, so it must not need to be listable (0o300, ACLs)."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+
+    def _crash_before_move(_source, _destination):
+        raise KeyboardInterrupt("simulated process loss")
+
+    monkeypatch.setattr(storage_migration_module, "_move_entry_keeping_mode", _crash_before_move)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.undo()
+
+    def _cannot_list(*_args, **_kwargs):
+        raise PermissionError("cannot list the original target")
+
+    monkeypatch.setattr(storage_migration_module, "_holds_only_own_publish_reservation", _cannot_list)
+    _stop_after_recovery(monkeypatch, storage_migration_module)
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "stop_after_recovery"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
+
+
+@pytest.mark.unit
+def test_no_replace_rename_blocked_by_seccomp_falls_back(tmp_path, monkeypatch):
+    import ctypes
+    import errno
+
+    from utils import storage_migration as storage_migration_module
+
+    def _blocked(_source, _target):
+        ctypes.set_errno(errno.EPERM)
+        return -1
+
+    monkeypatch.setattr(storage_migration_module, "_native_no_replace_rename", lambda: _blocked)
+    source = tmp_path / "source.json"
+    source.write_text("source", encoding="utf-8")
+
+    assert storage_migration_module._rename_no_replace(source, tmp_path / "target.json") is False
+    assert source.read_text(encoding="utf-8") == "source"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix", reason="the reservation is the POSIX directory path")
+def test_directory_publish_prefers_the_no_replace_rename(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "facts.json").write_bytes(b"{}")
+    target = tmp_path / "target"
+
+    def _no_reservation(*_args, **_kwargs):
+        raise AssertionError("the mkdir reservation is only the fallback")
+
+    def _no_replace(source, destination):
+        os.rename(source, destination)
+        return True
+
+    monkeypatch.setattr(storage_migration_module, "_rename_no_replace", _no_replace)
+    monkeypatch.setattr(storage_migration_module.os, "mkdir", _no_reservation)
+
+    storage_migration_module._publish_without_overwrite(staged, target)
+
+    assert (target / "facts.json").read_bytes() == b"{}"
