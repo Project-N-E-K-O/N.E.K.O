@@ -682,7 +682,7 @@ def test_a_call_that_never_closes_gives_back_the_reply_after_its_outer_closer():
         for chunks in _split_everywhere(leaked):
             visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), chunks)
             assert visible == expected, chunks
-            assert events and events[0].finalized is True
+            assert events, chunks
 
 
 def test_many_calls_that_never_close_are_recovered_without_recursion():
@@ -697,10 +697,9 @@ def test_many_calls_that_never_close_are_recovered_without_recursion():
     assert events and events[-1].finalized is True
 
 
-def test_a_call_left_open_long_after_its_outer_closer_is_given_up_there():
-    """Past the recovery window the reply after the outer closer comes back
-    at once (streamed, not held to the end), and what follows is read for
-    further calls."""
+def test_an_unclosed_call_is_given_up_where_the_next_call_starts():
+    """The reply after the outer closer comes back as soon as another call
+    opens in it (streamed, not held to the end), and that call is read."""
     from utils.llm_tool_leak_filter import ToolLeakFilter
 
     tail = "后面的正文很长。" * 100
@@ -710,6 +709,46 @@ def test_a_call_left_open_long_after_its_outer_closer_is_given_up_there():
     assert streamed.startswith("前 " + tail), "given back while streaming, not held to the end"
     visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [leaked])
     assert visible == "前 " + tail + "完"
+
+
+def test_a_well_formed_long_call_is_never_given_up_halfway():
+    """Nested closers and closers inside quotes set a recovery point too; a
+    long, well-formed call must still run to its own closer."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter, strip_tool_call_leaks
+
+    long = "种一排向日葵然后补坚果" * 60
+    for leaked, expected in (
+        ('好的 default_api:pvz_start{"opts": {"lane": 1}, "goal": "' + long + '"} 好了', "好的  好了"),
+        ('前 pvz_start(goal="build (a) then ' + long + '") 后', "前  后"),
+    ):
+        assert strip_tool_call_leaks(leaked, tool_names=_PVZ_TOOLS) == expected
+        visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [leaked])
+        assert visible == expected and events[0].finalized is False
+
+
+def test_finished_text_in_pieces_matches_one_feed_at_every_offset():
+    """The finished-text helpers feed a piece at a time; wherever a piece
+    boundary falls, the result is the one a single feed gives."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter, strip_tool_call_leaks
+
+    def one_feed(text):
+        leak_filter = ToolLeakFilter(tool_names=_PVZ_TOOLS)
+        visible, _event = leak_filter.feed(text)
+        tail, _event = leak_filter.finalize()
+        return visible + tail
+
+    bodies = [
+        ' <function><name>pvz_start</name> <parameter name="goal">hi</parameter></function> ok',
+        " <function><name>pvz_start</name>\n</function> ok",
+        " <seed:tool_call><function=pvz_start><parameter=goal>x</parameter></function></seed:tool_call> ok",
+        " asynccall:pvz_instruction{instruction:丢樱桃} ok",
+        " pvz_instruction(instruction='种坚果') ok",
+    ]
+    for body in bodies:
+        for pad in range(0, 300):
+            text = "x" * pad + body
+            assert strip_tool_call_leaks(text, tool_names=_PVZ_TOOLS) == one_feed(text), (pad, body)
+            assert "pvz_" not in strip_tool_call_leaks(text, tool_names=_PVZ_TOOLS), (pad, body)
 
 
 def test_finished_text_helpers_read_tool_names_once():

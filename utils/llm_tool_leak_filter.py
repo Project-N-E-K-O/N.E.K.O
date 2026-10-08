@@ -44,10 +44,8 @@ _PREFIXED_CALL_OPENERS = (
 # Lowercase text every prefixed or seed opener contains (``strip_tool_call_leaks``),
 # taken from the openers themselves so a new prefix is never skipped.
 _OPENER_MARKERS = ("seed", *dict.fromkeys(steps[0][1] for steps in _PREFIXED_CALL_OPENERS))
-# How far past its first outer closer a call may stay open before the text
-# after that closer is taken back as reply. Waiting for the end of the stream
-# instead would make every unclosed call rescan the rest of the reply.
-_CALL_RECOVERY_WINDOW = 512
+# The last character of every inline opener: only there can one complete.
+_OPENER_END_CHARS = frozenset("({=:")
 # ``_consume_inline_call``: the call was given up, resume at ``_call_resume``.
 _CALL_GIVEN_UP = -2
 _OPENER_FAIL = ("fail", 0)
@@ -93,6 +91,8 @@ class ToolLeakFilter:
         self._call_first_chars = frozenset(
             steps[0][1][0].lower() for steps in self._call_openers
         )
+        # How far back an opener completing in recovered text can start.
+        self._opener_lookback = 128 + max((len(name) for name in self._tool_names), default=0)
         # A call opener must not continue a word, including one whose end was
         # already emitted with an earlier chunk.
         self._last_visible_char = ""
@@ -248,15 +248,17 @@ class ToolLeakFilter:
         closer that does not end the call (inside a quote never closed, or
         after a same-kind opener left open in a value) marks where the reply
         may resume: ``finalize`` gives back what followed the first one, and
-        reads it again for further calls. A call still open
-        ``_CALL_RECOVERY_WINDOW`` characters after that closer is given up
-        there and then (``_CALL_GIVEN_UP``, the text to read on in
-        ``_call_resume``), so a reply full of unclosed calls stays linear.
+        reads it again for further calls. A call that starts in that text
+        settles it at once: the open call is given up there
+        (``_CALL_GIVEN_UP``, the text to read on in ``_call_resume``), so
+        unclosed calls in a row stay linear while a well-formed long call,
+        whose nested closers also set a recovery point, still runs to its
+        own closer.
         """
         for index, char in enumerate(text):
             if self._call_recovery is not None:
                 self._call_recovery.append(char)
-                if len(self._call_recovery) > _CALL_RECOVERY_WINDOW:
+                if char in _OPENER_END_CHARS and self._opens_call_at_end(self._call_recovery):
                     self._call_resume = "".join(self._call_recovery) + text[index + 1:]
                     return _CALL_GIVEN_UP
             outer_closer = (
@@ -292,6 +294,20 @@ class ToolLeakFilter:
             if not char.isspace():
                 self._call_last = char
         return -1
+
+    def _opens_call_at_end(self, chars: list[str]) -> bool:
+        """Whether an inline call opener ends with the last of ``chars``."""
+        window = "".join(chars[-self._opener_lookback:])
+        for start in range(len(window)):
+            if start and window[start - 1] in _ASCII_WORD_CHARS:
+                continue
+            if window[start].lower() not in self._call_first_chars:
+                continue
+            for steps in self._call_openers:
+                state, end = self._match_call_opener(window, start, steps)
+                if state == "full" and end == len(window):
+                    return True
+        return False
 
     def _suppression_close_match(self, text: str) -> re.Match[str] | None:
         if self._suppression_pattern != "structured_tool_call":
@@ -388,7 +404,13 @@ class ToolLeakFilter:
         seed = _SEED_OPEN_RE.search(text)
         best: Optional[tuple[int, int, str]] = None
         if seed:
-            best = (seed.start(), seed.end(), "seed_tool_call")
+            start = seed.start()
+            # ``<seed:tool_call`` whose ">" is still to come matches the bare
+            # form: the "<" belongs to it, not to the reply.
+            lead = text[:start].rstrip()
+            if lead.endswith("<"):
+                start = len(lead) - 1
+            best = (start, seed.end(), "seed_tool_call")
         inline = self._inline_call_start(text, stop=best[0] if best else len(text))
         if inline is not None:
             best = inline
@@ -720,6 +742,11 @@ class ToolLeakFilter:
         if not ok:
             return False
         if partial or pos == len(text):
+            return True
+
+        # Whitespace may separate </name> from what follows it.
+        pos = cls._consume_whitespace(text, pos)
+        if pos == len(text):
             return True
 
         ok, _pos, partial = cls._consume_parameter_open_prefix(text, pos)
