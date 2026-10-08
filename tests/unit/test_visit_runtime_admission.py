@@ -1987,27 +1987,32 @@ async def test_an_overrun_channel_close_is_handed_to_stop_all(tmp_path, monkeypa
     monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
-    release = asyncio.Event()
+    release, pump_stuck = asyncio.Event(), asyncio.Event()
     rt.outbox.leave_done = lambda now=None: False            # 关闭通道到点也没完
+
+    async def stubborn_send(*args, **kwargs):
+        if asyncio.current_task() is rt._pump_task:
+            pump_stuck.set()
+        while not release.is_set():                           # 不理取消的写
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+        return True
+
     try:
-        rt.request_finalize("route_end")
-        await asyncio.sleep(0.1)
-
-        async def stubborn_send(*args, **kwargs):
-            while not release.is_set():                       # 不理取消的最后一次写
-                try:
-                    await release.wait()
-                except asyncio.CancelledError:
-                    continue
-            return True
-
         rt.transport.send = stubborn_send
+        rt.kick()
+        await asyncio.wait_for(pump_stuck.wait(), 5)          # 前提：发送泵确实卡进了这次写
+        rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 15)
         closing = rt._closing_task
         assert closing is not None and not closing.done()
         assert closing in rtm._detached                       # 注销之后交给模块级登记，stop_all 收得到
         pump = rt._pump_task                                  # 卡在同一个写里的发送泵也一样
         assert pump is not None and not pump.done() and pump in rtm._detached
+        release.set()
+        await wait_for(lambda: pump.done())                   # 写放开之后泵自己停下，不在已注销的运行时上接着转
     finally:
         release.set()
         await teardown(host, guest, wire=wire, clock=clock)

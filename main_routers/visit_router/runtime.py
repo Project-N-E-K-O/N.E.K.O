@@ -1155,7 +1155,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
     async def _pump_loop(self) -> None:
         """Flush the outbox, acks and heartbeats; wakes on :meth:`kick` or every 250 ms."""
-        while True:
+        # 拆掉的场次不再转：取消被一次不理取消的写吞掉、正常返回时，也不在已注销的运行时上接着 flush
+        while not self._terminated:
             try:
                 await asyncio.wait_for(self._kick_event.wait(), _PUMP_IDLE_S)
             except asyncio.TimeoutError:
