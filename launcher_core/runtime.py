@@ -2218,6 +2218,58 @@ def wait_for_servers(timeout: int = 60) -> bool | str:
         return False
 
 
+def _snapshot_server_descendants(servers) -> list:
+    """Every live descendant of the tracked servers, taken before teardown.
+
+    A server can exit while a non-daemon child (a plugin host) lives on, and
+    once the server is gone its children can no longer be found through it.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return []
+    descendants = []
+    for server in servers:
+        proc = server.get('process')
+        pid = getattr(proc, 'pid', None) if proc else None
+        if not pid:
+            continue
+        try:
+            descendants.extend(psutil.Process(pid).children(recursive=True))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return descendants
+
+
+def _reap_surviving_descendants(descendants) -> bool:
+    """Kill descendants that outlived their server; True if any is still alive.
+
+    ``psutil.Process`` remembers each process's creation time, so a recycled
+    PID is never mistaken for, or killed as, one of these.
+    """
+    if not descendants:
+        return False
+    import psutil
+
+    def _alive(process) -> bool:
+        try:
+            return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+        except psutil.AccessDenied:
+            return True
+
+    survivors = [process for process in descendants if _alive(process)]
+    for process in survivors:
+        try:
+            process.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    if survivors:
+        psutil.wait_procs(survivors, timeout=3)
+    return any(_alive(process) for process in survivors)
+
+
 def cleanup_servers():
     """Clean up all server processes"""
     global _cleanup_done
@@ -3164,6 +3216,10 @@ def main():
     finally:
         print("\n正在关闭所有进程...", flush=True)
 
+        # Taken while the servers still run: afterwards an orphaned plugin
+        # host can no longer be found through its exited server.
+        server_descendants = _snapshot_server_descendants(SERVERS)
+
         # 尝试优雅关闭
         cleanup_servers()
 
@@ -3230,12 +3286,17 @@ def main():
                 for server in SERVERS
             )
 
+        # The teardown above only reaches a server's process tree while the
+        # server itself is alive; a child that outlived it is handled here.
+        descendants_alive = _reap_surviving_descendants(server_descendants)
+
         print("\n清理完成", flush=True)
-        # A migration restart is only safe after every old server process is
-        # proven dead: a stuck Main process could otherwise keep writing to the
-        # source root while the next launch copies it. File locks are defence
-        # in depth, not evidence that the old process has stopped.
-        if allow_storage_restart and not has_alive:
+        # A migration restart is only safe after every old server process --
+        # and every process they started -- is proven dead: a stuck Main or
+        # an orphaned plugin host could otherwise keep writing to the source
+        # root while the next launch copies it. File locks are defence in
+        # depth, not evidence that the old process has stopped.
+        if allow_storage_restart and not has_alive and not descendants_alive:
             try:
                 restart_scheduled = _maybe_schedule_storage_restart()
             except Exception as e:

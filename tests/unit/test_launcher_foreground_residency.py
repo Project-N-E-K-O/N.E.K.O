@@ -143,7 +143,85 @@ def test_storage_restart_requires_every_old_server_to_be_dead():
     """A file lock cannot substitute for proof that old Main exited."""
 
     source = (LAUNCHER_CORE / "runtime.py").read_text(encoding="utf-8")
-    assert "if allow_storage_restart and not has_alive:" in source
+    assert "if allow_storage_restart and not has_alive and not descendants_alive:" in source
+
+
+class _TrackedServer:
+    def __init__(self, popen):
+        self.pid = popen.pid
+
+
+def _spawn_server_with_a_child(tmp_path):
+    """A stand-in server that starts a long-lived child and reports its pid."""
+    pid_file = tmp_path / "child.pid"
+    server_code = textwrap.dedent(
+        f"""
+        import subprocess, sys, time
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        open({str(pid_file)!r}, "w").write(str(child.pid))
+        time.sleep(120)
+        """
+    )
+    server = subprocess.Popen([sys.executable, "-c", server_code])
+    deadline = time.monotonic() + 20
+    while not (pid_file.exists() and pid_file.read_text().strip()):
+        if time.monotonic() > deadline:
+            server.kill()
+            pytest.fail("the stand-in server never started its child")
+        time.sleep(0.05)
+    return server, int(pid_file.read_text())
+
+
+@pytest.mark.unit
+def test_storage_restart_reaps_a_child_that_outlived_its_server(tmp_path):
+    """A plugin host (daemon=False) survives its server being killed; the
+    restart must not go ahead while it can still write the old root."""
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    server, child_pid = _spawn_server_with_a_child(tmp_path)
+    try:
+        descendants = runtime._snapshot_server_descendants([{"process": _TrackedServer(server)}])
+        assert child_pid in {process.pid for process in descendants}
+        server.kill()
+        server.wait(timeout=10)
+        assert psutil.pid_exists(child_pid)
+
+        assert runtime._reap_surviving_descendants(descendants) is False
+        assert not psutil.pid_exists(child_pid) or psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE
+    finally:
+        server.kill()
+        try:
+            psutil.Process(child_pid).kill()
+        except psutil.NoSuchProcess:
+            pass
+
+
+@pytest.mark.unit
+def test_storage_restart_waits_for_a_child_that_cannot_be_killed(tmp_path, monkeypatch):
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    server, child_pid = _spawn_server_with_a_child(tmp_path)
+    try:
+        descendants = runtime._snapshot_server_descendants([{"process": _TrackedServer(server)}])
+        server.kill()
+        server.wait(timeout=10)
+
+        def _refuse_kill(self):
+            raise psutil.AccessDenied(self.pid)
+
+        monkeypatch.setattr(psutil.Process, "kill", _refuse_kill)
+        monkeypatch.setattr(psutil, "wait_procs", lambda procs, timeout=None: ([], list(procs)))
+
+        assert runtime._reap_surviving_descendants(descendants) is True
+    finally:
+        monkeypatch.undo()
+        server.kill()
+        try:
+            psutil.Process(child_pid).kill()
+        except psutil.NoSuchProcess:
+            pass
 
 
 # ---------------------------------------------------------------------------
