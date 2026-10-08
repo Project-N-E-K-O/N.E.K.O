@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 import pytest
 
@@ -1387,7 +1388,7 @@ async def test_stop_all_leaves_a_registered_visits_own_room_cancel_to_its_shutdo
     assert done == [rt.visit_id]                              # 没被当成孤儿提前掐断
 
 
-async def test_stop_all_cancels_a_room_cancel_whose_shutdown_failed_early(tmp_path, monkeypatch, clocks):
+async def test_stop_all_cancels_a_room_cancel_whose_shutdown_failed_early(tmp_path, monkeypatch, clocks, caplog):
     side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
 
     async def never_answers(visit_id, **kwargs):
@@ -1402,9 +1403,11 @@ async def test_stop_all_cancels_a_room_cancel_whose_shutdown_failed_early(tmp_pa
 
     rt.shutdown = broken_shutdown
     try:
-        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
-        await asyncio.sleep(0)
-        assert pending.cancelled()                            # 没人等也没人取消的那份由 stop_all 收掉
+        with caplog.at_level(logging.WARNING):
+            await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
+        assert pending.cancelled()                            # 没人等也没人取消的那份由 stop_all 收掉（取消后也等过）
+        assert any("shutdown failed" in r.getMessage() and rt.visit_id[:6] in r.getMessage()
+                   for r in caplog.records)                   # 半路出错按场次留日志
     finally:
         pending.cancel()
 

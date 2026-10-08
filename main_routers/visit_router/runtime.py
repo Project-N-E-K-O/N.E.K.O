@@ -2423,15 +2423,19 @@ async def stop_all(reason: str = "shutdown") -> None:
                 for task in orphans:
                     task.cancel()
 
-        await asyncio.gather(*(rt.shutdown() for rt in runtimes), settle_orphan_cancels(), return_exceptions=True)
-        # 某一场的 shutdown() 半路出错、没走到它自己的撤销等待：剩下没完成的一并取消，不留给事件循环销毁
-        # （正常路径下这时都已完成，这一步什么都不做）
-        for task in [t for t in _room_cancels if not t.done()]:
-            task.cancel()
+        results = await asyncio.gather(*(rt.shutdown() for rt in runtimes), settle_orphan_cancels(),
+                                       return_exceptions=True)
+        for rt, result in zip(runtimes, results):
+            if isinstance(result, BaseException):
+                # 这一场没封存 / 没 finalize，留给下次启动补录：至少在日志里能查到是哪一场、出了什么错
+                logger.warning("visit %s: shutdown failed: %r", rt.visit_id[:6], result)
         # 脱离运行时的后台任务（账号映射补写、交还回调、没关完的会话）也一并停掉，不留给事件循环销毁
         # 按角色登记的后台写入（digest、最后总结、延后的 spool 收尾、启动补录）同样停掉：没写完的留给下次启动补录
+        # 还没完成的撤销房间请求（某一场 shutdown() 半路出错、没走到它自己的撤销等待）同样取消再限时等
+        # （正常路径下这时都已完成）
         detached = [t for t in _detached if not t.done()]
         detached += [t for bucket in list(_visit_bg_tasks.values()) for t in list(bucket) if not t.done()]
+        detached += [t for t in _room_cancels if not t.done()]
         for task in detached:
             task.cancel()
         if detached:
