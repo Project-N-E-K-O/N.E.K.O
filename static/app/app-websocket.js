@@ -2835,6 +2835,8 @@
         S.socket.onopen = function () {
             if (S.socket !== _thisSocket) return;
             console.log(window.t('console.websocketConnected'));
+            // The state module publishes read errors; reconnect must remain usable.
+            window.appChatAvatarState?.refresh('reconnect')?.catch?.(() => {});
 
             if (S._conversationLanguageClearPending) {
                 var pendingLanguageClear = S._conversationLanguageClearPending;
@@ -3127,6 +3129,12 @@
 
             try {
                 var response = JSON.parse(event.data);
+                // Persistent display resources do not belong to the assistant stream
+                // or model-preview IPC pipeline; invalidate even while a turn is gated.
+                if (response.type === 'chat_avatar_changed') {
+                    window.appChatAvatarState?.onBackendChanged(response);
+                    return;
+                }
                 if (response.type === 'catgirl_switched') {
                     console.log(window.t('console.catgirlSwitchedReceived'), response);
                 }

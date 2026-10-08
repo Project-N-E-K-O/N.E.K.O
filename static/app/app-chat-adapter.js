@@ -1216,6 +1216,7 @@
     }
 
     // 头像更新事件
+    window.addEventListener('chat-avatar-display-updated', refreshReactAssistantAvatars);
     window.addEventListener('chat-avatar-preview-updated', refreshReactAssistantAvatars);
     window.addEventListener('chat-avatar-preview-cleared', refreshReactAssistantAvatars);
     window.addEventListener('neko:tutorial-chat-identity-changed', refreshReactAssistantAvatars);

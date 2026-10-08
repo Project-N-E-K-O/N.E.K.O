@@ -581,6 +581,17 @@
                 <button id="chatAvatarPreviewRefreshButton" class="chat-avatar-preview-refresh-btn" type="button" data-i18n="chat.avatarPreviewRefresh">刷新头像</button>
             </div>
         </div>
+        <div class="chat-avatar-custom-controls">
+            <div class="chat-avatar-custom-actions">
+                <button id="chat-avatar-upload" class="chat-avatar-preview-refresh-btn" type="button" data-i18n="chatAvatar.custom.upload">上传图片</button>
+                <input id="chat-avatar-file-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+                <button id="chat-avatar-restore" class="chat-avatar-preview-refresh-btn" type="button" data-i18n="chatAvatar.custom.restore" hidden>恢复模型头像</button>
+                <button id="chat-avatar-save" class="chat-avatar-preview-refresh-btn" type="button" data-i18n="chatAvatar.custom.save" hidden>确认保存</button>
+                <button id="chat-avatar-cancel-edit" class="chat-avatar-preview-refresh-btn" type="button" data-i18n="chatAvatar.custom.cancel" hidden>取消编辑</button>
+            </div>
+            <div class="chat-avatar-custom-help" data-i18n="chatAvatar.custom.help">PNG、JPEG 或 WebP，最大 10 MiB</div>
+            <div id="chat-avatar-custom-status" class="chat-avatar-custom-status" role="status" aria-live="polite" aria-atomic="true"></div>
+        </div>
         <div class="chat-avatar-preview-crop-body">
             <div class="avatar-cropper-area">
                 <div id="avatar-cropper-wrap" class="avatar-cropper-canvas-wrap">
@@ -652,6 +663,9 @@
     <script src="/static/app/app-ui/wrapup-final-guards.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-chat-text-utils.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-chat.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat-avatar-image.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat-avatar-state.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat-avatar-editor.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-chat-avatar.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-audio-playback.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-widget-interaction.js?v={{ static_asset_version }}"></script>

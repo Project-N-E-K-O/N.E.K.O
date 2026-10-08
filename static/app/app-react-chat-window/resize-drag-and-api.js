@@ -452,6 +452,7 @@
             I.clearMessages();
         });
 
+        window.addEventListener('chat-avatar-display-updated', I.refreshAssistantAvatarUrls);
         window.addEventListener('chat-avatar-preview-updated', I.refreshAssistantAvatarUrls);
         window.addEventListener('chat-avatar-preview-cleared', I.refreshAssistantAvatarUrls);
         window.addEventListener('neko:tutorial-chat-identity-changed', I.refreshAssistantAvatarUrls);

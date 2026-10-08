@@ -80,9 +80,13 @@ from utils.config_manager import (
     ensure_catgirl_character_id,
     assign_new_character_uid,
     flatten_reserved,
+    get_character_uid,
     get_reserved,
     set_reserved,
 )
+from utils.asyncio_retirement import await_retirement
+from utils.chat_avatar_store import ChatAvatarError, remove_record as remove_chat_avatar_record
+from utils.config_manager.storage_roots import chat_avatar_directory
 from utils.voice_config import read_legacy_voice_id
 from utils.recent_file import capture_recent_generation, write_recent_payload
 from utils.language_utils import normalize_language_code
@@ -1964,6 +1968,17 @@ async def _delete_catgirl_by_name(name: str):
         return await _delete_catgirl_by_name_serialized(name)
 
 
+async def _cleanup_deleted_chat_avatar(directory, uid):
+    if uid is None:
+        return True
+    try:
+        await await_retirement(asyncio.to_thread(remove_chat_avatar_record, directory, uid))
+        return True
+    except ChatAvatarError as exc:
+        logger.warning("Deleted character chat avatar cleanup failed: %s", exc.code)
+        return False
+
+
 async def _delete_catgirl_by_name_serialized(name: str):
     _config_manager = get_config_manager()
     characters = await _config_manager.aload_characters()
@@ -1975,6 +1990,8 @@ async def _delete_catgirl_by_name_serialized(name: str):
     if name == current_catgirl:
         return JSONResponse({'success': False, 'error': '不能删除当前正在使用的猫娘！请先切换到其他猫娘后再删除。'}, status_code=400)
 
+    deleted_character_uid = get_character_uid(characters["猫娘"][name])
+    deleted_avatar_directory = chat_avatar_directory(_config_manager)
     safe_path_name = _validate_existing_character_path_name(name) is None
     assert_cloudsave_writable(
         _config_manager,
@@ -2064,12 +2081,14 @@ async def _delete_catgirl_by_name_serialized(name: str):
         # characters.json retired and silently drop every later write.
         retire_character_runtime_caches(name)
 
+        avatar_cleanup_ok = await _cleanup_deleted_chat_avatar(deleted_avatar_directory, deleted_character_uid)
         return {
             "success": True,
             "unsafe_name_rescue": True,
             "memory_deleted": False,
             "card_face_deleted": False,
             "memory_server_reloaded": memory_server_reloaded,
+            **({"partial_success": True, "chat_avatar_cleanup_failed": True} if not avatar_cleanup_ok else {}),
         }
 
     characters_snapshot = copy.deepcopy(characters)
@@ -2251,6 +2270,9 @@ async def _delete_catgirl_by_name_serialized(name: str):
                 )
             raise
         except MaintenanceModeError as exc:
+            # Finalize failures also roll back a tentatively committed delete.
+            # Keep the avatar until the entire delete has a terminal outcome.
+            delete_committed = False
             rollback_error, rollback_cancelled = (
                 await _await_coroutine_to_completion(
                     _rollback_character_operation(
@@ -2275,6 +2297,7 @@ async def _delete_catgirl_by_name_serialized(name: str):
                 raise exc from RuntimeError(rollback_error)
             raise
         except Exception as exc:
+            delete_committed = False
             rollback_error, rollback_cancelled = (
                 await _await_coroutine_to_completion(
                     _rollback_character_operation(
@@ -2309,6 +2332,8 @@ async def _delete_catgirl_by_name_serialized(name: str):
             )
         finally:
             release_character_recent_transaction(recent_transaction)
+            if delete_committed:
+                avatar_cleanup_ok = await _cleanup_deleted_chat_avatar(deleted_avatar_directory, deleted_character_uid)
 
     pending_remove_ok = True
     pending_remove_error = ""
@@ -2320,6 +2345,8 @@ async def _delete_catgirl_by_name_serialized(name: str):
         logger.exception("remove new character greeting pending failed: %s", name)
 
     result = {"success": True, "memory_server_reloaded": memory_server_reloaded}
+    if not avatar_cleanup_ok:
+        result.update({"partial_success": True, "chat_avatar_cleanup_failed": True})
     if not pending_remove_ok:
         result["partial_success"] = True
         result["pending_remove_ok"] = False

@@ -1,4 +1,29 @@
 {
+    "chatAvatar": {
+        "custom": {
+            "upload": "이미지 업로드",
+            "save": "아바타 저장",
+            "cancel": "편집 취소",
+            "restore": "모델 아바타로 복원",
+            "custom": "사용자 지정 아바타",
+            "ready": "이미지를 저장할 수 있습니다",
+            "saving": "아바타 저장 중…",
+            "unavailable": "이 서버에서는 사용자 지정 아바타를 사용할 수 없습니다.",
+            "invalidImage": "이미지를 읽을 수 없습니다. PNG, JPEG 또는 WebP 이미지를 선택하세요.",
+            "tooLarge": "이미지가 크기 제한을 초과합니다.",
+            "tooManyPixels": "이미지가 2,000만 화소를 초과합니다.",
+            "saveFailed": "아바타를 저장하지 못했습니다. 현재 아바타는 변경되지 않았습니다.",
+            "conflict": "다른 창에서 아바타가 변경되었습니다. 최신 아바타를 확인한 후 다시 저장하세요.",
+            "readFailed": "저장된 아바타를 읽지 못했습니다. 나중에 다시 시도하세요.",
+            "unknownOutcome": "저장 결과를 확인하지 못했습니다. 다시 열거나 연결하여 확인한 후 저장하세요.",
+            "roleMissing": "이 캐릭터는 더 이상 존재하지 않습니다.",
+            "loading": "아바타 불러오는 중…",
+            "chooseHint": "이미지를 선택하고 자른 후 저장하세요.",
+            "help": "PNG, JPEG 또는 WebP · 최대 10 MiB",
+            "maintenance": "서버 점검 중입니다. 점검이 끝난 후 다시 시도하세요.",
+            "storageChanged": "서버 데이터 디렉터리가 변경되었습니다. 아바타 편집기를 다시 연 후 저장하세요."
+        }
+    },
     "instanceAccess": {"title":"NEKO 연결","description":"서버 소유자가 제공한 인스턴스 접근 키를 입력하세요. 이 기기는 연결을 30일 동안 기억합니다.","key":"인스턴스 접근 키","connect":"연결","failed":"연결이 거부되었습니다. 키를 확인하고 다시 시도하세요.","httpsRequired":"HTTPS 또는 신뢰할 수 있는 HTTPS 터널로 연결하세요.","insecureWarning":"이 연결은 암호화되지 않았습니다(HTTP). 같은 네트워크 경로의 다른 사람이 키와 세션을 볼 수 있습니다. 가능하면 HTTPS를 사용하세요."},
     "common": {
         "load": "로드",

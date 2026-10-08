@@ -651,9 +651,10 @@
         if (!window.avatarPortrait || typeof window.avatarPortrait.capture !== 'function') {
             // Electron 多窗口模式：通过 IPC 请求 Pet 窗口截取头像
             if (window.__NEKO_MULTI_WINDOW__ && typeof window.__nekoRequestAvatarPreview === 'function') {
-                // 优先使用已缓存的外部头像
-                if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
-                    var cached = window.appChatAvatar.getCurrentAvatarDataUrl();
+                // Model preview broadcasts must never contain a custom display image.
+                if (window.appChatAvatar && typeof window.appChatAvatar.getCachedPreview === 'function') {
+                    var preview = window.appChatAvatar.getCachedPreview();
+                    var cached = preview && preview.dataUrl;
                     if (cached) {
                         window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
                             detail: { dataUrl: cached, source: 'cached' }

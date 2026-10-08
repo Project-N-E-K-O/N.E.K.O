@@ -209,6 +209,7 @@ LEGACY_RUNTIME_DIR_NAMES = (
     "theater",
     "character_cards",
     "card_faces",
+    "chat_avatars",
     "avatar_tools",
     "cloudsave",
     "cloudsave_backups",
@@ -270,6 +271,7 @@ RUNTIME_ASSET_DIR_NAMES = (
     "workshop",
     "character_cards",
     "card_faces",
+    "chat_avatars",
     "avatar_tools",
 )
 

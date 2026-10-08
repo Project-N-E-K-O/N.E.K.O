@@ -1,4 +1,29 @@
 {
+    "chatAvatar": {
+        "custom": {
+            "upload": "Carregar imagem",
+            "save": "Salvar avatar",
+            "cancel": "Cancelar edição",
+            "restore": "Restaurar avatar do modelo",
+            "custom": "Avatar personalizado",
+            "ready": "Imagem pronta para salvar",
+            "saving": "Salvando avatar…",
+            "unavailable": "Este servidor não oferece avatares personalizados.",
+            "invalidImage": "Não foi possível ler a imagem. Escolha uma imagem PNG, JPEG ou WebP.",
+            "tooLarge": "A imagem excede o limite de tamanho.",
+            "tooManyPixels": "A imagem excede 20 milhões de pixels.",
+            "saveFailed": "Não foi possível salvar o avatar. O avatar atual não foi alterado.",
+            "conflict": "O avatar foi alterado em outra janela. Confira a versão mais recente antes de salvar novamente.",
+            "readFailed": "Não foi possível ler o avatar salvo. Tente novamente mais tarde.",
+            "unknownOutcome": "Não foi possível confirmar o resultado. Reabra ou reconecte para verificar antes de tentar salvar novamente.",
+            "roleMissing": "Este personagem não existe mais.",
+            "loading": "Carregando avatar…",
+            "chooseHint": "Escolha uma imagem e recorte antes de salvar.",
+            "help": "PNG, JPEG ou WebP · até 10 MiB",
+            "maintenance": "O servidor está em manutenção. Tente novamente quando terminar.",
+            "storageChanged": "O diretório de dados do servidor mudou. Reabra o editor de avatar antes de salvar."
+        }
+    },
     "instanceAccess": {"title":"Conectar ao NEKO","description":"Digite a chave de acesso fornecida pelo proprietário do servidor. Este dispositivo lembrará a conexão por 30 dias.","key":"Chave de acesso à instância","connect":"Conectar","failed":"Acesso negado. Verifique a chave e tente novamente.","httpsRequired":"Use HTTPS ou um túnel HTTPS confiável para conectar com segurança.","insecureWarning":"Esta conexão não é criptografada (HTTP). Qualquer pessoa no mesmo caminho de rede pode ver a chave e a sessão. Use HTTPS quando possível."},
     "common": {
         "load": "Carregar",

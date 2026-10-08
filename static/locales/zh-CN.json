@@ -1,4 +1,29 @@
 {
+    "chatAvatar": {
+        "custom": {
+            "upload": "上传图片",
+            "save": "确认保存",
+            "cancel": "取消编辑",
+            "restore": "恢复模型头像",
+            "custom": "自定义头像",
+            "ready": "图片已准备好，可以保存",
+            "saving": "正在保存头像…",
+            "unavailable": "当前服务器不支持自定义头像。",
+            "invalidImage": "无法解码图片，请选择 PNG、JPEG 或 WebP 图片。",
+            "tooLarge": "图片超过大小限制。",
+            "tooManyPixels": "图片超过 2000 万像素。",
+            "saveFailed": "头像保存失败，当前头像未改变。",
+            "conflict": "其他窗口已修改头像，请查看最新头像后重新保存。",
+            "readFailed": "读取已保存的头像失败，请稍后重试。",
+            "unknownOutcome": "暂时无法确认保存结果，请重新打开或重连后确认，再尝试保存。",
+            "roleMissing": "此角色已不存在。",
+            "loading": "正在读取头像…",
+            "chooseHint": "选择图片并裁剪后保存。",
+            "help": "PNG、JPEG 或 WebP，最大 10 MiB",
+            "maintenance": "后端正在维护，请在维护完成后重试。",
+            "storageChanged": "后端数据目录已切换，请重新打开头像编辑器后再保存。"
+        }
+    },
     "instanceAccess": {"title":"连接 NEKO 实例","description":"输入服务器所有者提供的实例访问凭证，此设备将记住连接 30 天。","key":"实例访问凭证","connect":"连接","failed":"连接未获授权，请检查凭证后重试。","httpsRequired":"请使用 HTTPS 或可信的 HTTPS 隧道安全连接。","insecureWarning":"当前连接未加密（HTTP），同一网络路径上的人可能看到访问凭证和会话。条件允许时请使用 HTTPS。"},
     "common": {
         "load": "加载",

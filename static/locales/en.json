@@ -1,4 +1,29 @@
 {
+    "chatAvatar": {
+        "custom": {
+            "upload": "Upload image",
+            "save": "Save avatar",
+            "cancel": "Cancel editing",
+            "restore": "Restore model avatar",
+            "custom": "Custom avatar",
+            "ready": "Image ready to save",
+            "saving": "Saving avatar…",
+            "unavailable": "Custom avatars are unavailable on this server.",
+            "invalidImage": "The image could not be decoded. Choose a PNG, JPEG or WebP image.",
+            "tooLarge": "The image exceeds the size limit.",
+            "tooManyPixels": "The image exceeds 20 million pixels.",
+            "saveFailed": "Could not save the avatar. Your current avatar is unchanged.",
+            "conflict": "This avatar changed in another window. Review the latest avatar before saving again.",
+            "readFailed": "Could not read the saved avatar. Try again later.",
+            "unknownOutcome": "The save result could not be confirmed. Reopen or reconnect to check before retrying.",
+            "roleMissing": "This character no longer exists.",
+            "loading": "Loading avatar…",
+            "chooseHint": "Choose an image and crop it before saving.",
+            "help": "PNG, JPEG or WebP · up to 10 MiB",
+            "maintenance": "The backend is undergoing maintenance. Try again when it finishes.",
+            "storageChanged": "The backend data directory changed. Reopen the avatar editor before saving."
+        }
+    },
     "instanceAccess": {"title":"Connect to NEKO","description":"Enter the instance access key supplied by the server owner. This device will remember the connection for 30 days.","key":"Instance access key","connect":"Connect","failed":"Connection denied. Check the key and try again.","httpsRequired":"Use HTTPS or a trusted HTTPS tunnel to connect securely.","insecureWarning":"This connection is not encrypted (HTTP). Anyone on the same network path could see the key and session. Use HTTPS when you can."},
     "common": {
         "load": "Load",
