@@ -101,6 +101,7 @@ class ReceiveMixin:
         self._ln_by_key: dict[tuple, str] = {}
         self._deltas = LineDeltaAssembler()
         self._rejected_lines: dict[str, None] = {}
+        self._lp_owner: dict[Any, str] = {}
         self._display: deque = deque()
         self._display_task: Optional[asyncio.Task] = None
         self._peer_lp: dict[str, int] = {}
@@ -356,6 +357,8 @@ class ReceiveMixin:
         ln, lp = m.get("ln"), m.get("lp")
         if self._lp_rejected(self.room.observe_lp(lp, ln=ln)):
             return
+        if self._lp_reused(ln, lp):
+            return
         if not self._line_admitted(ln, from_vid, now):
             # 这一行没拿到 text 配额：整行不上屏（增量也不发），与超速的 text 同一个结果
             return
@@ -400,6 +403,8 @@ class ReceiveMixin:
         behind it. Over ``_DISPLAY_BACKLOG_MAX`` queued frames, droppable
         ones (subtitle pieces, typing) are dropped; final lines never are.
         """
+        if self._terminated:
+            return  # 这场已收尾（显示队列已清）：晚到的帧不再往页面送
         if droppable and len(self._display) >= _DISPLAY_BACKLOG_MAX:
             self.display_dropped += 1
             return
@@ -421,6 +426,27 @@ class ReceiveMixin:
         task = self._display_task
         if task is not None and not task.done():
             task.cancel()
+
+    def _lp_reused(self, ln: Any, lp: Any) -> bool:
+        """A second peer line claiming an ``lp`` another of its lines already holds: rejected whole.
+
+        An honest sender allocates ``lp = max(own, seen) + 1`` per line, so two
+        of its lines never share one; letting it through would give two
+        transcript rows one ``(lp, side)`` identity.
+        """
+        key = str(ln)
+        holder = self._lp_owner.get(lp)
+        if holder is None:
+            self._lp_owner[lp] = key
+            while len(self._lp_owner) > 1024:
+                self._lp_owner.pop(next(iter(self._lp_owner)))
+            return False
+        if holder == key:
+            return False
+        if key not in self._rejected_lines:
+            self._count_anomaly("lp_reused")
+            self._reject_line(key)
+        return True
 
     def _reject_line(self, ln: Any) -> None:
         """Drop a peer line whole: no more deltas on screen, its ``text`` kept out of transcript and history."""
@@ -503,6 +529,9 @@ class ReceiveMixin:
         ln, lp = m.get("ln"), m.get("lp")
         if self._lp_rejected(self.room.observe_lp(lp, ln=ln, reliable=True, closes_line=True)):
             return
+        if self._lp_reused(ln, lp):
+            self._deltas.close(m)
+            return
         self._deltas.close(m)  # 收口：之后到的该行分片一律不再上屏
         if str(ln) in self._rejected_lines:
             return  # 开口时就被 room 拒掉的行（违约已记）：收口这条也不进转录与历史
@@ -523,6 +552,9 @@ class ReceiveMixin:
         ), now)
         if eff.violation == "line_meta_mismatch":
             self.apply_effects(eff)  # 记异常，并让连续违约的收尾生效
+            # 它的分片可能已经上屏：撤掉这个气泡，不留一句永远不完整的话
+            self._post_display({"type": "visit_line_abort", "visit_id": self.visit_id, "line_id": ln,
+                                "i_done": 0, "reason": "rejected", "ts": self.wall()})
             return
         # 停嘴、取消待发回复、收尾状态这些要立刻生效，不等下面落盘；只有回复要等这一行进了历史
         reply, say_goodbye = eff.reply, eff.say_goodbye

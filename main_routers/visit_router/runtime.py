@@ -1793,9 +1793,16 @@ _detached: set[asyncio.Task] = set()
 
 
 async def _retry_record_account(deps: "RuntimeDeps", account: Any, visit_uid: Any, visit_id: str) -> None:
-    """Keep writing the account map in the background until it lands (bounded tries)."""
-    for delay in _ACCOUNT_RETRY_DELAYS_S:
-        await asyncio.sleep(delay)
+    """Keep writing the account map in the background until it lands.
+
+    Backs off along ``_ACCOUNT_RETRY_DELAYS_S``, then keeps the last interval
+    (the map is idempotent; the process exit ends it).
+    """
+    attempt = 0
+    while True:
+        delays = _ACCOUNT_RETRY_DELAYS_S
+        await asyncio.sleep(delays[min(attempt, len(delays) - 1)])
+        attempt += 1
         try:
             await asyncio.wait_for(deps.record_account(account, visit_uid), _ACCOUNT_RECORD_S * 4)
             return

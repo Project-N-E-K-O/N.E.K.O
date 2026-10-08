@@ -1185,3 +1185,61 @@ async def test_a_line_whose_generation_failed_midway_is_marked_truncated(tmp_pat
         assert failed["truncated"] is True and failed["txt"]     # 有前缀也标截断，不当成说完的一句
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_no_display_frame_after_the_visit_ended(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        rt.request_finalize("route_end")
+        await finish(rt, clock)
+        before = len(host.host.frames)
+        rt._post_display({"type": "visit_line", "line_id": "g:1"})   # 慢落盘的 _rx_text 这时才回来
+        await settle()
+        assert len(host.host.frames) == before and not rt._display
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_final_that_contradicts_its_pieces_takes_the_bubble_down(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "line_delta", "v": 1, "ln": "g:76", "i": 0, "lp": 76, "txt": "嗯", "sp": "h", "ad": "hc",
+            "rt": "", "wu": False}, nbytes=200)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:76", "lp": 76, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
+            "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "嗯", "truncated": False, "i_done": 1,
+        }, nbytes=200)
+        await wait_for(lambda: [f for f in host.host.frames
+                                if f.get("type") == "visit_line_abort" and f.get("line_id") == "g:76"])
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_second_peer_line_on_the_same_lp_is_rejected(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+
+    def final(ln, txt):
+        return {"t": "text", "v": 1, "ln": ln, "lp": 77, "seq": rt.sequencer.contiguous_seq + 1, "sp": "h",
+                "ad": "hc", "rt": "", "wu": False, "final": True, "txt": txt, "truncated": False, "i_done": 0}
+
+    try:
+        anomalies = rt.journal._anomalies
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=final("g:77", "第一行"), nbytes=200)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=final("g:78", "冒用同一个 lp"), nbytes=200)
+        texts = [r["text"] for r in rt.journal.lines()]
+        assert "第一行" in texts and "冒用同一个 lp" not in texts
+        assert rt.journal._anomalies == anomalies + 1
+        ids = [r["line_id"] for r in rt.snapshot()["transcript"]]
+        assert len(ids) == len(set(ids))
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
