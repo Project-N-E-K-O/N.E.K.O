@@ -1251,8 +1251,6 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.finalize_at = self.clock()
         self._was_phase = self.phase
         self._set_phase(PHASE_ENDING)
-        if self.room is not None and self.room.phase != "ending":
-            self.room._phase = "ending"
         self._exit_task = asyncio.ensure_future(self._exit_flow())
         return True
 
@@ -1596,7 +1594,8 @@ async def start_visit(
     vid = visit_id or secrets.token_urlsafe(16)
     # 锁检查与占位之间没有 await：查完立刻占位，别的路由插不进来；占位之后它必为真，不能再查
     if is_external_route_locked(name):
-        raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "route_owned"})
+        reason = "already_visiting" if name in _runtimes else "route_owned"
+        raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": reason})
     slot = activate_visit_route(name, phase=PHASE_PENDING, visit_id=vid)
     try:
         failure = host.precondition_failure()

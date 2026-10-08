@@ -281,12 +281,15 @@ class FakeClient:
         self.replies = replies
         self._conversation_history: list = [SystemMessage(content="instructions")]
         self.prompts: list[str] = []
+        self.seen: list[list[str]] = []
         self.closed = False
 
     async def stream_text(self, text: str, **_kwargs: Any) -> None:
         from utils.llm_client import AIMessage, HumanMessage
 
         self.prompts.append(text)
+        # LLM 这一轮实际收到的历史（不含本轮提问）
+        self.seen.append([getattr(m, "content", "") for m in self._conversation_history])
         self._conversation_history.append(HumanMessage(content=text))
         chunks = await self.replies.next(text)
         out = []

@@ -334,28 +334,38 @@ async def test_peer_text_flood_is_acked_dropped_and_ends_the_visit(tmp_path, mon
 
 
 async def test_simultaneous_openings_sort_the_same_on_both_sides(tmp_path, monkeypatch):
-    host_replies = Replies(queue=[["主人家开场。"]], gate=None)
-    guest_replies = Replies(queue=[["客人开场。"]], gate=None)
+    # 两侧都以 lp=1 开场，guest 那句先说完、先到 host：两侧下一轮喂给 LLM 的历史都是「host 句、guest 句」
+    host_open = asyncio.Event()
     after = asyncio.Event()
+    host_replies = Replies(queue=[[host_open, "主人家开场。"]])
+    guest_replies = Replies(queue=[["客人开场。"]])
     host_replies.default = [after, "后续"]
     guest_replies.default = [after, "后续"]
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, host_replies=host_replies,
                                                     guest_replies=guest_replies)
     try:
-        await wait_for(lambda: len(_texts(wire, "host")) >= 1 and len(_texts(wire, "guest")) >= 1)
-        await wait_for(lambda: len(host.rt.journal.lines()) >= 2 and len(guest.rt.journal.lines()) >= 2)
-        await settle(100)
+        await wait_for(lambda: _texts(wire, "guest"))
+        await wait_for(lambda: any(r["from"] == "peer_cat" for r in host.rt.journal.lines()))
+        host_open.set()
+        await wait_for(lambda: _texts(wire, "host"))
+        await wait_for(lambda: any(r["from"] == "peer_cat" for r in guest.rt.journal.lines()))
+        assert _texts(wire, "host")[0]["lp"] == 1 and _texts(wire, "guest")[0]["lp"] == 1
+        await wait_for(lambda: len(host.clients[0].seen) >= 2 and len(guest.clients[0].seen) >= 2)
 
-        def order(side):
-            session = side.rt.session
-            sort_visit_history(session)
-            contents = [getattr(m, "content", "") for m in session.history]
-            return [i for i, c in enumerate(contents) if "主人家开场" in c][0] < \
-                [i for i, c in enumerate(contents) if "客人开场" in c][0]
+        def host_first(seen):
+            h = [i for i, c in enumerate(seen) if "主人家开场" in c]
+            g = [i for i, c in enumerate(seen) if "客人开场" in c]
+            assert h and g
+            return h[0] < g[0]
 
-        assert order(host) and order(guest)
+        assert host_first(host.clients[0].seen[-1]) and host_first(guest.clients[0].seen[-1])
+        # 历史里只有真实台词：上一轮的提问（到达通知）已摘掉
+        from config.prompts.prompts_visit import get_visit_arrival_notice
+
+        assert get_visit_arrival_notice("host", host.rt.lang) not in host.clients[0].seen[-1]
     finally:
         after.set()
+        host_open.set()
         await teardown(host, guest, wire=wire, clock=clock)
 
 
