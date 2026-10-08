@@ -673,3 +673,17 @@ async def test_shutdown_during_the_exit_flow_keeps_files_first(tmp_path, monkeyp
         for g in gates:
             g.set()
         await teardown(guest, wire=wire, clock=clock)
+
+
+async def test_a_global_goodbye_ends_the_visit_without_a_sound(tmp_path, monkeypatch):
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    hh = host.host
+    try:
+        host.rt.request_finalize("goodbye")
+        await finish(host.rt, clock)
+        assert not [s for s in hh.streams if s.request_id.startswith(("visit-ritual", "visit-debrief"))]
+        assert [e for e in hh.events if e.startswith("output:visit-ritual")]   # 固定句照样上屏
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)

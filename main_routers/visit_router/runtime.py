@@ -448,9 +448,13 @@ class _Transport(VisitTransportSession):
 
     def on_page_lost(self, now: float) -> None:
         super().on_page_lost(now)
-        # 记下的入房报告属于断掉的那条连接：新连接要自己入房、自己报
-        self._rt._pending_join = None
+        self._rt.on_page_gone()
         self._rt.kick()
+
+    def on_page_attached(self, now: float) -> None:
+        super().on_page_attached(now)
+        # 顶替旧连接时旧连接的 finally 不再报 page_lost：同样把它留下的东西作废
+        self._rt.on_page_gone()
 
     def on_page_rejoined(self, now: float) -> None:
         super().on_page_rejoined(now)
@@ -752,7 +756,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self.request_finalize("busy")
             return False
         try:
-            await self.host.interrupt_ordinary_speech()
+            # 有界：页面不收时它会一直等，而此刻已持有接管、能力门计时还没装上
+            await asyncio.wait_for(self.host.interrupt_ordinary_speech(), _INTERRUPT_MAIN_TURN_S)
         except Exception as exc:  # noqa: BLE001 - 切不掉普通语音：释放接管、按 busy 结束
             logger.warning("visit %s: ordinary speech not interrupted: %s", self.visit_id[:6], type(exc).__name__)
             self.request_finalize("busy")
@@ -783,6 +788,19 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         else:
             reason = "servers_unreachable"
         self.request_finalize(reason, status_details=details)
+
+    def on_page_gone(self) -> None:
+        """The transport socket that was setting up the room is gone (dropped or replaced).
+
+        Its deferred ``joined`` report is void (the new socket must enter and
+        report itself), and the per-connection setup deadlines (preflight /
+        SDK gate / join) stop: until the new socket gets its credentials the
+        page-reload deadline of the liveness is the only clock.
+        """
+        self._pending_join = None
+        self._preflight_deadline = None
+        self._sdk_deadline = None
+        self._join_deadline = None
 
     async def on_sdk_caps(self, caps: dict) -> None:
         """Gate ③: ``transport_ok:false`` ends the visit (Servers already counted one issue)."""
@@ -1818,7 +1836,9 @@ async def start_visit(
         if failure is not None:
             raise VisitRefused(409, {"reason": failure})
         account = await _local_account()
-        # 查账号期间（还没登记运行时、输入还不归串门）语音会话 / 热切换可能已经起来：再查一次
+        # 查账号期间（还没登记运行时、输入还不归串门）语音会话 / 热切换可能已经起来、manager 也可能被换掉：再查一次
+        if not host.is_current():
+            raise VisitRefused(409, {"reason": "busy"})
         failure = host.precondition_failure()
         if failure is not None:
             raise VisitRefused(409, {"reason": failure})

@@ -1129,3 +1129,45 @@ async def test_the_display_queue_is_bounded_and_dropped_when_the_visit_ends(tmp_
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_peer_line_effects_apply_before_the_line_is_persisted(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    applied = []
+    real_apply = rt.apply_effects
+
+    async def slow_record(*args, **kwargs):
+        await stuck.wait()                                   # 磁盘慢：落盘卡住
+
+    def spy(eff):
+        applied.append(eff)
+        return real_apply(eff)
+
+    produced = []
+    real_done = rt.room.on_incoming_done
+
+    def done_spy(ev, now):
+        eff = real_done(ev, now)
+        produced.append(eff)
+        return eff
+
+    rt.record_line = slow_record
+    rt.apply_effects = spy
+    rt.room.on_incoming_done = done_spy
+    try:
+        receiving = asyncio.ensure_future(rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:74", "lp": 74, "seq": rt.sequencer.contiguous_seq + 1, "sp": "h",
+            "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "等一下", "truncated": False, "i_done": 0,
+        }, nbytes=200))
+        await wait_for(lambda: produced and produced[0] in applied)   # 这一行的停嘴 / 取消待发回复不等落盘
+        assert not receiving.done()
+        assert produced[0].reply is None and not produced[0].say_goodbye  # 回复留到进了历史之后
+        stuck.set()
+        await receiving
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)

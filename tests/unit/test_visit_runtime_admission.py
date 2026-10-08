@@ -1082,3 +1082,64 @@ async def test_the_guest_wait_starts_after_the_journal_header_is_written(tmp_pat
         assert rt.liveness.wait_deadline - clock() > VISIT_PEER_LOST_S - 1   # 仍有完整的等对端时间
     finally:
         await teardown(side, clock=clock)
+
+
+async def test_a_superseded_socket_takes_its_pending_join_and_setup_deadlines_with_it(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    try:
+        await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+        assert await rt.issue_credentials() is not None
+        assert rt._sdk_deadline is not None
+        await rt.on_transport_state({"state": "joined", "peer_present": False})
+        rt.transport.on_page_attached(clock())               # 新连接顶替了旧连接（旧连接不再报 page_lost）
+        assert rt._sdk_deadline is None and rt._join_deadline is None and rt._preflight_deadline is None
+        clock.advance(21)
+        await rt.tick()                                       # 旧连接的能力门期限（20 s）不会把重载中的这场判死
+        assert rt.finalize_reason is None
+        await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
+        assert rt.joined is False                             # 旧连接的入房报告不算
+    finally:
+        await teardown(side, clock=clock)
+
+
+async def test_a_manager_replaced_during_the_account_lookup_is_refused(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+
+    async def account_while_replaced():
+        side.host.current = False                             # 查账号期间 manager 被换掉
+        return "acct"
+
+    monkeypatch.setattr(rtm, "_local_account", account_while_replaced)
+    with pytest.raises(rtm.VisitRefused) as refused:
+        await start_side(side, clock=clock, wall=wall)
+    assert refused.value.body["reason"] == "busy"
+    assert visit_route_state.get_visit_route_state("Host") is None
+
+
+async def test_a_stuck_ordinary_speech_interrupt_releases_the_takeover(tmp_path, monkeypatch, clocks):
+    monkeypatch.setattr(rtm, "_INTERRUPT_MAIN_TURN_S", 0.2)
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    stuck = asyncio.Event()
+
+    async def hang():
+        await stuck.wait()                                    # 页面不收：send_user_activity 一直等
+
+    side.host.interrupt_ordinary_speech = hang
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    try:
+        await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+        assert await asyncio.wait_for(rt.issue_credentials(), 3) is None
+        assert rt.finalize_reason == "busy"
+        await _finished(rt)
+        assert side.host.released == side.host.takeovers and side.host.takeovers
+    finally:
+        stuck.set()

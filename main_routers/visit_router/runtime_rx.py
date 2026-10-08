@@ -43,7 +43,7 @@ from typing import Any, Optional
 from config.visit_settings import VISIT_GOODBYE_MAX_CHARS
 from main_logic.visit.identity import JtiWindow, PeerBlocked, TicketRejected, verify_identity_ticket
 from main_logic.visit.limits import RateChannel, channel_for
-from main_logic.visit.room import IncomingLineDone, IncomingLineStart, LineRef
+from main_logic.visit.room import IncomingLineDone, IncomingLineStart, LineRef, RoomEffects
 from main_logic.visit.sanitize import clamp_peer_line, defang_markdown_media
 from main_routers.visit_router.runtime_common import (
     PHASE_AWAITING,
@@ -524,6 +524,10 @@ class ReceiveMixin:
         if eff.violation == "line_meta_mismatch":
             self.apply_effects(eff)  # 记异常，并让连续违约的收尾生效
             return
+        # 停嘴、取消待发回复、收尾状态这些要立刻生效，不等下面落盘；只有回复要等这一行进了历史
+        reply, say_goodbye = eff.reply, eff.say_goodbye
+        eff.reply, eff.say_goodbye = None, False
+        self.apply_effects(eff)  # 违约由 apply_effects 统一记一次异常
         txt = str(m.get("txt") or "")
         speaker_from = "peer_cat" if sp == "cat" else "peer_human"
         await self.record_line(speaker_from, side=self.peer_side, lp=lp, ln=ln, text=txt, truncated=truncated)
@@ -536,7 +540,8 @@ class ReceiveMixin:
             reply_to=str(m.get("rt") or ""), goodbye=m.get("wu") is True, text=txt, truncated=truncated,
             i_done=m.get("i_done", 0), trunc_reason=trunc_reason,
         ))
-        self.apply_effects(eff)  # 违约由 apply_effects 统一记一次异常
+        if reply is not None or say_goodbye:
+            self.apply_effects(RoomEffects(reply=reply, say_goodbye=say_goodbye))
 
     # ── leave ────────────────────────────────────────────────────────
 

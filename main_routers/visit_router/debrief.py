@@ -163,7 +163,7 @@ async def run_debrief(rt: Any, *, input_stamp: float) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit %s: debrief summary not shown: %s", rt.visit_id[:6], type(exc).__name__)
     else:
-        await rt.speak_home_segment("debrief", text, kind="visit_debrief")
+        await rt.speak_home_segment("debrief", text, kind="visit_debrief", silent=rt.finalize_reason == "goodbye")
     await _push_state(rt, "summary")
     # 日记读的是 spool：有没有可记的句子按 spool 实际写进去的算（与上传流水各自独立）
     await _offer_chips(rt, has_lines=rt.spool_lines > 0)

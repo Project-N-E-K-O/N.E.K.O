@@ -714,7 +714,7 @@ class TalkMixin:
             if handoff is not None:
                 handoff.skip("ritual")
             return
-        await self.speak_home_segment("ritual", text, kind="visit_ritual")
+        await self.speak_home_segment("ritual", text, kind="visit_ritual", silent=reason == "goodbye")
 
     async def one_shot_turn(self, prompt: str, *, timeout: float, without_history: bool = False) -> Optional[str]:
         """One extra turn of the isolated session (ritual / debrief); None on failure.
@@ -749,8 +749,11 @@ class TalkMixin:
         text = strip_emotion_tags("".join(chunks)).strip()
         return text or None
 
-    async def speak_home_segment(self, name: str, text: str, *, kind: str) -> None:
-        """Say one home-coming segment; its speech id is registered for the inbox handoff first."""
+    async def speak_home_segment(self, name: str, text: str, *, kind: str, silent: bool = False) -> None:
+        """Say one home-coming segment; its speech id is registered for the inbox handoff first.
+
+        ``silent``: show it only (the family said goodbye: the home stays quiet).
+        """
         handoff = self.handoff
         est = estimate_speech_ms(text)
         self._handoff_stamps[name] = self.host.last_user_input()
@@ -758,7 +761,7 @@ class TalkMixin:
         meta = self._mirror_meta(kind)
         stream = None
         # 本场已回落到估时（TTS 起不来）就不再开新的语音流
-        if self.voice.tts_on:
+        if self.voice.tts_on and not silent:
             try:
                 stream = self.host.open_speech_stream(metadata=meta, request_id=request_id,
                                                       on_enqueued=lambda _n: None)
@@ -782,7 +785,7 @@ class TalkMixin:
                 if handoff is not None:
                     handoff.skip(name)
         elif handoff is not None:
-            if self.voice.tts_on:
+            if self.voice.tts_on or silent:
                 handoff.skip(name)
             else:
                 handoff.mark_queued(name, est)
