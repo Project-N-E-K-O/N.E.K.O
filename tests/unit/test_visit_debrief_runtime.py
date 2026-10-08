@@ -213,7 +213,7 @@ async def test_the_debrief_turn_sees_only_its_bounded_record(tmp_path, monkeypat
         debrief_seen = client.seen[-1]                       # 最后一轮 = 简述
         assert debrief_seen == [system]                      # 不带近期历史，只有指令 + 有预算的记录块
         ritual_seen = client.seen[-2]
-        assert len(ritual_seen) > 1                          # 仪式句照常带着这场的历史
+        assert ritual_seen == [system]                       # 仪式句同样不带这场的历史（对端原话无从复述）
         left = [getattr(m, "content", "") for m in client._conversation_history]
         assert "我回来啦。" not in left and "聊得很开心。" not in left        # 两轮都不留在历史里
         assert left[0] == system and len(left) >= len(ritual_seen)            # 简述轮把原历史原样放回

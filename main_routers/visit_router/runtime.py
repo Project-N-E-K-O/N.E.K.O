@@ -575,6 +575,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._room_cancel_sent = False
         self._room_cancel_task: Optional[asyncio.Task] = None
         self._handback_started = False
+        self._files_done = False
+        self._shutdown_started = False
+        self._closing_task: Optional[asyncio.Task] = None
 
         self._init_rx()
         self._init_talk()
@@ -1349,6 +1352,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         except Exception as exc:  # noqa: BLE001 - 收尾每一步都尽力而为，最后一定注销
             logger.error("visit %s: exit flow failed: %r", self.visit_id[:6], exc)
         finally:
+            if not self._files_done and not self._shutdown_started:
+                # 前面的步骤抛了：转录与 spool 的收口是必做的（关机路径自己收口）
+                try:
+                    await self._finish_files(reason)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("visit %s: files not finalized: %r", self.visit_id[:6], exc)
             if not self._handback_started:
                 # 中途失败 / 被取消：没排上的段落不再等，回调照样交还（不丢、也不一直暂扣）
                 if self.handoff is not None:
@@ -1365,7 +1374,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         # ① 先收口本侧进行中的行：这一行的 text{final} 排在 leave 之前、进得了本场转录
         await self.close_current_line("visit_end")
         # ② 后台关闭数据通道（排空 → leave → 补传窗口），不阻塞下面任何一步
-        closing = asyncio.ensure_future(self._close_channel(reason))
+        closing = self._closing_task = asyncio.ensure_future(self._close_channel(reason))
         # ③ 回调暂扣 → 立即释放接管（此后亲人就能普通聊天）
         input_stamp = self.host.last_user_input()
         if self.takeover_token is not None:
@@ -1380,9 +1389,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self.takeover_token = None
         if self.activated:
             self.handoff = inbox_handoff.InboxHandoff(self.visit_id, finalize_at=self.clock(), clock=self.clock)
-        # ④ 回家仪式句（亲人先开口则放弃）
+        # ④ 回家仪式句（亲人先开口则放弃）；可选步骤：失败不挡后面的封存与交还
         if self.activated:
-            await self.say_ritual(reason, input_stamp=input_stamp)
+            try:
+                await self.say_ritual(reason, input_stamp=input_stamp)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit %s: home-coming line failed: %r", self.visit_id[:6], exc)
+                if self.handoff is not None:
+                    self.handoff.skip("ritual")  # 不会再播：交还不等它
         await self._settle_activation()
         # ⑤ 等关闭任务结束（数据通道要靠 iframe 发 leave，所以 iframe 留到这时）
         try:
@@ -1394,18 +1408,29 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             await self.status(self.status_code, reason=self.status_details.get("reason"),
                               retry_after_s=self.status_details.get("retry_after_s"))
         self._set_phase(PHASE_ENDED)
-        # ⑥ 收口转录（先 .upload.json）→ spool finalize（后 finalized）
-        await self.seal_and_finalize(reason)
-        # ⑦ digest 与上次摘要在后台（登记进该角色的后台任务集合）
-        self._spawn_memory_commits()
-        # ⑧ debrief（只有真的串过门）
+        # ⑥⑦ 收口转录（先 .upload.json）→ spool finalize（后 finalized）→ 后台 digest 与上次摘要
+        await self._finish_files(reason)
+        # ⑧ debrief（只有真的串过门）；可选步骤，失败照样交还
         if self.activated:
             from main_routers.visit_router.debrief import run_debrief
 
-            await run_debrief(self, input_stamp=input_stamp)
+            try:
+                await run_debrief(self, input_stamp=input_stamp)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit %s: debrief failed: %r", self.visit_id[:6], exc)
+                if self.handoff is not None:
+                    self.handoff.skip("debrief")
         # ⑨ 交还 VisitInbox：仪式句与简述都播完（或兜底期限）。独立任务，不占角色锁：
         # 路由 pop 之后到的 ended 经 inbox_handoff 表照样转给它
         self._start_handback()
+
+    async def _finish_files(self, reason: str) -> None:
+        """Seal the transcript, finalize the spool, start the memory commits (once; mandatory)."""
+        if self._files_done:
+            return
+        self._files_done = True
+        await self.seal_and_finalize(reason)
+        self._spawn_memory_commits()
 
     async def _close_channel(self, reason: str) -> None:
         """Drain (normal ends), ``leave``, its resend window; then stop the iframe and drop the transport."""
@@ -1559,6 +1584,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         """``stop_all``: no ``leave`` (the pages are already gone), files first, takeover released."""
         # 先置终态：挂起中的凭证 / 激活醒来看到 finalizing 就不再接管、不再建会话
         self._terminated = True
+        self._shutdown_started = True
         if self._exit_task is not None and not self._exit_task.done():
             self._exit_task.cancel()
         self.finalize_reason = self.finalize_reason or "shutdown"
@@ -1578,7 +1604,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             parked = self.inbox.close() or []
             if parked:
                 self.host.resubmit_callbacks(parked)
-        inflight = [t for t in (self._creds_task, self._activation) if t is not None and not t.done()]
+        # 收尾流程另起的关闭通道任务也停掉：关机不发 leave，也不能在封存之后还在排空
+        inflight = [t for t in (self._creds_task, self._activation, self._closing_task)
+                    if t is not None and not t.done()]
         for task in inflight:
             task.cancel()
         if inflight:

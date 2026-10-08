@@ -701,8 +701,9 @@ class TalkMixin:
         natural = reason in NATURAL_REASONS or (reason == "peer_left" and self.peer_reason in ("home", "wrapup"))
         text: Optional[str] = None
         if natural:
+            # 不带这场的历史：回家这一句是对家人说的，对端的原话不能有机会被复述出来
             text = await self.one_shot_turn(get_visit_back_home_notice(self.side, self.lang),
-                                            timeout=VISIT_CEREMONY_TIMEOUT_S)
+                                            timeout=VISIT_CEREMONY_TIMEOUT_S, without_history=True)
         if not text:
             text = get_visit_fixed_line("ended" if natural else fixed_line_kind(reason), self.lang)
         if self.host.last_user_input() > input_stamp:

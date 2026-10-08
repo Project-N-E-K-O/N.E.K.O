@@ -162,6 +162,11 @@ class ReceiveMixin:
         """``wrap_up{ph:'speaking'}`` handed out ahead of a ``seq`` gap (stops the step timer)."""
         if self.room is None or self.finalizing:
             return
+        violation = self.room.observe_lp(msg.get("lp"), reliable=True)
+        if violation is not None:
+            # 提前交付的这条不再经过 _rx_wrap_up：在这里同样校验 lp、计违约
+            self._early_effects.append(self.room.violation_effects(violation))
+            return
         self._early_effects.append(self.room.on_incoming_wrap_up(
             "speaking", str(msg.get("reason") or ""), msg.get("lp", 0), now, msg.get("ln"),
         ))

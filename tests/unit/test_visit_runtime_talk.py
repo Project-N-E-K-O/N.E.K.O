@@ -719,3 +719,30 @@ async def test_the_owed_ack_still_goes_out_after_our_leave_completed(tmp_path, m
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_early_speaking_wrap_ups_with_bad_lp_count_toward_the_cutoff(tmp_path, monkeypatch):
+    from config.visit_settings import VISIT_ANOMALY_FINALIZE_COUNT, VISIT_LP_MAX_JUMP
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    for st in rt.limiter._senders.values():                  # 只看违约计数：ctl 4/s 的限速放开
+        st.ctl.rate = st.ctl.capacity = st.ctl.tokens = 10 ** 9
+        st.recv_msgs.rate = st.recv_msgs.capacity = st.recv_msgs.tokens = 10 ** 9
+    rt.limiter._recv_msgs_per_s = 10 ** 9
+    try:
+        before = rt.journal._anomalies
+        for i in range(VISIT_ANOMALY_FINALIZE_COUNT + 2):
+            far = rt.room.max_lp_seen + VISIT_LP_MAX_JUMP + 100 + i
+            # wrap_up{speaking} 一律走提前交付，不经过 _rx_wrap_up
+            await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload={
+                "t": "wrap_up", "v": 1, "seq": rt.sequencer.contiguous_seq + 1, "lp": far, "ph": "speaking",
+                "ln": f"g:{500 + i}", "reason": "quiet", "initiated_by": "host"}, nbytes=200)
+            if rt.exit_task is not None:
+                break
+        assert rt.journal._anomalies > before
+        assert rt.finalize_reason == "peer_protocol_violation"
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)

@@ -472,6 +472,9 @@ async def test_a_failing_exit_step_still_hands_the_callbacks_back(tmp_path, monk
         await wait_for(lambda: hh.resubmitted)                # 不等兜底期限：没排上的段落直接跳过
         assert [c["text"] for c in hh.resubmitted] == ["插件回调"]
         assert hh.hold_released == hh.holds and hh.holds
+        # 仪式句是可选步骤：它失败了，封存与简述照常
+        assert host.rt.journal.sealed
+        assert [b for b in hh.blocks if b[1] == f"visit-debrief:{host.rt.visit_id}"]
     finally:
         for g in gates:
             g.set()
@@ -583,3 +586,45 @@ async def test_background_tasks_follow_a_rename_of_an_idle_character(monkeypatch
     finally:
         gate.set()
         await asyncio.gather(task)
+
+
+async def test_a_failing_mandatory_step_still_seals_the_transcript_and_the_spool(tmp_path, monkeypatch):
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    rt = host.rt
+    real_push = rt.push
+
+    async def push(phase, **kw):
+        if phase == "ended":
+            raise RuntimeError("display socket exploded")
+        return await real_push(phase, **kw)
+
+    rt.push = push
+    try:
+        rt.request_finalize("route_end")
+        await finish(rt, clock)
+        assert rt.journal.sealed
+        state = json.loads((host.config_dir / "visit_spool" / f"{rt.visit_id}.state.json").read_text(encoding="utf-8"))
+        assert state["finalized"] == "route_end"
+        await wait_for(lambda: ("region", rt.visit_id) in host.commits)
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_shutdown_stops_the_channel_close_of_a_visit_already_ending(tmp_path, monkeypatch):
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    rt = host.rt
+    wire.drop = lambda role, payload: role == "host"           # 对端收不到：leave 一直等不到确认
+    try:
+        rt.request_finalize("route_end")
+        await wait_for(lambda: rt._closing_task is not None)
+        await settle()
+        assert not rt._closing_task.done()
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 3)
+        assert rt._closing_task.done()                         # 关机返回时不再有排空 / leave 在跑
+    finally:
+        wire.drop = None
+        for g in gates:
+            g.set()
+        await teardown(guest, wire=wire, clock=clock)
