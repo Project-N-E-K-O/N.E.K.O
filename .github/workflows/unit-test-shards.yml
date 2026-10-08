@@ -73,6 +73,16 @@ jobs:
       - name: Run ${{ matrix.name }}
         run: uv run pytest tests/unit -m "${{ matrix.marker }}" -q ${{ matrix.pytest_args }} --basetemp ".codex-tmp\${{ matrix.marker }}"
 
+      - name: Prepare pinned models for strict enrollment duration acceptance
+        if: matrix.marker == 'integration_serial'
+        run: |
+          uv run scripts/prepare_voice_turn_assets.py
+          uv run scripts/prepare_speaker_model.py
+
+      - name: Run strict enrollment acceptance with real RNNoise, Silero and CAM++
+        if: matrix.marker == 'integration_serial'
+        run: uv run pytest tests/integration/test_voice_enrollment_duration_real.py -q --basetemp ".codex-tmp\voice-enrollment-duration-real"
+
   historical-review-audit:
     name: historical review audit
     runs-on: windows-latest
@@ -202,6 +212,25 @@ jobs:
             ${{ runner.temp }}/voice-preview-chromium
             ${{ runner.temp }}/voice-recovery-chromium
           if-no-files-found: warn
+
+  voice-enrollment-browser:
+    name: voice enrollment duration (Chromium actual page)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install fixed Playwright test runtime and Chromium
+        run: |
+          npm install --prefix "$RUNNER_TEMP/voice-enrollment-browser" --no-audit --no-fund --save-exact playwright@1.62.1
+          "$RUNNER_TEMP/voice-enrollment-browser/node_modules/.bin/playwright" install --with-deps chromium
+
+      - name: Run actual enrollment page and AudioWorklet with fixed quiet speech
+        run: NODE_PATH="$RUNNER_TEMP/voice-enrollment-browser/node_modules" node tests/frontend/voice_enrollment_duration_browser.cjs
 
   voice-readiness-electron:
     name: voice readiness (Electron actual page)

@@ -19,7 +19,10 @@ from main_logic.voice_identity_service.preference_store import (
     VoiceIdentityPreferenceStore,
     VoiceIdentityPreferenceStoreError,
 )
-from main_logic.voice_identity_service.enrollment import EnrollmentSpeechResult
+from main_logic.voice_identity_service.enrollment import (
+    EnrollmentSpeechResult,
+    SileroEnrollmentSpeechValidator,
+)
 from main_logic.voice_identity_service.audio_contract import (
     OWNER_CAMPPLUS_DESKTOP_CONTRACT_ID,
     desktop_audio_contract_snapshot,
@@ -270,6 +273,64 @@ def _embedding(axis: int = 0) -> np.ndarray:
     result = np.zeros(CAMPPLUS_EMBEDDING_DIM, dtype=np.float32)
     result[axis] = 1.0
     return result
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active_windows", [46, 47])
+async def test_quiet_reference_reaches_embedding_only_after_speech_gate(
+    tmp_path: Path, active_windows: int,
+) -> None:
+    # Keep the real enrollment validator; control probabilities and identity
+    # inference to test service ordering rather than real-model audio quality.
+    class ControlledVad:
+        is_ready = False
+
+        def load(self) -> bool:
+            self.is_ready = True
+            return True
+
+        def reset_stream(self) -> None:
+            return
+
+        def process_pcm16(self, pcm16: bytes) -> list[float]:
+            assert np.max(np.frombuffer(pcm16, dtype="<i2")) == 16
+            return [0.5] * active_windows + [0.49] * (93 - active_windows)
+
+        def close(self) -> None:
+            self.is_ready = False
+
+    vad = ControlledVad()
+    validator = SileroEnrollmentSpeechValidator(vad=vad)
+    service, model, _activations, _events = _service(
+        tmp_path, speech_validator=validator,
+    )
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+    pcm16 = np.full(144_000, 16, dtype="<i2").tobytes()
+    try:
+        if active_windows == 47:
+            result = await service.submit_enrollment_segment(
+                enrollment.enrollment_id, "quiet-profile", 1, pcm16,
+            )
+            assert result.enrollment is not None
+            assert result.enrollment.next_segment_index == 2
+            assert model.inference_count == 1
+        else:
+            with pytest.raises(VoiceIdentityServiceError) as caught:
+                await service.submit_enrollment_segment(
+                    enrollment.enrollment_id, "quiet-profile", 1, pcm16,
+                )
+            assert caught.value.code == "no_speech_detected"
+            assert model.inference_count == 0
+            current = service.status().enrollment
+            assert current is not None
+            assert current.next_segment_index == 1
+        assert not (tmp_path / "voice_identity.profile").exists()
+    finally:
+        await service.cancel_enrollment(enrollment.enrollment_id)
+        await service.close()
+    assert not vad.is_ready
 
 
 @pytest.mark.unit

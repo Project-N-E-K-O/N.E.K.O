@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并 main（消息表情、音色导入、八语文案）与存储迁移加固的提示文案，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-10-09-storage-hardening-prepared-recovery';
+    // 合并上游存储迁移提示与声纹录入时长提示，刷新八语言客户端缓存。
+    const LOCALE_VERSION = '2026-10-09-pr3349-rebase-storage-hardening';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

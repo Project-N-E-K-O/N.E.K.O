@@ -208,7 +208,7 @@ def validate_enrollment_pcm16(
     *,
     maximum_pcm_bytes: int = ENROLLMENT_MAXIMUM_PCM_BYTES,
 ) -> None:
-    """Accept usable 16 kHz mono PCM16 without retaining derived samples."""
+    """Check PCM structure and clipping; the speech validator owns speech duration."""
 
     if type(pcm16) is not bytes or len(pcm16) % 2:
         raise EnrollmentAudioError("invalid_pcm")
@@ -217,39 +217,12 @@ def validate_enrollment_pcm16(
     if len(pcm16) > maximum_pcm_bytes:
         raise EnrollmentAudioError("audio_too_long")
 
-    samples: np.ndarray | None = None
-    normalized: np.ndarray | None = None
-    frames: np.ndarray | None = None
-    try:
-        samples = np.frombuffer(pcm16, dtype="<i2")
-        if samples.size == 0:
-            raise EnrollmentAudioError("silence")
-        clipped = np.count_nonzero(np.abs(samples.astype(np.int32)) >= 32_760)
-        if clipped / samples.size > _MAX_CLIPPED_SAMPLE_RATIO:
-            raise EnrollmentAudioError("severe_clipping")
-
-        complete_samples = samples.size - samples.size % _FRAME_SAMPLES
-        if complete_samples < _FRAME_SAMPLES:
-            raise EnrollmentAudioError("speech_too_short")
-        normalized = samples[:complete_samples].astype(np.float32)
-        normalized /= np.float32(32_768.0)
-        frames = normalized.reshape(-1, _FRAME_SAMPLES)
-        rms = np.sqrt(
-            np.mean(frames * frames, axis=1, dtype=np.float32),
-            dtype=np.float32,
-        )
-        active_frames = int(np.count_nonzero(rms >= _ACTIVE_FRAME_RMS))
-        required_frames = math.ceil(
-            ENROLLMENT_MINIMUM_AUDIO_MS
-            / (_FRAME_SAMPLES * 1_000 / ENROLLMENT_SAMPLE_RATE_HZ)
-        )
-        if active_frames < required_frames:
-            raise EnrollmentAudioError("volume_too_low", diagnostics=enrollment_audio_diagnostics(pcm16))
-    finally:
-        if frames is not None:
-            frames.fill(0.0)
-        if normalized is not None:
-            normalized.fill(0.0)
+    samples = np.frombuffer(pcm16, dtype="<i2")
+    if samples.size == 0:
+        raise EnrollmentAudioError("silence")
+    clipped = np.count_nonzero(np.abs(samples.astype(np.int32)) >= 32_760)
+    if clipped / samples.size > _MAX_CLIPPED_SAMPLE_RATIO:
+        raise EnrollmentAudioError("severe_clipping")
 
 
 def wipe_enrollment_embedding(embedding: np.ndarray | None) -> None:
