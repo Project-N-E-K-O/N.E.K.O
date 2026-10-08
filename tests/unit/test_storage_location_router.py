@@ -4143,5 +4143,7 @@ def test_storage_location_cleanup_stays_pending_when_the_retained_root_cannot_be
     monkeypatch.undo()
 
     assert response.status_code == 409, response.json()
-    assert ".neko-cleanup-*" in response.json()["remaining_entries"]
+    # Reported as a flag the UI can word, not as an entry named by a pattern.
+    assert response.json()["retained_root_unlistable"] is True
+    assert ".neko-cleanup-*" not in response.json()["remaining_entries"]
     assert (source_root / ".neko-cleanup-memory-0123456789ab" / "recent.json").is_file()

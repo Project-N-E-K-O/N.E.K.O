@@ -25,7 +25,11 @@ function loadStorageLocation(locale) {
     document: { currentScript: { getAttribute() { return 'false'; } } },
   });
   vm.runInContext(script, context);
-  return { model: window.appStorageLocation.buildMaintenanceProgressModel, messages };
+  return {
+    model: window.appStorageLocation.buildMaintenanceProgressModel,
+    cleanupMessage: window.appStorageLocation.buildCleanupIncompleteMessage,
+    messages,
+  };
 }
 
 for (const locale of ['en', 'zh-CN']) {
@@ -74,6 +78,47 @@ for (const locale of ['en', 'zh-CN']) {
     });
 
     assert.strictEqual(progress.label, `${messages.storage.progressPublishConflict} ${windowsRoot}${backslash}.smtx${backslash}0123456789ab`);
+  });
+
+  test(`${locale}: an unreadable stage points at the transaction directory`, () => {
+    const { model, messages } = loadStorageLocation(locale);
+    const progress = model({
+      lifecycle_state: 'maintenance',
+      migration: {
+        status: 'rollback_required',
+        error_code: 'migration_stage_unreadable',
+        target_root: 'E:/new/N.E.K.O',
+        txid: '0123456789abcdef0123456789abcdef',
+      },
+    });
+
+    assert.strictEqual(progress.hasError, true);
+    assert.strictEqual(progress.label, `${messages.storage.progressStageUnreadable} E:/new/N.E.K.O/.smtx/0123456789ab`);
+  });
+
+  test(`${locale}: an unlistable old directory is worded, not shown as a pattern`, () => {
+    const { cleanupMessage, messages } = loadStorageLocation(locale);
+    const message = cleanupMessage({
+      error_code: 'retained_source_cleanup_incomplete',
+      remaining_entries: [],
+      retained_root_unlistable: true,
+    });
+
+    assert.strictEqual(message, messages.storage.retainedRootUnlistable);
+  });
+
+  test(`${locale}: kept entries and an unlistable old directory are both reported`, () => {
+    const { cleanupMessage, messages } = loadStorageLocation(locale);
+    const message = cleanupMessage({
+      error_code: 'retained_source_cleanup_incomplete',
+      remaining_entries: ['memory', 'config'],
+      retained_root_unlistable: true,
+    });
+
+    assert.strictEqual(
+      message,
+      `${messages.storage.retainedSourceCleanupIncomplete} memory, config ${messages.storage.retainedRootUnlistable}`,
+    );
   });
 
   test(`${locale}: other failed migrations keep the generic text`, () => {

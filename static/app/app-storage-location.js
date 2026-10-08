@@ -1092,15 +1092,21 @@
                         // the user which directory that is instead of "waiting".
                         label = translate('storage.progressSourceMissing', '原始数据目录或其中的数据不见了，迁移已暂停，新旧两边的数据都原样保留。请把原始数据目录恢复原样后重启：')
                             + ' ' + String(migrationPayload.source_root || '').trim();
-                    } else if (migrationPayload && migrationPayload.error_code === 'migration_publish_conflict') {
+                    } else if (migrationPayload && (
+                        migrationPayload.error_code === 'migration_publish_conflict'
+                        || migrationPayload.error_code === 'migration_stage_unreadable'
+                    )) {
                         // The original target data lives in the transaction
-                        // backup; deleting that directory would lose it.
+                        // backup, the staged copies in its stage; deleting
+                        // that directory would lose them.
                         var targetRoot = String(migrationPayload.target_root || '').trim();
                         // Join with the separator the path already uses, so a
                         // Windows path does not end up mixing both kinds.
                         var backslash = String.fromCharCode(92);
                         var separator = targetRoot.indexOf(backslash) >= 0 ? backslash : '/';
-                        label = translate('storage.progressPublishConflict', '迁移时目标位置被其他程序重新创建，迁移已暂停，新旧数据都已保留。原来的数据在下面这个事务目录的 backup 里，请勿删除，确认后再手动处理：');
+                        label = migrationPayload.error_code === 'migration_stage_unreadable'
+                            ? translate('storage.progressStageUnreadable', '迁移暂存的数据无法读取，迁移已暂停，新旧两边的数据都原样保留。暂存数据在下面这个事务目录的 stage 里，请勿删除，检查它的读取权限后重启应用：')
+                            : translate('storage.progressPublishConflict', '迁移时目标位置被其他程序重新创建，迁移已暂停，新旧数据都已保留。原来的数据在下面这个事务目录的 backup 里，请勿删除，确认后再手动处理：');
                         // The backup sits in this transaction's own directory,
                         // named after the first 12 characters of its id.
                         var transactionDir = ['.smtx', String(migrationPayload.txid || '').slice(0, 12)]
@@ -1411,19 +1417,11 @@
                 payload = await response.json();
             } catch (_) {}
             if (payload && payload.error_code === 'retained_source_cleanup_incomplete') {
-                // Part of the old directory is already gone; say so and name
-                // what was kept instead of reporting a plain failure.
-                var remainingEntries = Array.isArray(payload.remaining_entries)
-                    ? payload.remaining_entries.map(function (entry) { return String(entry); }).join(', ')
-                    : '';
                 if (state.completionCleanupButton) {
                     state.completionCleanupButton.disabled = false;
                 }
                 if (typeof window.showStatusToast === 'function') {
-                    window.showStatusToast(
-                        extractResponseError(payload, '') + (remainingEntries ? ' ' + remainingEntries : ''),
-                        8000
-                    );
+                    window.showStatusToast(buildCleanupIncompleteMessage(payload), 8000);
                 }
                 await checkReadyStateCompletionNotice();
                 return;
@@ -1452,6 +1450,22 @@
                 );
             }
         }
+    }
+
+    // Part of the old directory is already gone; say so and name what was
+    // kept instead of reporting a plain failure.
+    function buildCleanupIncompleteMessage(payload) {
+        var remainingEntries = Array.isArray(payload && payload.remaining_entries)
+            ? payload.remaining_entries.map(function (entry) { return String(entry); }).join(', ')
+            : '';
+        var parts = [];
+        if (remainingEntries) {
+            parts.push(extractResponseError(payload, '') + ' ' + remainingEntries);
+        }
+        if (payload && payload.retained_root_unlistable === true) {
+            parts.push(translate('storage.retainedRootUnlistable', '旧数据目录的内容无法列出，里面可能还有清理到一半的条目，已暂停清理。请检查该目录的读取权限后再点一次「清理旧数据」。'));
+        }
+        return parts.length ? parts.join(' ') : extractResponseError(payload, '');
     }
 
     function extractResponseError(payload, fallbackText) {
@@ -2445,6 +2459,7 @@
 
     window.appStorageLocation = {
         formatError: extractResponseError,
+        buildCleanupIncompleteMessage: buildCleanupIncompleteMessage,
         buildMaintenanceProgressModel: buildMaintenanceProgressModel,
         init: init,
         waitUntilMainUiAllowed: function () {

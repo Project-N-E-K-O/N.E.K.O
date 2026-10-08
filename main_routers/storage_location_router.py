@@ -2219,13 +2219,19 @@ async def _post_storage_location_retained_source_cleanup_locked(
         }
 
     if remaining_entries:
+        # The placeholder is not an entry the user can look for: the old
+        # directory could not be listed, so one may still hide under a private
+        # cleanup name. It is reported as a flag of its own.
         response.status_code = 409
         return {
             "ok": False,
             "error_code": "retained_source_cleanup_incomplete",
             "error": "旧数据目录仍含缺少复制证据的运行时条目，已保留供人工确认。",
             "retained_root": expected_retained_root,
-            "remaining_entries": list(remaining_entries),
+            "remaining_entries": [
+                entry_name for entry_name in remaining_entries if entry_name != _UNLISTABLE_RETAINED_ROOT
+            ],
+            "retained_root_unlistable": _UNLISTABLE_RETAINED_ROOT in remaining_entries,
         }
 
 
