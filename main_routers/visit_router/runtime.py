@@ -2082,6 +2082,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             finalize_visit_route_state(self.lanlan_name)
         self._set_phase(PHASE_ENDED)
         self._terminated = True
+        # 拆掉的场次不再收任何对端消息：封存那步半路出错、没走到置标志时也成立
+        self._rx_closed = True
         self.ended_at_mono = self.clock()
         _prune_recent(self.ended_at_mono)
         _recent[self.visit_id] = self
