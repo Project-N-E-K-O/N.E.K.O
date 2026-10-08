@@ -147,11 +147,45 @@ def test_storage_restart_requires_every_old_server_to_be_dead():
 
 
 @pytest.mark.unit
-def test_descendants_are_only_settled_for_a_storage_restart():
+def test_descendants_are_only_settled_for_a_storage_restart(monkeypatch):
     """An ordinary exit must leave programs a server opened for the user alone."""
+    from launcher_core import runtime
+
+    calls = []
+    monkeypatch.setattr(runtime, "_settle_surviving_descendants", lambda descendants: calls.append(descendants) or False)
+    monkeypatch.setattr(runtime, "_teardown_descendants", [])
+
+    assert runtime._descendants_block_storage_restart(False) is False
+    assert calls == []
+    assert runtime._descendants_block_storage_restart(True) is False
+    assert calls == [[]]
     source = (LAUNCHER_CORE / "runtime.py").read_text(encoding="utf-8")
-    assert "_settle_surviving_descendants(_teardown_descendants) if allow_storage_restart else False" in source
-    assert source.count("_settle_surviving_descendants(") == 2  # definition + the guarded call
+    assert "descendants_alive = _descendants_block_storage_restart(allow_storage_restart)" in source
+
+
+@pytest.mark.unit
+def test_storage_restart_is_blocked_when_descendants_are_unknown(monkeypatch):
+    """No psutil, or a server that could not be inspected: its orphans are
+    out of reach, so the restart must not go ahead on that basis."""
+    from launcher_core import runtime
+
+    monkeypatch.setattr(runtime, "_teardown_descendants", None)
+
+    assert runtime._descendants_block_storage_restart(True) is True
+    assert runtime._descendants_block_storage_restart(False) is False
+
+
+@pytest.mark.unit
+def test_descendants_of_an_exited_server_are_unknown():
+    from launcher_core import runtime
+
+    class _Exited:
+        pid = 4242
+
+        def is_alive(self):
+            return False
+
+    assert runtime._snapshot_server_descendants([{"process": _Exited()}]) is None
 
 
 @pytest.mark.unit
@@ -163,35 +197,49 @@ def test_descendants_are_taken_before_the_first_teardown_step():
     from launcher_core import runtime
 
     source = inspect.getsource(runtime.cleanup_servers)
+    teardown_try = source.index("    try:\n")
     snapshot = source.index("_teardown_descendants = _snapshot_server_descendants(")
     first_teardown = source.index("for server in _iter_servers_for_shutdown():")
-    assert snapshot < first_teardown
+    assert teardown_try < snapshot < first_teardown
+
+
+# Spawning the base interpreter keeps a Windows venv's python.exe stub out of
+# the process tree, so the tree looks the way multiprocessing builds it.
+_INTERPRETER = getattr(sys, "_base_executable", "") or sys.executable
 
 
 class _TrackedServer:
     def __init__(self, popen):
         self.pid = popen.pid
+        self._popen = popen
+
+    def is_alive(self):
+        return self._popen.poll() is None
 
 
-def _spawn_server_with_a_child(tmp_path):
-    """A stand-in server that starts a long-lived child and reports its pid."""
-    pid_file = tmp_path / "child.pid"
-    server_code = textwrap.dedent(
-        f"""
-        import subprocess, sys, time
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
-        open({str(pid_file)!r}, "w").write(str(child.pid))
-        time.sleep(120)
-        """
-    )
-    server = subprocess.Popen([sys.executable, "-c", server_code])
+def _wait_for_pid(pid_file, server):
     deadline = time.monotonic() + 20
     while not (pid_file.exists() and pid_file.read_text().strip()):
         if time.monotonic() > deadline:
             server.kill()
-            pytest.fail("the stand-in server never started its child")
+            pytest.fail(f"the stand-in process tree never wrote {pid_file.name}")
         time.sleep(0.05)
-    return server, int(pid_file.read_text())
+    return int(pid_file.read_text())
+
+
+def _spawn_server_with_a_child(tmp_path):
+    """A stand-in server that starts a long-lived child (a plugin host)."""
+    pid_file = tmp_path / "child.pid"
+    server_code = textwrap.dedent(
+        f"""
+        import subprocess, time
+        child = subprocess.Popen([{_INTERPRETER!r}, "-c", "import time; time.sleep(120)"])
+        open({str(pid_file)!r}, "w").write(str(child.pid))
+        time.sleep(120)
+        """
+    )
+    server = subprocess.Popen([_INTERPRETER, "-c", server_code])
+    return server, _wait_for_pid(pid_file, server)
 
 
 def _orphan_a_child(tmp_path):
@@ -204,12 +252,13 @@ def _orphan_a_child(tmp_path):
     return server, child_pid, descendants
 
 
-def _kill_quietly(psutil, server, child_pid):
+def _kill_quietly(psutil, server, *pids):
     server.kill()
-    try:
-        psutil.Process(child_pid).kill()
-    except psutil.NoSuchProcess:
-        return  # already stopped by the code under test
+    for pid in pids:
+        try:
+            psutil.Process(pid).kill()
+        except psutil.NoSuchProcess:
+            continue  # already stopped by the code under test
 
 
 @pytest.mark.unit
@@ -221,16 +270,54 @@ def test_storage_restart_stops_our_own_child_that_outlived_its_server(tmp_path):
 
     server, child_pid, descendants = _orphan_a_child(tmp_path)
     try:
-        # A Windows venv python.exe is a stub that starts the real interpreter as
-        # one more descendant; every one of them runs our own executable.
-        assert child_pid in {process.pid for process, _own in descendants}
-        assert all(own for _process, own in descendants)
+        assert [(process.pid, own) for process, own in descendants] == [(child_pid, True)]
         assert psutil.pid_exists(child_pid)
 
         assert runtime._settle_surviving_descendants(descendants) is False
         assert not psutil.pid_exists(child_pid) or psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE
     finally:
         _kill_quietly(psutil, server, child_pid)
+
+
+@pytest.mark.unit
+def test_a_program_a_plugin_started_with_our_interpreter_is_not_ours(tmp_path):
+    """A plugin may run a user program through sys.executable; it runs the
+    same executable but is no plugin host, so it is never stopped."""
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    host_pid_file = tmp_path / "host.pid"
+    program_pid_file = tmp_path / "program.pid"
+    host_code = textwrap.dedent(
+        f"""
+        import subprocess, time
+        program = subprocess.Popen([{_INTERPRETER!r}, "-c", "import time; time.sleep(120)"])
+        open({str(program_pid_file)!r}, "w").write(str(program.pid))
+        time.sleep(120)
+        """
+    )
+    server_code = textwrap.dedent(
+        f"""
+        import subprocess, time
+        host = subprocess.Popen([{_INTERPRETER!r}, "-c", {host_code!r}])
+        open({str(host_pid_file)!r}, "w").write(str(host.pid))
+        time.sleep(120)
+        """
+    )
+    server = subprocess.Popen([_INTERPRETER, "-c", server_code])
+    host_pid = _wait_for_pid(host_pid_file, server)
+    program_pid = _wait_for_pid(program_pid_file, server)
+    try:
+        descendants = runtime._snapshot_server_descendants([{"process": _TrackedServer(server)}])
+        ownership = {process.pid: own for process, own in descendants}
+        assert ownership == {host_pid: True, program_pid: False}
+        server.kill()
+        server.wait(timeout=10)
+
+        assert runtime._settle_surviving_descendants(descendants) is True
+        assert psutil.Process(program_pid).is_running()
+    finally:
+        _kill_quietly(psutil, server, host_pid, program_pid)
 
 
 @pytest.mark.unit

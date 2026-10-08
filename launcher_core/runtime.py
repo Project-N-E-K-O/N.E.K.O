@@ -108,7 +108,8 @@ _cleanup_lock = threading.Lock()
 _cleanup_done = False
 # Descendants of the servers, taken by cleanup_servers before its first
 # teardown step; read only to decide whether a migration restart is safe.
-_teardown_descendants: list = []
+# None means they could not be determined.
+_teardown_descendants: list | None = None
 _expected_launcher_shutdown = False
 _existing_neko_services: set[str] = set()  # 已有 N.E.K.O 实例占用的端口键
 _partial_or_mixed_existing_backend = False
@@ -2228,20 +2229,31 @@ def _process_exe(process) -> str:
         return ""
 
 
-def _snapshot_server_descendants(servers) -> list:
+def _snapshot_server_descendants(servers) -> list | None:
     """Every live descendant of the tracked servers, as ``(process, own)``.
 
     Taken before teardown: a server can exit while a non-daemon child (a
     plugin host) lives on, and once the server is gone its children can no
-    longer be found through it. ``own`` marks N.E.K.O's own processes --
-    running the same executable as a server or the launcher -- as opposed to
-    programs a server opened for the user (an app, a file manager).
+    longer be found through it. ``own`` marks N.E.K.O's own processes: direct
+    children of a server running the same executable, which is what a
+    multiprocessing plugin host is. Anything further down -- a program a
+    plugin started, even through ``sys.executable`` -- and anything running
+    another executable (an app or file manager opened for the user) is not.
+
+    ``None`` when the tree cannot be determined -- no psutil, or a server
+    that already exited or cannot be inspected, whose orphans are then out
+    of reach. A migration restart is not safe on that basis.
     """
     try:
         import psutil
     except ImportError:
-        return []
-    own_exes = {_process_exe(psutil.Process()), os.path.normcase(sys.executable)}
+        return None
+    own_exes = {
+        _process_exe(psutil.Process()),
+        os.path.normcase(sys.executable),
+        os.path.normcase(getattr(sys, "_base_executable", "") or sys.executable),
+    }
+    server_pids: set[int] = set()
     descendants = []
     for server in servers:
         proc = server.get('process')
@@ -2249,13 +2261,24 @@ def _snapshot_server_descendants(servers) -> list:
         if not pid:
             continue
         try:
+            if not proc.is_alive():
+                return None
             server_process = psutil.Process(pid)
             own_exes.add(_process_exe(server_process))
+            server_pids.add(pid)
             descendants.extend(server_process.children(recursive=True))
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
+        except (psutil.Error, OSError, ValueError):
+            return None
     own_exes.discard("")
-    return [(process, _process_exe(process) in own_exes) for process in descendants]
+
+    def _is_own(process) -> bool:
+        try:
+            parent_pid = process.ppid()
+        except psutil.Error:
+            return False
+        return parent_pid in server_pids and _process_exe(process) in own_exes
+
+    return [(process, _is_own(process)) for process in descendants]
 
 
 def _settle_surviving_descendants(descendants) -> bool:
@@ -2308,6 +2331,20 @@ def _settle_surviving_descendants(descendants) -> bool:
     return bool(survivors)
 
 
+def _descendants_block_storage_restart(allow_storage_restart: bool) -> bool:
+    """Whether a server descendant keeps a migration restart from going ahead.
+
+    Only consulted for a migration restart: an ordinary exit leaves every
+    descendant alone. Descendants that could not be determined block it.
+    """
+    if not allow_storage_restart:
+        return False
+    if _teardown_descendants is None:
+        print("[Launcher] 无法确认服务进程的子进程是否都已退出，不安排存储迁移重启", flush=True)
+        return True
+    return _settle_surviving_descendants(_teardown_descendants)
+
+
 def cleanup_servers():
     """Clean up all server processes"""
     global _cleanup_done
@@ -2318,12 +2355,13 @@ def cleanup_servers():
 
     global _teardown_descendants
     try:
-        # Before the first teardown step, while every server still runs.
-        _teardown_descendants = _snapshot_server_descendants(list(_iter_servers_for_shutdown()))
-    except Exception:
-        _teardown_descendants = []
-
-    try:
+        # Before the first teardown step, while every server still runs --
+        # but inside the try, so an interruption here cannot skip teardown
+        # or leave _cleanup_complete unset.
+        try:
+            _teardown_descendants = _snapshot_server_descendants(list(_iter_servers_for_shutdown()))
+        except Exception:
+            _teardown_descendants = None
         _teardown_print("\n正在关闭服务器...")
         for server in _iter_servers_for_shutdown():
             proc = server.get('process')
@@ -3330,9 +3368,7 @@ def main():
         # The teardown above only reaches a server's process tree while the
         # server itself is alive. Only a migration restart needs proof that
         # nothing outlived it; an ordinary exit leaves descendants alone.
-        descendants_alive = (
-            _settle_surviving_descendants(_teardown_descendants) if allow_storage_restart else False
-        )
+        descendants_alive = _descendants_block_storage_restart(allow_storage_restart)
 
         print("\n清理完成", flush=True)
         # A migration restart is only safe after every old server process --
