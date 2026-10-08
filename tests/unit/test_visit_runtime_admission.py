@@ -1395,3 +1395,32 @@ async def test_no_started_frame_once_the_visit_is_ending(tmp_path, monkeypatch):
     finally:
         gate.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_stalled_journal_open_neither_hangs_entry_nor_finalization(tmp_path, monkeypatch, clocks):
+    monkeypatch.setattr(rtm, "_JOURNAL_OPEN_MAX_S", 0.2)
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    gate = asyncio.Event()
+    real_open = rt.journal.open
+
+    async def stalled_open(**kw):
+        await gate.wait()                                     # 磁盘卡住
+        await real_open(**kw)
+
+    rt.journal.open = stalled_open
+    try:
+        assert rt._join_deadline is not None
+        # 收包处理不跟着挂死；入房期限在上传头写完之前一直在
+        await asyncio.wait_for(rt.on_transport_state({"state": "joined", "peer_present": False}), 3)
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(rt), 10)             # 收尾也不无限等上传头
+        gate.set()                                            # 上传头晚到写完
+        await wait_for(lambda: rt.journal.sealed)             # 立刻封存，不留没封存的流水
+        await wait_for(lambda: not list((side.config_dir / "visit_spool").glob("*.upload.jsonl")))
+    finally:
+        gate.set()

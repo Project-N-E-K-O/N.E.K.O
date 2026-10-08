@@ -21,6 +21,7 @@ import asyncio
 import pytest
 
 from main_routers.visit_router import runtime as rtm
+from main_routers.visit_router import runtime_talk as rtm_talk
 from main_routers.visit_router import transport_ws
 from tests.unit.visit_runtime_harness import (
     GUEST_VID,
@@ -1305,4 +1306,60 @@ async def test_state_replay_keeps_the_full_visit_line_shape(tmp_path, monkeypatc
             for key in ("addressee", "reply_to", "goodbye", "i_done", "speaker", "text"):
                 assert replay[ln][key] == live[ln][key]       # 重载后与直播时同一份形状
     finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_line_whose_llm_ignores_cancellation_still_reaches_the_transcript(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm_talk, "_LLM_SETTLE_S", 0.2)
+    pause = asyncio.Event()
+    host, guest, wire, clock, wall = await bring_up(
+        tmp_path, monkeypatch, host_replies=Replies(queue=[["说到一半。", "后半", pause, "句。"]]),
+        guest_replies=Replies(gate=asyncio.Event()))
+    host.host.auto_play = False
+    rt = host.rt
+    try:
+        await wait_for(lambda: host.host.streams and host.host.streams[0].pushed)
+        await rtm.on_page_signal("Host", {"speech_id": host.host.streams[0].speech_id, "played_ms": 60000,
+                                          "ended": False})
+        await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "line_delta"])
+        llm = rt._line.llm_task
+        real_cancel = llm.cancel
+        llm.cancel = lambda *a, **k: False                    # LLM 协程不肯停
+        rt.interrupt_line("human_interrupt")
+        await wait_for(lambda: [r for r in rt.journal.lines() if r["from"] == "own_cat" and r["truncated"]],
+                       timeout=3)                             # 已发出的那行照样进转录
+        llm.cancel = real_cancel
+    finally:
+        pause.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_an_admitted_family_line_goes_out_before_leave(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_record = rt.record_line
+
+    async def slow_record(speaker, **kwargs):
+        if speaker == "own_human":
+            await stuck.wait()                                # 只有亲人那句落盘慢
+        return await real_record(speaker, **kwargs)
+
+    rt.record_line = slow_record
+    try:
+        sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
+            "input_type": "text", "data": "我们先走啦", "source": "neko_visit:guest_cat"}))
+        await wait_for(lambda: rt.outbox.reserved_bytes > 0)
+        rt.request_finalize("delivery_failed")                # 这时开始收尾（不排空、直接发 leave 的那类）
+        await asyncio.sleep(0.2)
+        stuck.set()
+        await asyncio.gather(sending)
+        await finish(rt, clock)
+        sent = [p.get("t") for p in wire.sent["host"]]
+        humans = [i for i, p in enumerate(wire.sent["host"]) if p.get("t") == "text" and p.get("sp") == "h"]
+        assert humans and "leave" in sent and humans[0] < sent.index("leave")   # 那句排在 leave 前面
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)

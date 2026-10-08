@@ -87,6 +87,7 @@ _BUSY_RETRY_S = 1.0
 _LINE_CLOSE_WAIT_S = 5.0
 _HOME_TURN_WAIT_S = 30.0
 _HOME_TURN_START_S = 3.0
+_LLM_SETTLE_S = 2.0
 
 
 @dataclass(eq=False)
@@ -408,8 +409,11 @@ class TalkMixin:
         try:
             await drive(line.speaker, clock=self.clock)
         finally:
-            if line.llm_task is not None:
-                await asyncio.wait([line.llm_task])
+            if line.llm_task is not None and not line.llm_task.done():
+                # text{final} 已入队：等 LLM 任务停下有上限，不肯停的不能拖着这一行进不了转录
+                await asyncio.wait([line.llm_task], timeout=_LLM_SETTLE_S)
+                if not line.llm_task.done():
+                    line.llm_task.cancel()
             await self._finish_line(line)
             if self._line is line:
                 self._line = None

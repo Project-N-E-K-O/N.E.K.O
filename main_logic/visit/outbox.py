@@ -354,6 +354,11 @@ class VisitOutbox:
         return list(self._unacked)
 
     @property
+    def reserved_bytes(self) -> int:
+        """Bytes held by reservations not consumed or released yet (admitted sends still persisting)."""
+        return self._reserved_bytes
+
+    @property
     def pending_bytes(self) -> int:
         """Encoded bytes of all unacked reliable items (queued or transmitted) plus held reservations."""
         return sum(item.nbytes for item in self._unacked.values()) + self._reserved_bytes

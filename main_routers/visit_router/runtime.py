@@ -128,6 +128,8 @@ _CLOSE_WAIT_S = VISIT_LEAVE_GAP_GRACE_S * 2 + 2.0
 _HANDOFF_POLL_S = 0.25
 # 关机总预算 VISIT_SHUTDOWN_BUDGET_S：等在飞任务、收口当前行各 0.5 s，取消未配对房间 1 s，余下给封存
 _SHUTDOWN_TASK_WAIT_S = 0.5
+_JOURNAL_OPEN_MAX_S = 10.0
+_RESERVATION_WAIT_S = 3.0
 _ACCOUNT_RECORD_S = 3.0
 _ACCOUNT_RETRY_DELAYS_S = (1.0, 5.0, 30.0, 120.0, 600.0)
 _SHUTDOWN_ROOM_CANCEL_S = 1.0
@@ -903,7 +905,6 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             # 还没下发凭证 / 能力门 ③ 还没过的连接报的入房不算：等真正入房的那一次再做首次入房的事
             return
         self.joined = True
-        self._join_deadline = None
         gen = self._first_join_gen = self._page_gen
         # 进入本场：先写上传头，之后的每一行、用量与异常都追加在它后面。独立任务：
         # 收尾 / 关机封存之前先等它写完（否则封存时流水还没装好、封存成空操作）。只写一次：
@@ -914,15 +915,19 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 role=self.side, own_visit_uid=creds.visit_uid, own_char_uid=self.character_uid,
                 transport=creds.transport, started_at=self.wall(), app_version=cr._app_version(),
             ))
-        await asyncio.wait([opening])
+        # 写上传头有界：磁盘卡住时收包循环不能一直挂着（入房期限仍在走，到点按 relay_lost 结束）
+        await asyncio.wait([opening], timeout=_JOURNAL_OPEN_MAX_S)
         self._first_join_gen = None
-        if not opening.cancelled() and opening.exception() is not None:
+        if not opening.done():
+            logger.warning("visit %s: upload journal still opening, continuing without it", self.visit_id[:6])
+        if opening.done() and not opening.cancelled() and opening.exception() is not None:
             # 上传流水建不起来：转录少一份，串门照常
             logger.warning("visit %s: upload journal not opened: %s", self.visit_id[:6],
                            type(opening.exception()).__name__)
         if self.finalizing:
             # 写上传头期间这场已被结束：不再把阶段翻回等待
             return
+        self._join_deadline = None
         if gen != self._page_gen:
             # 写上传头期间报入房的那条连接没了 / 被顶替：这次入房不算；新连接期间报过的入房这时补做
             self.joined = False
@@ -1552,6 +1557,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                     while not self.outbox.drain_done(self.clock()) and self.clock() < deadline:
                         self.kick()
                         await asyncio.sleep(0.1)
+                # 已接纳、正在落盘的亲人那句（持有预留）要排在 leave 前面：等它入队（有上限）
+                wait_until = self.clock() + _RESERVATION_WAIT_S
+                while self.outbox.reserved_bytes and self.clock() < wait_until:
+                    await asyncio.sleep(0.05)
                 try:
                     self.outbox.send({"t": "leave", "v": 1, "reason": leave_reason}, now=self.clock())
                 except ValueError as exc:
@@ -1599,10 +1608,21 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         return self.joined and is_transport_attached(self.visit_id, self.side)
 
     async def _settle_journal_open(self, timeout: Optional[float] = None) -> None:
-        # 正常收尾等它写完（本地建一个文件，没有上限也不会久等）；关机按预算限时，没写完就随进程退出
+        # 收尾等它写完，但有上限；还没写完就登记一个回调：它晚到写完时立刻封存，不留没封存的流水
         opening = self._journal_opening
-        if opening is not None and not opening.done():
-            await asyncio.wait([opening], timeout=timeout)
+        if opening is None or opening.done():
+            return
+        await asyncio.wait([opening], timeout=_JOURNAL_OPEN_MAX_S if timeout is None else timeout)
+        if not opening.done():
+            reason = self.finalize_reason or "shutdown"
+            opening.add_done_callback(lambda _t: _detach(self._seal_late_journal(reason)))
+
+    async def _seal_late_journal(self, reason: str) -> None:
+        try:
+            await self.journal.seal(reason, ended_at=self.wall())
+            self.deps.schedule_upload(self.visit_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("visit %s: late upload journal not sealed: %s", self.visit_id[:6], type(exc).__name__)
 
     async def seal_and_finalize(self, reason: str) -> None:
         """Seal ``.upload.json`` first, then ``state.json.finalized`` (§3.2.6 item 22 step 3)."""
