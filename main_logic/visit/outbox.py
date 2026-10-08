@@ -551,7 +551,9 @@ class VisitOutbox:
         ``stats`` are dropped and a ``line_delta`` drops the rest of its line
         (returns 0); a line whose pieces were dropped (backpressure or a
         backlog over ``VISIT_DELTA_BACKLOG_DROP_S``) gets no further pieces,
-        its ``text`` closes it. Raises ``ValueError``
+        its ``text`` closes it. After :meth:`close` has started nothing is
+        queued any more and 0 is returned (no ``seq``: the item is neither
+        sent nor in the file). Raises ``ValueError``
         for an invalid payload, a ``text`` over ``VISIT_PIECES_MAX`` pieces,
         or a reliable payload after ``leave``.
         """
@@ -560,6 +562,9 @@ class VisitOutbox:
             raise ValueError("message must be a mapping")
         t = msg.get("t")
         cmd = cmd_of(t)  # 未知类型 → ValueError
+        if self._closed:
+            # 已关闭：泵已停、文件已删，不再分配可靠序号（否则调用方拿到一个既发不出、也不在文件里的 seq）
+            return 0
         if t == "line_delta":
             self._send_delta(msg, now, final_piece=final_piece)
             return 0

@@ -583,8 +583,13 @@ class TalkMixin:
 
     # ── 记账与入史 ───────────────────────────────────────────────────
 
-    async def record_line(self, speaker: str, *, side: str, lp: int, ln: str, text: str, truncated: bool) -> None:
-        """Spool (memory on) and upload record of one final line."""
+    async def record_line(self, speaker: str, *, side: str, lp: int, ln: str, text: str, truncated: bool,
+                          on_journaled: Optional[Callable[[], None]] = None) -> None:
+        """Spool (memory on) and upload record of one final line.
+
+        ``on_journaled`` is called once the upload record is in (before the
+        spool write): that is all the transcript seal needs.
+        """
         ts = self.wall()
         clean = clamp_text_utf8(text)
         self._ln_by_key[(lp, side)] = ln
@@ -609,6 +614,8 @@ class TalkMixin:
                                            truncated=bool(truncated))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: line not kept: %s", self.visit_id[:6], type(exc).__name__)
+        if on_journaled is not None:
+            on_journaled()
         spool = self.spool
         if spool is not None and self.memory_enabled and spool.is_open:
             try:
@@ -748,6 +755,10 @@ class TalkMixin:
         self.family_records.add(recorded)
         recorded.add_done_callback(self.family_records.discard)
 
+        def journaled(*_args: Any) -> None:
+            if not recorded.done():
+                recorded.set_result(None)
+
         def shown() -> None:
             ad_side, ad_kind = decode_addressee(ad)
             self._post_display(self.visit_line_payload(
@@ -764,12 +775,12 @@ class TalkMixin:
         async def commit() -> None:
             try:
                 try:
-                    # 先落盘再发送：最坏是本侧记了一句还没发出去的话（Servers 比对标单侧）
+                    # 先落盘再发送：最坏是本侧记了一句还没发出去的话（Servers 比对标单侧）。
+                    # 上传流水一记下就算「已落盘」：封存只需要它，不等后面的 spool 写盘
                     await self.record_line("own_human", side=self.side, lp=lp, ln=ln, text=payload["txt"],
-                                           truncated=bool(payload["truncated"]))
+                                           truncated=bool(payload["truncated"]), on_journaled=journaled)
                 finally:
-                    if not recorded.done():
-                        recorded.set_result(None)
+                    journaled()
                 if self.outbox.closed:
                     # 落盘卡得比收尾还久：通道已关、泵已停，这句发不出去了（转录里已记下）
                     logger.warning("visit %s: family line recorded after the outbox closed; not sent",
@@ -795,6 +806,7 @@ class TalkMixin:
         # 接纳之后（改了 room、可能已记进转录）这一段不能半途而废：调用方被取消（关机等）也照样落盘、入队、
         # 入史、上屏、排回复；预留一直持有到入队，关闭通道的 leave 照样排在它后面；封存之前限时等它落盘
         committing = asyncio.ensure_future(commit())
+        committing.add_done_callback(journaled)  # 还没开始跑就被取消（事件循环收尾等）也要完成，不让封存白等
         committing.add_done_callback(lambda t: t.cancelled() or t.exception())
         try:
             await asyncio.shield(committing)

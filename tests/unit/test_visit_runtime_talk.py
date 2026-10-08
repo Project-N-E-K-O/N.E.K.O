@@ -1676,9 +1676,14 @@ async def test_shutdown_waits_for_an_admitted_family_line_before_sealing(tmp_pat
     async def slow_record(speaker, **kwargs):
         if speaker == "own_human":
             await stuck.wait()
-            result = await real_record(speaker, **kwargs)
-            order.append("recorded")
-            return result
+            inner = kwargs.get("on_journaled")
+
+            def journaled():
+                order.append("recorded")                      # 记进上传流水（封存只需要它）
+                if inner is not None:
+                    inner()
+
+            kwargs["on_journaled"] = journaled
         return await real_record(speaker, **kwargs)
 
     real_seal = rt.journal.seal
@@ -1739,9 +1744,14 @@ async def test_the_normal_seal_waits_for_an_admitted_family_line(tmp_path, monke
     async def slow_record(speaker, **kwargs):
         if speaker == "own_human":
             await stuck.wait()
-            result = await real_record(speaker, **kwargs)
-            order.append("recorded")
-            return result
+            inner = kwargs.get("on_journaled")
+
+            def journaled():
+                order.append("recorded")                      # 记进上传流水（封存只需要它）
+                if inner is not None:
+                    inner()
+
+            kwargs["on_journaled"] = journaled
         return await real_record(speaker, **kwargs)
 
     real_seal = rt.journal.seal
@@ -1817,6 +1827,94 @@ async def test_a_family_line_recorded_after_the_outbox_closed_is_not_sent(tmp_pa
         assert rt.outbox.reserved_bytes == 0                  # 预留照样释放
     finally:
         stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_settling_family_records_does_not_wait_for_the_spool(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    assert rt.memory_enabled and rt.spool is not None and rt.spool.is_open
+    spool_stuck = asyncio.Event()
+    real_append = rt.spool.append
+
+    async def stuck_append(record):
+        if record.get("from") == "own_human":
+            await spool_stuck.wait()                          # spool 写盘卡住
+        return await real_append(record)
+
+    rt.spool.append = stuck_append
+    try:
+        sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
+            "input_type": "text", "data": "spool 卡住", "source": "neko_visit:guest_cat"}))
+        await wait_for(lambda: any(r.get("text") == "spool 卡住" for r in rt.journal._records))  # 上传流水已记下
+        await asyncio.wait_for(rt.settle_family_records(5), 1)  # 只等上传流水，不等 spool
+        assert not rt.family_records and not sending.done()
+    finally:
+        spool_stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_family_commit_cancelled_before_it_runs_still_settles(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    real_ensure = asyncio.ensure_future
+
+    def ensure_future(coro, **kw):
+        task = real_ensure(coro, **kw)
+        if getattr(coro, "__qualname__", "").endswith("._send_human_line.<locals>.commit"):
+            task.cancel()                                     # 还没开始跑就被取消（事件循环收尾等）
+        return task
+
+    monkeypatch.setattr(rtm_talk.asyncio, "ensure_future", ensure_future)
+    try:
+        sending = real_ensure(rtm.route_stream_message("Host", {
+            "input_type": "text", "data": "没跑起来", "source": "neko_visit:guest_cat"}))
+        await asyncio.gather(sending, return_exceptions=True)
+        monkeypatch.undo()
+        await settle()
+        assert not rt.family_records                          # 照样完成，之后的封存不会白等
+    finally:
+        monkeypatch.undo()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_the_family_wait_and_the_seal_share_one_deadline(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck, seal_stuck = asyncio.Event(), asyncio.Event()
+    real_record = rt.record_line
+    real_seal = rt.journal.seal
+
+    async def slow_record(speaker, **kwargs):
+        if speaker == "own_human":
+            await stuck.wait()                                # 这句一直落不了盘
+        return await real_record(speaker, **kwargs)
+
+    async def slow_seal(reason, **kw):
+        await seal_stuck.wait()                               # 封存也卡着
+        return await real_seal(reason, **kw)
+
+    rt.record_line = slow_record
+    rt.journal.seal = slow_seal
+    monkeypatch.setattr(rtm, "_SEAL_MAX_S", 1.0)
+    try:
+        sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
+            "input_type": "text", "data": "卡住的一句", "source": "neko_visit:guest_cat"}))
+        await wait_for(lambda: rt.outbox.reserved_bytes > 0)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        assert await asyncio.wait_for(rt.seal_and_finalize("peer_left"), 5) is False
+        assert loop.time() - started < 1.6                    # 两段等待合计不超过一个 _SEAL_MAX_S
+        sending.cancel()
+    finally:
+        stuck.set()
+        seal_stuck.set()
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)

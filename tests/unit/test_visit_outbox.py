@@ -789,7 +789,9 @@ async def test_a_send_after_close_does_not_recreate_the_outbox_file(tmp_path):
     tx.send(text(1), now=0.0)
     await tx.close()
     assert tx.closed and not await asyncio.to_thread(tx.path.exists)
-    tx.send(text(2), now=1.0)                              # 迟到的一句
+    unacked = tx.unacked_seqs
+    assert tx.send(text(2), now=1.0) == 0                  # 迟到的一句：不分配可靠序号
+    assert tx.unacked_seqs == unacked
     await tx.flush()
     assert tx._executor is None                            # 写线程不重建
     assert not await asyncio.to_thread(tx.path.exists)     # 带正文的文件不重新出现

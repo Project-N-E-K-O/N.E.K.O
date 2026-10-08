@@ -372,6 +372,24 @@ async def test_guest_gives_up_after_thirty_seconds_without_hello(tmp_path, monke
 # ── hello 核验 ───────────────────────────────────────────────────────
 
 
+async def test_a_hello_before_joined_keeps_the_awaiting_phase(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    wire = Wire()
+    wire.attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(), nbytes=900)  # 对端 hello 先到
+    assert rt.phase == "awaiting_accept"
+    await rt.on_transport_state({"state": "joined", "peer_present": True})            # 入房报告后到
+    assert rt.phase == "awaiting_accept"                  # 不翻回 invite_ready：邀请仍能接受
+    assert not side.host.frames_of("visit_state_change", "invite_ready")
+    status, _ = await rt.accept(False)
+    assert status == 200
+    await _finished(rt)
+
+
 async def test_verified_hello_invites_the_family_and_fills_peer_vid(tmp_path, monkeypatch, clocks):
     side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
     try:
@@ -1296,6 +1314,23 @@ async def test_shutdown_gives_the_room_cancel_its_floor_even_past_the_budget(tmp
     rt.deps.cancel_room = slow_cancel
     await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
     assert done == [rt.visit_id]                              # 保底等满：邀请码与配额占用不留到过期
+
+
+async def test_stop_all_waits_for_a_room_cancel_left_by_a_finished_visit(tmp_path, monkeypatch, clocks):
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    done = []
+
+    async def slow_cancel(visit_id, **kwargs):
+        await asyncio.sleep(0.3)                              # 撤销房间的请求还在飞
+        done.append(visit_id)
+        return True
+
+    rt.deps.cancel_room = slow_cancel
+    rt.request_finalize("route_end")                          # 没配上对的 host 正常结束
+    await _finished(rt)
+    assert rt.visit_id not in [r.visit_id for r in rtm._runtimes.values()] and done == []
+    await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
+    assert done == [rt.visit_id]                              # 运行时已拆掉，关机照样等它发完
 
 
 async def test_a_late_spool_after_stop_all_is_left_to_recovery(tmp_path, monkeypatch):

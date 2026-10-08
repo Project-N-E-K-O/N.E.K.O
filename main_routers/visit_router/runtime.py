@@ -428,6 +428,9 @@ def _reset_for_tests() -> None:
     for task in list(_detached):
         task.cancel()
     _detached.clear()
+    for task in list(_room_cancels):
+        task.cancel()
+    _room_cancels.clear()
     _runtimes.clear()
     _pending_visits.clear()
     _resolving_names.clear()
@@ -975,6 +978,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             pending, self._pending_join = self._pending_join, None
             if pending is not None:
                 await self.on_transport_state(pending)
+            return
+        if self.peer is not None:
+            # 对端的 hello 先于本侧的入房报告到达、已核验并进了等待接待：阶段与期限已由核验接管，不翻回去
             return
         now = self.clock()  # 写上传头 await 过：等待期限从这一刻算
         if self.side == "host":
@@ -1681,6 +1687,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._room_cancel_task = self.spawn(self.deps.cancel_room(
             self.visit_id, invite_expires_at=creds.invite_expires_at, account=creds.account))
         self._room_cancel_at = asyncio.get_running_loop().time()
+        # 运行时正常拆掉（已注销）之后它可能还在飞：单独登记，关机时 stop_all 也能限时等它发完
+        _room_cancels.add(self._room_cancel_task)
+        self._room_cancel_task.add_done_callback(_room_cancels.discard)
 
     def transport_alive(self) -> bool:
         from main_routers.visit_router.transport_ws import is_transport_attached
@@ -1808,12 +1817,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     async def seal_and_finalize(self, reason: str) -> bool:
         """Seal ``.upload.json`` first, then ``state.json.finalized`` (§3.2.6 item 22 step 3).
 
-        The seal waits at most ``_SEAL_MAX_S``: a stalled disk must not keep
-        the visit registered and its route locked. Past that the rest (spool
+        The seal waits at most ``_SEAL_MAX_S`` (the wait for admitted family
+        lines to be recorded included): a stalled disk must not keep the
+        visit registered and its route locked. Past that the rest (spool
         finalize, memory commits, upload) follows the seal in the background,
         in the same order, and this returns False.
         """
-        # 已接纳的亲人发言还在落盘（对端先走 / 传输已断时关闭通道不等预留）：先等它记进转录（限时）
+        loop = asyncio.get_running_loop()
+        seal_deadline = loop.time() + _SEAL_MAX_S
+        # 已接纳的亲人发言还在落盘（对端先走 / 传输已断时关闭通道不等预留）：先等它记进转录，与封存共用一个期限
         await self.settle_family_records(_SEAL_MAX_S)
         await self._settle_journal_open()
         if self._header_pending():
@@ -1823,7 +1835,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return False
         self._flush_journal_backlog()  # 上传头在等待中落盘：积压的记录先补进去再封存
         sealing = self._start_seal(reason)
-        await asyncio.wait([sealing], timeout=_SEAL_MAX_S)
+        await asyncio.wait([sealing], timeout=max(0.0, seal_deadline - loop.time()))
         if not sealing.done():
             logger.warning("visit %s: upload seal still writing; finishing it in the background", self.visit_id[:6])
             # 按 uid 登记：后台这段跑完（会写 spool 与串门记忆）之前，这个角色不能改名 / 删除
@@ -2172,6 +2184,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 _detached: set[asyncio.Task] = set()
 """Tasks that outlive their runtime (the inbox handoff); kept referenced until done."""
 
+_room_cancels: set[asyncio.Task] = set()
+"""Room cancellation requests still in flight (they may outlive their runtime)."""
+
 
 async def _retry_record_account(deps: "RuntimeDeps", account: Any, visit_uid: Any, visit_id: str) -> None:
     """Keep writing the account map in the background until it lands.
@@ -2398,6 +2413,12 @@ async def stop_all(reason: str = "shutdown") -> None:
         runtimes = list(_runtimes.values())
         if runtimes:
             await asyncio.gather(*(rt.shutdown() for rt in runtimes), return_exceptions=True)
+        # 已拆掉的场次发出的撤销房间请求（邀请码与配额占用）：限时等它发完，到点才取消
+        cancels = [t for t in _room_cancels if not t.done()]
+        if cancels:
+            await asyncio.wait(cancels, timeout=_SHUTDOWN_ROOM_CANCEL_S)
+            for task in cancels:
+                task.cancel()
         # 脱离运行时的后台任务（账号映射补写、交还回调、没关完的会话）也一并停掉，不留给事件循环销毁
         # 按角色登记的后台写入（digest、最后总结、延后的 spool 收尾、启动补录）同样停掉：没写完的留给下次启动补录
         detached = [t for t in _detached if not t.done()]
