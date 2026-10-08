@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from main_routers.visit_router import credentials as cr
@@ -25,8 +27,6 @@ from tests.unit.visit_runtime_harness import (
     GUEST_CHAR_UID,
     GUEST_UID,
     GUEST_VID,
-    HOST_CHAR_UID,
-    HOST_UID,
     HOST_VID,
     INVITE,
     NOW,
@@ -492,6 +492,7 @@ async def test_ready_goes_out_only_after_the_host_is_ready_to_receive(tmp_path, 
         assert seen["state"] == (True, True, True, True, True) and seen["count"] == 1
         assert len(host.clients) == 1
         await wait_for(lambda: guest.rt.activated)
+        await wait_for(lambda: guest.host.frames_of("visit_state_change", "departed"))
         assert len(guest.clients) == 1
         media = [m for m in wire.downlinks["host"] if m.get("type") == "media"]
         assert media[-1]["subscribe"] is True
@@ -586,4 +587,120 @@ async def test_video_unavailable_keeps_media_off_after_ready(tmp_path, monkeypat
         host.rt.peer.video = False
         assert host.rt.media_snapshot()["subscribe"] is False
     finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+# ── 在飞的凭证 / 激活与收尾、关机的竞态 ─────────────────────────────
+
+
+@pytest.mark.parametrize("role", ["host", "guest"])
+async def test_both_sides_interrupt_the_main_turn_before_taking_over(tmp_path, monkeypatch, clocks, role):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, role, clock=clock, wall=wall)
+    rt = await start_side(side, invite_code=INVITE if role == "guest" else None, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID if role == "host" else GUEST_VID)
+    try:
+        await through_gate(rt)
+        events = side.host.events
+        assert events.index("interrupt_main_turn") < events.index("acquire_takeover")
+    finally:
+        await teardown(side, clock=clock)
+
+
+async def test_room_minted_after_the_host_already_ended_is_cancelled_once(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    side.creds_gate = asyncio.Event()
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+    issuing = asyncio.ensure_future(rt.issue_credentials())
+    await wait_for(lambda: side.creds_calls)
+    rt.request_finalize("route_end")
+    await _finished(rt)                                   # 收尾走完时还没有凭证：那时没有房间可取消
+    assert side.cancelled == []
+    side.creds_gate.set()                                 # Servers 这才签出房间
+    assert await issuing is None
+    await wait_for(lambda: side.cancelled)
+    rt._cancel_room_once()                                # 收尾流程与晚到的凭证各调一次：只发一次
+    await settle()
+    assert len(side.cancelled) == 1
+    assert side.host.takeovers == []
+
+
+async def test_shutdown_while_credentials_are_pending_takes_nothing_over(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    side.creds_gate = asyncio.Event()
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+    issuing = asyncio.ensure_future(rt.issue_credentials())
+    await wait_for(lambda: side.creds_calls)
+    await asyncio.wait_for(rtm.stop_all("shutdown"), 3)
+    # 不等 Servers 回话：挂起的领凭证随关机取消，也不把 CancelledError 抛给 transport 处理器
+    assert await asyncio.wait_for(issuing, 1) is None
+    side.creds_gate.set()
+    await settle()
+    assert side.host.takeovers == []
+    assert rtm.get_runtime("Host") is None and rt.finalizing
+
+
+async def test_activation_that_finishes_after_the_end_publishes_nothing(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    hrt = host.rt
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = hrt._open_spool
+
+    async def slow_open(subjects):
+        await real_open(subjects)
+        reached.set()
+        await gate.wait()
+
+    hrt._open_spool = slow_open
+    try:
+        accepting = asyncio.ensure_future(hrt.accept(True))
+        await asyncio.wait_for(reached.wait(), 5)
+        hrt.request_finalize("route_end")                 # 等 spool 落盘期间这场被结束
+        await settle()
+        gate.set()
+        assert (await accepting)[0] == 200
+        await finish(hrt, clock)
+        assert hrt.room is None and not hrt.activated and hrt.phase == "ended"
+        assert not host.host.frames_of("visit_state_change", "started")
+        assert "ready" not in [p.get("t") for p in wire.sent["host"]]
+        assert hrt.spool is not None and not hrt.spool.is_open
+    finally:
+        gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_session_created_while_ending_is_still_closed(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    hrt = host.rt
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_create = host.deps.create_session
+
+    async def slow_create(*args, **kwargs):
+        reached.set()
+        await gate.wait()
+        return await real_create(*args, **kwargs)
+
+    host.deps.create_session = slow_create
+    try:
+        accepting = asyncio.ensure_future(hrt.accept(True))
+        await asyncio.wait_for(reached.wait(), 5)
+        hrt.request_finalize("route_end")
+        await settle()
+        await asyncio.sleep(0.3)
+        gate.set()                                        # 收尾已开始之后会话才建好
+        assert (await accepting)[0] == 200
+        await finish(hrt, clock)
+        assert len(host.clients) == 1 and host.clients[0].closed
+        assert hrt.room is None and not hrt.activated
+    finally:
+        gate.set()
         await teardown(host, guest, wire=wire, clock=clock)

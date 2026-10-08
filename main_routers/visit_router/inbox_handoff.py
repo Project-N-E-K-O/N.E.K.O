@@ -21,8 +21,9 @@ summary have been spoken. Both are mirror speeches with their own
 in a table that does not depend on the route state (the route slot is gone
 by the time the last ``visit_speech_progress{ended}`` arrives).
 
-A segment is *done* once its ``ended`` arrived, it was interrupted (the
-family spoke after it was queued), or it was skipped (never spoken). The
+A segment is *done* once its ``ended{final:true}`` arrived (``final:false``
+is only a drained queue that may resume), it was interrupted (the family
+spoke after it was queued), or it was skipped (never spoken). The
 handoff is due at the first of:
 
 * every expected segment done;
@@ -98,6 +99,12 @@ class InboxHandoff:
             seg.queued_at = self._clock()
         seg.done = True
 
+    def abandon(self) -> None:
+        """The exit flow failed: segments not queued yet will never be spoken (skip them)."""
+        for name, seg in self._segments.items():
+            if seg.queued_at is None:
+                self.skip(name)
+
     def mark_done(self, name: str) -> None:
         """The segment ended or was interrupted (an ``ended`` arriving later changes nothing)."""
         self._segments[name].done = True
@@ -114,12 +121,12 @@ class InboxHandoff:
             if seg.voiced and seg.queued_at is not None and stamp is not None and last_input > stamp:
                 seg.done = True
 
-    def on_progress(self, speech_id: str, *, ended: bool) -> bool:
+    def on_progress(self, speech_id: str, *, ended: bool, final: bool) -> bool:
         """A ``visit_speech_progress`` for one of the registered speech ids; False when unknown."""
         for seg in self._segments.values():
             if seg.speech_id == speech_id:
                 seg.last_progress_at = self._clock()
-                if ended:
+                if ended and final:
                     seg.ended = True
                     seg.done = True
                 return True
@@ -179,12 +186,12 @@ class InboxHandoff:
 _by_speech: dict[str, InboxHandoff] = {}
 
 
-def route_progress(speech_id: str, *, ended: bool) -> bool:
+def route_progress(speech_id: str, *, ended: bool, final: bool) -> bool:
     """Deliver a progress report to the handoff that registered ``speech_id`` (route may be gone)."""
     handoff = _by_speech.get(speech_id)
     if handoff is None:
         return False
-    return handoff.on_progress(speech_id, ended=ended)
+    return handoff.on_progress(speech_id, ended=ended, final=final)
 
 
 def pending_speech_ids() -> int:

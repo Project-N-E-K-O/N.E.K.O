@@ -55,7 +55,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from config.visit_settings import (
-    VISIT_ACCEPT_TIMEOUT_S,
     VISIT_ACTIVATION_ALLOWANCE_S,
     VISIT_CAPS_PREFLIGHT_TIMEOUT_S,
     VISIT_CAPS_SDK_TIMEOUT_S,
@@ -100,7 +99,6 @@ from main_routers.visit_router.runtime_common import (
     PHASE_INVITE_READY,
     PHASE_JOINING,
     PHASE_PENDING,
-    PHASE_WRAP_UP,
     STATUS_FOR_REASON,
     WAITING_PHASES,
     leave_reason_for,
@@ -128,6 +126,7 @@ _PUMP_IDLE_S = 0.25
 _INTERRUPT_MAIN_TURN_S = 3.0
 _CLOSE_WAIT_S = VISIT_LEAVE_GAP_GRACE_S * 2 + 2.0
 _HANDOFF_POLL_S = 0.25
+_SHUTDOWN_TASK_WAIT_S = 1.0
 _VOICE_STATUS_THROTTLE_S = 5.0
 
 # ═════════════════════════════════════════════════════════════════════
@@ -262,6 +261,13 @@ def get_runtime_by_visit(visit_id: str) -> Optional["VisitRuntime"]:
     return _by_visit.get(visit_id)
 
 
+def _prune_recent(now: float) -> None:
+    # 没人再查的场次也要放掉（它们持有转录、会话与 manager）
+    for visit_id, rt in list(_recent.items()):
+        if rt.ended_at_mono is None or now - rt.ended_at_mono > VISIT_TRANSCRIPT_MEMORY_TTL_S:
+            del _recent[visit_id]
+
+
 def recent_runtime(visit_id: str, *, now: Optional[float] = None) -> Optional["VisitRuntime"]:
     """A runtime that ended less than ``VISIT_TRANSCRIPT_MEMORY_TTL_S`` ago (its memory transcript)."""
     rt = _recent.get(visit_id)
@@ -280,9 +286,16 @@ def is_visit_live(visit_id: str) -> bool:
 
 
 def is_visit_route_active(lanlan_name: str) -> bool:
-    """Registry ``is_active``: the visit owns the character's input (false from ``ending`` on)."""
+    """Registry ``is_active``: the visit owns the character's input.
+
+    False from ``ending`` on, but only once the takeover is released: until
+    then ordinary chat would run with its output suppressed, so the visit
+    keeps the input and refuses it.
+    """
     rt = _runtimes.get(str(lanlan_name or ""))
-    return rt is not None and rt.phase not in (PHASE_ENDING, PHASE_ENDED)
+    if rt is None:
+        return False
+    return rt.phase not in (PHASE_ENDING, PHASE_ENDED) or rt.takeover_token is not None
 
 
 def is_visit_route_locked(lanlan_name: str) -> bool:
@@ -310,17 +323,20 @@ def has_visit_background_tasks(lanlan_name: str) -> bool:
 
 
 async def _remember_name(character_uid: str) -> None:
-    # 守卫按名字查：补录派生的任务只带 uid（这个角色在本进程可能没串过门），先认出它现在叫什么
-    if character_uid in _uid_by_name.values():
-        return
+    # 守卫按名字查：补录派生的任务只带 uid（这个角色在本进程可能没串过门），先认出它现在叫什么；
+    # 每次都重新解析：角色空闲时改过名，旧名字的映射作废
     try:
         from main_logic.visit import local_chars
 
         name = await local_chars.resolve_char_name(character_uid)
     except Exception:  # noqa: BLE001 - 认不出名字就只按 uid 登记
         return
-    if name:
-        _uid_by_name[name] = character_uid
+    if not name:
+        return
+    for old, uid in list(_uid_by_name.items()):
+        if uid == character_uid and old != name:
+            del _uid_by_name[old]
+    _uid_by_name[name] = character_uid
 
 
 def spawn_visit_background(character_uid: str, factory: Callable[[], Awaitable[Any]]) -> asyncio.Task:
@@ -507,7 +523,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._accept_deadline: Optional[float] = None
         self.accepted: Optional[bool] = None
         self.activated = False
-        self._activating = False
+        self._activation: Optional[asyncio.Task] = None
         self.ready_exchanged = False
         self.started_at_mono: Optional[float] = None
         self.started_at_wall: Optional[float] = None
@@ -546,6 +562,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.handoff: Optional[inbox_handoff.InboxHandoff] = None
         self.done_received = False
         self.sealed_doc: Optional[dict] = None
+        self.spool_lines = 0
+        self._terminated = False
+        self._room_cancel_sent = False
+        self._handback_started = False
 
         self._init_rx()
         self._init_talk()
@@ -574,7 +594,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
     @property
     def finalizing(self) -> bool:
-        return self._exit_task is not None
+        return self._exit_task is not None or self._terminated
 
     def _set_phase(self, phase: str) -> None:
         self.phase = phase
@@ -620,8 +640,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.grant is None:
             if self._creds_task is None:
                 self._creds_task = asyncio.ensure_future(self._obtain_credentials())
-            ok = await asyncio.shield(self._creds_task)
-            if not ok or self.finalizing:
+            task = self._creds_task
+            # 只等不连带取消（页面重连会再来要）；关机取消了它就按没领到
+            await asyncio.wait([task])
+            if task.cancelled() or not task.result() or self.finalizing:
                 return None
             self._sdk_deadline = self.clock() + VISIT_CAPS_SDK_TIMEOUT_S
         else:
@@ -658,7 +680,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
     async def _obtain_credentials(self) -> bool:
         """Main turn interrupt → Servers credentials → takeover (§3.2.1 steps 4–6)."""
-        if self.side == "host" and not await self.host.interrupt_main_turn(_INTERRUPT_MAIN_TURN_S):
+        # 两侧一样：普通文字回复还在生成就先打断（接管只压输出，不停离线会话的生成）
+        if not await self.host.interrupt_main_turn(_INTERRUPT_MAIN_TURN_S):
             self.request_finalize("busy")
             return False
         try:
@@ -685,7 +708,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self.request_finalize("servers_unreachable")
             return False
         if self.finalizing:
-            # 等 Servers 期间这场已被结束：已签发的房间交给收尾流程取消
+            # 等 Servers 期间这场已被结束：收尾流程可能已经走过取消那一步，这里补一次（只发一次）
+            self._cancel_room_once()
             return False
         try:
             self.takeover_token = self.host.acquire_takeover(self._voice_dispatcher, self.inbox.accept)
@@ -812,7 +836,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if present:
             if not self.peer_present:
                 self.peer_present = True
-                if self.liveness.peer_departed_at is not None:
+                if self.liveness.peer_departed_at is not None or self.peer is not None:
+                    # 显式离开后的重入，或超时类断开后再出现：vendor 刚确认对端在场，心跳从现在算
                     self.liveness.on_peer_vendor_rejoined(now)
                 self.liveness.on_peer_entered(now)
                 self.outbox.resume(now, reason=PAUSE_PEER_AWAY)
@@ -924,7 +949,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             try:
                 await asyncio.wait_for(self._kick_event.wait(), _PUMP_IDLE_S)
             except asyncio.TimeoutError:
-                pass
+                pass  # 没人 kick：按空闲间隔照常冲一遍
             self._kick_event.clear()
             try:
                 await self.flush()
@@ -1058,7 +1083,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
     async def on_ready(self) -> None:
         """Guest: the host's ``ready`` arrived; activate before the first turn."""
-        if self.side != "guest" or self.ready_exchanged or self._activating or self.finalizing:
+        if self.side != "guest" or self.ready_exchanged or self._activation is not None or self.finalizing:
             return
         self.liveness.on_ready(self.clock())
         try:
@@ -1083,13 +1108,30 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
     async def activate(self) -> None:
         """The single activation: isolated session, proactive parked, spool, ``VisitRoom`` active."""
-        if self.activated or self._activating:
+        if self.activated or self._activation is not None:
             return
-        self._activating = True
+        # 独立任务：收尾流程在收口 spool / 关会话之前等它停下（_settle_activation）
+        task = asyncio.ensure_future(self._activate())
+        self._activation = task
         try:
-            await self._activate()
-        finally:
-            self._activating = False
+            await asyncio.wait([task])
+        except asyncio.CancelledError:
+            task.cancel()  # 调用方超时 / 被取消：激活一起停
+            raise
+        if not task.cancelled():
+            task.result()  # 激活失败照常抛给调用方；被关机取消就静默返回（调用方看 finalizing）
+
+    async def _settle_activation(self) -> None:
+        """Let an in-flight activation notice ``finalizing`` and stop before teardown (bounded)."""
+        task = self._activation
+        if task is None or task.done():
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), VISIT_ACTIVATION_ALLOWANCE_S)
+        except asyncio.TimeoutError:
+            task.cancel()
+        except Exception:  # noqa: BLE001 - 激活失败由发起方处理，这里只等它结束
+            return
 
     async def _activate(self) -> None:
         from config.prompts.prompts_visit import build_visit_instructions, get_family_neutral_term
@@ -1103,10 +1145,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if peer is None or creds is None:
             raise RuntimeError("activation before the peer verified")
         settings = await self.deps.settings()
+        if self.finalizing:
+            return
         self.memory_enabled = bool(settings.get("visitMemoryEnabled", VISIT_MEMORY_DEFAULT))
         self.voice = VoiceState(enabled=bool(settings.get("visitVoiceEnabled", VISIT_VOICE_DEFAULT)))
         self.lang = prompt_lang()
         ctx = await self.deps.character_context()
+        if self.finalizing:
+            return
         self.family_names = tuple(getattr(ctx, "family_names", ()) or ())
         self.char_names = tuple(getattr(ctx, "char_names", ()) or ())
         protected = protected_display_names(self.lang, self.family_names, self.char_names)
@@ -1133,12 +1179,17 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             memory_block=memory_block, peer_display=peer.display,
         )
         self.neutral_term = get_family_neutral_term(self.lang)
+        if self.finalizing:
+            return
+        # 之后的 session / spool 一挂到 self 上，收尾流程就负责关闭（它先等激活停下）
         self.session = await self.deps.create_session(self.lanlan_name, self.side,
                                                       instructions=instructions, lang=self.lang)
         if self.finalizing:
             return
         self.host.park_proactive()
         await self._open_spool(subjects)
+        if self.finalizing:
+            return
         self.room = VisitRoom(self.side, peer_crop=peer.crop, rng=self.deps.rng,
                               reply_gap_s=self.deps.reply_gap_s)
         self.activated = True
@@ -1195,16 +1246,21 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                     "peer_uid": peer.uid, "peer_char_id": peer_char_id, "peer_char_tag": peer.char_tag,
                     "started_at": self.wall(), "lang": self.lang or "und",
                 }, now=self.clock())
-                await PeerRoster(self.config_dir, own_uid=creds.visit_uid).upsert(
-                    peer.uid, self.lanlan_name, pair_id=pair_id, peer_char_id=peer_char_id,
-                    char_tag=peer.char_tag, display_name=peer.display, now=self.wall(),
-                    visit_id=self.visit_id,
-                )
         except Exception as exc:  # noqa: BLE001 - spool 打不开：本场不记串门记忆，对话照常
             logger.warning("visit %s: spool not opened: %s", self.visit_id[:6], type(exc).__name__)
             memory_on = False
         self.memory_enabled = memory_on
         self.spool = spool
+        if not memory_on:
+            return
+        try:
+            await PeerRoster(self.config_dir, own_uid=creds.visit_uid).upsert(
+                peer.uid, self.lanlan_name, pair_id=pair_id, peer_char_id=peer_char_id,
+                char_tag=peer.char_tag, display_name=peer.display, now=self.wall(),
+                visit_id=self.visit_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - 名册是附带的：写不进不影响已打开的转录
+            logger.warning("visit %s: peer roster not updated: %s", self.visit_id[:6], type(exc).__name__)
 
     # ── 输入接管（注册表入口）─────────────────────────────────────────
 
@@ -1235,9 +1291,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     ) -> bool:
         """Flip to ``ending`` now and start the exit flow (idempotent, never awaits).
 
-        From here ``is_visit_route_active`` is false (the family's typing goes
-        to ordinary chat once the takeover is released); the slot stays
-        locked until the exit flow completed.
+        Once the takeover is released ``is_visit_route_active`` is false (the
+        family's typing goes to ordinary chat; before that it is refused);
+        the slot stays locked until the exit flow completed.
         """
         if self._exit_task is not None:
             return False
@@ -1271,7 +1327,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         except Exception as exc:  # noqa: BLE001 - 收尾每一步都尽力而为，最后一定注销
             logger.error("visit %s: exit flow failed: %r", self.visit_id[:6], exc)
         finally:
+            if not self._handback_started:
+                # 中途失败 / 被取消：没排上的段落不再等，回调照样交还（不丢、也不一直暂扣）
+                if self.handoff is not None:
+                    self.handoff.abandon()
+                self._start_handback()
             await self._teardown()
+
+    def _start_handback(self) -> None:
+        self._handback_started = True
+        _detach(self._hand_back_callbacks())
 
     async def _exit_steps(self, reason: str) -> None:
         await self.push(PHASE_ENDING, reason=reason)
@@ -1296,6 +1361,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         # ④ 回家仪式句（亲人先开口则放弃）
         if self.activated:
             await self.say_ritual(reason, input_stamp=input_stamp)
+        await self._settle_activation()
         # ⑤ 等关闭任务结束（数据通道要靠 iframe 发 leave，所以 iframe 留到这时）
         try:
             await asyncio.wait_for(asyncio.shield(closing), _CLOSE_WAIT_S)
@@ -1317,7 +1383,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             await run_debrief(self, input_stamp=input_stamp)
         # ⑨ 交还 VisitInbox：仪式句与简述都播完（或兜底期限）。独立任务，不占角色锁：
         # 路由 pop 之后到的 ended 经 inbox_handoff 表照样转给它
-        _detach(self._hand_back_callbacks())
+        self._start_handback()
 
     async def _close_channel(self, reason: str) -> None:
         """Drain (normal ends), ``leave``, its resend window; then stop the iframe and drop the transport."""
@@ -1332,17 +1398,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                         await asyncio.sleep(0.1)
                 try:
                     self.outbox.send({"t": "leave", "v": 1, "reason": leave_reason}, now=self.clock())
-                except ValueError:
-                    pass
-                self.kick()
-                while not self.outbox.leave_done(self.clock()):
+                except ValueError as exc:
+                    # 没入队就没有补传窗口可等（leave_done 永远不会成立）
+                    logger.warning("visit %s: leave not queued: %s", self.visit_id[:6], exc)
+                else:
                     self.kick()
-                    await asyncio.sleep(0.1)
-            if self.side == "host" and self.creds is not None and self.peer is None:
-                # 对端核验之前就结束：邀请码还可能被兑换，后台取消房间（不扣对方配额）
-                creds = self.creds
-                self.spawn(self.deps.cancel_room(self.visit_id, invite_expires_at=creds.invite_expires_at,
-                                                 account=creds.account))
+                    while not self.outbox.leave_done(self.clock()):
+                        self.kick()
+                        await asyncio.sleep(0.1)
+            if self.peer is None:
+                self._cancel_room_once()
         finally:
             try:
                 # 对端的 leave 还欠着 ack（peer_left 收尾）：先送出，免得对方白等补传窗口
@@ -1358,6 +1423,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 await self.outbox.close()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: outbox close failed: %s", self.visit_id[:6], type(exc).__name__)
+
+    def _cancel_room_once(self) -> None:
+        # host 在对端核验之前就结束：邀请码还可能被兑换，后台取消房间（不扣对方配额）。
+        # 收尾流程与晚到的凭证各调一次，只发一次
+        creds = self.creds
+        if self.side != "host" or creds is None or self._room_cancel_sent:
+            return
+        self._room_cancel_sent = True
+        self.spawn(self.deps.cancel_room(self.visit_id, invite_expires_at=creds.invite_expires_at,
+                                         account=creds.account))
 
     def transport_alive(self) -> bool:
         from main_routers.visit_router.transport_ws import is_transport_attached
@@ -1426,6 +1501,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         """Close the session, drop the slot and unregister (always runs)."""
         from main_routers.visit_router import transcript_upload
 
+        await self._settle_activation()
         if self.takeover_token is not None:
             try:
                 self.host.release_takeover(self.takeover_token)
@@ -1441,7 +1517,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if slot is self.slot:
             finalize_visit_route_state(self.lanlan_name)
         self._set_phase(PHASE_ENDED)
+        self._terminated = True
         self.ended_at_mono = self.clock()
+        _prune_recent(self.ended_at_mono)
         _recent[self.visit_id] = self
         _unregister(self)
         if self.journal.sealed or transcript_upload.upload_pending_sync(self.config_dir, self.visit_id):
@@ -1454,10 +1532,32 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
     async def shutdown(self) -> None:
         """``stop_all``: no ``leave`` (the pages are already gone), files first, takeover released."""
+        # 先置终态：挂起中的凭证 / 激活醒来看到 finalizing 就不再接管、不再建会话
+        self._terminated = True
         if self._exit_task is not None and not self._exit_task.done():
             self._exit_task.cancel()
         self.finalize_reason = self.finalize_reason or "shutdown"
         self._set_phase(PHASE_ENDED)
+        if not self._handback_started:
+            # 收尾流程已取消，它的 finally 看到这个标记就不再另起交还
+            # 进程要退了：不等仪式句，暂扣的回调立即交还
+            self._handback_started = True
+            if self.handoff is not None:
+                self.handoff.close()
+            if self.hold_token is not None:
+                try:
+                    self.host.release_callback_hold(self.hold_token)
+                except Exception:  # noqa: BLE001
+                    pass
+                self.hold_token = None
+            parked = self.inbox.close() or []
+            if parked:
+                self.host.resubmit_callbacks(parked)
+        inflight = [t for t in (self._creds_task, self._activation) if t is not None and not t.done()]
+        for task in inflight:
+            task.cancel()
+        if inflight:
+            await asyncio.wait(inflight, timeout=_SHUTDOWN_TASK_WAIT_S)
         try:
             self.sealed_doc = await self.journal.seal("shutdown", ended_at=self.wall())
         except Exception as exc:  # noqa: BLE001
@@ -1466,7 +1566,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             try:
                 await self.spool.close()
                 changes: dict[str, Any] = {"finalized": "shutdown"}
-                if self.memory_enabled and await self._has_digestable_lines():
+                if self.memory_enabled and self.spool_lines > 0:
                     changes.update(debrief_choice="ask_later", debrief_chip_pending=True)
                 await self.spool.update_state(**changes)
             except Exception as exc:  # noqa: BLE001
@@ -1487,10 +1587,6 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if slot is self.slot:
             finalize_visit_route_state(self.lanlan_name)
         _unregister(self)
-
-    async def _has_digestable_lines(self) -> bool:
-        return any(line.get("from") in ("own_cat", "peer_cat", "own_human", "peer_human")
-                   for line in self.journal.lines()) if self.journal.role is not None else False
 
     # ── 状态 ─────────────────────────────────────────────────────────
 
@@ -1673,7 +1769,7 @@ async def on_page_signal(lanlan_name: str, message: dict) -> bool:
     if rt is not None and rt.speech_router.route(speech_id, played_ms=played_ms, ended=ended,
                                                  final=bool(final)):
         return True
-    return inbox_handoff.route_progress(speech_id, ended=ended)
+    return inbox_handoff.route_progress(speech_id, ended=ended, final=bool(final))
 
 
 async def finalize_for_character(lanlan_name: str) -> int:
@@ -1714,6 +1810,7 @@ async def visit_sweep_loop() -> None:
     """Every ``VISIT_SWEEP_INTERVAL_S``: each runtime's timers (PR-09b starts it after startup)."""
     while True:
         await asyncio.sleep(VISIT_SWEEP_INTERVAL_S)
+        _prune_recent(time.monotonic())
         for rt in list(_runtimes.values()):
             try:
                 await rt.tick()

@@ -22,7 +22,6 @@ import pytest
 
 from main_routers.visit_router import runtime as rtm
 from main_routers.visit_router import transport_ws
-from main_routers.visit_router.session_pool import sort_visit_history
 from tests.unit.visit_runtime_harness import (
     GUEST_VID,
     HOST_VID,
@@ -263,7 +262,6 @@ async def test_human_interrupt_stops_now_and_keeps_only_the_released_prefix(tmp_
         await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "line_delta"])
         await rtm.route_stream_message("Host", {"input_type": "text", "data": "等一下", "source": "neko_visit:guest_cat"})
         assert stream.aborted
-        types = wire.sent_types("host")
         await wait_for(lambda: len(_texts(wire, "host")) >= 2)
         types = wire.sent_types("host")
         assert types.index("line_abort") < types.index("text")
@@ -421,6 +419,9 @@ async def test_ending_closes_the_line_in_progress_before_leave(tmp_path, monkeyp
         await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "line_delta"])
         status, _ = await rtm.end_visit("Host", host.rt.visit_id, "route_end")
         assert status == 200
+        # 收口这一行期间接管还在：输入仍归串门（拒掉），释放接管之后才交还普通聊天
+        assert rtm.is_visit_route_active("Host") and host.rt.takeover_token is not None
+        await wait_for(lambda: host.host.released)
         assert not rtm.is_visit_route_active("Host") and rtm.is_visit_route_locked("Host")
         await finish(host.rt, clock)
         types = wire.sent_types("host")
@@ -488,6 +489,42 @@ async def test_vid_binding_drops_a_third_party(tmp_path, monkeypatch):
                                                                         "crop": "upper", "hidden": False}, nbytes=60)
         assert guest.rt.binding_dropped >= 1
         assert HOST_VID != "h_" + "z" * 24
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_peer_goodbye_is_cleaned_and_capped_before_it_reaches_our_prompt(tmp_path, monkeypatch):
+    from config.visit_settings import VISIT_GOODBYE_MAX_CHARS
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        forged = "再见" * 200                                # 对端不守 LineSpeaker 的 40 字上限
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:90", "lp": 90, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
+            "ad": "hc", "rt": "", "wu": True, "final": True, "txt": forged, "truncated": False, "i_done": 0,
+        }, nbytes=900)
+        assert rt.last_peer_goodbye
+        assert len(rt.last_peer_goodbye) <= VISIT_GOODBYE_MAX_CHARS
+        assert forged.startswith(rt.last_peer_goodbye)
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_peer_back_after_a_timeout_class_drop_restarts_the_heartbeat_clock(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        now = clock()
+        rt.liveness.peer_last_seen = now - 25               # 心跳快到 30 s 判死
+        rt._on_peer_presence(False, 1, now)                 # 超时类断开：不起重入宽限
+        assert rt.liveness.peer_departed_at is None
+        rt._on_peer_presence(True, None, now + 1)           # vendor 又确认对端在场
+        assert rt.liveness.peer_last_seen == now + 1
     finally:
         hgate.set()
         ggate.set()

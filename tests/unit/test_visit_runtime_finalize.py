@@ -106,12 +106,20 @@ def test_every_received_leave_reason_maps_into_the_finalize_set():
 # ── 状态翻转、锁与输入 ─────────────────────────────────────────────
 
 
-async def test_ending_releases_the_input_at_once_and_keeps_the_lock_until_done(tmp_path, monkeypatch):
+async def test_ending_releases_the_input_with_the_takeover_and_keeps_the_lock_until_done(tmp_path, monkeypatch):
     host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
     try:
         assert rtm.is_visit_route_active("Host") and registry.get_active_external_route("Host").kind == "neko_visit"
         assert host.rt.request_finalize("route_end") is True
         assert host.rt.request_finalize("peer_lost") is False          # 幂等
+        # 接管还没释放：普通聊天此刻输出被压着，这句由串门拒掉（不漏进普通聊天）
+        assert host.rt.phase == "ending" and host.rt.takeover_token is not None
+        assert rtm.is_visit_route_active("Host")
+        claim = await registry.route_external_stream_message("Host", {"input_type": "text", "data": "喂"})
+        assert claim is registry.RouteClaim.CLAIMED
+        assert host.host.status_codes()[-1] == "VISIT_INPUT_REFUSED_WRAPUP"
+        # 接管一释放：输入交还普通聊天，改名 / 删除锁保持到收尾完成
+        await wait_for(lambda: host.host.released)
         assert not rtm.is_visit_route_active("Host")
         assert registry.get_active_external_route("Host") is None
         assert registry.is_external_route_locked("Host")
@@ -399,7 +407,7 @@ async def test_character_switch_and_replaced_manager(tmp_path, monkeypatch):
     try:
         assert await registry.finalize_external_routes_for_character("Host") == 1
         assert host.rt.finalize_reason == "character_switch"
-        assert not rtm.is_visit_route_active("Host")
+        await wait_for(lambda: not rtm.is_visit_route_active("Host"))
         guest.host.current = False
         await guest.rt.tick()
         assert guest.rt.finalize_reason == "manager_replaced"
@@ -442,3 +450,134 @@ async def test_shutdown_writes_files_first_and_never_sends_leave(tmp_path, monke
 async def test_stop_all_without_visits_does_nothing():
     await rtm.stop_all("shutdown")
     await settle()
+
+
+# ── 评审补充：失败路径与边界 ─────────────────────────────────────────
+
+
+async def test_a_failing_exit_step_still_hands_the_callbacks_back(tmp_path, monkeypatch):
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    hh = host.host
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("ritual exploded")
+
+    host.rt.say_ritual = broken
+    try:
+        hh.sink({"source_kind": "plugin", "text": "插件回调"})
+        host.rt.request_finalize("recall")
+        await finish(host.rt, clock)
+        await wait_for(lambda: hh.resubmitted)                # 不等兜底期限：没排上的段落直接跳过
+        assert [c["text"] for c in hh.resubmitted] == ["插件回调"]
+        assert hh.hold_released == hh.holds and hh.holds
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_leave_that_cannot_be_queued_does_not_wedge_the_channel_close(tmp_path, monkeypatch):
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    rt = host.rt
+    real_send = rt.outbox.send
+
+    def refuse_leave(msg, **kw):
+        if msg.get("t") == "leave":
+            raise ValueError("outbox full")
+        return real_send(msg, **kw)
+
+    rt.outbox.send = refuse_leave
+    try:
+        rt.request_finalize("route_end")
+        await finish(rt, clock)
+        await wait_for(lambda: [m for m in wire.downlinks["host"] if m.get("type") == "stop"])
+        await wait_for(lambda: rt.outbox._executor is None)       # 写线程停了、.outbox.jsonl 已删
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_ended_runtimes_expire_from_the_recent_table(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from config.visit_settings import VISIT_TRANSCRIPT_MEMORY_TTL_S
+
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        stale = SimpleNamespace(ended_at_mono=clock() - VISIT_TRANSCRIPT_MEMORY_TTL_S - 1)
+        fresh = SimpleNamespace(ended_at_mono=clock() - 1)
+        rtm._recent["stale-visit"] = stale
+        rtm._recent["fresh-visit"] = fresh
+        rt.request_finalize("route_end")
+        await finish(rt, clock)
+        # 没人查过的过期场次也在下一场登记时放掉
+        assert "stale-visit" not in rtm._recent
+        assert rtm._recent["fresh-visit"] is fresh and rtm._recent[rt.visit_id] is rt
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_home_segments_stay_text_only_after_the_visit_fell_back_from_tts(tmp_path, monkeypatch):
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    hh = host.host
+    try:
+        hh.sink({"source_kind": "plugin", "text": "回调"})
+        host.rt.voice.fallen_back = True                   # 这一场 TTS 已起不来、改按估时
+        host.rt.request_finalize("recall")
+        await finish(host.rt, clock)
+        assert not [s for s in hh.streams if s.request_id.startswith(("visit-ritual", "visit-debrief"))]
+        assert [e for e in hh.events if e.startswith("output:visit-ritual")]
+        clock.advance(30)
+        await wait_for(lambda: hh.resubmitted)              # 按两段估时交还
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_drained_audio_queue_does_not_hand_the_callbacks_back(tmp_path, monkeypatch):
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    hh = host.host
+    try:
+        hh.sink({"source_kind": "plugin", "text": "回调"})
+        hh.auto_play = False
+        host.rt.request_finalize("recall")
+        await finish(host.rt, clock)
+        segments = [s for s in hh.streams if s.request_id.startswith(("visit-ritual", "visit-debrief"))]
+        assert len(segments) == 2
+        for seg in segments:                                # 队列暂时排空，之后还会接着播
+            await rtm.on_page_signal("Host", {"speech_id": seg.speech_id, "played_ms": 900,
+                                              "ended": True, "final": False})
+        await asyncio.sleep(0.6)
+        assert hh.resubmitted == []
+        for seg in segments:
+            await rtm.on_page_signal("Host", {"speech_id": seg.speech_id, "played_ms": 3000,
+                                              "ended": True, "final": True})
+        await wait_for(lambda: hh.resubmitted)
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_background_tasks_follow_a_rename_of_an_idle_character(monkeypatch):
+    from main_logic.visit import local_chars
+
+    async def resolve(uid):
+        return "新名字"
+
+    monkeypatch.setattr(local_chars, "resolve_char_name", resolve)
+    rtm._uid_by_name["旧名字"] = "uid-1"                   # 上次串门时的名字
+    gate = asyncio.Event()
+    task = rtm.spawn_visit_background("uid-1", gate.wait)
+    try:
+        await wait_for(lambda: "新名字" in rtm._uid_by_name)
+        assert rtm.has_visit_background_tasks("新名字")
+        assert "旧名字" not in rtm._uid_by_name
+    finally:
+        gate.set()
+        await task

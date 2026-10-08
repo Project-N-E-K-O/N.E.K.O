@@ -41,7 +41,8 @@ from typing import Any, Optional
 from main_logic.visit.identity import JtiWindow, PeerBlocked, TicketRejected, verify_identity_ticket
 from main_logic.visit.limits import RateChannel, channel_for
 from main_logic.visit.room import IncomingLineDone, IncomingLineStart, LineRef
-from main_logic.visit.sanitize import defang_markdown_media
+from config.visit_settings import VISIT_GOODBYE_MAX_CHARS
+from main_logic.visit.sanitize import clamp_peer_line, defang_markdown_media
 from main_routers.visit_router.runtime_common import (
     PHASE_AWAITING,
     decode_addressee,
@@ -411,7 +412,8 @@ class ReceiveMixin:
         await self.record_line(speaker_from, side=self.peer_side, lp=lp, ln=ln, text=txt, truncated=truncated)
         self.add_peer_history(ln, lp, speaker_from, txt, truncated=truncated, trunc_reason=trunc_reason)
         if m.get("wu") is True and sp == "cat":
-            self.last_peer_goodbye = txt
+            # 要拼进本侧下一轮 prompt：按收件侧再清洗、按告别句上限截（对端可能不守 LineSpeaker 的上限）
+            self.last_peer_goodbye = clamp_peer_line(txt)[:VISIT_GOODBYE_MAX_CHARS]
         await self.host.send_frame(self.visit_line_payload(
             ln=ln, lp=lp, side=self.peer_side, kind=sp, ad_side=ad_side, ad_kind=ad_kind,
             reply_to=str(m.get("rt") or ""), goodbye=m.get("wu") is True, text=txt, truncated=truncated,

@@ -177,6 +177,7 @@ class FakeHost:
         return self.precondition
 
     async def interrupt_main_turn(self, timeout: float) -> bool:
+        self.events.append("interrupt_main_turn")
         return True
 
     async def send_frame(self, payload: dict) -> bool:
@@ -255,7 +256,7 @@ class FakeHost:
     def last_user_input(self) -> float:
         return self.last_input
 
-    async def wait_turn_idle(self, timeout: float) -> None:
+    async def wait_turn_idle(self, timeout: float, *, start_window: float = 0.0) -> None:
         self.events.append("wait_turn_idle")
 
     async def ack_text_session(self, request_id) -> None:
@@ -347,6 +348,7 @@ class Side:
     settings: dict = field(default_factory=lambda: {"visitMemoryEnabled": True, "visitVoiceEnabled": True})
     rt: Optional[rtm.VisitRuntime] = None
     creds_error: Optional[Exception] = None
+    creds_gate: Optional[asyncio.Event] = None
 
 
 def make_side(tmp_path: Path, role: str, *, clock: FakeClock, wall: FakeClock, name: Optional[str] = None,
@@ -360,6 +362,8 @@ def make_side(tmp_path: Path, role: str, *, clock: FakeClock, wall: FakeClock, n
     async def fetch(**kwargs):
         side = side_holder["side"]
         side.creds_calls.append(kwargs)
+        if side.creds_gate is not None:
+            await side.creds_gate.wait()
         if side.creds_error is not None:
             raise side.creds_error
         return credentials(role)
@@ -598,6 +602,6 @@ async def teardown(*sides: Side, wire: Optional[Wire] = None, clock: Optional[Fa
             try:
                 await finish(rt, clock, timeout=30)
             except AssertionError:
-                pass
+                pass  # 收尸尽力而为：没收完的场次由各测试文件的 _reset_for_tests 夹具兜底
     if wire is not None:
         await wire.close()

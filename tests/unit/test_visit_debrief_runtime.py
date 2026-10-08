@@ -162,3 +162,41 @@ async def test_page_signal_reaches_the_handoff_after_the_route_is_gone(tmp_path,
     assert await registry.route_external_page_signal("Host", {"speech_id": "sp-late", "played_ms": 900,
                                                               "ended": True, "final": True})
     assert handoff._segments["ritual"].done
+
+
+async def test_a_failed_roster_write_keeps_the_visit_memory(tmp_path, monkeypatch):
+    from main_logic.visit.subjects import PeerRoster
+
+    async def broken_upsert(self, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(PeerRoster, "upsert", broken_upsert)
+    host, guest, wire, clock, gates = await _visit_with_lines(tmp_path, monkeypatch)
+    try:
+        assert host.rt.memory_enabled is True and host.rt.spool.is_open
+        assert host.rt.spool_lines >= 2                    # 名册写不进，转录照样逐句落盘
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_no_diary_chip_when_nothing_reached_the_spool(tmp_path, monkeypatch):
+    from main_logic.visit.spool import VisitSpool
+
+    async def broken_append(self, line):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(VisitSpool, "append", broken_append)
+    host, guest, wire, clock, gates = await _visit_with_lines(tmp_path, monkeypatch)
+    host.replies.queue = [["我回来啦。"], ["聊得很开心。"]]
+    try:
+        assert host.rt.journal.lines() and host.rt.spool_lines == 0
+        host.rt.request_finalize("route_end")
+        await finish(host.rt, clock)
+        # 上传流水有句子，但日记读的 spool 一句没有：不出芯片
+        assert not [b for b in host.host.blocks if b[1] == f"visit-debrief:{host.rt.visit_id}"]
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)

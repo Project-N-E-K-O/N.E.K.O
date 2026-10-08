@@ -103,8 +103,12 @@ class VisitHost(Protocol):
     def last_user_input(self) -> float:
         """Wall time of the latest ordinary user input (0 when none)."""
 
-    async def wait_turn_idle(self, timeout: float) -> None:
-        """Wait until the ordinary session is not producing a reply (bounded)."""
+    async def wait_turn_idle(self, timeout: float, *, start_window: float = 0.0) -> None:
+        """Wait until the ordinary session is not producing a reply (bounded).
+
+        ``start_window`` > 0: first wait up to that long for a reply to start
+        (input that was just ingressed may not have started one yet).
+        """
 
     async def ack_text_session(self, request_id: Optional[str]) -> None:
         """Acknowledge a text ``start_session`` without starting an ordinary text session."""
@@ -153,12 +157,13 @@ class ManagerHost:
         session = getattr(self._mgr, "session", None)
         if session is None or not getattr(session, "_is_responding", False):
             return True
+        # 打断与等 turn end 共用一个期限
+        deadline = time.monotonic() + timeout
         try:
             await asyncio.wait_for(session.handle_interruption(), timeout)
         except Exception as exc:  # noqa: BLE001 - 打断失败按 busy 拒绝
             logger.warning("visit: main turn interruption failed: %s", type(exc).__name__)
             return False
-        deadline = time.monotonic() + timeout
         while getattr(session, "_is_responding", False) and time.monotonic() < deadline:
             await asyncio.sleep(_TURN_IDLE_POLL_S)
         return not getattr(session, "_is_responding", False)
@@ -243,11 +248,16 @@ class ManagerHost:
         value = getattr(self._mgr, "last_user_activity_time", None)
         return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
-    async def wait_turn_idle(self, timeout: float) -> None:
+    async def wait_turn_idle(self, timeout: float, *, start_window: float = 0.0) -> None:
         deadline = time.monotonic() + timeout
+        start_by = time.monotonic() + max(0.0, min(start_window, timeout))
+        started = False
         while time.monotonic() < deadline:
             session = getattr(self._mgr, "session", None)
-            if session is None or not getattr(session, "_is_responding", False):
+            responding = session is not None and getattr(session, "_is_responding", False)
+            if responding:
+                started = True
+            elif started or time.monotonic() >= start_by:
                 return
             await asyncio.sleep(_TURN_IDLE_POLL_S)
 

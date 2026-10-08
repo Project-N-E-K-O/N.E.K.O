@@ -163,7 +163,8 @@ async def run_debrief(rt: Any, *, input_stamp: float) -> None:
     else:
         await rt.speak_home_segment("debrief", text, kind="visit_debrief")
     await _push_state(rt, "summary")
-    await _offer_chips(rt, has_lines=bool(lines))
+    # 日记读的是 spool：有没有可记的句子按 spool 实际写进去的算（与上传流水各自独立）
+    await _offer_chips(rt, has_lines=rt.spool_lines > 0)
 
 
 async def _push_state(rt: Any, phase: str) -> None:

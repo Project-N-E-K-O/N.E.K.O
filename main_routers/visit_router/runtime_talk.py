@@ -86,6 +86,7 @@ LINE_ABORT_REASONS = frozenset({"human_interrupt", "wrap_up", "tts_error", "llm_
 _BUSY_RETRY_S = 1.0
 _LINE_CLOSE_WAIT_S = 5.0
 _HOME_TURN_WAIT_S = 30.0
+_HOME_TURN_START_S = 3.0
 
 
 @dataclass(eq=False)
@@ -521,6 +522,7 @@ class TalkMixin:
             try:
                 await spool.append({"lp": lp, "side": side, "ts": ts, "from": speaker, "text": clean,
                                     "ln": ln, "truncated": bool(truncated)})
+                self.spool_lines += 1
             except Exception as exc:  # noqa: BLE001 - 写不进 spool：这一句不进串门记忆
                 logger.warning("visit %s: spool append failed: %s", self.visit_id[:6], type(exc).__name__)
         if self.journal.is_open:
@@ -596,6 +598,10 @@ class TalkMixin:
         if self.side == "guest":
             await self.status("VISIT_INPUT_REFUSED_AWAY", request_id=request_id)
             return True
+        if self.finalizing:
+            # 收尾中、接管还没释放：普通聊天此刻输出被压着，这句不能漏过去
+            await self.status("VISIT_INPUT_REFUSED_WRAPUP", request_id=request_id)
+            return True
         room = self.room
         if room is None or not self.activated or self.phase in WAITING_PHASES:
             await self.status("VISIT_INPUT_REFUSED_NOT_READY", request_id=request_id)
@@ -603,7 +609,7 @@ class TalkMixin:
         if room.phase == "wrap_up":
             await self.status("VISIT_INPUT_REFUSED_WRAPUP", request_id=request_id)
             return True
-        if room.phase != "active" or self.finalizing:
+        if room.phase != "active":
             return False
         now = self.clock()
         if not room.can_accept_local_line(now):
@@ -721,7 +727,8 @@ class TalkMixin:
         request_id = f"visit-{name}:{self.visit_id}"
         meta = self._mirror_meta(kind)
         stream = None
-        if self.voice.enabled:
+        # 本场已回落到估时（TTS 起不来）就不再开新的语音流
+        if self.voice.tts_on:
             try:
                 stream = self.host.open_speech_stream(metadata=meta, request_id=request_id,
                                                       on_enqueued=lambda _n: None)
@@ -735,7 +742,7 @@ class TalkMixin:
             if handoff is not None:
                 handoff.mark_queued(name, est)
         elif handoff is not None:
-            if self.voice.enabled:
+            if self.voice.tts_on:
                 handoff.skip(name)
             else:
                 handoff.mark_queued(name, est)
@@ -745,8 +752,12 @@ class TalkMixin:
             logger.warning("visit %s: home-coming line not shown: %s", self.visit_id[:6], type(exc).__name__)
 
     async def wait_family_turn(self) -> None:
-        """Let an ordinary turn the family started finish before showing more (bounded)."""
-        await self.host.wait_turn_idle(_HOME_TURN_WAIT_S)
+        """Let an ordinary turn the family started finish before showing more (bounded).
+
+        The family's input may not have started a reply yet: wait briefly
+        for it to start, then for it to end.
+        """
+        await self.host.wait_turn_idle(_HOME_TURN_WAIT_S, start_window=_HOME_TURN_START_S)
 
     async def close_session(self) -> None:
         from main_routers.visit_router.session_pool import close_visit_session

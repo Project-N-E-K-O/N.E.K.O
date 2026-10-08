@@ -50,13 +50,13 @@ def test_both_segments_must_end():
     clock = Clock()
     h = _voiced(clock)
     assert not h.due()
-    assert ih.route_progress("sp-r", ended=True)
+    assert ih.route_progress("sp-r", ended=True, final=True)
     assert not h.due()
-    assert ih.route_progress("sp-d", ended=True)
+    assert ih.route_progress("sp-d", ended=True, final=True)
     assert h.due()
     h.close()
     assert ih.pending_speech_ids() == 0
-    assert not ih.route_progress("sp-r", ended=True)
+    assert not ih.route_progress("sp-r", ended=True, final=True)
 
 
 def test_an_end_signal_before_the_other_segment_is_registered_is_kept():
@@ -64,12 +64,12 @@ def test_an_end_signal_before_the_other_segment_is_registered_is_kept():
     h = ih.InboxHandoff("v" * 22, finalize_at=clock(), clock=clock)
     h.attach_speech("ritual", "sp-r")
     h.mark_queued("ritual", 2000)
-    ih.route_progress("sp-r", ended=True)          # 仪式句很快播完，简述还在生成
+    ih.route_progress("sp-r", ended=True, final=True)          # 仪式句很快播完，简述还在生成
     assert not h.due()
     clock.now += 8
     h.attach_speech("debrief", "sp-d")
     h.mark_queued("debrief", 2000)
-    ih.route_progress("sp-d", ended=True)
+    ih.route_progress("sp-d", ended=True, final=True)
     assert h.due()
 
 
@@ -85,7 +85,7 @@ def test_twenty_second_cap_counts_from_the_second_segment_and_respects_playback(
     assert not h.due()
     clock.now += 2
     assert h.due()                                   # 没有任何在播的进度
-    ih.route_progress("sp-d", ended=False)           # 还在播：不交还
+    ih.route_progress("sp-d", ended=False, final=False)           # 还在播：不交还
     assert not h.due()
 
 
@@ -108,8 +108,8 @@ def test_absolute_deadline_hands_back_even_while_progress_keeps_coming():
     clock = Clock()
     h = _voiced(clock)
     while clock.now < h.absolute_deadline():
-        ih.route_progress("sp-r", ended=False)
-        ih.route_progress("sp-d", ended=False)
+        ih.route_progress("sp-r", ended=False, final=False)
+        ih.route_progress("sp-d", ended=False, final=False)
         assert not h.due() or clock.now >= h.absolute_deadline()
         clock.now += 1
     assert h.due()
@@ -142,5 +142,31 @@ def test_skipped_segments_count_as_done():
     h.attach_speech("debrief", "sp-d")
     h.mark_queued("debrief", 2000)
     assert not h.due()
-    ih.route_progress("sp-d", ended=True)
+    ih.route_progress("sp-d", ended=True, final=True)
+    assert h.due()
+
+
+def test_a_drained_queue_is_not_the_end_of_the_segment():
+    # ended{final:false} 只是音频队列暂时排空、之后还会接着播：不算这一段结束
+    clock = Clock()
+    h = _voiced(clock)
+    assert ih.route_progress("sp-r", ended=True, final=False)
+    assert ih.route_progress("sp-d", ended=True, final=False)
+    assert not h.due()
+    clock.now += VISIT_INBOX_HANDOFF_MAX_S + 1
+    ih.route_progress("sp-d", ended=False, final=False)  # 接着播：20 s 兜底也不交还
+    assert not h.due()
+    ih.route_progress("sp-r", ended=True, final=True)
+    ih.route_progress("sp-d", ended=True, final=True)
+    assert h.due()
+
+
+def test_abandon_skips_only_the_segments_not_queued_yet():
+    clock = Clock()
+    h = ih.InboxHandoff("v" * 22, finalize_at=clock(), clock=clock)
+    h.attach_speech("ritual", "sp-r")
+    h.mark_queued("ritual", 2000)
+    h.abandon()                                      # 收尾中途失败：简述不会再来
+    assert not h.due()                               # 仪式句还没播完
+    ih.route_progress("sp-r", ended=True, final=True)
     assert h.due()
