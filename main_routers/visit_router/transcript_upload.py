@@ -393,7 +393,7 @@ class UploadJournal:
         # 写线程上、排在建文件之后：建成了就把攒下的记录补上再关 fd；建失败就什么都不做
         try:
             fd = open_job.result()
-        except BaseException:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - 建文件失败 / 被取消（concurrent 的 CancelledError 也是 Exception）：没有流水可补
             return
         try:
             for data in tail:
