@@ -3547,7 +3547,8 @@ def test_game_scores_are_never_published_through_a_linked_state(tmp_path):
     result = run_pending_storage_migration(config_manager)
 
     assert result["completed"] is False
-    assert result["error_code"] == "entry_parent_not_directory"
+    # Refused while staging already, before anything is published.
+    assert result["error_code"] == "path_link_unsupported"
     assert not any(elsewhere.iterdir())
 
 
@@ -3692,3 +3693,88 @@ def test_migration_stops_when_it_cannot_tell_whether_an_entry_exists(tmp_path, m
     assert result["completed"] is False
     assert result["error_code"] == "manifest_read_failed"
     assert not (target_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_migration_refuses_a_reused_target_entry_behind_a_linked_parent(tmp_path):
+    """Reusing the target, target/state is a link: its game_scores lies outside
+    the selected root and is never published, so nothing else would catch it."""
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    for root in (source_root, target_root):
+        (root / "config").mkdir(parents=True)
+        (root / "config" / "characters.json").write_text("same", encoding="utf-8")
+    (source_root / "state" / "game_scores").mkdir(parents=True)
+    (source_root / "state" / "game_scores" / "badminton_scores.db").write_bytes(b"scores")
+    elsewhere = tmp_path / "elsewhere-state"
+    (elsewhere / "game_scores").mkdir(parents=True)
+    (elsewhere / "game_scores" / "badminton_scores.db").write_bytes(b"scores")
+    _link_directory(target_root / "state", elsewhere)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "path_link_unsupported"
+
+
+@pytest.mark.unit
+def test_an_earlier_published_entry_changed_before_commit_stops_the_migration(tmp_path, monkeypatch):
+    """config was published and checked; a sync client rewrote it while memory
+    was being published. Its recorded manifest no longer describes it."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "facts.json").write_text("{}", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_earlier_one_rewritten(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
+        if Path(target).name == "memory":
+            (target_root / "config" / "characters.json").write_text("rewritten by a sync client", encoding="utf-8")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_earlier_one_rewritten)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "rewritten by a sync client"
+
+
+@pytest.mark.unit
+def test_a_completed_transaction_puts_user_data_from_its_trash_back_before_going(tmp_path):
+    """A v1 catch-up stopped right after moving the new root's scaffold aside,
+    and a file had arrived in it: the leftover cleanup must not delete it."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, target_root = _start_migration_into_empty_target(tmp_path)
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    txid = "0123456789abcdef0123456789abcdef"
+    payload = dict(load_storage_migration(config_manager))
+    payload["txid"] = txid
+    save_storage_migration(config_manager, payload)
+    trashed = storage_migration_module._transaction_path(target_root, txid) / "trash" / "pngtuber"
+    trashed.mkdir(parents=True)
+    (trashed / "arrived.png").write_bytes(b"new root data")
+
+    run_pending_storage_migration(config_manager)
+
+    assert (target_root / "pngtuber" / "arrived.png").read_bytes() == b"new root data"
+    assert not storage_migration_module._transaction_path(target_root, txid).exists()

@@ -208,6 +208,17 @@ def entry_parents_are_real_directories(root: Path, entry_name: str) -> bool:
     return all(classify_entry_no_follow(parent) == "dir" for parent in _entry_parents(root, entry_name))
 
 
+def _has_linked_parent(root: Path, entry_name: str) -> bool:
+    """Whether a directory above the entry exists but is not a real one.
+
+    Parents not created yet (a fresh target) are fine here.
+    """
+    return any(
+        os.path.lexists(parent) and classify_entry_no_follow(parent) != "dir"
+        for parent in _entry_parents(root, entry_name)
+    )
+
+
 def ensure_entry_parents(root: Path, entry_name: str) -> None:
     """Create the directories above a nested entry; refuse a link among them."""
     for parent in _entry_parents(root, entry_name):
@@ -1378,6 +1389,21 @@ def _remove_completed_transaction_leftover(payload: dict[str, Any] | None) -> No
             backup_root = transaction_root / "backup"
             if os.path.lexists(backup_root) and any(backup_root.iterdir()):
                 return
+        if status == STORAGE_MIGRATION_STATUS_COMPLETED:
+            # Only a v1 catch-up moves anything into a completed checkpoint's
+            # trash: the new root's empty scaffolding, which may have received
+            # a file before the process stopped. That goes back first; if it
+            # cannot, the transaction stays.
+            trash_root = transaction_root / "trash"
+            for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES:
+                trashed = trash_root / entry_name
+                if not os.path.lexists(trashed) or not _tree_has_user_file(trashed):
+                    continue
+                target_root = normalize_runtime_root(raw_target_root)
+                ensure_entry_parents(target_root, entry_name)
+                if not _rescue_from_trash(trashed, target_root / entry_name):
+                    logger.warning("Kept a transaction holding user data: %s", trashed)
+                    return
         _remove_transaction(transaction_root)
     except Exception as exc:
         logger.warning("Failed to remove leftover storage migration transaction: %s", exc)
@@ -1703,17 +1729,19 @@ def create_pending_storage_migration(
     return save_storage_migration(config_manager, payload, anchor_root=anchor_root)
 
 
-def record_retained_cleanup_started(config_manager, *, anchor_root: Path) -> None:
-    """Record, before anything is deleted, that a retained-root cleanup runs.
+def record_retained_root_removal_started(config_manager, *, anchor_root: Path) -> None:
+    """Record that a cleanup emptied the retained root and is removing it.
 
     A retained root found gone later counts as cleaned only with this record:
     an unmounted disk can make it vanish too, and comes back with the data.
+    Written only once nothing migrated is left in it, so an incomplete
+    cleanup never leaves it behind.
     """
     migration_payload = load_storage_migration(config_manager, anchor_root=anchor_root)
     if not isinstance(migration_payload, dict):
         return
     updated_payload = dict(migration_payload)
-    updated_payload["cleanup_started_at"] = _utc_now_iso()
+    updated_payload["retained_root_removal_started_at"] = _utc_now_iso()
     save_storage_migration(config_manager, updated_payload, anchor_root=anchor_root)
 
 
@@ -1815,7 +1843,7 @@ def reconcile_finished_retained_cleanup(config_manager, *, anchor_root: Path | s
         return ""
     if not _retained_root_holds_no_migrated_entries(
         normalize_runtime_root(retained_root),
-        cleanup_started=bool(str(payload.get("cleanup_started_at") or "").strip()),
+        cleanup_started=bool(str(payload.get("retained_root_removal_started_at") or "").strip()),
     ):
         return ""
     record_retained_cleanup_completed(
@@ -1909,6 +1937,7 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
     ]
     copied: list[str] = []
     skipped: list[str] = []
+    copied_source_fingerprints: dict[str, str] = {}
     # Set when user data could not be put anywhere but the transaction.
     keep_transaction = False
     if candidates:
@@ -1988,6 +2017,7 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
                     copied_entries=dict(copied_entries),
                 )
                 copied.append(entry_name)
+                copied_source_fingerprints[entry_name] = fingerprint
         finally:
             if keep_transaction:
                 # Forget the id, too: the finished-checkpoint leftover
@@ -2001,6 +2031,24 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
                     _remove_transaction(transaction_root)
                 except Exception as exc:
                     logger.warning("Failed to remove the v1 catch-up transaction: %s", exc)
+    # Copied earlier, then changed in the old root while later entries were
+    # copied: the new root holds an older copy, so it is not proof and the
+    # old data is named instead.
+    for entry_name in list(copied):
+        try:
+            unchanged = _metadata_fingerprint(source_root / entry_name) == copied_source_fingerprints[entry_name]
+        except StorageMigrationError:
+            unchanged = False
+        if not unchanged:
+            copied.remove(entry_name)
+            copied_entries.pop(entry_name, None)
+            skipped.append(entry_name)
+            payload = _persist_migration_payload(
+                config_manager,
+                payload,
+                anchor_root=normalized_anchor_root,
+                copied_entries=dict(copied_entries),
+            )
     # One that turned up in the old root meanwhile (a sync client) would
     # otherwise be neither copied nor named; the next launch takes it.
     turned_up = [
@@ -2554,13 +2602,22 @@ def run_pending_storage_migration(
             reused_target_entries.update(
                 set(_iter_existing_runtime_entries(target_root)) - set(existing_entries)
             )
+            for entry_name in sorted(reused_target_entries):
+                if _has_linked_parent(target_root, entry_name):
+                    raise StorageMigrationError(
+                        "path_link_unsupported",
+                        f"沿用的目标条目的上级是链接或 junction，已停止迁移: {entry_name}",
+                    )
         source_fingerprints: dict[str, str] = {}
         for entry_name in existing_entries:
             source_entry = source_root / entry_name
             target_entry = target_root / entry_name
-            if not entry_parents_are_real_directories(source_root, entry_name):
+            if not entry_parents_are_real_directories(source_root, entry_name) or _has_linked_parent(
+                target_root, entry_name
+            ):
                 # Through a linked parent the entry is somewhere else
-                # entirely, as with a top-level entry that is a link.
+                # entirely, as with a top-level entry that is a link -- on
+                # the target too, where a reused entry is never published.
                 raise StorageMigrationError(
                     "path_link_unsupported",
                     f"迁移条目的上级是链接或 junction，已停止迁移: {entry_name}",
@@ -2629,6 +2686,10 @@ def run_pending_storage_migration(
         # Taken right before the kept target config is scanned for paths into
         # the source; set once that scan has run.
         kept_config_fingerprint: str | None = None
+        # Each published entry as it was once in place; a write since (a sync
+        # client, while later entries were published) would leave its
+        # recorded target manifest describing something it no longer is.
+        published_fingerprints: dict[str, str] = {}
 
         def _require_sources_unchanged() -> None:
             appeared = set(_iter_existing_runtime_entries(source_root)) - set(existing_entries)
@@ -2666,6 +2727,18 @@ def run_pending_storage_migration(
                     raise StorageMigrationError(
                         "target_changed_during_migration",
                         f"沿用的目标在迁移期间少了条目，已停止迁移: {entry_name}",
+                    )
+            for entry_name, published_fingerprint in published_fingerprints.items():
+                try:
+                    target_unchanged = (
+                        _metadata_fingerprint(target_root / entry_name, across_move=True) == published_fingerprint
+                    )
+                except StorageMigrationError:
+                    target_unchanged = False
+                if not target_unchanged:
+                    raise StorageMigrationError(
+                        "verification_failed",
+                        f"迁移发布的条目在提交前被改动，已停止迁移：{entry_name}。",
                     )
             if kept_config_fingerprint is not None:
                 # Edited after it was scanned, the kept config may now point
@@ -2848,6 +2921,7 @@ def run_pending_storage_migration(
                 # restored only after everything below it.
                 for relative_dir, original_mode in widened_modes.get(entry_name, []):
                     os.chmod(target_entry / relative_dir, original_mode)
+                published_fingerprints[entry_name] = _metadata_fingerprint(target_entry, across_move=True)
                 # Rollback still needs the published manifest; cleanup must not
                 # delete a source entry the kept target config points into.
                 if entry_name not in referenced_by_kept_config:

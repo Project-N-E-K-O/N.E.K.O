@@ -4574,7 +4574,7 @@ def test_v1_catch_up_keeps_a_scaffold_written_to_while_the_old_data_was_copied(t
 def test_v1_catch_up_records_no_evidence_for_a_copy_written_as_it_went_live(tmp_path, monkeypatch):
     from utils import storage_migration as storage_migration_module
 
-    _source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    _v1_migration_that_left_pngtuber_behind(tmp_path)
     original_publish = storage_migration_module._publish_without_overwrite
 
     def _publish_then_written(staged, target, **kwargs):
@@ -4727,3 +4727,84 @@ def test_v1_catch_up_is_not_marked_done_while_an_old_entry_cannot_be_looked_up(t
     run_pending_storage_migration(_make_real_config_manager(tmp_path))
 
     assert (target_root / "pngtuber" / "set" / "idle.png").read_bytes() == b"png"
+
+
+@pytest.mark.unit
+def test_storage_cleanup_left_incomplete_is_not_recorded_once_its_root_vanishes(tmp_path):
+    """A cleanup that kept an entry never got to removing the root; the root
+    vanishing later (an unmounted disk) is not that cleanup finishing."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "watch_together").mkdir()
+    (source_root / "watch_together" / "unproved.json").write_text("{}", encoding="utf-8")
+    assert _cleanup_request(tmp_path, source_root).status_code == 409
+    shutil.rmtree(source_root)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "manual_retention"
+
+
+@pytest.mark.unit
+def test_v1_catch_up_names_an_entry_whose_old_copy_changed_after_it_was_copied(tmp_path, monkeypatch):
+    """pngtuber was copied, then changed in the old root while watch_together
+    was copied: the new root holds the older copy, so it is not proof."""
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (source_root / "watch_together").mkdir()
+    (source_root / "watch_together" / "library.json").write_text("{}", encoding="utf-8")
+    original_copy = storage_migration_module._copy_and_verify_entry
+
+    def _copy_while_the_earlier_source_changes(source_path, staged_path, **kwargs):
+        result = original_copy(source_path, staged_path, **kwargs)
+        if Path(source_path).name == "watch_together":
+            (source_root / "pngtuber" / "set" / "idle.png").write_bytes(b"newer in the old root")
+        return result
+
+    monkeypatch.setattr(storage_migration_module, "_copy_and_verify_entry", _copy_while_the_earlier_source_changes)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert "pngtuber" not in checkpoint["copied_entries"]
+    assert "watch_together" in checkpoint["copied_entries"]
+    assert checkpoint["v1_catch_up_skipped"] == ["pngtuber"]
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_rechecks_the_live_config_before_each_deletion(tmp_path, monkeypatch):
+    """The live config was pointed at the retained workshop while an earlier
+    entry was being compared; the workshop must not go with a stale scan."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "workshop" / "mods").mkdir(parents=True)
+    (source_root / "workshop" / "mods" / "item.txt").write_text("mod", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    original_snapshot = storage_location_router_module.snapshot_runtime_entry
+    edited = []
+
+    def _snapshot_while_the_config_is_edited(path):
+        if not edited:
+            edited.append(True)
+            (target_root / "config" / "workshop_config.json").write_text(
+                json.dumps({"user_mod_folder": str(source_root / "workshop" / "mods")}), encoding="utf-8"
+            )
+        return original_snapshot(path)
+
+    monkeypatch.setattr(storage_location_router_module, "snapshot_runtime_entry", _snapshot_while_the_config_is_edited)
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert "workshop" in response.json()["remaining_entries"]
+    assert (source_root / "workshop" / "mods" / "item.txt").is_file()

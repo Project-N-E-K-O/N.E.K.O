@@ -90,7 +90,7 @@ from utils.storage_migration import (
     private_cleanup_name,
     reconcile_finished_retained_cleanup,
     record_retained_cleanup_completed,
-    record_retained_cleanup_started,
+    record_retained_root_removal_started,
     source_entries_referenced_by_config,
     v1_catch_up_skipped_entries,
     rewrite_migrated_config_paths,
@@ -1710,6 +1710,7 @@ def _cleanup_retained_runtime_root(
     copied_entries: dict | None = None,
     legacy_checkpoint: bool = False,
     catch_up_skipped: list[str] | tuple[str, ...] = (),
+    before_root_removal: Callable[[], None] | None = None,
 ) -> tuple[tuple[str, ...], bool]:
     if not is_retained_root_cleanup_available(
         retained_path,
@@ -1753,10 +1754,31 @@ def _cleanup_retained_runtime_root(
         raise ValueError("迁移检查点没有可验证的复制证据，拒绝清理。")
     # The live config may have been pointed into the retained root since the
     # migration (a workshop folder, say); what it uses there stays.
-    referenced_by_live_config = source_entries_referenced_by_config(
-        config_root=normalized_target / "config",
-        source_root=retained_path,
-    )
+    def _live_config_fingerprint() -> str | None:
+        try:
+            return metadata_fingerprint(normalized_target / "config")
+        except (StorageMigrationError, OSError):
+            return None
+
+    live_config = {
+        "fingerprint": _live_config_fingerprint(),
+        "references": source_entries_referenced_by_config(
+            config_root=normalized_target / "config",
+            source_root=retained_path,
+        ),
+    }
+
+    def _referenced_by_live_config(entry_name: str) -> bool:
+        # Scanned again when the config changed meanwhile: cleaning a large
+        # entry takes a while, and an edit could point at one not done yet.
+        fingerprint = _live_config_fingerprint()
+        if fingerprint is None or fingerprint != live_config["fingerprint"]:
+            live_config["fingerprint"] = fingerprint
+            live_config["references"] = source_entries_referenced_by_config(
+                config_root=normalized_target / "config",
+                source_root=retained_path,
+            )
+        return entry_name in live_config["references"]
 
     # The evidence proves each entry was copied completely. What is deleted is
     # the retained copy, so it must still be exactly what was copied. The
@@ -1876,7 +1898,7 @@ def _cleanup_retained_runtime_root(
             logger.warning("Retained root cleanup left %s under %s: %s", entry_name, private.name, exc)
 
     for entry_name, proof in proved_entries:
-        if entry_name in referenced_by_live_config:
+        if _referenced_by_live_config(entry_name):
             continue
         if os.path.lexists(retained_path / entry_name) and _target_still_holds_copy(entry_name, proof):
             source_manifest = proof.get("source_manifest")
@@ -1885,15 +1907,17 @@ def _cleanup_retained_runtime_root(
                 lambda path, expected=source_manifest: snapshot_runtime_entry(path) == expected,
                 # Still the recorded kind, not merely present: a directory
                 # replaced by a file meanwhile is no longer the copy.
-                lambda name=entry_name, recorded=proof: _target_still_holds_copy(name, recorded),
+                lambda name=entry_name, recorded=proof: (
+                    _target_still_holds_copy(name, recorded) and not _referenced_by_live_config(name)
+                ),
             )
     for entry_name in legacy_entries:
-        if entry_name in referenced_by_live_config:
+        if _referenced_by_live_config(entry_name):
             continue
         _delete_if_still_matching(
             entry_name,
             lambda path, name=entry_name: _matches_target(name, path),
-            lambda name=entry_name: _target_unchanged_since_compared(name),
+            lambda name=entry_name: _target_unchanged_since_compared(name) and not _referenced_by_live_config(name),
         )
 
     # The anchor root holds more than runtime data (state, cloud saves) and
@@ -1926,6 +1950,8 @@ def _cleanup_retained_runtime_root(
         # policy and cloud saves and is never removed, so there is nothing
         # to gain from emptying its regenerable directories.
         if not remaining_entries:
+            if before_root_removal is not None:
+                before_root_removal()
             # Parents of nested entries, now empty, would keep it too.
             for entry_name in migrated_names:
                 for parent in reversed(_nested_entry_parents(retained_path, entry_name)):
@@ -2256,9 +2282,6 @@ async def _post_storage_location_retained_source_cleanup_locked(
         # lets the worker finish when the request is cancelled but then raises,
         # so a separate second job would never run and leave the checkpoint
         # pointing at a retained root that is already gone.
-        # Recorded before anything goes: a retained root found gone later
-        # counts as cleaned only after a cleanup really started.
-        record_retained_cleanup_started(config_manager, anchor_root=anchor_root)
         remaining, kept = _cleanup_retained_runtime_root(
             retained_path,
             current_root=current_root,
@@ -2267,6 +2290,9 @@ async def _post_storage_location_retained_source_cleanup_locked(
             copied_entries=cleanup_checkpoint.get("copied_entries"),
             legacy_checkpoint=is_legacy_unproven_checkpoint(cleanup_checkpoint),
             catch_up_skipped=v1_catch_up_skipped_entries(cleanup_checkpoint),
+            # A retained root found gone later counts as cleaned only once a
+            # cleanup really got to removing it.
+            before_root_removal=partial(record_retained_root_removal_started, config_manager, anchor_root=anchor_root),
         )
         if not remaining:
             _persist_cleanup_result()
