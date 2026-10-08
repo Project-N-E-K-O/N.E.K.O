@@ -2557,6 +2557,7 @@
         "retainedSourceCleanupFailed": "清理舊資料保留目錄失敗，請稍後重試。",
         "retainedSourceCleanupIncomplete": "已清理能確認複製完整的部分。以下項目與新目錄不一致或缺少複製紀錄，已原樣保留，請手動確認並刪除後再點一次「清理舊資料」：",
         "retainedRootUnlistable": "舊資料目錄的內容無法列出，裡面可能還有清理到一半的項目，已暫停清理。請檢查該目錄的讀取權限後再點一次「清理舊資料」。",
+        "v1CatchUpSkipped": "舊資料目錄裡還有這些資料沒有搬到目前路徑（目前路徑裡已有同名資料，沒有覆蓋）。請確認後自行處理：",
         "retainedSourceMismatch": "請求的清理路徑與目前保留目錄不一致，請重新整理後再試。",
         "retainedSourceNotFound": "目前沒有可清理的舊資料保留目錄。",
         "selectPathRequired": "請先提供目標路徑。",

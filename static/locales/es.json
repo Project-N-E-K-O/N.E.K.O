@@ -2557,6 +2557,7 @@
         "retainedSourceCleanupFailed": "No se pudo limpiar el directorio de datos antiguo. Inténtalo de nuevo más tarde.",
         "retainedSourceCleanupIncomplete": "Se limpió todo lo que se pudo confirmar como copiado por completo. Las entradas siguientes difieren del nuevo directorio o no tienen registro de copia, así que se han conservado. Revísalas, elimínalas manualmente y vuelve a pulsar «Limpiar datos antiguos»:",
         "retainedRootUnlistable": "No se puede listar el contenido del directorio de datos antiguos, así que puede quedar una entrada de una limpieza interrumpida. La limpieza está en pausa. Revisa los permisos de lectura del directorio y vuelve a pulsar «Limpiar datos antiguos».",
+        "v1CatchUpSkipped": "Hay datos en el directorio de datos antiguos que no se movieron a la ubicación actual: esta ya tiene datos con el mismo nombre, que no se sobrescribieron. Revísalos y resuélvelo tú mismo:",
         "retainedSourceMismatch": "La ruta solicitada para la limpieza no coincide con el directorio conservado. Actualiza la página y vuelve a intentarlo.",
         "retainedSourceNotFound": "No hay ningún directorio de datos antiguo conservado para limpiar.",
         "selectPathRequired": "Primero debes indicar una ruta de destino.",

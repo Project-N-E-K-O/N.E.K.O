@@ -28,6 +28,7 @@ function loadStorageLocation(locale) {
   return {
     model: window.appStorageLocation.buildMaintenanceProgressModel,
     cleanupMessage: window.appStorageLocation.buildCleanupIncompleteMessage,
+    describeSkipped: window.appStorageLocation.describeV1CatchUpSkipped,
     messages,
   };
 }
@@ -119,6 +120,17 @@ for (const locale of ['en', 'zh-CN']) {
       message,
       `${messages.storage.retainedSourceCleanupIncomplete} memory, config ${messages.storage.retainedRootUnlistable}`,
     );
+  });
+
+  test(`${locale}: data a v1 migration could not bring over is named`, () => {
+    const { describeSkipped, messages } = loadStorageLocation(locale);
+
+    assert.strictEqual(
+      describeSkipped({ completed: true, v1_catch_up_skipped: ['pngtuber', 'watch_together'] }),
+      `${messages.storage.v1CatchUpSkipped} pngtuber, watch_together`,
+    );
+    assert.strictEqual(describeSkipped({ completed: true, v1_catch_up_skipped: [] }), '');
+    assert.strictEqual(describeSkipped({ completed: true }), '');
   });
 
   test(`${locale}: other failed migrations keep the generic text`, () => {

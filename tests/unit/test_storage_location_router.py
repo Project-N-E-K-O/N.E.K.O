@@ -4452,7 +4452,17 @@ def test_v1_catch_up_leaves_an_entry_the_new_root_already_has(tmp_path):
     run_pending_storage_migration(reloaded_manager)
 
     assert sorted(child.name for child in (target_root / "pngtuber").iterdir()) == ["own.png"]
-    assert "pngtuber" not in (load_storage_migration(reloaded_manager).get("copied_entries") or {})
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert "pngtuber" not in (checkpoint.get("copied_entries") or {})
+    assert (source_root / "pngtuber" / "set" / "idle.png").is_file()
+    # Not silently dropped: the storage page names it, and cleanup keeps it.
+    assert checkpoint["v1_catch_up_skipped"] == ["pngtuber"]
+    with _build_client(_make_real_config_manager(tmp_path)) as client:
+        notice = client.get("/api/storage/location/status").json()["completion_notice"]
+    assert notice["v1_catch_up_skipped"] == ["pngtuber"]
+    response = _cleanup_request(tmp_path, source_root)
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["pngtuber"]
     assert (source_root / "pngtuber" / "set" / "idle.png").is_file()
 
 
@@ -4494,3 +4504,41 @@ def test_v1_cleanup_reports_a_caught_up_entry_changed_since(tmp_path):
 
     assert response.status_code == 409, response.json()
     assert response.json()["remaining_entries"] == ["pngtuber"]
+
+
+@pytest.mark.unit
+def test_v1_catch_up_replaces_the_empty_directory_the_app_created(tmp_path):
+    """Main creates pngtuber/ empty at every start; that scaffolding must not
+    keep the user's data in the old root."""
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (target_root / "pngtuber" / "empty-subdir").mkdir(parents=True)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert (target_root / "pngtuber" / "set" / "idle.png").read_bytes() == b"png"
+    assert not (target_root / "pngtuber" / "empty-subdir").exists()
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert "pngtuber" in checkpoint["copied_entries"]
+    assert checkpoint["v1_catch_up_skipped"] == []
+    assert not list(target_root.glob(".smtx/*"))
+
+
+@pytest.mark.unit
+def test_v1_catch_up_puts_the_empty_directory_back_when_publishing_fails(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (target_root / "pngtuber").mkdir()
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _fail_publishing_the_copy(staged, target, **kwargs):
+        if ".smtx" in Path(staged).parts and "stage" in Path(staged).parts:
+            raise OSError(5, "simulated I/O error")
+        return original_publish(staged, target, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _fail_publishing_the_copy)
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+
+    assert (target_root / "pngtuber").is_dir()
+    assert (source_root / "pngtuber" / "set" / "idle.png").is_file()

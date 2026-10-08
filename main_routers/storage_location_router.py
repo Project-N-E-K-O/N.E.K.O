@@ -93,6 +93,7 @@ from utils.storage_migration import (
     record_retained_cleanup_completed,
     record_retained_cleanup_started,
     source_entries_referenced_by_config,
+    v1_catch_up_skipped_entries,
     rewrite_migrated_config_paths,
     root_has_user_content,
     save_storage_migration,
@@ -1604,6 +1605,13 @@ def _build_completed_migration_notice(
 
     return {
         "completed": True,
+        # Still in the old root because the new root had its own: the user
+        # decides what to keep.
+        "v1_catch_up_skipped": [
+            entry_name
+            for entry_name in v1_catch_up_skipped_entries(migration_payload)
+            if retained_root and _entry_may_exist(Path(retained_root) / entry_name)
+        ],
         "selection_source": str(migration_payload.get("selection_source") or "").strip(),
         "source_root": source_root,
         "target_root": target_root,
@@ -1705,6 +1713,7 @@ def _cleanup_retained_runtime_root(
     target_root: Path | str | None = None,
     copied_entries: dict | None = None,
     legacy_checkpoint: bool = False,
+    catch_up_skipped: list[str] | tuple[str, ...] = (),
 ) -> tuple[tuple[str, ...], bool]:
     if not is_retained_root_cleanup_available(
         retained_path,
@@ -1898,7 +1907,9 @@ def _cleanup_retained_runtime_root(
             # later; those entries are reported like any other.
             [
                 entry_name
-                for entry_name in dict.fromkeys([*migrated_names, *proofs])
+                # So is what it had to leave behind because the new root had
+                # its own: never deleted here, only reported.
+                for entry_name in dict.fromkeys([*migrated_names, *proofs, *catch_up_skipped])
                 if _entry_may_exist(retained_path / entry_name)
             ]
             + [entry_name for entry_name, _private in leftovers or []]
@@ -2256,6 +2267,7 @@ async def _post_storage_location_retained_source_cleanup_locked(
             target_root=notice.get("target_root") or "",
             copied_entries=cleanup_checkpoint.get("copied_entries"),
             legacy_checkpoint=is_legacy_unproven_checkpoint(cleanup_checkpoint),
+            catch_up_skipped=v1_catch_up_skipped_entries(cleanup_checkpoint),
         )
         if not remaining:
             _persist_cleanup_result()

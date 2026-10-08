@@ -1809,8 +1809,13 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
     since (pngtuber, watch_together, ...) stayed in the old root while the app
     moved on to the new one, so to the user they were gone. Each is staged,
     checked and published without overwriting, as a migration does, and its
-    copy evidence lets cleanup remove the old copy. An entry the new root
-    already has is left alone on both sides: that copy is the one in use.
+    copy evidence lets cleanup remove the old copy.
+
+    The app creates some of these directories empty at every start, so an
+    entry the new root holds without a single user file is only scaffolding:
+    it goes to the transaction's trash and the old data takes its place. One
+    with real data there is left alone on both sides and recorded in
+    ``v1_catch_up_skipped``, for the storage page to point the user at.
 
     Runs once; an attempt stopped midway is safe to repeat (what was already
     published is found in the new root and left alone). Returns the entries
@@ -1857,6 +1862,7 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
         and os.path.lexists(source_root / entry_name)
     ]
     copied: list[str] = []
+    skipped: list[str] = []
     if candidates:
         # Recorded first, so a stopped attempt's stage is found and removed
         # as a finished checkpoint's transaction leftover.
@@ -1868,7 +1874,11 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
         try:
             for entry_name in candidates:
                 target_entry = target_root / entry_name
-                if os.path.lexists(target_entry):
+                replaces_scaffold = os.path.lexists(target_entry)
+                if replaces_scaffold and (
+                    classify_entry_no_follow(target_entry) != "dir" or _tree_has_user_file(target_entry)
+                ):
+                    skipped.append(entry_name)
                     continue
                 source_entry = source_root / entry_name
                 fingerprint = _metadata_fingerprint(source_entry)
@@ -1880,11 +1890,24 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
                         f"补迁旧版本未迁移的数据时校验失败，已停止，原数据未受影响：{entry_name}。",
                     )
                 ensure_entry_parents(target_root, entry_name)
+                scaffold_in_trash = transaction_root / "trash" / entry_name
+                if replaces_scaffold:
+                    # Copied and verified first, so a failed copy never
+                    # leaves the new root without the directory.
+                    (transaction_root / "trash").mkdir(exist_ok=True)
+                    ensure_entry_parents(transaction_root / "trash", entry_name)
+                    _move_entry_keeping_mode(target_entry, scaffold_in_trash)
                 try:
                     _publish_without_overwrite(staged_entry, target_entry)
                 except FileExistsError:
                     # Appeared meanwhile: the new root's own, left alone.
+                    skipped.append(entry_name)
                     continue
+                except BaseException:
+                    if replaces_scaffold:
+                        with suppress(OSError):
+                            _publish_without_overwrite(scaffold_in_trash, target_entry)
+                    raise
                 for relative_dir, original_mode in widened:
                     os.chmod(target_entry / relative_dir, original_mode)
                 # The verified staged copy itself was moved into place.
@@ -1911,8 +1934,20 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
         payload,
         anchor_root=normalized_anchor_root,
         v1_catch_up_completed_at=_utc_now_iso(),
+        v1_catch_up_skipped=skipped,
     )
     return copied
+
+
+def v1_catch_up_skipped_entries(payload: dict[str, Any] | None) -> list[str]:
+    """Entries the v1 catch-up left in the old root: the new root had its own."""
+    if not isinstance(payload, dict):
+        return []
+    return [
+        str(entry_name)
+        for entry_name in payload.get("v1_catch_up_skipped") or []
+        if str(entry_name) in MIGRATED_RUNTIME_ENTRY_NAMES
+    ]
 
 
 def run_pending_storage_migration(

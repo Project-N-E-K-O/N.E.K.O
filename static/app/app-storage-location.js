@@ -1197,6 +1197,8 @@
         retainedItem.appendChild(openRetainedButton);
         pathList.appendChild(targetItem);
         pathList.appendChild(retainedItem);
+        var skippedNote = createElement('p', 'storage-location-completion-skipped', '');
+        skippedNote.hidden = true;
 
         var actions = createElement('div', 'storage-location-actions storage-location-completion-actions');
         var cleanupButton = createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.cleanupRetainedRoot', '清理旧数据'));
@@ -1214,11 +1216,13 @@
         state.completionOpenTargetButton = openTargetButton;
         state.completionOpenRetainedButton = openRetainedButton;
         state.completionCleanupButton = cleanupButton;
+        state.completionSkipped = skippedNote;
 
         title.classList.add('storage-location-panel-title--with-close');
         title.classList.add('storage-location-completion-drag-handle');
         card.appendChild(title);
         card.appendChild(pathList);
+        card.appendChild(skippedNote);
         card.appendChild(actions);
         document.body.appendChild(card);
         installCompletionCardDragging(card);
@@ -1320,7 +1324,23 @@
         state.completionOpenTargetButton.hidden = !String(state.completionNotice.target_root || '').trim();
         state.completionOpenRetainedButton.hidden = !String(state.completionNotice.retained_root || '').trim();
         state.completionCleanupButton.hidden = !state.completionNotice.cleanup_available;
+        var skippedText = describeV1CatchUpSkipped(state.completionNotice);
+        state.completionSkipped.textContent = skippedText;
+        state.completionSkipped.hidden = !skippedText;
         card.hidden = false;
+    }
+
+    // Data an old (v1) migration left in the old directory that could not be
+    // copied over later, because the current location had its own.
+    function describeV1CatchUpSkipped(notice) {
+        var entries = Array.isArray(notice && notice.v1_catch_up_skipped)
+            ? notice.v1_catch_up_skipped.map(function (entry) { return String(entry); }).filter(Boolean)
+            : [];
+        if (!entries.length) {
+            return '';
+        }
+        return translate('storage.v1CatchUpSkipped', '旧数据目录里还有这些数据没有搬到当前路径（当前路径里已有同名数据，没有覆盖）。请确认后自行处理：')
+            + ' ' + entries.join(', ');
     }
 
     function handleHomeTutorialStartupRelease(event) {
@@ -2460,6 +2480,7 @@
     window.appStorageLocation = {
         formatError: extractResponseError,
         buildCleanupIncompleteMessage: buildCleanupIncompleteMessage,
+        describeV1CatchUpSkipped: describeV1CatchUpSkipped,
         buildMaintenanceProgressModel: buildMaintenanceProgressModel,
         init: init,
         waitUntilMainUiAllowed: function () {

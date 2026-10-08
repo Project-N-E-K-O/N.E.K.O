@@ -2557,6 +2557,7 @@
         "retainedSourceCleanupFailed": "Failed to clean up the old data directory. Please try again later.",
         "retainedSourceCleanupIncomplete": "Cleaned up everything that could be confirmed as fully copied. The entries below differ from the new directory or have no copy record, so they were kept. Check and delete them manually, then click “Clean up old data” again:",
         "retainedRootUnlistable": "The contents of the old data directory cannot be listed, so an entry from an interrupted cleanup may still be in it. The cleanup is paused. Check the directory’s read permissions, then click “Clean up old data” again.",
+        "v1CatchUpSkipped": "Some data in the old data directory was not moved to the current location: the current location already has data with the same name, which was not overwritten. Check it and sort it out yourself:",
         "retainedSourceMismatch": "The requested cleanup path does not match the retained directory. Please refresh and try again.",
         "retainedSourceNotFound": "There is no retained old data directory to clean up.",
         "selectPathRequired": "Please provide a target path first.",
