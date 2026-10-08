@@ -83,6 +83,7 @@ from utils.storage_migration import (
     is_retained_root_cleanup_available,
     is_storage_migration_pending,
     load_storage_migration,
+    metadata_fingerprint,
     move_entry_without_overwrite,
     private_cleanup_entry_name,
     rewrite_migrated_config_paths,
@@ -1752,7 +1753,12 @@ def _cleanup_retained_runtime_root(
         except (StorageMigrationError, OSError):
             return False
 
+    # The target as it was when a legacy entry was compared against it; it has
+    # to be the same still when the retained copy goes.
+    compared_target_fingerprints: dict[str, str] = {}
+
     def _matches_target(entry_name: str, retained_entry: Path) -> bool:
+        compared_target_fingerprints[entry_name] = metadata_fingerprint(normalized_target / entry_name)
         retained_manifest = snapshot_runtime_entry(retained_entry)
         target_manifest = snapshot_runtime_entry(normalized_target / entry_name)
         if entry_name != "config" or retained_manifest["kind"] != "dir":
@@ -1783,8 +1789,11 @@ def _cleanup_retained_runtime_root(
             )
             return snapshot_runtime_entry(scratch_root / "config") == target_manifest
 
-    def _target_still_present(entry_name: str) -> bool:
-        return classify_entry_no_follow(normalized_target / entry_name) is not None
+    def _target_unchanged_since_compared(entry_name: str) -> bool:
+        # Comparing a large entry (config is even copied and rewritten first)
+        # takes a while; a target changed meanwhile no longer proves the copy.
+        expected = compared_target_fingerprints.get(entry_name)
+        return expected is not None and metadata_fingerprint(normalized_target / entry_name) == expected
 
     def _delete_if_still_matching(
         entry_name: str,
@@ -1843,7 +1852,7 @@ def _cleanup_retained_runtime_root(
         _delete_if_still_matching(
             entry_name,
             lambda path, name=entry_name: _matches_target(name, path),
-            lambda name=entry_name: _target_still_present(name),
+            lambda name=entry_name: _target_unchanged_since_compared(name),
         )
 
     # The anchor root holds more than runtime data (state, cloud saves) and

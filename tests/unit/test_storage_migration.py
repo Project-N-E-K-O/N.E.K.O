@@ -3296,3 +3296,49 @@ def test_target_only_entry_removed_before_commit_stops_the_migration(tmp_path, m
     result = run_pending_storage_migration(config_manager)
 
     assert result["error_code"] == "target_changed_during_migration"
+
+
+@pytest.mark.unit
+def test_kept_target_config_edited_during_publish_stops_the_migration(tmp_path, monkeypatch):
+    """Scanned for paths into the source before publishing; edited afterwards
+    to point at the source workshop, which would otherwise be recorded as
+    deletable copy evidence."""
+    import json
+
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    for root in (source_root, target_root):
+        (root / "workshop" / "mods").mkdir(parents=True)
+        (root / "workshop" / "mods" / "item.txt").write_bytes(b"same")
+        (root / "config").mkdir(parents=True)
+    (source_root / "config" / "workshop_config.json").write_text("{}", encoding="utf-8")
+    (target_root / "config" / "workshop_config.json").write_text(
+        json.dumps({"user_mod_folder": str(tmp_path / "elsewhere"), "kept": True}), encoding="utf-8"
+    )
+    # Only in the source, so something is staged and published.
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "facts.json").write_text("{}", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_config_points_into_source(staged, target):
+        original_publish(staged, target)
+        (target_root / "config" / "workshop_config.json").write_text(
+            json.dumps({"user_mod_folder": str(source_root / "workshop" / "mods"), "kept": True, "edited": 1}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_config_points_into_source)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "target_changed_during_migration"

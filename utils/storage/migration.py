@@ -823,6 +823,11 @@ def snapshot_runtime_entry(path: Path) -> dict[str, int | str]:
     return _snapshot_path(path)
 
 
+def metadata_fingerprint(path: Path) -> str:
+    """Digest of an entry's metadata: whether it was touched since, unread."""
+    return _metadata_fingerprint(path)
+
+
 def rewrite_migrated_config_paths(*, source_root: Path, target_root: Path, config_root: Path) -> None:
     """Rebase workshop paths in ``config_root/config`` the way migration does."""
     _rewrite_migrated_runtime_config_paths(
@@ -1962,6 +1967,10 @@ def run_pending_storage_migration(
             if os.path.lexists(target_entry):
                 original_target_entries.append(entry_name)
 
+        # Taken right before the kept target config is scanned for paths into
+        # the source; set once that scan has run.
+        kept_config_fingerprint: str | None = None
+
         def _require_sources_unchanged() -> None:
             appeared = set(_iter_existing_runtime_entries(source_root)) - set(existing_entries)
             if appeared:
@@ -1999,6 +2008,19 @@ def run_pending_storage_migration(
                         "target_changed_during_migration",
                         f"沿用的目标在迁移期间少了条目，已停止迁移: {entry_name}",
                     )
+            if kept_config_fingerprint is not None:
+                # Edited after it was scanned, the kept config may now point
+                # at a source entry recorded as copy evidence, which cleanup
+                # would then delete from under it.
+                try:
+                    config_unchanged = _metadata_fingerprint(target_root / "config") == kept_config_fingerprint
+                except StorageMigrationError:
+                    config_unchanged = False
+                if not config_unchanged:
+                    raise StorageMigrationError(
+                        "target_changed_during_migration",
+                        "沿用的目标 config 在迁移期间被修改，已停止迁移。",
+                    )
 
         _require_sources_unchanged()
 
@@ -2008,6 +2030,8 @@ def run_pending_storage_migration(
         # into the source: that copy is still in use.
         referenced_by_kept_config: set[str] = set()
         if use_existing_target and "config" not in entries_to_publish:
+            if os.path.lexists(target_root / "config"):
+                kept_config_fingerprint = _metadata_fingerprint(target_root / "config")
             referenced_by_kept_config = _source_entries_referenced_by_config(
                 config_root=target_root / "config",
                 source_root=source_root,

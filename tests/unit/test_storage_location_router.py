@@ -3487,6 +3487,7 @@ def test_storage_location_cleanup_reports_unproved_runtime_entries(tmp_path):
         "error": "旧数据目录仍含缺少复制证据的运行时条目，已保留供人工确认。",
         "retained_root": str(source_root.resolve()),
         "remaining_entries": ["memory"],
+        "retained_root_unlistable": False,
     }
     assert (source_root / "memory" / "unproved.json").is_file()
     migration_payload = load_storage_migration(reloaded_manager)
@@ -3608,6 +3609,47 @@ def test_storage_location_v1_cleanup_keeps_entries_the_target_does_not_have(tmp_
     assert cleanup_response.json()["remaining_entries"] == ["memory"]
     assert (source_root / "memory" / "only-here.json").is_file()
     assert not (source_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_storage_location_v1_cleanup_keeps_entries_whose_target_changes_while_compared(tmp_path, monkeypatch):
+    """The target matched when it was read, then a sync client rewrote it
+    before the retained copy was deleted: that copy may be the last one."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "recent.json").write_text("[1, 2, 3]", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+    original_snapshot = storage_location_router_module.snapshot_runtime_entry
+
+    def _snapshot_then_target_rewritten(path):
+        manifest = original_snapshot(path)
+        if Path(path) == target_root / "memory":
+            (target_root / "memory" / "recent.json").write_text("rewritten by a sync client", encoding="utf-8")
+        return manifest
+
+    monkeypatch.setattr(storage_location_router_module, "snapshot_runtime_entry", _snapshot_then_target_rewritten)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 409, cleanup_response.json()
+    assert cleanup_response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "recent.json").read_text(encoding="utf-8") == "[1, 2, 3]"
 
 
 @pytest.mark.unit
