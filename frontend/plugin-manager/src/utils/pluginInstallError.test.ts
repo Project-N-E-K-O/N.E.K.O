@@ -17,6 +17,9 @@ describe('resolvePluginInstallErrorKey', () => {
     ['override_start_failed', 'market.overrideStartFailed'],
     ['INSTALL_SOURCE_READ_ONLY', 'market.lockWriteFailed'],
     ['PLUGIN_BUILTIN_OVERRIDE_MARKET_REQUIRED', 'market.autoUpgradeBlocked'],
+    ['market_release_mismatch', 'market.releaseMismatch'],
+    ['market_catalog_unavailable', 'market.marketListFetchFailed'],
+    ['market_catalog_not_configured', 'market.catalogNotConfigured'],
   ])('maps %s to a localized key', (code, key) => {
     expect(resolvePluginInstallErrorKey(code)).toBe(key)
   })

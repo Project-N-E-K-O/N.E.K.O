@@ -68,6 +68,8 @@ def _install_failing_restart_candidates(
     def build_candidate(_selection):
         candidate = SimpleNamespace(
             is_ready=True,
+            last_failure_code=None,
+            failure_started_at=None,
             connect=AsyncMock(
                 side_effect=RuntimeError("private restart connect detail")
             ),
@@ -198,6 +200,8 @@ async def test_soniox_connect_retries_exhausted_blocks_without_provider_fallback
     sessions = []
     for attempt in range(3):
         session = type("Soniox", (), {})()
+        session.last_failure_code = None
+        session.failure_started_at = None
         session.connect = AsyncMock(
             side_effect=RuntimeError(f"private provider detail {attempt}")
         )
@@ -367,6 +371,7 @@ async def test_restart_default_attempts_follow_soniox_policy_ladder(
     ]
     assert any(status["code"] == "ASR_INDEPENDENT_FAILED" for status in statuses)
     assert statuses[-1]["code"] == "VOICE_INPUT_RECOVERY_FAILED"
+    assert statuses[-1]["details"]["lease_generation"] == runtime._voice_lease_generation
 
 
 async def test_restart_explicit_attempt_override_beats_policy(monkeypatch) -> None:

@@ -12,7 +12,7 @@ vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('@/utils/request', () => ({ formatHttpError: (error: unknown) => error instanceof Error ? error.message : String(error) }))
 vi.mock('@/stores/plugin', async () => {
   const { reactive } = await import('vue')
-  const store = reactive({ pluginsWithStatus: [{ id: 'demo', status: 'running', entries: [] }], fetchPlugins: vi.fn(), fetchPluginStatus: vi.fn() })
+  const store = reactive({ pluginSummariesWithStatus: [{ id: 'demo', status: 'running', entries: [] }], fetchPluginSummaries: vi.fn(), fetchPluginStatus: vi.fn() })
   return { usePluginStore: () => store }
 })
 vi.mock('@/api/development', () => ({ getDevelopment: vi.fn(), setDevelopmentEnabled: vi.fn(), registerDevelopment: vi.fn(), rebindDevelopment: vi.fn(), removeDevelopment: vi.fn(), runDevelopmentAction: vi.fn(), downloadDevelopmentPackage: vi.fn() }))
@@ -39,9 +39,9 @@ function button(root: Element, key: string) { return [...root.querySelectorAll('
 beforeEach(() => {
   vi.clearAllMocks()
   const store = usePluginStore()
-  store.pluginsWithStatus[0]!.status = 'running'
-  store.pluginsWithStatus[0]!.entries = []
-  vi.mocked(store.fetchPlugins).mockReset()
+  store.pluginSummariesWithStatus[0]!.status = 'running'
+  store.pluginSummariesWithStatus[0]!.entries = []
+  vi.mocked(store.fetchPluginSummaries).mockReset()
   vi.mocked(store.fetchPluginStatus).mockReset()
   vi.mocked(getDevelopment).mockResolvedValue({ enabled: true, registrations: [{ ...record }] })
   vi.mocked(registerDevelopment).mockResolvedValue({ ...record })
@@ -107,7 +107,7 @@ describe('development plugin workflow', () => {
     expect(setDevelopmentEnabled).toHaveBeenCalledTimes(1)
   })
   it('uses the translated source-missing label instead of the raw backend status', async () => {
-    usePluginStore().pluginsWithStatus[0]!.status = 'source_missing'
+    usePluginStore().pluginSummariesWithStatus[0]!.status = 'source_missing'
     const root = mount()
     await settle()
     expect(root.querySelector('article')?.textContent).toContain('status.sourceMissing')
@@ -120,7 +120,7 @@ describe('development plugin workflow', () => {
     }
   })
   it('can stop a live process after its source becomes unavailable', async () => {
-    usePluginStore().pluginsWithStatus[0]!.status = 'source_missing'
+    usePluginStore().pluginSummariesWithStatus[0]!.status = 'source_missing'
     const missing = { ...record, runtime_alive: true, error: 'directory unavailable' }
     vi.mocked(getDevelopment).mockResolvedValue({ enabled: true, registrations: [missing] })
     vi.mocked(runDevelopmentAction).mockResolvedValue({ success: true })
@@ -134,12 +134,12 @@ describe('development plugin workflow', () => {
   })
   it('refreshes runtime state and entry metadata using the toolbar', async () => {
     const store = usePluginStore()
-    store.pluginsWithStatus[0]!.entries = [{ id: 'hello', name: 'hello', description: 'Old entry' }]
+    store.pluginSummariesWithStatus[0]!.entries = [{ id: 'hello', name: 'hello', description: 'Old entry' }]
     const root = mount()
     await settle()
-    vi.mocked(store.fetchPlugins).mockImplementationOnce(async () => {
-      store.pluginsWithStatus[0]!.status = 'stopped'
-      store.pluginsWithStatus[0]!.entries = [{ id: 'hello', name: 'hello', description: 'Updated entry' }]
+    vi.mocked(store.fetchPluginSummaries).mockImplementationOnce(async () => {
+      store.pluginSummariesWithStatus[0]!.status = 'stopped'
+      store.pluginSummariesWithStatus[0]!.entries = [{ id: 'hello', name: 'hello', description: 'Updated entry' }]
     })
     vi.mocked(getDevelopment).mockResolvedValue({ enabled: true, registrations: [{ ...record, runtime_alive: false }] })
     vi.mocked(store.fetchPluginStatus).mockClear()
@@ -152,21 +152,21 @@ describe('development plugin workflow', () => {
   })
   it('updates visible entry descriptions from refreshed metadata after reload', async () => {
     const store = usePluginStore()
-    store.pluginsWithStatus[0]!.entries = [{ id: 'hello', name: 'hello', description: 'Hello v1' }]
+    store.pluginSummariesWithStatus[0]!.entries = [{ id: 'hello', name: 'hello', description: 'Hello v1' }]
     vi.mocked(runDevelopmentAction).mockResolvedValue({ success: true })
     const root = mount()
     await settle()
     expect(root.querySelector('.development-entries')?.textContent).toContain('hello')
     expect(root.querySelector('.development-entries')?.textContent).toContain('Hello v1')
-    vi.mocked(store.fetchPlugins).mockImplementationOnce(async () => {
-      store.pluginsWithStatus[0]!.entries = [{ id: 'hello', name: 'hello', description: 'Hello v2' }]
+    vi.mocked(store.fetchPluginSummaries).mockImplementationOnce(async () => {
+      store.pluginSummariesWithStatus[0]!.entries = [{ id: 'hello', name: 'hello', description: 'Hello v2' }]
     })
     button(root, 'development.reload').click()
     await settle()
-    expect(store.fetchPlugins).toHaveBeenCalledWith(true)
+    expect(store.fetchPluginSummaries).toHaveBeenCalledWith(true)
     expect(root.querySelector('.development-entries')?.textContent).toContain('Hello v2')
     expect(root.querySelector('.development-entries')?.textContent).not.toContain('Hello v1')
-    store.pluginsWithStatus[0]!.entries = []
+    store.pluginSummariesWithStatus[0]!.entries = []
     await settle()
     expect(root.querySelector('.development-entries')?.textContent).toContain('common.noData')
     expect(root.querySelector('.development-entries')?.textContent).not.toContain('Hello v2')

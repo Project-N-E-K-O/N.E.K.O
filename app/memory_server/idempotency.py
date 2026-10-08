@@ -1,0 +1,838 @@
+# -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Idempotency-key bookkeeping shared by every keyed memory_server write.
+
+Three per-character files live under ``memory_dir/<character>/``:
+
+* ``idempotency_keys.json`` -- ``{key: {state, written_at, ...}}`` with
+  ``state`` one of ``pending`` / ``done`` / ``cancelled``. Records are kept
+  forever: the caller retries without a bound, so the proof that a key was
+  already written must not expire before the retries do.
+* ``idempotency_staging/<sha256(key)[:32]>.json`` -- the "generate first,
+  apply later" journal of one keyed request (the raw key contains ``:``,
+  which Windows file names reject, so the file name is a digest and the key
+  itself is stored inside the document).
+* ``scoped_tombstones.json`` -- ``{subject_key: {forgotten_at,
+  forget_epoch}}``, the largest forget epoch each subject ever received.
+
+Locking contract (see docs/design/visit-infrastructure.md section 4.6):
+
+* ``idempotency_lock(name)`` is the per-character lock. It only ever wraps
+  one read-modify-write of a small JSON file (``update_key`` and the
+  tombstone writer) and never an LLM call or a memory-store write, so two
+  different keys of one character can never overwrite each other's record.
+* ``key_lock(name, key)`` is the per-key lock that a keyed request holds for
+  its whole duration, so a retry that arrives while the first attempt is
+  still running waits and then sees the final state.
+* Order is fixed: key lock first, character lock second (the character lock
+  is only taken inside the helpers below). Nothing here takes a key lock
+  while holding the character lock, so the two cannot deadlock.
+
+All file I/O runs in worker threads (``scripts/check_async_blocking.py``).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import hashlib
+import json
+import os
+import shutil
+import time
+import weakref
+from collections.abc import Callable, Iterable
+from typing import Any
+
+from utils.cloudsave_runtime import assert_cloudsave_writable
+from utils.file_utils import atomic_write_json, read_json_tolerating_replace
+
+from ._shared import logger
+
+IDEMPOTENCY_KEYS_FILENAME = "idempotency_keys.json"
+# 读不出、无人认领的暂存在清除时被抹成的占位：同键重试按已取消处理
+UNREADABLE_CANCELLED_MARKER = "__unreadable_cancelled__"
+STAGING_DIRNAME = "idempotency_staging"
+TOMBSTONES_FILENAME = "scoped_tombstones.json"
+
+KEY_STATE_PENDING = "pending"
+KEY_STATE_DONE = "done"
+KEY_STATE_CANCELLED = "cancelled"
+TERMINAL_KEY_STATES = frozenset({KEY_STATE_DONE, KEY_STATE_CANCELLED})
+_KNOWN_KEY_STATES = frozenset({KEY_STATE_PENDING}) | TERMINAL_KEY_STATES
+
+STAGING_STATE_GENERATED = "generated"
+
+
+class IdempotencyStateError(RuntimeError):
+    """A bookkeeping file exists but cannot be read as the expected shape.
+
+    Never degraded to "empty": an unreadable key file read as ``{}`` and then
+    written back would erase every ``done`` record of the character, and the
+    next retry of an already-applied digest would apply it again.
+    """
+
+
+class IdempotencyCorruptError(IdempotencyStateError):
+    """The bookkeeping file was read but its content is damaged (not a read failure)."""
+
+
+# ── locks ────────────────────────────────────────────────────────────────
+# asyncio.Lock binds to the loop that first contends on it. Registries are
+# keyed per running loop so a lock created under one loop (a previous test,
+# a restarted server loop) is never awaited from another.
+_character_locks: dict[tuple[int, str], asyncio.Lock] = {}
+# 键级锁按弱引用登记：持有或等待它的协程都引用着它，空闲的键随即被回收，
+# 注册表不会随请求总数无限增长
+_key_locks: "weakref.WeakValueDictionary[tuple[int, str, str], asyncio.Lock]" = (
+    weakref.WeakValueDictionary()
+)
+_fence_locks: "weakref.WeakValueDictionary[tuple[int, str, str], asyncio.Lock]" = (
+    weakref.WeakValueDictionary()
+)
+
+
+def _loop_id() -> int:
+    return id(asyncio.get_running_loop())
+
+
+def idempotency_lock(lanlan_name: str) -> asyncio.Lock:
+    """Return the per-character read-modify-write lock (same object per name)."""
+    registry_key = (_loop_id(), lanlan_name)
+    lock = _character_locks.get(registry_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _character_locks[registry_key] = lock
+    return lock
+
+
+def key_lock(lanlan_name: str, key: str) -> asyncio.Lock:
+    """Return the per-key lock (the same object for the same character and key).
+
+    Registered weakly: callers keep the returned lock referenced while they
+    hold or wait on it (``async with key_lock(...)`` does), and an idle key's
+    lock is dropped.
+    """
+    registry_key = (_loop_id(), lanlan_name, key)
+    lock = _key_locks.get(registry_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _key_locks[registry_key] = lock
+    return lock
+
+
+def forget_fence(lanlan_name: str, subject_key: str) -> asyncio.Lock:
+    """Return the per-subject lock that serializes epoch-tagged forgets of one subject.
+
+    Held from the completed-epoch check through the erase, both cancellation
+    passes and the completion marker, so the next forget of the subject only
+    checks once the previous one has published (or failed to publish) its
+    completed epoch. Taken before any other lock, by forgets only.
+    """
+    # 独立的登记表：客户端的幂等键可以是任意合法字符串，借用键锁的命名空间会让
+    # 某个键恰好与栅栏同名，清除拿着栅栏再去拿同名键锁就会自己等自己
+    registry_key = (_loop_id(), lanlan_name, subject_key)
+    lock = _fence_locks.get(registry_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _fence_locks[registry_key] = lock
+    return lock
+
+
+# ── paths ────────────────────────────────────────────────────────────────
+
+def _config_manager():
+    # 晚绑定：测试与 reload 都通过替换 runtime._config_manager 生效。
+    from . import runtime
+
+    return runtime._config_manager
+
+
+def _character_dir(lanlan_name: str) -> str:
+    # 只拼路径不建目录：读路径不能把一个已删除角色的目录重新建出来；
+    # 写路径由 atomic_write_json 自己建父目录。
+    return os.path.join(str(_config_manager().memory_dir), lanlan_name)
+
+
+def key_digest(key: str) -> str:
+    """The 32-hex-char digest used for staging file names and effect keys."""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+
+
+def effect_key_for(key: str, ordinal: int) -> str:
+    """Per-effect dedup key: ``sha256(key)[:32] + ':' + ordinal``."""
+    return f"{key_digest(key)}:{int(ordinal)}"
+
+
+def keys_path(lanlan_name: str) -> str:
+    return os.path.join(_character_dir(lanlan_name), IDEMPOTENCY_KEYS_FILENAME)
+
+
+def staging_dir(lanlan_name: str) -> str:
+    return os.path.join(_character_dir(lanlan_name), STAGING_DIRNAME)
+
+
+def staging_path(lanlan_name: str, key: str) -> str:
+    return os.path.join(staging_dir(lanlan_name), f"{key_digest(key)}.json")
+
+
+def tombstones_path(lanlan_name: str) -> str:
+    return os.path.join(_character_dir(lanlan_name), TOMBSTONES_FILENAME)
+
+
+# ── raw file helpers (run in worker threads) ─────────────────────────────
+
+def _read_json_object(path: str) -> dict:
+    """Read a dict-rooted JSON file; missing means empty, anything else raises."""
+    try:
+        # 其他键正用 os.replace 改写同一文件：Windows 上替换窗口里的共享冲突先退避重试，
+        # 不能直接当成「状态读不出」让带键写入 503、清除 500
+        data = read_json_tolerating_replace(path)
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        # 读失败（共享冲突退避用完、权限等）不等于内容坏了：调用方按状态读不出处理、可重试
+        raise IdempotencyStateError(f"{os.path.basename(path)} unreadable: {exc}") from exc
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
+        raise IdempotencyCorruptError(f"{os.path.basename(path)} unreadable: {exc}") from exc
+    if not isinstance(data, dict):
+        raise IdempotencyCorruptError(f"{os.path.basename(path)} is not an object")
+    return data
+
+
+def _write_json_object(path: str, data: dict) -> None:
+    assert_cloudsave_writable(
+        _config_manager(),
+        operation="save",
+        target=f"memory/{os.path.basename(os.path.dirname(path))}/{os.path.basename(path)}",
+    )
+    atomic_write_json(path, data, ensure_ascii=False, indent=2)
+
+
+def _cloudsave_target(path: str) -> str:
+    try:
+        relative = os.path.relpath(path, str(_config_manager().memory_dir))
+    except ValueError:
+        relative = os.path.basename(path)
+    return "memory/" + relative.replace(os.sep, "/")
+
+
+def _remove_file(path: str) -> bool:
+    # 与写入同一道闸：cloudsave 只读 / 快照导入期间，memory 目录不能被删改
+    assert_cloudsave_writable(_config_manager(), operation="delete", target=_cloudsave_target(path))
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+async def _update_json_object(
+    lanlan_name: str,
+    path: str,
+    mutate: Callable[[dict], bool],
+) -> dict:
+    """Character-locked read-modify-write of one dict file.
+
+    ``mutate`` edits the freshly read mapping in place and returns whether
+    anything changed; nothing is written when it did not.
+    """
+    async with idempotency_lock(lanlan_name):
+        data = await asyncio.to_thread(_read_json_object, path)
+        if mutate(data):
+            await asyncio.to_thread(_write_json_object, path, data)
+        return data
+
+
+# ── key records ──────────────────────────────────────────────────────────
+
+async def read_key(lanlan_name: str, key: str) -> dict | None:
+    """Return the current record of ``key`` (a copy), or ``None``."""
+    data = await asyncio.to_thread(_read_json_object, keys_path(lanlan_name))
+    if key not in data:
+        return None
+    record = data[key]
+    state = record.get("state") if isinstance(record, dict) else None
+    if not isinstance(state, str) or state not in _KNOWN_KEY_STATES:
+        # 键在但记录不是对象、或状态缺失 / 不认识：不能当作「没有这个键」或「未完成」——
+        # 它可能原本是 done / cancelled，重新生成会把已完成或已清除的产物再写一遍
+        raise IdempotencyStateError(f"idempotency record of {key!r} is malformed")
+    return dict(record)
+
+
+async def update_key(
+    lanlan_name: str,
+    key: str,
+    fn: Callable[[dict | None], dict | None],
+) -> dict | None:
+    """Change exactly one key record under the character lock.
+
+    Reads the LATEST file, hands ``fn`` a copy of this key's record (or
+    ``None``), and writes back only that entry: ``fn`` returning ``None``
+    leaves the file untouched, returning an equal record skips the write.
+    Every other key in the file is preserved byte-for-byte as read inside
+    the lock, so concurrent transitions of different keys cannot lose each
+    other. Returns the record now stored for ``key``.
+    """
+    result: dict[str, Any] = {}
+
+    def _mutate(data: dict) -> bool:
+        old = data.get(key)
+        old_copy = dict(old) if isinstance(old, dict) else None
+        new = fn(None if old_copy is None else dict(old_copy))
+        if new is None:
+            result["record"] = old_copy
+            return False
+        new = dict(new)
+        result["record"] = new
+        if new == old_copy:
+            return False
+        data[key] = new
+        return True
+
+    await _update_json_object(lanlan_name, keys_path(lanlan_name), _mutate)
+    return result.get("record")
+
+
+def transition(state: str, **extra: Any) -> Callable[[dict | None], dict | None]:
+    """An ``update_key`` callback moving a record to ``state``.
+
+    Terminal records are never moved again (``done`` stays ``done`` even if a
+    late forget tries to cancel it, and a cancelled key is never revived).
+    """
+    def _fn(old: dict | None) -> dict | None:
+        if old is not None and old.get("state") in TERMINAL_KEY_STATES:
+            return None
+        record = dict(old or {})
+        record["state"] = state
+        record.setdefault("written_at", time.time())
+        record["updated_at"] = time.time()
+        for name, value in extra.items():
+            if value is not None:
+                record[name] = value
+        return record
+
+    return _fn
+
+
+# ── staging ──────────────────────────────────────────────────────────────
+
+def _read_staging_sync(path: str, key: str) -> dict | None:
+    try:
+        data = read_json_tolerating_replace(path)
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as exc:
+        raise IdempotencyStateError(f"staging unreadable: {exc}") from exc
+    if isinstance(data, dict) and UNREADABLE_CANCELLED_MARKER in data:
+        # 清除时读不出、没人认领而被抹掉原文的暂存：按这个键已取消处理（见 drop_unreadable_orphan_staging）。
+        # 只认那份不含任何别的字段的占位：标记混在一份正常日志里是损坏，绝不能借它把未应用的效果丢掉
+        if data != {UNREADABLE_CANCELLED_MARKER: True}:
+            raise IdempotencyStateError("staging carries a stray cancellation marker")
+        return {"key": key, UNREADABLE_CANCELLED_MARKER: True}
+    if not isinstance(data, dict) or data.get("key") != key:
+        # 文件名只是摘要：内容里的原键对不上（截断碰撞 / 手改）时绝不套用
+        # 别的键的产物。
+        raise IdempotencyStateError("staging document does not belong to this key")
+    return data
+
+
+async def read_staging(lanlan_name: str, key: str) -> dict | None:
+    """Return the staging document of ``key`` or ``None`` when there is none."""
+    return await asyncio.to_thread(
+        _read_staging_sync, staging_path(lanlan_name, key), key,
+    )
+
+
+async def write_staging(lanlan_name: str, key: str, document: dict) -> None:
+    """Atomically (re)write the staging document of ``key``.
+
+    Callers hold ``key_lock(lanlan_name, key)``: one writer per key.
+    """
+    doc = dict(document)
+    doc["key"] = key
+    await asyncio.to_thread(
+        _write_json_object, staging_path(lanlan_name, key), doc,
+    )
+
+
+def is_staging_path_of(lanlan_name: str, key: str, path: str) -> bool:
+    """Whether ``path`` (from :func:`list_staging`) is the staging file of ``key``."""
+    return (
+        os.path.normcase(os.path.abspath(staging_path(lanlan_name, key)))
+        == os.path.normcase(os.path.abspath(path))
+    )
+
+
+def _read_staging_file(path: str) -> tuple[bool, Any]:
+    """``(missing, document_or_None)`` of one staging file read by path."""
+    try:
+        return False, read_json_tolerating_replace(path)
+    except FileNotFoundError:
+        return True, None
+    except (OSError, ValueError, RecursionError):
+        return False, None
+
+
+async def scrub_misplaced_staging(
+    lanlan_name: str, path: str, scrub: Callable[[dict], dict],
+) -> bool:
+    """Rewrite one staging file whose embedded key does not match its name, in place.
+
+    The file's real owner is looked up by name in the key records (best
+    effort) and its key lock held, so an in-flight apply of that key never
+    races the rewrite. Returns False when the file changed or vanished meanwhile.
+    """
+    try:
+        records = await asyncio.to_thread(_read_json_object, keys_path(lanlan_name))
+    except IdempotencyStateError:
+        records = {}
+    owner = next(
+        (key for key in records if isinstance(key, str) and key and is_staging_path_of(lanlan_name, key, path)),
+        None,
+    )
+    async with (key_lock(lanlan_name, owner) if owner else contextlib.nullcontext()):
+        missing, current = await asyncio.to_thread(_read_staging_file, path)
+        if missing:
+            return False
+        if not isinstance(current, dict) or (
+            isinstance(current.get("key"), str) and is_staging_path_of(lanlan_name, current["key"], path)
+        ):
+            # 已被它真正的键重写成正常暂存（或已读不出）：交给常规流程
+            return False
+        await asyncio.to_thread(_write_json_object, path, scrub(current))
+    return True
+
+
+async def drop_unreadable_orphan_staging(lanlan_name: str, path: str) -> bool:
+    """Scrub a staging file that no longer parses and that no key record owns.
+
+    Such a file cannot be matched against a forget (its subjects are
+    unreadable) nor cancelled through a key record; kept, it would retain
+    whatever extracted plaintext it holds, and a later repair would let a
+    same-key retry adopt it. It is overwritten in place with a content-free
+    marker: the plaintext is gone, and a same-key retry reads the marker as
+    a cancelled key (never as "no staging", which would regenerate and
+    write the forgotten subject back). Ownership unknown (no or unreadable
+    key records) or a transient read error keeps the file. Returns whether
+    it was scrubbed.
+    """
+
+    def _scrub() -> bool:
+        if not os.path.exists(keys_path(lanlan_name)):
+            # 有暂存、没有键文件：归属未知（文件丢了 / 同步或还原过），原样保留
+            return False
+        try:
+            records = _read_json_object(keys_path(lanlan_name))
+        except IdempotencyStateError:
+            return False
+        if any(isinstance(key, str) and key and is_staging_path_of(lanlan_name, key, path) for key in records):
+            # 有键记录认领：pending 的由按记录取消的那一遍处理，终态的不会再被应用
+            return False
+        try:
+            document = read_json_tolerating_replace(path)
+        except FileNotFoundError:
+            return False
+        except (ValueError, RecursionError):
+            document = None
+        except OSError:
+            return False
+        if isinstance(document, dict):
+            return False
+        _write_json_object(path, {UNREADABLE_CANCELLED_MARKER: True})
+        return True
+
+    # 读键记录、复读、改写都在同一把锁里：期间不会有 update_key 认领这条路径
+    async with idempotency_lock(lanlan_name):
+        return await asyncio.to_thread(_scrub)
+
+
+async def delete_staging(lanlan_name: str, key: str) -> bool:
+    return await asyncio.to_thread(_remove_file, staging_path(lanlan_name, key))
+
+
+def _list_staging_sync(directory: str) -> list[tuple[str, dict | None, float]]:
+    rows: list[tuple[str, dict | None, float]] = []
+    try:
+        entries = list(os.scandir(directory))
+    except FileNotFoundError:
+        return rows
+    for entry in entries:
+        if not entry.is_file() or not entry.name.endswith(".json"):
+            continue
+        try:
+            mtime = entry.stat().st_mtime
+        except OSError:
+            continue
+        try:
+            data = read_json_tolerating_replace(entry.path)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError):
+            data = None
+        rows.append((entry.path, data if isinstance(data, dict) else None, mtime))
+    return rows
+
+
+async def list_staging(lanlan_name: str) -> list[tuple[str, dict | None, float]]:
+    """``[(path, document_or_None, mtime)]`` for every staging file."""
+    return await asyncio.to_thread(_list_staging_sync, staging_dir(lanlan_name))
+
+
+# ── tombstones ───────────────────────────────────────────────────────────
+
+async def read_tombstones(lanlan_name: str) -> dict:
+    return await asyncio.to_thread(
+        _read_json_object, tombstones_path(lanlan_name),
+    )
+
+
+async def record_tombstones(
+    lanlan_name: str,
+    subject_keys: Iterable[str],
+    forget_epoch: int,
+    *,
+    now: float | None = None,
+) -> dict:
+    """Raise each subject's tombstone to at least ``forget_epoch``.
+
+    Monotonic: a smaller epoch never lowers an existing tombstone (a late or
+    replayed forget must not reopen a window a newer forget closed).
+    """
+    stamp = time.time() if now is None else float(now)
+    keys = sorted({str(key) for key in subject_keys if key})
+    epoch = int(forget_epoch)
+
+    def _mutate(data: dict) -> bool:
+        changed = False
+        for subject_key in keys:
+            current = data.get(subject_key)
+            current_epoch = (
+                current.get("forget_epoch")
+                if isinstance(current, dict) else None
+            )
+            if subject_key in data and (
+                not isinstance(current_epoch, int)
+                or isinstance(current_epoch, bool)
+                or current_epoch < 0
+            ):
+                # 墓碑在但内容坏了：原值可能是更高的围栏，不能用这次较低的代数覆盖掉；
+                # 也不能因此挡住这次清除（擦除照常进行）。原样留着它：读路径对它
+                # fail closed，这个 subject 的带键写入在修好之前一律 503
+                logger.warning(f"[Idempotency] {lanlan_name}: 墓碑 {subject_key!r} 内容损坏，保留不覆盖")
+                continue
+            if (
+                isinstance(current_epoch, int)
+                and not isinstance(current_epoch, bool)
+                and current_epoch >= epoch
+            ):
+                continue
+            data[subject_key] = {"forgotten_at": stamp, "forget_epoch": epoch}
+            changed = True
+        return changed
+
+    return await _update_json_object(
+        lanlan_name, tombstones_path(lanlan_name), _mutate,
+    )
+
+
+async def mark_tombstone_erased(
+    lanlan_name: str, subject_key: str, forget_epoch: int, *, covered_epoch: int | None = None,
+) -> None:
+    """Record that the erase of ``forget_epoch`` for ``subject_key`` completed (monotonic).
+
+    The tombstone is written BEFORE the erase, so it alone does not prove the
+    erase finished; this marker does, and lets a replayed or stale forget of
+    an epoch at or below it skip re-erasing writes made after it.
+
+    ``covered_epoch`` is the tombstone fence already in place before this
+    erase started (a newer forget may have raised it and then failed before
+    erasing). The erase ran behind that fence, so it completes that epoch too.
+    """
+    epoch = int(forget_epoch)
+    if isinstance(covered_epoch, int) and not isinstance(covered_epoch, bool) and covered_epoch > epoch:
+        epoch = covered_epoch
+
+    def _mutate(data: dict) -> bool:
+        row = data.get(subject_key)
+        fence = row.get("forget_epoch") if isinstance(row, dict) else None
+        if subject_key in data and (
+            not isinstance(fence, int) or isinstance(fence, bool) or fence < 0
+        ):
+            # 这一行坏了：这次清除已把该 subject 擦干净，按「本次围栏 + 本次完成标记」重建这一行
+            # （坏行里原本可能更高的围栏会丢，丢的只是对更早请求的拦截）。不能回 503 让清除永远
+            # 卡住——没有任何东西会把文件修好，撤销流程与这个人的记忆写入会一直暂停
+            logger.warning(f"[Idempotency] {lanlan_name}: 墓碑 {subject_key!r} 损坏，按本次清除重建")
+            data[subject_key] = {"forgotten_at": time.time(), "forget_epoch": epoch, "erased_epoch": epoch}
+            return True
+        if not isinstance(row, dict):
+            # 墓碑在擦除期间被移走了（比如启动清理把一条早已过期、本次未抬高的旧墓碑清掉）：
+            # 不能静默跳过——回成功而没有完成标记，之后同代数的重放会再擦一遍新写入的记忆。
+            # 按本次代数重建墓碑并记上完成
+            data[subject_key] = {"forgotten_at": time.time(), "forget_epoch": epoch, "erased_epoch": epoch}
+            return True
+        current = row.get("erased_epoch")
+        # 完成标记只在合法且不超过围栏时才算数（与 erased_epoch() 同口径）：坏的 / 超出围栏的
+        # 标记不能挡住这次写入，否则接口回了成功、读端却仍不认它，之后的重放会再擦一遍
+        if _non_negative_int(current) and current <= fence and current >= epoch:
+            return False
+        if epoch > fence:
+            # 擦除期间旧墓碑被清理移走、又被一次较低代数的清除重建：这次擦除完成的是更高的代数，
+            # 围栏要抬回去（单调），否则完成标记被截断，较高代数的重放会再擦一遍
+            row["forget_epoch"] = epoch
+            row["forgotten_at"] = time.time()
+        row["erased_epoch"] = epoch
+        return True
+
+    path = tombstones_path(lanlan_name)
+    # 读、隔离、重建都在同一把锁里：并发的两次清除不会一个重建了文件、另一个读到重建结果就
+    # 跳过自己那一行（接口回成功却既没有围栏也没有完成标记）
+    async with idempotency_lock(lanlan_name):
+        await asyncio.to_thread(_mark_tombstone_erased_sync, path, _mutate)
+
+
+def _mark_tombstone_erased_sync(path: str, mutate: Callable[[dict], bool]) -> None:
+    try:
+        data = _read_json_object(path)
+    except IdempotencyCorruptError:
+        # 整份墓碑文件内容坏了：复制一份留底（排查用），以本次清除重建这一行。别的 subject 的围栏随
+        # 之丢失，但永久 503 更糟——撤销流程永远完成不了，也没有任何东西会把文件修好。
+        # 读失败（OSError）不走这里：完好的文件不能因为一次共享冲突被当成损坏隔离掉
+        # 先过 cloudsave 闸：只读 / 快照导入期间不动 memory 目录
+        assert_cloudsave_writable(_config_manager(), operation="save", target=_cloudsave_target(path))
+        # 复制而不是改名，重建内容再原子覆盖原路径：覆盖失败（磁盘满）时原路径上仍是那份坏文件、
+        # 读路径照旧 fail closed，不会变成「没有墓碑」让所有围栏一起失效
+        quarantine = f"{path}.corrupt-{time.time_ns() // 1_000_000}-{os.getpid()}"
+        try:
+            shutil.copy2(path, quarantine)
+            logger.error(f"[Idempotency] 墓碑文件不可读，已留底为 {os.path.basename(quarantine)} 并重建")
+        except OSError as exc:
+            # 留底只是排查用：复制不了（空间不够、文件已不在）不能挡住记下这次擦除已完成——
+            # 否则接口回 500，同代数重试认不出上次已擦过，会再擦一遍
+            logger.error(f"[Idempotency] 墓碑文件不可读，留底失败（{exc}），直接重建")
+        data = {}
+    if mutate(data):
+        _write_json_object(path, data)
+
+
+def _non_negative_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def erased_epoch(tombstones: dict, subject_key: str) -> int | None:
+    """Highest forget epoch whose erase completed for ``subject_key`` (None when unknown).
+
+    Only a well-formed row counts: the fence must be valid and the marker may
+    not exceed it. A damaged row must never let a forget be skipped.
+    """
+    row = tombstones.get(subject_key)
+    if not isinstance(row, dict):
+        return None
+    fence, value = row.get("forget_epoch"), row.get("erased_epoch")
+    if not _non_negative_int(fence) or not _non_negative_int(value) or value > fence:
+        return None
+    return value
+
+
+def tombstone_epoch(tombstones: dict, subject_keys: Iterable[str]) -> int | None:
+    """Largest forget epoch recorded for any of ``subject_keys`` (or None)."""
+    best: int | None = None
+    for subject_key in subject_keys:
+        if subject_key not in tombstones:
+            continue
+        row = tombstones[subject_key]
+        epoch = row.get("forget_epoch") if isinstance(row, dict) else None
+        if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
+            # 墓碑在但内容坏了：不能当作没有墓碑放行，旧请求会借此写回已清除的记忆
+            raise IdempotencyStateError(f"tombstone of {subject_key!r} is malformed")
+        if best is None or epoch > best:
+            best = epoch
+    return best
+
+
+# ── startup cleanup ──────────────────────────────────────────────────────
+
+async def cleanup_expired(
+    lanlan_names: Iterable[str],
+    *,
+    ttl_s: float | None = None,
+    now: float | None = None,
+) -> dict:
+    """Drop staging leftovers and tombstones older than the retention period.
+
+    Key records are never touched (``done`` / ``cancelled`` / ``pending`` are
+    kept forever), and the staging of a ``pending`` key is kept too: it is
+    the only copy of the generated products and of the apply progress; so
+    are the tombstones of subjects such a staging document references.
+    Characters being released (rename / delete draining) are skipped through
+    the same lifecycle admission the write endpoints use. Best-effort per
+    character: one unreadable file is logged and skipped, never aborts the
+    sweep.
+    """
+    if ttl_s is None:
+        from config import MEMORY_IDEMPOTENCY_TTL_S
+
+        ttl_s = MEMORY_IDEMPOTENCY_TTL_S
+    current = time.time() if now is None else float(now)
+    cutoff = current - float(ttl_s)
+    report = {"staging_removed": 0, "tombstones_removed": 0}
+    from . import runtime
+
+    for name in lanlan_names:
+        # 与写端点同一套角色生命周期准入：删除 / 改名正在排空时不碰这个角色，
+        # 否则写回墓碑文件会把刚删掉的角色目录重新建出来
+        lease = runtime._begin_character_request(name)
+        if lease is None:
+            continue
+        try:
+            await _cleanup_one(name, cutoff, report)
+        finally:
+            runtime._end_character_request(name, lease)
+    if report["staging_removed"] or report["tombstones_removed"]:
+        logger.info(
+            "[Idempotency] 启动清理：暂存 %d、墓碑 %d",
+            report["staging_removed"],
+            report["tombstones_removed"],
+        )
+    return report
+
+
+async def _cleanup_one(name: str, cutoff: float, report: dict) -> None:
+    protected: set[str] = set()
+    if not await asyncio.to_thread(os.path.isdir, _character_dir(name)):
+        return
+    try:
+        # 按文件名反查它属于哪个键：文件名是键的摘要，内容里的键可能坏了 / 被改过，
+        # 只有键记录能说明这份暂存还是不是某个 pending 键唯一的副本
+        records = await asyncio.to_thread(_read_json_object, keys_path(name))
+        owner_of_path = {
+            os.path.normcase(os.path.abspath(staging_path(name, key))): key
+            for key in records
+            if isinstance(key, str) and key
+        }
+        for path, document, mtime in await list_staging(name):
+            created = (
+                document.get("created_at") if isinstance(document, dict) else None
+            )
+            age_anchor = (
+                float(created)
+                if isinstance(created, (int, float)) and not isinstance(created, bool)
+                else mtime
+            )
+            if age_anchor >= cutoff:
+                continue
+            key = owner_of_path.get(os.path.normcase(os.path.abspath(path)))
+            if key is None:
+                embedded = document.get("key") if isinstance(document, dict) else None
+                if not (
+                    isinstance(embedded, str) and embedded
+                    and os.path.normcase(os.path.abspath(staging_path(name, embedded)))
+                    == os.path.normcase(os.path.abspath(path))
+                ):
+                    # 没有任何键记录对应这个文件、内嵌键也对不上文件名（读不出 / 坏了）：
+                    # 没有键能认领它，过期即删，抽取原文不长期留在磁盘上
+                    if await asyncio.to_thread(_remove_file, path):
+                        report["staging_removed"] += 1
+                    continue
+                # 孤儿暂存可被同键重试认领（重建 pending 记录后接着应用）。上面的键记录是
+                # 枚举前的快照：删之前拿键级锁、重读最新记录，已被认领成 pending 的不删
+                key = embedded
+            if key_lock(name, key).locked():
+                # 同键请求正持着键锁（多半在调 LLM）：清理持着角色请求租约，不能排在它后面等，
+                # 否则角色删除 / 改名的排空会被拖住。这一份留到下次启动再扫
+                continue
+            # 与在飞的同键请求互斥：它可能正要补应用这份暂存。
+            async with key_lock(name, key):
+                try:
+                    record = await read_key(name, key)
+                except IdempotencyStateError as exc:
+                    # 这一条键记录坏了：只保留它对应的这份暂存（可能是 pending 键的唯一副本），
+                    # 不能让整个角色的清理就此停下、其余过期暂存一直留在磁盘上
+                    logger.warning(f"[Idempotency] {name}: 键记录 {key!r} 不可读，保留其暂存: {exc}")
+                    continue
+                if record is not None and record.get("state") == KEY_STATE_PENDING:
+                    # pending 键的暂存是已生成产物与应用进度的唯一副本（读不出 / 内嵌键
+                    # 坏了也一样：同键重试读它会 fail closed）：删了重试只能重新生成，
+                    # 序号对不上的 effect_key 会挡错事实、漏掉没应用的
+                    continue
+                if await asyncio.to_thread(_remove_file, path):
+                    report["staging_removed"] += 1
+    except Exception as exc:  # noqa: BLE001 - startup sweep is best-effort
+        logger.warning(f"[Idempotency] {name}: 暂存清理失败（跳过）: {exc}")
+    try:
+        removed: list[str] = []
+
+        # 还被保留着的暂存（pending）引用的 subject：它们的墓碑是「这份暂存早于清除」
+        # 的唯一持久证据，不能先于暂存过期
+        for _path, document, _mtime in await list_staging(name):
+            protected.update(_staged_subjects(document))
+        # 先记 pending、后写暂存：崩在两步之间的 pending 键没有暂存，清除也取消不了它，
+        # 它的请求 subject 的墓碑同样是唯一的证据
+        try:
+            records = await asyncio.to_thread(_read_json_object, keys_path(name))
+        except Exception:  # noqa: BLE001 - 读不出键记录就不删任何墓碑
+            return
+        for record in records.values():
+            if isinstance(record, dict) and record.get("state") == KEY_STATE_PENDING:
+                request = record.get("request")
+                wire_keys = request.get("wire_keys") if isinstance(request, dict) else None
+                if isinstance(wire_keys, list):
+                    protected.update(str(k) for k in wire_keys)
+                routed = record.get("routed_keys")
+                if isinstance(routed, list):
+                    protected.update(str(k) for k in routed)
+
+        def _drop_expired(data: dict) -> bool:
+            for subject_key, row in list(data.items()):
+                if subject_key in protected:
+                    continue
+                stamp = row.get("forgotten_at") if isinstance(row, dict) else None
+                if (
+                    isinstance(stamp, (int, float))
+                    and not isinstance(stamp, bool)
+                    and stamp < cutoff
+                ):
+                    data.pop(subject_key, None)
+                    removed.append(subject_key)
+            return bool(removed)
+
+        if await asyncio.to_thread(os.path.exists, tombstones_path(name)):
+            await _update_json_object(name, tombstones_path(name), _drop_expired)
+        report["tombstones_removed"] += len(removed)
+    except Exception as exc:  # noqa: BLE001 - startup sweep is best-effort
+        logger.warning(f"[Idempotency] {name}: 墓碑清理失败（跳过）: {exc}")
+
+
+def _staged_subjects(document: Any) -> set[str]:
+    """Every subject key a staging document references: the ``subjects`` index plus each segment.
+
+    The index alone is not enough: a document whose index is missing or
+    damaged still names its subjects segment by segment (wire key and routed
+    destination), and recovery replays it from those, so their tombstones
+    must outlive it too (same reading as the forget-side cancellation scan).
+    """
+    if not isinstance(document, dict):
+        return set()
+    subjects = document.get("subjects")
+    keys = {str(s) for s in subjects} if isinstance(subjects, list) else set()
+    segments = document.get("segments")
+    for segment in segments if isinstance(segments, list) else []:
+        if not isinstance(segment, dict):
+            continue
+        if segment.get("wire_key"):
+            keys.add(str(segment["wire_key"]))
+        subject = segment.get("subject")
+        if isinstance(subject, dict) and subject.get("subject_kind") and subject.get("subject_id"):
+            keys.add(f"{subject['subject_kind']}:{subject['subject_id']}")
+    return keys

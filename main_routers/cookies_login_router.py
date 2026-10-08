@@ -26,7 +26,6 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import asyncio
-import ipaddress
 import re
 import io
 import base64
@@ -49,6 +48,7 @@ from utils.cookies_login import (
 )
 from utils.logger_config import get_module_logger
 from utils.twitch_auth import TwitchAuthService
+from main_routers.local_access import is_direct_loopback_request
 
 logger = get_module_logger(__name__, "Main")
 
@@ -61,15 +61,7 @@ SUSPICIOUS_PATTERN = re.compile(
 def verify_local_access(request: Request):
     """🛡️ Defense in depth: block unauthorized access attempts from non-local hosts."""
     client_host = getattr(request.client, "host", None) if request.client else None
-    allowed = client_host == "localhost"
-    if not allowed:
-        try:
-            client_ip = ipaddress.ip_address(str(client_host or ""))
-        except ValueError:
-            client_ip = None
-        if client_ip is not None:
-            mapped = getattr(client_ip, "ipv4_mapped", None)
-            allowed = client_ip.is_loopback or (mapped is not None and mapped.is_loopback)
+    allowed = is_direct_loopback_request(request)
 
     if not allowed:
         logger.warning(f"🚨 拦截到非本地主机的越权访问尝试，来源 IP: {client_host}")
@@ -159,7 +151,7 @@ async def render_auth_page(request: Request):
     """Credential management page (local access only)."""
     from config import APP_VERSION
 
-    return templates.TemplateResponse("cookies_login.html", {
+    return templates.TemplateResponse(request, "cookies_login.html", {
         "request": request,
         "static_asset_version": APP_VERSION,
     })
@@ -170,7 +162,7 @@ async def render_auth_guide(request: Request):
     """Standalone browser credential guide (local access only)."""
     from config import APP_VERSION
 
-    return templates.TemplateResponse("cookies_guide.html", {
+    return templates.TemplateResponse(request, "cookies_guide.html", {
         "request": request,
         "static_asset_version": APP_VERSION,
     })

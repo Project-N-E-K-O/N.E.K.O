@@ -47,6 +47,15 @@ export default {
     removeHint: "停止外掛並移除關聯？原始碼和執行資料會保留。",
   },
   common: {
+    surfaceLanguagePending: "應用語言已變更。為保留未儲存內容，此面板暫時保留原語言。",
+    surfaceApplyLanguage: "套用新語言並重新載入面板",
+    surfaceApplyLanguageConfirm: "重新載入面板會遺失其中未儲存的內容。是否繼續？",
+
+    languageLoading: "正在載入語言，目前介面仍可使用",
+    languageLoadFailed: "語言載入失敗，已保留目前語言。",
+    languageRetry: "重試語言載入",
+    languageReload: "重新載入頁面",
+
     loading: '載入中...',
     refresh: '重新整理',
     search: '搜尋',
@@ -248,6 +257,8 @@ export default {
     packageHashMismatch: '外掛套件驗證失敗。',
     downloadFailed: '外掛套件下載失敗。',
     marketListFetchFailed: '外掛市集暫時無法使用。',
+    catalogNotConfigured: '尚未設定外掛市集位址。',
+    releaseMismatch: '安裝請求與市集發布記錄不一致，請重新整理外掛市集後再試。',
     unsafeProfilePath: '記錄的套件 Profile 路徑不安全。',
     packageIdentityMismatch: '套件身分與目標外掛不一致。',
     confirmationChanged: '確認後外掛或套件已變更，請檢查新計畫後再試。',
@@ -442,6 +453,10 @@ export default {
     disabled: '已停用',
     autoStart: '自動啟動',
     manualStart: '手動啟動',
+    autoStartHint: 'N.E.K.O 啟動時自動啟動此外掛。手動啟動或停止不會改變此設定。',
+    autoStartDisabledHint: '此外掛目前已停用。開啟自動啟動會同時啟用它，讓它下次啟動時執行，但不會立即啟動。',
+    autoStartBlockedHint: '偏好已開啟，但外掛被停用或仍待核准，下次不會自動啟動。關閉再開啟可啟用並核准自動啟動。',
+    autoStartUnsupportedDevelopment: '開發外掛不會自動啟動，請手動啟動。',
     fetchFailed: '取得外掛列表失敗',
     pluginType: '類型',
     pluginTypeNormal: '外掛',
@@ -583,6 +598,8 @@ export default {
       blockedLegacyPlugin: '仍安裝著此前版本的外掛。請先解除安裝 {plugin} 再繼續。',
       blockedOwnershipUnknown: '無法確認現有外掛目錄的所有權。請先還原對應的安裝來源記錄，再重試。',
       blockedInstallSourceReadOnly: '安裝來源記錄無法使用或處於唯讀狀態。請先還原安裝來源記錄，再重試。',
+      installSucceeded: '安裝完成，處理了 {count} 個外掛。',
+      completedWithWarnings: '{plugin} 已安裝，但有警告：{reasons}',
       rollbackCompleted: '升級失敗，已回復先前的版本。',
       rollbackIncomplete: '升級失敗且回復未完整完成，請先檢查外掛狀態再繼續。',
       error: {
@@ -593,6 +610,7 @@ export default {
         pluginManifestInvalid: '外掛的 plugin.toml 格式錯誤，請聯絡外掛作者修正後重新打包。',
         identityMismatch: '外掛資料夾名稱與 plugin.toml 內的 ID 不一致，請聯絡作者修正套件。',
         hashMismatch: '套件內容與驗證資訊不一致，已拒絕安裝，未保留任何安裝變更。',
+        profileOwnershipConflict: '此外掛套件的設定檔目錄已存在，但不屬於該套件（可能是先前安裝留下的殘留），已拒絕安裝，未做任何變更。',
         inspectFailed: '無法檢查此外掛套件。請確認檔案存在且為有效的 N.E.K.O 外掛套件，然後重試。',
         verifyFailed: '無法驗證此外掛套件。請重新下載，或請外掛作者重新打包後再試。',
         installFailed: '無法安裝此外掛套件，未保留未確認的安裝變更。'
@@ -796,6 +814,9 @@ export default {
     pluginDeleted: '外掛已刪除',
     pluginDeletedBuiltinRestartFailed: '外掛 {plugin} 已刪除，但還原的內建版本啟動失敗：{error}',
     startFailed: '啟動失敗',
+    autoStartEnabled: '已開啟自動啟動',
+    autoStartDisabled: '已關閉自動啟動',
+    autoStartUpdateFailed: '更新自動啟動設定失敗',
     stopFailed: '停止失敗',
     reloadFailed: '重新載入失敗',
     buildFailed: '構建外掛失敗',
@@ -809,6 +830,7 @@ export default {
     serviceUnavailable: '服務不可用',
     networkError: '網路錯誤，請檢查網路連線',
     requestTimeout: '請求逾時，請稍後重試',
+    csrfBootstrapFailed: '無法取得安全權杖。如使用反向代理，請確認已將 /security/csrf-token 轉發到外掛服務。',
     pluginLifecycleTimeout: '外掛啟動或重載逾時，請查看外掛日誌'
   },
   welcome: {

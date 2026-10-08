@@ -65,7 +65,7 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "let socialOpenRequestReleased = false;" in listener
     assert listener.count("releaseSocialOpenRequestForFlow();") == 2
     assert "if (!socialOpenRequestReleased)" in listener
-    # Community opens in-app (Electron framed child / browser tab); OAuth may still use openExternal.
+    # Community opens in-app (Electron framed child / browser tab).
     helper_start = listener.index("const openElectronSocialWindow = (targetUrl) => {")
     helper_end = listener.index("const fetchNativeSyncTicket = async () => {", helper_start)
     electron_helper = listener[helper_start:helper_end]
@@ -140,7 +140,8 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert listener.index("fetch('/api/card-drop/auth-status'") < listener.index(
         "fetch('/api/card-drop/oauth/start'"
     )
-    assert "openExternal(authUrl)" in listener
+    # 桌面端改由设置页登录，悬浮按钮不再从这里拉起外部浏览器 OAuth。
+    assert "openExternal(authUrl)" not in listener
     protocol_guard = "targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:'"
     assert protocol_guard in listener
     assert listener.index(protocol_guard) < listener.index(
@@ -178,6 +179,15 @@ def test_social_open_request_is_deduped_before_fetching_config():
     main_flow = listener[helper_end:]
     assert "let communityLoggedIn = initialNativeHandoff.loginState === 'logged-in';" in main_flow
     assert "if (initialNativeHandoff.loginState === 'unknown')" in main_flow
+    # 状态未知（delegate 超时且 auth-status 兜底失败）时不能提示去设置页登录。
+    assert "let communityLoggedOut = initialNativeHandoff.loginState === 'logged-out';" in main_flow
+    assert re.search(
+        r"if \(statusRes\.ok\) \{[^}]*communityLoggedOut = !communityLoggedIn\s*"
+        r"&& !\(statusJson && statusJson\.session_saved\);",
+        main_flow,
+    ), "只有 auth-status 成功返回且本地无会话时才算明确登出"
+    assert "if (communityLoggedOut && typeof window.showStatusToast === 'function')" in main_flow
+    assert "if (!communityLoggedIn && typeof window.showStatusToast" not in main_flow
     assert main_flow.index("fetch('/api/card-drop/auth-status'") < main_flow.index(
         "await completeInitialCommunityHandoff("
     )
@@ -447,9 +457,9 @@ const fetch = (_url, options) => new Promise((resolve, reject) => {
 
 @pytest.mark.unit
 @pytest.mark.parametrize("ticket_delay_ms", [2000, 5000])
-@pytest.mark.parametrize("oauth_launch_failed", [False, True])
+@pytest.mark.parametrize("auth_status_logged_out", [False, True])
 def test_social_handoff_reuses_only_unsent_tickets_and_starts_fallback_early(
-    ticket_delay_ms, oauth_launch_failed,
+    ticket_delay_ms, auth_status_logged_out,
 ):
     node = shutil.which("node")
     if not node:
@@ -459,7 +469,7 @@ def test_social_handoff_reuses_only_unsent_tickets_and_starts_fallback_early(
     listener = source[start:source.index("// 睡觉按钮（请她离开）", start)]
     script = (
         "const ticketDelay = " + str(ticket_delay_ms) + ";\n"
-        + "const oauthLaunchFailed = " + str(oauth_launch_failed).lower() + ";\n"
+        + "const authStatusLoggedOut = " + str(auth_status_logged_out).lower() + ";\n"
     ) + r"""
 const assert = require('node:assert/strict');
 let now = 0;
@@ -489,11 +499,16 @@ const releaseSocialOpenRequest = () => { released += 1; };
 const isResolvedDarkTheme = () => false;
 const registerSocialThemeTarget = () => null;
 const queueSocialThemeSync = () => {};
+const toasts = [];
+let externalOpens = 0;
 const window = {
     location: new URL('http://localhost:48911/'),
-    electronShell: { openExternal: async () => { throw new Error('already logged in'); } },
+    // isElectron 靠 electronShell.openExternal 判定，stub 不能删。
+    electronShell: { openExternal: async () => { externalOpens += 1; } },
     addEventListener: (_type, callback) => { onClick = callback; },
     open: url => { opened.push({ url: new URL(url), at: now }); return { focus() {} }; },
+    showStatusToast: message => { toasts.push(message); },
+    t: key => 'T:' + key,
 };
 const response = body => ({ ok: true, json: async () => body });
 const fetch = async (url, options = {}) => {
@@ -512,10 +527,9 @@ const fetch = async (url, options = {}) => {
         return new Promise(resolve => setTimeout(() => resolve(response({ native_delegate: 'desktop-delegate' })), 7000));
     }
     if (url === '/api/card-drop/auth-status') {
-        if (oauthLaunchFailed) return response({ logged_in: false });
+        if (authStatusLoggedOut) return response({ logged_in: false });
         return new Promise(resolve => setTimeout(() => resolve(response({ logged_in: true })), Math.max(0, 7000 - now)));
     }
-    if (url === '/api/card-drop/oauth/start' && oauthLaunchFailed) return { ok: false };
     throw new Error('unexpected request: ' + url);
 };
 """ + listener + r"""
@@ -534,8 +548,10 @@ const fetch = async (url, options = {}) => {
     advance(2000); await flush();
     await flow;
     assert.equal(delegateRequests, 1, 'reuse the late initial delegate instead of validating again');
-    assert.equal(requests.filter(request => request.url === '/api/card-drop/oauth/start').length,
-        oauthLaunchFailed ? 1 : 0);
+    assert.equal(requests.filter(request => request.url === '/api/card-drop/oauth/start').length, 0,
+        'the desktop app signs in from settings instead of launching the browser');
+    assert.equal(externalOpens, 0);
+    assert.deepEqual(toasts, authStatusLoggedOut ? ['T:app.socialSettingsLoginPrompt'] : []);
     assert.equal(ticketRequests, ticketDelay > 4000 ? 1 : 2);
     assert.equal(opened.length, 2);
     assert.equal(opened[0].url.hash.includes('native_sync'), ticketDelay <= 4000);
@@ -548,6 +564,118 @@ const fetch = async (url, options = {}) => {
 """
     result = run_node_stdin(node, script, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("scenario", "expected_toasts", "expected_delegate_requests"),
+    [
+        # 明确登出：只提示一次，且不再重试 delegate。
+        ("delegate_409", 1, 1),
+        # delegate 超时后兜底也失败：状态未知，不提示。
+        ("delegate_slow_status_500", 0, 1),
+        ("delegate_slow_status_rejected", 0, 1),
+        # 云端暂时校验不了但本地会话仍在：不是登出，不提示。
+        ("delegate_503_session_saved", 0, 2),
+        ("delegate_ok", 0, 1),
+    ],
+)
+def test_social_settings_login_prompt_only_for_explicit_logout(
+    scenario, expected_toasts, expected_delegate_requests,
+):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    source = read_js_parts(APP_UI_PATH)
+    start = source.index("window.addEventListener('live2d-social-click', async () => {")
+    listener = source[start:source.index("// 睡觉按钮（请她离开）", start)]
+    script = (
+        "const scenario = " + repr(scenario) + ";\n"
+        + "const expectedToasts = " + str(expected_toasts) + ";\n"
+        + "const expectedDelegateRequests = " + str(expected_delegate_requests) + ";\n"
+    ) + r"""
+const assert = require('node:assert/strict');
+let now = 0;
+let nextTimer = 0;
+const timers = new Map();
+const setTimeout = (callback, delay) => {
+    const id = ++nextTimer;
+    timers.set(id, { callback, at: now + delay });
+    return id;
+};
+const clearTimeout = id => timers.delete(id);
+const advance = elapsed => {
+    now += elapsed;
+    for (const [id, timer] of [...timers]) {
+        if (timer.at <= now) { timers.delete(id); timer.callback(); }
+    }
+};
+const flush = async () => { for (let i = 0; i < 5; i += 1) await new Promise(resolve => setImmediate(resolve)); };
+let onClick;
+const requests = [];
+const toasts = [];
+let externalOpens = 0;
+let delegateRequests = 0;
+const shouldIgnoreSocialOpenRequest = () => false;
+const releaseSocialOpenRequest = () => {};
+const isResolvedDarkTheme = () => false;
+const registerSocialThemeTarget = () => null;
+const queueSocialThemeSync = () => {};
+const window = {
+    location: new URL('http://localhost:48911/'),
+    electronShell: { openExternal: async () => { externalOpens += 1; } },
+    addEventListener: (_type, callback) => { onClick = callback; },
+    open: () => ({ focus() {} }),
+    showStatusToast: message => { toasts.push(message); },
+    t: key => 'T:' + key,
+};
+const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+const fetch = async (url, options = {}) => {
+    requests.push(url);
+    if (url === '/api/system/social/config') return response({ social_base_url: 'https://community.example' });
+    if (url === '/api/system/client-id') return response({ client_id: 'device-id' });
+    if (url === '/api/card-drop/sync-ticket') return response({ sync_ticket: 'ticket' });
+    if (url === '/api/card-drop/native-delegate') {
+        delegateRequests += 1;
+        if (scenario === 'delegate_409') return response({ error: 'not_logged_in' }, 409);
+        if (scenario === 'delegate_503_session_saved') return response({ error: 'identity_verification_unavailable' }, 503);
+        if (scenario === 'delegate_ok') return response({ native_delegate: 'desktop-delegate' });
+        // 像真实 fetch 一样在 abort 时 reject；否则流程永远等不到结束，断言根本不会执行。
+        return new Promise((_resolve, reject) => {
+            options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+    }
+    if (url === '/api/card-drop/auth-status') {
+        if (scenario === 'delegate_slow_status_500') return response({}, 500);
+        if (scenario === 'delegate_slow_status_rejected') throw new Error('connection refused');
+        return response({ logged_in: false, user: null, bind: null, session_saved: true });
+    }
+    throw new Error('unexpected request: ' + url);
+};
+""" + listener + r"""
+(async () => {
+    const flow = onClick();
+    for (let i = 0; i < 6; i += 1) { await flush(); advance(1000); }
+    await flush();
+    if (scenario.startsWith('delegate_slow')) {
+        // 挂起的 delegate 请求本身有 120s 上限：首次请求和重试各推进一次，让流程收尾。
+        advance(120000); await flush();
+        advance(120000); await flush();
+    }
+    await flow;
+    assert.equal(toasts.filter(message => message === 'T:app.socialSettingsLoginPrompt').length, expectedToasts);
+    assert.equal(toasts.length, expectedToasts, 'no other toast: ' + JSON.stringify(toasts));
+    assert.equal(requests.filter(url => url === '/api/card-drop/oauth/start').length, 0);
+    assert.equal(externalOpens, 0);
+    assert.equal(delegateRequests, expectedDelegateRequests + (scenario.startsWith('delegate_slow') ? 1 : 0));
+    assert.equal(timers.size, 0, 'every deadline is cleared or fired');
+    console.log('SCENARIO_COMPLETE');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = run_node_stdin(node, script, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+    # 挂起的 promise 会让 node 以 0 退出而不跑断言，必须确认脚本真的走到了末尾。
+    assert "SCENARIO_COMPLETE" in result.stdout, result.stdout + result.stderr
 
 
 @pytest.mark.unit
@@ -573,7 +701,7 @@ def test_social_native_delegate_is_the_fast_path_login_proof_with_safe_fallback(
     assert main_flow.index(unknown_guard) < main_flow.index(
         "fetch('/api/card-drop/auth-status', { cache: 'no-store' })"
     )
-    assert main_flow.index("if (!communityLoggedIn)") < main_flow.index(
+    assert main_flow.index("if (!communityLoggedIn && !isElectron)") < main_flow.index(
         "fetch('/api/card-drop/oauth/start'"
     )
     assert "initialNativeHandoff.nativeDelegate" in main_flow
@@ -598,11 +726,11 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
     assert "currentPopup.opener = null;" in listener
     assert "currentPopup.location.replace(navigationTarget);" in listener
     assert "if (navigated && !options.keepReference)" in listener
-    assert "const waitForOAuthCompletion = async (timeoutMs, requirePopup) => {" in listener
-    assert "if (requirePopup)" in listener
+    assert "const waitForOAuthCompletion = async (timeoutMs, state) => {" in listener
+    assert "requirePopup" not in listener
     assert "let pollDelayMs = 1000;" in listener
     assert "Math.min(Math.ceil(pollDelayMs * 1.5), 5000)" in listener
-    assert "fetch('/api/card-drop/oauth/status', { cache: 'no-store' })" in listener
+    assert "fetch(`/api/card-drop/oauth/completion?state=${encodeURIComponent(state)}`, { cache: 'no-store' })" in listener
     assert "navigateBrowserPopup(authUrl, { keepReference: true })" in listener
     assert "await waitForOAuthCompletion(" in listener
     assert "const refreshedTargetUrl = await attachNativeSyncTicket(" in listener
@@ -614,14 +742,14 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
         listener,
     )
     assert "navigateBrowserPopup(refreshedTargetUrl.toString())" in listener
-    assert "openElectronSocialWindow(refreshedTargetUrl.toString())" in listener
-    assert "const shouldWaitForOAuth = (isElectron && oauthLaunched)" in listener
-    assert "|| (!isElectron && browserOAuthStarted);" in listener
+    # 外层已经限定 !isElectron，块内不再保留桌面端分支。
+    assert "openElectronSocialWindow(refreshedTargetUrl.toString())" not in listener
+    assert "oauthLaunched" not in listener
     assert re.search(
-        r"await waitForOAuthCompletion\(\s*browserOAuthTimeoutMs,\s*!isElectron\s*\)",
+        r"await waitForOAuthCompletion\(\s*browserOAuthTimeoutMs,\s*browserOAuthState\s*\)",
         listener,
     )
-    assert listener.index("navigateBrowserPopup(url, { keepReference: true })") < listener.index(
+    assert listener.index("const navigateBrowserPopup =") < listener.index(
         "const initialNativeHandoff = await initialNativeHandoffReadiness;"
     )
     assert listener.index("fetch('/api/card-drop/auth-status'") < listener.index(
@@ -631,7 +759,7 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
         "await waitForOAuthCompletion("
     )
     assert re.search(
-        r"else if \(!navigateBrowserPopup\(authUrl, \{ keepReference: true \}\)\) \{\s*"
+        r"if \(!navigateBrowserPopup\(authUrl, \{ keepReference: true \}\)\) \{\s*"
         r"closePopup\(\);",
         listener,
     )

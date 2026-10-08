@@ -14,6 +14,53 @@ type PendingAction = {
   timeout: number;
 };
 
+type CardActionResponse = {
+  response: Response;
+  payload: unknown;
+};
+
+function csrfErrorCode(payload: unknown): string {
+  if (!payload || typeof payload !== 'object') return '';
+  const record = payload as Record<string, unknown>;
+  if (typeof record.error_code === 'string') return record.error_code;
+  const detail = record.detail;
+  if (detail && typeof detail === 'object' && typeof (detail as Record<string, unknown>).error_code === 'string') {
+    return (detail as Record<string, unknown>).error_code as string;
+  }
+  return '';
+}
+
+async function requestCardAction(
+  url: string,
+  init: RequestInit,
+  retry = false,
+): Promise<CardActionResponse> {
+  const security = window.nekoLocalMutationSecurity;
+  const mutationHeaders = security?.getMutationHeaders
+    ? await security.getMutationHeaders()
+    : {};
+  const response = await fetch(url, {
+    ...init,
+    headers: { ...(init.headers || {}), ...mutationHeaders },
+  });
+  let payload: unknown = {};
+  try {
+    payload = await response.json();
+  } catch {
+    // Preserve the response status when the server sends a non-JSON failure.
+  }
+  if (
+    !retry
+    && response.status === 403
+    && csrfErrorCode(payload) === 'csrf_validation_failed'
+    && security?.refreshToken
+  ) {
+    await security.refreshToken();
+    return requestCardAction(url, init, true);
+  }
+  return { response, payload };
+}
+
 // One observer for all mounted cards. Only theme changes schedule work; no
 // subtree observation, polling or per-card observer. The transition ending also
 // needs a sync so we do not retain an intermediate computed text color.
@@ -155,16 +202,21 @@ export default function HtmlCardBlock({ block }: { block: HtmlCard }) {
       setFeedback(i18n('chat.cardActionRunning', 'Working…'));
       const isCurrent = () => !disposed && requests.get(actionId) === pending;
       try {
-        const response = await fetch(`/api/plugin-cards/${encodeURIComponent(pluginId)}/action/${encodeURIComponent(action.entry)}`, {
+        const { response, payload } = await requestCardAction(`/api/plugin-cards/${encodeURIComponent(pluginId)}/action/${encodeURIComponent(action.entry)}`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ card_id: cardId, target_lanlan: targetLanlan, presentation,
             args: action.args || {}, locale: document.documentElement.lang || 'en' }),
           signal: controller.signal,
         });
-        const payload = await response.json();
         if (!response.ok) throw new Error(getCardErrorMessage(payload));
-        if (isCurrent() && feedbackOwner === pending) setFeedback(typeof payload.result?.message === 'string'
-          ? payload.result.message : i18n('chat.cardActionDone', 'Done'));
+        const result = payload && typeof payload === 'object'
+          ? (payload as Record<string, unknown>).result
+          : undefined;
+        const resultMessage = result && typeof result === 'object'
+          ? (result as Record<string, unknown>).message
+          : undefined;
+        if (isCurrent() && feedbackOwner === pending) setFeedback(typeof resultMessage === 'string'
+          ? resultMessage : i18n('chat.cardActionDone', 'Done'));
       } catch (error) {
         if (isCurrent() && feedbackOwner === pending) setFeedback(controller.signal.reason === 'timeout'
           ? i18n('chat.cardActionTimeout', 'Request timed out; the action may have completed.')

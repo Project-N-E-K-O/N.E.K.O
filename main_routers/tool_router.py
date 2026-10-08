@@ -44,8 +44,11 @@ Endpoints
         }
 
 ``POST /api/tools/unregister``
-    Body: ``{"name": "...", "role": null}`` — drops the tool. Returns
-    ``{"removed": bool}``.
+    Body: ``{"name": "...", "role": null, "expected_source": "plugin:foo"}`` —
+    drops the tool. ``expected_source`` is optional; when set, roles whose
+    tool is owned by a different source are NOT removed and reported in
+    ``refused_roles`` (a plugin can never delete another plugin's tool by
+    name collision). Returns ``{"removed": bool, "refused_roles": [...]}``.
 
 ``POST /api/tools/clear``
     Body: ``{"source": "plugin:foo", "role": null}`` — drops every tool
@@ -59,7 +62,7 @@ registered directly via ``LLMSessionManager.register_tool``.
 
 URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
 See ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+``.agent/rules/neko-guide.md`` (API URL conventions) for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 from __future__ import annotations
@@ -79,22 +82,13 @@ from main_logic.tool_calling import (
     ToolCall,
     ToolDefinition,
     ToolResult,
-    _MAX_TOOL_IMAGE_B64_BYTES,
-    _MAX_TOOL_IMAGES,
     looks_like_tool_envelope,
-    parse_tool_images,
     tool_result_from_envelope,
-    tool_result_output_payload,
 )
 from main_routers.cookies_login_router import verify_local_access
 from utils.logger_config import get_module_logger
 
 from .shared_state import get_session_manager
-
-# Re-export under the historical private names so existing unit tests keep
-# importing from this module.
-_parse_tool_images = parse_tool_images
-_tool_result_output_payload = tool_result_output_payload
 
 
 def _validate_local_callback_url(url: str) -> str:
@@ -196,6 +190,10 @@ class ToolRegisterRequest(BaseModel):
 class ToolUnregisterRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
     role: Optional[str] = None  # None = remove from all roles
+    # 设置时校验该名字当前归属的 source，不匹配的 role 拒绝删除（响应记入
+    # refused_roles）。用于插件注销自己的工具时防止误删其它 source 占用的
+    # 同名工具（例如本插件的注册从未生效、名字实际归属别的插件的场景）。
+    expected_source: Optional[str] = None
 
 
 class ToolClearRequest(BaseModel):
@@ -585,6 +583,23 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
             "role": req.role,
         },
     )
+    # Reserve ownership before the first await, including managers rebuilt
+    # during session sync. Refused registrations must not alter the ledger.
+    conflicts = []
+    for mgr in targets:
+        existing = mgr.tool_registry.get(req.name)
+        if existing is not None and existing.metadata.get("source", "") != req.source:
+            conflicts.append({"role": getattr(mgr, "lanlan_name", "?"), "error": "cross-source overwrite refused"})
+    for entry in _remote_tool_ledger.values():
+        overlaps = req.role is None or entry.role == req.role or (
+            entry.role is None and req.role not in entry.excluded_roles
+        )
+        if entry.tool.name == req.name and overlaps and entry.tool.metadata.get("source", "") != req.source:
+            conflicts.append({"role": entry.role or "*", "error": "cross-source ledger overwrite refused"})
+    if conflicts:
+        logger.warning("register_tool refused cross-source overwrite: name='%s' incoming='%s'", req.name, req.source)
+        return {"ok": False, "registered": req.name, "affected_roles": [], "failed_roles": conflicts}
+
     # 先记台账再逐个注册：registry.register 在同步 wire 之前就已生效（同步失败
     # 也留在 registry 里），而循环中途被重建的 manager 不在 targets 里，只能靠
     # 台账重放拿到。一个 manager 都没有时 registry 什么也没发生，不记。
@@ -595,6 +610,26 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
     for mgr in targets:
         role_name = getattr(mgr, "lanlan_name", "?")
         try:
+            # 跨 source 重名拒绝：registry 以名字为键、replace=True 无条件覆盖，
+            # 若不设防，后注册的插件会把其它 source 已有的同名工具静默挤掉
+            # （模型调用被重定向到新 callback，原插件还能把别人的工具注销）。
+            # 同 source 重注册（插件重启刷新 callback_url / 更新 schema）不受影响。
+            existing = mgr.tool_registry.get(req.name)
+            if existing is not None:
+                existing_source = str((getattr(existing, "metadata", None) or {}).get("source", ""))
+                if existing_source != req.source:
+                    logger.warning(
+                        "register_tool refused cross-source overwrite on %s: name='%s' owned_by='%s' incoming='%s'",
+                        role_name, req.name, existing_source or "unknown", req.source,
+                    )
+                    failed.append({
+                        "role": role_name,
+                        "error": (
+                            f"tool '{req.name}' already owned by source "
+                            f"'{existing_source or 'unknown'}' (cross-source overwrite refused)"
+                        ),
+                    })
+                    continue
             # 用 _and_sync 版本：注册后等 session.update 推送完成再返回，
             # 这样调用方拿到 ok=True 的瞬间，active/pending session 上的
             # tools 已经是最新 —— 不会出现"返回成功但下一次 model 调用
@@ -629,13 +664,36 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
     targets = _resolve_target_managers(req.role)
     # 解析成功之后、第一个 await 之前删台账：404 的请求不能改台账；而循环中途
     # 重建的 manager 也不能再从台账里把它重放回来（两者之间没有 await）。
-    _ledger_forget(lambda entry: entry.tool.name == req.name, req.role)
+    _ledger_forget(
+        lambda entry: entry.tool.name == req.name and (
+            req.expected_source is None or entry.tool.metadata.get("source") == req.expected_source
+        ), req.role,
+    )
     removed_any = False
     affected: List[str] = []
     failed: List[Dict[str, str]] = []
+    refused: List[Dict[str, str]] = []
     for mgr in targets:
         role_name = getattr(mgr, "lanlan_name", "?")
         try:
+            # 所有权校验：expected_source 与现属 source 不匹配时拒绝删除。
+            # 与 /register 的跨 source 拒绝对偶——注销也只能删自己的工具。
+            # tool_registry 用 getattr 兼容鸭子类型的 manager（如测试桩），
+            # 没有 registry 的 manager 跳过校验，保持原有注销行为。
+            registry = getattr(mgr, "tool_registry", None)
+            existing = registry.get(req.name) if registry is not None else None
+            if req.expected_source is not None and existing is not None:
+                existing_source = str((getattr(existing, "metadata", None) or {}).get("source", ""))
+                if existing_source != req.expected_source:
+                    logger.warning(
+                        "unregister_tool refused foreign-owned name on %s: name='%s' owned_by='%s' expected='%s'",
+                        role_name, req.name, existing_source or "unknown", req.expected_source,
+                    )
+                    refused.append({
+                        "role": role_name,
+                        "owned_by": existing_source or "unknown",
+                    })
+                    continue
             # _and_sync 版本：等 session 同步完成再返回，与 register 端点对偶。
             if await mgr.unregister_tool_and_sync(req.name):
                 removed_any = True
@@ -652,6 +710,7 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
         "name": req.name,
         "affected_roles": affected,
         "failed_roles": failed,
+        "refused_roles": refused,
     }
 
 

@@ -104,10 +104,17 @@ from ._shared import (  # noqa: F401
 from .reserved_schema import (  # noqa: F401
     _legacy_live2d_name_from_model_path,
     _legacy_live2d_to_model_path,
+    assign_new_character_uid,
     delete_reserved,
+    ensure_catgirl_character_id,
+    ensure_character_uids,
     flatten_reserved,
+    get_character_uid,
     get_reserved,
+    is_valid_character_uid,
     migrate_catgirl_reserved,
+    normalize_character_id,
+    new_character_uid,
     set_reserved,
     validate_reserved_schema,
 )

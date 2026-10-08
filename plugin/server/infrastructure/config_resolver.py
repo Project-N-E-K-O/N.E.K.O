@@ -1,20 +1,39 @@
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Mapping
 
-from plugin.config.plugin_toml_semantics import PluginConfigWarning, collect_plugin_toml_semantic_warnings
+from plugin.server.infrastructure.error_mapping import http_exception
+
+from plugin.config.plugin_toml_semantics import (
+    PluginConfigWarning,
+    collect_plugin_toml_semantic_warnings,
+)
+from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.logging_config import get_logger
+from plugin.server.infrastructure.config_locking import get_plugin_update_lock
 from plugin.server.infrastructure.config_merge import deep_merge
-from plugin.server.infrastructure.config_paths import ensure_plugin_runtime_config, get_plugin_manifest_path
-from plugin.server.infrastructure.config_profiles import apply_user_config_profiles, get_profiles_state
-from plugin.server.infrastructure.config_toml import load_toml_from_file
+from plugin.server.infrastructure.config_paths import (
+    ensure_plugin_runtime_config,
+    get_plugin_manifest_path,
+)
+from plugin.server.infrastructure.config_profiles import (
+    apply_user_config_profiles,
+    get_profiles_state,
+)
+from plugin.server.infrastructure.config_toml import load_toml_from_file, read_toml_file
+from plugin.utils.path_resolution import PathResolutionCache, canonical_read_path
+from plugin.server.infrastructure.config_fingerprint import fingerprint_config
+from plugin.server.infrastructure.config_locking import plugin_config_file_lock
 
 logger = get_logger("server.infrastructure.config_resolver")
 
-_SCHEMA_VALIDATION_ENABLED = os.getenv("NEKO_CONFIG_SCHEMA_VALIDATION", "true").lower() in {
+_SCHEMA_VALIDATION_ENABLED = os.getenv(
+    "NEKO_CONFIG_SCHEMA_VALIDATION", "true"
+).lower() in {
     "true",
     "1",
     "yes",
@@ -22,9 +41,14 @@ _SCHEMA_VALIDATION_ENABLED = os.getenv("NEKO_CONFIG_SCHEMA_VALIDATION", "true").
 }
 
 
-def _validate_config_schema(config_data: dict[str, object], plugin_id: str) -> list[dict[str, object]]:
+def _validate_config_schema(
+    config_data: dict[str, object], plugin_id: str
+) -> list[dict[str, object]]:
     try:
-        from plugin.server.config_schema import ConfigValidationError, validate_plugin_config
+        from plugin.server.config_schema import (
+            ConfigValidationError,
+            validate_plugin_config,
+        )
     except ImportError:
         logger.debug(
             "Plugin {}: config_schema module not available, skip validation",
@@ -45,7 +69,9 @@ def _validate_config_schema(config_data: dict[str, object], plugin_id: str) -> l
         return [{"msg": exc.message, "field": exc.field}]
 
 
-def _schema_warning_items(validation_errors: list[dict[str, object]]) -> list[PluginConfigWarning]:
+def _schema_warning_items(
+    validation_errors: list[dict[str, object]],
+) -> list[PluginConfigWarning]:
     warnings: list[PluginConfigWarning] = []
     for item in validation_errors:
         msg = item.get("msg")
@@ -72,6 +98,7 @@ def _resolve_plugin_config_core(
     base_config: dict[str, object],
     include_effective_config: bool,
     validate_schema: bool,
+    last_modified: float | None = None,
 ) -> dict[str, object]:
     manifest_plugin = manifest_config.get("plugin")
     effective_config = deep_merge(manifest_config, base_config)
@@ -88,7 +115,9 @@ def _resolve_plugin_config_core(
         effective_config = dict(effective_config)
         effective_config["plugin"] = dict(manifest_plugin)
 
-    semantic_warnings = collect_plugin_toml_semantic_warnings(effective_config, toml_path=manifest_path)
+    semantic_warnings = collect_plugin_toml_semantic_warnings(
+        effective_config, toml_path=manifest_path
+    )
     schema_validation_errors = (
         _validate_config_schema(effective_config, plugin_id)
         if validate_schema and _SCHEMA_VALIDATION_ENABLED
@@ -100,15 +129,17 @@ def _resolve_plugin_config_core(
         plugin_id=plugin_id,
         config_path=manifest_path,
     )
-    stat = config_path.stat()
+    if last_modified is None:
+        last_modified = config_path.stat().st_mtime
 
     return {
         "plugin_id": plugin_id,
         "config_path": str(config_path),
         "manifest_path": str(manifest_path),
-        "last_modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        "last_modified": datetime.fromtimestamp(last_modified).isoformat(),
         "base_config": base_config,
         "effective_config": effective_config,
+        "config_fingerprint": fingerprint_config(effective_config),
         "profiles_state": profiles_state,
         "warnings": [*schema_warnings, *semantic_warnings],
         "schema_validation_errors": schema_validation_errors,
@@ -123,19 +154,87 @@ def resolve_plugin_config_from_path(
     include_effective_config: bool = True,
     validate_schema: bool = True,
 ) -> dict[str, object]:
-    manifest_path = config_path.resolve(strict=False)
-    manifest_config = base_config if isinstance(base_config, dict) else load_toml_from_file(manifest_path)
-    runtime_config_path = ensure_plugin_runtime_config(plugin_id, manifest_path=manifest_path)
-    runtime_config = load_toml_from_file(runtime_config_path)
-    return _resolve_plugin_config_core(
-        plugin_id,
-        config_path=runtime_config_path,
-        manifest_path=manifest_path,
-        manifest_config=manifest_config,
-        base_config=runtime_config,
-        include_effective_config=include_effective_config,
-        validate_schema=validate_schema,
-    )
+    """Materialize runtime config using current installation and storage paths."""
+    # Profile and runtime writes use the same per-plugin lock. Keeping the
+    # complete synchronous read under that lock prevents an application-state
+    # query from observing one file before an atomic replacement and another
+    # file after it. Writes resolve current paths independently of discovery.
+    with get_plugin_update_lock(plugin_id):
+        manifest_path = canonical_read_path(config_path)
+        manifest_config = base_config if isinstance(base_config, dict) else load_toml_from_file(manifest_path)
+        runtime_config_path = ensure_plugin_runtime_config(
+            plugin_id, manifest_path=manifest_path
+        )
+        with plugin_config_file_lock(runtime_config_path):
+            runtime_config = load_toml_from_file(runtime_config_path)
+            return _resolve_plugin_config_core(
+                plugin_id,
+                config_path=runtime_config_path,
+                manifest_path=manifest_path,
+                manifest_config=manifest_config,
+                base_config=runtime_config,
+                include_effective_config=include_effective_config,
+                validate_schema=validate_schema,
+            )
+
+
+def read_plugin_config_from_path(
+    plugin_id: str,
+    *,
+    config_path: Path,
+    base_config: dict[str, object] | None = None,
+    include_effective_config: bool = True,
+    validate_schema: bool = True,
+    read_cache: PathResolutionCache | None = None,
+) -> dict[str, object]:
+    """Resolve discovery configuration without initializing runtime files."""
+    # The optional cache pins canonical paths for one discovery pass; it does
+    # not recheck symlink targets under this lock. Installation/storage changes
+    # require a fresh discovery cache. The lock protects file content.
+    with get_plugin_update_lock(plugin_id):
+        manifest_path = canonical_read_path(config_path, cache=read_cache)
+        manifest_config = (
+            base_config
+            if isinstance(base_config, dict)
+            else load_toml_from_file(manifest_path)
+        )
+        layout = resolve_plugin_layout(
+            plugin_id, manifest_path.parent, read_cache=read_cache
+        )
+        source = layout.config_path
+        if source.exists():
+            if not source.is_file():
+                raise http_exception(
+                    status_code=500,
+                    detail=f"Plugin '{plugin_id}' runtime config path is not a file: {source}",
+                )
+            read_lock = plugin_config_file_lock(source)
+        else:
+            source = layout.installed_dir / "config.example.toml"
+            if not source.is_file():
+                source = layout.manifest_path
+            read_lock = nullcontext()
+
+        # Keep runtime data, profiles and their fingerprint in one snapshot.
+        # Missing runtime files keep using the installed seed without writes.
+        with read_lock:
+            try:
+                runtime_config = read_toml_file(source)
+                modified = source.stat().st_mtime
+            except ValueError as exc:
+                raise http_exception(status_code=400, detail=str(exc)) from exc
+            except (OSError, RuntimeError) as exc:
+                raise http_exception(status_code=500, detail=str(exc)) from exc
+            return _resolve_plugin_config_core(
+                plugin_id,
+                config_path=layout.config_path,
+                manifest_path=manifest_path,
+                manifest_config=manifest_config,
+                base_config=runtime_config,
+                include_effective_config=include_effective_config,
+                validate_schema=validate_schema,
+                last_modified=modified,
+            )
 
 
 def resolve_plugin_config(
@@ -153,4 +252,8 @@ def resolve_plugin_config(
     )
 
 
-__all__ = ["resolve_plugin_config", "resolve_plugin_config_from_path"]
+__all__ = [
+    "resolve_plugin_config",
+    "resolve_plugin_config_from_path",
+    "read_plugin_config_from_path",
+]

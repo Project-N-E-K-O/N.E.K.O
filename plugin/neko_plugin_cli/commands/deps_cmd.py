@@ -3,11 +3,26 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import os
+import re
 import shutil
+import stat
 import subprocess
 import sys
+import time
+import uuid
 from pathlib import Path
+from tempfile import gettempdir
+from typing import NamedTuple
 
+import portalocker
+
+from ..core.build_rules import (
+    VENDOR_SYNC_BACKUP_PREFIX,
+    VENDOR_SYNC_PENDING_SUFFIX,
+    VENDOR_SYNC_STAGING_PREFIX,
+)
 from ..paths import CliDefaults
 from ._completers import PLUGIN_NAME_COMPLETER
 from ._resolve import resolve_plugin_dir_candidate
@@ -31,7 +46,10 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
     sync_parser.add_argument(
         "--python",
         default=sys.executable,
-        help="Python interpreter to use for pip install",
+        help=(
+            "Target Python interpreter; uv installs the dependencies for it "
+            "(falls back to its pip, with a warning, only when uv is not found)"
+        ),
     )
     sync_parser.add_argument(
         "--clean",
@@ -54,34 +72,209 @@ def handle_sync(args: argparse.Namespace) -> int:
         print(f"[FAIL] {exc}", file=sys.stderr)
         return 1
 
-    pyproject_path = plugin_dir / "pyproject.toml"
-    if not pyproject_path.is_file():
-        print(f"[OK] {plugin_dir.name}: no external dependencies to sync")
-        return 0
-
-    # 1. Read declared dependencies
-    all_deps = _read_dependencies(pyproject_path)
-    external_deps = _filter_external(all_deps)
-    if not external_deps:
-        print(f"[OK] {plugin_dir.name}: no external dependencies to sync")
-        return 0
-
-    # 2. Optionally clean vendor/
     vendor_dir = plugin_dir / "vendor"
-    if args.clean and vendor_dir.exists():
-        shutil.rmtree(vendor_dir)
+    # Keep a persistent OS lock file outside the plugin. Unlinking lock files
+    # can let waiting processes lock different inodes for the same plugin.
+    plugin_identity = _lock_identity(plugin_dir)
+    lock_name = hashlib.sha256(plugin_identity).hexdigest()
+    staging_dir: Path | None = None
+    try:
+        # Inside the try: an unusable lock dir reports like any other OSError.
+        lock_path = _lock_dir() / f"neko-plugin-sync-{lock_name}.lock"
+        with portalocker.Lock(lock_path, timeout=0):
+            # The lock is the directory sampled above; if the path now names
+            # another one (renamed and replaced), another sync may hold its
+            # lock, so touch nothing.
+            if _lock_identity(plugin_dir) != plugin_identity:
+                print(
+                    f"[FAIL] {plugin_dir} was replaced while the sync started; retry.",
+                    file=sys.stderr,
+                )
+                return 1
+            # Holding the lock means no other sync of this plugin by this user
+            # is running, so this user's staging dirs were left by killed runs.
+            _remove_stale_staging(plugin_dir)
+            _remove_orphan_markers(plugin_dir)
 
-    # 3. Install all declared deps into vendor/
-    exit_code = _pip_install_to_vendor(
-        external_deps,
-        vendor_dir=vendor_dir,
-        python=args.python,
-    )
-    if exit_code != 0:
-        return exit_code
+            pyproject_path = plugin_dir / "pyproject.toml"
+            external_deps = (
+                _filter_external(_read_dependencies(pyproject_path))
+                if pyproject_path.is_file()
+                else []
+            )
 
-    # 4. Clean vendor artifacts
-    _clean_vendor(vendor_dir)
+            # A user's explicit `sync --clean` may discard an unreconciled
+            # backup, but only when an install rebuilds vendor/; the
+            # no-dependency path has nothing to reconcile it with. Callers
+            # that clean by default (publish) pass discard_backups=False, so
+            # the only full copy of the old vendor/ is never dropped silently.
+            discard_backups = getattr(args, "discard_backups", args.clean)
+            unreconciled = _unreconciled_backups(plugin_dir, vendor_dir)
+            # A backup another user is mid-swap on is never removed here, so
+            # --clean cannot clear it; say how to instead.
+            foreign = [path for path in unreconciled if _swapped_by_other_user(path)]
+            # Another user's sync may have finished it meanwhile.
+            unreconciled = [path for path in unreconciled if path.exists()]
+            foreign = [path for path in foreign if path.exists()]
+            if unreconciled and (not discard_backups or not external_deps or foreign):
+                if foreign:
+                    hint = (
+                        "it belongs to another user and may be their sync in "
+                        "progress; let it finish or have them recover it, or once "
+                        "no sync is running remove the backup and its .pending file"
+                    )
+                elif external_deps:
+                    hint = "recover it or run `neko-plugin sync --clean` explicitly"
+                else:
+                    hint = "recover it before retrying"
+                locations = ", ".join(str(path) for path in unreconciled)
+                print(
+                    f"[FAIL] Cannot sync with an unreconciled dependency backup; "
+                    f"{hint}: {locations}",
+                    file=sys.stderr,
+                )
+                return 1
+
+            if not external_deps:
+                # Leftovers of finished swaps would otherwise never go away.
+                _remove_retained_backups(plugin_dir)
+                print(f"[OK] {plugin_dir.name}: no external dependencies to sync")
+                return 0
+
+            if _is_link(vendor_dir) and not vendor_dir.is_dir():
+                print(
+                    f"[FAIL] {vendor_dir} is a link that does not lead to a "
+                    "directory. Fix or remove it and retry.",
+                    file=sys.stderr,
+                )
+                return 1
+
+            if vendor_dir.exists() and not vendor_dir.is_dir():
+                print(
+                    f"[FAIL] {vendor_dir} is not a directory; sync would move it "
+                    "aside as a backup. Remove or rename it and retry.",
+                    file=sys.stderr,
+                )
+                return 1
+
+            # The swap renames vendor/ itself, which would turn a link to
+            # another disk into a real directory, and a mount point (a Docker
+            # volume) can not be renamed at all. Install into those in place,
+            # as before the swap existed, without its rollback.
+            if vendor_dir.is_dir() and (_is_link(vendor_dir) or _is_mount_point(vendor_dir)):
+                # Several plugins may link vendor/ to one target: every writer
+                # to it must hold that target's lock, not only its plugin's.
+                target = _vendor_target(vendor_dir)
+                # vendor -> .. (or a bind mount of a parent): refilling it
+                # would move the plugin itself aside and delete it.
+                if _contains_plugin(target.stat, vendor_dir, plugin_dir):
+                    print(
+                        f"[FAIL] {vendor_dir} leads to the plugin directory or one of "
+                        "its parents (or, without inode numbers, can not be told "
+                        "apart from them); point it at a separate directory and retry.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                target_lock = hashlib.sha256(_lock_identity(vendor_dir, target.stat)).hexdigest()
+                with portalocker.Lock(
+                    _lock_dir() / f"neko-plugin-sync-{target_lock}.lock", timeout=0
+                ):
+                    exit_code = _sync_in_place(vendor_dir, external_deps, args, target)
+                if exit_code != 0:
+                    return exit_code
+                _remove_retained_backups(plugin_dir)
+                print(f"[OK] {plugin_dir.name}: synced {len(external_deps)} dependencies to vendor/")
+                print(f"  vendor={vendor_dir}")
+                return 0
+
+            if vendor_dir.is_dir():
+                foreign = _find_foreign_subdir(vendor_dir, junctions=not args.clean)
+                if foreign is not None:
+                    print(
+                        f"[FAIL] {foreign} is a directory junction or mount point "
+                        "inside vendor/; sync would copy or delete what it points "
+                        "to. Remove it and retry.",
+                        file=sys.stderr,
+                    )
+                    return 1
+
+            # Install into a sibling staging dir so vendor/ stays untouched
+            # until the install succeeds. A plain mkdir (unlike mkdtemp's 0700)
+            # keeps the new vendor/ readable by other users per the umask.
+            staging_dir = plugin_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
+            # The vendor/ the swap will move aside; checked again right before
+            # it, as another process may have replaced it during the install.
+            vendor_before = vendor_dir.lstat() if vendor_dir.exists() else None
+            copy_old = not args.clean and vendor_dir.is_dir()
+            if copy_old and sys.platform.startswith("linux") and _linux_mount_points() is None:
+                # The copy would follow a same-filesystem bind mount that
+                # ismount() misses into staging (and so into the package).
+                # Install fresh instead; the old vendor/ stays as a backup,
+                # which is not deleted while mounts can not be ruled out.
+                print(
+                    f"[WARN] /proc/self/mountinfo is unavailable, so mounts inside {vendor_dir} "
+                    "can not be ruled out; installing fresh instead of on top of it "
+                    "(the old vendor/ is kept as a backup).",
+                    file=sys.stderr,
+                )
+                copy_old = False
+            if copy_old:
+                shutil.copytree(vendor_dir, staging_dir, symlinks=True)
+            else:
+                staging_dir.mkdir()
+
+            exit_code = _install_to_vendor(
+                external_deps, vendor_dir=staging_dir, python=args.python,
+                project_root=defaults.repo_root,
+            )
+            if exit_code != 0:
+                return exit_code
+            # _clean_vendor recurses, and the swap would expose staging as
+            # vendor/: stop if anything got mounted inside during the install.
+            # (An unreadable mount table does not stop the sync: vendor/ was
+            # checked before, and the deletions later keep what they can not
+            # rule out.)
+            mounted = _find_mount(staging_dir)
+            if mounted is not None:
+                print(
+                    f"[FAIL] {mounted} got mounted inside {staging_dir} during the "
+                    "install; not touching it. Unmount it, then retry.",
+                    file=sys.stderr,
+                )
+                return 1  # the finally block's mount check keeps staging
+            if sys.platform.startswith("linux") and _linux_mount_points() is None:
+                # ismount() misses a same-filesystem bind mount, and every
+                # cleanup step (even bin/'s files) could reach into one: skip
+                # it. build and pack leave out caches anyway; bin/ they ship.
+                print(
+                    f"[WARN] Skipped removing __pycache__, .pyc and bin/ from {staging_dir}: "
+                    "/proc/self/mountinfo is unavailable, so mounts inside can not be "
+                    "ruled out. Remove vendor/bin by hand if it should not be packaged.",
+                    file=sys.stderr,
+                )
+            else:
+                _clean_vendor(staging_dir)
+            if not _vendor_unchanged(vendor_dir, vendor_before):
+                print(
+                    f"[FAIL] {vendor_dir} was replaced during the install; not swapping "
+                    "it aside. Check it and retry.",
+                    file=sys.stderr,
+                )
+                return 1
+            if not _replace_vendor(vendor_dir, staging_dir):
+                return 1
+            # A complete successful sync supersedes retained backups.
+            _remove_retained_backups(plugin_dir)
+    except portalocker.exceptions.LockException:
+        print(f"[FAIL] Dependency sync already in progress for {plugin_dir}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"[FAIL] Could not sync dependencies for {plugin_dir}: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        # The install ran inside staging; rule out a mount there before rmtree.
+        if staging_dir is not None and staging_dir.exists() and not _mounted_inside(staging_dir):
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
     print(f"[OK] {plugin_dir.name}: synced {len(external_deps)} dependencies to vendor/")
     print(f"  vendor={vendor_dir}")
@@ -93,6 +286,410 @@ def handle_sync(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 _HOST_PROVIDED = {"n-e-k-o"}
+# A backup whose swap or rollback has not finished carries a sibling marker
+# file. Keeping it beside the backup (never inside a vendor tree) means it
+# can not collide with package data or travel into vendor/.
+def _vendor_unchanged(vendor_dir: Path, before: os.stat_result | None) -> bool:
+    try:
+        now = vendor_dir.lstat()
+    except FileNotFoundError:
+        return before is None
+    if before is None or not os.path.samestat(now, before):
+        return False
+    if not before.st_ino:
+        # Without inode numbers samestat takes any directory on the device
+        # for this one. A replacement was created later: st_ctime is the
+        # creation time on Windows (elsewhere it also moves on changes, which
+        # only makes this stricter).
+        return now.st_ctime_ns == before.st_ctime_ns
+    return True
+
+
+def _pending_marker(backup_dir: Path) -> Path:
+    return backup_dir.with_name(backup_dir.name + VENDOR_SYNC_PENDING_SUFFIX)
+
+
+def _contains_plugin(target: os.stat_result, vendor_dir: Path, plugin_dir: Path) -> bool:
+    """Whether the directory vendor/ leads to is (or may be) plugin_dir or one
+    of its parents: compared by identity (a symlink, junction or bind mount),
+    or by resolved path where the filesystem reports no inode numbers. A
+    mount point there can not be resolved to what it mounts, so it counts."""
+    if not target.st_ino:
+        if not _is_link(vendor_dir):
+            return True
+        resolved = os.path.normcase(os.path.realpath(vendor_dir))
+        plugin = Path(os.path.realpath(plugin_dir))
+        return any(
+            os.path.normcase(str(directory)) == resolved
+            for directory in (plugin, *plugin.parents)
+        )
+    for directory in (plugin_dir, *plugin_dir.resolve().parents):
+        try:
+            if os.path.samestat(directory.stat(), target):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _report_vendor_changed(vendor_dir: Path) -> int:
+    print(
+        f"[FAIL] {vendor_dir} changed during the sync (retargeted, or a mount "
+        "appeared inside); not touching it further. Check it and retry.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+class _VendorTarget(NamedTuple):
+    """The directory vendor/ led to when its lock was taken."""
+
+    stat: os.stat_result
+    # Compared too where the filesystem reports no inode numbers: samestat
+    # alone would take any directory on the device for this one.
+    path: str
+
+
+def _vendor_target(vendor_dir: Path) -> _VendorTarget:
+    return _VendorTarget(vendor_dir.stat(), os.path.realpath(vendor_dir))
+
+
+def _is_target(identity: _VendorTarget, info: os.stat_result, path: str) -> bool:
+    if not os.path.samestat(info, identity.stat):
+        return False
+    return bool(identity.stat.st_ino) or (
+        os.path.normcase(path) == os.path.normcase(identity.path)
+    )
+
+
+def _same_target(vendor_dir: Path, identity: _VendorTarget) -> bool:
+    try:
+        return _is_target(identity, vendor_dir.stat(), os.path.realpath(vendor_dir))
+    except OSError:
+        return False
+
+
+def _sync_in_place(
+    vendor_dir: Path,
+    external_deps: list[str],
+    args: argparse.Namespace,
+    identity: _VendorTarget,
+) -> int:
+    """Sync a linked or mounted vendor/ without renaming it.
+
+    Without --clean the install goes straight into it, as before the swap
+    existed. With --clean it goes into a staging dir first, and vendor/ is
+    emptied and refilled only once that succeeded, so a failed install
+    (publish always cleans) leaves the working dependencies alone. That
+    staging dir lives inside vendor/, on the filesystem vendor/ really is
+    (the other disk a link leads to, the volume): the plugin's own disk may
+    be the one without room, and refilling is then a rename, not a copy.
+    Either way there is no rollback once vendor/ itself is being written.
+
+    identity is the directory vendor/ led to when its lock was taken. The
+    installer is another process that can only be given a path, so vendor/
+    is checked to still lead there before and after each step that writes.
+    """
+    print(
+        "[WARN] "
+        + _tri(
+            f"{vendor_dir} is a link or mount point; updating it in place. "
+            "If writing into it fails, it can be left partly updated (no rollback).",
+            f"{vendor_dir} 是链接或挂载点，将在原处更新。"
+            "写入它的过程中出错时，它可能处于更新了一半的状态（无法回滚）。",
+            f"{vendor_dir} はリンクまたはマウントポイントのため、その場で更新します。"
+            "書き込み中に失敗すると一部だけ更新された状態になる可能性があります（ロールバック不可）。",
+        ),
+        file=sys.stderr,
+    )
+    if not _same_target(vendor_dir, identity):
+        return _report_vendor_changed(vendor_dir)
+    unfinished = _unfinished_refills(vendor_dir)
+    if unfinished:
+        locations = ", ".join(str(path) for path in unfinished)
+        print(
+            f"[FAIL] An earlier sync stopped while replacing the contents of {vendor_dir}; "
+            f"the old files it had moved are in {locations}. Move them back into vendor/ "
+            "(or delete that dir once vendor/ is complete), then retry.",
+            file=sys.stderr,
+        )
+        return 1
+    # Left inside vendor/ by a killed --clean run; it would ship with it.
+    _remove_stale_staging(vendor_dir)
+    if not args.clean:
+        exit_code = _install_to_vendor(
+            external_deps, vendor_dir=vendor_dir, python=args.python,
+            project_root=args._defaults.repo_root,
+        )
+        if exit_code != 0:
+            return exit_code
+        if not _same_target(vendor_dir, identity):
+            # The install may have gone to the new target; say so.
+            return _report_vendor_changed(vendor_dir)
+        # _clean_vendor's recursive searches would cross a mount or junction
+        # inside and delete caches and bin/ in that external tree.
+        if sys.platform.startswith("linux") and _linux_mount_points() is None:
+            # vendor/ is the user's tree: even its bin/ may be a bind mount
+            # that ismount() can not see.
+            print(
+                f"[WARN] Skipped removing __pycache__, .pyc and bin/ from {vendor_dir}: "
+                "/proc/self/mountinfo is unavailable, so mounts inside can not be "
+                "ruled out. Remove vendor/bin by hand if it should not be packaged.",
+                file=sys.stderr,
+            )
+        elif _find_foreign_subdir(vendor_dir, junctions=True) is not None:
+            print(
+                f"[WARN] Skipped removing __pycache__ and .pyc from {vendor_dir}: "
+                "a mount point or junction is inside it.",
+                file=sys.stderr,
+            )
+            _remove_installer_bin(vendor_dir)
+        else:
+            _clean_vendor(vendor_dir)
+        return 0
+
+    # Emptying recurses: a mount inside would lose its files. (rmtree
+    # removes a nested Windows junction itself, not its target.) Without
+    # Linux's mount table a same-filesystem bind mount can not be ruled out.
+    if sys.platform.startswith("linux") and _linux_mount_points() is None:
+        print(
+            f"[FAIL] /proc/self/mountinfo is unavailable, so mounts inside {vendor_dir} "
+            "can not be ruled out; --clean would delete what they hold. "
+            "Run without --clean, or empty vendor/ by hand.",
+            file=sys.stderr,
+        )
+        return 1
+    foreign = _find_foreign_subdir(vendor_dir, junctions=False)
+    if foreign is not None:
+        print(
+            f"[FAIL] {foreign} is a mount point inside vendor/; --clean would "
+            "delete what it holds. Remove it and retry.",
+            file=sys.stderr,
+        )
+        return 1
+    if not _same_target(vendor_dir, identity):
+        return _report_vendor_changed(vendor_dir)
+    staging_dir = vendor_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
+    staging_dir.mkdir()
+    try:
+        exit_code = _install_to_vendor(
+            external_deps, vendor_dir=staging_dir, python=args.python,
+            project_root=args._defaults.repo_root,
+        )
+        if exit_code != 0:
+            return exit_code
+        # Every later step reaches staging through vendor/; after a retarget
+        # that path names a directory in the new target.
+        if not _same_target(vendor_dir, identity):
+            return _report_vendor_changed(vendor_dir)
+        # As in the swap path: _clean_vendor recurses, and the move would
+        # carry a mount into vendor/; stop if one appeared during the install.
+        mounted = _find_mount(staging_dir)
+        if mounted is not None:
+            print(
+                f"[FAIL] {mounted} got mounted inside {staging_dir} during the "
+                "install; not touching it. Unmount it, then retry.",
+                file=sys.stderr,
+            )
+            return 1  # the mount check below keeps staging
+        if sys.platform.startswith("linux") and _linux_mount_points() is None:
+            # The table was readable before the install; without it now a
+            # same-filesystem bind mount in staging can not be ruled out.
+            return _report_vendor_changed(vendor_dir)
+        _clean_vendor(staging_dir)
+        return _refill_in_place(vendor_dir, staging_dir, identity)
+    finally:
+        # Through a retargeted vendor/ this path names a directory in the
+        # new target; leave ours for the next sync of that target instead.
+        if not _same_target(vendor_dir, identity):
+            print(
+                f"[WARN] Not removing the staging dir: {vendor_dir} no longer leads "
+                "to the directory it was created in.",
+                file=sys.stderr,
+            )
+        elif staging_dir.exists() and not _mounted_inside(staging_dir):
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+
+# Directory-handle variants of the calls that empty and refill vendor/
+# (POSIX); Windows offers none of them.
+_DIR_FD_OPS = (
+    os.open in os.supports_dir_fd
+    and os.scandir in os.supports_fd
+    and os.rename in os.supports_dir_fd
+    and shutil.rmtree.avoids_symlink_attacks
+)
+
+
+def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: _VendorTarget) -> int:
+    """Replace vendor/'s contents with staging's, in the directory the
+    install ran in.
+
+    The install can take minutes, during which a link may be retargeted or
+    a mount added inside. Recheck right before emptying; on POSIX every step
+    then goes through one opened handle of that directory, so a retarget
+    after the check can no longer redirect the deletion. (Windows has no
+    such calls; there the check runs right before the path-based deletion.)
+    """
+    def changed() -> int:
+        return _report_vendor_changed(vendor_dir)
+
+    if _find_foreign_subdir(vendor_dir, junctions=False) is not None:
+        return changed()
+    if not _DIR_FD_OPS:
+        # No directory-handle calls (Windows): hold the link itself open
+        # instead, so no other process can delete, rename or retarget it
+        # while the path-based refill below works through it.
+        try:
+            unpin = _pin_link(vendor_dir)
+        except OSError:
+            return changed()
+        try:
+            if not _same_target(vendor_dir, identity) or not staging_dir.is_dir():
+                return changed()
+            _empty_directory(vendor_dir, keep=staging_dir.name)
+            for child in staging_dir.iterdir():
+                child.replace(vendor_dir / child.name)
+        finally:
+            unpin()
+        return 0
+
+    fd = os.open(vendor_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        if not _is_target(identity, os.fstat(fd), _open_dir_path(fd) or ""):
+            return changed()
+        try:
+            staging_fd = os.open(staging_dir.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        except OSError:
+            return changed()
+        # Move the old contents aside by rename (no recursion), refill, and
+        # only then delete them: the mount check right before that deletion
+        # sees a mount added while the install ran, as for a swapped backup.
+        trash = f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
+        os.mkdir(trash, dir_fd=fd)
+        trash_fd = os.open(trash, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        try:
+            # Until the refill is complete this dir holds the only copy of
+            # what was moved into it; the marker keeps a later sync from
+            # taking it for disposable staging.
+            os.close(os.open(_REFILL_MARKER, os.O_CREAT | os.O_WRONLY, dir_fd=trash_fd))
+            for name in os.listdir(fd):
+                if name in {staging_dir.name, trash} or _others_staging(name, fd):
+                    continue
+                os.rename(name, name, src_dir_fd=fd, dst_dir_fd=trash_fd)
+            for name in os.listdir(staging_fd):
+                os.rename(name, name, src_dir_fd=staging_fd, dst_dir_fd=fd)
+            os.unlink(_REFILL_MARKER, dir_fd=trash_fd)
+        finally:
+            os.close(trash_fd)
+            os.close(staging_fd)
+        # The mount table is checked under the path the open handle really
+        # has, so a later retarget of vendor/ can not point the check away.
+        opened = _open_dir_path(fd)
+        if opened is None:
+            print(
+                f"[WARN] Not removing the old contents moved to {vendor_dir / trash} yet: "
+                "mounts inside can not be checked through the open handle here.",
+                file=sys.stderr,
+            )
+        elif not _mounted_inside(Path(opened, trash)):
+            shutil.rmtree(trash, dir_fd=fd)
+        # Otherwise kept with a warning; the next in-place sync retries it.
+    finally:
+        os.close(fd)
+    return 0
+
+
+_STAGING_NAME_RE = re.compile(re.escape(VENDOR_SYNC_STAGING_PREFIX) + r"[0-9a-f]{8}")
+# Inside an in-place refill's trash dir while it holds the only copy of the
+# old vendor/ entries it took (see _refill_in_place).
+_REFILL_MARKER = ".neko-sync-refill-pending"
+
+
+def _unfinished_refills(vendor_dir: Path) -> list[Path]:
+    return [
+        path
+        for path in _sync_work_dirs(vendor_dir, VENDOR_SYNC_STAGING_PREFIX)
+        if (path / _REFILL_MARKER).is_file()
+    ]
+
+
+def _others_staging(name: str, dir_fd: int) -> bool:
+    """Another user's staging dir in a shared vendor/ target: the lock is per
+    user, so it may belong to a live install (as _remove_stale_staging)."""
+    if not _STAGING_NAME_RE.fullmatch(name):
+        return False
+    try:
+        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return stat.S_ISDIR(info.st_mode) and info.st_uid != os.getuid()
+
+
+def _open_dir_path(fd: int) -> str | None:
+    """The path an open directory handle refers to now: /proc/self/fd on
+    Linux, F_GETPATH on macOS. None where neither is available - resolving
+    the link again could name a directory it was retargeted to since."""
+    try:
+        return os.readlink(f"/proc/self/fd/{fd}")
+    except OSError:
+        pass  # no /proc (not Linux, or not mounted); try F_GETPATH
+    try:
+        import fcntl
+
+        if hasattr(fcntl, "F_GETPATH"):
+            raw = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
+            return os.fsdecode(raw.split(b"\0", 1)[0])
+    except (ImportError, OSError):
+        pass  # no fcntl (Windows) or the call failed: no path to report
+    return None
+
+
+def _pin_link(path: Path):
+    """Open a Windows junction / directory symlink itself (not its target)
+    sharing only reads, which makes deleting, renaming or retargeting it fail
+    with a sharing violation in every other process until the returned
+    function closes it. Work through the link is unaffected. For anything
+    but a Windows link there is nothing to pin."""
+    if sys.platform != "win32" or not _is_link(path):
+        return lambda: None
+    import ctypes.wintypes
+
+    wintypes = ctypes.wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    generic_read, file_share_read, open_existing = 0x80000000, 0x1, 3
+    backup_semantics, open_reparse_point = 0x02000000, 0x00200000
+    handle = kernel32.CreateFileW(
+        str(path), generic_read, file_share_read, None, open_existing,
+        backup_semantics | open_reparse_point, None,
+    )
+    if handle is None or handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return lambda: kernel32.CloseHandle(handle)
+
+
+def _empty_directory(directory: Path, *, keep: str) -> None:
+    """Delete what is inside directory, except the entry named keep."""
+    for child in directory.iterdir():
+        if child.name == keep:
+            continue
+        if _is_link(child):
+            # A link to a directory (or a junction) is removed with rmdir on
+            # Windows; neither form follows it.
+            try:
+                child.unlink()
+            except OSError:
+                os.rmdir(child)
+        elif child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
 
 
 def _read_dependencies(pyproject_path: Path) -> list[str]:
@@ -121,38 +718,586 @@ def _filter_external(deps: list[str]) -> list[str]:
     return result
 
 
-def _pip_install_to_vendor(
+def _is_link(path: Path) -> bool:
+    """Symlink, or a Windows junction (which is_symlink() misses on 3.11)."""
+    if path.is_symlink():
+        return True
+    try:
+        os.readlink(path)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _find_foreign_subdir(root: Path, *, junctions: bool) -> Path | None:
+    """A subdirectory of vendor/ that belongs to another tree.
+
+    A POSIX mount point would have its contents deleted when the old vendor/
+    (now a backup) is removed. A Windows junction is only a problem for the
+    non-clean copy: copytree(symlinks=True) copies its whole target tree in
+    as a real directory, while rmtree removes just the junction.
+    """
+    if sys.platform == "win32" and not junctions:
+        return None
+    # ismount() misses a bind mount from the same filesystem (same st_dev);
+    # the kernel's mount table on Linux lists every mount point.
+    mount_points = _linux_mount_points()
+    if mount_points is not None:
+        real_root = os.path.realpath(root)
+        for point in mount_points:
+            try:
+                inside = point != real_root and os.path.commonpath([real_root, point]) == real_root
+            except ValueError:  # different drives or mixed absolute/relative
+                inside = False
+            if inside:
+                return Path(point)
+        return None
+    for dirpath, dirnames, _ in os.walk(root):
+        for name in dirnames:
+            path = Path(dirpath, name)
+            if sys.platform == "win32":
+                if junctions and not path.is_symlink() and _is_link(path):
+                    return path
+            elif os.path.ismount(path):
+                return path
+    return None
+
+
+def _linux_mount_points() -> list[str] | None:
+    """Mount points from /proc/self/mountinfo, or None where unavailable."""
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8", errors="surrogateescape") as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    return _parse_mountinfo_points(lines)
+
+
+def _parse_mountinfo_points(lines: list[str]) -> list[str]:
+    points = []
+    for line in lines:
+        fields = line.split()
+        if len(fields) > 4:
+            # Field 5 is the mount point, with space/tab/newline/backslash
+            # written as octal escapes.
+            points.append(re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[4]))
+    return points
+
+
+def _lock_dir() -> Path:
+    """A per-user directory for the persistent sync lock.
+
+    On POSIX a lock left directly in a shared, sticky /tmp could be
+    pre-created by another user (unopenable, and undeletable by its victim),
+    so use a private cache dir instead, and fall back to a uid-named dir in
+    the shared temp dir only if that is unusable. On Windows use the user's
+    LocalAppData as the shell reports it. Neither location depends on the
+    process environment (TEMP, HOME, XDG_CACHE_HOME), so every sync process
+    of one user picks the same lock.
+    """
+    if not hasattr(os, "getuid"):
+        local = _windows_known_folder(_FOLDERID_LOCAL_APPDATA)
+        if local is not None:
+            private = local / "neko-plugin" / "sync-locks"
+            try:
+                private.mkdir(parents=True, exist_ok=True)
+                return private
+            except OSError:
+                pass
+        return Path(gettempdir())
+    base = _lock_cache_base()
+    if base is not None:
+        private = base / "neko-plugin" / "sync-locks"
+        try:
+            private.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _make_private(private)
+            return private
+        except OSError:
+            pass  # e.g. a read-only home in a container; use the fallback below
+    fallback = _shared_tmp() / f"neko-plugin-sync-{os.getuid()}"
+    fallback.mkdir(exist_ok=True, mode=0o700)
+    _make_private(fallback)
+    return fallback
+
+
+def _lock_identity(plugin_dir: Path, info: os.stat_result | None = None) -> bytes:
+    """The plugin directory itself, not one of its names: two bind-mount
+    aliases (or other paths) to one directory must share one lock. The
+    resolved path is the fallback where the directory has no usable id."""
+    if info is None:
+        try:
+            info = plugin_dir.stat()
+        except OSError:
+            info = None
+    if info is not None and info.st_ino:
+        return f"{info.st_dev}:{info.st_ino}".encode()
+    # fsencode: a POSIX path may hold undecodable bytes (surrogate escapes).
+    return os.fsencode(os.path.normcase(str(plugin_dir.resolve())))
+
+
+# FOLDERID_LocalAppData, as SHGetKnownFolderPath reports it.
+_FOLDERID_LOCAL_APPDATA = "F1B32785-6FBA-4FCF-9D55-7B8E7F157091"
+
+
+def _windows_known_folder(folder_id: str) -> Path | None:
+    """A known folder from the shell, not from LOCALAPPDATA / TEMP, which a
+    process may have set to something else."""
+    try:
+        import ctypes
+
+        guid = (ctypes.c_ubyte * 16).from_buffer_copy(uuid.UUID(folder_id).bytes_le)
+        path = ctypes.c_wchar_p()
+        result = ctypes.windll.shell32.SHGetKnownFolderPath(
+            ctypes.byref(guid), 0, None, ctypes.byref(path)
+        )
+    except (AttributeError, ImportError, OSError):
+        return None
+    try:
+        return Path(path.value) if result == 0 and path.value else None
+    finally:
+        ctypes.windll.ole32.CoTaskMemFree(path)
+
+
+def _lock_cache_base() -> Path | None:
+    """The user's cache dir from the account database, not from HOME or
+    XDG_CACHE_HOME: every sync process of one user must pick the same lock,
+    whatever its environment, or two could run at once and one could delete
+    the other's live staging dir as stale. None when the uid has no account
+    record (common in containers)."""
+    try:
+        import pwd
+
+        return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".cache"
+    except (ImportError, KeyError):
+        return None
+
+
+def _shared_tmp() -> Path:
+    # The POSIX /tmp rather than gettempdir(), which follows TMPDIR and so
+    # could differ between two processes of the same user. Every process of
+    # one uid sees /tmp's usability the same way, so the choice stays stable;
+    # an unusable /tmp (read-only in some containers) falls back to TMPDIR.
+    fixed = Path("/tmp")
+    if fixed.is_dir() and os.access(fixed, os.W_OK | os.X_OK):
+        return fixed
+    return Path(gettempdir())
+
+
+def _make_private(directory: Path) -> None:
+    """Require the lock dir to be ours, writable, and closed to group and
+    others.
+
+    mkdir(mode=0o700) does not touch an existing directory, which may have
+    been created (or later opened up) with group/world write access.
+    """
+    # lstat: a symlinked lock dir would make the chmod below change whatever
+    # shared directory it points to.
+    info = directory.lstat()
+    if stat.S_ISLNK(info.st_mode):
+        raise PermissionError(f"lock directory {directory} is a symlink")
+    if info.st_uid != os.getuid():
+        raise PermissionError(f"lock directory {directory} is owned by another user")
+    if info.st_mode & 0o077:
+        os.chmod(directory, 0o700)
+    # An existing dir may be read-only (mode 0500, a read-only mount): fail
+    # here so the private dir falls back instead of every lock open failing.
+    if not os.access(directory, os.W_OK | os.X_OK):
+        raise PermissionError(f"lock directory {directory} is not writable")
+
+
+def _short_token() -> str:
+    # Installers write deep package paths under the work dir, so keep its
+    # name short: Windows without long-path support caps paths at 260 chars.
+    return uuid.uuid4().hex[:8]
+
+
+def _sync_work_dirs(plugin_dir: Path, prefix: str) -> list[Path]:
+    """Work dirs this command created: exactly the prefix plus a token.
+
+    A plugin may have its own directory that merely shares the prefix
+    (".vendor.staging-assets"); only exact generated names are ever deleted
+    or treated as dependency backups.
+    """
+    pattern = re.compile(re.escape(prefix) + r"[0-9a-f]{8}")
+    return [
+        path
+        for path in plugin_dir.glob(f"{prefix}*")
+        if pattern.fullmatch(path.name) and path.is_dir() and not path.is_symlink()
+    ]
+
+
+def _is_mount_point(path: Path) -> bool:
+    # On Windows, rmtree refuses a junction or mounted folder itself.
+    if sys.platform == "win32":
+        return False
+    mount_points = _linux_mount_points()
+    if mount_points is not None:
+        return os.path.realpath(path) in mount_points
+    return os.path.ismount(path)
+
+
+def _remove_retained_backups(plugin_dir: Path) -> None:
+    """Delete backups of finished swaps, except one another user is
+    mid-swap on (the lock is per user) or one with a mount inside."""
+    for backup in _retained_backups(plugin_dir):
+        try:
+            if _swapped_by_other_user(backup):
+                continue
+            if _mounted_inside(backup):
+                continue
+            shutil.rmtree(backup)
+            _pending_marker(backup).unlink(missing_ok=True)
+        except OSError as exc:
+            print(f"[WARN] Could not remove old dependency backup {backup}: {exc}", file=sys.stderr)
+
+
+def _find_mount(path: Path) -> Path | None:
+    """A mount point that is, or is inside, path, if one is positively seen."""
+    return path if _is_mount_point(path) else _find_foreign_subdir(path, junctions=False)
+
+
+def _mounted_inside(path: Path) -> bool:
+    """Whether a leftover work dir is, or contains, a mount point, which
+    rmtree would descend into and empty. Such a dir is kept, with a warning."""
+    if sys.platform.startswith("linux") and _linux_mount_points() is None:
+        # Without the kernel's mount table a same-filesystem bind mount can
+        # not be ruled out (ismount misses it), so keep the directory.
+        print(
+            f"[WARN] Not removing {path}: /proc/self/mountinfo is unavailable, "
+            "so mounts inside it can not be ruled out. Delete it by hand.",
+            file=sys.stderr,
+        )
+        return True
+    mount = _find_mount(path)
+    if mount is None:
+        return False
+    print(
+        f"[WARN] Not removing {path}: {mount} is a mount point. "
+        "Unmount it, then delete the directory.",
+        file=sys.stderr,
+    )
+    return True
+
+
+def _owned_by_other_user(path: Path) -> bool:
+    """POSIX only; Windows has no cheap owner id and treats every dir as own."""
+    if not hasattr(os, "getuid"):
+        return False
+    return path.stat().st_uid != os.getuid()
+
+
+def _swapped_by_other_user(backup: Path) -> bool:
+    """Whether another user's sync is (or was) mid-swap on this backup.
+
+    The backup dir keeps the owner of the vendor/ it was renamed from, so it
+    says nothing about who is swapping. Its pending marker is created by the
+    syncing user right after the rename; a backup without one has finished
+    its swap and belongs to nobody's live work.
+    """
+    if not hasattr(os, "getuid"):
+        return False
+    try:
+        return _pending_marker(backup).stat().st_uid != os.getuid()
+    except FileNotFoundError:
+        return False
+
+
+def _remove_stale_staging(directory: Path) -> None:
+    """Delete this user's staging dirs in directory: the plugin dir, or a
+    linked / mounted vendor/ that an in-place --clean stages inside."""
+    # The sync lock is per user, so holding it only rules out this user's
+    # own runs; another user's staging dir may belong to a live install.
+    for path in _sync_work_dirs(directory, VENDOR_SYNC_STAGING_PREFIX):
+        try:
+            if _owned_by_other_user(path) or (path / _REFILL_MARKER).exists():
+                continue
+            if _mounted_inside(path):
+                continue
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            # Another user's sync moved it away between glob and here.
+            continue
+        except OSError as exc:
+            print(f"[WARN] Could not remove stale staging dir {path}: {exc}", file=sys.stderr)
+
+
+# A marker is created right before its rename; one older than this with no
+# backup dir is certainly orphaned, whoever made it.
+_ORPHAN_MARKER_AGE_SECONDS = 600
+
+
+def _remove_orphan_markers(plugin_dir: Path) -> None:
+    """Delete this user's pending markers whose backup dir is gone: left when
+    a run was killed between creating the marker and the rename, or when a
+    rollback could not delete it. Nothing else would ever remove them."""
+    pattern = re.compile(
+        re.escape(VENDOR_SYNC_BACKUP_PREFIX) + r"[0-9a-f]{8}" + re.escape(VENDOR_SYNC_PENDING_SUFFIX)
+    )
+    for marker in plugin_dir.glob(f"{VENDOR_SYNC_BACKUP_PREFIX}*{VENDOR_SYNC_PENDING_SUFFIX}"):
+        if not pattern.fullmatch(marker.name) or marker.is_symlink() or not marker.is_file():
+            continue
+        backup = marker.with_name(marker.name[: -len(VENDOR_SYNC_PENDING_SUFFIX)])
+        try:
+            # Another user's marker may precede their rename right now; on
+            # Windows ownership is unknown, so a fresh marker is left alone.
+            if backup.exists() or _owned_by_other_user(marker):
+                continue
+            if time.time() - marker.stat().st_mtime < _ORPHAN_MARKER_AGE_SECONDS:
+                continue
+            marker.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            print(f"[WARN] Could not remove stale recovery marker {marker}: {exc}", file=sys.stderr)
+
+
+def _retained_backups(plugin_dir: Path) -> list[Path]:
+    return _sync_work_dirs(plugin_dir, VENDOR_SYNC_BACKUP_PREFIX)
+
+
+def _unreconciled_backups(plugin_dir: Path, vendor_dir: Path) -> list[Path]:
+    """Backups that may hold the only complete copy of the old vendor/.
+
+    A backup still marked pending never finished its swap or rollback. With
+    no live vendor/, every backup is the only copy of the old tree. A backup
+    next to a live vendor/ without the marker is only a leftover from a sync
+    whose cleanup failed, and does not block.
+    """
+    backups = _retained_backups(plugin_dir)
+    pending = [path for path in backups if _pending_marker(path).is_file()]
+    if pending:
+        return pending
+    return [] if vendor_dir.exists() else backups
+
+
+def _tri(english: str, chinese: str, japanese: str) -> str:
+    return f"{english} / {chinese} / {japanese}"
+
+
+_PIP_FALLBACK_BANNER = "!" * 78
+_PIP_FALLBACK_WARNING = "\n".join([
+    _PIP_FALLBACK_BANNER,
+    "[WARN] uv was not found; falling back to pip.",
+    "  This project requires uv. pip reads a different configuration (pip.conf,",
+    "  PIP_* variables) and resolves dependencies its own way, so vendor/ may",
+    "  not match what uv installs, with unpredictable results. Install uv",
+    "  (https://docs.astral.sh/uv/) and run this command again.",
+    "[警告] 未找到 uv，改用 pip 安装。",
+    "  本项目强制要求使用 uv。pip 读取的是另一套配置（pip.conf、PIP_* 环境变量），",
+    "  解析依赖的方式也不同，装出的 vendor/ 可能与 uv 不一致，后果不可预测。",
+    "  请安装 uv（https://docs.astral.sh/uv/）后重新运行本命令。",
+    "[警告] uv が見つからないため、pip にフォールバックします。",
+    "  本プロジェクトは uv の使用を必須としています。pip は別の設定（pip.conf、",
+    "  PIP_* 環境変数）を読み、依存関係の解決方法も異なるため、vendor/ が uv の",
+    "  結果と一致せず、予測できない問題が起きる可能性があります。",
+    "  uv（https://docs.astral.sh/uv/）をインストールして、再実行してください。",
+    _PIP_FALLBACK_BANNER,
+])
+
+
+def _find_uv() -> str | None:
+    # `uv run` exports its own path as UV, which finds uv even when it is not
+    # on PATH (installed with pipx, or `py -m uv` on Windows).
+    for candidate in (os.environ.get("UV"), "uv"):
+        found = shutil.which(candidate) if candidate else None
+        if found:
+            # uv may run in another directory (the N.E.K.O project root): a
+            # relative UV or PATH entry must keep meaning what it means here.
+            return os.path.abspath(found)
+    return None
+
+
+def _install_to_vendor(
     packages: list[str],
     *,
     vendor_dir: Path,
     python: str,
+    project_root: Path | None = None,
 ) -> int:
-    """Run pip install --target vendor/ for the given packages."""
+    """Install packages into vendor/ for the target interpreter.
+
+    The project requires uv: `uv pip install` (uv's own installer, not pip)
+    installs for the target interpreter, which needs no pip of its own, and
+    reads uv's configuration (uv.toml, UV_* variables). Only when uv can not
+    be found does the target's own pip install them, behind a warning: pip
+    reads another configuration and resolves differently.
+
+    uv pip finds project configuration (uv.toml, [tool.uv]) from its working
+    directory, and `uv run --project` does not pass the project on: name the
+    N.E.K.O project with --project, so a plugin repository outside N.E.K.O
+    uses the same indexes as N.E.K.O itself. The working directory stays the
+    caller's, so relative paths (requirements, --python, PATH entries, UV_*
+    settings) keep meaning what they mean here.
+    """
     if not packages:
         return 0
 
     vendor_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        python, "-m", "pip", "install",
-        "--target", str(vendor_dir),
-        "--upgrade",
-        "--no-user",
-        *packages,
-    ]
-
-    print(f"  running: {' '.join(cmd)}")
-    result = subprocess.run(
-        cmd,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    if result.returncode != 0:
-        print(f"[FAIL] pip install failed (exit {result.returncode}):", file=sys.stderr)
+    uv = _find_uv()
+    if uv is not None:
+        has_project = project_root is not None and (project_root / "pyproject.toml").is_file()
+        command = [
+            uv, "pip", "install",
+            *(["--project", str(project_root)] if has_project else []),
+            "--python", python,
+            "--target", str(vendor_dir),
+            "--upgrade",
+            *packages,
+        ]
+        label = "uv pip install"
+    else:
+        print(_PIP_FALLBACK_WARNING, file=sys.stderr)
+        command = [
+            python, "-m", "pip", "install",
+            "--target", str(vendor_dir),
+            "--upgrade",
+            "--no-user",
+            *packages,
+        ]
+        label = "pip install"
+    result = _run_installer(command, label=label)
+    if result is not None and result.returncode != 0:
+        print(f"[FAIL] {label} failed (exit {result.returncode}):", file=sys.stderr)
         print(result.stdout, file=sys.stderr)
-        return 1
-    return 0
+    if uv is None:
+        # Last, after any installer output that may have scrolled the
+        # warning away.
+        print(
+            "[WARN] "
+            + _tri(
+                "This sync used pip, not uv; see the warning above.",
+                "本次同步用的是 pip 而不是 uv，见上方警告。",
+                "今回の同期は uv ではなく pip を使用しました。上の警告を参照してください。",
+            ),
+            file=sys.stderr,
+        )
+    return 0 if result is not None and result.returncode == 0 else 1
+
+
+def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess[str] | None:
+    print(f"  running: {' '.join(cmd)}")
+    try:
+        return subprocess.run(
+            cmd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+    except OSError as exc:
+        print(f"[FAIL] {label} could not start: {exc}", file=sys.stderr)
+        return None
+
+
+def _replace_vendor(vendor_dir: Path, staging_dir: Path) -> bool:
+    """Swap the staging dir into vendor/; on failure rename the old one back."""
+    backup_dir = vendor_dir.parent / f"{VENDOR_SYNC_BACKUP_PREFIX}{_short_token()}"
+    marker = _pending_marker(backup_dir)
+    had_vendor = vendor_dir.exists()
+    try:
+        if had_vendor:
+            # Mark before the rename, so the backup never exists unmarked while
+            # its swap is live: a crash or failed rollback leaves a backup that
+            # blocks plain retries, and another user's sync can not take it for
+            # a finished leftover and delete it.
+            marker.touch()
+            try:
+                vendor_dir.replace(backup_dir)
+            except OSError:
+                try:
+                    marker.unlink(missing_ok=True)
+                except OSError:
+                    pass  # A marker without its backup dir blocks nothing.
+                raise
+    except OSError as exc:
+        # vendor/ was not moved, so there is nothing to roll back.
+        _report_replace_failure(vendor_dir, exc)
+        return False
+    try:
+        staging_dir.replace(vendor_dir)
+    except OSError as exc:
+        _report_replace_failure(vendor_dir, exc)
+        if had_vendor:
+            _roll_back_vendor(vendor_dir, backup_dir)
+        return False
+    if had_vendor:
+        try:
+            _pending_marker(backup_dir).unlink(missing_ok=True)
+        except OSError as exc:
+            print(f"[WARN] Could not clear recovery marker for {backup_dir}: {exc}", file=sys.stderr)
+        # The caller's _remove_retained_backups deletes the backup, checking
+        # it for mounts added since vendor/ was checked.
+    return True
+
+
+def _roll_back_vendor(vendor_dir: Path, backup_dir: Path) -> None:
+    if vendor_dir.exists() or vendor_dir.is_symlink():
+        # Whatever now occupies vendor/ is neither tree we manage; never
+        # delete it. The marked backup blocks plain retries until recovered.
+        print(
+            f"[FAIL] Could not roll back: {vendor_dir} reappeared after the failed swap; "
+            f"backup retained at {backup_dir}",
+            file=sys.stderr,
+        )
+        return
+    try:
+        # Keep the marker on the backup until the rename succeeds, so a failed
+        # rollback stays blocking even if vendor/ reappears before a retry.
+        backup_dir.replace(vendor_dir)
+    except OSError as exc:
+        print(
+            f"[FAIL] Could not roll back vendor; backup retained at {backup_dir}: {exc}",
+            file=sys.stderr,
+        )
+        return
+    try:
+        _pending_marker(backup_dir).unlink(missing_ok=True)
+    except OSError as exc:
+        # Without its backup dir the marker blocks nothing.
+        print(f"[WARN] Could not clear recovery marker for {backup_dir}: {exc}", file=sys.stderr)
+
+
+def _report_replace_failure(vendor_dir: Path, exc: OSError) -> None:
+    if isinstance(exc, PermissionError):
+        print(
+            f"[FAIL] Cannot replace {vendor_dir}: files are in use. "
+            f"Close processes using the plugin and retry. ({exc})",
+            file=sys.stderr,
+        )
+    else:
+        print(f"[FAIL] Failed to replace {vendor_dir}: {exc}", file=sys.stderr)
+
+
+def _remove_installer_bin(vendor_dir: Path) -> None:
+    """Remove the installer's top-level bin/ (console scripts, which build
+    and pack would ship) without recursing: it normally holds only files, and
+    one holding a directory, which could be a mount, is left with a warning.
+    A bin/ that is itself a mount point is left too: its files are another
+    tree's."""
+    bin_dir = vendor_dir / "bin"
+    if _is_link(bin_dir):
+        try:
+            bin_dir.unlink()
+        except OSError:
+            os.rmdir(bin_dir)
+        return
+    if not bin_dir.is_dir():
+        return
+    if _is_mount_point(bin_dir):
+        print(f"[WARN] Not removing {bin_dir}: it is a mount point.", file=sys.stderr)
+        return
+    children = list(bin_dir.iterdir())
+    if any(child.is_dir() and not _is_link(child) for child in children):
+        print(f"[WARN] Not removing {bin_dir}: it contains directories.", file=sys.stderr)
+        return
+    for child in children:
+        try:
+            child.unlink()
+        except OSError:
+            os.rmdir(child)  # a link to a directory on Windows
+    bin_dir.rmdir()
 
 
 def _clean_vendor(vendor_dir: Path) -> None:
@@ -171,5 +1316,7 @@ def _clean_vendor(vendor_dir: Path) -> None:
 
     # Remove bin/ directory (CLI scripts we don't need)
     bin_dir = vendor_dir / "bin"
-    if bin_dir.is_dir():
+    if bin_dir.is_symlink():
+        bin_dir.unlink()
+    elif bin_dir.is_dir():
         shutil.rmtree(bin_dir, ignore_errors=True)

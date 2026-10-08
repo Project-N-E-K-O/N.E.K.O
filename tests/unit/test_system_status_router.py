@@ -26,7 +26,6 @@ def _reset_shared_state_after_test():
         steamworks=None,
         templates=None,
         config_manager=None,
-        logger=None,
     )
 
 
@@ -61,7 +60,6 @@ def _build_client(config_manager):
         steamworks=None,
         templates=None,
         config_manager=config_manager,
-        logger=None,
     )
     app = FastAPI()
     app.include_router(system_router_module.router)
@@ -108,20 +106,54 @@ def test_system_client_id_persists_fresh_identity_before_returning(tmp_path):
 def test_system_social_config_trims_override_and_falls_back(monkeypatch, tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "  https://social.example.test/api/  ")
+    monkeypatch.setenv("NEKO_AUTH_URL", "  https://auth.example.test/  ")
 
     with _build_client(config_manager) as client:
         configured = client.get(SYSTEM_SOCIAL_CONFIG_ENDPOINT)
         monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "   ")
+        monkeypatch.delenv("NEKO_AUTH_URL")
         fallback = client.get(SYSTEM_SOCIAL_CONFIG_ENDPOINT)
 
     assert configured.status_code == 200
     assert configured.json() == {
         "ok": True,
         "social_base_url": "https://social.example.test/api",
+        "auth_public_url": "https://auth.example.test",
         "enabled": True,
     }
     assert fallback.json()["social_base_url"] == "https://community.project-neko.cn"
+    assert fallback.json()["auth_public_url"] == "https://auth.project-neko.cn"
     assert "no-store" in configured.headers["Cache-Control"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", [
+    "https://auth.example.test?x=1",
+    "https://auth.example.test/#frag",
+    "ftp://auth.example.test",
+    "auth.example.test",
+])
+def test_validate_http_url_rejects_values_that_cannot_take_a_path(value):
+    from utils import social_base
+
+    with pytest.raises(ValueError):
+        social_base.validate_http_url(value, name="NEKO_AUTH_URL")
+
+
+@pytest.mark.unit
+def test_invalid_auth_url_falls_back_and_is_reported_once(monkeypatch, caplog):
+    from utils import social_base
+
+    social_base._resolve_auth_public_url.cache_clear()
+    monkeypatch.setenv("NEKO_AUTH_URL", "https://auth.example.test?x=1")
+    with caplog.at_level("ERROR", logger=social_base.logger.name):
+        results = {social_base.auth_public_url() for _ in range(3)}
+    social_base._resolve_auth_public_url.cache_clear()
+
+    assert results == {"https://auth.project-neko.cn"}
+    errors = [r for r in caplog.records if "NEKO_AUTH_URL" in r.getMessage()]
+    assert len(errors) == 1
+    assert errors[0].levelname == "ERROR"
 
 
 @pytest.mark.unit

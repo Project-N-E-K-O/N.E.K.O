@@ -169,7 +169,20 @@ ANTI_REPEAT_EXEMPT_SOURCE_TAGS = frozenset({"MUSIC", "MEME"})
   才回落到正常台词判定，台词没雷同则依然能发。
 - 另：这类 channel 的台词不录进 anti-repeat corpus（见 finish_proactive_
   delivery），免得模板化 intro 污染 FG 窗、漂移其它 channel 的复读基线；
-  素材标识的近期去重走 system_router 的 _proactive_material_history。"""
+  素材标识的近期去重走 system_router 的 _proactive_material_history。
+- 例外见 ANTI_REPEAT_VERBATIM_GUARD_SOURCE_TAGS：MEME 素材新鲜时仍拦单纯复读。"""
+
+ANTI_REPEAT_VERBATIM_GUARD_SOURCE_TAGS = frozenset({"MEME"})
+"""ANTI_REPEAT_EXEMPT_SOURCE_TAGS 里素材新鲜时仍要拦"单纯复读"的子集。
+- 动机：MEME 的素材标识是搜索关键词而不是图片；随机热词 fallback 时关键词
+  为空 → 永远算新素材 → 永远豁免，而 Phase 2 看不到图，配文可能与近期某句
+  一字不差（"快看这个，笑死我了"）。
+- 语义：只拦逐字相同（去掉空白 / 标点 / 符号 / emoji 后完全一致，见
+  _find_verbatim_recent_proactive_chat）；换图时配文相似但不完全一样照常
+  放行，不跑 0.90 字面相似度、BM25 与未回应长窗，台词也仍不录进 anti-repeat
+  corpus。命中时不直接 drop，而是带上原句走一次 regen 换个说法；改写后仍
+  逐字相同才 drop。
+- 素材不新鲜时与其它 channel 一样走完整台词判定，这里不起作用。"""
 
 AVATAR_INTERACTION_DEDUPE_MAX_ITEMS = 32
 """_recent_avatar_interaction_ids deque maxlen。

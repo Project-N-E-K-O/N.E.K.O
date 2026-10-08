@@ -7,17 +7,30 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
-    <link rel="stylesheet" href="/static/css/voice_identity.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/voice_identity.css?v={{ static_asset_version }}-pr3149-rebase-20261004">
     <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
     <script src="/static/common_dialogs.js?v={{ static_asset_version }}" defer></script>
     <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
-    <script src="/static/js/voice_identity.js?v={{ static_asset_version }}" defer></script>
+    <script src="/static/js/microphone-input.js?v={{ static_asset_version }}" defer></script>
+    <script src="/static/js/voice-identity-readiness.js?v={{ static_asset_version }}" defer></script>
+    <script src="/static/js/voice_identity.js?v={{ static_asset_version }}-readiness-pr3149-rebase-20261004" defer></script>
 </head>
 <body class="voice-identity-page">
     <main class="voice-identity-shell container">
         <header class="voice-identity-header container-header page-title-bar">
-            <h2 data-i18n="voiceIdentity.pageTitle" data-text="Owner 声纹">Owner 声纹</h2>
+            <div class="voice-identity-brand">
+                <span class="brand-cat-paw" aria-hidden="true">
+                    <svg viewBox="0 0 44 36" focusable="false">
+                        <ellipse cx="22" cy="24" rx="10" ry="8"></ellipse>
+                        <circle cx="9" cy="12" r="4"></circle>
+                        <circle cx="18" cy="7" r="4"></circle>
+                        <circle cx="28" cy="7" r="4"></circle>
+                        <circle cx="37" cy="12" r="4"></circle>
+                    </svg>
+                </span>
+                <h2 data-i18n="voiceIdentity.pageTitle" data-text="Owner 声纹">Owner 声纹</h2>
+            </div>
             <div class="neko-window-controls">
                 <button type="button" class="neko-window-control-btn"
                     data-neko-window-control="pin"
@@ -63,7 +76,8 @@
                     <div class="status-copy">
                         <span class="status-dot" id="voice-identity-status-dot" aria-hidden="true"></span>
                         <div>
-                            <h2 id="profile-status-title" data-i18n="voiceIdentity.profileStatus">声纹状态</h2>
+                            <h2 class="status-card-label" id="profile-status-title"
+                                data-i18n="voiceIdentity.profileStatus">声纹状态</h2>
                             <p id="voice-identity-profile-status" role="status"
                                 aria-live="polite" aria-atomic="true"
                                 data-i18n="voiceIdentity.profileMissing">尚未录入 Owner 声纹</p>
@@ -71,91 +85,131 @@
                     </div>
                 </section>
 
-                <section class="enrollment-card" id="voice-identity-enrollment"
-                    aria-labelledby="voice-identity-enrollment-title">
-                    <div class="enrollment-copy">
-                        <p class="eyebrow" data-i18n="voiceIdentity.localOnly">仅在本机处理</p>
-                        <h2 id="voice-identity-enrollment-title" tabindex="-1"
-                            data-i18n="voiceIdentity.privacyTitle">四段短语音，完成本机声纹录入</h2>
-                        <p class="enrollment-help" data-i18n="voiceIdentity.privacyBody">
-                            使用同一麦克风，以正常音量说四句不同的完整话。语音仅在本机处理，验证成功后才会加密保存声纹。
-                        </p>
-                        <ul class="enrollment-hints" aria-label="录音提示"
-                            data-i18n-aria="voiceIdentity.recordingHints">
-                            <li data-i18n="voiceIdentity.hintSameMicrophone">保持使用同一麦克风</li>
-                            <li data-i18n="voiceIdentity.hintNormalVolume">使用正常音量</li>
-                            <li data-i18n="voiceIdentity.hintDifferentSentence">每段说一句不同的完整话</li>
-                        </ul>
-                    </div>
-                    <div class="step-progress" aria-label="声纹录入进度"
-                        data-i18n-aria="voiceIdentity.progressLabel">
-                        <span class="step-dot current" data-voice-segment="1">1</span>
-                        <span class="step-line" aria-hidden="true"></span>
-                        <span class="step-dot" data-voice-segment="2">2</span>
-                        <span class="step-line" aria-hidden="true"></span>
-                        <span class="step-dot" data-voice-segment="3">3</span>
-                        <span class="step-line" aria-hidden="true"></span>
-                        <span class="step-dot verification" data-voice-segment="4">4</span>
-                    </div>
-                    <p class="progress-label" id="voice-identity-progress-label">第 1/4 段</p>
-                    <p class="phase-label" id="voice-identity-phase" aria-live="polite"></p>
-                    <div class="reading-prompt" id="voice-identity-reading-prompt"
-                        role="status" aria-live="polite" aria-atomic="true" hidden>
-                        <span class="reading-prompt-label"
-                            data-i18n="voiceIdentity.readingPromptLabel">请朗读</span>
-                        <q id="voice-identity-reading-text"></q>
-                    </div>
-                    <p class="verification-help" id="voice-identity-verification-help"
-                        data-i18n="voiceIdentity.verificationScoreHelp" hidden>
-                        结果取本次录音三个检查点中的最低值，不代表身份认证准确率。
-                    </p>
-                    <p class="remaining-label" id="voice-identity-remaining" aria-live="polite"></p>
-                    <div class="capture-status" id="voice-identity-capture-status" hidden>
-                        <span class="record-icon" aria-hidden="true"></span>
-                        <span id="voice-identity-capture-label" role="status"
-                            aria-live="polite" aria-atomic="true"
-                            data-i18n="voiceIdentity.recording">正在录音…</span>
-                        <span class="recording-timer" id="voice-identity-timer" aria-hidden="true"></span>
-                    </div>
+                <section class="readiness-card" aria-labelledby="voice-input-title">
+                    <h2 id="voice-input-title" data-i18n="voiceIdentity.inputTitle">检查麦克风与资源</h2>
+                    <ul id="voice-identity-resources" aria-live="polite"></ul>
+                    <p data-i18n="voiceIdentity.resourceLocation">模型与运行组件位于此页面连接的 N.E.K.O. 后端机器；麦克风位于当前设备。</p>
+                    <label><input type="checkbox" id="voice-identity-wake-enable"> <span data-i18n="voiceIdentity.wakeEnable">启用唤醒词</span></label>
                     <div class="enrollment-actions">
+                        <button type="button" class="secondary-button" id="voice-identity-prepare" data-i18n="voiceIdentity.resourcePrepare">检查并加载资源</button>
+                        <button type="button" class="secondary-button" id="voice-identity-download" data-i18n="voiceIdentity.resourceDownload">下载唤醒词模型</button>
+                        <button type="button" class="secondary-button" id="voice-identity-repair" data-i18n="voiceIdentity.resourceRepairButton" hidden>修复资源</button>
+                        <button type="button" class="secondary-button" id="voice-identity-resource-cancel" data-i18n="voiceIdentity.resourceCancel" hidden>取消资源操作</button>
+                    </div>
+                    <p id="voice-identity-resource-message" role="status"></p>
+                    <label for="voice-identity-microphone" data-i18n="voiceIdentity.inputSelect">麦克风</label>
+                    <select id="voice-identity-microphone"></select>
+                    <p><span data-i18n="voiceIdentity.inputActual">实际输入：</span> <span id="voice-identity-actual-device" data-i18n="voiceIdentity.inputNotOpened">尚未启用麦克风</span></p>
+                    <p id="voice-identity-input-notice" role="status" aria-live="polite"></p>
+                    <label for="voice-identity-gain" data-i18n="voiceIdentity.inputGain">输入增益</label>
+                    <input type="range" id="voice-identity-gain" min="-5" max="25" step="1" value="0">
+                    <output id="voice-identity-gain-value" for="voice-identity-gain">0 dB</output>
+                    <meter id="voice-identity-meter" min="0" max="1" value="0" data-i18n-aria="voiceIdentity.inputVolume" aria-label="输入音量"></meter>
+                    <p data-i18n="voiceIdentity.inputTestHelp">先试录三秒，检查处理后的有效人声。试录前会停止关联会话的录音；不会自动恢复。</p>
+                    <button type="button" class="primary-button" id="voice-identity-test" data-i18n="voiceIdentity.inputTest">启用麦克风并试录</button>
+                    <button type="button" class="secondary-button" id="voice-identity-test-cancel" data-i18n="voiceIdentity.cancel" hidden>取消录入</button>
+                    <p id="voice-identity-test-result" role="status" aria-live="polite"></p>
+                </section>
+
+                <section class="enrollment-card" id="voice-identity-enrollment"
+                    aria-labelledby="voice-identity-step-title">
+                    <span class="card-cat-paw card-cat-paw-top" aria-hidden="true">
+                        <svg viewBox="0 0 44 36" focusable="false">
+                            <ellipse cx="22" cy="24" rx="10" ry="8"></ellipse>
+                            <circle cx="9" cy="12" r="4"></circle>
+                            <circle cx="18" cy="7" r="4"></circle>
+                            <circle cx="28" cy="7" r="4"></circle>
+                            <circle cx="37" cy="12" r="4"></circle>
+                        </svg>
+                    </span>
+                    <div class="enrollment-copy">
+                        <div class="segment-progress" id="voice-identity-progress" role="list"
+                            data-i18n-aria="voiceIdentity.progressLabel" aria-label="四段录入进度">
+                            <span role="listitem" data-step="1" aria-label="第 1 段">1</span>
+                            <span role="listitem" data-step="2" aria-label="第 2 段">2</span>
+                            <span role="listitem" data-step="3" aria-label="第 3 段">3</span>
+                            <span role="listitem" data-step="4" aria-label="第 4 段">4</span>
+                        </div>
+                        <p class="step-count" id="voice-identity-step-count" aria-live="polite"
+                            aria-atomic="true"></p>
+                        <p class="eyebrow" id="voice-identity-eyebrow"
+                            data-i18n="voiceIdentity.localOnly">发送到此页面使用的 N.E.K.O. 服务处理</p>
+                        <h2 id="voice-identity-step-title" tabindex="-1"
+                            data-i18n="voiceIdentity.privacyTitle">录入 3 段声纹和 1 段验证语音</h2>
+                        <p id="voice-identity-step-body" class="enrollment-help" data-i18n="voiceIdentity.privacyBody">
+                            使用同一麦克风和正常音量完成三段参考录音，再完成一段验证录音。语音会发送到此页面使用的 N.E.K.O. 服务进行处理，验证成功后才会加密保存声纹。
+                        </p>
+                        <div id="voice-identity-result" class="verification-result" hidden
+                            role="status" aria-live="polite" aria-atomic="true"
+                            aria-labelledby="voice-identity-result-title">
+                            <div class="verification-success-icon" aria-hidden="true">✓</div>
+                            <h2 id="voice-identity-result-title"
+                                data-i18n="voiceIdentity.verificationResultTitle">声纹验证通过</h2>
+                            <p class="verification-score-label"
+                                data-i18n="voiceIdentity.verificationScoreLabel">最低声纹相似度</p>
+                            <strong id="voice-identity-match-percent" class="verification-score">—</strong>
+                            <p id="voice-identity-score-help" class="verification-score-help"
+                                data-i18n="voiceIdentity.verificationScoreHelp">
+                                结果取本次验证录音三个检查点中的最低值，不代表身份认证准确率。
+                            </p>
+                            <p id="voice-identity-result-status" class="verification-result-status"
+                                data-i18n="voiceIdentity.verificationSavedStatus">
+                                Owner 声纹已保存，声纹激活已开启。
+                            </p>
+                        </div>
+                        <blockquote id="voice-identity-prompt" class="voice-prompt" hidden
+                            role="status" aria-live="polite" aria-atomic="true"></blockquote>
+                    </div>
+                    <div class="capture-status" id="voice-identity-capture-status" hidden role="status"
+                        aria-live="polite" aria-atomic="true">
+                        <span class="record-icon" aria-hidden="true"></span>
+                        <span id="voice-identity-capture-label" data-i18n="voiceIdentity.recording">正在录音…</span>
+                        <span id="voice-identity-voice-state" class="voice-activity-state"
+                            data-i18n="voiceIdentity.voiceWaiting">等待说话</span>
+                            <span class="recording-timer" id="voice-identity-timer" aria-hidden="true"></span>
+                    </div>
+                    <p class="enrollment-rule-note" id="voice-identity-rule-note" data-i18n="voiceIdentity.recordingRule">
+                        每段自然说满约 1.5 秒即可保存；系统会自动补齐分析所需时长（前 3 段补齐到 3 秒，第 4 段补齐到 5 秒）。
+                    </p>
+                    <div class="enrollment-actions" id="voice-identity-actions">
                         <button type="button" class="primary-button" id="voice-identity-start"
-                            data-i18n="voiceIdentity.enrollAndEnable">录入并启用声纹</button>
+                            data-i18n="voiceIdentity.enrollAndEnable">开始录入</button>
+                        <button type="button" class="primary-button" id="voice-identity-finish" hidden
+                            data-i18n="voiceIdentity.finish">说完了，保存</button>
+                        <button type="button" class="primary-button" id="voice-identity-next" hidden
+                            data-i18n="voiceIdentity.nextSegment">开始下一段</button>
                         <button type="button" class="secondary-button" id="voice-identity-cancel" hidden
                             data-i18n="voiceIdentity.cancel">取消录入</button>
                     </div>
+                    <p id="voice-identity-message" class="enrollment-message"
+                        role="status" aria-live="polite" aria-atomic="true"></p>
+                    <button type="button" class="secondary-button retry-connection" id="voice-identity-retry"
+                        data-i18n="voiceIdentity.retryConnection" hidden>重试连接</button>
                 </section>
 
                 <section class="profile-card" id="voice-identity-profile-controls"
                     aria-labelledby="voice-filter-title" hidden>
-                    <div class="profile-card-heading">
-                        <h2 id="voice-filter-title" data-i18n="voiceIdentity.filterLabel">声纹激活语音对话</h2>
-                        <button type="button" class="profile-card-toggle"
-                            id="voice-identity-profile-toggle"
-                            aria-expanded="false"
-                            aria-controls="voice-identity-profile-details">展开</button>
-                    </div>
-                    <div id="voice-identity-profile-details" hidden>
-                        <div class="filter-row">
+                    <div class="filter-row" id="voice-identity-filter-controls">
+                        <div>
+                            <h2 id="voice-filter-title" data-i18n="voiceIdentity.filterLabel">Owner 声纹过滤</h2>
                             <p id="voice-filter-help" data-i18n="voiceIdentity.filterHelp">
                                 声纹验证通过后激活对话；若已配置本地唤醒词且检测器就绪，命中也可直接激活，无需确认说话人身份。激活期间可直接接话，也会接收附近其他人的声音；连续 30 秒无人声后重新等待激活。
                             </p>
-                            <label class="switch">
-                                <input type="checkbox" id="voice-identity-filter"
-                                    aria-labelledby="voice-filter-title"
-                                    aria-describedby="voice-filter-help">
-                                <span class="switch-track" aria-hidden="true"></span>
-                            </label>
                         </div>
-                        <div class="profile-actions">
-                            <button type="button" class="secondary-button" id="voice-identity-reenroll"
-                                data-i18n="voiceIdentity.reenroll">重新录入</button>
-                            <button type="button" class="danger-button" id="voice-identity-delete"
-                                data-i18n="voiceIdentity.delete">删除声纹</button>
-                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="voice-identity-filter"
+                                aria-labelledby="voice-filter-title"
+                                aria-describedby="voice-filter-help">
+                            <span class="switch-track" aria-hidden="true"></span>
+                        </label>
+                    </div>
+                    <div class="profile-actions" id="voice-identity-profile-actions">
+                        <button type="button" class="secondary-button" id="voice-identity-reenroll"
+                            data-i18n="voiceIdentity.reenroll">重新录入</button>
+                        <button type="button" class="danger-button" id="voice-identity-delete"
+                            data-i18n="voiceIdentity.delete">删除声纹</button>
                     </div>
                 </section>
-                <p id="voice-identity-message" class="enrollment-message"
-                    role="status" aria-live="polite" aria-atomic="true"></p>
             </div>
         </div>
     </main>

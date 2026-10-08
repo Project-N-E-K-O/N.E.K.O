@@ -606,6 +606,20 @@
         return result;
     }
 
+    function getExportReaction(message) {
+        var reaction = message && message.reaction;
+        if (!message || message.role !== 'user' || message.status === 'sending' || message.status === 'failed'
+                || !reaction || typeof reaction.emoji !== 'string' || !reaction.emoji
+                || typeof reaction.author !== 'string' || !reaction.author.trim()) return null;
+        return { emoji: reaction.emoji, author: reaction.author.trim() };
+    }
+
+    function getExportReactionLabel(entry) {
+        return entry.reaction ? translateText(
+            'chat.messageReaction', '{{author}} reacted with {{emoji}}', entry.reaction
+        ) : '';
+    }
+
     function buildExportEntry(message) {
         var role = getRoleLabel(message.role);
         var author = message.author ? String(message.author) : '';
@@ -626,6 +640,7 @@
             time: time,
             header: header,
             rawRole: message.role,
+            reaction: getExportReaction(message),
             avatarUrl: avatarUrl,
             avatarLabel: avatarLabel,
             textContent: extractBlocksPlainText(message),
@@ -728,7 +743,15 @@
                 lines.push('## ' + headerParts.join(' · '));
             }
             if (entry.markdownContent) {
-                lines.push(entry.markdownContent);
+                // A truncated reply must not absorb the next message or reaction.
+                lines.push(closeUnfinishedMarkdownFence(entry.markdownContent));
+            }
+            var reactionLabel = getExportReactionLabel(entry);
+            if (reactionLabel) {
+                // Keep character names literal in Markdown instead of creating markup.
+                reactionLabel = reactionLabel.replace(/\\/g, '\\\\')
+                    .replace(/([`*_\[\]<>])/g, '\\$1').replace(/[\r\n]+/g, ' ');
+                lines.push('', '> ' + reactionLabel);
             }
             lines.push('');
         });
@@ -742,22 +765,69 @@
 
     // ======================== Markdown → HTML (preview) ========================
 
+    function getOpeningCodeFence(line) {
+        var match = line.match(/^\s{0,3}(`{3,}|~{3,})(.*)$/);
+        return match && (match[1][0] !== '`' || match[2].indexOf('`') < 0) ? match[1] : null;
+    }
+
+    function isClosingCodeFence(line, fence) {
+        var match = line.match(/^\s{0,3}(`{3,}|~{3,})\s*$/);
+        return match && match[1][0] === fence[0] && match[1].length >= fence.length;
+    }
+
+    function closeUnfinishedMarkdownFence(content) {
+        var fence = null;
+        String(content).split(/\r?\n/).forEach(function (line) {
+            if (fence) {
+                if (isClosingCodeFence(line, fence)) fence = null;
+            } else fence = getOpeningCodeFence(line);
+        });
+        return fence ? content + '\n' + fence : content;
+    }
+
     function renderInlineMarkdown(text) {
         var source = String(text || '');
+        // Protect escaped punctuation until markup parsing is finished, then
+        // restore it as HTML-escaped text. Choose a marker absent from the input.
+        var marker = '\u0000';
+        while (source.indexOf(marker) >= 0) marker += '\u0000';
+        var escaped = [];
+        // Code spans contain literal backslashes and Markdown punctuation.
+        // Match an equally sized closing delimiter before processing escapes.
+        source = source.replace(/(`+)([\s\S]*?)(\1)(?!`)/g, function (match, ticks, content, closing, offset) {
+            if ((offset > 0 && source.charAt(offset - 1) === '`') || content.charAt(0) === '`') return match;
+            var backslashes = 0;
+            for (var cursor = offset - 1; cursor >= 0 && source.charAt(cursor) === '\\'; cursor -= 1) backslashes += 1;
+            if (backslashes % 2) return match;
+            escaped.push({ html: '<code>' + escapeHtml(content) + '</code>', literal: escapeHtml(match) });
+            return marker + (escaped.length - 1) + ';';
+        });
+        source = source.replace(/\\([\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e])/g, function (_, literal) {
+            escaped.push(escapeHtml(literal));
+            return marker + (escaped.length - 1) + ';';
+        });
+        function restoreEscapes(value, literalCode) {
+            return value.replace(new RegExp(marker + '(\\d+);', 'g'), function (_, index) {
+                var item = escaped[Number(index)];
+                return typeof item === 'string' ? item : (literalCode ? item.literal : item.html);
+            });
+        }
         source = escapeHtml(source);
+        // Validate the final destination; placeholders must not hide its protocol.
         // images first (they look like links) – only emit src/href for safe URLs
         source = source.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function (_, alt, url) {
-            var safeUrl = isSafeUrl(url) ? url : '';
+            var destination = restoreEscapes(url, true);
+            var safeUrl = isSafeUrl(destination) ? destination : '';
             return '<img src="' + safeUrl + '" alt="' + alt + '">';
         });
         source = source.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (_, label, url) {
-            if (!isSafeUrl(url)) return label;
-            return '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+            var destination = restoreEscapes(url, true);
+            if (!isSafeUrl(destination)) return label;
+            return '<a href="' + destination + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
         });
-        source = source.replace(/`([^`]+)`/g, '<code>$1</code>');
         source = source.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
         source = source.replace(/(^|[^\*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-        return source;
+        return restoreEscapes(source);
     }
 
     function renderMarkdownAsHtml(markdownContent) {
@@ -765,6 +835,14 @@
         var html = [];
         var paragraphBuffer = [];
         var inList = false;
+        var codeFence = null;
+        var codeLines = [];
+
+        function flushCode() {
+            html.push('<pre><code>' + escapeHtml(codeLines.join('\n')) + '</code></pre>');
+            codeLines = [];
+            codeFence = null;
+        }
 
         function flushParagraph() {
             if (paragraphBuffer.length === 0) return;
@@ -777,6 +855,17 @@
 
         for (var i = 0; i < lines.length; i += 1) {
             var line = lines[i];
+            if (codeFence) {
+                if (isClosingCodeFence(line, codeFence)) flushCode();
+                else codeLines.push(line);
+                continue;
+            }
+            var openingFence = getOpeningCodeFence(line);
+            if (openingFence) {
+                flushParagraph(); closeList();
+                codeFence = openingFence;
+                continue;
+            }
             if (line.trim() === '') { flushParagraph(); closeList(); continue; }
             var headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
             if (headingMatch) {
@@ -802,6 +891,7 @@
         }
         flushParagraph();
         closeList();
+        if (codeFence) flushCode();
 
         return html.join('\n');
     }
@@ -1012,6 +1102,7 @@
                 avatarLabel: entry.avatarLabel,
                 avatarImage: avatarImage,
                 textContent: entry.textContent,
+                reaction: entry.reaction,
                 media: loaded
             });
             if ((i + 1) % 2 === 0) await waitForNextPaint();
@@ -1278,6 +1369,16 @@
                         widthUsed = Math.max(widthUsed, ctx.measureText(line).width);
                     });
                 }
+            });
+        }
+
+        var reactionLabel = getExportReactionLabel(entry);
+        if (reactionLabel) {
+            var reactionLines = wrapTextLines(ctx, reactionLabel, maxWidth);
+            segments.push({ kind: 'note', lines: reactionLines, lineHeight: bodyLineHeight });
+            height += reactionLines.length * bodyLineHeight + 4;
+            reactionLines.forEach(function (line) {
+                widthUsed = Math.max(widthUsed, ctx.measureText(line).width);
             });
         }
 
@@ -2291,6 +2392,11 @@
                     }
                 });
             }
+            var reactionLabel = getExportReactionLabel(entry);
+            if (reactionLabel) {
+                measureCtx.font = noteFont;
+                noteLines = noteLines.concat(wrapTextLines(measureCtx, reactionLabel, textMaxWidth));
+            }
             var imagesHeight = images.reduce(function (sum, image) {
                 return sum + image.height + 12;
             }, 0);
@@ -2581,7 +2687,8 @@
         var locale = document.documentElement.lang || '';
         var theme = isDarkTheme() ? 'dark' : 'light';
         var signature = (entries || []).map(function (entry) {
-            return entry.id + ':' + (entry.textContent || '').length + ':' + (entry.mediaDescriptors ? entry.mediaDescriptors.length : 0);
+            return entry.id + ':' + (entry.textContent || '').length + ':' + (entry.mediaDescriptors ? entry.mediaDescriptors.length : 0)
+                + ':' + JSON.stringify(entry.reaction || null);
         }).join('|');
         var imageStyleId = currentFormatId === 'image' ? getCurrentImageExportStyle().id : '';
         var imageFormatId = currentFormatId === 'image' ? getCurrentImageExportFormat().id : '';
@@ -3062,6 +3169,20 @@
             state.previewModal = createPreviewModal(doc);
         }
         return state.previewModal;
+    }
+
+    function refreshMessageReaction(messageId) {
+        var latest = getReactMessages().find(function (message) { return message.id === messageId; });
+        if (!latest) return;
+        var reaction = getExportReaction(latest);
+        state.allMessages = state.allMessages.map(function (message) {
+            return message.id === messageId
+                ? Object.assign({}, message, { reaction: reaction, status: latest.status }) : message;
+        });
+        if (state.selectedIds && state.selectedIds.has(messageId)
+                && state.previewModal && !state.previewModal.panel.hidden) {
+            schedulePreviewRender();
+        }
     }
 
     function getSelectedEntries() {
@@ -3787,7 +3908,7 @@
                 showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
                 return;
             }
-            state.allMessages = messages;
+            state.allMessages = getReactMessages();
             state.selectedIds = new Set();
             clearPreviewCache();
             await openPreviewModal(previewWindow);
@@ -3848,6 +3969,7 @@
     window.appChatExport = {
         open: handleExportButtonClick,
         close: closePreviewModal,
+        refreshMessageReaction: refreshMessageReaction,
         getCompactInlineOptions: getCompactInlineExportOptions,
         buildCompactInlinePreview: buildCompactInlinePreview,
         copyCompactInlineSelection: copyCompactInlineSelection,

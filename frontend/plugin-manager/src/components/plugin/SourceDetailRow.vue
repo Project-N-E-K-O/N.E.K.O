@@ -159,7 +159,6 @@ const installedAtDisplay = computed(() => {
  * two inline strips read as members of the same family. Any change to
  * the metrics bar's styling should be mirrored here. */
 .source-detail-bar {
-  will-change: height, opacity, margin-top;
   margin-top: 8px;
 }
 

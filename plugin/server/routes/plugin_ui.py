@@ -30,14 +30,20 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+from utils.deployment import has_forwarding_metadata
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins.ui_query_service import PluginUiQueryService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.mutation_auth import PluginPageMutationGuardedRoute
 
 router = APIRouter(tags=["plugin-ui"])
+# Plugin pages (including published market plugins) call these routes; the
+# browser token stays optional so they keep working. See
+# mutation_auth.require_plugin_page_mutation_access before tightening this.
+mutation_router = APIRouter(tags=["plugin-ui"], route_class=PluginPageMutationGuardedRoute)
 logger = get_logger("server.routes.plugin_ui")
 plugin_ui_query_service = PluginUiQueryService()
 
@@ -69,11 +75,23 @@ _SSE_RUNS_BRIDGE_SUB = None
 _SSE_RUN_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "canceled", "timeout"})
 
 
-def _sse_queue_put_best_effort(queue: asyncio.Queue, frame: str) -> None:
+def _sse_queue_put_best_effort(queue: asyncio.Queue, frame: str) -> bool:
+    """往一个 SSE 客户端队列塞一帧；满了丢弃**最旧**、让新帧入队。
+
+    慢客户端读不过来时，保留的是**最新**的帧（丢队首最旧），符合「实时流」直觉 ——
+    而不是丢刚产生的新帧。``asyncio.Queue`` 为 FIFO，``get_nowait()`` 取/删队首。
+    返回 True 表示该帧最终已入队（直接入队，或 drop-oldest 后入队）。
+    """
     try:
         queue.put_nowait(frame)
+        return True
     except asyncio.QueueFull:
-        pass  # 慢客户端丢帧，SSE 本来就是尽力而为
+        try:
+            queue.get_nowait()      # 丢弃最旧（队首）一条
+            queue.put_nowait(frame)  # 新帧入队
+            return True
+        except (asyncio.QueueEmpty, asyncio.QueueFull):
+            return False  # 极端竞态：别崩，尽力而为
 
 
 def _bridge_runs_event(op: str, payload: object) -> None:
@@ -171,6 +189,10 @@ def _parse_push_payload(body: bytes) -> dict:
         msg_type = str(payload.get("type") or "").strip()
         if msg_type:
             result["type"] = msg_type
+        # 可选的结构化数据透传（如 qq_message 的 qq_inbound），供 SSE 订阅者直接取用。
+        data = payload.get("data")
+        if isinstance(data, (dict, list)):
+            result["data"] = data
         style = str(payload.get("style") or "").strip()
         if style in ("catgirl", "narration"):
             result["style"] = style
@@ -435,7 +457,7 @@ async def plugin_ui_sse_events(plugin_id: str):
     )
 
 
-@router.post("/plugin/{plugin_id}/ui-api/push")
+@mutation_router.post("/plugin/{plugin_id}/ui-api/push")
 async def plugin_ui_push(plugin_id: str, request: Request):
     """向插件静态 UI 的所有 SSE 客户端广播一条实时消息（后端 → 前端推送）。
 
@@ -445,8 +467,11 @@ async def plugin_ui_push(plugin_id: str, request: Request):
     鉴权：仅本机回环客户端可直接推送（不再要求共享密钥；对端非回环一律拒绝，
     伪造 Origin / 转发头均无法绕过；Origin 校验仍防跨站注入）。
     """
-    # 回环校验：只接受本机回环客户端。用直连对端 request.client.host，不信任
-    # X-Forwarded-For，避免伪造转发头绕过（非回环部署应保留其他鉴权/可信代理）。
+    # Proxy middleware may rewrite client.host to a loopback upstream address.
+    # Push is a native local operation, so reject forwarding metadata before
+    # considering that address, including when an outer proxy is loopback.
+    if has_forwarding_metadata(request.headers):
+        return JSONResponse({"ok": False, "error": "forwarded push rejected"}, status_code=403)
     client_host = request.client.host if request.client else ""
     if not _is_loopback_host(client_host):
         return JSONResponse({"ok": False, "error": "non-loopback push rejected"}, status_code=403)
@@ -470,6 +495,8 @@ async def plugin_ui_push(plugin_id: str, request: Request):
     event: dict = {"text": payload["text"]}
     if payload.get("type"):
         event["type"] = payload["type"]
+    if "data" in payload:  # 空容器([]/{})常代表清空/重置状态，按 key 存在而非 truthiness 保留
+        event["data"] = payload["data"]
     if payload.get("style"):
         event["style"] = payload["style"]
     if payload.get("placement"):
@@ -483,10 +510,8 @@ async def plugin_ui_push(plugin_id: str, request: Request):
         clients = _sse_clients.get(plugin_id, [])
         for c in list(clients):
             try:
-                c.put_nowait(data)  # 队列满（QueueFull）→ 丢弃新消息，不计入 queued
-                queued += 1
-            except asyncio.QueueFull:
-                pass  # 预期：队列满丢弃该条，不计入 queued
+                if _sse_queue_put_best_effort(c, data):  # 满了丢最旧、新帧保留
+                    queued += 1
             except Exception as exc:  # 其他运行时故障（如队列已关闭）记录，不阻断其它客户端
                 logger.warning("[plugin-ui] SSE push 队列写入失败: %s", exc)
     finally:
@@ -626,7 +651,7 @@ async def plugin_hosted_ui_context(plugin_id: str, kind: str = "panel", id: str 
     return JSONResponse(context)
 
 
-@router.post("/plugin/{plugin_id}/hosted-ui/action/{action_id}")
+@mutation_router.post("/plugin/{plugin_id}/hosted-ui/action/{action_id}")
 async def plugin_hosted_ui_action(
     plugin_id: str,
     action_id: str,
@@ -659,7 +684,7 @@ class ChatCardActionRequest(BaseModel):
     presentation: Literal["chat", "agent"] = "chat"
 
 
-@router.post("/plugin/{plugin_id}/chat-card/action/{action_id}")
+@mutation_router.post("/plugin/{plugin_id}/chat-card/action/{action_id}")
 async def plugin_chat_card_action(
     plugin_id: str, action_id: str, http_request: Request, request: ChatCardActionRequest,
 ):
@@ -680,3 +705,6 @@ async def plugin_chat_card_action(
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
     return JSONResponse(result)
+
+
+router.include_router(mutation_router)

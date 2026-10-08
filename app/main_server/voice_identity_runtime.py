@@ -31,6 +31,8 @@ from main_logic.voice_identity_service.registry import (
 )
 from main_logic.voice_identity_service.service import VoiceIdentityService
 from main_logic.voice_input.suppression import VoiceInputSuppressionController
+from main_logic.voice_input.wake_word.resources import WakeWordResources
+from main_logic.voice_identity_service.wake_resources import resolve_wake_word_resources
 from main_routers.config_router.preferences import (
     configure_voice_identity_audio_contract_callbacks,
 )
@@ -49,6 +51,7 @@ class _OwnerActivation:
     enforce: bool
     required: bool
     noise_reduction_enabled: bool | None
+    wake_resources: WakeWordResources | None = None
 
     @classmethod
     def from_borrowed(
@@ -59,6 +62,7 @@ class _OwnerActivation:
         enforce: bool,
         required: bool,
         noise_reduction_enabled: bool | None,
+        wake_resources: WakeWordResources | None = None,
     ) -> "_OwnerActivation":
         return cls(
             copy.copy(profile),
@@ -66,6 +70,7 @@ class _OwnerActivation:
             enforce,
             required,
             noise_reduction_enabled,
+            wake_resources,
         )
 
     def factory_for(self, manager) -> OwnerVoiceSessionActivationFactory:
@@ -75,6 +80,7 @@ class _OwnerActivation:
             activation_generation=self.generation,
             enforce=self.enforce,
             noise_reduction_enabled=self.noise_reduction_enabled,
+            wake_resources=self.wake_resources,
         )
 
     def close(self) -> None:
@@ -447,6 +453,11 @@ class OwnerVoiceRuntimeRegistry:
         async with self._activation_request_lock(request_revision):
             if self._closed:
                 return VoiceIdentityActivationResult.RUNTIME_DEGRADED
+            wake_resources = None
+            if profile is not None and self._enforce:
+                wake_resources = await asyncio.to_thread(resolve_wake_word_resources)
+                if self._closed or request_revision != self._authority_request_revision:
+                    return VoiceIdentityActivationResult.RUNTIME_DEGRADED
             try:
                 next_activation = (
                     None
@@ -457,6 +468,7 @@ class OwnerVoiceRuntimeRegistry:
                         enforce=self._enforce,
                         required=required,
                         noise_reduction_enabled=noise_reduction_enabled,
+                        wake_resources=wake_resources,
                     )
                 )
             except Exception:
@@ -665,6 +677,13 @@ class OwnerVoiceRuntimeRegistry:
 
     @staticmethod
     def _manager_activation_result(manager) -> VoiceIdentityActivationResult:
+        # Session startup publishes ``is_active`` before the microphone route
+        # has finished resolving.  During that bounded window Core keeps the
+        # route fail-closed as ``blocked`` while ASR is connecting.  Treat that
+        # state as a runtime transition so the control plane can retry and the
+        # UI does not report a permanently unsupported route.
+        if OwnerVoiceRuntimeRegistry._manager_route_is_starting(manager):
+            return VoiceIdentityActivationResult.RUNTIME_DEGRADED
         if OwnerVoiceRuntimeRegistry._manager_is_inactive_blocked(manager):
             return VoiceIdentityActivationResult.READY
         if bool(getattr(manager, "_voice_session_activation_degraded", False)):
@@ -682,6 +701,24 @@ class OwnerVoiceRuntimeRegistry:
         if route_mode is not None and route_mode not in {"native", "independent"}:
             return VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
         return VoiceIdentityActivationResult.READY
+
+    @staticmethod
+    def _manager_route_is_starting(manager) -> bool:
+        """Return whether a blocked active route is still resolving.
+
+        ``LLMSessionManager`` exposes ``is_starting`` as the public state.  The
+        counter fallback keeps this gate correct for managers that are between
+        lifecycle phases and have not yet published the property transition.
+        A starting route remains fail-closed; this helper only changes the
+        reported reason from unsupported to retryable runtime degradation.
+        """
+
+        if getattr(manager, "_asr_route_mode", None) != "blocked":
+            return False
+        if bool(getattr(manager, "is_starting", False)):
+            return True
+        starting_count = getattr(manager, "_starting_session_count", 0)
+        return type(starting_count) is int and starting_count > 0
 
     @staticmethod
     async def _set_manager_activation_factory(
@@ -1392,9 +1429,9 @@ def install_voice_identity_runtime(config_manager) -> VoiceIdentityService:
         .lower()
     )
     runtime_mode = (
-        configured_mode if configured_mode in {"off", "shadow", "enforce"} else "off"
+        configured_mode if configured_mode in {"off", "enforce"} else "off"
     )
-    if configured_mode not in {"off", "shadow", "enforce"}:
+    if configured_mode not in {"off", "enforce"}:
         logger.warning(
             "Unsupported NEKO_VOICE_IDENTITY_MODE value %r; Owner voice "
             "filtering is disabled",

@@ -17,6 +17,7 @@ const VOICE_CLONE_PROVIDER_REGISTRY_KEYS = Object.freeze({
     mimo: 'mimo',
     vllm_omni: 'vllm_omni',
     doubao_tts: 'doubao_tts',
+    glm_tts: 'glm',
 });
 const VOICE_CLONE_RESTRICTED_REGISTRY_KEYS = new Set([
     'qwen_intl',
@@ -31,6 +32,7 @@ const VOICE_CLONE_PROVIDER_KEY_FIELDS = Object.freeze([
     ['elevenlabs', 'assistApiKeyElevenlabs'],
     ['mimo', 'assistApiKeyMimo'],
     ['doubao_tts', 'assistApiKeyDoubaoTts'],
+    ['glm_tts', 'assistApiKeyGlm'],
 ]);
 const voiceCloneProviderRestrictionState = {
     loaded: false,
@@ -1031,6 +1033,7 @@ function updateVoiceCloneProviderNoticeText(noticeDiv, provider) {
         'mimo': 'voice.mimoApiRequired',
         'vllm_omni': 'voice.vllmOmniNotice',
         'doubao_tts': 'voice.doubaoTtsApiRequired',
+        'glm_tts': 'voice.glmTtsApiRequired',
     };
     const fallbackMap = {
         'cosyvoice_intl': '请先在 API 设置中填写阿里国际版 API Key',
@@ -1038,6 +1041,7 @@ function updateVoiceCloneProviderNoticeText(noticeDiv, provider) {
         'mimo': '请先在 API 设置中填写 MiMo API Key',
         'vllm_omni': '本地 vLLM-Omni 服务，无需 API Key',
         'doubao_tts': 'Please save a Doubao Speech (Volcengine) API Key in the API Key Book.',
+        'glm_tts': '请先在 API 设置中填写智谱 GLM API Key',
     };
     const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
     span.setAttribute('data-i18n', i18nKey);
@@ -1562,6 +1566,7 @@ function updateVoiceDesignHint(provider) {
 // MiMo 只支持本地文件克隆：它把参考样本存在本地、不走 /voice_clone_direct（后端
 // valid_providers 不含 mimo，直链会直接 TTS_PROVIDER_INVALID）。选中 MiMo 时禁用直链方式。
 function isDirectLinkUnsupportedProvider(provider) {
+    // glm_tts 已支持直链（后端 /voice_clone_direct 下载音频后走两步注册），不再禁用。
     return provider === 'mimo' || provider === 'vllm_omni' || provider === 'doubao_tts';
 }
 
@@ -2321,21 +2326,41 @@ function updateVoicePreviewSessionState(session, state) {
 function finishVoicePreviewSession(session) {
     if (activeVoicePreviewSessions.get(session.voiceId) !== session) return;
     activeVoicePreviewSessions.delete(session.voiceId);
+    if (session.controller) session.controller.abort();
+    if (session.audio) {
+        const audio = session.audio;
+        session.audio = null;
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.load();
+    }
     session.buttons.forEach(btn => setVoicePreviewButtonState(btn, 'idle'));
     session.buttons.clear();
+}
+
+function voicePreviewCacheIdentity(options) {
+    return options.origin === 'import'
+        ? JSON.stringify([options.overwrite_operation_id || '', options.overwrite_status || '', options.remote_revision || ''])
+        : '';
 }
 
 async function playPreview(voiceId, btn, options = {}) {
     if (btn.disabled) return;
 
     const voiceIdKey = String(voiceId);
+    const cacheIdentity = voicePreviewCacheIdentity(options);
     const existingSession = activeVoicePreviewSessions.get(voiceIdKey);
-    if (existingSession) {
+    if (existingSession && existingSession.cacheIdentity === cacheIdentity) {
         attachVoicePreviewButton(voiceIdKey, btn);
         return;
     }
+    if (existingSession) finishVoicePreviewSession(existingSession);
     const session = {
         voiceId: voiceIdKey,
+        cacheIdentity,
+        imported: options.origin === 'import',
+        controller: null,
+        audio: null,
         state: 'loading',
         buttons: new Set(),
     };
@@ -2345,14 +2370,17 @@ async function playPreview(voiceId, btn, options = {}) {
     try {
         const storageKey = `voice_preview_${voiceId}`;
         const previewLanguage = getVoicePreviewLanguage();
-        const cachedPreview = localStorage.getItem(storageKey);
+        let cachedPreview = null;
+        try { cachedPreview = localStorage.getItem(storageKey); }
+        catch (error) { console.warn('Failed to read preview from localStorage:', error); }
         let audioSrc = '';
         if (cachedPreview) {
             try {
                 const cachedData = JSON.parse(cachedPreview);
                 if (
                     cachedData
-                    && cachedData.version === 2
+                    && cachedData.version === (cacheIdentity ? 3 : 2)
+                    && (!cacheIdentity || cachedData.cacheIdentity === cacheIdentity)
                     && cachedData.language === previewLanguage
                     && typeof cachedData.audioSrc === 'string'
                     && cachedData.audioSrc
@@ -2366,10 +2394,10 @@ async function playPreview(voiceId, btn, options = {}) {
 
         if (!audioSrc) {
             // 如果本地没有缓存，则从服务器获取
-            // 保留 Voice Clone 原有的 voice-id 判定；Voice Design 仅通过
-            // source/design id 追加到同一实时合成超时档位。
+            // 导入音色使用本地 UUID，不能只靠远端 ID 的 clone 字样判断。
             const voiceSource = String(options.source || '').trim().toLowerCase();
-            const isCloneVoice = typeof voiceId === 'string' && voiceId.includes('-clone-');
+            const isCloneVoice = voiceSource === 'clone'
+                || (typeof voiceId === 'string' && voiceId.includes('-clone-'));
             const isDesignVoice = voiceSource === 'design'
                 || (typeof voiceId === 'string' && voiceId.includes('-design-'));
             const isRealtimeRegisteredVoice = isCloneVoice || isDesignVoice;
@@ -2378,8 +2406,10 @@ async function playPreview(voiceId, btn, options = {}) {
             let lastTtsError = null;
             let response = null;
             for (let attempt = 1; attempt <= ttsMaxAttempts; attempt += 1) {
+                if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
                 response = null;
                 const ctrl = new AbortController();
+                session.controller = ctrl;
                 const tid = setTimeout(() => ctrl.abort(), ttsTimeoutMs);
                 try {
                     response = await fetch(
@@ -2395,11 +2425,14 @@ async function playPreview(voiceId, btn, options = {}) {
                     if (attempt >= ttsMaxAttempts) break;
                 } finally {
                     clearTimeout(tid);
+                    if (session.controller === ctrl) session.controller = null;
                 }
+                if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
                 await sleepVoiceCloneLoaderRetry(VOICE_CLONE_LOADER_FETCH_BACKOFF_MS * attempt);
             }
             if (!response) throw lastTtsError || new Error('请求失败');
             const { data, nonJson, text } = await safeReadResponse(response);
+            if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
             if (!response.ok) {
                 if (data && (data.error || data.detail)) {
                     throw new Error(data.error || data.detail);
@@ -2415,7 +2448,8 @@ async function playPreview(voiceId, btn, options = {}) {
                 // 保存到 localStorage
                 try {
                     localStorage.setItem(storageKey, JSON.stringify({
-                        version: 2,
+                        version: cacheIdentity ? 3 : 2,
+                        ...(cacheIdentity ? { cacheIdentity } : {}),
                         language: previewLanguage,
                         audioSrc
                     }));
@@ -2429,8 +2463,9 @@ async function playPreview(voiceId, btn, options = {}) {
             }
         }
 
-        if (audioSrc) {
+        if (audioSrc && activeVoicePreviewSessions.get(voiceIdKey) === session) {
             const audio = new Audio(audioSrc);
+            session.audio = audio;
             let playbackFinished = false;
             const restorePreviewButton = () => {
                 if (playbackFinished) return;
@@ -2444,6 +2479,7 @@ async function playPreview(voiceId, btn, options = {}) {
             try {
                 await audio.play();
             } catch (e) {
+                if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
                 restorePreviewButton();
                 console.error('Audio play error:', e);
                 const errorMsg = e?.message || e?.toString();
@@ -2458,6 +2494,7 @@ async function playPreview(voiceId, btn, options = {}) {
             }
         }
     } catch (error) {
+        if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
         console.error('Preview error:', error);
         const errorMsg = error?.message || error?.toString();
         showVoicePreviewErrorNotice(
@@ -2468,7 +2505,9 @@ async function playPreview(voiceId, btn, options = {}) {
 }
 
 // 加载音色列表
+let voiceListLoadGeneration = 0;
 async function loadVoices() {
+    const generation = ++voiceListLoadGeneration;
     const container = document.getElementById('voice-list-container');
     const refreshBtn = document.getElementById('refresh-voices-btn');
 
@@ -2494,8 +2533,10 @@ async function loadVoices() {
             console.warn('获取当前角色音色失败:', error);
             return '';
         });
+        if (generation !== voiceListLoadGeneration) return;
         const response = await fetchVoiceCloneLoaderResponse('/api/characters/voices');
         const { data, nonJson, text } = await safeReadResponse(response);
+        if (generation !== voiceListLoadGeneration) return;
         if (!response.ok) {
             if (data && (data.error || data.detail)) {
                 throw new Error(data.error || data.detail);
@@ -2504,6 +2545,15 @@ async function loadVoices() {
         }
         if (nonJson) {
             throw new Error(buildNonJsonError(response, text));
+        }
+
+        for (const session of activeVoicePreviewSessions.values()) {
+            if (!session.imported) continue;
+            const voice = data.voices && data.voices[session.voiceId];
+            if (!voice || voice.availability === 'unavailable' ||
+                voicePreviewCacheIdentity(voice) !== session.cacheIdentity) {
+                finishVoicePreviewSession(session);
+            }
         }
 
         if ((!data.voices || Object.keys(data.voices).length === 0) &&
@@ -2600,16 +2650,16 @@ async function loadVoices() {
         });
 
         // 创建音色列表项
-        voicesArray.forEach(({ voiceId, prefix, created_at, source, provider }) => {
+        voicesArray.forEach(({ voiceId, prefix, display_name, remote_voice_id, created_at, source, provider, origin, can_overwrite, availability, overwrite_status, overwrite_operation_id, remote_revision }) => {
             const item = document.createElement('div');
             item.className = 'voice-list-item';
             item.dataset.voiceId = voiceId;
             item.tabIndex = 0;
             item.setAttribute('role', 'button');
-            item.setAttribute('aria-label', window.t ? window.t('voice.applyVoiceAria', { name: prefix || voiceId }) : `应用音色 ${prefix || voiceId}`);
+            item.setAttribute('aria-label', window.t ? window.t('voice.applyVoiceAria', { name: display_name || prefix || remote_voice_id || voiceId }) : `应用音色 ${display_name || prefix || remote_voice_id || voiceId}`);
             markSelectedVoiceItem(item, voiceId === currentVoiceId);
 
-            const voiceName = prefix || voiceId;
+            const voiceName = display_name || prefix || remote_voice_id || voiceId;
             const displayName = voiceName.length > 30 ? voiceName.substring(0, 30) + '...' : voiceName;
 
             let dateStr = '';
@@ -2641,10 +2691,15 @@ async function loadVoices() {
             previewImg.alt = '';
             previewBtn.appendChild(previewImg);
             previewBtn.appendChild(document.createTextNode(previewText));
+            const previewOptions = { source, provider, origin, overwrite_status, overwrite_operation_id, remote_revision };
+            const previousPreview = activeVoicePreviewSessions.get(String(voiceId));
+            if (previousPreview && previousPreview.cacheIdentity !== voicePreviewCacheIdentity(previewOptions)) {
+                finishVoicePreviewSession(previousPreview);
+            }
             attachVoicePreviewButton(voiceId, previewBtn);
             previewBtn.onclick = (event) => {
                 event.stopPropagation();
-                playPreview(voiceId, previewBtn, { source, provider });
+                playPreview(voiceId, previewBtn, previewOptions);
             };
 
             const deleteBtn = document.createElement('button');
@@ -2663,6 +2718,34 @@ async function loadVoices() {
             voiceActions.appendChild(previewBtn);
             voiceActions.appendChild(deleteBtn);
 
+            const available = !availability || availability === 'available';
+            if (!available) {
+                previewBtn.disabled = true;
+                item.setAttribute('aria-disabled', 'true');
+            }
+            const updatePending = overwrite_status === 'processing' || overwrite_status === 'unknown';
+            if (can_overwrite === true && availability === 'available' && !updatePending && window.RemoteVoiceManager) {
+                const overwriteBtn = document.createElement('button');
+                overwriteBtn.type = 'button';
+                overwriteBtn.className = 'voice-preview-btn';
+                overwriteBtn.textContent = window.t ? window.t('voice.remote.overwrite') : 'Overwrite voice';
+                overwriteBtn.onclick = event => {
+                    event.stopPropagation();
+                    window.RemoteVoiceManager.openOverwrite(voiceId, { provider, remote_voice_id });
+                };
+                voiceActions.appendChild(overwriteBtn);
+            }
+            if (updatePending && availability === 'available' && window.RemoteVoiceManager) {
+                const statusBtn = document.createElement('button');
+                statusBtn.type = 'button'; statusBtn.className = 'voice-preview-btn';
+                statusBtn.textContent = window.t ? window.t('voice.remote.refreshStatus') : 'Refresh update status';
+                statusBtn.onclick = event => {
+                    event.stopPropagation();
+                    window.RemoteVoiceManager.openStatus(voiceId, { provider, remote_voice_id });
+                };
+                voiceActions.appendChild(statusBtn);
+            }
+
             const infoDiv = document.createElement('div');
             infoDiv.className = 'voice-info';
 
@@ -2673,8 +2756,15 @@ async function loadVoices() {
 
             const idDiv = document.createElement('div');
             idDiv.className = 'voice-id';
-            idDiv.textContent = `ID: ${voiceId}`;
+            idDiv.textContent = `ID: ${remote_voice_id || voiceId}`;
             infoDiv.appendChild(idDiv);
+
+            if (!available) {
+                const unavailableDiv = document.createElement('div');
+                unavailableDiv.className = 'remote-voice-warning';
+                unavailableDiv.textContent = window.t ? window.t('voice.remote.unavailable') : 'Unavailable with the current configuration';
+                infoDiv.appendChild(unavailableDiv);
+            }
 
             if (dateStr) {
                 const dateDiv = document.createElement('div');
@@ -2685,12 +2775,12 @@ async function loadVoices() {
 
             item.appendChild(infoDiv);
             item.appendChild(voiceActions);
-            item.addEventListener('click', () => applyVoiceToCurrentCharacter(voiceId, displayName, item));
+            item.addEventListener('click', () => { if (available) applyVoiceToCurrentCharacter(voiceId, displayName, item); });
             item.addEventListener('keydown', (event) => {
                 if (event.target !== item) return;
                 if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
-                    applyVoiceToCurrentCharacter(voiceId, displayName, item);
+                    if (available) applyVoiceToCurrentCharacter(voiceId, displayName, item);
                 }
             });
 
@@ -2858,6 +2948,7 @@ async function loadVoices() {
         }
 
     } catch (error) {
+        if (generation !== voiceListLoadGeneration) return;
         console.error('加载音色列表失败:', error);
         const loadErrorText = window.t ? window.t('voice.loadError') : '加载失败，请稍后重试';
         container.textContent = '';
@@ -2869,7 +2960,7 @@ async function loadVoices() {
         errorDiv.appendChild(errorSpan);
         container.appendChild(errorDiv);
     } finally {
-        if (refreshBtn) refreshBtn.disabled = false;
+        if (refreshBtn && generation === voiceListLoadGeneration) refreshBtn.disabled = false;
     }
 }
 
@@ -2919,6 +3010,8 @@ async function deleteVoice(voiceId, voiceName) {
         const data = parsed || {};
 
         if (response.ok && data.success) {
+            const session = activeVoicePreviewSessions.get(String(voiceId));
+            if (session) finishVoicePreviewSession(session);
             // 删除本地缓存的预览音频
             localStorage.removeItem(`voice_preview_${voiceId}`);
             
@@ -2938,7 +3031,9 @@ async function deleteVoice(voiceId, voiceName) {
             }
         } else {
             // 删除失败，重新加载列表以恢复事件处理器
-            const errorMsg = data.error || (window.t ? window.t('voice.deleteFailed') : '删除失败');
+            const errorMsg = data.code === 'OPERATION_IN_PROGRESS'
+                ? (window.t ? window.t('voice.remote.operationInProgress') : '音色操作尚未完成，请先刷新状态')
+                : data.error || (window.t ? window.t('voice.deleteFailed') : '删除失败');
             alert(errorMsg);
             await loadVoices();
         }

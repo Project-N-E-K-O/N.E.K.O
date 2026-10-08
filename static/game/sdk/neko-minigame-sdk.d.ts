@@ -201,7 +201,12 @@ declare namespace NekoMiniGame {
     readonly state: RuntimeState;
     readonly session: RuntimeSession;
     configure(config?: RuntimeConfiguration): Readonly<RuntimeConfiguration>;
-    reset(options?: { newSession?: boolean }): RuntimeSession;
+    /**
+     * `keepCharacter` re-applies the currently bound character synchronously, so a
+     * replay keeps its mounted Avatars without re-binding. It is not re-resolved, and
+     * every mounted or mounting Avatar must declare that same `characterName`.
+     */
+    reset(options?: { newSession?: boolean; keepCharacter?: boolean }): RuntimeSession;
     /** Resolve and bind locally before pregame requests. Omit name for current character. */
     bindCharacter(name?: string, options?: RequestOptions): Promise<AvatarCharacterDescriptor | null>;
     /**

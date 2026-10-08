@@ -61,6 +61,13 @@
             },
             "type": "object"
           },
+          "inject_to_chat": {
+            "description": {
+              "$i18n": "entries.setChatInjection.fields.inject.description",
+              "default": "Whether to inject this server's tools into the chat context"
+            },
+            "type": "boolean"
+          },
           "name": {
             "description": {
               "$i18n": "entries.addServer.fields.name.description",
@@ -462,6 +469,60 @@
       },
       "return_message": "",
       "timeout": null
+    },
+    {
+      "auto_start": false,
+      "description": {
+        "$i18n": "entries.setChatInjection.description",
+        "default": "Enable or disable injecting an MCP server's tools into the chat context."
+      },
+      "event_key": "mcp_adapter.set_chat_injection",
+      "event_type": "plugin_entry",
+      "id": "set_chat_injection",
+      "input_schema": {
+        "properties": {
+          "inject_to_chat": {
+            "description": {
+              "$i18n": "entries.setChatInjection.fields.inject.description",
+              "default": "Whether to inject this server's tools into the chat context"
+            },
+            "type": "boolean"
+          },
+          "server_name": {
+            "description": {
+              "$i18n": "entries.common.fields.server_name.description",
+              "default": "Server name"
+            },
+            "type": "string"
+          }
+        },
+        "required": [
+          "server_name",
+          "inject_to_chat"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": [
+        "message"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "message": {}
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "metadata": {},
+      "model_validate": true,
+      "name": {
+        "$i18n": "entries.setChatInjection.name",
+        "default": "Set MCP Chat Injection"
+      },
+      "return_message": "",
+      "timeout": null
     }
   ],
   "entries_config_sha256": "",
@@ -473,7 +534,8 @@
     "gateway_invoke": "gateway_invoke",
     "list_servers": "list_servers",
     "list_tools": "list_tools",
-    "remove_servers": "remove_servers"
+    "remove_servers": "remove_servers",
+    "set_chat_injection": "set_chat_injection"
   },
   "handlers": {
     "mcp_adapter.add_server": {
@@ -533,6 +595,13 @@
               "default": "Custom HTTP headers for SSE/HTTP transport"
             },
             "type": "object"
+          },
+          "inject_to_chat": {
+            "description": {
+              "$i18n": "entries.setChatInjection.fields.inject.description",
+              "default": "Whether to inject this server's tools into the chat context"
+            },
+            "type": "boolean"
           },
           "name": {
             "description": {
@@ -990,6 +1059,67 @@
       },
       "timeout": null
     },
+    "mcp_adapter.set_chat_injection": {
+      "auto_start": false,
+      "description": {
+        "$i18n": "entries.setChatInjection.description",
+        "default": "Enable or disable injecting an MCP server's tools into the chat context."
+      },
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "extra": {},
+      "id": "set_chat_injection",
+      "input_schema": {
+        "properties": {
+          "inject_to_chat": {
+            "description": {
+              "$i18n": "entries.setChatInjection.fields.inject.description",
+              "default": "Whether to inject this server's tools into the chat context"
+            },
+            "type": "boolean"
+          },
+          "server_name": {
+            "description": {
+              "$i18n": "entries.common.fields.server_name.description",
+              "default": "Server name"
+            },
+            "type": "string"
+          }
+        },
+        "required": [
+          "server_name",
+          "inject_to_chat"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": [
+        "message"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "message": {}
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "metadata": {},
+      "model_validate": true,
+      "name": {
+        "$i18n": "entries.setChatInjection.name",
+        "default": "Set MCP Chat Injection"
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
+    },
     "mcp_adapter:lifecycle:shutdown": {
       "auto_start": false,
       "description": "",
@@ -1099,6 +1229,13 @@
               "default": "Custom HTTP headers for SSE/HTTP transport"
             },
             "type": "object"
+          },
+          "inject_to_chat": {
+            "description": {
+              "$i18n": "entries.setChatInjection.fields.inject.description",
+              "default": "Whether to inject this server's tools into the chat context"
+            },
+            "type": "boolean"
           },
           "name": {
             "description": {
@@ -1555,13 +1692,76 @@
         "priority": 0
       },
       "timeout": null
+    },
+    "mcp_adapter:plugin_entry:set_chat_injection": {
+      "auto_start": false,
+      "description": {
+        "$i18n": "entries.setChatInjection.description",
+        "default": "Enable or disable injecting an MCP server's tools into the chat context."
+      },
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "extra": {},
+      "id": "set_chat_injection",
+      "input_schema": {
+        "properties": {
+          "inject_to_chat": {
+            "description": {
+              "$i18n": "entries.setChatInjection.fields.inject.description",
+              "default": "Whether to inject this server's tools into the chat context"
+            },
+            "type": "boolean"
+          },
+          "server_name": {
+            "description": {
+              "$i18n": "entries.common.fields.server_name.description",
+              "default": "Server name"
+            },
+            "type": "string"
+          }
+        },
+        "required": [
+          "server_name",
+          "inject_to_chat"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": [
+        "message"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "message": {}
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "metadata": {},
+      "model_validate": true,
+      "name": {
+        "$i18n": "entries.setChatInjection.name",
+        "default": "Set MCP Chat Injection"
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     }
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 261548,
+  "source_bytes": 330731,
   "source_files": [
     "__init__.py",
+    "chat_schema.py",
+    "config.schema.json",
     "docs/quickstart.tsx",
     "i18n/en.json",
     "i18n/es.json",
@@ -1579,5 +1779,5 @@
     "transport.py",
     "ui/panel.tsx"
   ],
-  "source_sha256": "972939fcfe63918d08225f6ad7126c366efb8302e900add7f9a43240fa2d93bb"
+  "source_sha256": "0b024de56fca6db6e652e1e0b036ea5ae5fc373988fe9281864bf8b87bf38582"
 }

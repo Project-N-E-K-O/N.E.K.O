@@ -1,12 +1,15 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
 import pytest
 from main_logic.voice_input.consumers import CoreChatTurnContext
 from main_logic.asr_client.lifecycle import VoiceTurnToken
 from main_logic.voice_turn.contracts import AsrFailureEvent, VoiceTranscriptEvent
+from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
 
 from tests.support.core_asr_harness import (
     _install_ready_lifecycle,
+    _install_active_smart_turn,
 )
 
 from tests.support.asr_fakes import (
@@ -14,6 +17,81 @@ from tests.support.asr_fakes import (
 )
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.runtime]
+
+
+@pytest.mark.parametrize("failure", ["error", "cancel"])
+@pytest.mark.parametrize("replace_probe", [False, True])
+async def test_failed_preparation_releases_only_its_own_pause_probe(failure, replace_probe):
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    arbiter = SimpleNamespace(pause_owner_alive=None)
+    runtime.session._response_arbiter = arbiter
+    newer_probe = lambda owner: True
+
+    async def prepare(**kwargs):
+        assert callable(arbiter.pause_owner_alive)
+        if replace_probe:
+            arbiter.pause_owner_alive = newer_probe
+        if failure == "cancel":
+            raise asyncio.CancelledError
+        raise RuntimeError("prepare failed")
+
+    runtime.session.prepare_external_voice_turn = prepare
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    if failure == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await runtime._prepare_core_voice_turn(token)
+    else:
+        assert await runtime._prepare_core_voice_turn(token) is False
+    assert arbiter.pause_owner_alive is (newer_probe if replace_probe else None)
+
+
+async def test_pause_owner_probe_is_fenced_to_active_asr_runtime_and_turn():
+    runtime = _Runtime()
+    arbiter = SimpleNamespace()
+    runtime.session._response_arbiter = arbiter
+    runtime.session.prepare_external_voice_turn = AsyncMock(return_value=False)
+    await _install_active_smart_turn(runtime)
+    owner = runtime.session.prepare_external_voice_turn.await_args.kwargs["turn_id"]
+    assert arbiter.pause_owner_alive(owner)
+    assert not arbiter.pause_owner_alive("another turn")
+    component = runtime._asr_runtime
+    component._asr_audio_generation += 1
+    assert not arbiter.pause_owner_alive(owner)
+    component._asr_audio_generation -= 1
+    assert arbiter.pause_owner_alive(owner)
+    component._asr_turn_prepared = False
+    assert not arbiter.pause_owner_alive(owner)
+
+
+async def test_gemini_preparation_does_not_install_unused_pause_probe():
+    runtime = _Runtime()
+    arbiter = SimpleNamespace(pause_owner_alive=None)
+    runtime.session._response_arbiter = arbiter
+    runtime.session._is_gemini = True
+    runtime.session.prepare_external_voice_turn = AsyncMock(return_value=False)
+    await _install_active_smart_turn(runtime)
+    assert arbiter.pause_owner_alive is None
+
+
+@pytest.mark.parametrize("probe_kind", ["owned", "newer", "connection"])
+async def test_successful_turn_releases_only_matching_pause_probe(probe_kind):
+    runtime = _Runtime()
+    arbiter = RealtimeResponseArbiter(AsyncMock())
+    runtime.session._response_arbiter = arbiter
+    runtime.session.prepare_external_voice_turn = AsyncMock(return_value=False)
+    await _install_active_smart_turn(runtime)
+    owner = runtime.session.prepare_external_voice_turn.await_args.kwargs["turn_id"]
+    probe = arbiter.pause_owner_alive
+    if probe_kind != "owned":
+        probe = lambda owner: True
+        if probe_kind == "newer":
+            probe.pause_owner = "newer turn"
+        arbiter.pause_owner_alive = probe
+    arbiter._ensure_worker = lambda: None
+    arbiter.pause_dispatch(owner)
+    arbiter.resume_dispatch()
+    assert arbiter.pause_owner_alive is (None if probe_kind == "owned" else probe)
 
 
 async def test_prepare_failure_releases_keyed_external_turn_pause() -> None:

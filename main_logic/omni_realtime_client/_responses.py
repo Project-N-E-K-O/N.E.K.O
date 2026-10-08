@@ -78,6 +78,24 @@ def _proactive_text_instruction(language: str, *, has_vision: bool) -> str:
 
 
 class _ResponseMixin:
+    def get_conversation_turn_type(self) -> str:
+        """Classify delivered content by its provider response ownership."""
+        if getattr(self, "_is_gemini", False):
+            owner = getattr(self, "_gemini_proactive_outcome_owner", None)
+            proactive = bool(
+                owner is not None
+                and len(owner) > 4
+                and owner[0] == getattr(self, "_connection_generation", None)
+                and owner[1] is getattr(self, "_gemini_session", None)
+                and owner[2] == getattr(self, "_proactive_inject_outcome_token", None)
+                and owner[4] == getattr(self, "_tool_scope_generation", 0)
+            )
+        else:
+            # Captured when accepted start evidence opens the response. It
+            # survives terminal bookkeeping before a final transcript flush.
+            proactive = getattr(self, "_current_response_source", None) == "proactive"
+        return "proactive_reply" if proactive else "assistant_message"
+
     def _ensure_response_arbiter(self) -> RealtimeResponseArbiter:
         arbiter = getattr(self, "_response_arbiter", None)
         if arbiter is None:
@@ -339,7 +357,9 @@ class _ResponseMixin:
         active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
         if active_pause_id == stable_turn_id:
             self._external_voice_turn_pause_id = None
-        arbiter.resume_dispatch()
+        arbiter.allow_ticket_while_paused(ticket)
+        if active_pause_id in (None, stable_turn_id):
+            arbiter.resume_dispatch()
         try:
             await ticket.sent
         except asyncio.CancelledError:
@@ -357,7 +377,7 @@ class _ResponseMixin:
                 and getattr(self, "_external_voice_turn_pause_id", None)
                 == active_pause_id
             ):
-                arbiter.pause_dispatch()
+                arbiter.pause_dispatch(active_pause_id)
         return ticket
 
     def get_multimodal_turn_delivery(self) -> MultimodalTurnDelivery:
@@ -684,7 +704,9 @@ class _ResponseMixin:
         active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
         if active_pause_id == stable_turn_id:
             self._external_voice_turn_pause_id = None
-        arbiter.resume_dispatch()
+        arbiter.allow_ticket_while_paused(ticket)
+        if active_pause_id in (None, stable_turn_id):
+            arbiter.resume_dispatch()
         try:
             await ticket.sent
         except asyncio.CancelledError:
@@ -697,7 +719,7 @@ class _ResponseMixin:
                 and getattr(self, "_external_voice_turn_pause_id", None)
                 == active_pause_id
             ):
-                arbiter.pause_dispatch()
+                arbiter.pause_dispatch(active_pause_id)
         # Only here, and only on the path where ``ticket.sent`` resolved without
         # raising. Everything that could still have removed or rewritten a frame
         # has already run against this very dict -- both ownership downgrades
@@ -994,16 +1016,35 @@ class _ResponseMixin:
             # 隔离针对的是**上一轮**（主动搭话）那一轮，所以它必须在上一轮的
             # scope 下跑完；跑完之后这一轮才真正开始。
             self.note_user_turn_started()
+            preparation_arbiter = None
+            preparation_token = None
             try:
                 if not self._is_gemini:
                     arbiter = self._ensure_response_arbiter()
                     self._external_voice_turn_pause_id = stable_turn_id
-                    arbiter.pause_dispatch()
-                    await arbiter.cancel_current()
+                    preparation_token = arbiter.begin_turn_preparation(stable_turn_id)
+                    preparation_arbiter = arbiter
+                    # Only cancel something the provider is already acting on.
+                    # Independent ASR cuts one spoken sentence into several
+                    # turns, so this prepare routinely lands while the
+                    # *previous* turn's reply is still parked before its first
+                    # send. Cancelling that is not barge-in: nothing is being
+                    # said over the user, and the turn it discards is a
+                    # complete sentence that then never gets answered at all.
+                    # Leave it queued -- the lane is serial, and this turn's
+                    # own ticket is priority 0.
+                    if arbiter.has_live_response or (
+                        arbiter.current_source is not None
+                        and arbiter.current_source != "external_asr"
+                    ):
+                        await arbiter.cancel_current(reason="external_asr_prepare")
                 await self.handle_interruption()
             except BaseException:
                 self.abandon_external_voice_turn(stable_turn_id)
                 raise
+            finally:
+                if preparation_arbiter is not None:
+                    preparation_arbiter.end_turn_preparation(preparation_token)
         return self._connection_generation != connection_generation
 
     def _consume_cancelled_terminal(self) -> bool:
@@ -1125,13 +1166,17 @@ class _ResponseMixin:
             None,
         )
         if quarantine_task is not None and quarantine_task is not asyncio.current_task():
-            await asyncio.shield(quarantine_task)
-            if (
-                quarantine_task.done()
-                and getattr(self, "_gemini_external_quarantine_task", None)
-                is quarantine_task
-            ):
-                self._gemini_external_quarantine_task = None
+            try:
+                await asyncio.shield(quarantine_task)
+            except Exception:
+                # The retained SDK owner must close successfully before we
+                # reconnect; retry it rather than replaying the old exception.
+                await self._close_gemini()
+            finally:
+                if (quarantine_task.done() and getattr(self, "_gemini_external_quarantine_task", None) is quarantine_task):
+                    self._gemini_external_quarantine_task = None
+        if getattr(self, "_fatal_error_occurred", False) and getattr(self, "_gemini_session", None) is not None:
+            await self._close_gemini()
         if getattr(self, "_gemini_session", None) is None:
             instructions = str(getattr(self, "instructions", "") or "")
             if instructions:

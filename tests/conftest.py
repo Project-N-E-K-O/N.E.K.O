@@ -9,7 +9,6 @@ _project_root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), '..')
 if _project_root not in _sys.path:
     _sys.path.insert(0, _project_root)
 
-
 def _ensure_builtin_live2d_unpacked(model_name):
     # Some tests read static/<model>/* directly (Live2D model). The models are
     # shipped as assets/<model>.tar.gz; auto-unpack so pytest works without
@@ -593,8 +592,9 @@ def clean_user_data_dir(tmp_path_factory):
             str(new_app_docs_dir),
             dirs_exist_ok=True,
             # Chromium / Electron 运行时可能遗留 SingletonSocket / SingletonLock 等特殊文件，
-            # 这些文件既不属于用户数据，也会在 macOS 上导致 copytree 失败。
-            ignore=shutil.ignore_patterns("Singleton*"),
+            # 这些文件既不属于用户数据，也会在 macOS 上导致 copytree 失败。小剧场 Session
+            # 同样是运行态数据；复制开发机活动存档会让浏览器测试依赖测试开始前的真实演绎状态。
+            ignore=shutil.ignore_patterns("Singleton*", "theater"),
         )
     
     cm.app_docs_dir = cm.docs_dir / "N.E.K.O"

@@ -509,11 +509,9 @@ async def test_browser_adapter_close_stops_keep_alive_session() -> None:
     adapter._overlay_task = None
     adapter._browser_session = session
     adapter._session_ever_started = True
-    adapter._agents = {"session": object()}
 
     await adapter.close()
 
     assert session.stop_calls == 1
     assert adapter._browser_session is None
     assert adapter._session_ever_started is False
-    assert adapter._agents == {}

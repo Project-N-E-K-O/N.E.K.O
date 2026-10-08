@@ -67,7 +67,6 @@ from ._shared import (  # noqa: F401
     OpenClawAdapter,
     TaskDeduper,
     DirectTaskExecutor,
-    get_session_manager,
     parse_computer_use_result,
     parse_browser_use_result,
     parse_plugin_result,
@@ -191,4 +190,6 @@ from .channels.user_plugin import (  # noqa: F401
 
 
 app = FastAPI(title="N.E.K.O Tool Server")
+from utils.instance_access import InstanceAccessMiddleware
+app.add_middleware(InstanceAccessMiddleware)
 app.add_middleware(HostOriginGuardMiddleware)

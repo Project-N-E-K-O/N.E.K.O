@@ -697,7 +697,8 @@
         // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份。
         // Electron：window.open → setWindowOpenHandler 识别 social feed，以带 OS chrome 的内置
         // framed 子窗口打开（见 NEKO-PC pet-window-lifecycle）。浏览器：预开 about:blank 保手势。
-        // Desktop OAuth 仍走系统浏览器（loopback 回调 + 文案提示在浏览器完成登录）。
+        // 桌面端这里不发起 OAuth：账号在托盘设置里登录，或直接在社区页登录后由桌面静默认领；
+        // 仅浏览器环境未登录时在预开的弹窗里走 OAuth。
         window.addEventListener('live2d-social-click', async () => {
             if (window.nekoSocialUnlock && window.nekoSocialUnlock.isLocked()) {
                 return;
@@ -748,7 +749,20 @@
                 }
                 popupRef = null;
             };
+            let remoteRelayChannel = null;
             const navigateBrowserPopup = (targetUrl, options = {}) => {
+                if (remoteRelayChannel && remoteRelayChannel.completed
+                    && (!popupRef || popupRef.closed)) {
+                    const target = new URL(String(targetUrl), window.location.href);
+                    if (target.searchParams.get('neko_source_origin') === window.location.origin) {
+                        attachResolvedTheme(target);
+                    }
+                    remoteRelayChannel.channel.postMessage({ type: 'navigate',
+                        state: remoteRelayChannel.state, url: target.toString() });
+                    remoteRelayChannel.channel.close();
+                    remoteRelayChannel = null;
+                    return true;
+                }
                 if (typeof isSocialOpenRequestCurrent === 'function'
                     && !isSocialOpenRequestCurrent(socialOpenGeneration)) {
                     return true;
@@ -789,24 +803,26 @@
                 }
                 return navigated;
             };
-            const waitForOAuthCompletion = async (timeoutMs, requirePopup) => {
+            const oauthCompletedStates = new Set();
+            const oauthPendingRelays = new Set();
+            const waitForOAuthCompletion = async (timeoutMs, state) => {
                 const deadline = Date.now() + timeoutMs;
                 let pollDelayMs = 1000;
                 while (Date.now() < deadline) {
-                    if (requirePopup) {
-                        if (!popupRef) {
-                            return false;
-                        }
-                        try {
-                            if (popupRef.closed) {
-                                if (typeof forgetSocialWindow === 'function') {
-                                    forgetSocialWindow(popupRef, socialOpenGeneration);
-                                }
-                                popupRef = null;
-                                return false;
-                            }
-                        } catch (_) { /* ignore */ }
+                    if (oauthCompletedStates.has(state)) return true;
+                    if (remoteRelayChannel && remoteRelayChannel.failed) return false;
+                    if (!popupRef && !oauthPendingRelays.has(state) && !remoteRelayChannel) {
+                        return false;
                     }
+                    try {
+                        if (popupRef && popupRef.closed) {
+                            if (typeof forgetSocialWindow === 'function') {
+                                forgetSocialWindow(popupRef, socialOpenGeneration);
+                            }
+                            popupRef = null;
+                            if (!oauthPendingRelays.has(state) && !remoteRelayChannel) return false;
+                        }
+                    } catch (_) { /* ignore */ }
                     const remainingMs = deadline - Date.now();
                     if (remainingMs <= 0) {
                         return false;
@@ -817,10 +833,13 @@
                     ));
                     pollDelayMs = Math.min(Math.ceil(pollDelayMs * 1.5), 5000);
                     try {
-                        const statusRes = await fetch('/api/card-drop/oauth/status', { cache: 'no-store' });
+                        const statusRes = await fetch(`/api/card-drop/oauth/completion?state=${encodeURIComponent(state)}`, { cache: 'no-store' });
                         if (statusRes.ok) {
                             const statusJson = await statusRes.json();
                             if (statusJson && statusJson.logged_in) {
+                                if (remoteRelayChannel && remoteRelayChannel.state === state) {
+                                    remoteRelayChannel.completed = true;
+                                }
                                 return true;
                             }
                         }
@@ -894,6 +913,7 @@
                         signal: controller.signal,
                     });
                     if (!response.ok) {
+                        // 后端只在确实没有桌面会话时回 409；凭据并发轮换、云端暂不可验证都回 503。
                         if (response.status === 409) {
                             return { nativeDelegate: '', loginState: 'logged-out' };
                         }
@@ -970,7 +990,8 @@
                 if (!nativeDelegate && pendingProofs.nativeHandoff) {
                     nativeDelegate = (await pendingProofs.nativeHandoff).nativeDelegate;
                 }
-                if (!nativeDelegate) {
+                // 已明确判定未登录时重试也只会再拿一次 409，白白多一次本地往返并延长 social-open 锁。
+                if (!nativeDelegate && !pendingProofs.loggedOut) {
                     const retryHandoff = await fetchNativeDelegate();
                     nativeDelegate = retryHandoff.nativeDelegate;
                 }
@@ -991,8 +1012,9 @@
                         navigateBrowserPopup(delegateTargetUrl.toString());
                     }
                 } else if (!isElectron) {
-                    // 只释放本地引用，不关闭已打开的 Community 页面。
-                    popupRef = null;
+                    // The browser popup stays blank until auth readiness is
+                    // known, so even guest handoff must now navigate it.
+                    if (popupRef) navigateBrowserPopup(targetUrl);
                 }
             };
             try {
@@ -1082,33 +1104,40 @@
                     targetUrl.searchParams.set('cid', clientId);
                 }
                 url = targetUrl.toString();
-                // 先打开猫娘社区；Desktop 未登录时再额外拉起平台 Desktop OAuth（不挡社区）。
+                // 先打开猫娘社区。桌面端的登录在设置页完成，这里不再另开浏览器。
                 if (isElectron) {
                     // 目标 URL 直接交给 setWindowOpenHandler，才能命中 isSocialFeedUrl → framed 内置窗。
                     // 复用 'neko-social' 名：已开则聚焦/导航同一窗口，避免叠多个社区窗。
                     if (!openElectronSocialWindow(url)) {
                         throw new Error('popup blocked');
                     }
-                } else if (!navigateBrowserPopup(url, { keepReference: true })) {
-                    throw new Error('popup blocked');
                 }
+                // Keep the reserved browser popup same-origin with its opener
+                // until we know whether the fixed OAuth relay is needed.
                 const initialNativeHandoff = await initialNativeHandoffReadiness;
                 let communityLoggedIn = initialNativeHandoff.loginState === 'logged-in';
+                // 只有明确判定为未登录才提示去设置页登录；delegate 超时且 auth-status
+                // 兜底也失败时状态未知，已登录用户不能被误提示。
+                let communityLoggedOut = initialNativeHandoff.loginState === 'logged-out';
                 if (initialNativeHandoff.loginState === 'unknown') {
                     try {
                         const statusRes = await fetch('/api/card-drop/auth-status', { cache: 'no-store' });
                         if (statusRes.ok) {
                             const statusJson = await statusRes.json();
                             communityLoggedIn = !!(statusJson && statusJson.logged_in);
+                            // 云端暂时校验不了（离线、超时、5xx）时本地会话仍在，
+                            // 后端以 session_saved 标出；这种情况不是登出，不能提示去登录。
+                            communityLoggedOut = !communityLoggedIn
+                                && !(statusJson && statusJson.session_saved);
                         }
                     } catch (statusErr) {
                         console.warn('[social] auth-status fetch failed (non-fatal):', statusErr);
                     }
                 }
-                if (!communityLoggedIn) {
+                if (!communityLoggedIn && !isElectron) {
                     let browserOAuthStarted = false;
+                    let browserOAuthState = '';
                     let browserOAuthTimeoutMs = 10 * 60 * 1000;
-                    let oauthLaunched = false;
                     try {
                         const oauthRes = await fetch('/api/card-drop/oauth/start', {
                             method: 'POST',
@@ -1116,6 +1145,7 @@
                         });
                         if (oauthRes.ok) {
                             const oauthJson = await oauthRes.json();
+                            browserOAuthState = String(oauthJson.state || '');
                             const authUrl = oauthJson && oauthJson.auth_url
                                 ? String(oauthJson.auth_url)
                                 : '';
@@ -1127,10 +1157,34 @@
                                         expiresInSec * 1000
                                     );
                                 }
-                                if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
-                                    await window.electronShell.openExternal(authUrl);
-                                    oauthLaunched = true;
-                                } else if (!navigateBrowserPopup(authUrl, { keepReference: true })) {
+                                if (oauthJson.relay_origin) {
+                                    const relayState = browserOAuthState;
+                                    const channel = new BroadcastChannel('neko-oauth:' + relayState);
+                                    remoteRelayChannel = { channel, state: relayState, completed: false };
+                                    const cleanupTimer = setTimeout(() => channel.close(), browserOAuthTimeoutMs);
+                                    channel.onmessage = async (event) => {
+                                        const data = event.data;
+                                        if (!data || data.state !== relayState) return;
+                                        if (data.type === 'redeeming') oauthPendingRelays.add(relayState);
+                                        if (data.type !== 'complete') return;
+                                        // Channel messages are hints. Only the owner/session-bound
+                                        // backend completion endpoint can confirm a successful login.
+                                        try {
+                                            const response = await fetch(`/api/card-drop/oauth/completion?state=${encodeURIComponent(relayState)}`, { cache: 'no-store' });
+                                            if (response.ok && (await response.json()).logged_in) {
+                                                oauthCompletedStates.add(relayState);
+                                                if (remoteRelayChannel) remoteRelayChannel.completed = true;
+                                                clearTimeout(cleanupTimer);
+                                            } else if (data.ok === false && remoteRelayChannel) {
+                                                remoteRelayChannel.failed = true;
+                                                clearTimeout(cleanupTimer);
+                                                channel.close();
+                                            }
+                                        } catch (_) { /* polling observes the same saved completion */ }
+                                        finally { oauthPendingRelays.delete(relayState); }
+                                    };
+                                }
+                                if (!navigateBrowserPopup(authUrl, { keepReference: true })) {
                                     closePopup();
                                     if (typeof window.showStatusToast === 'function') {
                                         window.showStatusToast(
@@ -1140,10 +1194,9 @@
                                         );
                                     }
                                 } else {
-                                    oauthLaunched = true;
                                     browserOAuthStarted = true;
                                 }
-                                if (oauthLaunched && typeof window.showStatusToast === 'function') {
+                                if (browserOAuthStarted && typeof window.showStatusToast === 'function') {
                                     const oauthPromptKey = 'app.socialOAuthPrompt';
                                     const oauthPrompt = (typeof window.t === 'function')
                                         ? window.t(oauthPromptKey)
@@ -1160,14 +1213,11 @@
                     } catch (oauthErr) {
                         console.warn('[social] oauth/start failed (non-fatal):', oauthErr);
                     } finally {
-                        const shouldWaitForOAuth = (isElectron && oauthLaunched)
-                            || (!isElectron && browserOAuthStarted);
-                        if (shouldWaitForOAuth) {
+                        if (browserOAuthStarted) {
                             releaseSocialOpenRequestForFlow();
                             socialOpenRequestReleased = true;
                             const oauthCompleted = await waitForOAuthCompletion(
-                                browserOAuthTimeoutMs,
-                                !isElectron
+                                browserOAuthTimeoutMs, browserOAuthState
                             );
                             if (oauthCompleted) {
                                 const refreshedDelegatePromise = fetchNativeDelegate();
@@ -1179,11 +1229,7 @@
                                     refreshedTargetUrl,
                                     refreshedHandoff.nativeDelegate
                                 );
-                                if (isElectron) {
-                                    if (!openElectronSocialWindow(refreshedTargetUrl.toString())) {
-                                        console.warn('[social] failed to refresh Electron community window after OAuth');
-                                    }
-                                } else if (popupRef) {
+                                if (popupRef || (remoteRelayChannel && remoteRelayChannel.completed)) {
                                     if (!navigateBrowserPopup(refreshedTargetUrl.toString())) {
                                         console.warn('[social] failed to navigate browser community window after OAuth');
                                         closePopup();
@@ -1203,18 +1249,32 @@
                                 initialNativeHandoff.nativeDelegate,
                                 {
                                     nativeHandoff: initialNativeHandoffPromise,
-                                    syncTicket: initialSyncTicket ? null : initialSyncTicketPromise
+                                    syncTicket: initialSyncTicket ? null : initialSyncTicketPromise,
+                                    loggedOut: communityLoggedOut
                                 }
                             );
                         }
                     }
                 } else {
+                    if (communityLoggedOut && typeof window.showStatusToast === 'function') {
+                        const settingsPromptKey = 'app.socialSettingsLoginPrompt';
+                        const settingsPrompt = (typeof window.t === 'function')
+                            ? window.t(settingsPromptKey)
+                            : '';
+                        window.showStatusToast(
+                            (settingsPrompt && settingsPrompt !== settingsPromptKey)
+                                ? settingsPrompt
+                                : '桌面端还没有登录 N.E.K.O 账号。已在社区页登录的话会自动同步到桌面，也可以从托盘菜单打开设置登录',
+                            4000
+                        );
+                    }
                     await completeInitialCommunityHandoff(
                         url,
                         initialNativeHandoff.nativeDelegate,
                         {
                             nativeHandoff: initialNativeHandoffPromise,
-                            syncTicket: initialSyncTicket ? null : initialSyncTicketPromise
+                            syncTicket: initialSyncTicket ? null : initialSyncTicketPromise,
+                            loggedOut: communityLoggedOut
                         }
                     );
                 }
@@ -1302,6 +1362,14 @@
             }
             if (window.mmdManager) {
                 window.mmdManager._goodbyeClicked = true;
+            }
+            // pngtuber 也要设：Electron 输入区域桥（pet-input-region-bridge 的
+            // isCurrentModelInGoodbyeMode）按当前模型类型只读对应 manager 的
+            // _goodbyeClicked；漏设会让猫咪态的点击穿透命中测试与鼠标轮询
+            // 走"模型在场"分支，长按拖动返回球期间穿透状态抖动、位移事件断流，
+            // 松手被兜底判成无位移点击而误触发"请她回来"。
+            if (window.pngtuberManager) {
+                window.pngtuberManager._goodbyeClicked = true;
             }
             if (window.appInterpage && typeof window.appInterpage.postGoodbyeChatComposerHiddenState === 'function') {
                 window.appInterpage.postGoodbyeChatComposerHiddenState(true, 'live2d-goodbye-click');
@@ -1626,7 +1694,10 @@
                 }
             }
             if (usePngtuberReturn && pngtuberReturnButtonContainer) {
-                activeReturnButtonContainer = I.showReturnBallContainer(pngtuberReturnButtonContainer, savedGoodbyeRect);
+                // 与 MMD/VRM/Live2D 分支一致延迟显形：等 model-to-cat 烟雾转场
+                // 收尾再 reveal。早显会让返回球在转场期间就可交互，且桌面桥的
+                // 窗口收缩（return-ball-show）与转场抢窗口几何，拖拽起步易丢位移。
+                activeReturnButtonContainer = I.showReturnBallContainer(pngtuberReturnButtonContainer, savedGoodbyeRect, { deferReveal: true });
             } else {
                 I.hideReturnBallContainer(pngtuberReturnButtonContainer);
             }
@@ -1958,6 +2029,11 @@
             }
             if (window.mmdManager) {
                 window.mmdManager._goodbyeClicked = false;
+            }
+            // 与 goodbye 入口对称：pngtuber 的标志不清会让 Electron 输入桥
+            // 一直按猫咪态处理命中测试，回来后模型区域持续点击穿透。
+            if (window.pngtuberManager) {
+                window.pngtuberManager._goodbyeClicked = false;
             }
             console.log('[App] 标志清除后 - live2dManager._goodbyeClicked:', window.live2dManager?._goodbyeClicked);
             console.log('[App] 标志清除后 - vrmManager._goodbyeClicked:', window.vrmManager?._goodbyeClicked);

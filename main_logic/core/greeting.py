@@ -22,7 +22,7 @@ import asyncio
 import time
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient, _strip_nonverbal_directives
-from main_logic.session_state import SessionEvent
+from main_logic.session_state import SessionEvent, session_reply_in_progress
 from main_logic.startup_greeting_policy import (
     _STARTUP_GREETING_BURST_SECONDS,
     _STARTUP_GREETING_EARLIER_SAMPLES,
@@ -104,28 +104,44 @@ class GreetingMixin:
         }
 
     @staticmethod
-    def _resolve_local_avatar_tool_prompt_record(raw: dict, record: dict) -> dict:
-        change_items = record.get("imageChange", {}).get("items")
-        change_index = raw.get("change_index")
-        if (
-            not isinstance(change_items, list)
-            or isinstance(change_index, bool)
-            or not isinstance(change_index, int)
-            or change_index < 0
-            or change_index >= len(change_items)
-        ):
-            raise ValueError("invalid local change index")
+    def _resolve_local_avatar_tool_prompt_record(raw: dict, record: dict) -> dict | None:
+        version = record.get("recordVersion")
+        if version == 2:
+            change_items = record.get("imageChange", {}).get("items")
+            change_index = raw.get("change_index")
+            if (
+                "image_id" in raw
+                or not isinstance(change_items, list)
+                or isinstance(change_index, bool)
+                or not isinstance(change_index, int)
+                or change_index < 0
+                or change_index >= len(change_items)
+            ):
+                raise ValueError("invalid local change index")
+            meaning = change_items[change_index]["meaning"]
+        elif version == 3:
+            image_id = raw.get("image_id")
+            images = record.get("images")
+            if "change_index" in raw or not isinstance(images, list):
+                raise ValueError("invalid local image ID")
+            image = next((item for item in images if item["id"] == image_id), None)
+            if image is None:
+                raise ValueError("invalid local image ID")
+            meaning = image["meaning"]
+        else:
+            raise ValueError("invalid local record version")
         special = record.get("interaction", {}).get("special")
         has_special_fact = "special_triggered" in raw
         if bool(special) != has_special_fact:
             raise ValueError("local special fact does not match record")
+        selected_meaning = (
+            special["meaning"] if special and raw["special_triggered"] is True else meaning
+        )
+        if not selected_meaning:
+            return None
         return {
             "name": record["name"],
-            "meaning": (
-                special["meaning"]
-                if special and raw["special_triggered"] is True
-                else change_items[change_index]["meaning"]
-            ),
+            "meaning": selected_meaning,
         }
 
     def note_avatar_interaction_ingress(self, payload: dict) -> bool:
@@ -265,7 +281,7 @@ class GreetingMixin:
                     )
                     gate_rejection = (raw_interaction_id, "invalid_payload")
 
-            if not cooldown_hit and gate_rejection is None:
+            if not cooldown_hit and gate_rejection is None and (local_store is None or local_prompt_record is not None):
                 self._remember_avatar_interaction_id(interaction_id)
                 self._last_avatar_interaction_at = now_ms
 
@@ -281,6 +297,10 @@ class GreetingMixin:
             await self.send_avatar_interaction_ack(interaction_id, False, "cooldown")
             return {"accepted": False, "reason": "cooldown", "interaction_id": interaction_id}
 
+        if local_store is not None and local_prompt_record is None:
+            await self.send_avatar_interaction_ack(interaction_id, False, "no_meaning")
+            return {"accepted": False, "reason": "no_meaning", "interaction_id": interaction_id}
+
         if self.is_active and isinstance(self.session, OmniRealtimeClient):
             logger.debug("[%s] handle_avatar_interaction: voice session active, skipping", self.lanlan_name)
             await self.send_avatar_interaction_ack(interaction_id, False, "voice_session_active")
@@ -294,6 +314,12 @@ class GreetingMixin:
             try:
                 logger.info("[%s] handle_avatar_interaction: auto-starting text session", self.lanlan_name)
                 await self.start_session(self.websocket, new=False, input_mode='text')
+            except asyncio.CancelledError as exc:
+                if not self._consume_start_retirement_cancellation(exc):
+                    raise
+                logger.info("[%s] handle_avatar_interaction: auto start_session cancelled", self.lanlan_name)
+                await self.send_avatar_interaction_ack(interaction_id, False, "session_start_cancelled")
+                return {"accepted": False, "reason": "session_start_cancelled", "interaction_id": interaction_id}
             except Exception as e:
                 logger.warning("[%s] handle_avatar_interaction: auto start_session failed: %s", self.lanlan_name, e)
                 await self.send_avatar_interaction_ack(interaction_id, False, "session_start_failed")
@@ -324,7 +350,10 @@ class GreetingMixin:
             if not (self.is_active and isinstance(self.session, OmniOfflineClient)):
                 await self.send_avatar_interaction_ack(interaction_id, False, "session_changed")
                 return {"accepted": False, "reason": "session_changed", "interaction_id": interaction_id}
-            if getattr(self.session, "_is_responding", False):
+            # A guard pause drops _is_responding while its reply is still live;
+            # prompt_ephemeral would decline to start over it, after the speech
+            # id below had already been rotated under that reply.
+            if session_reply_in_progress(self.session):
                 logger.debug("[%s] handle_avatar_interaction: text session busy, skipping", self.lanlan_name)
                 await self.send_avatar_interaction_ack(interaction_id, False, "busy")
                 return {"accepted": False, "reason": "busy", "interaction_id": interaction_id}
@@ -345,7 +374,7 @@ class GreetingMixin:
             # 等 prompt_ephemeral 触发 handle_response_complete 时随 turn end
             # 原子地下发。不再走独立的 sync_message_queue 控制消息，避免
             # meta 与 turn end 两条消息时序错乱导致本轮被误判成 proactive。
-            self._pending_turn_meta = {
+            turn_meta = self._pending_turn_meta = {
                 "kind": "avatar_interaction",
                 "interaction_id": interaction_id,
                 "memory_note": memory_note,
@@ -354,6 +383,16 @@ class GreetingMixin:
             }
 
             current_turn_id = self.current_speech_id
+            # 本回复的快照（见 _shared._ReplyTurn）：完成回调用它自己的 meta
+            # 收尾，不去读届时可能已属于新一轮的共享字段。
+            reply_turn = self._begin_reply_turn(
+                speech_id=current_turn_id,
+                meta=self._pending_turn_meta,
+            )
+
+            async def response_done_callback() -> None:
+                await self.handle_response_complete(reply_turn=reply_turn)
+
             # 主动搭话 race guard：prompt_ephemeral 运行期间若用户发起新输入
             # 会换 current_speech_id + 清 TTS queue，本路径产生的 text delta
             # 必须靠 _proactive_expected_sid 在 handle_text_data/handle_output_transcript
@@ -361,10 +400,13 @@ class GreetingMixin:
             _sid_token = _proactive_expected_sid.set(current_turn_id)
             try:
                 try:
+                    reply_turn.session = self.session
                     delivered = await self.session.prompt_ephemeral(
                         instruction,
                         completion_mode="response",
                         persist_response=False,
+                        response_done_callback=response_done_callback,
+                        reply_owner=reply_turn,
                     )
                 except Exception as e:
                     logger.exception(
@@ -380,6 +422,7 @@ class GreetingMixin:
                     return {"accepted": False, "reason": "error", "interaction_id": interaction_id}
             finally:
                 _proactive_expected_sid.reset(_sid_token)
+                self._end_reply_turn(reply_turn)
 
             # Prompt 跑完后若 current_speech_id 已换（用户中途接管），
             # 本轮 avatar 响应算未送达：meta 不该挂到用户的新 turn end 上，
@@ -387,6 +430,12 @@ class GreetingMixin:
             interrupted = self.current_speech_id != current_turn_id
             accepted = bool(delivered) and not interrupted
             if interrupted:
+                self._pending_turn_meta = None
+            # Still ours after the call: neither handle_response_complete nor an
+            # interrupted or displaced turn's close consumed it, so no reply ran
+            # (prompt_ephemeral declines to start over another reply still in
+            # progress). Drop it here, or it lands on the next, unrelated turn end.
+            if self._pending_turn_meta is turn_meta:
                 self._pending_turn_meta = None
             if accepted:
                 self._last_avatar_interaction_speak_at = int(time.time() * 1000)
@@ -543,10 +592,11 @@ class GreetingMixin:
             return
 
         # 先确认投递通道可用，再消费节日预算（避免 session 拉起失败白扣次数）
-        # 如果已有 text session 且空闲，直接走投递逻辑
-        if isinstance(self.session, OmniOfflineClient) and not getattr(self.session, "_is_responding", False):
-            pass
-        else:
+        # An existing text session is reused even while a reply is in progress
+        # on it (live, guard-paused or awaiting its completion): the claim
+        # below (try_start_proactive) refuses then, while start_session would
+        # end that session and cut its reply.
+        if not isinstance(self.session, OmniOfflineClient):
             # 没有 session 或不是 text session → 主动拉起
             # ── 拉起前再次检查：避免与即将到来的语音 session 竞争 ──
             if self._is_voice_session_active_or_starting():
@@ -559,6 +609,10 @@ class GreetingMixin:
             try:
                 logger.info("[%s] trigger_greeting: auto-starting text session", self.lanlan_name)
                 await self.start_session(ws, new=False, input_mode='text')
+            except asyncio.CancelledError as exc:
+                if not self._consume_start_retirement_cancellation(exc):
+                    raise
+                return
             except Exception as e:
                 logger.warning("[%s] trigger_greeting: auto start_session failed: %s", self.lanlan_name, e)
                 return
@@ -772,7 +826,7 @@ class GreetingMixin:
             return
 
         # 原子 SM claim：与 trigger_agent_callbacks / /api/proactive_chat 互斥
-        # 并拦截"AI 正在为用户回复"（session._is_responding）的场景
+        # 并拦截回复进行中（session_reply_in_progress）的场景
         if not await self.state.try_start_proactive(session=self.session):
             logger.info(
                 "[%s] trigger_greeting: SM denied claim (phase=%s), skipping",
@@ -932,10 +986,10 @@ class GreetingMixin:
             logger.debug("[%s] trigger_cat_greeting: duration %.0fs below threshold, skipping", self.lanlan_name, duration_seconds)
             return
 
-        # 投递通道：已有空闲 text session 则直接用，否则主动拉起（与 trigger_greeting 对偶）
-        if isinstance(self.session, OmniOfflineClient) and not getattr(self.session, "_is_responding", False):
-            pass
-        else:
+        # 投递通道：已有 text session 则直接用，否则主动拉起（与 trigger_greeting 对偶）。
+        # Reused even while a reply is in progress on it, as in trigger_greeting:
+        # the claim below refuses then; start_session would cut that reply.
+        if not isinstance(self.session, OmniOfflineClient):
             if self._is_voice_session_active_or_starting():
                 logger.info("[%s] trigger_cat_greeting: voice session appeared before text session auto-start, skipping", self.lanlan_name)
                 return
@@ -946,6 +1000,10 @@ class GreetingMixin:
             try:
                 logger.info("[%s] trigger_cat_greeting: auto-starting text session", self.lanlan_name)
                 await self.start_session(ws, new=False, input_mode='text')
+            except asyncio.CancelledError as exc:
+                if not self._consume_start_retirement_cancellation(exc):
+                    raise
+                return
             except Exception as e:
                 logger.warning("[%s] trigger_cat_greeting: auto start_session failed: %s", self.lanlan_name, e)
                 return
@@ -1082,6 +1140,10 @@ class GreetingMixin:
             try:
                 logger.info("[%s] trigger_new_character_greeting: auto-starting text session", self.lanlan_name)
                 await self.start_session(self.websocket, new=False, input_mode='text')
+            except asyncio.CancelledError as exc:
+                if not self._consume_start_retirement_cancellation(exc):
+                    raise
+                return
             except Exception as e:
                 logger.warning("[%s] trigger_new_character_greeting: auto start_session failed: %s", self.lanlan_name, e)
                 return

@@ -22,6 +22,7 @@ Split out of the former monolithic ``main_routers/system_router.py``.
 from ._shared import _validate_local_mutation_request, logger, router
 import difflib
 import math
+import random
 import re
 from fastapi import Request
 from utils.llm_client import (
@@ -34,6 +35,8 @@ from ..shared_state import (
 )
 from config import (
     EMOTION_ANALYSIS_MAX_TOKENS,
+    MESSAGE_REACTION_CONFIDENCE_THRESHOLD,
+    MESSAGE_REACTION_EMOJIS_BY_EMOTION,
 )
 from config.prompts.prompts_emotion import (
     get_outward_emotion_analysis_prompt,
@@ -607,10 +610,17 @@ def _push_emotion_update(lanlan_name, emotion, confidence):
         })
 
 
-def _emotion_response(emotion, confidence):
+def _emotion_response(emotion, confidence, lanlan_name=None):
+    candidates = MESSAGE_REACTION_EMOJIS_BY_EMOTION.get(emotion, ())
+    reaction = None
+    if (lanlan_name and candidates and math.isfinite(confidence)
+            and confidence >= MESSAGE_REACTION_CONFIDENCE_THRESHOLD):
+        reaction = {"emoji": random.choice(candidates), "author": lanlan_name}
+
     return {
         "emotion": emotion,
-        "confidence": confidence
+        "confidence": confidence,
+        "reaction": reaction
     }
 
 
@@ -907,7 +917,7 @@ async def emotion_analysis(request: Request):
             emotion = "neutral"
             confidence = 0.5
             _push_emotion_update(lanlan_name, emotion, confidence)
-            return _emotion_response(emotion, confidence)
+            return _emotion_response(emotion, confidence, lanlan_name)
 
         api_key = data.get('api_key')
         model = data.get('model')
@@ -977,6 +987,8 @@ async def emotion_analysis(request: Request):
                 lines = lines[:-1]  # 移除最后一行
             result_text = "\n".join(lines).strip()
         
+        reaction_eligible = False
+
         # 尝试解析JSON响应
         emotion = "neutral"
         confidence = 0.5
@@ -1000,6 +1012,27 @@ async def emotion_analysis(request: Request):
                 raw_confidence = result.get("confidence", 0.5)
                 emotion = _normalize_emotion_label(raw_emotion, raw_confidence)
                 confidence = _coerce_emotion_confidence(raw_confidence)
+                # Unknown model labels cannot become reaction-eligible through
+                # avatar heuristics. Keep the avatar normalization unchanged.
+                reaction_label = (
+                    raw_emotion.strip().lower() if isinstance(raw_emotion, str) else ""
+                )
+                reaction_normalized_label = re.sub(r"[\s\-_]+", " ", reaction_label)
+                reaction_compact_label = re.sub(
+                    r"[\W_]+", "", reaction_label, flags=re.UNICODE
+                )
+                reaction_label_valid = "emotion" in result and (
+                    reaction_normalized_label in _EMOTION_NORMALIZED_ALIAS_LOOKUP
+                    or reaction_compact_label in _EMOTION_COMPACT_ALIAS_LOOKUP
+                )
+                try:
+                    reaction_score = float(raw_confidence)
+                    reaction_eligible = (reaction_label_valid
+                                         and not isinstance(raw_confidence, bool)
+                                         and math.isfinite(reaction_score)
+                                         and 0.0 <= reaction_score <= 1.0)
+                except (TypeError, ValueError):
+                    reaction_eligible = False
                 decision_source = "model"
 
                 heuristic_emotion, heuristic_score = _infer_emotion_from_text(text)
@@ -1031,10 +1064,10 @@ async def emotion_analysis(request: Request):
             emotion, confidence = _apply_degraded_emotion_fallback()
 
         _push_emotion_update(lanlan_name, emotion, confidence)
-        return _emotion_response(emotion, confidence)
+        return _emotion_response(emotion, confidence, lanlan_name if reaction_eligible else None)
             
     except Exception as e:
-        logger.error(f"情感分析失败: {e}")
+        print(f"[Emotion] analysis failed: {type(e).__name__}")
         return {
             "error": f"情感分析失败: {str(e)}",
             "emotion": "neutral",

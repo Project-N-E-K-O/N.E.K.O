@@ -2567,6 +2567,11 @@
             const bounce = this.currentSpeakingBounceTransform();
             const breathing = this.currentLayeredBreathingTransform(timestamp);
             const talkingHop = this.currentTalkingHopTransform(timestamp);
+            // 记录本帧动画位移/缩放，供 getStableAnchorRect() 还原静止锚点，
+            // 让悬浮按钮等 UI 不跟随模型自主上下运动漂移。
+            this._appliedAnimOffsetY = bounce.y + breathing.y + talkingHop.y;
+            this._appliedAnimScaleX = bounce.scaleX * breathing.scaleX * talkingHop.scaleX;
+            this._appliedAnimScaleY = bounce.scaleY * breathing.scaleY * talkingHop.scaleY;
             const placement = this.getActivePlacement();
             const renderPlacement = this.getRenderPlacement(placement);
             const scaleX = this.config.mirror ? -renderPlacement.scale : renderPlacement.scale;
@@ -2578,6 +2583,10 @@
                 this.container.style.pointerEvents = modelManagerPage ? 'auto' : 'none';
             }
             const centerAnchored = modelManagerPage || this.config.position_anchor === 'center';
+            this._appliedAnimCenterAnchored = centerAnchored;
+            // 镜像时 finalScaleX 为负:right bottom 原点固定的是可见矩形的左边界,
+            // getStableAnchorRect 需要据此选择保持不动的水平边
+            this._appliedAnimMirrored = finalScaleX < 0;
             if (centerAnchored) {
                 Object.assign(this.image.style, {
                     position: 'absolute',
@@ -2701,9 +2710,9 @@
                 this.container.classList.remove('locked-hover-fade');
             }
             if (updateFloatingButtons && this._floatingButtonsContainer) {
-                const shouldHideButtons = this.isLocked
-                    || isYuiGuideFloatingToolbarSuppressed()
-                    || this._pngtuberFloatingControlsVisible === false;
+                const inTutorial = this._floatingButtonsContainer.dataset.inTutorial === 'true';
+                const shouldHideButtons = isYuiGuideFloatingToolbarSuppressed()
+                    || (!inTutorial && (this.isLocked || this._pngtuberFloatingControlsVisible === false));
                 this._floatingButtonsContainer.style.display = shouldHideButtons ? 'none' : 'flex';
             }
             if (typeof this.updateLockIconPosition === 'function') {
@@ -3493,17 +3502,74 @@
             this.updateLockIconPosition();
         }
 
+        // 固定锚点：从当前 image rect 中剥离呼吸/说话弹跳/talkingHop 的动画位移与缩放，
+        // 返回模型静止布局下的矩形。悬浮按钮、锁图标等 UI 用它定位，
+        // 避免跟随模型自主上下运动而漂移、难以点击。
+        getStableAnchorRect() {
+            const image = this.image || (this.ensureContainer() && this.image);
+            if (!image) return null;
+            const rect = image.getBoundingClientRect();
+            if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+            const rectRight = Number.isFinite(rect.right) ? rect.right : rect.left + rect.width;
+            const rectBottom = Number.isFinite(rect.bottom) ? rect.bottom : rect.top + rect.height;
+            const animY = Number(this._appliedAnimOffsetY) || 0;
+            const animScaleX = Number(this._appliedAnimScaleX) || 1;
+            const animScaleY = Number(this._appliedAnimScaleY) || 1;
+            const stableWidth = rect.width / animScaleX;
+            const stableHeight = rect.height / animScaleY;
+            if (this._appliedAnimCenterAnchored === false) {
+                // transform-origin: right bottom —— Y 向缩放围绕底边不动,剥离 Y 向平移即可。
+                // 水平方向:非镜像(finalScaleX>0)时右边界固定;镜像时 scale 为负,
+                // 变换后矩形从原点向右展开,固定的是左边界 rect.left。
+                const bottom = rectBottom - animY;
+                const left = this._appliedAnimMirrored ? rect.left : rectRight - stableWidth;
+                return {
+                    left,
+                    top: bottom - stableHeight,
+                    right: left + stableWidth,
+                    bottom,
+                    width: stableWidth,
+                    height: stableHeight
+                };
+            }
+            // transform-origin: center center —— 缩放围绕中心不动，中心点剥离 Y 向平移
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2 - animY;
+            return {
+                left: centerX - stableWidth / 2,
+                top: centerY - stableHeight / 2,
+                right: centerX + stableWidth / 2,
+                bottom: centerY + stableHeight / 2,
+                width: stableWidth,
+                height: stableHeight
+            };
+        }
+
         updateLockIconPosition() {
             const lockIcon = this._lockIconElement || document.getElementById('pngtuber-lock-icon');
             if (!lockIcon) return;
+            // 告别/猫咪态期间锁图标必须保持隐藏。setLocked、scheduleLayout（原生
+            // 窗口收缩触发 resize）、setupHTMLLockIcon 重建、updateFloatingButtonsPosition
+            // 的 isLocked 分支等回写路径都汇聚到本方法，末尾非 important 的
+            // display:block 会直接覆盖中央 goodbye handler 刚写上的
+            // display:none!important，让锁图标在离开瞬间重新冒出。
+            // 与 live2d showButtons 的 _goodbyeClicked 守卫对称。
+            if (this._goodbyeClicked || this._isInReturnState) {
+                lockIcon.style.setProperty('display', 'none', 'important');
+                lockIcon.style.setProperty('visibility', 'hidden', 'important');
+                lockIcon.style.setProperty('opacity', '0', 'important');
+                return;
+            }
             if (isYuiGuideFloatingToolbarSuppressed()) {
                 lockIcon.style.display = 'none';
                 lockIcon.style.visibility = 'hidden';
                 lockIcon.style.opacity = '0';
                 return;
             }
-            const image = this.image || (this.ensureContainer() && this.image);
-            const rect = image ? image.getBoundingClientRect() : null;
+            // 用固定锚点定位，锁图标不随模型呼吸/弹跳上下漂移
+            const rect = typeof this.getStableAnchorRect === 'function'
+                ? this.getStableAnchorRect()
+                : (this.image ? this.image.getBoundingClientRect() : null);
             if (!rect || rect.width <= 0 || rect.height <= 0) {
                 if (!window.isInTutorial) lockIcon.style.display = 'none';
                 return;
@@ -4314,6 +4380,7 @@
                 characterMenuItems: [
                     { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
                     { id: 'pngtuber-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
+                    { id: 'theater', label: '小剧场', labelKey: 'settings.menu.theater', icon: '/static/icons/character_icon.png', action: 'navigate', url: '/theater' },
                     { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
                 ],
                 onMouseTrackingToggle: function(enabled) {
@@ -4377,6 +4444,9 @@
             }
             this._pngtuberFloatingControlsVisible = true;
             this._pngtuberControlsHover = false;
+            const baseButtonSize = 48;
+            const baseGap = 12;
+            const baseButtonWidth = 82;
 
             this.updateFloatingButtonsPosition = () => {
                 this.syncResponsiveButtonVisibility(buttonsContainer);
@@ -4391,12 +4461,12 @@
                     buttonsContainer.style.display = 'none';
                     return;
                 }
-                if (this.isLocked) {
+                if (this.isLocked && buttonsContainer.dataset.inTutorial !== 'true') {
                     buttonsContainer.style.display = 'none';
                     this.updateLockIconPosition();
                     return;
                 }
-                if (this._pngtuberFloatingControlsVisible === false) {
+                if (this._pngtuberFloatingControlsVisible === false && buttonsContainer.dataset.inTutorial !== 'true') {
                     buttonsContainer.style.display = 'none';
                     this.updateLockIconPosition();
                     return;
@@ -4404,6 +4474,8 @@
                 const isMobile = window.isMobileWidth && window.isMobileWidth();
                 if (isMobile) {
                     buttonsContainer.style.flexDirection = 'column';
+                    buttonsContainer.style.transformOrigin = 'right bottom';
+                    buttonsContainer.style.transform = 'scale(1)';
                     buttonsContainer.style.bottom = '116px';
                     buttonsContainer.style.right = '16px';
                     buttonsContainer.style.left = '';
@@ -4414,8 +4486,10 @@
                     return;
                 }
 
-                const image = this.image || (this.ensureContainer() && this.image);
-                const rect = image ? image.getBoundingClientRect() : null;
+                // 固定锚点：剥离呼吸/说话弹跳的动画位移，工具栏不随模型自主上下运动漂移
+                const rect = typeof this.getStableAnchorRect === 'function'
+                    ? this.getStableAnchorRect()
+                    : (this.image ? this.image.getBoundingClientRect() : null);
                 if (!rect || rect.width <= 0 || rect.height <= 0) {
                     buttonsContainer.style.display = 'none';
                     return;
@@ -4424,14 +4498,23 @@
                     const style = window.getComputedStyle(child);
                     return style.display !== 'none' && style.visibility !== 'hidden';
                 });
-                const buttonWidth = 82;
-                const buttonHeight = Math.max(48, visibleButtons.length * 48 + Math.max(0, visibleButtons.length - 1) * 12);
+                const baseToolbarHeight = Math.max(
+                    baseButtonSize,
+                    visibleButtons.length * baseButtonSize + Math.max(0, visibleButtons.length - 1) * baseGap
+                );
+                const targetToolbarHeight = rect.height / 2;
+                const scale = Math.max(0.5, Math.min(1, targetToolbarHeight / baseToolbarHeight));
+                const actualToolbarHeight = baseToolbarHeight * scale;
+                const actualToolbarWidth = baseButtonWidth * scale;
                 const targetX = rect.right * 0.8 + rect.left * 0.2;
-                const maxX = window.innerWidth - buttonWidth - 12;
+                const maxX = Math.max(12, window.innerWidth - actualToolbarWidth - 12);
                 const left = Math.max(12, Math.min(targetX, maxX));
-                let top = rect.top + (rect.height - buttonHeight) / 2;
-                top = Math.max(12, Math.min(window.innerHeight - buttonHeight - 12, top));
+                const maxTop = Math.max(12, window.innerHeight - actualToolbarHeight - 12);
+                let top = rect.top + (rect.height - actualToolbarHeight) / 2;
+                top = Math.max(12, Math.min(maxTop, top));
                 buttonsContainer.style.flexDirection = 'column';
+                buttonsContainer.style.transformOrigin = 'left top';
+                buttonsContainer.style.transform = `scale(${scale})`;
                 buttonsContainer.style.left = `${left}px`;
                 buttonsContainer.style.top = `${top}px`;
                 buttonsContainer.style.right = '';
@@ -4513,7 +4596,15 @@
                 this._pngtuberControlsHover = true;
                 showFloatingControls();
             };
-            const unmarkControlsHover = () => {
+            const unmarkControlsHover = (event) => {
+                // 在相邻按钮边缘移动时,mouseleave 可能因目标切换而触发;
+                // 若 relatedTarget 仍在控件区域内,说明指针没有真正离开,不取消悬停标记
+                const related = event && event.relatedTarget;
+                if (related && related !== document && related !== document.documentElement
+                    && (buttonsContainer.contains(related)
+                        || (this._lockIconElement && this._lockIconElement.contains && this._lockIconElement.contains(related)))) {
+                    return;
+                }
                 this._pngtuberControlsHover = false;
                 startHideTimer();
             };
@@ -4557,16 +4648,35 @@
                 }
             };
             const handleWindowBlur = () => clearPointerAndHideSoon();
+            // document 上 capture=true 的 mouseenter/mouseleave 会收到页面内所有元素的
+            // 进出事件;只有 target 为 document/documentElement 且 relatedTarget 为空
+            // 才是真正进出浏览器窗口,否则(如相邻按钮之间跨越边缘)忽略,避免按钮
+            // 在边缘移动时被反复判定隐藏/显示
+            const isWindowBoundaryMouseEvent = (event) => {
+                if (!event) return false;
+                const target = event.target;
+                const isDocTarget = !target || target === document || target === document.documentElement;
+                return isDocTarget && !event.relatedTarget;
+            };
             const handleDocumentMouseEnter = (event) => {
                 if (event && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
-                    handlePointerMove(event);
+                    if (isWindowBoundaryMouseEvent(event)) {
+                        handlePointerMove(event);
+                    } else {
+                        // 元素级 enter 仅刷新指针坐标,不做显示/隐藏判定
+                        this._lastPngtuberPointerX = event.clientX;
+                        this._lastPngtuberPointerY = event.clientY;
+                    }
                     return;
                 }
-                if (shouldKeepFloatingControlsVisible()) {
+                if (isWindowBoundaryMouseEvent(event) && shouldKeepFloatingControlsVisible()) {
                     showFloatingControls();
                 }
             };
-            const handleDocumentMouseLeave = () => clearPointerAndHideSoon();
+            const handleDocumentMouseLeave = (event) => {
+                if (!isWindowBoundaryMouseEvent(event)) return;
+                clearPointerAndHideSoon();
+            };
 
             const buttonConfigs = this._buttonConfigs;
             buttonConfigs.forEach((config) => {

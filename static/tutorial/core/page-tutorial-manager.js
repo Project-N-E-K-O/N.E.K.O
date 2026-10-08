@@ -8,6 +8,11 @@
     'use strict';
 
     const PAGE_STORAGE_PREFIX = 'neko_tutorial_';
+    function isClickGuideInspectingPage() {
+        if (window.__nekoClickGuideWindowInspection) return true;
+        try { return window.opener?.isNekoClickGuideActive === true; }
+        catch (_) { return false; }
+    }
     const YUI_HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token';
     const SUPPORTED_PAGES = Object.freeze([
         'model_manager',
@@ -342,10 +347,16 @@
         }
 
         checkAndStartTutorial() {
+            if (isClickGuideInspectingPage()) {
+                this._clickGuideDeferredStart = true;
+                return;
+            }
+            if (!window.driver) return;
             if (!this.shouldManageCurrentPage()) return;
             if (this.isTutorialRunning || window.isInTutorial) return;
             if (this.hasActiveYuiHandoff()) return;
 
+            this._clickGuideDeferredStart = false;
             const manual = this.consumeManualIntent();
             if (!manual && this.hasSeenTutorial()) return;
 
@@ -393,7 +404,16 @@
 
             const wait = () => {
                 if (isReady() || Date.now() - startedAt >= timeoutMs) {
-                    window.setTimeout(() => this.startTutorial(), delayMs);
+                    window.setTimeout(() => {
+                        if (isClickGuideInspectingPage()) {
+                            this._clickGuideDeferredStart = true;
+                            if (source === 'manual') {
+                                localStorage.setItem(manualIntentKeyForPage(this.currentPage), 'true');
+                            }
+                            return;
+                        }
+                        this.startTutorial();
+                    }, delayMs);
                     return;
                 }
                 window.setTimeout(wait, 100);
@@ -403,6 +423,11 @@
         }
 
         maybeStartModelManagerTutorial(delayMs = 400, reason = '') {
+            if (isClickGuideInspectingPage()) {
+                this._clickGuideDeferredStart = true;
+                return;
+            }
+            if (!window.driver) return;
             if (this.currentPage !== 'model_manager') return;
             if (this.isTutorialRunning || window.isInTutorial) return;
             if (this.hasActiveYuiHandoff()) return;
@@ -875,9 +900,11 @@
         }
 
         startTutorial() {
+            if (isClickGuideInspectingPage()) return false;
             if (!this.shouldManageCurrentPage()) return false;
             if (this.isTutorialRunning || window.isInTutorial) return false;
             if (this.hasActiveYuiHandoff()) return false;
+            if (this.deferUntilModalCloses()) return false;
 
             this.captureMemoryBrowserTutorialUiState();
             this.prepareMemoryBrowserTutorialUi();
@@ -926,6 +953,7 @@
                 this.handleTutorialEnd('destroy');
                 return false;
             }
+            this._clickGuideInterruptedStep = null;
 
             window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
                 detail: {
@@ -933,6 +961,31 @@
                     source: this.currentTutorialStartSource
                 }
             }));
+            return true;
+        }
+
+        deferUntilModalCloses() {
+            const hasModal = () => Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"]'))
+                .some(element => element.getClientRects().length > 0);
+            if (!hasModal()) return false;
+            if (this._modalTutorialWaitCleanup) return true;
+            const cleanup = () => {
+                observer.disconnect();
+                window.removeEventListener('pagehide', cleanup);
+                document.removeEventListener('visibilitychange', resume);
+                if (this._modalTutorialWaitCleanup === cleanup) this._modalTutorialWaitCleanup = null;
+            };
+            const resume = () => {
+                if (this._modalTutorialWaitCleanup !== cleanup || hasModal() || document.visibilityState !== 'visible') return;
+                cleanup();
+                this.startTutorial();
+            };
+            const observer = new MutationObserver(resume);
+            this._modalTutorialWaitCleanup = cleanup;
+            observer.observe(document.body, { childList: true, subtree: true, attributes: true,
+                attributeFilter: ['hidden', 'style', 'class', 'role', 'aria-modal'] });
+            window.addEventListener('pagehide', cleanup, { once: true });
+            document.addEventListener('visibilitychange', resume);
             return true;
         }
 
@@ -1113,6 +1166,10 @@
                     ? 'complete'
                     : 'skip'
             );
+            if (reason === 'click-guide-window') {
+                this._clickGuideInterruptedStep = Number.isInteger(this.driver?.currentStep)
+                    ? this.driver.currentStep : 0;
+            }
 
             this._refreshTimers.forEach((timer) => window.clearTimeout(timer));
             this._refreshTimers = [];
@@ -1211,6 +1268,37 @@
     }
 
     window.PageTutorialManager = PageTutorialManager;
+    function resumeInterruptedPageTutorial() {
+        if (document.visibilityState !== 'visible' || isClickGuideInspectingPage()) return;
+        const manager = window.pageTutorialManager;
+        if (!Number.isInteger(manager?._clickGuideInterruptedStep)) {
+            if (manager?._clickGuideDeferredStart) {
+                manager.checkAndStartTutorial();
+            }
+            return;
+        }
+        const index = manager._clickGuideInterruptedStep;
+        if (!manager.startTutorial()) return;
+        manager._clickGuideInterruptedStep = null;
+        manager._clickGuideDeferredStart = false;
+        if (index > 0 && manager.driver?.showStep) {
+            manager.driver.showStep(Math.min(index, manager.cachedValidSteps.length - 1));
+        }
+    }
+    window.addEventListener('neko:click-guide-window-inspection', () => {
+        const manager = window.pageTutorialManager;
+        if (!isClickGuideInspectingPage()) {
+            resumeInterruptedPageTutorial();
+            return;
+        }
+        if (!manager?.isTutorialRunning) return;
+        // Temporary interruption must not mark a page tutorial as seen/skipped.
+        manager.endReason = 'click-guide-window';
+        manager.driver?.destroy();
+        manager.handleTutorialEnd('click-guide-window');
+    });
+    window.addEventListener('focus', resumeInterruptedPageTutorial);
+    document.addEventListener('visibilitychange', resumeInterruptedPageTutorial);
     window.initPageTutorialManager = initPageTutorialManager;
     window.resetPageTutorialStorage = resetPageTutorialStorage;
 })();

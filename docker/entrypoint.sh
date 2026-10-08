@@ -575,6 +575,15 @@ server {
     # 取消客户端请求体大小限制
     client_max_body_size 0;
 
+    # CSRF bootstrap must reach the same plugin backend as lifecycle mutations.
+    # Preserve the public authority and overwrite proxy metadata for NAS access.
+    location = /security/csrf-token {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
     # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
     location ~ ^/(api/model-config(?:/|$)|ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
         proxy_pass http://127.0.0.1:48916;
@@ -694,6 +703,15 @@ server {
     
     # 取消客户端请求体大小限制
     client_max_body_size 0;
+
+    # CSRF bootstrap must reach the same plugin backend as lifecycle mutations.
+    # Preserve the public authority and overwrite proxy metadata for NAS access.
+    location = /security/csrf-token {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
 
     # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
     location ~ ^/(api/model-config(?:/|$)|ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
@@ -1327,6 +1345,24 @@ main() {
         echo "   cifsacl、或只读挂载都会这样。容器内的服务以 neko 身份运行，"
         echo "   数据目录写不进去会在启动之后才零散暴露，所以这里直接停。"
         exit 1
+    fi
+
+    # ./logs 挂载点：宿主机上不存在时 Docker 会以 root 创建一个空目录，镜像里给
+    # /app/logs 的属主就被盖掉了，DEBUG 级 dev 日志和后备日志目录随之写不进去。
+    # 只在它为空时改挂载点本身（不递归）：宿主侧的 ./logs 若是指向别处的符号链接，
+    # Docker 挂的是链接目标，容器里的 -L 识别不出来；限定空目录就不会去改一个已有
+    # 内容的宿主目录（比如 /var/log）的属主。已有内容时交给管理员处理：宿主侧的
+    # docker/preflight.sh 看得见符号链接，由它确认之后再改。
+    # 主日志在数据目录里，这里失败不影响服务，所以只警告不退出。
+    if [ -d /app/logs ] && [ ! -L /app/logs ] && [ -z "$(ls -A /app/logs 2>/dev/null)" ]; then
+        chown -h 1000:1000 /app/logs 2>/dev/null \
+            || echo "⚠️ 无法把 /app/logs 的属主改为 1000:1000，DEBUG 日志可能无法写入"
+    elif [ -d /app/logs ] && [ "$(stat -c '%u' /app/logs 2>/dev/null)" != 1000 ]; then
+        echo "⚠️ /app/logs 非空且属主不是 1000，DEBUG 日志和后备日志可能无法写入。"
+        echo "   在宿主机仓库根目录执行预检（会拒绝符号链接，只改目录本身）："
+        echo "       sudo sh docker/preflight.sh"
+        echo "   覆盖文件改过挂载路径时，按覆盖文件里写的原样传入两个路径："
+        echo "       sudo sh docker/preflight.sh <neko-home 路径> <logs 路径>"
     fi
 
     # 放在服务启动前打印：此时前面的初始化日志已经刷完，这条不会被淹掉

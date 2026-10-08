@@ -1,11 +1,21 @@
 import { describe, expect, it, vi } from 'vitest'
+import { ref } from 'vue'
 
 import { usePluginWorkbench } from './usePluginWorkbench'
+import { useGridWorkbench } from './useGridWorkbench'
 import type { PluginMeta } from '@/types/api'
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({ locale: { value: 'zh-CN' } }),
 }))
+
+const safePinyin = vi.hoisted(() => vi.fn((value: string, pattern: 'pinyin' | 'first') => {
+  if (value === '插件' && pattern === 'pinyin') return 'cha jian'
+  if (value === '插件' && pattern === 'first') return 'cj'
+  return ''
+}))
+
+vi.mock('@/utils/pinyinSearch', () => ({ safePinyin }))
 
 const plugins: PluginMeta[] = [
   {
@@ -18,6 +28,54 @@ const plugins: PluginMeta[] = [
 ]
 
 describe('usePluginWorkbench scoped selection state', () => {
+  it('reuses normalized and indexed item objects while query state changes', () => {
+    const workbench = usePluginWorkbench(plugins, { scope: 'plugin-workbench-index-reuse-test' })
+    const first = workbench.items.value[0]
+
+    workbench.filterText.value = 'demo'
+
+    expect(workbench.items.value[0]).toBe(first)
+    expect(workbench.filteredItems.value[0]).toBe(first)
+  })
+
+  it('rebuilds the normalized item when the source object changes', () => {
+    const source = ref([...plugins])
+    const workbench = usePluginWorkbench(source, { scope: 'plugin-workbench-index-update-test' })
+    const first = workbench.items.value[0]
+
+    source.value[0] = { ...source.value[0]!, description: 'updated' }
+
+    expect(workbench.items.value[0]).not.toBe(first)
+    expect(workbench.items.value[0]?.description).toBe('updated')
+  })
+
+  it('publishes in-place source mutations even when the search index text is unchanged', () => {
+    const source = ref([{ ...plugins[0]!, status: 'stopped' }])
+    const workbench = usePluginWorkbench(source, { scope: 'plugin-workbench-in-place-status-test' })
+    const first = workbench.items.value[0]
+
+    source.value[0]!.status = 'running'
+    workbench.filterText.value = 'is:running'
+
+    expect(workbench.items.value[0]).not.toBe(first)
+    expect(workbench.items.value[0]?.status).toBe('running')
+    expect(workbench.filteredItems.value.map(item => item.id)).toEqual(['demo_plugin'])
+  })
+
+  it('rebuilds localized display text after an in-place name and i18n mutation', () => {
+    const source = ref([{ ...plugins[0]! }])
+    const workbench = usePluginWorkbench(source, { scope: 'plugin-workbench-in-place-display-test' })
+
+    expect(workbench.items.value[0]?.displayName).toBe('Demo Plugin')
+    source.value[0]!.name = 'Renamed Plugin'
+    source.value[0]!.i18n = {
+      messages: { 'zh-CN': { 'plugin.name': '本地化名称' } },
+    }
+
+    expect(workbench.items.value[0]?.name).toBe('Renamed Plugin')
+    expect(workbench.items.value[0]?.displayName).toBe('本地化名称')
+  })
+
   it('keeps package manager selection isolated from the main plugin list', () => {
     const mainWorkbench = usePluginWorkbench(plugins)
     const packagePlugin: PluginMeta = {
@@ -39,5 +97,61 @@ describe('usePluginWorkbench scoped selection state', () => {
 
     expect(mainWorkbench.selectedPluginIds.value).toEqual(['demo_plugin'])
     expect(packageWorkbench.selectedPluginIds.value).toEqual([])
+  })
+
+  it('returns no items when all type groups are deselected', () => {
+    const workbench = usePluginWorkbench(plugins, { scope: 'plugin-workbench-empty-groups-test' })
+
+    workbench.selectedTypes.value = []
+
+    expect(workbench.filteredItems.value).toEqual([])
+    expect(workbench.filteredPurePlugins.value).toEqual([])
+    expect(workbench.filteredAdapters.value).toEqual([])
+  })
+
+  it('matches a Chinese name on the first Latin pinyin query', async () => {
+    const workbench = usePluginWorkbench([
+      { ...plugins[0]!, name: '插件' },
+    ], { scope: 'plugin-workbench-ascii-search-test' })
+
+    workbench.filterText.value = 'chajian'
+    await vi.waitFor(() => {
+      expect(workbench.filteredItems.value.map(item => item.id)).toEqual(['demo_plugin'])
+    })
+  })
+
+  it('also builds the index for a CJK query', async () => {
+    safePinyin.mockClear()
+    const workbench = useGridWorkbench([{ id: 'plugin' }], {
+      scope: 'grid-workbench-cjk-search-test',
+      groups: [{ id: 'all', predicate: () => true }],
+      buildPinyinSearchIndex: (_item, search) => search('插件', 'pinyin'),
+      defaults: { filterText: '插件' },
+    })
+    await vi.waitFor(() => {
+      void workbench.filteredItems.value
+      expect(safePinyin).toHaveBeenCalled()
+    }, { timeout: 1000 })
+  })
+
+  it('does not rebuild pinyin indexes on every keystroke of an active search', async () => {
+    const buildPinyin = vi.fn(() => 'chajian')
+    const workbench = useGridWorkbench([{ id: 'a' }, { id: 'b' }], {
+      scope: 'grid-workbench-pinyin-keystroke-test',
+      groups: [{ id: 'all', predicate: () => true }],
+      buildPinyinSearchIndex: buildPinyin,
+    })
+    workbench.filterText.value = 'c'
+    await vi.waitFor(() => {
+      void workbench.filteredItems.value
+      expect(buildPinyin).toHaveBeenCalledTimes(2)
+    }, { timeout: 1000 })
+
+    for (const text of ['ch', 'cha', 'chaj']) {
+      workbench.filterText.value = text
+      void workbench.filteredItems.value
+    }
+    expect(buildPinyin).toHaveBeenCalledTimes(2)
+    expect(workbench.filteredItems.value.map(item => item.id)).toEqual(['a', 'b'])
   })
 })

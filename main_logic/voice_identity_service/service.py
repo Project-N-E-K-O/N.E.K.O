@@ -63,6 +63,7 @@ from .profile_store import (
     VoiceIdentityProfileWrite,
 )
 from .state import VoiceIdentityEffectiveReason, VoiceIdentityState
+from .resource_manager import VoiceResourceManager, VoiceResourceError
 
 
 class EnrollmentEmbeddingModel(Protocol):
@@ -107,7 +108,7 @@ class VoiceActivationTransaction(Protocol):
     async def abort_activation(self, prepared: PreparedVoiceActivation) -> VoiceIdentityActivationResult: ...
 
 
-VoiceIdentityRuntimeMode = Literal["off", "shadow", "enforce"]
+VoiceIdentityRuntimeMode = Literal["off", "enforce"]
 EnrollmentPhase = Literal[
     "collecting_reference",
     "checking_consistency",
@@ -136,8 +137,9 @@ async def _await_cancellation_safe(
 class VoiceIdentityServiceError(RuntimeError):
     """A stable, UI-safe control-plane failure."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, diagnostics: dict[str, float] | None = None) -> None:
         self.code = code
+        self.diagnostics = diagnostics
         super().__init__(code)
 
 
@@ -286,8 +288,8 @@ class VoiceIdentityService:
             )
         if type(enrollment_noise_reduction_enabled) is not bool:
             raise TypeError("enrollment_noise_reduction_enabled must be bool")
-        if runtime_mode not in ("off", "shadow", "enforce"):
-            raise ValueError("runtime_mode must be off, shadow, or enforce")
+        if runtime_mode not in ("off", "enforce"):
+            raise ValueError("runtime_mode must be off or enforce")
         for name, value in (
             ("enrollment_ttl_seconds", enrollment_ttl_seconds),
             ("model_timeout_seconds", model_timeout_seconds),
@@ -334,6 +336,102 @@ class VoiceIdentityService:
         self._model_inference_cleanup_task: asyncio.Task[None] | None = None
         self._initialized = False
         self._closed = False
+        self._resource_manager = VoiceResourceManager(
+            lambda: self._runtime_noise_reduction_enabled,
+            on_ready=self._refresh_after_resource_operation,
+        )
+
+    async def _refresh_after_resource_operation(self, operation_id: str) -> None:
+        async with self._operation_lock:
+            self._require_initialized()
+            if not self._resource_manager.owns(operation_id):
+                raise VoiceResourceError("operation_cancelled")
+            if self._enrollment is not None:
+                raise VoiceResourceError("enrollment_in_progress")
+            await self.refresh_resources_activation()
+
+    async def resources(self) -> dict:
+        self._require_initialized()
+        return await self._resource_manager.resources()
+
+    def start_resource_operation(self, kind: str) -> dict:
+        self._require_initialized()
+        if self._enrollment is not None:
+            raise VoiceResourceError("enrollment_in_progress")
+        return self._resource_manager.start(kind)
+
+    def resource_operation(self, operation_id: str) -> dict:
+        self._require_initialized()
+        return self._resource_manager.operation(operation_id)
+
+    def reserve_resource_operation(self, kind: str) -> dict:
+        self._require_initialized()
+        if self._enrollment is not None:
+            raise VoiceResourceError("enrollment_in_progress")
+        return self._resource_manager.reserve(kind)
+
+    def start_reserved_resource_operation(self, operation_id: str) -> dict:
+        self._require_initialized()
+        if self._enrollment is not None:
+            raise VoiceResourceError("enrollment_in_progress")
+        return self._resource_manager.start_reserved(operation_id)
+
+    async def cancel_resource_operation(self, operation_id: str) -> dict:
+        self._require_initialized()
+        return await self._resource_manager.cancel(operation_id)
+
+    async def check_trial_audio(self, pcm16: bytes, *, noise_reduction_enabled: bool) -> dict:
+        self._require_initialized()
+        if self._enrollment is not None:
+            raise VoiceResourceError("enrollment_in_progress")
+        if self._runtime_audio_contract_transition_pending:
+            raise VoiceResourceError("audio_contract_changed")
+        return await self._resource_manager.check_audio(pcm16, noise_reduction_enabled=noise_reduction_enabled)
+
+    def begin_trial_isolation(self, request_id: str):
+        from main_logic.voice_input.preview import preview_isolation_registry
+        self._require_initialized()
+        if self._enrollment is not None:
+            raise VoiceResourceError("enrollment_in_progress")
+        if self._runtime_audio_contract_transition_pending:
+            raise VoiceResourceError("audio_contract_changed")
+        ticket = preview_isolation_registry.begin_inactive(
+            request_id, noise_reduction_enabled=self._runtime_noise_reduction_enabled
+        )
+        ticket.current = lambda: (
+            self._runtime_noise_reduction_enabled is ticket.noise_reduction_enabled
+            and not self._runtime_audio_contract_transition_pending and not self._closed
+        )
+        return ticket
+
+    async def set_wake_word_preference(self, enabled: bool) -> dict:
+        from main_logic.voice_input.preview import preview_isolation_registry
+        self._require_initialized()
+        async with self._operation_lock:
+            if self._enrollment is not None:
+                raise VoiceResourceError("enrollment_in_progress")
+            ticket = preview_isolation_registry.begin_inactive(
+                str(uuid.uuid4()), noise_reduction_enabled=self._runtime_noise_reduction_enabled
+            )
+            cancellations: list[asyncio.CancelledError] = []
+            try:
+                ticket.validate_current()
+                preference = await _await_cancellation_safe(
+                    self._resource_manager.save_preference(enabled),
+                    name="voice-identity-wake-preference-save", cancellations=cancellations,
+                )
+                ticket.validate_current()
+                await _await_cancellation_safe(
+                    self.refresh_resources_activation(),
+                    name="voice-identity-wake-preference-refresh", cancellations=cancellations,
+                )
+                if cancellations:
+                    raise cancellations[0]
+                return {"wake_enabled": preference["enabled"], "requires_microphone_restart": True}
+            except ValueError as exc:
+                raise VoiceResourceError(str(exc)) from exc
+            finally:
+                preview_isolation_registry.release(ticket)
 
     async def initialize(self) -> VoiceIdentityServiceStatus:
         async with self._operation_lock:
@@ -476,9 +574,20 @@ class VoiceIdentityService:
             phase=session.phase,
         )
 
-    async def start_enrollment(self) -> EnrollmentStatus:
+    async def start_enrollment(
+        self, *, expected_audio_contract: VoiceIdentityAudioContractSnapshot | None = None,
+    ) -> EnrollmentStatus:
         async with self._operation_lock:
             self._require_initialized()
+            self._require_runtime_enabled()
+            if expected_audio_contract is not None and (
+                type(expected_audio_contract) is not VoiceIdentityAudioContractSnapshot
+                or self._runtime_audio_contract_transition_pending
+                or not expected_audio_contract.matches_runtime(
+                    noise_reduction_enabled=self._runtime_noise_reduction_enabled
+                )
+            ):
+                raise VoiceIdentityServiceError("audio_contract_changed")
             if self._runtime_audio_contract_transition_pending:
                 self._record_failure(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
                 raise VoiceIdentityServiceError("runtime_degraded")
@@ -688,6 +797,7 @@ class VoiceIdentityService:
 
         async with self._operation_lock:
             self._require_initialized()
+            self._require_runtime_enabled()
             if self._last_completed == (enrollment_id, profile_id):
                 return self.status()
             if type(pcm16) is not bytes or len(pcm16) % 2:
@@ -753,7 +863,7 @@ class VoiceIdentityService:
                     operation_task,
                 ):
                     self._clear_segment_operation(session)
-            raise VoiceIdentityServiceError(exc.code) from exc
+            raise VoiceIdentityServiceError(exc.code, diagnostics=exc.diagnostics) from exc
         except EnrollmentAudioNormalizationError as exc:
             retired = await self._terminate_failed_segment_operation(
                 session,
@@ -869,7 +979,7 @@ class VoiceIdentityService:
                 except EnrollmentAudioError as exc:
                     self._reset_session_references(session)
                     self._clear_segment_operation(session)
-                    raise VoiceIdentityServiceError(exc.code) from exc
+                    raise VoiceIdentityServiceError(exc.code, diagnostics=exc.diagnostics) from exc
                 finally:
                     for reference_embedding in session.reference_embeddings:
                         wipe_enrollment_embedding(reference_embedding)
@@ -1412,16 +1522,28 @@ class VoiceIdentityService:
                         if rollback_profile is not None
                         else str(uuid.uuid4())
                     )
-                    old_activation_restore_result = await self._activate(
-                        rollback_profile,
-                        rollback_generation,
-                        protection_requested=old_requested,
+                    restore_cancellations: list[asyncio.CancelledError] = []
+                    old_activation_restore_result = await _await_cancellation_safe(
+                        self._activate(
+                            rollback_profile,
+                            rollback_generation,
+                            protection_requested=old_requested,
+                        ),
+                        name="voice-identity-enrollment-activation-restore",
+                        cancellations=restore_cancellations,
                     )
                     if old_activation_restore_result is VoiceIdentityActivationResult.RUNTIME_DEGRADED:
                         failure_reason = VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
                 if preference_changed:
                     try:
-                        await self._preference_store.asave(old_requested)
+                        preference_restore_cancellations: list[
+                            asyncio.CancelledError
+                        ] = []
+                        await _await_cancellation_safe(
+                            self._preference_store.asave(old_requested),
+                            name="voice-identity-enrollment-preference-restore",
+                            cancellations=preference_restore_cancellations,
+                        )
                     except VoiceIdentityPreferenceStoreError:
                         failure_reason = VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
                 if new_profile is not None:
@@ -1613,23 +1735,27 @@ class VoiceIdentityService:
         if type(runtime_ready) is not bool:
             raise TypeError("runtime_ready must be bool")
         async with self._operation_lock:
+            transition_settled = False
             try:
-                return await self._update_runtime_noise_reduction_enabled_locked(
+                status = await self._update_runtime_noise_reduction_enabled_locked(
                     enabled,
                     runtime_ready=runtime_ready,
                 )
-            finally:
-                # A failed DSP transition or activation did not commit a new
-                # contract. Keep same-value reconciliation retryable until a
-                # subsequent activation succeeds.
-                self._runtime_audio_contract_transition_pending = (
-                    not runtime_ready
-                    or (
-                        self._runtime_mode != "off"
-                        and self._effective_reason
-                        is VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
-                    )
+                # `off` is an intentional settled state even though its
+                # effective reason is represented as runtime_degraded.  For
+                # every other mode, a degraded result means activation or DSP
+                # reconciliation did not commit and must remain retryable.
+                transition_settled = runtime_ready and (
+                    self._runtime_mode == "off"
+                    or status.state.effective_reason
+                    is not VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
                 )
+                return status
+            finally:
+                # Exceptions during activation are also unsettled: do not let
+                # the value assignment above make a failed transition look
+                # committed to the next reconciliation.
+                self._runtime_audio_contract_transition_pending = not transition_settled
 
     async def _update_runtime_noise_reduction_enabled_locked(
         self,
@@ -1790,6 +1916,8 @@ class VoiceIdentityService:
             raise TypeError("enabled must be bool")
         async with self._operation_lock:
             self._require_initialized()
+            if enabled:
+                self._require_runtime_enabled()
             cancellations: list[asyncio.CancelledError] = []
             try:
                 await _await_cancellation_safe(
@@ -1952,6 +2080,11 @@ class VoiceIdentityService:
                 return
             self._closed = True
             cancellations: list[asyncio.CancelledError] = []
+            await _await_cancellation_safe(
+                self._resource_manager.close(),
+                name="voice-identity-close-resource-manager",
+                cancellations=cancellations,
+            )
             session = self._enrollment
             self._enrollment = None
             if session is not None:
@@ -2258,14 +2391,58 @@ class VoiceIdentityService:
         except Exception:
             return VoiceIdentityActivationResult.RUNTIME_DEGRADED
 
+    async def refresh_resources_activation(self) -> VoiceIdentityActivationResult:
+        cancellations: list[asyncio.CancelledError] = []
+        result = await _await_cancellation_safe(
+            self._refresh_resources_activation(), name="voice-resource-activation-refresh",
+            cancellations=cancellations,
+        )
+        if cancellations:
+            raise cancellations[0]
+        return result
+
+    async def _refresh_resources_activation(self) -> VoiceIdentityActivationResult:
+        """Refresh installed resources under the caller's operation lock.
+
+        Preserve profile and user preference. The application adapter revokes
+        old authority before awaiting discovery and installs a fresh WAITING
+        factory; it never restores a previous ACTIVE state or recorder.
+        """
+        self._require_initialized()
+        if self._enrollment is not None:
+            raise VoiceResourceError("enrollment_in_progress")
+        profile = self._profile
+        reason = None
+        if not self._requested_enabled:
+            reason = VoiceIdentityEffectiveReason.DISABLED
+        elif profile is None:
+            reason = VoiceIdentityEffectiveReason.NO_PROFILE
+        elif not self._profile_is_compatible(profile):
+            reason = VoiceIdentityEffectiveReason.PROFILE_INCOMPATIBLE
+        elif not self._audio_contract_matches_runtime(self._profile_audio_contract):
+            reason = VoiceIdentityEffectiveReason.AUDIO_CONTRACT_MISMATCH
+        elif self._runtime_mode == "off" or self._runtime_audio_contract_transition_pending:
+            reason = VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
+        if reason is not None:
+            # Refresh resources without promoting an unusable saved identity
+            # into activation authority, even if the adapter reports READY.
+            profile = None
+            self._set_ineffective(reason)
+        generation = str(uuid.uuid4())
+        result = await self._activate(profile, generation,
+            protection_requested=self._requested_enabled,
+            noise_reduction_enabled=self._runtime_noise_reduction_enabled)
+        if reason is not None:
+            self._set_ineffective(reason)
+        else:
+            self._apply_activation_result(result)
+        return result
+
     def _apply_activation_result(
         self,
         result: VoiceIdentityActivationResult,
     ) -> None:
         if result is VoiceIdentityActivationResult.READY:
-            if self._runtime_mode == "shadow":
-                self._set_ineffective(VoiceIdentityEffectiveReason.SHADOW_MODE)
-                return
             self._set_ready()
             return
         self._set_ineffective(VoiceIdentityEffectiveReason(result.value))
@@ -2316,6 +2493,10 @@ class VoiceIdentityService:
         self._require_open()
         if not self._initialized:
             raise VoiceIdentityServiceError("service_not_initialized")
+
+    def _require_runtime_enabled(self) -> None:
+        if self._runtime_mode == "off":
+            raise VoiceIdentityServiceError("feature_disabled")
 
 
 def _require_identifier(name: str, value: str) -> None:

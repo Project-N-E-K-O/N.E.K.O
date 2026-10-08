@@ -47,6 +47,15 @@ export default {
     removeHint: "¿Detener el plugin y eliminar el vínculo? Se conservarán el código y los datos de ejecución.",
   },
   common: {
+    surfaceLanguagePending: "El idioma de la aplicación cambió. Se conserva el idioma del panel para proteger el trabajo sin guardar.",
+    surfaceApplyLanguage: "Aplicar idioma y recargar panel",
+    surfaceApplyLanguageConfirm: "Al recargar el panel se descartará el trabajo sin guardar. ¿Continuar?",
+
+    languageLoading: "Cargando idioma; la interfaz sigue disponible",
+    languageLoadFailed: "No se pudo cargar el idioma. Se mantiene el idioma actual.",
+    languageRetry: "Reintentar idioma",
+    languageReload: "Recargar página",
+
     loading: 'Cargando...',
     refresh: 'Actualizar',
     search: 'Buscar',
@@ -248,6 +257,8 @@ export default {
     packageHashMismatch: 'Falló la verificación del paquete del plugin.',
     downloadFailed: 'Falló la descarga del paquete del plugin.',
     marketListFetchFailed: 'El Market de plugins no está disponible temporalmente.',
+    catalogNotConfigured: 'La dirección del Market de plugins no está configurada.',
+    releaseMismatch: 'La solicitud de instalación no coincide con el registro de publicación del Market. Actualiza el Market de plugins e inténtalo de nuevo.',
     unsafeProfilePath: 'La ruta registrada del perfil del paquete no es segura.',
     packageIdentityMismatch: 'La identidad del paquete no coincide con el plugin de destino.',
     confirmationChanged: 'El plugin o el paquete cambió después de confirmar. Revisa el nuevo plan.',
@@ -442,6 +453,10 @@ export default {
     disabled: 'Deshabilitado',
     autoStart: 'Inicio automático',
     manualStart: 'Inicio manual',
+    autoStartHint: 'Iniciar automáticamente cuando se abra N.E.K.O. Iniciar o detener manualmente no cambia esta opción.',
+    autoStartDisabledHint: 'Este complemento está deshabilitado. Activar el inicio automático también lo habilitará para la próxima apertura, sin iniciarlo ahora.',
+    autoStartBlockedHint: 'La opción está activada, pero el complemento está deshabilitado o pendiente de aprobación y no se iniciará al abrir N.E.K.O. Desactívala y actívala de nuevo para habilitar y aprobar el inicio automático.',
+    autoStartUnsupportedDevelopment: 'Los plugins en desarrollo no se inician automáticamente. Inícialos manualmente.',
     fetchFailed: 'Error al obtener los plugins',
     pluginType: 'Tipo',
     pluginTypeNormal: 'Plugin',
@@ -583,6 +598,8 @@ export default {
       blockedLegacyPlugin: 'Todavía hay una versión anterior de este plugin instalada. Desinstala {plugin} antes de continuar.',
       blockedOwnershipUnknown: 'No se pudo verificar quién es propietario de la carpeta del plugin. Restaura el registro del origen de instalación antes de reintentarlo.',
       blockedInstallSourceReadOnly: 'El registro del origen de instalación no está disponible o es de solo lectura. Restáuralo antes de reintentarlo.',
+      installSucceeded: 'Instalación completada. Se procesaron {count} plugin(s).',
+      completedWithWarnings: '{plugin} se instaló, pero con advertencias: {reasons}',
       rollbackCompleted: 'La actualización falló y se restauró la versión anterior.',
       rollbackIncomplete: 'La actualización falló y la reversión quedó incompleta. Comprueba el estado del plugin antes de continuar.',
       error: {
@@ -593,6 +610,7 @@ export default {
         pluginManifestInvalid: 'El plugin.toml no es válido. Pide al autor que lo corrija y vuelva a empaquetarlo.',
         identityMismatch: 'El nombre de la carpeta del plugin no coincide con el ID de plugin.toml. Pide al autor que corrija el paquete.',
         hashMismatch: 'El contenido del paquete no coincide con los datos de verificación. Se rechazó la instalación y no se conservaron cambios.',
+        profileOwnershipConflict: 'Ya existe una carpeta de perfiles para este paquete que no le pertenece, posiblemente restos de una instalación anterior. No se instaló nada.',
         inspectFailed: 'No se pudo inspeccionar este paquete de plugin. Comprueba que el archivo exista y sea un paquete N.E.K.O válido, y vuelve a intentarlo.',
         verifyFailed: 'No se pudo verificar este paquete de plugin. Descárgalo de nuevo o pide al autor que lo vuelva a crear, y vuelve a intentarlo.',
         installFailed: 'No se pudo instalar este paquete de plugin. No se conservaron cambios de instalación sin confirmar.'
@@ -796,6 +814,9 @@ export default {
     pluginDeleted: 'Plugin eliminado',
     pluginDeletedBuiltinRestartFailed: 'Se eliminó el plugin {plugin}, pero no se pudo iniciar la versión integrada restaurada: {error}',
     startFailed: 'Error al iniciar',
+    autoStartEnabled: 'Inicio automático activado',
+    autoStartDisabled: 'Inicio automático desactivado',
+    autoStartUpdateFailed: 'No se pudo actualizar el inicio automático',
     stopFailed: 'Error al detener',
     reloadFailed: 'Error al recargar',
     buildFailed: 'Error al empaquetar el plugin',
@@ -809,6 +830,7 @@ export default {
     serviceUnavailable: 'Servicio no disponible',
     networkError: 'Error de red. Comprueba tu conexión.',
     requestTimeout: 'La solicitud agotó el tiempo de espera. Inténtalo de nuevo.',
+    csrfBootstrapFailed: 'No se pudo obtener el token de seguridad. Si usas un proxy inverso, asegúrate de que reenvíe /security/csrf-token al servidor de plugins.',
     pluginLifecycleTimeout: 'El inicio o reinicio del plugin agotó el tiempo de espera. Revisa los registros del plugin.'
   },
   welcome: {

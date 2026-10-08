@@ -138,6 +138,42 @@ jobs:
 
       - name: Run frontend contract tests
         run: |
+          node --test static/voice-identity.test.cjs static/voice-readiness.test.cjs
           node --test tests/frontend/asr_input_delivery_status.test.cjs
+          node --test tests/frontend/mic_recovery_route.test.cjs
+          node --test tests/frontend/voice_preparing_toast.test.cjs
+          node --test tests/frontend/remote_voice_manager.test.cjs tests/frontend/api_key_secret_masking.test.cjs
           node --test tests/frontend/computer_use_capture_lifecycle.test.cjs
           node --test tests/frontend/test_game_voice_control_runtime.js
+          node tests/frontend/test_storage_error_messages_runtime.js
+          node --test tests/frontend/vrm_guided_facing.test.cjs
+          node --test tests/frontend/vrm_guided_lifecycle.test.cjs
+          node --test tests/frontend/vrm_animation_translation.test.cjs
+          node --test tests/frontend/vrm_preferences_persistence.test.cjs
+          # tests/unit/*.test.js 是 pytest 永不收集的 node:test 文件；用 glob
+          # 而非手列清单，新增文件无法再静默绕过 CI。
+          node --test tests/unit/*.test.js
+
+  voice-readiness-electron:
+    name: voice readiness (Electron actual page)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install isolated fixed Electron test runtime
+        shell: pwsh
+        run: npm install --prefix "$env:RUNNER_TEMP/voice-readiness-electron" --no-audit --no-fund --save-exact electron@41.2.0
+
+      - name: Run actual enrollment template and AudioWorklet with fake input
+        shell: pwsh
+        run: |
+          Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+          node "$env:RUNNER_TEMP/voice-readiness-electron/node_modules/electron/cli.js" tests/frontend/voice_identity_electron.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Voice readiness Electron test failed ($LASTEXITCODE)." }
+          node "$env:RUNNER_TEMP/voice-readiness-electron/node_modules/electron/cli.js" tests/frontend/mic_capture_electron.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Microphone capture Electron test failed ($LASTEXITCODE)." }

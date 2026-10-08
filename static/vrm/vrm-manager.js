@@ -1124,6 +1124,9 @@ class VRMManager {
         } catch (_) {}
         try { if (this.interaction && this.interaction.isDragging) return true; } catch (_) {}
         try {
+            if (this.interaction?.isMoving || this.interaction?._smoothFacingFrame != null) return true;
+        } catch (_) {}
+        try {
             const cf = this._cursorFollow;
             // 时间戳 0 是合法值（performance.now() 起点），不能用真值判断；但 CursorFollow
             // 构造/重置时把 _lastPointerMoveAt 置 0 当「尚无指针输入」，要靠 _hasPointerInput 区分
@@ -1228,6 +1231,8 @@ class VRMManager {
 
         const THREE = window.THREE;
         const vrm = model.vrm || model;
+
+        this.interaction?._cancelGuidedMovement({ invalidateInteraction: true });
 
         // 1) 先复位模型的位置与旋转
         scene.position.set(0, 0, 0);
@@ -1758,8 +1763,8 @@ class VRMManager {
         return false;
     }
 
-    stopVRMAAnimation() {
-        if (this.animation) this.animation.stopVRMAAnimation();
+    stopVRMAAnimation(options) {
+        if (this.animation) return this.animation.stopVRMAAnimation(options);
     }
     onWindowResize() {
         if (!this.camera || !this.renderer) return;
@@ -1777,11 +1782,14 @@ class VRMManager {
             const visibleHeight = (this.container && this.container.clientHeight > 0)
                 ? this.container.clientHeight : (window.innerHeight || screenHeight);
 
+            if (!Number.isFinite(visibleWidth) || !Number.isFinite(visibleHeight)
+                || visibleWidth <= 0 || visibleHeight <= 0) return;
             this.camera.aspect = visibleWidth / visibleHeight;
             this.camera.updateProjectionMatrix();
             this.renderer.setSize(visibleWidth, visibleHeight, false);
             this.renderer.domElement.style.width = visibleWidth + 'px';
             this.renderer.domElement.style.height = visibleHeight + 'px';
+            this.interaction?._revalidateMovementTarget();
             return;
         }
 
@@ -1793,15 +1801,19 @@ class VRMManager {
             height = window.innerHeight;
         }
 
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
         this.camera.aspect = width / height;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(width, height);
+        this.interaction?._revalidateMovementTarget();
     }
     getCurrentModel() {
         return this.currentModel;
     }
     setModelPosition(x, y, z) {
-        if (this.currentModel?.vrm?.scene) this.currentModel.vrm.scene.position.set(x, y, z);
+        if (!this.currentModel?.vrm?.scene) return;
+        this.interaction?._cancelGuidedMovement({ invalidateInteraction: true });
+        this.currentModel.vrm.scene.position.set(x, y, z);
     }
 
     /**
@@ -1912,6 +1924,9 @@ class VRMManager {
         // 4. 清理阴影资源
         this._disposeShadowResources();
 
+        // 模型仍可读取时停止交互并入队最终快照；core.disposeVRM 会清空 currentModel。
+        this.interaction?.cleanupDragAndZoom?.();
+
         // 5. 清理模型资源（调用 core.disposeVRM）
         if (this.core && typeof this.core.disposeVRM === 'function') {
             await this.core.disposeVRM();
@@ -1943,10 +1958,6 @@ class VRMManager {
             if (this.interaction._initTimerId) {
                 clearTimeout(this.interaction._initTimerId);
                 this.interaction._initTimerId = null;
-            }
-            // 清理交互模块的拖拽和缩放事件监听器
-            if (typeof this.interaction.cleanupDragAndZoom === 'function') {
-                this.interaction.cleanupDragAndZoom();
             }
         }
 

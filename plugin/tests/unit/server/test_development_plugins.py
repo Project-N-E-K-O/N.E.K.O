@@ -61,6 +61,7 @@ async def test_removed_registration_cannot_downgrade_cached_development(tmp_path
     import httpx
     from plugin.server.application.plugins import registry_service
     from plugin.server.routes import plugins as routes
+    from plugin.server.infrastructure.mutation_auth import AUTOSTART_CSRF_TOKEN
 
     record = _register(tmp_path)
     registry = registry_service.PluginRegistryService()
@@ -75,8 +76,14 @@ async def test_removed_registration_cannot_downgrade_cached_development(tmp_path
     monkeypatch.setattr(routes, "ensure_plugin_messaging_started", AsyncMock(return_value=True))
     app = FastAPI()
     app.include_router(routes.router)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("192.168.1.2", 1234)),
-                                 base_url="http://127.0.0.1") as http:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.168.1.2", 1234)),
+        base_url="http://192.168.1.10:8080",
+        headers={
+            "Origin": "http://192.168.1.10:8080",
+            "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+        },
+    ) as http:
         response = await http.post(f"/plugin/{record.plugin_id}/{action}")
     assert response.status_code == 409, response.text
     assert response.headers["X-Error-Code"] == "DEVELOPMENT_STALE"
@@ -113,7 +120,7 @@ async def test_degraded_startup_error_survives_view_refresh_and_stop(monkeypatch
             assert kwargs["startup_failure"] == "warn"
             return {"startup_error": "startup hook failed"}
 
-    monkeypatch.setattr(lifecycle_service, "PluginProcessHost", WarnHost)
+    monkeypatch.setattr(lifecycle_service, "create_plugin_host", WarnHost)
     result = await lifecycle_service.PluginLifecycleService().start_plugin(record.plugin_id)
     assert result["startup_degraded"] is True
     service._record_runtime_failure_sync(record, None)
@@ -295,7 +302,7 @@ async def test_restored_association_does_not_stop_ordinary_host_started_during_s
         def is_alive(self):
             return self.started and super().is_alive()
 
-    monkeypatch.setattr(lifecycle_service, "PluginProcessHost", Host)
+    monkeypatch.setattr(lifecycle_service, "create_plugin_host", Host)
     monkeypatch.setattr(lifecycle_service, "scan_plugin_metadata_isolated", lambda **kwargs: IsolatedPluginMetadata(
         entries_preview=[], handlers={}, entry_methods={}))
     cleanup = AsyncMock()
@@ -358,9 +365,22 @@ async def test_corrupt_store_preserves_ordinary_startup_discovery(tmp_path, monk
     async def start(plugin_id, **kwargs):
         assert store.registration_for_plugin_sync(plugin_id) is None
         started.append(plugin_id)
+
+    async def start_batch(independent, ordered=(), **kwargs):
+        # 自启动走分波并发入口，波次之间释放锁给排队的管理操作。
+        # 这个桩复刻它对外可观测的效果：并发组在前、按序组在后，每个插件各启动一次。
+        # 本测试关心的是"哪些插件被启动、顺序如何"，不关心并发本身
+        # （并发行为由 test_autostart_concurrency.py 专门钉住）。
+        for plugin_id in list(independent) + list(ordered):
+            await start(plugin_id)
+        return {"started": list(independent) + list(ordered), "failed": []}
+
     lifecycle = ServerLifecycleService()
     lifecycle._plugin_registry_service = manager
-    lifecycle._plugin_lifecycle_service = SimpleNamespace(start_plugin=start)
+    lifecycle._plugin_lifecycle_service = SimpleNamespace(
+        start_plugin=start,
+        start_plugins_batch=start_batch,
+    )
     await lifecycle._refresh_registry_and_start_autostart_plugins()
     assert started == ["ordinary"]
     assert store._store_path().read_text(encoding="utf-8") == corruption
@@ -407,7 +427,7 @@ async def test_ordinary_lifecycle_can_start_after_corrupt_development_store(tmp_
         def is_alive(self):
             return self.started
 
-    monkeypatch.setattr(lifecycle, "PluginProcessHost", Host)
+    monkeypatch.setattr(lifecycle, "create_plugin_host", Host)
     monkeypatch.setattr(lifecycle, "scan_plugin_metadata_isolated", lambda **kwargs: IsolatedPluginMetadata(
         entries_preview=[], handlers={}, entry_methods={}))
     result = await lifecycle.PluginLifecycleService().start_plugin("ordinary", refresh_registry=False)
@@ -907,6 +927,24 @@ def test_preflight_prunes_dependency_directories_before_visiting(monkeypatch, tm
     service.preflight_development_sync(record)
 
 
+def test_preflight_skips_dependency_sync_work_dirs(tmp_path):
+    # Staging/backup trees of `neko-plugin sync` hold third-party code (maybe
+    # half-written, maybe Python 2), like vendor/; a look-alike plugin dir and
+    # a nested one are still plugin source.
+    record = _register(tmp_path)
+    for name in (".vendor.staging-0a1b2c3d", ".vendor.backup-0a1b2c3d"):
+        legacy = record.source_dir / name / "oldpkg"
+        legacy.mkdir(parents=True)
+        (legacy / "legacy.py").write_text('print "x"\n', encoding="utf-8")
+    service.preflight_development_sync(record)
+
+    own = record.source_dir / ".vendor.backup-notes"
+    own.mkdir()
+    (own / "mine.py").write_text("broken syntax !", encoding="utf-8")
+    with pytest.raises(ServerDomainError, match="invalid syntax"):
+        service.preflight_development_sync(record)
+
+
 def test_preflight_still_checks_runtime_source_excluded_from_packaging(tmp_path):
     record = _register(tmp_path)
     (record.source_dir / "pyproject.toml").write_text('[tool.neko.build]\nexclude = ["generated/**"]\n', encoding="utf-8")
@@ -1044,7 +1082,7 @@ async def test_start_integrates_source_policy_and_does_not_write_metadata_to_sou
         return scanner(**kwargs)
     def forbid_packaged_metadata(*args, **kwargs):
         raise AssertionError("Development plugins must scan their current source")
-    monkeypatch.setattr(lifecycle_service, "PluginProcessHost", Host)
+    monkeypatch.setattr(lifecycle_service, "create_plugin_host", Host)
     monkeypatch.setattr(lifecycle_service, "scan_plugin_metadata_isolated", scan)
     monkeypatch.setattr(lifecycle_service, "_read_packaged_isolated_metadata", forbid_packaged_metadata)
     result = await lifecycle_service.PluginLifecycleService().start_plugin(record.plugin_id)
@@ -1277,3 +1315,75 @@ async def test_websocket_stop_returns_versioned_api_error(monkeypatch, tmp_path,
     else:
         assert response["ok"] is True
         stop.assert_awaited_once_with("demo")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["remove", "disable", "rebind"])
+async def test_changing_association_revokes_hot_reload_recovery(tmp_path, monkeypatch, operation):
+    """With no host the association never reaches stop_plugin; a stopped plugin's
+    auto-reload recovery permission must still not survive its source changing."""
+    from plugin.server.application.plugins import lifecycle_service
+    record = _register(tmp_path)
+    monkeypatch.setattr(lifecycle_service, "_hot_reload_failed", {record.plugin_id})
+    if operation == "remove":
+        assert (await service.remove_development(record.registration_id, record.revision))["success"]
+    elif operation == "disable":
+        await service.set_development_enabled(False)
+    else:
+        replacement = _source(tmp_path / "replacement")
+        await service.rebind_development(record.registration_id, record.revision, str(replacement))
+    assert not lifecycle_service.plugin_needs_hot_reload_recovery(record.plugin_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("operation", "mutation"), [
+    ("remove", "remove_registration_sync"),
+    ("disable", "set_enabled_sync"),
+    ("rebind", "rebind_registration_sync"),
+])
+async def test_failed_association_change_keeps_hot_reload_recovery(tmp_path, monkeypatch, operation, mutation):
+    """The old source stays registered, so its recovery permission must too."""
+    from plugin.server.application.plugins import lifecycle_service
+    record = _register(tmp_path)
+    monkeypatch.setattr(lifecycle_service, "_hot_reload_failed", {record.plugin_id})
+
+    def fail(*_args, **_kwargs):
+        raise ServerDomainError(code="DEVELOPMENT_STORE_FAILED", message="disk full", status_code=500)
+
+    monkeypatch.setattr(store, mutation, fail)
+    with pytest.raises(ServerDomainError):
+        if operation == "remove":
+            await service.remove_development(record.registration_id, record.revision)
+        elif operation == "disable":
+            await service.set_development_enabled(False)
+        else:
+            await service.rebind_development(record.registration_id, record.revision, str(_source(tmp_path / "replacement")))
+    assert lifecycle_service.plugin_needs_hot_reload_recovery(record.plugin_id)
+
+
+@pytest.mark.asyncio
+async def test_bulk_reload_isolates_unexpected_preflight_errors(monkeypatch, tmp_path):
+    """A preflight that raises something other than ServerDomainError (a symlink
+    loop makes Path.resolve raise RuntimeError) fails only that plugin; the
+    batch still reloads the others instead of leaving them stopped."""
+    from plugin.server.application.plugins import lifecycle_service as lifecycle
+
+    record = _register(tmp_path)
+    monkeypatch.setattr(lifecycle, "_list_running_plugin_ids_sync", lambda: ["ordinary", record.plugin_id])
+    monkeypatch.setattr(lifecycle.plugin_registry_service, "refresh_registry", AsyncMock())
+    monkeypatch.setattr(lifecycle.plugin_registry_service, "order_plugin_ids", AsyncMock(side_effect=lambda ids: ids))
+
+    def preflight(snapshot):
+        raise RuntimeError("Symlink loop")
+
+    monkeypatch.setattr(service, "preflight_development_sync", preflight)
+    manager = lifecycle.PluginLifecycleService()
+    stop, start = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(manager, "stop_plugin", stop)
+    monkeypatch.setattr(manager, "start_plugin", start)
+    result = await manager.reload_all_plugins()
+    stopped = [call.args[0] for call in stop.await_args_list]
+    started = [call.args[0] for call in start.await_args_list]
+    assert stopped == ["ordinary"] and started == ["ordinary"]
+    assert result["reloaded"] == ["ordinary"]
+    assert not result["success"]

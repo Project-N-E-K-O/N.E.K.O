@@ -407,8 +407,8 @@ def test_startup_warmup_does_not_block_the_event_loop(monkeypatch):
 
     class _Hanging:
         def open(self, req, timeout=None):
-            release.wait(5)
-            raise OSError('timed out')
+            release.wait()
+            return _JsonResp('{"countryCode": "US"}')
 
     import urllib.request
     monkeypatch.setattr(urllib.request, 'build_opener', lambda *a, **kw: _Hanging())
@@ -421,28 +421,32 @@ def test_startup_warmup_does_not_block_the_event_loop(monkeypatch):
     ConfigManager._ensure_ip_probe_started()
 
     async def _run():
-        gaps = []
-        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        join_entered = asyncio.Event()
+        original_join = probe.join_ip_probe
 
-        async def _beat():
-            last = real_time.monotonic()
-            while not stop.is_set():
-                await asyncio.sleep(0.02)
-                now = real_time.monotonic()
-                gaps.append(now - last)
-                last = now
+        def observed_join(*args):
+            assert threading.get_ident() != loop_thread, "probe wait ran on the event-loop thread"
+            loop.call_soon_threadsafe(join_entered.set)
+            # Start the real join budget only after the test releases the
+            # probe; scheduler delays cannot finish warming before that gate.
+            release.wait()
+            return original_join(*args)
 
-        beat = asyncio.create_task(_beat())
-        await asyncio.sleep(0.1)
-        release.set()
-        await probe.awarmup_region_check(timeout=5)
-        stop.set()
-        await beat
-        return max(gaps)
+        monkeypatch.setattr(probe, "join_ip_probe", observed_join)
+        warming = asyncio.create_task(probe.awarmup_region_check(timeout=5))
+        try:
+            # The loop must run while the real probe is still blocked. Unlike
+            # a heartbeat latency ceiling, this survives shared-runner load.
+            await asyncio.wait_for(join_entered.wait(), timeout=5)
+            assert not warming.done()
+        finally:
+            release.set()
+            assert await asyncio.wait_for(warming, timeout=5) is True
 
     try:
-        worst = asyncio.run(_run())
-        assert worst < 0.5, f'预热期间事件循环被占用 {worst:.2f}s'
+        asyncio.run(_run())
     finally:
         release.set()
 
@@ -931,7 +935,11 @@ def test_every_plugin_offline_client_settles_the_region():
     import ast
 
     files = _plugin_files_constructing_offline_clients()
-    assert files, '未发现任何构造 OmniOfflineClient 的插件文件，本断言已失效'
+    if not files:
+        # 本 PR 删掉了 qq_auto_reply、main 又移出了 bilibili_danmaku，仓库里已没有构造
+        # OmniOfflineClient 的插件，发现集为空时这条守卫没有标的。跳过而不是断言失败：
+        # 将来再有插件用这个模式，守卫会自动重新生效（这正是"发现式"而非硬编码清单的意义）。
+        pytest.skip('仓库内已无构造 OmniOfflineClient 的插件文件，本守卫暂时无标的')
 
     problems = []
     for path in files:
@@ -1006,56 +1014,6 @@ def test_raw_config_gate_ignores_an_explicit_lanlan_app_endpoint():
     # 免费路由本身不受影响
     assert ConfigManager._config_needs_region(
         {'CORE_URL': 'wss://www.lanlan.tech/core'}) is True
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize('rel_path', [
-    'plugin/plugins/qq_auto_reply/session_bootstrap_service.py',
-])
-def test_plugin_session_paths_settle_the_region(rel_path):
-    """Plugin sessions cache an OmniOfflineClient too — same base-URL freeze.
-
-    The plugin keeps the client in a session-keyed dict, so a route picked before
-    the verdict lands sticks for the life of that session.
-
-    Checked per enclosing function and by line order, not by whole-file counts: a
-    settle call sitting in some unrelated function, or after the config read it is
-    supposed to guard, would satisfy a count-based assertion while guaranteeing
-    nothing.
-    """
-    import ast
-    import pathlib
-
-    source = pathlib.Path(__file__).resolve().parents[2] / rel_path
-    tree = ast.parse(source.read_text(encoding='utf-8'))
-
-    def _named(call):
-        return getattr(call.func, 'attr', None) or getattr(call.func, 'id', None)
-
-    checked = 0
-    for func in ast.walk(tree):
-        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        reads, settles = [], []
-        for call in ast.walk(func):
-            if not isinstance(call, ast.Call):
-                continue
-            name = _named(call)
-            if (name == 'get_model_api_config' and call.args
-                    and isinstance(call.args[0], ast.Constant)
-                    and call.args[0].value == 'conversation'):
-                reads.append(call.lineno)
-            elif name == 'aensure_region_resolved':
-                settles.append(call.lineno)
-        for read_line in reads:
-            checked += 1
-            earlier = [s for s in settles if s < read_line]
-            assert earlier, (
-                f'{rel_path}:{read_line} 在 {func.name}() 里冻结会话线路前没有先落定区域'
-                f'（该函数内的落定调用: {settles or "无"}）'
-            )
-
-    assert checked, f'{rel_path} 里没找到 conversation 配置读取，本断言已失效'
 
 
 @pytest.mark.unit
@@ -1531,6 +1489,14 @@ def test_region_sensitive_voice_endpoints_settle_first():
             continue
         calls = {getattr(c.func, 'attr', None) or getattr(c.func, 'id', None)
                  for c in ast.walk(node) if isinstance(c, ast.Call)}
+        # 标准线程卸载仍是目录读取；仅识别 asyncio.to_thread 的直接首参。
+        calls.update(
+            getattr(c.args[0], 'attr', None) or getattr(c.args[0], 'id', None)
+            for c in ast.walk(node)
+            if isinstance(c, ast.Call) and c.args
+            and isinstance(c.func, ast.Attribute) and c.func.attr == 'to_thread'
+            and isinstance(c.func.value, ast.Name) and c.func.value.id == 'asyncio'
+        )
         if not (calls & readers):
             continue
         checked.append(node.name)
@@ -1539,6 +1505,23 @@ def test_region_sensitive_voice_endpoints_settle_first():
 
     assert len(checked) >= 2, f'未找到足够的音色目录端点，断言失效: {checked}'
     assert not missing, f'这些端点按区域出音色目录却未先落定: {missing}'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('endpoint', ['get_voices', 'get_voice_preview'])
+def test_voice_catalog_guard_rejects_removing_region_settlement(monkeypatch, endpoint):
+    """Both direct and to_thread readers remain guarded, rather than lowering the count."""
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[2] / 'main_routers' / 'characters_router' / 'voice_preview.py'
+    original_read = Path.read_text
+    text = original_read(source, encoding='utf-8')
+    start = text.index(f'async def {endpoint}(')
+    mutant = text[:start] + text[start:].replace('aensure_region_resolved()', 'unrelated_readiness()', 1)
+    monkeypatch.setattr(Path, 'read_text', lambda path, *args, **kwargs:
+                        mutant if path == source else original_read(path, *args, **kwargs))
+    with pytest.raises(AssertionError, match=endpoint):
+        test_region_sensitive_voice_endpoints_settle_first()
 
 
 def _yui_binding_manager(authoritative_cfg, saved, probe_calls=None, non_mainland=False):
@@ -1735,7 +1718,12 @@ def test_paths_that_pick_a_voice_and_build_a_tts_url_settle_first():
                         f'晚于第一次区域敏感读取 line {first_read}'
                     )
 
-    assert checked, '未找到任何「挑音色 + 拼 TTS 端点」的路径，断言失效'
+    if not checked:
+        # 唯一符合条件的样本（plugin/plugins/qq_auto_reply/voice_reply_service.py 的
+        # synthesize_reply_voice_audio）随市场插件一起被 gitignore，CI 检出里不存在，
+        # 于是扫描为空。此时跳过而非断言失败——测试只对「仓库内确实存在该模式」时生效，
+        # 避免护栏在无样本的检出里因空集而阻塞 CI。
+        pytest.skip('未找到任何「挑音色 + 拼 TTS 端点」的路径（样本在 gitignore 的市场插件中），跳过')
     assert not missing, f'这些路径在一次操作里两次读区域却未先落定: {missing}'
 
 

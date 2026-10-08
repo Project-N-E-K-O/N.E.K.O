@@ -15,6 +15,7 @@ _ASSIST_API_KEY_FIELDS = (
     'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
     'assistApiKeyOrcarouter',
+    'assistApiKeyRequesty',
 )
 
 _MODEL_TYPES = (
@@ -31,6 +32,8 @@ _CONFIG_SECRET_FIELDS = (
     *_ASSIST_API_KEY_FIELDS,
     'mcpToken',
     *_MODEL_API_KEY_FIELDS,
+    'doubaoVoiceManagementAccessKey',
+    'doubaoVoiceManagementSecretKey',
 )
 
 
@@ -153,6 +156,33 @@ def test_get_redacts_every_core_config_secret(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
+@pytest.mark.parametrize('requesty_key', ['', 'sk-requesty-dedicated'])
+def test_requesty_readback_uses_only_its_dedicated_key(
+    config_manager, core_config_router, core_provider, requesty_key,
+):
+    """An unrelated core credential must not appear as a configured Requesty key."""
+    core_key = 'free-access' if core_provider == 'free' else 'sk-other-core'
+    _write_core_config(config_manager, {
+        'coreApi': core_provider,
+        'coreApiKey': core_key,
+        'assistApi': 'requesty',
+        'assistApiKeyRequesty': requesty_key,
+    })
+    response = asyncio.run(core_config_router.get_core_config_api())
+    assert response['success'] is True
+    assert response['assistApi'] == 'requesty'
+    assert response['assistApiKeyRequesty'] == (
+        core_config_router.CORE_CONFIG_SECRET_SENTINEL if requesty_key else ''
+    )
+    assert response['assist_api_key_display'] == (
+        core_config_router.mask_core_config_secret_for_display(requesty_key)
+    )
+    assert 'sk-other-core' not in json.dumps(response)
+    assert 'sk-requesty-dedicated' not in json.dumps(response)
+
+
+@pytest.mark.unit
 def test_get_preserves_empty_secrets_and_free_access(
     config_manager,
     core_config_router,
@@ -204,6 +234,37 @@ def test_get_uses_effective_realtime_core_for_asr_capability(
     assert response['coreApi'] == 'free'
     assert response['effectiveCoreApi'] == 'local'
     assert response['supportsIndependentAsr'] is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('installed', [True, False])
+def test_get_reports_local_asr_availability_off_the_event_loop(
+    monkeypatch,
+    config_manager,
+    core_config_router,
+    installed,
+):
+    import threading
+
+    import main_logic.asr_client as asr_client
+
+    probes = []
+
+    def fake_probe(module_name):
+        probes.append((module_name, threading.get_ident()))
+        return installed
+
+    monkeypatch.setattr(asr_client, '_optional_dependency_available', fake_probe)
+    _write_core_config(config_manager, {'coreApi': 'qwen', 'assistApi': 'qwen'})
+
+    loop_thread = threading.get_ident()
+    response = asyncio.run(core_config_router.get_core_config_api())
+
+    assert response['success'] is True
+    assert response['localAsrAvailable'] is installed
+    assert [name for name, _ in probes] == ['faster_whisper']
+    # The import-system probe must not run on the request's event loop.
+    assert all(thread != loop_thread for _, thread in probes)
 
 
 @pytest.mark.unit

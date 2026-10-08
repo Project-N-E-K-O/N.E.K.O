@@ -33,7 +33,7 @@ async function mountSidebar(): Promise<{ container: HTMLDivElement; unmount: () 
   const pinia = createPinia()
   setActivePinia(pinia)
   const store = usePluginStore()
-  store.plugins = [
+  store.pluginSummaries = [
     { id: 'adapter#demo', name: '哈希适配器', type: 'adapter', status: 'running', version: '1.0.0' },
     { id: 'adapter_demo', name: '普通适配器', type: 'adapter', status: 'running', version: '1.0.0' },
     { id: 'study_companion', name: '普通插件', type: 'plugin', status: 'running', version: '1.0.0' },

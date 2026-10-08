@@ -47,6 +47,15 @@ export default {
     removeHint: "プラグインを停止して関連付けを解除しますか？ソースと実行データは保持されます。",
   },
   common: {
+    surfaceLanguagePending: "アプリの言語が変更されました。未保存の内容を保護するため、このパネルの言語は維持されます。",
+    surfaceApplyLanguage: "言語を適用してパネルを再読み込み",
+    surfaceApplyLanguageConfirm: "パネルを再読み込みすると、未保存の内容は失われます。続行しますか？",
+
+    languageLoading: "言語を読み込み中です。画面は引き続き利用できます",
+    languageLoadFailed: "言語を読み込めませんでした。現在の言語を維持します。",
+    languageRetry: "言語を再試行",
+    languageReload: "ページを再読み込み",
+
     loading: '読み込み中...',
     refresh: '更新',
     search: '検索',
@@ -248,6 +257,8 @@ export default {
     packageHashMismatch: 'プラグインパッケージの検証に失敗しました。',
     downloadFailed: 'プラグインパッケージのダウンロードに失敗しました。',
     marketListFetchFailed: 'プラグイン Market は一時的に利用できません。',
+    catalogNotConfigured: 'プラグイン Market のアドレスが設定されていません。',
+    releaseMismatch: 'インストール要求が Market の公開記録と一致しません。プラグイン Market を再読み込みしてから再試行してください。',
     unsafeProfilePath: '記録されたパッケージ Profile のパスは安全ではありません。',
     packageIdentityMismatch: 'パッケージ ID が対象プラグインと一致しません。',
     confirmationChanged: '確認後にプラグインまたはパッケージが変更されました。新しい計画を確認してください。',
@@ -442,6 +453,10 @@ export default {
     disabled: '無効',
     autoStart: '自動起動',
     manualStart: '手動起動',
+    autoStartHint: 'N.E.K.O の起動時にこのプラグインを自動で起動します。手動で起動・停止してもこの設定は変わりません。',
+    autoStartDisabledHint: 'このプラグインは無効です。自動起動をオンにすると次回起動時に実行できるよう有効化されますが、今すぐ起動することはありません。',
+    autoStartBlockedHint: '設定はオンですが、プラグインが無効または承認待ちのため、次回は自動起動しません。オフにしてからオンにすると、有効化と自動起動の承認が行われます。',
+    autoStartUnsupportedDevelopment: '開発中のプラグインは自動起動されません。手動で起動してください。',
     fetchFailed: 'プラグイン一覧の取得に失敗しました',
     pluginType: 'タイプ',
     pluginTypeNormal: 'プラグイン',
@@ -583,6 +598,8 @@ export default {
       blockedLegacyPlugin: 'このプラグインの以前のバージョンがまだインストールされています。続行する前に {plugin} をアンインストールしてください。',
       blockedOwnershipUnknown: '既存のプラグインディレクトリの所有元を確認できません。インストール元の記録を復元してから再試行してください。',
       blockedInstallSourceReadOnly: 'インストール元の記録を利用できないか、読み取り専用です。記録を復元してから再試行してください。',
+      installSucceeded: 'インストールが完了しました。{count} 個のプラグインを処理しました。',
+      completedWithWarnings: '{plugin} はインストールされましたが、警告があります：{reasons}',
       rollbackCompleted: 'アップグレードに失敗したため、以前のバージョンを復元しました。',
       rollbackIncomplete: 'アップグレードに失敗し、ロールバックも完了できませんでした。続行する前にプラグインの状態を確認してください。',
       error: {
@@ -593,6 +610,7 @@ export default {
         pluginManifestInvalid: 'プラグインの plugin.toml が不正です。作者に修正と再ビルドを依頼してください。',
         identityMismatch: 'プラグインのフォルダー名と plugin.toml の ID が一致しません。作者に修正を依頼してください。',
         hashMismatch: 'パッケージ内容が検証情報と一致しません。インストールは行われませんでした。',
+        profileOwnershipConflict: 'このパッケージのプロファイルフォルダーが既に存在しますが、このパッケージのものではありません（以前のインストールの残りの可能性があります）。インストールは行われませんでした。',
         inspectFailed: 'このプラグインパッケージを検査できませんでした。ファイルが存在し、有効な N.E.K.O パッケージであることを確認してから再試行してください。',
         verifyFailed: 'このプラグインパッケージを検証できませんでした。再ダウンロードするか、作者に再ビルドを依頼してから再試行してください。',
         installFailed: 'このプラグインパッケージをインストールできませんでした。未確認の変更は保存されていません。'
@@ -796,6 +814,9 @@ export default {
     pluginDeleted: 'プラグインを削除しました',
     pluginDeletedBuiltinRestartFailed: 'プラグイン {plugin} は削除されましたが、復元した内蔵版を起動できませんでした：{error}',
     startFailed: '起動に失敗しました',
+    autoStartEnabled: '自動起動を有効にしました',
+    autoStartDisabled: '自動起動を無効にしました',
+    autoStartUpdateFailed: '自動起動の設定を更新できませんでした',
     stopFailed: '停止に失敗しました',
     reloadFailed: 'リロードに失敗しました',
     buildFailed: 'プラグインのパッケージ化に失敗しました',
@@ -809,6 +830,7 @@ export default {
     serviceUnavailable: 'サービスが利用できません',
     networkError: 'ネットワークエラー。接続を確認してください。',
     requestTimeout: 'リクエストがタイムアウトしました。もう一度お試しください。',
+    csrfBootstrapFailed: 'セキュリティトークンを取得できませんでした。リバースプロキシを使用している場合は、/security/csrf-token がプラグインサーバーに転送されているか確認してください。',
     pluginLifecycleTimeout: 'プラグインの起動または再起動がタイムアウトしました。プラグインログを確認してください。'
   },
   welcome: {

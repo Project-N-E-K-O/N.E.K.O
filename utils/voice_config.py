@@ -38,6 +38,7 @@ existing ``validate_voice_id`` resolution, which it reuses.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any
 
 # Voice sources (dimension B). Empty string = "no voice configured".
@@ -45,6 +46,11 @@ SOURCE_PRESET = "preset"
 SOURCE_CLONE = "clone"
 SOURCE_DESIGN = "design"
 VALID_SOURCES = frozenset({SOURCE_PRESET, SOURCE_CLONE, SOURCE_DESIGN})
+
+
+def is_imported_voice_ref(value: object) -> bool:
+    """Recognize the provider-neutral library-reference namespace."""
+    return isinstance(value, str) and bool(re.fullmatch(r"voice_[0-9a-f]{32}", value))
 
 
 @dataclass(frozen=True)
@@ -240,6 +246,10 @@ def to_legacy_voice_id(vc: "VoiceConfig") -> str:
     """
     if vc is None or vc.is_empty():
         return ""
+    # Imported voices use an opaque library reference for every provider.
+    # Preserve it before reconstructing prefixes used by legacy remote IDs.
+    if is_imported_voice_ref(vc.ref):
+        return vc.ref
     if vc.provider == "elevenlabs":
         return f"eleven:{vc.ref}"
     if vc.provider == "gptsovits":

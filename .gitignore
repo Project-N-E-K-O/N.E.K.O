@@ -21,6 +21,16 @@ tests/test_inputs/
 /docker/ssl/
 /docker/logs/
 /docker/N.E.K.O/
+# 已移除的 community-2c2g 部署留下的数据目录（迁回 docker/ 前不要误提交）。
+/docker/community-2c2g/neko-home/
+/docker/community-2c2g/logs/
+# 回退时从 git 历史恢复的旧 compose 文件，只在本机使用。
+/docker/community-2c2g/docker-compose.yaml
+# 本机网关覆盖配置；可移植示例见 docs/zh-CN/deployment/low-spec-server.md。
+# 旧路径保留忽略，直到用户把文件迁出 community-2c2g。
+/docker/community-2c2g/compose.gateway.yaml
+/docker/compose.gateway.yaml
+/docker/compose.local.yaml
 
 # 忽略日志文件
 *.log
@@ -85,6 +95,10 @@ __pycache__/
 /.pytest_tmp*/
 .DS_Store
 .codex
+# Local investigation material: raw provider responses, synthetic fixtures
+# and credential-reading probe scripts. Never commit these — the repository
+# is public and the incident record keeps such artifacts local on purpose.
+.codex-tmp/
 .venv
 .venv_monitor/
 .matplotlib/
@@ -213,12 +227,12 @@ plugin/rust/
 plugin/plugins/music_tester/
 plugin/plugins/web_radio/
 
-# QQ 自动回复：NapCat.Shell 整个目录不入库，仅保留 .gitkeep 占位
-plugin/plugins/qq_auto_reply/NapCat.Shell/*
+# 本地安装的插件（含已移出本仓库的 qq_auto_reply）：整个目录不入库
+plugin/plugins/qq_auto_reply
 plugin/plugins/writer_power_analysis
 plugin/plugins/sts2_autoplay
 plugin/plugins/bilibili_danmaku
-
+plugin/plugins/neko_overcooked
 # QQ 自动回复 测试数据
 plugin/plugins/qq_auto_reply/static/cache/
 plugin/plugins/qq_auto_reply/data/

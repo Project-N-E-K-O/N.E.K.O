@@ -378,6 +378,7 @@ window.startPageConfigLoad = function startPageConfigLoad() {
                 && typeof window.__nekoSevenDayTutorialStateReady.then === 'function') {
                 await window.__nekoSevenDayTutorialStateReady;
             }
+            await window.NekoAvatarFloatingBoot?.waitForAuthoritativeState?.();
 
             if (window.__NEKO_MULTI_WINDOW__ && isReservedPagePath(window.location.pathname)) {
                 return resolvePageConfig(await startMultiWindowPageConfigLoad());

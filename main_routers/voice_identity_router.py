@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from pathlib import Path
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from main_logic.voice_identity_service.audio_contract import (
     OWNER_CAMPPLUS_DESKTOP_CONTRACT_ID,
     OWNER_CAMPPLUS_DESKTOP_SOURCE_SAMPLE_RATE_HZ,
+    VoiceIdentityAudioContractSnapshot,
 )
 from main_logic.voice_identity_service.registry import (
     VoiceIdentityServiceRegistryError,
     get_voice_identity_service_for_router,
 )
 from main_logic.voice_identity_service.service import VoiceIdentityServiceError
+from main_logic.voice_identity_service.resource_manager import MAX_TRIAL_PCM_BYTES, VoiceResourceError
 from main_routers.system_router import _validate_local_mutation_request
 from utils.logger_config import get_module_logger
 
@@ -58,9 +62,11 @@ def _service_error(exc: VoiceIdentityServiceError) -> JSONResponse:
     }:
         status_code = 400
     elif exc.code in {
+        "feature_disabled",
         "stale_enrollment",
         "segment_out_of_order",
         "segment_in_progress",
+        "audio_contract_changed",
     }:
         status_code = 409
     elif exc.code == "audio_too_long":
@@ -85,7 +91,10 @@ def _service_error(exc: VoiceIdentityServiceError) -> JSONResponse:
         status_code = 503
     else:
         status_code = 503
-    return JSONResponse({"error_code": exc.code}, status_code=status_code)
+    payload = {"error_code": exc.code}
+    if exc.diagnostics is not None:
+        payload["diagnostics"] = exc.diagnostics
+    return JSONResponse(payload, status_code=status_code)
 
 
 def _validate_mutation(request: Request, payload: dict | None = None):
@@ -126,8 +135,28 @@ async def start_voice_identity_enrollment(request: Request):
     service = _service()
     if service is None:
         return _service_unavailable()
+    body = await _read_bounded_body(request, 1024)
+    expected_audio_contract = None
+    if body:
+        try:
+            payload = json.loads(body)
+            if type(payload) is not dict or set(payload) - {"preview_audio_contract"}:
+                raise ValueError
+            if "preview_audio_contract" in payload:
+                raw = payload["preview_audio_contract"]
+                if (type(raw) is not dict or set(raw) != {"contract_id", "revision", "noise_reduction_enabled"}
+                        or type(raw["revision"]) is not int or type(raw["noise_reduction_enabled"]) is not bool):
+                    raise ValueError
+                expected_audio_contract = VoiceIdentityAudioContractSnapshot(**raw)
+        except (ValueError, TypeError, UnicodeDecodeError):
+            return JSONResponse({"error_code": "unsupported_audio_contract"}, status_code=400)
+    elif body is None:
+        return JSONResponse({"error_code": "unsupported_audio_contract"}, status_code=413)
     try:
-        await service.start_enrollment()
+        if expected_audio_contract is None:
+            await service.start_enrollment()
+        else:
+            await service.start_enrollment(expected_audio_contract=expected_audio_contract)
     except VoiceIdentityServiceError as exc:
         return _service_error(exc)
     return service.status().as_dict()
@@ -267,3 +296,213 @@ async def delete_voice_identity_profile(request: Request):
 
 
 __all__ = ["router"]
+
+
+def _resource_error(exc) -> JSONResponse:
+    code = exc.code
+    status = 503
+    if code in {"invalid_resource_operation", "invalid_pcm", "invalid_enabled", "invalid_preview_request", "preview_request_invalid"}:
+        status = 400
+    elif code in {"resource_operation_busy", "enrollment_in_progress", "audio_contract_changed", "wake_preference_managed",
+                  "preview_invalid", "preview_busy", "preview_expired", "preview_consumed", "preview_not_ready", "preview_owner_active", "preview_owner_changed"}:
+        status = 409
+    return JSONResponse({"error_code": code}, status_code=status)
+
+
+@router.get("/resources")
+async def get_voice_resources():
+    service = _service()
+    if service is None:
+        return _service_unavailable()
+    try:
+        return await service.resources()
+    except (VoiceIdentityServiceError, VoiceResourceError) as exc:
+        return _resource_error(exc)
+
+
+def _read_voice_repair_guide() -> str:
+    guide = Path(__file__).resolve().parents[1] / "docs" / "development" / "voice-readiness.md"
+    try:
+        if guide.stat().st_size > 64 * 1024:
+            raise OSError
+        with guide.open("r", encoding="utf-8") as source:
+            return source.read(64 * 1024)
+    except (OSError, UnicodeError):
+        # Frontend displays the localized backend-machine repair explanation.
+        # This fixed URL is a safe exit when an older frozen bundle lacks docs.
+        return "https://github.com/Project-N-E-K-O/N.E.K.O/releases\n"
+
+
+@router.get("/resources/repair-guide")
+async def get_voice_resource_repair_guide():
+    return PlainTextResponse(await asyncio.to_thread(_read_voice_repair_guide))
+
+
+async def _start_resource_operation(request: Request, kind: str | None, operation_id: str | None = None):
+    rejected = _validate_mutation(request)
+    if rejected is not None:
+        return rejected
+    service = _service()
+    if service is None:
+        return _service_unavailable()
+    # This endpoint takes no client URL/path/configuration payload.
+    body = await _read_bounded_body(request, 2)
+    if body not in {b"", b"{}"}:
+        return JSONResponse({"error_code": "invalid_resource_operation"}, status_code=400)
+    try:
+        if operation_id is not None:
+            return JSONResponse(service.start_reserved_resource_operation(operation_id), status_code=202)
+        return JSONResponse(service.start_resource_operation(kind), status_code=202)
+    except (VoiceIdentityServiceError, VoiceResourceError) as exc:
+        return _resource_error(exc)
+
+
+@router.post("/resources/prepare")
+async def prepare_voice_resources(request: Request):
+    return await _start_resource_operation(request, "prepare")
+
+
+@router.post("/resources/wake-word/download")
+async def download_wake_word_resources(request: Request):
+    return await _start_resource_operation(request, "download")
+
+
+@router.get("/resources/operations/{operation_id}")
+async def get_voice_resource_operation(operation_id: str):
+    service = _service()
+    if service is None:
+        return _service_unavailable()
+    try:
+        return service.resource_operation(operation_id)
+    except (VoiceIdentityServiceError, VoiceResourceError) as exc:
+        return _resource_error(exc)
+
+
+@router.post("/resources/operations")
+async def reserve_voice_resource_operation(request: Request):
+    rejected = _validate_mutation(request)
+    if rejected is not None:
+        return rejected
+    payload = await _read_resource_json(request)
+    if payload is None or set(payload) != {"kind"} or payload["kind"] not in ("prepare", "download"):
+        return JSONResponse({"error_code": "invalid_resource_operation"}, status_code=400)
+    service = _service()
+    if service is None:
+        return _service_unavailable()
+    try:
+        return JSONResponse(service.reserve_resource_operation(payload["kind"]), status_code=201)
+    except (VoiceIdentityServiceError, VoiceResourceError) as exc:
+        return _resource_error(exc)
+
+
+@router.post("/resources/operations/{operation_id}/start")
+async def start_reserved_voice_resource_operation(operation_id: str, request: Request):
+    return await _start_resource_operation(request, None, operation_id)
+
+
+@router.post("/resources/operations/{operation_id}/cancel")
+async def cancel_voice_resource_operation(operation_id: str, request: Request):
+    rejected = _validate_mutation(request)
+    if rejected is not None:
+        return rejected
+    service = _service()
+    if service is None:
+        return _service_unavailable()
+    try:
+        return await service.cancel_resource_operation(operation_id)
+    except (VoiceIdentityServiceError, VoiceResourceError) as exc:
+        return _resource_error(exc)
+
+
+async def _read_resource_json(request: Request) -> dict | None:
+    body = await _read_bounded_body(request, 1024)
+    if body is None:
+        return None
+    try:
+        payload = json.loads(body)
+        return payload if type(payload) is dict else None
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+@router.post("/resources/wake-word/preference")
+async def set_voice_wake_word_preference(request: Request):
+    from main_logic.voice_input.preview import VoicePreviewIsolationError
+    rejected = _validate_mutation(request)
+    if rejected is not None:
+        return rejected
+    payload = await _read_resource_json(request)
+    if payload is None or set(payload) != {"enabled"} or type(payload["enabled"]) is not bool:
+        return JSONResponse({"error_code": "invalid_enabled"}, status_code=400)
+    service = _service()
+    if service is None:
+        return _service_unavailable()
+    try:
+        return await service.set_wake_word_preference(payload["enabled"])
+    except (VoiceIdentityServiceError, VoiceResourceError, VoicePreviewIsolationError) as exc:
+        return _resource_error(exc)
+
+
+@router.post("/audio/check/isolation")
+async def begin_voice_preview_isolation(request: Request):
+    from main_logic.voice_input.preview import VoicePreviewIsolationError
+    rejected = _validate_mutation(request)
+    if rejected is not None:
+        return rejected
+    payload = await _read_resource_json(request)
+    if payload is None or set(payload) != {"request_id"} or not isinstance(payload["request_id"], str) or not 1 <= len(payload["request_id"]) <= 128:
+        return JSONResponse({"error_code": "invalid_preview_request"}, status_code=400)
+    service = _service()
+    if service is None:
+        return _service_unavailable()
+    try:
+        return service.begin_trial_isolation(payload["request_id"]).as_dict()
+    except (VoiceIdentityServiceError, VoiceResourceError, VoicePreviewIsolationError) as exc:
+        return _resource_error(exc)
+
+
+@router.post("/audio/check/isolation/release")
+async def release_voice_preview_isolation(request: Request):
+    from main_logic.voice_input.preview import preview_isolation_registry
+    rejected = _validate_mutation(request)
+    if rejected is not None:
+        return rejected
+    payload = await _read_resource_json(request)
+    if payload is None or set(payload) != {"token"} or not isinstance(payload["token"], str) or not 1 <= len(payload["token"]) <= 128:
+        return JSONResponse({"error_code": "invalid_preview_request"}, status_code=400)
+    return {"released": preview_isolation_registry.release(payload["token"])}
+
+
+@router.post("/audio/check")
+async def check_voice_trial_audio(request: Request):
+    from main_logic.voice_input.preview import preview_isolation_registry, VoicePreviewIsolationError
+    rejected = _validate_mutation(request)
+    if rejected is not None:
+        return rejected
+    if request.headers.get("content-type", "").lower() != _PCM_CONTENT_TYPE:
+        return JSONResponse({"error_code": "invalid_pcm"}, status_code=415)
+    if request.headers.get(_AUDIO_CONTRACT_HEADER, "") != OWNER_CAMPPLUS_DESKTOP_CONTRACT_ID:
+        return JSONResponse({"error_code": "unsupported_audio_contract"}, status_code=415)
+    service = _service()
+    if service is None:
+        return _service_unavailable()
+    ticket = None
+    try:
+        ticket = preview_isolation_registry.claim(request.headers.get("X-Voice-Input-Check", ""))
+        pcm16 = await asyncio.wait_for(
+            _read_bounded_body(request, MAX_TRIAL_PCM_BYTES),
+            timeout=min(15.0, ticket.as_dict()["ttl_seconds"]),
+        )
+        if pcm16 is None:
+            return JSONResponse({"error_code": "audio_too_long"}, status_code=413)
+        ticket.validate_current()
+        result = await service.check_trial_audio(pcm16, noise_reduction_enabled=ticket.noise_reduction_enabled)
+        ticket.validate_current()
+        return result
+    except (VoiceIdentityServiceError, VoiceResourceError, VoicePreviewIsolationError) as exc:
+        return _resource_error(exc)
+    except TimeoutError:
+        return JSONResponse({"error_code": "preview_expired"}, status_code=409)
+    finally:
+        if ticket is not None:
+            preview_isolation_registry.release(ticket)

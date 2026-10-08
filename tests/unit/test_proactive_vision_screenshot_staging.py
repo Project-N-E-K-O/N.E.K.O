@@ -374,6 +374,29 @@ def test_prompt_ephemeral_no_visible_text_keeps_staged_screenshot():
     assert c._proactive_image_to_inject == "SCREEN_B64"
 
 
+def test_prompt_ephemeral_cancel_does_not_emit_response_done_boundary():
+    """A locally cancelled proactive stream must not close a TTS turn."""
+    c, _set_chunks = _make_offline_for_ephemeral()
+
+    async def _cancelled_stream(_messages, **_overrides):
+        await c.cancel_response()
+        if False:
+            yield SimpleNamespace(content="")
+
+    c._astream_visible_with_tools = _cancelled_stream
+
+    committed = asyncio.run(
+        c.prompt_ephemeral(
+            "======启动问候======",
+            completion_mode="response",
+            persist_response=False,
+        )
+    )
+
+    assert committed is False
+    c.on_response_done.assert_not_awaited()
+
+
 def test_prompt_ephemeral_committed_text_callback_receives_sanitized_text_once():
     c, set_chunks = _make_offline_for_ephemeral()
     set_chunks([

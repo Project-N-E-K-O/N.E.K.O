@@ -15,6 +15,107 @@
     S.voiceInputRecoverySessionEpoch = null;
     S.voiceInputRecoveryLeaseGeneration = null;
     S.voiceInputRecoveryTimer = null;
+    S.asrAutomaticRecovery = null;
+    function matchesAutomaticRecoveryIdentity(detail) {
+        return !!detail && S.independentAsrActive === true && S.isRecording === true
+            && !S.isMicMuted && !S.gameVoiceSttGateActive
+            && Number.isSafeInteger(detail.recovery_id)
+            && detail.session_epoch != null
+            && detail.session_epoch === (S.voiceSessionEpoch ?? S.sessionEpoch)
+            && detail.lease_generation != null
+            && detail.lease_generation === S.voiceInputCurrentLeaseGeneration;
+    }
+    function matchesAutomaticRecoveryOperation(detail) {
+        const current = S.asrAutomaticRecovery;
+        return matchesAutomaticRecoveryIdentity(detail) && current != null
+            && current.state !== 'retired'
+            && current.recovery_id === detail.recovery_id
+            && current.session_epoch === detail.session_epoch
+            && current.lease_generation === detail.lease_generation
+            && current.route_generation === detail.route_generation;
+    }
+    function retireAutomaticRecovery() {
+        if (S.asrAutomaticRecovery) S.asrAutomaticRecovery.state = 'retired';
+    }
+    function handleAutomaticRecoveryStatus(code, detail) {
+        if (!matchesAutomaticRecoveryIdentity(detail)) return false;
+        const current = S.asrAutomaticRecovery;
+        if (code === 'ASR_RECOVERY_STARTED') {
+            if (current && current.session_epoch === detail.session_epoch
+                && detail.recovery_id <= current.recovery_id) return false;
+            S.asrAutomaticRecovery = { ...detail, state: 'recovering', incomplete: false };
+            // Automatic recovery has its own backend deadline. Retire the
+            // unmute timer instead of letting its four seconds block buffering.
+            clearVoiceInputRecoveryTimer();
+            S.voiceInputRecoveryGeneration += 1;
+            S.voiceInputRecoveryState = 'idle';
+            updateRecoveryStatus('recovering');
+        } else {
+            if (!matchesAutomaticRecoveryOperation(detail)) return false;
+            if (code === 'ASR_TURN_INCOMPLETE') {
+                if (current.incomplete) return false;
+                current.incomplete = true;
+                if (typeof window.showStatusToast === 'function') {
+                    const key = 'microphone.voiceInputTurnIncomplete';
+                    const translated = typeof window.t === 'function' ? window.t(key) : null;
+                    window.showStatusToast(translated && translated !== key ? translated
+                        : 'The previous sentence was not completed. Please say it again after voice input recovers.', 6000);
+                }
+            } else {
+                if (current.state !== 'recovering') return false;
+                current.state = code === 'ASR_RECOVERY_READY' ? 'ready' : 'failed';
+                updateRecoveryStatus(current.state);
+            }
+        }
+        window.dispatchEvent(new CustomEvent('asr-automatic-recovery-changed', {
+            detail: { ...S.asrAutomaticRecovery }
+        }));
+        return true;
+    }
+    mod.handleAutomaticRecoveryStatus = handleAutomaticRecoveryStatus;
+    mod.matchesAutomaticRecoveryOperation = matchesAutomaticRecoveryOperation;
+    function handleAutomaticRecoveryBlocked(detail) {
+        if (!matchesAutomaticRecoveryIdentity(detail)
+                || !Number.isSafeInteger(detail.route_generation)) return false;
+        const current = S.asrAutomaticRecovery;
+        if (current && current.session_epoch === detail.session_epoch
+                && current.lease_generation === detail.lease_generation) {
+            if (detail.recovery_id < current.recovery_id
+                    || detail.route_generation < current.route_generation) return false;
+            if (detail.recovery_id === current.recovery_id) {
+                if (!matchesAutomaticRecoveryOperation(detail)
+                        || current.state === 'ready' || current.state === 'retired') return false;
+                if (current.state === 'failed') return true;
+            }
+        }
+        // Signed lifecycle BLOCKED is itself terminal evidence. STARTED or
+        // FAILED may have missed their bounded delivery window; neither is
+        // required to retire this still-current microphone route.
+        S.asrAutomaticRecovery = {
+            ...detail, state: 'failed', buffering: false,
+            incomplete: current?.recovery_id === detail.recovery_id
+                && current.session_epoch === detail.session_epoch
+                && current.lease_generation === detail.lease_generation
+                && current.route_generation === detail.route_generation
+                && current.incomplete === true
+        };
+        clearVoiceInputRecoveryTimer();
+        S.voiceInputRecoveryGeneration += 1;
+        S.voiceInputRecoveryState = 'failed';
+        updateRecoveryStatus('failed');
+        window.dispatchEvent(new CustomEvent('asr-automatic-recovery-changed', {
+            detail: { ...S.asrAutomaticRecovery }
+        }));
+        return true;
+    }
+    mod.handleAutomaticRecoveryBlocked = handleAutomaticRecoveryBlocked;
+    window.addEventListener('mic-mute-state-changed', event => {
+        if (event.detail?.muted) retireAutomaticRecovery();
+    });
+    window.addEventListener('mic-lease-changed', event => {
+        if (event.detail?.owner !== 'core') retireAutomaticRecovery();
+    });
+    window.addEventListener('voice-input-socket-open', retireAutomaticRecovery);
     function recoveryStatusElement() {
         return document.getElementById('status-toast');
     }
@@ -31,6 +132,7 @@
     function clearVoiceInputRecoveryTimer() { if (S.voiceInputRecoveryTimer) clearTimeout(S.voiceInputRecoveryTimer); S.voiceInputRecoveryTimer = null; }
     function resetVoiceInputRecoveryState() {
         clearVoiceInputRecoveryTimer();
+        S.asrAutomaticRecovery = null;
         // Retire callbacks already queued by the previous session as well as
         // its transport identity. A hardware restart within a session must not
         // call this: it still has to wait for the current recovery verdict.
@@ -135,6 +237,17 @@
     function setSelectedMicrophoneId(deviceId) {
         S.selectedMicrophoneId = deviceId;
         microphoneSelectionGeneration += 1;
+    }
+
+    // 正式录音和设置页试麦共用：试麦要预判正式录音实际能听到什么，两边必须同一套处理。
+    function micCaptureAudioConstraints(targetSampleRate = window.appUtils.isMobile() ? 16000 : 48000) {
+        const base = window.nekoMicrophoneInput ? window.nekoMicrophoneInput.constraints : {
+            noiseSuppression: false,
+            echoCancellation: true,
+            channelCount: 1
+        };
+        // 16k input bypasses backend DSP; 48k input uses backend AGC.
+        return { ...base, autoGainControl: targetSampleRate === 16000 };
     }
 
     function currentVoiceInputControlState() {
@@ -247,8 +360,13 @@
     }
 
     function canUploadOrdinaryMicFrame() {
+        if (window.nekoVoiceCaptureReadiness && window.nekoVoiceCaptureReadiness.blocked()) return false;
         if (refreshMicLease() !== MIC_LEASE.CORE) return false;
         const state = currentVoiceInputControlState();
+        const recovery = S.asrAutomaticRecovery;
+        if (recovery && matchesAutomaticRecoveryOperation(recovery)
+            && (recovery.state === 'failed'
+                || (recovery.state === 'recovering' && recovery.buffering !== true))) return false;
         return !state.hard_muted && !state.focus_suppressed
             && !isVoiceInputRecoveryPending() && S.voiceInputRecoveryState !== 'failed';
     }
@@ -980,6 +1098,9 @@
         // 保存选择到服务器
         await saveSelectedMicrophone(deviceId);
 
+        // 没在录音但设置页正在试麦：按新设备重开 probe，否则音量条一直测的是旧设备。
+        if (!S.isRecording) restartSettingsMicVolumeProbe();
+
         // 如果正在录音，先显示选择提示，然后延迟重启录音
         if (S.isRecording) {
             const wasRecording = S.isRecording;
@@ -1003,7 +1124,8 @@
                 if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
                     window.stopProactiveVisionDuringSpeech();
                 }
-                // 停止屏幕共享
+                // 只临时停掉屏幕共享的发送，切换完成后按 shouldRestartScreening
+                // 恢复；进行中的换源重启和启动都要保留，不能用 teardownScreenSharing。
                 if (typeof window.stopScreening === 'function') {
                     window.stopScreening();
                 }
@@ -1135,9 +1257,9 @@
                     window.syncVoiceChatComposerHidden(false);
                 }
 
-                // 清理资源
-                if (typeof window.stopScreening === 'function') {
-                    window.stopScreening();
+                // 清理资源（会话结束：屏幕共享要完整收尾）
+                if (typeof window.teardownScreenSharing === 'function') {
+                    window.teardownScreenSharing();
                 }
                 stopSilenceDetection();
                 S.inputAnalyser = null;
@@ -1172,6 +1294,7 @@
                 return;
             } finally {
                 window._isSwitchingMicDevice = false;
+                scheduleSettingsMicVolumeProbeResume();
             }
         } else {
             // 如果不在录音，直接显示选择提示
@@ -1292,13 +1415,86 @@
         }
     }
 
+    // 设置页的 15 秒试麦。和正式录音分开，结束时只关掉这次临时流。
+    let settingsMicVolumeTest = null;
+    // 每次 start / stop 都递增。start 跨 await 回来时比对一次：
+    // 过期就只关掉自己拿到的流，不碰别人的 probe，也不再发布。
+    let settingsMicVolumeGeneration = 0;
+    // 设置页 15 秒后会自己发 stop；窗口被关、崩溃或重载时 stop 发不出来，
+    // 主页面到点自己释放，不让麦克风一直被占着。
+    const SETTINGS_MIC_VOLUME_TEST_MAX_MS = 20000;
+    let settingsMicVolumeWatchdog = null;
+
+    function clearSettingsMicVolumeWatchdog() {
+        if (settingsMicVolumeWatchdog === null) return;
+        clearTimeout(settingsMicVolumeWatchdog);
+        settingsMicVolumeWatchdog = null;
+    }
+
+    // watchdog 还在才表示设置页这轮试麦还在。
+    function isSettingsMicSessionActive() {
+        return settingsMicVolumeWatchdog != null;
+    }
+
+    // 只由设置页发起的 start 布置；让位后重建 probe 不续期，保证总时长有上限。
+    function armSettingsMicVolumeWatchdog() {
+        clearSettingsMicVolumeWatchdog();
+        settingsMicVolumeWatchdog = setTimeout(function () {
+            settingsMicVolumeWatchdog = null;
+            stopSettingsMicVolumeTest();
+        }, SETTINGS_MIC_VOLUME_TEST_MAX_MS);
+    }
+
+    // 正式录音开始占用麦克风时，临时 probe 立即让位，避免两路流同时占着麦克风。
+    function yieldSettingsMicVolumeProbeToLive() {
+        // 只让位还在跑的 probe。failed 是终态：重建失败后设置页已经收尾，
+        // 再改成 live 会让录音结束时把麦克风重新打开，而且没有 watchdog 收场。
+        // failed 标记本身不持有流（重建失败时流已就地释放），不需要 release。
+        if (!settingsMicVolumeTest || settingsMicVolumeTest.mode !== 'probe') return;
+        releaseSettingsMicVolumeProbe();
+        settingsMicVolumeTest = { mode: 'live' };
+    }
+
+    // 正式录音占着麦克风，或马上要占用（start 进行中 / 正在切换设备）。
+    // 不看 S.inputAnalyser：切换设备时它先被清空，但设备随后就会被正式录音重开。
+    function isLiveMicCaptureActiveOrPending() {
+        return S.isRecording === true
+            || pendingMicStartUiOwnerToken !== null
+            || window._isSwitchingMicDevice === true;
+    }
+
+    // 正式录音在状态转换点（停止 / start 结束 / 切换结束）调用。推迟到微任务再判断：
+    // 先 stop 再同步 start 的重启流程这时已经占住了 start，probe 不会去抢设备。
+    function scheduleSettingsMicVolumeProbeResume() {
+        Promise.resolve().then(resumeSettingsMicVolumeProbeAfterLive);
+    }
+
+    function releaseSettingsMicVolumeProbe() {
+        const probe = settingsMicVolumeTest;
+        settingsMicVolumeTest = null;
+        if (!probe || probe.mode !== 'probe') return;
+        stopMicrophoneStreamTracks(probe.stream);
+        try {
+            if (probe.context && probe.context.state !== 'closed') probe.context.close();
+        } catch (_) {}
+    }
+
+    // 正式链路和设置页 probe 共用的增益写入，保证两边听到的音量一致。不做持久化。
+    function applyMicrophoneGainDb(gainDb) {
+        S.microphoneGainDb = gainDb;
+        const linear = window.appUtils.dbToLinear(gainDb);
+        if (S.micGainNode) {
+            S.micGainNode.gain.value = linear;
+        }
+        if (settingsMicVolumeTest && settingsMicVolumeTest.gain) {
+            settingsMicVolumeTest.gain.gain.value = linear;
+        }
+    }
+
     // 更新麦克风增益（供外部调用，参数为分贝值）
     window.setMicrophoneGain = function (gainDb) {
         if (gainDb >= C.MIN_MIC_GAIN_DB && gainDb <= C.MAX_MIC_GAIN_DB) {
-            S.microphoneGainDb = gainDb;
-            if (S.micGainNode) {
-                S.micGainNode.gain.value = window.appUtils.dbToLinear(gainDb);
-            }
+            applyMicrophoneGainDb(gainDb);
             saveMicGainSetting();
             // 更新 UI 滑块（如果存在）
             const slider = document.getElementById('mic-gain-slider');
@@ -1399,6 +1595,10 @@
                 const _status = statusElement();
                 if (_status && _status.textContent.includes(noSoundText)) {
                     window.showStatusToast(window.t ? window.t('app.speaking') : '正在语音...', 2000);
+                    // 本地语音识别模型还在准备：麦克风打开时的提示不能把准备提示盖掉。
+                    if (S.localAsrPreparingMessage && typeof window.showVoicePreparingToast === 'function') {
+                        window.showVoicePreparingToast(S.localAsrPreparingMessage);
+                    }
                     console.log('麦克风静音检测：检测到声音，已清除警告');
                 }
             }
@@ -1429,7 +1629,8 @@
         mediaStream,
         startToken,
         selectedMicrophoneIdAtStart,
-        microphoneSelectionGenerationAtStart
+        microphoneSelectionGenerationAtStart,
+        captureTargetSampleRate = window.appUtils.isMobile() ? 16000 : 48000
     ) {
         // Entry gate, before ANY shared state is touched. An attempt can be
         // superseded while it is still in startMicCapture's getUserMedia (a
@@ -1642,9 +1843,8 @@
             await ownContext.audioWorklet.addModule('/static/audio-processor.js');
 
             // 根据连接类型确定目标采样率
-            const isMobile = window.appUtils.isMobile;
-            const targetSampleRate = isMobile() ? 16000 : 48000;
-            console.log(`音频采样率配置: 原始=${ownContext.sampleRate}Hz, 目标=${targetSampleRate}Hz, 移动端=${isMobile()}`);
+            const targetSampleRate = captureTargetSampleRate;
+            console.log(`音频采样率配置: 原始=${ownContext.sampleRate}Hz, 目标=${targetSampleRate}Hz`);
 
             // 创建AudioWorkletNode
             ownWorkletNode = new AudioWorkletNode(ownContext, 'audio-processor', {
@@ -1691,6 +1891,11 @@
             // 连接节点：gainNode → workletNode（音频经过增益处理后发送）
             ownGainNode.connect(ownWorkletNode);
 
+            if (window.nekoVoiceCaptureReadiness) {
+                if (window.nekoVoiceCaptureReadiness.blocked()) { discardOwnPipeline(); return false; }
+                try { await window.nekoVoiceCaptureReadiness.register(true); }
+                catch (_) { discardOwnPipeline(); return false; }
+            }
             // Last gate before the commit. Everything above only awaited; this
             // is where the microphone actually becomes live and where
             // refreshMicLease() would re-claim the lease. A text takeover (or
@@ -1704,6 +1909,7 @@
                 || S.voiceInputRouteBlocked === true
                 || S.selectedMicrophoneId !== selectedMicrophoneIdAtStart
                 || microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart
+                || (window.nekoVoiceCaptureReadiness && window.nekoVoiceCaptureReadiness.blocked())
             ) {
                 console.log('[App] microphone start was superseded while opening; unwinding');
                 // Nothing above was published, so this tears down ONLY what
@@ -1755,6 +1961,7 @@
             // 所有初始化成功后，才标记为录音状态
             S.isRecording = true;
             window.isRecording = true;
+            yieldSettingsMicVolumeProbeToLive();
             refreshMicLease();
             return true;
 
@@ -1814,6 +2021,8 @@
         S.voiceChatActive = false;
         S.voiceStartPending = false;
         window.isMicStarting = false;
+        S.localAsrPreparingMessage = null;
+        scheduleSettingsMicVolumeProbeResume();
         if (typeof window.hideVoicePreparingToast === 'function') {
             window.hideVoicePreparingToast();
         }
@@ -1890,6 +2099,10 @@
 
     async function requestUsableMicrophoneStream(constraints) {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        if (window.nekoMicrophoneInput && !window.nekoMicrophoneInput.liveTrack(stream)) {
+            window.nekoMicrophoneInput.stop(stream);
+            const error = new Error('microphone_unavailable'); error.name = 'NotReadableError'; throw error;
+        }
         if (hasLiveMicrophoneTrack(stream)) {
             return stream;
         }
@@ -2028,6 +2241,12 @@
     }
 
     async function startMicCapture() {
+        // 小剧场使用独立文本输入与 TTS 队列，任一窗口演绎期间都不能重新打开普通聊天麦克风。
+        if (window.nekoTheaterRuntime
+                && typeof window.nekoTheaterRuntime.blocksOrdinaryVoice === 'function'
+                && window.nekoTheaterRuntime.blocksOrdinaryVoice()) {
+            return false;
+        }
         // Refuse to open the hardware microphone onto a route the backend has
         // already fail-closed. This is THE guard that closes the startup-failure
         // hole: on a cold voice start the mic is opened only AFTER
@@ -2050,7 +2269,14 @@
         // getUserMedia() half of the window as well.
         micStartGeneration += 1;
         const micStartToken = micStartGeneration;
+        // Bind capture constraints, Worklet output and the wire header before
+        // permission/player awaits or selected-device fallback can interleave.
+        const captureTargetSampleRate = window.appUtils.isMobile() ? 16000 : 48000;
         pendingMicStartUiOwnerToken = micStartToken;
+        // 正式录音一开始占设备就让位，不等到提交：独占式采集的驱动上，
+        // probe 还开着会让正式录音的 getUserMedia 以 NotReadableError 失败。
+        // 没能提交时 finally 会把试麦还回去。
+        yieldSettingsMicVolumeProbeToLive();
         const _mic = micButton();
         const _mute = muteButton();
         const _screen = screenButton();
@@ -2107,12 +2333,7 @@
             }
 
             // 获取麦克风流，使用选择的麦克风设备ID
-            const baseAudioConstraints = {
-                noiseSuppression: false,
-                echoCancellation: true,
-                autoGainControl: true,
-                channelCount: 1
-            };
+            const baseAudioConstraints = micCaptureAudioConstraints(captureTargetSampleRate);
 
             // Attempt-local, for the same reason the audio graph is: publishing
             // the stream here put it OUTSIDE the single publish point in
@@ -2146,12 +2367,18 @@
             // 检查音频轨道状态
             const audioTracks = ownStream.getAudioTracks();
             console.log(window.t('console.audioTrackCount'), audioTracks.length);
-            console.log(window.t('console.audioTrackStatus'), audioTracks.map(track => ({
-                label: track.label,
-                enabled: track.enabled,
-                muted: track.muted,
-                readyState: track.readyState
-            })));
+            console.log(window.t('console.audioTrackStatus'), audioTracks.map(track => {
+                const settings = typeof track.getSettings === 'function'
+                    ? track.getSettings()
+                    : {};
+                return {
+                    label: track.label,
+                    enabled: track.enabled,
+                    muted: track.muted,
+                    readyState: track.readyState,
+                    autoGainControl: settings.autoGainControl
+                };
+            }));
 
             if (audioTracks.length === 0) {
                 console.error(window.t('console.noAudioTrackAvailable'));
@@ -2173,7 +2400,8 @@
                 ownStream,
                 micStartToken,
                 selectedMicrophoneIdAtStart,
-                microphoneSelectionGenerationAtStart
+                microphoneSelectionGenerationAtStart,
+                captureTargetSampleRate
             );
             if (!micStartCommitted) {
                 // Superseded or fail-closed while opening: the hardware is
@@ -2215,6 +2443,10 @@
             if (_stop)   _stop.disabled = true;
             if (_reset)  _reset.disabled = false;
             window.showStatusToast(window.t ? window.t('app.speaking') : '正在语音...', 2000);
+            // 本地语音识别模型还在准备：麦克风打开时的提示不能把准备提示盖掉。
+            if (S.localAsrPreparingMessage && typeof window.showVoicePreparingToast === 'function') {
+                window.showVoicePreparingToast(S.localAsrPreparingMessage);
+            }
 
             // 确保active类存在
             if (_mic && !_mic.classList.contains('active')) {
@@ -2279,6 +2511,8 @@
             if (pendingMicStartUiOwnerToken === micStartToken) {
                 pendingMicStartUiOwnerToken = null;
             }
+            // 没能提交的 start 也要把让位出去的试麦还回去。
+            scheduleSettingsMicVolumeProbeResume();
         }
     }
 
@@ -2287,6 +2521,7 @@
         S.isSwitchingMode = true;
 
         // 隐藏语音准备提示（防止残留）
+        S.localAsrPreparingMessage = null;
         if (typeof window.hideVoicePreparingToast === 'function') {
             window.hideVoicePreparingToast();
         }
@@ -2366,6 +2601,7 @@
 
     // 停止录音（内部辅助，清理音频管道与后端通信）
     function stopRecording(options) {
+        if (window.nekoVoiceCaptureReadiness) window.nekoVoiceCaptureReadiness.stopped();
         options = options || {};
         const notifyServer = options.notifyServer !== false;
         // Also retire recovery when startup failed before isRecording became
@@ -2380,8 +2616,8 @@
             window.invalidatePendingMusicSearch();
         }
 
-        if (typeof window.stopScreening === 'function') {
-            window.stopScreening();
+        if (typeof window.teardownScreenSharing === 'function') {
+            window.teardownScreenSharing();
         }
         stopGameVoiceSttGate({ restoreOrdinaryMic: false });
         if (typeof window.removeExternalAsrPreview === 'function') {
@@ -2459,9 +2695,99 @@
                 action: 'pause_session'
             }));
         }
+
+        scheduleSettingsMicVolumeProbeResume();
     }
 
     // ======================== 音量可视化 ========================
+
+    // 时域采样 buffer 提到闭包级复用，避免每帧分配 ~8KB Float32Array
+    // 在 60fps 下产生 ~480KB/s 的 GC 抖动。
+    let micVolumeSampleBuffer = null;
+
+    // liveOnly：主页面弹窗只反映真正送给 AI 的音量，不借设置页试麦的 probe，
+    // 否则没在录音时弹窗也会显示“正在收音”。
+    // 采样本身不开关设备：probe 的让位 / 重建由正式录音的状态转换驱动。
+    // 兜底：有些 teardown（WebSocket 断线等）直接改 S.isRecording，不经过那些转换点，
+    // probe 会一直停在 live。这里只把恢复排进微任务，由 resume 自己再判断一次。
+    function sampleMicVolumeLevel(options) {
+        const liveOnly = !!(options && options.liveOnly);
+        if (
+            !liveOnly
+            && settingsMicVolumeTest
+            && settingsMicVolumeTest.mode === 'live'
+            && !isLiveMicCaptureActiveOrPending()
+        ) {
+            scheduleSettingsMicVolumeProbeResume();
+        }
+        let analyser = null;
+        if (S.isRecording && S.inputAnalyser) analyser = S.inputAnalyser;
+        else if (!liveOnly && settingsMicVolumeTest) analyser = settingsMicVolumeTest.analyser;
+        if (!analyser) {
+            // 重建失败是终态：如实报给设置页，而不是退化成普通的 0 音量。
+            if (!liveOnly && settingsMicVolumeTest && settingsMicVolumeTest.mode === 'failed') {
+                return { recording: false, percent: 0, tone: 'idle', failed: true };
+            }
+            // 没有进行中的试麦（页面重载过、watchdog 已到点）：设置页还在轮询说明它以为测试还在，
+            // 如实告诉它会话已不存在，而不是让它对着 0 音量等满一轮。
+            // 判定看 watchdog 而不是 probe：重开 probe（切换设备 / 录音结束后恢复）期间
+            // probe 暂时为空，但 watchdog 一直有效，不能误报。
+            if (!liveOnly && !isSettingsMicSessionActive()) {
+                return { recording: false, percent: 0, tone: 'idle', noSession: true };
+            }
+            return { recording: false, percent: 0, tone: 'idle' };
+        }
+        // 用时域数据反映 worklet/AI 实际收到的线性振幅。
+        // 频域 + 默认 dB 刻度（-100..-30dB）会在人声常见电平就饱和，
+        // 软件增益和过载在条上看不出区别，正是用户反馈的根因。
+        //
+        // 必须用 getFloatTimeDomainData 而不是 byte：byte 量化步长 1/128，
+        // byte=255 实际覆盖 [127/128, ∞) 浮点区间，loud-but-clean 信号
+        // (峰值 0.99 但 worklet 不会硬切) 也会被误判成 clip。
+        const fftSize = analyser.fftSize;
+        if (!micVolumeSampleBuffer || micVolumeSampleBuffer.length !== fftSize) {
+            micVolumeSampleBuffer = new Float32Array(fftSize);
+        }
+        analyser.getFloatTimeDomainData(micVolumeSampleBuffer);
+
+        let peak = 0;
+        let sumSq = 0;
+        let clippedCount = 0;
+        for (let i = 0; i < fftSize; i++) {
+            const val = micVolumeSampleBuffer[i];
+            const abs = val < 0 ? -val : val;
+            if (abs > peak) peak = abs;
+            sumSq += val * val;
+            // worklet 的 `Math.max(-1, Math.min(1, x))*0x7FFF` 只在浮点
+            // 严格越过 ±1 时才硬切。0.999 留一点浮点比较容差。
+            if (abs >= 0.999) clippedCount++;
+        }
+        const rms = Math.sqrt(sumSq / fftSize);
+
+        // 显示用 peak（更直观地反映"接近削顶"的距离），
+        // 状态判定结合 RMS：信号能量高于 noise floor 才进入分级。
+        const volumePercent = Math.min(100, peak * 100);
+        // 一帧内 >=0.5% 样本撞到 ±1 视作过载（≈10/2048）。worklet
+        // 的 `Math.max(-1, Math.min(1, x))*0x7FFF` 在这个边界硬切，
+        // 失真无关用户是否说话，所以唯一无歧义的红色告警就是 clip。
+        const isClipping = clippedCount >= fftSize * 0.005;
+        // hasSignal：RMS 高于后端 AGC noise floor（0.015）的半档，
+        // 视作"用户在说话"——只有这种情况才对偏低/正常做颜色提示，
+        // 没说话时不能用警告色把用户吓到。
+        const hasSignal = rms >= 0.008;
+        const lowVolume = hasSignal && peak < 0.15;
+        // high 必须门控 hasSignal：静默期键盘/桌面敲击等瞬态噪声
+        // peak 可能短暂 > 0.85 但 RMS 仍低于 noise floor，没有 hasSignal
+        // 守住会让"等待中"被误判为"音量较高"。
+        const high = hasSignal && !isClipping && peak > 0.85;
+
+        let tone = 'waiting';
+        if (isClipping) tone = 'clipping';
+        else if (high) tone = 'high';
+        else if (lowVolume) tone = 'low';
+        else if (hasSignal) tone = 'normal';
+        return { recording: true, percent: volumePercent, tone };
+    }
 
     // 启动麦克风音量可视化
     function startMicVolumeVisualization() {
@@ -2473,9 +2799,6 @@
         let cachedStatus = document.getElementById('mic-volume-status');
         let cachedHint = document.getElementById('mic-volume-hint');
         let cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
-        // 时域采样 buffer 提到闭包级复用，避免每帧分配 ~8KB Float32Array
-        // 在 60fps 下产生 ~480KB/s 的 GC 抖动。
-        let timeDomainBuffer = null;
 
         function updateVolumeDisplay() {
             // 仅当缓存元素被移出 DOM 时才重新查询（popup 重建场景）
@@ -2498,63 +2821,19 @@
                 return;
             }
 
-            // 检查是否正在录音且有 analyser
-            if (S.isRecording && S.inputAnalyser) {
-                // 用时域数据反映 worklet/AI 实际收到的线性振幅。
-                // 频域 + 默认 dB 刻度（-100..-30dB）会在人声常见电平就饱和，
-                // 软件增益和过载在条上看不出区别，正是用户反馈的根因。
-                //
-                // 必须用 getFloatTimeDomainData 而不是 byte：byte 量化步长 1/128，
-                // byte=255 实际覆盖 [127/128, ∞) 浮点区间，loud-but-clean 信号
-                // (峰值 0.99 但 worklet 不会硬切) 也会被误判成 clip。
-                const fftSize = S.inputAnalyser.fftSize;
-                if (!timeDomainBuffer || timeDomainBuffer.length !== fftSize) {
-                    timeDomainBuffer = new Float32Array(fftSize);
-                }
-                S.inputAnalyser.getFloatTimeDomainData(timeDomainBuffer);
-
-                let peak = 0;
-                let sumSq = 0;
-                let clippedCount = 0;
-                for (let i = 0; i < fftSize; i++) {
-                    const val = timeDomainBuffer[i];
-                    const abs = val < 0 ? -val : val;
-                    if (abs > peak) peak = abs;
-                    sumSq += val * val;
-                    // worklet 的 `Math.max(-1, Math.min(1, x))*0x7FFF` 只在浮点
-                    // 严格越过 ±1 时才硬切。0.999 留一点浮点比较容差。
-                    if (abs >= 0.999) clippedCount++;
-                }
-                const rms = Math.sqrt(sumSq / fftSize);
-
-                // 显示用 peak（更直观地反映"接近削顶"的距离），
-                // 状态判定结合 RMS：信号能量高于 noise floor 才进入分级。
-                const volumePercent = Math.min(100, peak * 100);
-                // 一帧内 >=0.5% 样本撞到 ±1 视作过载（≈10/2048）。worklet
-                // 的 `Math.max(-1, Math.min(1, x))*0x7FFF` 在这个边界硬切，
-                // 失真无关用户是否说话，所以唯一无歧义的红色告警就是 clip。
-                const isClipping = clippedCount >= fftSize * 0.005;
-                // hasSignal：RMS 高于后端 AGC noise floor（0.015）的半档，
-                // 视作"用户在说话"——只有这种情况才对偏低/正常做颜色提示，
-                // 没说话时不能用警告色把用户吓到。
-                const hasSignal = rms >= 0.008;
-                const lowVolume = hasSignal && peak < 0.15;
-                // high 必须门控 hasSignal：静默期键盘/桌面敲击等瞬态噪声
-                // peak 可能短暂 > 0.85 但 RMS 仍低于 noise floor，没有 hasSignal
-                // 守住会让"等待中"被误判为"音量较高"。
-                const high = hasSignal && !isClipping && peak > 0.85;
-
+            const sample = sampleMicVolumeLevel({ liveOnly: true });
+            if (sample.recording) {
                 // 更新音量条（条宽始终跟着 peak，没说话时自然就短）
-                cachedBarFill.style.width = `${volumePercent}%`;
+                cachedBarFill.style.width = `${sample.percent}%`;
 
                 // 根据状态设置颜色
-                if (isClipping) {
+                if (sample.tone === 'clipping') {
                     cachedBarFill.style.backgroundColor = '#dc3545'; // 红 - 过载（唯一警告）
-                } else if (high) {
+                } else if (sample.tone === 'high') {
                     cachedBarFill.style.backgroundColor = '#fd7e14'; // 橙 - 接近过载
-                } else if (lowVolume) {
+                } else if (sample.tone === 'low') {
                     cachedBarFill.style.backgroundColor = '#ffc107'; // 黄 - 在说话但偏低
-                } else if (hasSignal) {
+                } else if (sample.tone === 'normal') {
                     cachedBarFill.style.backgroundColor = '#28a745'; // 绿 - 正常
                 } else {
                     cachedBarFill.style.backgroundColor = '#4f8cff'; // 蓝 - 静默/等待
@@ -2562,16 +2841,16 @@
 
                 // 更新状态文字
                 if (cachedStatus) {
-                    if (isClipping) {
+                    if (sample.tone === 'clipping') {
                         cachedStatus.textContent = window.t ? window.t('microphone.volumeClipping') : '过载';
                         cachedStatus.style.color = '#dc3545';
-                    } else if (high) {
+                    } else if (sample.tone === 'high') {
                         cachedStatus.textContent = window.t ? window.t('microphone.volumeHigh') : '音量较高';
                         cachedStatus.style.color = '#fd7e14';
-                    } else if (lowVolume) {
+                    } else if (sample.tone === 'low') {
                         cachedStatus.textContent = window.t ? window.t('microphone.volumeLow') : '音量偏低';
                         cachedStatus.style.color = '#ffc107';
-                    } else if (hasSignal) {
+                    } else if (sample.tone === 'normal') {
                         cachedStatus.textContent = window.t ? window.t('microphone.volumeNormal') : '正常';
                         cachedStatus.style.color = '#28a745';
                     } else {
@@ -2583,13 +2862,13 @@
                 // 更新提示文字（分支顺序与上面的 status 保持一致：
                 // clipping → high → lowVolume → hasSignal → idle）
                 if (cachedHint) {
-                    if (isClipping) {
+                    if (sample.tone === 'clipping') {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintClipping') : '麦克风增益过高，音频被削顶，AI 可能识别异常，请调低增益';
-                    } else if (high) {
+                    } else if (sample.tone === 'high') {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintHigh') : '音量偏高，建议调低增益';
-                    } else if (lowVolume) {
+                    } else if (sample.tone === 'low') {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintLow') : '音量较低，建议调高增益';
-                    } else if (hasSignal) {
+                    } else if (sample.tone === 'normal') {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintOk') : '麦克风工作正常';
                     } else {
                         cachedHint.textContent = window.t ? window.t('microphone.volumeHintWaiting') : '麦克风正在监听，请说话';
@@ -2686,12 +2965,218 @@
         }
     }
 
+    function settingsMicTestConstraints(deviceId, targetSampleRate) {
+        const audio = micCaptureAudioConstraints(targetSampleRate);
+        if (deviceId) audio.deviceId = { exact: deviceId };
+        return { audio };
+    }
+
+    async function startSettingsMicVolumeTest() {
+        const generation = ++settingsMicVolumeGeneration;
+        const captureTargetSampleRate = window.appUtils.isMobile() ? 16000 : 48000;
+        const isCurrent = function () { return generation === settingsMicVolumeGeneration; };
+        releaseSettingsMicVolumeProbe();
+        if (isLiveMicCaptureActiveOrPending()) {
+            settingsMicVolumeTest = { mode: 'live' };
+            return { ok: true, mode: 'live' };
+        }
+        // 和正式录音同一套判定：拿到的音轨已 ended 时合成 NotReadableError，
+        // 只有设备类错误才退回默认麦克风；权限拒绝 / 安全 / 中止类错误直接抛出。
+        // 等授权 / 开设备期间用户又切了麦克风：此时还没有 probe，restart 找不到对象，
+        // 由这里丢掉旧设备的流，按新选中的设备重开。
+        let stream = null;
+        let fellBack = false;
+        for (;;) {
+            const selectionGeneration = microphoneSelectionGeneration;
+            const selectedMicrophoneId = S.selectedMicrophoneId;
+            fellBack = false;
+            try {
+                stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(selectedMicrophoneId, captureTargetSampleRate));
+            } catch (error) {
+                if (!isCurrent()) return { ok: false };
+                if (selectionGeneration !== microphoneSelectionGeneration) continue;
+                if (!selectedMicrophoneId || !isSelectedMicrophoneFallbackEligibleError(error)) throw error;
+                // 回退也可能失败：和首次请求同样先看是否过期、选择是否已变，变了就按新设备重试。
+                try {
+                    stream = await requestUsableMicrophoneStream(settingsMicTestConstraints(null, captureTargetSampleRate));
+                } catch (fallbackError) {
+                    if (!isCurrent()) return { ok: false };
+                    if (selectionGeneration !== microphoneSelectionGeneration) continue;
+                    throw fallbackError;
+                }
+                fellBack = true;
+            }
+            // 等授权 / 开设备期间被 stop 或新一轮 start 取代：这条流没人能再关，必须当场释放。
+            if (!isCurrent()) {
+                stopMicrophoneStreamTracks(stream);
+                return { ok: false };
+            }
+            if (selectionGeneration === microphoneSelectionGeneration) break;
+            stopMicrophoneStreamTracks(stream);
+            stream = null;
+        }
+        // 等待期间正式录音已启动或开始接管：让位给正式录音。必须先于下面改选中项：
+        // 改选中项会递增选择代次，正在按原设备打开的正式录音会被判为过期而取消，
+        // 回退交给正式录音自己的流程处理。
+        if (isLiveMicCaptureActiveOrPending()) {
+            stopMicrophoneStreamTracks(stream);
+            settingsMicVolumeTest = { mode: 'live' };
+            return { ok: true, mode: 'live' };
+        }
+        // 和正式录音一样：选中的设备用不了、实际测的是系统默认麦克风时，把选中项改过去，
+        // 否则设置页还显示原设备名，用户会以为那个设备是好的。
+        if (fellBack) applySystemDefaultMicrophoneSelection();
+        let context = null;
+        let probe = null;
+        try {
+            const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+            context = new AudioContextConstructor();
+            const source = context.createMediaStreamSource(stream);
+            const gain = context.createGain();
+            gain.gain.value = window.appUtils.dbToLinear(S.microphoneGainDb);
+            const analyser = context.createAnalyser();
+            analyser.fftSize = 2048;
+            analyser.smoothingTimeConstant = 0.8;
+            source.connect(gain);
+            gain.connect(analyser);
+            probe = { mode: 'probe', stream, context, gain, analyser };
+            settingsMicVolumeTest = probe;
+            if (context.state === 'suspended') {
+                try { await context.resume(); } catch (_) {}
+            }
+            if (settingsMicVolumeTest !== probe) {
+                // resume 期间正式录音接管：probe 已让位，正式录音的 analyser 可用，不算失败。
+                if (isCurrent() && settingsMicVolumeTest && settingsMicVolumeTest.mode === 'live') {
+                    return { ok: true, mode: 'live' };
+                }
+                // 被 stop / 新一轮 start 取代：probe 已由对方释放。
+                return { ok: false };
+            }
+            // 仍未运行的 context 采不到任何数据，与其一直显示静音，不如如实报失败。
+            if (context.state !== 'running') {
+                releaseSettingsMicVolumeProbe();
+                return { ok: false };
+            }
+            return fellBack ? { ok: true, mode: 'probe', fellBack: true } : { ok: true, mode: 'probe' };
+        } catch (error) {
+            if (probe && settingsMicVolumeTest === probe) settingsMicVolumeTest = null;
+            stopMicrophoneStreamTracks(stream);
+            try { if (context && context.state !== 'closed') context.close(); } catch (_) {}
+            throw error;
+        }
+    }
+
+    // 在试麦窗口内重开 probe（正式录音结束后 / 切换设备后）。走内部 start，不续期 watchdog。
+    // start 在第一个 await 之前就同步清掉了旧标记，重建进行中的采样会直接返回 idle，
+    // 所以不需要另设“重建中”标志。本代次的重建失败写入 failed 终态交给设置页，
+    // 不在 80ms 的轮询里反复重试。
+    // 最近一次内部重开：{ generation, pending }。设置页那次 start 被它越过时跟随它的结果。
+    let settingsMicVolumeReopen = null;
+
+    function reopenSettingsMicVolumeProbe() {
+        const pending = startSettingsMicVolumeTest();
+        const generation = settingsMicVolumeGeneration;
+        settingsMicVolumeReopen = { generation, pending };
+        const markFailed = function () {
+            if (generation === settingsMicVolumeGeneration && settingsMicVolumeTest === null) {
+                settingsMicVolumeTest = { mode: 'failed' };
+            }
+        };
+        pending.then(function (result) {
+            if (!result || result.ok !== true) markFailed();
+        }, markFailed);
+    }
+
+    // 试麦让位给正式录音后，正式录音若在试麦窗口内结束，重新拉起 probe，
+    // 否则设置页剩下的时间里一直显示“测试中”但音量为 0。
+    function resumeSettingsMicVolumeProbeAfterLive() {
+        // 会话已经结束就不要再开设备。
+        if (!isSettingsMicSessionActive()) return;
+        if (!settingsMicVolumeTest || settingsMicVolumeTest.mode !== 'live') return;
+        if (isLiveMicCaptureActiveOrPending()) return;
+        reopenSettingsMicVolumeProbe();
+    }
+
+    function restartSettingsMicVolumeProbe() {
+        if (!isSettingsMicSessionActive()) return;
+        if (!settingsMicVolumeTest) return;
+        if (settingsMicVolumeTest.mode !== 'probe' && settingsMicVolumeTest.mode !== 'failed') return;
+        reopenSettingsMicVolumeProbe();
+    }
+
+    function stopSettingsMicVolumeTest() {
+        settingsMicVolumeGeneration += 1;
+        clearSettingsMicVolumeWatchdog();
+        releaseSettingsMicVolumeProbe();
+        return { ok: true };
+    }
+
+    // 内部抛错路径只会清理本次自己创建的资源；这里不能再无条件 release，
+    // 否则一次过期 start 的失败会把新一轮刚装好的 probe 关掉。
+    // 入口先计时，兜住挂起中的 start；成功后再从头计时，让 20s 从设置页 15s 倒计时开始时算起。
+    // 被 stop / 新一轮 start 越过的旧 start 不碰 watchdog。
+    // 失败时带上 error（NotAllowedError 等）。桌面端目前失败只回 { ok: false }，
+    // 设置页还不按这个字段区分“去授权”和“设备不可用”；字段先留给日志和后续接线。
+    // start 期间被内部 reopen（切换设备）越过不算失败，跟随那次 reopen 的结果；
+    // 被 stop 或设置页新一轮 start 越过才是过期。
+    async function startSettingsMicVolumeTestFromSettings() {
+        armSettingsMicVolumeWatchdog();
+        let pending = startSettingsMicVolumeTest();
+        let generation = settingsMicVolumeGeneration;
+        let result;
+        for (;;) {
+            try {
+                result = await pending;
+            } catch (error) {
+                result = { ok: false, error: (error && error.name) || 'Error' };
+            }
+            const reopen = settingsMicVolumeReopen;
+            if (
+                generation === settingsMicVolumeGeneration
+                || !reopen
+                || reopen.generation !== settingsMicVolumeGeneration
+                || reopen.pending === pending
+            ) break;
+            pending = reopen.pending;
+            generation = reopen.generation;
+        }
+        if (generation === settingsMicVolumeGeneration) {
+            if (result && result.ok === true) armSettingsMicVolumeWatchdog();
+            else clearSettingsMicVolumeWatchdog();
+        }
+        return result;
+    }
+    window.startSettingsMicVolumeTest = startSettingsMicVolumeTestFromSettings;
+    window.stopSettingsMicVolumeTest = stopSettingsMicVolumeTest;
+
     // ======================== 暴露到 window（向后兼容） ========================
     window.startMicCapture = startMicCapture;
     window.stopMicCapture = stopMicCapture;
     window.abortVoiceStartForBlockedRoute = abortVoiceStartForBlockedRoute;
     window.invalidatePendingMicStart = invalidatePendingMicStart;
     window.stopRecording = stopRecording;
+    // Only same-origin, same-Session storage events carry device preferences.
+    // Electron partitions retain their separately salted device identifiers.
+    window.addEventListener('storage', function (event) {
+        if (event.key === 'neko_selected_microphone') {
+            invalidatePendingMicStart();
+            setSelectedMicrophoneId(event.newValue || null);
+        } else if (event.key === 'neko_mic_gain_db') {
+            const value = Number(event.newValue);
+            if (Number.isFinite(value) && value >= C.MIN_MIC_GAIN_DB && value <= C.MAX_MIC_GAIN_DB) applyMicrophoneGainDb(value);
+        }
+    });
+    if (typeof window.createVoiceCaptureReadiness === 'function') {
+        window.nekoVoiceCaptureReadiness = window.createVoiceCaptureReadiness(S, async function () {
+            invalidatePendingMicStart();
+            stopRecording({ notifyServer: false });
+            const button = micButton();
+            if (button) { button.classList.remove('recording'); button.classList.remove('active'); button.disabled = false; }
+            if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
+            S.voiceChatActive = false;
+            if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
+        });
+    }
     window.startSilenceDetection = startSilenceDetection;
     window.stopSilenceDetection = stopSilenceDetection;
     window.monitorInputVolume = monitorInputVolume;
@@ -2701,6 +3186,7 @@
     window.saveMicGainSetting = saveMicGainSetting;
     window.loadMicGainSetting = loadMicGainSetting;
     window.formatGainDisplay = formatGainDisplay;
+    window.sampleMicVolumeLevel = sampleMicVolumeLevel;
     window.startMicVolumeVisualization = startMicVolumeVisualization;
     window.stopMicVolumeVisualization = stopMicVolumeVisualization;
     window.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
@@ -2805,6 +3291,9 @@
     mod.stopMicCapture = stopMicCapture;
     mod.invalidatePendingMicStart = invalidatePendingMicStart;
     mod.stopRecording = stopRecording;
+    mod.sampleMicVolumeLevel = sampleMicVolumeLevel;
+    mod.startSettingsMicVolumeTest = startSettingsMicVolumeTestFromSettings;
+    mod.stopSettingsMicVolumeTest = stopSettingsMicVolumeTest;
     mod.startMicVolumeVisualization = startMicVolumeVisualization;
     mod.stopMicVolumeVisualization = stopMicVolumeVisualization;
     mod.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
@@ -3427,6 +3916,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var noiseToggle = null;
             var optimizationToggle = null;
             var optimizationHint = null;
+            var localAsrToggle = null;
+            var localAsrBlock = null;
             var voiceStatus = null;
 
             function providerDisplayName(provider) {
@@ -3439,7 +3930,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     gemini: 'Gemini',
                     openai: 'OpenAI',
                     step: 'Step',
-                    grok: 'Grok'
+                    grok: 'Grok',
+                    faster_whisper: 'faster-whisper'
                 };
                 return known[value.toLowerCase()] || value;
             }
@@ -3490,6 +3982,85 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 toggle.input.setAttribute('aria-describedby', hint.id);
                 panelBody.appendChild(block);
                 return hint;
+            }
+
+            // Packaged builds do not ship faster-whisper, so only offer the
+            // option where it can run. A preference persisted while it was
+            // installed stays visible so the user can still turn it off.
+            function shouldOfferLocalAsr() {
+                return S.localAsrAvailable === true
+                    || S.independentAsrProviderPreference === 'faster_whisper';
+            }
+
+            // Local recognition is an independent-ASR provider choice: it is
+            // only actionable when the Core allows independent ASR and the
+            // master switch is on.
+            function localAsrChoiceActionable() {
+                return !coreApiDisablesIndependentAsr()
+                    && S.independentAsrEnabled === true;
+            }
+
+            function createLocalAsrSetting(panelBody, beforeNode) {
+                localAsrToggle = createVoiceSettingToggle(
+                    S.independentAsrProviderPreference === 'faster_whisper',
+                    function (enabled) {
+                        // Turning it on needs a route that can use it; turning a
+                        // saved choice off is always allowed, or a preference the
+                        // current Core cannot use could never be cleared.
+                        if (enabled && !localAsrChoiceActionable()) {
+                            updateVoiceRecognitionUi();
+                            return;
+                        }
+                        S.independentAsrProviderPreference = enabled
+                            ? 'faster_whisper'
+                            : 'auto';
+                        // 依赖不可用时关掉就收起开关，免得它又被打开、下一次会话再选中缺失的 provider。
+                        reconcileLocalAsrSetting();
+                        markVoiceSettingsPending();
+                        updateVoiceRecognitionUi();
+                        persistVoiceSettingChange();
+                    }
+                );
+                var localAsrHint = appendVoicePanelSetting(
+                    panelBody,
+                    'microphone.localAsr',
+                    '本地语音识别',
+                    'microphone.localAsrHint',
+                    '在本机用 faster-whisper 识别语音；需要另外安装 faster-whisper，首次使用会下载模型',
+                    localAsrToggle
+                );
+                localAsrBlock = localAsrHint.parentNode;
+                // Disabled state is set here rather than left to the next
+                // updateVoiceRecognitionUi(), so a toggle added late never shows
+                // as operable while the master switch is off.
+                localAsrToggle.setDisabled(
+                    !localAsrChoiceActionable()
+                    && S.independentAsrProviderPreference !== 'faster_whisper'
+                );
+                // Keep the panel order stable when added late: after resource
+                // optimization, before the status line.
+                if (beforeNode && beforeNode.parentNode === panelBody) {
+                    panelBody.insertBefore(localAsrBlock, beforeNode);
+                }
+            }
+
+            // Availability can arrive after the panel opened (the capability
+            // refresh is asynchronous): add or drop the option in place.
+            function reconcileLocalAsrSetting() {
+                if (!voicePanel || !voicePanel.isConnected || !voiceStatus) return;
+                var panelBody = voiceStatus.parentNode;
+                if (!panelBody) return;
+                if (shouldOfferLocalAsr()) {
+                    if (!localAsrToggle) createLocalAsrSetting(panelBody, voiceStatus);
+                    return;
+                }
+                if (localAsrToggle) {
+                    if (localAsrBlock && localAsrBlock.parentNode) {
+                        localAsrBlock.parentNode.removeChild(localAsrBlock);
+                    }
+                    localAsrToggle = null;
+                    localAsrBlock = null;
+                }
             }
 
             function updateVoiceRecognitionUi() {
@@ -3546,6 +4117,16 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // independent-ASR and Omni-native routes.
                 noiseToggle.setDisabled(false);
                 optimizationToggle.setDisabled(!enabled);
+                // Local recognition is an independent-ASR provider choice, so
+                // it follows the same Core capability gate and master switch.
+                if (localAsrToggle) {
+                    // Show the saved choice as it is, even where the current
+                    // Core cannot use it, and keep an "on" choice switchable off.
+                    var localAsrChosen =
+                        S.independentAsrProviderPreference === 'faster_whisper';
+                    localAsrToggle.setChecked(localAsrChosen);
+                    localAsrToggle.setDisabled(!enabled && !localAsrChosen);
+                }
                 if (capabilityUnavailable) {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionNativeCoreHint')
@@ -3611,10 +4192,15 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
 
             function onVoiceSettingsPendingChanged() {
+                // 其它窗口改了偏好也会走到这里：开关的有无跟着偏好走。
+                reconcileLocalAsrSetting();
                 updateVoiceRecognitionUi();
             }
 
+            // 可用性（能力刷新）和偏好（设置 GET 合并）都可能在面板打开后才到，
+            // 两者任一变化都要重新决定本地语音识别开关的有无。
             function onCoreApiCapabilityChanged() {
+                reconcileLocalAsrSetting();
                 updateVoiceRecognitionUi();
             }
 
@@ -3637,6 +4223,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     window.removeEventListener(entry[0], entry[1]);
                 });
                 voiceWindowListeners = [];
+                stopMicPopupLayoutTracking();
                 // Tear down the shared action state as well as its DOM. This
                 // clears an old render's pending hover-collapse timer so it
                 // cannot remove a subwindow created by the next render.
@@ -3645,6 +4232,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 noiseToggle = null;
                 optimizationToggle = null;
                 optimizationHint = null;
+                localAsrToggle = null;
+                localAsrBlock = null;
                 voiceStatus = null;
                 asrSummary = null;
                 if (
@@ -3666,6 +4255,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             );
             addVoiceWindowListener(
                 'neko:core-api-capability-changed',
+                onCoreApiCapabilityChanged
+            );
+            addVoiceWindowListener(
+                'neko:conversation-settings-hydrated',
                 onCoreApiCapabilityChanged
             );
             addVoiceWindowListener(
@@ -3728,11 +4321,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
             gainSlider.addEventListener('input', function (e) {
                 var newGainDb = parseFloat(e.target.value);
-                S.microphoneGainDb = newGainDb;
+                applyMicrophoneGainDb(newGainDb);
                 gainValueEl.textContent = formatGainDisplay(newGainDb);
-                if (S.micGainNode) {
-                    S.micGainNode.gain.value = window.appUtils.dbToLinear(newGainDb);
-                }
             });
             gainSlider.addEventListener('change', function () { saveMicGainSetting(); });
             gainContainer.appendChild(gainSlider);
@@ -3787,9 +4377,47 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             leftColumn.appendChild(volumeContainer);
 
             var MIC_ACTION_HOVER_COLLAPSE_MS = 260;
+            var MIC_ACTION_HOVER_BRIDGE_MS = 900;
             var activeMicActionKey = null;
             var micActionHoverCollapseTimer = null;
             var micActionHoverOpenGeneration = 0;
+            var micHoverPointer = null;
+            var micHoverPointerTracking = false;
+            var micPopupLayout = null;
+
+            function rememberMicHoverPointer(event) {
+                micHoverPointer = { x: event.clientX, y: event.clientY };
+            }
+
+            function stopMicHoverPointerTracking() {
+                if (!micHoverPointerTracking) return;
+                document.removeEventListener('pointermove', rememberMicHoverPointer, true);
+                micHoverPointerTracking = false;
+            }
+
+            function isPointerInMicHoverBridge() {
+                var panel = getOwnedMicSubwindow();
+                var action = leftColumn.querySelector('[data-neko-mic-main-action="' + activeMicActionKey + '"]');
+                if (!panel || !action || !micHoverPointer) return false;
+                var a = action.getBoundingClientRect();
+                var b = panel.getBoundingClientRect();
+                var p = micHoverPointer;
+                var padding = 8;
+                // A narrow trapezoid joins the facing edges. Unlike a bounding
+                // rectangle, it does not keep a remote blank area active.
+                function between(value, start, end) { return value >= start && value <= end; }
+                function corridor(value, cross, start, end, lowStart, highStart, lowEnd, highEnd) {
+                    if (!between(value, start - padding, end + padding)) return false;
+                    var t = Math.max(0, Math.min(1, (value - start) / Math.max(1, end - start)));
+                    return between(cross, lowStart + (lowEnd - lowStart) * t - padding,
+                        highStart + (highEnd - highStart) * t + padding);
+                }
+                if (b.right <= a.left) return corridor(p.x, p.y, b.right, a.left, b.top, b.bottom, a.top, a.bottom);
+                if (a.right <= b.left) return corridor(p.x, p.y, a.right, b.left, a.top, a.bottom, b.top, b.bottom);
+                if (b.bottom <= a.top) return corridor(p.y, p.x, b.bottom, a.top, b.left, b.right, a.left, a.right);
+                if (a.bottom <= b.top) return corridor(p.y, p.x, a.bottom, b.top, a.left, a.right, b.left, b.right);
+                return false;
+            }
 
             function getOwnedMicSubwindow() {
                 var ownerSelector = micPopup.id
@@ -3803,6 +4431,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     clearTimeout(micActionHoverCollapseTimer);
                     micActionHoverCollapseTimer = null;
                 }
+                stopMicHoverPointerTracking();
             }
 
             function isMicActionHoverSurfaceActive() {
@@ -3822,11 +4451,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 activeMicActionKey = null;
                 var ownerSelector = micPopup.id ? '[data-neko-sidepanel-owner="' + micPopup.id + '"]' : '.neko-mic-subwindow';
                 document.querySelectorAll(ownerSelector + '.neko-mic-subwindow').forEach(function (panel) {
+                    if (micPopupLayout) micPopupLayout.setPanel(null);
                     panel.remove();
                 });
             }
 
-            function scheduleMicActionHoverCollapse() {
+            function scheduleMicActionHoverCollapse(event) {
                 clearMicActionHoverCollapseTimer();
                 // Screen-source settings contain text input and OS-mediated
                 // interactions (for example IME candidate windows). Leaving
@@ -3835,16 +4465,28 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // disposed. Other lightweight action panels keep the shared
                 // delayed hover-collapse behavior.
                 if (activeMicActionKey === 'screen') return;
-                micActionHoverCollapseTimer = setTimeout(function () {
+                if (event) rememberMicHoverPointer(event);
+                micHoverPointerTracking = true;
+                document.addEventListener('pointermove', rememberMicHoverPointer, true);
+                var bridgeStartedAt = Date.now();
+                function attemptCollapse() {
                     micActionHoverCollapseTimer = null;
-                    if (isMicActionHoverSurfaceActive()) return;
+                    if (isMicActionHoverSurfaceActive()) {
+                        stopMicHoverPointerTracking();
+                        return;
+                    }
+                    if (isPointerInMicHoverBridge() && Date.now() - bridgeStartedAt < MIC_ACTION_HOVER_BRIDGE_MS) {
+                        micActionHoverCollapseTimer = setTimeout(attemptCollapse, 90);
+                        return;
+                    }
                     closeMicSubwindow();
                     leftColumn.querySelectorAll(
                         '[data-neko-mic-main-action-row], [data-neko-mic-main-action]'
                     ).forEach(function (surface) {
                         surface.style.background = 'transparent';
                     });
-                }, MIC_ACTION_HOVER_COLLAPSE_MS);
+                }
+                micActionHoverCollapseTimer = setTimeout(attemptCollapse, MIC_ACTION_HOVER_COLLAPSE_MS);
             }
 
             leftColumn.addEventListener('mouseenter', function () {
@@ -3865,21 +4507,27 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 panel.addEventListener('mouseenter', function () {
                     clearMicActionHoverCollapseTimer();
                 });
-                panel.addEventListener('mouseleave', function () {
-                    scheduleMicActionHoverCollapse();
+                panel.addEventListener('mouseleave', function (event) {
+                    scheduleMicActionHoverCollapse(event);
                 });
             }
 
-            function openMicActionPanel(actionKey, openFn) {
+            function openMicActionPanel(actionKey, openFn, triggerEvent) {
                 clearMicActionHoverCollapseTimer();
                 var existing = getOwnedMicSubwindow();
                 if (activeMicActionKey === actionKey && existing && existing.isConnected) {
                     wireMicSubwindowHoverBridge(existing);
+                    // A click on a row whose panel was opened by hover finishes
+                    // any work that hover deferred (screen-source enumeration).
+                    if (triggerEvent && triggerEvent.type === 'click'
+                        && typeof existing._nekoOnExplicitOpen === 'function') {
+                        existing._nekoOnExplicitOpen();
+                    }
                     return Promise.resolve(existing);
                 }
                 activeMicActionKey = actionKey;
                 var generation = ++micActionHoverOpenGeneration;
-                return Promise.resolve(openFn()).then(function () {
+                return Promise.resolve(openFn(triggerEvent)).then(function () {
                     if (generation !== micActionHoverOpenGeneration || activeMicActionKey !== actionKey) return null;
                     var panel = getOwnedMicSubwindow();
                     if (panel) {
@@ -3891,20 +4539,77 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
 
             function positionMicSubwindow(panel) {
-                if (!panel || !micPopup || !micPopup.isConnected) return;
+                if (!panel || !panel.isConnected || !micPopup || !micPopup.isConnected) return;
+                var anchor = leftColumn.querySelector('[data-neko-mic-main-action="' + activeMicActionKey + '"]') || micPopup;
+                if (window.AvatarPopupUI && typeof window.AvatarPopupUI.positionSidePanel === 'function') {
+                    panel._popupElement = micPopup;
+                    window.AvatarPopupUI.positionSidePanel(panel, anchor, { adaptivePlacement: true });
+                    // These panels appear immediately; keep the shared scale
+                    // without the entry-animation offset used by other menus.
+                    window.AvatarPopupUI.applySidePanelTransform(panel, 'none');
+                    return;
+                }
+                // Standalone pages without the shared helper still follow the
+                // owner's direction, shrinking instead of flipping by width.
                 var rect = micPopup.getBoundingClientRect();
+                var gap = 8;
+                var opensLeft = micPopup.dataset && micPopup.dataset.opensLeft === 'true';
+                var availableWidth = opensLeft ? rect.left - gap * 2 : window.innerWidth - rect.right - gap * 2;
+                var viewportWidth = Math.max(1, window.innerWidth - gap * 2);
+                var stackPanel = availableWidth < Math.min(240, viewportWidth);
+                panel.style.maxWidth = (stackPanel ? viewportWidth : availableWidth) + 'px';
+                if (panel._originalMaxHeight === undefined) {
+                    panel._originalMaxHeight = panel.style.maxHeight;
+                    panel._originalOverflowY = panel.style.overflowY;
+                } else {
+                    panel.style.maxHeight = panel._originalMaxHeight;
+                    panel.style.overflowY = panel._originalOverflowY;
+                }
                 var panelWidth = panel.offsetWidth || 320;
                 var panelHeight = panel.offsetHeight || 360;
-                var gap = 8;
-                var left = rect.right + gap;
-                var opensLeft = micPopup.dataset && micPopup.dataset.opensLeft === 'true';
-                if (opensLeft || left + panelWidth > window.innerWidth - gap) {
-                    left = rect.left - panelWidth - gap;
+                var left = opensLeft ? rect.left - panelWidth - gap : rect.right + gap;
+                var desiredTop = rect.top;
+                if (stackPanel) {
+                    left = Math.min(rect.left, window.innerWidth - panelWidth - gap);
+                    var above = Math.max(0, rect.top - gap * 2);
+                    var below = Math.max(0, window.innerHeight - rect.bottom - gap * 2);
+                    var placeBelow = below >= panelHeight || (above < panelHeight && below >= above);
+                    panel.style.maxHeight = Math.max(1, Math.min(panelHeight, placeBelow ? below : above)) + 'px';
+                    panel.style.overflowY = 'auto';
+                    panelHeight = panel.offsetHeight;
+                    desiredTop = placeBelow ? rect.bottom + gap : rect.top - panelHeight - gap;
                 }
-                left = Math.max(gap, Math.min(left, window.innerWidth - panelWidth - gap));
-                var top = Math.max(gap, Math.min(rect.top, window.innerHeight - panelHeight - gap));
+                left = Math.max(gap, left);
+                var top = Math.max(gap, Math.min(desiredTop, window.innerHeight - panelHeight - gap));
                 panel.style.left = left + 'px';
                 panel.style.top = top + 'px';
+            }
+
+            function syncMicPopupLayout() {
+                if (voiceControlsDisposed || !isPopupAvailable()) return;
+                var popupUi = window.AvatarPopupUI;
+                if (popupUi && popupUi.positionPopup && micPopup.closest('[id$="-floating-buttons"]')) {
+                    var prefix = micPopup.id.split('-popup-')[0];
+                    popupUi.positionPopup(micPopup, { buttonId: 'mic', buttonPrefix: prefix + '-btn-',
+                        triggerPrefix: prefix + '-trigger-icon-', preserveDirection: true });
+                }
+                positionMicSubwindow(getOwnedMicSubwindow());
+            }
+
+            function stopMicPopupLayoutTracking() {
+                if (micPopupLayout) micPopupLayout.disconnect();
+                micPopupLayout = null;
+            }
+
+            function startMicPopupLayoutTracking() {
+                var popupUi = window.AvatarPopupUI;
+                if (popupUi && popupUi.observePopupLayout) {
+                    micPopupLayout = popupUi.observePopupLayout(micPopup, syncMicPopupLayout, {
+                        anchors: Array.from(leftColumn.querySelectorAll('[data-neko-mic-main-action-row]'))
+                    });
+                } else {
+                    addVoiceWindowListener('resize', syncMicPopupLayout);
+                }
             }
 
             function createMicSubwindow(title, iconText, width) {
@@ -3912,6 +4617,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 clearMicActionHoverCollapseTimer();
                 var ownerSelector = micPopup.id ? '[data-neko-sidepanel-owner="' + micPopup.id + '"]' : '.neko-mic-subwindow';
                 document.querySelectorAll(ownerSelector + '.neko-mic-subwindow').forEach(function (panel) {
+                    if (micPopupLayout) micPopupLayout.setPanel(null);
                     panel.remove();
                 });
                 var panel = document.createElement('div');
@@ -3949,6 +4655,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 panel.addEventListener('click', stopSubwindowEvent);
 
                 var header = document.createElement('div');
+                header.setAttribute('data-neko-sidepanel-header', '');
                 Object.assign(header.style, {
                     display: 'flex',
                     alignItems: 'center',
@@ -3992,15 +4699,23 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 closeBtn.addEventListener('click', function (e) {
                     e.stopPropagation();
                     closeMicSubwindow();
+                    // A compact panel can cover its own opener. Removing it
+                    // must not treat the newly exposed row as a fresh hover.
+                    var hit = document.elementFromPoint(e.clientX, e.clientY);
+                    var action = hit && hit.closest('[data-neko-mic-main-action]');
+                    if (action && leftColumn.contains(action)) action._nekoMicHoverDismissed = true;
                 });
 
                 var headerActions = document.createElement('div');
                 Object.assign(headerActions.style, {
                     display: 'flex',
+                    flexWrap: 'wrap',
                     alignItems: 'center',
                     justifyContent: 'flex-end',
                     gap: '7px',
-                    flexShrink: '0'
+                    minWidth: '0',
+                    maxWidth: '100%',
+                    flexShrink: '1'
                 });
                 headerActions.appendChild(closeBtn);
 
@@ -4011,6 +4726,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
                 var body = document.createElement('div');
                 body.className = 'neko-mic-popup-scroll neko-mic-subwindow-body';
+                body.setAttribute('data-neko-sidepanel-body', '');
                 Object.assign(body.style, {
                     display: 'flex',
                     flex: '1 1 auto',
@@ -4020,10 +4736,16 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     overflowY: 'auto'
                 });
                 panel.appendChild(body);
-                panel._nekoMicSubwindowBody = body;
+                var content = document.createElement('div');
+                content.setAttribute('data-neko-sidepanel-content', '');
+                Object.assign(content.style, { display: 'flex', flexDirection: 'column',
+                    flex: '0 0 auto', minWidth: '0', gap: '4px' });
+                body.appendChild(content);
+                panel._nekoMicSubwindowBody = content;
                 attachTransientMicPopupScrollbar(body, panel);
 
                 document.body.appendChild(panel);
+                if (micPopupLayout) micPopupLayout.setPanel(panel);
                 requestAnimationFrame(function () { positionMicSubwindow(panel); });
                 return panel;
             }
@@ -4086,34 +4808,36 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
                 function openActionPanel(event) {
                     actionSurface().style.background = 'var(--neko-popup-hover)';
-                    return openMicActionPanel(actionKey, onClick).catch(function (error) {
+                    return openMicActionPanel(actionKey, onClick, event).catch(function (error) {
                         console.error('[麦克风弹窗] 子窗口打开失败:', error);
                     });
                 }
 
-                // Most settings side panels may expand on hover. Screen-source
-                // enumeration is different: on Linux it can invoke
-                // xdg-desktop-portal and show an OS sharing dialog, so that
-                // action must require an explicit click/user gesture.
-                if (interactionOptions.openOnHover !== false) {
-                    button.addEventListener('mouseenter', function (event) {
+                // Resolve hover permission at event time: desktop bridges may
+                // arrive after rendering.
+                button.addEventListener('mouseenter', function (event) {
+                    if (button._nekoMicHoverDismissed) return;
+                    var openOnHover = typeof interactionOptions.openOnHover === 'function'
+                        ? interactionOptions.openOnHover()
+                        : interactionOptions.openOnHover !== false;
+                    if (openOnHover) {
                         openActionPanel(event);
-                    });
-                } else {
-                    button.addEventListener('mouseenter', function () {
+                    } else {
                         clearMicActionHoverCollapseTimer();
                         actionSurface().style.background = 'var(--neko-popup-hover)';
-                    });
-                }
-                button.addEventListener('mouseleave', function () {
+                    }
+                });
+                button.addEventListener('mouseleave', function (event) {
+                    button._nekoMicHoverDismissed = false;
                     // Shared rows own the full hover surface, including any
                     // sibling toggle. Their mouseleave handler closes the panel.
                     if (button._nekoMicActionRow) return;
                     actionSurface().style.background = 'transparent';
-                    scheduleMicActionHoverCollapse();
+                    scheduleMicActionHoverCollapse(event);
                 });
                 button.addEventListener('click', function (e) {
                     e.stopPropagation();
+                    button._nekoMicHoverDismissed = false;
                     openActionPanel(e);
                 });
                 return button;
@@ -4147,9 +4871,9 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 row.addEventListener('mouseenter', function () {
                     clearMicActionHoverCollapseTimer();
                 });
-                row.addEventListener('mouseleave', function () {
+                row.addEventListener('mouseleave', function (event) {
                     row.style.background = 'transparent';
-                    scheduleMicActionHoverCollapse();
+                    scheduleMicActionHoverCollapse(event);
                 });
                 return row;
             }
@@ -4273,6 +4997,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     optimizationToggle
                 );
 
+                localAsrToggle = null;
+                localAsrBlock = null;
+                if (shouldOfferLocalAsr()) {
+                    createLocalAsrSetting(panelBody, null);
+                }
+
                 voiceStatus = document.createElement('div');
                 voiceStatus.className = 'neko-voice-recognition-status';
                 voiceStatus.setAttribute('role', 'status');
@@ -4393,12 +5123,59 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 requestAnimationFrame(function () { positionMicSubwindow(panel); });
             }
 
-            async function openScreenSourceSubwindow() {
+            async function openScreenSourceSubwindow(triggerEvent) {
                 var panel = createMicSubwindow(
                     window.t ? window.t('buttons.screenShare') : 'Screen Share',
                     null,
                     '360px'
                 );
+                var provider = typeof window.getDesktopCaptureProvider === 'function'
+                    ? window.getDesktopCaptureProvider() : null;
+                var mobileCamera = window.appUtils && typeof window.appUtils.isMobile === 'function'
+                    && window.appUtils.isMobile();
+                var browserCaptureAvailable = navigator.mediaDevices && (mobileCamera
+                    ? typeof navigator.mediaDevices.getUserMedia === 'function'
+                    : typeof navigator.mediaDevices.getDisplayMedia === 'function');
+                if ((mobileCamera || !provider) && browserCaptureAvailable) {
+                    var browserBody = panel._nekoMicSubwindowBody;
+                    var hint = document.createElement('div');
+                    var hintKey = mobileCamera ? 'app.screenSource.mobileCameraHint' : 'app.screenSource.browserPickerHint';
+                    hint.textContent = window.t ? window.t(hintKey)
+                        : (mobileCamera ? 'When sharing starts, your camera will be used.'
+                            : 'When sharing starts, your browser will ask you to choose a tab, window, or screen.');
+                    Object.assign(hint.style, { padding: '8px', fontSize: '13px', color: 'var(--neko-popup-text-sub)' });
+                    var browserShareButton = document.createElement('button');
+                    browserShareButton.type = 'button';
+                    browserShareButton.dataset.nekoBrowserScreenShare = '';
+                    browserShareButton.textContent = shareToggleButton.getAttribute('aria-label')
+                        || (window.t ? window.t('buttons.screenShare') : 'Screen Share');
+                    Object.assign(browserShareButton.style, {
+                        padding: '10px', border: 'none', borderRadius: '6px', cursor: 'pointer',
+                        color: 'var(--neko-popup-text)', background: 'var(--neko-popup-selected-bg)'
+                    });
+                    browserShareButton.addEventListener('click', function (event) {
+                        event.stopPropagation();
+                        var currentProvider = typeof window.getDesktopCaptureProvider === 'function'
+                            ? window.getDesktopCaptureProvider() : null;
+                        var startPending = typeof window.isScreenSharingStartPending === 'function'
+                            && window.isScreenSharingStartPending();
+                        if (!mobileCamera && currentProvider && !isScreenShareActive() && !startPending) {
+                            // The bridge can arrive after this browser panel opens.
+                            // Show its sources before allowing a new capture start.
+                            closeMicSubwindow();
+                            openMicActionPanel('screen', openScreenSourceSubwindow);
+                            return;
+                        }
+                        closeMicSubwindow();
+                        // Preserve the click gesture and reuse voice gating,
+                        // cancellation and stream cleanup from the main switch.
+                        shareToggleButton.click();
+                    });
+                    browserBody.appendChild(hint);
+                    browserBody.appendChild(browserShareButton);
+                    positionMicSubwindow(panel);
+                    return;
+                }
                 var headerActions = panel._nekoMicSubwindowHeaderActions;
                 if (headerActions
                     && typeof window.isScreenSourceTitleMatchEnabled === 'function'
@@ -4409,12 +5186,15 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                         display: 'flex',
                         alignItems: 'center',
                         gap: '6px',
+                        minWidth: '0',
                         color: 'var(--neko-popup-text-sub)',
                         fontSize: '11px',
                         fontWeight: '500',
                         whiteSpace: 'nowrap'
                     });
                     var rememberText = document.createElement('span');
+                    Object.assign(rememberText.style, { minWidth: '0', overflow: 'hidden',
+                        textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
                     rememberText.textContent = window.t
                         ? window.t('app.screenSource.rememberWindow')
                         : '记住窗口';
@@ -4446,7 +5226,25 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // （createScreenShareToggleButton），子窗口仅保留屏幕/窗口源列表。
                 positionMicSubwindow(panel);
                 if (typeof window.renderFloatingScreenSourceList === 'function') {
-                    await window.renderFloatingScreenSourceList(screenSourceList, { requireVisible: false });
+                    // Linux source enumeration can show an OS sharing dialog
+                    // (xdg-desktop-portal). Hover only opens the panel; the
+                    // user clicks the row or the panel's button to enumerate.
+                    // Bridges that predate the flag are inferred per platform,
+                    // so legacy macOS / Windows bridges still list on hover.
+                    var deferEnumeration = !!(triggerEvent && triggerEvent.type === 'mouseenter'
+                        && window.desktopSourceEnumerationMayPrompt(provider));
+                    panel._nekoOnExplicitOpen = function () {
+                        var loadButton = screenSourceList.querySelector(
+                            '[data-neko-screen-source-deferred-load]'
+                        );
+                        if (loadButton) loadButton.click();
+                    };
+                    await window.renderFloatingScreenSourceList(screenSourceList, {
+                        requireVisible: false,
+                        deferEnumeration: deferEnumeration,
+                        retryOnFailure: true,
+                        onDeferredRender: function () { positionMicSubwindow(panel); }
+                    });
                     positionMicSubwindow(panel);
                 }
             }
@@ -4483,14 +5281,26 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
             var currentSpeakerLabel = getCurrentSpeakerLabel();
 
+            function getCurrentScreenSourceLabel() {
+                var sourceLabel = typeof window.getSelectedScreenSourceLabel === 'function'
+                    ? window.getSelectedScreenSourceLabel() : '';
+                // 未选择来源时同样用单数的「屏幕」，不用来源列表的复数分组标题。
+                return sourceLabel || (window.t ? window.t('app.screenSource.genericScreen') : 'Screen');
+            }
+            var currentScreenSourceLabel = getCurrentScreenSourceLabel();
+
             var firstContent = leftColumn.firstChild;
             var screenActionButton = createMainActionButton(
                 null,
                 screenButtonLabel,
-                window.t ? window.t('app.screenSource.screens') : 'Screens',
+                currentScreenSourceLabel,
                 'screen',
                 openScreenSourceSubwindow,
-                { openOnHover: false }
+                { openOnHover: function () {
+                    var provider = typeof window.getDesktopCaptureProvider === 'function'
+                        ? window.getDesktopCaptureProvider() : null;
+                    return !provider || typeof provider.getSources === 'function';
+                } }
             );
             var shareToggleButton = createScreenShareToggleButton({ mini: true });
             var screenActionRow = createMainActionRow(
@@ -4498,6 +5308,17 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 shareToggleButton
             );
             leftColumn.insertBefore(screenActionRow, firstContent);
+            var screenSummary = screenActionButton.querySelector('.neko-mic-action-sub-label');
+            if (screenSummary) {
+                screenSummary.setAttribute('aria-live', 'polite');
+                screenSummary.title = currentScreenSourceLabel;
+                // 选择、自动回退和其他窗口的选择都会派发该事件。
+                addVoiceWindowListener('neko:screen-source-changed', function () {
+                    var nextLabel = getCurrentScreenSourceLabel();
+                    screenSummary.textContent = nextLabel;
+                    screenSummary.title = nextLabel;
+                });
+            }
             // 主按钮展开屏幕源，右侧独立按钮开始/停止共享；二者共用行级悬停生命周期。
             // 屏幕共享行：标题允许换行显示（去掉省略号截断），
             // 保证葡语 "Compartilhamento de tela"、俄语 "Демонстрация экрана" 等长文案也能完整显示
@@ -4563,6 +5384,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
             // 组装
             micPopup.appendChild(leftColumn);
+            startMicPopupLayoutTracking();
 
             startMicVolumeVisualization();
             return true;

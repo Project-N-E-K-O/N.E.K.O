@@ -4,76 +4,66 @@ This package is mixed: most modules are implemented, while a few helper modules
 remain contract-only during the migration.
 """
 
-from .base import NEKO_PLUGIN_META_ATTR, NEKO_PLUGIN_TAG, NekoPluginBase, PluginMeta
-from .config import (
-    PluginConfig,
-    PluginConfigBaseView,
-    PluginConfigProfiles,
-)
-from plugin.sdk.shared.models.exceptions import (
-    ConfigPathError,
-    ConfigProfileError,
-    ConfigValidationError,
-    PluginConfigError,
-)
-from .decorators import (
-    PERSIST_ATTR,
-    EntryKind,
-    HookDecoratorMeta,
-    after_entry,
-    around_entry,
-    before_entry,
-    custom_event,
-    hook,
-    lifecycle,
-    message,
-    neko_plugin,
-    on_event,
-    plugin,
-    plugin_entry,
-    replace_entry,
-    timer_interval,
-)
-from .context import SdkContext, ensure_sdk_context
-from .bus_context import (
-    SdkBusContext,
-    SdkBusConversationRecord,
-    SdkBusDelta,
-    SdkBusEventRecord,
-    SdkBusLifecycleRecord,
-    SdkBusList,
-    SdkBusMemoryRecord,
-    SdkBusMessageRecord,
-    SdkBusWatcher,
-    ensure_sdk_bus_context,
-)
-from .events import EVENT_META_ATTR, EventHandler, EventMeta
-from .hook_executor import HookExecutorMixin
-from .hooks import HOOK_META_ATTR, HookHandler, HookMeta, HookTiming
-from .plugins import (
-    InvalidEntryRefError,
-    InvalidEventRefError,
-    PluginCallError,
-    PluginDescriptor,
-    Plugins,
-    parse_entry_ref,
-    parse_event_ref,
-)
-from .router import EntryConflictError, PluginRouter, PluginRouterError, RouteHandler
-from .types import (
-    EntryRef,
-    EventRef,
-    InputSchema,
-    JsonObject,
-    JsonScalar,
-    JsonValue,
-    LoggerLike,
-    Metadata,
-    MutableStateProtocol,
-    PluginContextProtocol,
-    PluginRef,
-    PushMessageResult,
-)
+from importlib import import_module
+
+# Loading a path helper or an entry contract must not initialize the entire SDK.
+# The facade keeps the same objects and star-import surface as before.
+_EXPORT_GROUPS = {
+    ".base": ("NEKO_PLUGIN_META_ATTR", "NEKO_PLUGIN_TAG", "NekoPluginBase", "PluginMeta"),
+    ".config": ("PluginConfig", "PluginConfigBaseView", "PluginConfigProfiles"),
+    "plugin.sdk.shared.models.exceptions": (
+        "ConfigPathError", "ConfigProfileError", "ConfigValidationError", "PluginConfigError"
+    ),
+    ".decorators": (
+        "PERSIST_ATTR", "EntryKind", "HookDecoratorMeta", "after_entry", "around_entry",
+        "before_entry", "custom_event", "hook", "lifecycle", "message", "neko_plugin",
+        "on_event", "plugin", "plugin_entry", "replace_entry", "timer_interval"
+    ),
+    ".context": ("SdkContext", "ensure_sdk_context"),
+    ".bus_context": (
+        "SdkBusContext", "SdkBusConversationRecord", "SdkBusDelta", "SdkBusEventRecord",
+        "SdkBusLifecycleRecord", "SdkBusList", "SdkBusMemoryRecord", "SdkBusMessageRecord",
+        "SdkBusWatcher", "ensure_sdk_bus_context"
+    ),
+    ".events": ("EVENT_META_ATTR", "EventHandler", "EventMeta"),
+    ".hook_executor": ("HookExecutorMixin",),
+    ".hooks": ("HOOK_META_ATTR", "HookHandler", "HookMeta", "HookTiming"),
+    ".plugins": (
+        "InvalidEntryRefError", "InvalidEventRefError", "PluginCallError", "PluginDescriptor",
+        "Plugins", "parse_entry_ref", "parse_event_ref"
+    ),
+    ".router": ("EntryConflictError", "PluginRouter", "PluginRouterError", "RouteHandler"),
+    ".types": (
+        "EntryRef", "EventRef", "InputSchema", "JsonObject", "JsonScalar", "JsonValue",
+        "LoggerLike", "Metadata", "MutableStateProtocol", "PluginContextProtocol",
+        "PluginRef", "PushMessageResult"
+    ),
+}
+_EXPORTS = {name: module for module, names in _EXPORT_GROUPS.items() for name in names}
+# These modules were attributes of the facade after its eager imports, including
+# the helpers imported transitively by those modules. Keep package.attribute
+# navigation available without loading them when the package is imported.
+_SUBMODULES = frozenset({
+    "_facade", "base", "base_runtime", "bus_context", "cards", "config",
+    "context", "decorators", "events", "finish", "hook_executor", "hooks",
+    "plugins", "result_contract", "router", "types",
+})
+
+
+def __getattr__(name: str):
+    if name in _SUBMODULES:
+        value = import_module(f".{name}", __name__)
+    else:
+        module = _EXPORTS.get(name)
+        if module is None:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        value = getattr(import_module(module, __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__) | _SUBMODULES)
 
 __all__ = [
     "NEKO_PLUGIN_META_ATTR",

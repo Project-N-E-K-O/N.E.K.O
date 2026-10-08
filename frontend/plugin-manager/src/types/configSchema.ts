@@ -4,6 +4,7 @@ export interface ConfigEditorSchema {
   title?: string
   description?: string
   properties?: Record<string, ConfigEditorSchema>
+  additionalProperties?: ConfigEditorSchema | boolean
   items?: ConfigEditorSchema
   enum?: unknown[]
   default?: unknown
@@ -11,6 +12,7 @@ export interface ConfigEditorSchema {
   maximum?: number
   maxLength?: number
   readOnly?: boolean
+  writeOnly?: boolean
   'x-title-i18n'?: Record<string, string>
   'x-description-i18n'?: Record<string, string>
 }

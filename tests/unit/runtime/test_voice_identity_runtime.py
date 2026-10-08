@@ -44,12 +44,14 @@ class _Factory:
         activation_generation: str,
         enforce: bool,
         noise_reduction_enabled: bool | None = None,
+        wake_resources=None,
     ) -> None:
         self.runtime = runtime
         self.profile = profile
         self.activation_generation = activation_generation
         self.enforce = enforce
         self.noise_reduction_enabled = noise_reduction_enabled
+        self.wake_resources = wake_resources
         self.closed = False
 
     def close(self) -> None:
@@ -380,6 +382,33 @@ async def test_activation_status_tracks_live_route_and_runtime_degradation() -> 
     assert (
         registry.activation_status()
         is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+    )
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_starting_blocked_route_is_retryable_degradation() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    manager = _Manager()
+    manager.is_active = True  # type: ignore[attr-defined]
+    manager.is_starting = True  # type: ignore[attr-defined]
+    manager._asr_route_mode = "blocked"  # type: ignore[attr-defined]
+    await registry.register_manager(manager)
+    profile = _profile("profile-starting-route")
+    try:
+        assert await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+
+    assert (
+        registry.activation_status()
+        is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+    )
+    manager.is_starting = False  # type: ignore[attr-defined]
+    assert (
+        registry.activation_status()
+        is VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
     )
     await registry.close()
 
@@ -860,10 +889,11 @@ async def test_failed_dsp_construction_blocks_pcm_until_successful_retry(
     # Use real Core, Registry and settings sequencing. Only model inference and
     # the pipeline constructor failure are injected.
     def factory_for(_manager, _profile, *, activation_generation, enforce,
-                    noise_reduction_enabled=None):
+                    noise_reduction_enabled=None, wake_resources=None):
         factory = _CoreActivationFactory()
         factory.activation_generation = activation_generation
         factory.noise_reduction_enabled = noise_reduction_enabled
+        factory.wake_resources = wake_resources
         return factory
 
     monkeypatch.setattr(runtime_module, "OwnerVoiceSessionActivationFactory", factory_for)
@@ -2695,10 +2725,12 @@ def test_unavailable_profile_store_never_falls_back_to_plaintext(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("configured_mode", ["invalid-mode", "shadow"])
 async def test_runtime_install_and_wrapper_lifecycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    configured_mode: str,
 ) -> None:
     installed: list[object] = []
     callback_configurations: list[tuple[object | None, object | None]] = []
@@ -2766,7 +2798,7 @@ async def test_runtime_install_and_wrapper_lifecycle(
             (prepare, reconcile)
         ),
     )
-    monkeypatch.setenv("NEKO_VOICE_IDENTITY_MODE", "invalid-mode")
+    monkeypatch.setenv("NEKO_VOICE_IDENTITY_MODE", configured_mode)
     config = SimpleNamespace(local_state_dir=tmp_path)
 
     service = runtime_module.install_voice_identity_runtime(config)

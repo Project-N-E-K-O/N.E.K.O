@@ -1,74 +1,1018 @@
 // @vitest-environment happy-dom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, nextTick, ref } from 'vue'
-import ElementPlus from 'element-plus'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createApp, h, nextTick, ref } from 'vue'
+import ElementPlus, {
+  ElMessage,
+  ElMessageBox,
+  type Action,
+  type MessageBoxData,
+} from 'element-plus'
+import * as configApi from '@/api/config'
+import { setPendingReload } from '@/utils/pendingReload'
 import PluginConfigEditor from './PluginConfigEditor.vue'
 
-const api = vi.hoisted(() => ({
-  getPluginConfig: vi.fn(), getPluginEffectiveBaseConfig: vi.fn(),
-  getPluginProfilesState: vi.fn(), getPluginProfileConfig: vi.fn(),
-  upsertPluginProfileConfig: vi.fn(), deletePluginProfileConfig: vi.fn(),
+vi.mock('vue-i18n', () => ({
+  useI18n: () => ({
+    mergeLocaleMessage: vi.fn(),
+    te: () => true,
+    getLocaleMessage: () => ({}),
+    locale: ref('en-US'),
+    t: (key: string, params?: { value?: unknown }) =>
+      params?.value === undefined ? key : key + ': ' + String(params.value),
+  }),
 }))
-vi.mock('@/api/config', () => api)
 vi.mock('@/utils/request', () => ({ isRequestTimeout: () => false }))
-vi.mock('@/stores/plugin', () => ({ usePluginStore: () => ({ reload: vi.fn() }) }))
-vi.mock('vue-router', () => ({ useRouter: () => ({ replace: vi.fn() }) }))
-vi.mock('vue-i18n', () => ({ useI18n: () => ({ locale: ref('en-US'), t: (key: string) => key }) }))
-
-let dispose: (() => void) | undefined
-beforeEach(() => {
+vi.mock('vue-router', () => ({ onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn() }))
+const storeReload = vi.hoisted(() => vi.fn())
+vi.mock('@/stores/plugin', () => ({ usePluginStore: () => ({ reload: storeReload }) }))
+vi.mock('@/api/config', () => ({
+  getPluginEffectiveBaseConfig: async () => ({
+    config: {
+      plugin_runtime: { enabled: true },
+      search: { max_results: 8 },
+      cache: { ttl: 120 },
+      plugin: { id: 'test' },
+    },
+  }),
+  getPluginConfig: async () => ({ config: {} }),
+  getPluginProfilesState: async () => ({ config_profiles: null }),
+  getPluginProfileConfig: vi.fn(),
+  deletePluginProfileConfig: vi.fn(),
+  upsertPluginProfileConfig: vi.fn(),
+  hotUpdatePluginConfig: vi.fn(),
+}))
+const cleanups: (() => void)[] = []
+afterEach(() => {
+  cleanups.splice(0).forEach((cleanup) => cleanup())
+  vi.restoreAllMocks()
   vi.clearAllMocks()
-  api.getPluginConfig.mockResolvedValue({ config: { search: { query: 'old' } } })
-  api.getPluginEffectiveBaseConfig.mockResolvedValue({
-    config: { search: { query: 'old', count: 8 } },
-    config_schema: { type: 'object', properties: {
-      search: { type: 'object', properties: {
-        query: { type: 'string', title: 'Search query', description: 'Words to look up' },
-      } },
-    } },
-  })
-  api.getPluginProfilesState.mockResolvedValue({ config_profiles: { active: 'prod', files: { draft: {} } } })
-  api.getPluginProfileConfig.mockResolvedValue({ config: {} })
-  api.upsertPluginProfileConfig.mockResolvedValue({})
+  // The pending flag lives in its module, so clear the plugin these tests use.
+  setPendingReload('test', false)
+  localStorage.clear()
 })
-afterEach(() => { dispose?.(); dispose = undefined })
-
-async function mount() {
-  const host = document.createElement('div')
-  document.body.appendChild(host)
-  const app = createApp(PluginConfigEditor, { pluginId: 'demo' })
+async function mountEditor({
+  expectNav = true,
+  navCount = 3,
+  onLayoutModeChange,
+}: {
+  expectNav?: boolean
+  navCount?: number
+  onLayoutModeChange?: (pageScroll: boolean) => void
+} = {}) {
+  const host = document.createElement('main')
+  host.dataset.yuiGuideId = 'plugin-main'
+  Object.defineProperty(host, 'clientHeight', { value: 1000 })
+  document.body.append(host)
+  const pluginId = ref('test')
+  const app = createApp({
+    render: () => h(PluginConfigEditor, { pluginId: pluginId.value, onLayoutModeChange }),
+  })
   app.use(ElementPlus)
   app.mount(host)
-  dispose = () => { app.unmount(); host.remove() }
-  await vi.waitFor(() => expect(host.querySelector('.pcf input')).not.toBeNull())
-  return host
+  let mounted = true
+  const unmount = () => {
+    if (mounted) app.unmount()
+    mounted = false
+    host.remove()
+  }
+  cleanups.push(unmount)
+  // Plugins without configurable sections render no navigation at all.
+  await vi.waitFor(() =>
+    expect(host.querySelectorAll(expectNav ? '.config-nav button' : '.config-footer')).toHaveLength(
+      expectNav ? navCount : 1
+    )
+  )
+  return { host, pluginId, unmount }
+}
+async function search(host: HTMLElement, value: string) {
+  const input = host.querySelector<HTMLInputElement>('.config-toolbar input')!
+  input.value = value
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  await nextTick()
+  await nextTick()
 }
 
-describe('PluginConfigEditor schema integration', () => {
-  it('loads field metadata from the API and saves only edited profile values', async () => {
-    const host = await mount()
-    expect(api.getPluginEffectiveBaseConfig).toHaveBeenCalledWith('demo')
-    expect(host.textContent).toContain('Words to look up')
-    const title = Array.from(host.querySelectorAll('.field-title')).find((node) => node.textContent === 'Search query')!
-    const input = title.closest('.row')!.querySelector('input')!
-    input.value = 'new'
-    input.dispatchEvent(new Event('input'))
-    input.dispatchEvent(new Event('change'))
-    await nextTick()
-    const save = Array.from(host.querySelectorAll('button')).find((node) => node.textContent?.trim() === 'common.save')!
-    save.click()
-    await vi.waitFor(() => expect(api.upsertPluginProfileConfig).toHaveBeenCalledWith(
-      'demo', 'draft', { search: { query: 'new' } }, false,
-    ))
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
+async function startProfileDeletion() {
+  vi.spyOn(configApi, 'getPluginProfilesState').mockImplementation(async (pluginId) => ({
+    plugin_id: pluginId,
+    profiles_path: '',
+    profiles_exists: true,
+    config_profiles: {
+      active: 'saved',
+      files: { saved: { path: 'saved.toml', resolved_path: null, exists: true } },
+    },
+  }))
+  vi.spyOn(configApi, 'getPluginProfileConfig').mockImplementation(async (pluginId, name) => ({
+    plugin_id: pluginId,
+    profile: { name, path: 'saved.toml', resolved_path: null, exists: true },
+    config: {},
+  }))
+  const deletion = deferred<Awaited<ReturnType<typeof configApi.deletePluginProfileConfig>>>()
+  const deleteSpy = vi
+    .spyOn(configApi, 'deletePluginProfileConfig')
+    .mockReturnValue(deletion.promise)
+  const confirmation = deferred<Action>()
+  const confirmSpy = vi
+    .spyOn(ElMessageBox, 'confirm')
+    .mockReturnValue(confirmation.promise as Promise<MessageBoxData>)
+  const success = vi.spyOn(ElMessage, 'success').mockReturnValue({ close: vi.fn() })
+  const editor = await mountEditor()
+  editor.host.querySelector<HTMLButtonElement>('.profile-entry')!.click()
+  await vi.waitFor(() =>
+    expect(document.querySelector('.profile-current-row button')).not.toBeNull()
+  )
+  document.querySelector<HTMLButtonElement>('.profile-current-row button')!.click()
+  expect(confirmSpy).toHaveBeenCalledOnce()
+  expect(deleteSpy).not.toHaveBeenCalled()
+  confirmation.resolve('confirm')
+  await vi.waitFor(() => expect(deleteSpy).toHaveBeenCalledWith('test', 'saved'))
+  return { ...editor, deletion, success }
+}
+
+async function flushDeletion() {
+  // Drain the API, composable, component, and rendering continuations.
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  await nextTick()
+}
+
+describe('profile deletion lifecycle', () => {
+  it('shows success for the current mounted plugin', async () => {
+    const { deletion, success } = await startProfileDeletion()
+    // The refreshed list no longer has the deleted profile, so the selection moves on.
+    vi.mocked(configApi.getPluginProfilesState).mockResolvedValue({
+      plugin_id: 'test',
+      profiles_path: '',
+      profiles_exists: true,
+      config_profiles: { active: null, files: {} },
+    })
+    deletion.resolve({ plugin_id: 'test', profile: 'saved', removed: true })
+    await vi.waitFor(() => expect(success).toHaveBeenCalledExactlyOnceWith('common.success'))
   })
 
-  it('shows a translated warning and keeps generic editing available for invalid schemas', async () => {
-    api.getPluginEffectiveBaseConfig.mockResolvedValue({
-      config: { query: 'old' }, config_schema: null,
-      warnings: [{ code: 'PLUGIN_CONFIG_EDITOR_SCHEMA_INVALID' }],
-    })
-    const host = await mount()
-    expect(host.textContent).toContain('plugins.configSchemaInvalid')
-    expect(host.querySelector('.pcf input')).not.toBeNull()
+  it('does not show success after unmount while deletion is pending', async () => {
+    const { deletion, success, unmount } = await startProfileDeletion()
+    unmount()
+    deletion.resolve({ plugin_id: 'test', profile: 'saved', removed: true })
+    await flushDeletion()
+    expect(success).not.toHaveBeenCalled()
   })
+
+  it('does not show success after switching plugins while deletion is pending', async () => {
+    const { deletion, success, pluginId, host } = await startProfileDeletion()
+    pluginId.value = 'next'
+    await nextTick()
+    await vi.waitFor(() => expect(host.querySelectorAll('.config-nav button')).toHaveLength(3))
+    deletion.resolve({ plugin_id: 'test', profile: 'saved', removed: true })
+    await flushDeletion()
+    expect(success).not.toHaveBeenCalled()
+  })
+
+  it('does not display a stale deletion error on the next plugin', async () => {
+    const { deletion, success, pluginId, host } = await startProfileDeletion()
+    pluginId.value = 'next'
+    await nextTick()
+    await vi.waitFor(() => expect(host.querySelectorAll('.config-nav button')).toHaveLength(3))
+    deletion.reject(new Error('Previous plugin deletion failed'))
+    await flushDeletion()
+    expect(host.querySelector('.config-error')).toBeNull()
+    expect(host.textContent).not.toContain('Previous plugin deletion failed')
+    expect(success).not.toHaveBeenCalled()
+  })
+
+  it('clears the base-config reload path when the deleted profile was active', async () => {
+    // After deleting the active profile the server clears `active` while another
+    // saved profile remains, so the editor must still offer a working reload.
+    let state: configApi.PluginProfilesState = {
+      plugin_id: 'test',
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'saved',
+        files: {
+          saved: { path: 'saved.toml', resolved_path: null, exists: true },
+          other: { path: 'other.toml', resolved_path: null, exists: true },
+        },
+      },
+    }
+    vi.spyOn(configApi, 'getPluginProfilesState').mockImplementation(async () => state)
+    vi.spyOn(configApi, 'getPluginProfileConfig').mockResolvedValue({
+      plugin_id: 'test',
+      profile: { name: 'saved', path: 'saved.toml', resolved_path: null, exists: true },
+      config: {},
+    })
+    vi.spyOn(configApi, 'deletePluginProfileConfig').mockImplementation(async () => {
+      state = {
+        ...state,
+        config_profiles: {
+          active: null,
+          files: { other: { path: 'other.toml', resolved_path: null, exists: true } },
+        },
+      }
+      return { plugin_id: 'test', profile: 'saved', removed: true }
+    })
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as unknown as MessageBoxData)
+    const { host, unmount } = await mountEditor()
+    host.querySelector<HTMLButtonElement>('.profile-entry')!.click()
+    await vi.waitFor(() =>
+      expect(document.querySelector('.profile-current-row button')).not.toBeNull()
+    )
+    document.querySelector<HTMLButtonElement>('.profile-current-row button')!.click()
+    await vi.waitFor(() =>
+      expect(host.querySelector('.apply-status')?.textContent).toContain(
+        'plugins.configUi.pendingApply'
+      )
+    )
+    const reload = [...host.querySelectorAll<HTMLButtonElement>('.config-footer button')].find(
+      (button) => button.textContent?.trim() === 'plugins.reloadPlugin'
+    )
+    expect(reload).toBeDefined()
+    expect(reload?.disabled).toBe(false)
+    unmount()
+  })
+
+  it('keeps a reload hint after deleting the active profile, including after remount', async () => {
+    const { deletion, host, unmount } = await startProfileDeletion()
+    deletion.resolve({ plugin_id: 'test', profile: 'saved', removed: true })
+    await vi.waitFor(() =>
+      expect(host.querySelector('.apply-status')?.textContent).toContain(
+        'plugins.configUi.pendingApply'
+      )
+    )
+    // The hint is derived from persisted state, so it survives a remount.
+    unmount()
+    const { host: remounted } = await mountEditor()
+    expect(remounted.querySelector('.apply-status')?.textContent).toContain(
+      'plugins.configUi.pendingApply'
+    )
+  })
+
+  it('still displays a deletion error for the current plugin', async () => {
+    const { deletion, host } = await startProfileDeletion()
+    deletion.reject(new Error('Current plugin deletion failed'))
+    await vi.waitFor(() =>
+      expect(host.querySelector('.config-error')?.textContent).toContain(
+        'Current plugin deletion failed'
+      )
+    )
+  })
+})
+
+describe('saved profile hot updates', () => {
+  async function savedEditor() {
+    vi.spyOn(configApi, 'upsertPluginProfileConfig').mockResolvedValue({
+      plugin_id: 'test',
+      profile: { name: 'default', path: 'default.toml', resolved_path: null, exists: true },
+      config: { search: { max_results: 9 } },
+    })
+    vi.spyOn(configApi, 'getPluginProfilesState').mockResolvedValue({
+      plugin_id: 'test',
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'default',
+        files: { default: { path: 'default.toml', resolved_path: null, exists: true } },
+      },
+    })
+    const editor = await mountEditor()
+    const input = editor.host.querySelector<HTMLInputElement>(
+      'input[aria-label="search.max_results"]'
+    )!
+    input.value = '9'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    const save = [...editor.host.querySelectorAll<HTMLButtonElement>('.config-footer button')].find(
+      (button) => button.textContent?.trim() === 'plugins.configUi.saveProfile'
+    )!
+    save.click()
+    await vi.waitFor(() => expect(hotButton(editor.host)?.disabled).toBe(false))
+    return editor
+  }
+
+  function hotButton(host: HTMLElement) {
+    return [...host.querySelectorAll<HTMLButtonElement>('.config-footer button')].find(
+      (button) => button.textContent?.trim() === 'plugins.hotUpdate'
+    )
+  }
+
+  it('sends fresh resolved config temporarily, excluding protected metadata', async () => {
+    const { host } = await savedEditor()
+    const resolved = {
+      plugin: { id: 'test', entry: 'main' },
+      search: { max_results: 9, inherited: true },
+      cache: {},
+    }
+    const read = vi
+      .spyOn(configApi, 'getPluginConfig')
+      .mockResolvedValue({ plugin_id: 'test', config: resolved, last_modified: '' })
+    const hot = vi.spyOn(configApi, 'hotUpdatePluginConfig').mockResolvedValue({
+      success: true,
+      plugin_id: 'test',
+      mode: 'temporary',
+      hot_reloaded: true,
+      requires_reload: false,
+      message: 'Config update sent (response timeout, may have been applied)',
+    })
+    hotButton(host)!.click()
+    await vi.waitFor(() =>
+      expect(hot).toHaveBeenCalledExactlyOnceWith(
+        'test',
+        {
+          search: { max_results: 9, inherited: true },
+          cache: {},
+        },
+        'temporary',
+        'default'
+      )
+    )
+    expect(read).toHaveBeenCalledWith('test')
+    expect(resolved.plugin.id).toBe('test')
+    await vi.waitFor(() =>
+      expect(host.querySelector('.apply-status')?.textContent).toContain(
+        'plugins.configUi.hotRequested'
+      )
+    )
+    // Hot updates are merged into the live config, so the pending state and the
+    // reload affordance stay available.
+    expect(hotButton(host)).toBeDefined()
+    expect(hotButton(host)?.disabled).toBe(false)
+    expect(configApi.upsertPluginProfileConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the pending state after leaving and returning to the page', async () => {
+    const { unmount } = await savedEditor()
+    unmount()
+    const { host } = await mountEditor()
+    expect(hotButton(host)).toBeDefined()
+    expect(hotButton(host)?.disabled).toBe(false)
+  })
+
+  it.each(['unmount', 'switch'] as const)('does not apply a response after %s', async (action) => {
+    const { host, pluginId, unmount } = await savedEditor()
+    const response = deferred<Awaited<ReturnType<typeof configApi.getPluginConfig>>>()
+    const read = vi.spyOn(configApi, 'getPluginConfig').mockReturnValueOnce(response.promise)
+    const hot = vi.spyOn(configApi, 'hotUpdatePluginConfig')
+    hotButton(host)!.click()
+    await vi.waitFor(() => expect(read).toHaveBeenCalled())
+    if (action === 'unmount') unmount()
+    else {
+      pluginId.value = 'next'
+      await nextTick()
+    }
+    response.resolve({
+      plugin_id: 'test',
+      config: { search: { max_results: 9 } },
+      last_modified: '',
+    })
+    await flushDeletion()
+    expect(hot).not.toHaveBeenCalled()
+  })
+
+  it('does not apply when reading the saved config fails', async () => {
+    const { host } = await savedEditor()
+    vi.spyOn(configApi, 'getPluginConfig').mockRejectedValue(new Error('Cannot read saved config'))
+    const hot = vi.spyOn(configApi, 'hotUpdatePluginConfig')
+    hotButton(host)!.click()
+    await vi.waitFor(() =>
+      expect(host.querySelector('.config-error')?.textContent).toContain('Cannot read saved config')
+    )
+    expect(hot).not.toHaveBeenCalled()
+    expect(hotButton(host)?.disabled).toBe(false)
+  })
+})
+
+describe('layout mode', () => {
+  it('reports its initial mode so a remount resets the parent', async () => {
+    // The parent keeps the last reported mode across an editor remount; a fresh editor
+    // that measures the same fixed layout would otherwise never correct it.
+    const modes: boolean[] = []
+    const { unmount } = await mountEditor({ onLayoutModeChange: (mode) => modes.push(mode) })
+    expect(modes[0]).toBe(false)
+    unmount()
+  })
+})
+
+describe('change review', () => {
+  it('undoes a deleted profile-only field whose row the form no longer shows', async () => {
+    vi.spyOn(configApi, 'getPluginProfilesState').mockResolvedValue({
+      plugin_id: 'test',
+      profiles_path: '',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'saved',
+        files: { saved: { path: 'saved.toml', resolved_path: null, exists: true } },
+      },
+    })
+    vi.spyOn(configApi, 'getPluginProfileConfig').mockResolvedValue({
+      plugin_id: 'test',
+      profile: { name: 'saved', path: 'saved.toml', resolved_path: null, exists: true },
+      config: { search: { extra: 'x' } },
+    })
+    const { host, unmount } = await mountEditor()
+    const row = () => host.querySelector<HTMLElement>('[data-config-path="search.extra"]')
+    await vi.waitFor(() => expect(row()).not.toBeNull())
+    const button = (root: ParentNode, label: string) =>
+      [...root.querySelectorAll<HTMLButtonElement>('button')].find(
+        (b) => b.textContent?.trim() === label
+      )!
+
+    button(row()!, 'common.delete').click()
+    await vi.waitFor(() => expect(row()).toBeNull())
+
+    button(host, 'plugins.configUi.reviewChanges').click()
+    await vi.waitFor(() => expect(document.querySelector('.change-path button')).not.toBeNull())
+    // Nothing is inherited in its place, so the review must not call it a default value.
+    expect(document.querySelector('.change-intent')!.textContent).toBe(
+      'plugins.configUi.removeValue'
+    )
+    document.querySelector<HTMLButtonElement>('.change-path button')!.click()
+    await vi.waitFor(() => expect(row()).not.toBeNull())
+    expect(host.querySelector<HTMLInputElement>('input[aria-label="search.extra"]')!.value).toBe(
+      'x'
+    )
+    unmount()
+  })
+
+  it('calls a removed override that falls back to the base value a default', async () => {
+    vi.spyOn(configApi, 'getPluginProfilesState').mockResolvedValue({
+      plugin_id: 'test',
+      profiles_path: '',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'saved',
+        files: { saved: { path: 'saved.toml', resolved_path: null, exists: true } },
+      },
+    })
+    vi.spyOn(configApi, 'getPluginProfileConfig').mockResolvedValue({
+      plugin_id: 'test',
+      profile: { name: 'saved', path: 'saved.toml', resolved_path: null, exists: true },
+      config: { search: { max_results: 9 } },
+    })
+    const { host, unmount } = await mountEditor()
+    const row = () => host.querySelector<HTMLElement>('[data-config-path="search.max_results"]')
+    await vi.waitFor(() => expect(row()).not.toBeNull())
+    const button = (root: ParentNode, label: string) =>
+      [...root.querySelectorAll<HTMLButtonElement>('button')].find(
+        (b) => b.textContent?.trim() === label
+      )!
+
+    button(row()!, 'plugins.configUi.restoreInheritance').click()
+    await nextTick()
+    button(host, 'plugins.configUi.reviewChanges').click()
+    await vi.waitFor(() => expect(document.querySelector('.change-intent')).not.toBeNull())
+    expect(document.querySelector('.change-intent')!.textContent).toBe(
+      'plugins.configUi.restoreInheritance'
+    )
+    unmount()
+  })
+})
+
+describe('virtual default materialization', () => {
+  it('persists the current draft instead of writing an empty profile', async () => {
+    const upsert = vi.spyOn(configApi, 'upsertPluginProfileConfig').mockResolvedValue({
+      plugin_id: 'test',
+      profile: { name: 'default', path: 'default.toml', resolved_path: null, exists: true },
+      config: { search: { max_results: 9 } },
+    })
+    vi.spyOn(configApi, 'getPluginProfileConfig').mockResolvedValue({
+      plugin_id: 'test',
+      profile: { name: 'default', path: 'default.toml', resolved_path: null, exists: true },
+      config: { search: { max_results: 9 } },
+    })
+    vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({
+      value: 'default',
+      action: 'confirm',
+    } as MessageBoxData)
+    const { host, unmount } = await mountEditor()
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="search.max_results"]')!
+    input.value = '9'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    host.querySelector<HTMLButtonElement>('button.profile-entry')!.click()
+    await nextTick()
+    await vi.waitFor(() =>
+      expect(document.querySelector('.profile-picker-row button')).not.toBeNull()
+    )
+    const addBtn = [
+      ...document.querySelectorAll<HTMLButtonElement>('.profile-picker-row button'),
+    ].find((button) => button.querySelector('svg'))!
+    addBtn.click()
+    await vi.waitFor(() => expect(upsert).toHaveBeenCalled())
+    // The draft must be persisted, not replaced by an empty profile object.
+    expect(upsert).toHaveBeenCalledWith('test', 'default', { search: { max_results: 9 } }, true)
+    unmount()
+  })
+})
+
+describe('profile replacement', () => {
+  it('hides the form while a profile deletion is in flight', async () => {
+    const { host, deletion } = await startProfileDeletion()
+    // A successful deletion drops the record, so edits typed meanwhile would be lost.
+    await vi.waitFor(() => expect(host.querySelector('.el-skeleton')).not.toBeNull())
+    expect(host.querySelector('input[aria-label="search.max_results"]')).toBeNull()
+    deletion.resolve({} as never)
+    await vi.waitFor(() =>
+      expect(host.querySelector('input[aria-label="search.max_results"]')).not.toBeNull()
+    )
+  })
+})
+
+describe('manual refresh', () => {
+  it('hides the form while a discarding refresh is in flight', async () => {
+    const { host } = await mountEditor()
+    const input = () =>
+      host.querySelector<HTMLInputElement>('input[aria-label="search.max_results"]')
+    input()!.value = '9'
+    input()!.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as unknown as MessageBoxData)
+    const reload = deferred<Awaited<ReturnType<typeof configApi.getPluginEffectiveBaseConfig>>>()
+    vi.spyOn(configApi, 'getPluginEffectiveBaseConfig').mockReturnValue(reload.promise)
+    host
+      .querySelector<HTMLButtonElement>(
+        'button[aria-label="plugins.configUi.configData / common.refresh"]'
+      )!
+      .click()
+    await vi.waitFor(() => expect(document.querySelector('.el-dropdown-menu__item')).not.toBeNull())
+    ;[...document.querySelectorAll<HTMLElement>('.el-dropdown-menu__item')]
+      .find((item) => item.textContent?.includes('common.refresh'))!
+      .click()
+    // The draft is about to be cleared, so nothing may stay editable until it is.
+    await vi.waitFor(() => expect(host.querySelector('.el-skeleton')).not.toBeNull())
+    expect(input()).toBeNull()
+    reload.resolve({ plugin_id: 'test', config: { search: { max_results: 8 } } } as never)
+    await vi.waitFor(() => expect(input()?.value).toBe('8'))
+    expect(host.querySelector('.el-skeleton')).toBeNull()
+  })
+})
+
+describe('pending state synchronisation', () => {
+  it('clears the warning when the plugin is reloaded elsewhere', async () => {
+    setPendingReload('test', true)
+    const { host, unmount } = await mountEditor()
+    expect(host.querySelector('.apply-status')?.textContent).toContain(
+      'plugins.configUi.pendingApply'
+    )
+
+    // What pluginStore.reload() does for any entry point outside the editor.
+    setPendingReload('test', false)
+    await nextTick()
+
+    expect(host.querySelector('.apply-status')).toBeNull()
+    unmount()
+  })
+
+  it('leaves the reload flag to the store instead of clearing it locally', async () => {
+    setPendingReload('test', true)
+    const { host, unmount } = await mountEditor()
+    const reload = [...host.querySelectorAll<HTMLButtonElement>('.config-footer button')].find(
+      (button) => button.textContent?.trim() === 'plugins.reloadPlugin'
+    )!
+    reload.click()
+    // Drain the store call, the notice update, and the reloaded drafts.
+    for (let round = 0; round < 3; round += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await nextTick()
+    }
+
+    // The store clears the flag itself once the host matches the saved configuration, and
+    // only while no newer write claimed it. This harness stubs the store out, so a
+    // surviving notice proves the editor did not clear the flag behind its back.
+    expect(host.querySelector('.apply-status')?.textContent).toContain(
+      'plugins.configUi.pendingApply'
+    )
+    unmount()
+  })
+
+  it('drops the reload-complete notice once a new write is pending', async () => {
+    setPendingReload('test', true)
+    const { host, unmount } = await mountEditor()
+    // The store clears the flag when the reload applied the saved configuration.
+    storeReload.mockImplementationOnce(async () => setPendingReload('test', false))
+    const reload = [...host.querySelectorAll<HTMLButtonElement>('.config-footer button')].find(
+      (button) => button.textContent?.trim() === 'plugins.reloadPlugin'
+    )!
+    reload.click()
+    await vi.waitFor(() =>
+      expect(host.querySelector('.apply-status')?.textContent).toContain(
+        'plugins.configUi.reloadComplete'
+      )
+    )
+
+    // Activating the selected profile flags it again without changing the selection.
+    setPendingReload('test', true)
+    await nextTick()
+    expect(host.querySelector('.apply-status')?.textContent).toContain(
+      'plugins.configUi.pendingApply'
+    )
+    unmount()
+  })
+
+  it('keeps the form usable when only protected metadata is configured', async () => {
+    vi.spyOn(configApi, 'getPluginEffectiveBaseConfig').mockResolvedValue({
+      plugin_id: 'test',
+      config: { plugin: { id: 'test', entry: 'main' } },
+    } as never)
+    const { host, unmount } = await mountEditor({ expectNav: false })
+    expect(host.querySelector('.el-empty')).toBeNull()
+    expect(host.querySelectorAll('.config-nav button')).toHaveLength(0)
+    unmount()
+  })
+})
+
+describe('configuration navigation boundaries', () => {
+  it('matches field order, hides protected metadata, and keeps runtime last', async () => {
+    const { host } = await mountEditor()
+    expect([...host.querySelectorAll('.config-nav button span')].map((e) => e.textContent)).toEqual(
+      ['search', 'cache', 'plugin_runtime']
+    )
+  })
+
+  it('does not enable a base-only literal section under the configured filter', async () => {
+    // A top-level `constructor` table read off the empty draft must not resolve the
+    // prototype member and count as configured.
+    vi.spyOn(configApi, 'getPluginEffectiveBaseConfig').mockResolvedValue({
+      plugin_id: 'test',
+      config: JSON.parse(
+        '{"plugin_runtime":{"enabled":true},"search":{"max_results":8},"constructor":{"ttl":1}}'
+      ),
+    } as never)
+    const { host } = await mountEditor()
+    host
+      .querySelector<HTMLButtonElement>('button[aria-label="plugins.configUi.filterFields"]')!
+      .click()
+    await vi.waitFor(() => expect(document.querySelector('.el-dropdown-menu__item')).not.toBeNull())
+    const configured = [...document.querySelectorAll<HTMLElement>('.el-dropdown-menu__item')].find(
+      (item) => item.textContent?.includes('plugins.configUi.configured')
+    )!
+    configured.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('plugins.configUi.configured'))
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>('.config-nav button')]
+    await vi.waitFor(() => expect(buttons.every((button) => button.disabled)).toBe(true))
+  })
+
+  it('disables nonmatching sections and handles an empty search result', async () => {
+    const { host } = await mountEditor()
+    await search(host, 'max_results')
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>('.config-nav button')]
+    expect(buttons.map((button) => button.disabled)).toEqual([false, true, true])
+    await search(host, 'no-such-field')
+    expect(buttons.every((button) => button.disabled)).toBe(true)
+    expect(host.textContent).toContain('plugins.configUi.emptySearch')
+  })
+
+  it('jumps within the editor without clearing search or changing an unsaved draft', async () => {
+    const { host } = await mountEditor()
+    await search(host, 'max_results')
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="search.max_results"]')!
+    input.value = '9'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    const pane = host.querySelector<HTMLElement>('.config-content')!
+    const scroll = vi.spyOn(pane, 'scrollTo').mockImplementation(() => {})
+    const row = host.querySelector<HTMLElement>('[data-config-path="search"]')!
+    vi.spyOn(row, 'getClientRects').mockReturnValue([{}] as unknown as DOMRectList)
+    vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 120, 100, 50))
+    host.querySelector<HTMLButtonElement>('.config-nav button')!.click()
+    await nextTick()
+    await nextTick()
+    expect(scroll).toHaveBeenCalled()
+    expect(host.querySelector<HTMLInputElement>('.config-toolbar input')!.value).toBe('max_results')
+    expect(input.value).toBe('9')
+    expect(host.querySelector('.config-footer')?.textContent).toContain(
+      'plugins.configUi.unsavedCount'
+    )
+  })
+})
+
+describe('async operation lifecycle isolation', () => {
+  it('does not show stale errors after switching plugins', async () => {
+    vi.spyOn(configApi, 'getPluginProfilesState').mockResolvedValue({
+      plugin_id: 'test',
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'default',
+        files: { default: { path: 'default.toml', resolved_path: null, exists: true } },
+      },
+    })
+    vi.spyOn(configApi, 'upsertPluginProfileConfig').mockRejectedValue(new Error('Create failed'))
+    vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({
+      value: 'prod',
+      action: 'confirm',
+    } as MessageBoxData)
+    const { host, pluginId, unmount } = await mountEditor()
+    // 打开配置文件管理器
+    const profileBtn = [...host.querySelectorAll<HTMLButtonElement>('button')].find((btn) =>
+      btn.classList.contains('profile-entry')
+    )!
+    profileBtn.click()
+    await nextTick()
+    await vi.waitFor(() => expect(document.querySelector('.profile-manager-dialog')).not.toBeNull())
+    // 点击新建配置文件按钮
+    const addBtn = [
+      ...document.querySelectorAll<HTMLButtonElement>('.profile-picker-row button'),
+    ].find(
+      (btn) => btn.querySelector('svg') // Plus icon
+    )!
+    addBtn.click()
+    await vi.waitFor(() => expect(configApi.upsertPluginProfileConfig).toHaveBeenCalled())
+    pluginId.value = 'other'
+    await nextTick()
+    await nextTick()
+    expect(host.querySelector('.config-error')).toBeNull()
+    unmount()
+  })
+
+  it('does not show stale activation errors after plugin change', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(configApi, 'getPluginProfilesState').mockResolvedValue({
+      plugin_id: 'test',
+      profiles_path: 'profiles',
+      profiles_exists: true,
+      config_profiles: {
+        active: 'prod',
+        files: { prod: { path: 'prod.toml', resolved_path: null, exists: true } },
+      },
+    })
+    vi.spyOn(configApi, 'getPluginProfileConfig').mockResolvedValue({
+      plugin_id: 'test',
+      profile: { name: 'prod', path: 'prod.toml', resolved_path: null, exists: true },
+      config: { cache: { ttl: 60 } },
+    })
+
+    const { host, pluginId, unmount } = await mountEditor()
+    await vi.waitFor(() => expect(configApi.getPluginProfilesState).toHaveBeenCalled())
+    await nextTick()
+
+    // 模拟保存操作失败（延迟 100ms）
+    const saveSpy = vi.spyOn(configApi, 'upsertPluginProfileConfig').mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Network error')), 100)
+        })
+    )
+
+    // 修改配置以触发草稿状态
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="cache.ttl"]')
+    expect(input).toBeDefined()
+    input!.value = '120'
+    input!.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    // 点击保存按钮
+    await vi.waitFor(() => {
+      const saveBtn = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+        (btn) => btn.textContent?.includes('save') || btn.classList.contains('save-button')
+      )
+      expect(saveBtn).toBeDefined()
+      return saveBtn !== undefined
+    })
+    const saveBtn = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (btn) => btn.textContent?.includes('save') || btn.classList.contains('save-button')
+    )!
+    saveBtn.click()
+    await nextTick()
+
+    // 等待 50ms，然后切换插件
+    await vi.advanceTimersByTimeAsync(50)
+    pluginId.value = 'another-plugin'
+    await nextTick()
+
+    // 等待保存操作完成（失败）
+    await vi.advanceTimersByTimeAsync(100)
+    await nextTick()
+
+    expect(saveSpy).toHaveBeenCalledOnce()
+    // 不应该显示错误（因为插件 ID 已经改变）
+    expect(host.querySelector('.config-error')).toBeNull()
+    vi.useRealTimers()
+    unmount()
+  })
+})
+
+// Ported from #3191, which added schema support against the earlier editor.
+describe('schema integration', () => {
+  const baseConfig = {
+    plugin_runtime: { enabled: true },
+    search: { max_results: 8 },
+    cache: { ttl: 120 },
+    plugin: { id: 'test' },
+  }
+
+  it('labels fields from the schema without writing anything on load', async () => {
+    vi.spyOn(configApi, 'getPluginEffectiveBaseConfig').mockResolvedValue({
+      plugin_id: 'test',
+      config: baseConfig,
+      config_schema: {
+        type: 'object',
+        properties: {
+          search: {
+            type: 'object',
+            properties: {
+              max_results: {
+                type: 'integer',
+                title: 'Result count',
+                description: 'How many results to return',
+              },
+            },
+          },
+        },
+      },
+    } as never)
+    const upsert = vi.spyOn(configApi, 'upsertPluginProfileConfig')
+    const { host, unmount } = await mountEditor()
+
+    const row = host.querySelector<HTMLElement>('[data-config-path="search.max_results"]')!
+    expect(row.querySelector('label')?.textContent?.trim()).toBe('Result count')
+    expect(row.querySelector('.field-key')?.textContent).toBe('max_results')
+    expect(row.textContent).toContain('How many results to return')
+    expect(upsert).not.toHaveBeenCalled()
+    unmount()
+  })
+
+  it('navigates to and searches a section that only the schema declares', async () => {
+    vi.spyOn(configApi, 'getPluginEffectiveBaseConfig').mockResolvedValue({
+      plugin_id: 'test',
+      config: baseConfig,
+      config_schema: {
+        type: 'object',
+        properties: {
+          extra: { type: 'object', properties: { token: { type: 'string' } } },
+        },
+      },
+    } as never)
+    const { host, unmount } = await mountEditor({ navCount: 4 })
+    await search(host, 'token')
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>('.config-nav button')]
+    // Only the schema-only section matches; the form shows its field instead of no results.
+    expect(buttons.filter((button) => !button.disabled)).toHaveLength(1)
+    expect(host.textContent).not.toContain('plugins.configUi.emptySearch')
+    expect(host.querySelector('[data-config-path="extra.token"]')).not.toBeNull()
+    unmount()
+  })
+
+  it('warns about an invalid schema and keeps generic editing available', async () => {
+    vi.spyOn(configApi, 'getPluginEffectiveBaseConfig').mockResolvedValue({
+      plugin_id: 'test',
+      config: baseConfig,
+      config_schema: null,
+      warnings: [{ code: 'PLUGIN_CONFIG_EDITOR_SCHEMA_INVALID' }],
+    } as never)
+    const { host, unmount } = await mountEditor()
+
+    expect(host.textContent).toContain('plugins.configSchemaInvalid')
+    expect(host.querySelector('input[aria-label="search.max_results"]')).not.toBeNull()
+    unmount()
+  })
+})
+
+describe('PluginConfigEditor confidential values', () => {
+  it.each([
+    { overridden: false, dynamic: false },
+    { overridden: true, dynamic: false },
+    { overridden: false, dynamic: true },
+    { overridden: true, dynamic: true },
+  ])(
+    'masks all display surfaces and saves real edits (override=$overridden, dynamic=$dynamic)',
+    async ({ overridden, dynamic }) => {
+      const baseline = {
+        auth: { token: 'fixture-baseline-token' },
+        servers: [{ token: 'fixture-array-token' }],
+      }
+      vi.spyOn(configApi, 'getPluginConfig').mockResolvedValue({ config: baseline } as never)
+      vi.spyOn(configApi, 'getPluginEffectiveBaseConfig').mockResolvedValue({
+        config: baseline,
+        config_schema: {
+          type: 'object',
+          properties: {
+            auth: {
+              type: 'object',
+              ...(dynamic
+                ? {
+                    additionalProperties: {
+                      type: 'string',
+                      title: 'Access token',
+                      writeOnly: true,
+                    },
+                  }
+                : {
+                    properties: {
+                      token: { type: 'string', title: 'Access token', writeOnly: true },
+                    },
+                  }),
+            },
+            servers: {
+              type: 'array',
+              items: {
+                type: 'object',
+                ...(dynamic
+                  ? {
+                      additionalProperties: { type: 'string', writeOnly: true },
+                    }
+                  : {
+                      properties: {
+                        token: { type: 'string', writeOnly: true },
+                      },
+                    }),
+              },
+            },
+          },
+        },
+      } as never)
+      vi.spyOn(configApi, 'getPluginProfilesState').mockResolvedValue({
+        plugin_id: 'test',
+        profiles_path: '',
+        profiles_exists: true,
+        config_profiles: {
+          active: 'saved',
+          files: { saved: { path: 'saved.toml', resolved_path: null, exists: true } },
+        },
+      })
+      const profile = { name: 'saved', path: 'saved.toml', resolved_path: null, exists: true }
+      vi.spyOn(configApi, 'getPluginProfileConfig').mockResolvedValue({
+        plugin_id: 'test',
+        profile,
+        config: overridden ? { auth: { token: 'fixture-profile-token' } } : {},
+      })
+      const upsert = vi.spyOn(configApi, 'upsertPluginProfileConfig').mockResolvedValue({
+        plugin_id: 'test',
+        profile,
+        config: { auth: { token: 'fixture-edited-token' } },
+      })
+      const { host, unmount } = await mountEditor({ navCount: 2 })
+      const inputs = host.querySelectorAll<HTMLInputElement>('input[type="password"]')
+      expect(inputs).toHaveLength(2)
+      expect(inputs[0]!.value).toBe(overridden ? 'fixture-profile-token' : 'fixture-baseline-token')
+      expect(inputs[1]!.value).toBe('fixture-array-token')
+      expect(host.textContent).not.toContain('fixture-')
+      expect(
+        [...host.querySelectorAll('[title]')].map((node) => node.getAttribute('title')).join()
+      ).not.toContain('fixture-')
+      inputs[0]!.value = 'fixture-edited-token'
+      inputs[0]!.dispatchEvent(new Event('input', { bubbles: true }))
+      await nextTick()
+
+      const button = (root: ParentNode, label: string) =>
+        [...root.querySelectorAll<HTMLButtonElement>('button')].find(
+          (node) => node.textContent?.trim() === label
+        )!
+      button(host, 'plugins.configUi.reviewChanges').click()
+      await vi.waitFor(() => expect(document.querySelector('.change-review')).not.toBeNull())
+      expect(document.querySelector('.change-review')!.textContent).toContain('********')
+      expect(document.querySelector('.change-review')!.textContent).not.toContain('fixture-')
+      const reviewDialog = document.querySelector('.change-review')!.closest('.el-dialog')!
+      reviewDialog.querySelector<HTMLButtonElement>('.el-dialog__headerbtn')!.click()
+      await nextTick()
+
+      // The raw-data dialog has three independent sources; all must be masked.
+      host
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="plugins.configUi.configData / common.refresh"]'
+        )!
+        .click()
+      await vi.waitFor(() =>
+        expect(
+          [...document.querySelectorAll<HTMLElement>('.el-dropdown-menu__item')].find(
+            (node) => node.textContent?.trim() === 'plugins.configUi.configData'
+          )
+        ).toBeDefined()
+      )
+      ;[...document.querySelectorAll<HTMLElement>('.el-dropdown-menu__item')]
+        .find((node) => node.textContent?.trim() === 'plugins.configUi.configData')!
+        .click()
+      await vi.waitFor(() => expect(document.querySelector('.config-json')).not.toBeNull())
+      const dataDialog = document.querySelector('.config-json')!.closest('.el-dialog')!
+      for (const tab of dataDialog.querySelectorAll<HTMLElement>('[role="tab"]')) {
+        tab.click()
+        await nextTick()
+        expect(dataDialog.querySelector('.config-json')!.textContent).toContain('********')
+        expect(dataDialog.querySelector('.config-json')!.textContent).not.toContain('fixture-')
+      }
+      dataDialog.querySelector<HTMLButtonElement>('.el-dialog__headerbtn')!.click()
+      await nextTick()
+      expect(host.textContent).not.toContain('fixture-')
+      button(host, 'plugins.configUi.saveProfile').click()
+      await vi.waitFor(() =>
+        expect(upsert).toHaveBeenCalledWith(
+          'test',
+          'saved',
+          { auth: { token: 'fixture-edited-token' } },
+          false
+        )
+      )
+      expect(baseline.auth.token).toBe('fixture-baseline-token')
+      expect(baseline.servers[0]!.token).toBe('fixture-array-token')
+      unmount()
+    }
+  )
 })

@@ -136,6 +136,37 @@ def prompt_flow_client(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+def test_click_guide_choice_reset_and_stale_finish_are_independent(prompt_flow_client):
+    client, config = prompt_flow_client
+    initial = client.get('/api/click-guide/state').json()
+    assert initial['choice'] == 'seven-day'
+    chosen = client.post('/api/click-guide/state', json={
+        'action': 'choose', 'choice': 'click', 'expectedRevision': initial['revision'],
+    })
+    assert chosen.status_code == 200
+    revision = chosen.json()['state']['revision']
+    reset = client.post('/api/click-guide/state', json={'action': 'reset', 'expectedRevision': revision})
+    assert reset.status_code == 200
+    stale = client.post('/api/click-guide/state', json={
+        'action': 'finish', 'status': 'completed', 'expectedRevision': revision,
+    })
+    assert stale.status_code == 409
+    assert stale.json()['state']['pending'] is True
+    assert not config.get_config_path('seven_day_tutorial_state.json').exists()
+
+
+@pytest.mark.unit
+def test_click_guide_mutation_requires_csrf_and_valid_action(prompt_flow_client):
+    client, _ = prompt_flow_client
+    initial = client.get('/api/click-guide/state').json()
+    payload = {'action': 'delete', 'expectedRevision': initial['revision']}
+    invalid = client.post('/api/click-guide/state', json=payload)
+    assert invalid.status_code == 400
+    client.headers.pop('X-CSRF-Token')
+    assert client.post('/api/click-guide/state', json=payload).status_code == 403
+
+
+@pytest.mark.unit
 def test_yui_guide_handoff_token_is_backend_authoritative_and_single_use(prompt_flow_client):
     client, _config = prompt_flow_client
 

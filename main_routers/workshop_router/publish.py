@@ -29,7 +29,11 @@ from .content_gate import (
 )
 from .meta import calculate_content_hash, read_workshop_meta, write_workshop_meta
 from .preview_cards import find_preview_image_in_folder
-from .ugc import get_subscribed_workshop_items
+from .ugc import (
+    UnsupportedUGCDetailsError,
+    _query_ugc_details_batch,
+    get_subscribed_workshop_items,
+)
 from .voice_manifest import resolve_voice_reference_serialized
 
 import os
@@ -50,6 +54,51 @@ from utils.workshop_utils import (
 
 # 全局互斥锁，用于序列化创意工坊发布操作，防止并发回调混乱
 publish_lock = threading.Lock()
+
+
+async def _validate_existing_workshop_item(steamworks, item_id: int) -> tuple[bool, str]:
+    """Guard updates against stale metadata pointing at an unrelated item.
+
+    The character-card sidecar is the local source of truth for update intent,
+    but old/copy-pasted sidecars can contain an item ID that no longer belongs
+    to the card. When rich UGC details are available, verify the Steam owner
+    before entering ``StartItemUpdate``. The Workshop title is intentionally
+    not compared here because renaming an existing item is a supported update.
+    Older wrappers may not expose the query bridge; preserve the existing
+    update path in that case and let Steam perform its normal authorization
+    check.
+    """
+    try:
+        details_by_id = await _query_ugc_details_batch(
+            steamworks, [int(item_id)], max_retries=1
+        )
+    except UnsupportedUGCDetailsError:
+        logger.info(
+            "跳过 Workshop 物品 %s 的更新归属校验：当前 Steamworks wrapper 不支持 UGC 详情查询",
+            item_id,
+        )
+        return True, ''
+    except Exception as exc:
+        logger.warning("校验 Workshop 物品 %s 的更新归属失败，将交由 Steam 校验: %s", item_id, exc)
+        return True, ''
+
+    details = details_by_id.get(int(item_id))
+    if details is None:
+        # A transient query failure should not turn a valid update into a hard
+        # outage. Steam will still reject an invalid or unauthorized update.
+        logger.warning("未查询到 Workshop 物品 %s 的详情，将交由 Steam 校验", item_id)
+        return True, ''
+
+    try:
+        owner_id = int(getattr(details, 'steamIDOwner', 0) or 0)
+        current_user_id = int(steamworks.Users.GetSteamID())
+    except (TypeError, ValueError, AttributeError):
+        owner_id = current_user_id = 0
+
+    if owner_id and current_user_id and owner_id != current_user_id:
+        return False, f'Workshop 物品 {item_id} 不属于当前 Steam 账号，已阻止更新'
+
+    return True, ''
 
 
 @router.get('/check-upload-status')
@@ -180,25 +229,6 @@ async def prepare_workshop_upload(request: Request):
         if not character_card_name and safe_chara_name:
             if safe_chara_name.endswith('.chara.json'):
                 character_card_name = safe_chara_name[:-11]  # 去掉 .chara.json 后缀
-        
-        # TODO: 临时阻止重复上传，直到实现创意工坊作者验证机制
-        # 未来需要支持：
-        # 1. 验证当前用户是否是原上传者
-        # 2. 允许原作者更新已上传的内容
-
-        # 检查是否已存在workshop_meta.json文件（防止重复上传）
-        if character_card_name:
-            meta_data = await asyncio.to_thread(read_workshop_meta, character_card_name)
-            if meta_data and meta_data.get('workshop_item_id'):
-                workshop_item_id = meta_data.get('workshop_item_id')
-
-                # 返回错误，提示用户该角色卡已上传过
-                return JSONResponse({
-                    "success": False,
-                    "error": "该角色卡已上传到创意工坊",
-                    "workshop_item_id": workshop_item_id,
-                    "message": f"角色卡 '{character_card_name}' 已经上传过（物品ID: {workshop_item_id}）。如需更新，请使用更新功能。"
-                }, status_code=400)
         
         # 获取workshop基础路径
         base_workshop_path = await get_workshop_path_async()
@@ -553,6 +583,32 @@ async def publish_to_workshop(request: Request):
                 "error": "没有文件夹访问权限",
                 "message": f"没有读取内容文件夹的权限: {content_folder}"
             }, status_code=403)
+
+        # Re-uploading an existing card intentionally enters the update path,
+        # but do not blindly trust a stale/copied sidecar ID. When the wrapper
+        # can query UGC details, verify the target before touching the content
+        # folder or starting the native publish operation.
+        if character_card_name:
+            existing_meta = await asyncio.to_thread(
+                read_workshop_meta, character_card_name
+            )
+            existing_item_id = existing_meta.get('workshop_item_id') if existing_meta else None
+            if existing_item_id:
+                try:
+                    item_id_for_validation = int(existing_item_id)
+                except (TypeError, ValueError):
+                    item_id_for_validation = 0
+                if item_id_for_validation > 0:
+                    is_valid, validation_error = await _validate_existing_workshop_item(
+                        steamworks, item_id_for_validation
+                    )
+                    if not is_valid:
+                        return JSONResponse(content={
+                            "success": False,
+                            "error": "Workshop 更新目标校验失败",
+                            "message": validation_error,
+                            "workshop_item_id": str(existing_item_id),
+                        }, status_code=409)
         
         # 处理预览图片路径
         if preview_image:
@@ -1086,7 +1142,6 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
             
             logger.info(f"创意工坊物品上传成功完成！物品ID: {item_id}")
             
-            # 在原文件夹创建带物品ID的txt文件，标记为已上传
             # 在原文件夹创建带物品ID的txt文件，标记为已上传
             try:
                 marker_file_path = os.path.join(content_folder, f"steam_workshop_id_{item_id}.txt")

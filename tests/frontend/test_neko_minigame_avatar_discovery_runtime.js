@@ -500,6 +500,61 @@ async function characterBinding() {
     assert.equal(e.timers.size, 0);
   }
 
+  // keepCharacter: a replay keeps the binding (and its mounted Avatar) across reset
+  // synchronously, with no unbound window and no bindCharacter() call.
+  {
+    const e = await environment(() => ({
+      async mount() { return {dispose() {}}; },
+      getCharacter: name => (name === 'Neko' ? descriptor : null),
+      dispose() {},
+    }));
+    const h = e.host(); const client = await e.game(h);
+    const config = {slot:'opponent', characterName:'Neko', model:descriptor.model,
+      viewport:{mode:'fixed',width:200,height:300}, resize:{mode:'fixed'}};
+    try {
+      assert.equal((await client.runtime.bindCharacter('Neko')).name, 'Neko');
+      await client.avatar.mount(config);
+      const firstSession = client.runtime.session.id;
+      const kept = client.runtime.reset({newSession:true, keepCharacter:true});
+      assert.equal(kept.characterName, 'Neko', 'reset() must report the kept character');
+      assert.equal(h.routeLanlanName, 'Neko');
+      assert.equal(client.runtime.session.characterName, 'Neko');
+      assert.notEqual(client.runtime.session.id, firstSession, 'newSession must still mint a session');
+      // A kept Avatar must belong to the kept character, mounted or still mounting.
+      for (const characterName of ['Other', undefined]) {
+        const foreign = await client.avatar.mount({...config, slot:'guest', characterName});
+        assert.throws(() => client.runtime.reset({newSession:true, keepCharacter:true}), {code:'invalid_state'},
+          `keepCharacter kept an Avatar mounted for ${characterName || 'no character'}`);
+        assert.equal(h.routeLanlanName, 'Neko', 'a refused reset must not change the binding');
+        foreign.dispose();
+      }
+      const mountGate = deferred();
+      h.mountAvatar = async () => { await mountGate.promise; return {dispose() {}}; };
+      const pendingForeign = client.avatar.mount({...config, slot:'guest', characterName:'Other'});
+      await tick();
+      assert.throws(() => client.runtime.reset({newSession:true, keepCharacter:true}), {code:'invalid_state'},
+        'keepCharacter must also vet a mount that is still pending');
+      mountGate.resolve(); (await pendingForeign).dispose();
+      assert.equal(client.runtime.reset({newSession:true, keepCharacter:true}).characterName, 'Neko');
+      // A host that refuses the kept name: the reset still completes, then throws.
+      // Leave a real ended route first so a half-finished reset would stay `ended`.
+      await client.runtime.start();
+      await client.runtime.end();
+      assert.equal(client.runtime.state, 'ended');
+      const hostBind = h.bindRuntimeCharacter;
+      h.bindRuntimeCharacter = () => { throw new Error('host refused'); };
+      assert.throws(() => client.runtime.reset({newSession:true, keepCharacter:true}));
+      h.bindRuntimeCharacter = hostBind;
+      assert.equal(client.runtime.state, 'idle', 'a refused keep must not leave a half-reset runtime');
+      assert.equal(client.runtime.session.characterName, '');
+      client.runtime.reset({newSession:true});
+      assert.equal(h.routeLanlanName, '', 'without the opt-in reset still clears the binding');
+      assert.equal(client.runtime.reset({keepCharacter:true}).characterName, '',
+        'keepCharacter with nothing bound is a no-op');
+    } finally { client.dispose(); }
+    assert.equal(e.timers.size, 0);
+  }
+
   const capacityEnv = await environment(() => ({getCharacter: () => ({...descriptor,name:'Other'}), mount() {}, dispose() {}}));
   const capacityHost = capacityEnv.host();
   const held = [];

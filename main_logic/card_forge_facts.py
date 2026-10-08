@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import random
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -227,6 +228,25 @@ def _weighted_pick(items: list[dict[str, Any]], count: int) -> list[dict[str, An
 
 _FactKey = tuple[str, ...]
 _FORGE_WIRE_ID_PREFIX = "__neko_forge_id_v1__:"
+# Machine-generated log rows (e.g. imported interaction logs) carry UUIDs or
+# ISO-8601 timestamps that natural-language memories practically never do.
+# Lookarounds instead of word boundaries: CJK text counts as word characters.
+# ASCII digit classes only: Python's digit class also accepts full-width digits.
+_MACHINE_LOG_PATTERNS = (
+    re.compile(
+        r"(?<![0-9a-f])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9a-f])",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?<![0-9])[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(?![0-9])"),
+)
+
+
+def _looks_like_machine_log(item: dict[str, Any]) -> bool:
+    """Whether a row's text reads as a machine log rather than a memory."""
+    text = item.get("text")
+    return isinstance(text, str) and any(
+        pattern.search(text) for pattern in _MACHINE_LOG_PATTERNS
+    )
 
 
 def _fact_identity(item: dict[str, Any]) -> tuple[_FactKey | None, str, set[str]]:
@@ -334,16 +354,25 @@ def _legacy_excluded_fact_keys(
 def _memory_identity_stats(
     raw: list[dict[str, Any]], raw_archive: list[dict[str, Any]],
 ) -> tuple[int, set[_FactKey], set[str]]:
-    """Count accumulated memories before eligibility filters; active rows win overlaps."""
+    """Count accumulated memories before eligibility filters; active rows win overlaps.
+
+    Machine-log rows are not memories, so they never count toward the
+    community's accumulated-memory threshold. They still register their
+    identities, so an archive copy stays shadowed by its active row.
+    """
     ids: set[_FactKey] = set()
     hashes: set[str] = set()
     active_ids: set[_FactKey] = set()
     active_hashes: set[str] = set()
     count = 0
     for collection, is_active in ((raw, True), (raw_archive, False)):
-        for item in collection:
-            if not isinstance(item, dict):
-                continue
+        # Stable sort: a readable copy claims a shared identity before a
+        # machine-log duplicate in the same file, matching candidate selection.
+        ordered = sorted(
+            (item for item in collection if isinstance(item, dict)),
+            key=_looks_like_machine_log,
+        )
+        for item in ordered:
             # Keep identity-only legacy records, but never count malformed text
             # as content or let it hide a valid archive copy.
             if "text" in item and not isinstance(item["text"], str):
@@ -351,7 +380,11 @@ def _memory_identity_stats(
             fact_id, _, fact_hashes = _fact_identity(item)
             if fact_id is None:
                 continue
-            if fact_id not in ids and not fact_hashes.intersection(hashes):
+            if (
+                fact_id not in ids
+                and not fact_hashes.intersection(hashes)
+                and not _looks_like_machine_log(item)
+            ):
                 count += 1
             ids.add(fact_id)
             hashes.update(fact_hashes)
@@ -394,6 +427,9 @@ def _select_forge_facts_with_stats(
             excluded_count += 1
             continue
         if item.get("private") is True or item.get("redacted") is True:
+            excluded_count += 1
+            continue
+        if _looks_like_machine_log(item):
             excluded_count += 1
             continue
         if not include_absorbed and item.get("absorbed"):

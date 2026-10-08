@@ -831,6 +831,109 @@ def _read_recent_browser_snapshot(path: Path) -> tuple[str, str]:
         )
 
 
+class _RecentBrowserTheaterEditRejected(Exception):
+    """A browser save may carry an edited theater capsule as ordinary text."""
+
+
+_RECENT_BROWSER_ROLE_TYPES = {"user": "human", "assistant": "ai", "system": "system"}
+
+
+def _recent_payload_type_and_content(item: object) -> tuple[object, object]:
+    """Return the ``(type, content)`` pair of one on-disk or role-style message."""
+    if not isinstance(item, dict):
+        return None, None
+    data = item.get("data")
+    if isinstance(data, dict):
+        return item.get("type"), data.get("content")
+    return (
+        item.get("type") or _RECENT_BROWSER_ROLE_TYPES.get(item.get("role")),
+        item.get("content"),
+    )
+
+
+def _merge_browser_payload_with_theater(
+    current_text: str,
+    payload: list[dict],
+    browser_chat: list | None,
+) -> list[dict]:
+    """Carry theater messages over verbatim when the browser rewrites recent history.
+
+    The browser posts only ``{role, text}`` (plus an optional ``source_index``
+    pointing into the snapshot it loaded), which would strip the theater
+    metadata and turn a capsule into ordinary memory. Every theater message of
+    the locked snapshot is therefore copied back untouched at its original
+    position relative to the surviving ordinary messages, and posted items that
+    stand for a theater message are dropped. Without theater messages the
+    payload is returned unchanged.
+    """
+    from memory.message_sources import is_theater_memory_message
+
+    try:
+        current = json.loads(current_text)
+    except (TypeError, ValueError):
+        return payload
+    if not isinstance(current, list):
+        return payload
+    theater_indexes = [
+        index
+        for index, message in enumerate(current)
+        if is_theater_memory_message(message)
+    ]
+    if not theater_indexes:
+        return payload
+    theater_index_set = set(theater_indexes)
+    chat = browser_chat if isinstance(browser_chat, list) else []
+
+    merged: list[dict] = []
+    next_theater = 0
+    cursor = 0
+    has_unresolved_item = False
+    matched_theater: set[int] = set()
+    for position, item in enumerate(payload):
+        chat_item = chat[position] if position < len(chat) else {}
+        if not isinstance(chat_item, dict):
+            chat_item = {}
+        source = chat_item.get("source_index")
+        if not (
+            isinstance(source, int)
+            and not isinstance(source, bool)
+            and cursor <= source < len(current)
+        ):
+            # 旧客户端只回传 {role, text}：按类型 + 原文向前对齐，编辑过的条目对不上。
+            source = None
+            item_key = _recent_payload_type_and_content(item)
+            for index in range(cursor, len(current)):
+                if _recent_payload_type_and_content(current[index]) == item_key:
+                    source = index
+                    break
+        if source is None:
+            if chat_item.get("theater"):
+                # 浏览器标成剧场的条目绝不能以普通文本写回；原件会从快照补回。
+                continue
+            has_unresolved_item = True
+            merged.append(item)
+            continue
+        cursor = source + 1
+        while (
+            next_theater < len(theater_indexes)
+            and theater_indexes[next_theater] <= source
+        ):
+            merged.append(current[theater_indexes[next_theater]])
+            next_theater += 1
+        if source in theater_index_set:
+            matched_theater.add(source)
+            continue
+        if chat_item.get("theater"):
+            continue
+        merged.append(item)
+    merged.extend(current[index] for index in theater_indexes[next_theater:])
+    if has_unresolved_item and len(matched_theater) < len(theater_indexes):
+        # 有剧场胶囊没被对上，同时又有对不上原文的条目：它可能正是被旧页面改过的
+        # 胶囊，写回就会把剧场虚构当成日常记忆。宁可拒绝，让用户重新加载。
+        raise _RecentBrowserTheaterEditRejected()
+    return merged
+
+
 def _write_recent_browser_payload(
     path: Path,
     payload: list[dict],
@@ -838,6 +941,7 @@ def _write_recent_browser_payload(
     expected_fingerprint: str | None,
     expected_identity_token: str | None,
     expected_generation: tuple[str, int],
+    browser_chat: list | None = None,
 ) -> tuple[bool, str, str]:
     """Replace a browser snapshot unless disk or pending state changed since read."""
     with recent_file_access(
@@ -854,6 +958,10 @@ def _write_recent_browser_payload(
             and expected_fingerprint != current_fingerprint
         ):
             return False, current_fingerprint, current_identity_token
+        # 剧场胶囊只能经 /cache 与 /theater/forget 维护；浏览器保存原样保留。
+        payload = _merge_browser_payload_with_theater(
+            current_text, payload, browser_chat,
+        )
         write_recent_payload_unlocked(resolved_path, payload)
         set_recent_pending_unlocked(resolved_path, [])
         saved_text = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -1251,6 +1359,16 @@ async def save_recent_file(request: Request):
                 expected_fingerprint=snapshot_fingerprint,
                 expected_identity_token=snapshot_identity_token,
                 expected_generation=admission_generation,
+                browser_chat=chat,
+            )
+        except _RecentBrowserTheaterEditRejected:
+            return JSONResponse(
+                {
+                    "success": False,
+                    "code": "RECENT_FILE_THEATER_READONLY",
+                    "error": "小剧场记忆不能在记忆浏览器中编辑，请重新加载后再保存",
+                },
+                status_code=409,
             )
         except RecentFileDeletedError:
             saved_fingerprint, saved_identity_token = await asyncio.to_thread(

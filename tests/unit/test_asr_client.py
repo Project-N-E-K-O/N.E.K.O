@@ -145,6 +145,7 @@ def test_public_exports_are_frozen():
         "VoiceIdentityActivationResult",
         "create_asr_session",
         "get_asr_core_capabilities",
+        "is_local_asr_available",
     ]
     assert not hasattr(asr_client, "get_asr_worker")
     assert not hasattr(asr_client, "AsrWorkerFn")
@@ -222,6 +223,7 @@ def test_phase2_registry_routes_and_capabilities():
         "glm",
         "gemini",
         "soniox",
+        "faster_whisper",
     }
     assert CORE_ASR_ROUTES["qwen"].provider_key == "qwen"
     assert CORE_ASR_ROUTES["qwen"].credential_field == "ASSIST_API_KEY_QWEN"
@@ -708,7 +710,10 @@ def test_provider_endpoint_does_not_install_smart_turn_factory(monkeypatch):
     assert session._voice_turn_factory is None
 
 
-def test_endpointing_contract_is_provider_neutral_and_route_defaulted(monkeypatch):
+@pytest.mark.parametrize("qwen_core", ["qwen", "qwen_intl"])
+def test_endpointing_contract_is_provider_neutral_and_route_defaulted(monkeypatch, qwen_core):
+    from main_logic.asr_client.workers.qwen import _qwen_session_update
+
     callback = AsyncMock()
     observed_modes: list[tuple[str, str]] = []
 
@@ -729,7 +734,7 @@ def test_endpointing_contract_is_provider_neutral_and_route_defaulted(monkeypatc
         on_connection_error=callback,
     )
     qwen_session = create_asr_session(
-        "qwen",
+        qwen_core,
         on_input_transcript=callback,
         on_connection_error=callback,
     )
@@ -738,7 +743,9 @@ def test_endpointing_contract_is_provider_neutral_and_route_defaulted(monkeypatc
     assert qwen_session._config.endpointing_mode == "provider"
     assert grok_session._voice_turn_factory is None
     assert qwen_session._voice_turn_factory is None
-    assert observed_modes == [("grok", "provider"), ("qwen", "provider")]
+    assert observed_modes == [("grok", "provider"), (qwen_core, "provider")]
+    assert not resolve_provider_policy("qwen", qwen_session._config.endpointing_mode).smart_turn_required
+    assert _qwen_session_update(qwen_session._config, language="zh")["session"]["turn_detection"] == {"type": "server_vad"}
     with pytest.raises(ValueError, match="manual.*provider"):
         AsrSessionConfig(endpointing_mode="server_vad")
 
@@ -1833,7 +1840,12 @@ async def test_worker_exception_during_close_is_not_reported():
         on_connection_error=errors,
     )
     await session.connect()
-    await asyncio.wait_for(session.close(), 1)
+    # Closing must surface retirement failure to its owner without recursively
+    # invoking the connection-error callback for another recovery operation.
+    with pytest.raises(RuntimeError, match="ASR_CONNECTION_RETIRE_FAILED"):
+        await asyncio.wait_for(session.close(), 1)
+    with pytest.raises(RuntimeError, match="ASR_CONNECTION_RETIRE_FAILED"):
+        await session.close()
 
     assert session.is_ready is False
     errors.assert_not_awaited()
@@ -1952,6 +1964,24 @@ async def test_runtime_start_closed_during_lifecycle_returns_stale_without_ready
     assert runtime._asr_session is None
     assert [event.code for event in statuses] == []
     candidate.close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_stale_connect_cleanup_does_not_block_new_session_epoch() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    old_epoch = runtime._asr_session_epoch
+    stale_cleanup = asyncio.create_task(asyncio.sleep(60))
+    runtime._connect_cleanup_tasks_for_epoch(old_epoch).add(stale_cleanup)
+
+    new_epoch = runtime._advance_asr_session_epoch()
+
+    assert new_epoch == old_epoch + 1
+    assert stale_cleanup in runtime._connect_cleanup_tasks_for_epoch(old_epoch)
+    assert not runtime._connect_cleanup_tasks_for_epoch(new_epoch)
+
+    stale_cleanup.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stale_cleanup
 
 
 @pytest.mark.asyncio

@@ -370,6 +370,7 @@ async def test_reference_inconsistency_wipes_all_inputs_and_resets_round(
 @pytest.mark.asyncio
 async def test_expiry_during_validation_retires_operation_before_late_result(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class BlockingValidator(_SpeechValidator):
         def __init__(self) -> None:
@@ -390,8 +391,20 @@ async def test_expiry_during_validation_retires_operation_before_late_result(
     service, model, _activations, events = _service(
         tmp_path,
         speech_validator=validator,
-        enrollment_ttl_seconds=0.03,
     )
+    expire_enrollment = service._expire_enrollment
+
+    async def expire_after_validation_starts(enrollment_id: str, _ttl: float) -> None:
+        # Control when the deadline arrives, not the retirement implementation.
+        # A 30ms wall-clock TTL can expire during normalization on busy runners,
+        # before the validator ever sets the event this test is waiting for.
+        await validator.started.wait()
+        session = service._enrollment
+        assert session is not None and session.enrollment_id == enrollment_id
+        session.expires_at = asyncio.get_running_loop().time()
+        await expire_enrollment(enrollment_id, 0.0)
+
+    monkeypatch.setattr(service, "_expire_enrollment", expire_after_validation_starts)
     await service.initialize()
     enrollment = await service.start_enrollment()
     submission = asyncio.create_task(
@@ -403,7 +416,10 @@ async def test_expiry_during_validation_retires_operation_before_late_result(
         )
     )
     await asyncio.wait_for(validator.started.wait(), 1.0)
-    await _wait_until(lambda: service.status().enrollment is None)
+    await _wait_until(
+        lambda: service.status().enrollment is None,
+        timeout_seconds=3.0,
+    )
     with pytest.raises(VoiceIdentityServiceError, match="stale_enrollment"):
         await submission
     assert model.inference_count == 0
@@ -629,5 +645,18 @@ async def test_runtime_noise_reduction_aba_reinstalls_after_stale_prepare(
     assert len(activations) == activation_count + 3
     assert not service._runtime_audio_contract_transition_pending  # type: ignore[attr-defined]
     await service.close()
+
+@pytest.mark.asyncio
+async def test_trial_isolation_reports_contract_change_instead_of_enrollment(tmp_path):
+    from main_logic.voice_identity_service.resource_manager import VoiceResourceError
+    service, *_ = _service(tmp_path)
+    await service.initialize()
+    try:
+        service._runtime_audio_contract_transition_pending = True
+        with pytest.raises(VoiceResourceError, match="audio_contract_changed"):
+            service.begin_trial_isolation("contract-change")
+    finally:
+        await service.close()
+
 
 pytestmark = pytest.mark.unit_fast

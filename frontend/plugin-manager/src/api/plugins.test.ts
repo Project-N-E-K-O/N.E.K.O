@@ -2,24 +2,60 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const postMock = vi.fn()
 const getMock = vi.fn()
+const delMock = vi.fn()
+const putMock = vi.fn()
 
 vi.mock('@/api', () => ({
   get: getMock,
   post: postMock,
+  del: delMock,
+  put: putMock,
 }))
+
+describe('plugin deletion', () => {
+  it('clears the pending-reload flag once the plugin is uninstalled', async () => {
+    const { deletePlugin } = await import('./plugins')
+    const { hasPendingReload, setPendingReload } = await import('@/utils/pendingReload')
+    setPendingReload('gone', true)
+    delMock.mockRejectedValueOnce(new Error('busy'))
+    await expect(deletePlugin('gone')).rejects.toThrow('busy')
+    expect(hasPendingReload('gone')).toBe(true)
+
+    delMock.mockResolvedValueOnce({ success: true, plugin_id: 'gone', message: '' })
+    await deletePlugin('gone')
+    expect(delMock).toHaveBeenLastCalledWith('/plugin/gone')
+    expect(hasPendingReload('gone')).toBe(false)
+  })
+})
 
 describe('plugin hosted UI API', () => {
   it('marks aggregate refreshes as local development actions and preserves caller options', async () => {
     const { refreshPluginsRegistry } = await import('./plugins')
-    await refreshPluginsRegistry({ timeout: 1234, preserveMessagesOn404: true, headers: { 'X-Other': 'value' } })
+    await refreshPluginsRegistry({
+      timeout: 1234,
+      preserveMessagesOn404: true,
+      headers: { 'X-Other': 'value' },
+    })
     expect(postMock).toHaveBeenCalledWith('/plugins/refresh', undefined, {
-      timeout: 1234, preserveMessagesOn404: true,
+      timeout: 1234,
+      preserveMessagesOn404: true,
       headers: { 'X-Other': 'value', 'X-Neko-Development': '1' },
     })
   })
   beforeEach(() => {
     postMock.mockReset()
     getMock.mockReset()
+    putMock.mockReset()
+  })
+
+  it('writes only the auto-start preference through a dedicated PUT', async () => {
+    putMock.mockResolvedValue({ success: true, plugin_id: 'demo plugin', auto_start: false })
+    const { setPluginAutoStart } = await import('./plugins')
+
+    await setPluginAutoStart('demo plugin', false)
+
+    expect(putMock).toHaveBeenCalledWith('/plugin/demo%20plugin/auto-start', { auto_start: false })
+    expect(postMock).not.toHaveBeenCalled()
   })
 
   it('merges locale with existing plugin list parameters', async () => {
@@ -91,7 +127,7 @@ describe('plugin hosted UI API', () => {
       'demo plugin',
       'long action',
       { input: 'x' },
-      { kind: 'panel', id: 'main', locale: 'zh-CN', timeoutMs: 80000 },
+      { kind: 'panel', id: 'main', locale: 'zh-CN', timeoutMs: 80000 }
     )
 
     expect(postMock).toHaveBeenCalledWith(
@@ -103,7 +139,7 @@ describe('plugin hosted UI API', () => {
         locale: 'zh-CN',
         timeout_ms: 80000,
       },
-      { suppressPluginNotRunningMessage: true, timeout: 80000 },
+      { suppressPluginNotRunningMessage: true, timeout: 80000 }
     )
   })
 
@@ -111,16 +147,21 @@ describe('plugin hosted UI API', () => {
     postMock.mockResolvedValue({ ok: true })
     const { callPluginHostedSurfaceAction } = await import('./plugins')
 
-    await callPluginHostedSurfaceAction('demo', 'save', {}, {
-      kind: 'panel',
-      id: 'main',
-      userInitiated: true,
-    })
+    await callPluginHostedSurfaceAction(
+      'demo',
+      'save',
+      {},
+      {
+        kind: 'panel',
+        id: 'main',
+        userInitiated: true,
+      }
+    )
 
     expect(postMock).toHaveBeenCalledWith(
       '/plugin/demo/hosted-ui/action/save',
       expect.objectContaining({ timeout_ms: undefined }),
-      { suppressPluginNotRunningMessage: false },
+      { suppressPluginNotRunningMessage: false }
     )
   })
 
@@ -129,16 +170,21 @@ describe('plugin hosted UI API', () => {
     const { callPluginHostedSurfaceAction } = await import('./plugins')
     const controller = new AbortController()
 
-    await callPluginHostedSurfaceAction('demo', 'slow', {}, {
-      kind: 'panel',
-      id: 'main',
-      signal: controller.signal,
-    })
+    await callPluginHostedSurfaceAction(
+      'demo',
+      'slow',
+      {},
+      {
+        kind: 'panel',
+        id: 'main',
+        signal: controller.signal,
+      }
+    )
 
     expect(postMock).toHaveBeenCalledWith(
       '/plugin/demo/hosted-ui/action/slow',
       expect.any(Object),
-      expect.objectContaining({ signal: controller.signal }),
+      expect.objectContaining({ signal: controller.signal })
     )
   })
 
@@ -152,15 +198,12 @@ describe('plugin hosted UI API', () => {
       locale: 'pt',
     })
 
-    expect(getMock).toHaveBeenCalledWith(
-      '/plugin/study%20companion/hosted-ui/source',
-      {
-        params: {
-          kind: 'docs',
-          id: 'onboarding',
-          locale: 'pt',
-        },
+    expect(getMock).toHaveBeenCalledWith('/plugin/study%20companion/hosted-ui/source', {
+      params: {
+        kind: 'docs',
+        id: 'onboarding',
+        locale: 'pt',
       },
-    )
+    })
   })
 })

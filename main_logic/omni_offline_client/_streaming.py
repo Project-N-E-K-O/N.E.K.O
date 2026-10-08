@@ -21,6 +21,9 @@ from main_logic.proactive_delivery import (
 )
 
 from ._shared import (
+    _cancelled_turn_end,
+    _find_by_identity,
+    _same_route,
     AIMessage,
     Any,
     Awaitable,
@@ -66,7 +69,12 @@ from ._media import (
 from ._genai_support import (
     _should_use_genai_sdk,
 )
-from ._lifecycle import _with_dialog_slop
+from ._lifecycle import (
+    _close_genai_client,
+    _retire_replaced_clients,
+    _tracked_reply_call,
+    _with_dialog_slop,
+)
 
 
 def _strip_route_bound_tool_call_extras(history) -> int:
@@ -156,7 +164,12 @@ class _StreamingMixin:
             if self._conversation_history and isinstance(self._conversation_history[0], SystemMessage):
                 self._conversation_history[0] = SystemMessage(content=self._instructions)
 
-    async def switch_model(self, new_model: str, use_vision_config: bool = False) -> None:
+    async def switch_model(
+        self,
+        new_model: str,
+        use_vision_config: bool = False,
+        abandon_if: Optional[Callable[[], bool]] = None,
+    ) -> bool:
         """
         Temporarily switch to a different model (e.g., vision model).
         This allows dynamic model switching for vision tasks.
@@ -164,6 +177,17 @@ class _StreamingMixin:
         Args:
             new_model: The model to switch to
             use_vision_config: If True, use vision_base_url and vision_api_key
+            abandon_if: Asked right before the new client replaces the
+                current one, after the awaits that build it. When it returns
+                True the switch is dropped and the current client stays:
+                ``prompt_ephemeral`` passes its own decline check, so a reply
+                that began meanwhile is not moved onto another client.
+
+        Returns False only when ``abandon_if`` dropped the switch.
+
+        The replaced clients are closed once no reply call is in flight
+        (``_retire_replaced_clients``), never under a reply still streaming
+        on one.
         """
         lock = getattr(self, "_model_switch_lock", None)
         if lock is None:
@@ -171,10 +195,8 @@ class _StreamingMixin:
             self._model_switch_lock = lock
 
         async with lock:
-            if not new_model or new_model == self.model:
-                return
-
-            logger.info(f"Switching model from {self.model} to {new_model}")
+            if not new_model:
+                return True
 
             # 选择使用的 API 配置
             if use_vision_config:
@@ -185,6 +207,18 @@ class _StreamingMixin:
                 base_url = self.base_url
                 api_key = self.api_key
                 provider_type = getattr(self, "provider_type", None)
+
+            # 模型 id 相同也不能直接返回：视觉槽可以填和对话槽同一个模型 id、却指向
+            # 另一个 URL / Key / 协议（例如本地 Ollama 专门跑多模态的那一台，或同一
+            # 网关下的 Anthropic 风格接口）。只比 id 的话截图帧会一直打在纯文本端点
+            # 上。id 和路由都没变才是真正的 no-op。
+            if new_model == self.model and _same_route(
+                base_url, api_key, provider_type,
+                self.base_url, self.api_key, getattr(self, "provider_type", None),
+            ):
+                return True
+
+            logger.info(f"Switching model from {self.model} to {new_model}")
 
             # 先创建新 client，成功后再原子替换，避免半切换状态。
             # max_completion_tokens 跟随当前 max_response_length 同步设置
@@ -218,6 +252,15 @@ class _StreamingMixin:
                 timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
                 provider_type=provider_type,
             )
+            # Nothing below awaits until the swap, so this answer still holds
+            # when the new client goes in.
+            if abandon_if is not None and abandon_if():
+                logger.info("switch_model: switch to %s dropped by the caller", new_model)
+                try:
+                    await new_llm.aclose()
+                except Exception as e:
+                    logger.warning(f"switch_model: unused client aclose failed: {e}")
+                return False
             # 端点是否真的换了 —— 换 endpoint（或换账号）才需要清掉历史里
             # 那些只有铸造方看得懂的 vendor 私有字段。同一个 endpoint 只换
             # 模型（conversation → vision 都在同一家）不能清：那正是签名要
@@ -226,11 +269,11 @@ class _StreamingMixin:
             # 比较前把空串归一成 None：上面 vision 分支已经做过这一步而
             # conversation 分支没有，两边留着不同的"空"表示会让同一个端点被
             # 判成换了路由——误判方向是"多清"，正好打在本改动的目标场景上。
-            def _same(a, b) -> bool:
-                return (a or None) == (b or None)
-
-            route_changed = not (
-                _same(base_url, self.base_url) and _same(api_key, self.api_key)
+            # URL 同理按 same_endpoint 比：尾斜杠、主机大小写、显式默认端口
+            # 都不算换了一家。协议不参与：签名只跟铸造它的端点和账号绑定。
+            route_changed = not _same_route(
+                base_url, api_key, None,
+                self.base_url, self.api_key, None,
             )
             old_llm = self.llm
             self.llm = new_llm
@@ -240,6 +283,9 @@ class _StreamingMixin:
             # 把 vision 走的 Gemini endpoint 错误路由到 OpenAI-compat（反之亦然）。
             self.base_url = base_url
             self.api_key = api_key
+            # 协议也随路由同步：下一次 switch_model 的 no-op 判据和对话侧
+            # 分支读的都是它，停在旧值会把已经切过去的会话判成「还没切」。
+            self.provider_type = provider_type
             if route_changed:
                 # getattr 防御与本文件其余处一致：__new__ 绕过 __init__ 的测试桩
                 # 没有这个字段，helper 对 None 也是 no-op。
@@ -254,30 +300,142 @@ class _StreamingMixin:
                     )
             # 路由旗标随之刷新；旧 _genai_client 抛弃（若 api_key 变了它已失效）。
             # genai.Client 内部持有 httpx 连接池——直接 = None 靠 GC 回收虽不
-            # 是 leak，但提早 close() 能马上释放底层连接（SDK 没暴露 aclose，
-            # close 是同步方法，放进 to_thread 不阻事件循环）。
+            # 是 leak，但提早关掉能马上释放底层连接。回复走的是 .aio 那一半，
+            # 同步 close() 关不到它，所以两半都关（_close_genai_client）。
             old_genai = self._genai_client
             self._use_genai_sdk = _should_use_genai_sdk(self.model, self.base_url)
             self._genai_client = None
             self._genai_tools_unsupported = False
-            if old_genai is not None and hasattr(old_genai, "close"):
-                try:
-                    await asyncio.to_thread(old_genai.close)
-                except Exception as _close_err:
-                    logger.warning(
-                        "switch_model: old genai client close failed: %s",
-                        _close_err,
-                    )
-            try:
-                await old_llm.aclose()
-            except Exception as e:
-                logger.warning(f"switch_model: old client aclose failed: {e}")
+            # 换了模型就重新给工具一次机会：拒收 tools 是上一个模型的能力限制。
+            self._openai_tools_unsupported = False
+            self._openai_tools_unsupported_with_images = False
+            # Closed once no reply call can still be streaming on them.
+            closers = [lambda: old_llm.aclose()]
+            if old_genai is not None:
+                closers.insert(0, lambda: _close_genai_client(old_genai))
+            await _retire_replaced_clients(self, closers)
+        return True
+
+    def _commit_cancelled_reply(
+        self, anchor, reply, generation: int, *, turn_history=None,
+    ) -> None:
+        """Commit the visible part of a cancelled reply to its own turn.
+
+        ``anchor`` is the last message this turn owns in history (its user
+        message, or for ``prompt_ephemeral`` the last non-tool-round message
+        it saw; ``None`` when there was none) and ``generation`` the one it
+        streamed under. A turn that began after the cancellation may already
+        have saved its user message or a proactive reply, so the reply goes
+        where this turn ends (``_cancelled_turn_end``) instead of at the end.
+        Tool-round messages are dicts and end no turn: a round starts none,
+        and stepping over it keeps it next to its replies. ``turn_history`` is
+        the history list the turn began in: once history was replaced on
+        purpose (the repetition reset, ``close()``) the reply is dropped. An
+        anchor gone from the same list (trimmed in place) falls back to
+        appending, and an empty reply is never written: some providers reject
+        an empty assistant message.
+        """
+        if not str(getattr(reply, "content", "") or "").strip():
+            return
+        history = self._conversation_history
+        if turn_history is not None and history is not turn_history:
+            return
+        start = -1 if anchor is None else _find_by_identity(history, -1, anchor)
+        position = len(history)
+        if anchor is None or start >= 0:
+            position = _cancelled_turn_end(history, start, generation)
+        history.insert(position, reply)
+
+    def _commit_reply(
+        self, anchor, text: str, generation: int, *, turn_history=None,
+    ) -> bool:
+        """Write a reply's final ``text`` to history; False once it is no
+        longer live.
+
+        Every await before a commit (the end-of-stream prefix flush, the tail
+        or summary sent to TTS) is a cancellation point, so each commit decides
+        where to write at the moment it writes: a live or guard-paused reply is
+        appended, a cancelled or displaced one goes through
+        ``_commit_cancelled_reply`` and never lands after a turn that began
+        after it. A caller keeps a reply that is no longer live out of the
+        repetition check too.
+        """
+        if self._active_response_generation != generation:
+            self._commit_cancelled_reply(
+                anchor, AIMessage(content=text), generation, turn_history=turn_history,
+            )
+            return False
+        if text:
+            self._conversation_history.append(AIMessage(content=text))
+        return True
+
+    def _trim_cancelled_round_text(self, shown: str, rounds) -> None:
+        """Make a kept, cancelled tool round hold only the text that was shown.
+
+        The tool loop writes its own stream buffer into the round, which also
+        holds what this turn deliberately withheld (the name-prefix buffer, a
+        think residual, a summary tail). A cancelled turn never emits that,
+        so the next request must not see it either. ``rounds`` are this
+        turn's own rounds (see ``_last_tool_round_of``).
+        """
+        kept = self._last_tool_round_of(rounds)
+        if kept is not None:
+            kept["content"] = shown
+
+    def _last_tool_round_of(self, rounds):
+        """The tool round (assistant ``tool_calls`` turn) this turn appended
+        last, while it is still in history; None if it has none or that round
+        is gone.
+
+        ``rounds`` lists, in order, the assistant turns this turn's tool loop
+        appended (``_run_tool_round``). They are matched by identity, never by
+        position: a reply still live in this turn's setup window can reach
+        its tool round after this turn's user message was saved, and this
+        turn's own round can follow the user message of a turn whose setup
+        window it ran in. A round that left history (no call ran, or it went
+        with its turn) is not looked for elsewhere: an earlier round never
+        held the text shown after it.
+        """
+        if not rounds:
+            return None
+        latest = rounds[-1]
+        if _find_by_identity(self._conversation_history, -1, latest) < 0:
+            return None
+        return latest
+
+    def _keep_shown_text_of_cut_stream(
+        self, anchor, shown: str, segment_round, generation: int, rounds,
+        *, turn_history=None,
+    ) -> None:
+        """Keep what a reply had shown when its task was cancelled before it
+        committed.
+
+        A task cancelled in the stream loop, the end-of-stream flush or the
+        summary epilogue never reaches the commit it was heading for, so
+        this does what that commit, or the tool round sentinel before it,
+        would have done with ``shown`` (the text shown since the last
+        persisted tool round). A round of this turn's own
+        ``rounds`` kept after ``segment_round`` (the one the last sentinel
+        reported) already holds that text, its sentinel lost to the
+        cancellation: it is trimmed to it. Otherwise the text is committed as
+        a cancelled reply, in order.
+        """
+        kept = self._last_tool_round_of(rounds)
+        if kept is not None and kept is not segment_round:
+            kept["content"] = shown
+            return
+        self._commit_cancelled_reply(
+            anchor, AIMessage(content=shown), generation, turn_history=turn_history,
+        )
 
     async def _check_repetition(self, response: str) -> bool:
         """
         Check whether the reply is highly repetitive of recent replies.
         Returns True and triggers the callback if 3 consecutive turns are highly repetitive.
+        Never fires while ``repetition_reset_enabled`` is off.
         """
+        if not self.repetition_reset_enabled:
+            return False
 
         # 与最近的回复比较相似度
         high_similarity_count = 0
@@ -522,6 +680,7 @@ class _StreamingMixin:
             overrides["max_completion_tokens"] = base_max_tokens + FOCUS_THINKING_EXTRA_TOKENS
         return overrides
 
+    @_tracked_reply_call
     @_with_dialog_slop
     async def stream_text(
         self,
@@ -547,6 +706,8 @@ class _StreamingMixin:
         response_discarded_callback: Optional[
             Callable[[str, int, int, bool, Optional[str]], Awaitable[None]]
         ] = None,
+        response_done_callback: Optional[Callable[[], Awaitable[None]]] = None,
+        reply_owner: Any = None,
     ) -> None:
         """
         Send a text message to the API and stream the response.
@@ -588,6 +749,16 @@ class _StreamingMixin:
         ``response_discarded_callback`` binds discard ownership to this invocation.
         It avoids re-reading mutable session-level request state after a later text
         request has already started.
+
+        ``response_done_callback`` does the same for the completion, which runs
+        in place of ``on_response_done``. It still runs whenever the session
+        callback would, including for a reply cut by ``close()``; the caller
+        decides what a late completion may still touch.
+
+        ``reply_owner`` is an opaque token for the caller's own record of this
+        reply. When the reply's close is taken over (an interruption, or a
+        displacing begin), ``InterruptedReply.owner`` hands it back, so the
+        caller closes this reply and not whatever its shared state holds then.
 
         ``system_prefix_images`` binds passive callback media to the same
         invocation as ``system_prefix``.  Unlike ``_pending_images``, this list
@@ -693,8 +864,11 @@ class _StreamingMixin:
         # Prepare user message content
         if has_images:
             # Switch to vision model permanently for this session
-            # (cannot switch back because image data remains in conversation history)
-            if self.vision_model and self.vision_model != self.model:
+            # (cannot switch back because image data remains in conversation history).
+            # Do not require vision_model != model: the same id on a different
+            # vision URL/key must still switch; switch_model itself is a no-op
+            # when both the id and the endpoint already match.
+            if self.vision_model:
                 logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
                 try:
                     await self.switch_model(self.vision_model, use_vision_config=True)
@@ -888,6 +1062,9 @@ class _StreamingMixin:
             user_message = HumanMessage(content=_user_text_with_prefix)
 
         self._conversation_history.append(user_message)
+        # The list this turn's user message went into: a cancelled reply is
+        # dropped once history was replaced since (_commit_cancelled_reply).
+        turn_history = self._conversation_history
         # 本次调用自己的「已提交」标记。调用方不能用全局 history 长度判断：并发的
         # 另一条文本请求或收尾中的响应同样会追加，长度增长并不代表**这一轮**进去了。
         if callable(on_turn_committed):
@@ -927,6 +1104,24 @@ class _StreamingMixin:
         assistant_message_total = ""  # 整轮累计（含 pre-tool），整轮级判定看它
         status_reported = False
         guard_exhausted = False
+        # The task itself was cancelled (close(), a torn-down transcript
+        # worker) with the generation still live: the model was cut off, not
+        # silent, so no LLM_NO_RESPONSE.
+        task_cancelled = False
+        # Set while a cancellation of this task would skip a cancelled-reply
+        # commit: from the stream loop through the end-of-stream flush and the
+        # summary epilogue (the summary call, the tail or summary sent to
+        # TTS), each of which emits text before this turn commits. Cleared
+        # right before every commit, so an await after one (the repetition
+        # check) never writes the reply twice, and before every guard
+        # decision, whose text is either committed there or discarded. Every
+        # await while it is set leaves in ``assistant_message`` the text shown
+        # so far, which is what this turn would commit after it; a summary
+        # replaces the UI-only tail only once its TTS send has returned. See
+        # the except below. ``segment_round`` is the tool round the last
+        # sentinel reported.
+        cut_keeps_shown = False
+        segment_round = None
         # Empty-completion 诊断字段重置：每轮 turn 独立，否则会读到上一轮的旧值。
         self._last_finish_reason = None
         self._last_block_reason = None
@@ -951,7 +1146,7 @@ class _StreamingMixin:
                 self.max_response_length, summary_mode=True,
             )
 
-        response_generation = self._begin_response_generation()
+        response_generation = self._begin_response_generation(owner=reply_owner)
         # 这一轮的工具图槽位，跨 attempt 存活。见 _astream_visible_with_tools
         # 里的说明：由内层 finally 释放的话，一次可重试的失败会把像素换成占位
         # 符，而重试用的是同一份历史。
@@ -959,7 +1154,13 @@ class _StreamingMixin:
         # 同一个理由，另一半：暂存待抄送的工具帧也必须跨 attempt 存活，否则
         # 重试成功的那轮"模型看到了、插件读不到"。
         _turn_tool_bus_frames: list = []
+        # The tool rounds this turn appended, across attempts, so a cancelled
+        # turn trims only its own (``_last_tool_round_of``).
+        _turn_tool_rounds: list = []
         try:
+            # A displaced reply's frontend notice goes out before this reply
+            # sends anything (see _begin_response_generation).
+            await self._run_displaced_followup()
             reroll_count = 0
             set_call_type("conversation")
 
@@ -1105,13 +1306,18 @@ class _StreamingMixin:
                         # 工具图上总线时带上本轮的 turn_id，和这一轮的用户帧
                         # 归到同一个回合下；普通文本轮没有 turn_id，那里就是 None。
                         _focus_overrides["_tool_frames_turn_id"] = turn_id
+                        cut_keeps_shown = True
                         async for chunk in self._astream_visible_with_tools(
                             self._conversation_history,
                             _tool_image_slots=_turn_tool_image_slots,
                             _tool_bus_frames=_turn_tool_bus_frames,
+                            _tool_rounds=_turn_tool_rounds,
+                            _response_generation=response_generation,
                             **_focus_overrides,
                         ):
-                            if not _ttft_recorded:
+                            # The empty chunk a cancelled tool loop hands up is
+                            # not a token: it must not set the TTFT metric.
+                            if not _ttft_recorded and not getattr(chunk, "_answered_ack", False):
                                 _ttft_recorded = True
                                 try:
                                     from utils.instrument import histogram as _instr_h
@@ -1152,8 +1358,24 @@ class _StreamingMixin:
                             # 第二次写进 history。``_total`` 不重置——重复检测
                             # / token 长度 guard 仍要看完整一轮的实际文本量。
                             if getattr(chunk, "tool_round_persisted", False):
+                                # A cancelled round still reports what it kept
+                                # (see _settle_unfinished_tool_round); reset the
+                                # state below but emit nothing further, and keep
+                                # only the text that reached UI/TTS in it. A
+                                # round whose turn left history went with it,
+                                # its text included.
+                                _round_cancelled = (
+                                    self._active_response_generation != response_generation
+                                )
+                                if _round_cancelled:
+                                    self._trim_cancelled_round_text(
+                                        assistant_message, _turn_tool_rounds,
+                                    )
                                 length_guard_persisted_prefix = assistant_message_total
                                 assistant_message = ""
+                                segment_round = self._last_tool_round_of(
+                                    _turn_tool_rounds,
+                                )
                                 # 重置围栏 / prefix buffer：下一段是新的语义
                                 # 单元（模型基于 tool 结果重新出文本），不应
                                 # 复用之前的 fence / prefix 状态。
@@ -1170,7 +1392,11 @@ class _StreamingMixin:
                                     # would lose the pre-tool sentence. Then re-arm
                                     # for the post-tool segment (new semantic unit).
                                     _pretool_residual = think_stripper.flush()
-                                    if _pretool_residual and _pretool_residual.strip() and self.on_text_delta:
+                                    if (
+                                        not _round_cancelled
+                                        and _pretool_residual and _pretool_residual.strip()
+                                        and self.on_text_delta
+                                    ):
                                         await self.on_text_delta(_pretool_residual, is_first_chunk)
                                         is_first_chunk = False
                                     think_stripper.reset()
@@ -1184,7 +1410,9 @@ class _StreamingMixin:
                                 # 三家口径一致。然后再重置 state 让 post-tool 重新
                                 # 走 idle 起点。
                                 if (
-                                    summary_mode_enabled
+                                    # Re-read: the residual send above may have cut it.
+                                    self._active_response_generation == response_generation
+                                    and summary_mode_enabled
                                     and summary_state == 'cutover_done'
                                     and summary_tail_buffer
                                 ):
@@ -1351,7 +1579,9 @@ class _StreamingMixin:
                                                         "(prefix_chars=%d, trigger=%d tokens)",
                                                         len(assistant_message), summary_trigger_tokens,
                                                     )
-                                                    if post:
+                                                    # The await before it may have cut the reply:
+                                                    # its remaining half is never shown.
+                                                    if post and self._active_response_generation == response_generation:
                                                         assistant_message += post
                                                         assistant_message_total += post
                                                         summary_tail_buffer += post
@@ -1413,6 +1643,19 @@ class _StreamingMixin:
                                         break
                             elif content and not content.strip():
                                 logger.debug(f"OmniOfflineClient: 过滤空白内容 - content_repr: {repr(content)[:100]}")
+
+                        # A guard pause still owns this generation. Cancellation
+                        # or replacement does not: discard every un-emitted
+                        # buffer (name prefix, think residual, summary epilogue)
+                        # but keep what already reached UI/TTS, or the next
+                        # request would not see what the user just saw.
+                        if self._active_response_generation != response_generation:
+                            cut_keeps_shown = False
+                            self._commit_cancelled_reply(
+                                user_message, AIMessage(content=assistant_message),
+                                response_generation, turn_history=turn_history,
+                            )
+                            break
 
                         # 流结束后：先 flush thinking stripper 的残留。仅漏型
                         # provider 的 thinking_on 轮挂了它；若整轮没出现 </think>
@@ -1534,7 +1777,9 @@ class _StreamingMixin:
                                                         "(prefix_chars=%d, trigger=%d tokens)",
                                                         len(assistant_message), summary_trigger_tokens,
                                                     )
-                                                    if post:
+                                                    # The await before it may have cut the reply:
+                                                    # its remaining half is never shown.
+                                                    if post and self._active_response_generation == response_generation:
                                                         assistant_message += post
                                                         assistant_message_total += post
                                                         summary_tail_buffer += post
@@ -1567,7 +1812,23 @@ class _StreamingMixin:
                                                 await self.on_text_delta(emit_flush_text, is_first_chunk)
                                             is_first_chunk = False
 
+                        # The flush's sends are cancellation points too: a reply
+                        # cut there sends no tail or summary under the turn
+                        # that cut it, and keeps what was shown, like the check
+                        # before the flush.
+                        if self._active_response_generation != response_generation:
+                            cut_keeps_shown = False
+                            self._commit_cancelled_reply(
+                                user_message, AIMessage(content=assistant_message),
+                                response_generation, turn_history=turn_history,
+                            )
+                            break
+
                         if guard_triggered:
+                            # Every way out of here either commits the
+                            # recovery or discards the text (a retry, or a
+                            # placeholder written by the caller).
+                            cut_keeps_shown = False
                             guard_attempt += 1
                             reroll_count += 1
                             will_retry = guard_attempt <= self.max_response_rerolls
@@ -1597,9 +1858,13 @@ class _StreamingMixin:
                                     "(原 %d tokens → 截断后 %d tokens)",
                                     original_tokens, count_tokens(recovery_text),
                                 )
-                                if history_recovery_text:
-                                    self._conversation_history.append(AIMessage(content=history_recovery_text))
-                                await self._check_repetition(recovery_text)
+                                # The recovery may first be emitted by the
+                                # end-of-stream flush above, a cancellation point.
+                                if self._commit_reply(
+                                    user_message, history_recovery_text, response_generation,
+                                    turn_history=turn_history,
+                                ):
+                                    await self._check_repetition(recovery_text)
                                 assistant_message = history_recovery_text
                                 guard_exhausted = True
                                 break
@@ -1737,14 +2002,17 @@ class _StreamingMixin:
                                 "静默 commit prefix (%d chars) 到 history，TTS 残队列保留",
                                 len(summary_prefix_for_history),
                             )
-                            if summary_prefix_for_history:
-                                self._conversation_history.append(
-                                    AIMessage(content=summary_prefix_for_history)
-                                )
                             # 重复检测只看 prefix（= 真正进 history / 被 TTS 读的部分）。
                             # 用 assistant_message_total 会把判定为乱码、已丢弃的 tail
                             # 也塞进 _recent_responses，污染后续重复判定。
-                            if summary_prefix_for_history:
+                            cut_keeps_shown = False
+                            if (
+                                self._commit_reply(
+                                    user_message, summary_prefix_for_history, response_generation,
+                                    turn_history=turn_history,
+                                )
+                                and summary_prefix_for_history
+                            ):
                                 await self._check_repetition(summary_prefix_for_history)
                             assistant_message = ""
                             guard_exhausted = True
@@ -1770,6 +2038,17 @@ class _StreamingMixin:
                                     prefix=summary_prefix_for_history,
                                     tail=summary_tail_buffer,
                                 )
+                                # The summary call is a cancellation point of its
+                                # own: a turn cancelled while it ran must not
+                                # reach TTS or commit prefix + summary. Keep what
+                                # the UI already shows, like the check above.
+                                if self._active_response_generation != response_generation:
+                                    cut_keeps_shown = False
+                                    self._commit_cancelled_reply(
+                                        user_message, AIMessage(content=assistant_message),
+                                        response_generation, turn_history=turn_history,
+                                    )
+                                    break
                                 if summary_text:
                                     logger.info(
                                         "OmniOfflineClient summary: 摘要成功 "
@@ -1781,7 +2060,11 @@ class _StreamingMixin:
                                             summary_text, False,
                                             ui_enabled=False, tts_enabled=True,
                                         )
-                                    # history = prefix + summary，与 TTS 听到的对齐
+                                    # history = prefix + summary，与 TTS 听到的对齐。
+                                    # Only once the send has returned: a cut while
+                                    # it waits (for the TTS cache lock) has not
+                                    # queued the summary, and keeps the shown text
+                                    # like a cut in the summary call.
                                     assistant_message = summary_prefix_for_history + summary_text
                                 else:
                                     logger.info(
@@ -1798,14 +2081,17 @@ class _StreamingMixin:
                         # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
                         # 此处不再手动调用 TokenTracker.record() 避免双重计数。
 
-                        if assistant_message:
-                            # final AIMessage 只写未被 inline 持久化的最后一段
-                            # （pre-tool 文本已经在前面 ``assistant.tool_calls.content``
-                            # 里了，再 append 一次会双写历史）。
-                            self._conversation_history.append(AIMessage(content=assistant_message))
+                        # final AIMessage 只写未被 inline 持久化的最后一段
+                        # （pre-tool 文本已经在前面 ``assistant.tool_calls.content``
+                        # 里了，再 append 一次会双写历史）。
+                        cut_keeps_shown = False
+                        _live_at_commit = self._commit_reply(
+                            user_message, assistant_message, response_generation,
+                            turn_history=turn_history,
+                        )
                         # 重复检测看完整一轮文本（含 pre-tool），与人类用户感知
                         # 的"这一轮 AI 说了什么"一致。
-                        if assistant_message_total:
+                        if assistant_message_total and _live_at_commit:
                             await self._check_repetition(assistant_message_total)
                         break
 
@@ -1819,6 +2105,8 @@ class _StreamingMixin:
                         break
 
                 except _llm_retry_error_types() as e:
+                    # A failed stream's text is discarded below, never kept.
+                    cut_keeps_shown = False
                     from openai import InternalServerError
 
                     error_type = type(e).__name__
@@ -1899,6 +2187,7 @@ class _StreamingMixin:
                             status_reported = True
                         break
                 except Exception as e:
+                    cut_keeps_shown = False
                     is_api_key_rejected = _is_api_key_rejected_error(e)
                     # Telemetry：D1 流失里 LLM 调用失败是大头。error_class 低基数
                     # （exception 类名）；api_key_invalid 单独计——首日配错 key
@@ -1968,59 +2257,101 @@ class _StreamingMixin:
                         await self.on_status_message(json.dumps(status_error_payload))
                         status_reported = True
                     break
+        except asyncio.CancelledError:
+            # The independent-ASR child task is cancelled outright: by
+            # handle_interruption once it has taken this reply over, or with
+            # the reply still live by close() or a cancelled voice turn (its
+            # completion then still runs). Either way the commit this turn
+            # was heading for (after the stream loop, the end-of-stream flush
+            # or the summary epilogue) never runs: keep what was shown, as it
+            # would have, but never a summary its send had not yet queued.
+            if cut_keeps_shown:
+                self._keep_shown_text_of_cut_stream(
+                    user_message, assistant_message, segment_round,
+                    response_generation, _turn_tool_rounds,
+                    turn_history=turn_history,
+                )
+            task_cancelled = True
+            raise
         finally:
             # 先于其它收尾：把 base64 从历史里摘掉，别让它跟着后续每一次请求
             # 走（token 计数器把图像部分算成短占位符，截断器看不见它）。
+            response_cancelled = self._active_response_generation != response_generation
+            interrupter_owned = self._take_interrupter_ownership(response_generation)
             self._release_tool_image_slots(_turn_tool_image_slots)
             self._finish_response_generation(response_generation)
 
-            if (
-                history_replacement_text
-                and 0 <= history_replacement_index < len(self._conversation_history)
-                and self._conversation_history[history_replacement_index] is user_message
-            ):
-                self._conversation_history[history_replacement_index] = HumanMessage(
-                    content=history_replacement_text
+            if history_replacement_text:
+                # The index is a hint: a concurrent turn's cancelled tool round
+                # or reply commit may have shifted this message. Identity is
+                # the only proof it is still ours.
+                _history = self._conversation_history
+                _replace_at = _find_by_identity(
+                    _history, history_replacement_index, user_message,
                 )
+                if _replace_at >= 0:
+                    _history[_replace_at] = HumanMessage(content=history_replacement_text)
 
             # 还原 summary 模式临时抬高的 API budget，别泄漏给 prompt_ephemeral。
             if _summary_prev_max_tokens is not None and getattr(self, "llm", None) is not None:
                 self.llm.max_completion_tokens = _summary_prev_max_tokens
 
-            # 整轮判定：所有重试都没产生过任何文本（包括 pre-tool）才算 LLM_NO_RESPONSE。
-            # 用 final-segment 会让"tool 轮跑完了但模型没出 final 文本"的场景被错报。
-            if not assistant_message_total and not guard_exhausted and not status_reported:
-                # 把最后一次 attempt 的 finish_reason / block_reason / prompt_tokens
-                # 拼进 warning。Gemini-via-OpenAI-compat 静默 empty 时（safety /
-                # recitation / max_tokens / 上下文超限），这条 log 是日志里能拿到
-                # 的唯一"为什么 empty"线索。
-                logger.warning(
-                    "OmniOfflineClient: 所有重试均未产生文本回复 "
-                    "(finish_reason=%s block_reason=%s prompt_tokens=%s model=%s)",
-                    getattr(self, "_last_finish_reason", None),
-                    getattr(self, "_last_block_reason", None),
-                    getattr(self, "_last_prompt_tokens", None),
-                    getattr(self, "model", None),
-                )
-                if self.on_status_message:
-                    finish_reason = getattr(self, "_last_finish_reason", None)
-                    block_reason = getattr(self, "_last_block_reason", None)
-                    prompt_tokens = getattr(self, "_last_prompt_tokens", None)
-                    model = getattr(self, "model", None)
-                    if _is_safety_violation_signal(finish_reason, block_reason):
-                        await self.on_status_message(json.dumps({
-                            "code": "API_POLICY_VIOLATION",
-                            "details": {
-                                "msg": "LLM completion was blocked by upstream safety policy.",
-                                "finish_reason": finish_reason,
-                                "block_reason": block_reason,
-                                "prompt_tokens": prompt_tokens,
-                                "model": model,
-                            },
-                        }))
-                    else:
-                        await self.on_status_message(json.dumps({"code": "LLM_NO_RESPONSE"}))
+            # The status await below is the one window in which an interruption
+            # (or a displacing user reply) can claim this finished turn's
+            # completion. Mark it only for that window and always take the mark
+            # back, or a raising status send leaves it behind for the next,
+            # unrelated interruption to claim. A turn taken over mid-reply
+            # never marks, so its take reports it as taken over too.
+            if not interrupter_owned:
+                self._mark_completion_pending(response_generation, owner=reply_owner)
+            try:
+                # 整轮判定：所有重试都没产生过任何文本（包括 pre-tool）才算 LLM_NO_RESPONSE。
+                # 用 final-segment 会让"tool 轮跑完了但模型没出 final 文本"的场景被错报。
+                if (
+                    not response_cancelled
+                    and not task_cancelled
+                    and not assistant_message_total
+                    and not guard_exhausted
+                    and not status_reported
+                ):
+                    # 把最后一次 attempt 的 finish_reason / block_reason / prompt_tokens
+                    # 拼进 warning。Gemini-via-OpenAI-compat 静默 empty 时（safety /
+                    # recitation / max_tokens / 上下文超限），这条 log 是日志里能拿到
+                    # 的唯一"为什么 empty"线索。
+                    logger.warning(
+                        "OmniOfflineClient: 所有重试均未产生文本回复 "
+                        "(finish_reason=%s block_reason=%s prompt_tokens=%s model=%s)",
+                        getattr(self, "_last_finish_reason", None),
+                        getattr(self, "_last_block_reason", None),
+                        getattr(self, "_last_prompt_tokens", None),
+                        getattr(self, "model", None),
+                    )
+                    if self.on_status_message:
+                        finish_reason = getattr(self, "_last_finish_reason", None)
+                        block_reason = getattr(self, "_last_block_reason", None)
+                        prompt_tokens = getattr(self, "_last_prompt_tokens", None)
+                        model = getattr(self, "model", None)
+                        if _is_safety_violation_signal(finish_reason, block_reason):
+                            await self.on_status_message(json.dumps({
+                                "code": "API_POLICY_VIOLATION",
+                                "details": {
+                                    "msg": "LLM completion was blocked by upstream safety policy.",
+                                    "finish_reason": finish_reason,
+                                    "block_reason": block_reason,
+                                    "prompt_tokens": prompt_tokens,
+                                    "model": model,
+                                },
+                            }))
+                        else:
+                            await self.on_status_message(json.dumps({"code": "LLM_NO_RESPONSE"}))
+            finally:
+                completion_taken_over = not self._take_completion(response_generation)
 
-            # Call response done callback
-            if self.on_response_done:
-                await self.on_response_done()
+            # Call response done callback (the caller's bound one, else the
+            # session's). Skipped exactly when someone else took the close
+            # over: an interrupter (mid-reply, or a claim during the status
+            # await above) or a user reply that displaced this one (see
+            # _begin_response_generation). A close() still runs it.
+            done_callback = response_done_callback or self.on_response_done
+            if not completion_taken_over and done_callback:
+                await done_callback()

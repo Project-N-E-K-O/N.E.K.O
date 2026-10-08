@@ -47,6 +47,15 @@ export default {
     removeHint: "Stop this plugin and remove its association? Source files and runtime data will be kept.",
   },
   common: {
+    surfaceLanguagePending: "App language changed. This panel keeps its language to preserve unsaved work.",
+    surfaceApplyLanguage: "Apply language and reload panel",
+    surfaceApplyLanguageConfirm: "Reloading the panel discards its unsaved work. Continue?",
+
+    languageLoading: "Loading language; the interface remains available",
+    languageLoadFailed: "Language could not load. The current language was kept.",
+    languageRetry: "Retry language",
+    languageReload: "Reload page",
+
     loading: 'Loading...',
     refresh: 'Refresh',
     search: 'Search',
@@ -248,6 +257,8 @@ export default {
     packageHashMismatch: 'Plugin package verification failed.',
     downloadFailed: 'The plugin package download failed.',
     marketListFetchFailed: 'The Plugin Market is temporarily unavailable.',
+    catalogNotConfigured: 'The Plugin Market address is not configured.',
+    releaseMismatch: 'The install request does not match the Market release record. Refresh the Plugin Market and try again.',
     unsafeProfilePath: 'The recorded package profile path is unsafe.',
     packageIdentityMismatch: 'The package identity does not match the target plugin.',
     confirmationChanged: 'The plugin or package changed after confirmation. Review the new plan and try again.',
@@ -442,6 +453,10 @@ export default {
     disabled: 'Disabled',
     autoStart: 'Auto Start',
     manualStart: 'Manual Start',
+    autoStartHint: 'Start automatically when N.E.K.O launches. Starting or stopping manually does not change this.',
+    autoStartDisabledHint: 'This plugin is disabled. Turning on auto-start will also enable it for the next launch, without starting it now.',
+    autoStartBlockedHint: 'The preference is on, but this plugin is disabled or awaiting approval and will not start at launch. Turn off and on again to enable and approve auto-start.',
+    autoStartUnsupportedDevelopment: 'Development plugins are not started automatically. Start them manually.',
     fetchFailed: 'Failed to fetch plugins',
     pluginType: 'Type',
     pluginTypeNormal: 'Plugin',
@@ -583,6 +598,8 @@ export default {
       blockedLegacyPlugin: 'An earlier version of this plugin is still installed. Uninstall {plugin} before continuing.',
       blockedOwnershipUnknown: 'N.E.K.O could not verify who owns the existing plugin directory. Restore its install-source record before trying again.',
       blockedInstallSourceReadOnly: 'The install-source record is unavailable or read-only. Restore it before trying again.',
+      installSucceeded: 'Install complete. Processed {count} plugin(s).',
+      completedWithWarnings: '{plugin} was installed, but with warnings: {reasons}',
       rollbackCompleted: 'The upgrade failed and the previous version was restored.',
       rollbackIncomplete: 'The upgrade failed and rollback was incomplete. Check the plugin state before continuing.',
       error: {
@@ -593,6 +610,7 @@ export default {
         pluginManifestInvalid: 'A plugin.toml in this package is invalid. Ask the plugin author to fix and rebuild it.',
         identityMismatch: 'The plugin folder name and the ID in plugin.toml do not match. Ask the plugin author to fix the package.',
         hashMismatch: 'The package contents do not match its verification data. Nothing was installed.',
+        profileOwnershipConflict: 'A profile folder for this package already exists but does not belong to it, possibly left over from an earlier install. Nothing was installed.',
         inspectFailed: 'Could not inspect this plugin package. Check that the file exists and is a valid N.E.K.O package, then try again.',
         verifyFailed: 'Could not verify this plugin package. Download it again or ask the author to rebuild it, then try again.',
         installFailed: 'The plugin package could not be installed. No confirmed installation changes were kept.'
@@ -796,6 +814,9 @@ export default {
     pluginDeleted: 'Plugin deleted',
     pluginDeletedBuiltinRestartFailed: 'Plugin {plugin} was deleted, but the restored built-in version failed to start: {error}',
     startFailed: 'Failed to start',
+    autoStartEnabled: 'Auto start enabled',
+    autoStartDisabled: 'Auto start disabled',
+    autoStartUpdateFailed: 'Failed to update auto start',
     stopFailed: 'Failed to stop',
     reloadFailed: 'Failed to reload',
     buildFailed: 'Failed to build plugin',
@@ -809,6 +830,7 @@ export default {
     serviceUnavailable: 'Service unavailable',
     networkError: 'Network error. Please check your connection.',
     requestTimeout: 'The request timed out. Please try again.',
+    csrfBootstrapFailed: 'Could not obtain the security token. If you use a reverse proxy, make sure it forwards /security/csrf-token to the plugin server.',
     pluginLifecycleTimeout: 'Plugin startup or restart timed out. Please check the plugin logs.'
   },
   welcome: {

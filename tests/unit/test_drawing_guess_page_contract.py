@@ -19,7 +19,7 @@ class _FakePageRequest:
 
 
 class _FakeTemplates:
-    def TemplateResponse(self, template_name: str, context: dict):
+    def TemplateResponse(self, request, template_name: str, context: dict):
         return {"template_name": template_name, "context": context}
 
 

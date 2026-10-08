@@ -28,21 +28,19 @@ def _reset_shared_state_after_test(monkeypatch):
         steamworks=None,
         templates=None,
         config_manager=None,
-        logger=None,
     )
 
 
-def _build_client():
+def _build_client(client_host="testclient"):
     init_shared_state(
         role_state={},
         steamworks=None,
         templates=None,
         config_manager=None,
-        logger=None,
     )
     app = FastAPI()
     app.include_router(system_router_module.router)
-    return TestClient(app)
+    return TestClient(app, client=(client_host, 50000))
 
 
 def _local_headers():
@@ -80,10 +78,9 @@ def test_is_remote_backend_deployment_falsy(monkeypatch, env_value):
 
 @pytest.mark.unit
 def test_backend_screenshot_blocked_when_backend_marked_remote(monkeypatch):
-    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
     monkeypatch.setenv("NEKO_ACTIVITY_TRACKER_REMOTE", "1")
 
-    with _build_client() as client:
+    with _build_client("127.0.0.1") as client:
         response = client.post(SCREENSHOT_ENDPOINT, headers=_local_headers())
 
     assert response.status_code == 501
@@ -95,7 +92,6 @@ def test_backend_screenshot_blocked_when_backend_marked_remote(monkeypatch):
 
 @pytest.mark.unit
 def test_interactive_screenshot_blocked_when_backend_marked_remote(monkeypatch):
-    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
     monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
     monkeypatch.setenv("ACTIVITY_TRACKER_REMOTE", "true")
 
@@ -108,7 +104,7 @@ def test_interactive_screenshot_blocked_when_backend_marked_remote(monkeypatch):
         _should_not_run,
     )
 
-    with _build_client() as client:
+    with _build_client("127.0.0.1") as client:
         response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
 
     assert response.status_code == 501

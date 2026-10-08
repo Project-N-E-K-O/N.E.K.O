@@ -208,6 +208,10 @@ SCOPED_HISTORY_BATCH_MAX_SEGMENTS = 8
 # 30s 单发超时与由它推导的结算等待上限才能原样沿用）。每个成员桶的硬顶
 # 是 150（GROUP_MEMBER_HARD_LIMIT）< 200，所以一个桶永远不用跨批拆分。
 SCOPED_HISTORY_BATCH_MAX_MESSAGES = 200
+# 带幂等键写入（串门 digest / 日记，docs/design/visit-infrastructure.md §4.6）
+# 的辅助数据保留期：暂存产物残留、键已终态的退役记录与墓碑。done / cancelled
+# 键记录永久保留，不受它约束。
+MEMORY_IDEMPOTENCY_TTL_S = 365 * 86400
 # 每条消息进入批抽取 prompt 前的正文上限。与 recent 压缩的单条口径一致：
 # 500 token，超限时保留头尾、用 locale 对应的可见标记替换中段。
 SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS = 500
@@ -275,7 +279,7 @@ SPEAKER_TRUST_EVENT_HISTORY_LIMIT = 128
 # 会把 memory_dir 下每一个不在导入角色名单里的**子目录** rmtree 掉，而
 # `delete_file_targets` 只认 `memory/<角色>/<白名单叶名>` 三段路径。根级平铺
 # 文件两条都躲开。先例：`app/memory_server/gates.py` 的
-# `idle_maintenance_state.json`、`main_logic/quota/ux_state.py`。
+# `idle_maintenance_state.json`。
 # 将来若要分片，只能是 `speaker_trust.<n>.json` 这种平铺文件名。
 SPEAKER_TRUST_POOL_FILENAME = "speaker_trust.json"
 

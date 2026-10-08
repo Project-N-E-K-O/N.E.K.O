@@ -43,6 +43,7 @@ from plugin.server.routes import (
     websocket_router,
 )
 from plugin.server.routes.frontend import mount_static_files
+from plugin.server.routes.security import router as security_router
 
 _EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
 
@@ -330,6 +331,7 @@ def build_plugin_server_app(
     app.include_router(logs_router)
     app.include_router(media_router)
     app.include_router(frontend_router)
+    app.include_router(security_router)
     app.include_router(websocket_router)
     app.include_router(plugin_ui_router)
     # Built-in plugin routes are optional. In AppImage/Nuitka builds,
@@ -345,5 +347,7 @@ def build_plugin_server_app(
     app.include_router(market_bridge_router)
     # Keep the Host/Origin guard outside CORS and the cache-header middleware;
     # untrusted requests must not be short-circuited before the guard runs.
+    from utils.instance_access import InstanceAccessMiddleware
+    app.add_middleware(InstanceAccessMiddleware)
     app.add_middleware(HostOriginGuardMiddleware)
     return app

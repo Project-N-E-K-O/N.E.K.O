@@ -18,7 +18,7 @@
 Why this exists — the regression pattern
 ----------------------------------------
 Production (Steam / Nuitka frozen) runs merged single-process mode:
-``launcher.run_merged_servers`` imports the three app modules
+``launcher_core.runtime.run_merged_servers`` imports the three app modules
 (memory/agent/main) **serially, before any port binds**, so every module
 pulled in at module scope is paid on the every-launch critical path
 between double-click and the Pet window becoming interactive.
@@ -67,8 +67,7 @@ comment when a module-scope import is genuinely required (rare — e.g. a
 module that is itself only ever imported lazily AND needs the symbol at
 class-definition time). Prefer restructuring to the lazy pattern first.
 Directory-level: ``EXCLUDE_DIRS`` lists trees that are not on the
-startup import chain (plugins load on demand; brain/cua is only
-imported from on-demand agent paths).
+startup import chain (plugins load on demand).
 
 Output
 ------
@@ -88,8 +87,8 @@ from typing import Iterable, Iterator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Startup-chain source trees: everything launcher.run_merged_servers reaches
-# via `from app import memory_server / agent_server / main_server`, plus the
+# Startup-chain source trees: everything launcher_core.runtime.run_merged_servers
+# reaches via `from app import memory_server / agent_server / main_server`, plus the
 # launcher itself and the config package (imported by all of them).
 DEFAULT_PATHS: list[str] = [
     "app",
@@ -113,11 +112,6 @@ EXCLUDE_DIRS = {
     ".mypy_cache",
     ".ruff_cache",
     ".pytest_cache",
-    # Not on the startup import chain: cua is only imported from on-demand
-    # agent execution paths (no module-scope route from the three app
-    # modules reaches it). If that ever changes, lazify its openai/anthropic
-    # imports first, then remove this exclusion.
-    "brain/cua",
 }
 
 CODE = "STARTUP_LAZY_IMPORT"

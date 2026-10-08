@@ -234,6 +234,27 @@ def test_start_returns_canonical_status_without_private_model_data(
 
 
 @pytest.mark.unit
+def test_disabled_runtime_rejects_start_and_filter_enable_with_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _fake_service({**SAFE_STATUS, "runtime_mode": "off"})
+    service.start_enrollment.side_effect = VoiceIdentityServiceError("feature_disabled")
+    service.set_filter.side_effect = VoiceIdentityServiceError("feature_disabled")
+    client = _client(monkeypatch, service)
+
+    started = client.post(f"{API_ROOT}/enrollment/start")
+    enabled = client.put(f"{API_ROOT}/filter", json={"enabled": True})
+    status = client.get(f"{API_ROOT}/status")
+
+    assert started.status_code == 409
+    assert started.json() == {"error_code": "feature_disabled"}
+    assert enabled.status_code == 409
+    assert enabled.json() == {"error_code": "feature_disabled"}
+    assert status.status_code == 200
+    assert status.json()["runtime_mode"] == "off"
+
+
+@pytest.mark.unit
 def test_binary_segment_upload_forwards_exact_headers_index_and_body_idempotently(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -552,6 +573,7 @@ async def test_chunked_profile_body_is_bounded_without_content_length() -> None:
         ("invalid_enrollment_id", 400),
         ("invalid_profile_id", 400),
         ("invalid_segment_index", 400),
+        ("feature_disabled", 409),
         ("stale_enrollment", 409),
         ("segment_out_of_order", 409),
         ("segment_in_progress", 409),

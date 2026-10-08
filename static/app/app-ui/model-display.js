@@ -688,6 +688,14 @@
             console.log('[showCurrentModel] 当前处于"请她离开"状态（MMD），跳过显示逻辑');
             return;
         }
+        // pngtuber 的标志如今是真实状态载体（Electron 输入桥按模型类型读它），
+        // 守卫必须自查而不能依赖 live2dManager 标志恒被同时设置的巧合——
+        // 例如切到 live2d 角色的分支只清 live2d/vrm 标志的窗口期内，
+        // 会话启动/WS 重连路径会穿透守卫，把告别态静默解除。
+        if (window.pngtuberManager && window.pngtuberManager._goodbyeClicked) {
+            console.log('[showCurrentModel] 当前处于"请她离开"状态（PNGTuber），跳过显示逻辑');
+            return;
+        }
 
         const modelViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel();
         if (!modelViewportReady.ready) {
@@ -703,6 +711,9 @@
         }
         if (window.mmdManager) {
             window.mmdManager._goodbyeClicked = false;
+        }
+        if (window.pngtuberManager) {
+            window.pngtuberManager._goodbyeClicked = false;
         }
 
         try {

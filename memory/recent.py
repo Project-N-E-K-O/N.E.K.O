@@ -14,7 +14,21 @@
 
 from utils.config_manager import get_config_manager
 from utils.token_tracker import set_call_type
-from utils.llm_client import SystemMessage, HumanMessage, AIMessage, messages_to_dict, messages_from_dict, create_chat_llm, openai_retry_error_types
+from memory.message_sources import (
+    is_theater_episode_summary,
+    is_theater_memory_message,
+    theater_memory_episode_key,
+)
+from utils.llm_client import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    create_chat_llm,
+    message_metadata,
+    messages_from_dict,
+    messages_to_dict,
+    openai_retry_error_types,
+)
 import re
 import json
 import os
@@ -22,7 +36,9 @@ import asyncio
 import hashlib
 import logging
 import locale
+import secrets
 import sys
+import time
 from contextlib import suppress
 
 from config.prompts.prompts_memory import (
@@ -36,6 +52,7 @@ from utils.language_utils import (
     get_global_language_full,
 )
 from utils.tokenize import acount_tokens
+from utils.screen_comment_guard import strip_screen_labels
 from config import (
     LLM_OUTPUT_GUARD_MAX_TOKENS,
     MEMORY_LLM_HARD_TIMEOUT_SECONDS,
@@ -312,6 +329,54 @@ def _find_fingerprint_position(current: list, fingerprint: list[dict]) -> int | 
     return match
 
 
+def _compute_review_slots(snapshot: list, current: list) -> list[int]:
+    """定位 snapshot 在当前历史中仍可安全替换的普通消息槽位。"""  # noqa: DOCSTRING_CJK
+
+    if not snapshot or not current:
+        return []
+    # 通用 review 的 snapshot 已排除剧场胶囊；提交时对当前历史做同样投影，
+    # 但保留原始下标，避免胶囊把前后普通对话的逆向匹配截断。
+    if (
+        not any(is_theater_memory_message(message) for message in snapshot)
+        and any(is_theater_memory_message(message) for message in current)
+    ):
+        current_indexes = [
+            index
+            for index, message in enumerate(current)
+            if not is_theater_memory_message(message)
+        ]
+        projected_current = [current[index] for index in current_indexes]
+    else:
+        current_indexes = list(range(len(current)))
+        projected_current = current
+    if (
+        len(projected_current) >= len(snapshot)
+        and all(
+            _msg_identity(projected_current[index]) == _msg_identity(snapshot[index])
+            for index in range(len(snapshot))
+        )
+    ):
+        return current_indexes[:len(snapshot)]
+    anchor = build_review_fingerprint(snapshot, REVIEW_FINGERPRINT_K)
+    projected_cutoff = _find_fingerprint_position(projected_current, anchor)
+    if projected_cutoff is None:
+        return []
+    slots: list[int] = []
+    snapshot_index = len(snapshot) - 1
+    current_index = projected_cutoff
+    while (
+        snapshot_index >= 0
+        and current_index >= 0
+        and _msg_identity(projected_current[current_index])
+        == _msg_identity(snapshot[snapshot_index])
+    ):
+        slots.append(current_indexes[current_index])
+        snapshot_index -= 1
+        current_index -= 1
+    slots.reverse()
+    return slots
+
+
 def _compute_review_capacity(snapshot: list, current: list) -> tuple[int, int | None]:
     """Given the snapshot taken at review start and the current history, compute (capacity, cutoff_idx).
 
@@ -323,26 +388,8 @@ def _compute_review_capacity(snapshot: list, current: list) -> tuple[int, int | 
 
     Returns ``(0, None)`` for a wasted (no-op) review.
     """
-    if not snapshot or not current:
-        return (0, None)
-    if (
-        len(current) >= len(snapshot)
-        and all(_msg_identity(current[i]) == _msg_identity(snapshot[i]) for i in range(len(snapshot)))
-    ):
-        return (len(snapshot), len(snapshot) - 1)
-    anchor = build_review_fingerprint(snapshot, REVIEW_FINGERPRINT_K)
-    cutoff_idx = _find_fingerprint_position(current, anchor)
-    if cutoff_idx is None:
-        return (0, None)
-    # 从 cutoff 起逆向走（包含 cutoff 自身），算 capacity
-    capacity = 0
-    s_idx = len(snapshot) - 1
-    c_idx = cutoff_idx
-    while s_idx >= 0 and c_idx >= 0 and _msg_identity(current[c_idx]) == _msg_identity(snapshot[s_idx]):
-        capacity += 1
-        s_idx -= 1
-        c_idx -= 1
-    return (capacity, cutoff_idx)
+    slots = _compute_review_slots(snapshot, current)
+    return (len(slots), slots[-1] if slots else None)
 
 
 # Setup logger
@@ -365,6 +412,451 @@ RECENT_READ_UNREADABLE = 'unreadable'
 # 磁盘长期不可写时，未落盘批次的条数上界。超了丢最旧的：降级形态是「内存里
 # 留住最近 N 条」，仍严格好于重构前的「立刻把这批丢掉」。
 RECENT_PENDING_MAX_ITEMS = 64
+# 每个剧本只让最近三个周目进入日常工作记忆；更早周目的完整正文留在公开冷档案中。
+THEATER_RECENT_EPISODES_PER_STORY = 3
+# 所有剧本合计最多占用三十条近期胶囊，避免剧本数量增长时挤压普通对话。
+THEATER_RECENT_EPISODES_TOTAL = 30
+
+
+def _copy_message_metadata(message, metadata):
+    """复制内部消息并替换元数据，避免原地污染调用方对象。"""  # noqa: DOCSTRING_CJK
+
+    message_type = getattr(message, "type", "system")
+    message_class = {
+        "human": HumanMessage,
+        "ai": AIMessage,
+        "system": SystemMessage,
+    }.get(message_type, SystemMessage)
+    return message_class(
+        content=getattr(message, "content", ""),
+        metadata=dict(metadata),
+    )
+
+
+def _positive_metadata_int(value) -> int:
+    """Read a theater counter from capsule metadata; anything but a positive int is 0.
+
+    Shared with the memory server's prompt rendering so the stored and rendered
+    run_index / story_run_count can never disagree.
+    """
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return 0
+
+
+def is_retracted_theater_episode(
+    message, story_id: str, session_id: str, archive_through_revision: int,
+) -> bool:
+    """Match the capsule written by one theater archive range (story, session, through revision)."""
+
+    if not is_theater_memory_message(message):
+        return False
+    metadata = message_metadata(message)
+    through = metadata.get("archive_through_revision")
+    return (
+        str(metadata.get("story_id") or "") == story_id
+        and str(metadata.get("session_id") or "") == session_id
+        and isinstance(through, int)
+        and not isinstance(through, bool)
+        and through == archive_through_revision
+    )
+
+
+# A declined (retracted) theater archive leaves a tombstone next to recent.json so
+# a late /cache write of that same archive attempt cannot resurrect the capsule.
+# Late writes arrive within seconds to minutes; a week of history is ample.
+THEATER_RETRACTIONS_FILENAME = "theater_retractions.json"
+THEATER_RETRACTION_TTL_SECONDS = 7 * 24 * 3600
+THEATER_RETRACTIONS_MAX = 128
+THEATER_RUNS_FILENAME = "theater_runs.json"
+THEATER_PREVIOUS_EPISODE = "_theater_previous_episode"
+
+
+def restored_theater_history(history, story_id, session_id, through):
+    """Replace a declined capsule with its previous version, without nesting backups."""
+    restored = []
+    for message in history:
+        if not is_retracted_theater_episode(message, story_id, session_id, through):
+            restored.append(message)
+            continue
+        backup = message_metadata(message).get(THEATER_PREVIOUS_EPISODE)
+        if not isinstance(backup, dict):
+            continue
+        previous = messages_from_dict([backup])[0]
+        metadata = message_metadata(previous)
+        if (
+            theater_memory_episode_key(previous) == (story_id, session_id)
+            and _positive_metadata_int(metadata.get("archive_through_revision")) < through
+        ):
+            restored.append(previous)
+    return restored
+
+
+def _load_theater_runs_unlocked(recent_path):
+    """Read durable numbers, quarantining malformed data but propagating I/O errors."""
+    path = recent_file.recent_sidecar_path(recent_path, THEATER_RUNS_FILENAME)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = None
+    if not isinstance(payload, dict) or any(
+        not isinstance(story, dict)
+        or not isinstance(story.get("sessions"), dict)
+        or not isinstance(story.get("total"), int)
+        or not _positive_metadata_int(story.get("total"))
+        or any(not isinstance(number, int) or not _positive_metadata_int(number)
+               for number in story["sessions"].values())
+        or story["total"] < max(story["sessions"].values(), default=0)
+        for story in payload.values()
+    ):
+        # Preserve the damaged file, then let the caller seed only verifiable
+        # numbers from recent. I/O errors still propagate without resetting it.
+        os.replace(path, f"{path}.{secrets.token_hex(8)}.corrupt")
+        logger.warning("[RecentHistory] quarantined invalid theater run numbers: %s", path)
+        return {}
+    return payload
+
+
+class TheaterEpisodeRetracted(RuntimeError):
+    """A theater archive write matched a tombstone left by the player's decline."""
+
+
+def _load_theater_retraction_state_unlocked(recent_path) -> tuple[list[dict], list[dict]]:
+    """Read (attempt tombstones, story forget tombstones); the caller holds the file lock.
+
+    A missing or structurally invalid file reads as empty (writes are atomic, so
+    invalid content only comes from outside tampering); an I/O failure raises so
+    a pending tombstone is never silently ignored.
+    """
+
+    path = recent_file.recent_sidecar_path(recent_path, THEATER_RETRACTIONS_FILENAME)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = handle.read()
+    except FileNotFoundError:
+        return [], []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning(f"[RecentHistory] ignoring invalid theater retraction file: {path}")
+        return [], []
+    if not isinstance(payload, dict):
+        return [], []
+    lists = []
+    for key in ("entries", "forgotten_stories"):
+        values = payload.get(key)
+        lists.append(
+            [entry for entry in values if isinstance(entry, dict)]
+            if isinstance(values, list)
+            else []
+        )
+    return lists[0], lists[1]
+
+
+def _write_theater_retraction_state_unlocked(
+    recent_path, entries: list[dict], forgotten: list[dict],
+) -> None:
+    """Atomically persist both tombstone lists; the caller holds the file lock."""
+
+    recent_file.write_recent_sidecar_unlocked(
+        recent_path,
+        THEATER_RETRACTIONS_FILENAME,
+        {
+            "schema": "neko.theater.retractions.v1",
+            "entries": entries[-THEATER_RETRACTIONS_MAX:],
+            "forgotten_stories": forgotten[-THEATER_RETRACTIONS_MAX:],
+        },
+    )
+
+
+def _is_fresh_tombstone(stamp, now: float) -> bool:
+    return (
+        isinstance(stamp, (int, float))
+        and not isinstance(stamp, bool)
+        and now - stamp < THEATER_RETRACTION_TTL_SECONDS
+    )
+
+
+def _theater_story_write_is_forgotten(
+    forgotten: list[dict], story_id: str, forget_marker: str | None, now: float,
+) -> bool:
+    """True when a write for this story was issued before the story was forgotten.
+
+    Every forget of a story stores a fresh random ``forget_marker`` and returns
+    it to the theater, which persists it and attaches it to each archive request
+    it issues afterwards (under the story's memory lock, which forget also
+    holds). A write issued before the forget carries an older marker or none, so
+    it cannot match and is dropped; an archive the player starts after the forget
+    carries the current marker and lands. No clock is compared, so a system clock
+    stepping backwards cannot reject a legitimate archive. A tombstone without a
+    marker (written by an intermediate build) drops every write of its story.
+    Tombstones stop applying after the retention window, which bounds the damage
+    if the theater ever loses its marker.
+    """
+
+    if not story_id:
+        return False
+    for entry in forgotten:
+        if str(entry.get("story_id") or "") != story_id:
+            continue
+        forgotten_at = entry.get("forgotten_at")
+        if (
+            isinstance(forgotten_at, (int, float))
+            and not isinstance(forgotten_at, bool)
+            and not _is_fresh_tombstone(forgotten_at, now)
+        ):
+            continue
+        current_marker = entry.get("forget_marker")
+        if not isinstance(current_marker, str) or not current_marker:
+            return True
+        if forget_marker != current_marker:
+            return True
+    return False
+
+
+def _theater_attempt_is_retracted(
+    entries: list[dict], archive_request_id: str, archive_attempt: int | None,
+) -> bool:
+    """True when this archive attempt was issued before a matching retraction.
+
+    Attempts are numbered per archive request; a retraction covers every attempt
+    up to the one the theater had issued when the player declined, while a later
+    explicit archive of the same request (a new attempt) stays allowed.
+    """
+
+    if not archive_request_id:
+        return False
+    for entry in entries:
+        if str(entry.get("archive_request_id") or "") != archive_request_id:
+            continue
+        through_attempt = entry.get("through_attempt")
+        if not isinstance(through_attempt, int) or isinstance(through_attempt, bool):
+            return True
+        if archive_attempt is None or archive_attempt <= through_attempt:
+            return True
+    return False
+
+
+def _theater_episode_capsule(messages: list):
+    """把旧版同 Session 多条正文折叠为一条单集摘要胶囊。"""  # noqa: DOCSTRING_CJK
+
+    latest = messages[-1]
+    metadata = dict(message_metadata(latest))
+    summary = str(
+        metadata.get("episode_summary")
+        or metadata.get("ending_summary")
+        or ""
+    ).strip()
+    if not summary:
+        for message in reversed(messages):
+            content = getattr(message, "content", "")
+            if isinstance(content, list):
+                content = "\n".join(
+                    str(part.get("text") or "").strip()
+                    for part in content
+                    if isinstance(part, dict) and str(part.get("text") or "").strip()
+                )
+            summary = " ".join(str(content or "").split())
+            if summary:
+                break
+    if len(summary) > 360:
+        summary = summary[:360].rstrip() + "……"
+    metadata.update({
+        "memory_tier": "episode_summary",
+        "message_kind": "episode_summary",
+        "episode_summary": summary,
+    })
+    return SystemMessage(content=summary, metadata=metadata)
+
+
+def _collapse_theater_episode_messages(history: list) -> list:
+    """按 story_id + session_id 合并旧格式剧场消息，同时保留普通对话顺序。"""  # noqa: DOCSTRING_CJK
+
+    collapsed: list = []
+    groups: dict[tuple[str, str], list] = {}
+    slots: dict[tuple[str, str], int] = {}
+    for message in history:
+        if not is_theater_memory_message(message):
+            collapsed.append(message)
+            continue
+        key = theater_memory_episode_key(message)
+        if not all(key):
+            collapsed.append(message)
+            continue
+        groups.setdefault(key, []).append(message)
+        if key not in slots:
+            slots[key] = len(collapsed)
+            collapsed.append(None)
+    for key, slot in slots.items():
+        group = groups[key]
+        if len(group) == 1 and is_theater_episode_summary(group[0]):
+            # An already-folded capsule stays byte-identical: rebuilding it would
+            # turn list content into a string and truncate long ending summaries,
+            # which resets the story's time-index timestamp and breaks in-flight
+            # compression/review snapshots whenever another story is archived.
+            collapsed[slot] = group[0]
+        else:
+            collapsed[slot] = _theater_episode_capsule(group)
+    return [message for message in collapsed if message is not None]
+
+
+def _merge_theater_episode_summary(history: list, incoming):
+    """幂等更新一个周目摘要，并收住同剧本近期记忆的数量。"""  # noqa: DOCSTRING_CJK
+
+    merged = _collapse_theater_episode_messages(list(history))
+    incoming_metadata = dict(message_metadata(incoming))
+    incoming_key = theater_memory_episode_key(incoming)
+    story_id = incoming_key[0]
+    previous_index = next(
+        (
+            index
+            for index, message in enumerate(merged)
+            if is_theater_episode_summary(message)
+            and theater_memory_episode_key(message) == incoming_key
+        ),
+        None,
+    )
+    previous = merged[previous_index] if previous_index is not None else None
+    merged = [
+        message
+        for message in merged
+        if not (
+            is_theater_episode_summary(message)
+            and theater_memory_episode_key(message) == incoming_key
+        )
+    ]
+
+    story_episodes = [
+        (position, message)
+        for position, message in enumerate(merged)
+        if is_theater_episode_summary(message)
+        and message_metadata(message).get("story_id") == story_id
+    ]
+    known_total = 0
+    ending_titles: list[str] = []
+    for index, (position, message) in enumerate(story_episodes, start=1):
+        metadata = dict(message_metadata(message))
+        run_index = _positive_metadata_int(metadata.get("run_index"))
+        if not run_index:
+            run_index = index
+            metadata["run_index"] = run_index
+            replacement = _copy_message_metadata(message, metadata)
+            merged[position] = replacement
+        known_total = max(
+            known_total,
+            run_index,
+            _positive_metadata_int(metadata.get("story_run_count")),
+        )
+        for title in metadata.get("ending_titles_seen") or []:
+            normalized = str(title or "").strip()
+            if normalized and normalized not in ending_titles:
+                ending_titles.append(normalized)
+        current_ending = str(metadata.get("ending_title") or "").strip()
+        if current_ending and current_ending not in ending_titles:
+            ending_titles.append(current_ending)
+
+    previous_metadata = message_metadata(previous) if previous is not None else {}
+    if previous is not None:
+        if previous_metadata.get("archive_through_revision") == incoming_metadata.get("archive_through_revision"):
+            backup = previous_metadata.get(THEATER_PREVIOUS_EPISODE)
+        else:
+            backup = messages_to_dict([previous])[0]
+            backup["data"]["metadata"].pop(THEATER_PREVIOUS_EPISODE, None)
+        if backup:
+            incoming_metadata[THEATER_PREVIOUS_EPISODE] = backup
+    previous_run_index = _positive_metadata_int(previous_metadata.get("run_index"))
+    if previous_run_index:
+        run_index = previous_run_index
+        known_total = max(
+            known_total,
+            _positive_metadata_int(previous_metadata.get("story_run_count")),
+        )
+    else:
+        run_index = _positive_metadata_int(incoming_metadata.get("run_index")) or known_total + 1
+    known_total = max(known_total, _positive_metadata_int(incoming_metadata.get("story_run_count")))
+    for title in previous_metadata.get("ending_titles_seen") or []:
+        normalized = str(title or "").strip()
+        if normalized and normalized not in ending_titles:
+            ending_titles.append(normalized)
+    previous_ending = str(previous_metadata.get("ending_title") or "").strip()
+    if previous_ending and previous_ending not in ending_titles:
+        ending_titles.append(previous_ending)
+    current_ending = str(incoming_metadata.get("ending_title") or "").strip()
+    if current_ending and current_ending not in ending_titles:
+        ending_titles.append(current_ending)
+    incoming_metadata.update({
+        "run_index": run_index,
+        "story_run_count": max(known_total, run_index),
+        "ending_titles_seen": ending_titles,
+    })
+    stored_incoming = _copy_message_metadata(incoming, incoming_metadata)
+
+    def retry_payload(message):
+        metadata = dict(message_metadata(message))
+        # These describe the whole story, not a change to this episode.
+        metadata.pop("story_run_count", None)
+        metadata.pop("ending_titles_seen", None)
+        return messages_to_dict([_copy_message_metadata(message, metadata)])
+
+    if (
+        previous is not None
+        and retry_payload(stored_incoming) == retry_payload(previous)
+    ):
+        # A retried archive that changes nothing keeps its slot, so the retry
+        # cannot reorder history under an in-flight compression snapshot or
+        # reset the story's time-index timestamp. A changed capsule (resumed,
+        # paused again, or completed) is the newest event and moves to the end,
+        # matching the fresh timestamp reconcile gives an updated story.
+        merged.insert(previous_index, stored_incoming)
+    else:
+        merged.append(stored_incoming)
+
+    story_indexes = [
+        index
+        for index, message in enumerate(merged)
+        if is_theater_episode_summary(message)
+        and message_metadata(message).get("story_id") == story_id
+    ]
+    # The durable run number determines the recent three episodes. An evicted
+    # old Session arriving late must not displace a newer run just by arriving.
+    ranked_story_indexes = sorted(story_indexes, key=lambda index: (
+        _positive_metadata_int(message_metadata(merged[index]).get("run_index")), index,
+    ))
+    drop_indexes = set(ranked_story_indexes[:-THEATER_RECENT_EPISODES_PER_STORY])
+    incoming_evicted_by_run_limit = any(merged[index] is stored_incoming for index in drop_indexes)
+    if drop_indexes:
+        merged = [
+            message
+            for index, message in enumerate(merged)
+            if index not in drop_indexes
+        ]
+    theater_indexes = [
+        index
+        for index, message in enumerate(merged)
+        if is_theater_episode_summary(message)
+    ]
+    global_drop_indexes = set(
+        theater_indexes[:-THEATER_RECENT_EPISODES_TOTAL]
+    )
+    if global_drop_indexes:
+        merged = [
+            message
+            for index, message in enumerate(merged)
+            if index not in global_drop_indexes
+        ]
+    from memory.theater_budget import bound_theater_history
+    bounded = bound_theater_history(merged)
+    # A known older run intentionally outside the per-story window may be
+    # acknowledged without re-entering hot memory; token-budget rejection is
+    # still an error for an incoming run that should have been retained.
+    if not incoming_evicted_by_run_limit and not any(message is stored_incoming for message in bounded):
+        # Reject before persistence: the caller must retain its archive receipt
+        # rather than acknowledge a capsule that never entered hot memory.
+        raise ValueError("theater_episode_budget_exceeded")
+    return bounded, stored_incoming
 
 
 class CompressedRecentHistoryManager:
@@ -580,6 +1072,7 @@ class CompressedRecentHistoryManager:
 
     def _merge_backup_memo_locked(
         self, file_path, lanlan_name, snapshot, memo, expected_generation=None,
+        preserved_messages=(),
     ) -> tuple[str, int, int]:
         """Re-read, locate, merge and persist a backup memo in one critical section."""
         with recent_file.recent_file_access(
@@ -597,7 +1090,7 @@ class CompressedRecentHistoryManager:
                 or (cutoff_idx - capacity + 1) != 0
             ):
                 return ('moot', len(current), len(current))
-            new_history = [memo] + current[cutoff_idx + 1:]
+            new_history = [memo] + list(preserved_messages) + current[cutoff_idx + 1:]
             try:
                 recent_file.write_recent_payload_unlocked(
                     file_path, messages_to_dict(new_history),
@@ -718,8 +1211,427 @@ class CompressedRecentHistoryManager:
             self._cache_history_view(file_path, lanlan_name, merged)
             return (merged, True)
 
+    def _upsert_theater_episode_locked(
+        self, file_path, lanlan_name, incoming, expected_generation=None,
+        archive_request_id="", archive_attempt=None, forget_marker=None,
+    ):
+        """在单个文件临界区内替换同 Session 胶囊并落盘。"""  # noqa: DOCSTRING_CJK
+
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
+            retracted_attempts, forgotten_stories = (
+                _load_theater_retraction_state_unlocked(file_path)
+            )
+            if archive_request_id and _theater_attempt_is_retracted(
+                retracted_attempts,
+                archive_request_id,
+                archive_attempt,
+            ):
+                raise TheaterEpisodeRetracted(archive_request_id)
+            if _theater_story_write_is_forgotten(
+                forgotten_stories,
+                str(message_metadata(incoming).get("story_id") or ""),
+                forget_marker,
+                time.time(),
+            ):
+                raise TheaterEpisodeRetracted(archive_request_id)
+            status, history = self._load_history_unlocked(file_path, lanlan_name)
+            pending = recent_file.get_recent_pending_unlocked(file_path)
+            if status == RECENT_READ_UNREADABLE:
+                logger.warning(
+                    f"[RecentHistory] {lanlan_name} 历史文件读取失败，"
+                    "剧场单集摘要由归档回执重试"
+                )
+                # Ordinary pending is flushed without theater merge/tombstone
+                # checks or index reconciliation. Never enqueue an archive here;
+                # its durable receipt retries through the complete /cache path.
+                raise RuntimeError("theater_episode_persist_failed")
+
+            runs = _load_theater_runs_unlocked(file_path)
+            current = list(history) + list(pending)
+            for message in current:
+                metadata = message_metadata(message)
+                story, session = theater_memory_episode_key(message)
+                if story and session and _positive_metadata_int(metadata.get("run_index")):
+                    record = runs.setdefault(story, {"sessions": {}, "total": 0})
+                    record["sessions"].setdefault(session, int(metadata["run_index"]))
+                    record["total"] = max(record["total"], int(metadata["run_index"]),
+                                          _positive_metadata_int(metadata.get("story_run_count")))
+            # Allocate old unnumbered capsules from the same durable registry
+            # before allocating incoming, rather than giving both position 1.
+            for position, message in enumerate(current):
+                if not is_theater_episode_summary(message):
+                    continue
+                metadata = dict(message_metadata(message))
+                if _positive_metadata_int(metadata.get("run_index")):
+                    continue
+                story, session = theater_memory_episode_key(message)
+                record = runs.setdefault(story, {"sessions": {}, "total": 0})
+                number = record["sessions"].get(session) or record["total"] + 1
+                record["sessions"][session] = number
+                record["total"] = max(record["total"], number)
+                metadata.update(run_index=number, story_run_count=record["total"])
+                current[position] = _copy_message_metadata(message, metadata)
+            metadata = dict(message_metadata(incoming))
+            story, session = theater_memory_episode_key(incoming)
+            record = runs.setdefault(story, {"sessions": {}, "total": 0})
+            sessions = record["sessions"]
+            number = sessions.get(session) or record["total"] + 1
+            sessions[session] = number
+            record["total"] = max(record["total"], number)
+            metadata.update(run_index=number, story_run_count=record["total"])
+            incoming = _copy_message_metadata(incoming, metadata)
+            merged, stored_incoming = _merge_theater_episode_summary(
+                current,
+                incoming,
+            )
+            try:
+                # Write ahead: retry reuses the same number even if recent fails.
+                recent_file.write_recent_sidecar_unlocked(file_path, THEATER_RUNS_FILENAME, runs)
+                recent_file.write_recent_payload_unlocked(
+                    file_path, messages_to_dict(merged),
+                )
+            except Exception as exc:
+                logger.error(
+                    f"[RecentHistory] 保存 {lanlan_name} 剧场单集摘要失败: {exc}",
+                    exc_info=True,
+                )
+                # Keep existing ordinary pending intact. Failed archive input
+                # must remain solely in the theater's durable retry protocol.
+                raise RuntimeError("theater_episode_persist_failed") from exc
+
+            self._set_pending_batches(lanlan_name, [], file_path)
+            self._cache_history_view(file_path, lanlan_name, merged)
+            return stored_incoming
+
+    async def upsert_theater_episode(
+        self, message, lanlan_name, *, archive_request_id="", archive_attempt=None,
+        forget_marker=None,
+    ):
+        """把同一 Session 的暂停与完成状态收敛成一条近期记忆。
+
+        带 archive_request_id 的写入若命中撤回墓碑，或该剧本存在遗忘墓碑而写入未携带
+        其当前 forget_marker（即在遗忘之前发出），抛 TheaterEpisodeRetracted 且不落盘。
+        """  # noqa: DOCSTRING_CJK
+
+        if not is_theater_episode_summary(message):
+            raise ValueError("theater_episode_summary_required")
+        story_id, session_id = theater_memory_episode_key(message)
+        if not story_id or not session_id:
+            raise ValueError("theater_episode_identity_required")
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
+        try:
+            _, _, _, _, _, _, _, _, recent_log = await self._config_manager.aget_character_data()
+            self.log_file_path = recent_log
+        except Exception as exc:
+            logger.error(f"获取角色配置失败: {exc}")
+        await asyncio.to_thread(
+            assert_cloudsave_writable,
+            self._config_manager,
+            operation="save",
+            target=f"memory/{lanlan_name}/recent.json",
+        )
+        return await _await_recent_mutation_to_completion(
+            self._upsert_theater_episode_locked,
+            file_path,
+            lanlan_name,
+            message,
+            admission_generation,
+            str(archive_request_id or ""),
+            archive_attempt,
+            str(forget_marker or "") or None,
+        )
+
+    def _restore_theater_cache_snapshot_locked(
+        self, file_path, lanlan_name, previous, expected, expected_generation=None,
+    ):
+        """Restore a failed theater cache write only if no later write replaced it."""
+
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
+            status, history = self._load_history_unlocked(file_path, lanlan_name)
+            if status == RECENT_READ_UNREADABLE:
+                raise RuntimeError("theater_recent_history_unreadable")
+            pending = recent_file.get_recent_pending_unlocked(file_path)
+            if messages_to_dict(list(history) + list(pending)) != messages_to_dict(expected):
+                raise RuntimeError("theater_recent_history_changed")
+            recent_file.write_recent_payload_unlocked(file_path, messages_to_dict(previous))
+            recent_file.set_recent_pending_unlocked(file_path, [])
+            self._set_pending_batches(lanlan_name, [], file_path)
+            self._cache_history_view(file_path, lanlan_name, previous)
+
+    async def restore_theater_cache_snapshot(self, lanlan_name, previous, expected):
+        """Roll back an episode upsert when the time-index transaction fails."""
+
+        file_path, admission_generation = self._capture_recent_operation_admission(lanlan_name)
+        await asyncio.to_thread(
+            assert_cloudsave_writable,
+            self._config_manager,
+            operation="save",
+            target=f"memory/{lanlan_name}/recent.json",
+        )
+        await _await_recent_mutation_to_completion(
+            self._restore_theater_cache_snapshot_locked,
+            file_path,
+            lanlan_name,
+            previous,
+            expected,
+            admission_generation,
+        )
+
+    def _forget_theater_story_locked(
+        self, file_path, lanlan_name, story_id, expected_generation=None,
+    ):
+        """在 recent.json 临界区内删除指定剧本胶囊。"""  # noqa: DOCSTRING_CJK
+
+        return self._drop_theater_messages_locked(
+            file_path,
+            lanlan_name,
+            lambda message: (
+                is_theater_memory_message(message)
+                and str(message_metadata(message).get("story_id") or "") == story_id
+            ),
+            expected_generation,
+        )
+
+    def _retract_theater_episode_locked(
+        self, file_path, lanlan_name, story_id, session_id, archive_through_revision,
+        expected_generation=None,
+    ):
+        """Drop only the episode capsule written for one archive range."""
+
+        return self._drop_theater_messages_locked(
+            file_path,
+            lanlan_name,
+            lambda message: is_retracted_theater_episode(
+                message, story_id, session_id, archive_through_revision,
+            ),
+            expected_generation,
+            restore_episode=(story_id, session_id, archive_through_revision),
+        )
+
+    def _drop_theater_messages_locked(
+        self, file_path, lanlan_name, should_drop, expected_generation=None,
+        restore_episode=None,
+    ):
+        """Remove matching messages from recent.json inside its file critical section."""
+
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
+            status, history = self._load_history_unlocked(file_path, lanlan_name)
+            if status == RECENT_READ_UNREADABLE:
+                raise RuntimeError("theater_recent_history_unreadable")
+            pending = recent_file.get_recent_pending_unlocked(file_path)
+            current = list(history) + list(pending)
+            retained = (
+                restored_theater_history(current, *restore_episode)
+                if restore_episode else [message for message in current if not should_drop(message)]
+            )
+            removed = sum(bool(should_drop(message)) for message in current)
+            if not removed:
+                self._cache_history_view(file_path, lanlan_name, history, pending)
+                return 0
+            recent_file.write_recent_payload_unlocked(
+                file_path, messages_to_dict(retained),
+            )
+            recent_file.set_recent_pending_unlocked(file_path, [])
+            self._set_pending_batches(lanlan_name, [], file_path)
+            self._cache_history_view(file_path, lanlan_name, retained)
+            return removed
+
+    def _record_theater_retraction_locked(
+        self, file_path, lanlan_name, entry, expected_generation=None,
+    ):
+        """Persist one retraction tombstone inside the recent.json critical section."""
+
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
+            now = float(entry["retracted_at"])
+            kept = []
+            through_attempt = int(entry["through_attempt"])
+            entries, forgotten = _load_theater_retraction_state_unlocked(file_path)
+            for existing in entries:
+                if existing.get("archive_request_id") == entry["archive_request_id"]:
+                    previous = existing.get("through_attempt")
+                    if isinstance(previous, int) and not isinstance(previous, bool):
+                        through_attempt = max(through_attempt, previous)
+                    continue
+                if _is_fresh_tombstone(existing.get("retracted_at"), now):
+                    kept.append(existing)
+            kept.append({**entry, "through_attempt": through_attempt})
+            _write_theater_retraction_state_unlocked(file_path, kept, forgotten)
+
+    def _record_theater_story_forget_locked(
+        self, file_path, lanlan_name, story_id, forgotten_at, forget_marker,
+        expected_generation=None,
+    ):
+        """Persist a story-level forget tombstone inside the recent.json critical section.
+
+        A repeated forget of the same story replaces its tombstone: the new
+        marker supersedes the old one, and ``forgotten_at`` (only used for
+        retention) restarts from this forget.
+        """
+
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
+            entries, forgotten = _load_theater_retraction_state_unlocked(file_path)
+            kept = [
+                existing for existing in forgotten
+                if existing.get("story_id") != story_id
+                and _is_fresh_tombstone(existing.get("forgotten_at"), forgotten_at)
+            ]
+            kept.append({
+                "story_id": story_id,
+                "forgotten_at": forgotten_at,
+                "forget_marker": forget_marker,
+            })
+            runs = _load_theater_runs_unlocked(file_path)
+            runs.pop(story_id, None)
+            recent_file.write_recent_sidecar_unlocked(file_path, THEATER_RUNS_FILENAME, runs)
+            _write_theater_retraction_state_unlocked(file_path, entries, kept)
+
+    async def record_theater_story_forget(self, lanlan_name, story_id) -> str:
+        """Durably drop every later-arriving write of this story issued before now.
+
+        Story forget removes the story's capsules, but an archive request the
+        theater timed out on may still be in flight and land afterwards. The
+        tombstone is keyed by story rather than by archive attempt, so it also
+        covers writes whose receipts the forget has already deleted. Returns the
+        fresh forget marker: only writes that carry it are admitted for this
+        story from now on, and the theater attaches it only to archive requests
+        it issues after this forget completed.
+        """
+
+        normalized_story_id = str(story_id or "").strip()
+        if not normalized_story_id:
+            raise ValueError("theater_story_id_required")
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
+        await asyncio.to_thread(
+            assert_cloudsave_writable,
+            self._config_manager,
+            operation="save",
+            target=f"memory/{lanlan_name}/{THEATER_RETRACTIONS_FILENAME}",
+        )
+        forget_marker = secrets.token_hex(16)
+        await _await_recent_mutation_to_completion(
+            self._record_theater_story_forget_locked,
+            file_path,
+            lanlan_name,
+            normalized_story_id,
+            time.time(),
+            forget_marker,
+            admission_generation,
+        )
+        return forget_marker
+
+    async def record_theater_retraction(
+        self,
+        lanlan_name,
+        *,
+        story_id,
+        session_id,
+        archive_through_revision,
+        archive_request_id,
+        archive_attempt,
+    ):
+        """Durably block late writes of the archive attempts a declined archive issued."""
+
+        normalized_request_id = str(archive_request_id or "").strip()
+        if not normalized_request_id:
+            raise ValueError("theater_archive_request_id_required")
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
+        await asyncio.to_thread(
+            assert_cloudsave_writable,
+            self._config_manager,
+            operation="save",
+            target=f"memory/{lanlan_name}/{THEATER_RETRACTIONS_FILENAME}",
+        )
+        entry = {
+            "archive_request_id": normalized_request_id,
+            "through_attempt": max(0, int(archive_attempt or 0)),
+            "story_id": str(story_id or ""),
+            "session_id": str(session_id or ""),
+            "archive_through_revision": int(archive_through_revision),
+            "retracted_at": time.time(),
+        }
+        await _await_recent_mutation_to_completion(
+            self._record_theater_retraction_locked,
+            file_path,
+            lanlan_name,
+            entry,
+            admission_generation,
+        )
+
+    async def retract_theater_episode(
+        self, story_id, session_id, archive_through_revision, lanlan_name,
+    ):
+        """Idempotently drop the episode capsule a declined theater archive wrote."""
+
+        normalized_story_id = str(story_id or "").strip()
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_story_id or not normalized_session_id:
+            raise ValueError("theater_episode_identity_required")
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
+        await asyncio.to_thread(
+            assert_cloudsave_writable,
+            self._config_manager,
+            operation="delete",
+            target=f"memory/{lanlan_name}/recent.json",
+        )
+        return await _await_recent_mutation_to_completion(
+            self._retract_theater_episode_locked,
+            file_path,
+            lanlan_name,
+            normalized_story_id,
+            normalized_session_id,
+            int(archive_through_revision),
+            admission_generation,
+        )
+
+    async def forget_theater_story(self, story_id, lanlan_name):
+        """幂等删除一个剧本的近期剧场记忆。"""  # noqa: DOCSTRING_CJK
+
+        normalized_story_id = str(story_id or "").strip()
+        if not normalized_story_id:
+            raise ValueError("theater_story_id_required")
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
+        await asyncio.to_thread(
+            assert_cloudsave_writable,
+            self._config_manager,
+            operation="delete",
+            target=f"memory/{lanlan_name}/recent.json",
+        )
+        return await _await_recent_mutation_to_completion(
+            self._forget_theater_story_locked,
+            file_path,
+            lanlan_name,
+            normalized_story_id,
+            admission_generation,
+        )
+
     def _splice_compressed_locked(
-        self, file_path, lanlan_name, snapshot, memo, expected_generation=None,
+        self,
+        file_path,
+        lanlan_name,
+        snapshot,
+        memo,
+        expected_generation=None,
+        preserved_messages=(),
     ) -> str:
         """Replace the compressed head with ``memo`` and persist, as one critical section.
 
@@ -746,7 +1658,8 @@ class CompressedRecentHistoryManager:
                 and capacity == len(snapshot)
                 and (cutoff_idx - capacity + 1) == 0
             ):
-                new_history = [memo] + current[cutoff_idx + 1:]
+                # 剧场胶囊不能被普通聊天摘要吞并，否则会丢失来源隔离和周目计数。
+                new_history = [memo] + list(preserved_messages) + current[cutoff_idx + 1:]
             else:
                 # 不能证明 snapshot 仍是 current 的完整头部时必须 fail closed。
                 # 按条数 fallback 会在短指纹碰撞时把未参与压缩的尾部一起切掉。
@@ -804,12 +1717,59 @@ class CompressedRecentHistoryManager:
                 # 磁盘内容一起补写。
                 return
 
-            if compress and len(history) > self.compress_threshold:
-                to_compress = history[:-self.max_history_length+1]
+            # 剧场胶囊压缩时原样保留，不能计入触发门槛和尾部保留条数；否则胶囊一多，
+            # 压缩后的历史仍超门槛，每次 settle 都会重复压缩、反复摘要 memo。
+            # 无剧场消息时与 history[:-max_history_length+1] 完全等价。
+            ordinary_indices = [
+                index
+                for index, message in enumerate(history)
+                if not is_theater_memory_message(message)
+            ]
+            if compress and len(ordinary_indices) > self.compress_threshold:
+                compressed_ordinary = len(
+                    ordinary_indices[:-self.max_history_length+1]
+                )
+                cutoff = (
+                    ordinary_indices[compressed_ordinary]
+                    if compressed_ordinary < len(ordinary_indices)
+                    else len(history)
+                )
+                to_compress = history[:cutoff]
                 snapshot = list(to_compress)
+                preserved_theater = [
+                    message
+                    for message in snapshot
+                    if is_theater_memory_message(message)
+                ]
+                compression_input = [
+                    message
+                    for message in snapshot
+                    if not is_theater_memory_message(message)
+                ]
+                if not compression_input or (
+                    len(compression_input) == 1
+                    and isinstance(compression_input[0], SystemMessage)
+                ):
+                    # 当前可压缩头部全是剧场胶囊（或只剩已有备忘录），再调摘要模型只会
+                    # 反复改写 memo；只能交给保留胶囊的硬上限裁剪。
+                    # Unreachable with the shipped constants (threshold 20, keep 10:
+                    # the head holds >= threshold - keep + 2 = 12 ordinary messages),
+                    # but reachable whenever max_history_length > compress_threshold
+                    # (the head shrinks to at most one message, e.g. the memo) or
+                    # max_history_length == 1 (the
+                    # [:-max_history_length+1] slice is [:0], so the head is empty).
+                    await self.enforce_hard_cap(
+                        lanlan_name,
+                        admission_generation,
+                    )
+                    return
                 # 压缩 LLM 在**锁外**跑。它耗时数秒到数十秒，关进临界区会把
                 # /cache 一起挡住。
-                compressed_result = await self.compress_history(to_compress, lanlan_name, detailed)
+                compressed_result = await self.compress_history(
+                    compression_input,
+                    lanlan_name,
+                    detailed,
+                )
                 if compressed_result is None:
                     logger.warning(
                         f"[RecentHistory] {lanlan_name} 摘要失败，跳过本轮压缩以保留原始历史"
@@ -824,6 +1784,7 @@ class CompressedRecentHistoryManager:
                     # ⚠️ 这个回调**必须**留在所有临界区之外：dead-letter 分支会同步
                     # 调 enforce_hard_cap，那条路径要拿同一把文件锁，而 threading.Lock
                     # 不可重入 —— 挪进任何一个临界区就是 worker 线程上的无超时死锁。
+                    # 后台任务按完整快照定位提交，只把普通消息交给摘要模型。
                     await self._notify_compress_done(
                         on_compress_done,
                         lanlan_name,
@@ -837,7 +1798,7 @@ class CompressedRecentHistoryManager:
                     splice_status = await _await_recent_mutation_to_completion(
                         self._splice_compressed_locked,
                         file_path, lanlan_name, snapshot, compressed_result[0],
-                        admission_generation,
+                        admission_generation, preserved_theater,
                     )
                     # merged / moot 都不需要再跑同一份后台摘要；只有读写失败才触发兜底。
                     await self._notify_compress_done(
@@ -962,7 +1923,7 @@ class CompressedRecentHistoryManager:
         )
 
     def _render_messages_to_text(self, messages, lanlan_name):
-        """把消息列表渲染成喂给摘要 LLM 的文本：每条做头尾保留截断 + role 前缀。
+        """把消息列表渲染成喂给摘要 LLM 的文本：每条做头尾保留截断 + role 前缀。  # noqa: DOCSTRING_CJK
 
         单条 message 文本超过 RECENT_PER_MESSAGE_MAX_TOKENS 时做头尾保留截断
         （head=tail=半数 token）。用户长贴 / AI 偶尔写小作文都会触发；头尾各
@@ -1134,6 +2095,11 @@ class CompressedRecentHistoryManager:
 
     # detailed: 保留尽可能多的细节
     async def compress_history(self, messages, lanlan_name, detailed=False):
+        # The summary replaces these messages and is stored as a system memo
+        # the screen-history guard does not rewrite: it is made from the
+        # replies without source labels, but with every comment kept, so no
+        # content the user saw is lost to the summary.
+        messages = strip_screen_labels(list(messages))
         messages_text = self._render_messages_to_text(messages, lanlan_name)
         locale_text = self._summary_prompt_locale_text(messages)
         # 输入过大（积压一直压不掉时会膨胀）→ 先分段 map-reduce 缩小输入，减小
@@ -1267,21 +2233,55 @@ class CompressedRecentHistoryManager:
             return total
 
         def _trim(history):
-            if _raw_tokens(history) <= RECENT_HARD_CAP_TOKENS:
-                return None  # 未超，不动
-            # 首条若是备忘录（已压缩的长期记忆）则保留，只丢正文里最旧的原文。
-            head = [history[0]] if isinstance(history[0], SystemMessage) else []
-            body = history[len(head):]
-            kept = []
-            kept_tok = _raw_tokens(head)
-            for msg in reversed(body):
+            # Theater eviction belongs to /cache's locked recent/index commit.
+            # Background chat trimming cannot remove capsules without updating
+            # their time index. Prompt rendering independently bounds old data.
+            ordinary = [message for message in history if not is_theater_memory_message(message)]
+            if _raw_tokens(ordinary) <= RECENT_HARD_CAP_TOKENS:
+                return None
+            # 剧场胶囊带有独立来源和周目语义，不能被普通聊天硬裁剪吞掉。
+            # Same predicate as compression and review: every theater memory
+            # message is outside the ordinary body and can never be the memo head.
+            theater_indices = {
+                index
+                for index, message in enumerate(history)
+                if is_theater_memory_message(message)
+            }
+            ordinary_indices = [
+                index
+                for index in range(len(history))
+                if index not in theater_indices
+            ]
+            # 普通历史首条若是备忘录则保留，只丢普通正文里最旧的原文。
+            head_indices = (
+                {ordinary_indices[0]}
+                if ordinary_indices
+                and isinstance(history[ordinary_indices[0]], SystemMessage)
+                else set()
+            )
+            body_indices = ordinary_indices[len(head_indices):]
+            kept_indices = set(head_indices) | theater_indices
+            # Theater has its own allowance and never consumes the chat budget.
+            kept_tok = _raw_tokens([history[index] for index in head_indices])
+            kept_body_count = 0
+            for index in reversed(body_indices):
+                msg = history[index]
                 mtok = _raw_tokens([msg])
-                if kept and kept_tok + mtok > RECENT_HARD_CAP_TOKENS and len(kept) >= self.max_history_length:
+                if (
+                    kept_body_count
+                    and kept_tok + mtok > RECENT_HARD_CAP_TOKENS
+                    and kept_body_count >= self.max_history_length
+                ):
                     break
-                kept.append(msg)
+                kept_indices.add(index)
+                kept_body_count += 1
                 kept_tok += mtok
-            kept.reverse()
-            return head + kept
+            # 按原索引回写，避免剧场胶囊被统一移到历史尾部而改变时间顺序。
+            return [
+                message
+                for index, message in enumerate(history)
+                if index in kept_indices
+            ]
 
         # tokenize 始终在锁外；提交时用完整磁盘快照做 CAS。若期间有新批次，重读后
         # 最多再算一次，绝不拿 stale 结果覆盖并发 append。
@@ -1329,6 +2329,7 @@ class CompressedRecentHistoryManager:
 
     async def merge_backup_memo(
         self, lanlan_name, snapshot, memo, expected_generation=None,
+        preserved_messages=(),
     ):
         """Merge a background compression memo when its disk snapshot still matches.
 
@@ -1370,6 +2371,7 @@ class CompressedRecentHistoryManager:
                 snapshot,
                 memo,
                 admission_generation,
+                preserved_messages,
             )
         except recent_file.RecentFileDeletedError:
             return 'moot'
@@ -1525,7 +2527,9 @@ class CompressedRecentHistoryManager:
                 # review LLM，永不熔断。只读盘场景下那是整夜空烧。
                 return ('failed', None, '提交时读盘失败，无法定位 cutoff')
 
-            capacity, cutoff_idx = _compute_review_capacity(snapshot, current)
+            review_slots = _compute_review_slots(snapshot, current)
+            capacity = len(review_slots)
+            cutoff_idx = review_slots[-1] if review_slots else None
             if cutoff_idx is None:
                 # 白 review：cutoff 在当前 history 里失配（被压缩 / 被清空）
                 return ('white', None, 'review 完成但 cutoff 失配')
@@ -1537,15 +2541,25 @@ class CompressedRecentHistoryManager:
                 # 写盘也不更新 fingerprint（避免 anchor 漂移到非 review 区）。
                 return ('white', None, 'review 输出为空')
 
-            # 替换 [cutoff_idx - capacity + 1, cutoff_idx] 这 capacity 个 slot
-            # 为 corrected 末尾 take_count 条；cutoff_idx 之后新增的保留。
-            # take_count < capacity 时，前 (capacity - take_count) 个 slot
-            # 直接消失（review 决定删条，结果就比原来短）。
-            new_history = (
-                current[:cutoff_idx - capacity + 1]
-                + corrected_messages[-take_count:]
-                + current[cutoff_idx + 1:]
-            )
+            # 只替换匹配到的普通消息槽位；夹在其中的剧场胶囊及并发新增消息原位保留。
+            # corrected 变短时与旧逻辑一致，删除较早槽位并把模型输出写入最近槽位。
+            review_slot_set = set(review_slots)
+            replacement_slots = review_slots[-take_count:]
+            replacements = dict(zip(
+                replacement_slots,
+                corrected_messages[-take_count:],
+                strict=True,
+            ))
+            new_history = []
+            patched_end = -1
+            for index, message in enumerate(current):
+                if index not in review_slot_set:
+                    new_history.append(message)
+                    continue
+                replacement = replacements.get(index)
+                if replacement is not None:
+                    new_history.append(replacement)
+                    patched_end = len(new_history) - 1
 
             # 栅栏留在白 review 判定之后：重构前它也在那两个 early return 之后，
             # 维护态下的白 review 照旧不会被抬成 'failed'。
@@ -1565,9 +2579,12 @@ class CompressedRecentHistoryManager:
             #   patched_end   = patched_start + take_count - 1
             # 新 fingerprint = K 条以 patched_end 结尾的消息。如果 patched_end
             # 之前的消息不足 K-1 条，取从 0 开始所有可用的。
-            patched_end = (cutoff_idx - capacity + 1) + take_count - 1
-            fp_start = max(0, patched_end - REVIEW_FINGERPRINT_K + 1)
-            fp_messages = new_history[fp_start:patched_end + 1]
+            reviewed_prefix = [
+                message
+                for message in new_history[:patched_end + 1]
+                if not is_theater_memory_message(message)
+            ]
+            fp_messages = reviewed_prefix[-REVIEW_FINGERPRINT_K:]
             new_fingerprint = build_review_fingerprint(fp_messages, k=REVIEW_FINGERPRINT_K)
             detail = (
                 f"cutoff_idx={cutoff_idx}, capacity={capacity}, "
@@ -1640,6 +2657,9 @@ class CompressedRecentHistoryManager:
             except recent_file.RecentFileDeletedError:
                 return ('failed', None)
 
+        # Apply the same fiction boundary to caller snapshots and legacy reads.
+        # This filtered snapshot also defines the ordinary-message commit slots.
+        snapshot = [message for message in snapshot if not is_theater_memory_message(message)]
         if not snapshot:
             _safe_print(f"{lanlan_name} 的历史记录为空，无需审阅")
             return ('failed', None)

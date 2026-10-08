@@ -12,10 +12,12 @@ app, polls the resulting task to completion, then verifies:
 This is the hard-evidence test for "下载链路真的通了". It exercises the
 full chain — HTTP download → sha256 check → unpack → ISM record →
 lock atomic write → ``/market/installed`` projection — without any
-mocks beyond redirecting filesystem roots into ``tmp_path``.
+network mocks except a Market catalogue populated from the served packages.
 """
 
 from __future__ import annotations
+
+from plugin.utils.http_imports import load_httpx
 
 import asyncio
 import contextlib
@@ -27,6 +29,7 @@ import socket
 import shutil
 import threading
 import time
+import tomllib
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -54,6 +57,10 @@ from plugin.neko_plugin_cli.public import build_plugin
 FIXTURE_PLUGINS_ROOT = (
     Path(__file__).resolve().parents[1] / "fixtures" / "neko_plugin_cli" / "plugins"
 )
+
+# Published release facts supplied by the test Market, independently of the
+# install request. The lifecycle tests retain their existing local ID aliases.
+_catalog_releases: list[dict[str, Any]] = []
 
 
 # ─── Fixture: build a minimal valid .neko-plugin package ──────────────
@@ -133,12 +140,20 @@ def _build_neko_plugin_zip(
 
 
 @contextlib.contextmanager
-def _serve_bytes(*, filename: str, content: bytes) -> Iterator[str]:
+def _serve_bytes(
+    *, filename: str, content: bytes, extra_release: dict[str, Any] | None = None,
+    catalog_sha256: str | None = None,
+    market_id: str | None = None,
+    published_at: str | None = None,
+    catalog: bool = True,
+) -> Iterator[str]:
     """Start a localhost HTTP server that serves a single file.
 
     Yields the absolute URL of the served file; tears the server down
     on exit. Bound to an OS-assigned port so concurrent test runs don't
-    collide.
+    collide. With ``catalog`` (the default) the package, which must then
+    be a real ``.neko-plugin`` archive, is also published to the test
+    Market catalogue for the duration of the block.
     """
 
     class _Handler(http.server.BaseHTTPRequestHandler):
@@ -158,14 +173,77 @@ def _serve_bytes(*, filename: str, content: bytes) -> Iterator[str]:
 
     server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
     port = server.server_address[1]
+    url = f"http://127.0.0.1:{port}/{filename}"
+    published = (
+        _package_releases(
+            content, url,
+            extra_release=extra_release,
+            catalog_sha256=catalog_sha256,
+            market_id=market_id,
+            published_at=published_at,
+        )
+        if catalog
+        else []
+    )
+    _catalog_releases.extend(published)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{port}/{filename}"
+        yield url
     finally:
+        for release in published:
+            _catalog_releases.remove(release)
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def _package_releases(
+    content: bytes,
+    url: str,
+    *,
+    extra_release: dict[str, Any] | None,
+    catalog_sha256: str | None,
+    market_id: str | None,
+    published_at: str | None,
+) -> list[dict[str, Any]]:
+    """Catalogue rows (stable and beta) describing a served package."""
+
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        manifest = tomllib.loads(archive.read("manifest.toml").decode("utf-8"))
+        try:
+            metadata = tomllib.loads(archive.read("metadata.toml").decode("utf-8"))
+        except KeyError:
+            metadata = {}
+    catalog_id = market_id if market_id is not None else str(manifest["id"])
+    payload_table = metadata.get("payload")
+    rows = [
+        {"plugin_id": catalog_id, "version": manifest["version"], "channel": channel,
+         "package_url": url,
+         "package_sha256": catalog_sha256 or hashlib.sha256(content).hexdigest(),
+         "payload_hash": payload_table.get("hash") if isinstance(payload_table, dict) else None,
+         "created_at": published_at,
+         "yanked_at": None}
+        for channel in ("stable", "beta")
+    ]
+    if extra_release is not None:
+        rows.append({**extra_release, "plugin_id": catalog_id})
+    return rows
+
+
+def _catalog_response(request: httpx.Request) -> httpx.Response:
+    """Answer ``/api/v1/plugins/{id}/versions`` like the Market does."""
+
+    parts = request.url.path.strip("/").split("/")
+    if len(parts) != 5 or parts[:3] != ["api", "v1", "plugins"] or parts[4] != "versions":
+        return httpx.Response(404, json={"detail": "Not Found"})
+    rows = [r for r in _catalog_releases if r["plugin_id"] == parts[3]]
+    if not rows:
+        return httpx.Response(404, json={"detail": "插件不存在"})
+    channel = request.url.params.get("channel")
+    return httpx.Response(
+        200, json=[r for r in rows if channel is None or r["channel"] == channel],
+    )
 
 
 # ─── Fixture: a fully wired bridge ASGI app pointed at tmp_path roots ──
@@ -235,6 +313,19 @@ def bridge_e2e_env(
     mgr.load()  # First_Startup seed
     set_global_manager(mgr)
 
+    # Only the bridge's catalogue client talks to the test Market; package
+    # downloads and other HTTP traffic stay real.
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        market_bridge_module,
+        "_market_catalog_client",
+        lambda: real_async_client(
+            transport=httpx.MockTransport(_catalog_response),
+            base_url=market_bridge_module.MARKET_API_URL,
+            follow_redirects=False,
+        ),
+    )
+
     # Mount only the bridge router on a fresh FastAPI app.
     app = FastAPI(title="market-bridge-e2e")
     app.include_router(market_bridge_module.router)
@@ -276,6 +367,71 @@ def bridge_e2e_env(
 
 
 # ─── Tests ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested_market_id", ["401", "403"])
+async def test_install_rejects_another_plugins_release(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    requested_market_id: str,
+) -> None:
+    """An existing or unknown Market ID cannot authorize another plugin's hash."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    version = "1.0.0"
+    package_a, _ = _build_neko_plugin_zip(plugin_id="catalog_a", version=version)
+    package_b, _ = _build_neko_plugin_zip(plugin_id="catalog_b", version=version)
+    hash_a = hashlib.sha256(package_a).hexdigest()
+    hash_b = hashlib.sha256(package_b).hexdigest()
+    assert hash_a != hash_b
+
+    async def forbidden_download(*args: Any, **kwargs: Any) -> Path:
+        pytest.fail("another plugin's release reached download")
+
+    monkeypatch.setattr(market_bridge_module, "_download_package_once", forbidden_download)
+    client = bridge_e2e_env["client"]
+    token = bridge_e2e_env["token"]
+    lock_path = bridge_e2e_env["lock_path"]
+    before = lock_path.read_bytes() if lock_path.exists() else None
+
+    with (
+        _serve_bytes(filename="a.neko-plugin", content=package_a, market_id="401"),
+        _serve_bytes(filename="b.neko-plugin", content=package_b, market_id="402") as url_b,
+    ):
+        for market_id, expected_hash in (("401", hash_a), ("402", hash_b)):
+            async with market_bridge_module._market_catalog_client() as catalog_client:
+                response = await catalog_client.get(
+                    f"{market_bridge_module.MARKET_API_URL.rstrip('/')}/api/v1/plugins/{market_id}/versions",
+                    params={"channel": "stable"},
+                )
+            assert response.status_code == 200
+            rows = response.json()
+            assert len(rows) == 1
+            assert rows[0]["plugin_id"] == market_id
+            assert rows[0]["package_sha256"] == expected_hash
+
+        response = await client.post(
+            "/market/install", params={"token": token},
+            json={"plugin_id": requested_market_id, "version": version, "channel": "stable",
+                  "package_url": url_b, "package_sha256": hash_b},
+        )
+        assert response.status_code == 200
+        task_id = response.json()["task_id"]
+        try:
+            await market_bridge_module._task_workers[task_id]
+            response = await client.get(f"/market/tasks/{task_id}", params={"token": token})
+            task = response.json()
+            assert task["status"] == "failed", task
+            assert task["error_code"] == "market_release_mismatch", task
+        finally:
+            market_bridge_module._task_workers.pop(task_id, None)
+            market_bridge_module._tasks.pop(task_id, None)
+
+    assert not (bridge_e2e_env["user_root"] / "catalog_a").exists()
+    assert not (bridge_e2e_env["user_root"] / "catalog_b").exists()
+    after = lock_path.read_bytes() if lock_path.exists() else None
+    assert after == before
 
 
 def test_market_task_cleanup_prunes_overflow_workers(
@@ -390,7 +546,7 @@ async def test_market_catalog_plugins_use_same_origin_bridge(
             seen_urls.append(url)
             return CatalogResponse()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", CatalogClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", CatalogClient)
     monkeypatch.setattr(
         market_bridge_module,
         "MARKET_API_URL",
@@ -444,7 +600,7 @@ async def test_market_catalog_latest_versions_use_same_origin_bridge(
             seen_urls.append(url)
             return CatalogResponse()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", CatalogClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", CatalogClient)
     monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
 
     response = await bridge_e2e_env["client"].get(
@@ -488,7 +644,7 @@ async def test_market_catalog_readme_uses_same_origin_bridge(
             seen_urls.append(url)
             return CatalogResponse()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", CatalogClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", CatalogClient)
     monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
 
     response = await bridge_e2e_env["client"].get(
@@ -530,7 +686,7 @@ async def test_market_catalog_comments_use_same_origin_bridge(
             seen_urls.append(url)
             return CatalogResponse()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", CatalogClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", CatalogClient)
     monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
 
     response = await bridge_e2e_env["client"].get(
@@ -572,7 +728,7 @@ async def test_market_catalog_bridge_rejects_upstream_redirects(
             seen_urls.append(url)
             return RedirectResponse()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", RedirectClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", RedirectClient)
     monkeypatch.setattr(
         market_bridge_module,
         "MARKET_API_URL",
@@ -629,6 +785,26 @@ async def test_bridge_token_allows_local_same_origin(
 
 
 @pytest.mark.asyncio
+async def test_market_install_rejects_invalid_bridge_token_before_side_effects(
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    """The Market bridge keeps its token contract independent from CSRF."""
+
+    response = await bridge_e2e_env["client"].post(
+        "/market/install?token=invalid",
+        json={
+            "package_url": "https://market.example/plugin.neko-plugin",
+            "package_sha256": "a" * 64,
+            "plugin_id": "demo",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "无效的 bridge token"}
+    assert not response.headers.get("x-error-code")
+
+
+@pytest.mark.asyncio
 async def test_install_happy_path_writes_v2_lock_entry(
     bridge_e2e_env: dict[str, Any],
 ) -> None:
@@ -656,6 +832,7 @@ async def test_install_happy_path_writes_v2_lock_entry(
 
     with _serve_bytes(
         filename="e2e_calendar-1.2.3.neko-plugin", content=zip_bytes,
+        published_at="2026-05-16T08:00:00.000000Z",
     ) as package_url:
         # Trigger the install task.
         resp = await client.post(
@@ -667,7 +844,8 @@ async def test_install_happy_path_writes_v2_lock_entry(
                 "plugin_id": plugin_id,
                 "version": version,
                 "channel": "stable",
-                "published_at": "2026-05-16T08:00:00.000000Z",
+                # Stale client value; the lock must record the catalogue's.
+                "published_at": "2026-05-01T00:00:00.000000Z",
                 "mode": "install",
                 "on_conflict": "fail",
             },
@@ -704,7 +882,7 @@ async def test_install_happy_path_writes_v2_lock_entry(
 
     # All four v2 fields must be populated by the bytes that actually
     # landed on disk — sha256 from re-hashing, payload_hash from unpack
-    # output, channel + published_at from the request payload.
+    # output, channel + published_at from the Market catalogue row.
     assert detail["plugin_market_id"] == plugin_id
     assert detail["version"] == version
     assert detail["package_url"] == f"http://127.0.0.1:{package_url.split(':')[-1].split('/')[0]}/e2e_calendar-1.2.3.neko-plugin" or detail["package_url"].endswith("e2e_calendar-1.2.3.neko-plugin")
@@ -740,6 +918,7 @@ async def test_installed_endpoint_projects_latest_install_source(
 
     with _serve_bytes(
         filename=f"{plugin_id}-{version}.neko-plugin", content=zip_bytes,
+        published_at="2026-05-16T09:00:00.000000Z",
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",
@@ -897,7 +1076,7 @@ async def test_authenticated_market_install_reports_usage(
     from plugin.server.routes import market_bridge as market_bridge_module
 
     reports: list[dict[str, Any]] = []
-    real_async_client = market_bridge_module.httpx.AsyncClient
+    real_async_client = load_httpx().AsyncClient
 
     class _RecordingAsyncClient:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -938,7 +1117,7 @@ async def test_authenticated_market_install_reports_usage(
     monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
     monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
     monkeypatch.setattr(
-        market_bridge_module.httpx,
+        load_httpx(),
         "AsyncClient",
         _RecordingAsyncClient,
     )
@@ -975,6 +1154,7 @@ async def test_authenticated_market_install_reports_usage(
     with _serve_bytes(
         filename=f"{local_plugin_id}-{version}.neko-plugin",
         content=zip_bytes,
+        market_id="42",
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",
@@ -1155,7 +1335,7 @@ async def test_fetch_auth_userinfo_marks_rejected_tokens(
         async def get(self, *args: Any, **kwargs: Any) -> RejectingResponse:
             return RejectingResponse()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", RejectingClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", RejectingClient)
 
     with pytest.raises(market_bridge_module._OAuthAccessTokenRejected):
         await market_bridge_module._fetch_auth_userinfo("rejected-access-token")
@@ -1193,7 +1373,7 @@ async def test_fetch_market_user_logs_safe_http_failure_without_secrets(
         def warning(self, message: str, *args: Any, **kwargs: Any) -> None:
             captured_logs.append(message.format(*args))
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", RejectingClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", RejectingClient)
     monkeypatch.setattr(market_bridge_module, "logger", CapturingLogger())
     monkeypatch.setattr(
         market_bridge_module,
@@ -1244,7 +1424,7 @@ async def test_fetch_market_user_logs_safe_network_failure_without_exception_tex
         def warning(self, message: str, *args: Any, **kwargs: Any) -> None:
             captured_logs.append(message.format(*args))
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", FailingClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", FailingClient)
     monkeypatch.setattr(market_bridge_module, "logger", CapturingLogger())
     monkeypatch.setattr(
         market_bridge_module,
@@ -1304,7 +1484,7 @@ async def test_auth_token_lifecycle_logs_are_safe(
         def debug(self, message: str, *args: Any, **kwargs: Any) -> None:
             captured_logs.append(message.format(*args))
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", TokenClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", TokenClient)
     monkeypatch.setattr(market_bridge_module, "logger", CapturingLogger())
     monkeypatch.setattr(
         market_bridge_module,
@@ -1392,7 +1572,7 @@ async def test_download_package_logs_safe_network_failure_without_signed_url(
         def warning(self, message: str, *args: Any, **kwargs: Any) -> None:
             captured_logs.append(message.format(*args))
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", FailingClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", FailingClient)
     monkeypatch.setattr(market_bridge_module, "logger", CapturingLogger())
 
     with pytest.raises(ValueError, match=r"^下载网络错误$"):
@@ -1466,7 +1646,7 @@ async def test_download_package_retries_allowlisted_proxy_via_github_direct(
             attempts.append(url)
             return Stream(url)
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", Client)
     monkeypatch.setattr(
         market_bridge_module.PluginCliPathPolicy,
         "from_settings",
@@ -1539,7 +1719,7 @@ async def test_download_package_retries_oversized_allowlisted_proxy_via_github_d
             attempts.append(url)
             return Stream(url)
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", Client)
     monkeypatch.setattr(
         market_bridge_module.PluginCliPathPolicy,
         "from_settings",
@@ -1609,7 +1789,7 @@ async def test_direct_download_hash_mismatch_does_not_retry_github_again(
             attempts.append(url)
             return Stream(url)
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", Client)
     monkeypatch.setattr(
         market_bridge_module.PluginCliPathPolicy,
         "from_settings",
@@ -1706,7 +1886,7 @@ async def test_download_cancellation_removes_temporary_package(
             assert method == "GET"
             return Stream()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", Client)
     monkeypatch.setattr(
         market_bridge_module.PluginCliPathPolicy,
         "from_settings",
@@ -1900,7 +2080,7 @@ async def test_hash_mismatch_retries_allowlisted_proxy_via_github_direct(
             attempts.append(url)
             return Stream(url)
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", Client)
     monkeypatch.setattr(
         market_bridge_module.PluginCliPathPolicy,
         "from_settings",
@@ -2191,7 +2371,7 @@ async def test_oauth_account_summary_keeps_auth_token_when_market_rejects_it(
 
     monkeypatch.setattr(market_bridge_module, "_fetch_auth_userinfo", fetch_auth)
     monkeypatch.setattr(
-        market_bridge_module.httpx,
+        load_httpx(),
         "AsyncClient",
         MarketRejectedClient,
     )
@@ -2363,7 +2543,7 @@ async def test_oauth_status_refreshes_stale_cached_market_user(
             return FreshMarketResponse()
 
     monkeypatch.setattr(
-        market_bridge_module.httpx,
+        load_httpx(),
         "AsyncClient",
         FreshMarketClient,
     )
@@ -2798,7 +2978,7 @@ async def test_oauth_status_keeps_auth_login_for_invalid_market_response(
             captured_logs.append(message.format(*args))
 
     monkeypatch.setattr(
-        market_bridge_module.httpx,
+        load_httpx(),
         "AsyncClient",
         SubjectlessClient,
     )
@@ -2877,7 +3057,7 @@ async def test_oauth_status_resolves_a_pending_auth_subject(
                 return AuthUserResponse()
             return MarketUnavailableResponse()
 
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", BoundaryClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", BoundaryClient)
 
     token_file: Path = bridge_e2e_env["oauth_token_file"]
     token_file.write_text(
@@ -3343,7 +3523,7 @@ async def test_oauth_complete_keeps_auth_login_when_market_is_not_ready(
         "_fetch_auth_userinfo",
         fetch_auth_userinfo,
     )
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", MarketClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", MarketClient)
 
     pending_file: Path = bridge_e2e_env["oauth_pending_file"]
     callback_file: Path = bridge_e2e_env["oauth_callback_file"]
@@ -3435,7 +3615,7 @@ async def test_oauth_complete_keeps_token_when_auth_userinfo_is_unavailable(
             return MarketUnavailableResponse()
 
     monkeypatch.setattr(market_bridge_module, "_exchange_oauth_code", exchange_oauth_code)
-    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", BoundaryClient)
+    monkeypatch.setattr(load_httpx(), "AsyncClient", BoundaryClient)
 
     pending_file: Path = bridge_e2e_env["oauth_pending_file"]
     callback_file: Path = bridge_e2e_env["oauth_callback_file"]
@@ -3566,7 +3746,7 @@ async def test_oauth_complete_keeps_pending_identity_when_auth_subject_is_missin
         fetch_auth_userinfo,
     )
     monkeypatch.setattr(
-        market_bridge_module.httpx,
+        load_httpx(),
         "AsyncClient",
         MarketUnavailableClient,
     )
@@ -4183,22 +4363,33 @@ async def test_oauth_logout_prevents_in_flight_refresh_from_restoring_token(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch_stage", ["catalog", "download"])
 async def test_install_rejects_sha256_mismatch(
     bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    mismatch_stage: str,
 ) -> None:
-    """SHA256 mismatch fails the task without writing a lock entry.
+    """Reject both unlisted hashes and altered downloads without installation."""
+    from plugin.server.routes import market_bridge as market_bridge_module
 
-    Note: ``"0" * 64`` is treated as "Market did not provide a hash"
-    (R3.5) and gracefully skips verification; only a real-shaped but
-    non-matching hex triggers a hard mismatch failure. We only test the
-    latter — the skip-hash branch is covered by ``_verify_sha256``'s
-    structured-log path.
-    """
-
-    fake_sha = "f" * 64
     plugin_id = "e2e_bad_hash"
     version = "0.0.1"
     zip_bytes, _ = _build_neko_plugin_zip(plugin_id=plugin_id, version=version)
+    published_bytes, _ = _build_neko_plugin_zip(
+        plugin_id=plugin_id, version=version, include_profile=True,
+    )
+    expected_sha = hashlib.sha256(published_bytes).hexdigest()
+    assert expected_sha != hashlib.sha256(zip_bytes).hexdigest()
+
+    downloaded_paths: list[Path] = []
+    original_download = market_bridge_module._download_package_once
+
+    async def record_download(*args: Any, **kwargs: Any) -> Path:
+        path = await original_download(*args, **kwargs)
+        downloaded_paths.append(path)
+        return path
+
+    monkeypatch.setattr(market_bridge_module, "_download_package_once", record_download)
 
     client: AsyncClient = bridge_e2e_env["client"]
     token: str = bridge_e2e_env["token"]
@@ -4207,12 +4398,13 @@ async def test_install_rejects_sha256_mismatch(
 
     with _serve_bytes(
         filename=f"{plugin_id}-{version}.neko-plugin", content=zip_bytes,
+        catalog_sha256=expected_sha if mismatch_stage == "download" else None,
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",
             json={
                 "package_url": package_url,
-                "package_sha256": fake_sha,
+                "package_sha256": expected_sha,
                 "plugin_id": plugin_id,
                 "version": version,
                 "channel": "stable",
@@ -4232,6 +4424,12 @@ async def test_install_rejects_sha256_mismatch(
             await asyncio.sleep(0.05)
         assert final_status is not None
         assert final_status["status"] == "failed", final_status
+        expected_code = (
+            "package_hash_mismatch" if mismatch_stage == "download" else "market_release_mismatch"
+        )
+        assert final_status["error_code"] == expected_code, final_status
+        assert len(downloaded_paths) == (1 if mismatch_stage == "download" else 0)
+        assert all(not path.exists() for path in downloaded_paths)
         message_blob = (final_status.get("error") or "") + \
                        (final_status.get("message") or "")
         assert "SHA256" in message_blob, message_blob
@@ -4647,6 +4845,7 @@ async def test_upgrade_lifecycle_uses_installed_plugin_id_not_market_id(
 
     with _serve_bytes(
         filename=f"{plugin_id}-2.0.0.neko-plugin", content=v2_zip,
+        market_id=market_id,
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",
@@ -4789,6 +4988,7 @@ async def test_upgrade_rejects_plugin_identity_mismatch_before_replacement(
     intruder_sha = hashlib.sha256(intruder_zip).hexdigest()
     with _serve_bytes(
         filename=f"{intruder_id}-2.0.0.neko-plugin", content=intruder_zip,
+        market_id=plugin_id,
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",
@@ -4878,6 +5078,7 @@ async def test_failed_market_install_cleans_promoted_profile_dir(
 
     with _serve_bytes(
         filename=f"{intruder_id}-2.0.0.neko-plugin", content=zip_bytes,
+        market_id=plugin_id,
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",
@@ -5117,6 +5318,9 @@ async def test_upgrade_rollback_on_download_failure(
     # different filename to force the failure.
     with _serve_bytes(
         filename=f"{plugin_id}-1.0.0.neko-plugin", content=v1_zip,
+        extra_release={"version": "2.0.0", "channel": "stable",
+                       "package_url": "https://example.test/e2e_rollback-2.0.0.neko-plugin",
+                       "package_sha256": "f" * 64, "yanked_at": None},
     ) as package_url:
         broken_url = package_url.rsplit("/", 1)[0] + "/does_not_exist.neko-plugin"
 

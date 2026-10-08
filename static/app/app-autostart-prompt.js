@@ -582,6 +582,7 @@
     function isTutorialBusy() {
         const manager = window.universalTutorialManager || null;
         return window.isNekoHomeTutorialPending === true
+            || window.isNekoClickGuideActive === true
             || window.isInTutorial === true
             || !!(manager && (
                 manager.isTutorialRunning

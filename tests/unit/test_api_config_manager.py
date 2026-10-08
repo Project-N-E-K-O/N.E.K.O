@@ -60,6 +60,7 @@ class TestKeybookSaveLoad:
         'assistApiKeyMimo': 'ASSIST_API_KEY_MIMO',
         'assistApiKeyMimoTokenPlan': 'ASSIST_API_KEY_MIMO_TOKEN_PLAN',
         'assistApiKeyGrok': 'ASSIST_API_KEY_GROK',
+        'assistApiKeyRequesty': 'ASSIST_API_KEY_REQUESTY',
     }
 
     @pytest.mark.unit
@@ -104,6 +105,7 @@ class TestKeybookSaveLoad:
                        'ASSIST_API_KEY_DOUBAO', 'ASSIST_API_KEY_DOUBAO_TTS', 'ASSIST_API_KEY_GROK',
                        'ASSIST_API_KEY_CLAUDE', 'ASSIST_API_KEY_OPENROUTER',
                        'ASSIST_API_KEY_ORCAROUTER',
+                       'ASSIST_API_KEY_REQUESTY',
                        'ASSIST_API_KEY_QWEN_INTL',
                        'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL',
                        'ASSIST_API_KEY_MIMO']:
@@ -245,6 +247,89 @@ class TestKeybookSaveLoad:
         cfg = config_manager.get_core_config()
         assert cfg['ASSIST_API_KEY_MINIMAX'] == ''
         assert cfg['ASSIST_API_KEY_MINIMAX_INTL'] == ''
+
+
+class TestRequestyResolution:
+    @pytest.mark.unit
+    @pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
+    @pytest.mark.parametrize('requesty_key', ['', 'sk-requesty-dedicated'])
+    def test_selected_provider_credentials_and_models(
+        self, config_manager, core_provider, requesty_key,
+    ):
+        """Resolve each Requesty task without borrowing another provider's key."""
+        core_key = 'free-access' if core_provider == 'free' else 'sk-other-core'
+        _write_core_config(config_manager, {
+            'coreApi': core_provider,
+            'coreApiKey': core_key,
+            'assistApi': 'requesty',
+            'assistApiKeyRequesty': requesty_key,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['CORE_API_KEY'] == core_key
+        assert cfg['CORE_API_TYPE'] == core_provider
+        assert cfg['ASSIST_API_KEY_REQUESTY'] == requesty_key
+        assert cfg['OPENROUTER_API_KEY'] == requesty_key
+        assert cfg['AUDIO_API_KEY'] == (
+            core_key if core_provider != 'free' else ''
+        )
+        assert cfg['AGENT_MODEL_API_KEY'] == requesty_key
+        for task, model in {
+            'conversation': 'google/gemini-2.5-flash',
+            'summary': 'google/gemini-2.5-flash',
+            'correction': 'google/gemini-2.5-flash',
+            'emotion': 'google/gemini-2.5-flash-lite',
+            'vision': 'google/gemini-2.5-flash',
+            'agent': 'google/gemini-3-flash-preview',
+        }.items():
+            resolved = config_manager.get_model_api_config(task)
+            assert resolved['api_key'] == requesty_key, task
+            assert resolved['base_url'] == 'https://router.requesty.ai/v1', task
+            assert resolved['model'] == model, task
+            assert resolved['provider_type'] == 'openai_compatible', task
+
+    @pytest.mark.unit
+    def test_missing_key_does_not_use_legacy_assist_defaults(self, config_manager, monkeypatch):
+        """Clear legacy router defaults while retaining the independent audio key."""
+        import config
+
+        monkeypatch.setattr(config, 'DEFAULT_AUDIO_API_KEY', 'sk-legacy-audio')
+        monkeypatch.setattr(config, 'DEFAULT_OPENROUTER_API_KEY', 'sk-legacy-router')
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-other-core',
+            'assistApi': 'requesty',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['AUDIO_API_KEY'] == 'sk-legacy-audio'
+        assert cfg['OPENROUTER_API_KEY'] == ''
+        assert config_manager.get_model_api_config('conversation')['api_key'] == ''
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('requesty_key', ['', 'sk-requesty-dedicated'])
+    def test_requesty_key_preserves_cosyvoice_voice_storage(self, config_manager, requesty_key):
+        """A Requesty text key must not change voice buckets across assist switches."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-dashscope-core',
+            'assistApi': 'requesty',
+            'assistApiKeyRequesty': requesty_key,
+        })
+        config_manager.save_voice_for_current_api('cosyvoice-existing', {
+            'name': 'Existing cloned voice',
+            'provider': 'cosyvoice',
+        })
+        stored = config_manager.load_voice_storage()
+        assert 'cosyvoice-existing' in stored['sk-dashscope-core']
+        assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
+        assert config_manager.get_model_api_config('conversation')['api_key'] == requesty_key
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-dashscope-core',
+            'assistApi': 'qwen',
+            'assistApiKeyRequesty': requesty_key,
+        })
+        assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
+        assert config_manager.get_core_config()['AUDIO_API_KEY'] == 'sk-dashscope-core'
 
 
 # ---------------------------------------------------------------------------
@@ -800,6 +885,7 @@ class TestProviderExclusion:
             'claude',
             'openrouter',
             'orcarouter',
+            'requesty',
             'elevenlabs',
             'qwen_intl',
             'minimax_intl',
@@ -1609,6 +1695,37 @@ class TestVllmOmniRawKeyPassthrough:
         assert config_manager.validate_voice_id('S_xeC2CDp72') is True
         assert config_manager.delete_voice_for_current_api('S_xeC2CDp72') is True
         assert config_manager.load_voice_storage()['__DOUBAO_TTS__112997'] == {}
+
+    @pytest.mark.unit
+    def test_glm_tts_cloned_voice_is_listed_and_deletable(self, config_manager):
+        """Dual to the doubao test: a GLM clone in __GLM_TTS__{suffix} must merge
+        into the current-API voice list (selected by voice_meta.provider at
+        dispatch, independent of the active core/TTS provider) and must be
+        deletable through the standard delete endpoint."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyGlm': 'glm-key-1234',
+        })
+        config_manager.save_voice_storage({
+            '__GLM_TTS__key-1234': {
+                'voice_clone_20260926_001': {
+                    'voice_id': 'voice_clone_20260926_001',
+                    'provider': 'glm_tts',
+                    'source': 'clone',
+                },
+            },
+        })
+
+        assert config_manager.get_tts_api_key('glm_tts') == 'glm-key-1234'
+
+        voices = config_manager.get_voices_for_current_api(for_listing=True)
+
+        assert voices['voice_clone_20260926_001']['provider'] == 'glm_tts'
+        assert config_manager.validate_voice_id('voice_clone_20260926_001') is True
+        assert config_manager.delete_voice_for_current_api('voice_clone_20260926_001') is True
+        assert config_manager.load_voice_storage()['__GLM_TTS__key-1234'] == {}
 
     @pytest.mark.unit
     def test_cleanup_keeps_vllm_omni_character_voice(self, config_manager, monkeypatch):

@@ -2792,6 +2792,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
 
+            // 保存请求期间保持原模型上下文，避免切换后的状态被旧请求覆盖。
+            if (savingInProgress) {
+                e.target.value = currentModelType;
+                if (modelTypeManager) {
+                    modelTypeManager.updateButtonText();
+                }
+                return;
+            }
+
             // 检查语音模式状态
             const voiceStatus = await checkVoiceModeStatus();
             if (voiceStatus.isCurrent && voiceStatus.isVoiceMode) {
@@ -2804,6 +2813,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 切换时恢复 live3d 子类型（如有保存）
             const restoredSubType = (type === 'live3d') ? (localStorage.getItem('live3dSubType') || '') : '';
             await switchModelDisplay(type, restoredSubType);
+
+            // 模型类型本身也是角色模型配置的一部分。切换到 PNGTuber（或从
+            // PNGTuber 切走）后，即使自动选中的模型与下拉框当前值相同，仍需
+            // 允许用户保存，并让保存成功后的卡面处理流程感知这次变更。
+            window.hasUnsavedChanges = true;
+            if (savePositionBtn) savePositionBtn.disabled = false;
+            markModelChangedForCardFacePrompt();
 
             // 从 VRM 切回 Live2D 时，确保当前 Live2D 模型会被加载出来
             //（switchModelDisplay 会重建 PIXI，但不会自动触发 model-select 的 change）
@@ -7223,6 +7239,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
+            const saveContext = captureModelManagerSaveContext({
+                modelType: currentModelType,
+                live3dSubType: currentLive3dSubType,
+                modelInfo: currentModelInfo,
+                settingsSnapshot: captureSettingsSnapshot()
+            });
+            const savingModelType = saveContext.modelType;
+            const savingLive3dSubType = saveContext.live3dSubType;
+
             const savingMessage = t('live2d.savingSettings', '正在保存设置...');
             showStatus(savingMessage);
             showModelManagerToast(savingMessage, 0, 'loading');
@@ -7235,7 +7260,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             );
 
             // 根据模型类型保存不同的设置
-            if (currentModelType === 'live3d' || currentModelType === 'pngtuber') {
+            if (savingModelType === 'live3d' || savingModelType === 'pngtuber') {
                 // Live3D/PNGTuber 模式：保存模型设置
                 // 优先使用 path（含完整相对路径），name 仅为文件名
                 modelSaveResult = await saveModelToCharacter(currentModelInfo.path || currentModelInfo.name, null, null);
@@ -7271,15 +7296,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             const modelPartialAndPositionFailedMessage = `${partialMessage}；${positionSaveFailedSuffix}`;
             const modelSavedAtLeastPartially = modelStatus === 'ok' || modelStatus === 'partial';
 
-            if (currentModelType === 'pngtuber') {
+            const saveContextStillCurrent = isModelManagerSaveContextCurrent(saveContext, {
+                modelType: currentModelType,
+                live3dSubType: currentLive3dSubType,
+                modelInfo: currentModelInfo,
+                settingsSnapshot: captureSettingsSnapshot()
+            });
+            if (savingModelType === 'pngtuber') {
                 // PNGTuber stores its lightweight model config and transform together.
                 // Keep the user-facing success text aligned with Live2D's save button.
                 if (modelStatus === 'ok') {
                     const message = t('live2d.settingsSaved', '位置和模型设置保存成功!');
                     showStatus(message, 2000);
                     showModelManagerToast(message, 2600, 'success');
-                    window.hasUnsavedChanges = false;
-                    window._savedModelSnapshot = captureSettingsSnapshot();
+                    if (saveContextStillCurrent) {
+                        window.hasUnsavedChanges = false;
+                        window._savedModelSnapshot = captureSettingsSnapshot();
+                    }
                     window._modelManagerHasSaved = true;
                 } else if (modelStatus === 'partial') {
                     showStatus(partialMessage, 3000);
@@ -7290,14 +7323,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus(message, 2000);
                     showModelManagerToast(message, 3200, 'error');
                 }
-            } else if (currentModelType === 'live3d') {
+            } else if (savingModelType === 'live3d') {
                 // Live3D 模式：只显示模型保存结果
                 if (modelStatus === 'ok') {
                     const message = modelMessage || t('live2d.settingsSaved', '模型设置保存成功!');
                     showStatus(message, 2000);
                     showModelManagerToast(message, 2600, 'success');
-                    window.hasUnsavedChanges = false;
-                    window._savedModelSnapshot = captureSettingsSnapshot();
+                    if (saveContextStillCurrent) {
+                        window.hasUnsavedChanges = false;
+                        window._savedModelSnapshot = captureSettingsSnapshot();
+                    }
                     window._modelManagerHasSaved = true;
                 } else if (modelStatus === 'partial') {
                     showStatus(partialMessage, 3000);
@@ -7314,8 +7349,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const message = t('live2d.settingsSaved', '位置和模型设置保存成功!');
                     showStatus(message, 2000);
                     showModelManagerToast(message, 2600, 'success');
-                    window.hasUnsavedChanges = false; // 保存成功后重置标志
-                    window._savedModelSnapshot = captureSettingsSnapshot();
+                    if (saveContextStillCurrent) {
+                        window.hasUnsavedChanges = false; // 保存成功后重置标志
+                        window._savedModelSnapshot = captureSettingsSnapshot();
+                    }
                     window._modelManagerHasSaved = true;
                     // 不在保存时立即通知主页，而是在返回主页时通知
                     // sendMessageToMainPage('reload_model');
@@ -7338,7 +7375,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus(message, 2000);
                     showModelManagerToast(message, 3200, 'warning');
                     if (modelStatus === 'ok') {
-                        window._savedModelSnapshot = captureSettingsSnapshot();
+                        if (saveContextStillCurrent) {
+                            window._savedModelSnapshot = captureSettingsSnapshot();
+                        }
                     }
                     window._modelManagerHasSaved = true;
                     // 不在保存时立即通知主页，而是在返回主页时通知
@@ -7350,24 +7389,32 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            const modelFullySaved = (currentModelType === 'live3d' || currentModelType === 'pngtuber')
+            const modelFullySaved = (savingModelType === 'live3d' || savingModelType === 'pngtuber')
                 ? modelStatus === 'ok'
                 : (positionSuccess && modelStatus === 'ok');
             const shouldOfferCardFace = modelFullySaved
+                && saveContextStillCurrent
                 && (
                     savedFallbackModelAsExplicitBinding ||
                     parameterEditedSinceSave ||
                     window._modelManagerModelChangedSinceSave
                     || modelSelectionChanged(beforeSaveSnapshot, captureSettingsSnapshot())
             );
-            if (modelFullySaved) {
+            if (modelFullySaved && saveContextStillCurrent) {
                 await clearPendingParameterEditorSaveState();
             }
             if (shouldOfferCardFace) {
-                const savedLive3dSubType = modelSaveResult?.details?.effectiveLive3dSubType || currentLive3dSubType;
+                const savedLive3dSubType = modelSaveResult?.details?.effectiveLive3dSubType || savingLive3dSubType;
                 offerCardFaceAfterModelSave({
-                    currentModelType,
-                    currentLive3dSubType: savedLive3dSubType
+                    currentModelType: savingModelType,
+                    currentLive3dSubType: savedLive3dSubType,
+                    saveContext,
+                    getCurrentSaveContext: () => captureModelManagerSaveContext({
+                        modelType: currentModelType,
+                        live3dSubType: currentLive3dSubType,
+                        modelInfo: currentModelInfo,
+                        settingsSnapshot: captureSettingsSnapshot()
+                    })
                 }).catch(error => {
                     console.error('[模型管理] 保存后的卡面处理失败:', error);
                 });
