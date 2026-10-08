@@ -438,14 +438,15 @@ class ReceiveMixin:
             except Exception as exc:  # noqa: BLE001 - 一帧发不出去不让后面的整句跟着停下
                 logger.warning("visit %s: display frame not sent: %s", self.visit_id[:6], type(exc).__name__)
 
-    async def _flush_display(self, timeout: float) -> None:
-        """Wait (bounded) until the display queue has been sent to the page."""
+    async def _flush_display(self, timeout: float) -> bool:
+        """Wait (bounded) until the display queue has been sent to the page; False if it was not."""
         task = self._display_task
         if self._display and (task is None or task.done()):
             # 发送任务已退出（被取消等）但队列里还有帧：重新拉起，告别句不能就此被清掉
             task = self._display_task = self.spawn(self._drain_display())
         if task is not None and not task.done():
             await asyncio.wait([task], timeout=timeout)
+        return task is None or task.done()
 
     def _stop_display(self) -> None:
         """The visit ended: drop what is still queued for the page and stop sending it."""

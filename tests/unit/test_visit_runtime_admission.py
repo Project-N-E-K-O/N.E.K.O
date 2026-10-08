@@ -850,6 +850,106 @@ async def test_a_spool_opened_after_teardown_is_finalized(tmp_path, monkeypatch)
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def _bring_up_with_a_pending_header(tmp_path, monkeypatch):
+    """Both sides activated while their upload headers are still being written (the disk is slow)."""
+    from main_routers.visit_router import transcript_upload
+
+    monkeypatch.setattr(rtm, "_JOURNAL_OPEN_MAX_S", 0.1)
+    gate = asyncio.Event()
+    real_open = transcript_upload.UploadJournal.open
+
+    async def slow_open(self, **kw):
+        await gate.wait()
+        await real_open(self, **kw)
+
+    monkeypatch.setattr(transcript_upload.UploadJournal, "open", slow_open)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    assert not host.rt.journal.is_open
+    return host, guest, wire, clock, gate
+
+
+async def test_a_header_still_writing_at_the_end_keeps_seal_before_finalized(tmp_path, monkeypatch):
+    host, guest, wire, clock, gate = await _bring_up_with_a_pending_header(tmp_path, monkeypatch)
+    rt = host.rt
+    order: list[str] = []
+    real_seal = rt.journal.seal
+
+    async def seal(reason, **kw):
+        doc = await real_seal(reason, **kw)
+        if doc is not None:
+            order.append("sealed")
+        return doc
+
+    real_finalize = rt._finalize_spool
+
+    async def finalize_spool(reason):
+        order.append("finalized")
+        await real_finalize(reason)
+
+    rt.journal.seal = seal
+    rt._finalize_spool = finalize_spool
+    try:
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(rt), 10)
+        await asyncio.sleep(0.2)
+        assert order == []                                    # 上传头还在写：不封存，也不先标 finalized
+        assert rtm.has_visit_background_tasks("Host")
+        gate.set()                                            # 上传头落盘
+        await wait_for(lambda: order == ["sealed", "finalized"], timeout=5)   # 先封存、后 finalized
+        await wait_for(lambda: not rtm.has_visit_background_tasks("Host"), timeout=5)
+    finally:
+        gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_shutdown_with_a_header_still_writing_does_not_finalize_the_spool(tmp_path, monkeypatch):
+    host, guest, wire, clock, gate = await _bring_up_with_a_pending_header(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        assert rt.spool is not None
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
+        assert not rt._spool_finalized                        # seal() 立即返回 None 不算封存完成
+        state = await rt.spool.read_state()
+        assert not (state or {}).get("finalized")             # 留给下次启动补录
+    finally:
+        gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_ended_is_not_sent_while_the_display_queue_is_still_draining(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "_DISPLAY_FLUSH_S", 0.2)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    real_send = host.host.send_frame
+
+    queued_at_end: list = []
+
+    async def send_frame(payload):
+        if payload.get("line_id") in ("slow1", "slow2"):
+            await asyncio.sleep(0.5)                          # 页面背压：每帧写得慢
+        if payload.get("type") == "visit_state_change" and payload.get("action") == rtm.PHASE_ENDED:
+            queued_at_end.append(len(rt._display))            # 发「已结束」这一刻队列里还剩几帧
+        return await real_send(payload)
+
+    host.host.send_frame = send_frame
+    try:
+        rt._post_display({"type": "visit_line", "visit_id": rt.visit_id, "line_id": "slow1"})
+        rt._post_display({"type": "visit_line", "visit_id": rt.visit_id, "line_id": "slow2"})
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(rt), 10)
+        await asyncio.sleep(1.2)
+        frames = host.host.frames
+        ended = [i for i, f in enumerate(frames) if f.get("type") == "visit_state_change"
+                 and f.get("action") == rtm.PHASE_ENDED]
+        assert ended
+        late = [f for f in frames[ended[0]:] if f.get("line_id") in ("slow1", "slow2")]
+        assert not late                                       # 送不完的先停掉：「已结束」之后不再冒出整句
+        assert queued_at_end == [0]                           # 发「已结束」之前显示队列已经停掉、清空
+    finally:
+        host.host.send_frame = real_send
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_failed_takeover_release_is_retried_by_teardown(tmp_path, monkeypatch):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
