@@ -408,3 +408,23 @@ async def test_a_callback_with_images_skips_tools_once_images_refused_them():
     client.script = [[_text("看到了。"), _text("", "stop")]]
     assert await client.prompt_ephemeral(_INSTRUCTION, images=[_png_b64(4, 4, (1, 2, 3))]) is True
     assert sent_tools == [False]
+
+
+@pytest.mark.parametrize("provider", ["openai", "gemini"])
+@pytest.mark.parametrize("entry", ["stream_text", "prompt_ephemeral"])
+async def test_text_held_back_before_a_tool_round_stays_in_that_round(provider, entry):
+    """Pre-tool text ending in a harmless prefix of a call marker is held back
+    by the leak filter; the tool loop flushes and resets it before saving the
+    round, so it is neither lost from the round nor joined to the reply."""
+    client = _seeded(_client(provider, handler=_recording_handler([])))
+    client.script = [
+        _round_step(provider, "c1", text="好的 default_"),
+        _text_step(provider, "api 是个词。"),
+    ]
+    if entry == "stream_text":
+        await client.stream_text("Q")
+    else:
+        assert await client.prompt_ephemeral(_INSTRUCTION) is True
+    shape = _history_shape(client)
+    assert [s[1] for s in shape if s[0] == "assistant"] == ["好的 default_"]
+    assert shape[-1] == ("ai", "api 是个词。", None)
