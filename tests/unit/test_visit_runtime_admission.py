@@ -1545,6 +1545,89 @@ async def test_late_text_during_finalization_keeps_the_reception_gate_and_the_li
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_late_text_whose_speaker_changed_since_its_first_piece_is_not_recorded(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        await wait_for(lambda: len(rt.journal.lines()) >= 1)
+        lp = rt.room.max_lp_seen + 1
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "line_delta", "v": 1, "ln": "g:96", "i": 0, "lp": lp, "txt": "猫", "sp": "c", "ad": "hc",
+            "rt": "", "wu": False}, nbytes=200)                # 开口按猫娘行
+        stuck = asyncio.Event()
+
+        async def slow_close(*args, **kwargs):
+            await stuck.wait()
+
+        rt.close_current_line = slow_close
+        rt.request_finalize("route_end")
+        seq = rt.sequencer.contiguous_seq + 1
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:96", "lp": lp, "seq": seq, "sp": "h", "ad": "hc",
+            "rt": "", "wu": False, "final": True, "txt": "收口改成人类说的", "truncated": False, "i_done": 1,
+        }, nbytes=200)
+        assert rt.sequencer.contiguous_seq == seq
+        assert not [r for r in rt.journal.lines() if r["text"] == "收口改成人类说的"]   # 说话人记不准：不进转录
+        stuck.set()
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_the_backlog_is_recorded_when_the_header_lands_in_time(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    gate = asyncio.Event()
+    real_open = rt.journal.open
+
+    async def slow_open(**kw):
+        await gate.wait()
+        await real_open(**kw)
+
+    rt.journal.open = slow_open
+    try:
+        joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
+        await wait_for(lambda: rt._journal_opening is not None)
+        rt._count_anomaly("test", streak=False)               # 上传头还在写：先攒着
+        assert rt._journal_backlog
+        gate.set()                                            # 10 s 之内写完
+        await asyncio.wait_for(joining, 5)
+        await wait_for(lambda: not rt._journal_backlog)       # 不等下一句或封存，落盘时就补记
+        assert rt.journal.anomalies == 1
+    finally:
+        gate.set()
+        await teardown(side, clock=clock)
+
+
+async def test_page_frames_queued_before_the_end_reach_the_page_first(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    real_send = host.host.send_frame
+
+    async def send_frame(payload):
+        if payload.get("type") == "visit_line" and payload.get("line_id") == "slow":
+            await asyncio.sleep(0.3)                          # 页面背压
+        return await real_send(payload)
+
+    host.host.send_frame = send_frame
+    try:
+        rt._post_display({"type": "visit_line", "visit_id": rt.visit_id, "line_id": "slow"})
+        rt._post_display({"type": "visit_line", "visit_id": rt.visit_id, "line_id": "goodbye"})
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(rt), 10)
+        frames = host.host.frames
+        ended = [i for i, f in enumerate(frames) if f.get("type") == "visit_state_change"
+                 and f.get("action") == rtm.PHASE_ENDED]
+        shown = [i for i, f in enumerate(frames) if f.get("line_id") == "goodbye"]
+        assert ended and shown and shown[0] < ended[0]        # 告别句先上屏，再「已结束」
+    finally:
+        host.host.send_frame = real_send
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_lines_recorded_while_the_journal_header_is_late_are_backfilled(tmp_path, monkeypatch, clocks):
     monkeypatch.setattr(rtm, "_JOURNAL_OPEN_MAX_S", 0.1)
     patch_admission(monkeypatch)
@@ -1640,6 +1723,10 @@ async def test_state_reports_a_page_reload_as_reconnecting(tmp_path, monkeypatch
         assert not snap["connected"] and snap["reconnecting"]
         rt.liveness.on_page_back(clock())
         assert rt.snapshot()["connected"]
+        rt.liveness.on_page_lost(clock())
+        rt.phase = rtm.PHASE_ENDED                            # 结束后留在 _recent 里重放：不算重连中
+        assert not rt.snapshot()["reconnecting"]
+        rt.phase = rtm.PHASE_ACTIVE
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 

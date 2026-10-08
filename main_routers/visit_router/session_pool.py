@@ -63,6 +63,8 @@ class VisitSession:
     client: Any
     side: str
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # 到点 / 被取消后仍不肯停的那次生成：下一轮先等它停下（runtime_talk._await_stray）
+    stray: Optional[asyncio.Future] = None
     _sink: Optional[DeltaSink] = None
     # id(message) -> (message, key)：同时持有对象引用，id 不会被回收后复用
     _keys: dict[int, tuple[Any, SortKey]] = field(default_factory=dict)

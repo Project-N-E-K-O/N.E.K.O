@@ -389,28 +389,36 @@ class TalkMixin:
 
         try:
             async with session.turn_lock:
-                sort_visit_history(session)
-                before = {id(m) for m in session.history}
-                session.set_sink(sink)
-                try:
-                    await _stream_bounded(session, line.prompt, timeout)
-                except asyncio.TimeoutError:
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + timeout
+                # 上一轮被撇下的生成还在出字：等它停下（与这一行共用时限），等不到就不开新流，
+                # 否则它后面的字会经同一个 sink 串进这一行
+                if not await _await_stray(session, timeout):
                     line.llm_error = "timeout"
-                except asyncio.CancelledError:
-                    if not line.llm_cancelled:
-                        raise
-                except Exception as exc:  # noqa: BLE001 - 一行生成失败按 llm_error 收口
-                    logger.warning("visit %s: line generation failed: %s", self.visit_id[:6], type(exc).__name__)
-                    line.llm_error = "error"
-                finally:
-                    session.set_sink(None)
-                    output = "".join(line.raw)
+                else:
+                    sort_visit_history(session)
+                    before = {id(m) for m in session.history}
+                    session.set_sink(sink)
                     try:
-                        self._on_usage(estimate_turn_usage(session, output))
-                    except Exception:  # noqa: BLE001
-                        pass
-                    # 这一轮追加的提问与回复都摘掉：历史里只留真实台词（本行收口后按已放出的入史）
-                    _drop_new_messages(session, before)
+                        await _stream_bounded(session, line.prompt, max(0.0, deadline - loop.time()))
+                    except asyncio.TimeoutError:
+                        line.llm_error = "timeout"
+                    except asyncio.CancelledError:
+                        if not line.llm_cancelled:
+                            raise
+                    except Exception as exc:  # noqa: BLE001 - 一行生成失败按 llm_error 收口
+                        logger.warning("visit %s: line generation failed: %s", self.visit_id[:6],
+                                       type(exc).__name__)
+                        line.llm_error = "error"
+                    finally:
+                        session.set_sink(None)
+                        output = "".join(line.raw)
+                        try:
+                            self._on_usage(estimate_turn_usage(session, output))
+                        except Exception:  # noqa: BLE001
+                            pass
+                        # 这一轮追加的提问与回复都摘掉：历史里只留真实台词（本行收口后按已放出的入史）
+                        _drop_new_messages(session, before)
         except asyncio.CancelledError:
             if not line.llm_cancelled:
                 speaker.llm_done()
@@ -560,7 +568,7 @@ class TalkMixin:
             self._journal_backlog.append(dict(kind="line", lp=lp, side=side, speaker=speaker, ts=ts, text=clean,
                                               truncated=bool(truncated)))
             if self.journal.is_open:
-                await self._flush_journal_backlog()
+                self._flush_journal_backlog()
         elif self.journal.is_open:
             try:
                 await self.journal.append_line(lp=lp, side=side, speaker=speaker, ts=ts, text=clean,
@@ -766,14 +774,18 @@ class TalkMixin:
             logger.info("visit %s: home-coming turn skipped: session still busy", self.visit_id[:6])
             return None
         try:
+            if not await _await_stray(session, max(0.0, deadline - loop.time())):
+                logger.info("visit %s: home-coming turn skipped: an abandoned turn is still running",
+                            self.visit_id[:6])
+                return None
             saved = list(session.history)
             before = {id(m) for m in saved}
             if without_history:
                 session.history[:] = [m for m in saved if isinstance(m, SystemMessage)]
             session.set_sink(chunks.append)
             try:
-                # 与拿锁共用同一个期限：整轮不超过 timeout
-                await asyncio.wait_for(session.client.stream_text(prompt), max(0.0, deadline - loop.time()))
+                # 与拿锁共用同一个期限：整轮不超过 timeout；不肯停的客户端也不会把退出流程卡住
+                await _stream_bounded(session, prompt, max(0.0, deadline - loop.time()))
             except Exception as exc:  # noqa: BLE001 - 超时 / 失败：调用方用固定句
                 logger.info("visit %s: home-coming turn failed: %s", self.visit_id[:6], type(exc).__name__)
                 return None
@@ -869,15 +881,59 @@ async def _stream_bounded(session: Any, prompt: str, timeout: float) -> None:
     try:
         done, _pending = await asyncio.wait([gen], timeout=timeout)
     except asyncio.CancelledError:
+        session.set_sink(None)
         gen.cancel()
-        await asyncio.wait([gen], timeout=_LLM_SETTLE_S)
+        await _settle_or_abandon(session, gen)
         raise
     if not done:
         session.set_sink(None)  # 到点之后它再吐的字不进这一行
         gen.cancel()
-        await asyncio.wait([gen], timeout=_LLM_SETTLE_S)
+        await _settle_or_abandon(session, gen)
         raise asyncio.TimeoutError
     gen.result()
+
+
+async def _settle_or_abandon(session: Any, gen: asyncio.Future) -> None:
+    """Give a cancelled stream ``_LLM_SETTLE_S`` to stop; one that does not is left on ``session.stray``.
+
+    The next turn on this session waits for it first (:func:`_await_stray`):
+    the delta sink is looked up per delta, so a stream still running would
+    feed the next line, and two streams would share one client. When it
+    finally stops, what it appended to the history is taken out again.
+    """
+    await asyncio.wait([gen], timeout=_LLM_SETTLE_S)
+    if gen.done():
+        return
+    session.stray = gen
+    gen.add_done_callback(lambda _t: _purge_untracked(session))
+
+
+async def _await_stray(session: Any, timeout: float) -> bool:
+    """Wait (bounded) for a turn abandoned earlier on ``session``; False if it is still running."""
+    stray = getattr(session, "stray", None)
+    if stray is None:
+        return True
+    if not stray.done():
+        await asyncio.wait([stray], timeout=timeout)
+        if not stray.done():
+            return False
+    session.stray = None
+    _purge_untracked(session)
+    return True
+
+
+def _purge_untracked(session: Any) -> None:
+    """Drop history messages no line put there (a stray turn's prompt / reply); system messages stay.
+
+    Every real line is added with its sort key (``append_visit_message``);
+    only a turn's own prompt and reply are untagged, and no turn is running
+    while a stray one is (each turn waits for it first).
+    """
+    from utils.llm_client import SystemMessage
+
+    history = session.history
+    history[:] = [m for m in history if isinstance(m, SystemMessage) or session.key_of(m) is not None]
+    session.forget_untracked()
 
 
 def _drop_new_messages(session: Any, before: set[int]) -> None:

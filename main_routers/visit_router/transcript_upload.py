@@ -346,6 +346,25 @@ class UploadJournal:
         # 已登记的一行不因调用方被取消而撤回
         await asyncio.shield(self._submit(self._append_sync, _encode_record(record)))
 
+    def book_line(
+        self, *, lp: int, side: str, speaker: str, ts: float, text: str, truncated: bool,
+    ) -> None:
+        """Record one final line now and write it in the background (lines buffered before the header).
+
+        Synchronous like :meth:`note_usage`: the in-memory copy (what
+        :meth:`seal` writes) has the line at once; the stream write keeps its
+        order on the single writer thread.
+        """
+        if not self.is_open:
+            raise RuntimeError("upload stream is not open")
+        if side not in SIDE_RANK or speaker not in SPEAKERS:
+            raise ValueError("bad line side / speaker")
+        record = {"kind": "line", "lp": int(lp), "side": side, "from": speaker, "ts": float(ts),
+                  "text": str(text), "truncated": bool(truncated)}
+        self._records.append(record)
+        self._last_ts = float(ts)
+        self._fire(record)
+
     def note_usage(self, delta: Mapping[str, Any], *, ts: float | None = None) -> None:
         """Record a usage delta (positive integers only); a no-op once sealed or never opened.
 

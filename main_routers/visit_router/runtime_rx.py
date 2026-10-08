@@ -433,6 +433,12 @@ class ReceiveMixin:
         while self._display:
             await self.host.send_frame(self._display.popleft())
 
+    async def _flush_display(self, timeout: float) -> None:
+        """Wait (bounded) until the display queue has been sent to the page."""
+        task = self._display_task
+        if task is not None and not task.done():
+            await asyncio.wait([task], timeout=timeout)
+
     def _stop_display(self) -> None:
         """The visit ended: drop what is still queued for the page and stop sending it."""
         self._display.clear()
@@ -448,6 +454,11 @@ class ReceiveMixin:
         if self._lp_rejected(self.room.observe_lp(lp, ln=ln, reliable=True, closes_line=True)):
             return
         if self._lp_reused(ln, lp) or str(ln) in self._rejected_lines:
+            return
+        opened = self._peer_lines.get(ln)
+        if opened is not None and opened.get("sp") != m.get("sp"):
+            # 开口按一种说话人、收口改成另一种（room 的 line_meta_mismatch）：说话人记不准，不进转录
+            self._count_anomaly("line_meta_mismatch")
             return
         if not self._line_admitted(ln, from_vid, now):
             return  # 与正常收口同一份配额决定：分片时已判超速的行，收尾中补到也不进转录

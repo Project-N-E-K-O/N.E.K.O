@@ -129,6 +129,7 @@ _HANDOFF_POLL_S = 0.25
 # 关机总预算 VISIT_SHUTDOWN_BUDGET_S：等在飞任务、收口当前行各 0.5 s，取消未配对房间 1 s，余下给封存
 _SHUTDOWN_TASK_WAIT_S = 0.5
 _JOURNAL_OPEN_MAX_S = 10.0
+_DISPLAY_FLUSH_S = 2.0
 _ACCOUNT_RECORD_S = 3.0
 _ACCOUNT_RETRY_DELAYS_S = (1.0, 5.0, 30.0, 120.0, 600.0)
 _SHUTDOWN_ROOM_CANCEL_S = 1.0
@@ -915,13 +916,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 role=self.side, own_visit_uid=creds.visit_uid, own_char_uid=self.character_uid,
                 transport=creds.transport, started_at=self.wall(), app_version=cr._app_version(),
             ))
+            # 上传头一落盘就补记等待期间攒下的行 / 用量 / 异常（写失败时 is_open 为假，什么都不做）
+            opening.add_done_callback(lambda _t: self._flush_journal_backlog())
         # 写上传头有界：磁盘卡住时收包循环不能一直挂着（入房期限仍在走，到点按 relay_lost 结束）
         await asyncio.wait([opening], timeout=_JOURNAL_OPEN_MAX_S)
         self._first_join_gen = None
         if not opening.done():
             logger.warning("visit %s: upload journal still opening, buffering its lines", self.visit_id[:6])
-            opening.add_done_callback(lambda _t: _detach(self._flush_journal_backlog()))
-            # 封存前都会再 flush 一次：后台这次补写没跑完也不会漏行
         if opening.done() and not opening.cancelled() and opening.exception() is not None:
             # 上传流水建不起来：转录少一份，串门照常
             logger.warning("visit %s: upload journal not opened: %s", self.visit_id[:6],
@@ -1522,6 +1523,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             await asyncio.wait_for(asyncio.shield(closing), _CLOSE_WAIT_S)
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit %s: channel close did not finish: %r", self.visit_id[:6], exc)
+        await self._flush_display(_DISPLAY_FLUSH_S)  # 告别句等整句先上屏，再发「已结束」
         await self.push(PHASE_ENDED, reason=reason, peer_reason=self.peer_reason)
         if self.status_code is not None:
             await self.status(self.status_code, reason=self.status_details.get("reason"),
@@ -1629,13 +1631,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
             opening.add_done_callback(_late)
 
-    async def _flush_journal_backlog(self) -> None:
-        """The upload header finally landed: write what was recorded meanwhile (lines, usage, anomalies), in order.
+    def _flush_journal_backlog(self) -> None:
+        """The upload header landed: record what was buffered meanwhile (lines, usage, anomalies), in order.
 
-        Every seal path calls this first. Records are taken one by one, and
-        ``append_line`` books a line in memory before it awaits the write: a
-        background flush still waiting on the disk has already booked the line
-        it took, and whatever it has not taken yet is taken here, in order.
+        Synchronous: every record is in the in-memory copy before this
+        returns (the stream writes follow on the writer thread), so a seal
+        right after it -- or interleaved with nothing at all -- has them all.
+        Every seal path calls it first; it also runs when the header lands.
         """
         while self._journal_backlog and self.journal.is_open:
             record = dict(self._journal_backlog.pop(0))
@@ -1646,13 +1648,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 elif kind == "anomaly":
                     self.journal.note_anomaly(ts=record["ts"])
                 else:
-                    await self.journal.append_line(**record)
+                    self.journal.book_line(**record)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: buffered %s not recorded: %s", self.visit_id[:6], kind, type(exc).__name__)
 
     async def _seal_late_journal(self, reason: str, ended_at: float) -> None:
         try:
-            await self._flush_journal_backlog()
+            self._flush_journal_backlog()
             await self.journal.seal(reason, ended_at=ended_at)
             self.deps.schedule_upload(self.visit_id)
         except Exception as exc:  # noqa: BLE001
@@ -1661,7 +1663,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     async def seal_and_finalize(self, reason: str) -> None:
         """Seal ``.upload.json`` first, then ``state.json.finalized`` (§3.2.6 item 22 step 3)."""
         await self._settle_journal_open()
-        await self._flush_journal_backlog()  # 上传头在等待中落盘：积压的行先补进去再封存
+        self._flush_journal_backlog()  # 上传头在等待中落盘：积压的记录先补进去再封存
         try:
             self.sealed_doc = await self.journal.seal(reason, ended_at=self.wall())
         except Exception as exc:  # noqa: BLE001 - 封存失败：流水留着给下次启动补录
@@ -1795,10 +1797,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         except Exception as exc:  # noqa: BLE001 - 收不完也照样封存
             logger.warning("visit %s: line not closed at shutdown: %r", self.visit_id[:6], exc)
         await self._settle_journal_open(_SHUTDOWN_TASK_WAIT_S)
-        try:
-            await asyncio.wait_for(self._flush_journal_backlog(), _SHUTDOWN_TASK_WAIT_S)
-        except Exception as exc:  # noqa: BLE001 - 补不完也照样封存（已取走的行都在内存副本里）
-            logger.warning("visit %s: journal backlog not flushed at shutdown: %r", self.visit_id[:6], exc)
+        self._flush_journal_backlog()
         try:
             self.sealed_doc = await self.journal.seal("shutdown", ended_at=self.wall())
         except Exception as exc:  # noqa: BLE001
@@ -1850,7 +1849,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         creds = self.creds
         peer = self.peer
         transcript = [self.visit_line_payload_from_record(r) for r in self.journal.lines()[-50:]]
-        reconnecting = self.liveness.self_disconnected_at is not None or self.liveness.page_departed_at is not None
+        reconnecting = self.phase != PHASE_ENDED and (
+            self.liveness.self_disconnected_at is not None or self.liveness.page_departed_at is not None)
         return {
             "active": self.phase not in (PHASE_ENDED,),
             "role": self.side, "side": self.side, "visit_id": self.visit_id, "phase": self.phase,
