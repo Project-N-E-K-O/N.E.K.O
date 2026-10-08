@@ -984,3 +984,22 @@ async def test_two_characters_cannot_take_the_same_visit_at_once(tmp_path, monke
         assert rtm.get_runtime_by_visit(rt.visit_id) is rt
     finally:
         await teardown(one, clock=clock)
+
+
+async def test_a_single_joined_report_ahead_of_the_sdk_gate_is_replayed(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    try:
+        await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+        assert await rt.issue_credentials() is not None
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 只报这一次
+        assert rt.joined is False
+        await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
+        assert rt.joined is True and rt.phase == "invite_ready"                  # 能力门一过就补做首次入房
+        await settle()
+        assert side.host.frames_of("visit_state_change", "invite_ready")
+    finally:
+        await teardown(side, clock=clock)

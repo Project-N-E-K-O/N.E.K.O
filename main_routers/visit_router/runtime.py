@@ -587,6 +587,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._closing_task: Optional[asyncio.Task] = None
         self._journal_opening: Optional[asyncio.Task] = None
         self._sdk_ok = False
+        self._pending_join: Optional[dict] = None
 
         self._init_rx()
         self._init_talk()
@@ -787,6 +788,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.video_ok = caps.get("video_ok") is True
         self.codecs = list(caps.get("codecs") or [])
         self._sdk_ok = True
+        pending, self._pending_join = self._pending_join, None
+        if pending is not None and not self.joined:
+            await self.on_transport_state(pending)
+            return
         if not self.joined and self._join_deadline is None:
             # 能力门通过不代表入房成功：25 s 内没报 joined 按 relay_lost 结束，不发邀请码
             self._join_deadline = self.clock() + VISIT_SELF_RECONNECT_S
@@ -807,6 +812,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self.liveness.on_self_connected(now)
             self.outbox.resume(now, reason=PAUSE_SELF_RECONNECT)
             if not self.joined:
+                if self.creds is not None and not self._sdk_ok:
+                    # 入房报告比能力门 ③ 先到（iframe 一次入房只报一次）：记下，能力门过了再补做
+                    self._pending_join = dict(msg)
+                    return
                 await self._on_first_join(now)
             elif reconnected:
                 # SDK 自己重连成功：重发 hello 与当前媒体快照（手动重新入房后 iframe 的发布 / 订阅都没了）

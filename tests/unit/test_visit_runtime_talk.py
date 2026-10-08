@@ -966,3 +966,66 @@ async def test_frames_sent_elsewhere_get_the_same_bookkeeping(tmp_path, monkeypa
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_line_abort_after_the_final_text_changes_nothing(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "line_delta", "v": 1, "ln": "g:71", "i": 0, "lp": 71, "txt": "说完了", "sp": "c", "ad": "hc",
+            "rt": "", "wu": False}, nbytes=200)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:71", "lp": 71, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
+            "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "说完了", "truncated": False, "i_done": 1,
+        }, nbytes=200)
+        before = len(host.host.frames)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "line_abort", "v": 1, "ln": "g:71", "lp": 71, "i_done": 0, "reason": "human_interrupt"},
+            nbytes=200)                                      # 迟到 / 重放的 abort
+        assert not [f for f in host.host.frames[before:] if f.get("type") == "visit_line_abort"]
+        # 被接受的 abort 之后，那一行的分片不再上屏
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "line_delta", "v": 1, "ln": "g:72", "i": 0, "lp": 72, "txt": "第一片", "sp": "c", "ad": "hc",
+            "rt": "", "wu": False}, nbytes=200)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "line_abort", "v": 1, "ln": "g:72", "lp": 72, "i_done": 1, "reason": "human_interrupt"},
+            nbytes=200)
+        mark = len(host.host.frames)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "line_delta", "v": 1, "ln": "g:72", "i": 1, "lp": 72, "txt": "停嘴之后", "sp": "c", "ad": "hc",
+            "rt": "", "wu": False}, nbytes=200)
+        assert not [f for f in host.host.frames[mark:] if f.get("type") == "visit_line_delta"]
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_an_early_speaking_wrap_up_does_not_make_the_gap_filler_look_reordered(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    seen = []
+    real = rt._lp_rejected
+
+    def spy(violation):
+        seen.append(violation)
+        return real(violation)
+
+    rt._lp_rejected = spy
+    try:
+        seq = rt.sequencer.contiguous_seq
+        lp = rt.room.max_lp_seen
+        # begin（seq+1）丢了；speaking（seq+2）先到、提前交付
+        await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload={
+            "t": "wrap_up", "v": 1, "seq": seq + 2, "lp": lp + 11, "ph": "speaking", "ln": "g:600",
+            "reason": "quiet", "initiated_by": "host"}, nbytes=200)
+        # 缺口补到：同一发送方更早的 begin，lp 更小
+        await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload={
+            "t": "wrap_up", "v": 1, "seq": seq + 1, "lp": lp + 10, "ph": "begin", "ln": "g:600",
+            "reason": "quiet", "initiated_by": "host"}, nbytes=200)
+        assert "lp_not_monotonic" not in seen
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)

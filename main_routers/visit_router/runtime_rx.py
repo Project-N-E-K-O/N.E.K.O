@@ -169,7 +169,9 @@ class ReceiveMixin:
         """``wrap_up{ph:'speaking'}`` handed out ahead of a ``seq`` gap (stops the step timer)."""
         if self.room is None or self.finalizing:
             return
-        violation = self.room.observe_lp(msg.get("lp"), reliable=True)
+        # 它跳过了 seq 缺口：按重传对待（只校验范围 / 大幅回退），不抬高可靠消息的 lp 下限，
+        # 否则缺口里那条更早的 wrap_up{begin} 补到时会被误判逆序
+        violation = self.room.observe_lp(msg.get("lp"), reliable=True, is_retransmit=True)
         if violation is not None:
             # 提前交付的这条不再经过 _rx_wrap_up：在这里同样校验 lp、计违约
             self._early_effects.append(self.room.violation_effects(violation))
@@ -432,8 +434,11 @@ class ReceiveMixin:
         if self.room is None:
             return
         ln = m.get("ln")
+        if self._deltas.closed(str(ln)):
+            return  # 迟到 / 重放的 abort：这一行已由 text 收口，不能再把完整气泡改成截断
         if self._lp_rejected(self.room.observe_lp(m.get("lp"), ln=ln)):
             return
+        self._deltas.drop(str(ln))  # 停嘴之后的分片不再上屏（它的 text 照常收口）
         self.apply_effects(self.room.on_incoming_abort(ln, now, m.get("reason")))
         await self.host.send_frame({
             "type": "visit_line_abort", "visit_id": self.visit_id, "line_id": ln,

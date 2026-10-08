@@ -1941,6 +1941,10 @@ class LineDeltaAssembler:
             self._final.popitem(last=False)
         return txt
 
+    def closed(self, ln: str) -> bool:
+        """True once ``ln`` was closed by its ``text`` or dropped (its tombstone is still kept)."""
+        return ln in self._final or ln in self._stalled
+
     def drop(self, ln: str) -> None:
         """Forget an open line locally (stall truncation) without a ``text``.
 
