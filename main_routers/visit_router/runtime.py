@@ -807,6 +807,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if isinstance(msg.get("hidden"), bool):
             self.local_hidden = msg["hidden"]
             self._announce_view()
+        if state not in ("joined", "connected"):
+            # 之后又报了断线 / 出错 / 被踢：记下的那次入房作废，不能在能力门通过后被当成仍在房里
+            self._pending_join = None
         if state in ("joined", "connected"):
             reconnected = self.liveness.self_disconnected_at is not None
             self.liveness.on_self_connected(now)

@@ -1003,3 +1003,21 @@ async def test_a_single_joined_report_ahead_of_the_sdk_gate_is_replayed(tmp_path
         assert side.host.frames_of("visit_state_change", "invite_ready")
     finally:
         await teardown(side, clock=clock)
+
+
+async def test_a_pending_joined_report_is_dropped_once_the_connection_drops(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    try:
+        await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+        assert await rt.issue_credentials() is not None
+        await rt.on_transport_state({"state": "joined", "peer_present": False})
+        await rt.on_transport_state({"state": "reconnecting"})                    # 能力门之前又断了
+        await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
+        assert rt.joined is False and rt.phase != "invite_ready"
+        assert rt.liveness.self_disconnected_at is not None                       # 仍按断线计时
+    finally:
+        await teardown(side, clock=clock)
