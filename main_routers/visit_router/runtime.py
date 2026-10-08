@@ -1578,9 +1578,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: channel close did not finish; retiring it", self.visit_id[:6])
             closing.cancel()  # 它的 finally 先发对端欠着的 ack 与 stop{reason}，再注销
             await asyncio.wait([closing], timeout=_SHUTDOWN_TASK_WAIT_S)
-            if not closing.done():
-                # finally 里的发送也卡着：直接注销（幂等），封存之前不再收对端的帧
-                unregister_transport_session(self.transport)
+            # 无条件再注销一次（幂等）：finally 里的发送还卡着、或取消落在别处时，封存之前都不再收对端的帧
+            unregister_transport_session(self.transport)
         flushed = await self._flush_display(_DISPLAY_FLUSH_S)  # 告别句等整句先上屏，再发「已结束」
         self._ended_published = True  # 从这里起不再往显示队列放帧（收尾中补到的整句只进转录）
         if not flushed:
@@ -1646,22 +1645,25 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 self._cancel_room_once()
         finally:
             try:
-                # 对端的 leave 还欠着 ack（peer_left / 两侧同时收尾）：直接送出（本侧 leave 完成后队列不再出帧），
-                # 免得对方白等补传窗口
-                ack = self.sequencer.poll_ack(self.clock(), force=True)
-                if ack is not None and ack > 0:
-                    await self.transport.send(self.outbox.final_ack_frame(ack, now=self.clock()).to_ws())
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                await self.transport.send({"type": "stop", "reason": reason})
-            except Exception:  # noqa: BLE001
-                pass
-            unregister_transport_session(self.transport)
-            try:
-                await self.outbox.close()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("visit %s: outbox close failed: %s", self.visit_id[:6], type(exc).__name__)
+                try:
+                    # 对端的 leave 还欠着 ack（peer_left / 两侧同时收尾）：直接送出（本侧 leave 完成后队列不再出帧），
+                    # 免得对方白等补传窗口
+                    ack = self.sequencer.poll_ack(self.clock(), force=True)
+                    if ack is not None and ack > 0:
+                        await self.transport.send(self.outbox.final_ack_frame(ack, now=self.clock()).to_ws())
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    await self.transport.send({"type": "stop", "reason": reason})
+                except Exception:  # noqa: BLE001
+                    pass
+            finally:
+                # 上面的发送被取消（退出流程到点收掉它）也要走到：注销与关 outbox 不能被跳过
+                unregister_transport_session(self.transport)
+                try:
+                    await self.outbox.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("visit %s: outbox close failed: %s", self.visit_id[:6], type(exc).__name__)
 
     def _cancel_room_once(self) -> None:
         # host 在对端核验之前就结束：邀请码还可能被兑换，后台取消房间（不扣对方配额）。

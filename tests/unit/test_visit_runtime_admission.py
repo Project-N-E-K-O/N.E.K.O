@@ -1527,6 +1527,41 @@ async def test_the_invite_frame_keeps_its_order_in_the_display_queue(tmp_path, m
         await teardown(side, wire=wire, clock=clocks[0])
 
 
+async def test_a_channel_close_cancelled_mid_send_still_unregisters(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    unregistered = []
+    real_unregister = rtm.unregister_transport_session
+
+    def unregister(transport):
+        if transport is rt.transport:
+            unregistered.append(True)
+        return real_unregister(transport)
+
+    monkeypatch.setattr(rtm, "unregister_transport_session", unregister)
+    real_send = rt.transport.send
+    in_stop = asyncio.Event()
+
+    async def send(msg, *args, **kwargs):
+        if isinstance(msg, dict) and msg.get("type") == "stop":
+            in_stop.set()
+            await stuck.wait()                                # finally 里发 stop 时页面背压
+        return await real_send(msg, *args, **kwargs)
+
+    rt.transport.send = send
+    try:
+        rt.outbox.leave_done = lambda now: True
+        closing = asyncio.ensure_future(rt._close_channel("route_end"))
+        await asyncio.wait_for(in_stop.wait(), 5)
+        closing.cancel()                                      # 取消正好落在 finally 的发送上
+        await asyncio.wait([closing], timeout=2)
+        assert closing.done() and unregistered                # 内层 finally：注销照样做
+    finally:
+        stuck.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_the_spool_is_finalized_only_once(tmp_path, monkeypatch):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt

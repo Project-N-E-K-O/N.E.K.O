@@ -327,7 +327,9 @@ class UploadJournal:
                 with contextlib.suppress(OSError):
                     self.stream_path.unlink(missing_ok=True)
             executor.shutdown(wait=False)
-            if added:
+            if added and not (self._open_abandoned and not opening.done()):
+                # 放弃等待时线程可能还在建这份流水：登记留着，关机这几秒里上传 worker 不会把写了一半的
+                # 流水当孤立文件重封（进程马上退出，下次启动的补录照常处理）
                 _open_streams.discard(self.visit_id)
             raise
         self._executor = executor

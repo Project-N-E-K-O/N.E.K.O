@@ -149,10 +149,12 @@ async def test_an_abandoned_open_stops_at_once_when_cancelled(tmp_path, servers)
         journal.abandon_open()                                # 关机
         opening.cancel()
         done, _ = await asyncio.wait([opening], timeout=0.5)
-        assert done                                           # 不等卡住的写盘，进程才退得出去
+        assert done                                           # 不等卡住的写盘，事件循环不被挂住
+        assert V1 in tu._open_streams                         # 登记留着：上传 worker 不会把写了一半的流水当孤立文件重封
     finally:
         release.set()
         await asyncio.sleep(0.1)
+        tu._open_streams.discard(V1)
 
 
 async def test_a_second_seal_while_the_first_is_writing_waits_for_the_same_write(tmp_path, servers):
