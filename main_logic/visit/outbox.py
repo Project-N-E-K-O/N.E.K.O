@@ -552,10 +552,11 @@ class VisitOutbox:
         (returns 0); a line whose pieces were dropped (backpressure or a
         backlog over ``VISIT_DELTA_BACKLOG_DROP_S``) gets no further pieces,
         its ``text`` closes it. After :meth:`close` has started nothing is
-        queued any more and 0 is returned (no ``seq``: the item is neither
-        sent nor in the file). Raises ``ValueError``
+        queued any more: lossy types return 0, reliable ones raise
+        ``ValueError`` like after ``leave`` (no ``seq`` that is neither sent
+        nor in the file). Raises ``ValueError``
         for an invalid payload, a ``text`` over ``VISIT_PIECES_MAX`` pieces,
-        or a reliable payload after ``leave``.
+        or a reliable payload after ``leave`` or after :meth:`close`.
         """
         now = self._now(now)
         if not isinstance(msg, Mapping):
@@ -563,7 +564,10 @@ class VisitOutbox:
         t = msg.get("t")
         cmd = cmd_of(t)  # 未知类型 → ValueError
         if self._closed:
-            # 已关闭：泵已停、文件已删，不再分配可靠序号（否则调用方拿到一个既发不出、也不在文件里的 seq）
+            # 已关闭：泵已停、文件已删。可丢的直接丢；必达的与 leave 之后一样报错（调用方都按「没入队」处理），
+            # 不分配一个既发不出、也不在文件里的 seq
+            if is_reliable(t):
+                raise ValueError("reliable message after close")
             return 0
         if t == "line_delta":
             self._send_delta(msg, now, final_piece=final_piece)

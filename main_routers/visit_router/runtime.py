@@ -2411,14 +2411,17 @@ async def stop_all(reason: str = "shutdown") -> None:
     _stopping = True  # stop_all 进行中新到的入场同样拒绝
     try:
         runtimes = list(_runtimes.values())
-        if runtimes:
-            await asyncio.gather(*(rt.shutdown() for rt in runtimes), return_exceptions=True)
-        # 已拆掉的场次发出的撤销房间请求（邀请码与配额占用）：限时等它发完，到点才取消
-        cancels = [t for t in _room_cancels if not t.done()]
-        if cancels:
-            await asyncio.wait(cancels, timeout=_SHUTDOWN_ROOM_CANCEL_S)
-            for task in cancels:
-                task.cancel()
+        # 已拆掉的场次发出的撤销房间请求（邀请码与配额占用）：与各场关机并行限时等它发完，到点才取消，
+        # 不在关机之后再多出一段
+        orphans = [t for t in _room_cancels if not t.done()]
+
+        async def settle_orphan_cancels() -> None:
+            if orphans:
+                await asyncio.wait(orphans, timeout=_SHUTDOWN_ROOM_CANCEL_S)
+                for task in orphans:
+                    task.cancel()
+
+        await asyncio.gather(*(rt.shutdown() for rt in runtimes), settle_orphan_cancels(), return_exceptions=True)
         # 脱离运行时的后台任务（账号映射补写、交还回调、没关完的会话）也一并停掉，不留给事件循环销毁
         # 按角色登记的后台写入（digest、最后总结、延后的 spool 收尾、启动补录）同样停掉：没写完的留给下次启动补录
         detached = [t for t in _detached if not t.done()]

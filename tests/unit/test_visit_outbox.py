@@ -790,8 +790,10 @@ async def test_a_send_after_close_does_not_recreate_the_outbox_file(tmp_path):
     await tx.close()
     assert tx.closed and not await asyncio.to_thread(tx.path.exists)
     unacked = tx.unacked_seqs
-    assert tx.send(text(2), now=1.0) == 0                  # 迟到的一句：不分配可靠序号
+    with pytest.raises(ValueError):
+        tx.send(text(2), now=1.0)                          # 迟到的必达一句：与 leave 之后一样报错，不分配序号
     assert tx.unacked_seqs == unacked
+    assert tx.send({"t": "typing", "lp": 2, "sp": "c"}, now=1.0) == 0  # 可丢的直接丢
     await tx.flush()
     assert tx._executor is None                            # 写线程不重建
     assert not await asyncio.to_thread(tx.path.exists)     # 带正文的文件不重新出现

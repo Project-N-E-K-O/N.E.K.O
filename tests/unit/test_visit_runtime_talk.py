@@ -1890,6 +1890,7 @@ async def test_a_family_commit_cancelled_before_it_runs_still_settles(tmp_path, 
         monkeypatch.undo()
         await settle()
         assert not rt.family_records                          # 照样完成，之后的封存不会白等
+        assert rt.outbox.reserved_bytes == 0                  # 预留也照样释放
     finally:
         monkeypatch.undo()
         hgate.set()

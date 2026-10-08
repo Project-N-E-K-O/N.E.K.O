@@ -806,7 +806,9 @@ class TalkMixin:
         # 接纳之后（改了 room、可能已记进转录）这一段不能半途而废：调用方被取消（关机等）也照样落盘、入队、
         # 入史、上屏、排回复；预留一直持有到入队，关闭通道的 leave 照样排在它后面；封存之前限时等它落盘
         committing = asyncio.ensure_future(commit())
-        committing.add_done_callback(journaled)  # 还没开始跑就被取消（事件循环收尾等）也要完成，不让封存白等
+        # 还没开始跑就被取消（事件循环收尾等）：「已落盘」照样完成（不让封存白等），预留照样释放（幂等）
+        committing.add_done_callback(journaled)
+        committing.add_done_callback(lambda _t: reservation.release())
         committing.add_done_callback(lambda t: t.cancelled() or t.exception())
         try:
             await asyncio.shield(committing)

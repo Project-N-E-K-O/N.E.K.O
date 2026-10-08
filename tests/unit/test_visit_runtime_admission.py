@@ -1333,6 +1333,30 @@ async def test_stop_all_waits_for_a_room_cancel_left_by_a_finished_visit(tmp_pat
     assert done == [rt.visit_id]                              # 运行时已拆掉，关机照样等它发完
 
 
+async def test_stop_all_waits_for_orphan_room_cancels_alongside_the_shutdowns(tmp_path, monkeypatch, clocks):
+    monkeypatch.setattr(rtm, "_SHUTDOWN_ROOM_CANCEL_S", 0.5)
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    real_shutdown = rt.shutdown
+
+    async def slow_shutdown():
+        await asyncio.sleep(0.5)                              # 这一场关机要一会儿
+        await real_shutdown()
+
+    rt.shutdown = slow_shutdown
+    orphan = asyncio.ensure_future(asyncio.sleep(30))        # 已拆掉的场次留下、一直不回的撤销房间请求
+    rtm._room_cancels.add(orphan)
+    try:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
+        assert loop.time() - started < 0.9                    # 与关机并行等，不在关机之后再多等一段
+        await asyncio.sleep(0)
+        assert orphan.cancelled()                             # 到点取消
+    finally:
+        orphan.cancel()
+        rtm._room_cancels.discard(orphan)
+
+
 async def test_a_late_spool_after_stop_all_is_left_to_recovery(tmp_path, monkeypatch):
     monkeypatch.setattr(rtm, "VISIT_ACTIVATION_ALLOWANCE_S", 0.2)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
