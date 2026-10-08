@@ -1334,27 +1334,56 @@ async def test_stop_all_waits_for_a_room_cancel_left_by_a_finished_visit(tmp_pat
 
 
 async def test_stop_all_waits_for_orphan_room_cancels_alongside_the_shutdowns(tmp_path, monkeypatch, clocks):
-    monkeypatch.setattr(rtm, "_SHUTDOWN_ROOM_CANCEL_S", 0.5)
+    monkeypatch.setattr(rtm, "_SHUTDOWN_ROOM_CANCEL_S", 0.3)
     side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
     real_shutdown = rt.shutdown
+    order: list[str] = []
 
     async def slow_shutdown():
-        await asyncio.sleep(0.5)                              # 这一场关机要一会儿
+        await asyncio.sleep(1.0)                              # 这一场关机要一会儿（远长于孤儿的等待上限）
         await real_shutdown()
+        order.append("shutdown_done")
+
+    async def never_answers():
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            order.append("orphan_cancelled")
+            raise
 
     rt.shutdown = slow_shutdown
-    orphan = asyncio.ensure_future(asyncio.sleep(30))        # 已拆掉的场次留下、一直不回的撤销房间请求
+    orphan = asyncio.ensure_future(never_answers())          # 已拆掉的场次留下、一直不回的撤销房间请求
     rtm._room_cancels.add(orphan)
     try:
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
-        assert loop.time() - started < 0.9                    # 与关机并行等，不在关机之后再多等一段
-        await asyncio.sleep(0)
-        assert orphan.cancelled()                             # 到点取消
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
+        # 与关机并行等：孤儿到点就取消，不等那一场关机做完之后再多等一段（只断言先后，不看绝对时长）
+        assert order == ["orphan_cancelled", "shutdown_done"]
     finally:
         orphan.cancel()
         rtm._room_cancels.discard(orphan)
+
+
+async def test_stop_all_leaves_a_registered_visits_own_room_cancel_to_its_shutdown(tmp_path, monkeypatch, clocks):
+    monkeypatch.setattr(rtm, "_SHUTDOWN_ROOM_CANCEL_S", 0.3)
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    done = []
+
+    async def slow_cancel(visit_id, **kwargs):
+        await asyncio.sleep(0.6)                              # 慢但正常的撤销房间
+        done.append(visit_id)
+        return True
+
+    rt.deps.cancel_room = slow_cancel
+    rt._cancel_room_once()                                    # 还登记着的这一场自己已发出撤销
+    real_shutdown = rt.shutdown
+
+    async def slow_shutdown():
+        await asyncio.sleep(0.4)                              # 封存、spool 等前面的步骤用掉一段
+        await real_shutdown()                                 # 走到撤销那步再按自己的保底等
+
+    rt.shutdown = slow_shutdown
+    await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
+    assert done == [rt.visit_id]                              # 没被当成孤儿提前掐断
 
 
 async def test_a_late_spool_after_stop_all_is_left_to_recovery(tmp_path, monkeypatch):

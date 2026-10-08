@@ -2413,7 +2413,9 @@ async def stop_all(reason: str = "shutdown") -> None:
         runtimes = list(_runtimes.values())
         # 已拆掉的场次发出的撤销房间请求（邀请码与配额占用）：与各场关机并行限时等它发完，到点才取消，
         # 不在关机之后再多出一段
-        orphans = [t for t in _room_cancels if not t.done()]
+        # 还登记着的场次自己发出的那份不算：它的 shutdown() 按自己的规则（保底时长）等
+        owned = {rt._room_cancel_task for rt in runtimes}
+        orphans = [t for t in _room_cancels if not t.done() and t not in owned]
 
         async def settle_orphan_cancels() -> None:
             if orphans:
