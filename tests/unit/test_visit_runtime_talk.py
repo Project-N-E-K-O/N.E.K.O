@@ -1384,7 +1384,8 @@ async def test_an_abandoned_generation_cannot_leak_into_the_next_line(tmp_path, 
     async def stream_text(self, text, **kw):
         calls[id(self)] = calls.get(id(self), 0) + 1
         if calls[id(self)] > 1:
-            return await real_stream(self, text, **kw)
+            await real_stream(self, text, **kw)
+            return
         self._conversation_history.append(HumanMessage(content=text))
         while not release.is_set():
             try:
