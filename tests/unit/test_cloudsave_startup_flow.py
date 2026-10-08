@@ -1247,6 +1247,9 @@ def test_launcher_main_schedules_restart_for_storage_restart_requested_during_st
         cleanup_calls.append("cleanup")
 
     monkeypatch.setattr(launcher, "cleanup_servers", _cleanup_once)
+    # The real cleanup_servers snapshots the servers' descendants first; this
+    # stand-in found none left, so they do not hold the restart back.
+    monkeypatch.setattr(launcher, "_teardown_descendants", [])
     monkeypatch.setattr(
         launcher,
         "_maybe_schedule_storage_restart",
