@@ -1665,15 +1665,6 @@ def _cleanup_retained_runtime_root(
     ]
     if normalized_target is None or (not proved_entries and not legacy_checkpoint):
         raise ValueError("迁移检查点没有可验证的复制证据，拒绝清理。")
-    # An entry already gone from the retained root -- removed by an earlier
-    # partial cleanup, or by the user after one was reported -- needs nothing
-    # more. It deletes nothing, so it cannot weaken the checks on the rest; a
-    # repeated request then finishes the checkpoint instead of failing on it.
-    proved_entries = [
-        (entry_name, proof)
-        for entry_name, proof in proved_entries
-        if os.path.lexists(retained_path / entry_name)
-    ]
 
     # The evidence proves each entry was copied completely. What is deleted is
     # the retained copy, so it must still be exactly what was copied. The
@@ -1683,6 +1674,9 @@ def _cleanup_retained_runtime_root(
     # entry is no longer that copy. An entry that fails any check -- or
     # cannot be read right now -- is simply kept and reported among the
     # remaining entries; one bad entry must not block cleaning the others.
+    # An entry already gone from the retained root -- removed by an earlier
+    # partial cleanup, or by the user after one was reported -- needs nothing
+    # more and is not reported, so a repeated request finishes the checkpoint.
     def _proof_still_holds(entry_name: str, proof: dict) -> bool:
         source_entry = retained_path / entry_name
         target_entry = normalized_target / entry_name
