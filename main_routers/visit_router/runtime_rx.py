@@ -93,6 +93,7 @@ class ReceiveMixin:
         self.pending_peer_reason: Optional[str] = None
         self._pending_leave_final: Optional[str] = None
         self.gate_dropped = 0
+        self._delivering: Optional[asyncio.Future] = None
         self.binding_dropped = 0
         self.rate_dropped = 0
         self.display_dropped = 0
@@ -113,6 +114,10 @@ class ReceiveMixin:
 
     async def on_recv(self, *, from_vid: str, cmd: int, payload: dict, nbytes: int) -> None:
         """One reassembled message from the iframe (``recv``)."""
+        previous = self._delivering
+        if previous is not None and not previous.done():
+            # 上一条收下的消息还在处理（那次收包处理被取消、处理在后台继续）：先等它做完，交付顺序不乱
+            await asyncio.wait([previous])
         now = self.clock()
         frame = self.limiter.admit_frame(from_vid, nbytes, now=now)
         if not frame.allowed:
@@ -162,6 +167,18 @@ class ReceiveMixin:
         if res.violation is not None:
             self.request_finalize("peer_protocol_violation")
             return
+        if res.leave is None and not any(is_reliable(str(item.get("t"))) and item.get("t") != "ack"
+                                         for item in res.deliver):
+            # 只有可丢消息 / ack：就地处理（不多让出一拍，丢了对端也不指望送达）
+            await self._deliver(res, from_vid, now)
+            return
+        # 序号器已收下这批可靠消息（推进了连续水位、记了去重）：对端不会再重传，交付处理半途被取消就永远丢了
+        # （例如 hello 核验到一半，对端重连重传的同一条被当成重复）。这一段是运行时自己的受保护任务，
+        # 收包处理被取消也照样做完
+        delivering = self._delivering = self.spawn(self._deliver(res, from_vid, now), name="deliver")
+        await asyncio.shield(delivering)
+
+    async def _deliver(self, res: Any, from_vid: str, now: float) -> None:
         early, self._early_effects = self._early_effects, []
         for eff in early:
             self.apply_effects(eff)

@@ -44,6 +44,14 @@ TAKEOVER_OWNER = "neko_visit"
 _FRAME_TIMEOUT_S = 2.0
 _TURN_IDLE_POLL_S = 0.2
 
+_abandoned_interrupts: set[asyncio.Future] = set()
+"""Main-turn interruptions that ignored cancellation past their bound (``stop_all`` retires them)."""
+
+
+def abandoned_interrupts() -> list[asyncio.Future]:
+    """Main-turn interruptions abandoned past their bound and still running."""
+    return [t for t in _abandoned_interrupts if not t.done()]
+
 
 class VisitHost(Protocol):
     """Session-manager capabilities used by one visit runtime."""
@@ -193,6 +201,9 @@ class ManagerHost:
         if not interrupting.done():
             interrupting.cancel()
             logger.warning("visit: main turn interruption did not finish in time")
+            # 不理取消、还在跑：留个登记，关机时 stop_all 一并取消并限时等，不留给事件循环销毁
+            _abandoned_interrupts.add(interrupting)
+            interrupting.add_done_callback(_abandoned_interrupts.discard)
             return False
         if interrupting.cancelled() or interrupting.exception() is not None:
             # 打断失败按 busy 拒绝

@@ -484,8 +484,8 @@ async def test_awaiting_accept_gate_acks_text_but_shows_and_stores_nothing(tmp_p
         assert hrt.gate_dropped >= 3 and hrt.room is None and host.clients == []
         assert hrt.sequencer.contiguous_seq == 3            # text 照常按 seq 推进（会回 ack）
         await hrt.flush()
-        acks = [p for p in wire.sent["host"] if p.get("t") == "ack"]
-        assert acks and acks[-1]["seq"] == 3
+        # 可靠消息的交付在受保护的任务里做完，ack 由泵稍后送出：等它到线上
+        await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "ack" and p.get("seq") == 3])
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -1618,6 +1618,32 @@ async def test_a_failed_grant_renewal_backs_off(tmp_path, monkeypatch, clocks):
     assert len(calls) == 2                                    # 退避期过了再试
     rt.request_finalize("route_end")
     await _finished(rt)
+
+
+async def test_a_grant_renewal_finishing_after_the_end_sends_nothing(tmp_path, monkeypatch, clocks):
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    release = asyncio.Event()
+    sent: list[int] = []
+
+    async def slow_fresh():
+        await release.wait()                                  # 等 Servers 期间这场进了收尾
+        return True
+
+    rt.grant.refresh_due = lambda **kw: True
+    rt.grant.ensure_fresh = slow_fresh
+    real_message = rt._credentials_message
+
+    def message(**kw):
+        sent.append(1)
+        return real_message(**kw)
+
+    rt._credentials_message = message
+    await rt.tick()
+    await settle()
+    rt.request_finalize("route_end")
+    release.set()
+    await _finished(rt)
+    assert sent == []                                         # 不再把刷新后的凭证写给页面
 
 
 async def test_a_grant_renewal_failing_for_any_reason_backs_off(tmp_path, monkeypatch, clocks):

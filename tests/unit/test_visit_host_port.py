@@ -62,6 +62,9 @@ async def test_main_turn_interruption_that_ignores_cancellation_is_abandoned_in_
         result = await asyncio.wait_for(_host(_Stubborn(responding=True)).interrupt_main_turn(0.2), 3)
         assert result is False                        # 到点就按 busy 拒绝，不等它真正停下
         assert time.monotonic() - started < 0.6
+        from main_routers.visit_router import host_port
+
+        assert host_port.abandoned_interrupts()       # 撇下的打断留了登记，关机时 stop_all 收得到
     finally:
         release.set()
         await asyncio.sleep(0.05)

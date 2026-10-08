@@ -1239,7 +1239,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
     async def _renew_grant(self) -> None:
         try:
-            if await self.grant.ensure_fresh():  # type: ignore[union-attr]
+            refreshed = await self.grant.ensure_fresh()  # type: ignore[union-attr]
+            if refreshed and not self.finalizing:
+                # 等 Servers 期间这场进了收尾：不再发（会排在 leave / stop 之后写给页面）
                 await self.transport.send(self._credentials_message(refresh=True))
             self._renew_failures = 0
             self._renew_retry_at = None
@@ -2521,6 +2523,10 @@ async def stop_all(reason: str = "shutdown") -> None:
         detached += [t for t in _room_cancels if not t.done()]
         # 关机途中才登记的 outbox 清理（各场 shutdown() 自己的）也在这里收
         detached += [t for t in _outbox_cleanups if not t.done()]
+        # 打断主会话到点没停、被撇下的任务（ManagerHost 登记）
+        from main_routers.visit_router import host_port as _host_port
+
+        detached += _host_port.abandoned_interrupts()
         for task in detached:
             task.cancel()
         if detached:

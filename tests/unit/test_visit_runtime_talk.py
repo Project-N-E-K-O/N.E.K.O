@@ -1958,6 +1958,36 @@ async def test_the_mirrored_family_line_is_the_wire_fitted_text(tmp_path, monkey
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_reliable_message_is_handled_even_if_its_receive_is_cancelled(tmp_path, monkeypatch):
+    from main_routers.visit_router import runtime_rx
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    handled: list[str] = []
+
+    async def slow_wrap_up(rt_, m, from_vid, now):
+        await stuck.wait()                                    # 处理要 await 一阵
+        handled.append(m["t"])
+
+    monkeypatch.setitem(runtime_rx._HANDLERS, "wrap_up", slow_wrap_up)
+    try:
+        seq = rt.sequencer.contiguous_seq + 1
+        receiving = asyncio.ensure_future(rt.on_recv(from_vid=GUEST_VID, cmd=1, payload={
+            "t": "wrap_up", "v": 1, "seq": seq, "lp": rt.room.max_lp_seen, "ph": "propose", "reason": "recall",
+            "initiated_by": "guest"}, nbytes=200))
+        await wait_for(lambda: rt.sequencer.contiguous_seq == seq)  # 序号层已收下（对端不会再重传）
+        receiving.cancel()                                    # 收包处理被取消（连接断开）
+        await asyncio.gather(receiving, return_exceptions=True)
+        stuck.set()
+        await wait_for(lambda: handled == ["wrap_up"])        # 照样处理完，不会永远丢掉
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_family_line_is_admitted_synchronously_before_its_commit_runs(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
