@@ -637,6 +637,36 @@ def test_an_apostrophe_inside_an_unquoted_value_does_not_swallow_the_reply():
     assert visible == " and that's all"
 
 
+def test_an_opener_left_unclosed_inside_a_value_ends_at_the_outer_closer():
+    """Values are natural language: a half-written ``(`` or ``[`` in one must
+    not keep the call open and take the rest of the reply with it."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter, strip_tool_call_leaks
+
+    for leaked in (
+        "好呀 asynccall:pvz_instruction{instruction: 在第3行(靠左放坚果} 接下来我们继续玩吧！",
+        "好呀 pvz_instruction(instruction=[第3行放坚果) 接下来我们继续玩吧！",
+        "好呀 asynccall:pvz_instruction{instruction: 好难 :( 先种坚果} 接下来我们继续玩吧！",
+    ):
+        assert strip_tool_call_leaks(leaked, tool_names=_PVZ_TOOLS) == "好呀  接下来我们继续玩吧！"
+        for chunks in _split_everywhere(leaked):
+            visible, _events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), chunks)
+            assert visible == "好呀  接下来我们继续玩吧！", chunks
+
+
+def test_finished_text_without_any_opener_marker_skips_the_scan(monkeypatch):
+    """The finished-text helpers run on the event loop: a reply with no marker
+    and no tool name never reaches the per-position scan."""
+    from utils import llm_tool_leak_filter as module
+
+    def no_scan(*_args, **_kwargs):
+        raise AssertionError("scanned a reply that holds no opener")
+
+    monkeypatch.setattr(module.ToolLeakFilter, "feed", no_scan)
+    plain = "今天天气不错，我们去公园散步吧。" * 50
+    assert module.strip_tool_call_leaks(plain, tool_names=_PVZ_TOOLS) == plain
+    assert module.strip_tool_call_leaks_from_parts([plain, plain], tool_names=_PVZ_TOOLS) == [plain, plain]
+
+
 def test_an_unclosed_inline_call_is_dropped_on_finalize():
     from utils.llm_tool_leak_filter import ToolLeakFilter
 

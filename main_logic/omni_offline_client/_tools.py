@@ -106,6 +106,24 @@ class _ToolingMixin:
         projected = self._projected_dialog_messages(messages)
         return self._seat_tool_rounds(projected)
 
+    def _turn_request_view(self, overrides):
+        """Pop a tool loop's turn parameters from ``overrides``.
+
+        Returns ``(tool_rounds, instruction, request_view)``. The turn's rounds
+        place its instruction in every request view, so a loop called without
+        the caller's list still keeps its own.
+        """
+        tool_rounds = overrides.pop("_tool_rounds", None)
+        if tool_rounds is None:
+            tool_rounds = []
+        instruction = overrides.pop("_instruction", None)
+
+        def request_view(messages):
+            return self._dialog_messages_for_provider(
+                messages, instruction=instruction, own_rounds=tool_rounds,
+            )
+        return tool_rounds, instruction, request_view
+
     @staticmethod
     def _with_instruction(messages, instruction, own_rounds):
         """``messages`` with ``instruction`` before the first of ``own_rounds``
@@ -1160,18 +1178,8 @@ class _ToolingMixin:
         tool_image_slots = overrides.pop("_tool_image_slots", None)
         tool_bus_frames = overrides.pop("_tool_bus_frames", None)
         tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
-        # This turn's rounds place its instruction in every request view, so
-        # a loop called without the caller's list still keeps its own.
-        tool_rounds = overrides.pop("_tool_rounds", None)
-        if tool_rounds is None:
-            tool_rounds = []
+        tool_rounds, instruction, request_view = self._turn_request_view(overrides)
         response_generation = overrides.pop("_response_generation", None)
-        instruction = overrides.pop("_instruction", None)
-
-        def request_view(messages):
-            return self._dialog_messages_for_provider(
-                messages, instruction=instruction, own_rounds=tool_rounds,
-            )
 
         generation_is_active = _generation_check(self, response_generation)
 
@@ -1181,9 +1189,11 @@ class _ToolingMixin:
         if (
             tools_payload
             and getattr(self, "_openai_tools_unsupported_with_images", False)
-            # The request view: a proactive turn's images ride its instruction,
-            # which history does not hold.
-            and self._messages_carry_images(request_view(messages))
+            # A proactive turn's images ride its instruction, which history
+            # does not hold.
+            and self._messages_carry_images(
+                [*messages, *([instruction] if instruction is not None else [])]
+            )
         ):
             tools_payload = None
         if tools_payload:

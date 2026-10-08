@@ -40,6 +40,8 @@ _PREFIXED_CALL_OPENERS = (
     (("lit", "default_api"), ("ws",), ("char", ":."), ("ws",), ("ident",), ("ws",), ("char", "({")),
     (("lit", "asynccall"), ("ws",), ("char", ":"), ("ws",), ("ident",), ("ws",), ("char", "({")),
 )
+# Lowercase text every prefixed or seed opener contains (``strip_tool_call_leaks``).
+_OPENER_MARKERS = ("seed", "default_api", "asynccall")
 _OPENER_FAIL = ("fail", 0)
 _OPENER_PARTIAL = ("partial", 0)
 
@@ -219,8 +221,12 @@ class ToolLeakFilter:
             if char in _CALL_CLOSERS:
                 self._call_closers.append(_CALL_CLOSERS[char])
                 self._call_opened = True
-            elif self._call_closers and char == self._call_closers[-1]:
-                self._call_closers.pop()
+            elif char in self._call_closers:
+                # An opener left unclosed inside a value (``(靠左}``) must not
+                # keep the call open past an outer closer, or the rest of the
+                # reply goes with it.
+                while self._call_closers.pop() != char:
+                    pass
                 if not self._call_closers:
                     return index + 1
             elif char in _QUOTE_CHARS and self._call_opened and self._call_last in "([{=:,":
@@ -768,12 +774,24 @@ def strip_tool_call_leaks(text: str, *, tool_names: Iterable[str] | None = None)
     the built-in default names) is removed: a bare ``name(param=...)`` only
     counts for a registered tool.
     """
-    if not text:
+    if not text or not _may_hold_tool_call(text, tool_names):
         return text
     leak_filter = ToolLeakFilter(tool_names=set(tool_names or ()))
     visible, _event = leak_filter.feed(text)
     tail, _event = leak_filter.finalize()
     return visible + tail
+
+
+def _may_hold_tool_call(text: str, tool_names: Iterable[str] | None) -> bool:
+    """Whether ``text`` contains what every tool-call opener starts with.
+
+    The filter scans every position against every opener; the finished-text
+    helpers run on the event loop, and almost no reply holds any of these.
+    """
+    lowered = text.lower()
+    return any(marker in lowered for marker in _OPENER_MARKERS) or any(
+        name.lower() in lowered for name in (set(tool_names or ()) or _DEFAULT_TOOL_NAMES)
+    )
 
 
 def strip_tool_call_leaks_from_parts(
@@ -786,6 +804,8 @@ def strip_tool_call_leaks_from_parts(
     end comes out with the next one, and the last part takes the rest. Parts
     with nothing cut come back as they were, holding back included.
     """
+    if not _may_hold_tool_call("".join(texts), tool_names):
+        return list(texts)
     leak_filter = ToolLeakFilter(tool_names=set(tool_names or ()))
     cleaned = [leak_filter.feed(text)[0] for text in texts]
     tail, _event = leak_filter.finalize()

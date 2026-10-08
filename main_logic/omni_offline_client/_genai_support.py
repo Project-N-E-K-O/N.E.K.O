@@ -396,18 +396,8 @@ class _GenaiMixin:
         tool_image_slots = overrides.pop("_tool_image_slots", None)
         tool_bus_frames = overrides.pop("_tool_bus_frames", None)
         tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
-        # This turn's rounds place its instruction in every request view, so
-        # a loop called without the caller's list still keeps its own.
-        tool_rounds = overrides.pop("_tool_rounds", None)
-        if tool_rounds is None:
-            tool_rounds = []
+        tool_rounds, _instruction, request_view = self._turn_request_view(overrides)
         response_generation = overrides.pop("_response_generation", None)
-        instruction = overrides.pop("_instruction", None)
-
-        def request_view(messages):
-            return self._dialog_messages_for_provider(
-                messages, instruction=instruction, own_rounds=tool_rounds,
-            )
 
         generation_is_active = _generation_check(self, response_generation)
 
