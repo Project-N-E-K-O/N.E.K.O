@@ -46,6 +46,27 @@ async def test_main_turn_interruption_has_one_deadline_for_both_stages(monkeypat
     assert time.monotonic() - started < 0.55
 
 
+async def test_main_turn_interruption_that_ignores_cancellation_is_abandoned_in_time():
+    release = asyncio.Event()
+
+    class _Stubborn(_Session):
+        async def handle_interruption(self) -> None:
+            while not release.is_set():               # 不响应取消（例如 gather 一个不肯停的子任务）
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+
+    try:
+        started = time.monotonic()
+        result = await asyncio.wait_for(_host(_Stubborn(responding=True)).interrupt_main_turn(0.2), 3)
+        assert result is False                        # 到点就按 busy 拒绝，不等它真正停下
+        assert time.monotonic() - started < 0.6
+    finally:
+        release.set()
+        await asyncio.sleep(0.05)
+
+
 async def test_family_turn_wait_covers_a_reply_that_starts_late(monkeypatch):
     monkeypatch.setattr(host_port, "_TURN_IDLE_POLL_S", 0.02)
     session = _Session(responding=False)

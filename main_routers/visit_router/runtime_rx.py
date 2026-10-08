@@ -498,8 +498,9 @@ class ReceiveMixin:
         frame = self._peer_line_frame(m, str(ln), lp)
         await self.record_line(f"peer_{sp}", side=self.peer_side, lp=lp, ln=str(ln), text=str(m.get("txt") or ""),
                                truncated=m.get("truncated") is True)
-        if show:
-            # 页面上已开出半截气泡：用整句收口（不入史、不触发回复）
+        if show and not self._ended_published:
+            # 页面上已开出半截气泡：用整句收口（不入史、不触发回复）；上面等写盘期间「已结束」
+            # 可能已经发出，那时就不再往页面补
             self._post_display(frame)
 
     def _lp_reused(self, ln: Any, lp: Any) -> bool:

@@ -1071,6 +1071,74 @@ async def test_a_late_spool_waits_for_a_deferred_seal(tmp_path, monkeypatch):
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_stalled_spool_finalize_does_not_keep_the_visit_registered(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "_SEAL_MAX_S", 0.2)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    gate = asyncio.Event()
+    real_update = rt.spool.update_state
+
+    async def slow_update(**changes):
+        if "finalized" in changes:
+            await gate.wait()                                 # 写 finalized 时磁盘卡住
+        return await real_update(**changes)
+
+    rt.spool.update_state = slow_update
+    try:
+        before = len(host.commits)
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(rt), 10)
+        assert rtm.get_runtime("Host") is None                # 照样注销、释放占位
+        assert rtm.has_visit_background_tasks("Host")         # 记忆提交还在后台等它
+        assert len(host.commits) == before
+        gate.set()
+        await wait_for(lambda: len(host.commits) > before, timeout=5)   # spool 写完后再起记忆提交
+    finally:
+        gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_late_line_recorded_after_ended_was_sent_is_not_shown(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        await wait_for(lambda: len(rt.journal.lines()) >= 1)
+        lp = rt.room.max_lp_seen + 1
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "line_delta", "v": 1, "ln": "g:120", "i": 0, "lp": lp, "txt": "半截", "sp": "c", "ad": "hc",
+            "rt": "", "wu": False}, nbytes=200)                # 页面上开出半截气泡
+        stuck = asyncio.Event()
+
+        async def slow_close(*args, **kwargs):
+            await stuck.wait()
+
+        rt.close_current_line = slow_close
+        rt.request_finalize("route_end")
+        gate = asyncio.Event()
+        real_record = rt.record_line
+
+        async def slow_record(*args, **kwargs):
+            await gate.wait()                                 # 落盘慢：这期间「已结束」发了出去
+            return await real_record(*args, **kwargs)
+
+        rt.record_line = slow_record
+        before = len(host.host.frames)
+        receiving = asyncio.ensure_future(rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:120", "lp": lp, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
+            "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "补到的整句", "truncated": False, "i_done": 1,
+        }, nbytes=200))
+        await asyncio.sleep(0.05)
+        rt._ended_published = True
+        gate.set()
+        await asyncio.wait_for(receiving, 5)
+        await settle()
+        assert not [f for f in host.host.frames[before:] if f.get("type") == "visit_line"
+                    and f.get("line_id") == "g:120"]          # 「已结束」之后不再往页面补
+        stuck.set()
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_the_spool_is_finalized_only_once(tmp_path, monkeypatch):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt

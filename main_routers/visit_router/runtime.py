@@ -1731,8 +1731,20 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             spawn_visit_background(self.character_uid, lambda: self._finalize_after_seal(sealing, reason, gen))
             return False
         self._take_seal(sealing)
-        await self._finalize_spool(reason)
+        finalizing = asyncio.ensure_future(self._finalize_spool(reason))
+        await asyncio.wait([finalizing], timeout=_SEAL_MAX_S)
+        if not finalizing.done():
+            # spool 写盘卡住：照常注销、释放占位；记忆提交在后台等它写完再起（同样按 uid 登记）
+            logger.warning("visit %s: spool still finalizing; finishing it in the background", self.visit_id[:6])
+            gen = _stop_gen
+            spawn_visit_background(self.character_uid, lambda: self._commit_after_spool(finalizing, gen))
+            return False
         return True
+
+    async def _commit_after_spool(self, finalizing: asyncio.Future, gen: int) -> None:
+        await asyncio.wait([finalizing])
+        if not _stopped_since(gen):
+            self._spawn_memory_commits()
 
     def _start_seal(self, reason: str, *, ended_at: Optional[float] = None) -> asyncio.Future:
         """The seal of this visit, started once: a later caller (shutdown, teardown) sees the same write."""
@@ -1757,6 +1769,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                            "cancelled" if sealing.cancelled() else type(sealing.exception()).__name__)
             return
         self.sealed_doc = sealing.result()
+
+    async def _finalize_spool_at_shutdown(self, spool: Any) -> None:
+        try:
+            await spool.close()
+            changes: dict[str, Any] = {"finalized": "shutdown"}
+            if self.memory_enabled and self.spool_lines > 0:
+                changes.update(debrief_choice="ask_later", debrief_chip_pending=True)
+            await spool.update_state(**changes)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("visit %s: spool not finalized at shutdown: %s", self.visit_id[:6], type(exc).__name__)
 
     async def _finalize_spool(self, reason: str) -> None:
         if self.spool is not None and not self._spool_finalized:
@@ -1922,17 +1944,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         else:
             # 磁盘卡住：写盘在线程里照样落地；spool 不标 finalized（顺序是先封存后 finalized），下次启动补录
             logger.warning("visit %s: upload seal still writing at shutdown", self.visit_id[:6])
-        if self.spool is not None and sealed:
+        if self.spool is not None and sealed and not self._spool_finalized:
             self._spool_finalized = True
-            try:
-                await self.spool.close()
-                changes: dict[str, Any] = {"finalized": "shutdown"}
-                if self.memory_enabled and self.spool_lines > 0:
-                    changes.update(debrief_choice="ask_later", debrief_chip_pending=True)
-                await self.spool.update_state(**changes)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("visit %s: spool not finalized at shutdown: %s", self.visit_id[:6],
-                               type(exc).__name__)
+            # 关机预算内限时：写盘卡住就不等了（线程里的写照样落地，没落地的由下次启动补录）
+            closing = asyncio.ensure_future(self._finalize_spool_at_shutdown(self.spool))
+            closing.add_done_callback(lambda t: t.cancelled() or t.exception())
+            await asyncio.wait([closing], timeout=_SHUTDOWN_TASK_WAIT_S)
+            if not closing.done():
+                logger.warning("visit %s: spool still finalizing at shutdown", self.visit_id[:6])
         if self.takeover_token is not None:
             try:
                 self.host.release_takeover(self.takeover_token)

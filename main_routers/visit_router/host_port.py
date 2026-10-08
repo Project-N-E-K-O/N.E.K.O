@@ -157,12 +157,20 @@ class ManagerHost:
         session = getattr(self._mgr, "session", None)
         if session is None or not getattr(session, "_is_responding", False):
             return True
-        # 打断与等 turn end 共用一个期限
+        # 打断与等 turn end 共用一个期限。不用 wait_for：它到点后还会等被取消的协程真正结束，
+        # 不肯停的打断会把发凭证（以及占着的串门路由）一直挂住
         deadline = time.monotonic() + timeout
-        try:
-            await asyncio.wait_for(session.handle_interruption(), timeout)
-        except Exception as exc:  # noqa: BLE001 - 打断失败按 busy 拒绝
-            logger.warning("visit: main turn interruption failed: %s", type(exc).__name__)
+        interrupting = asyncio.ensure_future(session.handle_interruption())
+        interrupting.add_done_callback(lambda t: t.cancelled() or t.exception())
+        await asyncio.wait([interrupting], timeout=timeout)
+        if not interrupting.done():
+            interrupting.cancel()
+            logger.warning("visit: main turn interruption did not finish in time")
+            return False
+        if interrupting.cancelled() or interrupting.exception() is not None:
+            # 打断失败按 busy 拒绝
+            logger.warning("visit: main turn interruption failed: %s",
+                           "cancelled" if interrupting.cancelled() else type(interrupting.exception()).__name__)
             return False
         while getattr(session, "_is_responding", False) and time.monotonic() < deadline:
             await asyncio.sleep(_TURN_IDLE_POLL_S)
