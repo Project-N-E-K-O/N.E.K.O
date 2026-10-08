@@ -3891,31 +3891,99 @@ def test_storage_location_cleanup_reports_a_copy_it_could_not_put_back(tmp_path,
     source_root, response = _cleanup_with_snapshot_hook(tmp_path, monkeypatch, _changed_and_name_taken)
 
     assert response.status_code == 409, response.json()
-    remaining = response.json()["remaining_entries"]
-    private_names = [name for name in remaining if name.startswith(".neko-cleanup-")]
-    assert remaining == ["memory", *private_names] and len(private_names) == 1
-    assert (source_root / private_names[0] / "recent.json").is_file()
+    assert response.json()["remaining_entries"] == ["memory"]
+    private_copies = list(source_root.glob(".neko-cleanup-memory-*"))
+    assert len(private_copies) == 1
+    assert (private_copies[0] / "recent.json").is_file()
     assert (source_root / "memory" / "written-later.json").read_text(encoding="utf-8") == "keep"
 
 
-@pytest.mark.unit
-def test_storage_location_cleanup_reports_copies_left_by_an_interrupted_cleanup(tmp_path):
-    source_root, _target_root = _migrate_config_and_memory(tmp_path)
-    leftover = source_root / ".neko-cleanup-0123456789ab"
-    leftover.mkdir()
-    (leftover / "recent.json").write_text("{}", encoding="utf-8")
-
+def _cleanup_request(tmp_path, source_root):
     reloaded_manager = _make_real_config_manager(tmp_path)
     with _build_client(reloaded_manager) as client:
-        response = client.post(
+        return client.post(
             "/api/storage/location/retained-source/cleanup",
             json={"retained_root": str(source_root)},
         )
 
-    assert response.status_code == 409, response.json()
-    assert response.json()["remaining_entries"] == [".neko-cleanup-0123456789ab"]
-    assert (leftover / "recent.json").is_file()
 
+@pytest.mark.unit
+def test_storage_location_cleanup_puts_back_an_entry_a_stopped_cleanup_left_renamed(tmp_path):
+    """A v1 cleanup stopped between renaming memory and putting it back: the
+    old copy is the only one of the old content and must come back as memory."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "m.json").write_text("old", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+    (target_root / "memory" / "m.json").write_text("changed since", encoding="utf-8")
+    (source_root / "memory").rename(source_root / ".neko-cleanup-memory-0123456789ab")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "m.json").read_text(encoding="utf-8") == "old"
+    assert not list(source_root.glob(".neko-cleanup-*"))
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_finishes_an_entry_a_stopped_cleanup_left_renamed(tmp_path):
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "memory").rename(source_root / ".neko-cleanup-memory-0123456789ab")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 200, response.json()
+    assert not source_root.exists()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_reports_a_renamed_entry_whose_name_is_taken(tmp_path):
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    leftover = source_root / ".neko-cleanup-memory-0123456789ab"
+    (source_root / "memory").rename(leftover)
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "newer.json").write_text("newer", encoding="utf-8")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (leftover / "recent.json").is_file()
+    assert (source_root / "memory" / "newer.json").read_text(encoding="utf-8") == "newer"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_leaves_links_where_they_are(tmp_path, monkeypatch):
+    """A link is never renamed: putting it back could turn it into a hard
+    link to whatever it points at."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    original_classify = storage_location_router_module.classify_entry_no_follow
+
+    def _memory_is_a_link(path):
+        if Path(path) == source_root / "memory":
+            return None
+        return original_classify(path)
+
+    monkeypatch.setattr(storage_location_router_module, "classify_entry_no_follow", _memory_is_a_link)
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "recent.json").is_file()
+    assert not list(source_root.glob(".neko-cleanup-*"))
 
 
 @pytest.mark.unit
@@ -3944,3 +4012,23 @@ def test_storage_location_cleanup_keeps_reporting_entries_it_cannot_look_up(tmp_
     assert response.json()["remaining_entries"] == ["memory"]
     assert (blocked / "recent.json").is_file()
 
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_reports_a_renamed_entry_it_cannot_put_back(tmp_path, monkeypatch):
+    """Putting the entry back failed (a file in use): it is still reported,
+    under its own name, so the cleanup does not end as if it were gone."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    leftover = source_root / ".neko-cleanup-memory-0123456789ab"
+    (source_root / "memory").rename(leftover)
+
+    def _in_use(_source, _target):
+        raise PermissionError(32, "the file is being used by another process")
+
+    monkeypatch.setattr(storage_location_router_module, "move_entry_without_overwrite", _in_use)
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (leftover / "recent.json").is_file()

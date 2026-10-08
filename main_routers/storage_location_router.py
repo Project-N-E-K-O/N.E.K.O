@@ -1624,19 +1624,48 @@ def _entry_may_exist(path: Path) -> bool:
     return True
 
 
-def _leftover_private_cleanup_entries(retained_path: Path) -> tuple[str, ...]:
-    """Entries a cleanup renamed and could neither delete nor put back.
+def _private_cleanup_name(entry_name: str) -> str:
+    # The entry's own name stays readable in it, so an entry left behind by a
+    # cleanup that stopped midway can always be told apart and put back.
+    return f"{_CLEANUP_PRIVATE_PREFIX}{entry_name}-{uuid.uuid4().hex[:12]}"
 
-    That includes the ones a cleanup stopped by a process exit left behind;
-    they are reported like any remaining entry instead of silently keeping
-    the root.
-    """
+
+def _entry_of_private_cleanup_name(name: str) -> str | None:
+    """The entry a private cleanup name belongs to; ``None`` for any other name."""
+    if not name.startswith(_CLEANUP_PRIVATE_PREFIX):
+        return None
+    entry_name, separator, suffix = name[len(_CLEANUP_PRIVATE_PREFIX):].rpartition("-")
+    if not separator or len(suffix) != 12 or any(char not in "0123456789abcdef" for char in suffix):
+        return None
+    return entry_name if entry_name in MIGRATED_RUNTIME_ENTRY_NAMES else None
+
+
+def _private_cleanup_leftovers(retained_path: Path) -> list[tuple[str, Path]]:
     try:
-        return tuple(
-            sorted(child.name for child in retained_path.iterdir() if child.name.startswith(_CLEANUP_PRIVATE_PREFIX))
-        )
+        children = sorted(retained_path.iterdir(), key=lambda child: child.name)
     except OSError:
-        return ()
+        return []
+    leftovers = []
+    for child in children:
+        entry_name = _entry_of_private_cleanup_name(child.name)
+        if entry_name is not None:
+            leftovers.append((entry_name, child))
+    return leftovers
+
+
+def _restore_private_cleanup_leftovers(retained_path: Path) -> None:
+    """Put entries a stopped cleanup left under a private name back under their own.
+
+    Only while their own name is free; otherwise both stay, and the entry is
+    reported under its own name until the user has sorted it out.
+    """
+    for entry_name, private in _private_cleanup_leftovers(retained_path):
+        if classify_entry_no_follow(private) is None:
+            continue
+        try:
+            move_entry_without_overwrite(private, retained_path / entry_name)
+        except OSError as exc:
+            logger.warning("Retained root cleanup could not put %s back from %s: %s", entry_name, private.name, exc)
 
 
 def _cleanup_retained_runtime_root(
@@ -1662,6 +1691,9 @@ def _cleanup_retained_runtime_root(
     # junction that would reach into whatever directory it points at.
     if classify_entry_no_follow(retained_path) != "dir":
         raise ValueError("保留目录不是普通目录（可能是链接或 junction），拒绝清理。")
+    # A cleanup stopped midway may have left entries under their private
+    # names; they go back first and are then handled like any other entry.
+    _restore_private_cleanup_leftovers(retained_path)
 
     proofs = copy_evidence_entries(copied_entries)
     normalized_target = normalize_runtime_root(target_root) if str(target_root or "").strip() else None
@@ -1744,7 +1776,12 @@ def _cleanup_retained_runtime_root(
 
     def _delete_if_still_matching(entry_name: str, matches: Callable[[Path], bool]) -> None:
         entry = retained_path / entry_name
-        private = retained_path / f"{_CLEANUP_PRIVATE_PREFIX}{uuid.uuid4().hex[:12]}"
+        if classify_entry_no_follow(entry) is None:
+            # A link or special file: putting it back later could turn it
+            # into a hard link to what it points at. Leave it in place.
+            logger.warning("Retained root cleanup kept %s: not a regular file or directory", entry_name)
+            return
+        private = retained_path / _private_cleanup_name(entry_name)
         try:
             os.rename(entry, private)
         except OSError as exc:
@@ -1769,8 +1806,8 @@ def _cleanup_retained_runtime_root(
         try:
             move_entry_without_overwrite(private, entry)
         except OSError as exc:
-            # Something new took the name meanwhile: keep both; the private
-            # copy is reported under its own name.
+            # Something new took the name meanwhile: keep both; the entry is
+            # reported under its own name and put back once that is free.
             logger.warning("Retained root cleanup left %s under %s: %s", entry_name, private.name, exc)
 
     for entry_name, proof in proved_entries:
@@ -1787,10 +1824,11 @@ def _cleanup_retained_runtime_root(
     # always stays. Any other retained root goes once emptied; files the user
     # kept in it stay put.
     remaining_entries = tuple(
-        entry_name
-        for entry_name in migrated_names
-        if _entry_may_exist(retained_path / entry_name)
-    ) + _leftover_private_cleanup_entries(retained_path)
+        dict.fromkeys(
+            [entry_name for entry_name in migrated_names if _entry_may_exist(retained_path / entry_name)]
+            + [entry_name for entry_name, _private in _private_cleanup_leftovers(retained_path)]
+        )
+    )
     retained_root_kept = paths_equal(retained_path, anchor_root)
     if not retained_root_kept:
         # Directories the app recreates (old logs, plugin install records)
