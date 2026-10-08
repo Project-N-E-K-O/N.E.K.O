@@ -428,3 +428,15 @@ async def test_text_held_back_before_a_tool_round_stays_in_that_round(provider, 
     shape = _history_shape(client)
     assert [s[1] for s in shape if s[0] == "assistant"] == ["好的 default_"]
     assert shape[-1] == ("ai", "api 是个词。", None)
+
+
+async def test_a_saved_round_holds_the_text_without_its_speaker_prefix():
+    """The pre-tool text is shown with its speaker prefix stripped; the saved
+    round must hold that, or the next request feeds the prefix back."""
+    client = _seeded(_client(handler=_recording_handler([])))
+    client._prefix_buffer_size = 100
+    client.script = [[_text("L | 我来"), _tool_calls("c1")], [_text("丢好了。"), _text("", "stop")]]
+    assert await client.prompt_ephemeral(_INSTRUCTION) is True
+    assert _emitted(client) == ["我来", "丢好了。"]
+    assert [s[1] for s in _history_shape(client) if s[0] == "assistant"] == ["我来"]
+    assert "L | " not in json.dumps(client.requests[1], ensure_ascii=False, default=repr)

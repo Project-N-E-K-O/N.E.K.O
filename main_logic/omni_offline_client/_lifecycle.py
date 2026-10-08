@@ -1030,13 +1030,15 @@ class _LifecycleMixin:
                         if getattr(chunk, "tool_round_persisted", False):
                             if self._response_generation_is_active(response_generation):
                                 # 还压在名字前缀缓冲里的工具前文本已经在工具轮
-                                # 里了，现在补发给用户，历史与所见一致。
+                                # 里了，现在补发给用户。
                                 await _flush_prefix_buffer()
-                            else:
-                                # A cancelled round keeps only what was shown.
-                                self._trim_cancelled_round_text(
-                                    assistant_message, _turn_tool_rounds,
-                                )
+                            # The round keeps what was shown: the speaker
+                            # prefix stripped from it, nor (once cancelled)
+                            # text that never left the buffer. Otherwise the
+                            # next request feeds the prefix back to the model.
+                            self._trim_cancelled_round_text(
+                                assistant_message, _turn_tool_rounds,
+                            )
                             assistant_message = ""
                             segment_round = self._last_tool_round_of(_turn_tool_rounds)
                             # 下一段是新的语义单元，名字前缀重新检测。
