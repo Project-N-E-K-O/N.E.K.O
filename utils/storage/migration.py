@@ -1122,9 +1122,12 @@ def _transaction_entries_diverged_from_source(
     if os.path.lexists(stage_root):
         try:
             entries.extend(child.name for child in stage_root.iterdir())
-        except OSError:
+        except OSError as exc:
             # Cannot tell what the stage holds; it may be the only copy left.
-            return ["stage"]
+            raise StorageMigrationError(
+                "migration_stage_unreadable",
+                f"迁移事务的暂存目录无法读取，迁移未完成，已保留目标与事务目录，可以读取后会继续处理: {stage_root}",
+            ) from exc
     for entry_name, proof in copy_evidence_entries(payload.get("copied_entries")).items():
         if isinstance(proof.get("source_manifest"), dict):
             recorded[entry_name] = proof["source_manifest"]
@@ -1484,6 +1487,7 @@ def run_pending_storage_migration(
         status = {
             "migration_rollback_required": STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
             "migration_source_missing": STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
+            "migration_stage_unreadable": STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
             "migration_publish_conflict": STORAGE_MIGRATION_STATUS_ROLLBACK_REQUIRED,
             # Keep COMMITTING so the next start decides again from the policy.
             "migration_commit_ambiguous": STORAGE_MIGRATION_STATUS_COMMITTING,
@@ -2136,12 +2140,13 @@ def run_pending_storage_migration(
             selection_source=selection_source,
         )
     except StorageMigrationError as exc:
-        if exc.error_code != "migration_source_missing":
+        if exc.error_code not in {"migration_source_missing", "migration_stage_unreadable"}:
             _cleanup_unpublished_transaction()
         if exc.error_code in {
             "migration_rollback_required",
             "migration_commit_ambiguous",
             "migration_source_missing",
+            "migration_stage_unreadable",
             "migration_publish_conflict",
         }:
             return _finish_retryable(exc.error_code, exc.message)

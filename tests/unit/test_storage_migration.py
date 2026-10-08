@@ -2985,11 +2985,34 @@ def test_an_unlistable_stage_counts_as_diverged(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "iterdir", _iterdir)
 
-    diverged = storage_migration_module._transaction_entries_diverged_from_source(
-        payload={}, source_root=source_root, transaction_root=transaction_root
-    )
+    with pytest.raises(StorageMigrationError) as raised:
+        storage_migration_module._transaction_entries_diverged_from_source(
+            payload={}, source_root=source_root, transaction_root=transaction_root
+        )
 
-    assert diverged == ["stage"]
+    # Its own code: the source is fine, only the stage cannot be read.
+    assert raised.value.error_code == "migration_stage_unreadable"
+
+
+@pytest.mark.unit
+def test_an_unlistable_stage_keeps_the_transaction_and_stays_retryable(tmp_path, monkeypatch):
+    config_manager, target_root = _crash_publishing_memory_after_config(tmp_path, monkeypatch)
+    (stage,) = (target_root / ".smtx").glob("*/stage")
+    original_iterdir = Path.iterdir
+
+    def _iterdir(self):
+        if self == stage:
+            raise PermissionError(13, "listing denied", str(self))
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _iterdir)
+    retry = run_pending_storage_migration(config_manager)
+    monkeypatch.undo()
+
+    assert retry["error_code"] == "migration_stage_unreadable"
+    assert retry["payload"]["status"] == "rollback_required"
+    assert stage.is_dir()
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "migrated"
 
 
 @pytest.mark.unit
