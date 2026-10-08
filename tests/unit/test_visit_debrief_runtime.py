@@ -122,21 +122,18 @@ async def test_chips_and_ask_later_only_with_memory_on(tmp_path, monkeypatch):
 
 
 async def test_a_stalled_debrief_state_write_does_not_hold_the_exit(tmp_path, monkeypatch):
-    import asyncio
-
     monkeypatch.setattr(debrief, "_STATE_WRITE_MAX_S", 0.2)
     host, guest, wire, clock, gates = await _visit_with_lines(tmp_path, monkeypatch)
     host.replies.queue = [["我回来啦。"], ["聊得很开心。"]]
     rt = host.rt
     stuck = asyncio.Event()
-    real_update = rt.spool.update_state
+    real_mark = rt.spool.mark_debrief_pending
 
-    async def stalled_update(**changes):
-        if "debrief_chip_pending" in changes:
-            await stuck.wait()                                # 写 state.json 卡在磁盘上
-        return await real_update(**changes)
+    async def stalled_mark():
+        await stuck.wait()                                    # 写 state.json 卡在磁盘上
+        return await real_mark()
 
-    rt.spool.update_state = stalled_update
+    rt.spool.mark_debrief_pending = stalled_mark
     try:
         rt.request_finalize("route_end")
         await asyncio.wait_for(finish(rt, clock), 15)         # 退出流程照常走完（交还、teardown）

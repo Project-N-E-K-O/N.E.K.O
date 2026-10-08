@@ -44,7 +44,6 @@ from typing import Any, Optional
 
 from config.visit_settings import (
     VISIT_CEREMONY_TIMEOUT_S,
-    VISIT_DEBRIEF_DEFAULT,
     VISIT_DEBRIEF_INPUT_MAX_TOKENS,
     VISIT_DEBRIEF_MAX_TOKENS,
     VISIT_PEER_NGRAM_N,
@@ -184,7 +183,8 @@ async def _offer_chips(rt: Any, *, has_lines: bool) -> None:
     if not rt.memory_enabled or spool is None or not has_lines:
         return
     # 有界：磁盘卡住时不能让退出流程停在这里（交还回调、teardown 都在后面）；到点不等，写没写成由启动补录兜底
-    writing = asyncio.ensure_future(spool.update_state(debrief_choice=VISIT_DEBRIEF_DEFAULT, debrief_chip_pending=True))
+    # 有条件写入：芯片先出、用户选得快时，晚到的这次写不会把已记下的选择改回「以后再说」
+    writing = asyncio.ensure_future(spool.mark_debrief_pending())
     writing.add_done_callback(lambda t: t.cancelled() or t.exception())
     await asyncio.wait([writing], timeout=_STATE_WRITE_MAX_S)
     if not writing.done():

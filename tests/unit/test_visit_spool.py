@@ -241,6 +241,18 @@ CANONICAL_FIELDS = {
 }
 
 
+async def test_marking_the_debrief_pending_never_replaces_a_newer_choice(tmp_path):
+    sp = VisitSpool(tmp_path, vid(8))
+    await sp.write_state(state_for())
+    await sp.mark_forget()                          # 芯片先出，用户已选「不记」
+    state = await sp.mark_debrief_pending()                   # 晚到的「待选择」标记
+    assert state["debrief_choice"] == "forget" and state["debrief_chip_pending"] is False
+    sp2 = VisitSpool(tmp_path, vid(9))
+    await sp2.write_state(state_for())
+    state = await sp2.mark_debrief_pending()                  # 还没选：照常标成「以后再说」、芯片待处理
+    assert state["debrief_choice"] == "ask_later" and state["debrief_chip_pending"] is True
+
+
 async def test_delete_peer_fields_keeps_own_account(tmp_path):
     sp = VisitSpool(tmp_path, vid(7))
     await sp.write_state(state_for())

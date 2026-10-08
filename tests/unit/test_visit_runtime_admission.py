@@ -383,6 +383,8 @@ async def test_a_hello_before_joined_keeps_the_awaiting_phase(tmp_path, monkeypa
     await through_gate(rt)
     await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(), nbytes=900)  # 对端 hello 先到
     assert rt.phase == "awaiting_accept"
+    monkeypatch.setattr(transport_ws, "is_transport_attached", lambda visit_id, side: True)
+    assert not rt.joined and rtm.VisitRuntime.transport_alive(rt)  # 已核验对端：通道算活着，收尾照样发 leave
     await rt.on_transport_state({"state": "joined", "peer_present": True})            # 入房报告后到
     assert rt.phase == "awaiting_accept"                  # 不翻回 invite_ready：邀请仍能接受
     assert not side.host.frames_of("visit_state_change", "invite_ready")
@@ -644,6 +646,8 @@ async def test_room_minted_after_the_host_already_ended_is_cancelled_once(tmp_pa
     rt.request_finalize("route_end")
     await _finished(rt)                                   # 收尾走完时还没有凭证：那时没有房间可取消
     assert side.cancelled == []
+    creds_task = rt._creds_task
+    assert creds_task is not None and not creds_task.done() and creds_task in rtm._detached  # 注销后关机收得到
     side.creds_gate.set()                                 # Servers 这才签出房间
     assert await issuing is None
     await wait_for(lambda: side.cancelled)
@@ -1196,12 +1200,21 @@ async def test_a_stalled_spool_finalize_does_not_keep_the_visit_registered(tmp_p
         return await real_update(**changes)
 
     rt.spool.update_state = slow_update
+    finalizers: list = []
+    real_finalize = rt._finalize_spool
+
+    async def finalize_spool(reason):
+        finalizers.append(asyncio.current_task())
+        return await real_finalize(reason)
+
+    rt._finalize_spool = finalize_spool
     try:
         before = len(host.commits)
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 10)
         assert rtm.get_runtime("Host") is None                # 照样注销、释放占位
         assert rtm.has_visit_background_tasks("Host")         # 记忆提交还在后台等它
+        assert finalizers and finalizers[0] in rtm._detached  # 底下卡着的那个写盘任务本身也登记了，关机收得到
         assert len(host.commits) == before
         gate.set()
         await wait_for(lambda: len(host.commits) > before, timeout=5)   # spool 写完后再起记忆提交
@@ -1981,6 +1994,120 @@ async def test_a_reconnect_during_the_first_join_still_has_a_join_deadline(tmp_p
         gate.set()
         rt.request_finalize("route_end")
         await _finished(rt)
+
+
+async def test_a_failed_memory_off_correction_is_written_with_finalized(tmp_path, monkeypatch):
+    from main_logic.visit import spool as spool_mod
+
+    async def broken_open(self, *args, **kwargs):
+        raise OSError("disk full")
+
+    real_update = spool_mod.VisitSpool.update_state
+    failed: list[int] = []
+
+    async def flaky_update(self, **changes):
+        if changes == {"memory_enabled": False} and not failed:
+            failed.append(1)
+            raise OSError("disk full")                        # 改回记忆关这次也没写成
+        return await real_update(self, **changes)
+
+    monkeypatch.setattr(spool_mod.VisitSpool, "open", broken_open)
+    monkeypatch.setattr(spool_mod.VisitSpool, "update_state", flaky_update)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    try:
+        assert failed and (await host.rt.spool.read_state())["memory_enabled"] is True
+        host.rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(host.rt), 15)
+        state = await host.rt.spool.read_state()
+        assert state["finalized"] and state["memory_enabled"] is False  # 写 finalized 时一并改回记忆关
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_runtime_tasks_surviving_shutdown_cancellation_are_handed_to_stop_all(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    release = asyncio.Event()
+
+    async def stubborn():
+        while not release.is_set():                           # 卡在不理取消的依赖里
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    task = rt.spawn(stubborn())
+    try:
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
+        assert not task.done() and task in rtm._detached      # 注销之后交给模块级登记，没有被丢下
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_ended_waits_behind_a_display_write_that_never_retired(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "_DISPLAY_FLUSH_S", 0.2)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    release = asyncio.Event()
+    order: list[str] = []
+    real_send = host.host.send_frame
+
+    async def send_frame(frame):
+        if frame.get("type") == "visit_state_change" and frame.get("action") == "ended":
+            order.append("ended")
+            return await real_send(frame)
+        if frame.get("type") == "visit_line" and frame.get("text") == "卡住的一行":
+            while not release.is_set():                       # 页面这次写一直卡着、不理取消
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+            order.append("stuck_line")
+        return await real_send(frame)
+
+    host.host.send_frame = send_frame
+    try:
+        rt._post_display({"type": "visit_line", "text": "卡住的一行"})
+        await settle()
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(rt), 15)
+        assert "ended" not in order                           # 那次写没退下：「已结束」不与它并发、不抢先
+        release.set()
+        await wait_for(lambda: "ended" in order)
+        assert order == ["stuck_line", "ended"]               # 排在它后面送出
+    finally:
+        release.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_an_unpaired_room_is_cancelled_even_if_the_channel_close_is_cut_off(tmp_path, monkeypatch, clocks):
+    monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    rt.peer_present = True                                    # 客人在房、hello 一直没核验
+    rt.outbox.leave_done = lambda now=None: False            # leave 的补传窗口卡住：关闭任务到点被取消
+    rt.request_finalize("route_end")
+    await asyncio.wait_for(_finished(rt), 15)
+    await settle()
+    assert [c[0] for c in side.cancelled] == [rt.visit_id]    # 邀请码与配额占用照样撤销
+
+
+async def test_the_pump_keeps_sending_after_shutdown_marks_the_visit_terminated(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        rt._terminated = True                                 # 关机第一步就置上（之后几步还要靠泵发出去）
+        rt.kick()
+        await settle()
+        await settle()                                        # 泵至少又转过一圈
+        rt.outbox.send({"t": "typing", "lp": 1, "sp": "c"}, now=clock())
+        rt.kick()
+        await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "typing"])  # 照常发出
+        assert not rt._pump_task.done()
+    finally:
+        rt._terminated = False
+        await teardown(host, guest, wire=wire, clock=clock)
 
 
 async def test_an_overrun_channel_close_is_handed_to_stop_all(tmp_path, monkeypatch):

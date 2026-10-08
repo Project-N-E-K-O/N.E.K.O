@@ -606,6 +606,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         # 任务
         self._kick_event = asyncio.Event()
         self._pump_task: Optional[asyncio.Task] = None
+        self._pump_stop = False
+        self._memory_off_unsaved = False
         self._renew_task: Optional[asyncio.Task] = None
         self._renew_failures = 0
         self._renew_retry_at: Optional[float] = None
@@ -690,6 +692,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.phase = phase
         self.slot["phase"] = phase
 
+    async def _send_after_display(self, display: asyncio.Future, payload: dict) -> None:
+        await asyncio.wait([display], timeout=_DISPLAY_FLUSH_S)
+        if not display.done():
+            logger.warning("visit %s: display write never retired; ended not sent", self.visit_id[:6])
+            return
+        try:
+            await self.host.send_frame(payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("visit %s: ended not sent: %s", self.visit_id[:6], type(exc).__name__)
+
     async def push(self, action: str, **fields: Any) -> None:
         """``visit_state_change{action}`` to the display socket (§4.5).
 
@@ -702,6 +714,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                    "visit_id": self.visit_id, "ts": self.wall()}
         payload.update({k: v for k, v in fields.items() if v is not None})
         if action == PHASE_ENDED:
+            display = self._display_task
+            if display is not None and not display.done():
+                # 显示队列那次写到点还没退下：「已结束」排在它后面（后台、限时），不与它并发写同一个页面、不先到
+                self._keep_background(asyncio.ensure_future(self._send_after_display(display, payload)))
+                return
             await self.host.send_frame(payload)
             return
         self._post_display(payload)
@@ -1029,11 +1046,18 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         # 只等一次快照的话，新这批的台词会落在封存之后
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        while self._delivering is not None and not self._delivering.done():
+        while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
                 return
-            await asyncio.wait([self._delivering], timeout=remaining)
+            delivering = self._delivering
+            if delivering is not None and not delivering.done():
+                await asyncio.wait([delivering], timeout=remaining)
+            elif self._rx_waiting:
+                # 上一批刚做完、排着的收包还没醒（这边先醒了）：让一拍，等它交出新一批再看
+                await asyncio.sleep(0)
+            else:
+                return
 
     def _start_journal_for_backlog(self) -> None:
         # 对端 hello 先到、这场已开口，却一直没等来本侧的入房报告就收尾：上传头还没开始写，
@@ -1155,8 +1179,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
     async def _pump_loop(self) -> None:
         """Flush the outbox, acks and heartbeats; wakes on :meth:`kick` or every 250 ms."""
-        # 拆掉的场次不再转：取消被一次不理取消的写吞掉、正常返回时，也不在已注销的运行时上接着 flush
-        while not self._terminated:
+        # 停下的泵不再转：取消被一次不理取消的写吞掉、正常返回时，也不在已注销的运行时上接着 flush。
+        # 看专门的 _pump_stop（只在取消泵的地方置上），不看 _terminated：关机一开始就置后者，之后那几步
+        # （收口在说的那行、补齐对端欠的 ack）还要靠泵发出去
+        while not self._pump_stop:
             try:
                 await asyncio.wait_for(self._kick_event.wait(), _PUMP_IDLE_S)
             except asyncio.TimeoutError:
@@ -1512,12 +1538,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         except Exception as exc:  # noqa: BLE001 - spool 打不开：本场不记串门记忆，对话照常
             logger.warning("visit %s: spool not opened: %s", self.visit_id[:6], type(exc).__name__)
             if memory_on:
-                # 状态已按「记忆开」写下：改回记忆关，否则启动补录每次都去提交一份不存在的转录、这场永远结不清
+                # 状态已按「记忆开」写下：改回记忆关，否则启动补录每次都去提交一份不存在的转录、这场永远结不清。
+                # 这次也写不成（同一次磁盘故障）就记下，收尾写 finalized 时一并带上
                 try:
                     await spool.update_state(memory_enabled=False)
                 except Exception as state_exc:  # noqa: BLE001
                     logger.warning("visit %s: memory-off state not written: %s", self.visit_id[:6],
                                    type(state_exc).__name__)
+                    self._memory_off_unsaved = True
             memory_on = False
         self.memory_enabled = memory_on
         self.spool = spool
@@ -1724,9 +1752,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                     while not self.outbox.leave_done(self.clock()):
                         self.kick()
                         await asyncio.sleep(0.1)
-            if self.peer is None:
-                self._cancel_room_once()
         finally:
+            if self.peer is None:
+                # 没配上对的 host：邀请码与配额占用要撤销。放在 finally：排空 / leave / 补传卡住、
+                # 关闭任务被收尾流程到点取消时也照样起
+                self._cancel_room_once()
             try:
                 try:
                     # 对端的 leave 还欠着 ack（peer_left / 两侧同时收尾）：直接送出（本侧 leave 完成后队列不再出帧），
@@ -1765,7 +1795,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     def transport_alive(self) -> bool:
         from main_routers.visit_router.transport_ws import is_transport_attached
 
-        return self.joined and is_transport_attached(self.visit_id, self.side)
+        # 对端 hello 先于本侧的入房报告到达、已核验：数据通道已经通了，收尾照样发可靠的 leave（不只等 joined）
+        return (self.joined or self.peer is not None) and is_transport_attached(self.visit_id, self.side)
 
     async def _settle_journal_open(self, timeout: Optional[float] = None) -> None:
         # 收尾等它写完，但有上限；还没写完就登记一条后台链：它晚到写完时立刻封存，不留没封存的流水
@@ -1947,6 +1978,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             # spool 写盘卡住：照常注销、释放占位；记忆提交在后台等它写完再起（同样按 uid 登记）
             logger.warning("visit %s: spool still finalizing; finishing it in the background", self.visit_id[:6])
             gen = _stop_gen
+            # 外层后台链被取消不会传到它（asyncio.wait 不传取消）：它本身也登记，关机时一并取消、限时等
+            self._keep_background(finalizing)
             spawn_visit_background(self.character_uid, lambda: self._commit_after_spool(finalizing, gen))
             return False
         return True
@@ -1984,6 +2017,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         try:
             await spool.close()
             changes: dict[str, Any] = {"finalized": "shutdown"}
+            if self._memory_off_unsaved:
+                changes["memory_enabled"] = False
             if self.memory_enabled and self.spool_lines > 0:
                 changes.update(debrief_choice="ask_later", debrief_chip_pending=True)
             await spool.update_state(**changes)
@@ -2001,7 +2036,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self._spool_finalized = True
             try:
                 await self.spool.close()
-                await self.spool.update_state(finalized=reason)
+                changes: dict[str, Any] = {"finalized": reason}
+                if self._memory_off_unsaved:
+                    changes["memory_enabled"] = False  # 激活时改回记忆关没写成：这次一并写上
+                await self.spool.update_state(**changes)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: spool not finalized: %s", self.visit_id[:6], type(exc).__name__)
 
@@ -2093,6 +2131,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         await self.close_session(_SESSION_CLOSE_S)
         self.speech_router.clear()
         if self._pump_task is not None:
+            self._pump_stop = True
             self._pump_task.cancel()
         self._stop_display()
         unregister_transport_session(self.transport)
@@ -2114,7 +2153,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             cleanup.add_done_callback(_outbox_cleanups.discard)
         # 激活卡在不理取消的操作里、等满上限还没停（以及还在等它的接受 / ready 流程等运行时任务）：
         # 注销之后 stop_all 看不到这个运行时，交给模块级登记，关机时限时收掉（spool 照旧留给启动补录）
-        lingering = [t for t in list(self._tasks) + [self._activation, self._closing_task, self._pump_task]
+        lingering = [t for t in list(self._tasks) + [self._activation, self._closing_task, self._pump_task, self._creds_task]
                      if t is not None and not t.done() and t is not self._room_cancel_task]
         for task in lingering:
             self._keep_background(task)
@@ -2240,7 +2279,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         for task in list(self._tasks):
             task.cancel()
         if self._pump_task is not None:
+            self._pump_stop = True
             self._pump_task.cancel()
+        # 取消之后还活着的（卡在不理取消的依赖里）：注销之后 stop_all 看不到这个运行时，交给模块级登记一并收
+        for task in list(self._tasks) + [self._pump_task]:
+            if task is not None and not task.done():
+                self._keep_background(task)
         self._stop_display()
         # 正常收尾由关闭通道 / teardown 做的两件事，关机路径也要做（各自限时，不超关机预算）：
         # .outbox.jsonl 带正文，不能比这场活得久；隔离会话的客户端要关掉它自己的任务与 HTTP 连接

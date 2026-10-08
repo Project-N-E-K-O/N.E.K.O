@@ -1341,6 +1341,20 @@ class VisitSpool:
             atomic_write_json(self.state_path, clean)
             return clean
 
+    async def mark_debrief_pending(self) -> dict:
+        """``debrief_choice='ask_later'`` + ``debrief_chip_pending`` unless a newer choice is already recorded.
+
+        The chips may be answered while this write is still queued: a choice
+        recorded meanwhile is never put back to ``ask_later``.
+        """
+
+        def mutate(state: dict) -> None:
+            if state.get("debrief_choice") in (None, "ask_later"):
+                state["debrief_choice"] = "ask_later"
+                state["debrief_chip_pending"] = True
+
+        return await asyncio.to_thread(self._update_state_sync, mutate)
+
     async def update_state(self, **changes: Any) -> dict:
         """Read-modify-write ``state.json`` with ``changes``; the result is validated."""
 
