@@ -529,3 +529,42 @@ async def test_peer_back_after_a_timeout_class_drop_restarts_the_heartbeat_clock
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_rate_limited_peer_line_shows_none_of_its_deltas(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from main_logic.visit.limits import RateChannel
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    real_admit = rt.limiter.admit
+    text_calls = []
+
+    def admit(vid, channel, **kw):
+        if channel is RateChannel.TEXT:
+            text_calls.append(vid)
+            return SimpleNamespace(allowed=False, reason="text_rate")
+        return real_admit(vid, channel, **kw)
+
+    monkeypatch.setattr(rt.limiter, "admit", admit)
+    before = len(host.host.frames)
+    dropped = rt.rate_dropped
+    try:
+        for i in range(2):
+            await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+                "t": "line_delta", "v": 1, "ln": "g:77", "i": i, "lp": 77, "txt": f"片{i}", "sp": "c", "ad": "hc",
+                "rt": "", "wu": False}, nbytes=200)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:77", "lp": 77, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
+            "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "片0片1", "truncated": False, "i_done": 2,
+        }, nbytes=200)
+        shown = [f for f in host.host.frames[before:] if str(f.get("type")).startswith("visit_line")]
+        assert shown == []                                   # 增量与整行都不上屏
+        assert len(text_calls) == 1                          # 一行只取一次配额
+        assert rt.rate_dropped == dropped + 1
+        assert not [r for r in rt.journal.lines() if r["text"] == "片0片1"]
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)

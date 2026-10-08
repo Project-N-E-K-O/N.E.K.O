@@ -90,6 +90,7 @@ class ReceiveMixin:
         self.rate_dropped = 0
         self._early_effects: list = []
         self._peer_lines: dict[str, dict] = {}
+        self._line_quota: dict[str, bool] = {}
         self._peer_lp: dict[str, int] = {}
         self.last_peer_goodbye = ""
 
@@ -326,6 +327,9 @@ class ReceiveMixin:
         ln, lp = m.get("ln"), m.get("lp")
         if self.room.observe_lp(lp, ln=ln) is not None:
             return
+        if not self._line_admitted(ln, from_vid, now):
+            # 这一行没拿到 text 配额：整行不上屏（增量也不发），与超速的 text 同一个结果
+            return
         meta = self._peer_lines.get(ln)
         if m.get("i") == 0 and meta is None:
             ad_side, ad_kind = decode_addressee(m.get("ad"))
@@ -346,6 +350,21 @@ class ReceiveMixin:
             "addressee": {"side": ad_side, "kind": ad_kind}, "goodbye": bool(meta.get("wu")),
             "ts": self.wall(), "paced": "audio",
         })
+
+    def _line_admitted(self, ln: Any, from_vid: str, now: float) -> bool:
+        """The ``RateChannel.TEXT`` decision of one peer line, taken once (first delta, or its text)."""
+        key = str(ln)
+        decided = self._line_quota.get(key)
+        if decided is not None:
+            return decided
+        decision = self.limiter.admit(from_vid, RateChannel.TEXT, now=now)
+        self._line_quota[key] = decision.allowed
+        while len(self._line_quota) > 256:
+            self._line_quota.pop(next(iter(self._line_quota)))
+        if not decision.allowed:
+            self.rate_dropped += 1
+            self._count_anomaly(decision.reason or "text_rate")
+        return decision.allowed
 
     def _remember_peer_line(self, ln: str, meta: dict) -> None:
         self._peer_lines[ln] = meta
@@ -390,11 +409,8 @@ class ReceiveMixin:
         ln, lp = m.get("ln"), m.get("lp")
         if self.room.observe_lp(lp, ln=ln, reliable=True, closes_line=True) is not None:
             return
-        decision = self.limiter.admit(from_vid, RateChannel.TEXT, now=now)
-        if not decision.allowed:
+        if not self._line_admitted(ln, from_vid, now):
             # 超速：已回 ack（不让对端重传到 delivery_failed），但不上屏、不入史、不进转录、不触发回复
-            self.rate_dropped += 1
-            self._count_anomaly(decision.reason or "text_rate")
             return
         self.last_text_at = now
         sp = "human" if m.get("sp") == "h" else "cat"
