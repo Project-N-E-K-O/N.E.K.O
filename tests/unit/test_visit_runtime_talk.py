@@ -1379,9 +1379,14 @@ async def test_an_abandoned_generation_cannot_leak_into_the_next_line(tmp_path, 
     monkeypatch.setattr(rtm_talk, "_LLM_SETTLE_S", 0.1)
     release = asyncio.Event()
     real_stream = harness.FakeClient.stream_text
+    host_replies = Replies()
     calls: dict = {}
 
     async def stream_text(self, text, **kw):
+        if self.replies is not host_replies:
+            # 只卡主人这侧：客人照常说话，不会先按 llm_error 收尾、把主人带进 peer_left
+            await real_stream(self, text, **kw)
+            return
         calls[id(self)] = calls.get(id(self), 0) + 1
         if calls[id(self)] > 1:
             await real_stream(self, text, **kw)
@@ -1396,21 +1401,29 @@ async def test_an_abandoned_generation_cannot_leak_into_the_next_line(tmp_path, 
         self._conversation_history.append(AIMessage(content="幽灵回复"))
 
     monkeypatch.setattr(harness.FakeClient, "stream_text", stream_text)
-    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, host_replies=host_replies)
     rt = host.rt
     session = rt.session
+    finished: list = []
+    real_finish = rt._finish_line
+
+    async def finish_spy(line):
+        finished.append(line)                                 # 每一行收口时的结局（不靠抓 rt._line 的瞬时状态）
+        return await real_finish(line)
+
+    rt._finish_line = finish_spy
     try:
-        await wait_for(lambda: session.stray is not None, timeout=3)   # 开场那行到点，生成被撇下
-        await wait_for(lambda: rt._line is None, timeout=3)
-        rt.schedule_reply(None)                               # 撇下的还在跑时轮到下一行
-        await wait_for(lambda: rt._line is not None, timeout=3)
-        nxt = rt._line
-        await wait_for(lambda: nxt.task.done(), timeout=3)
-        assert nxt.llm_error == "timeout"                     # 不开新流（同一个 client 上不并发两次生成）
-        assert calls[id(session.client)] == 1
+        await wait_for(lambda: rt._line is not None, timeout=10)
+        opening = rt._line                                    # 主人的开场那行
+        await wait_for(lambda: session.stray is not None, timeout=10)  # 开场那行到点，生成被撇下
+        rt.schedule_reply(None)                               # 撇下的还在跑时轮到下一行（已有一行在排 / 在说就排在它后面）
+        await wait_for(lambda: rt.finalize_reason is not None, timeout=10)
         assert rt.finalize_reason == "llm_error"              # 等满一个时限还停不下：这场说不了话，按 llm_error 收尾
+        later = [line for line in finished if line is not opening]
+        assert later and all(line.llm_error == "timeout" for line in later)
+        assert calls[id(session.client)] == 1                 # 不开新流（同一个 client 上不并发两次生成）
         release.set()                                         # 撇下的那次这时吐字、往历史里追加
-        await wait_for(lambda: session.stray is None or session.stray.done(), timeout=3)
+        await wait_for(lambda: session.stray is None or session.stray.done(), timeout=10)
         await settle()
         contents = [getattr(m, "content", "") for m in session.history]
         assert not [c for c in contents if "幽灵回复" in str(c)]  # 它追加的回复被摘掉
