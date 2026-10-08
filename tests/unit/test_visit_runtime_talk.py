@@ -1936,6 +1936,28 @@ async def test_the_family_wait_and_the_seal_share_one_deadline(tmp_path, monkeyp
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_the_mirrored_family_line_is_the_wire_fitted_text(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    real_fit = rtm_talk.fit_text_to_wire
+
+    def fit(payload, **kw):
+        out = real_fit(payload, **kw)
+        if out.get("sp") == "h":
+            out = dict(out, txt="裁短了", truncated=True)       # 线上放不下：被裁短
+        return out
+
+    monkeypatch.setattr(rtm_talk, "fit_text_to_wire", fit)
+    try:
+        await rtm.route_stream_message("Host", {
+            "input_type": "text", "data": "一句很长很长的话", "source": "neko_visit:guest_cat"})
+        await wait_for(lambda: host.host.user_inputs)
+        assert host.host.user_inputs[-1] == "裁短了"             # 镜像与对端 / 转录一致，不是裁之前的原文
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_family_line_is_admitted_synchronously_before_its_commit_runs(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt

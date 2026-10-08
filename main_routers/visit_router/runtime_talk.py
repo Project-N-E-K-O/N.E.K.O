@@ -800,7 +800,8 @@ class TalkMixin:
             self._after_send_step("display", shown)
             try:
                 # 不可撤回的放最后：进 sync_message_queue 之后收不回
-                await self.host.mirror_user_input(text, metadata=self._mirror_meta("visit_human"),
+                # 镜像的是裁到线上长度之后的那句：与对端、转录、上屏、历史一致
+                await self.host.mirror_user_input(payload["txt"], metadata=self._mirror_meta("visit_human"),
                                                   request_id=request_id)
             except Exception as exc:  # noqa: BLE001 - 这句已发出，只记诊断
                 logger.warning("visit %s: mirror_user_input failed: %s", self.visit_id[:6], type(exc).__name__)

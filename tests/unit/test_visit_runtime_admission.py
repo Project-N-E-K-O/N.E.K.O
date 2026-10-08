@@ -1725,14 +1725,50 @@ async def test_a_line_arriving_during_a_background_activation_waits_for_it(tmp_p
         readying.cancel()                                     # 收下 ready 的那次处理被取消，激活在后台继续
         await asyncio.gather(readying, return_exceptions=True)
         dropped = grt.gate_dropped
+        media_gate = asyncio.Event()
+        real_media = grt.send_media
+
+        async def slow_media():
+            await media_gate.wait()                           # ready 流程激活之后的那段（推媒体、started、开场）
+            return await real_media()
+
+        grt.send_media = slow_media
         dispatching = asyncio.ensure_future(grt._dispatch({"t": "text"}, HOST_VID, clock()))  # 重连后主人的开场台词
         await settle()
-        assert not dispatching.done()                         # 等激活做完，不当早到的丢掉
+        assert not dispatching.done()                         # 等 ready 流程走完，不当早到的丢掉
         gate.set()
+        await wait_for(lambda: grt.activated)
+        await settle()
+        assert not dispatching.done()                         # 激活完了也还等：ready 流程后半段没走完
+        media_gate.set()
         await asyncio.wait_for(dispatching, 5)
         assert handled and grt.gate_dropped == dropped
     finally:
         gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_the_host_does_not_hold_its_receive_loop_for_an_activation(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    hrt = host.rt
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = hrt._open_spool
+
+    async def slow_open(subjects):
+        await real_open(subjects)
+        reached.set()
+        await gate.wait()
+
+    hrt._open_spool = slow_open
+    try:
+        accepting = asyncio.ensure_future(hrt.accept(True))
+        await asyncio.wait_for(reached.wait(), 5)             # 主人接受、激活还在跑
+        dropped = hrt.gate_dropped
+        await asyncio.wait_for(hrt._dispatch({"t": "text"}, GUEST_VID, clock()), 1)  # 不卡住收包循环
+        assert hrt.gate_dropped == dropped + 1                # 主人侧早到的台词照旧丢
+    finally:
+        gate.set()
+        await asyncio.gather(accepting, return_exceptions=True)
         await teardown(host, guest, wire=wire, clock=clock)
 
 
@@ -1767,6 +1803,37 @@ async def test_buffered_usage_is_not_stamped_before_the_journal_start(tmp_path, 
     assert stamped and all(ts >= start for ts in stamped)     # 补写的用量不早于开始时间
     rt.request_finalize("route_end")
     await _finished(rt)
+
+
+async def test_an_activation_that_outlives_teardown_is_handed_to_stop_all(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "VISIT_ACTIVATION_ALLOWANCE_S", 0.2)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    hrt = host.rt
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = hrt._open_spool
+
+    async def stubborn_open(subjects):
+        reached.set()
+        while not gate.is_set():
+            try:
+                await gate.wait()                             # 不理取消的写盘
+            except asyncio.CancelledError:
+                continue
+        await real_open(subjects)
+
+    hrt._open_spool = stubborn_open
+    try:
+        accepting = asyncio.ensure_future(hrt.accept(True))
+        await asyncio.wait_for(reached.wait(), 5)
+        hrt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(hrt), 15)            # 收尾等满上限后照常注销
+        activation = hrt._activation
+        assert activation is not None and not activation.done()
+        assert activation in rtm._detached                    # 注销之后交给模块级登记，stop_all 收得到
+    finally:
+        gate.set()
+        await asyncio.gather(accepting, return_exceptions=True)
+        await teardown(host, guest, wire=wire, clock=clock)
 
 
 async def test_a_channel_close_that_overruns_is_retired_before_sealing(tmp_path, monkeypatch):

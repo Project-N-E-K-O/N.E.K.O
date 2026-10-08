@@ -583,6 +583,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.accepted: Optional[bool] = None
         self.activated = False
         self._activation: Optional[asyncio.Task] = None
+        self._ready_task: Optional[asyncio.Task] = None
         self.ready_exchanged = False
         self.started_at_mono: Optional[float] = None
         self.started_at_wall: Optional[float] = None
@@ -1300,7 +1301,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.liveness.on_ready(self.clock())
         # ready 已收下（期限已撤、序号已确认，不会再来一次）：激活是运行时自己的任务，收包处理被取消也照样走完，
         # 否则这场既不开始、也没有期限能结束它。收尾时随运行时一起取消
-        readying = self.spawn(self._ready_flow(), name="ready")
+        readying = self._ready_task = self.spawn(self._ready_flow(), name="ready")
         await asyncio.shield(readying)
 
     async def _ready_flow(self) -> None:
@@ -2072,6 +2073,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             # stop_all 看不到这个运行时，交给模块级登记，关机时一并收
             _outbox_cleanups.add(cleanup)
             cleanup.add_done_callback(_outbox_cleanups.discard)
+        # 激活卡在不理取消的操作里、等满上限还没停（以及还在等它的接受 / ready 流程等运行时任务）：
+        # 注销之后 stop_all 看不到这个运行时，交给模块级登记，关机时限时收掉（spool 照旧留给启动补录）
+        lingering = [t for t in list(self._tasks) + [self._activation]
+                     if t is not None and not t.done() and t is not self._room_cancel_task]
+        for task in lingering:
+            self._keep_background(task)
         _unregister(self)
         # 封存还没落盘（后台收尾链会在落盘后排上传）：这时排的上传只会找不到 .upload.json、白退避一轮
         if self._seal_settled() and (
