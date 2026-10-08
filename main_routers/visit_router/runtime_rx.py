@@ -171,7 +171,7 @@ class ReceiveMixin:
             if self.finalizing and item.get("t") != "ack":
                 # 收尾中只把补到的整句记进转录，不上屏、不入史、不触发回复；ack 照常处理（leave 要等它确认）
                 if item.get("t") == "text":
-                    await self._record_late_text(item)
+                    await self._record_late_text(item, from_vid, now)
                 continue
             await self._dispatch(item, from_vid, now)
         if res.leave is not None:
@@ -205,7 +205,7 @@ class ReceiveMixin:
         if self.room is not None and streak:
             self.apply_effects(self.room.record_anomaly(kind))  # apply_effects 记上传异常（只记这一次）
             return
-        self.journal.note_anomaly()
+        self._note_journal_anomaly()
         if self.room is not None:
             self.room.anomalies_total += 1
         else:
@@ -440,10 +440,17 @@ class ReceiveMixin:
         if task is not None and not task.done():
             task.cancel()
 
-    async def _record_late_text(self, m: dict) -> None:
+    async def _record_late_text(self, m: dict, from_vid: str, now: float) -> None:
         ln, lp = m.get("ln"), m.get("lp")
-        if str(ln) in self._rejected_lines or not isinstance(lp, int) or isinstance(lp, bool):
+        if self.room is None or not self.activated:
+            return  # 接待前的台词照样不收（与 _dispatch 的闸门一致）
+        # 与 _rx_text 记账前同一套校验：lp 范围 / 回退、一个 lp 只属于一行、行的文本配额
+        if self._lp_rejected(self.room.observe_lp(lp, ln=ln, reliable=True, closes_line=True)):
             return
+        if self._lp_reused(ln, lp) or str(ln) in self._rejected_lines:
+            return
+        if not self._line_admitted(ln, from_vid, now):
+            return  # 与正常收口同一份配额决定：分片时已判超速的行，收尾中补到也不进转录
         speaker_from = "peer_human" if m.get("sp") == "h" else "peer_cat"
         await self.record_line(speaker_from, side=self.peer_side, lp=lp, ln=str(ln), text=str(m.get("txt") or ""),
                                truncated=m.get("truncated") is True)

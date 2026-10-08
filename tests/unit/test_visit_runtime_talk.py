@@ -1344,6 +1344,63 @@ async def test_a_line_whose_llm_ignores_cancellation_still_reaches_the_transcrip
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_line_whose_llm_ignores_the_deadline_still_ends(tmp_path, monkeypatch):
+    from tests.unit import visit_runtime_harness as harness
+
+    monkeypatch.setattr(rtm_talk, "VISIT_LLM_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(rtm_talk, "_LLM_SETTLE_S", 0.2)
+    release = asyncio.Event()
+
+    async def stubborn(self, text, **_kw):
+        while not release.is_set():
+            try:
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                continue                                      # 吞掉取消：到点了也不停
+
+    monkeypatch.setattr(harness.FakeClient, "stream_text", stubborn)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        await wait_for(lambda: rt._line is not None)
+        line = rt._line
+        await wait_for(lambda: line.task.done(), timeout=3)   # 到点就收口，不等不肯停的生成
+        assert line.llm_error == "timeout"
+    finally:
+        release.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_own_line_frames_reach_the_page_in_order(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    real_send = host.host.send_frame
+    slowed = []
+
+    async def send_frame(payload):
+        if payload.get("type") == "visit_line_delta" and not slowed:
+            slowed.append(payload)
+            await asyncio.sleep(0.2)                          # 第一片写页面时被背压
+        return await real_send(payload)
+
+    host.host.send_frame = send_frame
+    before = len(host.host.frames)
+    try:
+        rt.schedule_reply(None)
+        await wait_for(lambda: [f for f in host.host.frames[before:] if f.get("type") == "visit_line"
+                                and f.get("speaker", {}).get("side") == "host"], timeout=5)
+        await settle()
+        own = [f for f in host.host.frames[before:] if f.get("type") in ("visit_line_delta", "visit_line")
+               and f.get("speaker", {}).get("side") == "host"]
+        ln = slowed[0]["line_id"]
+        kinds = [f["type"] for f in own if f.get("line_id") == ln]
+        assert kinds[-1] == "visit_line"                      # 整句最后到，过时的分片不会排在它后面
+        assert "visit_line_delta" in kinds
+    finally:
+        host.host.send_frame = real_send
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_an_admitted_family_line_goes_out_before_leave(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt

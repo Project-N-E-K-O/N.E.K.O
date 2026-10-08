@@ -1477,6 +1477,74 @@ async def test_reliable_peer_messages_during_finalization_are_still_acked_and_re
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_late_text_during_finalization_keeps_the_reception_gate_and_the_line_quota(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from main_logic.visit.limits import RateChannel
+
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        await wait_for(lambda: len(rt.journal.lines()) >= 1)
+        real_admit = rt.limiter.admit
+        text_calls = []
+
+        def admit(vid, channel, **kw):
+            if channel is RateChannel.TEXT:
+                text_calls.append(vid)
+                return SimpleNamespace(allowed=False, reason="text_rate")
+            return real_admit(vid, channel, **kw)
+
+        monkeypatch.setattr(rt.limiter, "admit", admit)
+        lp = rt.room.max_lp_seen + 1
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "line_delta", "v": 1, "ln": "g:91", "i": 0, "lp": lp, "txt": "超速", "sp": "c", "ad": "hc",
+            "rt": "", "wu": False}, nbytes=200)                # 分片时已判超速
+        assert len(text_calls) == 1
+        stuck = asyncio.Event()
+
+        async def slow_close(*args, **kwargs):
+            await stuck.wait()
+
+        rt.close_current_line = slow_close
+        rt.request_finalize("route_end")
+        seq = rt.sequencer.contiguous_seq + 1
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:91", "lp": lp, "seq": seq, "sp": "c", "ad": "hc",
+            "rt": "", "wu": False, "final": True, "txt": "超速的整句", "truncated": False, "i_done": 1,
+        }, nbytes=200)
+        assert rt.sequencer.contiguous_seq == seq             # 照样推进序号（回 ack）
+        assert len(text_calls) == 1                           # 复用分片时的配额决定
+        assert not [r for r in rt.journal.lines() if r["text"] == "超速的整句"]
+        monkeypatch.setattr(rt.limiter, "admit", real_admit)  # 下一行配额放行，只看接待闸门
+        rt.activated = False                                  # 接待前开始收尾：补到的台词同样不收
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:92", "lp": lp + 1, "seq": seq + 1, "sp": "c", "ad": "hc",
+            "rt": "", "wu": False, "final": True, "txt": "接待前的一句", "truncated": False, "i_done": 0,
+        }, nbytes=200)
+        assert rt.sequencer.contiguous_seq == seq + 1
+        assert not [r for r in rt.journal.lines() if r["text"] == "接待前的一句"]
+        rt.activated = True
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:93", "lp": lp + 2, "seq": seq + 2, "sp": "c", "ad": "hc",
+            "rt": "", "wu": False, "final": True, "txt": "合法的最后一句", "truncated": False, "i_done": 0,
+        }, nbytes=200)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:94", "lp": lp + 2, "seq": seq + 3, "sp": "c", "ad": "hc",
+            "rt": "", "wu": False, "final": True, "txt": "占用同一 lp 的一句", "truncated": False, "i_done": 0,
+        }, nbytes=200)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:95", "lp": 10 ** 9, "seq": seq + 4, "sp": "c", "ad": "hc",
+            "rt": "", "wu": False, "final": True, "txt": "越界 lp 的一句", "truncated": False, "i_done": 0,
+        }, nbytes=200)
+        texts = [r["text"] for r in rt.journal.lines()]
+        assert "合法的最后一句" in texts                         # 合法的照样进转录
+        assert "占用同一 lp 的一句" not in texts and "越界 lp 的一句" not in texts
+        stuck.set()
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_lines_recorded_while_the_journal_header_is_late_are_backfilled(tmp_path, monkeypatch, clocks):
     monkeypatch.setattr(rtm, "_JOURNAL_OPEN_MAX_S", 0.1)
     patch_admission(monkeypatch)
@@ -1497,12 +1565,83 @@ async def test_lines_recorded_while_the_journal_header_is_late_are_backfilled(tm
         await rt.on_transport_state({"state": "joined", "peer_present": False})
         assert not rt.journal.is_open
         await rt.record_line("own_human", side="host", lp=3, ln="h:3", text="上传头还没写完时说的", truncated=False)
+        rt._on_usage({"llm_output_tokens": 7})                # 这期间的用量与异常同样先攒着
+        rt._count_anomaly("test", streak=False)
         gate.set()                                            # 上传头晚到写完
         await wait_for(lambda: [r for r in rt.journal.lines() if r["text"] == "上传头还没写完时说的"])
+        await wait_for(lambda: not rt._journal_backlog)       # 用量 / 异常排在那一行后面补记
+        assert rt.journal.usage()["llm_output_tokens"] == 7
+        assert rt.journal.anomalies == 1
     finally:
         gate.set()
         await teardown(side, clock=clock)
 
+
+
+async def test_the_backlog_still_being_flushed_is_in_the_sealed_journal(tmp_path, monkeypatch, clocks):
+    import threading
+
+    monkeypatch.setattr(rtm, "_JOURNAL_OPEN_MAX_S", 0.1)
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    gate = asyncio.Event()
+    real_open = rt.journal.open
+    write_gate = threading.Event()
+    writing = threading.Event()
+    real_append = rt.journal._append_sync
+
+    async def slow_open(**kw):
+        await gate.wait()
+        await real_open(**kw)
+
+    def slow_append(data):
+        writing.set()
+        write_gate.wait(10)                                   # 补写第 1 行时磁盘卡住
+        real_append(data)
+
+    rt.journal.open = slow_open
+    try:
+        await rt.on_transport_state({"state": "joined", "peer_present": False})
+        for i in (3, 4):
+            await rt.record_line("own_human", side="host", lp=i, ln=f"h:{i}", text=f"积压第{i}行", truncated=False)
+        rt.journal._append_sync = slow_append
+        gate.set()                                            # 上传头落盘：后台补写开始，卡在第 1 行
+        await wait_for(writing.is_set)
+        late = asyncio.ensure_future(rt.record_line("own_human", side="host", lp=5, ln="h:5", text="积压第5行",
+                                                    truncated=False))
+        await asyncio.sleep(0)                                # 积压没补完时新来的行排在积压后面
+        rt.request_finalize("route_end")                      # 补写没跑完就开始收尾封存
+        await asyncio.sleep(0.2)
+        write_gate.set()
+        await asyncio.wait_for(_finished(rt), 10)
+        await asyncio.wait_for(late, 5)
+        assert rt.journal.sealed
+        # 按写入顺序看（lines() 会按 lp 重排）：积压没补完时新来的行排在积压后面
+        texts = [r["text"] for r in rt.journal._records if str(r.get("text", "")).startswith("积压")]
+        assert texts == ["积压第3行", "积压第4行", "积压第5行"]
+    finally:
+        gate.set()
+        write_gate.set()
+        await teardown(side, clock=clock)
+
+
+async def test_state_reports_a_page_reload_as_reconnecting(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        snap = rt.snapshot()
+        assert snap["connected"] and not snap["reconnecting"]
+        rt.liveness.on_page_lost(clock())                     # 传输页重载中：没有页面能收发帧
+        snap = rt.snapshot()
+        assert not snap["connected"] and snap["reconnecting"]
+        rt.liveness.on_page_back(clock())
+        assert rt.snapshot()["connected"]
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
 
 
 async def test_shutdown_closes_the_outbox_and_the_isolated_session(tmp_path, monkeypatch):

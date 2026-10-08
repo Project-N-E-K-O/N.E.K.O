@@ -921,6 +921,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if not opening.done():
             logger.warning("visit %s: upload journal still opening, buffering its lines", self.visit_id[:6])
             opening.add_done_callback(lambda _t: _detach(self._flush_journal_backlog()))
+            # 封存前都会再 flush 一次：后台这次补写没跑完也不会漏行
         if opening.done() and not opening.cancelled() and opening.exception() is not None:
             # 上传流水建不起来：转录少一份，串门照常
             logger.warning("visit %s: upload journal not opened: %s", self.visit_id[:6],
@@ -1629,15 +1630,25 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             opening.add_done_callback(_late)
 
     async def _flush_journal_backlog(self) -> None:
-        """The upload header finally landed: write the lines recorded meanwhile, in order."""
-        backlog, self._journal_backlog = self._journal_backlog, []
-        for record in backlog:
-            if not self.journal.is_open:
-                return
+        """The upload header finally landed: write what was recorded meanwhile (lines, usage, anomalies), in order.
+
+        Every seal path calls this first. Records are taken one by one, and
+        ``append_line`` books a line in memory before it awaits the write: a
+        background flush still waiting on the disk has already booked the line
+        it took, and whatever it has not taken yet is taken here, in order.
+        """
+        while self._journal_backlog and self.journal.is_open:
+            record = dict(self._journal_backlog.pop(0))
+            kind = record.pop("kind")
             try:
-                await self.journal.append_line(**record)
+                if kind == "usage":
+                    self.journal.note_usage(record["d"], ts=record["ts"])
+                elif kind == "anomaly":
+                    self.journal.note_anomaly(ts=record["ts"])
+                else:
+                    await self.journal.append_line(**record)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("visit %s: buffered line not recorded: %s", self.visit_id[:6], type(exc).__name__)
+                logger.warning("visit %s: buffered %s not recorded: %s", self.visit_id[:6], kind, type(exc).__name__)
 
     async def _seal_late_journal(self, reason: str, ended_at: float) -> None:
         try:
@@ -1650,6 +1661,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     async def seal_and_finalize(self, reason: str) -> None:
         """Seal ``.upload.json`` first, then ``state.json.finalized`` (§3.2.6 item 22 step 3)."""
         await self._settle_journal_open()
+        await self._flush_journal_backlog()  # 上传头在等待中落盘：积压的行先补进去再封存
         try:
             self.sealed_doc = await self.journal.seal(reason, ended_at=self.wall())
         except Exception as exc:  # noqa: BLE001 - 封存失败：流水留着给下次启动补录
@@ -1784,6 +1796,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: line not closed at shutdown: %r", self.visit_id[:6], exc)
         await self._settle_journal_open(_SHUTDOWN_TASK_WAIT_S)
         try:
+            await asyncio.wait_for(self._flush_journal_backlog(), _SHUTDOWN_TASK_WAIT_S)
+        except Exception as exc:  # noqa: BLE001 - 补不完也照样封存（已取走的行都在内存副本里）
+            logger.warning("visit %s: journal backlog not flushed at shutdown: %r", self.visit_id[:6], exc)
+        try:
             self.sealed_doc = await self.journal.seal("shutdown", ended_at=self.wall())
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit %s: upload not sealed at shutdown: %s", self.visit_id[:6], type(exc).__name__)
@@ -1834,6 +1850,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         creds = self.creds
         peer = self.peer
         transcript = [self.visit_line_payload_from_record(r) for r in self.journal.lines()[-50:]]
+        reconnecting = self.liveness.self_disconnected_at is not None or self.liveness.page_departed_at is not None
         return {
             "active": self.phase not in (PHASE_ENDED,),
             "role": self.side, "side": self.side, "visit_id": self.visit_id, "phase": self.phase,
@@ -1844,8 +1861,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 "cat_name": peer.display, "short_id": peer.short_id, "human_label": None,
                 "lang": peer.lang, "hidden": bool(self.room.peer_hidden) if self.room else False,
             },
-            "connected": self.joined and self.liveness.self_disconnected_at is None,
-            "reconnecting": self.liveness.self_disconnected_at is not None,
+            # 页面重载期间（传输页还没回到房间）同样算重连中：这时没有页面能收发帧
+            "connected": self.joined and not reconnecting,
+            "reconnecting": reconnecting,
             "rtt_ms": self.stats.get("rtt_ms"), "rx_fps": self.stats.get("rx_fps"),
             "tx_fps": self.stats.get("tx_fps"),
             "reconnects": self.reconnects,

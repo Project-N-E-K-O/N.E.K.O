@@ -139,8 +139,25 @@ class TalkMixin:
         return build_mirror_meta(source="neko_visit", kind=kind, session_id=self.visit_id,
                                  event={"memory_enabled": False})
 
+    def _journal_buffering(self) -> bool:
+        """The upload header is still being written, or what was recorded meanwhile is not all written yet."""
+        opening = getattr(self, "_journal_opening", None)
+        if not self.journal.is_open:
+            return opening is not None and not opening.done()
+        return bool(self._journal_backlog)
+
     def _on_usage(self, delta: dict) -> None:
+        if self._journal_buffering():
+            # 上传头还没写完：用量同样先攒着（note_usage 在流水开起来之前什么都不记）
+            self._journal_backlog.append({"kind": "usage", "d": dict(delta), "ts": self.wall()})
+            return
         self.journal.note_usage(delta)
+
+    def _note_journal_anomaly(self) -> None:
+        if self._journal_buffering():
+            self._journal_backlog.append({"kind": "anomaly", "ts": self.wall()})
+            return
+        self.journal.note_anomaly()
 
     def _on_tts_fallback(self) -> None:
         self.spawn(self.status("VISIT_TTS_FALLBACK"))
@@ -152,7 +169,7 @@ class TalkMixin:
         if eff is None:
             return
         if eff.violation is not None:
-            self.journal.note_anomaly()
+            self._note_journal_anomaly()
         if eff.finalize_reason is not None:
             self.request_finalize(eff.finalize_reason)
             return
@@ -376,7 +393,7 @@ class TalkMixin:
                 before = {id(m) for m in session.history}
                 session.set_sink(sink)
                 try:
-                    await asyncio.wait_for(session.client.stream_text(line.prompt), timeout)
+                    await _stream_bounded(session, line.prompt, timeout)
                 except asyncio.TimeoutError:
                     line.llm_error = "timeout"
                 except asyncio.CancelledError:
@@ -430,12 +447,13 @@ class TalkMixin:
                 logger.warning("visit %s: line_delta not queued: %s", self.visit_id[:6], exc)
             self.kick()
         ad_side, ad_kind = decode_addressee(h.ad)
-        self.spawn(self.host.send_frame({
+        # 本侧的分片 / 整句 / 停嘴与对端的一样走有序显示队列：页面不会先收到整句、再收到过时的分片
+        self._post_display({
             "type": "visit_line_delta", "visit_id": self.visit_id, "line_id": h.ln, "i": piece.index,
             "lp": h.lp, "text": defang_markdown_media(piece.text),
             "speaker": self.speaker_payload(self.side, "cat"), "addressee": {"side": ad_side, "kind": ad_kind},
             "goodbye": h.wu, "ts": self.wall(), "paced": piece.paced,
-        }))
+        }, droppable=True)
 
     def _final_payload(self, h: Any, text: str, *, truncated: bool, reason: Optional[str], tail_ms: int) -> dict:
         payload = {
@@ -479,11 +497,11 @@ class TalkMixin:
             self._send_lossy({"t": "typing", "v": 1, "lp": h.lp, "sp": "c", "on": False})
         self.kick()
         ad_side, ad_kind = decode_addressee(h.ad)
-        self.spawn(self.host.send_frame(self.visit_line_payload(
+        self._post_display(self.visit_line_payload(
             ln=h.ln, lp=h.lp, side=self.side, kind="cat", ad_side=ad_side, ad_kind=ad_kind, reply_to=h.rt,
             goodbye=h.wu, text=payload["txt"], truncated=payload["truncated"],
             i_done=self.outbox.line_i_done(h.ln), trunc_reason=payload.get("trunc_reason"),
-        )))
+        ))
         if self.room is not None:
             self.apply_effects(self.room.on_local_line_done(line.ref, bool(payload["truncated"]), self.clock()))
 
@@ -511,10 +529,10 @@ class TalkMixin:
         if reason in LINE_ABORT_REASONS:
             self._send_lossy({"t": "line_abort", "v": 1, "ln": h.ln, "lp": h.lp,
                               "i_done": self.outbox.line_i_done(h.ln), "reason": reason})
-            self.spawn(self.host.send_frame({
+            self._post_display({
                 "type": "visit_line_abort", "visit_id": self.visit_id, "line_id": h.ln,
                 "i_done": self.outbox.line_i_done(h.ln), "reason": reason, "ts": self.wall(),
-            }))
+            })
         line.speaker.interrupt(reason)
 
     async def close_current_line(self, reason: str) -> None:
@@ -536,11 +554,13 @@ class TalkMixin:
         clean = clamp_text_utf8(text)
         self._ln_by_key[(lp, side)] = ln
         # 上传流水在前：它的内存记录一进来就算数，关机时 spool 写盘慢、封存先到也不会漏掉这一行
-        opening = getattr(self, "_journal_opening", None)
-        if not self.journal.is_open and opening is not None and not opening.done():
-            # 上传头还没写完（磁盘慢）：先攒着，写完后按序补写，不让开头几句从转录里丢掉
-            self._journal_backlog.append(dict(lp=lp, side=side, speaker=speaker, ts=ts, text=clean,
+        if self._journal_buffering():
+            # 上传头还没写完（磁盘慢）：先攒着，写完后按序补写，不让开头几句从转录里丢掉；
+            # 积压还没补完时新来的行也排在后面
+            self._journal_backlog.append(dict(kind="line", lp=lp, side=side, speaker=speaker, ts=ts, text=clean,
                                               truncated=bool(truncated)))
+            if self.journal.is_open:
+                await self._flush_journal_backlog()
         elif self.journal.is_open:
             try:
                 await self.journal.append_line(lp=lp, side=side, speaker=speaker, ts=ts, text=clean,
@@ -696,11 +716,11 @@ class TalkMixin:
         self.kick()
         self._add_own_human_history(ln, lp, payload["txt"])
         ad_side, ad_kind = decode_addressee(ad)
-        self.spawn(self.host.send_frame(self.visit_line_payload(
+        self._post_display(self.visit_line_payload(
             ln=ln, lp=lp, side=self.side, kind="human", ad_side=ad_side, ad_kind=ad_kind, reply_to="",
             goodbye=False, text=payload["txt"], truncated=bool(payload["truncated"]),
             trunc_reason=payload.get("trunc_reason"),
-        )))
+        ))
         return ref
 
     # ── 回家仪式句 ───────────────────────────────────────────────────
@@ -832,6 +852,32 @@ class TalkMixin:
             await close_visit_session(session)
         except Exception:  # noqa: BLE001
             pass
+
+
+async def _stream_bounded(session: Any, prompt: str, timeout: float) -> None:
+    """``stream_text`` under a deadline that never waits without bound for a stubborn cancellation.
+
+    ``asyncio.wait_for`` waits for the cancelled coroutine to actually stop: a
+    client that swallows the cancellation would hold the line (and the turn
+    lock) forever. Past the deadline, or when the caller is cancelled, the
+    stream gets ``_LLM_SETTLE_S`` to stop and is then left behind (its sink is
+    already detached on the deadline path). Raises ``TimeoutError`` past the
+    deadline, else whatever the stream raised.
+    """
+    gen = asyncio.ensure_future(session.client.stream_text(prompt))
+    gen.add_done_callback(lambda t: t.cancelled() or t.exception())  # 被撇下的那个结束时取走异常
+    try:
+        done, _pending = await asyncio.wait([gen], timeout=timeout)
+    except asyncio.CancelledError:
+        gen.cancel()
+        await asyncio.wait([gen], timeout=_LLM_SETTLE_S)
+        raise
+    if not done:
+        session.set_sink(None)  # 到点之后它再吐的字不进这一行
+        gen.cancel()
+        await asyncio.wait([gen], timeout=_LLM_SETTLE_S)
+        raise asyncio.TimeoutError
+    gen.result()
 
 
 def _drop_new_messages(session: Any, before: set[int]) -> None:
