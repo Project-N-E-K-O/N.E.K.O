@@ -370,11 +370,14 @@ async def test_memory_commits_run_as_background_tasks_of_the_character(tmp_path,
 async def test_peer_leave_waits_for_the_gap_then_keeps_the_late_line(tmp_path, monkeypatch):
     host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
     rt = host.rt
+    # 掐掉真实客人那侧发来的帧：seq + 1 只能由用例自己补上（否则它的可靠消息可能先把缺口补齐）
+    wire.drop = lambda role, payload: role == "guest"
+    await settle()
     seq = rt.sequencer.contiguous_seq
     try:
         await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload={
             "t": "leave", "v": 1, "seq": seq + 2, "last_seq": seq + 1, "reason": "home"}, nbytes=80)
-        assert rt.exit_task is None                    # 前面还缺一条：先等补齐
+        assert rt.exit_task is None, rt.finalize_reason  # 前面还缺一条：先等补齐
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "text", "v": 1, "ln": "g:50", "lp": 50, "seq": seq + 1, "sp": "c", "ad": "hc", "rt": "",
             "wu": False, "final": True, "txt": "最后一句。", "truncated": False, "i_done": 0}, nbytes=200)
