@@ -273,8 +273,15 @@ class ManagerHost:
             await asyncio.sleep(_TURN_IDLE_POLL_S)
 
     async def ack_text_session(self, request_id: Optional[str]) -> None:
-        await self._mgr.send_session_started("text", request_id=request_id)
+        # 与其它页面写入一样有界：外部路由分派在等它，页面不收也不能把这条请求卡死
+        try:
+            await asyncio.wait_for(self._mgr.send_session_started("text", request_id=request_id), _FRAME_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            logger.warning("visit: session ack timed out")
 
     async def fail_session(self, mode: str, request_id: Optional[str]) -> None:
         if request_id:
-            await self._mgr.send_session_failed(mode, request_id=request_id)
+            try:
+                await asyncio.wait_for(self._mgr.send_session_failed(mode, request_id=request_id), _FRAME_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                logger.warning("visit: session failure notice timed out")

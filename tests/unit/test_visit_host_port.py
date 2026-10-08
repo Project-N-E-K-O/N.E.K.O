@@ -105,3 +105,19 @@ async def test_mirror_and_chat_block_writes_are_bounded(monkeypatch):
     assert await asyncio.wait_for(host.render_chat_blocks([], request_id="r", source_name="s"), 3) is False
     assert time.monotonic() - started < 1.0
     stuck.set()
+
+
+async def test_session_start_answers_are_bounded(monkeypatch):
+    monkeypatch.setattr(host_port, "_FRAME_TIMEOUT_S", 0.1)
+    stuck = asyncio.Event()
+
+    async def hang(*args, **kwargs):
+        await stuck.wait()                            # 页面不收
+
+    host = ManagerHost("Host", SimpleNamespace(send_session_started=hang, send_session_failed=hang))
+    started = time.monotonic()
+    # 外层 3 s 只为让测试本身不挂死
+    await asyncio.wait_for(host.ack_text_session("r1"), 3)
+    await asyncio.wait_for(host.fail_session("audio", "r2"), 3)
+    assert time.monotonic() - started < 1.0
+    stuck.set()

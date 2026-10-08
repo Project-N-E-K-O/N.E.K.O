@@ -1143,3 +1143,63 @@ async def test_a_stuck_ordinary_speech_interrupt_releases_the_takeover(tmp_path,
         assert side.host.released == side.host.takeovers and side.host.takeovers
     finally:
         stuck.set()
+
+
+async def test_ending_while_the_main_turn_is_interrupted_fetches_no_credentials(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "guest", clock=clock, wall=wall)
+    gate, reached = asyncio.Event(), asyncio.Event()
+
+    async def slow_interrupt(timeout):
+        reached.set()
+        await gate.wait()                                   # 主对话轮还在收尾
+        return True
+
+    side.host.interrupt_main_turn = slow_interrupt
+    rt = await start_side(side, invite_code=INVITE, clock=clock, wall=wall)
+    Wire().attach(rt, None, GUEST_VID)
+    await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+    issuing = asyncio.ensure_future(rt.issue_credentials())
+    await asyncio.wait_for(reached.wait(), 5)
+    rt.request_finalize("route_end")
+    gate.set()
+    assert await issuing is None
+    await _finished(rt)
+    assert side.creds_calls == []                            # 一次性邀请码没被兑掉
+    assert side.host.takeovers == []
+
+
+async def test_a_first_join_whose_socket_was_replaced_meanwhile_does_not_count(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = rt.journal.open
+
+    opens = []
+
+    async def slow_open(**kw):
+        opens.append(kw)
+        reached.set()
+        await gate.wait()
+        await real_open(**kw)
+
+    rt.journal.open = slow_open
+    try:
+        joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
+        await asyncio.wait_for(reached.wait(), 5)
+        rt.transport.on_page_attached(clock())               # 写上传头期间新连接顶替了它
+        gate.set()
+        await asyncio.gather(joining)
+        assert rt.joined is False and rt.phase != "invite_ready"
+        await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 新连接自己报
+        assert rt.joined is True and rt.phase == "invite_ready" and rt.journal.is_open
+        assert len(opens) == 1                                # 上传头只写一次，新连接沿用
+    finally:
+        gate.set()
+        await teardown(side, clock=clock)

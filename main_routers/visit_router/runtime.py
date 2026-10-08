@@ -599,6 +599,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._journal_opening: Optional[asyncio.Task] = None
         self._sdk_ok = False
         self._pending_join: Optional[dict] = None
+        self._page_gen = 0
 
         self._init_rx()
         self._init_talk()
@@ -722,6 +723,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if not await self.host.interrupt_main_turn(_INTERRUPT_MAIN_TURN_S):
             self.request_finalize("busy")
             return False
+        if self.finalizing:
+            # 等主对话轮期间这场已被结束：不再去领凭证（guest 会兑掉一次性邀请码、扣配额，且撤不回）
+            return False
         try:
             creds = await self.deps.fetch_credentials(
                 role=self.side, visit_id=self.visit_id, char_tag=self.character_uid,
@@ -801,6 +805,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._preflight_deadline = None
         self._sdk_deadline = None
         self._join_deadline = None
+        self._page_gen += 1
 
     async def on_sdk_caps(self, caps: dict) -> None:
         """Gate ③: ``transport_ok:false`` ends the visit (Servers already counted one issue)."""
@@ -874,12 +879,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return
         self.joined = True
         self._join_deadline = None
+        gen = self._page_gen
         # 进入本场：先写上传头，之后的每一行、用量与异常都追加在它后面。独立任务：
-        # 收尾 / 关机封存之前先等它写完（否则封存时流水还没装好、封存成空操作）
-        opening = self._journal_opening = asyncio.ensure_future(self.journal.open(
-            role=self.side, own_visit_uid=creds.visit_uid, own_char_uid=self.character_uid,
-            transport=creds.transport, started_at=self.wall(), app_version=cr._app_version(),
-        ))
+        # 收尾 / 关机封存之前先等它写完（否则封存时流水还没装好、封存成空操作）。只写一次：
+        # 连接被顶替后新连接再次首次入房时沿用这一份
+        opening = self._journal_opening
+        if opening is None:
+            opening = self._journal_opening = asyncio.ensure_future(self.journal.open(
+                role=self.side, own_visit_uid=creds.visit_uid, own_char_uid=self.character_uid,
+                transport=creds.transport, started_at=self.wall(), app_version=cr._app_version(),
+            ))
         await asyncio.wait([opening])
         if not opening.cancelled() and opening.exception() is not None:
             # 上传流水建不起来：转录少一份，串门照常
@@ -887,6 +896,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                            type(opening.exception()).__name__)
         if self.finalizing:
             # 写上传头期间这场已被结束：不再把阶段翻回等待
+            return
+        if gen != self._page_gen:
+            # 写上传头期间报入房的那条连接没了 / 被顶替：这次入房不算，等新连接自己入房再报
+            self.joined = False
             return
         now = self.clock()  # 写上传头 await 过：等待期限从这一刻算
         if self.side == "host":
