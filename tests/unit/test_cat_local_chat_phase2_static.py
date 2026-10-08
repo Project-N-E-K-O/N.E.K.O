@@ -76,6 +76,7 @@ def test_cat1_hiss_easter_egg_reuses_the_independent_stretch_presentation():
         ROOT / "static" / "avatar" / "avatar-ui-buttons" / "idle-actions-and-audio.js"
     )
     core_source = read(ROOT / "static" / "avatar" / "avatar-ui-buttons" / "core.js")
+    registry_source = read(ROOT / "static" / "avatar" / "avatar-ui-buttons" / "cat-resource-registry.js")
     index_source = read(ROOT / "templates" / "index.html")
 
     assert "CAT1_HISS_STRETCH_EASTER_EGG_RATE = 0.05" in manager_source
@@ -86,8 +87,8 @@ def test_cat1_hiss_easter_egg_reuses_the_independent_stretch_presentation():
     assert "window.NekoCatIdlePresentation = Object.freeze" in actions_source
     assert "requestCat1HissStretch: _requestNekoIdleCat1HissStretchPresentation" in actions_source
     assert "requestCat1Stretch:" not in actions_source
-    assert "_NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL" in actions_source
-    assert "cat1-voice-chat-angry.mp3" in core_source
+    assert "_getNekoCatVoiceUrl('cat1.hiss')" in actions_source
+    assert "/static/assets/cat-resources/voice/dev_neko/interaction/cat1-voice-chat-angry.mp3" in registry_source
     assert "appendStickerItem(hissReply.stickerUrl, reply, pending.requestId);" in manager_source
     assert "'ฅ(`ꈊ´ฅ)'" in lexicon_source
     assert "'(ฅ`ω´ฅ)'" in lexicon_source

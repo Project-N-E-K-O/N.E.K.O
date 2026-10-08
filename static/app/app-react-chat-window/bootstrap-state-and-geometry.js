@@ -1024,6 +1024,34 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         };
     }
 
+    function getIdleCat1CompactMirrorPlayYarnResource() {
+        var registry = window.NekoCatResourceRegistry;
+        if (!registry || typeof registry.getAppearance !== 'function') return null;
+        try {
+            var resource = registry.getAppearance('action.cat1.play_yarn', { random: false });
+            if (!resource || !resource.metadata || resource.metadata.wideArt !== true) return null;
+            return resource;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function normalizeIdleCat1CompactMirrorAssetUrl(value) {
+        return String(value || '').split(/[?#]/, 1)[0];
+    }
+
+    function isIdleCat1CompactMirrorWideArt(src) {
+        var resource = getIdleCat1CompactMirrorPlayYarnResource();
+        if (!resource) return false;
+        var normalizedSrc = normalizeIdleCat1CompactMirrorAssetUrl(src);
+        if (!normalizedSrc) return false;
+        var urls = Array.isArray(resource.urls) ? resource.urls : [];
+        if (!urls.length && resource.url) urls = [resource.url];
+        return urls.some(function (url) {
+            return normalizeIdleCat1CompactMirrorAssetUrl(url) === normalizedSrc;
+        });
+    }
+
     function showIdleCat1CompactMirror(detail) {
         var element = getIdleCat1CompactMirrorElement();
         var rect = getIdleCat1CompactMirrorPageRect(detail);
@@ -1036,7 +1064,7 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         if (image) {
             var src = detail && detail.assetUrl ? String(detail.assetUrl) : '/static/assets/neko-idle/cat-idle-cat1.gif';
             if (image.getAttribute('src') !== src) image.setAttribute('src', src);
-            if (src.indexOf('/static/assets/neko-idle/cat-idle-cat-play-1.gif') !== -1) {
+            if (isIdleCat1CompactMirrorWideArt(src)) {
                 element.setAttribute('data-neko-cat1-wide-art', 'true');
             } else {
                 element.removeAttribute('data-neko-cat1-wide-art');

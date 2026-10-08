@@ -386,6 +386,7 @@ def test_drawing_guess_static_route_contract():
     assert 'id="pngtuber-container"' in html
     assert 'class="dg-model-renderer dg-pngtuber-renderer hidden"' in html
     assert 'id="model-fallback-container" class="dg-model-fallback hidden" aria-hidden="true" hidden' in html
+    assert "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif?v={{ static_asset_version }}" in html
     assert ".dg-model-loading[hidden]" in html
     assert ".dg-pngtuber-renderer" in html
     assert "dg-model-loading-spin" in html

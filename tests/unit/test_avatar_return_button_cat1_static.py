@@ -42,6 +42,7 @@ CAT1_PLAY_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-i
 CAT1_EAT_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-eat.mp3"
 CAT1_CHAT_HISS_STICKER_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "cat1-chat-angry.gif"
 CAT1_CHAT_HISS_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-chat-angry.mp3"
+CAT_RESOURCE_ROOT = PROJECT_ROOT / "static" / "assets" / "cat-resources"
 
 
 def test_cat1_return_button_visual_contract_is_present():
@@ -49,7 +50,7 @@ def test_cat1_return_button_visual_contract_is_present():
 
     assert "neko:auto-goodbye:state-change" in source
     assert "data-neko-idle-tier" in source
-    assert "/static/assets/neko-idle/cat-idle-cat1.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif" in source
 
     create_return_block = source.split("ManagerPrototype.createReturnButton = function()", 1)[1].split(
         "ManagerPrototype._setupReturnButtonDrag",
@@ -62,6 +63,12 @@ def test_cat1_return_button_visual_contract_is_present():
 
 def test_cat1_return_button_assets_are_version_tracked():
     assert set(AVATAR_UI_BUTTONS_DIR.glob("*.js")) <= set(pages_router._YUI_GUIDE_ASSET_VERSION_PATHS)
+    assert tuple(sorted(CAT_RESOURCE_ROOT.rglob("*")))
+    assert all(
+        path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+        for path in CAT_RESOURCE_ROOT.rglob("*")
+        if path.is_file()
+    )
     assert INDEX_CSS_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_PLAY_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
@@ -83,8 +90,8 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     chat_source = read_js_parts(APP_REACT_CHAT_WINDOW_PATH)
     interpage_source = read_js_parts(APP_INTERPAGE_PATH)
 
-    assert "_NEKO_IDLE_CAT1_PLAY_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-play-1.gif'" in source
-    assert "_NEKO_IDLE_CAT1_PLAY_SOUND_URL = '/static/assets/neko-idle/cat1-voice3.mp3'" in source
+    assert "_NEKO_IDLE_CAT1_PLAY_ASSET_URL = _getNekoCatAppearanceUrl('action.cat1.play_yarn', { random: false })" in source
+    assert "_NEKO_IDLE_CAT1_PLAY_SOUND_URL = _getNekoCatVoiceUrl('cat1.play_yarn', { random: false })" in source
     assert "function _playNekoIdleCat1PlayAction(button)" in source
 
     play_block = source.split("function _playNekoIdleCat1PlayAction(button)", 1)[1].split(
@@ -93,12 +100,13 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     )[0]
     assert "_cancelNekoIdleCat1EatAction(button, { restoreArt: false });" in play_block
     assert "_NEKO_IDLE_CAT1_PLAY_ASSET_URL" in play_block
-    assert "_NEKO_IDLE_CAT1_PLAY_SOUND_URL" in play_block
+    assert "_getNekoCatVoiceUrl('cat1.play_yarn')" in play_block
     assert "'cat1-play-action'" in play_block
     assert "let audioDone" not in play_block
     assert "markAudioDone" not in play_block
     assert "if (!gifDone) return;" in play_block
-    assert "_playNekoIdleSound(state, _NEKO_IDLE_CAT1_PLAY_SOUND_URL, _NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME);" in play_block
+    assert "_playNekoIdleSound(" in play_block
+    assert "_getNekoCatVoiceUrl('cat1.play_yarn')" in play_block
     finish_play_block = source.split("function _finishNekoIdleCat1PlayAction(button, token)", 1)[1].split(
         "function _playNekoIdleCat1PlayAction(button)",
         1,
@@ -161,7 +169,10 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     assert ".neko-idle-return-btn.is-cat1-eating .neko-idle-thought-bubble" not in thought_bubble_hidden_block
 
     assert 'data-neko-cat1-wide-art' in chat_source
-    assert '/static/assets/neko-idle/cat-idle-cat-play-1.gif' in chat_source
+    assert "getAppearance('action.cat1.play_yarn', { random: false })" in chat_source
+    assert "resource.metadata.wideArt !== true" in chat_source
+    assert "isIdleCat1CompactMirrorWideArt(src)" in chat_source
+    assert "src.indexOf('/static/assets/neko-idle/cat-idle-cat-play-1.gif')" not in chat_source
     assert '.neko-idle-cat1-compact-mirror[data-neko-cat1-wide-art="true"] .neko-idle-cat1-compact-mirror-art' in css
     assert "body[data-neko-ball-drag] .neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art" in app_ui_source
     assert "width:175%!important" in app_ui_source
@@ -225,7 +236,7 @@ def test_cat1_stretch_action_has_an_independent_runner():
     assert "function _settleNekoIdleReturnSubactionToIdle" not in source
     assert "function _scheduleNekoIdleReturnSubactionSettle" not in source
     assert "function _requestNekoIdleCat1HissStretchPresentation()" in play_block
-    assert "_NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL" in play_block
+    assert "_getNekoCatVoiceUrl('cat1.hiss')" in play_block
     assert "requestCat1HissStretch: _requestNekoIdleCat1HissStretchPresentation" in play_block
 
 

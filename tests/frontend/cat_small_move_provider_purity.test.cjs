@@ -101,6 +101,7 @@ test('small_move capability check is pure while actual start owns hover preparat
         _canNekoIdleCat1MoveSoloWithExpandedChat: () => true,
         _hasNekoIdleCat1MoveVectorSpace: () => true,
         _getNekoIdleCat1Journey: () => state,
+        _getNekoCatActionResourceCapability: () => ({ available: true, reason: 'allowed' }),
         _cancelNekoIdleCat1Journey: () => {
             throw new Error('edge-peek cancellation should not run');
         },
@@ -132,4 +133,20 @@ test('small_move capability check is pure while actual start owns hover preparat
     assert.equal(context._canScheduleNekoIdleCat1PairMove(button, state), true,
         'expanded and compact chat must retain the existing solo cat move capability');
     assert.ok(geometryReads > 0, 'solo capability must validate the available cat movement space');
+});
+
+test('small_move runner rejects missing resources before preparing state', () => {
+    const context = vm.createContext({
+        _getNekoCatActionResourceCapability: () => ({ available: false, reason: 'appearance_unavailable' }),
+        _getNekoIdleCat1Journey: () => {
+            throw new Error('runner state must not be touched when resources are unavailable');
+        },
+    });
+
+    vm.runInContext(sourceBetween(
+        'function _startNekoIdleCat1PairMove',
+        'function _refreshNekoIdleCat1Observer'
+    ), context, { filename: JOURNEY_PATH });
+
+    assert.equal(context._startNekoIdleCat1PairMove({}, { source: 'cat_mind' }), false);
 });

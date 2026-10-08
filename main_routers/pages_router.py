@@ -54,6 +54,11 @@ _CHARACTER_CARD_MANAGER_JS_PATHS = tuple(sorted(
 _MODEL_MANAGER_JS_PATHS = tuple(sorted(
     (_PROJECT_ROOT / "static/js/model_manager").glob("*.js")
 ))
+_CAT_RESOURCE_ASSET_PATHS = tuple(sorted(
+    path
+    for path in (_PROJECT_ROOT / "static/assets/cat-resources").rglob("*")
+    if path.is_file()
+))
 _YUI_GUIDE_DIRECTOR_JS_PATHS = tuple(sorted(
     (_PROJECT_ROOT / "static/tutorial/yui-guide/director").glob("*.js")
 ))
@@ -194,6 +199,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/voice_identity.css",
     _PROJECT_ROOT / "static/css/model_manager.css",
     *_MODEL_MANAGER_JS_PATHS,
+    *_CAT_RESOURCE_ASSET_PATHS,
     _PROJECT_ROOT / "static/vrm/motion/player.js",
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
     *_TEMPLATE_STATIC_ASSET_VERSION_PATHS,

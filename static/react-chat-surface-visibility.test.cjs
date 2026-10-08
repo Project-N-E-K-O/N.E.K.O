@@ -25,6 +25,22 @@ function chatFontPresetBootstrapBlock() {
     return bootstrapSource.slice(start, end);
 }
 
+function compactMirrorWideArtMatcherBlock() {
+    const start = bootstrapSource.indexOf('    function getIdleCat1CompactMirrorPlayYarnResource()');
+    const end = bootstrapSource.indexOf('    function showIdleCat1CompactMirror(detail)', start);
+    assert.notEqual(start, -1, 'missing compact mirror metadata helper');
+    assert.notEqual(end, -1, 'missing compact mirror metadata helper boundary');
+    return bootstrapSource.slice(start, end);
+}
+
+function createCompactMirrorWideArtMatcher(registry) {
+    const source = compactMirrorWideArtMatcherBlock();
+    return vm.runInNewContext(
+        `(function () { ${source}; return isIdleCat1CompactMirrorWideArt; })()`,
+        { window: { NekoCatResourceRegistry: registry } },
+    );
+}
+
 function createChatFontPresetContext(storedPreset = null) {
     const attributes = {};
     const listeners = {};
@@ -199,4 +215,26 @@ test('chat host restores and live-syncs the shared font preset', () => {
         newValue: null
     });
     assert.equal(live.attributes['data-neko-chat-font-preset'], 'handwritten');
+});
+
+test('compact mirror wide art follows play-yarn metadata instead of a filename', () => {
+    const playYarnUrl = '/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.gif';
+    const matcher = createCompactMirrorWideArtMatcher({
+        getAppearance(slot, options) {
+            assert.equal(slot, 'action.cat1.play_yarn');
+            assert.equal(options.random, false);
+            return {
+                urls: [playYarnUrl],
+                metadata: { wideArt: true },
+            };
+        },
+    });
+
+    assert.equal(matcher(`${playYarnUrl}?v=123`), true);
+    assert.equal(matcher('/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif'), false);
+});
+
+test('compact mirror keeps the narrow fallback when registry metadata is unavailable', () => {
+    const matcher = createCompactMirrorWideArtMatcher(null);
+    assert.equal(matcher('/static/assets/neko-idle/cat-idle-cat-play-1.gif'), false);
 });

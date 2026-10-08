@@ -141,7 +141,8 @@ Object.assign(AvatarButtonMixin.methods, {
 
             const returnArt = document.createElement('img');
             returnArt.className = 'neko-idle-return-art';
-            returnArt.src = _getNekoIdleReturnAssetUrl(currentTier);
+            const initialReturnArtUrl = _getNekoIdleReturnAssetUrl(currentTier);
+            if (initialReturnArtUrl) returnArt.src = initialReturnArtUrl;
             returnArt.alt = window.t ? window.t('buttons.return') : '请她回来';
             returnArt.draggable = false;
             Object.assign(returnArt.style, {

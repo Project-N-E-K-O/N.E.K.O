@@ -120,6 +120,8 @@ function _finishNekoIdleCat1EatAction(button, token) {
 
 function _playNekoIdleCat1EatAction(button) {
     const catMindRunOptions = arguments[1] || {};
+    if (typeof _getNekoCatActionResourceCapability !== 'function' ||
+        !_getNekoCatActionResourceCapability('cat1_eat_snack').available) return false;
     if (!button) return false;
     if (_isNekoIdleDesktopWindowInteractionActionActive(button)) return false;
     if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return false;
@@ -200,7 +202,11 @@ function _playNekoIdleCat1EatAction(button) {
         latestState.timer = setTimeout(markGifDone, delayMs);
     });
 
-    const audio = _playNekoIdleSound(state, _NEKO_IDLE_CAT1_EAT_SOUND_URL, _NEKO_IDLE_CAT1_EAT_SOUND_VOLUME);
+    const audio = _playNekoIdleSound(
+        state,
+        _getNekoCatVoiceUrl('cat1.eat'),
+        _NEKO_IDLE_CAT1_EAT_SOUND_VOLUME
+    );
     if (!audio) {
         audioDone = true;
     } else {
@@ -322,6 +328,8 @@ function _finishNekoIdleCat1StretchAction(button, token) {
 }
 
 function _playNekoIdleCat1StretchAction(button, options = {}) {
+    if (typeof _getNekoCatAppearanceUrl !== 'function' ||
+        !_getNekoCatAppearanceUrl('movement.cat1.stretch', { random: false })) return false;
     if (!button) return false;
     if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return false;
     if (_normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier')) !== _NEKO_IDLE_TIER_CAT1) return false;
@@ -403,11 +411,15 @@ function _findNekoIdleCat1StretchPresentationButton() {
 }
 
 function _requestNekoIdleCat1HissStretchPresentation() {
+    const resourceCapability = typeof _getNekoCatActionResourceCapability === 'function'
+        ? _getNekoCatActionResourceCapability('cat1_hiss_stretch')
+        : { available: false, reason: 'resource_registry_unavailable' };
+    if (!resourceCapability.available) return false;
     const button = _findNekoIdleCat1StretchPresentationButton();
     if (!button || !_playNekoIdleCat1StretchAction(button)) return false;
     _playNekoIdleSound(
         _getNekoIdleCat1StretchActionState(button),
-        _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL,
+        _getNekoCatVoiceUrl('cat1.hiss'),
         _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_VOLUME
     );
     return true;
@@ -742,6 +754,8 @@ function _finishNekoIdleCat1PlayAction(button, token) {
 function _playNekoIdleCat1PlayAction(button) {
     const catMindRunOptions = arguments[1] || {};
     const isCatMindRun = catMindRunOptions.source === 'cat_mind';
+    if (typeof _getNekoCatActionResourceCapability !== 'function' ||
+        !_getNekoCatActionResourceCapability('cat1_play_yarn').available) return false;
     if (!button) return false;
     if (_isNekoIdleDesktopWindowInteractionActionActive(button)) return false;
     if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return false;
@@ -826,7 +840,11 @@ function _playNekoIdleCat1PlayAction(button) {
         latestState.timer = setTimeout(markGifDone, delayMs);
     });
 
-    _playNekoIdleSound(state, _NEKO_IDLE_CAT1_PLAY_SOUND_URL, _NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME);
+    _playNekoIdleSound(
+        state,
+        _getNekoCatVoiceUrl('cat1.play_yarn'),
+        _NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME
+    );
     finishIfReady();
     return true;
 }
@@ -1067,12 +1085,22 @@ function _playNekoIdleSleepSound(tier, token) {
     const actionId = tier === _NEKO_IDLE_TIER_CAT3
         ? _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK
         : _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK;
+    const resourceCapability = typeof _getNekoCatActionResourceCapability === 'function'
+        ? _getNekoCatActionResourceCapability(actionId)
+        : { available: false, reason: 'resource_registry_unavailable' };
+    if (!resourceCapability.available) return false;
+
     const run = _beginNekoCatMindStateAction(_nekoIdleSleepSoundState, actionId, tier, {
         source: catMindRunOptions.source || 'sleep-feedback-runner', requestId: catMindRunOptions.requestId
     });
     _notifyNekoCatMindRunnerAccepted(catMindRunOptions, run);
 
-    const audio = _playNekoIdleSound(_nekoIdleSleepSoundState, _pickNekoIdleSleepSoundSrc(config), config.volume);
+    const sleepSlot = tier === _NEKO_IDLE_TIER_CAT3 ? 'cat3.sleep' : 'cat2.sleep';
+    const audio = _playNekoIdleSound(
+        _nekoIdleSleepSoundState,
+        _getNekoCatVoiceUrl(sleepSlot),
+        config.volume
+    );
     if (!audio) {
         _reportNekoCatMindStateActionRunResult(_nekoIdleSleepSoundState, run, null, _NEKO_CAT_MIND_ACTION_RESULTS.FAILED, { reason: 'audio_not_started' });
         return false;
@@ -1132,9 +1160,7 @@ function _stopNekoIdleCat1AmbientSoundAudio(options = {}) {
 }
 
 function _pickNekoIdleCat1AmbientSoundUrl() {
-    const urls = _NEKO_IDLE_CAT1_AMBIENT_SOUND_URLS;
-    if (!urls || !urls.length) return '';
-    return urls[Math.floor(Math.random() * urls.length)] || urls[0] || '';
+    return _getNekoCatVoiceUrl('cat1.ambient');
 }
 
 function _playNekoIdleCat1AmbientSound(token) {
@@ -1145,6 +1171,11 @@ function _playNekoIdleCat1AmbientSound(token) {
         _isAnyNekoIdleReturnDragActionActive()) {
         return false;
     }
+
+    const resourceCapability = typeof _getNekoCatActionResourceCapability === 'function'
+        ? _getNekoCatActionResourceCapability(_NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING)
+        : { available: false, reason: 'resource_registry_unavailable' };
+    if (!resourceCapability.available) return false;
 
     const run = _beginNekoCatMindStateAction(_nekoIdleCat1AmbientSoundState, _NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING, _NEKO_IDLE_TIER_CAT1, {
         source: catMindRunOptions.source || 'cat1-social-ping-runner', requestId: catMindRunOptions.requestId
@@ -1216,7 +1247,7 @@ function _playNekoIdleCat1DragSound(tier, options = {}) {
     _stopNekoIdleSoundAudio(_nekoIdleCat1RapidDragSoundState);
     _playNekoIdleSound(
         _nekoIdleCat1DragSoundState,
-        _NEKO_IDLE_CAT1_DRAG_SOUND_URL,
+        _getNekoCatVoiceUrl('cat1.drag'),
         _NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME
     );
 }
@@ -1227,7 +1258,7 @@ function _playNekoIdleCat1RapidDragSound(tier, options = {}) {
     _stopNekoIdleSoundAudio(_nekoIdleCat1DragSoundState);
     _playNekoIdleSound(
         _nekoIdleCat1RapidDragSoundState,
-        _NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL,
+        _getNekoCatVoiceUrl('cat1.rapid_drag'),
         _NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME
     );
 }

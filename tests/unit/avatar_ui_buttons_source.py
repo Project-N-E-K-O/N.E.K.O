@@ -4,6 +4,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AVATAR_UI_BUTTONS_DIR = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons"
 AVATAR_UI_BUTTON_PART_NAMES = (
+    "cat-resource-registry.js",
     "core.js",
     "idle-assets-and-question.js",
     "idle-playground.js",

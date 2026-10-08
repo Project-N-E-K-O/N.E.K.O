@@ -177,6 +177,7 @@ test('independent stretch runner and hiss entry keep hard gates and one owned li
   let edgePeekActive = true;
   let scheduled = null;
   let journeySyncs = 0;
+  let hissCapabilityAvailable = false;
   const runtimeGate = {
     validCatRuntime: true,
     tier: 'cat1',
@@ -222,6 +223,12 @@ test('independent stretch runner and hiss entry keep hard gates and one owned li
     _NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS: 700,
     _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL: 'hiss.mp3',
     _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_VOLUME: 0.12,
+    _getNekoCatVoiceUrl: () => 'hiss.mp3',
+    _getNekoCatAppearanceUrl: () => 'stretch.gif',
+    _getNekoCatActionResourceCapability: () => ({
+      available: hissCapabilityAvailable,
+      reason: hissCapabilityAvailable ? 'allowed' : 'voice_unavailable',
+    }),
     _isNekoIdleCat1PlaygroundEntryOrDropActive: () => false,
     _normalizeNekoIdleReturnTier: (tier) => tier,
     _isNekoIdleReturnDragActionBlocking: () => false,
@@ -277,6 +284,8 @@ test('independent stretch runner and hiss entry keep hard gates and one owned li
   assert.equal(artSources.length, 0);
   assert.equal(hissSounds.length, 0);
 
+  hissCapabilityAvailable = true;
+
   edgePeekActive = false;
   runtimeGate.yarnDragActive = true;
   assert.equal(context.window.NekoCatIdlePresentation.requestCat1HissStretch(), false);
@@ -327,4 +336,7 @@ test('independent stretch runner and hiss entry keep hard gates and one owned li
   scheduled.callback();
   assert.equal(button.__nekoIdleCat1StretchActionState.active, false);
   assert.equal(soundStops.length, 2);
+
+  context._getNekoCatAppearanceUrl = () => '';
+  assert.equal(context._playNekoIdleCat1StretchAction(button), false);
 });

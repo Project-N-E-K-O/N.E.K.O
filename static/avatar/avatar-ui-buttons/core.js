@@ -486,8 +486,25 @@ const _NEKO_IDLE_RETURN_DRAG_PENDING_CLASS = 'is-drag-action-pending';
 const _NEKO_IDLE_RETURN_DRAG_ACTION_CLASS = 'is-drag-action';
 const _NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR = 'data-neko-cat1-play-finishing';
 const _NEKO_IDLE_CAT1_PLAY_YARN_RELEASE_SIZE_PX = 51;
-const _NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-move-5.gif';
-const _NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-funny.mp3';
+const _NEKO_CAT_RESOURCE_REGISTRY = window.NekoCatResourceRegistry;
+function _getNekoCatAppearanceUrl(slot, options) {
+    const result = _NEKO_CAT_RESOURCE_REGISTRY && _NEKO_CAT_RESOURCE_REGISTRY.getAppearance(slot, options);
+    return result && result.available ? result.url : '';
+}
+function _getNekoCatVoiceUrl(slot, options) {
+    const result = _NEKO_CAT_RESOURCE_REGISTRY && _NEKO_CAT_RESOURCE_REGISTRY.getVoice(slot, options);
+    return result && result.available ? result.url : '';
+}
+function _getNekoCatAppearanceUrls(slot) {
+    const result = _NEKO_CAT_RESOURCE_REGISTRY && _NEKO_CAT_RESOURCE_REGISTRY.getAppearance(slot, { random: false });
+    return result && result.available ? result.urls : [];
+}
+function _getNekoCatVoiceUrls(slot) {
+    const result = _NEKO_CAT_RESOURCE_REGISTRY && _NEKO_CAT_RESOURCE_REGISTRY.getVoice(slot, { random: false });
+    return result && result.available ? result.urls : [];
+}
+const _NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL = _getNekoCatAppearanceUrl('drag.rapid', { random: false });
+const _NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL = _getNekoCatVoiceUrl('cat1.rapid_drag', { random: false });
 const _NEKO_IDLE_CAT1_RAPID_DRAG_REACTION_MS = 5000;
 const _NEKO_IDLE_CAT1_RAPID_DRAG_WINDOW_MS = 1100;
 const _NEKO_IDLE_CAT1_RAPID_DRAG_MIN_DISTANCE_PX = 28;
@@ -509,16 +526,13 @@ const _NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES = Object.freeze([
 ]);
 const _NEKO_IDLE_RETURN_DRAG_ASSET_URLS_BY_TIER = Object.freeze({
     [_NEKO_IDLE_TIER_CAT1]: Object.freeze([
-        '/static/assets/neko-idle/cat-idle-cat-move-1.gif',
-        '/static/assets/neko-idle/cat-idle-cat-move-2.gif'
+        ..._getNekoCatAppearanceUrls('drag.cat1')
     ]),
     [_NEKO_IDLE_TIER_CAT2]: Object.freeze([
-        '/static/assets/neko-idle/cat-idle-cat-move-2.gif',
-        '/static/assets/neko-idle/cat-idle-cat-move-3.gif'
+        ..._getNekoCatAppearanceUrls('drag.cat2')
     ]),
     [_NEKO_IDLE_TIER_CAT3]: Object.freeze([
-        '/static/assets/neko-idle/cat-idle-cat-move-3.gif',
-        '/static/assets/neko-idle/cat-idle-cat-move-4.gif'
+        ..._getNekoCatAppearanceUrls('drag.cat3')
     ])
 });
 const _NEKO_IDLE_THOUGHT_BUBBLE_ACTIVE_CLASS = 'is-thought-bubble-active';
@@ -539,7 +553,7 @@ const _NEKO_IDLE_CAT1_QUESTION_MARK_KEY_SEQUENCE = Object.freeze([
     'ArrowLeft', 'ArrowLeft', 'ArrowRight', 'ArrowRight',
     'KeyB', 'KeyA', 'KeyB', 'KeyA'
 ]);
-const _NEKO_IDLE_CAT1_PLAYGROUND_AIR_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-move-2.gif';
+const _NEKO_IDLE_CAT1_PLAYGROUND_AIR_ASSET_URL = _getNekoCatAppearanceUrl('playground.cat1.air', { random: false });
 const _NEKO_IDLE_CAT1_PLAYGROUND_GRAVITY_PX_PER_SECOND2 = 2600;
 const _NEKO_IDLE_CAT1_PLAYGROUND_MAX_DELTA_MS = 50;
 const _NEKO_IDLE_CAT1_PLAYGROUND_HORIZONTAL_DAMPING = 0.992;
@@ -586,14 +600,14 @@ const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_TARGET_WAIT_MS = 900;
 const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
 let _nekoIdleCat1PlaygroundViewportBottomPx = null;
 let _nekoIdleCat1PlaygroundViewportBottomRefreshSeq = 0;
-const _NEKO_IDLE_CAT1_EAT_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat1-eat.gif';
-const _NEKO_IDLE_CAT1_EAT_SOUND_URL = '/static/assets/neko-idle/cat1-voice-eat.mp3';
+const _NEKO_IDLE_CAT1_EAT_ASSET_URL = _getNekoCatAppearanceUrl('action.cat1.eat', { random: false });
+const _NEKO_IDLE_CAT1_EAT_SOUND_URL = _getNekoCatVoiceUrl('cat1.eat', { random: false });
 const _NEKO_IDLE_CAT1_EAT_SOUND_VOLUME = 0.12;
 const _NEKO_IDLE_CAT1_EAT_SOUND_FALLBACK_MS = 5000;
-const _NEKO_IDLE_CAT1_PLAY_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-play-1.gif';
-const _NEKO_IDLE_CAT1_PLAY_SOUND_URL = '/static/assets/neko-idle/cat1-voice3.mp3';
+const _NEKO_IDLE_CAT1_PLAY_ASSET_URL = _getNekoCatAppearanceUrl('action.cat1.play_yarn', { random: false });
+const _NEKO_IDLE_CAT1_PLAY_SOUND_URL = _getNekoCatVoiceUrl('cat1.play_yarn', { random: false });
 const _NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME = 0.10;
-const _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL = '/static/assets/neko-idle/cat1-voice-chat-angry.mp3';
+const _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL = _getNekoCatVoiceUrl('cat1.hiss', { random: false });
 const _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_VOLUME = 0.12;
 const _NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS = 5000;
 const _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_FALLBACK_VISIBLE_MS = 8000;
@@ -607,26 +621,22 @@ const _NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME = 0.12;
 const _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS = 900;
 const _NEKO_IDLE_RETURN_DEFAULT_Z_INDEX = '99999';
 const _NEKO_IDLE_RETURN_COMPACT_SURFACE_Z_INDEX = '100050';
-const _NEKO_IDLE_CAT1_AMBIENT_SOUND_URLS = Object.freeze([
-    '/static/assets/neko-idle/cat1-voice1.mp3',
-    '/static/assets/neko-idle/cat1-voice2.mp3',
-    '/static/assets/neko-idle/cat1-voice3.mp3'
-]);
-const _NEKO_IDLE_CAT1_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-click.mp3';
+const _NEKO_IDLE_CAT1_AMBIENT_SOUND_URLS = Object.freeze(
+    _getNekoCatVoiceUrls('cat1.ambient').slice()
+);
+const _NEKO_IDLE_CAT1_DRAG_SOUND_URL = _getNekoCatVoiceUrl('cat1.drag', { random: false });
 const _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000;
 const _NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.06;
 const _NEKO_IDLE_SLEEP_SOUND_BY_TIER = Object.freeze({
     [_NEKO_IDLE_TIER_CAT2]: Object.freeze({
         srcs: Object.freeze([
-            '/static/assets/neko-idle/cat2-sleep1.mp3',
-            '/static/assets/neko-idle/cat2-sleep2.mp3'
+            ..._getNekoCatVoiceUrls('cat2.sleep')
         ]),
         volume: _NEKO_IDLE_SLEEP_SOUND_VOLUME
     }),
     [_NEKO_IDLE_TIER_CAT3]: Object.freeze({
         srcs: Object.freeze([
-            '/static/assets/neko-idle/cat3-sleep1.mp3',
-            '/static/assets/neko-idle/cat3-sleep2.mp3'
+            ..._getNekoCatVoiceUrls('cat3.sleep')
         ]),
         volume: _NEKO_IDLE_SLEEP_SOUND_VOLUME
     })

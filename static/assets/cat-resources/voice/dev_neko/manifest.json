@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "group_id": "dev_neko",
+  "kind": "voice",
+  "slots": {
+    "cat1.ambient": {
+      "resources": [
+        {"path": "/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice1.mp3", "media_type": "audio/mpeg"},
+        {"path": "/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice2.mp3", "media_type": "audio/mpeg"},
+        {"path": "/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice3.mp3", "media_type": "audio/mpeg"}
+      ]
+    },
+    "cat1.drag": {
+      "resources": [
+        {"path": "/static/assets/cat-resources/voice/dev_neko/interaction/cat1-voice-click.mp3", "media_type": "audio/mpeg"}
+      ]
+    },
+    "cat1.rapid_drag": {
+      "resources": [
+        {"path": "/static/assets/cat-resources/voice/dev_neko/interaction/cat1-voice-funny.mp3", "media_type": "audio/mpeg"}
+      ]
+    },
+    "cat1.eat": {
+      "resources": [
+        {"path": "/static/assets/cat-resources/voice/dev_neko/action/cat1-voice-eat.mp3", "media_type": "audio/mpeg"}
+      ]
+    },
+    "cat1.play_yarn": {
+      "resources": [
+        {"path": "/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice3.mp3", "media_type": "audio/mpeg"}
+      ]
+    },
+    "cat1.hiss": {
+      "resources": [
+        {"path": "/static/assets/cat-resources/voice/dev_neko/interaction/cat1-voice-chat-angry.mp3", "media_type": "audio/mpeg"}
+      ]
+    },
+    "cat2.sleep": {
+      "resources": [
+        {"path": "/static/assets/cat-resources/voice/dev_neko/sleep/cat2-sleep1.mp3", "media_type": "audio/mpeg"},
+        {"path": "/static/assets/cat-resources/voice/dev_neko/sleep/cat2-sleep2.mp3", "media_type": "audio/mpeg"}
+      ]
+    },
+    "cat3.sleep": {
+      "resources": [
+        {"path": "/static/assets/cat-resources/voice/dev_neko/sleep/cat3-sleep1.mp3", "media_type": "audio/mpeg"},
+        {"path": "/static/assets/cat-resources/voice/dev_neko/sleep/cat3-sleep2.mp3", "media_type": "audio/mpeg"}
+      ]
+    }
+  }
+}
