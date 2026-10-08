@@ -2580,3 +2580,168 @@ def test_recovery_keeps_an_empty_entry_created_after_the_interruption(tmp_path, 
 
     assert stopped["error_code"] == "stop_after_recovery"
     assert (target_root / "memory").is_dir()
+
+
+
+def _crash_publishing_memory_after_config(tmp_path, monkeypatch):
+    """Fresh target; config is published and recorded, then the process dies
+    while publishing memory."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("migrated", encoding="utf-8")
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "facts.json").write_bytes(b"{}")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _crash_on_memory(staged, target):
+        if Path(staged).name == "memory":
+            raise KeyboardInterrupt("simulated process loss")
+        original_publish(staged, target)
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_on_memory)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.undo()
+    return config_manager, target_root
+
+
+@pytest.mark.unit
+def test_recovery_keeps_a_published_target_written_since(tmp_path, monkeypatch):
+    """A sync client wrote into the published config while the app was down;
+    rolling back would delete that write."""
+    config_manager, target_root = _crash_publishing_memory_after_config(tmp_path, monkeypatch)
+    (target_root / "config" / "characters.json").write_text("written since", encoding="utf-8")
+
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "migration_publish_conflict"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "written since"
+
+
+@pytest.mark.unit
+def test_recovery_still_rolls_back_an_unchanged_published_target(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, target_root = _crash_publishing_memory_after_config(tmp_path, monkeypatch)
+
+    _stop_after_recovery(monkeypatch, storage_migration_module)
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "stop_after_recovery"
+    assert not (target_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_recovery_stops_when_target_and_backup_are_both_gone(tmp_path, monkeypatch):
+    """Moved into the backup, then the backup was lost: the original is gone
+    and a retry must not treat it as never touched."""
+    import shutil
+
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    original_move = storage_migration_module._move_entry_keeping_mode
+
+    def _crash_after_move(source, destination):
+        original_move(source, destination)
+        raise KeyboardInterrupt("simulated process loss")
+
+    monkeypatch.setattr(storage_migration_module, "_move_entry_keeping_mode", _crash_after_move)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.undo()
+    (backup,) = (target_root / ".smtx").glob("*/backup/config")
+    shutil.rmtree(backup)
+
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "migration_rollback_required"
+    assert list((target_root / ".smtx").glob("*/stage/config"))
+
+
+@pytest.mark.unit
+def test_kept_target_config_withholds_evidence_for_an_entry_copied_into_the_target(tmp_path):
+    """The target lacks workshop, so it is copied over; the kept target
+    config still points at the source's workshop, which cleanup must keep."""
+    import json
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "workshop" / "mods").mkdir(parents=True)
+    (source_root / "workshop" / "mods" / "item.txt").write_bytes(b"mod")
+    for root in (source_root, target_root):
+        (root / "config").mkdir(parents=True)
+    (source_root / "config" / "workshop_config.json").write_text("{}", encoding="utf-8")
+    (target_root / "config" / "workshop_config.json").write_text(
+        json.dumps({"user_mod_folder": str(source_root / "workshop" / "mods")}), encoding="utf-8"
+    )
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    assert (target_root / "workshop" / "mods" / "item.txt").read_bytes() == b"mod"
+    assert "workshop" not in result["payload"]["copied_entries"]
+
+
+@pytest.mark.unit
+def test_migrated_entry_content_counts_a_transaction_backup(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    root = tmp_path / "N.E.K.O"
+    backup = root / "avatar_tools" / ".local-12345678-1234-4123-8123-123456789abc.backup"
+    backup.mkdir(parents=True)
+
+    assert storage_migration_module.root_has_migrated_entry_content(root, ["avatar_tools"]) is True
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix", reason="POSIX names may be any bytes")
+def test_manifest_accepts_a_name_that_is_not_utf8(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    entry = tmp_path / "memory"
+    entry.mkdir()
+    with open(os.path.join(os.fsencode(entry), b"\xff-imported.bin"), "wb") as stream:
+        stream.write(b"asset")
+
+    manifest = storage_migration_module.snapshot_runtime_entry(entry)
+
+    assert manifest["file_count"] == 1
+    assert storage_migration_module.snapshot_runtime_entry(entry) == manifest
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix", reason="only POSIX exposes a change time")
+def test_metadata_fingerprint_sees_a_rewrite_that_restored_the_mtime(tmp_path):
+    import time
+
+    from utils import storage_migration as storage_migration_module
+
+    entry = tmp_path / "memory"
+    entry.mkdir()
+    facts = entry / "facts.json"
+    facts.write_bytes(b"aaaa")
+    before_stat = facts.stat()
+    before = storage_migration_module._metadata_fingerprint(entry)
+    time.sleep(0.02)
+    facts.write_bytes(b"bbbb")
+    os.utime(facts, ns=(before_stat.st_atime_ns, before_stat.st_mtime_ns))
+
+    assert storage_migration_module._metadata_fingerprint(entry) != before

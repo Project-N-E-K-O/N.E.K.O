@@ -547,11 +547,14 @@ def _manifest_path(path: Path) -> dict[str, int | str]:
                     total_bytes += size
                     file_count += 1
     records.sort(key=lambda record: (record[0], record[1]))
+    # A POSIX name that is not valid UTF-8 arrives as surrogate escapes;
+    # surrogateescape turns those back into the original bytes, so every
+    # name a filesystem allows gets a manifest (valid names are unaffected).
     encoded = json.dumps(
         records,
         ensure_ascii=False,
         separators=(",", ":"),
-    ).encode("utf-8")
+    ).encode("utf-8", "surrogateescape")
     return {
         "kind": kind,
         "file_count": file_count,
@@ -703,23 +706,38 @@ def _metadata_fingerprint(path: Path) -> str:
 
     Writing, creating, removing or renaming anything inside changes a size or
     an mtime, so comparing two fingerprints tells whether the entry was
-    touched in between -- far cheaper than another content manifest.
+    touched in between -- far cheaper than another content manifest. On
+    POSIX the ctime is included too: any write updates it, and unlike the
+    mtime it cannot be set back afterwards.
     """
-    records: list[tuple[str, int, int, int]] = []
+    records: list[tuple[str, int, int, int, int]] = []
     pending = [(path, "")]
-    while pending:
-        current, relative = pending.pop()
-        current_stat = current.lstat()
-        is_dir = stat.S_ISDIR(current_stat.st_mode)
-        records.append(
-            (relative, current_stat.st_mode, 0 if is_dir else current_stat.st_size, current_stat.st_mtime_ns)
-        )
-        if is_dir and not _stat_is_reparse(current_stat):
-            with os.scandir(current) as iterator:
-                for child in iterator:
-                    pending.append((Path(child.path), f"{relative}/{child.name}"))
+    try:
+        while pending:
+            current, relative = pending.pop()
+            current_stat = current.lstat()
+            is_dir = stat.S_ISDIR(current_stat.st_mode)
+            records.append(
+                (
+                    relative,
+                    current_stat.st_mode,
+                    0 if is_dir else current_stat.st_size,
+                    current_stat.st_mtime_ns,
+                    current_stat.st_ctime_ns,
+                )
+            )
+            if is_dir and not _stat_is_reparse(current_stat):
+                with os.scandir(current) as iterator:
+                    for child in iterator:
+                        pending.append((Path(child.path), f"{relative}/{child.name}"))
+    except OSError as exc:
+        raise StorageMigrationError(
+            "manifest_read_failed",
+            f"无法读取迁移目录: {path}",
+        ) from exc
     records.sort()
-    return hashlib.sha256(json.dumps(records, separators=(",", ":")).encode("utf-8")).hexdigest()
+    encoded = json.dumps(records, separators=(",", ":")).encode("utf-8", "surrogateescape")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _snapshot_path(path: Path) -> dict[str, int | str]:
@@ -855,6 +873,11 @@ def _rollback_interrupted_publish(
         mode = original_modes.get(entry_name)
         if mode is not None and classify_entry_no_follow(target_entry) == "dir":
             os.chmod(target_entry, stat.S_IMODE(mode))
+
+    published_manifests = {
+        entry_name: proof.get("target_manifest")
+        for entry_name, proof in copy_evidence_entries(payload.get("copied_entries")).items()
+    }
     candidates = list(
         dict.fromkeys(
             entry_name
@@ -882,6 +905,22 @@ def _rollback_interrupted_publish(
                 and not _holds_only_own_publish_reservation(target_entry, staged_entry)
             )
 
+        expected_manifest = published_manifests.get(entry_name)
+        if (
+            was_published
+            and entry_name not in restoring_entries
+            and isinstance(expected_manifest, dict)
+            and os.path.lexists(target_entry)
+            and _snapshot_path(target_entry) != expected_manifest
+        ):
+            # Written since it was published (a sync client while the app
+            # was down): rolling back would delete those writes. Keep the
+            # target, the backup and the transaction for a person to decide.
+            raise StorageMigrationError(
+                "migration_publish_conflict",
+                f"迁移目标在发布后又被改动，已保留目标、备份与事务目录，等待人工处理: {entry_name}",
+            )
+
         if target_existed and os.path.lexists(backup_entry):
             if foreign_at_target():
                 # The original is in the backup and something new took its
@@ -905,7 +944,10 @@ def _rollback_interrupted_publish(
                 # before removing the transaction.
                 _restore_original_mode(entry_name, target_entry)
                 continue
-            if was_published:
+            if was_published or not os.path.lexists(target_entry):
+                # Neither the backup nor the original at its place: it may
+                # have been moved into the backup and lost since. Retrying
+                # would treat it as never touched; keep the transaction.
                 raise StorageMigrationError(
                     "migration_rollback_required",
                     f"迁移事务缺少目标备份，拒绝继续: {entry_name}",
@@ -1094,6 +1136,10 @@ def _tree_has_user_file(path: Path) -> bool:
 
 def root_has_migrated_entry_content(root: Path, names: Any = MIGRATED_RUNTIME_ENTRY_NAMES) -> bool:
     """Whether any of ``names`` under ``root`` holds user data."""
+    try:
+        from utils.cloudsave_runtime._shared import TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS as transactional_patterns
+    except Exception:
+        transactional_patterns = {}
     for entry_name in names:
         entry = root / entry_name
         try:
@@ -1103,6 +1149,16 @@ def root_has_migrated_entry_content(root: Path, names: Any = MIGRATED_RUNTIME_EN
                 return True
         except OSError:
             return True
+        # As in the cloud-save probe, a dot-named transaction entry directly
+        # under the entry (an interrupted update's backup) may be the only
+        # copy of something, so it counts.
+        pattern = transactional_patterns.get(entry_name)
+        if pattern is not None:
+            try:
+                if any(pattern.fullmatch(child.name) for child in entry.iterdir()):
+                    return True
+            except OSError:
+                return True
         if _tree_has_user_file(entry):
             return True
     return False
@@ -1747,7 +1803,10 @@ def run_pending_storage_migration(
             # Taken before anything reads the entry, and compared once all
             # entries are staged: a write in between (a sync client, say)
             # would otherwise publish the copy taken before it.
-            source_fingerprints[entry_name] = _metadata_fingerprint(source_entry)
+            # Reusing a target, an entry it already holds is staged only when
+            # it is config; nothing else there needs the fingerprint.
+            if not (use_existing_target and os.path.lexists(target_entry)) or entry_name == "config":
+                source_fingerprints[entry_name] = _metadata_fingerprint(source_entry)
             source_manifest = _snapshot_path(source_entry)
             source_snapshots[entry_name] = source_manifest
             if use_existing_target and os.path.lexists(target_entry):
@@ -1797,8 +1856,8 @@ def run_pending_storage_migration(
 
         for entry_name in entries_to_publish:
             try:
-                unchanged = _metadata_fingerprint(source_root / entry_name) == source_fingerprints[entry_name]
-            except OSError:
+                unchanged = _metadata_fingerprint(source_root / entry_name) == source_fingerprints.get(entry_name)
+            except StorageMigrationError:
                 unchanged = False
             if not unchanged:
                 raise StorageMigrationError(
@@ -1922,11 +1981,14 @@ def run_pending_storage_migration(
                 # restored only after everything below it.
                 for relative_dir, original_mode in widened_modes.get(entry_name, []):
                     os.chmod(target_entry / relative_dir, original_mode)
-                copied_entries[entry_name] = {
-                    "source_manifest": source_snapshots[entry_name],
-                    "target_manifest": actual_manifest,
-                    "transaction": str(payload.get("txid") or ""),
-                }
+                # Rollback still needs the published manifest; cleanup must not
+                # delete a source entry the kept target config points into.
+                if entry_name not in referenced_by_kept_config:
+                    copied_entries[entry_name] = {
+                        "source_manifest": source_snapshots[entry_name],
+                        "target_manifest": actual_manifest,
+                        "transaction": str(payload.get("txid") or ""),
+                    }
                 payload = _persist_migration_payload(
                     config_manager,
                     payload,
