@@ -635,7 +635,15 @@ def _rewrite_migrated_runtime_config_paths(
     if rewritten_payload is payload:
         return
 
+    # The copy keeps the source's mode, and Windows refuses to replace a
+    # read-only file; lift it for the write and put it back afterwards.
+    original_mode = stat.S_IMODE(workshop_config_path.stat().st_mode)
+    read_only = not original_mode & stat.S_IWUSR
+    if read_only:
+        os.chmod(workshop_config_path, original_mode | stat.S_IWUSR)
     atomic_write_json(workshop_config_path, rewritten_payload, ensure_ascii=False, indent=2)
+    if read_only:
+        os.chmod(workshop_config_path, original_mode)
 
 
 def _snapshot_path(path: Path) -> dict[str, int | str]:

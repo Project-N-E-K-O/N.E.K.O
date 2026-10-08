@@ -2290,3 +2290,38 @@ def test_recovery_refuses_linked_transaction_directories(tmp_path, monkeypatch, 
 
     assert retry["error_code"] == "migration_rollback_required"
     assert (external / "config" / "sentinel.txt").read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.unit
+def test_read_only_workshop_config_is_rebased(tmp_path):
+    """The staged copy keeps the read-only mode, and Windows refuses to
+    replace a read-only file: the rewrite must lift it and put it back."""
+    import json
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    workshop_file = source_root / "config" / "workshop_config.json"
+    workshop_file.write_text(json.dumps({"user_mod_folder": str(source_root / "mods")}), encoding="utf-8")
+    workshop_file.chmod(stat.S_IREAD)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+
+    try:
+        result = run_pending_storage_migration(config_manager)
+        published = target_root / "config" / "workshop_config.json"
+        published_writable = bool(published.exists() and published.stat().st_mode & stat.S_IWUSR)
+    finally:
+        for path in (workshop_file, target_root / "config" / "workshop_config.json"):
+            if path.exists():
+                path.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+    assert result["completed"] is True, result
+    rebased = json.loads(published.read_text(encoding="utf-8"))
+    assert rebased["user_mod_folder"] == str((target_root / "mods").resolve())
+    assert published_writable is False
