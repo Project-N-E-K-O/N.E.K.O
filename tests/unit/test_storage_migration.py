@@ -3094,3 +3094,26 @@ def test_source_entry_appearing_during_staging_stops_the_migration(tmp_path, mon
     assert result["error_code"] == "verification_failed"
     assert "pngtuber" in result["payload"]["error_message"]
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
+
+
+
+@pytest.mark.unit
+def test_source_written_while_publishing_is_rolled_back(tmp_path, monkeypatch):
+    """Publishing hashes every target and takes a while; a source written in
+    that time must not go live as its older copy."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, source_root, target_root = _overwrite_migration(tmp_path)
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_source_changes(staged, target):
+        original_publish(staged, target)
+        (source_root / "config" / "characters.json").write_text("written while publishing", encoding="utf-8")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_source_changes)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "verification_failed"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
+    assert (source_root / "config" / "characters.json").read_text(encoding="utf-8") == "written while publishing"

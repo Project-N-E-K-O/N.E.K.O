@@ -1960,16 +1960,19 @@ def run_pending_storage_migration(
                 "迁移期间原始数据目录出现了新条目，已停止迁移，原始数据未受影响："
                 + ", ".join(sorted(appeared)) + "。",
             )
-        for entry_name in entries_to_publish:
-            try:
-                unchanged = _metadata_fingerprint(source_root / entry_name) == source_fingerprints.get(entry_name)
-            except StorageMigrationError:
-                unchanged = False
-            if not unchanged:
-                raise StorageMigrationError(
-                    "verification_failed",
-                    f"迁移期间原始数据被修改，已停止迁移，原始数据未受影响：{entry_name}。",
-                )
+        def _require_sources_unchanged() -> None:
+            for entry_name in entries_to_publish:
+                try:
+                    unchanged = _metadata_fingerprint(source_root / entry_name) == source_fingerprints.get(entry_name)
+                except StorageMigrationError:
+                    unchanged = False
+                if not unchanged:
+                    raise StorageMigrationError(
+                        "verification_failed",
+                        f"迁移期间原始数据被修改，已停止迁移，原始数据未受影响：{entry_name}。",
+                    )
+
+        _require_sources_unchanged()
 
         # Identical entries become copy evidence, so cleanup may delete their
         # source copy -- except where the target's own config, kept as it is
@@ -2125,6 +2128,10 @@ def run_pending_storage_migration(
                     publishing_entry="",
                     publishing_target_existed=False,
                 )
+            # Publishing hashes every target and takes a while: a source
+            # written meanwhile must not go live as its older copy. Raised
+            # here, the publish is rolled back like any other failure.
+            _require_sources_unchanged()
             # Until the policy points at the target, a failed checkpoint
             # write must undo the publish like any other failure here.
             payload = _persist_migration_payload(
