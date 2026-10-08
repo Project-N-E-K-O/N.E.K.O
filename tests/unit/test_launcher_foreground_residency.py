@@ -359,7 +359,12 @@ def test_the_running_snapshot_is_refreshed_from_startup_on():
 
     source = (LAUNCHER_CORE / "runtime.py").read_text(encoding="utf-8")
     assert "            _refresh_running_descendants()\n            time.sleep(5)\n" in source
-    assert "_refresh_running_descendants()" in inspect.getsource(runtime.wait_for_servers)
+    wait_source = inspect.getsource(runtime.wait_for_servers)
+    # Before the early-exit check of each poll, so a Main that ends itself
+    # during startup was seen at least once while it ran.
+    assert wait_source.index("_refresh_running_descendants()") < wait_source.index(
+        "if proc is not None and not proc.is_alive()"
+    )
 
 
 @pytest.mark.unit

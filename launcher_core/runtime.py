@@ -2159,6 +2159,11 @@ def wait_for_servers(timeout: int = 60) -> bool | str:
 
     # 第一步：等待所有端口就绪
     while time.time() - start_time < timeout:
+        # Servers can start plugin hosts while still getting ready, and a
+        # storage restart may end Main at any point here: refresh before
+        # checking for an exited server (snapshots accumulate, so a refresh
+        # after Main is gone loses nothing).
+        _refresh_running_descendants()
         # 若某个子进程提前退出，立即报错而不是等到超时
         for server in SERVERS:
             proc = server.get('process')
@@ -2190,9 +2195,6 @@ def wait_for_servers(timeout: int = 60) -> bool | str:
         if ready_count == len(SERVERS):
             break
 
-        # Servers can start plugin hosts while still getting ready, and a
-        # storage restart may already end Main here.
-        _refresh_running_descendants()
         time.sleep(0.5)
 
     # 第二步：等待所有服务器的 ready_event（同步初始化完成）
