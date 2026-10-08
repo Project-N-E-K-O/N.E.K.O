@@ -354,6 +354,7 @@ class _Connection:
     sdk_ok: bool = False
     in_room: bool = False
     rejoined: bool = False
+    lost_as_current: bool = False
     media_seq: int = 0
     media_last_ok: int = 0
     media_pending: set[int] = field(default_factory=set)
@@ -482,6 +483,7 @@ def _abandon(conn: _Connection, code: int, reason: str) -> None:
     if link is None or _links.get((link.session.visit_id, link.session.side)) is not link or link.conn is not conn:
         return
     link.conn = None
+    conn.lost_as_current = True  # 重入回放写失败时据此判断：是它这次掉线、而不是被更新的连接顶掉
     try:
         link.session.on_page_lost(link.session.now())
     except Exception as exc:  # noqa: BLE001
@@ -874,9 +876,9 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
                 session.on_frame_sent(frame)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit transport: on_frame_sent failed: %s", type(exc).__name__)
-        elif conn.retired or conn.closed:
-            # 回放写不出去、socket 已被弃（_abandon 已按新一次掉线起了重载期限）：把这次重载原来的
-            # 期限写回，绝对期限不能被反复重连续上
+        elif conn.lost_as_current:
+            # 回放写不出去、这条连接作为当前连接被弃（_abandon 已按新一次掉线起了重载期限）：把这次重载
+            # 原来的期限写回，绝对期限不能被反复重连续上。被更新的连接顶掉的不算：新连接可能已经重入完了
             _restore_reload_deadline(session, saved)
             return
     if _is_current(link, conn):
@@ -890,16 +892,22 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
             # 取不到最新的：期间 runtime 发过 media 就不再用旧快照兜底（会盖掉更新的状态）
             if _newer_media(conn, media_mark):
                 return
-        if not await _send_on(conn, media, text=media_text) and (conn.retired or conn.closed):
+        if not await _send_on(conn, media, text=media_text) and conn.lost_as_current:
             _restore_reload_deadline(session, saved)
 
 
 def _restore_reload_deadline(session: VisitTransportSession, saved: Any) -> None:
-    """A rejoin whose writes failed: the page reload goes on under its original (absolute) deadline."""
+    """A rejoin whose writes failed: the page reload goes on under its original (absolute) deadline.
+
+    The saved state is from before the rejoin (socket back); the socket was
+    just lost again, so the socket stage is recomputed from now within that
+    absolute deadline (``min(now + socket stage, absolute)``).
+    """
     if saved is None:
         return
     try:
         session.liveness.restore_page_reload_state(saved)
+        session.liveness.on_page_lost(session.now())
     except Exception as exc:  # noqa: BLE001
         logger.warning("visit transport: reload deadline not restored: %s", type(exc).__name__)
 

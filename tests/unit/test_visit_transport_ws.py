@@ -1183,8 +1183,42 @@ def test_a_rejoin_whose_replay_write_fails_keeps_the_original_reload_deadline():
     finally:
         tw._reset_for_tests()
     events = s.liveness.events
-    assert "page_lost" in events and events[-1] == "page_restored"   # 被弃之后把原来的期限写回
+    assert events[-2:] == ["page_restored", "page_lost"]   # 被弃之后写回原来的期限，再按这次掉线重算 socket 阶段
     assert s.liveness.reload_state is original        # 反复重连续不上绝对期限
+
+
+def test_a_superseded_rejoin_whose_replay_write_fails_does_not_touch_the_deadline():
+    import asyncio
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        link.connections_seen = 1
+        gate = asyncio.Event()
+
+        class _StuckThenBroken(_RecordingWS):
+            async def send_text(self, text):
+                await gate.wait()                         # 回放卡在背压上
+                raise OSError("write timed out")
+
+        old = tw._attach(link, _StuckThenBroken())
+        old.preflight_seen = old.preflight_ok = old.credentials_sent = old.sdk_seen = old.sdk_ok = True
+        rejoining = asyncio.ensure_future(
+            tw._handle_frame(link, old, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest"))
+        await asyncio.sleep(0.05)
+        tw._attach(link, _RecordingWS())                  # iframe 重连成新连接，顶掉旧的
+        before = list(s.liveness.events)
+        gate.set()                                        # 旧连接的写入这时才失败
+        await rejoining
+        return s, before
+
+    try:
+        s, before = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert "page_restored" not in s.liveness.events[len(before):]   # 被顶掉的不写回，不覆盖新连接的重入
 
 
 def test_unserializable_downlink_is_dropped_not_a_disconnect():
