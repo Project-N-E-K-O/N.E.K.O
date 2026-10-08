@@ -2073,6 +2073,51 @@ async def test_shutdown_waits_for_a_received_batch_before_sealing(tmp_path, monk
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_settling_deliveries_also_waits_for_the_batch_queued_behind(tmp_path, monkeypatch):
+    from main_routers.visit_router import runtime_rx
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    gates: dict[int, asyncio.Event] = {}
+    handled: list[int] = []
+
+    async def slow_wrap_up(rt_, m, from_vid, now):
+        await gates.setdefault(m["seq"], asyncio.Event()).wait()
+        handled.append(m["seq"])
+
+    monkeypatch.setitem(runtime_rx._HANDLERS, "wrap_up", slow_wrap_up)
+    for st in rt.limiter._senders.values():                  # 限流放开：只看交付顺序
+        for bucket in (st.recv_bytes, st.recv_msgs, st.ctl, st.lossy, st.text):
+            bucket.rate = bucket.capacity = bucket.tokens = 10 ** 9
+
+    def wrap_up(seq):
+        return rt.on_recv(from_vid=GUEST_VID, cmd=1, payload={
+            "t": "wrap_up", "v": 1, "seq": seq, "lp": rt.room.max_lp_seen, "ph": "propose", "reason": "recall",
+            "initiated_by": "guest"}, nbytes=200)
+
+    try:
+        base = rt.sequencer.contiguous_seq
+        first = asyncio.ensure_future(wrap_up(base + 1))
+        await wait_for(lambda: rt._delivering is not None and not rt._delivering.done())
+        queued = asyncio.ensure_future(wrap_up(base + 2))    # 排在后面、停在 on_recv 里等
+        await settle()
+        settling = asyncio.ensure_future(rt._settle_delivering(5))  # 封存前的等待
+        await settle()
+        gates.setdefault(base + 1, asyncio.Event()).set()     # 第一批做完：排着的那条先醒、交出第二批
+        await settle()
+        assert not settling.done()                            # 还在等第二批
+        gates.setdefault(base + 2, asyncio.Event()).set()
+        await asyncio.wait_for(settling, 5)
+        assert handled == [base + 1, base + 2]                # 两批都在「封存」之前处理完
+        await asyncio.gather(first, queued)
+    finally:
+        for g in gates.values():
+            g.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_family_line_is_admitted_synchronously_before_its_commit_runs(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt

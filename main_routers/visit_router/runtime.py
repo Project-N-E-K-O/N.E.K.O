@@ -1018,9 +1018,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         return opening
 
     async def _settle_delivering(self, timeout: float) -> None:
-        delivering = self._delivering
-        if delivering is not None and not delivering.done() and timeout > 0:
-            await asyncio.wait([delivering], timeout=timeout)
+        # 在期限内循环等，直到没有在处理的批次：这一批做完时，排在 on_recv 里的下一条会先醒、同步交出新的一批，
+        # 只等一次快照的话，新这批的台词会落在封存之后
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while self._delivering is not None and not self._delivering.done():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            await asyncio.wait([self._delivering], timeout=remaining)
 
     def _start_journal_for_backlog(self) -> None:
         # 对端 hello 先到、这场已开口，却一直没等来本侧的入房报告就收尾：上传头还没开始写，

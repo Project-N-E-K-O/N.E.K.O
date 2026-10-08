@@ -118,6 +118,9 @@ class ReceiveMixin:
             # 上一批收下的消息还在处理（那次收包处理被取消、处理在后台继续）：先等它做完，交付顺序不乱。
             # 循环检查：几次收包同时在等时，先醒的那个交出新一批（其间不让出），其余的接着等新这批
             await asyncio.wait([self._delivering])
+        if self._terminated or self._shutdown_started:
+            # 等的过程中这场已拆掉 / 在关机：不再收下新消息、不再起新的交付（封存的边界已经划过）
+            return
         now = self.clock()
         frame = self.limiter.admit_frame(from_vid, nbytes, now=now)
         if not frame.allowed:
