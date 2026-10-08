@@ -1892,6 +1892,12 @@ def run_pending_storage_migration(
         # Target entries the migration keeps as they are instead of staging:
         # they must still be there when the roots are switched.
         reused_target_entries: set[str] = set()
+        if use_existing_target:
+            # Entries only the target has never enter the loop below, yet are
+            # kept just the same.
+            reused_target_entries.update(
+                set(_iter_existing_runtime_entries(target_root)) - set(existing_entries)
+            )
         source_fingerprints: dict[str, str] = {}
         for entry_name in existing_entries:
             source_entry = source_root / entry_name

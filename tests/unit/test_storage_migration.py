@@ -3261,3 +3261,38 @@ def test_authoritative_target_entry_removed_before_commit_stops_the_migration(tm
     result = run_pending_storage_migration(config_manager)
 
     assert result["error_code"] == "target_changed_during_migration"
+
+
+@pytest.mark.unit
+def test_target_only_entry_removed_before_commit_stops_the_migration(tmp_path, monkeypatch):
+    """An entry the source does not have is kept from the target as it is; if
+    it is gone by commit time, the target would go live without it."""
+    import shutil
+
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    for root in (source_root, target_root):
+        (root / "config").mkdir(parents=True)
+        (root / "config" / "characters.json").write_text("same", encoding="utf-8")
+    (target_root / "memory").mkdir()
+    (target_root / "memory" / "facts.json").write_text("target only", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_target_only_entry_gone(staged, target):
+        original_publish(staged, target)
+        shutil.rmtree(target_root / "memory", ignore_errors=True)
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_target_only_entry_gone)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "target_changed_during_migration"
