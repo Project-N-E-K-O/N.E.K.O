@@ -326,18 +326,21 @@ class UploadJournal:
             if self._open_abandoned:
                 # 关机放弃：等上传头期间攒下的记录（可能为空）排在建文件之后由写线程补上（同一条单线程队列，
                 # 先头后行）再关 fd。建成的流水一律留着给下次启动补录（只有头也要留：零行转录与用量也得上传）；
-                # 没建成就什么都不写
-                executor.submit(self._finish_abandoned_open, open_job, list(self._abandoned_tail))
-            elif fd is not None:
-                with contextlib.suppress(OSError):
-                    os.close(fd)
-                with contextlib.suppress(OSError):
-                    self.stream_path.unlink(missing_ok=True)
+                # 没建成就什么都不写。登记一直留到补写关掉 fd 之后：这期间上传 worker 不会把还在写的流水
+                # 当孤立文件重封（建文件卡住就一直留着，进程马上退出，下次启动的补录照常处理）
+                finishing = executor.submit(self._finish_abandoned_open, open_job, list(self._abandoned_tail))
+                if added:
+                    visit_id = self.visit_id
+                    finishing.add_done_callback(lambda _f: _open_streams.discard(visit_id))
+            else:
+                if fd is not None:
+                    with contextlib.suppress(OSError):
+                        os.close(fd)
+                    with contextlib.suppress(OSError):
+                        self.stream_path.unlink(missing_ok=True)
+                if added:
+                    _open_streams.discard(self.visit_id)
             executor.shutdown(wait=False)
-            if added and not (self._open_abandoned and not opening.done()):
-                # 放弃等待时线程可能还在建这份流水：登记留着，关机这几秒里上传 worker 不会把写了一半的
-                # 流水当孤立文件重封（进程马上退出，下次启动的补录照常处理）
-                _open_streams.discard(self.visit_id)
             raise
         self._executor = executor
         self._records = [header]

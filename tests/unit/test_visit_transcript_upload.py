@@ -191,6 +191,49 @@ async def test_an_abandoned_open_still_writes_the_buffered_records_after_the_hea
         tu._open_streams.discard(V1)
 
 
+async def test_an_abandoned_open_stays_registered_until_its_tail_is_written(tmp_path, servers, monkeypatch):
+    import threading
+
+    journal = tu.UploadJournal(tmp_path, V1)
+    release, created, tail_go = threading.Event(), threading.Event(), threading.Event()
+    real_open = journal._open_sync
+    real_write_all = tu._write_all
+
+    def slow_open(data):
+        release.wait(10)
+        fd = real_open(data)
+        created.set()
+        return fd
+
+    def slow_write_all(fd, data):
+        tail_go.wait(10)                                      # 补写卡在写线程里
+        return real_write_all(fd, data)
+
+    journal._open_sync = slow_open
+    opening = asyncio.ensure_future(journal.open(role="host", own_visit_uid=OWN, own_char_uid=CHAR_UID,
+                                                 transport="trtc", started_at=1000.0, app_version="1.2"))
+    try:
+        await asyncio.sleep(0.05)
+        release.set()
+        created.wait(5)                                       # 头已建好，open() 还没恢复
+        monkeypatch.setattr(tu, "_write_all", slow_write_all)
+        journal.abandon_open([{"kind": "anomaly", "ts": 1001.0}])
+        opening.cancel()
+        await asyncio.wait([opening], timeout=1)
+        await asyncio.sleep(0.1)
+        assert V1 in tu._open_streams                         # 补写没完：上传 worker 不能把它当孤立流水重封
+        tail_go.set()
+        for _ in range(100):
+            if V1 not in tu._open_streams:
+                break
+            await asyncio.sleep(0.05)
+        assert V1 not in tu._open_streams                     # 补完、关掉 fd 之后才撤登记
+    finally:
+        release.set()
+        tail_go.set()
+        tu._open_streams.discard(V1)
+
+
 async def test_an_abandoned_open_that_already_finished_keeps_its_header_only_stream(tmp_path, servers):
     import threading
 

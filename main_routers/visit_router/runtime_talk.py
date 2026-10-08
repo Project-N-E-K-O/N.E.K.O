@@ -124,6 +124,8 @@ class TalkMixin:
         self._handoff_stamps: dict[str, float] = {}
         self._last_tail_ms = 0
         self._session_closing: Optional[asyncio.Future] = None
+        # 已接纳、还在落盘 / 入队的亲人发言：关机封存之前限时等它们
+        self.family_commits: set[asyncio.Future] = set()
 
     # ── 小工具 ───────────────────────────────────────────────────────
 
@@ -705,22 +707,12 @@ class TalkMixin:
         to_own = message.get("source") == "neko_visit:own_cat"
         ad = addressee_code(self.side, "cat") if to_own else addressee_code(self.peer_side, "cat")
         try:
-            accepted = await self._send_human_line(text, ad, now)
+            accepted = await self._send_human_line(text, ad, now, request_id=request_id, to_own=to_own)
         except Exception as exc:  # noqa: BLE001 - 任一步失败：预留已释放，文字留在输入框
             logger.warning("visit %s: family line not sent: %s", self.visit_id[:6], type(exc).__name__)
             accepted = None
         if accepted is None:
             await self.status("VISIT_E_BUSY", request_id=request_id)
-            return True
-        ref = accepted
-        try:
-            # 不可撤回的放最后：进 sync_message_queue 之后收不回
-            await self.host.mirror_user_input(text, metadata=self._mirror_meta("visit_human"), request_id=request_id)
-        except Exception as exc:  # noqa: BLE001 - 这句已发出，只记诊断
-            logger.warning("visit %s: mirror_user_input failed: %s", self.visit_id[:6], type(exc).__name__)
-        if to_own and not self.finalizing and self.room is not None and self.room.phase == "active":
-            lo, hi = self.deps.reply_gap_s
-            self.schedule_reply(ReplyPlan(reply_to=ref, not_before=self.clock() + self.deps.rng.uniform(lo, hi)))
         return True
 
     def _clean_human_text(self, raw: Any) -> str:
@@ -729,7 +721,8 @@ class TalkMixin:
             text = redact_outbound(text, family_names=self.family_names, replacement=self.neutral_term)
         return clamp_text_utf8(sanitize_relay_text(text, max_tokens=VISIT_HUMAN_LINE_MAX_TOKENS)).strip()
 
-    async def _send_human_line(self, text: str, ad: str, now: float) -> Optional[LineRef]:
+    async def _send_human_line(self, text: str, ad: str, now: float, *, request_id: Any = None,
+                               to_own: bool = False) -> Optional[LineRef]:
         room = self.room
         ln = self._next_ln()
         lp = room.next_lp()
@@ -743,33 +736,60 @@ class TalkMixin:
         if reservation is None:
             return None
         ref = LineRef(ln, lp, self.side)
+        try:
+            # 接纳与限速记账同步做完：紧接着的另一条输入或阶段变化看得到这句
+            self.apply_effects(room.on_local_human_line(ref, now))
+            self.own_line_lp[ln] = lp
+        except BaseException:
+            reservation.release()
+            raise
 
         async def commit() -> None:
             try:
-                self.apply_effects(room.on_local_human_line(ref, now))
-                self.own_line_lp[ln] = lp
                 # 先落盘再发送：最坏是本侧记了一句还没发出去的话（Servers 比对标单侧）
                 await self.record_line("own_human", side=self.side, lp=lp, ln=ln, text=payload["txt"],
                                        truncated=bool(payload["truncated"]))
                 self.outbox.send(payload, now=self.clock(), reservation=reservation)
             finally:
                 reservation.release()
+            # 发出去了，本侧的历史与上屏也得跟上（调用方被取消也照样做）
+            self.last_text_at = self.clock()
+            self.kick()
+            self._add_own_human_history(ln, lp, payload["txt"])
+            ad_side, ad_kind = decode_addressee(ad)
+            self._post_display(self.visit_line_payload(
+                ln=ln, lp=lp, side=self.side, kind="human", ad_side=ad_side, ad_kind=ad_kind, reply_to="",
+                goodbye=False, text=payload["txt"], truncated=bool(payload["truncated"]),
+                trunc_reason=payload.get("trunc_reason"),
+            ))
+            try:
+                # 不可撤回的放最后：进 sync_message_queue 之后收不回
+                await self.host.mirror_user_input(text, metadata=self._mirror_meta("visit_human"),
+                                                  request_id=request_id)
+            except Exception as exc:  # noqa: BLE001 - 这句已发出，只记诊断
+                logger.warning("visit %s: mirror_user_input failed: %s", self.visit_id[:6], type(exc).__name__)
+            if to_own and not self.finalizing and self.room is not None and self.room.phase == "active":
+                lo, hi = self.deps.reply_gap_s
+                self.schedule_reply(ReplyPlan(reply_to=ref, not_before=self.clock() + self.deps.rng.uniform(lo, hi)))
 
-        # 接纳之后（改了 room、可能已记进转录）这一段不能半途而废：调用方被取消（关机等）也照样落盘、入队，
-        # 预留一直持有到入队，关闭通道的 leave 照样排在它后面
+        # 接纳之后（改了 room、可能已记进转录）这一段不能半途而废：调用方被取消（关机等）也照样落盘、入队、
+        # 入史、上屏、排回复；预留一直持有到入队，关闭通道的 leave 照样排在它后面；关机封存之前限时等它
         committing = asyncio.ensure_future(commit())
+        self.family_commits.add(committing)
+        committing.add_done_callback(self.family_commits.discard)
         committing.add_done_callback(lambda t: t.cancelled() or t.exception())
-        await asyncio.shield(committing)
-        self.last_text_at = self.clock()
-        self.kick()
-        self._add_own_human_history(ln, lp, payload["txt"])
-        ad_side, ad_kind = decode_addressee(ad)
-        self._post_display(self.visit_line_payload(
-            ln=ln, lp=lp, side=self.side, kind="human", ad_side=ad_side, ad_kind=ad_kind, reply_to="",
-            goodbye=False, text=payload["txt"], truncated=bool(payload["truncated"]),
-            trunc_reason=payload.get("trunc_reason"),
-        ))
+        try:
+            await asyncio.shield(committing)
+        except asyncio.CancelledError:
+            # 调用方已走：之后出错没人接着记，在这里留一条日志
+            committing.add_done_callback(self._log_orphan_commit)
+            raise
         return ref
+
+    def _log_orphan_commit(self, task: "asyncio.Future[None]") -> None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("visit %s: family line not sent after its handler left: %s",
+                           self.visit_id[:6], type(task.exception()).__name__)
 
     # ── 回家仪式句 ───────────────────────────────────────────────────
 

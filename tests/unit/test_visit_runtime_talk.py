@@ -1626,8 +1626,102 @@ async def test_an_admitted_family_line_is_sent_even_if_its_handler_is_cancelled(
         await rt.flush()
         await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "text" and p.get("sp") == "h"],
                        timeout=5)                             # 照样落盘、入队、发到对端
+        await wait_for(lambda: "human" in rt._line_kinds.values())  # 本侧历史也有这句
+        await wait_for(lambda: [f for f in host.host.frames
+                                if f.get("type") == "visit_line" and f.get("text") == "被取消也要发出去"])  # 也上屏
+        await wait_for(lambda: "被取消也要发出去" in host.host.user_inputs)  # 也镜像进主会话
     finally:
         stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_cancelled_family_line_to_the_own_cat_still_schedules_its_reply(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_record = rt.record_line
+    plans: list = []
+
+    async def slow_record(speaker, **kwargs):
+        if speaker == "own_human":
+            await stuck.wait()
+        return await real_record(speaker, **kwargs)
+
+    rt.record_line = slow_record
+    rt.schedule_reply = plans.append
+    try:
+        sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
+            "input_type": "text", "data": "跟自家猫说", "source": "neko_visit:own_cat"}))
+        await wait_for(lambda: rt.outbox.reserved_bytes > 0)
+        sending.cancel()
+        await asyncio.gather(sending, return_exceptions=True)
+        stuck.set()
+        await wait_for(lambda: [p for p in plans if p is not None])  # 处理函数走了，回复照样排上
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_shutdown_waits_for_an_admitted_family_line_before_sealing(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_record = rt.record_line
+    order: list[str] = []
+
+    async def slow_record(speaker, **kwargs):
+        if speaker == "own_human":
+            await stuck.wait()
+            result = await real_record(speaker, **kwargs)
+            order.append("recorded")
+            return result
+        return await real_record(speaker, **kwargs)
+
+    real_seal = rt.journal.seal
+
+    async def seal(reason, **kw):
+        order.append("seal")
+        return await real_seal(reason, **kw)
+
+    rt.record_line = slow_record
+    rt.journal.seal = seal
+    try:
+        sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
+            "input_type": "text", "data": "关机前这句", "source": "neko_visit:guest_cat"}))
+        await wait_for(lambda: rt.outbox.reserved_bytes > 0)
+        asyncio.get_running_loop().call_later(0.3, stuck.set)  # 落盘要一会儿才完
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
+        await asyncio.gather(sending, return_exceptions=True)
+        assert "recorded" in order and "seal" in order
+        assert order.index("recorded") < order.index("seal")  # 先记进转录，再封存
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_family_line_is_admitted_synchronously_before_its_commit_runs(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    seen: list = []
+    real_apply = rt.apply_effects
+
+    def apply_effects(effects):
+        seen.append(asyncio.current_task())
+        return real_apply(effects)
+
+    rt.apply_effects = apply_effects
+    try:
+        sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
+            "input_type": "text", "data": "同步接纳", "source": "neko_visit:guest_cat"}))
+        await sending
+        assert seen and seen[0] is sending                    # 接纳在处理函数里同步做完，不推迟到落盘任务
+    finally:
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
