@@ -880,7 +880,12 @@ def _ensure_transaction_dirs_not_linked(transaction_root: Path) -> None:
     through a link or junction either would reach into another directory.
     Only the shared ``.smtx`` parent is checked elsewhere.
     """
-    for path in (transaction_root, transaction_root / "stage", transaction_root / "backup"):
+    for path in (
+        transaction_root,
+        transaction_root / "stage",
+        transaction_root / "backup",
+        transaction_root / "trash",
+    ):
         if os.path.lexists(path) and classify_entry_no_follow(path) != "dir":
             raise StorageMigrationError(
                 "migration_rollback_required",
@@ -897,13 +902,31 @@ def _rollback_interrupted_publish(
 ) -> None:
     """Restore the exact pre-publish target state recorded by the checkpoint.
 
-    ``mark_restoring`` records an entry in the checkpoint before its backup is
-    moved back. A backup only disappears through that move, so on a later run
-    a marked entry without a backup is already restored, while an unmarked one
-    has really lost its backup.
+    Whatever the target holds is moved whole into the transaction's trash --
+    one rename, so the target is never left half removed -- right after it
+    was checked, and the trash goes with the transaction.
+
+    ``mark_restoring`` records an entry in the checkpoint after the target
+    went to the trash and before its backup is moved back. A backup only
+    disappears through that move, so on a later run a marked entry without a
+    backup is already restored, while an unmarked one has really lost its
+    backup; a marked entry whose backup is still there has its target in the
+    trash, and anything at the target was put there since.
     """
     _ensure_transaction_dirs_not_linked(transaction_root)
     backup_root = transaction_root / "backup"
+    trash_root = transaction_root / "trash"
+
+    def _move_into_trash(entry_name: str, target_entry: Path) -> None:
+        if not os.path.lexists(target_entry):
+            return
+        trash_entry = trash_root / entry_name
+        trash_root.mkdir(exist_ok=True)
+        # Left by an earlier attempt that stopped right after this move, with
+        # an identical copy put back at the target since: nothing to keep.
+        _remove_existing_path(trash_entry)
+        # Same filesystem: the transaction lives inside the target root.
+        _move_entry_keeping_mode(target_entry, trash_entry)
     restoring_entries = {
         str(entry) for entry in payload.get("restoring_entries") or []
     }
@@ -976,9 +999,8 @@ def _rollback_interrupted_publish(
         )
         if (
             (was_published or moved_unrecorded)
-            # Once marked as restoring, the target may be our own half-done
-            # removal; a manifest cannot tell that from an outside write, and
-            # treating it as one would strand the restore.
+            # Once marked as restoring, the target is the restored original or
+            # something put there since; both are handled below.
             and entry_name not in restoring_entries
             and isinstance(expected_manifest, dict)
             and os.path.lexists(target_entry)
@@ -1002,10 +1024,17 @@ def _rollback_interrupted_publish(
                     "migration_publish_conflict",
                     f"迁移目标在发布期间被重新创建，原目标已在事务备份中，等待人工处理: {entry_name}",
                 )
+            if entry_name in restoring_entries and os.path.lexists(target_entry):
+                # Ours went to the trash before the mark and the backup is
+                # still here: this was put at the target since.
+                raise StorageMigrationError(
+                    "migration_publish_conflict",
+                    f"迁移目标在回滚期间被重新创建，原目标仍在事务备份中，等待人工处理: {entry_name}",
+                )
+            _move_into_trash(entry_name, target_entry)
             if mark_restoring is not None and entry_name not in restoring_entries:
                 mark_restoring(entry_name)
                 restoring_entries.add(entry_name)
-            _remove_existing_path(target_entry)
             _move_entry_keeping_mode(backup_entry, target_entry)
             _restore_original_mode(entry_name, target_entry)
             continue
@@ -1033,7 +1062,7 @@ def _rollback_interrupted_publish(
             # and something was written there since: leave it, as a publish
             # that fails on a newcomer does.
             continue
-        _remove_existing_path(target_entry)
+        _move_into_trash(entry_name, target_entry)
 
     _remove_transaction(transaction_root)
 

@@ -3035,11 +3035,9 @@ def test_recorded_staged_entries_are_checked_without_listing_the_stage(tmp_path)
 
 
 
-@pytest.mark.unit
-def test_recovery_finishes_a_restore_whose_removal_stopped_halfway(tmp_path, monkeypatch):
-    """The restore was recorded and the published copy partly removed when the
-    process stopped: that is our own removal, not an outside change, and the
-    next recovery must finish restoring the backup."""
+def _checkpoint_marked_restoring(tmp_path, monkeypatch):
+    """A rollback that recorded the restore of config: the published copy is
+    in the transaction trash, the original still in its backup."""
     from utils import storage_migration as storage_migration_module
 
     config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
@@ -3053,8 +3051,6 @@ def test_recovery_finishes_a_restore_whose_removal_stopped_halfway(tmp_path, mon
     with pytest.raises(KeyboardInterrupt):
         run_pending_storage_migration(config_manager)
     monkeypatch.undo()
-    # The checkpoint as a rollback leaves it after recording the restore and
-    # removing part of the published copy.
     payload = dict(load_storage_migration(config_manager))
     payload["published_entries"] = ["config"]
     payload["publishing_entry"] = ""
@@ -3064,14 +3060,77 @@ def test_recovery_finishes_a_restore_whose_removal_stopped_halfway(tmp_path, mon
         "config": {"source_manifest": staged.get("config"), "target_manifest": staged.get("config"), "transaction": payload.get("txid")}
     }
     save_storage_migration(config_manager, payload)
-    for child in list((target_root / "config").iterdir()):
-        child.unlink()
+    transaction_root = storage_migration_module._transaction_path(target_root, payload["txid"])
+    (transaction_root / "trash").mkdir()
+    (target_root / "config").rename(transaction_root / "trash" / "config")
+    return config_manager, target_root, transaction_root
+
+
+@pytest.mark.unit
+def test_recovery_finishes_a_restore_that_stopped_after_trashing_the_target(tmp_path, monkeypatch):
+    """Our own published copy is in the trash; the next recovery must finish
+    restoring the backup."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, target_root, transaction_root = _checkpoint_marked_restoring(tmp_path, monkeypatch)
 
     _stop_after_recovery(monkeypatch, storage_migration_module)
     retry = run_pending_storage_migration(config_manager)
 
     assert retry["error_code"] == "stop_after_recovery"
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
+    assert not transaction_root.exists()
+
+
+@pytest.mark.unit
+def test_recovery_keeps_a_target_recreated_after_the_restore_was_recorded(tmp_path, monkeypatch):
+    """Recorded as restoring with the backup still there: the published copy
+    already went to the trash, so what is at the target now was put there
+    since and must not be deleted -- even when it looks like that copy."""
+    import shutil
+
+    config_manager, target_root, transaction_root = _checkpoint_marked_restoring(tmp_path, monkeypatch)
+    shutil.copytree(transaction_root / "trash" / "config", target_root / "config")
+    (target_root / "config" / "notes.txt").write_text("written since", encoding="utf-8")
+
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "migration_publish_conflict"
+    assert (target_root / "config" / "notes.txt").read_text(encoding="utf-8") == "written since"
+    assert (transaction_root / "backup" / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
+
+
+@pytest.mark.unit
+def test_rollback_moves_the_target_whole_into_the_trash_before_recording_the_restore(tmp_path, monkeypatch):
+    """Stopping right after the mark must leave the target empty, not half
+    removed: a half-removed target could not be told from an outside write."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    original_persist = storage_migration_module._persist_migration_payload
+
+    def _crash_once_published(*args, **kwargs):
+        if kwargs.get("status") == "committing":
+            raise KeyboardInterrupt("simulated process loss after publish")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", _crash_once_published)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", original_persist)
+    target_at_mark = []
+
+    def _stop_at_mark(*args, **kwargs):
+        if kwargs.get("restoring_entries"):
+            target_at_mark.append(os.path.lexists(target_root / "config"))
+            raise KeyboardInterrupt("simulated process loss right after the mark")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", _stop_at_mark)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+
+    assert target_at_mark == [False]
 
 
 @pytest.mark.unit
