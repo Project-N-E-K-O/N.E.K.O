@@ -312,15 +312,22 @@ EXTRA_BODY_DASHSCOPE_MEMORY_THINKING = {"thinking_budget": 4096}
 EXTRA_BODY_SILICON_MEMORY_THINKING = {"enable_thinking": True, "thinking_budget": 4096}
 
 
-def memory_thinking_extra_body(base_url: str | None) -> dict | None:
+def memory_thinking_extra_body(base_url: str | None, output_cap: int) -> dict | None:
     """extra_body for a memory call that deliberately keeps thinking on.
 
     Resolved per endpoint (see ``CacheProviderConfig.memory_thinking_extra_body``).
     ``None`` means "send no extra_body" (the model's native thinking), which is
-    what those call sites did before."""
+    what those call sites did before. A ``thinking_budget`` is clamped to half
+    of ``output_cap`` so the answer keeps room when the request falls back to
+    a smaller cap on endpoints where the cap bounds thinking + answer."""
     provider = resolve_cache_provider(base_url)
     body = provider.memory_thinking_extra_body if provider is not None else None
-    return copy.deepcopy(body) if body else None
+    if not body:
+        return None
+    body = copy.deepcopy(body)
+    if "thinking_budget" in body:
+        body["thinking_budget"] = min(body["thinking_budget"], max(1, output_cap // 2))
+    return body
 
 
 def leaks_thinking_in_content(model: str) -> bool:

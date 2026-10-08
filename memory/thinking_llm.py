@@ -104,7 +104,7 @@ async def _acreate(api_config: dict, *, timeout: float, output_cap: int):
         max_completion_tokens=output_cap,  # thinking shares this cap with the JSON answer
         # None = no extra_body = the model's native thinking; a few endpoints get
         # an explicit lower-effort form because their native thinking is unbounded.
-        extra_body=memory_thinking_extra_body(api_config['base_url']),
+        extra_body=memory_thinking_extra_body(api_config['base_url'], output_cap),
         provider_type=api_config.get('provider_type'),
     )
 

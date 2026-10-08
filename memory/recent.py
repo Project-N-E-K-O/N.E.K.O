@@ -1118,7 +1118,7 @@ class CompressedRecentHistoryManager:
             api_config['api_key'] or None,
             timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
             max_completion_tokens=max_completion_tokens,  # thinking shares this budget with the corrected-dialogue JSON
-            extra_body=memory_thinking_extra_body(api_config['base_url']),
+            extra_body=memory_thinking_extra_body(api_config['base_url'], max_completion_tokens),
             provider_type=api_config.get('provider_type'),
         )
 

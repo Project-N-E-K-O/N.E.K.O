@@ -120,7 +120,7 @@ def test_memory_thinking_extra_body_is_endpoint_dialect(endpoint, form):
     from config import providers as P
 
     expected = getattr(P, form) if form else None
-    assert P.memory_thinking_extra_body(endpoint) == expected
+    assert P.memory_thinking_extra_body(endpoint, 8192) == expected
 
 
 def test_memory_thinking_budgets_match_shared_guard_and_are_copies():
@@ -131,9 +131,26 @@ def test_memory_thinking_budgets_match_shared_guard_and_are_copies():
     assert P.EXTRA_BODY_SILICON_MEMORY_THINKING["thinking_budget"] == LLM_OUTPUT_GUARD_MAX_TOKENS
     assert P.EXTRA_BODY_DASHSCOPE_MEMORY_THINKING["thinking_budget"] == LLM_OUTPUT_GUARD_MAX_TOKENS
 
-    body = P.memory_thinking_extra_body("https://api.deepseek.com/v1")
+    body = P.memory_thinking_extra_body("https://api.deepseek.com/v1", 8192)
     body["reasoning_effort"] = "high"
     assert P.EXTRA_BODY_DEEPSEEK_MEMORY_THINKING == {"reasoning_effort": "low"}
+
+
+def test_thinking_budget_leaves_half_of_a_smaller_cap_for_the_answer():
+    """On the 4096 fallback a 4096 thinking budget could eat the whole cap
+    (DashScope's cap bounds thinking + answer), so the budget is halved."""
+    from config import LLM_OUTPUT_GUARD_MAX_TOKENS, MEMORY_THINKING_OUTPUT_MAX_TOKENS
+    from config import providers as P
+
+    dashscope = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    full = P.memory_thinking_extra_body(dashscope, MEMORY_THINKING_OUTPUT_MAX_TOKENS)
+    fallback = P.memory_thinking_extra_body(dashscope, LLM_OUTPUT_GUARD_MAX_TOKENS)
+    assert full == {"thinking_budget": 4096}
+    assert fallback == {"thinking_budget": LLM_OUTPUT_GUARD_MAX_TOKENS // 2}
+    silicon = P.memory_thinking_extra_body("https://api.siliconflow.cn/v1", LLM_OUTPUT_GUARD_MAX_TOKENS)
+    assert silicon == {"enable_thinking": True, "thinking_budget": LLM_OUTPUT_GUARD_MAX_TOKENS // 2}
+    # Forms without a budget are untouched.
+    assert P.memory_thinking_extra_body("https://api.deepseek.com/v1", 100) == {"reasoning_effort": "low"}
 
 
 # ── memory.thinking_llm ───────────────────────────────────────────
@@ -224,6 +241,20 @@ async def test_ainvoke_thinking_retries_once_at_shared_guard_when_cap_rejected()
     assert [c.kwargs["max_completion_tokens"] for c in factory.call_args_list] == [
         MEMORY_THINKING_OUTPUT_MAX_TOKENS, LLM_OUTPUT_GUARD_MAX_TOKENS,
     ]
+
+
+@pytest.mark.asyncio
+async def test_ainvoke_thinking_fallback_halves_thinking_budget():
+    from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+    from memory.thinking_llm import ainvoke_thinking
+
+    llms = [_fake_llm(_CapRejected()), _fake_llm(_response())]
+    cfg = _api_config("deepseek-v4-flash-0731", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    with patch("utils.llm_client.create_chat_llm", side_effect=llms) as factory:
+        await ainvoke_thinking(cfg, "prompt", timeout=60, call_label="t")
+
+    budgets = [c.kwargs["extra_body"]["thinking_budget"] for c in factory.call_args_list]
+    assert budgets == [4096, LLM_OUTPUT_GUARD_MAX_TOKENS // 2]
 
 
 @pytest.mark.asyncio
