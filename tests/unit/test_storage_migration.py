@@ -3030,3 +3030,64 @@ def test_recorded_staged_entries_are_checked_without_listing_the_stage(tmp_path)
     )
 
     assert diverged == ["memory"]
+
+
+
+@pytest.mark.unit
+def test_recovery_compares_a_target_marked_restoring_while_its_backup_remains(tmp_path, monkeypatch):
+    """Stopped after recording the restore but before touching the target:
+    the target is still the published copy and may have been written to."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _crash_after_publish(staged, target):
+        original_publish(staged, target)
+        raise KeyboardInterrupt("simulated process loss")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.undo()
+    # The checkpoint as a rollback leaves it right after recording the
+    # restore and before touching the target.
+    payload = dict(load_storage_migration(config_manager))
+    payload["published_entries"] = ["config"]
+    payload["publishing_entry"] = ""
+    payload["restoring_entries"] = ["config"]
+    staged = payload.get("staged_target_manifests") or {}
+    payload["copied_entries"] = {
+        "config": {"source_manifest": staged.get("config"), "target_manifest": staged.get("config"), "transaction": payload.get("txid")}
+    }
+    save_storage_migration(config_manager, payload)
+    (target_root / "config" / "characters.json").write_text("written since", encoding="utf-8")
+
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "migration_publish_conflict"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "written since"
+
+
+@pytest.mark.unit
+def test_source_entry_appearing_during_staging_stops_the_migration(tmp_path, monkeypatch):
+    """Absent when the source was listed, so never staged; committing would
+    put the target live without it."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, source_root, target_root = _overwrite_migration(tmp_path)
+    original_copy = storage_migration_module._copy_runtime_entry
+
+    def _copy_then_new_source_entry(source_path, target_path):
+        widened = original_copy(source_path, target_path)
+        (source_root / "pngtuber").mkdir(exist_ok=True)
+        (source_root / "pngtuber" / "new.png").write_bytes(b"png")
+        return widened
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _copy_then_new_source_entry)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "verification_failed"
+    assert "pngtuber" in result["payload"]["error_message"]
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"

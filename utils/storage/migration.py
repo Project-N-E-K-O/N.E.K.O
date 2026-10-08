@@ -971,7 +971,9 @@ def _rollback_interrupted_publish(
         )
         if (
             (was_published or moved_unrecorded)
-            and entry_name not in restoring_entries
+            # Marked as restoring, but while the backup is still there the
+            # target is still the published copy and may have been written.
+            and (entry_name not in restoring_entries or os.path.lexists(backup_entry))
             and isinstance(expected_manifest, dict)
             and os.path.lexists(target_entry)
             and _snapshot_path(target_entry) != expected_manifest
@@ -1948,6 +1950,15 @@ def run_pending_storage_migration(
             if os.path.lexists(target_entry):
                 original_target_entries.append(entry_name)
 
+        appeared = set(_iter_existing_runtime_entries(source_root)) - set(existing_entries)
+        if appeared:
+            # Absent when the source was first listed, so never staged: the
+            # target would go live without it.
+            raise StorageMigrationError(
+                "verification_failed",
+                "迁移期间原始数据目录出现了新条目，已停止迁移，原始数据未受影响："
+                + ", ".join(sorted(appeared)) + "。",
+            )
         for entry_name in entries_to_publish:
             try:
                 unchanged = _metadata_fingerprint(source_root / entry_name) == source_fingerprints.get(entry_name)

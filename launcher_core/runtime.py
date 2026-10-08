@@ -118,6 +118,10 @@ _running_descendants: list = []
 # False while the latest refresh could not inspect a running server: what
 # was seen before may then miss a newer descendant.
 _running_descendants_known = True
+# Servers that were running when a refresh could not inspect them. The
+# uncertainty ends only once each is inspected again while alive; one that
+# exits first may have left an orphan no later snapshot can reach.
+_uninspected_servers: set = set()
 _expected_launcher_shutdown = False
 _existing_neko_services: set[str] = set()  # 已有 N.E.K.O 实例占用的端口键
 _partial_or_mixed_existing_backend = False
@@ -2289,18 +2293,24 @@ def _snapshot_server_descendants(servers) -> list | None:
             launcher_children = launcher.children()
         except (psutil.Error, OSError, ValueError):
             return None
+        host_vanished = False
         for child in launcher_children:
             if _process_exe(child) not in own_exes:
                 continue
             try:
                 host_descendants = child.children(recursive=True)
             except psutil.NoSuchProcess:
-                # This host exited meanwhile; the others still count.
+                # This host exited mid-scan: what it started is reparented
+                # and out of reach now. Keep scanning the others, but the
+                # result cannot be complete.
+                host_vanished = True
                 continue
             except (psutil.Error, OSError, ValueError):
                 return None
             descendants.append(child)
             descendants.extend(host_descendants)
+        if host_vanished:
+            return None
         servers = []
     for server in servers:
         proc = server.get('process')
@@ -2402,6 +2412,18 @@ def _still_running(process) -> bool:
         return False
 
 
+def _live_server_names() -> set:
+    names = set()
+    for server in SERVERS:
+        proc = server.get('process')
+        try:
+            if proc is not None and proc.is_alive():
+                names.add(server.get('name'))
+        except Exception:
+            continue
+    return names
+
+
 def _refresh_running_descendants() -> None:
     """Add what the servers have running now to what was seen before.
 
@@ -2410,15 +2432,21 @@ def _refresh_running_descendants() -> None:
     no longer reach the children it left behind. Exited ones are dropped
     (psutil compares creation times, so a recycled PID never matches).
     """
-    global _running_descendants, _running_descendants_known
+    global _running_descendants, _running_descendants_known, _uninspected_servers
+    live_before = _live_server_names()
     try:
         snapshot = _snapshot_server_descendants(SERVERS)
     except Exception:
         snapshot = None
     if snapshot is None:
+        _uninspected_servers |= live_before
         _running_descendants_known = False
         return
-    _running_descendants_known = True
+    live_after = _live_server_names()
+    if _uninspected_servers <= (live_before & live_after):
+        # Every server a failed refresh missed was inspected alive this time.
+        _uninspected_servers = set()
+        _running_descendants_known = True
     earlier = [(process, own) for process, own in _running_descendants if _still_running(process)]
     _running_descendants = _merge_descendant_snapshots(snapshot, earlier)
 

@@ -357,8 +357,28 @@ def test_the_running_snapshot_is_refreshed_from_startup_on():
 
     from launcher_core import runtime
 
+    import ast
+
     source = (LAUNCHER_CORE / "runtime.py").read_text(encoding="utf-8")
-    assert "            _refresh_running_descendants()\n            time.sleep(5)\n" in source
+
+    def _calls(body):
+        return [
+            ast.unparse(statement.value.func)
+            if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
+            else ""
+            for statement in body
+        ]
+
+    monitor_loops = [
+        _calls(node.body)
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.While) and "time.sleep" in _calls(node.body)
+        and "_refresh_running_descendants" in _calls(node.body)
+    ]
+    assert monitor_loops
+    assert all(
+        calls.index("_refresh_running_descendants") < calls.index("time.sleep") for calls in monitor_loops
+    )
     wait_source = inspect.getsource(runtime.wait_for_servers)
     # Before the early-exit check of each poll, so a Main that ends itself
     # during startup was seen at least once while it ran.
@@ -1562,7 +1582,9 @@ def test_merged_mode_snapshots_the_launchers_plugin_hosts_only(tmp_path):
 
 
 @pytest.mark.unit
-def test_merged_mode_keeps_the_other_hosts_when_one_exits_during_the_scan(monkeypatch):
+def test_merged_mode_snapshot_is_unknown_when_a_host_exits_during_the_scan(monkeypatch):
+    """What a host started is reparented the moment it exits and cannot be
+    found again; the snapshot cannot be complete, so it is unknown."""
     psutil = pytest.importorskip("psutil")
     from launcher_core import runtime
 
@@ -1577,10 +1599,7 @@ def test_merged_mode_keeps_the_other_hosts_when_one_exits_during_the_scan(monkey
 
     monkeypatch.setattr(psutil.Process, "children", _children)
     try:
-        descendants = runtime._snapshot_server_descendants([{"name": "Main", "process": None}])
-        ownership = {process.pid: own for process, own in descendants}
-        assert exited_pid not in ownership
-        assert ownership.get(hosts[1].pid) is True
+        assert runtime._snapshot_server_descendants([{"name": "Main", "process": None}]) is None
     finally:
         monkeypatch.undo()
         for host in hosts:
@@ -1645,3 +1664,51 @@ def test_running_snapshot_drops_processes_that_exited(monkeypatch):
     runtime._refresh_running_descendants()
 
     assert runtime._running_descendants == []
+
+
+
+class _FakeServerProcess:
+    def __init__(self, alive=True):
+        self.alive = alive
+
+    def is_alive(self):
+        return self.alive
+
+
+@pytest.mark.unit
+def test_uncertainty_outlasts_a_server_that_exits_before_it_is_inspected_again(monkeypatch):
+    """A refresh failed while Main ran; Main then exited. A later refresh that
+    no longer sees Main must not clear the uncertainty: an orphan it started
+    in between is out of reach."""
+    from launcher_core import runtime
+
+    main = _FakeServerProcess()
+    monkeypatch.setattr(runtime, "SERVERS", [{"name": "Main", "process": main}])
+    snapshots = iter([None, []])
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: next(snapshots))
+    monkeypatch.setattr(runtime, "_running_descendants", [])
+    monkeypatch.setattr(runtime, "_running_descendants_known", True)
+    monkeypatch.setattr(runtime, "_uninspected_servers", set())
+
+    runtime._refresh_running_descendants()  # cannot inspect Main
+    main.alive = False
+    runtime._refresh_running_descendants()  # "succeeds" without Main
+
+    assert runtime._running_descendants_known is False
+
+
+@pytest.mark.unit
+def test_uncertainty_ends_once_every_missed_server_is_inspected_alive(monkeypatch):
+    from launcher_core import runtime
+
+    monkeypatch.setattr(runtime, "SERVERS", [{"name": "Main", "process": _FakeServerProcess()}])
+    snapshots = iter([None, []])
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: next(snapshots))
+    monkeypatch.setattr(runtime, "_running_descendants", [])
+    monkeypatch.setattr(runtime, "_running_descendants_known", True)
+    monkeypatch.setattr(runtime, "_uninspected_servers", set())
+
+    runtime._refresh_running_descendants()
+    runtime._refresh_running_descendants()
+
+    assert runtime._running_descendants_known is True
