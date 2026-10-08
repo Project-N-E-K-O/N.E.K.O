@@ -808,3 +808,11 @@ def test_text_parts_with_nothing_cut_keep_their_boundaries():
     assert strip_tool_call_leaks_from_parts(
         ["好的 async", "call:pvz_instruction{instruction:a} 完毕"],
     ) == ["好的 ", " 完毕"]
+    # Held back but no call: it stays in its own part even when a later
+    # part does hold one.
+    assert strip_tool_call_leaks_from_parts(
+        ["alpha default_", "nothing asynccall:x{a:1} omega"],
+    ) == ["alpha default_", "nothing  omega"]
+    assert strip_tool_call_leaks_from_parts(
+        ["前面 async", "后面 asynccall:x{a:1} 完"],
+    ) == ["前面 async", "后面  完"]

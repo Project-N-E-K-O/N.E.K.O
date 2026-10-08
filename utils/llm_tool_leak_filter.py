@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import re
 import string
 from typing import Iterable, Optional
@@ -876,15 +877,26 @@ def strip_tool_call_leaks_from_parts(
     """``strip_tool_call_leaks`` over the text parts of one message.
 
     The parts are read as one stream, so a call split across two parts is
-    still found. Each part keeps what it showed; text held back at a part's
-    end comes out with the next one, and the last part takes the rest. Parts
-    with nothing cut come back as they were, holding back included.
+    still found. Each part keeps what it showed: text held back at a part's
+    end goes back to that part once the next one shows it was no call, and
+    the last part takes the rest. Parts with nothing cut come back as they
+    were.
     """
     names = set(tool_names or ())
     if not _may_hold_tool_call("".join(texts), names):
         return list(texts)
     leak_filter = ToolLeakFilter(tool_names=names)
-    cleaned = [_feed_in_pieces(leak_filter, text) for text in texts]
+    cleaned: list[str] = []
+    for text in texts:
+        held = leak_filter._pending
+        shown = _feed_in_pieces(leak_filter, text)
+        if cleaned and held:
+            # What the previous part held back comes out first, as far as it
+            # was not the start of a call.
+            given_back = len(os.path.commonprefix([held, shown]))
+            cleaned[-1] += shown[:given_back]
+            shown = shown[given_back:]
+        cleaned.append(shown)
     tail, _event = leak_filter.finalize()
     if cleaned:
         cleaned[-1] += tail
