@@ -304,7 +304,10 @@ def focus_extra_body(model: str) -> dict | None:
 #     把思考打开。不发参数时 qwen3.7-flash 思考打满 8192，DeepSeek 快照版到 12k。
 #   - 硅基流动：max_tokens 只封正文，不发参数时思考跑到请求超时；必须
 #     enable_thinking + thinking_budget 才封得住（只发 thinking_budget 会让 DeepSeek
-#     系直接不思考）。
+#     系直接不思考）。对不支持思考的模型（Ling-mini-2.0 / Qwen2.5-7B-Instruct /
+#     GLM-4-9B-0414 / DeepSeek-V3）enable_thinking 被忽略、不报错、不产生思考；
+#     实测的混合模型（Qwen3-8B、DeepSeek-V3.2 / V4-Flash、Qwen3.5）原生默认就开
+#     思考，所以按端点下发不会把关着的思考打开（2026-10-08）。
 # 预算取共享输出护栏同值，给 8192 额度里的 JSON 正文留出至少一半。
 # 未登记的端点保持原样（返回 None = 不发 extra_body = 原生思考）。
 EXTRA_BODY_DEEPSEEK_MEMORY_THINKING = {"reasoning_effort": "low"}
