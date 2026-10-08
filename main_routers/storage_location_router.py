@@ -70,6 +70,7 @@ from utils.storage_migration import (
     REGENERABLE_RUNTIME_ENTRY_NAMES,
     STORAGE_MIGRATION_STATUS_COMPLETED,
     STORAGE_MIGRATION_STATUS_FAILED,
+    V1_MIGRATED_RUNTIME_ENTRY_NAMES,
     StorageMigrationError,
     classify_entry_no_follow,
     copy_evidence_entries,
@@ -81,6 +82,7 @@ from utils.storage_migration import (
     is_storage_migration_pending,
     load_storage_migration,
     rewrite_migrated_config_paths,
+    root_has_migrated_entry_content,
     save_storage_migration,
     remove_runtime_entry,
     snapshot_runtime_entry,
@@ -829,9 +831,15 @@ def _estimate_runtime_payload_bytes(source_root: Path) -> int:
 
 def _target_root_has_user_content(target_root: Path, config_manager) -> bool:
     try:
-        from utils.cloudsave_runtime import runtime_root_has_user_content
+        from utils.cloudsave_runtime import LEGACY_RUNTIME_DIR_NAMES, runtime_root_has_user_content
 
-        return bool(runtime_root_has_user_content(target_root, config_manager=config_manager))
+        if runtime_root_has_user_content(target_root, config_manager=config_manager):
+            return True
+        # The cloud-save check only knows its own directories; a target that
+        # holds only entries the migration added later (pngtuber, runtimes,
+        # ...) is not empty either, and migrating into it would replace them.
+        extra_names = [name for name in MIGRATED_RUNTIME_ENTRY_NAMES if name not in LEGACY_RUNTIME_DIR_NAMES]
+        return root_has_migrated_entry_content(target_root, extra_names)
     except Exception:
         if not target_root.exists() or not target_root.is_dir():
             return False
@@ -1643,9 +1651,12 @@ def _cleanup_retained_runtime_root(
     # same entry with the same content right now. Anything else -- never
     # copied, copied partially, or changed in the target since -- stays for
     # the user to look at.
+    # A v1 migration copied only the v1 list; entries added since were never
+    # copied and stay where they are.
+    migrated_names = V1_MIGRATED_RUNTIME_ENTRY_NAMES if legacy_checkpoint else MIGRATED_RUNTIME_ENTRY_NAMES
     legacy_entries = [
         entry_name
-        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES
+        for entry_name in migrated_names
         if legacy_checkpoint
         and normalized_target is not None
         and entry_name not in proofs
@@ -1741,19 +1752,25 @@ def _cleanup_retained_runtime_root(
     # The anchor root holds more than runtime data (state, cloud saves) and
     # always stays. Any other retained root goes once emptied; files the user
     # kept in it stay put.
+    remaining_entries = tuple(
+        entry_name
+        for entry_name in migrated_names
+        if os.path.lexists(retained_path / entry_name)
+    )
     retained_root_kept = paths_equal(retained_path, anchor_root)
     if not retained_root_kept:
         # Directories the app recreates (old logs, plugin install records)
-        # would otherwise keep the old root alive. Only here: the anchor
-        # root's logs may still be written by a run started without the
-        # launcher.
-        for entry_name in REGENERABLE_RUNTIME_ENTRY_NAMES:
-            if classify_entry_no_follow(retained_path / entry_name) is None:
-                continue
-            try:
-                remove_runtime_entry(retained_path / entry_name)
-            except (StorageMigrationError, OSError) as exc:
-                logger.warning("Retained root cleanup kept %s: %s", entry_name, exc)
+        # would otherwise keep the old root alive. They go only when nothing
+        # migrated is left: while the user still has entries to sort out
+        # here, the old logs may help. The anchor root holds the storage
+        # policy and cloud saves and is never removed, so there is nothing
+        # to gain from emptying its regenerable directories.
+        if not remaining_entries:
+            for entry_name in REGENERABLE_RUNTIME_ENTRY_NAMES:
+                try:
+                    remove_runtime_entry(retained_path / entry_name)
+                except (StorageMigrationError, OSError) as exc:
+                    logger.warning("Retained root cleanup kept %s: %s", entry_name, exc)
         try:
             retained_path.rmdir()
         except FileNotFoundError:
@@ -1761,11 +1778,6 @@ def _cleanup_retained_runtime_root(
             pass
         except OSError:
             retained_root_kept = True
-    remaining_entries = tuple(
-        entry_name
-        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES
-        if os.path.lexists(retained_path / entry_name)
-    )
     return remaining_entries, retained_root_kept
 
 

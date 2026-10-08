@@ -1971,3 +1971,21 @@ def test_storage_migration_moves_pngtuber_watch_together_and_runtimes(tmp_path):
     assert (target_root / "watch_together" / "library.sqlite3").read_bytes() == b"sqlite"
     assert (target_root / "runtimes" / "galgame_plugin" / "RapidOCR" / "model.onnx").is_file()
     assert {"pngtuber", "watch_together", "runtimes"} <= set(result["payload"]["copied_entries"])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("entry_name", ["pngtuber", "watch_together", "runtimes", "embedding_models"])
+def test_migration_requires_confirmation_when_target_only_holds_entries_added_later(tmp_path, entry_name):
+    """The cloud-save probe does not know these entries; the target is still not empty."""
+    config = _make_config_manager(tmp_path)
+    config.app_docs_dir.mkdir(parents=True)
+    target = tmp_path / "target" / "N.E.K.O"
+    saved = target / entry_name / "existing.bin"
+    saved.parent.mkdir(parents=True)
+    saved.write_bytes(b"existing")
+    create_pending_storage_migration(config, source_root=config.app_docs_dir, target_root=target, selection_source="custom")
+
+    result = run_pending_storage_migration(config)
+
+    assert result["error_code"] == "target_confirmation_required"
+    assert saved.read_bytes() == b"existing"

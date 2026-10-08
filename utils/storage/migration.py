@@ -80,9 +80,28 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     "avatar_tools",
     "pngtuber",
     "watch_together",
-    # Downloaded RapidOCR runtimes and models: moved so OCR keeps working at
-    # the new root without downloading them again.
+    # Downloaded models (RapidOCR runtimes, memory embedding models): moved
+    # so they keep working at the new root without downloading them again.
     "runtimes",
+    "embedding_models",
+)
+
+# What v1 builds migrated. A v1 checkpoint is judged against these only:
+# entries added since were never copied by it, so their retained copy may be
+# the only one and must not be reported as something to delete by hand.
+V1_MIGRATED_RUNTIME_ENTRY_NAMES = (
+    "config",
+    "memory",
+    "plugins",
+    "live2d",
+    "vrm",
+    "mmd",
+    "workshop",
+    "theater",
+    "character_cards",
+    "card_faces",
+    "jukebox",
+    "avatar_tools",
 )
 
 # Top-level runtime directories the app recreates by itself. They are not
@@ -91,6 +110,10 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
 REGENERABLE_RUNTIME_ENTRY_NAMES = (
     "logs",
     "plugin-runtime",
+    # Scratch space of character edits and of config_manager's own data
+    # migration; its ledger names paths under this root's memory only.
+    ".rollback_tmp",
+    ".mig-staging",
 )
 
 _WINDOWS_IO_REPARSE_TAG_NAME_SURROGATE = 0x20000000
@@ -807,11 +830,36 @@ def _iter_existing_runtime_entries(root: Path) -> list[str]:
     ]
 
 
+def root_has_migrated_entry_content(root: Path, names: Any = MIGRATED_RUNTIME_ENTRY_NAMES) -> bool:
+    """Whether ``root`` holds any migrated entry with something in it.
+
+    The general user-content probe only knows the cloud-save directory list;
+    entries migrated beyond it (pngtuber, watch_together, ...) must count
+    too, or a target holding only those would be overwritten unasked.
+    """
+    for entry_name in names:
+        entry = root / entry_name
+        try:
+            if entry.is_file():
+                return True
+            if entry.is_dir() and any(child.name != ".gitkeep" for child in entry.iterdir()):
+                return True
+        except OSError:
+            # Unreadable is not proof of emptiness; ask before overwriting.
+            return True
+    return False
+
+
 def _root_has_user_content(root: Path, *, config_manager) -> bool:
     try:
-        from utils.cloudsave_runtime import runtime_root_has_user_content
+        from utils.cloudsave_runtime import LEGACY_RUNTIME_DIR_NAMES, runtime_root_has_user_content
 
-        return bool(runtime_root_has_user_content(root, config_manager=config_manager))
+        if runtime_root_has_user_content(root, config_manager=config_manager):
+            return True
+        # Only the entries the probe above does not know: it has its own
+        # rules for config and theater defaults that must stay in force.
+        extra = [name for name in MIGRATED_RUNTIME_ENTRY_NAMES if name not in LEGACY_RUNTIME_DIR_NAMES]
+        return root_has_migrated_entry_content(root, extra)
     except Exception:
         if not root.exists() or not root.is_dir():
             return False

@@ -3758,3 +3758,81 @@ def test_storage_location_cleanup_rejects_retained_root_that_contains_target_roo
     assert (target_root / "config").exists()
     migration_payload = load_storage_migration(reloaded_manager)
     assert migration_payload["status"] == "completed"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("entry_name", ["pngtuber", "watch_together", "runtimes", "embedding_models"])
+def test_target_with_only_entries_added_later_counts_as_existing_content(tmp_path, entry_name):
+    config_manager = _make_real_config_manager(tmp_path)
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (target_root / entry_name).mkdir(parents=True)
+    (target_root / entry_name / "existing.bin").write_bytes(b"existing")
+
+    assert storage_location_router_module._target_root_has_user_content(target_root, config_manager) is True
+
+
+@pytest.mark.unit
+def test_storage_location_v1_cleanup_keeps_entries_v1_never_migrated(tmp_path):
+    """v1 copied only its own list; pngtuber in the old root was never copied."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+    (source_root / "pngtuber" / "Alice").mkdir(parents=True)
+    (source_root / "pngtuber" / "Alice" / "idle.png").write_bytes(b"png")
+    (source_root / "logs").mkdir()
+    (source_root / "logs" / "old.log").write_text("old", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert cleanup_response.json()["retained_root_kept"] is True
+    assert (source_root / "pngtuber" / "Alice" / "idle.png").read_bytes() == b"png"
+    assert not (source_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_regenerable_dirs_while_entries_remain(tmp_path):
+    """Old logs stay while the user still has entries to sort out in that root."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "only-here.json").write_text("{}", encoding="utf-8")
+    (source_root / "logs").mkdir()
+    (source_root / "logs" / "old.log").write_text("old", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 409
+    assert cleanup_response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "logs" / "old.log").is_file()
+    assert not (source_root / "config").exists()

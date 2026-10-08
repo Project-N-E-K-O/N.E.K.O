@@ -1,8 +1,13 @@
 """Every top-level directory the code keeps under ``app_docs_dir`` must be
 either migrated or known to be regenerable; anything else would be left
-behind in the old root by a storage-location migration (see #3336)."""
+behind in the old root by a storage-location migration (see #3336).
 
-import re
+Discovery walks the AST rather than matching text, so it also sees names
+built from constants, ``os.path.join`` calls and variables that hold the
+runtime root (``base = cm.app_docs_dir`` ... ``base / "state"``).
+"""
+
+import ast
 from pathlib import Path
 
 import pytest
@@ -13,18 +18,102 @@ from utils.storage_migration import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-_QUOTES = "[" + '"' + chr(39) + "]"
-# Matches ``app_docs_dir / "name"`` and ``Path(...app_docs_dir) / "name"``.
-_TOP_LEVEL_DIR = re.compile(
-    "app_docs_dir[)]?[ ]*/[ ]*" + _QUOTES + "([A-Za-z0-9_.-]+)" + _QUOTES
-)
 _SKIPPED_PARTS = {"tests", ".venv", "node_modules", ".git", ".claude", "dist", "build"}
+
+# Directories that are deliberately neither migrated nor regenerable, with
+# the reason. Keep this list short and explained.
+DELIBERATELY_UNMIGRATED = {
+    # At the anchor root this holds the storage policy and the migration
+    # checkpoint itself, so it can never move as a whole. Mini-game scores
+    # under state/game_scores are not migrated yet (tracked separately).
+    "state",
+}
 
 
 @pytest.fixture(scope="session", autouse=True)
 def mock_memory_server():
     """Override the repo-level autouse fixture: this check reads source only."""
     yield
+
+
+def _mentions_runtime_root(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Attribute) and child.attr == "app_docs_dir":
+            return True
+        if isinstance(child, ast.Name) and child.id == "app_docs_dir":
+            return True
+        if isinstance(child, ast.Constant) and child.value == "app_docs_dir":
+            return True
+    return False
+
+
+def _is_runtime_root(node: ast.AST, aliases: set[str]) -> bool:
+    """Whether ``node`` evaluates to the runtime root itself (not a child or parent)."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return False
+    if isinstance(node, ast.Attribute) and node.attr == "parent":
+        return False
+    if isinstance(node, ast.Name) and node.id in aliases:
+        return True
+    return _mentions_runtime_root(node)
+
+
+def _string_value(node: ast.AST, constants: dict[str, str]) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return constants.get(node.id)
+    return None
+
+
+def _first_segment(value: str) -> str:
+    return value.replace("\\", "/").strip("/").split("/")[0]
+
+
+def _scan_module(tree: ast.Module) -> set[str]:
+    constants = {
+        target.id: node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    found: set[str] = set()
+    scopes = [tree] + [
+        node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    for scope in scopes:
+        aliases = {
+            target.id
+            for node in ast.walk(scope)
+            if isinstance(node, ast.Assign) and _is_runtime_root(node.value, set())
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        for node in ast.walk(scope):
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+                if _is_runtime_root(node.left, aliases):
+                    value = _string_value(node.right, constants)
+                    if value:
+                        found.add(_first_segment(value))
+            elif isinstance(node, ast.Call):
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if name not in {"join", "joinpath"}:
+                    continue
+                args = list(node.args)
+                if isinstance(func, ast.Attribute) and name == "joinpath":
+                    args = [func.value, *args]
+                for index, arg in enumerate(args[:-1]):
+                    if _is_runtime_root(arg, aliases):
+                        value = _string_value(args[index + 1], constants)
+                        if value:
+                            found.add(_first_segment(value))
+                        break
+    found.discard("")
+    return found
 
 
 def _top_level_dirs_in_source() -> dict[str, list[str]]:
@@ -34,21 +123,27 @@ def _top_level_dirs_in_source() -> dict[str, list[str]]:
         if _SKIPPED_PARTS.intersection(relative.parts):
             continue
         try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, SyntaxError):
             continue
-        for match in _TOP_LEVEL_DIR.finditer(text):
-            found.setdefault(match.group(1), []).append(relative.as_posix())
+        for name in _scan_module(tree):
+            found.setdefault(name, []).append(relative.as_posix())
     return found
 
 
 @pytest.mark.unit
 def test_every_runtime_top_level_dir_is_migrated_or_regenerable():
     found = _top_level_dirs_in_source()
-    # The scan must actually see the known directories, or it proves nothing.
-    assert {"config", "memory", "pngtuber", "watch_together", "logs"} <= set(found)
+    # The scan must see directories built every way the code builds them, or
+    # it proves nothing: a literal (config), a module constant through
+    # os.path.join (embedding_models), and a variable holding the root (state).
+    assert {"config", "pngtuber", "logs", "embedding_models", "state", "theater"} <= set(found)
 
-    known = set(MIGRATED_RUNTIME_ENTRY_NAMES) | set(REGENERABLE_RUNTIME_ENTRY_NAMES)
+    known = (
+        set(MIGRATED_RUNTIME_ENTRY_NAMES)
+        | set(REGENERABLE_RUNTIME_ENTRY_NAMES)
+        | DELIBERATELY_UNMIGRATED
+    )
     unlisted = {name: sorted(set(files)) for name, files in found.items() if name not in known}
 
     assert unlisted == {}, (
@@ -62,3 +157,6 @@ def test_every_runtime_top_level_dir_is_migrated_or_regenerable():
 @pytest.mark.unit
 def test_migrated_and_regenerable_lists_do_not_overlap():
     assert not set(MIGRATED_RUNTIME_ENTRY_NAMES) & set(REGENERABLE_RUNTIME_ENTRY_NAMES)
+    assert not DELIBERATELY_UNMIGRATED & (
+        set(MIGRATED_RUNTIME_ENTRY_NAMES) | set(REGENERABLE_RUNTIME_ENTRY_NAMES)
+    )
