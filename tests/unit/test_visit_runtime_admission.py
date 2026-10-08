@@ -988,6 +988,53 @@ async def test_two_characters_cannot_take_the_same_visit_at_once(tmp_path, monke
         await teardown(one, clock=clock)
 
 
+async def test_an_admission_still_awaiting_when_stop_all_runs_does_not_register(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    gate, reached = asyncio.Event(), asyncio.Event()
+
+    async def slow_account():
+        reached.set()
+        await gate.wait()
+        return "acct"
+
+    monkeypatch.setattr(rtm, "_local_account", slow_account)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    starting = asyncio.ensure_future(start_side(side, clock=clock, wall=wall))
+    try:
+        await asyncio.wait_for(reached.wait(), 5)
+        await rtm.stop_all("shutdown")                        # 关机时它还在查账号
+        gate.set()
+        with pytest.raises(rtm.VisitRefused):
+            await asyncio.wait_for(starting, 5)
+        assert rtm.get_runtime("Host") is None                # 关机之后不再登记运行时
+        assert visit_route_state.get_visit_route_state("Host") is None
+    finally:
+        gate.set()
+        if not starting.done():
+            starting.cancel()
+        await teardown(side, clock=clock)
+
+
+async def test_a_session_that_will_not_close_does_not_keep_the_visit_registered(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "_SESSION_CLOSE_S", 0.2)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+
+    async def close_session():
+        await stuck.wait()                                    # 客户端关不掉
+
+    rt.close_session = close_session
+    try:
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(rt), 10)
+        assert rtm.get_runtime("Host") is None                # 照样注销，这个角色不会一直锁着
+    finally:
+        stuck.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_single_joined_report_ahead_of_the_sdk_gate_is_replayed(tmp_path, monkeypatch, clocks):
     patch_admission(monkeypatch)
     clock, wall = clocks
@@ -1539,6 +1586,8 @@ async def test_late_text_during_finalization_keeps_the_reception_gate_and_the_li
         }, nbytes=200)
         texts = [r["text"] for r in rt.journal.lines()]
         assert "合法的最后一句" in texts                         # 合法的照样进转录
+        replay = [r for r in rt.snapshot()["transcript"] if r.get("line_id") == "g:93"]
+        assert replay and replay[0]["addressee"] == {"side": "host", "kind": "cat"}   # 重放带完整帧形状
         assert "占用同一 lp 的一句" not in texts and "越界 lp 的一句" not in texts
         stuck.set()
     finally:

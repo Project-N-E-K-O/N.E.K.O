@@ -462,9 +462,18 @@ class ReceiveMixin:
             return
         if not self._line_admitted(ln, from_vid, now):
             return  # 与正常收口同一份配额决定：分片时已判超速的行，收尾中补到也不进转录
-        speaker_from = "peer_human" if m.get("sp") == "h" else "peer_cat"
-        await self.record_line(speaker_from, side=self.peer_side, lp=lp, ln=str(ln), text=str(m.get("txt") or ""),
-                               truncated=m.get("truncated") is True)
+        sp = "human" if m.get("sp") == "h" else "cat"
+        txt = str(m.get("txt") or "")
+        truncated = m.get("truncated") is True
+        ad_side, ad_kind = decode_addressee(m.get("ad"))
+        # 不上屏，但缓存完整的帧形状：页面重载时 GET /state 按它重放（收件人 / 回复 / 告别 / i_done）
+        self.visit_line_payload(
+            ln=str(ln), lp=lp, side=self.peer_side, kind=sp, ad_side=ad_side, ad_kind=ad_kind,
+            reply_to=str(m.get("rt") or ""), goodbye=m.get("wu") is True, text=txt, truncated=truncated,
+            i_done=m.get("i_done", 0),
+            trunc_reason=m.get("trunc_reason") if isinstance(m.get("trunc_reason"), str) else None,
+        )
+        await self.record_line(f"peer_{sp}", side=self.peer_side, lp=lp, ln=str(ln), text=txt, truncated=truncated)
 
     def _lp_reused(self, ln: Any, lp: Any) -> bool:
         """A second peer line claiming an ``lp`` another of its lines already holds: rejected whole.

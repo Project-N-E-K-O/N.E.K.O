@@ -129,6 +129,7 @@ _HANDOFF_POLL_S = 0.25
 # 关机总预算 VISIT_SHUTDOWN_BUDGET_S：等在飞任务、收口当前行各 0.5 s，取消未配对房间 1 s，余下给封存
 _SHUTDOWN_TASK_WAIT_S = 0.5
 _JOURNAL_OPEN_MAX_S = 10.0
+_SESSION_CLOSE_S = 5.0
 _DISPLAY_FLUSH_S = 2.0
 _ACCOUNT_RECORD_S = 3.0
 _ACCOUNT_RETRY_DELAYS_S = (1.0, 5.0, 30.0, 120.0, 600.0)
@@ -329,7 +330,9 @@ _resolving_names: set[object] = set()
 
 _pending_visits: set[tuple[str, str]] = set()
 """``(visit_id, side)`` between the slot reservation and the runtime registration (``start_visit``)."""
-"""Last known ``character_uid`` of a name that started a visit (background-task lookup by name)."""
+
+_stop_gen = 0
+"""Bumped by ``stop_all``: a ``start_visit`` that was still awaiting when it ran does not register."""
 
 
 def has_visit_background_tasks(lanlan_name: str) -> bool:
@@ -1737,7 +1740,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             except Exception:  # noqa: BLE001
                 pass
             self.takeover_token = None
-        await self.close_session()
+        try:
+            # 客户端关不掉（取消排空 / HTTP 关闭卡住）也照样注销：不能让这个角色一直锁在已结束的场次里
+            await asyncio.wait_for(self.close_session(), _SESSION_CLOSE_S)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("visit %s: isolated session not closed: %r", self.visit_id[:6], exc)
         self.speech_router.clear()
         if self._pump_task is not None:
             self._pump_task.cancel()
@@ -1956,6 +1963,7 @@ async def start_visit(
     name = str(lanlan_name or "")
     if side not in ("host", "guest"):
         raise ValueError("side must be 'host' or 'guest'")
+    stop_gen = _stop_gen
     gate = await persona_gate(name)
     if not gate.ok:
         raise VisitRefused(409, {"code": "VISIT_PERSONA_UNREVIEWED", "state": gate.state})
@@ -1978,6 +1986,9 @@ async def start_visit(
         if failure is not None:
             raise VisitRefused(409, {"reason": failure})
         account = await _local_account()
+        if _stop_gen != stop_gen:
+            # 入场途中 stop_all 已经跑过（它只看得到已登记的运行时）：不再登记、不再起传输
+            raise VisitRefused(409, {"reason": "busy"})
         # 查账号期间（还没登记运行时、输入还不归串门）语音会话 / 热切换可能已经起来、manager 也可能被换掉：再查一次
         if not host.is_current():
             raise VisitRefused(409, {"reason": "busy"})
@@ -2088,6 +2099,8 @@ async def end_visit(lanlan_name: str, visit_id: str, reason: str) -> tuple[int, 
 
 async def stop_all(reason: str = "shutdown") -> None:
     """Shutdown hook (PR-09b, within ``VISIT_SHUTDOWN_BUDGET_S``): files first, never a ``leave``."""
+    global _stop_gen
+    _stop_gen += 1  # 还挂在入场途中的 start_visit 醒来后看到它就不登记
     runtimes = list(_runtimes.values())
     if runtimes:
         await asyncio.gather(*(rt.shutdown() for rt in runtimes), return_exceptions=True)
