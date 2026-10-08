@@ -72,3 +72,19 @@ async def test_family_turn_wait_gives_up_when_no_reply_starts(monkeypatch):
     started = time.monotonic()
     await _host(_Session(responding=False)).wait_turn_idle(5.0)
     assert time.monotonic() - started < 0.1           # 不给开始窗口：空闲就立即返回
+
+
+async def test_status_writes_are_bounded_like_frames(monkeypatch):
+    monkeypatch.setattr(host_port, "_FRAME_TIMEOUT_S", 0.1)
+    stuck = asyncio.Event()
+
+    async def send_status(message):
+        await stuck.wait()                            # 页面 socket 背压：一直写不出去
+        return True
+
+    host = ManagerHost("Host", SimpleNamespace(send_status=send_status))
+    started = time.monotonic()
+    # 外层 3 s 只为让测试本身不挂死
+    assert await asyncio.wait_for(host.send_status("VISIT_E_BUSY"), 3) is False
+    assert time.monotonic() - started < 1.0
+    stuck.set()

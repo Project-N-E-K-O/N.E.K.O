@@ -529,6 +529,7 @@ class TalkMixin:
         """Spool (memory on) and upload record of one final line."""
         ts = self.wall()
         clean = clamp_text_utf8(text)
+        self._ln_by_key[(lp, side)] = ln
         spool = self.spool
         if spool is not None and self.memory_enabled and spool.is_open:
             try:

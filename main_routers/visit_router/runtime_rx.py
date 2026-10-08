@@ -91,6 +91,7 @@ class ReceiveMixin:
         self._early_effects: list = []
         self._peer_lines: dict[str, dict] = {}
         self._line_quota: dict[str, bool] = {}
+        self._ln_by_key: dict[tuple, str] = {}
         self._peer_lp: dict[str, int] = {}
         self.last_peer_goodbye = ""
 
@@ -167,15 +168,20 @@ class ReceiveMixin:
             # 提前交付的这条不再经过 _rx_wrap_up：在这里同样校验 lp、计违约
             self._early_effects.append(self.room.violation_effects(violation))
             return
-        self._early_effects.append(self.room.on_incoming_wrap_up(
+        eff = self.room.on_incoming_wrap_up(
             "speaking", str(msg.get("reason") or ""), msg.get("lp", 0), now, msg.get("ln"),
-        ))
+        )
+        if eff.violation is None:
+            # 不经过 _dispatch：合法的这一条同样清零连续违约
+            self.room.record_valid_message()
+        self._early_effects.append(eff)
 
     def _count_anomaly(self, kind: str, *, streak: bool = True) -> None:
-        self.journal.note_anomaly()
         if self.room is not None and streak:
-            self.apply_effects(self.room.record_anomaly(kind))
-        elif self.room is not None:
+            self.apply_effects(self.room.record_anomaly(kind))  # apply_effects 记上传异常（只记这一次）
+            return
+        self.journal.note_anomaly()
+        if self.room is not None:
             self.room.anomalies_total += 1
         else:
             self.pre_room_anomalies += 1
@@ -505,7 +511,9 @@ class ReceiveMixin:
         side = record.get("side") or self.side
         kind = "human" if speaker_from.endswith("_human") else "cat"
         return {
-            "type": "visit_line", "visit_id": self.visit_id, "line_id": "", "lp": record.get("lp"),
+            "type": "visit_line", "visit_id": self.visit_id, "lp": record.get("lp"),
+            # 上传记录不存 ln：按 (lp, side) 找回原来的 line_id（找不到就用它造一个唯一的）
+            "line_id": self._ln_by_key.get((record.get("lp"), side)) or f"{side}:{record.get('lp')}",
             "speaker": self.speaker_payload(side, kind), "text": defang_markdown_media(str(record.get("text") or "")),
             "final": True, "truncated": bool(record.get("truncated")), "ts": record.get("ts"),
         }

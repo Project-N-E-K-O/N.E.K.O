@@ -746,3 +746,57 @@ async def test_early_speaking_wrap_ups_with_bad_lp_count_toward_the_cutoff(tmp_p
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_replayed_transcript_lines_keep_their_own_line_ids(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        await wait_for(lambda: len(rt.journal.lines()) >= 3)
+        def key(f):
+            return f["lp"], f["speaker"]["side"]
+
+        live = {key(f): f["line_id"] for f in host.host.frames if f.get("type") == "visit_line"}
+        replay = rt.snapshot()["transcript"]
+        ids = [r["line_id"] for r in replay]
+        assert all(ids) and len(set(ids)) == len(ids)       # 页面按 line_id 建气泡：不能塌成一个
+        matched = [r for r in replay if key(r) in live]
+        assert len(matched) >= 2
+        assert all(r["line_id"] == live[key(r)] for r in matched)   # 与直播时同一行同一个 id
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_runtime_detected_anomaly_is_recorded_once(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        journal, room = rt.journal._anomalies, rt.room.anomalies_total
+        rt._count_anomaly("schema")
+        assert rt.journal._anomalies == journal + 1 and rt.room.anomalies_total == room + 1
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_valid_early_wrap_up_resets_the_violation_streak(tmp_path, monkeypatch):
+    from main_logic.visit.room import RoomEffects
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        monkeypatch.setattr(rt.room, "on_incoming_wrap_up", lambda *a, **k: RoomEffects())
+        rt.room.violation_streak = 19
+        rt._on_early_wrap_up({"t": "wrap_up", "ph": "speaking", "lp": rt.room.max_lp_seen + 1, "ln": "g:900",
+                              "reason": "quiet"}, clock())
+        assert rt.room.violation_streak == 0                 # 合法的这一条同样算「中间有过正常消息」
+        monkeypatch.setattr(rt.room, "on_incoming_wrap_up", lambda *a, **k: RoomEffects(violation="wrap_up_order"))
+        rt.room.violation_streak = 3
+        rt._on_early_wrap_up({"t": "wrap_up", "ph": "speaking", "lp": rt.room.max_lp_seen + 1, "ln": "g:901",
+                              "reason": "quiet"}, clock())
+        assert rt.room.violation_streak == 3                 # 本身违约的不清零
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)

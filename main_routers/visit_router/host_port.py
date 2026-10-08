@@ -185,7 +185,8 @@ class ManagerHost:
     async def send_status(self, code: str, details: Optional[dict] = None) -> bool:
         message = json.dumps({"code": code, "details": dict(details or {})}, ensure_ascii=False)
         try:
-            return bool(await self._mgr.send_status(message))
+            # 与 send_frame 一样有界：页面卡住不能把收尾流程（封存、注销）一起卡住
+            return bool(await asyncio.wait_for(self._mgr.send_status(message), _FRAME_TIMEOUT_S))
         except Exception as exc:  # noqa: BLE001
             logger.debug("visit: status %s not written: %s", code, type(exc).__name__)
             return False
