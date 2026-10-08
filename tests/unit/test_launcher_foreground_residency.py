@@ -1539,3 +1539,62 @@ def test_merged_mode_keeps_the_other_hosts_when_one_exits_during_the_scan(monkey
         for host in hosts:
             host.kill()
             host.wait(timeout=10)
+
+
+
+@pytest.mark.unit
+def test_running_snapshot_survives_the_tick_after_main_exits(tmp_path, monkeypatch):
+    """The loop's real order, real processes: refresh while Main runs, Main
+    exits on its own (leaving a child), the next tick refreshes again before
+    noticing, then teardown. The orphan must still be in the snapshot."""
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    pid_file = tmp_path / "child.pid"
+    exit_flag = tmp_path / "exit-now"
+    main_code = textwrap.dedent(
+        f"""
+        import os, subprocess, time
+        child = subprocess.Popen([{_INTERPRETER!r}, "-c", "import time; time.sleep(120)"])
+        open({str(pid_file)!r}, "w").write(str(child.pid))
+        while not os.path.exists({str(exit_flag)!r}):
+            time.sleep(0.05)
+        """
+    )
+    main = subprocess.Popen([_INTERPRETER, "-c", main_code])
+    child_pid = _wait_for_pid(pid_file, main)
+    try:
+        monkeypatch.setattr(runtime, "SERVERS", [{"name": "Main", "module": "main_server", "process": _PopenServer(main)}])
+        monkeypatch.setattr(runtime, "_running_descendants", [])
+        monkeypatch.setattr(runtime, "_teardown_snapshot_taken", False)
+        monkeypatch.setattr(runtime, "_teardown_descendants", None)
+
+        runtime._refresh_running_descendants()  # tick N: Main running
+        exit_flag.write_text("", encoding="utf-8")
+        main.wait(timeout=20)  # Main shuts itself down during the sleep
+        runtime._refresh_running_descendants()  # tick N+1 refreshes first
+        runtime._take_teardown_snapshot_once()  # then the loop breaks into teardown
+
+        ownership = {process.pid: own for process, own in runtime._teardown_descendants}
+        assert ownership.get(child_pid) is True
+        assert runtime._settle_surviving_descendants(runtime._teardown_descendants) is False
+        assert not psutil.pid_exists(child_pid) or psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE
+    finally:
+        _kill_quietly(psutil, main, child_pid)
+
+
+@pytest.mark.unit
+def test_running_snapshot_drops_processes_that_exited(monkeypatch):
+    from launcher_core import runtime
+
+    class _Gone:
+        def is_running(self):
+            return False
+
+    gone = _Gone()
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: [])
+    monkeypatch.setattr(runtime, "_running_descendants", [(gone, True)])
+
+    runtime._refresh_running_descendants()
+
+    assert runtime._running_descendants == []

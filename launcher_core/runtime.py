@@ -2387,14 +2387,30 @@ def _descendants_block_storage_restart(allow_storage_restart: bool) -> bool:
     return _settle_surviving_descendants(_teardown_descendants)
 
 
+def _still_running(process) -> bool:
+    try:
+        return bool(process.is_running())
+    except Exception:
+        return False
+
+
 def _refresh_running_descendants() -> None:
+    """Add what the servers have running now to what was seen before.
+
+    Earlier entries stay while their process still runs: Main shuts itself
+    down for a migration while this loop sleeps, and the next snapshot can
+    no longer reach the children it left behind. Exited ones are dropped
+    (psutil compares creation times, so a recycled PID never matches).
+    """
     global _running_descendants
     try:
         snapshot = _snapshot_server_descendants(SERVERS)
     except Exception:
         return
-    if snapshot is not None:
-        _running_descendants = snapshot
+    if snapshot is None:
+        return
+    earlier = [(process, own) for process, own in _running_descendants if _still_running(process)]
+    _running_descendants = _merge_descendant_snapshots(snapshot, earlier)
 
 
 def _merge_descendant_snapshots(current: list | None, earlier: list) -> list | None:
