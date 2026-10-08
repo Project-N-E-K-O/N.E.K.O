@@ -87,6 +87,11 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     # so they keep working at the new root without downloading them again.
     "runtimes",
     "embedding_models",
+    # Mini-game scores. ``state`` itself never moves: at the anchor root it
+    # holds the storage policy and this checkpoint. An entry below a top-level
+    # directory is written with forward slashes and handled as one unit; the
+    # directories above it are created as needed and must be real directories.
+    "state/game_scores",
 )
 
 # What v1 builds migrated. A v1 checkpoint is judged against these only:
@@ -161,20 +166,59 @@ def _path_contains(parent: Path, child: Path) -> bool:
 
 CLEANUP_PRIVATE_PREFIX = ".neko-cleanup-"
 
+# Stands for "/" in a private cleanup name, which always sits directly in the
+# retained root; no migrated entry name contains it.
+_PRIVATE_NAME_SEPARATOR = "+"
+
+
+def private_cleanup_name(entry_name: str, suffix: str) -> str:
+    """The private name a retained-root cleanup moves ``entry_name`` to."""
+    return f"{CLEANUP_PRIVATE_PREFIX}{entry_name.replace('/', _PRIVATE_NAME_SEPARATOR)}-{suffix}"
+
 
 def private_cleanup_entry_name(name: str) -> str | None:
     """The migrated entry a cleanup's private name belongs to; ``None`` otherwise.
 
     Retained-root cleanup renames an entry to ``.neko-cleanup-<entry>-<12 hex>``
-    before checking and deleting it, so a cleanup that stopped midway can
-    leave one behind under that name.
+    directly in the retained root (``/`` in a nested entry's name written as
+    ``+``) before checking and deleting it, so a cleanup that stopped midway
+    can leave one behind under that name.
     """
     if not name.startswith(CLEANUP_PRIVATE_PREFIX):
         return None
     entry_name, separator, suffix = name[len(CLEANUP_PRIVATE_PREFIX):].rpartition("-")
     if not separator or len(suffix) != 12 or any(char not in "0123456789abcdef" for char in suffix):
         return None
+    entry_name = entry_name.replace(_PRIVATE_NAME_SEPARATOR, "/")
     return entry_name if entry_name in MIGRATED_RUNTIME_ENTRY_NAMES else None
+
+
+def _entry_parents(root: Path, entry_name: str) -> list[Path]:
+    """The directories between ``root`` and a (possibly nested) entry."""
+    parts = entry_name.split("/")[:-1]
+    return [root.joinpath(*parts[: index + 1]) for index in range(len(parts))]
+
+
+def entry_parents_are_real_directories(root: Path, entry_name: str) -> bool:
+    """Whether every directory above the entry is a real one, not a link.
+
+    A link or junction there would take reads, writes and deletes of the
+    entry into some other directory.
+    """
+    return all(classify_entry_no_follow(parent) == "dir" for parent in _entry_parents(root, entry_name))
+
+
+def ensure_entry_parents(root: Path, entry_name: str) -> None:
+    """Create the directories above a nested entry; refuse a link among them."""
+    for parent in _entry_parents(root, entry_name):
+        if not os.path.lexists(parent):
+            with suppress(FileExistsError):
+                parent.mkdir()
+        if classify_entry_no_follow(parent) != "dir":
+            raise StorageMigrationError(
+                "entry_parent_not_directory",
+                f"迁移条目的上级不是普通目录（可能是链接或 junction），已停止: {parent}",
+            )
 
 
 def _has_private_cleanup_leftover(root: Path) -> bool:
@@ -958,6 +1002,7 @@ def _rollback_interrupted_publish(
             return
         trash_entry = trash_root / entry_name
         trash_root.mkdir(exist_ok=True)
+        ensure_entry_parents(trash_root, entry_name)
         # Left by an earlier attempt that stopped right after this move, with
         # an identical copy put back at the target since: nothing to keep.
         _remove_existing_path(trash_entry)
@@ -1076,6 +1121,7 @@ def _rollback_interrupted_publish(
             if mark_restoring is not None and entry_name not in restoring_entries:
                 mark_restoring(entry_name)
                 restoring_entries.add(entry_name)
+            ensure_entry_parents(target_root, entry_name)
             _move_entry_keeping_mode(backup_entry, target_entry)
             _restore_original_mode(entry_name, target_entry)
             continue
@@ -1199,7 +1245,13 @@ def _transaction_entries_diverged_from_source(
     stage_root = transaction_root / "stage"
     if os.path.lexists(stage_root):
         try:
-            entries.extend(child.name for child in stage_root.iterdir())
+            listed = {child.name for child in stage_root.iterdir()}
+            entries.extend(listed)
+            for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES:
+                if "/" in entry_name and entry_name.split("/")[0] in listed and not _path_is_absent(
+                    stage_root / entry_name
+                ):
+                    entries.append(entry_name)
         except OSError as exc:
             # Cannot tell what the stage holds; it may be the only copy left.
             raise StorageMigrationError(
@@ -1529,9 +1581,12 @@ def _retained_root_holds_no_migrated_entries(retained_root: Path) -> bool:
             names = [child.name for child in iterator]
     except OSError:
         return False
-    return not any(
-        name in MIGRATED_RUNTIME_ENTRY_NAMES or private_cleanup_entry_name(name) is not None
-        for name in names
+    if any(name in MIGRATED_RUNTIME_ENTRY_NAMES or private_cleanup_entry_name(name) is not None for name in names):
+        return False
+    return all(
+        _path_is_absent(retained_root / entry_name)
+        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES
+        if "/" in entry_name
     )
 
 
@@ -2248,6 +2303,7 @@ def run_pending_storage_migration(
             for entry_name in entries_to_publish:
                 target_entry = target_root / entry_name
                 backup_entry = backup_root / entry_name
+                ensure_entry_parents(target_root, entry_name)
                 target_existed = os.path.lexists(target_entry)
                 reused_manifest = reused_target_manifests.get(entry_name)
                 if reused_manifest is not None and (
@@ -2294,6 +2350,7 @@ def run_pending_storage_migration(
                 )
                 if target_existed:
                     _classify_no_follow(target_entry)
+                    ensure_entry_parents(backup_root, entry_name)
                     _move_entry_keeping_mode(target_entry, backup_entry)
 
                 def _record_reservation(reservation_stat: os.stat_result, entry_name: str = entry_name) -> None:

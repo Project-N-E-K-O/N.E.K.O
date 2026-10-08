@@ -24,9 +24,17 @@ _SKIPPED_PARTS = {"tests", ".venv", "node_modules", ".git", ".claude", "dist", "
 # the reason. Keep this list short and explained.
 DELIBERATELY_UNMIGRATED = {
     # At the anchor root this holds the storage policy and the migration
-    # checkpoint itself, so it can never move as a whole. Mini-game scores
-    # under state/game_scores are not migrated yet (tracked separately).
+    # checkpoint itself, so it can never move as a whole; what the code keeps
+    # below it under the runtime root is checked one level down instead.
     "state",
+}
+
+# Files under state that belong to the anchor root and stay with it, with the
+# reason. Only anchor-local state goes here, never user data.
+ANCHOR_STATE_FILES = {
+    # config_manager.local_state_dir (anchor_root / "state"); the legacy
+    # merge reads it from a root that is the anchor there.
+    "character_tombstones.json",
 }
 
 
@@ -116,6 +124,63 @@ def _scan_module(tree: ast.Module) -> set[str]:
     return found
 
 
+def _division_chain(node: ast.AST) -> list[ast.AST]:
+    """``a / b / c`` as ``[a, b, c]``."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return [*_division_chain(node.left), node.right]
+    return [node]
+
+
+def _scan_state_children(tree: ast.Module) -> set[str]:
+    """Directories the code builds as ``<runtime root> / "state" / <name>``."""
+    constants = {
+        target.id: node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    found: set[str] = set()
+    scopes = [tree] + [
+        node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    for scope in scopes:
+        aliases = {
+            target.id
+            for node in ast.walk(scope)
+            if isinstance(node, ast.Assign) and _is_runtime_root(node.value, set())
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        for node in ast.walk(scope):
+            chain = _division_chain(node)
+            if len(chain) < 3 or not _is_runtime_root(chain[0], aliases):
+                continue
+            if _string_value(chain[1], constants) != "state":
+                continue
+            child = _string_value(chain[2], constants)
+            if child:
+                found.add(_first_segment(child))
+    return found
+
+
+def _state_children_in_source() -> dict[str, list[str]]:
+    found: dict[str, list[str]] = {}
+    for path in REPO_ROOT.rglob("*.py"):
+        relative = path.relative_to(REPO_ROOT)
+        if _SKIPPED_PARTS.intersection(relative.parts):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        for name in _scan_state_children(tree):
+            found.setdefault(name, []).append(relative.as_posix())
+    return found
+
+
 def _top_level_dirs_in_source() -> dict[str, list[str]]:
     found: dict[str, list[str]] = {}
     for path in REPO_ROOT.rglob("*.py"):
@@ -159,4 +224,27 @@ def test_migrated_and_regenerable_lists_do_not_overlap():
     assert not set(MIGRATED_RUNTIME_ENTRY_NAMES) & set(REGENERABLE_RUNTIME_ENTRY_NAMES)
     assert not DELIBERATELY_UNMIGRATED & (
         set(MIGRATED_RUNTIME_ENTRY_NAMES) | set(REGENERABLE_RUNTIME_ENTRY_NAMES)
+    )
+
+
+@pytest.mark.unit
+def test_every_runtime_dir_under_state_is_migrated():
+    """state stays where it is, but data the code keeps below it under the
+    runtime root (mini-game scores) must move with a migration."""
+    found = _state_children_in_source()
+    assert "game_scores" in found, "the scan must see state/game_scores, or it proves nothing"
+
+    migrated_under_state = {
+        name.split("/", 1)[1] for name in MIGRATED_RUNTIME_ENTRY_NAMES if name.startswith("state/")
+    }
+    unlisted = {
+        name: sorted(set(files))
+        for name, files in found.items()
+        if name not in migrated_under_state | ANCHOR_STATE_FILES
+    }
+
+    assert unlisted == {}, (
+        "These directories live under app_docs_dir/state but are not migrated. "
+        "Add each as \"state/<name>\" to MIGRATED_RUNTIME_ENTRY_NAMES in "
+        "utils/storage/migration.py."
     )

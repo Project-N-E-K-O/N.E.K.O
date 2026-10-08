@@ -3446,3 +3446,106 @@ def test_kept_target_config_edited_during_publish_stops_the_migration(tmp_path, 
 
     assert result["completed"] is False
     assert result["error_code"] == "target_changed_during_migration"
+
+
+def _migration_with_game_scores(tmp_path, *, target_scores=None):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    (source_root / "state" / "game_scores").mkdir(parents=True)
+    (source_root / "state" / "game_scores" / "badminton_scores.db").write_bytes(b"source scores")
+    # Stands for what else lives in state (the storage policy at the anchor).
+    (source_root / "state" / "storage_policy.json").write_text("{}", encoding="utf-8")
+    if target_scores is not None:
+        (target_root / "state" / "game_scores").mkdir(parents=True)
+        (target_root / "state" / "game_scores" / "badminton_scores.db").write_bytes(target_scores)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+        confirmed_existing_target_content=target_scores is not None,
+    )
+    return config_manager, source_root, target_root
+
+
+@pytest.mark.unit
+def test_game_scores_move_without_the_rest_of_state(tmp_path):
+    config_manager, source_root, target_root = _migration_with_game_scores(tmp_path)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    assert (target_root / "state" / "game_scores" / "badminton_scores.db").read_bytes() == b"source scores"
+    assert "state/game_scores" in result["payload"]["copied_entries"]
+    assert not (target_root / "state" / "storage_policy.json").exists()
+    assert (source_root / "state" / "storage_policy.json").is_file()
+
+
+@pytest.mark.unit
+def test_game_scores_replace_the_targets_own_once_confirmed(tmp_path):
+    config_manager, _source_root, target_root = _migration_with_game_scores(tmp_path, target_scores=b"target scores")
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    assert (target_root / "state" / "game_scores" / "badminton_scores.db").read_bytes() == b"source scores"
+
+
+@pytest.mark.unit
+def test_game_scores_published_over_a_target_are_rolled_back_with_it(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _migration_with_game_scores(tmp_path, target_scores=b"target scores")
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_fail(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
+        if Path(target).name == "game_scores":
+            raise RuntimeError("simulated failure after publishing the scores")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_fail)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert (target_root / "state" / "game_scores" / "badminton_scores.db").read_bytes() == b"target scores"
+    assert not list(target_root.glob(".smtx/*"))
+
+
+@pytest.mark.unit
+def test_staged_game_scores_count_when_the_stage_is_listed(tmp_path):
+    """Recovery lists the stage for entries whose record may not have landed;
+    a nested entry sits one level down."""
+    from utils import storage_migration as storage_migration_module
+
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    transaction_root = tmp_path / "txn"
+    (transaction_root / "stage" / "state" / "game_scores").mkdir(parents=True)
+
+    diverged = storage_migration_module._transaction_entries_diverged_from_source(
+        payload={},
+        source_root=source_root,
+        transaction_root=transaction_root,
+    )
+
+    assert diverged == ["state/game_scores"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="needs a symlink in place of state")
+def test_game_scores_are_never_published_through_a_linked_state(tmp_path):
+    config_manager, _source_root, target_root = _migration_with_game_scores(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    target_root.mkdir(parents=True)
+    os.symlink(elsewhere, target_root / "state")
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "entry_parent_not_directory"
+    assert not any(elsewhere.iterdir())

@@ -77,6 +77,8 @@ from utils.storage_migration import (
     classify_entry_no_follow,
     copy_evidence_entries,
     create_pending_storage_migration,
+    ensure_entry_parents,
+    entry_parents_are_real_directories,
     delete_storage_migration,
     get_storage_migration_path,
     is_legacy_unproven_checkpoint,
@@ -86,6 +88,7 @@ from utils.storage_migration import (
     metadata_fingerprint,
     move_entry_without_overwrite,
     private_cleanup_entry_name,
+    private_cleanup_name,
     reconcile_finished_retained_cleanup,
     record_retained_cleanup_completed,
     rewrite_migrated_config_paths,
@@ -1632,10 +1635,15 @@ def _entry_may_exist(path: Path) -> bool:
 def _private_cleanup_name(entry_name: str) -> str:
     # The entry's own name stays readable in it, so an entry left behind by a
     # cleanup that stopped midway can always be told apart and put back.
-    return f"{_CLEANUP_PRIVATE_PREFIX}{entry_name}-{uuid.uuid4().hex[:12]}"
+    return private_cleanup_name(entry_name, uuid.uuid4().hex[:12])
 
 
 _UNLISTABLE_RETAINED_ROOT = ".neko-cleanup-*"
+
+
+def _nested_entry_parents(root: Path, entry_name: str) -> list[Path]:
+    parts = entry_name.split("/")[:-1]
+    return [root.joinpath(*parts[: index + 1]) for index in range(len(parts))]
 
 
 def _private_cleanup_leftovers(retained_path: Path) -> list[tuple[str, Path]] | None:
@@ -1666,6 +1674,13 @@ def _restore_private_cleanup_leftovers(retained_path: Path) -> None:
         if classify_entry_no_follow(private) is None:
             continue
         entry = retained_path / entry_name
+        try:
+            # A nested entry goes back below its own parent, recreated if
+            # the cleanup removed it; never through a link.
+            ensure_entry_parents(retained_path, entry_name)
+        except (StorageMigrationError, OSError) as exc:
+            logger.warning("Retained root cleanup could not put %s back from %s: %s", entry_name, private.name, exc)
+            continue
         # Putting a directory back without a no-replace rename first reserves
         # the name with an empty directory; a restore stopped right there
         # leaves that empty reservation in the way. An empty directory holds
@@ -1803,6 +1818,10 @@ def _cleanup_retained_runtime_root(
         target_ok: Callable[[], bool],
     ) -> None:
         entry = retained_path / entry_name
+        if not entry_parents_are_real_directories(retained_path, entry_name):
+            # Through a linked parent the entry is somewhere else entirely.
+            logger.warning("Retained root cleanup kept %s: a parent is not a real directory", entry_name)
+            return
         if classify_entry_no_follow(entry) is None:
             # A link or special file: putting it back later could turn it
             # into a hard link to what it points at. Leave it in place.
@@ -1879,6 +1898,11 @@ def _cleanup_retained_runtime_root(
         # policy and cloud saves and is never removed, so there is nothing
         # to gain from emptying its regenerable directories.
         if not remaining_entries:
+            # Parents of nested entries, now empty, would keep it too.
+            for entry_name in migrated_names:
+                for parent in reversed(_nested_entry_parents(retained_path, entry_name)):
+                    with suppress(OSError):
+                        parent.rmdir()
             for entry_name in REGENERABLE_RUNTIME_ENTRY_NAMES:
                 try:
                     remove_runtime_entry(retained_path / entry_name)

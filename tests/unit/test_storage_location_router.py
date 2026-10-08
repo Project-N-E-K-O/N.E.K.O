@@ -4262,3 +4262,63 @@ def test_storage_cleanup_is_not_recorded_while_an_entry_waits_under_a_private_na
     run_pending_storage_migration(reloaded_manager)
 
     assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "manual_retention"
+
+
+def _migrate_config_and_game_scores(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "state" / "game_scores").mkdir(parents=True)
+    (source_root / "state" / "game_scores" / "badminton_scores.db").write_bytes(b"scores")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    return source_root, target_root
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_removes_retained_game_scores_and_their_empty_parent(tmp_path):
+    source_root, target_root = _migrate_config_and_game_scores(tmp_path)
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 200, response.json()
+    # state held nothing else, so the old root goes entirely.
+    assert not source_root.exists()
+    assert (target_root / "state" / "game_scores" / "badminton_scores.db").read_bytes() == b"scores"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_puts_back_game_scores_left_under_a_private_name(tmp_path):
+    """A stopped cleanup left the scores under their private name, in the
+    retained root itself, and removed the emptied state; they go back below a
+    recreated state, and changed since, they are kept and reported."""
+    source_root, _target_root = _migrate_config_and_game_scores(tmp_path)
+    private = source_root / ".neko-cleanup-state+game_scores-0123456789ab"
+    (source_root / "state" / "game_scores").rename(private)
+    (source_root / "state").rmdir()
+    (private / "badminton_scores.db").write_bytes(b"scores written since")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["state/game_scores"]
+    assert (source_root / "state" / "game_scores" / "badminton_scores.db").read_bytes() == b"scores written since"
+    assert not private.exists()
+
+
+@pytest.mark.unit
+def test_storage_cleanup_is_not_recorded_while_retained_game_scores_remain(tmp_path):
+    source_root, _target_root = _migrate_config_and_game_scores(tmp_path)
+    shutil.rmtree(source_root / "config")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "manual_retention"
