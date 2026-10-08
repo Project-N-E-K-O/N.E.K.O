@@ -653,6 +653,31 @@ async def test_shutdown_while_credentials_are_pending_takes_nothing_over(tmp_pat
     assert rtm.get_runtime("Host") is None and rt.finalizing
 
 
+async def test_a_cancelled_accept_request_still_finishes_the_acceptance(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    hrt = host.rt
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = hrt._open_spool
+
+    async def slow_open(subjects):
+        await real_open(subjects)
+        reached.set()
+        await gate.wait()
+
+    hrt._open_spool = slow_open
+    try:
+        accepting = asyncio.ensure_future(hrt.accept(True))
+        await asyncio.wait_for(reached.wait(), 5)
+        accepting.cancel()                                # 接受请求被取消（页面断开等）
+        await asyncio.gather(accepting, return_exceptions=True)
+        gate.set()
+        await wait_for(lambda: "ready" in [p.get("t") for p in wire.sent["host"]], timeout=5)  # 照样发 ready
+        assert hrt.ready_exchanged and not hrt.finalizing
+    finally:
+        gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_activation_that_finishes_after_the_end_publishes_nothing(tmp_path, monkeypatch):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
     hrt = host.rt

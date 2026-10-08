@@ -783,6 +783,18 @@ def test_unsequenced_line_events_with_a_foreign_prefix_are_rejected():
     assert rx.prefix_rejected == 2
 
 
+async def test_a_send_after_close_does_not_recreate_the_outbox_file(tmp_path):
+    tx = make_outbox(tmp_path)
+    tx.send(hello(), now=0.0)
+    tx.send(text(1), now=0.0)
+    await tx.close()
+    assert tx.closed and not await asyncio.to_thread(tx.path.exists)
+    tx.send(text(2), now=1.0)                              # 迟到的一句
+    await tx.flush()
+    assert tx._executor is None                            # 写线程不重建
+    assert not await asyncio.to_thread(tx.path.exists)     # 带正文的文件不重新出现
+
+
 async def test_cancelled_close_still_deletes_the_outbox_file(tmp_path):
     import threading
 

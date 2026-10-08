@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from config.visit_settings import (
     VISIT_CEREMONY_TIMEOUT_S,
@@ -124,8 +124,8 @@ class TalkMixin:
         self._handoff_stamps: dict[str, float] = {}
         self._last_tail_ms = 0
         self._session_closing: Optional[asyncio.Future] = None
-        # 已接纳、还在落盘 / 入队的亲人发言：关机封存之前限时等它们
-        self.family_commits: set[asyncio.Future] = set()
+        # 已接纳、还没记进转录的亲人发言（每句一个 future，落盘结束即完成）：封存之前限时等它们
+        self.family_records: set[asyncio.Future] = set()
 
     # ── 小工具 ───────────────────────────────────────────────────────
 
@@ -744,39 +744,57 @@ class TalkMixin:
             reservation.release()
             raise
 
-        async def commit() -> None:
-            try:
-                # 先落盘再发送：最坏是本侧记了一句还没发出去的话（Servers 比对标单侧）
-                await self.record_line("own_human", side=self.side, lp=lp, ln=ln, text=payload["txt"],
-                                       truncated=bool(payload["truncated"]))
-                self.outbox.send(payload, now=self.clock(), reservation=reservation)
-            finally:
-                reservation.release()
-            # 发出去了，本侧的历史与上屏也得跟上（调用方被取消也照样做）
-            self.last_text_at = self.clock()
-            self.kick()
-            self._add_own_human_history(ln, lp, payload["txt"])
+        recorded: asyncio.Future = asyncio.get_running_loop().create_future()
+        self.family_records.add(recorded)
+        recorded.add_done_callback(self.family_records.discard)
+
+        def shown() -> None:
             ad_side, ad_kind = decode_addressee(ad)
             self._post_display(self.visit_line_payload(
                 ln=ln, lp=lp, side=self.side, kind="human", ad_side=ad_side, ad_kind=ad_kind, reply_to="",
                 goodbye=False, text=payload["txt"], truncated=bool(payload["truncated"]),
                 trunc_reason=payload.get("trunc_reason"),
             ))
+
+        def reply() -> None:
+            if to_own and not self.finalizing and self.room is not None and self.room.phase == "active":
+                lo, hi = self.deps.reply_gap_s
+                self.schedule_reply(ReplyPlan(reply_to=ref, not_before=self.clock() + self.deps.rng.uniform(lo, hi)))
+
+        async def commit() -> None:
+            try:
+                try:
+                    # 先落盘再发送：最坏是本侧记了一句还没发出去的话（Servers 比对标单侧）
+                    await self.record_line("own_human", side=self.side, lp=lp, ln=ln, text=payload["txt"],
+                                           truncated=bool(payload["truncated"]))
+                finally:
+                    if not recorded.done():
+                        recorded.set_result(None)
+                if self.outbox.closed:
+                    # 落盘卡得比收尾还久：通道已关、泵已停，这句发不出去了（转录里已记下）
+                    logger.warning("visit %s: family line recorded after the outbox closed; not sent",
+                                   self.visit_id[:6])
+                    return
+                self.outbox.send(payload, now=self.clock(), reservation=reservation)
+            finally:
+                reservation.release()
+            # 发出去了，本侧的历史、上屏、镜像、回复也得跟上（调用方被取消也照样做）。这几步各自出错只记日志：
+            # 冒到处理函数会回 VISIT_E_BUSY，页面留着文字，再发一次对端就收到两遍
+            self.last_text_at = self.clock()
+            self.kick()
+            self._after_send_step("history", lambda: self._add_own_human_history(ln, lp, payload["txt"]))
+            self._after_send_step("display", shown)
             try:
                 # 不可撤回的放最后：进 sync_message_queue 之后收不回
                 await self.host.mirror_user_input(text, metadata=self._mirror_meta("visit_human"),
                                                   request_id=request_id)
             except Exception as exc:  # noqa: BLE001 - 这句已发出，只记诊断
                 logger.warning("visit %s: mirror_user_input failed: %s", self.visit_id[:6], type(exc).__name__)
-            if to_own and not self.finalizing and self.room is not None and self.room.phase == "active":
-                lo, hi = self.deps.reply_gap_s
-                self.schedule_reply(ReplyPlan(reply_to=ref, not_before=self.clock() + self.deps.rng.uniform(lo, hi)))
+            self._after_send_step("reply", reply)
 
         # 接纳之后（改了 room、可能已记进转录）这一段不能半途而废：调用方被取消（关机等）也照样落盘、入队、
-        # 入史、上屏、排回复；预留一直持有到入队，关闭通道的 leave 照样排在它后面；关机封存之前限时等它
+        # 入史、上屏、排回复；预留一直持有到入队，关闭通道的 leave 照样排在它后面；封存之前限时等它落盘
         committing = asyncio.ensure_future(commit())
-        self.family_commits.add(committing)
-        committing.add_done_callback(self.family_commits.discard)
         committing.add_done_callback(lambda t: t.cancelled() or t.exception())
         try:
             await asyncio.shield(committing)
@@ -785,6 +803,19 @@ class TalkMixin:
             committing.add_done_callback(self._log_orphan_commit)
             raise
         return ref
+
+    def _after_send_step(self, label: str, step: Callable[[], None]) -> None:
+        try:
+            step()
+        except Exception as exc:  # noqa: BLE001 - 这句已发出，只记诊断
+            logger.warning("visit %s: family line %s failed after send: %s",
+                           self.visit_id[:6], label, type(exc).__name__)
+
+    async def settle_family_records(self, timeout: float) -> None:
+        """Wait (at most ``timeout``) until every admitted family line has been recorded."""
+        pending = [f for f in self.family_records if not f.done()]
+        if pending and timeout > 0:
+            await asyncio.wait(pending, timeout=timeout)
 
     def _log_orphan_commit(self, task: "asyncio.Future[None]") -> None:
         if not task.cancelled() and task.exception() is not None:

@@ -337,6 +337,7 @@ class VisitOutbox:
 
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._last_write: Optional[concurrent.futures.Future] = None
+        self._closed = False
         self.write_errors = 0
         self._reserved_bytes = 0
 
@@ -1004,6 +1005,9 @@ class VisitOutbox:
         line = json.dumps({"seq": item.seq, "t": item.t, "cmd": item.cmd, "payload": item.payload},
                           ensure_ascii=False, separators=(",", ":")) + "\n"
         data = line.encode("utf-8")
+        if self._closed:
+            # 已关闭：文件已删 / 将删，写线程已停，不能为迟到的一条重新建出带正文的文件
+            return
         if self._executor is None:
             self._executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix=f"visit-outbox-{self.visit_id[:6]}")
@@ -1056,7 +1060,13 @@ class VisitOutbox:
         the cleanup: the pending write, the writer shutdown and the unlink
         still run, so no file with ``text`` bodies is left behind.
         """
+        self._closed = True
         await asyncio.shield(self._close_impl(delete))
+
+    @property
+    def closed(self) -> bool:
+        """``close`` has started: nothing is written to the file any more."""
+        return self._closed
 
     async def _close_impl(self, delete: bool) -> None:
         await self.flush()

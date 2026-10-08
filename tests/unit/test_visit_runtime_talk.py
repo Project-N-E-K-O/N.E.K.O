@@ -1705,6 +1705,123 @@ async def test_shutdown_waits_for_an_admitted_family_line_before_sealing(tmp_pat
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_settling_family_records_does_not_wait_for_the_mirror(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    mirror_stuck = asyncio.Event()
+
+    async def stuck_mirror(text, *, metadata, request_id):
+        await mirror_stuck.wait()                             # 镜像进主会话卡住
+
+    host.host.mirror_user_input = stuck_mirror
+    try:
+        sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
+            "input_type": "text", "data": "镜像卡住", "source": "neko_visit:guest_cat"}))
+        await rt.flush()
+        await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "text" and p.get("sp") == "h"])
+        await asyncio.wait_for(rt.settle_family_records(5), 1)  # 只等记进转录，不等镜像
+        assert not rt.family_records
+        assert not sending.done()                             # 镜像确实还卡着
+    finally:
+        mirror_stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_the_normal_seal_waits_for_an_admitted_family_line(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_record = rt.record_line
+    order: list[str] = []
+
+    async def slow_record(speaker, **kwargs):
+        if speaker == "own_human":
+            await stuck.wait()
+            result = await real_record(speaker, **kwargs)
+            order.append("recorded")
+            return result
+        return await real_record(speaker, **kwargs)
+
+    real_seal = rt.journal.seal
+
+    async def seal(reason, **kw):
+        order.append("seal")
+        return await real_seal(reason, **kw)
+
+    rt.record_line = slow_record
+    rt.journal.seal = seal
+    try:
+        sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
+            "input_type": "text", "data": "收尾前这句", "source": "neko_visit:guest_cat"}))
+        await wait_for(lambda: rt.outbox.reserved_bytes > 0)
+        asyncio.get_running_loop().call_later(0.3, stuck.set)  # 落盘要一会儿才完
+        await asyncio.wait_for(rt.seal_and_finalize("peer_left"), 15)  # 正常收尾（对端先走，不等预留）
+        await asyncio.gather(sending, return_exceptions=True)
+        assert "recorded" in order and "seal" in order
+        assert order.index("recorded") < order.index("seal")  # 先记进转录，再封存
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_failure_after_a_family_line_is_sent_does_not_report_busy(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+
+    def broken_history(ln, lp, text):
+        raise RuntimeError("history broke")
+
+    rt._add_own_human_history = broken_history
+    try:
+        await rtm.route_stream_message("Host", {
+            "input_type": "text", "data": "已经发出", "source": "neko_visit:guest_cat", "request_id": "r1"})
+        await rt.flush()
+        await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "text" and p.get("sp") == "h"])
+        await wait_for(lambda: [f for f in host.host.frames
+                                if f.get("type") == "visit_line" and f.get("text") == "已经发出"])  # 上屏不受影响
+        assert "已经发出" in host.host.user_inputs              # 镜像也不受影响
+        assert "VISIT_E_BUSY" not in host.host.status_codes()  # 已发出就不回「忙」（否则用户再发一遍）
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_family_line_recorded_after_the_outbox_closed_is_not_sent(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_record = rt.record_line
+
+    async def slow_record(speaker, **kwargs):
+        if speaker == "own_human":
+            await stuck.wait()                                # 落盘卡得比收尾还久
+        return await real_record(speaker, **kwargs)
+
+    rt.record_line = slow_record
+    try:
+        sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
+            "input_type": "text", "data": "迟到的一句", "source": "neko_visit:guest_cat"}))
+        await wait_for(lambda: rt.outbox.reserved_bytes > 0)
+        await rt.outbox.close()                               # 收尾已关掉 outbox
+        stuck.set()
+        await asyncio.gather(sending, return_exceptions=True)
+        await rt.flush()
+        await settle()
+        assert not [p for p in wire.sent["host"] if p.get("t") == "text" and p.get("sp") == "h"]
+        assert not await asyncio.to_thread(rt.outbox.path.exists)
+        assert rt.outbox.reserved_bytes == 0                  # 预留照样释放
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_family_line_is_admitted_synchronously_before_its_commit_runs(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
@@ -1719,7 +1836,7 @@ async def test_a_family_line_is_admitted_synchronously_before_its_commit_runs(tm
     try:
         sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
             "input_type": "text", "data": "同步接纳", "source": "neko_visit:guest_cat"}))
-        await sending
+        assert await sending is True                          # 这场的路由收下了这句
         assert seen and seen[0] is sending                    # 接纳在处理函数里同步做完，不推迟到落盘任务
     finally:
         hgate.set()

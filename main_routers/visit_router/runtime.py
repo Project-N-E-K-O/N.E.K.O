@@ -1227,25 +1227,31 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self.request_finalize("declined")
             return 200, {"ok": True}
         self._accept_deadline = None
+        # 已接受、接受期限已撤：接下来的激活与 ready 是一个整体，HTTP 请求被取消（页面断开等）也照样走完，
+        # 不然这场既不会开始、也没有期限能把它拒掉，路由一直锁着。任务归运行时，收尾时一起取消
+        accepting = self.spawn(self._accept_flow(), name="accept")
+        await asyncio.shield(accepting)
+        return 200, {"ok": True}
+
+    async def _accept_flow(self) -> None:
         try:
             await asyncio.wait_for(self.activate(), VISIT_ACTIVATION_ALLOWANCE_S)
         except asyncio.TimeoutError:
             logger.warning("visit %s: activation exceeded its allowance", self.visit_id[:6])
             self.request_finalize("declined")
-            return 200, {"ok": True}
+            return
         except Exception as exc:  # noqa: BLE001 - 隔离会话建不起来：这场没法说话
             logger.warning("visit %s: activation failed: %r", self.visit_id[:6], exc)
             self.request_finalize("llm_error")
-            return 200, {"ok": True}
+            return
         if self.finalizing:
-            return 200, {"ok": True}
+            return
         # ready 发出时本侧已能接收并处理对方台词
         self.outbox.send({"t": "ready", "v": 1}, now=self.clock())
         self.ready_exchanged = True
         self.kick()
         await self.send_media()
         await self._after_start()
-        return 200, {"ok": True}
 
     async def on_ready(self) -> None:
         """Guest: the host's ``ready`` arrived; activate before the first turn."""
@@ -1807,6 +1813,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         finalize, memory commits, upload) follows the seal in the background,
         in the same order, and this returns False.
         """
+        # 已接纳的亲人发言还在落盘（对端先走 / 传输已断时关闭通道不等预留）：先等它记进转录（限时）
+        await self.settle_family_records(_SEAL_MAX_S)
         await self._settle_journal_open()
         if self._header_pending():
             # 上传头还在写：seal() 这时什么都不封（会立即返回 None）。封存、spool finalize、记忆提交
@@ -2058,9 +2066,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 await asyncio.wait_for(self.book_line(line), left(_SHUTDOWN_TASK_WAIT_S))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: closed line not booked at shutdown: %r", self.visit_id[:6], exc)
-        if self.family_commits:
-            # 已接纳的亲人发言还在落盘：先等它记进转录（限时），再划封存的边界
-            await asyncio.wait(list(self.family_commits), timeout=left(_SHUTDOWN_TASK_WAIT_S))
+        # 已接纳的亲人发言还在落盘：先等它记进转录（限时），再划封存的边界
+        await self.settle_family_records(left(_SHUTDOWN_TASK_WAIT_S))
         # 封存之前先收掉接收通道：之后 iframe 还送来的可靠整句不会被收下、回 ack，却落在封存之后
         unregister_transport_session(self.transport)
         await self._settle_journal_open(left(_SHUTDOWN_TASK_WAIT_S))
@@ -2392,7 +2399,9 @@ async def stop_all(reason: str = "shutdown") -> None:
         if runtimes:
             await asyncio.gather(*(rt.shutdown() for rt in runtimes), return_exceptions=True)
         # 脱离运行时的后台任务（账号映射补写、交还回调、没关完的会话）也一并停掉，不留给事件循环销毁
+        # 按角色登记的后台写入（digest、最后总结、延后的 spool 收尾、启动补录）同样停掉：没写完的留给下次启动补录
         detached = [t for t in _detached if not t.done()]
+        detached += [t for bucket in list(_visit_bg_tasks.values()) for t in list(bucket) if not t.done()]
         for task in detached:
             task.cancel()
         if detached:

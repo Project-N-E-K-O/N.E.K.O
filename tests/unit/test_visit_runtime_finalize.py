@@ -588,6 +588,25 @@ async def test_background_tasks_follow_a_rename_of_an_idle_character(monkeypatch
         await asyncio.gather(task)
 
 
+async def test_stop_all_also_stops_registered_background_writes(monkeypatch):
+    from main_logic.visit import local_chars
+
+    async def resolve(uid):
+        return "某角色"
+
+    monkeypatch.setattr(local_chars, "resolve_char_name", resolve)
+    forever = asyncio.Event()
+    task = rtm.spawn_visit_background("uid-bg", forever.wait)
+    try:
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
+        await asyncio.sleep(0)
+        assert task.cancelled()                           # 关机时登记的后台写入也停掉，不留给事件循环销毁
+        assert not rtm.has_visit_background_tasks("某角色")
+    finally:
+        forever.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_a_failing_mandatory_step_still_seals_the_transcript_and_the_spool(tmp_path, monkeypatch):
     host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
     rt = host.rt
