@@ -1342,6 +1342,7 @@
             "openrouter": "OpenRouter（モデルアグリゲーター）",
             "orcarouter": "OrcaRouter（Claude ゲートウェイ）",
             "requesty": "Requesty（モデルルーター）",
+            "opper": "Opper（EU の AI ゲートウェイ）",
             "vllm_omni": "vLLM-Omni（TTS）",
             "gptsovits": "GPT-SoVITS（セルフホスト）"
         },
@@ -1418,6 +1419,7 @@
             "openrouter": "OpenRouter",
             "orcarouter": "OrcaRouter",
             "requesty": "Requesty",
+            "opper": "Opper",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
         "freeVersionNoApiKey": "無料版はAPIキー不要です",

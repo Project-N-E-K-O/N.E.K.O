@@ -1342,6 +1342,7 @@
             "openrouter": "OpenRouter（模型聚合，国内无法使用）",
             "orcarouter": "OrcaRouter（Claude 网关，国内无法使用）",
             "requesty": "Requesty（模型路由，国内无法使用）",
+            "opper": "Opper（欧洲 AI 网关，国内无法使用）",
             "vllm_omni": "vLLM-Omni（TTS）",
             "gptsovits": "GPT-SoVITS（自部署）"
         },
@@ -1418,6 +1419,7 @@
             "openrouter": "OpenRouter",
             "orcarouter": "OrcaRouter",
             "requesty": "Requesty",
+            "opper": "Opper",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
         "freeVersionNoApiKey": "免费版无需API Key",
