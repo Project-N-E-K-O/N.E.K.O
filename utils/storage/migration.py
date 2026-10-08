@@ -1951,17 +1951,26 @@ def run_pending_storage_migration(
             if os.path.lexists(target_entry):
                 original_target_entries.append(entry_name)
 
-        appeared = set(_iter_existing_runtime_entries(source_root)) - set(existing_entries)
-        if appeared:
-            # Absent when the source was first listed, so never staged: the
-            # target would go live without it.
-            raise StorageMigrationError(
-                "verification_failed",
-                "迁移期间原始数据目录出现了新条目，已停止迁移，原始数据未受影响："
-                + ", ".join(sorted(appeared)) + "。",
-            )
         def _require_sources_unchanged() -> None:
+            appeared = set(_iter_existing_runtime_entries(source_root)) - set(existing_entries)
+            if appeared:
+                # Absent when the source was first listed, so never staged: the
+                # target would go live without it.
+                raise StorageMigrationError(
+                    "verification_failed",
+                    "迁移期间原始数据目录出现了新条目，已停止迁移，原始数据未受影响："
+                    + ", ".join(sorted(appeared)) + "。",
+                )
             for entry_name in entries_to_publish:
+                if not os.path.lexists(source_root / entry_name):
+                    # Gone from the source: the staged or published copy may
+                    # be the only one left, so keep the transaction for
+                    # recovery instead of undoing it.
+                    raise StorageMigrationError(
+                        "migration_source_missing",
+                        "原始数据目录中的条目在迁移期间消失，迁移未完成，已保留目标与事务目录，恢复后会继续处理: "
+                        + entry_name,
+                    )
                 try:
                     unchanged = _metadata_fingerprint(source_root / entry_name) == source_fingerprints.get(entry_name)
                 except StorageMigrationError:
@@ -1970,6 +1979,14 @@ def run_pending_storage_migration(
                     raise StorageMigrationError(
                         "verification_failed",
                         f"迁移期间原始数据被修改，已停止迁移，原始数据未受影响：{entry_name}。",
+                    )
+            for entry_name in identical_entries:
+                if use_existing_target and not os.path.lexists(target_root / entry_name):
+                    # Reused as the target's own copy, not staged: gone now,
+                    # switching roots would leave it out.
+                    raise StorageMigrationError(
+                        "target_changed_during_migration",
+                        f"沿用的目标在迁移期间少了条目，已停止迁移: {entry_name}",
                     )
 
         _require_sources_unchanged()
@@ -2142,7 +2159,10 @@ def run_pending_storage_migration(
                 committed_at=_utc_now_iso(),
             )
         except Exception as exc:
-            if isinstance(exc, StorageMigrationError) and exc.error_code == "migration_publish_conflict":
+            if isinstance(exc, StorageMigrationError) and exc.error_code in {
+                "migration_publish_conflict",
+                "migration_source_missing",
+            }:
                 raise
             _rollback_publish_or_require_recovery(
                 payload=payload,
