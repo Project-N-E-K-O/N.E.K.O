@@ -103,22 +103,35 @@ def test_omni_streams_thinking_outside_content():
     assert leaks_thinking_in_content("qwen3.8-omni-flash") is False
 
 
-def test_memory_thinking_extra_body_only_for_unbounded_models():
+@pytest.mark.parametrize("endpoint,form", [
+    ("https://api.deepseek.com/v1", "EXTRA_BODY_DEEPSEEK_MEMORY_THINKING"),
+    # Same DeepSeek models on DashScope ignore reasoning_effort; only
+    # thinking_budget bounds them (and qwen) there.
+    ("https://dashscope.aliyuncs.com/compatible-mode/v1", "EXTRA_BODY_DASHSCOPE_MEMORY_THINKING"),
+    ("https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "EXTRA_BODY_DASHSCOPE_MEMORY_THINKING"),
+    ("https://dashscope-us.aliyuncs.com/compatible-mode/v1", "EXTRA_BODY_DASHSCOPE_MEMORY_THINKING"),
+    ("https://api.siliconflow.cn/v1", "EXTRA_BODY_SILICON_MEMORY_THINKING"),
+    ("https://api.siliconflow.com/v1", "EXTRA_BODY_SILICON_MEMORY_THINKING"),
+    ("https://open.bigmodel.cn/api/paas/v4", None),
+    ("https://llm.example.com/v1", None),
+    (None, None),
+])
+def test_memory_thinking_extra_body_is_endpoint_dialect(endpoint, form):
+    from config import providers as P
+
+    expected = getattr(P, form) if form else None
+    assert P.memory_thinking_extra_body(endpoint) == expected
+
+
+def test_memory_thinking_budgets_match_shared_guard_and_are_copies():
     from config import LLM_OUTPUT_GUARD_MAX_TOKENS
     from config import providers as P
 
-    # The SiliconFlow budget is documented as "same as the shared guard".
+    # Budgets are documented as "same as the shared guard".
     assert P.EXTRA_BODY_SILICON_MEMORY_THINKING["thinking_budget"] == LLM_OUTPUT_GUARD_MAX_TOKENS
+    assert P.EXTRA_BODY_DASHSCOPE_MEMORY_THINKING["thinking_budget"] == LLM_OUTPUT_GUARD_MAX_TOKENS
 
-    assert P.memory_thinking_extra_body("deepseek-flash") == P.EXTRA_BODY_DEEPSEEK_MEMORY_THINKING
-    assert (
-        P.memory_thinking_extra_body("deepseek-ai/DeepSeek-V4-Flash")
-        == P.EXTRA_BODY_SILICON_MEMORY_THINKING
-    )
-    assert P.memory_thinking_extra_body("qwen3.8-flash") is None
-    assert P.memory_thinking_extra_body("") is None
-
-    body = P.memory_thinking_extra_body("deepseek-flash")
+    body = P.memory_thinking_extra_body("https://api.deepseek.com/v1")
     body["reasoning_effort"] = "high"
     assert P.EXTRA_BODY_DEEPSEEK_MEMORY_THINKING == {"reasoning_effort": "low"}
 
@@ -133,9 +146,11 @@ class _CapRejected(Exception):
         return "Error code: 400 - max_tokens must be <= 4096"
 
 
-def _api_config(model: str = "qwen3.8-flash") -> dict:
+def _api_config(
+    model: str = "qwen3.8-flash", base_url: str = "https://llm.example.com/v1",
+) -> dict:
     return {
-        "model": model, "base_url": "https://llm.example.com/v1",
+        "model": model, "base_url": base_url,
         "api_key": "sk-test", "provider_type": "openai",
     }
 
@@ -163,20 +178,22 @@ def _response(content: str = '{"ok": true}', **metadata):
 @pytest.mark.asyncio
 async def test_ainvoke_thinking_requests_thinking_cap_and_bounded_extra_body():
     from config import MEMORY_THINKING_OUTPUT_MAX_TOKENS
-    from config.providers import EXTRA_BODY_DEEPSEEK_MEMORY_THINKING
+    from config.providers import EXTRA_BODY_DASHSCOPE_MEMORY_THINKING
     from memory.thinking_llm import ainvoke_thinking
 
     response = _response()
     with patch("utils.llm_client.create_chat_llm", return_value=_fake_llm(response)) as factory:
         got, cap = await ainvoke_thinking(
-            _api_config("deepseek-flash"), "prompt", timeout=90, call_label="t",
+            _api_config("deepseek-v4-flash-0731", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            "prompt", timeout=90, call_label="t",
         )
 
     assert got is response
     assert cap == MEMORY_THINKING_OUTPUT_MAX_TOKENS
     kwargs = factory.call_args.kwargs
     assert kwargs["max_completion_tokens"] == MEMORY_THINKING_OUTPUT_MAX_TOKENS
-    assert kwargs["extra_body"] == EXTRA_BODY_DEEPSEEK_MEMORY_THINKING
+    # A dated DashScope snapshot still gets the endpoint's thinking budget.
+    assert kwargs["extra_body"] == EXTRA_BODY_DASHSCOPE_MEMORY_THINKING
     assert kwargs["timeout"] == 90
 
 

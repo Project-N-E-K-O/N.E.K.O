@@ -291,36 +291,35 @@ def focus_extra_body(model: str) -> dict | None:
 
 
 # 记忆系统里有意开思考的后台调用（审阅、信号检测、refine、反思合成…）默认不发
-# extra_body，让模型走原生思考。下面这些模型的原生思考没有边：输出上限压不住，
-# 或者思考量大到撞超时，所以显式压一档。实测（2026-10-07，同一条信号检测提示词）：
-#   - DeepSeek 官方：默认思考 5.4k~6.5k token；reasoning_effort=low 降到 2.0k~2.4k
+# extra_body，让模型走原生思考。原生思考常常没有边：大到撞输出额度或超时，所以
+# 按端点显式压一档（登记在 CacheProviderConfig.memory_thinking_extra_body）。
+# 压思考的旋钮是**端点**的方言，不是模型的：同一个 deepseek-v4-flash，官方认
+# reasoning_effort，百炼只认 thinking_budget（发 reasoning_effort 被忽略，思考反而
+# 6.4k~7.6k）。按端点登记也让 deepseek-v4-flash-0731 这类快照名天然命中。
+# 实测（2026-10-07/08，同一条推理题 / 信号检测提示词）：
+#   - DeepSeek 官方：默认思考 5.4k~6.5k；reasoning_effort=low 降到 2.0k~2.4k
 #     （minimal 反而 3.4k~4.2k，不稳定，不用）。思考默认就开，不必再发 thinking。
+#   - 百炼（DashScope）：thinking_budget 对 qwen3.7/3.8、omni、max、百炼上的
+#     DeepSeek 都精确生效；对不开思考的模型（qwen-plus）无作用、不报错，也不会
+#     把思考打开。不发参数时 qwen3.7-flash 思考打满 8192，DeepSeek 快照版到 12k。
 #   - 硅基流动：max_tokens 只封正文，不发参数时思考跑到请求超时；必须
 #     enable_thinking + thinking_budget 才封得住（只发 thinking_budget 会让 DeepSeek
-#     系直接不思考）。预算取共享输出护栏同值。
-# 不在表里的模型保持原样（返回 None = 不发 extra_body = 原生思考）。
+#     系直接不思考）。
+# 预算取共享输出护栏同值，给 8192 额度里的 JSON 正文留出至少一半。
+# 未登记的端点保持原样（返回 None = 不发 extra_body = 原生思考）。
 EXTRA_BODY_DEEPSEEK_MEMORY_THINKING = {"reasoning_effort": "low"}
+EXTRA_BODY_DASHSCOPE_MEMORY_THINKING = {"thinking_budget": 4096}
 EXTRA_BODY_SILICON_MEMORY_THINKING = {"enable_thinking": True, "thinking_budget": 4096}
 
-MODELS_MEMORY_THINKING_EXTRA_BODY: dict[str, dict] = {
-    "deepseek-flash": EXTRA_BODY_DEEPSEEK_MEMORY_THINKING,
-    "deepseek-v4-flash": EXTRA_BODY_DEEPSEEK_MEMORY_THINKING,
-    "deepseek-v4-flash-vision-exp": EXTRA_BODY_DEEPSEEK_MEMORY_THINKING,
-    "deepseek-v4-pro": EXTRA_BODY_DEEPSEEK_MEMORY_THINKING,
-    "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_SILICON_MEMORY_THINKING,
-    "deepseek-ai/DeepSeek-V4-Flash": EXTRA_BODY_SILICON_MEMORY_THINKING,
-    "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_SILICON_MEMORY_THINKING,
-    "Qwen/Qwen3.5-122B-A10B": EXTRA_BODY_SILICON_MEMORY_THINKING,
-}
 
-
-def memory_thinking_extra_body(model: str) -> dict | None:
+def memory_thinking_extra_body(base_url: str | None) -> dict | None:
     """extra_body for a memory call that deliberately keeps thinking on.
 
+    Resolved per endpoint (see ``CacheProviderConfig.memory_thinking_extra_body``).
     ``None`` means "send no extra_body" (the model's native thinking), which is
-    what those call sites did before; only models whose native thinking cannot
-    be bounded by the output cap get an explicit, lower-effort form here."""
-    body = MODELS_MEMORY_THINKING_EXTRA_BODY.get(model or "")
+    what those call sites did before."""
+    provider = resolve_cache_provider(base_url)
+    body = provider.memory_thinking_extra_body if provider is not None else None
     return copy.deepcopy(body) if body else None
 
 
@@ -386,7 +385,12 @@ class CacheProviderConfig:
     #     硅基只拿它封正文，思考不受限；OpenAI 新模型直接 400。
     # 所以默认留在 max_completion_tokens，只有不认它的厂商改发 max_tokens。
     # 两个字段不能同时发：Doubao / Gemini / OpenAI 会 400。
+    # 百炼（DashScope）上 qwen 与 DeepSeek 实测都是 max_completion_tokens 封总量
+    # （2026-10-08），默认值即正确，不必登记。
     token_limit_field: str = "max_completion_tokens"
+    # 记忆系统开思考调用压思考用的 extra_body（端点方言，见
+    # memory_thinking_extra_body 上方的实测记录）；None = 原生思考。
+    memory_thinking_extra_body: dict | None = None
 
     # 兼容测试里 config["xxx"] 字典式访问
     def __getitem__(self, key: str) -> Any:
@@ -401,6 +405,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
     # dict 顺序做 substring 匹配，区域域名需要先命中自己的配置。
     "qwen_intl": CacheProviderConfig(
         provider_id="qwen_intl",
+        memory_thinking_extra_body=EXTRA_BODY_DASHSCOPE_MEMORY_THINKING,
         name="阿里云 DashScope (Intl)",
         base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         base_url_pattern="dashscope-intl.aliyuncs.com",
@@ -416,6 +421,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
     ),
     "qwen_us": CacheProviderConfig(
         provider_id="qwen_us",
+        memory_thinking_extra_body=EXTRA_BODY_DASHSCOPE_MEMORY_THINKING,
         name="阿里云 DashScope (US)",
         base_url="https://dashscope-us.aliyuncs.com/compatible-mode/v1",
         base_url_pattern="dashscope-us.aliyuncs.com",
@@ -431,6 +437,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
     ),
     "qwen": CacheProviderConfig(
         provider_id="qwen",
+        memory_thinking_extra_body=EXTRA_BODY_DASHSCOPE_MEMORY_THINKING,
         name="阿里云 DashScope",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         base_url_pattern="dashscope.aliyuncs.com",
@@ -490,6 +497,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
     ),
     "silicon": CacheProviderConfig(
         provider_id="silicon",
+        memory_thinking_extra_body=EXTRA_BODY_SILICON_MEMORY_THINKING,
         name="硅基流动 Silicon",
         base_url="https://api.siliconflow.cn/v1",
         base_url_pattern="api.siliconflow.cn",
@@ -502,6 +510,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
     # 硅基国际站：按与国内站同一套实现处理（未实测，无可用 key）。
     "silicon_intl": CacheProviderConfig(
         provider_id="silicon_intl",
+        memory_thinking_extra_body=EXTRA_BODY_SILICON_MEMORY_THINKING,
         name="SiliconFlow (Intl)",
         base_url="https://api.siliconflow.com/v1",
         base_url_pattern="api.siliconflow.com",
@@ -513,6 +522,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
     ),
     "deepseek": CacheProviderConfig(
         provider_id="deepseek",
+        memory_thinking_extra_body=EXTRA_BODY_DEEPSEEK_MEMORY_THINKING,
         name="DeepSeek",
         base_url="https://api.deepseek.com/v1",
         base_url_pattern="api.deepseek.com",

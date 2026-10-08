@@ -1106,8 +1106,8 @@ class CompressedRecentHistoryManager:
 
         ``extra_body`` overrides the provider-aware factory default (which
         would disable thinking): ``None`` leaves thinking models on their
-        native behavior, and models whose native thinking is unbounded get the
-        lower-effort form from ``memory_thinking_extra_body``.
+        native behavior, and endpoints whose native thinking is unbounded get
+        the lower-effort form from ``memory_thinking_extra_body``.
         max_retries=0 as above: SDK auto-retry off; the business-layer retry is
         the safety net.
         """
@@ -1118,7 +1118,7 @@ class CompressedRecentHistoryManager:
             api_config['api_key'] or None,
             timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
             max_completion_tokens=max_completion_tokens,  # thinking shares this budget with the corrected-dialogue JSON
-            extra_body=memory_thinking_extra_body(api_config['model']),
+            extra_body=memory_thinking_extra_body(api_config['base_url']),
             provider_type=api_config.get('provider_type'),
         )
 
