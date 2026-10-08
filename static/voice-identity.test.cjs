@@ -1625,6 +1625,26 @@ for (const scenario of [
     });
 }
 
+for (const canResume of [true, false]) {
+    test('resumed enrollment guidance ' + (canResume ? 'omits the button label' : 'retains the input-change blocker'), async () => {
+        const readinessController = {
+            isPending: () => false, canStart: () => false, canResume: () => canResume,
+            async refreshResources() {}, controls() {}
+        };
+        const harness = createHarness({ initialEnrollmentNextSegment: 3, readinessController });
+        const hint = createElement();
+        harness.elements.set('voice-identity-start-hint', hint);
+        await harness.initialize();
+        const start = harness.elements.get('voice-identity-start');
+        assert.equal(start.hidden, false);
+        assert.equal(start.disabled, !canResume);
+        assert.ok(start.textContent);
+        if (canResume) assert.equal(hint.textContent, '');
+        else assert.match(hint.textContent, /输入设置已更改/);
+        assert.equal(harness.mediaRequests, 0);
+    });
+}
+
 test('changed input prevents continuing an existing enrollment without cancelling it implicitly', async () => {
     let changed = 0;
     const readinessController = {

@@ -629,7 +629,7 @@
             else if (pending) text = translate('voiceIdentity.setupBusy', '正在准备或检查，请稍候。');
             else if (state.enrollmentId) text = disabled
                 ? translate('voiceIdentity.inputChanged', '输入设置已更改；如正在录入，请取消后重新试录。')
-                : translate('voiceIdentity.continueEnrollment', '继续录入');
+                : '';
             else if (readiness && readiness.startHintKey) {
                 const key = readiness.startHintKey();
                 text = translate(key, READINESS_HINT_FALLBACKS[key] || '');
