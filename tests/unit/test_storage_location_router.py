@@ -4616,3 +4616,63 @@ def test_v1_catch_up_is_not_marked_done_while_an_entry_turned_up_meanwhile(tmp_p
 
     assert (target_root / "watch_together" / "library.json").is_file()
     assert load_storage_migration(_make_real_config_manager(tmp_path))["v1_catch_up_completed_at"]
+
+
+def _scaffold_filled_during_copy_then_name_retaken(tmp_path, monkeypatch, *, fail_beside_too):
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (target_root / "pngtuber").mkdir()
+    original_copy = storage_migration_module._copy_and_verify_entry
+    original_move = storage_migration_module._move_entry_keeping_mode
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _copy_while_the_scaffold_fills(source_path, staged_path, **kwargs):
+        result = original_copy(source_path, staged_path, **kwargs)
+        (target_root / "pngtuber" / "arrived.png").write_bytes(b"new root data")
+        return result
+
+    def _move_then_name_retaken(source, destination):
+        original_move(source, destination)
+        if Path(source) == target_root / "pngtuber":
+            (target_root / "pngtuber").mkdir()
+
+    def _publish_refusing_beside(staged, target, **kwargs):
+        if fail_beside_too and ".neko-kept-" in Path(target).name:
+            raise OSError(13, "simulated permission error")
+        return original_publish(staged, target, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_copy_and_verify_entry", _copy_while_the_scaffold_fills)
+    monkeypatch.setattr(storage_migration_module, "_move_entry_keeping_mode", _move_then_name_retaken)
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_refusing_beside)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+    monkeypatch.undo()
+    return reloaded_manager, target_root
+
+
+@pytest.mark.unit
+def test_v1_catch_up_keeps_arrived_data_beside_a_retaken_name(tmp_path, monkeypatch):
+    """The filled scaffold cannot go back -- its name was taken again in the
+    meantime -- so it is kept beside it rather than deleted with the trash."""
+    reloaded_manager, target_root = _scaffold_filled_during_copy_then_name_retaken(
+        tmp_path, monkeypatch, fail_beside_too=False
+    )
+
+    kept = list(target_root.glob("pngtuber.neko-kept-*"))
+    assert len(kept) == 1 and (kept[0] / "arrived.png").read_bytes() == b"new root data"
+    assert load_storage_migration(reloaded_manager)["v1_catch_up_skipped"] == ["pngtuber"]
+
+
+@pytest.mark.unit
+def test_v1_catch_up_keeps_its_transaction_when_arrived_data_has_nowhere_else_to_go(tmp_path, monkeypatch):
+    reloaded_manager, target_root = _scaffold_filled_during_copy_then_name_retaken(
+        tmp_path, monkeypatch, fail_beside_too=True
+    )
+
+    kept = list(target_root.glob(".smtx/*/trash/pngtuber/arrived.png"))
+    assert len(kept) == 1 and kept[0].read_bytes() == b"new root data"
+    # A later launch must not clear it as a finished transaction's leftover.
+    assert not load_storage_migration(reloaded_manager).get("txid")
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    assert kept[0].read_bytes() == b"new root data"

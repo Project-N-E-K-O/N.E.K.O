@@ -1808,6 +1808,28 @@ def reconcile_finished_retained_cleanup(config_manager, *, anchor_root: Path | s
     return retained_root
 
 
+def _rescue_from_trash(trashed: Path, target_entry: Path) -> bool:
+    """Put user data found in the trash back next to where it came from.
+
+    Under its own name when that is free; otherwise beside it as
+    ``<name>.neko-kept-<12 hex>``. ``False`` when neither worked and it stays
+    in the trash, which must then be kept.
+    """
+    for destination in (
+        target_entry,
+        target_entry.with_name(f"{target_entry.name}.neko-kept-{uuid.uuid4().hex[:12]}"),
+    ):
+        try:
+            _publish_without_overwrite(trashed, destination)
+        except OSError as exc:
+            logger.warning("Could not put %s back at %s: %s", trashed, destination, exc)
+            continue
+        if destination != target_entry:
+            logger.warning("Kept data that arrived during the v1 catch-up at %s", destination)
+        return True
+    return False
+
+
 def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[str]:
     """Copy over what a completed v1 migration never knew about.
 
@@ -1869,6 +1891,8 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
     ]
     copied: list[str] = []
     skipped: list[str] = []
+    # Set when user data could not be put anywhere but the transaction.
+    keep_transaction = False
     if candidates:
         # Recorded first, so a stopped attempt's stage is found and removed
         # as a finished checkpoint's transaction leftover.
@@ -1906,8 +1930,9 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
                     # Checked again now that nothing can write into it: a file
                     # that arrived since makes it the new root's own data.
                     if _tree_has_user_file(scaffold_in_trash):
-                        _publish_without_overwrite(scaffold_in_trash, target_entry)
                         skipped.append(entry_name)
+                        if not _rescue_from_trash(scaffold_in_trash, target_entry):
+                            keep_transaction = True
                         continue
                 staged_fingerprint = _metadata_fingerprint(staged_entry, across_move=True)
                 try:
@@ -1945,10 +1970,18 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
                 )
                 copied.append(entry_name)
         finally:
-            try:
-                _remove_transaction(transaction_root)
-            except Exception as exc:
-                logger.warning("Failed to remove the v1 catch-up transaction: %s", exc)
+            if keep_transaction:
+                # Forget the id, too: the finished-checkpoint leftover
+                # cleanup would otherwise remove it on the next launch.
+                payload = _persist_migration_payload(
+                    config_manager, payload, anchor_root=normalized_anchor_root, txid=""
+                )
+                logger.warning("v1 catch-up kept user data in %s; nothing there is deleted", transaction_root / "trash")
+            else:
+                try:
+                    _remove_transaction(transaction_root)
+                except Exception as exc:
+                    logger.warning("Failed to remove the v1 catch-up transaction: %s", exc)
     # One that turned up in the old root meanwhile (a sync client) would
     # otherwise be neither copied nor named; the next launch takes it.
     turned_up = [
