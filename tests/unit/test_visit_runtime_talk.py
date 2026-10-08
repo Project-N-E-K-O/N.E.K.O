@@ -1573,6 +1573,37 @@ async def test_a_closed_line_whose_llm_lingers_is_booked_before_the_shutdown_sea
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_booking_a_line_survives_its_caller_being_cancelled(tmp_path, monkeypatch):
+    from main_logic.visit.room import LineRef
+    from main_routers.visit_router.line_speaker import LineHeader
+
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    gate = asyncio.Event()
+    calls = []
+    real_record = rt.record_line
+
+    async def slow_record(*args, **kwargs):
+        calls.append(kwargs.get("ln"))
+        await gate.wait()                                 # 写转录时磁盘慢
+        return await real_record(*args, **kwargs)
+
+    rt.record_line = slow_record
+    header = LineHeader(ln="h:99", lp=99, ad="gc", rt="", wu=False, sp="c", lang=None)
+    line = rtm_talk._LineRun(ref=LineRef("h:99", 99, "host"), header=header, reply_to=None, goodbye=False, prompt="")
+    line.payload = {"txt": "收口的这一行", "truncated": True}
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(rt.book_line(line), 0.1)   # 关机限时到点，取消了调用方
+        gate.set()
+        await rt.book_line(line)                          # 另一个调用方等的是同一次写入
+        assert calls == ["h:99"]                          # 只写一次
+        assert [r for r in rt.journal.lines() if r["text"] == "收口的这一行"]   # 写入没被那次取消打断
+    finally:
+        gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_an_admitted_family_line_goes_out_before_leave(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt

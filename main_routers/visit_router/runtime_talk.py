@@ -103,7 +103,7 @@ class _LineRun:
     llm_task: Optional[asyncio.Task] = None
     task: Optional[asyncio.Task] = None
     llm_cancelled: bool = False
-    booked: bool = False
+    booking: Optional[asyncio.Future] = None
     llm_error: Optional[str] = None
     raw: list[str] = field(default_factory=list)
     payload: Optional[dict] = None
@@ -524,14 +524,21 @@ class TalkMixin:
             self.apply_effects(self.room.on_local_line_done(line.ref, bool(payload["truncated"]), self.clock()))
 
     async def book_line(self, line: _LineRun) -> None:
-        """Record a closed own line in the spool / upload once (``_finish_line`` or shutdown, whichever first)."""
+        """Record a closed own line in the spool / upload once (``_finish_line`` or shutdown, whichever first).
+
+        One recording task per line, shared by both callers and shielded: a
+        caller cancelled at its deadline (shutdown) does not interrupt the
+        write, and the other caller waits for that same write.
+        """
         payload = line.payload
-        if payload is None or line.booked:
+        if payload is None:
             return
-        line.booked = True
-        h = line.header
-        await self.record_line("own_cat", side=self.side, lp=h.lp, ln=h.ln, text=payload["txt"],
-                               truncated=payload["truncated"])
+        if line.booking is None:
+            h = line.header
+            line.booking = asyncio.ensure_future(self.record_line(
+                "own_cat", side=self.side, lp=h.lp, ln=h.ln, text=payload["txt"], truncated=payload["truncated"]))
+            line.booking.add_done_callback(lambda t: t.cancelled() or t.exception())
+        await asyncio.shield(line.booking)
 
     async def _finish_line(self, line: _LineRun) -> None:
         payload = line.payload

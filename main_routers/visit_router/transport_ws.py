@@ -874,6 +874,11 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
                 session.on_frame_sent(frame)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit transport: on_frame_sent failed: %s", type(exc).__name__)
+        elif conn.retired or conn.closed:
+            # 回放写不出去、socket 已被弃（_abandon 已按新一次掉线起了重载期限）：把这次重载原来的
+            # 期限写回，绝对期限不能被反复重连续上
+            _restore_reload_deadline(session, saved)
+            return
     if _is_current(link, conn):
         # 发帧期间 runtime 可能已经发了更新的 media（例如刚关掉摄像头）：
         # 前面那份只用于提前发现失败，真正下发的取发送前一刻的最新状态，
@@ -885,7 +890,18 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
             # 取不到最新的：期间 runtime 发过 media 就不再用旧快照兜底（会盖掉更新的状态）
             if _newer_media(conn, media_mark):
                 return
-        await _send_on(conn, media, text=media_text)
+        if not await _send_on(conn, media, text=media_text) and (conn.retired or conn.closed):
+            _restore_reload_deadline(session, saved)
+
+
+def _restore_reload_deadline(session: VisitTransportSession, saved: Any) -> None:
+    """A rejoin whose writes failed: the page reload goes on under its original (absolute) deadline."""
+    if saved is None:
+        return
+    try:
+        session.liveness.restore_page_reload_state(saved)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("visit transport: reload deadline not restored: %s", type(exc).__name__)
 
 
 async def _receive_text(websocket: WebSocket) -> Optional[str]:

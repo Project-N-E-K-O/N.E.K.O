@@ -2022,9 +2022,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         except Exception as exc:  # noqa: BLE001 - 收不完也照样封存
             logger.warning("visit %s: line not closed at shutdown: %r", self.visit_id[:6], exc)
         line = self._line
-        if line is not None and line.payload is not None and not line.booked:
+        if line is not None and line.payload is not None and (line.booking is None or not line.booking.done()):
             # 这一行已收口（text{final} 已入队、已上屏），只是 LLM 还没停下、_finish_line 没跑到：
-            # 先记进转录再封存，不然关机取消它之后这一行就丢了
+            # 先记进转录再封存，不然关机取消它之后这一行就丢了。记账是共享、受保护的任务：
+            # 这里限时等到点被取消，也不会打断写入
             try:
                 await asyncio.wait_for(self.book_line(line), left(_SHUTDOWN_TASK_WAIT_S))
             except Exception as exc:  # noqa: BLE001

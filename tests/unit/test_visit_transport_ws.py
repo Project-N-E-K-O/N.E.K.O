@@ -1158,6 +1158,35 @@ def test_rejoin_snapshot_never_overrides_a_newer_media_state():
     assert medias and medias[-1]["publish"] is False
 
 
+def test_a_rejoin_whose_replay_write_fails_keeps_the_original_reload_deadline():
+    import asyncio
+
+    class _BrokenWS(_RecordingWS):
+        async def send_text(self, text):
+            raise OSError("socket gone")                  # 回放的第一帧就写不出去
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        link.connections_seen = 1  # 这是一条重载后的连接
+        original = object()
+        s.liveness.reload_state = original                # 这次重载原来的（绝对）期限
+        conn = tw._attach(link, _BrokenWS())
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = conn.sdk_seen = conn.sdk_ok = True
+        await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
+        return s, original
+
+    try:
+        s, original = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    events = s.liveness.events
+    assert "page_lost" in events and events[-1] == "page_restored"   # 被弃之后把原来的期限写回
+    assert s.liveness.reload_state is original        # 反复重连续不上绝对期限
+
+
 def test_unserializable_downlink_is_dropped_not_a_disconnect():
     import asyncio
 
