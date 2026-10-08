@@ -315,7 +315,9 @@ async def test_peer_text_flood_is_acked_dropped_and_ends_the_visit(tmp_path, mon
     for st in rt.limiter._senders.values():
         st.recv_bytes.rate = st.recv_bytes.capacity = st.recv_bytes.tokens = 10 ** 9
         st.recv_msgs.rate = st.recv_msgs.capacity = st.recv_msgs.tokens = 10 ** 9
+        st.text.rate = 0                      # 只看 burst：不随真实时间回填（慢机器上洪泛期间会补进令牌）
     rt.limiter._recv_msgs_per_s = 10 ** 9
+    assert rt.limiter._senders                # 对端的 sender 已建好，上面的设置生效
     seq = rt.sequencer.contiguous_seq
     try:
         for i in range(200):
@@ -1981,6 +1983,89 @@ async def test_a_reliable_message_is_handled_even_if_its_receive_is_cancelled(tm
         await asyncio.gather(receiving, return_exceptions=True)
         stuck.set()
         await wait_for(lambda: handled == ["wrap_up"])        # 照样处理完，不会永远丢掉
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_receives_waiting_on_the_same_batch_are_still_handled_one_by_one(tmp_path, monkeypatch):
+    from main_routers.visit_router import runtime_rx
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    gates: dict[int, asyncio.Event] = {}
+    running: list[int] = []
+    overlaps: list[tuple] = []
+
+    async def slow_wrap_up(rt_, m, from_vid, now):
+        if running:
+            overlaps.append((tuple(running), m["seq"]))       # 上一条还没处理完就开始了下一条
+        running.append(m["seq"])
+        await gates.setdefault(m["seq"], asyncio.Event()).wait()
+        running.remove(m["seq"])
+
+    monkeypatch.setitem(runtime_rx._HANDLERS, "wrap_up", slow_wrap_up)
+    for st in rt.limiter._senders.values():                  # 限流放开：只看交付顺序
+        for bucket in (st.recv_bytes, st.recv_msgs, st.ctl, st.lossy, st.text):
+            bucket.rate = bucket.capacity = bucket.tokens = 10 ** 9
+
+    def wrap_up(seq):
+        return rt.on_recv(from_vid=GUEST_VID, cmd=1, payload={
+            "t": "wrap_up", "v": 1, "seq": seq, "lp": rt.room.max_lp_seen, "ph": "propose", "reason": "recall",
+            "initiated_by": "guest"}, nbytes=200)
+
+    try:
+        base = rt.sequencer.contiguous_seq
+        first = asyncio.ensure_future(wrap_up(base + 1))
+        await wait_for(lambda: running == [base + 1])
+        later = [asyncio.ensure_future(wrap_up(base + 2)), asyncio.ensure_future(wrap_up(base + 3))]
+        await settle()                                        # 两次收包同时在等同一批
+        for seq in (base + 1, base + 2, base + 3):
+            gates.setdefault(seq, asyncio.Event()).set()
+            await settle()
+        await asyncio.wait_for(asyncio.gather(first, *later), 5)
+        assert overlaps == []                                 # 一批一批来，没有两批并发
+        assert rt.sequencer.contiguous_seq == base + 3
+    finally:
+        for g in gates.values():
+            g.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_shutdown_waits_for_a_received_batch_before_sealing(tmp_path, monkeypatch):
+    from main_routers.visit_router import runtime_rx
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    order: list[str] = []
+    stuck = asyncio.Event()
+
+    async def slow_wrap_up(rt_, m, from_vid, now):
+        await stuck.wait()                                    # 收下的这条还在处理
+        order.append("handled")
+
+    monkeypatch.setitem(runtime_rx._HANDLERS, "wrap_up", slow_wrap_up)
+    real_seal = rt.journal.seal
+
+    async def seal(reason, **kw):
+        order.append("seal")
+        return await real_seal(reason, **kw)
+
+    rt.journal.seal = seal
+    try:
+        receiving = asyncio.ensure_future(rt.on_recv(from_vid=GUEST_VID, cmd=1, payload={
+            "t": "wrap_up", "v": 1, "seq": rt.sequencer.contiguous_seq + 1, "lp": rt.room.max_lp_seen,
+            "ph": "propose", "reason": "recall", "initiated_by": "guest"}, nbytes=200))
+        await wait_for(lambda: rt._delivering is not None and not rt._delivering.done())
+        asyncio.get_running_loop().call_later(0.2, stuck.set)
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
+        await asyncio.gather(receiving, return_exceptions=True)
+        assert "handled" in order and "seal" in order
+        assert order.index("handled") < order.index("seal")   # 先处理完收下的这批，再封存
     finally:
         stuck.set()
         hgate.set()

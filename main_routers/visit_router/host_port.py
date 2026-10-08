@@ -197,6 +197,10 @@ class ManagerHost:
             await asyncio.wait([interrupting], timeout=timeout)
         except asyncio.CancelledError:
             interrupting.cancel()  # 串门已作废：不再去打断亲人正在进行的对话
+            if not interrupting.done():
+                # 取消之后它可能还在收尾（例如先把「本轮作废」发给页面）：同样留登记，关机时收得到
+                _abandoned_interrupts.add(interrupting)
+                interrupting.add_done_callback(_abandoned_interrupts.discard)
             raise
         if not interrupting.done():
             interrupting.cancel()

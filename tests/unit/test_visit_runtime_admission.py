@@ -1090,6 +1090,25 @@ async def test_stop_all_abandons_the_header_even_before_the_deferred_seal_starts
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_the_header_wait_shares_the_seal_deadline(tmp_path, monkeypatch):
+    host, guest, wire, clock, gate = await _bring_up_with_a_pending_header(tmp_path, monkeypatch)
+    rt = host.rt
+    monkeypatch.setattr(rtm, "_JOURNAL_OPEN_MAX_S", 5.0)      # 写上传头自己的上限远大于封存期限
+    monkeypatch.setattr(rtm, "_SEAL_MAX_S", 1.0)
+    stuck = asyncio.get_running_loop().create_future()
+    rt.family_records.add(stuck)                              # 一句亲人发言一直落不了盘：耗光封存期限
+    try:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        assert await asyncio.wait_for(rt.seal_and_finalize("route_end"), 10) is False
+        assert loop.time() - started < 1.6                    # 等上传头不再另起一段：共用同一个期限
+    finally:
+        stuck.cancel()
+        rt.family_records.discard(stuck)
+        gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_late_seal_is_the_one_seal_of_the_visit(tmp_path, monkeypatch):
     import threading
 
@@ -1714,10 +1733,12 @@ async def test_a_cancelled_ready_handler_still_finishes_the_guest_activation(tmp
 
     grt._open_spool = slow_open
     try:
-        readying = asyncio.ensure_future(grt.on_ready())      # 收到主人的 ready
+        receiving = asyncio.ensure_future(grt.on_recv(        # 收到主人的 ready
+            from_vid=HOST_VID, cmd=1, payload={"t": "ready", "v": 1, "seq": grt.sequencer.contiguous_seq + 1},
+            nbytes=50))
         await asyncio.wait_for(reached.wait(), 5)
-        readying.cancel()                                     # 收包处理被取消（连接断开等）
-        await asyncio.gather(readying, return_exceptions=True)
+        receiving.cancel()                                    # 收包处理被取消（连接断开等）
+        await asyncio.gather(receiving, return_exceptions=True)
         gate.set()
         await wait_for(lambda: grt.ready_exchanged, timeout=5)  # 激活照样走完，这场照常开始
         assert not grt.finalizing
@@ -1746,10 +1767,12 @@ async def test_a_line_arriving_during_a_background_activation_waits_for_it(tmp_p
     grt._open_spool = slow_open
     monkeypatch.setitem(runtime_rx._HANDLERS, "text", text_handler)
     try:
-        readying = asyncio.ensure_future(grt.on_ready())
+        seq = grt.sequencer.contiguous_seq + 1
+        receiving = asyncio.ensure_future(grt.on_recv(
+            from_vid=HOST_VID, cmd=1, payload={"t": "ready", "v": 1, "seq": seq}, nbytes=50))
         await asyncio.wait_for(reached.wait(), 5)
-        readying.cancel()                                     # 收下 ready 的那次处理被取消，激活在后台继续
-        await asyncio.gather(readying, return_exceptions=True)
+        receiving.cancel()                                    # 收下 ready 的那次处理被取消，ready 流程在后台继续
+        await asyncio.gather(receiving, return_exceptions=True)
         dropped = grt.gate_dropped
         media_gate = asyncio.Event()
         real_media = grt.send_media
@@ -1759,7 +1782,10 @@ async def test_a_line_arriving_during_a_background_activation_waits_for_it(tmp_p
             return await real_media()
 
         grt.send_media = slow_media
-        dispatching = asyncio.ensure_future(grt._dispatch({"t": "text"}, HOST_VID, clock()))  # 重连后主人的开场台词
+        dispatching = asyncio.ensure_future(grt.on_recv(      # 重连后新连接送来主人的开场台词
+            from_vid=HOST_VID, cmd=2, payload={
+                "t": "text", "v": 1, "ln": "h:1", "lp": 1, "seq": seq + 1, "sp": "c", "ad": "gc", "rt": "",
+                "wu": False, "final": True, "txt": "你好", "truncated": False, "i_done": 0}, nbytes=200))
         await settle()
         assert not dispatching.done()                         # 等 ready 流程走完，不当早到的丢掉
         gate.set()

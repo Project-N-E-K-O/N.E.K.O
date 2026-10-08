@@ -70,6 +70,29 @@ async def test_main_turn_interruption_that_ignores_cancellation_is_abandoned_in_
         await asyncio.sleep(0.05)
 
 
+async def test_an_interruption_still_running_after_its_caller_is_cancelled_is_registered():
+    release, started = asyncio.Event(), asyncio.Event()
+
+    class _Stubborn(_Session):
+        async def handle_interruption(self) -> None:
+            started.set()
+            while not release.is_set():               # 取消之后还在收尾（不立刻结束）
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+
+    try:
+        calling = asyncio.ensure_future(_host(_Stubborn(responding=True)).interrupt_main_turn(5))
+        await asyncio.wait_for(started.wait(), 2)
+        calling.cancel()                              # 串门作废：调用方被取消
+        await asyncio.gather(calling, return_exceptions=True)
+        assert host_port.abandoned_interrupts()       # 还在跑的打断留了登记，关机时 stop_all 收得到
+    finally:
+        release.set()
+        await asyncio.sleep(0.05)
+
+
 async def test_main_turn_interruption_is_cancelled_with_its_caller():
     cancelled = asyncio.Event()
 

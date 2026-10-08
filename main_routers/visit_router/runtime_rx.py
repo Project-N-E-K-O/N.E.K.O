@@ -114,10 +114,10 @@ class ReceiveMixin:
 
     async def on_recv(self, *, from_vid: str, cmd: int, payload: dict, nbytes: int) -> None:
         """One reassembled message from the iframe (``recv``)."""
-        previous = self._delivering
-        if previous is not None and not previous.done():
-            # 上一条收下的消息还在处理（那次收包处理被取消、处理在后台继续）：先等它做完，交付顺序不乱
-            await asyncio.wait([previous])
+        while self._delivering is not None and not self._delivering.done():
+            # 上一批收下的消息还在处理（那次收包处理被取消、处理在后台继续）：先等它做完，交付顺序不乱。
+            # 循环检查：几次收包同时在等时，先醒的那个交出新一批（其间不让出），其余的接着等新这批
+            await asyncio.wait([self._delivering])
         now = self.clock()
         frame = self.limiter.admit_frame(from_vid, nbytes, now=now)
         if not frame.allowed:
@@ -242,19 +242,6 @@ class ReceiveMixin:
             return
         if self.finalizing and t != "ack":
             return
-        readying = self._ready_task
-        if (not self.activated and t not in GATE_PASS and self.side == "guest"
-                and readying is not None and not readying.done()):
-            # 客人收下 ready 的那次处理被取消、ready 流程在后台继续，页面重连后主人的台词已到：等整个 ready 流程
-            # 走完（激活、started、开场）再分发，不把它当早到的丢掉（序号层已回 ack，对端不会重传），顺序也与
-            # 原来一致。只在这种情况下等：主人侧 / 平常的早到帧照旧丢，不卡收包循环。流程自带时限，等不久
-            await asyncio.wait([readying])
-            now = self.clock()  # 等过一阵：回复间隔等按此刻算
-            if self.finalizing:
-                # 等的过程中进了收尾：与收尾中补到的整句一样只记进转录
-                if t == "text":
-                    await self._record_late_text(m, from_vid, now)
-                return
         if not self.activated and t not in GATE_PASS:
             # 接待前闸门：台词类一律丢弃并单独计数（不进连续异常，免得早到的台词把对端踢掉）
             self.gate_dropped += 1

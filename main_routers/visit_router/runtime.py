@@ -583,7 +583,6 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.accepted: Optional[bool] = None
         self.activated = False
         self._activation: Optional[asyncio.Task] = None
-        self._ready_task: Optional[asyncio.Task] = None
         self.ready_exchanged = False
         self.started_at_mono: Optional[float] = None
         self.started_at_wall: Optional[float] = None
@@ -1018,6 +1017,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             opening.add_done_callback(lambda _t: self._flush_journal_backlog())
         return opening
 
+    async def _settle_delivering(self, timeout: float) -> None:
+        delivering = self._delivering
+        if delivering is not None and not delivering.done() and timeout > 0:
+            await asyncio.wait([delivering], timeout=timeout)
+
     def _start_journal_for_backlog(self) -> None:
         # 对端 hello 先到、这场已开口，却一直没等来本侧的入房报告就收尾：上传头还没开始写，
         # 攒下的那几句只在积压里。此刻开始写上传头，之后照常封存（关机时照常放弃并留给补录）
@@ -1301,10 +1305,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.side != "guest" or self.ready_exchanged or self._activation is not None or self.finalizing:
             return
         self.liveness.on_ready(self.clock())
-        # ready 已收下（期限已撤、序号已确认，不会再来一次）：激活是运行时自己的任务，收包处理被取消也照样走完，
-        # 否则这场既不开始、也没有期限能结束它。收尾时随运行时一起取消
-        readying = self._ready_task = self.spawn(self._ready_flow(), name="ready")
-        await asyncio.shield(readying)
+        # ready 是可靠消息：它所在的那批交付是运行时自己的受保护任务（on_recv），收包处理被取消也照样走完整个
+        # ready 流程；下一次收包会等它做完，之后到的台词不会被当成早到的丢掉
+        await self._ready_flow()
 
     async def _ready_flow(self) -> None:
         # 在收包循环里同步激活（之后的台词要有 room 才能处理），所以必须有上限：卡住就结束，不拖住心跳与 leave
@@ -1887,10 +1890,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         """
         loop = asyncio.get_running_loop()
         seal_deadline = loop.time() + _SEAL_MAX_S
-        # 已接纳的亲人发言还在落盘（对端先走 / 传输已断时关闭通道不等预留）：先等它记进转录，与封存共用一个期限
-        await self.settle_family_records(_SEAL_MAX_S)
+
+        def remaining() -> float:
+            return max(0.0, seal_deadline - loop.time())
+
+        # 已接纳的亲人发言还在落盘（对端先走 / 传输已断时关闭通道不等预留）、收下的那批对端消息还在处理：
+        # 先等它们记进转录。这几段等待与写上传头、封存共用一个期限
+        await self.settle_family_records(remaining())
+        await self._settle_delivering(remaining())
         self._start_journal_for_backlog()
-        await self._settle_journal_open()
+        await self._settle_journal_open(min(_JOURNAL_OPEN_MAX_S, remaining()))
         if self._header_pending():
             # 上传头还在写：seal() 这时什么都不封（会立即返回 None）。封存、spool finalize、记忆提交
             # 都交给上传头落盘后的那条后台链，仍是先封存后 finalized
@@ -2157,6 +2166,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         await self.settle_family_records(left(_SHUTDOWN_TASK_WAIT_S))
         # 封存之前先收掉接收通道：之后 iframe 还送来的可靠整句不会被收下、回 ack，却落在封存之后
         unregister_transport_session(self.transport)
+        # 已收下（对端不会再重传）、还在处理的那批对端消息：先等它记进转录（限时），之后的任务取消才不会掐断它
+        await self._settle_delivering(left(_SHUTDOWN_TASK_WAIT_S))
         self._start_journal_for_backlog()
         await self._settle_journal_open(left(_SHUTDOWN_TASK_WAIT_S))
         self._flush_journal_backlog()
