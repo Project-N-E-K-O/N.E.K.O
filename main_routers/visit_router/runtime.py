@@ -666,11 +666,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     def finalizing(self) -> bool:
         return self._exit_task is not None or self._terminated
 
-    def _release_turn_wrap_up(self) -> None:
+    def _release_turn_wrap_up(self, *, settle: bool = True) -> None:
         release = getattr(self.host, "release_turn_wrap_up", None)
         if callable(release):
             try:
-                release()
+                release(settle=settle)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: turn wrap-up not released: %s", self.visit_id[:6], type(exc).__name__)
 
@@ -2015,7 +2015,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             except Exception:  # noqa: BLE001
                 pass
             self.takeover_token = None
-        self._release_turn_wrap_up()
+        self._release_turn_wrap_up(settle=False)  # 进程要退了：只放开，不在关机途中起续期 / 换代
         cancel = self._room_cancel_task
         if cancel is not None and not cancel.done():
             # 撤销房间是对外请求（邀请码与配额占用）：从它派生那一刻算至少给它 _SHUTDOWN_ROOM_CANCEL_S，

@@ -1336,6 +1336,34 @@ async def test_the_held_turn_wrap_up_is_released_when_the_visit_ends(tmp_path, m
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_busy_admission_releases_the_held_wrap_up(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    side.host.interrupt_ok = False                        # 主对话打断不下来：按 busy 拒绝
+    try:
+        await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+        assert await rt.issue_credentials() is None
+        await asyncio.wait_for(_finished(rt), 10)
+        assert rt.finalize_reason == "busy"
+        assert "release_turn_wrap_up" in side.host.events     # 准入失败的路径同样放开、结清
+    finally:
+        await teardown(side, clock=clock)
+
+
+async def test_shutdown_releases_the_held_wrap_up_without_settling(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    try:
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
+        events = host.host.events
+        assert "release_turn_wrap_up:no_settle" in events     # 关机：只放开计数
+        assert "release_turn_wrap_up" not in events           # 不在关机途中起续期 / 换代
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_the_spool_is_finalized_only_once(tmp_path, monkeypatch):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt

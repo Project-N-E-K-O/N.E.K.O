@@ -167,6 +167,7 @@ class FakeHost:
         self.acked: list = []
         self.failed: list = []
         self.takeover_error: Optional[Exception] = None
+        self.interrupt_ok = True
         self.events: list[str] = []
         self.mirror_error: Optional[Exception] = None
         self.dead_worker_prefix: Optional[tuple[str, ...]] = None
@@ -179,7 +180,7 @@ class FakeHost:
 
     async def interrupt_main_turn(self, timeout: float) -> bool:
         self.events.append("interrupt_main_turn")
-        return True
+        return self.interrupt_ok
 
     async def send_frame(self, payload: dict) -> bool:
         self.frames.append(payload)
@@ -203,8 +204,8 @@ class FakeHost:
         self.events.append("release_takeover")
         return True
 
-    def release_turn_wrap_up(self) -> None:
-        self.events.append("release_turn_wrap_up")
+    def release_turn_wrap_up(self, *, settle: bool = True) -> None:
+        self.events.append("release_turn_wrap_up" if settle else "release_turn_wrap_up:no_settle")
 
     async def interrupt_ordinary_speech(self) -> None:
         return None

@@ -65,8 +65,12 @@ class VisitHost(Protocol):
         being admitted.
         """
 
-    def release_turn_wrap_up(self) -> None:
-        """The visit handed the session back: settle the wrap-up held by ``interrupt_main_turn`` (once)."""
+    def release_turn_wrap_up(self, *, settle: bool = True) -> None:
+        """The visit handed the session back: settle the wrap-up held by ``interrupt_main_turn`` (once).
+
+        ``settle=False`` (shutdown): only drop the hold; the process is about
+        to exit, so a renewal or swap started now would be cut off.
+        """
 
     async def send_frame(self, payload: dict) -> bool:
         """One display-socket frame (``visit_*``); False when it could not be written."""
@@ -164,6 +168,8 @@ class ManagerHost:
         return None
 
     async def interrupt_main_turn(self, timeout: float) -> bool:
+        # 无条件按住：此前一轮已欠下、会话还没空闲的那笔，准入期间同样不该结清（teardown / 关机放开）
+        self._hold_turn_wrap_up()
         session = getattr(self._mgr, "session", None)
         if session is None or not getattr(session, "_is_responding", False):
             return True
@@ -172,7 +178,6 @@ class ManagerHost:
         deadline = time.monotonic() + timeout
         # 离线会话：打断会接管这条回复的收尾（它自己的完成回调不再跑），必须走管理器的
         # _interrupt_offline_reply 把这一轮关掉，否则下一条普通回复会并进这一轮
-        self._hold_turn_wrap_up()
         interrupt_reply = getattr(self._mgr, "_interrupt_offline_reply", None)
         if callable(interrupt_reply):
             interrupting = asyncio.ensure_future(interrupt_reply(session))
@@ -209,21 +214,23 @@ class ManagerHost:
         self._mgr._reply_setup_depth = getattr(self._mgr, "_reply_setup_depth", 0) + 1
         self._wrap_up_held = True
 
-    def release_turn_wrap_up(self) -> None:
+    def release_turn_wrap_up(self, *, settle: bool = True) -> None:
         if not self._wrap_up_held:
             return
         self._wrap_up_held = False
         mgr = self._mgr
         mgr._reply_setup_depth = max(0, getattr(mgr, "_reply_setup_depth", 0) - 1)
-        settle = getattr(mgr, "_settle_owed_turn_wrap_up", None)
-        if not getattr(mgr, "_turn_wrap_up_owed", False) or not callable(settle):
+        if not settle:
+            return
+        settle_owed = getattr(mgr, "_settle_owed_turn_wrap_up", None)
+        if not getattr(mgr, "_turn_wrap_up_owed", False) or not callable(settle_owed):
             return
         fire = getattr(mgr, "_fire_task", None)
         try:
             if callable(fire):
-                fire(settle())
+                fire(settle_owed())
             else:
-                asyncio.ensure_future(settle())
+                asyncio.ensure_future(settle_owed())
         except Exception as exc:  # noqa: BLE001 - 结不清就留给下一次普通输入 / 会话空闲
             logger.warning("visit: owed turn wrap-up not settled: %s", type(exc).__name__)
 

@@ -137,6 +137,22 @@ async def test_the_interrupted_turns_wrap_up_is_held_until_the_visit_hands_back(
     assert mgr._reply_setup_depth == 1
 
 
+async def test_an_owed_wrap_up_is_held_even_when_no_reply_is_running():
+    settled = []
+
+    async def settle():
+        settled.append(True)
+
+    mgr = SimpleNamespace(session=_Session(responding=False), _reply_setup_depth=0, _turn_wrap_up_owed=True,
+                          _settle_owed_turn_wrap_up=settle, _fire_task=asyncio.ensure_future)
+    host = ManagerHost("Host", mgr)
+    assert await host.interrupt_main_turn(1.0) is True
+    assert mgr._reply_setup_depth == 1                    # 此前欠下、会话还没空闲的那笔：准入期间同样按住
+    host.release_turn_wrap_up(settle=False)               # 关机：只放开，不结清
+    await asyncio.sleep(0)
+    assert mgr._reply_setup_depth == 0 and settled == []
+
+
 async def test_family_turn_wait_covers_a_reply_that_starts_late(monkeypatch):
     monkeypatch.setattr(host_port, "_TURN_IDLE_POLL_S", 0.02)
     session = _Session(responding=False)
