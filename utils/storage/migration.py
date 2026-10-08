@@ -971,9 +971,10 @@ def _rollback_interrupted_publish(
         )
         if (
             (was_published or moved_unrecorded)
-            # Marked as restoring, but while the backup is still there the
-            # target is still the published copy and may have been written.
-            and (entry_name not in restoring_entries or os.path.lexists(backup_entry))
+            # Once marked as restoring, the target may be our own half-done
+            # removal; a manifest cannot tell that from an outside write, and
+            # treating it as one would strand the restore.
+            and entry_name not in restoring_entries
             and isinstance(expected_manifest, dict)
             and os.path.lexists(target_entry)
             and _snapshot_path(target_entry) != expected_manifest

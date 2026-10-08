@@ -3034,9 +3034,10 @@ def test_recorded_staged_entries_are_checked_without_listing_the_stage(tmp_path)
 
 
 @pytest.mark.unit
-def test_recovery_compares_a_target_marked_restoring_while_its_backup_remains(tmp_path, monkeypatch):
-    """Stopped after recording the restore but before touching the target:
-    the target is still the published copy and may have been written to."""
+def test_recovery_finishes_a_restore_whose_removal_stopped_halfway(tmp_path, monkeypatch):
+    """The restore was recorded and the published copy partly removed when the
+    process stopped: that is our own removal, not an outside change, and the
+    next recovery must finish restoring the backup."""
     from utils import storage_migration as storage_migration_module
 
     config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
@@ -3050,8 +3051,8 @@ def test_recovery_compares_a_target_marked_restoring_while_its_backup_remains(tm
     with pytest.raises(KeyboardInterrupt):
         run_pending_storage_migration(config_manager)
     monkeypatch.undo()
-    # The checkpoint as a rollback leaves it right after recording the
-    # restore and before touching the target.
+    # The checkpoint as a rollback leaves it after recording the restore and
+    # removing part of the published copy.
     payload = dict(load_storage_migration(config_manager))
     payload["published_entries"] = ["config"]
     payload["publishing_entry"] = ""
@@ -3061,12 +3062,14 @@ def test_recovery_compares_a_target_marked_restoring_while_its_backup_remains(tm
         "config": {"source_manifest": staged.get("config"), "target_manifest": staged.get("config"), "transaction": payload.get("txid")}
     }
     save_storage_migration(config_manager, payload)
-    (target_root / "config" / "characters.json").write_text("written since", encoding="utf-8")
+    for child in list((target_root / "config").iterdir()):
+        child.unlink()
 
+    _stop_after_recovery(monkeypatch, storage_migration_module)
     retry = run_pending_storage_migration(config_manager)
 
-    assert retry["error_code"] == "migration_publish_conflict"
-    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "written since"
+    assert retry["error_code"] == "stop_after_recovery"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
 
 
 @pytest.mark.unit
