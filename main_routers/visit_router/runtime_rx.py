@@ -105,7 +105,8 @@ class ReceiveMixin:
         frame = self.limiter.admit_frame(from_vid, nbytes, now=now)
         if not frame.allowed:
             self.rate_dropped += 1
-            if frame.sustained_overflow:
+            if frame.sustained_overflow and self.peer is not None and from_vid == self.peer.vid:
+                # 只有核验过的对端持续超限才收尾：同房第三人 / 被顶掉的旧身份照样限速，但结束不了这场
                 self.request_finalize("peer_protocol_violation")
             return
         expected = self.peer.vid if self.peer is not None else None

@@ -233,12 +233,22 @@ class ManagerHost:
         await self._mgr.mirror_user_input(text, metadata=metadata, request_id=request_id, send_to_frontend=False)
 
     async def mirror_assistant_output(self, text: str, *, metadata: dict, request_id: str) -> None:
-        await self._mgr.mirror_assistant_output(text, metadata=metadata, request_id=request_id)
+        # 有界：收尾流程在它之后才封存文件、注销，页面卡住不能把这些一起卡住
+        try:
+            await asyncio.wait_for(
+                self._mgr.mirror_assistant_output(text, metadata=metadata, request_id=request_id), _FRAME_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("visit: assistant mirror timed out")
 
     async def render_chat_blocks(self, blocks: list[dict], *, request_id: str, source_name: str) -> bool:
-        return bool(await self._mgr.render_chat_blocks(
-            blocks, request_id=request_id, source="system", source_name=source_name,
-        ))
+        try:
+            return bool(await asyncio.wait_for(self._mgr.render_chat_blocks(
+                blocks, request_id=request_id, source="system", source_name=source_name,
+            ), _FRAME_TIMEOUT_S))
+        except asyncio.TimeoutError:
+            logger.warning("visit: chat blocks timed out")
+            return False
 
     def park_proactive(self) -> None:
         park = getattr(self._mgr, "_park_proactive_for_goodbye", None)

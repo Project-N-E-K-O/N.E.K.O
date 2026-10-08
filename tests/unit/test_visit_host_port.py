@@ -88,3 +88,20 @@ async def test_status_writes_are_bounded_like_frames(monkeypatch):
     assert await asyncio.wait_for(host.send_status("VISIT_E_BUSY"), 3) is False
     assert time.monotonic() - started < 1.0
     stuck.set()
+
+
+async def test_mirror_and_chat_block_writes_are_bounded(monkeypatch):
+    monkeypatch.setattr(host_port, "_FRAME_TIMEOUT_S", 0.1)
+    stuck = asyncio.Event()
+
+    async def hang(*args, **kwargs):
+        await stuck.wait()                            # 页面 socket 背压：写不出去
+        return True
+
+    host = ManagerHost("Host", SimpleNamespace(mirror_assistant_output=hang, render_chat_blocks=hang))
+    started = time.monotonic()
+    # 外层 3 s 只为让测试本身不挂死
+    await asyncio.wait_for(host.mirror_assistant_output("我回来啦。", metadata={}, request_id="r"), 3)
+    assert await asyncio.wait_for(host.render_chat_blocks([], request_id="r", source_name="s"), 3) is False
+    assert time.monotonic() - started < 1.0
+    stuck.set()

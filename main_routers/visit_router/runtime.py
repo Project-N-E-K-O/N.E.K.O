@@ -319,6 +319,9 @@ def _character_uid_of(lanlan_name: str) -> Optional[str]:
 
 
 _uid_by_name: dict[str, str] = {}
+
+_pending_visits: set[tuple[str, str]] = set()
+"""``(visit_id, side)`` between the slot reservation and the runtime registration (``start_visit``)."""
 """Last known ``character_uid`` of a name that started a visit (background-task lookup by name)."""
 
 
@@ -395,6 +398,7 @@ def _reset_for_tests() -> None:
         task.cancel()
     _detached.clear()
     _runtimes.clear()
+    _pending_visits.clear()
     _by_visit.clear()
     _recent.clear()
     _visit_bg_tasks.clear()
@@ -448,6 +452,9 @@ class _Transport(VisitTransportSession):
 
     def now(self) -> float:
         return self._rt.clock()
+
+    def on_frame_sent(self, frame: Any) -> None:
+        self._rt.on_frame_sent(frame)
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1001,15 +1008,18 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                               "hidden": bool(self.local_hidden)}, now=now)
         frames = self.outbox.due(now)
         for frame in frames:
-            sent = await self.transport.send(frame.to_ws())
-            if not sent:
-                continue
-            if frame.seq or frame.t == "hb":
-                self.liveness.on_message_sent(self.clock())
-            if frame.t == "wrap_up" and not frame.retransmit and self.room is not None:
-                self.room.on_wrap_up_sent(frame.payload.get("ph"), self.clock())
+            if await self.transport.send(frame.to_ws()):
+                self.on_frame_sent(frame)
         if self.outbox.delivery_failed and not self.finalizing:
             self.request_finalize("delivery_failed")
+
+    def on_frame_sent(self, frame: Any) -> None:
+        """Bookkeeping after an outbox frame went out (the pump, or the page re-entry flush)."""
+        now = self.clock()
+        if frame.seq or frame.t == "hb":
+            self.liveness.on_message_sent(now)
+        if frame.t == "wrap_up" and not frame.retransmit and self.room is not None:
+            self.room.on_wrap_up_sent(frame.payload.get("ph"), now)
 
     async def tick(self) -> None:
         """Timers of this visit; called by :func:`visit_sweep_loop` every ``VISIT_SWEEP_INTERVAL_S``."""
@@ -1359,7 +1369,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         except Exception as exc:  # noqa: BLE001 - 收尾每一步都尽力而为，最后一定注销
             logger.error("visit %s: exit flow failed: %r", self.visit_id[:6], exc)
         finally:
-            if not self._files_done and not self._shutdown_started:
+            if self._shutdown_started:
+                # 关机取消了收尾流程：文件、接管与注销都由 shutdown() 按「文件优先」的顺序做，
+                # 这里不能并发 teardown（会抢在封存之前关会话、注销）
+                return
+            if not self._files_done:
                 # 前面的步骤抛了：转录与 spool 的收口是必做的（关机路径自己收口）
                 try:
                     await self._finish_files(reason)
@@ -1619,7 +1633,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             if parked:
                 self.host.resubmit_callbacks(parked)
         # 收尾流程另起的关闭通道任务也停掉：关机不发 leave，也不能在封存之后还在排空
-        inflight = [t for t in (self._creds_task, self._activation, self._closing_task)
+        inflight = [t for t in (self._exit_task, self._creds_task, self._activation, self._closing_task)
                     if t is not None and not t.done()]
         for task in inflight:
             task.cancel()
@@ -1771,7 +1785,12 @@ async def start_visit(
     if is_external_route_locked(name):
         reason = "already_visiting" if name in _runtimes or get_visit_route_state(name) else "route_owned"
         raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": reason})
+    key = (vid, side)
+    if key in _pending_visits or any(r.visit_id == vid and r.side == side for r in _runtimes.values()):
+        # 锁按角色：另一个角色正以同一侧进同一场（同一张邀请），不能互相顶掉登记
+        raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "visit_in_progress"})
     slot = activate_visit_route(name, phase=PHASE_PENDING, visit_id=vid)
+    _pending_visits.add(key)
     try:
         failure = host.precondition_failure()
         if failure is not None:
@@ -1791,11 +1810,13 @@ async def start_visit(
             clock=clock, wall=wall,
         )
     except BaseException:
+        _pending_visits.discard(key)
         if get_visit_route_state(name) is slot:
             finalize_visit_route_state(name)
         raise
     rt.slot = slot
     rt.start()
+    _pending_visits.discard(key)
     return rt
 
 

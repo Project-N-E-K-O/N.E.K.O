@@ -957,3 +957,30 @@ async def test_the_accept_deadline_starts_when_verification_finishes(tmp_path, m
         assert rt._accept_deadline - clock() > VISIT_ACCEPT_TIMEOUT_S - 1   # 亲人仍有完整的接待时间
     finally:
         await teardown(side, wire=wire, clock=clock)
+
+
+async def test_two_characters_cannot_take_the_same_visit_at_once(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    gate, reached = asyncio.Event(), asyncio.Event()
+
+    async def slow_account():
+        reached.set()
+        await gate.wait()
+        return "acct"
+
+    monkeypatch.setattr(rtm, "_local_account", slow_account)
+    clock, wall = clocks
+    one = make_side(tmp_path / "a", "guest", clock=clock, wall=wall, name="Mimi")
+    two = make_side(tmp_path / "b", "guest", clock=clock, wall=wall, name="Nana")
+    first = asyncio.ensure_future(start_side(one, invite_code=INVITE, clock=clock, wall=wall))
+    await asyncio.wait_for(reached.wait(), 5)
+    with pytest.raises(rtm.VisitRefused) as refused:
+        await start_side(two, invite_code=INVITE, clock=clock, wall=wall)   # 同一张邀请、同一个 visit_id
+    assert refused.value.body["reason"] == "visit_in_progress"
+    assert visit_route_state.get_visit_route_state("Nana") is None
+    gate.set()
+    rt = await first
+    try:
+        assert rtm.get_runtime_by_visit(rt.visit_id) is rt
+    finally:
+        await teardown(one, clock=clock)

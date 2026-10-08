@@ -153,6 +153,9 @@ class FakeSession(tw.VisitTransportSession):
     def media_snapshot(self):
         return dict(self.snapshot)
 
+    def on_frame_sent(self, frame):
+        self.log.append(("frame_sent", frame.payload.get("t")))
+
 
 @pytest.fixture
 def app(monkeypatch):
@@ -470,6 +473,7 @@ def _rejoin(ws) -> list[dict]:
     _auth(ws)
     _preflight(ws)
     out = [json.loads(ws.receive_text())]
+    _sdk_ok(ws)
     ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
     out.append(json.loads(ws.receive_text()))
     out.append(json.loads(ws.receive_text()))
@@ -484,6 +488,7 @@ def test_reload_resends_hello_then_exactly_one_media_snapshot_guest(app, session
         _auth(ws)
         _preflight(ws)
         ws.receive_text()
+        _sdk_ok(ws)
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
         _sync(ws)
     _wait_page_lost(session, 1)
@@ -521,6 +526,7 @@ def test_first_connection_sends_no_media_snapshot(app, session):
         _auth(ws)
         _preflight(ws)
         ws.receive_text()
+        _sdk_ok(ws)
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
         _sync(ws)
     assert not any(e[0] == "resend_hello" for e in session.log)
@@ -830,6 +836,7 @@ def test_failed_rejoin_is_retried_on_the_next_joined_report(app):
         _auth(ws)
         _preflight(ws)
         ws.receive_text()
+        _sdk_ok(ws)
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
         _barrier(ws, s)  # 不用 _sync：stats 本身也会触发重试，这里要验的是下一条 connected
         assert not s.fail_once and ("resend_hello",) not in s.log
@@ -987,6 +994,7 @@ def test_failed_state_hook_or_snapshot_retries_the_whole_rejoin(app, broken):
         _auth(ws)
         _preflight(ws)
         ws.receive_text()
+        _sdk_ok(ws)
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
         _barrier(ws, s)
         # 失败的这一拍不能开始重入：on_state 失败时 outbox 不动；快照失败时也不能已经恢复 outbox
@@ -1136,7 +1144,7 @@ def test_rejoin_snapshot_never_overrides_a_newer_media_state():
 
         ws = _SlowWS(on_first_send=_camera_off)
         conn = tw._attach(link, ws)
-        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = conn.sdk_seen = conn.sdk_ok = True
         await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
         await asyncio.gather(*tasks)
         return ws.sent
@@ -1177,6 +1185,7 @@ def test_unserializable_snapshot_keeps_the_socket_open(app, session):
         _auth(ws)
         _preflight(ws)
         ws.receive_text()
+        _sdk_ok(ws)
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
         _barrier(ws, session)
         # 快照序列化不了：重入整套不做（不发 hello、outbox 仍暂停、宽限没清），socket 也没被当成断线
@@ -1217,6 +1226,7 @@ def test_page_grace_keeps_running_until_the_new_iframe_rejoins(app):
         _auth(ws)
         _preflight(ws)
         ws.receive_text()
+        _sdk_ok(ws)
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
         ws.receive_text()
         ws.receive_text()
@@ -1414,7 +1424,7 @@ def test_transport_does_not_re_enter_after_the_deadline():
         link.connections_seen = 1
         ws = _RecordingWS()
         conn = tw._attach(link, ws)
-        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = conn.sdk_seen = conn.sdk_ok = True
         await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
         assert conn.retired  # 同步退役：之后的帧不再处理
         await tw._handle_frame(link, conn, {"type": "recv", "from_vid": PEER_VID, "cmd": 2,
@@ -1459,6 +1469,7 @@ def test_failed_replay_preparation_rolls_the_rejoin_back(app):
         _auth(ws)
         _preflight(ws)
         ws.receive_text()
+        _sdk_ok(ws)
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
         _barrier(ws, s)
         # 失败时：outbox 重新暂停、清掉的页面期限写回（due() 在最后，失败前期限已清），不留半恢复状态
@@ -1499,7 +1510,12 @@ def _reload_and_join(client, s, ws_fn):
         _auth(ws)
         _preflight(ws)
         ws.receive_text()  # credentials
+        _sdk_ok(ws)        # 新连接各自过能力门 ③ 才能重入
         return ws_fn(ws)
+
+
+def _sdk_ok(ws) -> None:
+    ws.send_text(json.dumps({"type": "caps", "stage": "sdk", "transport_ok": True, "video_ok": True}))
 
 
 def _joined(ws, state: str = "joined") -> None:
@@ -1686,7 +1702,7 @@ def test_failed_hook_or_ambiguous_state_does_not_leave_a_stale_in_room():
         link = tw._links[(VISIT_ID, "guest")]
         link.connections_seen = 1
         conn = tw._attach(link, _RecordingWS())
-        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = conn.sdk_seen = conn.sdk_ok = True
         await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
         assert conn.in_room and not conn.rejoined
         # error 不是进出房状态：保持在房内，stats 仍会重试
@@ -1744,7 +1760,7 @@ def test_rejoin_fallback_snapshot_never_overrides_a_runtime_media():
         link.connections_seen = 1
         ws = _SendsMediaDuringFrames(s)
         conn = tw._attach(link, ws)
-        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = conn.sdk_seen = conn.sdk_ok = True
         await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
         await asyncio.sleep(0.05)  # 让排在锁后面的 runtime media 发完
         return ws
@@ -1779,7 +1795,7 @@ def test_rejoin_fallback_snapshot_is_sent_when_nothing_newer_went_out():
         link.connections_seen = 1
         ws = _RecordingWS()
         conn = tw._attach(link, ws)
-        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = conn.sdk_seen = conn.sdk_ok = True
         await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
         return ws
 
@@ -1819,7 +1835,7 @@ def test_stats_does_not_end_the_socket_when_the_rejoin_check_raises():
         link = tw._links[(VISIT_ID, "guest")]
         link.connections_seen = 1
         conn = tw._attach(link, _RecordingWS())
-        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = conn.sdk_seen = conn.sdk_ok = True
         conn.in_room = True
         await tw._handle_frame(link, conn, {"type": "stats"}, 10, VISIT_ID, "guest")
         return conn
@@ -1850,7 +1866,7 @@ def test_backpressured_socket_does_not_block_closing_the_late_iframe(monkeypatch
         link.connections_seen = 1
         ws = _StuckWS()
         conn = tw._attach(link, ws)
-        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = conn.sdk_seen = conn.sdk_ok = True
         await asyncio.wait_for(
             tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest"), 1)
         await asyncio.sleep(0.3)
@@ -1944,7 +1960,7 @@ def test_rejected_runtime_media_does_not_suppress_the_fallback_snapshot():
         link.connections_seen = 1
         ws = _RejectedMediaDuringFrames(s)
         conn = tw._attach(link, ws)
-        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = conn.sdk_seen = conn.sdk_ok = True
         await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
         await asyncio.sleep(0.05)
         return ws
@@ -2236,7 +2252,7 @@ def test_rejoin_checks_and_commits_with_one_clock_reading():
         s.now = lambda: next(readings)
         conn = tw._attach(link, _RecordingWS())
         assert s.liveness.page_deadline == 30.0
-        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = True
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = conn.sdk_seen = conn.sdk_ok = True
         await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
         return s, conn
 
@@ -2378,3 +2394,28 @@ def test_a_downlink_write_that_never_drains_retires_the_socket(monkeypatch):
     ok, closed_with = asyncio.run(scenario())
     assert ok is False                              # 接待 / 激活 / 泵不再卡在这一次写上
     assert closed_with == tw.CLOSE_SEND_FAILED      # 退役这条 socket，iframe 走正常重连
+
+
+def test_rejoin_waits_for_this_connections_sdk_gate_and_books_its_frames(app):
+    s = FakeSession()
+    tw.register_transport_session(s)
+    vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
+    client = _client(app)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _sync(ws)
+    _wait_page_lost(s, 1)
+    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
+        _auth(ws)
+        _preflight(ws)
+        ws.receive_text()  # credentials
+        _joined(ws)        # 入房报告先到，这条连接的能力门 ③ 还没报
+        _barrier(ws, s)
+        assert not any(e[0] in ("resend_hello", "resume") for e in s.log)
+        assert PAUSE_PAGE_RELOAD in s.outbox.paused
+        _sdk_ok(ws)        # 能力门一过就重入
+        hello = json.loads(ws.receive_text())
+        json.loads(ws.receive_text())  # media
+    assert hello["type"] == "send"
+    # 重入时直接发出的帧同样交给 runtime 记账
+    assert ("frame_sent", "hello") in s.log

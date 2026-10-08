@@ -256,6 +256,9 @@ class VisitTransportSession(ABC):
     async def on_stats(self, msg: dict[str, Any]) -> None:
         """5 s ``stats`` report (default: ignored)."""
 
+    def on_frame_sent(self, frame: Any) -> None:
+        """An outbox frame the page re-entry flushed went out (default: nothing to book)."""
+
     async def on_backpressure(self, msg: dict[str, Any]) -> None:
         """``tx_backpressure``: pause ``typing`` / new deltas while on."""
         self.outbox.set_backpressure(bool(msg.get("on")))
@@ -348,6 +351,7 @@ class _Connection:
     preflight_seen: bool = False
     preflight_ok: bool = False
     sdk_seen: bool = False
+    sdk_ok: bool = False
     in_room: bool = False
     rejoined: bool = False
     media_seq: int = 0
@@ -758,7 +762,11 @@ async def _handle_frame(
             if conn.sdk_seen or not conn.credentials_sent:
                 return
             conn.sdk_seen = True
-            await _call(session, "on_sdk_caps", _sdk_caps(msg))
+            caps = _sdk_caps(msg)
+            if await _call(session, "on_sdk_caps", caps) is not _HOOK_FAILED:
+                conn.sdk_ok = caps.get("transport_ok") is True
+            # 入房报告可能先到：能力门一过就再试一次重入
+            await _try_rejoin(link, conn, session)
         return
     if kind == "state":
         # 非字符串（list / dict）不能拿去查 frozenset，否则抛 TypeError 被当成断线；
@@ -817,7 +825,8 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
     deadline running, and the next trigger redoes the whole thing.
     """
     # 只有已被顶掉的旧连接不能替新连接恢复；没入房、已重入的连接不做
-    if not (conn.reattach and conn.in_room and not conn.rejoined and _is_current(link, conn)):
+    # 重入同样要本连接过了能力门 ③（每条新连接各自加载 SDK）
+    if not (conn.reattach and conn.in_room and conn.sdk_ok and not conn.rejoined and _is_current(link, conn)):
         return
     # 期限已过（tick 还没来得及判）就不再重入：由 runtime 的 tick 判 local_page_lost。
     # 帧入口已查过一次；这里复查 on_state 等 await 期间刚过期的情形：新 iframe 已经用同一个 vid
@@ -859,7 +868,12 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
     conn.rejoined = True
     media_mark = conn.media_seq
     for frame in frames:
-        await _send_on(conn, frame.to_ws())
+        if await _send_on(conn, frame.to_ws()):
+            # 与泵发出的帧同一套记账（存活计时、收尾步骤计时器），不然重入时发出的首发就漏掉了
+            try:
+                session.on_frame_sent(frame)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit transport: on_frame_sent failed: %s", type(exc).__name__)
     if _is_current(link, conn):
         # 发帧期间 runtime 可能已经发了更新的 media（例如刚关掉摄像头）：
         # 前面那份只用于提前发现失败，真正下发的取发送前一刻的最新状态，

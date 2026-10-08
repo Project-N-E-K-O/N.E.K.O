@@ -927,3 +927,42 @@ async def test_family_input_waits_until_ready_is_queued(tmp_path, monkeypatch):
         assert not [p for p in wire.sent["host"] if p.get("t") == "text" and p.get("sp") == "h"]
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_only_the_verified_peer_can_end_the_visit_by_overflowing(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    overflow = SimpleNamespace(allowed=False, sustained_overflow=True)
+    monkeypatch.setattr(rt.limiter, "admit_frame", lambda vid, nbytes, now=None: overflow)
+    try:
+        await rt.on_recv(from_vid="g_" + "z" * 24, cmd=3, payload={"t": "typing", "v": 1, "lp": 1, "sp": "c"},
+                         nbytes=200)
+        assert rt.exit_task is None                         # 同房第三人刷爆自己的桶：结束不了这场
+        await rt.on_recv(from_vid=GUEST_VID, cmd=3, payload={"t": "typing", "v": 1, "lp": 1, "sp": "c"},
+                         nbytes=200)
+        assert rt.finalize_reason == "peer_protocol_violation"
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_frames_sent_elsewhere_get_the_same_bookkeeping(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    calls, sent = [], []
+    monkeypatch.setattr(rt.room, "on_wrap_up_sent", lambda ph, now: calls.append(ph))
+    monkeypatch.setattr(rt.liveness, "on_message_sent", lambda now: sent.append(now))
+    try:
+        rt.on_frame_sent(SimpleNamespace(seq=9, t="wrap_up", retransmit=False, payload={"ph": "begin"}))
+        assert calls == ["begin"] and len(sent) == 1        # 收尾步骤计时器照常起，存活计时也记上
+        rt.on_frame_sent(SimpleNamespace(seq=9, t="wrap_up", retransmit=True, payload={"ph": "begin"}))
+        assert calls == ["begin"]
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)

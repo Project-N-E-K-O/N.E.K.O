@@ -646,3 +646,30 @@ async def test_a_home_stream_the_tts_worker_refuses_falls_back_to_text(tmp_path,
         for g in gates:
             g.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_shutdown_during_the_exit_flow_keeps_files_first(tmp_path, monkeypatch):
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+
+    async def ritual(*args, **kwargs):
+        await stuck.wait()                                  # 收尾流程停在仪式句
+
+    rt.say_ritual = ritual
+    try:
+        rt.request_finalize("recall")
+        await wait_for(lambda: rt.takeover_token is None)   # 已走到仪式句之前
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 3)
+        await settle()
+        assert rt.exit_task.done()
+        # 被取消的收尾流程没有自己再 teardown：文件由 shutdown 收口，状态写的是 shutdown
+        assert rt.ended_at_mono is None
+        assert rt.journal.sealed
+        state = json.loads((host.config_dir / "visit_spool" / f"{rt.visit_id}.state.json").read_text(encoding="utf-8"))
+        assert state["finalized"] == "shutdown"
+    finally:
+        stuck.set()
+        for g in gates:
+            g.set()
+        await teardown(guest, wire=wire, clock=clock)
