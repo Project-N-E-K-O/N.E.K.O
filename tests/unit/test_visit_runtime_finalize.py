@@ -694,3 +694,48 @@ async def test_stop_all_also_stops_detached_background_work():
     task = rtm._detach(stuck.wait())                     # 例如还在退避等待的账号映射补写
     await asyncio.wait_for(rtm.stop_all("shutdown"), 3)
     assert task.cancelled()
+
+
+async def test_stop_all_during_a_pending_handback_still_releases_the_callbacks(tmp_path, monkeypatch):
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    hh = host.host
+    try:
+        hh.sink({"source_kind": "plugin", "text": "回调"})
+        hh.auto_play = False                                  # 仪式句 / 简述一直没播完：交还还在等
+        host.rt.request_finalize("recall")
+        await finish(host.rt, clock)
+        assert rtm.get_runtime("Host") is None and hh.resubmitted == []
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 3)   # 关机取消了等着交还的任务
+        assert [c["text"] for c in hh.resubmitted] == ["回调"]
+        assert hh.hold_released == hh.holds and hh.holds
+        assert inbox_handoff.pending_speech_ids() == 0
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_background_task_whose_owner_is_unknown_yet_blocks_lifecycle_changes(monkeypatch):
+    from main_logic.visit import local_chars
+
+    resolving = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_resolve(uid):
+        resolving.set()
+        await release.wait()
+        return "Mimi"
+
+    monkeypatch.setattr(local_chars, "resolve_char_name", slow_resolve)
+    work = asyncio.Event()
+    task = rtm.spawn_visit_background("uid-recovery", work.wait)
+    try:
+        await asyncio.wait_for(resolving.wait(), 3)
+        assert rtm.has_visit_background_tasks("Mimi")        # 名字还没认出来：保守地挡住
+        release.set()
+        await wait_for(lambda: "Mimi" in rtm._uid_by_name)
+        assert rtm.has_visit_background_tasks("Mimi") and not rtm.has_visit_background_tasks("Other")
+    finally:
+        release.set()
+        work.set()
+        await asyncio.gather(task)

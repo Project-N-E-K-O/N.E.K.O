@@ -221,3 +221,17 @@ async def test_the_debrief_turn_sees_only_its_bounded_record(tmp_path, monkeypat
         for g in gates:
             g.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_the_peer_copy_scan_runs_off_the_event_loop(monkeypatch):
+    seen = []
+    real = asyncio.to_thread
+
+    async def spy(fn, *args, **kwargs):
+        seen.append(getattr(fn, "__name__", ""))
+        return await real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(debrief.asyncio, "to_thread", spy)
+    out = await debrief.clean_summary("今天聊得很开心。", family_names=(), neutral_term="家人",
+                                      peer_lines=["我带了小鱼干"] * 50)
+    assert out and "assert_no_peer_ngram" in seen

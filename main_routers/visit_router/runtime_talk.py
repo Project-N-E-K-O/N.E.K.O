@@ -729,7 +729,13 @@ class TalkMixin:
         if session is None:
             return None
         chunks: list[str] = []
-        async with session.turn_lock:
+        try:
+            # 拿锁也算进时限：收尾时没停下来的那一轮可能还占着锁
+            await asyncio.wait_for(session.turn_lock.acquire(), timeout)
+        except asyncio.TimeoutError:
+            logger.info("visit %s: home-coming turn skipped: session still busy", self.visit_id[:6])
+            return None
+        try:
             saved = list(session.history)
             before = {id(m) for m in saved}
             if without_history:
@@ -747,6 +753,8 @@ class TalkMixin:
                     session.forget_untracked()
                 else:
                     _drop_new_messages(session, before)
+        finally:
+            session.turn_lock.release()
         text = strip_emotion_tags("".join(chunks)).strip()
         return text or None
 

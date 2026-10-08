@@ -322,6 +322,9 @@ def _character_uid_of(lanlan_name: str) -> Optional[str]:
 
 _uid_by_name: dict[str, str] = {}
 
+_resolving_names: set[object] = set()
+"""Background tasks whose character name is still being resolved (the lifecycle guard is conservative)."""
+
 _pending_visits: set[tuple[str, str]] = set()
 """``(visit_id, side)`` between the slot reservation and the runtime registration (``start_visit``)."""
 """Last known ``character_uid`` of a name that started a visit (background-task lookup by name)."""
@@ -329,6 +332,9 @@ _pending_visits: set[tuple[str, str]] = set()
 
 def has_visit_background_tasks(lanlan_name: str) -> bool:
     """Registry ``has_background_tasks``: this character's visit background writes are running."""
+    if _resolving_names:
+        # 有后台任务还没认出它属于哪个名字（启动补录派生的）：宁可短暂挡住改名 / 删除
+        return True
     uid = _character_uid_of(lanlan_name)
     tasks = _visit_bg_tasks.get(uid) if uid else None
     return bool(tasks and any(not t.done() for t in tasks))
@@ -363,13 +369,18 @@ def spawn_visit_background(character_uid: str, factory: Callable[[], Awaitable[A
 
     async def run() -> Any:
         try:
-            await _remember_name(character_uid)
+            try:
+                await _remember_name(character_uid)
+            finally:
+                _resolving_names.discard(token)
             return await factory()
         finally:
             bucket.discard(task)
             if not bucket:
                 _visit_bg_tasks.pop(character_uid, None)
 
+    token = object()
+    _resolving_names.add(token)
     task = asyncio.ensure_future(run())
     bucket.add(task)
     return task
@@ -406,6 +417,7 @@ def _reset_for_tests() -> None:
     _detached.clear()
     _runtimes.clear()
     _pending_visits.clear()
+    _resolving_names.clear()
     _by_visit.clear()
     _recent.clear()
     _visit_bg_tasks.clear()
@@ -1626,12 +1638,18 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
     async def _hand_back_callbacks(self) -> None:
         handoff = self.handoff
-        if handoff is not None and self.hold_token is not None:
-            stamps = getattr(self, "_handoff_stamps", {})
-            cap = (self.finalize_at or self.clock()) + VISIT_INBOX_HANDOFF_ABS_MAX_S
-            while not handoff.due(self.clock()) and self.clock() < cap:
-                handoff.interrupted_since(self.host.last_user_input(), stamps)
-                await asyncio.sleep(_HANDOFF_POLL_S)
+        try:
+            if handoff is not None and self.hold_token is not None:
+                stamps = getattr(self, "_handoff_stamps", {})
+                cap = (self.finalize_at or self.clock()) + VISIT_INBOX_HANDOFF_ABS_MAX_S
+                while not handoff.due(self.clock()) and self.clock() < cap:
+                    handoff.interrupted_since(self.host.last_user_input(), stamps)
+                    await asyncio.sleep(_HANDOFF_POLL_S)
+        finally:
+            # 关机取消了它也一样：暂扣的回调放出来、speech id 注销，不能一直扣着
+            self._finish_handback(handoff)
+
+    def _finish_handback(self, handoff: Optional[inbox_handoff.InboxHandoff]) -> None:
         if handoff is not None:
             handoff.close()
         if self.hold_token is not None:

@@ -128,7 +128,8 @@ async def clean_summary(raw: Optional[str], *, family_names: tuple[str, ...], ne
         text = redact_outbound(text, family_names=family_names, replacement=neutral_term)
     text = (await atruncate_to_tokens(text, VISIT_DEBRIEF_MAX_TOKENS)).strip()
     try:
-        assert_no_peer_ngram(text, peer_lines, n=VISIT_PEER_NGRAM_N)
+        # 整场对端句子可能很多：扫描放到线程里，不卡住事件循环上别的场次
+        await asyncio.to_thread(assert_no_peer_ngram, text, peer_lines, n=VISIT_PEER_NGRAM_N)
     except PeerNgramHit:
         logger.info("visit debrief: summary copied the peer, using the fixed line")
         return None

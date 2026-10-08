@@ -1243,3 +1243,19 @@ async def test_a_second_peer_line_on_the_same_lp_is_rejected(tmp_path, monkeypat
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_ceremony_turn_gives_up_when_the_session_lock_stays_busy(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        await rt.session.turn_lock.acquire()                  # 收尾时没停下的那一轮还占着锁
+        try:
+            out = await asyncio.wait_for(rt.one_shot_turn("回家说一句", timeout=0.2), 3)
+        finally:
+            rt.session.turn_lock.release()
+        assert out is None                                    # 用固定句，不无限等
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
