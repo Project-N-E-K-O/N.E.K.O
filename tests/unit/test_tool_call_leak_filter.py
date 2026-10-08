@@ -704,3 +704,15 @@ def test_strip_tool_call_leaks_without_tool_names_keeps_to_prefixed_syntax():
     assert strip_tool_call_leaks(bare, tool_names={"pvz_instruction"}) == "我来。"
     assert strip_tool_call_leaks("") == ""
     assert strip_tool_call_leaks("（调用工具pvz_start，目标：…）") == "（调用工具pvz_start，目标：…）"
+
+
+def test_text_parts_with_nothing_cut_keep_their_boundaries():
+    """Holding back a possible opener at a part's end must not move text
+    between parts when no call follows."""
+    from utils.llm_tool_leak_filter import strip_tool_call_leaks_from_parts
+
+    for parts in (["I have a", " plan"], ["the default", "_value"], ["好的 async", "hronous 也行"]):
+        assert strip_tool_call_leaks_from_parts(parts) == parts
+    assert strip_tool_call_leaks_from_parts(
+        ["好的 async", "call:pvz_instruction{instruction:a} 完毕"],
+    ) == ["好的 ", " 完毕"]

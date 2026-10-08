@@ -783,13 +783,16 @@ def strip_tool_call_leaks_from_parts(
 
     The parts are read as one stream, so a call split across two parts is
     still found. Each part keeps what it showed; text held back at a part's
-    end comes out with the next one, and the last part takes the rest.
+    end comes out with the next one, and the last part takes the rest. Parts
+    with nothing cut come back as they were, holding back included.
     """
     leak_filter = ToolLeakFilter(tool_names=set(tool_names or ()))
     cleaned = [leak_filter.feed(text)[0] for text in texts]
     tail, _event = leak_filter.finalize()
     if cleaned:
         cleaned[-1] += tail
+    if "".join(cleaned) == "".join(texts):
+        return list(texts)
     return cleaned
 
 
