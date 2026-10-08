@@ -1582,7 +1582,12 @@ async def test_an_overrun_outbox_cleanup_is_handed_to_stop_all(tmp_path, monkeyp
         await asyncio.wait_for(_finished(rt), 15)
         cleanup = rt.outbox.close_task
         assert cleanup is not None and not cleanup.done()
-        assert cleanup in rtm._detached                       # 运行时已注销：清理交给模块级登记，关机收得到
+        assert cleanup in rtm._outbox_cleanups                # 运行时已注销：清理交给模块级登记，关机收得到
+        assert rt.outbox.path.exists()
+        asyncio.get_running_loop().call_later(0.2, stuck.set)  # 写盘稍后恢复
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
+        assert cleanup.done() and not cleanup.cancelled()     # 关机先等它做完，不在 flush 处掐断
+        assert not rt.outbox.path.exists()                    # 带正文的文件当场删掉
     finally:
         stuck.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1610,6 +1615,44 @@ async def test_a_failed_grant_renewal_backs_off(tmp_path, monkeypatch, clocks):
     await rt.tick()
     await settle()
     assert len(calls) == 2                                    # 退避期过了再试
+    rt.request_finalize("route_end")
+    await _finished(rt)
+
+
+async def test_a_grant_renewal_failing_for_any_reason_backs_off(tmp_path, monkeypatch, clocks):
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    clock, wall = clocks
+    calls: list[int] = []
+
+    async def broken():
+        calls.append(1)
+        raise RuntimeError("socket reset")                    # 不是 VisitServersError 的失败
+
+    rt.grant.refresh_due = lambda **kw: True
+    rt.grant.ensure_fresh = broken
+    await rt.tick()
+    await settle()
+    clock.advance(2)
+    await rt.tick()
+    await settle()
+    assert len(calls) == 1                                    # 同样退避
+    rt.request_finalize("route_end")
+    await _finished(rt)
+
+
+async def test_the_journal_never_starts_after_its_earliest_buffered_line(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    await rt.record_line("own_cat", side="host", lp=1, ln="h:1", text="开场", truncated=False)
+    early = rt._journal_backlog[0]["ts"]
+    wall.advance(30)                                          # 30 s 后才报入房
+    await rt.on_transport_state({"state": "joined", "peer_present": False})
+    await wait_for(lambda: rt.journal.is_open)
+    assert rt.journal._started_at <= early                    # 开始时间不晚于最早那条：流水里没有 ts < started_at
     rt.request_finalize("route_end")
     await _finished(rt)
 

@@ -430,9 +430,10 @@ def _reset_for_tests() -> None:
     for task in list(_detached):
         task.cancel()
     _detached.clear()
-    for task in list(_room_cancels):
+    for task in list(_room_cancels) + list(_outbox_cleanups):
         task.cancel()
     _room_cancels.clear()
+    _outbox_cleanups.clear()
     _runtimes.clear()
     _pending_visits.clear()
     _resolving_names.clear()
@@ -957,9 +958,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         # 连接被顶替后新连接再次首次入房时沿用这一份
         opening = self._journal_opening
         if opening is None:
+            # 对端 hello 先于入房报告、已开口：积压里的行比此刻早。开始时间不晚于最早那条，
+            # 流水里不会出现 ts < started_at（补录按最后一条算 ended_at 时也不会早于开始）
+            started_at = min([self.wall()] + [float(r["ts"]) for r in self._journal_backlog
+                                              if isinstance(r.get("ts"), (int, float))
+                                              and not isinstance(r.get("ts"), bool)])
             opening = self._journal_opening = asyncio.ensure_future(self.journal.open(
                 role=self.side, own_visit_uid=creds.visit_uid, own_char_uid=self.character_uid,
-                transport=creds.transport, started_at=self.wall(), app_version=cr._app_version(),
+                transport=creds.transport, started_at=started_at, app_version=cr._app_version(),
             ))
             # 上传头一落盘就补记等待期间攒下的行 / 用量 / 异常（写失败时 is_open 为假，什么都不做）
             opening.add_done_callback(lambda _t: self._flush_journal_backlog())
@@ -1222,9 +1228,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self._renew_retry_at = None
         except cr.VisitRoomEnded:
             self.request_finalize("kicked")
-        except cr.VisitServersError as exc:
-            logger.warning("visit %s: vendor grant renewal failed (%s)", self.visit_id[:6], exc.code)
-            # 退避：Servers 暂时出错时不在每个 tick 上重发（宕机期间每场每分钟几十次请求只会放大故障）
+        except Exception as exc:  # noqa: BLE001 - 任何失败（Servers 报错、网络、页面写不出）都退避
+            logger.warning("visit %s: vendor grant renewal failed (%s)", self.visit_id[:6],
+                           getattr(exc, "code", None) or type(exc).__name__)
+            # 退避：暂时出错时不在每个 tick 上重发（宕机期间每场每分钟几十次请求只会放大故障）
             self._renew_failures += 1
             delay = min(_RENEW_RETRY_MAX_S, _RENEW_RETRY_BASE_S * 2 ** (self._renew_failures - 1))
             self._renew_retry_at = self.clock() + delay
@@ -2034,7 +2041,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if cleanup is not None and not cleanup.done():
             # 关闭通道到点被收掉时 outbox 的清理（写完、删掉带正文的 .outbox.jsonl）还在跑：注销之后
             # stop_all 看不到这个运行时，交给模块级登记，关机时一并收
-            self._keep_background(cleanup)
+            _outbox_cleanups.add(cleanup)
+            cleanup.add_done_callback(_outbox_cleanups.discard)
         _unregister(self)
         # 封存还没落盘（后台收尾链会在落盘后排上传）：这时排的上传只会找不到 .upload.json、白退避一轮
         if self._seal_settled() and (
@@ -2215,6 +2223,9 @@ _detached: set[asyncio.Task] = set()
 
 _room_cancels: set[asyncio.Task] = set()
 """Room cancellation requests still in flight (they may outlive their runtime)."""
+
+_outbox_cleanups: set[asyncio.Future] = set()
+"""Outbox cleanups (finish writes, delete the ``.outbox.jsonl`` with text bodies) still running after teardown."""
 
 
 async def _retry_record_account(deps: "RuntimeDeps", account: Any, visit_uid: Any, visit_id: str) -> None:
@@ -2445,6 +2456,9 @@ async def stop_all(reason: str = "shutdown") -> None:
         # 还登记着的场次自己发出的那份不算：它的 shutdown() 按自己的规则（保底时长）等
         owned = {rt._room_cancel_task for rt in runtimes}
         orphans = [t for t in _room_cancels if not t.done() and t not in owned]
+        # 已拆掉的场次还没做完的 outbox 清理（删掉带正文的 .outbox.jsonl）同样先限时等、到点才取消：
+        # 先取消会在 flush 处打断，文件要留到下次启动才删
+        orphans += [t for t in _outbox_cleanups if not t.done()]
 
         async def settle_orphan_cancels() -> None:
             if orphans:
