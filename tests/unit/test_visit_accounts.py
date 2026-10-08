@@ -98,6 +98,15 @@ async def test_a_corrupt_map_is_kept_aside_before_recording(cfg):
     assert await accounts.lookup_visit_uid("u2") == UID_2
 
 
+async def test_a_corrupt_map_that_cannot_be_moved_aside_defers_the_write(cfg, monkeypatch):
+    path = cfg / "visit_accounts.json"
+    path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(accounts, "move_aside", lambda *_a, **_k: None)
+    with pytest.raises(accounts.AccountMapDeferred):
+        await accounts.record_account_visit_uid("u2", UID_2)
+    assert path.read_text(encoding="utf-8") == "{not json"  # 没覆盖
+
+
 async def test_an_unreadable_map_is_not_replaced(cfg, monkeypatch):
     assert await accounts.record_account_visit_uid("u1", UID_1) is True
 
@@ -105,7 +114,8 @@ async def test_an_unreadable_map_is_not_replaced(cfg, monkeypatch):
         raise PermissionError("locked by another process")
 
     monkeypatch.setattr(accounts, "open", busy, raising=False)
-    assert await accounts.record_account_visit_uid("u2", UID_2) is False
+    with pytest.raises(accounts.AccountMapDeferred):     # 写不成要报出来（调用方据此补写），不是「已记过」的 False
+        await accounts.record_account_visit_uid("u2", UID_2)
     monkeypatch.undo()
     monkeypatch.setattr(accounts, "config_dir_provider", lambda: cfg)
     assert await accounts.lookup_visit_uid("u1") == UID_1                 # u1 的映射没被只含 u2 的表覆盖
