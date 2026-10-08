@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import builtins
 import json
 import os
@@ -4055,8 +4056,8 @@ def test_storage_location_cleanup_records_its_result_when_the_request_is_cancell
                 "/api/storage/location/retained-source/cleanup",
                 json={"retained_root": str(source_root)},
             )
-    except BaseException:  # the cancellation surfaces through the test client
-        pass
+    except (asyncio.CancelledError, concurrent.futures.CancelledError):
+        pass  # the cancellation surfaces through the test client's portal
 
     assert not source_root.exists()
     checkpoint = load_storage_migration(_make_real_config_manager(tmp_path))
