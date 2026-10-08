@@ -484,7 +484,11 @@ async def overwrite_remote_voice(
                     sync = StateSync.FAILED
             if isinstance(exc, VoiceManagementError):
                 exc.details.update(attempt_outcome=outcome.value, state_sync=sync.value)
-            if sync == StateSync.FAILED and not isinstance(exc, asyncio.CancelledError):
+            # A failed cleanup cannot turn proof of non-acceptance into an
+            # assertion that the remote voice was updated. Keep the original
+            # cause; state_sync and the persisted snapshot still fence retry.
+            if (sync == StateSync.FAILED and outcome == AttemptOutcome.UNKNOWN
+                    and not isinstance(exc, asyncio.CancelledError)):
                 raise VoiceManagementError("LOCAL_SAVE_FAILED_AFTER_UPDATE", 500, {
                     "attempt_outcome": outcome.value, "state_sync": sync.value,
                 }) from exc

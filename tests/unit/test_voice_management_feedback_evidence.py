@@ -4,6 +4,7 @@ import json
 import threading
 from dataclasses import replace
 
+import httpx
 import pytest
 
 from tests.unit.test_voice_management_service import fixture as management_fixture, payload  # noqa: F401
@@ -20,6 +21,109 @@ async def attach_disk(cm, monkeypatch, tmp_path):
     monkeypatch.setattr(cm, "load_voice_storage", lambda: json.loads(storage.read_text(encoding="utf-8")))
     monkeypatch.setattr(cm, "save_voice_storage", lambda value: atomic_write_json(storage, value))
     return storage
+
+
+@pytest.mark.asyncio
+async def test_unsubmitted_cleanup_failure_preserves_cause_and_pending_record(client, monkeypatch, tmp_path):
+    api, cm, adapter, ref, storage = await disk_fixture(client, monkeypatch, tmp_path)
+    token = payload(adapter, cm)["context_token"]
+    transition, update = cm.transition_imported_voice_overwrite, cm.aupdate_imported_voice
+
+    def fail_permission(*args, **kwargs):
+        if kwargs.get("action") == "submit":
+            raise VoiceManagementError("VOICE_STATE_CHANGED", 409)
+        return transition(*args, **kwargs)
+
+    async def fail_cleanup(*args, **kwargs):
+        if args[2].get("overwrite_status") == "failed":
+            raise OSError("controlled cleanup write failure")
+        return await update(*args, **kwargs)
+
+    monkeypatch.setattr(cm, "transition_imported_voice_overwrite", fail_permission)
+    monkeypatch.setattr(cm, "aupdate_imported_voice", fail_cleanup)
+    response = await api.post(f"/api/characters/voices/{ref}/overwrite", data={"context_token": token},
+                              files={"audio": ("sample.wav", _wav(), "audio/wav")})
+    assert response.status_code == 409
+    assert response.json()["code"] == "VOICE_STATE_CHANGED"
+    details = response.json()["details"]
+    assert details["attempt_outcome"] == "not_submitted"
+    assert details["state_sync"] == "failed"
+    assert "overwrite" not in details["voice_state"]["actions"]
+    record = cm.get_imported_voice(ref)
+    assert record["overwrite_status"] == "processing"
+    assert record["overwrite_submission_phase"] == "prepared"
+    assert adapter.mutations == []
+    assert ref in storage.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_overwrite_context_change_after_commit_keeps_accepted_saved_evidence(client, monkeypatch, tmp_path):
+    api, cm, adapter, ref, storage = await disk_fixture(client, monkeypatch, tmp_path)
+    token = payload(adapter, cm)["context_token"]
+    update = cm.aupdate_imported_voice
+
+    async def committed(*args, **kwargs):
+        receipt = await update(*args, **kwargs)
+        if args[2].get("overwrite_status") == "completed":
+            assert receipt.applied
+            cm.key = "isolated-new-account"
+        return receipt
+
+    monkeypatch.setattr(cm, "aupdate_imported_voice", committed)
+    response = await api.post(f"/api/characters/voices/{ref}/overwrite", data={"context_token": token},
+                              files={"audio": ("sample.wav", _wav(), "audio/wav")})
+    assert response.status_code == 409
+    assert response.json()["code"] == "CONTEXT_CHANGED"
+    assert response.json()["details"] == {
+        "attempt_outcome": "accepted", "state_sync": "saved", "voice_state": None,
+    }
+    assert len(adapter.mutations) == 1
+    assert cm.get_imported_voice(ref, include_inactive=True)["overwrite_status"] == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,body,code", [
+    (401, {}, "AUTH_FAILED"), (403, {}, "PERMISSION_DENIED"), (429, {}, "RATE_LIMITED"),
+    (400, {}, "UPSTREAM_REJECTED"), (503, {}, "UPDATE_OUTCOME_UNKNOWN"),
+    (200, {"code": "InvalidApiKey"}, "AUTH_FAILED"),
+    (200, {"code": "AccessDenied"}, "PERMISSION_DENIED"),
+])
+async def test_cosyvoice_diagnostics_without_nonacceptance_proof_keep_protection(client, monkeypatch, tmp_path, status, body, code):
+    from utils.voice_management.providers.cosyvoice import CosyVoiceAdapter
+    from tests.unit.test_voice_management_providers import runtime
+
+    api, cm, adapter, ref, storage = await disk_fixture(client, monkeypatch, tmp_path)
+    token = payload(adapter, cm)["context_token"]
+    original_client, seen = httpx.AsyncClient, []
+
+    def respond(request):
+        seen.append(request)
+        return httpx.Response(status, json=body)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: original_client(transport=httpx.MockTransport(respond)))
+
+    async def diagnostic():
+        return await CosyVoiceAdapter()._call(runtime("cosyvoice"), "update_voice", mutation=True,
+                                            voice_id="isolated-remote", url="https://sample.test/audio")
+
+    adapter.on_mutation = diagnostic
+    response = await api.post(f"/api/characters/voices/{ref}/overwrite", data={"context_token": token},
+                              files={"audio": ("sample.wav", _wav(), "audio/wav")})
+    assert response.json()["code"] == code
+    assert response.json()["details"]["attempt_outcome"] == "unknown"
+    record = cm.get_imported_voice(ref)
+    assert record["overwrite_status"] == "unknown"
+    assert record["overwrite_submission_phase"] == "submission_possible"
+    refreshed = await api.get(f"/api/characters/voices/{ref}/overwrite_status", params={"context_token": token})
+    assert refreshed.json()["details"]["voice_state"]["actions"] == ["refresh"]
+    retry = await api.post(f"/api/characters/voices/{ref}/overwrite", data={"context_token": token},
+                          files={"audio": ("sample.wav", _wav(), "audio/wav")})
+    assert retry.json()["code"] == "UPDATE_OUTCOME_UNKNOWN"
+    with pytest.raises(ValueError, match="VOICE_OPERATION_IN_PROGRESS"):
+        cm.delete_imported_voice(ref)
+    assert len(seen) == 1
+    assert json.loads(seen[0].content)["input"]["action"] == "update_voice"
+    assert len(adapter.mutations) == 1
 
 
 @pytest.mark.asyncio

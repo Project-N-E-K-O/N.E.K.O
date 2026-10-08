@@ -215,3 +215,41 @@ Chromium CDP session 由浏览器拥有，随既有窗口/浏览器清理一并�
 既定静态路径检查通过；扩大到测试服务代码的额外扫描会命中两个既有路由前缀，
 未将它们当成本次新增缺陷，也未修改检查规则。产品代码及后端协议无改动，
 恢复、服务商分类和资源兼容边界保持原合同；新 head 的远端 CI 单独核验。
+
+## 维护者评论核验（2026-10-08）
+
+受审 head：`a4a2e41f9099df8d9ea2c07ca59f7e9f40021668`；review：
+`5449410294`，行内评论 `4212868266`、`4212868868`。
+本轮先按合同、调用链及反例判断，再实施必要修复。
+
+| 意见 | 判定与处置 |
+| --- | --- |
+| HTTP 401/403/429/4xx 和业务错误导致 unknown 保护 | 现象实跑成立，恢复 base 的宽泛错误码解锁不属于已批准合同。更新只接受操作级非受理证据；版本未变、删除本地引用、submission_possible 后取消均不能绕过保护。保持此边界并回复原 thread。 |
+| 页面 CI 改用 PR head | 接受。移除两个 checkout 的 ref 覆盖，恢复 pull_request 默认 merge ref，检验与 main 的集成结果。 |
+| PR 缺少 UI 前后证据 | 接受。补充真实模板与 JS 的正常、未知、准备可恢复及豆包资源表单各两张截图。资源字段实际在音色导入弹窗。 |
+| 未提交时清理失败却报远端已更新 | 接受，并覆盖已证实 rejected 的同类情况。保留原始错误及 attempt_outcome/state_sync；落盘失败仍按真实 pending 快照限制动作。 |
+| 覆盖前 context 网络失败隐藏按钮 | 接受。仅在覆盖 POST 尚未发出且没有服务端错误码的传输失败时保留原控件和文件；用户显式重试仍重新获取 context。已发出的请求仍保守查询。 |
+| 旧 revision 快照吞掉错误 | 接受。只忽略旧状态与动作，仍呈现本次反馈并解除忙碌；准备恢复所依赖的对象身份保持不变。上下文变化不应用旧动作。 |
+| 提交保存后上下文变化返回 409 | 已接受的身份隔离取舍。实跑确认返回 CONTEXT_CHANGED，同时保留 accepted/saved、voice_state=null；不能给新账号应用旧上下文动作。 |
+| 删除 helper、抽取循环和调整文档位置 | 非阻塞整理建议，本轮不扩大恢复/存储重构。保留用户要求的历史实施与审查证据；目录调整由维护者决定。 |
+
+证据等级：上述交互与存储结论为本地实跑。服务商拒绝语义只做文档核对，未做
+真实账号验证。查阅的 [声音复刻 HTTP API](https://help.aliyun.com/zh/model-studio/voice-clone-design-http-api)
+与 [百炼错误码](https://help.aliyun.com/zh/model-studio/error-code) 说明请求与错误原因，
+本轮未找到足以证明某次 update_voice 未被接受的操作级承诺；不把这一缺口描述为
+服务商永远不支持。隔离 service fixture 将 mutation 委托给真实 CosyVoice `_call`
+及 HTTP helper，用 MockTransport 注入 401、403、429、400、503、InvalidApiKey、
+AccessDenied；七种情形均维持 unknown，查询无新版本证据不解锁，重试及删除受保护，
+实际 update_voice HTTP 调用各一次。已有有证据拒绝的回归继续验证保存成功才解锁。
+
+本地验证：相关 Python 九个套件 315 passed，service/恢复/路由合计行覆盖率
+90.28%；相关 Node 89 passed；Chromium 153 与 Electron 41.2.0 的管理、试听、
+恢复六个实际页面入口通过。静态 API 路径与文档路径检查通过。不是新一轮全量仓库测试。
+新断言在旧逻辑下复现两个 Node 失败及一个 Python 失败；两端实际管理页面在恢复旧
+产品 JS 后均于新增“保留提交按钮”断言失败并退出 1，随后恢复修复。
+
+八张截图使用同一隔离 API、虚构音色/资源、1120×820 视口；before 产品资源来自
+`8a165f087cf4e3d51e8aa9682d7e1b0af1d0d5d9`，after 来自修复后的工作树。
+它们展示交互和只读属性，不证明真实服务商兼容性；资源 DOM 的 readOnly 实测从
+false 变为 true。图片保存在 `/docs/images/issue3317/`，PR 描述使用提交固定链接。
+准备状态响应只展示服务端提供 recover 动作时的界面，不作为远端恢复能力证据。

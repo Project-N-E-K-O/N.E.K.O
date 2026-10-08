@@ -33,6 +33,46 @@ async function cleanup(h) {
     for (let index = 0; index < h.requests.length; index++) h.resolve(index, { success: false, code: 'CANCELLED' }, 409);
     await tick();
 }
+
+test('a transport failure before overwrite submission preserves the selected file and explicit retry', async () => {
+    const h = harness();
+    try {
+        h.window.RemoteVoiceManager.openOverwrite('voice-local', { provider: 'cosyvoice', remote_voice_id: 'remote' });
+        const audio = h.panel().querySelectorAll('input')[0];
+        audio.files = [new Blob(['isolated audio'])]; audio.dispatch('change');
+        h.button('overwrite').dispatch('click');
+        h.requests[0].reject(new TypeError('controlled context network failure')); await tick();
+        assert.equal(h.button('overwrite').hidden, false);
+        assert.equal(h.button('overwrite').disabled, false);
+        assert.equal(h.panel().querySelector('.remote-voice-status').textContent, 'voice.remote.requestFailed');
+        assert.equal(h.requests.filter(request => request.options.method === 'POST').length, 0);
+        h.button('overwrite').dispatch('click');
+        assert.ok(h.requests[1].url.includes('/context?'));
+        h.resolve(1, context(h)); await tick();
+        assert.equal(h.requests.filter(request => request.options.method === 'POST').length, 1);
+    } finally { await cleanup(h); }
+});
+
+for (const failure of [false, true]) {
+    test('a stale ' + (failure ? 'error' : 'success') + ' snapshot keeps current actions and renders feedback', async () => {
+        const h = harness();
+        try {
+            await openPendingStatus(h);
+            h.button('refreshStatus').dispatch('click');
+            h.resolve(h.requests.length - 1, state('failed', 10)); await tick();
+            h.button('refreshStatus').dispatch('click');
+            const old = state('unknown', 9);
+            h.resolve(h.requests.length - 1, failure ? { success: false, code: 'VOICE_STATE_CHANGED', details: old.details } : old, failure ? 409 : 200);
+            await tick();
+            assert.equal(h.button('overwriteAgain').hidden, false);
+            assert.equal(h.button('overwriteAgain').disabled, false);
+            assert.equal(h.panel().querySelector('.remote-voice-status').textContent,
+                'voice.remote.' + (failure ? 'voiceStateChanged' : 'failed'));
+            assert.equal(h.panel().attributes['aria-busy'], 'false');
+            assert.equal(h.requests.filter(request => request.options.method === 'POST').length, 0);
+        } finally { await cleanup(h); }
+    });
+}
 async function openPendingStatus(h) {
     h.window.RemoteVoiceManager.openStatus('voice-local', { provider: 'cosyvoice', remote_voice_id: 'remote' });
     h.resolve(0, context(h)); await tick();

@@ -374,25 +374,29 @@
     function updateOverwriteView(state, result, error = null, sent = true) {
         if (active !== state) return;
         if (error?.code === 'CONTEXT_CHANGED') state.context = null;
-        const snapshot = (error ? error.details : result && result.details)?.voice_state;
+        const snapshot = error?.code === 'CONTEXT_CHANGED' ? null : (error ? error.details : result && result.details)?.voice_state;
         const valid = snapshot && snapshot.local_ref === state.localRef && Number.isInteger(snapshot.record_revision) && snapshot.record_revision >= 0;
-        if (valid && Number.isInteger(state.recordRevision) && snapshot.record_revision < state.recordRevision) return;
-        if (valid) state.recordRevision = snapshot.record_revision;
-        const status = valid ? snapshot.overwrite_status : result && result.status;
-        state.currentOverwriteStatus = status;
+        const stale = valid && Number.isInteger(state.recordRevision) && snapshot.record_revision < state.recordRevision;
+        const status = stale ? state.currentOverwriteStatus : valid ? snapshot.overwrite_status : result && result.status;
         const pending = status === 'processing' || status === 'unknown';
-        // Only a current server snapshot may reopen submission. Missing fields
-        // (including an older server) leave an explicit query exit after sending.
-        const actions = valid && Array.isArray(snapshot.actions) ? snapshot.actions : ['refresh'];
-        state.overwriteAllowed = ['completed', 'failed'].includes(status) && actions.includes('overwrite') && !!state.context?.capabilities.overwrite;
-        if (state.submit) state.submit.hidden = !state.overwriteAllowed;
-        if (state.refreshStatus) state.refreshStatus.hidden = !actions.includes('refresh');
-        state.recoverySnapshot = valid && pending && actions.includes('recover') &&
-            typeof snapshot.operation_id === 'string' && snapshot.operation_id
-            ? { operation_id: snapshot.operation_id, record_revision: snapshot.record_revision } : null;
-        if (state.recoverPrepared) state.recoverPrepared.hidden = !state.recoverySnapshot;
-        if (state.recoveryHint) state.recoveryHint.hidden = !state.recoverySnapshot;
-        if (state.reopenOverwrite) state.reopenOverwrite.hidden = !state.overwriteAllowed;
+        // A stale snapshot cannot change actions or preparation identity, but
+        // this request's feedback must still replace transient progress text.
+        if (!stale) {
+            if (valid) state.recordRevision = snapshot.record_revision;
+            state.currentOverwriteStatus = status;
+            // Only a current server snapshot may reopen submission. Missing fields
+            // (including an older server) leave an explicit query exit after sending.
+            const actions = valid && Array.isArray(snapshot.actions) ? snapshot.actions : ['refresh'];
+            state.overwriteAllowed = ['completed', 'failed'].includes(status) && actions.includes('overwrite') && !!state.context?.capabilities.overwrite;
+            if (state.submit) state.submit.hidden = !state.overwriteAllowed;
+            if (state.refreshStatus) state.refreshStatus.hidden = !actions.includes('refresh');
+            state.recoverySnapshot = valid && pending && actions.includes('recover') &&
+                typeof snapshot.operation_id === 'string' && snapshot.operation_id
+                ? { operation_id: snapshot.operation_id, record_revision: snapshot.record_revision } : null;
+            if (state.recoverPrepared) state.recoverPrepared.hidden = !state.recoverySnapshot;
+            if (state.recoveryHint) state.recoveryHint.hidden = !state.recoverySnapshot;
+            if (state.reopenOverwrite) state.reopenOverwrite.hidden = !state.overwriteAllowed;
+        }
         if (error) {
             const uncertain = sent && !['not_submitted', 'rejected'].includes(error.details?.attempt_outcome) &&
                 (!valid || pending) && !['OPERATION_IN_PROGRESS', 'CONTEXT_CHANGED'].includes(error.code);
@@ -490,7 +494,11 @@
                 if (typeof root.loadVoices === 'function') await root.loadVoices();
             } catch (error) {
                 if (active === state && operations.current === operation) {
-                    updateOverwriteView(state, null, error, sent);
+                    // Context transport failed before an overwrite request
+                    // existed. Retain the user's file and existing controls;
+                    // an explicit retry obtains and validates context again.
+                    if (!sent && !error.code) showError(state, error);
+                    else updateOverwriteView(state, null, error, sent);
                     if (sent && typeof root.loadVoices === 'function') await root.loadVoices();
                 }
             } finally { if (active === state && operations.current === operation) busy(state, false); }

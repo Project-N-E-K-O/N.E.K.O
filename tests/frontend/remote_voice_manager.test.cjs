@@ -66,18 +66,18 @@ async function startControlledOverwrite(h) {
     return input;
 }
 
-test('failed context fetch keeps an in-dialog query exit and releases busy controls', async () => {
+test('failed context transport preserves explicit overwrite retry without querying or submitting', async () => {
     const h = harness();
     h.window.RemoteVoiceManager.openOverwrite('voice-local', { provider: 'cosyvoice', remote_voice_id: 'remote' });
     const input = h.panel().querySelectorAll('input')[0];
     input.files = [new Blob(['audio'])]; input.dispatch('change'); h.button('overwrite').dispatch('click');
     h.requests[0].reject(new TypeError('isolated connection failure')); await tick();
-    assert.equal(h.button('overwrite').hidden, true);
-    assert.equal(h.button('refreshStatus').hidden, false);
-    assert.equal(h.button('refreshStatus').disabled, false);
+    assert.equal(h.button('overwrite').hidden, false);
+    assert.equal(h.button('overwrite').disabled, false);
+    assert.equal(h.button('refreshStatus').hidden, true);
     assert.equal(h.panel().attributes['aria-busy'], 'false');
     assert.equal(h.requests.filter(request => request.options.method === 'POST').length, 0);
-    h.button('refreshStatus').dispatch('click');
+    h.button('overwrite').dispatch('click');
     h.resolve(1, { ...h.ctx, capabilities: { ...h.ctx.capabilities, overwrite: true } }); await tick();
     h.resolve(2, { success: true, status: 'failed', details: { voice_state: overwriteSnapshot('failed', ['refresh', 'overwrite']) } });
     await tick();

@@ -104,7 +104,7 @@ async def test_evidenced_rejection_unlocks_only_after_persistence(fixture, monke
     details = caught.value.details
     assert details["attempt_outcome"] == "rejected"
     assert details["state_sync"] == ("failed" if save_fails else "saved")
-    assert caught.value.code == ("LOCAL_SAVE_FAILED_AFTER_UPDATE" if save_fails else "UPSTREAM_REJECTED")
+    assert caught.value.code == "UPSTREAM_REJECTED"
     assert details["voice_state"]["overwrite_status"] == ("processing" if save_fails else "failed")
     assert ("overwrite" in details["voice_state"]["actions"]) is (not save_fails)
     assert len(adapter.mutations) == 1

@@ -140,6 +140,53 @@ async function verifyOverwriteOutcomes({ run, waitFor, state }) {
         await run("window.RemoteVoiceManager.close();document.getElementById('voiceProvider').value='cosyvoice';document.getElementById('voiceProvider').dispatchEvent(new Event('change'));true;");
     }
 }
+async function verifyOverwriteFeedback({ run, waitFor, state }) {
+    const ref = Object.keys(state.voices).find(key => state.voices[key].provider === 'cosyvoice');
+    assert.ok(ref);
+    const control = key => `Array.from(document.querySelectorAll('.remote-voice-dialog button')).find(button=>button.textContent===window.t('voice.remote.${key}'))`;
+    await run(`(() => {
+        window.RemoteVoiceManager.openOverwrite(${JSON.stringify(ref)}, ${JSON.stringify(state.voices[ref])});
+        const files = new DataTransfer(); files.items.add(new File(['isolated'], 'retained.wav', {type:'audio/wav'}));
+        const audio = document.querySelector('.remote-voice-dialog input[type=file]');
+        audio.files = files.files; audio.dispatchEvent(new Event('change'));
+        window.__feedbackFetch = window.fetch;
+        window.__feedbackContextFailure = true; window.__feedbackPosts = 0;
+        window.fetch = async (url, options) => {
+            if (String(url).includes('/remote_voices/context?') && window.__feedbackContextFailure) {
+                window.__feedbackContextFailure = false;
+                throw new TypeError('Controlled pre-submission connection failure');
+            }
+            if (String(url).endsWith('/overwrite')) {
+                const first = ++window.__feedbackPosts === 1;
+                return new Response(JSON.stringify({ success: false, code: first ? 'UPSTREAM_REJECTED' : 'VOICE_STATE_CHANGED', details: {
+                    attempt_outcome: first ? 'rejected' : 'not_submitted', state_sync: first ? 'saved' : 'unchanged',
+                    voice_state: { local_ref: ${JSON.stringify(ref)}, operation_id:'feedback-operation', record_revision: first ? 10 : 9,
+                        overwrite_status: first ? 'failed' : 'unknown', actions: first ? ['refresh','overwrite'] : ['refresh'] }
+                }}), {status: first ? 400 : 409, headers: {'Content-Type':'application/json'}});
+            }
+            return window.__feedbackFetch(url, options);
+        };
+        return true;
+    })()`);
+    try {
+        await run(control('overwrite') + '.click();true;');
+        await waitFor("document.querySelector('.remote-voice-dialog').getAttribute('aria-busy')==='false'");
+        assert.equal(await run(control('overwrite') + '.hidden'), false);
+        assert.equal(await run(control('overwrite') + '.disabled'), false);
+        assert.equal(await run('window.__feedbackPosts'), 0);
+        assert.equal(await run("document.querySelector('.remote-voice-status').textContent"), await run("window.t('voice.remote.requestFailed')"));
+        for (const key of ['failed', 'voiceStateChanged']) {
+            await run(control('overwrite') + '.click();true;');
+            await waitFor("document.querySelector('.remote-voice-dialog').getAttribute('aria-busy')==='false'");
+            assert.equal(await run("document.querySelector('.remote-voice-status').textContent"), await run(`window.t('voice.remote.${key}')`));
+            assert.equal(await run(control('overwrite') + '.hidden'), false);
+            assert.equal(await run(control('overwrite') + '.disabled'), false);
+            assert.equal(await run("document.querySelector('.remote-voice-dialog input[type=file]').files[0].name"), 'retained.wav');
+        }
+        assert.equal(await run('window.__feedbackPosts'), 2);
+    } finally { await run('window.fetch=window.__feedbackFetch;window.RemoteVoiceManager.close();true;'); }
+}
+
 async function verifyVoiceRaces({ run, waitFor, state }) {
     await run(`(() => {
         document.getElementById('voiceProvider').value = 'cosyvoice';
@@ -226,8 +273,10 @@ async function verifyVoiceRaces({ run, waitFor, state }) {
     } finally { await run('window.loadVoices=window.__raceLoadVoices;true;'); }
     await verifyOverwriteClaimConflict({ run, waitFor, state });
     await verifyOverwriteOutcomes({ run, waitFor, state });
+    await verifyOverwriteFeedback({ run, waitFor, state });
     return { importAcknowledgementOwned: true, deletionRejectsLatePreview: true, playingAudioReleased: true,
         overwriteClaimConflictRecoverable: true, overwriteOutcomeActions: true,
-        overwriteLateResponseFenced: true, serverResourceReadonly: true };
+        overwriteLateResponseFenced: true, serverResourceReadonly: true,
+        preSubmissionRetryPreserved: true, staleSnapshotFeedbackPreserved: true };
 }
 module.exports = { verifyVoiceRaces };
