@@ -768,12 +768,85 @@ async def test_a_stalled_seal_does_not_keep_the_visit_registered(tmp_path, monke
         assert rtm.get_runtime("Host") is None                # 照样注销、释放占位
         await asyncio.sleep(0.3)                              # 让后台的收尾链跑起来
         assert "finalized" not in order                       # 封存没写完：spool 先不标 finalized
+        assert rtm.has_visit_background_tasks("Host")         # 后台收尾跑完之前，角色不能改名 / 删除
+        assert rt.visit_id not in host.uploads                # .upload.json 还没落盘：先不排上传
         release.set()
         await wait_for(lambda: "finalized" in order, timeout=5)
         assert order == ["sealed", "finalized"]               # 后台仍按先封存后 finalized 的顺序
         assert rt.journal.sealed
+        await wait_for(lambda: rt.visit_id in host.uploads, timeout=5)   # 落盘后再排上传
+        await wait_for(lambda: not rtm.has_visit_background_tasks("Host"), timeout=5)
     finally:
         release.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_shutdown_during_a_stalled_seal_waits_for_the_same_seal(tmp_path, monkeypatch):
+    import threading
+
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    release = threading.Event()
+    real_seal = rt.journal._seal_sync
+    seals = []
+
+    def slow_seal(doc):
+        seals.append(doc)
+        release.wait(10)
+        real_seal(doc)
+
+    rt.journal._seal_sync = slow_seal
+    try:
+        rt.request_finalize("route_end")
+        await wait_for(lambda: seals, timeout=5)              # 退出流程正卡在封存上
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # 这时关机
+        state = await rt.spool.read_state() if rt.spool is not None else None
+        assert not (state or {}).get("finalized")             # 封存没落盘：不能先标 finalized
+        assert not rt._spool_finalized
+        release.set()
+        await wait_for(lambda: rt.journal.sealed and rt._sealing.done(), timeout=5)
+        assert len(seals) == 1                                # 只封存一次，没有第二次空封存
+    finally:
+        release.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_spool_opened_after_teardown_is_finalized(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "VISIT_ACTIVATION_ALLOWANCE_S", 0.2)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    hrt = host.rt
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = hrt._open_spool
+
+    async def stubborn_open(subjects):
+        reached.set()
+        while not gate.is_set():                              # 吞掉取消：拖过收尾的等待
+            try:
+                await gate.wait()
+            except asyncio.CancelledError:
+                continue
+        await real_open(subjects)
+
+    hrt._open_spool = stubborn_open
+    try:
+        accepting = asyncio.ensure_future(hrt.accept(True))
+        await asyncio.wait_for(reached.wait(), 5)
+        hrt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(hrt), 10)            # 封存时 spool 还没挂上
+        assert hrt.spool is None
+        gate.set()                                            # 这时 spool 才打开
+        await wait_for(lambda: hrt.spool is not None and hrt._spool_finalized, timeout=5)
+        state = None
+        for _ in range(50):
+            state = await hrt.spool.read_state()
+            if state and state.get("finalized"):
+                break
+            await asyncio.sleep(0.1)
+        assert state and state.get("finalized")               # 晚到的这份自己关掉、标 finalized
+        assert not hrt.spool.is_open
+        accepting.cancel()
+    finally:
+        gate.set()
         await teardown(host, guest, wire=wire, clock=clock)
 
 
