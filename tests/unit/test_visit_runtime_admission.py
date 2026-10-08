@@ -1255,6 +1255,71 @@ async def test_non_finite_transport_stats_are_not_kept(tmp_path, monkeypatch):
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_shutdown_gives_the_room_cancel_its_floor_even_past_the_budget(tmp_path, monkeypatch, clocks):
+    monkeypatch.setattr(rtm, "VISIT_SHUTDOWN_BUDGET_S", 0.1)
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    done = []
+
+    async def slow_cancel(visit_id, **kwargs):
+        await asyncio.sleep(0.5)                              # 撤销房间的请求比总预算慢
+        done.append(visit_id)
+        return True
+
+    rt.deps.cancel_room = slow_cancel
+    await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
+    assert done == [rt.visit_id]                              # 保底等满：邀请码与配额占用不留到过期
+
+
+async def test_a_late_spool_after_stop_all_is_left_to_recovery(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "VISIT_ACTIVATION_ALLOWANCE_S", 0.2)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    hrt = host.rt
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = hrt._open_spool
+
+    async def stubborn_open(subjects):
+        reached.set()
+        while not gate.is_set():
+            try:
+                await gate.wait()
+            except asyncio.CancelledError:
+                continue
+        await real_open(subjects)
+
+    hrt._open_spool = stubborn_open
+    try:
+        accepting = asyncio.ensure_future(hrt.accept(True))
+        await asyncio.wait_for(reached.wait(), 5)
+        hrt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(hrt), 10)
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # 已注销的这场不会被 shutdown()，但进程在关机
+        gate.set()
+        await wait_for(lambda: hrt.spool is not None, timeout=5)
+        await asyncio.sleep(0.3)
+        assert not hrt._spool_finalized                       # 留给启动补录，不在进程退出途中写一半
+        accepting.cancel()
+    finally:
+        gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_failing_deferred_chain_still_hands_late_spools_over(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        rt._files_deferred = True
+
+        def broken_start_seal(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        rt._start_seal = broken_start_seal
+        with pytest.raises(RuntimeError):
+            await rt._seal_late_journal("route_end", rt.wall(), header_ok=True)
+        assert rt._deferred_files_done                        # 链中途出错也置位：之后挂上的 spool 有人收
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_the_spool_is_finalized_only_once(tmp_path, monkeypatch):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt

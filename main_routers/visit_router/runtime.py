@@ -619,6 +619,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._spool_finalized = False
         self._files_deferred = False
         self._deferred_files_done = False
+        self._files_gen: Optional[int] = None
         self.spool_lines = 0
         self._terminated = False
         self._ended_published = False
@@ -1353,7 +1354,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.finalizing:
             chain_pending = self._files_deferred and not self._deferred_files_done
             if self._files_done and not chain_pending and self._seal_settled() and not self._shutdown_started \
-                    and not self._spool_finalized and self.spool is not None:
+                    and not _stopped_since(self._files_gen) and not self._spool_finalized and self.spool is not None:
                 # 收尾封存时 spool 还没挂上：晚到的这份自己关掉、标 finalized
                 reason = self.finalize_reason or "route_end"
                 spawn_visit_background(self.character_uid, lambda: self._finalize_spool(reason))
@@ -1586,6 +1587,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self._files_done:
             return
         self._files_done = True
+        self._files_gen = _stop_gen
         if await self.seal_and_finalize(reason):
             self._spawn_memory_commits()
 
@@ -1701,21 +1703,23 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         (``seal_and_finalize`` returned False); at shutdown only the seal is
         done here and the spool is left to the startup recovery.
         """
-        if header_ok:
-            self._flush_journal_backlog()
-            # 走 _start_seal：这一场只有一个封存 future，关机 / teardown 看到的是同一次写盘
-            sealing = self._start_seal(reason, ended_at=ended_at)
-            await asyncio.wait([sealing])
-            self._take_seal(sealing)
-            # 封存失败也排一次：上传重试会从留下的 .upload.jsonl 重封，不必等下次启动
-            try:
-                self.deps.schedule_upload(self.visit_id)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("visit %s: upload not scheduled: %s", self.visit_id[:6], type(exc).__name__)
-        if self._files_deferred and not self._shutdown_started and not _stopped_since(gen):
-            await self._finalize_spool(reason)
-            self._spawn_memory_commits()
-        self._deferred_files_done = True  # 之后才挂上的 spool 由激活那边自己收尾
+        try:
+            if header_ok:
+                self._flush_journal_backlog()
+                # 走 _start_seal：这一场只有一个封存 future，关机 / teardown 看到的是同一次写盘
+                sealing = self._start_seal(reason, ended_at=ended_at)
+                await asyncio.wait([sealing])
+                self._take_seal(sealing)
+                # 封存失败也排一次：上传重试会从留下的 .upload.jsonl 重封，不必等下次启动
+                try:
+                    self.deps.schedule_upload(self.visit_id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("visit %s: upload not scheduled: %s", self.visit_id[:6], type(exc).__name__)
+            if self._files_deferred and not self._shutdown_started and not _stopped_since(gen):
+                await self._finalize_spool(reason)
+                self._spawn_memory_commits()
+        finally:
+            self._deferred_files_done = True  # 链中途出错也置位：之后才挂上的 spool 由激活那边自己收尾
 
     async def seal_and_finalize(self, reason: str) -> bool:
         """Seal ``.upload.json`` first, then ``state.json.finalized`` (§3.2.6 item 22 step 3).
@@ -1914,7 +1918,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         to the startup recovery.
         """
         loop = asyncio.get_running_loop()
-        budget_end = loop.time() + VISIT_SHUTDOWN_BUDGET_S
+        started = loop.time()
+        budget_end = started + VISIT_SHUTDOWN_BUDGET_S
 
         def left(cap: float) -> float:
             return max(0.0, min(cap, budget_end - loop.time()))
@@ -1979,8 +1984,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             closing.add_done_callback(lambda t: t.cancelled() or t.exception())
             await asyncio.wait([closing], timeout=left(_SHUTDOWN_TASK_WAIT_S))
             if not closing.done():
+                # 不登记到后台：stop_all 紧接着会取消 _detached；线程里的写盘照样落地，没落地的由启动补录
                 logger.warning("visit %s: spool still finalizing at shutdown", self.visit_id[:6])
-                self._keep_background(closing)
         if self.takeover_token is not None:
             try:
                 self.host.release_takeover(self.takeover_token)
@@ -1989,8 +1994,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self.takeover_token = None
         cancel = self._room_cancel_task
         if cancel is not None and not cancel.done():
-            # 撤销房间是对外请求：总预算用完也至少给它 _SHUTDOWN_ROOM_CANCEL_S（它从一开始就在跑）
-            await asyncio.wait([cancel], timeout=max(left(_SHUTDOWN_ROOM_CANCEL_S), 0.0))
+            # 撤销房间是对外请求（邀请码与配额占用）：从关机开始算至少给它 _SHUTDOWN_ROOM_CANCEL_S，
+            # 前面的步骤把总预算用完了也一样（它一开始就在跑，总预算 > 这个保底，正常不超预算）
+            floor = started + _SHUTDOWN_ROOM_CANCEL_S - loop.time()
+            await asyncio.wait([cancel], timeout=max(left(_SHUTDOWN_ROOM_CANCEL_S), floor, 0.0))
         for task in list(self._tasks):
             task.cancel()
         if self._pump_task is not None:
