@@ -129,6 +129,7 @@ _HANDOFF_POLL_S = 0.25
 # 关机总预算 VISIT_SHUTDOWN_BUDGET_S：等在飞任务、收口当前行各 0.5 s，取消未配对房间 1 s，余下给封存
 _SHUTDOWN_TASK_WAIT_S = 0.5
 _ACCOUNT_RECORD_S = 3.0
+_ACCOUNT_RETRY_DELAYS_S = (1.0, 5.0, 30.0, 120.0, 600.0)
 _SHUTDOWN_ROOM_CANCEL_S = 1.0
 _VOICE_STATUS_THROTTLE_S = 5.0
 
@@ -747,8 +748,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         try:
             # 有界：本地记账卡住（文件锁 / 磁盘）不能让这场停在 pending、一直占着路由
             await asyncio.wait_for(self.deps.record_account(creds.account, creds.visit_uid), _ACCOUNT_RECORD_S)
-        except Exception as exc:  # noqa: BLE001 - 映射写不进不挡串门
+        except Exception as exc:  # noqa: BLE001 - 映射写不进不挡串门（凭证已签发、配额已扣），后台补写
             logger.warning("visit %s: account mapping not recorded: %s", self.visit_id[:6], type(exc).__name__)
+            # 转录 / 举报上传按这张映射认账号：没写成就一直补写，写成之前上传只是排队等着
+            _detach(_retry_record_account(self.deps, creds.account, creds.visit_uid, self.visit_id))
         if self.side == "host" and not creds.invite_code:
             logger.warning("visit %s: host credentials without an invite code", self.visit_id[:6])
             self.request_finalize("servers_unreachable")
@@ -1787,6 +1790,17 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
 _detached: set[asyncio.Task] = set()
 """Tasks that outlive their runtime (the inbox handoff); kept referenced until done."""
+
+
+async def _retry_record_account(deps: "RuntimeDeps", account: Any, visit_uid: Any, visit_id: str) -> None:
+    """Keep writing the account map in the background until it lands (bounded tries)."""
+    for delay in _ACCOUNT_RETRY_DELAYS_S:
+        await asyncio.sleep(delay)
+        try:
+            await asyncio.wait_for(deps.record_account(account, visit_uid), _ACCOUNT_RECORD_S * 4)
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("visit %s: account mapping retry failed: %s", visit_id[:6], type(exc).__name__)
 
 
 def _detach(coro: Awaitable[Any]) -> asyncio.Task:

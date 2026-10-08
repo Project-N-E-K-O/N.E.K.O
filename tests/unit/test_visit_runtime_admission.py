@@ -1344,3 +1344,29 @@ async def test_a_stuck_account_map_write_does_not_hold_the_visit(tmp_path, monke
     finally:
         stuck.set()
         await teardown(side, clock=clock)
+
+
+async def test_a_failed_account_map_write_is_retried_in_the_background(tmp_path, monkeypatch, clocks):
+    monkeypatch.setattr(rtm, "_ACCOUNT_RECORD_S", 0.1)
+    monkeypatch.setattr(rtm, "_ACCOUNT_RETRY_DELAYS_S", (0.01, 0.01, 0.01))
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    attempts = []
+
+    async def flaky(account, visit_uid):
+        attempts.append(visit_uid)
+        if len(attempts) < 3:
+            raise OSError("visit_accounts.json locked")   # 前两次写不进
+
+    side.deps.record_account = flaky
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    try:
+        await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+        assert await rt.issue_credentials() is not None    # 串门照常（凭证已签发，不为本地记账作废）
+        await wait_for(lambda: len(attempts) == 3)          # 后台补写到写成为止
+        await asyncio.sleep(0.1)
+        assert len(attempts) == 3
+    finally:
+        await teardown(side, clock=clock)
