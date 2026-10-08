@@ -28,6 +28,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
     ("https://open.bigmodel.cn/api/paas/v4", "max_tokens"),
     ("https://api.z.ai/api/paas/v4", "max_tokens"),
     ("https://api.siliconflow.cn/v1", "max_tokens"),
+    ("https://api.siliconflow.com/v1", "max_tokens"),
     ("https://dashscope.aliyuncs.com/compatible-mode/v1", "max_completion_tokens"),
     ("https://ark.cn-beijing.volces.com/api/v3", "max_completion_tokens"),
     ("https://api.openai.com/v1", "max_completion_tokens"),
@@ -93,6 +94,13 @@ def test_new_models_use_existing_dialect_constants():
         assert P.MODELS_FOCUS_EXTRA_BODY_MAP[model] is P.EXTRA_BODY_OPENROUTER_MINIMAL_THINKING
     # OpenRouter Gemini models that still accept effort=none keep it.
     assert P.MODELS_EXTRA_BODY_MAP["google/gemini-3.1-flash-lite"] is P.EXTRA_BODY_OPENROUTER
+
+
+def test_omni_streams_thinking_outside_content():
+    """Focus turns on qwen3.8-omni-flash need no stream stripper (reasoning_content only)."""
+    from config.providers import leaks_thinking_in_content
+
+    assert leaks_thinking_in_content("qwen3.8-omni-flash") is False
 
 
 def test_memory_thinking_extra_body_only_for_unbounded_models():

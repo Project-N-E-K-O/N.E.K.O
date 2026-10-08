@@ -342,6 +342,8 @@ def leaks_thinking_in_content(model: str) -> bool:
     # qwen3.8 is deliberately absent: on DashScope it streams reasoning via
     # ``reasoning_content`` with a clean ``content`` (checked 2026-09-27), and
     # the stripper would hold a clean Focus answer until the end of the stream.
+    # qwen3.8-omni-flash behaves the same with thinking on + streaming (checked
+    # 2026-10-08: reasoning only in ``reasoning_content``, no think tags in content).
     return any(tag in m for tag in ("qwen3.5", "qwen3.6", "qwen3.7"))
 
 
@@ -492,6 +494,18 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         name="硅基流动 Silicon",
         base_url="https://api.siliconflow.cn/v1",
         base_url_pattern="api.siliconflow.cn",
+        cache_mode="upstream",
+        requires_header=False,
+        min_cache_tokens=1024,
+        cached_token_field="prompt_cache_hit_tokens",
+        token_limit_field="max_tokens",
+    ),
+    # 硅基国际站：按与国内站同一套实现处理（未实测，无可用 key）。
+    "silicon_intl": CacheProviderConfig(
+        provider_id="silicon_intl",
+        name="SiliconFlow (Intl)",
+        base_url="https://api.siliconflow.com/v1",
+        base_url_pattern="api.siliconflow.com",
         cache_mode="upstream",
         requires_header=False,
         min_cache_tokens=1024,
