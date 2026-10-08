@@ -40,7 +40,7 @@ from .policy import (
     load_storage_policy,
     save_storage_policy,
 )
-from .path_rewrite import rebase_runtime_bound_workshop_config_paths
+from .path_rewrite import WORKSHOP_CONFIG_PATH_FIELDS, rebase_runtime_bound_workshop_config_paths
 
 logger = get_module_logger(__name__)
 
@@ -644,6 +644,41 @@ def _rewrite_migrated_runtime_config_paths(
     atomic_write_json(workshop_config_path, rewritten_payload, ensure_ascii=False, indent=2)
     if read_only:
         os.chmod(workshop_config_path, original_mode)
+
+
+def _source_entries_referenced_by_config(*, config_root: Path, source_root: Path) -> set[str]:
+    """Top-level source entries that ``config_root``'s workshop paths point into.
+
+    Deleting any of them from the retained source would break this config.
+    A path at the source root itself, or a config that cannot be read,
+    counts as pointing at every entry.
+    """
+    workshop_config_path = config_root / "workshop_config.json"
+    if not os.path.lexists(workshop_config_path):
+        return set()
+    try:
+        payload = read_json(workshop_config_path)
+    except Exception:
+        return set(MIGRATED_RUNTIME_ENTRY_NAMES)
+    # Rebasing onto a marker root shows which values sit under the source.
+    marker_root = source_root / ".neko-config-reference-probe"
+    rebased = rebase_runtime_bound_workshop_config_paths(
+        payload,
+        source_root=source_root,
+        target_root=marker_root,
+    )
+    if rebased is payload or not isinstance(rebased, dict):
+        return set()
+    referenced: set[str] = set()
+    for field in WORKSHOP_CONFIG_PATH_FIELDS:
+        value = rebased.get(field)
+        if value == (payload.get(field) if isinstance(payload, dict) else None):
+            continue
+        relative = Path(str(value)).relative_to(normalize_runtime_root(marker_root)).parts
+        if not relative:
+            return set(MIGRATED_RUNTIME_ENTRY_NAMES)
+        referenced.add(relative[0])
+    return referenced
 
 
 def _snapshot_path(path: Path) -> dict[str, int | str]:
@@ -1624,6 +1659,7 @@ def run_pending_storage_migration(
         entries_to_publish: list[str] = []
         original_target_entries: list[str] = []
         original_target_modes: dict[str, int] = {}
+        identical_entries: dict[str, dict[str, Any]] = {}
         for entry_name in existing_entries:
             source_entry = source_root / entry_name
             target_entry = target_root / entry_name
@@ -1636,7 +1672,7 @@ def run_pending_storage_migration(
                     # do not prove the source copy and are not cleanup-safe.
                     continue
                 if entry_name != "config":
-                    copied_entries[entry_name] = {
+                    identical_entries[entry_name] = {
                         "source_manifest": source_manifest,
                         "target_manifest": target_manifest,
                         "transaction": str(payload.get("txid") or ""),
@@ -1673,6 +1709,20 @@ def run_pending_storage_migration(
             entries_to_publish.append(entry_name)
             if os.path.lexists(target_entry):
                 original_target_entries.append(entry_name)
+
+        # Identical entries become copy evidence, so cleanup may delete their
+        # source copy -- except where the target's own config, kept as it is
+        # (it differs from the source, or the source has none), still points
+        # into the source: that copy is still in use.
+        referenced_by_kept_config: set[str] = set()
+        if use_existing_target and "config" not in entries_to_publish:
+            referenced_by_kept_config = _source_entries_referenced_by_config(
+                config_root=target_root / "config",
+                source_root=source_root,
+            )
+        for entry_name, proof in identical_entries.items():
+            if entry_name not in referenced_by_kept_config:
+                copied_entries[entry_name] = proof
 
         # Reusing an existing target only makes sense if it still holds runtime
         # data. Check again here, after staging (whose conflict checks give the

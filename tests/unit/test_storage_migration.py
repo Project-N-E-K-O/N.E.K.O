@@ -2325,3 +2325,80 @@ def test_read_only_workshop_config_is_rebased(tmp_path):
     rebased = json.loads(published.read_text(encoding="utf-8"))
     assert rebased["user_mod_folder"] == str((target_root / "mods").resolve())
     assert published_writable is False
+
+
+def _reuse_target_whose_config_differs(tmp_path, *, target_points_into_source):
+    import json
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    for root in (source_root, target_root):
+        (root / "workshop" / "mods").mkdir(parents=True)
+        (root / "workshop" / "mods" / "item.txt").write_bytes(b"same")
+        (root / "config").mkdir(parents=True)
+    (source_root / "config" / "workshop_config.json").write_text(
+        json.dumps({"user_mod_folder": str(source_root / "workshop" / "mods")}), encoding="utf-8"
+    )
+    kept_folder = source_root / "workshop" / "mods" if target_points_into_source else tmp_path / "elsewhere"
+    (target_root / "config" / "workshop_config.json").write_text(
+        json.dumps({"user_mod_folder": str(kept_folder), "kept": True}), encoding="utf-8"
+    )
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+    return run_pending_storage_migration(config_manager)
+
+
+@pytest.mark.unit
+def test_kept_target_config_pointing_into_the_source_withholds_cleanup_evidence(tmp_path):
+    """The target's own config is kept as it is; while it still points into
+    the source's workshop, that source copy must not become deletable."""
+    result = _reuse_target_whose_config_differs(tmp_path, target_points_into_source=True)
+
+    assert result["completed"] is True, result
+    assert "workshop" not in result["payload"]["copied_entries"]
+
+
+@pytest.mark.unit
+def test_kept_target_config_pointing_elsewhere_keeps_cleanup_evidence(tmp_path):
+    result = _reuse_target_whose_config_differs(tmp_path, target_points_into_source=False)
+
+    assert result["completed"] is True, result
+    assert "workshop" in result["payload"]["copied_entries"]
+
+
+@pytest.mark.unit
+def test_config_pointing_at_the_source_root_references_every_entry(tmp_path):
+    import json
+
+    from utils import storage_migration as storage_migration_module
+
+    source_root = tmp_path / "source" / "N.E.K.O"
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "workshop_config.json").write_text(
+        json.dumps({"default_workshop_folder": str(source_root)}), encoding="utf-8"
+    )
+
+    referenced = storage_migration_module._source_entries_referenced_by_config(
+        config_root=tmp_path / "config", source_root=source_root
+    )
+
+    assert referenced == set(storage_migration_module.MIGRATED_RUNTIME_ENTRY_NAMES)
+
+
+@pytest.mark.unit
+def test_unreadable_config_references_every_entry(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "workshop_config.json").write_bytes(b"{not json")
+
+    referenced = storage_migration_module._source_entries_referenced_by_config(
+        config_root=tmp_path / "config", source_root=tmp_path / "source" / "N.E.K.O"
+    )
+
+    assert referenced == set(storage_migration_module.MIGRATED_RUNTIME_ENTRY_NAMES)
