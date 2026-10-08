@@ -307,6 +307,30 @@ def _publish_without_overwrite(staged: Path, target: Path) -> None:
     os.unlink(staged)
 
 
+def _holds_only_own_publish_reservation(target: Path, staged: Path) -> bool:
+    """Whether an interrupted publish left nothing but its own traces at ``target``.
+
+    While the staged copy is still in place the final move never happened,
+    so the target holds at most the empty name reservation made just before
+    it, or a hard link to the staged file. Anything else was put there from
+    outside after the interruption and is not ours to delete.
+    """
+    try:
+        target_stat = target.lstat()
+    except FileNotFoundError:
+        return True
+    if _stat_is_reparse(target_stat) or stat.S_ISLNK(target_stat.st_mode):
+        return False
+    if stat.S_ISDIR(target_stat.st_mode):
+        return not any(target.iterdir())
+    if not stat.S_ISREG(target_stat.st_mode):
+        return False
+    if target_stat.st_size == 0:
+        return True
+    staged_stat = staged.lstat()
+    return (target_stat.st_dev, target_stat.st_ino) == (staged_stat.st_dev, staged_stat.st_ino)
+
+
 def _move_entry_keeping_mode(source: Path, destination: Path) -> None:
     """``os.replace`` an entry to another parent directory, keeping its mode.
 
@@ -692,6 +716,16 @@ def _rollback_interrupted_publish(
                 )
             # The checkpoint can precede the first replace. With no backup, the
             # target is still the original and must remain untouched.
+            continue
+        staged_entry = transaction_root / "stage" / entry_name
+        if (
+            not was_published
+            and os.path.lexists(staged_entry)
+            and not _holds_only_own_publish_reservation(target_entry, staged_entry)
+        ):
+            # Interrupted between reserving the name and moving the copy in,
+            # and something was written there since: leave it, as a publish
+            # that fails on a newcomer does.
             continue
         _remove_existing_path(target_entry)
 

@@ -1989,3 +1989,82 @@ def test_migration_requires_confirmation_when_target_only_holds_entries_added_la
 
     assert result["error_code"] == "target_confirmation_required"
     assert saved.read_bytes() == b"existing"
+
+
+def _start_migration_into_empty_target(tmp_path, *, memory_as_file=False):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_root.mkdir(parents=True)
+    if memory_as_file:
+        (source_root / "memory").write_bytes(b"memory file")
+    else:
+        (source_root / "memory").mkdir()
+        (source_root / "memory" / "facts.json").write_bytes(b"{}")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    return config_manager, target_root
+
+
+def _crash_while_publishing(monkeypatch, config_manager, reserve):
+    from utils import storage_migration as storage_migration_module
+
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _crash_after_reserving(staged, target):
+        if Path(staged).name == "memory":
+            reserve(Path(staged), Path(target))
+            raise KeyboardInterrupt("simulated process loss")
+        original_publish(staged, target)
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_reserving)
+    with pytest.raises(KeyboardInterrupt, match="simulated process loss"):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", original_publish)
+
+
+@pytest.mark.unit
+def test_recovery_keeps_what_was_written_into_an_interrupted_reservation(tmp_path, monkeypatch):
+    """A crash between reserving the name and the move leaves a visible empty
+    directory; whatever is written into it afterwards is not ours to delete."""
+    config_manager, target_root = _start_migration_into_empty_target(tmp_path)
+    _crash_while_publishing(monkeypatch, config_manager, lambda staged, target: os.mkdir(target))
+    (target_root / "memory" / "written-later.json").write_bytes(b"keep")
+
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["completed"] is False
+    assert (target_root / "memory" / "written-later.json").read_bytes() == b"keep"
+
+
+@pytest.mark.unit
+def test_recovery_removes_its_own_empty_reservation(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, target_root = _start_migration_into_empty_target(tmp_path)
+    _crash_while_publishing(monkeypatch, config_manager, lambda staged, target: os.mkdir(target))
+
+    def _stop_after_recovery(*_args, **_kwargs):
+        raise StorageMigrationError("stop_after_recovery", "inspect rolled back target")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _stop_after_recovery)
+    stopped = run_pending_storage_migration(config_manager)
+
+    assert stopped["error_code"] == "stop_after_recovery"
+    assert not os.path.lexists(target_root / "memory")
+
+
+@pytest.mark.unit
+def test_recovery_removes_its_own_hard_link_to_the_staged_file(tmp_path, monkeypatch):
+    """A file is published by linking it in, then unlinking the staged name."""
+    config_manager, target_root = _start_migration_into_empty_target(tmp_path, memory_as_file=True)
+    _crash_while_publishing(monkeypatch, config_manager, lambda staged, target: os.link(staged, target))
+
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["completed"] is True, retry
+    assert (target_root / "memory").read_bytes() == b"memory file"
