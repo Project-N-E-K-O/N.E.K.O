@@ -2745,3 +2745,31 @@ def test_metadata_fingerprint_sees_a_rewrite_that_restored_the_mtime(tmp_path):
     os.utime(facts, ns=(before_stat.st_atime_ns, before_stat.st_mtime_ns))
 
     assert storage_migration_module._metadata_fingerprint(entry) != before
+
+
+@pytest.mark.unit
+def test_recovery_keeps_a_target_written_before_its_publish_was_recorded(tmp_path, monkeypatch):
+    """Moved in, then written to by another program, and the process stopped
+    before the publish was recorded: the staged copy is gone, so only the
+    staged manifest can show the target is no longer that copy."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_written_then_crash(staged, target):
+        original_publish(staged, target)
+        (Path(target) / "characters.json").write_text("written since", encoding="utf-8")
+        raise KeyboardInterrupt("simulated process loss")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_written_then_crash)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.undo()
+
+    retry = run_pending_storage_migration(config_manager)
+
+    assert retry["error_code"] == "migration_publish_conflict"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "written since"
+    backups = list((target_root / ".smtx").glob("*/backup/config/characters.json"))
+    assert [backup.read_text(encoding="utf-8") for backup in backups] == ["healthy"]

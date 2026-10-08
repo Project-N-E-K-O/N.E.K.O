@@ -878,6 +878,8 @@ def _rollback_interrupted_publish(
         entry_name: proof.get("target_manifest")
         for entry_name, proof in copy_evidence_entries(payload.get("copied_entries")).items()
     }
+    raw_staged_targets = payload.get("staged_target_manifests")
+    staged_target_manifests = raw_staged_targets if isinstance(raw_staged_targets, dict) else {}
     candidates = list(
         dict.fromkeys(
             entry_name
@@ -905,9 +907,15 @@ def _rollback_interrupted_publish(
                 and not _holds_only_own_publish_reservation(target_entry, staged_entry)
             )
 
-        expected_manifest = published_manifests.get(entry_name)
+        # Moved in but not yet recorded as published (the checkpoint write
+        # failed or the process stopped right after the move): the staged
+        # copy is gone, and the target must still be exactly that copy.
+        moved_unrecorded = entry_name == publishing_entry and not was_published and not os.path.lexists(staged_entry)
+        expected_manifest = (
+            published_manifests.get(entry_name) if was_published else staged_target_manifests.get(entry_name)
+        )
         if (
-            was_published
+            (was_published or moved_unrecorded)
             and entry_name not in restoring_entries
             and isinstance(expected_manifest, dict)
             and os.path.lexists(target_entry)
@@ -1548,6 +1556,7 @@ def run_pending_storage_migration(
                 publish_conflict_entry="",
                 resuming_v1_copy=False,
                 staged_source_manifests={},
+                staged_target_manifests={},
             )
         except Exception as exc:
             logger.warning(
@@ -1744,6 +1753,7 @@ def run_pending_storage_migration(
             # so nothing a previous attempt left behind can steer a later rollback.
             publish_conflict_entry="",
             staged_source_manifests={},
+            staged_target_manifests={},
             copied_entries={},
             published_entries=[],
             original_target_entries=[],
@@ -1849,6 +1859,9 @@ def run_pending_storage_migration(
                 payload,
                 anchor_root=normalized_anchor_root,
                 staged_source_manifests=dict(staged_source_records),
+                # What the entry must look like once published: recovery
+                # compares a target it moved in but had not yet recorded.
+                staged_target_manifests=dict(staged_manifests),
             )
             entries_to_publish.append(entry_name)
             if os.path.lexists(target_entry):
