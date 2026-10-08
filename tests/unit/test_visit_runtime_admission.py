@@ -1603,6 +1603,9 @@ async def test_late_text_whose_speaker_changed_since_its_first_piece_is_not_reco
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:96", "i": 0, "lp": lp, "txt": "猫", "sp": "c", "ad": "hc",
             "rt": "", "wu": False}, nbytes=200)                # 开口按猫娘行
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "line_delta", "v": 1, "ln": "g:97", "i": 0, "lp": lp + 1, "txt": "猫", "sp": "c", "ad": "hc",
+            "rt": "", "wu": False}, nbytes=200)                # 开口不是告别
         stuck = asyncio.Event()
 
         async def slow_close(*args, **kwargs):
@@ -1617,6 +1620,12 @@ async def test_late_text_whose_speaker_changed_since_its_first_piece_is_not_reco
         }, nbytes=200)
         assert rt.sequencer.contiguous_seq == seq
         assert not [r for r in rt.journal.lines() if r["text"] == "收口改成人类说的"]   # 说话人记不准：不进转录
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:97", "lp": lp + 1, "seq": seq + 1, "sp": "c", "ad": "hc",
+            "rt": "", "wu": True, "final": True, "txt": "收口改成告别", "truncated": False, "i_done": 1,
+        }, nbytes=200)
+        assert rt.sequencer.contiguous_seq == seq + 1
+        assert not [r for r in rt.journal.lines() if r["text"] == "收口改成告别"]   # 与 room 同一判据（含 wu）
         stuck.set()
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1649,6 +1658,32 @@ async def test_the_backlog_is_recorded_when_the_header_lands_in_time(tmp_path, m
     finally:
         gate.set()
         await teardown(side, clock=clock)
+
+
+async def test_a_display_queue_whose_sender_stopped_is_restarted_by_the_flush(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    real_send = host.host.send_frame
+    hold = asyncio.Event()
+
+    async def send_frame(payload):
+        if payload.get("line_id") == "first":
+            await hold.wait()                                 # 第一帧写页面时卡住
+        return await real_send(payload)
+
+    host.host.send_frame = send_frame
+    try:
+        rt._post_display({"type": "visit_line", "visit_id": rt.visit_id, "line_id": "first"})
+        rt._post_display({"type": "visit_line", "visit_id": rt.visit_id, "line_id": "second"})
+        await settle()
+        rt._display_task.cancel()                             # 发送任务被取消：队列里还剩一句
+        await settle()
+        await rt._flush_display(2)
+        assert [f for f in host.host.frames if f.get("line_id") == "second"]   # flush 时重新拉起、送出去
+    finally:
+        hold.set()
+        host.host.send_frame = real_send
+        await teardown(host, guest, wire=wire, clock=clock)
 
 
 async def test_page_frames_queued_before_the_end_reach_the_page_first(tmp_path, monkeypatch):

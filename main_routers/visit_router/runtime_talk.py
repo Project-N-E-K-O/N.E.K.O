@@ -395,6 +395,8 @@ class TalkMixin:
                 # 否则它后面的字会经同一个 sink 串进这一行
                 if not await _await_stray(session, timeout):
                     line.llm_error = "timeout"
+                    # 撇下的那次等满一个时限还在跑：之后每一行都只会再等满再超时，这场已经说不了话
+                    self.request_finalize("llm_error")
                 else:
                     sort_visit_history(session)
                     before = {id(m) for m in session.history}
@@ -901,11 +903,12 @@ async def _settle_or_abandon(session: Any, gen: asyncio.Future) -> None:
     feed the next line, and two streams would share one client. When it
     finally stops, what it appended to the history is taken out again.
     """
-    await asyncio.wait([gen], timeout=_LLM_SETTLE_S)
-    if gen.done():
-        return
+    # 先登记再等：这 _LLM_SETTLE_S 里调用方再被取消一次，它也已经记在会话上
     session.stray = gen
     gen.add_done_callback(lambda _t: _purge_untracked(session))
+    await asyncio.wait([gen], timeout=_LLM_SETTLE_S)
+    if gen.done() and session.stray is gen:
+        session.stray = None
 
 
 async def _await_stray(session: Any, timeout: float) -> bool:

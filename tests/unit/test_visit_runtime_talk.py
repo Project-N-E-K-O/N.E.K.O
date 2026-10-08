@@ -1407,14 +1407,12 @@ async def test_an_abandoned_generation_cannot_leak_into_the_next_line(tmp_path, 
         await wait_for(lambda: nxt.task.done(), timeout=3)
         assert nxt.llm_error == "timeout"                     # 不开新流（同一个 client 上不并发两次生成）
         assert calls[id(session.client)] == 1
+        assert rt.finalize_reason == "llm_error"              # 等满一个时限还停不下：这场说不了话，按 llm_error 收尾
         release.set()                                         # 撇下的那次这时吐字、往历史里追加
         await wait_for(lambda: session.stray is None or session.stray.done(), timeout=3)
         await settle()
         contents = [getattr(m, "content", "") for m in session.history]
         assert not [c for c in contents if "幽灵回复" in str(c)]  # 它追加的回复被摘掉
-        rt.schedule_reply(None)
-        await wait_for(lambda: calls[id(session.client)] >= 2, timeout=3)  # 之后照常开新的一轮
-        await wait_for(lambda: rt._line is None or rt._line.task.done(), timeout=5)
         own = [r["text"] for r in rt.journal.lines() if r["from"] == "own_cat"]
         assert not [t for t in own if "串话" in t]             # 它的字没进任何一行
     finally:
@@ -1451,6 +1449,38 @@ async def test_a_home_coming_turn_is_bounded_even_if_the_llm_ignores_cancellatio
         assert not session.turn_lock.locked()
     finally:
         release.set()
+
+
+async def test_a_stream_abandoned_while_its_caller_is_cancelled_twice_is_still_recorded():
+    from main_routers.visit_router.session_pool import VisitSession
+    from utils.llm_client import SystemMessage
+
+    release = asyncio.Event()
+
+    class Stubborn:
+        def __init__(self):
+            self._conversation_history = [SystemMessage(content="instructions")]
+
+        async def stream_text(self, text, **kw):
+            while not release.is_set():
+                try:
+                    await asyncio.sleep(0.02)
+                except asyncio.CancelledError:
+                    continue
+
+    session = VisitSession(client=Stubborn(), side="host")
+    caller = asyncio.ensure_future(rtm_talk._stream_bounded(session, "x", 10))
+    try:
+        await asyncio.sleep(0.05)
+        caller.cancel()                                       # 收尾取消这一轮
+        await asyncio.sleep(0.05)                             # 它正在等不肯停的流停下
+        caller.cancel()                                       # 再被取消一次
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert session.stray is not None and not session.stray.done()   # 照样记在会话上，下一轮会先等它
+    finally:
+        release.set()
+        await asyncio.sleep(0.05)
 
 
 async def test_own_line_frames_reach_the_page_in_order(tmp_path, monkeypatch):

@@ -431,11 +431,18 @@ class ReceiveMixin:
 
     async def _drain_display(self) -> None:
         while self._display:
-            await self.host.send_frame(self._display.popleft())
+            frame = self._display.popleft()
+            try:
+                await self.host.send_frame(frame)
+            except Exception as exc:  # noqa: BLE001 - 一帧发不出去不让后面的整句跟着停下
+                logger.warning("visit %s: display frame not sent: %s", self.visit_id[:6], type(exc).__name__)
 
     async def _flush_display(self, timeout: float) -> None:
         """Wait (bounded) until the display queue has been sent to the page."""
         task = self._display_task
+        if self._display and (task is None or task.done()):
+            # 发送任务已退出（被取消等）但队列里还有帧：重新拉起，告别句不能就此被清掉
+            task = self._display_task = self.spawn(self._drain_display())
         if task is not None and not task.done():
             await asyncio.wait([task], timeout=timeout)
 
@@ -455,17 +462,20 @@ class ReceiveMixin:
             return
         if self._lp_reused(ln, lp) or str(ln) in self._rejected_lines:
             return
-        opened = self._peer_lines.get(ln)
-        if opened is not None and opened.get("sp") != m.get("sp"):
-            # 开口按一种说话人、收口改成另一种（room 的 line_meta_mismatch）：说话人记不准，不进转录
+        sp = "human" if m.get("sp") == "h" else "cat"
+        ad_side, ad_kind = decode_addressee(m.get("ad"))
+        if self.room.incoming_meta_mismatch(IncomingLineDone(
+            ref=LineRef(str(ln), lp, self.peer_side), truncated=m.get("truncated") is True,
+            tail_ms=m.get("tail_ms", 0), goodbye=m.get("wu") is True, speaker=sp, addressee_side=ad_side,
+            addressee_kind=ad_kind, reply_to=self._ref_of(m.get("rt")),
+        )):
+            # 收口与开口声明的元数据不一致（与 room 的 line_meta_mismatch 同一判据）：说话人等记不准，不进转录
             self._count_anomaly("line_meta_mismatch")
             return
         if not self._line_admitted(ln, from_vid, now):
             return  # 与正常收口同一份配额决定：分片时已判超速的行，收尾中补到也不进转录
-        sp = "human" if m.get("sp") == "h" else "cat"
         txt = str(m.get("txt") or "")
         truncated = m.get("truncated") is True
-        ad_side, ad_kind = decode_addressee(m.get("ad"))
         # 不上屏，但缓存完整的帧形状：页面重载时 GET /state 按它重放（收件人 / 回复 / 告别 / i_done）
         self.visit_line_payload(
             ln=str(ln), lp=lp, side=self.peer_side, kind=sp, ad_side=ad_side, ad_kind=ad_kind,

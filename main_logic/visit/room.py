@@ -871,6 +871,15 @@ class VisitRoom:
             self.pending_reply = None
         return eff
 
+    def incoming_meta_mismatch(self, ev: IncomingLineDone) -> bool:
+        """Whether a final ``text`` contradicts its line's first piece (read only; no state changes).
+
+        For a ``text`` handled outside :meth:`on_incoming_done` (one that
+        arrives once the visit is ending): the same judgement, nothing booked.
+        """
+        opened = self._peer_meta.get(ev.ref.line_id)
+        return opened is not None and self._meta_mismatch(ev, opened)
+
     @staticmethod
     def _meta_mismatch(ev: IncomingLineDone, opened: _PeerLine) -> bool:
         """True when the final ``text`` contradicts what the line's first piece declared."""
