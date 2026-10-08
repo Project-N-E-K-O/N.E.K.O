@@ -103,6 +103,7 @@ class _LineRun:
     llm_task: Optional[asyncio.Task] = None
     task: Optional[asyncio.Task] = None
     llm_cancelled: bool = False
+    booked: bool = False
     llm_error: Optional[str] = None
     raw: list[str] = field(default_factory=list)
     payload: Optional[dict] = None
@@ -146,6 +147,12 @@ class TalkMixin:
         if not self.journal.is_open:
             return opening is not None and not opening.done()
         return bool(self._journal_backlog)
+
+    def _journal_failed(self) -> bool:
+        """The upload header could not be written: this visit has no upload stream."""
+        opening = getattr(self, "_journal_opening", None)
+        return (opening is not None and opening.done() and not self.journal.is_open and not self.journal.sealed
+                and (opening.cancelled() or opening.exception() is not None))
 
     def _on_usage(self, delta: dict) -> None:
         if self._journal_buffering():
@@ -516,13 +523,21 @@ class TalkMixin:
         if self.room is not None:
             self.apply_effects(self.room.on_local_line_done(line.ref, bool(payload["truncated"]), self.clock()))
 
+    async def book_line(self, line: _LineRun) -> None:
+        """Record a closed own line in the spool / upload once (``_finish_line`` or shutdown, whichever first)."""
+        payload = line.payload
+        if payload is None or line.booked:
+            return
+        line.booked = True
+        h = line.header
+        await self.record_line("own_cat", side=self.side, lp=h.lp, ln=h.ln, text=payload["txt"],
+                               truncated=payload["truncated"])
+
     async def _finish_line(self, line: _LineRun) -> None:
         payload = line.payload
         if payload is None:
             return
-        h = line.header
-        await self.record_line("own_cat", side=self.side, lp=h.lp, ln=h.ln, text=payload["txt"],
-                               truncated=payload["truncated"])
+        await self.book_line(line)
         await self._add_own_cat_history(line, payload)
         if line.llm_error is not None:
             self._llm_failures += 1
@@ -578,6 +593,13 @@ class TalkMixin:
                                                truncated=bool(truncated))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: upload record failed: %s", self.visit_id[:6], type(exc).__name__)
+        elif self._journal_failed():
+            # 上传头写不成（这场没有上传流水）：至少记进内存转录，/state 重放与简述照常
+            try:
+                self.journal.remember_line(lp=lp, side=side, speaker=speaker, ts=ts, text=clean,
+                                           truncated=bool(truncated))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit %s: line not kept: %s", self.visit_id[:6], type(exc).__name__)
         spool = self.spool
         if spool is not None and self.memory_enabled and spool.is_open:
             try:

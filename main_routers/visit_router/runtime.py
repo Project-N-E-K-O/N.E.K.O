@@ -666,11 +666,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     def finalizing(self) -> bool:
         return self._exit_task is not None or self._terminated
 
-    def _release_turn_wrap_up(self, *, settle: bool = True) -> None:
+    def _release_turn_wrap_up(self) -> None:
         release = getattr(self.host, "release_turn_wrap_up", None)
         if callable(release):
             try:
-                release(settle=settle)
+                release()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: turn wrap-up not released: %s", self.visit_id[:6], type(exc).__name__)
 
@@ -682,11 +682,20 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.slot["phase"] = phase
 
     async def push(self, action: str, **fields: Any) -> None:
-        """``visit_state_change{action}`` to the display socket (§4.5)."""
+        """``visit_state_change{action}`` to the display socket (§4.5).
+
+        Through the ordered display queue, like every other frame of the
+        visit: a backpressured earlier phase can never land after a later
+        one. ``ended`` alone is written directly, once the queue has been
+        sent or retired (``_exit_steps``); after it the queue takes nothing.
+        """
         payload = {"type": "visit_state_change", "action": action, "side": self.side,
                    "visit_id": self.visit_id, "ts": self.wall()}
         payload.update({k: v for k, v in fields.items() if v is not None})
-        await self.host.send_frame(payload)
+        if action == PHASE_ENDED:
+            await self.host.send_frame(payload)
+            return
+        self._post_display(payload)
 
     async def status(self, code: str, **details: Any) -> None:
         details = {"visit_id": self.visit_id, **{k: v for k, v in details.items() if v is not None}}
@@ -1564,7 +1573,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             # 否则这句已落盘、已改过 room 的话到不了对端。再多等一段（有界：磁盘一直卡着就放弃）
             await asyncio.wait([closing], timeout=_RESERVED_SEND_MAX_S)
         if not closing.done():
-            logger.warning("visit %s: channel close did not finish", self.visit_id[:6])
+            # 到点还没关完：先收掉接收通道（注销传输、停掉关闭任务）再封存。否则之后对端重传来的整句
+            # 回了 ack、却落在封存之后，进不了转录
+            logger.warning("visit %s: channel close did not finish; retiring it", self.visit_id[:6])
+            unregister_transport_session(self.transport)
+            closing.cancel()
+            await asyncio.wait([closing], timeout=_SHUTDOWN_TASK_WAIT_S)
         flushed = await self._flush_display(_DISPLAY_FLUSH_S)  # 告别句等整句先上屏，再发「已结束」
         self._ended_published = True  # 从这里起不再往显示队列放帧（收尾中补到的整句只进转录）
         if not flushed:
@@ -1984,6 +1998,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             await asyncio.wait_for(self.close_current_line("visit_end"), left(_SHUTDOWN_TASK_WAIT_S))
         except Exception as exc:  # noqa: BLE001 - 收不完也照样封存
             logger.warning("visit %s: line not closed at shutdown: %r", self.visit_id[:6], exc)
+        line = self._line
+        if line is not None and line.payload is not None and not line.booked:
+            # 这一行已收口（text{final} 已入队、已上屏），只是 LLM 还没停下、_finish_line 没跑到：
+            # 先记进转录再封存，不然关机取消它之后这一行就丢了
+            try:
+                await asyncio.wait_for(self.book_line(line), left(_SHUTDOWN_TASK_WAIT_S))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit %s: closed line not booked at shutdown: %r", self.visit_id[:6], exc)
         await self._settle_journal_open(left(_SHUTDOWN_TASK_WAIT_S))
         self._flush_journal_backlog()
         sealed = False
@@ -2015,7 +2037,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             except Exception:  # noqa: BLE001
                 pass
             self.takeover_token = None
-        self._release_turn_wrap_up(settle=False)  # 进程要退了：只放开，不在关机途中起续期 / 换代
+        # 被打断那一轮欠下的收尾：关机时不放开。放开后关机途中会话一空闲就会去结清（续期 / 换代），
+        # 进程马上就退出了，计数留着也没有影响
         cancel = self._room_cancel_task
         if cancel is not None and not cancel.done():
             # 撤销房间是对外请求（邀请码与配额占用）：从它派生那一刻算至少给它 _SHUTDOWN_ROOM_CANCEL_S，

@@ -148,9 +148,10 @@ async def test_an_owed_wrap_up_is_held_even_when_no_reply_is_running():
     host = ManagerHost("Host", mgr)
     assert await host.interrupt_main_turn(1.0) is True
     assert mgr._reply_setup_depth == 1                    # 此前欠下、会话还没空闲的那笔：准入期间同样按住
-    host.release_turn_wrap_up(settle=False)               # 关机：只放开，不结清
+    assert settled == []                                  # 按住期间不结清
+    host.release_turn_wrap_up()                           # 交还普通对话：放开并结清
     await asyncio.sleep(0)
-    assert mgr._reply_setup_depth == 0 and settled == []
+    assert mgr._reply_setup_depth == 0 and settled == [True]
 
 
 async def test_family_turn_wait_covers_a_reply_that_starts_late(monkeypatch):

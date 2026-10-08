@@ -351,6 +351,21 @@ class UploadJournal:
         """
         self._fire(self._book(lp=lp, side=side, speaker=speaker, ts=ts, text=text, truncated=truncated))
 
+    def remember_line(
+        self, *, lp: int, side: str, speaker: str, ts: float, text: str, truncated: bool,
+    ) -> None:
+        """Keep a line in the in-memory copy only (the stream could not be created; nothing is written).
+
+        ``lines()`` (the ``GET /state`` replay, the debrief) still sees it;
+        there is no upload without a stream.
+        """
+        if self._executor is not None or self._sealed:
+            return
+        if side not in SIDE_RANK or speaker not in SPEAKERS:
+            raise ValueError("bad line side / speaker")
+        self._records.append({"kind": "line", "lp": int(lp), "side": side, "from": speaker, "ts": float(ts),
+                              "text": str(text), "truncated": bool(truncated)})
+
     def _book(self, *, lp: int, side: str, speaker: str, ts: float, text: str, truncated: bool) -> dict:
         """Validate one final line and add it to the in-memory copy; returns the record to write."""
         if not self.is_open:

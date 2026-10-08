@@ -59,17 +59,18 @@ class VisitHost(Protocol):
     async def interrupt_main_turn(self, timeout: float) -> bool:
         """Stop a reply the ordinary session is producing; False when it did not settle in time.
 
-        The wrap-up the interrupted reply owes (renewal check, final swap,
-        queued agent callbacks) is held from here until
-        :meth:`release_turn_wrap_up`: it must not run while the visit is
-        being admitted.
+        Holds the ordinary session's owed turn wrap-up (renewal check, final
+        swap, queued agent callbacks) unconditionally on entry -- whether or
+        not a reply is running, even without a session -- until
+        :meth:`release_turn_wrap_up`: a debt owed from an earlier turn must
+        not be paid while the visit is being admitted either.
         """
 
-    def release_turn_wrap_up(self, *, settle: bool = True) -> None:
+    def release_turn_wrap_up(self) -> None:
         """The visit handed the session back: settle the wrap-up held by ``interrupt_main_turn`` (once).
 
-        ``settle=False`` (shutdown): only drop the hold; the process is about
-        to exit, so a renewal or swap started now would be cut off.
+        Not called at shutdown: once released, the session going idle would
+        settle it mid-shutdown (a renewal, a swap) right before the exit.
         """
 
     async def send_frame(self, payload: dict) -> bool:
@@ -214,14 +215,12 @@ class ManagerHost:
         self._mgr._reply_setup_depth = getattr(self._mgr, "_reply_setup_depth", 0) + 1
         self._wrap_up_held = True
 
-    def release_turn_wrap_up(self, *, settle: bool = True) -> None:
+    def release_turn_wrap_up(self) -> None:
         if not self._wrap_up_held:
             return
         self._wrap_up_held = False
         mgr = self._mgr
         mgr._reply_setup_depth = max(0, getattr(mgr, "_reply_setup_depth", 0) - 1)
-        if not settle:
-            return
         settle_owed = getattr(mgr, "_settle_owed_turn_wrap_up", None)
         if not getattr(mgr, "_turn_wrap_up_owed", False) or not callable(settle_owed):
             return

@@ -311,6 +311,7 @@ async def test_invite_code_only_after_joined_and_never_in_the_state(tmp_path, mo
     await through_gate(rt)
     assert side.host.frames_of("visit_state_change", "invite_ready") == []
     await rt.on_transport_state({"state": "joined", "peer_present": False})
+    await settle()                                            # 阶段帧经有序显示队列发出
     ready = side.host.frames_of("visit_state_change", "invite_ready")
     try:
         assert len(ready) == 1 and ready[0]["invite_code"] == INVITE
@@ -1353,14 +1354,91 @@ async def test_a_busy_admission_releases_the_held_wrap_up(tmp_path, monkeypatch,
         await teardown(side, clock=clock)
 
 
-async def test_shutdown_releases_the_held_wrap_up_without_settling(tmp_path, monkeypatch):
+async def test_shutdown_keeps_the_turn_wrap_up_held(tmp_path, monkeypatch):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     try:
         await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
-        events = host.host.events
-        assert "release_turn_wrap_up:no_settle" in events     # 关机：只放开计数
-        assert "release_turn_wrap_up" not in events           # 不在关机途中起续期 / 换代
+        assert "release_turn_wrap_up" not in host.host.events   # 关机不放开：关机途中不会因会话空闲去续期 / 换代
     finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_channel_close_that_overruns_is_retired_before_sealing(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    order: list[str] = []
+    real_unregister = rtm.unregister_transport_session
+
+    def unregister(transport):
+        order.append("unregister")
+        return real_unregister(transport)
+
+    monkeypatch.setattr(rtm, "unregister_transport_session", unregister)
+    real_seal = rt.journal.seal
+
+    async def seal(reason, **kw):
+        order.append("seal")
+        return await real_seal(reason, **kw)
+
+    rt.journal.seal = seal
+    rt.outbox.leave_done = lambda now: False                  # 对端一直不回 leave 的 ack：关闭通道到点也没完
+    try:
+        rt.request_finalize("route_end")
+        await asyncio.sleep(0.1)
+        real_send = rt.transport.send
+
+        async def stalled_send(*args, **kwargs):
+            await asyncio.sleep(10)                           # 关闭任务 finally 里的发送也卡着
+            return await real_send(*args, **kwargs)
+
+        rt.transport.send = stalled_send
+        await asyncio.wait_for(_finished(rt), 10)
+        assert "unregister" in order and "seal" in order
+        assert order.index("unregister") < order.index("seal")  # 先收掉接收通道，再封存
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_lines_are_kept_in_memory_when_the_upload_header_fails(tmp_path, monkeypatch):
+    from main_routers.visit_router import transcript_upload
+
+    async def broken_open(self, **kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(transcript_upload.UploadJournal, "open", broken_open)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        assert not rt.journal.is_open
+        await wait_for(lambda: len(rt.journal.lines()) >= 1, timeout=5)   # 内存转录照常（/state 重放、简述）
+        assert rt.snapshot()["transcript"]
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_phase_frames_keep_their_order_with_queued_lines(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    real_send = host.host.send_frame
+
+    async def send_frame(payload):
+        if payload.get("line_id") == "slow":
+            await asyncio.sleep(0.3)                          # 页面背压
+        return await real_send(payload)
+
+    host.host.send_frame = send_frame
+    try:
+        before = len(host.host.frames)
+        rt._post_display({"type": "visit_line", "visit_id": rt.visit_id, "line_id": "slow"})
+        await rt.push("ending_soon", ends_at=1.0)
+        await wait_for(lambda: [f for f in host.host.frames[before:] if f.get("action") == "ending_soon"], timeout=5)
+        frames = host.host.frames[before:]
+        line = [i for i, f in enumerate(frames) if f.get("line_id") == "slow"]
+        phase = [i for i, f in enumerate(frames) if f.get("action") == "ending_soon"]
+        assert line and phase and line[0] < phase[0]          # 阶段帧不越过排在前面的整句
+    finally:
+        host.host.send_frame = real_send
         await teardown(host, guest, wire=wire, clock=clock)
 
 

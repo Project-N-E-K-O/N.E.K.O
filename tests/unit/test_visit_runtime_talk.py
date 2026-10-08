@@ -1547,6 +1547,32 @@ async def test_an_admitted_family_line_still_reaches_the_peer_after_the_close_wa
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_closed_line_whose_llm_lingers_is_booked_before_the_shutdown_seal(tmp_path, monkeypatch):
+    pause = asyncio.Event()
+    host, guest, wire, clock, wall = await bring_up(
+        tmp_path, monkeypatch, host_replies=Replies(queue=[["说到一半。", "后半", pause, "句。"]]),
+        guest_replies=Replies(gate=asyncio.Event()))
+    host.host.auto_play = False
+    rt = host.rt
+    try:
+        await wait_for(lambda: host.host.streams and host.host.streams[0].pushed)
+        await rtm.on_page_signal("Host", {"speech_id": host.host.streams[0].speech_id, "played_ms": 60000,
+                                          "ended": False})
+        await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "line_delta"])
+        line = rt._line
+        llm = line.llm_task
+        real_cancel = llm.cancel
+        llm.cancel = lambda *a, **k: False                    # LLM 不肯停：_finish_line 要等 _LLM_SETTLE_S
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # 关机只等 0.5 s
+        own = [r for r in rt.journal.lines() if r["from"] == "own_cat"]
+        assert own and own[-1]["truncated"]                   # 已收口的那一行在封存之前记进了转录
+        assert rt.journal.sealed
+        llm.cancel = real_cancel
+    finally:
+        pause.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_an_admitted_family_line_goes_out_before_leave(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
