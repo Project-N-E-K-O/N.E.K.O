@@ -4586,7 +4586,10 @@ def test_v1_catch_up_records_no_evidence_for_a_copy_written_as_it_went_live(tmp_
     reloaded_manager = _make_real_config_manager(tmp_path)
     run_pending_storage_migration(reloaded_manager)
 
-    assert "pngtuber" not in (load_storage_migration(reloaded_manager).get("copied_entries") or {})
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert "pngtuber" not in (checkpoint.get("copied_entries") or {})
+    # Named, so the old copy is not left behind unannounced.
+    assert checkpoint["v1_catch_up_skipped"] == ["pngtuber"]
 
 
 @pytest.mark.unit
@@ -4676,3 +4679,25 @@ def test_v1_catch_up_keeps_its_transaction_when_arrived_data_has_nowhere_else_to
     assert not load_storage_migration(reloaded_manager).get("txid")
     run_pending_storage_migration(_make_real_config_manager(tmp_path))
     assert kept[0].read_bytes() == b"new root data"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_does_not_trust_a_target_reached_through_a_linked_parent(tmp_path):
+    """target/state replaced by a link to somewhere that also has game_scores:
+    the kind check would pass there, but that is not the migrated copy."""
+    source_root, target_root = _migrate_config_and_game_scores(tmp_path)
+    elsewhere = tmp_path / "elsewhere-state"
+    shutil.copytree(target_root / "state", elsewhere)
+    shutil.rmtree(target_root / "state")
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(elsewhere), str(target_root / "state"))
+    else:
+        os.symlink(elsewhere, target_root / "state")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert "state/game_scores" in response.json()["remaining_entries"]
+    assert (source_root / "state" / "game_scores" / "badminton_scores.db").read_bytes() == b"scores"

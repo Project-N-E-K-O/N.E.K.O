@@ -1778,6 +1778,9 @@ def _cleanup_retained_runtime_root(
     def _target_still_holds_copy(entry_name: str, proof: dict) -> bool:
         target_manifest = proof.get("target_manifest")
         expected_kind = target_manifest.get("kind") if isinstance(target_manifest, dict) else None
+        if not entry_parents_are_real_directories(normalized_target, entry_name):
+            # Through a linked parent the target's entry is somewhere else.
+            return False
         try:
             return classify_entry_no_follow(normalized_target / entry_name) == expected_kind
         except (StorageMigrationError, OSError):

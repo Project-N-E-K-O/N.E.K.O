@@ -1457,11 +1457,29 @@ def _ensure_transaction_parent(transaction_root: Path) -> None:
         )
 
 
+def _entry_exists(path: Path) -> bool:
+    """Whether ``path`` exists; a lookup that fails for another reason raises.
+
+    ``os.path.lexists`` answers ``False`` then too (a parent without access,
+    a locked volume), which would quietly leave the entry out of a migration.
+    """
+    try:
+        os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError as exc:
+        raise StorageMigrationError(
+            "manifest_read_failed",
+            f"无法确认迁移条目是否存在，已停止迁移: {path}",
+        ) from exc
+    return True
+
+
 def _iter_existing_runtime_entries(root: Path) -> list[str]:
     return [
         name
         for name in MIGRATED_RUNTIME_ENTRY_NAMES
-        if os.path.lexists(root / name)
+        if _entry_exists(root / name)
     ]
 
 
@@ -1952,6 +1970,7 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
                     for relative_dir, original_mode in widened:
                         with suppress(OSError):
                             os.chmod(target_entry / relative_dir, original_mode)
+                    skipped.append(entry_name)
                     continue
                 for relative_dir, original_mode in widened:
                     os.chmod(target_entry / relative_dir, original_mode)
@@ -2539,6 +2558,13 @@ def run_pending_storage_migration(
         for entry_name in existing_entries:
             source_entry = source_root / entry_name
             target_entry = target_root / entry_name
+            if not entry_parents_are_real_directories(source_root, entry_name):
+                # Through a linked parent the entry is somewhere else
+                # entirely, as with a top-level entry that is a link.
+                raise StorageMigrationError(
+                    "path_link_unsupported",
+                    f"迁移条目的上级是链接或 junction，已停止迁移: {entry_name}",
+                )
             # Taken before anything reads the entry, and compared once all
             # entries are staged: a write in between (a sync client, say)
             # would otherwise publish the copy taken before it.

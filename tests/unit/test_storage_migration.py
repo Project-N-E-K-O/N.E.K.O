@@ -3632,3 +3632,63 @@ def test_a_target_written_right_after_publishing_is_not_recorded_as_the_copy(tmp
     # delete that write, it is kept for a person to decide.
     assert result["error_code"] == "migration_publish_conflict"
     assert (target_root / "memory" / "facts.json").read_bytes() == b"{} rewritten"
+
+
+def _link_directory(link: Path, target: Path) -> None:
+    """A directory link: a junction on Windows (no privilege needed), else a symlink."""
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        os.symlink(target, link)
+
+
+@pytest.mark.unit
+def test_migration_refuses_a_nested_source_entry_behind_a_linked_parent(tmp_path):
+    """source/state is a link: what lies below it is somewhere else entirely,
+    as with a top-level entry that is a link."""
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere-state"
+    (elsewhere / "game_scores").mkdir(parents=True)
+    (elsewhere / "game_scores" / "badminton_scores.db").write_bytes(b"not this root's")
+    _link_directory(source_root / "state", elsewhere)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "path_link_unsupported"
+    assert not (target_root / "state" / "game_scores").exists()
+
+
+@pytest.mark.unit
+def test_migration_stops_when_it_cannot_tell_whether_an_entry_exists(tmp_path, monkeypatch):
+    """state/ without access right now: game_scores may well be there, and
+    switching roots without it would leave it behind unannounced."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _migration_with_game_scores(tmp_path)
+    original_lstat = os.lstat
+
+    def _lstat(path, *args, **kwargs):
+        if Path(path).name == "game_scores":
+            raise PermissionError(13, "access denied", str(path))
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module.os, "lstat", _lstat)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "manifest_read_failed"
+    assert not (target_root / "config").exists()
