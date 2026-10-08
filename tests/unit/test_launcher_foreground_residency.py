@@ -1409,19 +1409,36 @@ def test_unreadable_lock_does_not_block_startup(monkeypatch):
 
 
 @pytest.mark.unit
-def test_merged_mode_snapshots_the_launchers_own_children(tmp_path):
-    """Packaged builds run the servers inside the launcher; plugin hosts are
-    then the launcher's children and must still be seen."""
+def test_merged_mode_snapshots_the_launchers_plugin_hosts_only(tmp_path):
+    """Packaged builds run the servers inside the launcher; its plugin hosts
+    (same executable) and what they started are checked, while another
+    child of the launcher -- on Windows its conhost.exe -- is left out, or
+    it would block every migration restart."""
     psutil = pytest.importorskip("psutil")
     from launcher_core import runtime
 
-    child = subprocess.Popen([_INTERPRETER, "-c", "import time; time.sleep(120)"])
+    grandchild_pid_file = tmp_path / "grandchild.pid"
+    host_code = textwrap.dedent(
+        f"""
+        import subprocess, time
+        program = subprocess.Popen([{_INTERPRETER!r}, "-c", "import time; time.sleep(120)"])
+        open({str(grandchild_pid_file)!r}, "w").write(str(program.pid))
+        time.sleep(120)
+        """
+    )
+    host = subprocess.Popen([_INTERPRETER, "-c", host_code])
+    other_command = ["ping", "-n", "120", "127.0.0.1"] if os.name == "nt" else ["sleep", "120"]
+    other = subprocess.Popen(other_command, stdout=subprocess.DEVNULL)
+    grandchild_pid = _wait_for_pid(grandchild_pid_file, host)
     try:
         descendants = runtime._snapshot_server_descendants(
             [{"name": "Main", "process": None}, {"name": "Memory", "process": None}]
         )
         ownership = {process.pid: own for process, own in descendants}
-        assert ownership.get(child.pid) is True
+        assert ownership.get(host.pid) is True
+        assert ownership.get(grandchild_pid) is False
+        assert other.pid not in ownership
     finally:
-        child.kill()
-        child.wait(timeout=10)
+        _kill_quietly(psutil, host, grandchild_pid)
+        other.kill()
+        other.wait(timeout=10)

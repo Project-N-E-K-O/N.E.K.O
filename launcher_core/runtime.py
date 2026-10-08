@@ -2229,16 +2229,6 @@ def _process_exe(process) -> str:
         return ""
 
 
-class _LauncherProcess:
-    """The launcher itself, standing in for the server process in merged mode."""
-
-    def __init__(self):
-        self.pid = os.getpid()
-
-    def is_alive(self) -> bool:
-        return True
-
-
 def _snapshot_server_descendants(servers) -> list | None:
     """Every live descendant of the tracked servers, as ``(process, own)``.
 
@@ -2272,12 +2262,24 @@ def _snapshot_server_descendants(servers) -> list | None:
     server_pids: set[int] = set()
     descendants = []
     if not any(server.get('process') for server in servers):
-        # Merged mode: the servers run inside the launcher, and plugin hosts
-        # are the launcher's own children.
+        # Merged mode: the servers run inside the launcher, so its plugin
+        # hosts -- direct children running its own executable -- and what
+        # they started are what to check. Nothing else the launcher has
+        # running counts: on Windows its console host (conhost.exe) is its
+        # child for as long as it lives, and would block every restart.
         try:
-            servers = [{"process": _LauncherProcess()}]
-        except psutil.Error:
+            launcher = psutil.Process()
+            server_pids.add(launcher.pid)
+            for child in launcher.children():
+                if _process_exe(child) not in own_exes:
+                    continue
+                descendants.append(child)
+                descendants.extend(child.children(recursive=True))
+        except psutil.NoSuchProcess:
+            pass
+        except (psutil.Error, OSError, ValueError):
             return None
+        servers = []
     for server in servers:
         proc = server.get('process')
         pid = getattr(proc, 'pid', None) if proc else None
