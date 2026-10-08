@@ -40,8 +40,9 @@ _PREFIXED_CALL_OPENERS = (
     (("lit", "default_api"), ("ws",), ("char", ":."), ("ws",), ("ident",), ("ws",), ("char", "({")),
     (("lit", "asynccall"), ("ws",), ("char", ":"), ("ws",), ("ident",), ("ws",), ("char", "({")),
 )
-# Lowercase text every prefixed or seed opener contains (``strip_tool_call_leaks``).
-_OPENER_MARKERS = ("seed", "default_api", "asynccall")
+# Lowercase text every prefixed or seed opener contains (``strip_tool_call_leaks``),
+# taken from the openers themselves so a new prefix is never skipped.
+_OPENER_MARKERS = ("seed", *dict.fromkeys(steps[0][1] for steps in _PREFIXED_CALL_OPENERS))
 _OPENER_FAIL = ("fail", 0)
 _OPENER_PARTIAL = ("partial", 0)
 
@@ -154,6 +155,20 @@ class ToolLeakFilter:
         return "".join(output), event
 
     def finalize(self) -> tuple[str, ToolLeakFilterEvent | None]:
+        if (
+            self._suppressing
+            and self._suppression_pattern == _INLINE_CALL_PATTERN
+            and self._call_recovery
+        ):
+            # The call never closed, but an outer closer went by (inside an
+            # unclosed quote, or with an unclosed opener in a value): what
+            # followed the first one is the reply, not the call.
+            rest = self._call_recovery
+            self._suppressed_chars -= len(rest)
+            event = self._finish_event(finalized=True)
+            visible, _event = self.feed(rest)
+            tail, _event = self.finalize()
+            return visible + tail, event
         if self._suppressing:
             self._suppressed_chars += len(self._pending)
             self._pending = ""
@@ -178,6 +193,8 @@ class ToolLeakFilter:
         self._reset_call_state()
 
     def _reset_call_state(self) -> None:
+        # Text after the first outer closer of a call still open; None until one.
+        self._call_recovery: str | None = None
         self._call_closers: list[str] = []
         self._call_opened = False
         self._call_quote = ""
@@ -206,10 +223,22 @@ class ToolLeakFilter:
 
         Brackets nest; a quote opens a string only where a value starts (after
         ``( [ { = : ,``), so an apostrophe inside an unquoted value such as
-        ``{instruction: don't}`` never swallows the rest of the reply.
+        ``{instruction: don't}`` never swallows the rest of the reply. An outer
+        closer that does not end the call (inside a quote never closed, or
+        after a same-kind opener left open in a value) marks where the reply
+        may resume: ``finalize`` gives back what followed the first one, and
+        reads it again for further calls.
         """
         for index, char in enumerate(text):
+            if self._call_recovery is not None:
+                self._call_recovery += char
+            outer_closer = (
+                self._call_recovery is None
+                and bool(self._call_closers) and char == self._call_closers[0]
+            )
             if self._call_quote:
+                if outer_closer:
+                    self._call_recovery = ""
                 if self._call_escape:
                     self._call_escape = False
                 elif char == "\\":
@@ -229,6 +258,8 @@ class ToolLeakFilter:
                     pass
                 if not self._call_closers:
                     return index + 1
+                if outer_closer:
+                    self._call_recovery = ""
             elif char in _QUOTE_CHARS and self._call_opened and self._call_last in "([{=:,":
                 self._call_quote = char
             if not char.isspace():
@@ -774,15 +805,16 @@ def strip_tool_call_leaks(text: str, *, tool_names: Iterable[str] | None = None)
     the built-in default names) is removed: a bare ``name(param=...)`` only
     counts for a registered tool.
     """
-    if not text or not _may_hold_tool_call(text, tool_names):
+    names = set(tool_names or ())
+    if not text or not _may_hold_tool_call(text, names):
         return text
-    leak_filter = ToolLeakFilter(tool_names=set(tool_names or ()))
+    leak_filter = ToolLeakFilter(tool_names=names)
     visible, _event = leak_filter.feed(text)
     tail, _event = leak_filter.finalize()
     return visible + tail
 
 
-def _may_hold_tool_call(text: str, tool_names: Iterable[str] | None) -> bool:
+def _may_hold_tool_call(text: str, tool_names: set[str]) -> bool:
     """Whether ``text`` contains what every tool-call opener starts with.
 
     The filter scans every position against every opener; the finished-text
@@ -790,7 +822,7 @@ def _may_hold_tool_call(text: str, tool_names: Iterable[str] | None) -> bool:
     """
     lowered = text.lower()
     return any(marker in lowered for marker in _OPENER_MARKERS) or any(
-        name.lower() in lowered for name in (set(tool_names or ()) or _DEFAULT_TOOL_NAMES)
+        name.lower() in lowered for name in (tool_names or _DEFAULT_TOOL_NAMES)
     )
 
 
@@ -804,9 +836,10 @@ def strip_tool_call_leaks_from_parts(
     end comes out with the next one, and the last part takes the rest. Parts
     with nothing cut come back as they were, holding back included.
     """
-    if not _may_hold_tool_call("".join(texts), tool_names):
+    names = set(tool_names or ())
+    if not _may_hold_tool_call("".join(texts), names):
         return list(texts)
-    leak_filter = ToolLeakFilter(tool_names=set(tool_names or ()))
+    leak_filter = ToolLeakFilter(tool_names=names)
     cleaned = [leak_filter.feed(text)[0] for text in texts]
     tail, _event = leak_filter.finalize()
     if cleaned:

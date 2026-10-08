@@ -667,6 +667,41 @@ def test_finished_text_without_any_opener_marker_skips_the_scan(monkeypatch):
     assert module.strip_tool_call_leaks_from_parts([plain, plain], tool_names=_PVZ_TOOLS) == [plain, plain]
 
 
+def test_a_call_that_never_closes_gives_back_the_reply_after_its_outer_closer():
+    """An unclosed quote or a same-kind opener left open in a value keeps the
+    call open to the end; the reply after its last outer closer still shows
+    (and is still stored)."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter, strip_tool_call_leaks
+
+    for leaked, expected in (
+        ('default_api:pvz_start{goal:"do it} Done.', " Done."),
+        ("好呀 pvz_instruction(instruction=在第3行(靠左放坚果) 接下来我们继续玩吧！", "好呀  接下来我们继续玩吧！"),
+        ("好 asynccall:pvz_instruction{instruction:'种坚果} 好了 asynccall:pvz_start{goal:a} 完", "好  好了  完"),
+    ):
+        assert strip_tool_call_leaks(leaked, tool_names=_PVZ_TOOLS) == expected
+        for chunks in _split_everywhere(leaked):
+            visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), chunks)
+            assert visible == expected, chunks
+            assert events and events[0].finalized is True
+
+
+def test_finished_text_helpers_read_tool_names_once():
+    """``tool_names`` may be a one-shot iterable: the pre-check must not use
+    it up before the filter reads it."""
+    from utils.llm_tool_leak_filter import strip_tool_call_leaks, strip_tool_call_leaks_from_parts
+
+    bare = "我来pvz_instruction(instruction='第三行种坚果')。"
+    assert strip_tool_call_leaks(bare, tool_names=iter(["pvz_instruction"])) == "我来。"
+    assert strip_tool_call_leaks_from_parts([bare], tool_names=iter(["pvz_instruction"])) == ["我来。"]
+
+
+def test_every_prefixed_opener_has_a_pre_check_marker():
+    from utils.llm_tool_leak_filter import _OPENER_MARKERS, _PREFIXED_CALL_OPENERS
+
+    for steps in _PREFIXED_CALL_OPENERS:
+        assert steps[0][1] in _OPENER_MARKERS
+
+
 def test_an_unclosed_inline_call_is_dropped_on_finalize():
     from utils.llm_tool_leak_filter import ToolLeakFilter
 
