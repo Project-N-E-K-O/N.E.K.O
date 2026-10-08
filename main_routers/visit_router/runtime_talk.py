@@ -144,10 +144,13 @@ class TalkMixin:
                                  event={"memory_enabled": False})
 
     def _journal_buffering(self) -> bool:
-        """The upload header is still being written, or what was recorded meanwhile is not all written yet."""
+        """The upload header is not written yet (not even started, or still writing), or what was recorded
+        meanwhile is not all written yet."""
         opening = getattr(self, "_journal_opening", None)
         if not self.journal.is_open:
-            return opening is not None and not opening.done()
+            # 还没开始写（对端 hello 先于本侧的入房报告到达、已被接受并激活）：同样先攒着，
+            # 入房后写上传头时一并补上，开场那几句与用量不会丢
+            return (opening is None and not self.journal.sealed) or (opening is not None and not opening.done())
         return bool(self._journal_backlog)
 
     def _journal_failed(self) -> bool:

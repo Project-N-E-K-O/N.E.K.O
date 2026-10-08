@@ -338,6 +338,7 @@ class VisitOutbox:
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._last_write: Optional[concurrent.futures.Future] = None
         self._closed = False
+        self._close_task: Optional["asyncio.Future[None]"] = None
         self.write_errors = 0
         self._reserved_bytes = 0
 
@@ -1070,7 +1071,14 @@ class VisitOutbox:
         still run, so no file with ``text`` bodies is left behind.
         """
         self._closed = True
-        await asyncio.shield(self._close_impl(delete))
+        if self._close_task is None:
+            self._close_task = asyncio.ensure_future(self._close_impl(delete))
+        await asyncio.shield(self._close_task)
+
+    @property
+    def close_task(self) -> Optional["asyncio.Future[None]"]:
+        """The (single) cleanup started by :meth:`close`, or None before it."""
+        return self._close_task
 
     @property
     def closed(self) -> bool:

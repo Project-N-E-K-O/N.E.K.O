@@ -1547,6 +1547,73 @@ async def test_shutdown_keeps_the_turn_wrap_up_held(tmp_path, monkeypatch):
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_lines_recorded_before_the_first_join_reach_the_journal(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    assert rt._journal_opening is None                        # 还没入房：上传头还没开始写
+    # 对端 hello 先到、已被接受并激活：开场那句在入房报告之前就记了
+    await rt.record_line("own_cat", side="host", lp=1, ln="h:1", text="开场", truncated=False)
+    assert [r["text"] for r in rt._journal_backlog if r.get("kind") == "line"] == ["开场"]  # 先攒着，不丢
+    await rt.on_transport_state({"state": "joined", "peer_present": False})
+    await wait_for(lambda: any(r.get("text") == "开场" for r in rt.journal._records))  # 上传头写好后补进流水
+    rt.request_finalize("route_end")
+    await _finished(rt)
+
+
+async def test_an_overrun_outbox_cleanup_is_handed_to_stop_all(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_impl = rt.outbox._close_impl
+
+    async def slow_impl(delete):
+        await stuck.wait()                                    # outbox 的清理卡在写盘上
+        await real_impl(delete)
+
+    rt.outbox._close_impl = slow_impl
+    rt.outbox.leave_done = lambda now: False                  # 关闭通道到点也没完，被收掉
+    try:
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(rt), 15)
+        cleanup = rt.outbox.close_task
+        assert cleanup is not None and not cleanup.done()
+        assert cleanup in rtm._detached                       # 运行时已注销：清理交给模块级登记，关机收得到
+    finally:
+        stuck.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_failed_grant_renewal_backs_off(tmp_path, monkeypatch, clocks):
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    clock, wall = clocks
+    calls: list[int] = []
+
+    async def failing():
+        calls.append(1)
+        raise cr.VisitServersError("upstream_down")           # Servers 暂时出错
+
+    rt.grant.refresh_due = lambda **kw: True
+    rt.grant.ensure_fresh = failing
+    await rt.tick()
+    await settle()
+    assert len(calls) == 1
+    clock.advance(2)
+    await rt.tick()
+    await settle()
+    assert len(calls) == 1                                    # 退避期内下一个 tick 不重发
+    clock.advance(4)
+    await rt.tick()
+    await settle()
+    assert len(calls) == 2                                    # 退避期过了再试
+    rt.request_finalize("route_end")
+    await _finished(rt)
+
+
 async def test_a_channel_close_that_overruns_is_retired_before_sealing(tmp_path, monkeypatch):
     monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)

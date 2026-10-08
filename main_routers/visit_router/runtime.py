@@ -138,6 +138,8 @@ _DISPLAY_FLUSH_S = 2.0
 _ACCOUNT_RECORD_S = 3.0
 _ACCOUNT_RETRY_DELAYS_S = (1.0, 5.0, 30.0, 120.0, 600.0)
 _SHUTDOWN_ROOM_CANCEL_S = 1.0
+_RENEW_RETRY_BASE_S = 5.0
+_RENEW_RETRY_MAX_S = 60.0
 _VOICE_STATUS_THROTTLE_S = 5.0
 
 # ═════════════════════════════════════════════════════════════════════
@@ -604,6 +606,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._kick_event = asyncio.Event()
         self._pump_task: Optional[asyncio.Task] = None
         self._renew_task: Optional[asyncio.Task] = None
+        self._renew_failures = 0
+        self._renew_retry_at: Optional[float] = None
         self._exit_task: Optional[asyncio.Task] = None
         self._tasks: set[asyncio.Task] = set()
 
@@ -1180,7 +1184,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self._accept_deadline is not None and now >= self._accept_deadline and not self.ready_exchanged:
             self.request_finalize("declined")
             return
-        if self.grant is not None and self.joined and self._renew_task is None and self.grant.refresh_due():
+        if (self.grant is not None and self.joined and self._renew_task is None
+                and (self._renew_retry_at is None or now >= self._renew_retry_at) and self.grant.refresh_due()):
             self._renew_task = self.spawn(self._renew_grant())
         if self.room is not None:
             self.apply_effects(self.room.on_tick(now))
@@ -1213,10 +1218,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         try:
             if await self.grant.ensure_fresh():  # type: ignore[union-attr]
                 await self.transport.send(self._credentials_message(refresh=True))
+            self._renew_failures = 0
+            self._renew_retry_at = None
         except cr.VisitRoomEnded:
             self.request_finalize("kicked")
         except cr.VisitServersError as exc:
             logger.warning("visit %s: vendor grant renewal failed (%s)", self.visit_id[:6], exc.code)
+            # 退避：Servers 暂时出错时不在每个 tick 上重发（宕机期间每场每分钟几十次请求只会放大故障）
+            self._renew_failures += 1
+            delay = min(_RENEW_RETRY_MAX_S, _RENEW_RETRY_BASE_S * 2 ** (self._renew_failures - 1))
+            self._renew_retry_at = self.clock() + delay
         finally:
             self._renew_task = None
 
@@ -2019,6 +2030,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.ended_at_mono = self.clock()
         _prune_recent(self.ended_at_mono)
         _recent[self.visit_id] = self
+        cleanup = self.outbox.close_task
+        if cleanup is not None and not cleanup.done():
+            # 关闭通道到点被收掉时 outbox 的清理（写完、删掉带正文的 .outbox.jsonl）还在跑：注销之后
+            # stop_all 看不到这个运行时，交给模块级登记，关机时一并收
+            self._keep_background(cleanup)
         _unregister(self)
         # 封存还没落盘（后台收尾链会在落盘后排上传）：这时排的上传只会找不到 .upload.json、白退避一轮
         if self._seal_settled() and (
