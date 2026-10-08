@@ -530,6 +530,13 @@ class TalkMixin:
         ts = self.wall()
         clean = clamp_text_utf8(text)
         self._ln_by_key[(lp, side)] = ln
+        # 上传流水在前：它的内存记录一进来就算数，关机时 spool 写盘慢、封存先到也不会漏掉这一行
+        if self.journal.is_open:
+            try:
+                await self.journal.append_line(lp=lp, side=side, speaker=speaker, ts=ts, text=clean,
+                                               truncated=bool(truncated))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit %s: upload record failed: %s", self.visit_id[:6], type(exc).__name__)
         spool = self.spool
         if spool is not None and self.memory_enabled and spool.is_open:
             try:
@@ -538,12 +545,6 @@ class TalkMixin:
                 self.spool_lines += 1
             except Exception as exc:  # noqa: BLE001 - 写不进 spool：这一句不进串门记忆
                 logger.warning("visit %s: spool append failed: %s", self.visit_id[:6], type(exc).__name__)
-        if self.journal.is_open:
-            try:
-                await self.journal.append_line(lp=lp, side=side, speaker=speaker, ts=ts, text=clean,
-                                               truncated=bool(truncated))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("visit %s: upload record failed: %s", self.visit_id[:6], type(exc).__name__)
 
     def _history_add(self, ln: str, message: Any, key: tuple[int, int]) -> None:
         """Insert a history message at its sorted place, inside the session turn lock (never blocks the caller)."""

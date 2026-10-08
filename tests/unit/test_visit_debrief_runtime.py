@@ -174,7 +174,7 @@ async def test_a_failed_roster_write_keeps_the_visit_memory(tmp_path, monkeypatc
     host, guest, wire, clock, gates = await _visit_with_lines(tmp_path, monkeypatch)
     try:
         assert host.rt.memory_enabled is True and host.rt.spool.is_open
-        assert host.rt.spool_lines >= 2                    # 名册写不进，转录照样逐句落盘
+        await wait_for(lambda: host.rt.spool_lines >= 2)   # 名册写不进，转录照样逐句落盘
     finally:
         for g in gates:
             g.set()

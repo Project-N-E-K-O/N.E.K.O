@@ -35,13 +35,15 @@ are requested (:meth:`VisitRuntime.request_finalize`) and run as a task.
 
 from __future__ import annotations
 
+import asyncio
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from config.visit_settings import VISIT_GOODBYE_MAX_CHARS
 from main_logic.visit.identity import JtiWindow, PeerBlocked, TicketRejected, verify_identity_ticket
 from main_logic.visit.limits import RateChannel, channel_for
 from main_logic.visit.room import IncomingLineDone, IncomingLineStart, LineRef
-from config.visit_settings import VISIT_GOODBYE_MAX_CHARS
 from main_logic.visit.sanitize import clamp_peer_line, defang_markdown_media
 from main_routers.visit_router.runtime_common import (
     PHASE_AWAITING,
@@ -53,6 +55,9 @@ from utils.logger_config import get_module_logger
 from utils.visit_wire import LineDeltaAssembler, decode_msg, proto_compatible
 
 logger = get_module_logger(__name__, "Main")
+
+_DISPLAY_BACKLOG_MAX = 64
+"""Queued display frames above which subtitle pieces / typing are dropped (final lines never)."""
 
 GATE_PASS = frozenset({"hello", "ready", "leave", "hb", "ack"})
 """What the reception gate lets through before the visit is activated (§4.2)."""
@@ -88,12 +93,15 @@ class ReceiveMixin:
         self.gate_dropped = 0
         self.binding_dropped = 0
         self.rate_dropped = 0
+        self.display_dropped = 0
         self._early_effects: list = []
         self._peer_lines: dict[str, dict] = {}
         self._line_quota: dict[str, bool] = {}
         self._ln_by_key: dict[tuple, str] = {}
         self._deltas = LineDeltaAssembler()
         self._rejected_lines: dict[str, None] = {}
+        self._display: deque = deque()
+        self._display_task: Optional[asyncio.Task] = None
         self._peer_lp: dict[str, int] = {}
         self.last_peer_goodbye = ""
 
@@ -375,13 +383,32 @@ class ReceiveMixin:
             self._remember_peer_line(ln, meta)
         meta = meta or {"sp": "c", "ad": None, "rt": "", "wu": False, "lp": lp}
         ad_side, ad_kind = decode_addressee(meta.get("ad"))
-        await self.host.send_frame({
+        self._post_display({
             "type": "visit_line_delta", "visit_id": self.visit_id, "line_id": ln, "i": m.get("i"),
             "lp": lp, "text": defang_markdown_media(str(m.get("txt") or "")),
             "speaker": self.speaker_payload(self.peer_side, "human" if meta.get("sp") == "h" else "cat"),
             "addressee": {"side": ad_side, "kind": ad_kind}, "goodbye": bool(meta.get("wu")),
             "ts": self.wall(), "paced": "audio",
-        })
+        }, droppable=True)
+
+    def _post_display(self, frame: dict, *, droppable: bool = False) -> None:
+        """Queue a display frame in order without awaiting it on the receive path.
+
+        The display socket may be backpressured (each write waits up to its
+        own bound); reliable ``text`` / ``ack`` / ``leave`` must not queue up
+        behind it. Over ``_DISPLAY_BACKLOG_MAX`` queued frames, droppable
+        ones (subtitle pieces, typing) are dropped; final lines never are.
+        """
+        if droppable and len(self._display) >= _DISPLAY_BACKLOG_MAX:
+            self.display_dropped += 1
+            return
+        self._display.append(frame)
+        if self._display_task is None or self._display_task.done():
+            self._display_task = self.spawn(self._drain_display())
+
+    async def _drain_display(self) -> None:
+        while self._display:
+            await self.host.send_frame(self._display.popleft())
 
     def _reject_line(self, ln: Any) -> None:
         """Drop a peer line whole: no more deltas on screen, its ``text`` kept out of transcript and history."""
@@ -440,7 +467,7 @@ class ReceiveMixin:
             return
         self._deltas.drop(str(ln))  # 停嘴之后的分片不再上屏（它的 text 照常收口）
         self.apply_effects(self.room.on_incoming_abort(ln, now, m.get("reason")))
-        await self.host.send_frame({
+        self._post_display({
             "type": "visit_line_abort", "visit_id": self.visit_id, "line_id": ln,
             "i_done": m.get("i_done"), "reason": m.get("reason"), "ts": self.wall(),
         })
@@ -450,10 +477,10 @@ class ReceiveMixin:
         if self.room is not None and self._lp_rejected(self.room.check_lp(m.get("lp"))):
             return
         kind = "human" if m.get("sp") == "h" else "cat"
-        await self.host.send_frame({
+        self._post_display({
             "type": "visit_typing", "visit_id": self.visit_id,
             "speaker": self.speaker_payload(self.peer_side, kind), "on": m.get("on", True) is not False,
-        })
+        }, droppable=True)
 
     async def _rx_stats(self, m: dict, from_vid: str, now: float) -> None:
         return None
@@ -492,7 +519,7 @@ class ReceiveMixin:
         if m.get("wu") is True and sp == "cat":
             # 要拼进本侧下一轮 prompt：按收件侧再清洗、按告别句上限截（对端可能不守 LineSpeaker 的上限）
             self.last_peer_goodbye = clamp_peer_line(txt)[:VISIT_GOODBYE_MAX_CHARS]
-        await self.host.send_frame(self.visit_line_payload(
+        self._post_display(self.visit_line_payload(
             ln=ln, lp=lp, side=self.peer_side, kind=sp, ad_side=ad_side, ad_kind=ad_kind,
             reply_to=str(m.get("rt") or ""), goodbye=m.get("wu") is True, text=txt, truncated=truncated,
             i_done=m.get("i_done", 0), trunc_reason=trunc_reason,

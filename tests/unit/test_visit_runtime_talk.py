@@ -295,6 +295,7 @@ async def test_peer_cannot_use_our_line_prefix(tmp_path, monkeypatch):
             "t": "line_delta", "v": 1, "ln": "h:1", "i": 0, "lp": 5, "txt": "冒", "sp": "c", "ad": "hc",
             "rt": "", "wu": False}, nbytes=200)
         assert rt.sequencer.contiguous_seq == seq                       # 照常按 seq 推进（会回 ack）
+        await settle()  # 页面帧经显示队列异步发出
         assert not [f for f in host.host.frames[before_frames:] if str(f.get("type")).startswith("visit_line")]
         assert rt.anomaly_count() >= anomalies + 2
         assert not [r for r in rt.journal.lines() if r["text"] == "冒充"]
@@ -559,6 +560,7 @@ async def test_a_rate_limited_peer_line_shows_none_of_its_deltas(tmp_path, monke
             "t": "text", "v": 1, "ln": "g:77", "lp": 77, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
             "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "片0片1", "truncated": False, "i_done": 2,
         }, nbytes=200)
+        await settle()  # 页面帧经显示队列异步发出
         shown = [f for f in host.host.frames[before:] if str(f.get("type")).startswith("visit_line")]
         assert shown == []                                   # 增量与整行都不上屏
         assert len(text_calls) == 1                          # 一行只取一次配额
@@ -820,6 +822,7 @@ async def test_replayed_or_late_line_deltas_are_not_forwarded(tmp_path, monkeypa
             "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "原本的", "truncated": False, "i_done": 1,
         }, nbytes=200)
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload=delta(1, "收口之后"), nbytes=200)  # 已收口
+        await settle()  # 页面帧经显示队列异步发出
         shown = [f["text"] for f in host.host.frames[before:] if f.get("type") == "visit_line_delta"]
         assert shown == ["原本的"]
         assert rt.journal._anomalies == anomalies + 1          # 重放计一次异常；收口后的晚到静默丢
@@ -868,6 +871,8 @@ async def test_a_line_rejected_as_an_overlap_is_dropped_whole(tmp_path, monkeypa
             "t": "text", "v": 1, "ln": "g:61", "lp": 60, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
             "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "交叠的那行", "truncated": False, "i_done": 1,
         }, nbytes=200)
+        await wait_for(lambda: any(f.get("line_id") == "g:60" for f in host.host.frames[before:]))
+        await settle()
         lines = [f["line_id"] for f in host.host.frames[before:] if str(f.get("type")).startswith("visit_line")]
         assert "g:61" not in lines and "g:60" in lines
         assert not [r for r in rt.journal.lines() if r["text"] == "交叠的那行"]
@@ -883,6 +888,7 @@ async def test_abort_and_typing_with_a_bad_lp_are_dropped_as_anomalies(tmp_path,
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
     try:
+        await settle()
         before, anomalies = len(host.host.frames), rt.journal._anomalies
         far = rt.room.max_lp_seen + VISIT_LP_MAX_JUMP + 100
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
@@ -890,6 +896,7 @@ async def test_abort_and_typing_with_a_bad_lp_are_dropped_as_anomalies(tmp_path,
             nbytes=200)
         await rt.on_recv(from_vid=GUEST_VID, cmd=3, payload={"t": "typing", "v": 1, "lp": far + 1, "sp": "c"},
                          nbytes=200)
+        await settle()  # 页面帧经显示队列异步发出
         types = [f.get("type") for f in host.host.frames[before:]]
         assert "visit_line_abort" not in types and "visit_typing" not in types
         assert rt.journal._anomalies == anomalies + 2
@@ -979,10 +986,12 @@ async def test_a_line_abort_after_the_final_text_changes_nothing(tmp_path, monke
             "t": "text", "v": 1, "ln": "g:71", "lp": 71, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
             "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "说完了", "truncated": False, "i_done": 1,
         }, nbytes=200)
+        await settle()
         before = len(host.host.frames)
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_abort", "v": 1, "ln": "g:71", "lp": 71, "i_done": 0, "reason": "human_interrupt"},
             nbytes=200)                                      # 迟到 / 重放的 abort
+        await settle()  # 页面帧经显示队列异步发出
         assert not [f for f in host.host.frames[before:] if f.get("type") == "visit_line_abort"]
         # 被接受的 abort 之后，那一行的分片不再上屏
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
@@ -991,10 +1000,12 @@ async def test_a_line_abort_after_the_final_text_changes_nothing(tmp_path, monke
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_abort", "v": 1, "ln": "g:72", "lp": 72, "i_done": 1, "reason": "human_interrupt"},
             nbytes=200)
+        await settle()
         mark = len(host.host.frames)
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:72", "i": 1, "lp": 72, "txt": "停嘴之后", "sp": "c", "ad": "hc",
             "rt": "", "wu": False}, nbytes=200)
+        await settle()  # 页面帧经显示队列异步发出
         assert not [f for f in host.host.frames[mark:] if f.get("type") == "visit_line_delta"]
     finally:
         hgate.set()
@@ -1026,6 +1037,67 @@ async def test_an_early_speaking_wrap_up_does_not_make_the_gap_filler_look_reord
             "reason": "quiet", "initiated_by": "host"}, nbytes=200)
         assert "lp_not_monotonic" not in seen
     finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_stuck_display_does_not_hold_up_the_receive_path(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    rt.limiter._recv_bps = 10 ** 9
+    for st in rt.limiter._senders.values():
+        st.recv_bytes.rate = st.recv_bytes.capacity = st.recv_bytes.tokens = 10 ** 9
+        st.recv_msgs.rate = st.recv_msgs.capacity = st.recv_msgs.tokens = 10 ** 9
+    rt.limiter._recv_msgs_per_s = 10 ** 9
+    stuck = asyncio.Event()
+    real_send = host.host.send_frame
+
+    async def slow_send(payload):
+        await stuck.wait()                                   # 页面 socket 背压：每次写都卡住
+        return await real_send(payload)
+
+    host.host.send_frame = slow_send
+    try:
+        async def burst():
+            for i in range(100):
+                await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+                    "t": "line_delta", "v": 1, "ln": "g:73", "i": i, "lp": 73, "txt": f"{i}", "sp": "c", "ad": "hc",
+                    "rt": "", "wu": False}, nbytes=200)
+            await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+                "t": "text", "v": 1, "ln": "g:73", "lp": 73, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
+                "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "整句", "truncated": False, "i_done": 100,
+            }, nbytes=200)
+
+        await asyncio.wait_for(burst(), 2)                   # 收包路径不等页面
+        assert rt.display_dropped > 0                        # 积压时丢的是字幕分片
+        stuck.set()
+        await wait_for(lambda: any(f.get("type") == "visit_line" and f.get("line_id") == "g:73"
+                                   for f in host.host.frames))   # 整句从不丢
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_the_upload_record_is_taken_before_a_slow_spool_write(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+
+    async def slow_append(line):
+        await stuck.wait()
+
+    monkeypatch.setattr(rt.spool, "append", slow_append)
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(rt.record_line("own_cat", side="host", lp=500, ln="h:500", text="最后一句",
+                                                  truncated=True), 0.2)
+        # spool 还卡着，关机这时封存：上传记录里已经有这一行
+        assert [r for r in rt.journal.lines() if r["text"] == "最后一句"]
+    finally:
+        stuck.set()
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)

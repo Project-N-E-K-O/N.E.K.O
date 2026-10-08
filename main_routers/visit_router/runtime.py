@@ -381,7 +381,9 @@ def current_instance(lanlan_name: str) -> Optional[str]:
 
 def _register(rt: "VisitRuntime") -> None:
     _runtimes[rt.lanlan_name] = rt
-    _by_visit[rt.visit_id] = rt
+    # 先登记的那个留着：本机另一个角色兑换本机发出的邀请会被 Servers 以 self_invite 拒掉，
+    # 被拒之前它不能顶掉仍在进行的这一场
+    _by_visit.setdefault(rt.visit_id, rt)
     if rt.character_uid:
         _uid_by_name[rt.lanlan_name] = rt.character_uid
 
@@ -391,6 +393,9 @@ def _unregister(rt: "VisitRuntime") -> None:
         del _runtimes[rt.lanlan_name]
     if _by_visit.get(rt.visit_id) is rt:
         del _by_visit[rt.visit_id]
+        other = next((r for r in _runtimes.values() if r.visit_id == rt.visit_id), None)
+        if other is not None:
+            _by_visit[rt.visit_id] = other
 
 
 def _reset_for_tests() -> None:

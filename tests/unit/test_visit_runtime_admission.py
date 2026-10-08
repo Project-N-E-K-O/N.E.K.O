@@ -1021,3 +1021,23 @@ async def test_a_pending_joined_report_is_dropped_once_the_connection_drops(tmp_
         assert rt.liveness.self_disconnected_at is not None                       # 仍按断线计时
     finally:
         await teardown(side, clock=clock)
+
+
+
+def test_a_second_runtime_of_the_same_visit_does_not_take_over_its_registration():
+    from types import SimpleNamespace
+
+    first = SimpleNamespace(lanlan_name="Mimi", visit_id="V" * 22, character_uid="")
+    second = SimpleNamespace(lanlan_name="Nana", visit_id="V" * 22, character_uid="")
+    rtm._register(first)
+    # 本机另一个角色兑换本机发出的邀请（Servers 以 self_invite 拒之前）：不顶掉在进行的那一场
+    rtm._register(second)
+    assert rtm.get_runtime_by_visit("V" * 22) is first
+    rtm._unregister(second)
+    assert rtm.get_runtime_by_visit("V" * 22) is first and rtm.is_visit_live("V" * 22)
+    # 反过来：先登记的那个结束了、另一个还在，就由它接着代表这一场
+    rtm._register(second)
+    rtm._unregister(first)
+    assert rtm.get_runtime_by_visit("V" * 22) is second
+    rtm._unregister(second)
+    assert not rtm.is_visit_live("V" * 22)
