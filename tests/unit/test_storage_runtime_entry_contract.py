@@ -59,6 +59,13 @@ def _is_runtime_root(node: ast.AST, aliases: set[str]) -> bool:
     """Whether ``node`` evaluates to the runtime root itself (not a child or parent)."""
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         return False
+    # A join is a path below the root, like a division: it merely mentions
+    # app_docs_dir inside.
+    if isinstance(node, ast.Call):
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name in {"join", "joinpath"}:
+            return False
     if isinstance(node, ast.Attribute) and node.attr == "parent":
         return False
     if isinstance(node, ast.Name) and node.id in aliases:
@@ -306,3 +313,22 @@ def test_state_child_scan_sees_every_way_a_path_is_built():
         "on_the_attribute",
         "joined_on_the_attribute",
     }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "cm.app_docs_dir / 'state' / 'new_child'",
+        "cm.app_docs_dir.joinpath('state', 'new_child')",
+        "os.path.join(cm.app_docs_dir, 'state', 'new_child')",
+        "cm.app_docs_dir.joinpath('state').joinpath('new_child')",
+    ],
+)
+def test_a_path_joined_straight_from_app_docs_dir_is_scanned_below_the_root(expression):
+    """No alias in between: the join itself must not pass for the root, or the
+    child is lost here and turns up as a top-level directory instead."""
+    tree = ast.parse(chr(10).join(["import os", "def f(cm):", f"    target = {expression}"]))
+
+    assert _scan_state_children(tree) == {"new_child"}
+    assert "new_child" not in _scan_module(tree)
