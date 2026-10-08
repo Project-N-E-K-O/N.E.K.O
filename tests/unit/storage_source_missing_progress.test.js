@@ -29,6 +29,7 @@ function loadStorageLocation(locale) {
     model: window.appStorageLocation.buildMaintenanceProgressModel,
     cleanupMessage: window.appStorageLocation.buildCleanupIncompleteMessage,
     describeSkipped: window.appStorageLocation.describeV1CatchUpSkipped,
+    dismissKey: window.appStorageLocation.buildCompletionNoticeDismissKey,
     messages,
   };
 }
@@ -131,6 +132,15 @@ for (const locale of ['en', 'zh-CN']) {
     );
     assert.strictEqual(describeSkipped({ completed: true, v1_catch_up_skipped: [] }), '');
     assert.strictEqual(describeSkipped({ completed: true }), '');
+  });
+
+  test(`${locale}: data left behind later is not hidden by an earlier dismissal`, () => {
+    const { dismissKey } = loadStorageLocation(locale);
+    const notice = { completed: true, completed_at: 't', target_root: 'E:/new', retained_root: 'D:/old' };
+
+    // Unchanged for a notice without it, so earlier dismissals still hold.
+    assert.strictEqual(dismissKey({ ...notice, v1_catch_up_skipped: [] }), dismissKey(notice));
+    assert.notStrictEqual(dismissKey({ ...notice, v1_catch_up_skipped: ['pngtuber'] }), dismissKey(notice));
   });
 
   test(`${locale}: other failed migrations keep the generic text`, () => {

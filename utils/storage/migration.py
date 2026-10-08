@@ -986,8 +986,13 @@ def _windows_change_time_ns(path: Path) -> int:
         kernel32.CloseHandle(handle)
 
 
-def _metadata_fingerprint(path: Path) -> str:
+def _metadata_fingerprint(path: Path, *, across_move: bool = False) -> str:
     """Digest of an entry's metadata, without reading any file.
+
+    ``across_move`` leaves out what moving the entry itself changes -- the
+    change time of the entry, and the mtime of a directory whose ``..`` a
+    move rewrites -- so a staged entry can be compared with itself once
+    published; everything inside still counts.
 
     Writing, creating, removing or renaming anything inside changes a size or
     an mtime, so comparing two fingerprints tells whether the entry was
@@ -1003,14 +1008,15 @@ def _metadata_fingerprint(path: Path) -> str:
             current, relative = pending.pop()
             current_stat = current.lstat()
             is_dir = stat.S_ISDIR(current_stat.st_mode)
+            moved_itself = across_move and relative == ""
             records.append(
                 (
                     relative,
                     current_stat.st_mode,
                     0 if is_dir else current_stat.st_size,
-                    current_stat.st_mtime_ns,
-                    current_stat.st_ctime_ns,
-                    _windows_change_time_ns(current) if os.name == "nt" else 0,
+                    0 if moved_itself and is_dir else current_stat.st_mtime_ns,
+                    0 if moved_itself else current_stat.st_ctime_ns,
+                    _windows_change_time_ns(current) if os.name == "nt" and not moved_itself else 0,
                 )
             )
             if is_dir and not _stat_is_reparse(current_stat):
@@ -1897,6 +1903,13 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
                     (transaction_root / "trash").mkdir(exist_ok=True)
                     ensure_entry_parents(transaction_root / "trash", entry_name)
                     _move_entry_keeping_mode(target_entry, scaffold_in_trash)
+                    # Checked again now that nothing can write into it: a file
+                    # that arrived since makes it the new root's own data.
+                    if _tree_has_user_file(scaffold_in_trash):
+                        _publish_without_overwrite(scaffold_in_trash, target_entry)
+                        skipped.append(entry_name)
+                        continue
+                staged_fingerprint = _metadata_fingerprint(staged_entry, across_move=True)
                 try:
                     _publish_without_overwrite(staged_entry, target_entry)
                 except FileExistsError:
@@ -1908,6 +1921,13 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
                         with suppress(OSError):
                             _publish_without_overwrite(scaffold_in_trash, target_entry)
                     raise
+                if _metadata_fingerprint(target_entry, across_move=True) != staged_fingerprint:
+                    # Written to the moment it went live: no proof of the copy,
+                    # so the old copy stays.
+                    for relative_dir, original_mode in widened:
+                        with suppress(OSError):
+                            os.chmod(target_entry / relative_dir, original_mode)
+                    continue
                 for relative_dir, original_mode in widened:
                     os.chmod(target_entry / relative_dir, original_mode)
                 # The verified staged copy itself was moved into place.
@@ -1929,6 +1949,25 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
                 _remove_transaction(transaction_root)
             except Exception as exc:
                 logger.warning("Failed to remove the v1 catch-up transaction: %s", exc)
+    # One that turned up in the old root meanwhile (a sync client) would
+    # otherwise be neither copied nor named; the next launch takes it.
+    turned_up = [
+        entry_name
+        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES
+        if entry_name not in V1_MIGRATED_RUNTIME_ENTRY_NAMES
+        and entry_name not in copied_entries
+        and entry_name not in skipped
+        and entry_name not in candidates
+        and os.path.lexists(source_root / entry_name)
+    ]
+    if turned_up:
+        _persist_migration_payload(
+            config_manager,
+            payload,
+            anchor_root=normalized_anchor_root,
+            v1_catch_up_skipped=skipped,
+        )
+        return copied
     _persist_migration_payload(
         config_manager,
         payload,
@@ -2696,6 +2735,9 @@ def run_pending_storage_migration(
                         },
                     )
 
+                # Nothing writes into the private stage; what the target holds
+                # right after the move must still be exactly this.
+                staged_fingerprint = _metadata_fingerprint(stage_root / entry_name, across_move=True)
                 try:
                     _publish_without_overwrite(stage_root / entry_name, target_entry, reserved=_record_reservation)
                 except FileExistsError as exc:
@@ -2733,7 +2775,12 @@ def run_pending_storage_migration(
                 # The publish moved the staged copy itself, verified just
                 # before; reading it a third time would prove nothing more.
                 actual_manifest = staged_manifests[entry_name]
-                if classify_entry_no_follow(target_entry) != actual_manifest.get("kind"):
+                # A write right after it went live (a sync client) shows in the
+                # metadata: then the staged manifest no longer describes it.
+                if (
+                    classify_entry_no_follow(target_entry) != actual_manifest.get("kind")
+                    or _metadata_fingerprint(target_entry, across_move=True) != staged_fingerprint
+                ):
                     raise StorageMigrationError(
                         "verification_failed",
                         f"迁移发布校验失败：{entry_name}。",

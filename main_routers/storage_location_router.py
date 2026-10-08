@@ -67,7 +67,6 @@ from utils.storage_location_bootstrap import (
     build_storage_location_bootstrap_payload,
 )
 from utils.storage_migration import (
-    CLEANUP_PRIVATE_PREFIX,
     MIGRATED_RUNTIME_ENTRY_NAMES,
     REGENERABLE_RUNTIME_ENTRY_NAMES,
     STORAGE_MIGRATION_STATUS_COMPLETED,
@@ -1621,9 +1620,6 @@ def _build_completed_migration_notice(
         "completed_at": str(migration_payload.get("completed_at") or "").strip(),
         "message": "存储位置迁移已完成，旧数据目录当前仍保留，需手动清理。",
     }
-
-
-_CLEANUP_PRIVATE_PREFIX = CLEANUP_PRIVATE_PREFIX
 
 
 def _entry_may_exist(path: Path) -> bool:

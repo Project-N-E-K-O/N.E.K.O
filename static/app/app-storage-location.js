@@ -151,7 +151,7 @@
         if (!notice || typeof notice !== 'object') {
             return '';
         }
-        return JSON.stringify([
+        var parts = [
             notice.completed_at,
             notice.target_root,
             notice.retained_root,
@@ -159,7 +159,17 @@
             notice.selection_source
         ].map(function (value) {
             return String(value || '').trim();
-        }));
+        });
+        // Data a later v1 catch-up could not bring over is news even after
+        // the plain completion notice was dismissed. Only added when present,
+        // so notices dismissed before keep their key.
+        var skipped = Array.isArray(notice.v1_catch_up_skipped)
+            ? notice.v1_catch_up_skipped.map(function (entry) { return String(entry); }).join(',')
+            : '';
+        if (skipped) {
+            parts.push(skipped);
+        }
+        return JSON.stringify(parts);
     }
 
     function isCompletionNoticeDismissed(notice) {
@@ -2481,6 +2491,7 @@
         formatError: extractResponseError,
         buildCleanupIncompleteMessage: buildCleanupIncompleteMessage,
         describeV1CatchUpSkipped: describeV1CatchUpSkipped,
+        buildCompletionNoticeDismissKey: buildCompletionNoticeDismissKey,
         buildMaintenanceProgressModel: buildMaintenanceProgressModel,
         init: init,
         waitUntilMainUiAllowed: function () {

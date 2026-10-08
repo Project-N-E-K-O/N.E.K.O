@@ -4542,3 +4542,77 @@ def test_v1_catch_up_puts_the_empty_directory_back_when_publishing_fails(tmp_pat
 
     assert (target_root / "pngtuber").is_dir()
     assert (source_root / "pngtuber" / "set" / "idle.png").is_file()
+
+
+@pytest.mark.unit
+def test_v1_catch_up_keeps_a_scaffold_written_to_while_the_old_data_was_copied(tmp_path, monkeypatch):
+    """Empty when first looked at, then a file arrived during the copy: it is
+    the new root's own data now, not scaffolding to throw away."""
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (target_root / "pngtuber").mkdir()
+    original_copy = storage_migration_module._copy_and_verify_entry
+
+    def _copy_while_the_scaffold_fills(source_path, staged_path, **kwargs):
+        result = original_copy(source_path, staged_path, **kwargs)
+        (target_root / "pngtuber" / "arrived.png").write_bytes(b"new root data")
+        return result
+
+    monkeypatch.setattr(storage_migration_module, "_copy_and_verify_entry", _copy_while_the_scaffold_fills)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert sorted(child.name for child in (target_root / "pngtuber").iterdir()) == ["arrived.png"]
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert "pngtuber" not in (checkpoint.get("copied_entries") or {})
+    assert checkpoint["v1_catch_up_skipped"] == ["pngtuber"]
+    assert (source_root / "pngtuber" / "set" / "idle.png").is_file()
+
+
+@pytest.mark.unit
+def test_v1_catch_up_records_no_evidence_for_a_copy_written_as_it_went_live(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    _source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_written(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
+        if Path(target).name == "pngtuber":
+            (Path(target) / "set" / "idle.png").write_bytes(b"rewritten")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_written)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert "pngtuber" not in (load_storage_migration(reloaded_manager).get("copied_entries") or {})
+
+
+@pytest.mark.unit
+def test_v1_catch_up_is_not_marked_done_while_an_entry_turned_up_meanwhile(tmp_path, monkeypatch):
+    """watch_together appeared in the old root while pngtuber was copied: it
+    is neither copied nor named yet, so the next launch must take it."""
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    original_copy = storage_migration_module._copy_and_verify_entry
+
+    def _copy_while_another_turns_up(source_path, staged_path, **kwargs):
+        result = original_copy(source_path, staged_path, **kwargs)
+        (source_root / "watch_together").mkdir(exist_ok=True)
+        (source_root / "watch_together" / "library.json").write_text("{}", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(storage_migration_module, "_copy_and_verify_entry", _copy_while_another_turns_up)
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    monkeypatch.undo()
+
+    checkpoint = load_storage_migration(_make_real_config_manager(tmp_path))
+    assert not checkpoint.get("v1_catch_up_completed_at")
+    assert (target_root / "pngtuber" / "set" / "idle.png").is_file()
+
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+
+    assert (target_root / "watch_together" / "library.json").is_file()
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["v1_catch_up_completed_at"]

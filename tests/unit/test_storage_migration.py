@@ -3606,3 +3606,29 @@ def test_metadata_fingerprint_sees_a_same_size_rewrite_with_its_mtime_set_back(t
 
     assert os.stat(data).st_mtime_ns == before_stat.st_mtime_ns
     assert storage_migration_module._metadata_fingerprint(entry) != before
+
+
+@pytest.mark.unit
+def test_a_target_written_right_after_publishing_is_not_recorded_as_the_copy(tmp_path, monkeypatch):
+    """The evidence describes the staged copy; a write the moment it went live
+    (a sync client) would make cleanup trust a copy the target no longer is.
+    Caught from metadata, without reading the entry a third time."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, target_root = _start_migration_into_empty_target(tmp_path)
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_written(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
+        if Path(target).name == "memory":
+            (Path(target) / "facts.json").write_bytes(b"{} rewritten")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_written)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    # Not committed on the staged manifest; and since rolling back would
+    # delete that write, it is kept for a person to decide.
+    assert result["error_code"] == "migration_publish_conflict"
+    assert (target_root / "memory" / "facts.json").read_bytes() == b"{} rewritten"

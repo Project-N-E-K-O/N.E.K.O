@@ -131,6 +131,29 @@ def _division_chain(node: ast.AST) -> list[ast.AST]:
     return [node]
 
 
+def _parts_after_runtime_root(node: ast.AST, aliases: set[str]) -> list[ast.AST] | None:
+    """The path parts after the runtime root in ``node``; ``None`` if not rooted.
+
+    Divisions, ``os.path.join`` and ``joinpath`` may be mixed and chained
+    (``root.joinpath("state").joinpath(name)``); each step adds its parts.
+    """
+    if _is_runtime_root(node, aliases):
+        return []
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        left = _parts_after_runtime_root(node.left, aliases)
+        return None if left is None else [*left, node.right]
+    if isinstance(node, ast.Call):
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name == "joinpath" and isinstance(func, ast.Attribute):
+            base = _parts_after_runtime_root(func.value, aliases)
+            return None if base is None else [*base, *node.args]
+        if name == "join" and node.args:
+            base = _parts_after_runtime_root(node.args[0], aliases)
+            return None if base is None else [*base, *node.args[1:]]
+    return None
+
+
 def _scan_state_children(tree: ast.Module) -> set[str]:
     """Directories the code builds as ``<runtime root> / "state" / <name>``."""
     constants = {
@@ -158,21 +181,7 @@ def _scan_state_children(tree: ast.Module) -> set[str]:
             # The parts after the runtime root, however the path is built:
             # root / "state" / name, os.path.join(root, "state", name),
             # root.joinpath("state", name), or "state/name" in one string.
-            parts: list[ast.AST] = []
-            chain = _division_chain(node)
-            if len(chain) >= 2 and _is_runtime_root(chain[0], aliases):
-                parts = chain[1:]
-            elif isinstance(node, ast.Call):
-                func = node.func
-                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-                if name in {"join", "joinpath"}:
-                    args = list(node.args)
-                    if isinstance(func, ast.Attribute) and name == "joinpath":
-                        args = [func.value, *args]
-                    for index, arg in enumerate(args[:-1]):
-                        if _is_runtime_root(arg, aliases):
-                            parts = args[index + 1:]
-                            break
+            parts = _parts_after_runtime_root(node, aliases) or []
             segments: list[str] = []
             for part in parts:
                 value = _string_value(part, constants)
@@ -278,7 +287,16 @@ def test_state_child_scan_sees_every_way_a_path_is_built():
         "    b = os.path.join(base, 'state', 'by_join')",
         "    c = base.joinpath('state', 'by_joinpath')",
         "    d = base / 'state/in_one_string'",
+        "    e = base.joinpath('state').joinpath('by_chained_joinpath')",
+        "    f = base.joinpath('state') / 'by_mixed'",
     ]
     tree = ast.parse(chr(10).join(lines))
 
-    assert _scan_state_children(tree) == {"by_division", "by_join", "by_joinpath", "in_one_string"}
+    assert _scan_state_children(tree) == {
+        "by_division",
+        "by_join",
+        "by_joinpath",
+        "in_one_string",
+        "by_chained_joinpath",
+        "by_mixed",
+    }
