@@ -106,6 +106,9 @@ INSTANCE_ID = ""
 JOB_HANDLE = None
 _cleanup_lock = threading.Lock()
 _cleanup_done = False
+# Descendants of the servers, taken by cleanup_servers before its first
+# teardown step; read only to decide whether a migration restart is safe.
+_teardown_descendants: list = []
 _expected_launcher_shutdown = False
 _existing_neko_services: set[str] = set()  # 已有 N.E.K.O 实例占用的端口键
 _partial_or_mixed_existing_backend = False
@@ -2218,16 +2221,27 @@ def wait_for_servers(timeout: int = 60) -> bool | str:
         return False
 
 
-def _snapshot_server_descendants(servers) -> list:
-    """Every live descendant of the tracked servers, taken before teardown.
+def _process_exe(process) -> str:
+    try:
+        return os.path.normcase(process.exe())
+    except Exception:
+        return ""
 
-    A server can exit while a non-daemon child (a plugin host) lives on, and
-    once the server is gone its children can no longer be found through it.
+
+def _snapshot_server_descendants(servers) -> list:
+    """Every live descendant of the tracked servers, as ``(process, own)``.
+
+    Taken before teardown: a server can exit while a non-daemon child (a
+    plugin host) lives on, and once the server is gone its children can no
+    longer be found through it. ``own`` marks N.E.K.O's own processes --
+    running the same executable as a server or the launcher -- as opposed to
+    programs a server opened for the user (an app, a file manager).
     """
     try:
         import psutil
     except ImportError:
         return []
+    own_exes = {_process_exe(psutil.Process()), os.path.normcase(sys.executable)}
     descendants = []
     for server in servers:
         proc = server.get('process')
@@ -2235,17 +2249,24 @@ def _snapshot_server_descendants(servers) -> list:
         if not pid:
             continue
         try:
-            descendants.extend(psutil.Process(pid).children(recursive=True))
+            server_process = psutil.Process(pid)
+            own_exes.add(_process_exe(server_process))
+            descendants.extend(server_process.children(recursive=True))
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-    return descendants
+    own_exes.discard("")
+    return [(process, _process_exe(process) in own_exes) for process in descendants]
 
 
-def _reap_surviving_descendants(descendants) -> bool:
-    """Kill descendants that outlived their server; True if any is still alive.
+def _settle_surviving_descendants(descendants) -> bool:
+    """Stop N.E.K.O's own descendants that outlived their server; True if any
+    descendant is still alive.
 
-    ``psutil.Process`` remembers each process's creation time, so a recycled
-    PID is never mistaken for, or killed as, one of these.
+    Only our own processes are stopped (terminate first, kill if they do not
+    exit); a program opened for the user is never touched, it only keeps the
+    migration restart from going ahead. ``psutil.Process`` remembers each
+    process's creation time, so a recycled PID is never mistaken for one of
+    these.
     """
     if not descendants:
         return False
@@ -2259,15 +2280,32 @@ def _reap_surviving_descendants(descendants) -> bool:
         except psutil.AccessDenied:
             return True
 
-    survivors = [process for process in descendants if _alive(process)]
+    def _signal(processes, method) -> None:
+        for process in processes:
+            try:
+                getattr(process, method)()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                # Gone already, or not ours to signal: whether it is still
+                # alive is checked below either way.
+                continue
+
+    own = [process for process, is_own in descendants if is_own and _alive(process)]
+    _signal(own, "terminate")
+    if own:
+        psutil.wait_procs(own, timeout=3)
+    own = [process for process in own if _alive(process)]
+    _signal(own, "kill")
+    if own:
+        psutil.wait_procs(own, timeout=3)
+
+    survivors = [process for process, _is_own in descendants if _alive(process)]
     for process in survivors:
         try:
-            process.kill()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-    if survivors:
-        psutil.wait_procs(survivors, timeout=3)
-    return any(_alive(process) for process in survivors)
+            name = process.name()
+        except psutil.Error:
+            name = "?"
+        print(f"[Launcher] 子进程 {name}(pid {process.pid}) 仍在运行，不安排存储迁移重启", flush=True)
+    return bool(survivors)
 
 
 def cleanup_servers():
@@ -2277,6 +2315,13 @@ def cleanup_servers():
         if _cleanup_done:
             return
         _cleanup_done = True
+
+    global _teardown_descendants
+    try:
+        # Before the first teardown step, while every server still runs.
+        _teardown_descendants = _snapshot_server_descendants(list(_iter_servers_for_shutdown()))
+    except Exception:
+        _teardown_descendants = []
 
     try:
         _teardown_print("\n正在关闭服务器...")
@@ -3216,10 +3261,6 @@ def main():
     finally:
         print("\n正在关闭所有进程...", flush=True)
 
-        # Taken while the servers still run: afterwards an orphaned plugin
-        # host can no longer be found through its exited server.
-        server_descendants = _snapshot_server_descendants(SERVERS)
-
         # 尝试优雅关闭
         cleanup_servers()
 
@@ -3287,8 +3328,11 @@ def main():
             )
 
         # The teardown above only reaches a server's process tree while the
-        # server itself is alive; a child that outlived it is handled here.
-        descendants_alive = _reap_surviving_descendants(server_descendants)
+        # server itself is alive. Only a migration restart needs proof that
+        # nothing outlived it; an ordinary exit leaves descendants alone.
+        descendants_alive = (
+            _settle_surviving_descendants(_teardown_descendants) if allow_storage_restart else False
+        )
 
         print("\n清理完成", flush=True)
         # A migration restart is only safe after every old server process --

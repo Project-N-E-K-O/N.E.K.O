@@ -146,6 +146,28 @@ def test_storage_restart_requires_every_old_server_to_be_dead():
     assert "if allow_storage_restart and not has_alive and not descendants_alive:" in source
 
 
+@pytest.mark.unit
+def test_descendants_are_only_settled_for_a_storage_restart():
+    """An ordinary exit must leave programs a server opened for the user alone."""
+    source = (LAUNCHER_CORE / "runtime.py").read_text(encoding="utf-8")
+    assert "_settle_surviving_descendants(_teardown_descendants) if allow_storage_restart else False" in source
+    assert source.count("_settle_surviving_descendants(") == 2  # definition + the guarded call
+
+
+@pytest.mark.unit
+def test_descendants_are_taken_before_the_first_teardown_step():
+    """The startup restart path tears down inside the try block; a snapshot
+    taken in the finally block would find nothing left to check."""
+    import inspect
+
+    from launcher_core import runtime
+
+    source = inspect.getsource(runtime.cleanup_servers)
+    snapshot = source.index("_teardown_descendants = _snapshot_server_descendants(")
+    first_teardown = source.index("for server in _iter_servers_for_shutdown():")
+    assert snapshot < first_teardown
+
+
 class _TrackedServer:
     def __init__(self, popen):
         self.pid = popen.pid
@@ -172,56 +194,80 @@ def _spawn_server_with_a_child(tmp_path):
     return server, int(pid_file.read_text())
 
 
-@pytest.mark.unit
-def test_storage_restart_reaps_a_child_that_outlived_its_server(tmp_path):
-    """A plugin host (daemon=False) survives its server being killed; the
-    restart must not go ahead while it can still write the old root."""
-    psutil = pytest.importorskip("psutil")
+def _orphan_a_child(tmp_path):
     from launcher_core import runtime
 
     server, child_pid = _spawn_server_with_a_child(tmp_path)
+    descendants = runtime._snapshot_server_descendants([{"process": _TrackedServer(server)}])
+    server.kill()
+    server.wait(timeout=10)
+    return server, child_pid, descendants
+
+
+def _kill_quietly(psutil, server, child_pid):
+    server.kill()
     try:
-        descendants = runtime._snapshot_server_descendants([{"process": _TrackedServer(server)}])
-        assert child_pid in {process.pid for process in descendants}
-        server.kill()
-        server.wait(timeout=10)
+        psutil.Process(child_pid).kill()
+    except psutil.NoSuchProcess:
+        return  # already stopped by the code under test
+
+
+@pytest.mark.unit
+def test_storage_restart_stops_our_own_child_that_outlived_its_server(tmp_path):
+    """A plugin host (daemon=False, same executable) survives its server
+    being killed; it is stopped before the restart can go ahead."""
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    server, child_pid, descendants = _orphan_a_child(tmp_path)
+    try:
+        # A Windows venv python.exe is a stub that starts the real interpreter as
+        # one more descendant; every one of them runs our own executable.
+        assert child_pid in {process.pid for process, _own in descendants}
+        assert all(own for _process, own in descendants)
         assert psutil.pid_exists(child_pid)
 
-        assert runtime._reap_surviving_descendants(descendants) is False
+        assert runtime._settle_surviving_descendants(descendants) is False
         assert not psutil.pid_exists(child_pid) or psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE
     finally:
-        server.kill()
-        try:
-            psutil.Process(child_pid).kill()
-        except psutil.NoSuchProcess:
-            pass
+        _kill_quietly(psutil, server, child_pid)
 
 
 @pytest.mark.unit
-def test_storage_restart_waits_for_a_child_that_cannot_be_killed(tmp_path, monkeypatch):
+def test_storage_restart_never_touches_a_program_opened_for_the_user(tmp_path):
+    """Another executable (an app the user had a server open) is left
+    running; it only keeps the restart from going ahead."""
     psutil = pytest.importorskip("psutil")
     from launcher_core import runtime
 
-    server, child_pid = _spawn_server_with_a_child(tmp_path)
+    server, child_pid, descendants = _orphan_a_child(tmp_path)
     try:
-        descendants = runtime._snapshot_server_descendants([{"process": _TrackedServer(server)}])
-        server.kill()
-        server.wait(timeout=10)
+        foreign = [(process, False) for process, _own in descendants]
 
-        def _refuse_kill(self):
+        assert runtime._settle_surviving_descendants(foreign) is True
+        assert psutil.Process(child_pid).is_running()
+    finally:
+        _kill_quietly(psutil, server, child_pid)
+
+
+@pytest.mark.unit
+def test_storage_restart_waits_for_a_child_that_cannot_be_stopped(tmp_path, monkeypatch):
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    server, child_pid, descendants = _orphan_a_child(tmp_path)
+    try:
+        def _refuse(self):
             raise psutil.AccessDenied(self.pid)
 
-        monkeypatch.setattr(psutil.Process, "kill", _refuse_kill)
+        monkeypatch.setattr(psutil.Process, "terminate", _refuse)
+        monkeypatch.setattr(psutil.Process, "kill", _refuse)
         monkeypatch.setattr(psutil, "wait_procs", lambda procs, timeout=None: ([], list(procs)))
 
-        assert runtime._reap_surviving_descendants(descendants) is True
+        assert runtime._settle_surviving_descendants(descendants) is True
     finally:
         monkeypatch.undo()
-        server.kill()
-        try:
-            psutil.Process(child_pid).kill()
-        except psutil.NoSuchProcess:
-            pass
+        _kill_quietly(psutil, server, child_pid)
 
 
 # ---------------------------------------------------------------------------
