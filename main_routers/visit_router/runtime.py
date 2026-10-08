@@ -1576,9 +1576,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             # 到点还没关完：先收掉接收通道（注销传输、停掉关闭任务）再封存。否则之后对端重传来的整句
             # 回了 ack、却落在封存之后，进不了转录
             logger.warning("visit %s: channel close did not finish; retiring it", self.visit_id[:6])
-            unregister_transport_session(self.transport)
-            closing.cancel()
+            closing.cancel()  # 它的 finally 先发对端欠着的 ack 与 stop{reason}，再注销
             await asyncio.wait([closing], timeout=_SHUTDOWN_TASK_WAIT_S)
+            if not closing.done():
+                # finally 里的发送也卡着：直接注销（幂等），封存之前不再收对端的帧
+                unregister_transport_session(self.transport)
         flushed = await self._flush_display(_DISPLAY_FLUSH_S)  # 告别句等整句先上屏，再发「已结束」
         self._ended_published = True  # 从这里起不再往显示队列放帧（收尾中补到的整句只进转录）
         if not flushed:
@@ -1626,7 +1628,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                         self.kick()
                         await asyncio.sleep(0.1)
                 # 已接纳、正在落盘的亲人那句（持有预留）要排在 leave 前面：等到它入队或放弃预留。
-                # 不设上限：等的期间收尾流程照常往下走（它只限时等这个关闭任务），关机会取消它
+                # 这里不设上限：收尾流程只限时等这个关闭任务（_CLOSE_WAIT_S，持有预留时再多等
+                # _RESERVED_SEND_MAX_S），到点就取消它；关机也会取消它
                 while self.outbox.reserved_bytes:
                     await asyncio.sleep(0.05)
                 try:
@@ -1677,15 +1680,18 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         return self.joined and is_transport_attached(self.visit_id, self.side)
 
     async def _settle_journal_open(self, timeout: Optional[float] = None) -> None:
-        # 收尾等它写完，但有上限；还没写完就登记一个回调：它晚到写完时立刻封存，不留没封存的流水
+        # 收尾等它写完，但有上限；还没写完就登记一条后台链：它晚到写完时立刻封存，不留没封存的流水
+        # （关机除外：不起这条链，流水留给下次启动补录）
         opening = self._journal_opening
         if opening is None or opening.done():
             return
         await asyncio.wait([opening], timeout=_JOURNAL_OPEN_MAX_S if timeout is None else timeout)
         if not opening.done() and self._shutdown_started:
-            # 关机：不起不设上限的后台封存链；写上传头的任务被事件循环取消时也不再等卡住的写盘，
-            # 进程才退得出去。留在磁盘上的流水由下次启动补录
+            # 关机：不起不设上限的后台封存链，并主动取消写上传头的任务（abandon_open 之后它被取消就立刻结束，
+            # 不再等卡住的写盘），事件循环这一层不会被它挂住。注意线程池的写盘线程不是 daemon：磁盘一直卡着时，
+            # 解释器退出仍会等它（所有走线程池写盘的地方都一样）。留在磁盘上的流水由下次启动补录
             self.journal.abandon_open()
+            opening.cancel()
             return
         if not opening.done():
             reason = self.finalize_reason or "shutdown"
@@ -1711,6 +1717,18 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         right after it -- or interleaved with nothing at all -- has them all.
         Every seal path calls it first; it also runs when the header lands.
         """
+        if self._journal_failed():
+            # 上传头写不成：积压里的行至少进内存转录（/state 重放、简述），用量与异常没有流水可记
+            backlog, self._journal_backlog = self._journal_backlog, []
+            for record in backlog:
+                if record.get("kind") == "line":
+                    line = {k: v for k, v in record.items() if k != "kind"}
+                    try:
+                        self.journal.remember_line(**line)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("visit %s: buffered line not kept: %s", self.visit_id[:6],
+                                       type(exc).__name__)
+            return
         while self._journal_backlog and self.journal.is_open:
             record = dict(self._journal_backlog.pop(0))
             kind = record.pop("kind")
@@ -2016,7 +2034,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         sealed = False
         if self._header_pending():
             # 上传头还在写：不调 seal()（它这时什么都不封、只会返回 None，还会被当成这一场的封存缓存下来）；
-            # 上传头落盘后的后台链会封存，spool 留给下次启动补录
+            # 关机不起后台封存链，流水与 spool 都留给下次启动补录
             logger.warning("visit %s: upload header still writing at shutdown", self.visit_id[:6])
         else:
             sealing = self._start_seal("shutdown")  # 退出流程已经在封存：等同一个，不再封第二次

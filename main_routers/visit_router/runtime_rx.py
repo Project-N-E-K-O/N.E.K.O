@@ -305,7 +305,7 @@ class ReceiveMixin:
                 "peer_short_id": self.peer.short_id, "cross_region": bool(creds and creds.cross_region),
                 "expires_at": self.wall() + VISIT_ACCEPT_TIMEOUT_S,
             }
-            await self.host.send_frame(dict(self._invite_frame))
+            self._post_display(dict(self._invite_frame))  # 与阶段帧同一条有序队列
             # peer_vid 补齐（订阅仍是 false：接待之前不收看）
             await self.send_media()
         else:

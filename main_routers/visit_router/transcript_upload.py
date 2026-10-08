@@ -310,7 +310,8 @@ class UploadJournal:
         except BaseException:
             # 被取消时线程里的建文件可能还在跑：等它结束（等的过程中再被取消也照等），关掉拿到的 fd、
             # 删掉只写了头的流水，之后才撤销登记——否则重试轮次会把一份仍开着的流水当成孤立文件重封。
-            # 关机时（abandon_open）不等：进程马上退出，本进程没有重试轮次，留下的流水由下次启动补录
+            # 关机时（abandon_open）不等：进程马上退出，本进程没有重试轮次，留下的流水由下次启动补录。
+            # 这只让事件循环不被挂住；卡在建文件里的线程池线程不是 daemon，解释器退出时仍会等它
             while not opening.done() and not self._open_abandoned:
                 try:
                     await asyncio.shield(opening)

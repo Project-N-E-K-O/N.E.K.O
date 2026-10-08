@@ -381,6 +381,7 @@ async def test_verified_hello_invites_the_family_and_fills_peer_vid(tmp_path, mo
         assert "hello" in wire.sent_types("host")
         await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(), nbytes=900)
         assert rt.phase == "awaiting_accept" and rt.peer.uid == GUEST_UID
+        await settle()                                        # 邀请帧经有序显示队列发出
         invite = side.host.frames_of("visit_invite")
         assert len(invite) == 1 and invite[0]["peer_short_id"] == GUEST_UID[:6].upper()
         media = [m for m in wire.downlinks["host"] if m.get("type") == "media"]
@@ -914,6 +915,7 @@ async def test_shutdown_with_a_header_still_writing_does_not_finalize_the_spool(
         assert not (state or {}).get("finalized")             # 留给下次启动补录
         assert rt._sealing is None                            # 关机没调 seal()，不留一个 None 的封存缓存
         assert rt.journal._open_abandoned                     # 写上传头被取消时不再等卡住的写盘
+        assert rt._journal_opening.done()                     # 关机主动取消了它，不靠事件循环收尾
         assert not rtm.has_visit_background_tasks("Host")     # 不起不设上限的后台封存链（进程才退得出去）
     finally:
         gate.set()
@@ -1440,6 +1442,89 @@ async def test_phase_frames_keep_their_order_with_queued_lines(tmp_path, monkeyp
     finally:
         host.host.send_frame = real_send
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_retired_channel_close_still_sends_its_stop(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    rt.outbox.leave_done = lambda now: False                  # 对端一直不回 leave 的 ack
+    order: list[str] = []
+    real_unregister = rtm.unregister_transport_session
+
+    def unregister(transport):
+        if transport is rt.transport:                         # 只记本侧（guest 那边也会注销自己的）
+            order.append("unregister")
+        return real_unregister(transport)
+
+    monkeypatch.setattr(rtm, "unregister_transport_session", unregister)
+    real_send = rt.transport.send
+
+    async def send(msg, *args, **kwargs):
+        if isinstance(msg, dict) and msg.get("type") == "stop":
+            order.append("stop:" + str(msg.get("reason")))
+        return await real_send(msg, *args, **kwargs)
+
+    rt.transport.send = send
+    try:
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(rt), 10)
+        assert "stop:route_end" in order and "unregister" in order
+        assert order.index("stop:route_end") < order.index("unregister")   # 先让它发完 stop{reason}，再注销
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_backlog_lines_survive_a_header_that_fails_late(tmp_path, monkeypatch, clocks):
+    monkeypatch.setattr(rtm, "_JOURNAL_OPEN_MAX_S", 0.1)
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    gate = asyncio.Event()
+
+    async def slow_then_broken(**kw):
+        await gate.wait()
+        raise OSError("disk full")                            # 写得慢，最后还写失败
+
+    rt.journal.open = slow_then_broken
+    try:
+        await rt.on_transport_state({"state": "joined", "peer_present": False})
+        await rt.record_line("own_human", side="host", lp=3, ln="h:3", text="开头那一句", truncated=False)
+        assert rt._journal_backlog                            # 先进了积压
+        gate.set()
+        await wait_for(lambda: [r for r in rt.journal.lines() if r["text"] == "开头那一句"], timeout=5)
+        assert not rt._journal_backlog                        # 积压里的行转进了内存转录
+    finally:
+        gate.set()
+        await teardown(side, clock=clock)
+
+
+async def test_the_invite_frame_keeps_its_order_in_the_display_queue(tmp_path, monkeypatch, clocks):
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    real_send = side.host.send_frame
+
+    async def send_frame(payload):
+        if payload.get("line_id") == "slow":
+            await asyncio.sleep(0.3)                          # 页面背压
+        return await real_send(payload)
+
+    side.host.send_frame = send_frame
+    try:
+        await rt.on_transport_state({"state": "connected", "peer_present": True})
+        before = len(side.host.frames)
+        rt._post_display({"type": "visit_state_change", "visit_id": rt.visit_id, "line_id": "slow"})
+        await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(), nbytes=900)
+        await wait_for(lambda: side.host.frames_of("visit_invite"), timeout=5)
+        frames = side.host.frames[before:]
+        slow = [i for i, f in enumerate(frames) if f.get("line_id") == "slow"]
+        invite = [i for i, f in enumerate(frames) if f.get("type") == "visit_invite"]
+        assert slow and invite and slow[0] < invite[0]        # 邀请帧不越过排在前面的帧
+    finally:
+        side.host.send_frame = real_send
+        await teardown(side, wire=wire, clock=clocks[0])
 
 
 async def test_the_spool_is_finalized_only_once(tmp_path, monkeypatch):
