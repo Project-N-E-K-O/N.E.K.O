@@ -137,8 +137,8 @@ def _parts_after_runtime_root(node: ast.AST, aliases: set[str]) -> list[ast.AST]
     Divisions, ``os.path.join`` and ``joinpath`` may be mixed and chained
     (``root.joinpath("state").joinpath(name)``); each step adds its parts.
     """
-    if _is_runtime_root(node, aliases):
-        return []
+    # Taken apart first: a whole join call merely mentions app_docs_dir
+    # somewhere inside, which would otherwise pass for the root itself.
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         left = _parts_after_runtime_root(node.left, aliases)
         return None if left is None else [*left, node.right]
@@ -151,6 +151,8 @@ def _parts_after_runtime_root(node: ast.AST, aliases: set[str]) -> list[ast.AST]
         if name == "join" and node.args:
             base = _parts_after_runtime_root(node.args[0], aliases)
             return None if base is None else [*base, *node.args[1:]]
+    if _is_runtime_root(node, aliases):
+        return []
     return None
 
 
@@ -289,6 +291,8 @@ def test_state_child_scan_sees_every_way_a_path_is_built():
         "    d = base / 'state/in_one_string'",
         "    e = base.joinpath('state').joinpath('by_chained_joinpath')",
         "    f = base.joinpath('state') / 'by_mixed'",
+        "    g = cm.app_docs_dir.joinpath('state', 'on_the_attribute')",
+        "    h = os.path.join(cm.app_docs_dir, 'state', 'joined_on_the_attribute')",
     ]
     tree = ast.parse(chr(10).join(lines))
 
@@ -299,4 +303,6 @@ def test_state_child_scan_sees_every_way_a_path_is_built():
         "in_one_string",
         "by_chained_joinpath",
         "by_mixed",
+        "on_the_attribute",
+        "joined_on_the_attribute",
     }
