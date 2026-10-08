@@ -68,6 +68,12 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-09-storage-hardening-prepared-recovery",
         "2026-10-09-pr3349-main-rebase",
         "2026-10-08-voice-enrollment-duration",
+        "2026-10-09-pr3349-rebase-storage-hardening",
+        "2026-10-09-pr3345-rebase-storage-hardening",
+        "2026-10-09-pr3345-main-rebase",
+        "2026-10-08-voice-identity-resource-help",
+        "2026-10-08-voice-identity-input-guidance",
+        "2026-10-08-voice-identity-input-layout",
         "2026-10-09-storage-hardening-main-merge",
         "2026-10-08-storage-v1-catch-up-skipped",
         "2026-10-08-unknown-unlock-prepared-recovery",
@@ -380,7 +386,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
 # 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = 'ba5027ed94f102a3d38a4e7ee6efc94fb54ec5af8e263acb49efedb2e4d24c04'
+LOCALE_KEY_SIGNATURE = '422da93f1998ed22d04da638042982360cca8b886c465da620a5f8473aeb6a96'
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

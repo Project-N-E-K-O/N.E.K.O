@@ -65,6 +65,14 @@
         insufficient_enrollment_time: ['voiceIdentity.errorInsufficientTime', '剩余时间不足以完成下一段，请重新开始录入。']
     });
 
+    const READINESS_HINT_FALLBACKS = Object.freeze({
+        'voiceIdentity.setupBusy': '正在准备或检查，请稍候。',
+        'voiceIdentity.resourcesChecking': '录入资源尚未确认，请检查并加载。',
+        'voiceIdentity.resourcesNeeded': '录入资源未就绪，请检查并加载资源。',
+        'voiceIdentity.inputTestRequired': '请先完成试录，再开始录入。',
+        'voiceIdentity.enrollmentReady': '试录与资源检查已通过，可以开始录入。'
+    });
+
     const state = {
         csrfToken: '',
         enrollmentId: null,
@@ -607,6 +615,28 @@
             && !state.segmentIndex;
         elements.cancel.disabled = state.cancelPending;
         elements.reenroll.disabled = pending || enrollmentUnavailable || Boolean(readiness && !readiness.canStart());
+        for (const [id, hidden, disabled] of [
+            ['voice-identity-start-hint', elements.start.hidden, elements.start.disabled],
+            ['voice-identity-reenroll-hint', elements.profileActions.hidden, elements.reenroll.disabled]
+        ]) {
+            const hint = document.getElementById(id);
+            if (!hint) continue;
+            hint.hidden = hidden;
+            let text = '';
+            if (state.initializationError) text = translate('voiceIdentity.setupConnectionFailed', '连接失败，请重试连接。');
+            else if (enrollmentUnavailable) text = state.runtimeDisabled
+                ? reasonMessage() : enrollmentErrorMessage(new Error(state.effectiveReason));
+            else if (pending) text = translate('voiceIdentity.setupBusy', '正在准备或检查，请稍候。');
+            else if (state.enrollmentId) text = disabled
+                ? translate('voiceIdentity.inputChanged', '输入设置已更改；如正在录入，请取消后重新试录。')
+                : translate('voiceIdentity.continueEnrollment', '继续录入');
+            else if (readiness && readiness.startHintKey) {
+                const key = readiness.startHintKey();
+                text = translate(key, READINESS_HINT_FALLBACKS[key] || '');
+            }
+            if (hint.textContent !== text) hint.textContent = text;
+            hint.classList.toggle('is-ready', !disabled);
+        }
         elements.delete.disabled = pending;
         if (!state.filterPending) elements.filter.checked = state.requestedEnabled;
         elements.filter.disabled = pending

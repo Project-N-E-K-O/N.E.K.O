@@ -102,6 +102,64 @@ test('input quality alone cannot bypass missing required resources', async () =>
     await h.elements.get('voice-identity-test').emit('click');
     assert.equal(h.controller.canStart(), false);
 });
+
+test('enrollment guidance follows resource and input gates without changing eligibility', async () => {
+    const h = harness();
+    assert.equal(h.controller.startHintKey(), 'voiceIdentity.resourcesChecking');
+    await h.controller.refreshResources();
+    assert.equal(h.controller.startHintKey(), 'voiceIdentity.inputTestRequired');
+    assert.equal(h.controller.canStart(), false);
+    await h.elements.get('voice-identity-test').emit('click');
+    assert.equal(h.controller.startHintKey(), 'voiceIdentity.enrollmentReady');
+    assert.equal(h.controller.canStart(), true);
+    h.elements.get('voice-identity-gain').value = '12';
+    h.elements.get('voice-identity-gain').emit('change');
+    assert.equal(h.controller.startHintKey(), 'voiceIdentity.inputTestRequired');
+    assert.equal(h.controller.canStart(), false);
+});
+
+test('passing input cannot produce ready guidance while required resources are missing', async () => {
+    const h = harness({ resourceReady: false });
+    await h.controller.refreshResources();
+    await h.elements.get('voice-identity-test').emit('click');
+    assert.equal(h.controller.startHintKey(), 'voiceIdentity.resourcesNeeded');
+    assert.equal(h.controller.canStart(), false);
+});
+
+test('resource guidance remains usable when translations are unavailable', async () => {
+    const h = harness();
+    h.controller.controls();
+    assert.match(h.elements.get('voice-identity-resource-summary').textContent, /not confirmed/i);
+    await h.controller.refreshResources();
+    assert.match(h.elements.get('voice-identity-resource-summary').textContent, /ready/i);
+    assert.match(h.elements.get('voice-identity-wake-summary').textContent, /off/i);
+});
+
+test('fallback trial success does not promise enrollment with missing resources', async () => {
+    const h = harness({ resourceReady: false });
+    await h.controller.refreshResources();
+    await h.elements.get('voice-identity-test').emit('click');
+    assert.equal(h.controller.canStart(), false);
+    assert.equal(h.elements.get('voice-identity-test-result').textContent, 'Input test passed.');
+});
+
+test('optional wake resources do not block enrollment and explain disabled download', async () => {
+    const h = harness({ translate: key => key, requestRouter: async url => {
+        if (url === '/resources') return { can_enroll: true, wake_enabled: false, resources: { wake_model: { state: 'missing' }, wake_runtime: { state: 'missing' } } };
+        if (url === '/audio/check/isolation') return { token: 'opaque-ticket', ttl_seconds: 60 };
+        if (url === '/audio/check') return { accepted: true, audio_contract: { revision: 1, noise_reduction_enabled: false } };
+        return {};
+    } });
+    await h.controller.refreshResources();
+    assert.equal(h.elements.get('voice-identity-download').disabled, true);
+    assert.equal(h.elements.get('voice-identity-download-help').hidden, false);
+    assert.equal(h.elements.get('voice-identity-resource-summary').textContent, 'voiceIdentity.resourcesReady');
+    assert.equal(h.elements.get('voice-identity-wake-summary').textContent, 'voiceIdentity.wakeOptional');
+    assert.equal(h.elements.get('voice-identity-download-help').textContent, 'voiceIdentity.downloadNeedsRuntime');
+    await h.elements.get('voice-identity-test').emit('click');
+    assert.equal(h.controller.startHintKey(), 'voiceIdentity.enrollmentReady');
+    assert.equal(h.controller.canStart(), true);
+});
 test('postprocessing rejection keeps enrollment blocked', async () => {
     const h = harness({ accepted: false }); await h.controller.refreshResources();
     await h.elements.get('voice-identity-test').emit('click');

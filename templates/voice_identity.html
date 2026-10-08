@@ -7,14 +7,14 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
-    <link rel="stylesheet" href="/static/css/voice_identity.css?v={{ static_asset_version }}-pr3149-rebase-20261004">
+    <link rel="stylesheet" href="/static/css/voice_identity.css?v={{ static_asset_version }}-input-layout-v4">
     <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
     <script src="/static/common_dialogs.js?v={{ static_asset_version }}" defer></script>
     <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
     <script src="/static/js/microphone-input.js?v={{ static_asset_version }}" defer></script>
-    <script src="/static/js/voice-identity-readiness.js?v={{ static_asset_version }}" defer></script>
-    <script src="/static/js/voice_identity.js?v={{ static_asset_version }}-readiness-pr3149-rebase-20261004" defer></script>
+    <script src="/static/js/voice-identity-readiness.js?v={{ static_asset_version }}-input-layout-v4" defer></script>
+    <script src="/static/js/voice_identity.js?v={{ static_asset_version }}-input-layout-v4" defer></script>
 </head>
 <body class="voice-identity-page">
     <main class="voice-identity-shell container">
@@ -29,7 +29,7 @@
                         <circle cx="37" cy="12" r="4"></circle>
                     </svg>
                 </span>
-                <h2 data-i18n="voiceIdentity.pageTitle" data-text="Owner 声纹">Owner 声纹</h2>
+                <h2 data-i18n="voiceIdentity.pageTitle" data-i18n-aria="voiceIdentity.pageTitle" aria-label="Owner 声纹" data-text="Owner 声纹">Owner 声纹</h2>
             </div>
             <div class="neko-window-controls">
                 <button type="button" class="neko-window-control-btn"
@@ -86,28 +86,30 @@
                 </section>
 
                 <section class="readiness-card" aria-labelledby="voice-input-title">
-                    <h2 id="voice-input-title" data-i18n="voiceIdentity.inputTitle">检查麦克风与资源</h2>
-                    <ul id="voice-identity-resources" aria-live="polite"></ul>
-                    <p data-i18n="voiceIdentity.resourceLocation">模型与运行组件位于此页面连接的 N.E.K.O. 后端机器；麦克风位于当前设备。</p>
-                    <label><input type="checkbox" id="voice-identity-wake-enable"> <span data-i18n="voiceIdentity.wakeEnable">启用唤醒词</span></label>
-                    <div class="enrollment-actions">
-                        <button type="button" class="secondary-button" id="voice-identity-prepare" data-i18n="voiceIdentity.resourcePrepare">检查并加载资源</button>
-                        <button type="button" class="secondary-button" id="voice-identity-download" data-i18n="voiceIdentity.resourceDownload">下载唤醒词模型</button>
-                        <button type="button" class="secondary-button" id="voice-identity-repair" data-i18n="voiceIdentity.resourceRepairButton" hidden>修复资源</button>
-                        <button type="button" class="secondary-button" id="voice-identity-resource-cancel" data-i18n="voiceIdentity.resourceCancel" hidden>取消资源操作</button>
+                    <div class="input-card-heading">
+                        <span class="setup-step" aria-hidden="true">01</span>
+                        <h2 id="voice-input-title" data-i18n="voiceIdentity.inputSetupTitle">麦克风与试录</h2>
                     </div>
-                    <p id="voice-identity-resource-message" role="status"></p>
-                    <label for="voice-identity-microphone" data-i18n="voiceIdentity.inputSelect">麦克风</label>
-                    <select id="voice-identity-microphone"></select>
-                    <p><span data-i18n="voiceIdentity.inputActual">实际输入：</span> <span id="voice-identity-actual-device" data-i18n="voiceIdentity.inputNotOpened">尚未启用麦克风</span></p>
+                    <div class="input-device-field">
+                        <label for="voice-identity-microphone" data-i18n="voiceIdentity.inputSelect">麦克风</label>
+                        <select id="voice-identity-microphone"></select>
+                        <p class="actual-input"><span data-i18n="voiceIdentity.inputActual">实际输入：</span> <span id="voice-identity-actual-device" data-i18n="voiceIdentity.inputNotOpened">尚未启用麦克风</span></p>
+                    </div>
                     <p id="voice-identity-input-notice" role="status" aria-live="polite"></p>
-                    <label for="voice-identity-gain" data-i18n="voiceIdentity.inputGain">输入增益</label>
-                    <input type="range" id="voice-identity-gain" min="-5" max="25" step="1" value="0">
-                    <output id="voice-identity-gain-value" for="voice-identity-gain">0 dB</output>
-                    <meter id="voice-identity-meter" min="0" max="1" value="0" data-i18n-aria="voiceIdentity.inputVolume" aria-label="输入音量"></meter>
-                    <p data-i18n="voiceIdentity.inputTestHelp">先试录三秒，检查处理后的有效人声。试录前会停止关联会话的录音；不会自动恢复。</p>
-                    <button type="button" class="primary-button" id="voice-identity-test" data-i18n="voiceIdentity.inputTest">启用麦克风并试录</button>
-                    <button type="button" class="secondary-button" id="voice-identity-test-cancel" data-i18n="voiceIdentity.cancel" hidden>取消录入</button>
+                    <div class="input-level-panel">
+                        <div class="input-gain-heading">
+                            <label for="voice-identity-gain" data-i18n="voiceIdentity.inputGain">输入增益</label>
+                            <output id="voice-identity-gain-value" for="voice-identity-gain">0 dB</output>
+                        </div>
+                        <input type="range" id="voice-identity-gain" min="-5" max="25" step="1" value="0">
+                        <label for="voice-identity-meter" data-i18n="voiceIdentity.inputVolume">输入音量</label>
+                        <meter id="voice-identity-meter" min="0" max="1" value="0" data-i18n-aria="voiceIdentity.inputVolume" aria-label="输入音量"></meter>
+                    </div>
+                    <p class="input-test-help" data-i18n="voiceIdentity.inputTestHelp">先试录三秒。试录会停止关联会话的麦克风，结束后不会自动恢复。</p>
+                    <div class="input-test-actions">
+                        <button type="button" class="primary-button" id="voice-identity-test" data-i18n="voiceIdentity.inputTest">启用麦克风并试录</button>
+                        <button type="button" class="secondary-button" id="voice-identity-test-cancel" data-i18n="voiceIdentity.cancel" hidden>取消录入</button>
+                    </div>
                     <p id="voice-identity-test-result" role="status" aria-live="polite"></p>
                 </section>
 
@@ -173,6 +175,7 @@
                     </p>
                     <div class="enrollment-actions" id="voice-identity-actions">
                         <button type="button" class="primary-button" id="voice-identity-start"
+                            aria-describedby="voice-identity-start-hint"
                             data-i18n="voiceIdentity.enrollAndEnable">开始录入</button>
                         <button type="button" class="primary-button" id="voice-identity-finish" hidden
                             data-i18n="voiceIdentity.finish">说完了，保存</button>
@@ -181,6 +184,7 @@
                         <button type="button" class="secondary-button" id="voice-identity-cancel" hidden
                             data-i18n="voiceIdentity.cancel">取消录入</button>
                     </div>
+                    <p id="voice-identity-start-hint" class="start-hint" role="status" aria-live="polite"></p>
                     <p id="voice-identity-message" class="enrollment-message"
                         role="status" aria-live="polite" aria-atomic="true"></p>
                     <button type="button" class="secondary-button retry-connection" id="voice-identity-retry"
@@ -205,11 +209,39 @@
                     </div>
                     <div class="profile-actions" id="voice-identity-profile-actions">
                         <button type="button" class="secondary-button" id="voice-identity-reenroll"
+                            aria-describedby="voice-identity-reenroll-hint"
                             data-i18n="voiceIdentity.reenroll">重新录入</button>
                         <button type="button" class="danger-button" id="voice-identity-delete"
                             data-i18n="voiceIdentity.delete">删除声纹</button>
                     </div>
+                    <p id="voice-identity-reenroll-hint" class="start-hint" role="status" aria-live="polite"></p>
                 </section>
+
+                <section class="resource-card" aria-labelledby="voice-resource-title">
+                    <div class="resource-overview">
+                        <details class="resource-details">
+                            <summary id="voice-resource-title" data-i18n="voiceIdentity.resourceSettingsTitle">资源与唤醒设置</summary>
+                            <div class="resource-details-content">
+                                <ul id="voice-identity-resources" aria-live="polite"></ul>
+                                <p class="resource-location" data-i18n="voiceIdentity.resourceLocation">点击「检查并加载资源」准备声纹识别，录音使用你当前设备的麦克风。</p>
+                                <div class="wake-settings">
+                                    <label class="wake-enable-label"><input type="checkbox" id="voice-identity-wake-enable"> <span data-i18n="voiceIdentity.wakeEnable">启用唤醒词</span></label>
+                                    <button type="button" class="secondary-button" id="voice-identity-download" aria-describedby="voice-identity-download-help" data-i18n="voiceIdentity.resourceDownload">下载唤醒词模型</button>
+                                </div>
+                                <p id="voice-identity-wake-summary" class="resource-location"></p>
+                                <p id="voice-identity-download-help" class="resource-location" hidden></p>
+                            </div>
+                        </details>
+                        <p id="voice-identity-resource-summary" class="resource-summary" role="status" aria-live="polite"></p>
+                    </div>
+                    <div class="resource-actions">
+                        <button type="button" class="secondary-button" id="voice-identity-prepare" data-i18n="voiceIdentity.resourcePrepare">检查并加载资源</button>
+                        <button type="button" class="secondary-button" id="voice-identity-repair" data-i18n="voiceIdentity.resourceRepairButton" hidden>修复资源</button>
+                        <button type="button" class="secondary-button" id="voice-identity-resource-cancel" data-i18n="voiceIdentity.resourceCancel" hidden>取消资源操作</button>
+                    </div>
+                    <p id="voice-identity-resource-message" role="status" aria-live="polite"></p>
+                </section>
+
             </div>
         </div>
     </main>

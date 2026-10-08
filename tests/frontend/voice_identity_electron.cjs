@@ -28,10 +28,11 @@ app.commandLine.appendSwitch('use-file-for-fake-audio-capture', wavPath);
 let server, win;
 let allowEnrollment = false, enrollment = null;
 const requests = [];
+let hasProfile = false;
 const watchdog = setTimeout(() => { console.error('VOICE_READINESS_ELECTRON_TIMEOUT'); app.exit(2); }, 40000);
 function json(response, value) { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(value)); }
 function status() {
-    return { has_profile: false, runtime_mode: 'enforce', enrollment_active: Boolean(enrollment), enrollment, effective_reason: 'no_profile' };
+    return { has_profile: hasProfile, profile_generation: hasProfile ? 'controlled-profile' : null, runtime_mode: 'enforce', enrollment_active: Boolean(enrollment), enrollment, effective_reason: hasProfile ? 'disabled' : 'no_profile' };
 }
 function measurePcm(pcm) {
     let activeSamples = 0;
@@ -52,6 +53,10 @@ app.whenReady().then(async () => {
         if (url.pathname === '/api/config/page_config') return json(response, { autostart_csrf_token: 'controlled-electron-test' });
         if (url.pathname === '/api/config/steam_language') return json(response, { ui_language: 'zh-CN' });
         if (url.pathname === '/api/voice-identity/status') return json(response, status());
+        if (url.pathname === '/api/voice-identity/profile' && request.method === 'DELETE') {
+            hasProfile = false;
+            return json(response, status());
+        }
         if (url.pathname === '/api/voice-identity/resources') return json(response, { can_enroll: true, wake_enabled: false, resources: { campp: { state: 'ready' }, silero: { state: 'ready' }, noise_reduction: { state: 'ready' }, wake_model: { state: 'missing', reason: 'WAKE_WORD_MODEL_MISSING' }, wake_runtime: { state: 'missing', reason: 'WAKE_WORD_RUNTIME_MISSING' } } });
         if (url.pathname === '/api/voice-identity/audio/check/isolation') return json(response, { token: 'controlled-ticket', ttl_seconds: 60 });
         if (url.pathname === '/api/voice-identity/audio/check/isolation/release') return json(response, { released: true });
@@ -97,6 +102,41 @@ app.whenReady().then(async () => {
     await win.loadURL(origin + '/voice_identity');
     await waitFor("!document.getElementById('voice-identity-test').disabled");
     assert.equal(await win.webContents.executeJavaScript("document.getElementById('voice-identity-start').disabled"), true);
+    await waitFor("typeof window.t === 'function' && window.t('voiceIdentity.resourcesReady') !== 'voiceIdentity.resourcesReady' && document.getElementById('voice-identity-resource-summary').textContent === window.t('voiceIdentity.resourcesReady')");
+    const setup = await win.webContents.executeJavaScript("({ hint: document.getElementById('voice-identity-start-hint').textContent, describedBy: document.getElementById('voice-identity-start').getAttribute('aria-describedby'), detailsOpen: document.querySelector('.resource-details').open, summaryVisible: document.getElementById('voice-identity-resource-summary').getBoundingClientRect().height > 0, downloadDisabled: document.getElementById('voice-identity-download').disabled, downloadHelpVisible: !document.getElementById('voice-identity-download-help').hidden, downloadHelp: document.getElementById('voice-identity-download-help').textContent })");
+    assert.match(setup.hint, /请先完成试录/);
+    assert.equal(setup.describedBy, 'voice-identity-start-hint');
+    assert.equal(setup.detailsOpen, false);
+    assert.equal(setup.summaryVisible, true);
+    assert.equal(setup.downloadDisabled, true);
+    assert.equal(setup.downloadHelpVisible, true);
+    assert.match(setup.downloadHelp, /运行组件/);
+    // Read Chromium's accessibility tree, including names contributed by CSS
+    // pseudo-elements. Locale changes must keep one translated heading name.
+    await waitFor("typeof window.changeLanguage === 'function'");
+    const titleAccessibility = [];
+    win.webContents.debugger.attach('1.3');
+    try {
+        await win.webContents.debugger.sendCommand('Accessibility.enable');
+        for (const language of ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'pt', 'es']) {
+            await win.webContents.executeJavaScript(`window.changeLanguage(${JSON.stringify(language)}).then(() => true)`);
+            const expected = await win.webContents.executeJavaScript("window.t('voiceIdentity.pageTitle')");
+            assert.notEqual(expected, 'voiceIdentity.pageTitle');
+            const { root: documentNode } = await win.webContents.debugger.sendCommand('DOM.getDocument');
+            const { nodeId } = await win.webContents.debugger.sendCommand('DOM.querySelector', { nodeId: documentNode.nodeId, selector: '.voice-identity-header h2' });
+            const { nodes } = await win.webContents.debugger.sendCommand('Accessibility.getPartialAXTree', { nodeId, fetchRelatives: false });
+            const heading = nodes.find(node => node.role?.value === 'heading');
+            assert.ok(heading, `${language}: title is an accessible heading`);
+            assert.equal(heading.name?.value, expected, `${language}: title must be announced once`);
+            const titleText = await win.webContents.executeJavaScript("({ text: document.querySelector('.voice-identity-header h2').textContent, decoration: document.querySelector('.voice-identity-header h2').getAttribute('data-text') })");
+            assert.equal(titleText.text, expected);
+            assert.equal(titleText.decoration, expected);
+            titleAccessibility.push({ language, name: heading.name.value });
+        }
+    } finally {
+        win.webContents.debugger.detach();
+    }
+    await win.webContents.executeJavaScript("window.changeLanguage('zh-CN').then(() => true)");
     await win.webContents.executeJavaScript("localStorage.setItem('neko_selected_microphone','nonexistent-controlled-device');window.__controlledStreams=[];const gum=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);navigator.mediaDevices.__controlledOriginal=gum;navigator.mediaDevices.getUserMedia=async options=>{const stream=await gum(options);window.__controlledStreams.push(stream);return stream;};document.getElementById('voice-identity-test').click();true;", true);
     await waitFor("!document.getElementById('voice-identity-test').disabled && document.getElementById('voice-identity-input-notice').textContent.length > 0");
     assert.equal(requests.some(r => r.path === '/api/voice-identity/audio/check'), false);
@@ -106,6 +146,7 @@ app.whenReady().then(async () => {
     assert.equal(check.token, 'controlled-ticket'); assert.equal(check.bytes, 288000);
     assert.ok(check.rmsActiveSeconds < 1.5, 'Quiet real-worklet trial must bypass the old RMS duration gate');
     assert.equal(requests.some(r => /enrollment\/start|\/profile$/.test(r.path)), false);
+    assert.match(await win.webContents.executeJavaScript("document.getElementById('voice-identity-start-hint').textContent"), /可以开始录入/);
     const ui = await win.webContents.executeJavaScript("({ actualDevice: document.getElementById('voice-identity-actual-device').textContent, meter: document.getElementById('voice-identity-meter').value, fallbackNotice: document.getElementById('voice-identity-input-notice').textContent, startEnabled: !document.getElementById('voice-identity-start').disabled })");
     assert.ok(ui.actualDevice); assert.notEqual(ui.actualDevice, '尚未启用麦克风');
     assert.ok(Number.isFinite(ui.meter) && ui.meter >= 0);
@@ -153,7 +194,41 @@ app.whenReady().then(async () => {
     assert.equal(await win.webContents.executeJavaScript("window.__controlledStreams.every(stream=>stream.getAudioTracks().every(track=>track.readyState==='ended'))"), true);
     await win.webContents.executeJavaScript("const gain=document.getElementById('voice-identity-gain');gain.value='12';gain.dispatchEvent(new Event('change'));true;", true);
     assert.equal(await win.webContents.executeJavaScript("document.getElementById('voice-identity-start').disabled"), true);
-    const report = { electron: process.versions.electron, actualPageAndWorklet: true, controlledApi: true, realMicrophoneCaptured: false, realBackend: false, quietFixedSentenceUploaded: true, prematureManualFinishBlocked: true, quietManualFinishUploaded: true, cancelledFormalInputReleased: true, manualRmsActiveSeconds: segment.rmsActiveSeconds, trialRmsActiveSeconds: check.rmsActiveSeconds, fallbackRequiresSecondTest: true, inputResourcesReleasedAfterTrial: true, repeatedTrialReacquiresStream: true, cancelledLatePermissionStopped: true, formalReopensAndChecksContract: true, changedServerContractRequiresRetest: true, pcmBytes: check.bytes, gainChangeInvalidatesTest: true, ui };
+    assert.match(await win.webContents.executeJavaScript("document.getElementById('voice-identity-start-hint').textContent"), /请先完成试录/);
+    hasProfile = true;
+    await win.loadURL(origin + '/voice_identity');
+    await waitFor("document.getElementById('voice-identity-enrollment').hidden && !document.getElementById('voice-identity-profile-controls').hidden && !document.getElementById('voice-identity-test').disabled");
+    const profileLayout = await win.webContents.executeJavaScript("({ input: document.querySelector('.readiness-card').getBoundingClientRect().toJSON(), profile: document.querySelector('.profile-card').getBoundingClientRect().toJSON(), resources: document.querySelector('.resource-card').getBoundingClientRect().toJSON(), hint: document.getElementById('voice-identity-reenroll-hint').textContent })");
+    assert.equal(profileLayout.profile.top, profileLayout.input.top);
+    assert.ok(profileLayout.profile.left >= profileLayout.input.right);
+    assert.ok(profileLayout.resources.top >= Math.max(profileLayout.profile.bottom, profileLayout.input.bottom));
+    assert.match(profileLayout.hint, /请先完成试录/);
+    win.setContentSize(390, 844);
+    await win.webContents.executeJavaScript('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    const mobileProfile = await win.webContents.executeJavaScript("({ input: document.querySelector('.readiness-card').getBoundingClientRect().toJSON(), profile: document.querySelector('.profile-card').getBoundingClientRect().toJSON(), resources: document.querySelector('.resource-card').getBoundingClientRect().toJSON(), width: document.documentElement.scrollWidth, viewport: innerWidth })");
+    assert.ok(mobileProfile.profile.top >= mobileProfile.input.bottom);
+    assert.ok(mobileProfile.resources.top >= mobileProfile.profile.bottom);
+    assert.equal(mobileProfile.width, mobileProfile.viewport);
+    win.setContentSize(960, 900);
+    const deletesBefore = requests.filter(r => r.path === '/api/voice-identity/profile' && r.method === 'DELETE').length;
+    await win.webContents.executeJavaScript("window.showConfirm=()=>new Promise(resolve=>{window.__resolveProfileDelete=resolve;});document.getElementById('voice-identity-delete').click();true;");
+    await waitFor("document.getElementById('voice-identity-delete').disabled && document.getElementById('voice-identity-profile-controls').hidden");
+    assert.equal(hasProfile, true);
+    assert.equal(requests.filter(r => r.path === '/api/voice-identity/profile' && r.method === 'DELETE').length, deletesBefore);
+    await win.webContents.executeJavaScript("window.__resolveProfileDelete(false);delete window.__resolveProfileDelete;true;");
+    await waitFor("!document.getElementById('voice-identity-delete').disabled && !document.getElementById('voice-identity-profile-controls').hidden");
+    assert.equal(hasProfile, true);
+    assert.equal(requests.filter(r => r.path === '/api/voice-identity/profile' && r.method === 'DELETE').length, deletesBefore);
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.profile-card').getBoundingClientRect().top === document.querySelector('.readiness-card').getBoundingClientRect().top"), true);
+    await win.webContents.executeJavaScript("window.showConfirm=async()=>true;document.getElementById('voice-identity-delete').click();true;");
+    await waitFor("!document.getElementById('voice-identity-enrollment').hidden && document.getElementById('voice-identity-profile-controls').hidden && !document.getElementById('voice-identity-test').disabled");
+    assert.equal(hasProfile, false);
+    assert.equal(requests.filter(r => r.path === '/api/voice-identity/profile' && r.method === 'DELETE').length, deletesBefore + 1);
+    const deletedLayout = await win.webContents.executeJavaScript("({ input: document.querySelector('.readiness-card').getBoundingClientRect().toJSON(), enrollment: document.getElementById('voice-identity-enrollment').getBoundingClientRect().toJSON(), resources: document.querySelector('.resource-card').getBoundingClientRect().toJSON() })");
+    assert.equal(deletedLayout.enrollment.top, deletedLayout.input.top);
+    assert.ok(deletedLayout.enrollment.left >= deletedLayout.input.right);
+    assert.ok(deletedLayout.resources.top >= Math.max(deletedLayout.enrollment.bottom, deletedLayout.input.bottom));
+    const report = { electron: process.versions.electron, actualPageAndWorklet: true, controlledApi: true, realMicrophoneCaptured: false, realBackend: false, quietFixedSentenceUploaded: true, prematureManualFinishBlocked: true, quietManualFinishUploaded: true, cancelledFormalInputReleased: true, manualRmsActiveSeconds: segment.rmsActiveSeconds, trialRmsActiveSeconds: check.rmsActiveSeconds, titleAccessibility, fallbackRequiresSecondTest: true, inputResourcesReleasedAfterTrial: true, repeatedTrialReacquiresStream: true, cancelledLatePermissionStopped: true, formalReopensAndChecksContract: true, changedServerContractRequiresRetest: true, pcmBytes: check.bytes, gainChangeInvalidatesTest: true, cancelledDeletionPreservesProfile: true, profileDeletionRestoresLayoutWithoutReload: true, ui };
     fs.writeFileSync(path.join(scratch, 'result.json'), JSON.stringify(report, null, 2));
     console.log('VOICE_READINESS_ELECTRON ' + JSON.stringify(report));
     console.log('VOICE_READINESS_ARTIFACTS ' + scratch);

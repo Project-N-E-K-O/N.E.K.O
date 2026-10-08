@@ -1602,6 +1602,29 @@ test('a fresh enrollment still requires a passed trial when readiness is enabled
     assert.equal(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/start`), false);
 });
 
+for (const scenario of [
+    { name: 'input test is required and its translation is unavailable', options: {}, expected: /请先完成试录/ },
+    { name: 'runtime is off', options: { runtimeMode: 'off' }, expected: /Voice identity is turned off/ },
+    { name: 'secure storage is unavailable for an existing profile', options: { initialProfile: true, initialEffectiveReason: 'secure_storage_unavailable' }, expected: /Secure storage unavailable/ },
+    { name: 'initial status connection fails', options: { initialStatusError: true }, expected: /连接失败/ }
+]) {
+    test('enrollment guidance reports the blocking condition when ' + scenario.name, async () => {
+        const readinessController = {
+            isPending: () => false, canStart: () => false, controls() {},
+            async refreshResources() {}, startHintKey: () => 'voiceIdentity.inputTestRequired'
+        };
+        const harness = createHarness({ ...scenario.options, readinessController });
+        const hintId = scenario.options.initialProfile ? 'voice-identity-reenroll-hint' : 'voice-identity-start-hint';
+        harness.elements.set(hintId, createElement());
+        await harness.initialize();
+        const buttonId = scenario.options.initialProfile ? 'voice-identity-reenroll' : 'voice-identity-start';
+        assert.equal(harness.elements.get(buttonId).disabled, true);
+        assert.equal(harness.elements.get(hintId).hidden, false);
+        assert.match(harness.elements.get(hintId).textContent, scenario.expected);
+        assert.equal(harness.mediaRequests, 0);
+    });
+}
+
 test('changed input prevents continuing an existing enrollment without cancelling it implicitly', async () => {
     let changed = 0;
     const readinessController = {
