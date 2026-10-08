@@ -207,6 +207,7 @@ class UploadJournal:
         self._fd: int | None = None
         self._executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._sealed = False
+        self._seal_write: asyncio.Future | None = None
         self._failed_writes = 0
 
     @property
@@ -415,8 +416,11 @@ class UploadJournal:
     async def seal(self, finalized_reason: str, *, ended_at: float | None = None) -> dict | None:
         """Write ``.upload.json`` from memory, then delete the stream; returns the document.
 
-        Idempotent; None when the journal was never opened. Called by
-        finalize (before ``state.json.finalized``) and by the shutdown hook.
+        Idempotent: a call while the seal is being written (or after it was)
+        waits for that same write and returns the same document, so no caller
+        mistakes an unwritten seal for a finished one. None when the journal
+        was never opened. Called by finalize (before ``state.json.finalized``)
+        and by the shutdown hook.
         Nothing is uploaded here: once the runtime is unregistered (``is_live``
         false) the caller must call :func:`schedule_visit_retry`, otherwise a
         report queued during the visit waits for the next start's recovery.
@@ -424,6 +428,9 @@ class UploadJournal:
         the last record still counts toward the duration. Crash recovery,
         which has no finalize time, uses the last record instead.
         """
+        if self._seal_write is not None:
+            # 已经在封存（或封存过）：等同一次写盘，不另起、也不返回 None 冒充「封存完了」
+            return await asyncio.shield(self._seal_write)
         if self._sealed or self._executor is None:
             return None
         doc = build_upload_doc(self._records, visit_id=self.visit_id, finalized_reason=finalized_reason)
@@ -432,9 +439,14 @@ class UploadJournal:
         _stamp_end(doc["request"], time.time() if ended_at is None else ended_at)
         remember_anomalies(self.visit_id, doc["request"].get("anomalies"), doc.get("own_visit_uid"))
         self._sealed = True
+        write = self._seal_write = asyncio.ensure_future(self._write_seal(doc, finalized_reason))
+        write.add_done_callback(lambda t: t.cancelled() or t.exception())  # 调用方都被取消时也取走异常
+        return await asyncio.shield(write)
+
+    async def _write_seal(self, doc: dict, finalized_reason: str) -> dict:
         executor = self._executor
         try:
-            await asyncio.shield(asyncio.wrap_future(executor.submit(self._seal_sync, doc)))
+            await asyncio.wrap_future(executor.submit(self._seal_sync, doc))
         finally:
             self._executor = None
             executor.shutdown(wait=False)

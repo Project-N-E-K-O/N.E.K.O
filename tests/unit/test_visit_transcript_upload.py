@@ -130,6 +130,33 @@ async def _recover(tmp_path, monkeypatch, submit=None):
 # ── 流水与封存 ─────────────────────────────────────────────────────────
 
 
+async def test_a_second_seal_while_the_first_is_writing_waits_for_the_same_write(tmp_path, servers):
+    import threading
+
+    journal = await _journal(tmp_path)
+    await _say(journal, 1, "first")
+    release = threading.Event()
+    real_seal = journal._seal_sync
+    writes = []
+
+    def slow_seal(doc):
+        writes.append(doc)
+        release.wait(10)                                      # 写 .upload.json 时磁盘卡住
+        real_seal(doc)
+
+    journal._seal_sync = slow_seal
+    first = asyncio.ensure_future(journal.seal("route_end", ended_at=1002.0))
+    while not writes:
+        await asyncio.sleep(0.01)
+    second = asyncio.ensure_future(journal.seal("shutdown"))  # 关机路径再来一次
+    await asyncio.sleep(0.1)
+    assert not second.done()                                  # 不立即返回 None 冒充「封存完了」
+    release.set()
+    doc = await asyncio.wait_for(first, 5)
+    assert await asyncio.wait_for(second, 5) is doc           # 等的是同一次写盘、同一份文档
+    assert len(writes) == 1 and _sealed(tmp_path) == doc
+
+
 async def test_seal_writes_the_upload_doc_then_deletes_the_stream(tmp_path, servers, monkeypatch):
     journal = await _journal(tmp_path)
     await _say(journal, 2, "second", side="guest", speaker="peer_cat")

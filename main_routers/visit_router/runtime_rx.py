@@ -448,6 +448,13 @@ class ReceiveMixin:
             await asyncio.wait([task], timeout=timeout)
         return task is None or task.done()
 
+    async def _retire_display(self, timeout: float) -> None:
+        """Stop the display queue and wait (bounded) for the frame being written to finish."""
+        task = self._display_task
+        self._stop_display()
+        if task is not None and not task.done():
+            await asyncio.wait([task], timeout=timeout)
+
     def _stop_display(self) -> None:
         """The visit ended: drop what is still queued for the page and stop sending it."""
         self._display.clear()

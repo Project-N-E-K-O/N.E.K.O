@@ -1347,7 +1347,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.host.park_proactive()
         await self._open_spool(subjects)
         if self.finalizing:
-            if self._files_done and not self._spool_finalized and self.spool is not None:
+            if self._files_done and not self._files_deferred and self._seal_settled() \
+                    and not self._spool_finalized and self.spool is not None:
                 # 收尾封存时 spool 还没挂上：晚到的这份自己关掉、标 finalized
                 reason = self.finalize_reason or "route_end"
                 spawn_visit_background(self.character_uid, lambda: self._finalize_spool(reason))
@@ -1548,7 +1549,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: channel close did not finish: %r", self.visit_id[:6], exc)
         if not await self._flush_display(_DISPLAY_FLUSH_S):  # 告别句等整句先上屏，再发「已结束」
             # 页面卡着送不完：停掉显示队列（转录由 GET /state 重放），「已结束」不和它并发写、不排在它后面
-            self._stop_display()
+            await self._retire_display(_DISPLAY_FLUSH_S)
         self._ended_published = True  # 之后收尾中补到的整句只进转录，不再往页面补气泡
         await self.push(PHASE_ENDED, reason=reason, peer_reason=self.peer_reason)
         if self.status_code is not None:
@@ -1650,14 +1651,17 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             reason = self.finalize_reason or "shutdown"
             ended_at = self.wall()  # 收尾这一刻：磁盘卡多久不该算进这场的时长
 
-            # 现在就按 uid 登记（不等上传头落盘）：这段后台收尾会写 spool 与串门记忆，跑完之前角色不能改名 / 删除
-            spawn_visit_background(self.character_uid, lambda: self._seal_after_header(opening, reason, ended_at))
+            # 现在就按 uid 登记（不等上传头落盘）：这段后台收尾会写 spool 与串门记忆，跑完之前角色不能改名 / 删除。
+            # 它不设上限地等写盘：磁盘一直卡着时，这个角色在本进程内都改不了名、删不掉（守卫宁可保守）
+            gen = _stop_gen
+            spawn_visit_background(self.character_uid,
+                                   lambda: self._seal_after_header(opening, reason, ended_at, gen))
 
-    async def _seal_after_header(self, opening: asyncio.Future, reason: str, ended_at: float) -> None:
+    async def _seal_after_header(self, opening: asyncio.Future, reason: str, ended_at: float, gen: int) -> None:
         await asyncio.wait([opening])
         # 上传头没写成（异常在这里取走）：没有流水可封存，spool 照样收尾
         header_ok = not opening.cancelled() and opening.exception() is None
-        await self._seal_late_journal(reason, ended_at, header_ok=header_ok)
+        await self._seal_late_journal(reason, ended_at, header_ok=header_ok, gen=gen)
 
     def _flush_journal_backlog(self) -> None:
         """The upload header landed: record what was buffered meanwhile (lines, usage, anomalies), in order.
@@ -1680,7 +1684,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: buffered %s not recorded: %s", self.visit_id[:6], kind, type(exc).__name__)
 
-    async def _seal_late_journal(self, reason: str, ended_at: float, *, header_ok: bool = True) -> None:
+    async def _seal_late_journal(self, reason: str, ended_at: float, *, header_ok: bool = True,
+                                 gen: Optional[int] = None) -> None:
         """The upload header landed after the exit flow gave up waiting: seal, then what follows the seal.
 
         The spool finalize and the memory commits were held back for it
@@ -1688,14 +1693,17 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         done here and the spool is left to the startup recovery.
         """
         if header_ok:
+            self._flush_journal_backlog()
+            # 走 _start_seal：这一场只有一个封存 future，关机 / teardown 看到的是同一次写盘
+            sealing = self._start_seal(reason, ended_at=ended_at)
+            await asyncio.wait([sealing])
+            self._take_seal(sealing)
+            # 封存失败也排一次：上传重试会从留下的 .upload.jsonl 重封，不必等下次启动
             try:
-                self._flush_journal_backlog()
-                await self.journal.seal(reason, ended_at=ended_at)
                 self.deps.schedule_upload(self.visit_id)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("visit %s: late upload journal not sealed: %s", self.visit_id[:6],
-                               type(exc).__name__)
-        if self._files_deferred and not self._shutdown_started:
+                logger.warning("visit %s: upload not scheduled: %s", self.visit_id[:6], type(exc).__name__)
+        if self._files_deferred and not self._shutdown_started and not _stopped_since(gen):
             await self._finalize_spool(reason)
             self._spawn_memory_commits()
 
@@ -1719,21 +1727,19 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if not sealing.done():
             logger.warning("visit %s: upload seal still writing; finishing it in the background", self.visit_id[:6])
             # 按 uid 登记：后台这段跑完（会写 spool 与串门记忆）之前，这个角色不能改名 / 删除
-            spawn_visit_background(self.character_uid, lambda: self._finalize_after_seal(sealing, reason))
+            gen = _stop_gen
+            spawn_visit_background(self.character_uid, lambda: self._finalize_after_seal(sealing, reason, gen))
             return False
         self._take_seal(sealing)
         await self._finalize_spool(reason)
         return True
 
-    def _start_seal(self, reason: str) -> asyncio.Future:
-        """The seal of this visit, started once: a later caller (shutdown) waits for the same write.
-
-        ``UploadJournal.seal`` marks the journal sealed before its write
-        lands, so a second call returns at once without a document.
-        """
+    def _start_seal(self, reason: str, *, ended_at: Optional[float] = None) -> asyncio.Future:
+        """The seal of this visit, started once: a later caller (shutdown, teardown) sees the same write."""
         sealing = self._sealing
         if sealing is None:
-            sealing = self._sealing = asyncio.ensure_future(self.journal.seal(reason, ended_at=self.wall()))
+            sealing = self._sealing = asyncio.ensure_future(self.journal.seal(
+                reason, ended_at=self.wall() if ended_at is None else ended_at))
             sealing.add_done_callback(lambda t: t.cancelled() or t.exception())  # 结果由 _take_seal 取
         return sealing
 
@@ -1753,7 +1759,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.sealed_doc = sealing.result()
 
     async def _finalize_spool(self, reason: str) -> None:
-        if self.spool is not None:
+        if self.spool is not None and not self._spool_finalized:
             self._spool_finalized = True
             try:
                 await self.spool.close()
@@ -1761,10 +1767,17 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: spool not finalized: %s", self.visit_id[:6], type(exc).__name__)
 
-    async def _finalize_after_seal(self, sealing: asyncio.Future, reason: str) -> None:
-        """The seal outlived the exit flow: finish what follows it, in order, once it lands."""
+    async def _finalize_after_seal(self, sealing: asyncio.Future, reason: str, gen: Optional[int] = None) -> None:
+        """The seal outlived the exit flow: finish what follows it, in order, once it lands.
+
+        If the process started shutting down meanwhile (``stop_all``), the
+        spool and the memory commits are left to the startup recovery: they
+        would be cut off half-way when the event loop goes.
+        """
         await asyncio.wait([sealing])
         self._take_seal(sealing)
+        if _stopped_since(gen):
+            return
         await self._finalize_spool(reason)
         self._spawn_memory_commits()
         if self.journal.sealed:
@@ -2016,6 +2029,11 @@ def _detach(coro: Awaitable[Any]) -> asyncio.Task:
     _detached.add(task)
     task.add_done_callback(_detached.discard)
     return task
+
+
+def _stopped_since(gen: Optional[int]) -> bool:
+    """``stop_all`` ran (or is running) since ``gen`` was read from ``_stop_gen``."""
+    return _stopping or (gen is not None and gen != _stop_gen)
 
 
 def _keep_detached(task: asyncio.Future) -> None:
