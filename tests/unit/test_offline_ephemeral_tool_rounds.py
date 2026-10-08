@@ -13,7 +13,7 @@ and the request view are production code.
 """
 import asyncio
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -239,8 +239,8 @@ async def test_a_task_cancelled_inside_a_round_keeps_the_pretool_text_once():
     client = _seeded(_client(handler=handler))
     client.script = [[_text("我来丢"), _tool_calls("c1", "c2")]]
     turn = asyncio.create_task(client.prompt_ephemeral(_INSTRUCTION))
-    with pytest.raises(asyncio.CancelledError):
-        await turn
+    await asyncio.gather(turn, return_exceptions=True)
+    assert turn.cancelled()
     assert _history_shape(client)[2:] == [
         ("assistant", "我来丢", ["c1"]),
         ("tool", "{}", None),
@@ -303,3 +303,64 @@ def test_a_round_right_after_the_system_prompt_gets_a_stand_in():
     assert [m.get("role") if isinstance(m, dict) else m.type for m in view] == [
         "system", "user", "assistant", "tool",
     ]
+
+
+# ── Second review round ─────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("post_text", [True, False])
+async def test_a_reply_cut_earlier_lands_before_a_later_callbacks_saved_round(post_text):
+    """A typed reply is cut while its text send is still awaiting; a callback
+    begins meanwhile (nothing is in progress any more) and saves its round.
+    The cut reply then commits what it showed: before the callback's round,
+    not between the round and its reply, nor after a round with no reply."""
+    gate = asyncio.Event()
+    cut = asyncio.Event()
+
+    async def on_text_delta(text, is_first, **_kw):
+        if text == "先说一句" and not cut.is_set():
+            await client.handle_interruption()
+            cut.set()
+            await gate.wait()
+
+    client = _seeded(_client(handler=_recording_handler([])))
+    client.on_text_delta = AsyncMock(side_effect=on_text_delta)
+    client.script = [
+        [_text("先说一句"), _text("还没说完"), _text("", "stop")],
+        [_tool_calls("p1")],
+        [_text("丢好了。"), _text("", "stop")] if post_text else [_text("", "stop")],
+    ]
+    typed = asyncio.create_task(client.stream_text("Q"))
+    await cut.wait()
+    await client.prompt_ephemeral(_INSTRUCTION)
+    gate.set()
+    await typed
+
+    expected = [
+        ("human", "Q", None),
+        ("ai", "先说一句", None),
+        ("assistant", "", ["p1"]),
+        ("tool", json.dumps({"ok": True}), None),
+    ]
+    if post_text:
+        expected.append(("ai", "丢好了。", None))
+    assert _history_shape(client)[2:] == expected
+
+
+async def test_a_callback_with_images_skips_tools_once_images_refused_them():
+    """The images ride the instruction, which only the request view holds:
+    the "refuses tools with images" memory must judge that view."""
+    from tests.unit.test_offline_provider_frame_publish import _png_b64
+
+    client = _seeded(_client(handler=_recording_handler([])))
+    client._openai_tools_unsupported_with_images = True
+    sent_tools = []
+    astream = client.llm.astream
+
+    def recording_astream(messages, **kwargs):
+        sent_tools.append("tools" in kwargs)
+        return astream(messages, **kwargs)
+
+    client.llm.astream = recording_astream
+    client.script = [[_text("看到了。"), _text("", "stop")]]
+    assert await client.prompt_ephemeral(_INSTRUCTION, images=[_png_b64(4, 4, (1, 2, 3))]) is True
+    assert sent_tools == [False]

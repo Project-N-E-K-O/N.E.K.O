@@ -776,6 +776,23 @@ def strip_tool_call_leaks(text: str, *, tool_names: Iterable[str] | None = None)
     return visible + tail
 
 
+def strip_tool_call_leaks_from_parts(
+    texts: list[str], *, tool_names: Iterable[str] | None = None,
+) -> list[str]:
+    """``strip_tool_call_leaks`` over the text parts of one message.
+
+    The parts are read as one stream, so a call split across two parts is
+    still found. Each part keeps what it showed; text held back at a part's
+    end comes out with the next one, and the last part takes the rest.
+    """
+    leak_filter = ToolLeakFilter(tool_names=set(tool_names or ()))
+    cleaned = [leak_filter.feed(text)[0] for text in texts]
+    tail, _event = leak_filter.finalize()
+    if cleaned:
+        cleaned[-1] += tail
+    return cleaned
+
+
 def log_tool_leak_filtered(
     event: ToolLeakFilterEvent,
     *,

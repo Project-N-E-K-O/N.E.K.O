@@ -1181,7 +1181,9 @@ class _ToolingMixin:
         if (
             tools_payload
             and getattr(self, "_openai_tools_unsupported_with_images", False)
-            and self._messages_carry_images(messages)
+            # The request view: a proactive turn's images ride its instruction,
+            # which history does not hold.
+            and self._messages_carry_images(request_view(messages))
         ):
             tools_payload = None
         if tools_payload:

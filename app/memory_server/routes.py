@@ -51,7 +51,10 @@ from config.prompts.prompts_memory import (
     _normalize_memory_prompt_lang,
 )
 from utils.frontend_utils import get_timestamp
-from utils.llm_tool_leak_filter import strip_tool_call_leaks
+from utils.llm_tool_leak_filter import (
+    strip_tool_call_leaks,
+    strip_tool_call_leaks_from_parts,
+)
 from utils.screen_comment_guard import project_screen_history
 from utils.language_utils import (
     get_global_language_full,
@@ -1657,13 +1660,17 @@ def _without_tool_call_leaks(history) -> list:
             message = copy.copy(message)
             message.content = text
         elif isinstance(content, list):
-            parts = [
-                {**part, "text": strip_tool_call_leaks(part["text"])}
+            text_at = [
+                index for index, part in enumerate(content)
                 if isinstance(part, dict) and part.get("type") == "text"
                 and isinstance(part.get("text"), str)
-                else part
-                for part in content
             ]
+            parts = list(content)
+            # One stream over every text part: a call may be split across them.
+            for index, text in zip(text_at, strip_tool_call_leaks_from_parts(
+                [content[index]["text"] for index in text_at],
+            )):
+                parts[index] = {**content[index], "text": text}
             if parts == content:
                 cleaned.append(message)
                 continue

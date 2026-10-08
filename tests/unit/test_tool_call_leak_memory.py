@@ -175,4 +175,17 @@ async def test_a_reply_that_was_only_a_spoken_call_is_not_stored(monkeypatch):
     replies, _sent = await _stored_replies(
         monkeypatch, ["asynccall:pvz_instruction{instruction:a}"],
     )
-    assert all("asynccall" not in reply for reply in replies)
+    assert replies == [], "not even as a bare time stamp"
+
+
+def test_a_call_split_across_text_parts_is_still_cut():
+    from app.memory_server.routes import _screen_guarded_recent_history
+    from utils.llm_client import AIMessage, HumanMessage
+
+    stored = [HumanMessage(content="hi"), AIMessage(content=[
+        {"type": "text", "text": "好的 async"},
+        {"type": "text", "text": "call:pvz_instruction{instruction:丢"},
+        {"type": "text", "text": "樱桃} 完毕"},
+    ])]
+    rendered = _screen_guarded_recent_history(stored)
+    assert [part["text"] for part in rendered[1].content] == ["好的 ", "", " 完毕"]

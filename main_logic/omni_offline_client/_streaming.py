@@ -343,8 +343,19 @@ class _StreamingMixin:
         start = -1 if anchor is None else _find_by_identity(history, -1, anchor)
         position = len(history)
         if anchor is None or start >= 0:
-            position = _cancelled_turn_end(history, start, generation)
+            position = _cancelled_turn_end(
+                history, start, generation,
+                round_generation=self._proactive_round_generation,
+            )
         history.insert(position, reply)
+
+    def _proactive_round_generation(self, message):
+        """The generation of the ``prompt_ephemeral`` reply that saved the
+        tool round ``message``; None when no recent one did."""
+        for generation, rounds in getattr(self, "_proactive_turn_rounds", ()):
+            if any(round_ is message for round_ in rounds):
+                return generation
+        return None
 
     def _commit_reply(
         self, anchor, text: str, generation: int, *, turn_history=None,

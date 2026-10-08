@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import asyncio
+import collections
 import contextlib
 import functools
 import inspect
@@ -892,6 +893,14 @@ class _LifecycleMixin:
             else "response"
         )
         response_generation = self._begin_response_generation(_completion_kind, reply_owner)
+        if persist_response:
+            # Its rounds go to shared history ahead of its reply, which is
+            # what a cancelled reply placed later must stop before
+            # (``_proactive_round_generation``). Only recent turns can matter.
+            registry = getattr(self, "_proactive_turn_rounds", None)
+            if registry is None:
+                registry = self._proactive_turn_rounds = collections.deque(maxlen=16)
+            registry.append((response_generation, _turn_tool_rounds))
 
         async def _flush_prefix_buffer() -> None:
             """Emit what the name-prefix buffer still holds once its segment

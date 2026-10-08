@@ -145,6 +145,10 @@ def normalize_text(text):  # 对文本进行基本预处理
     return text
 
 
+# The time stamp ``run_sync_connector`` starts every reply buffer with.
+_REPLY_STAMP_RE = re.compile(r"\[[^\]\n]*\] ")
+
+
 def normalize_assistant_text(text, tool_names=None):
     """``normalize_text`` for a reply, with any tool call it spoke as text cut.
 
@@ -152,9 +156,16 @@ def normalize_assistant_text(text, tool_names=None):
     (``asynccall:name{...}``, ``name(param=...)``). Stored, that line is shown
     to every later session as an example to copy, so it is cut before memory
     sees it. ``tool_names`` are the registered tools, which also lets a bare
-    ``name(param=...)`` count.
+    ``name(param=...)`` count. A reply that was nothing but such a call comes
+    back empty rather than as its bare time stamp.
     """
-    return normalize_text(strip_tool_call_leaks(text, tool_names=tool_names))
+    stamp = _REPLY_STAMP_RE.match(text)
+    head = stamp.group(0) if stamp else ""
+    body = text[len(head):]
+    stripped = strip_tool_call_leaks(body, tool_names=tool_names)
+    if stripped != body and not normalize_text(stripped):
+        return ""
+    return normalize_text(head + stripped)
 
 
 # Mirror schema + detection now lives in main_logic.mirror_meta;
