@@ -924,7 +924,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                     # 入房报告比能力门 ③ 先到（iframe 一次入房只报一次）：记下，能力门过了再补做
                     self._pending_join = dict(msg)
                     return
-                await self._on_first_join(now)
+                # 首次入房的记账（写上传头、代数、阶段）是运行时自己的受保护任务：收包处理被取消也照样走完，
+                # 否则 _first_join_gen 卡在旧代数，重连后的入房报告只会一直搁在 _pending_join 里
+                joining = self.spawn(self._on_first_join(now), name="first_join")
+                await asyncio.shield(joining)
             elif reconnected:
                 # SDK 自己重连成功：重发 hello 与当前媒体快照（手动重新入房后 iframe 的发布 / 订阅都没了）
                 self.outbox.resend_hello(now)
@@ -2106,7 +2109,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             cleanup.add_done_callback(_outbox_cleanups.discard)
         # 激活卡在不理取消的操作里、等满上限还没停（以及还在等它的接受 / ready 流程等运行时任务）：
         # 注销之后 stop_all 看不到这个运行时，交给模块级登记，关机时限时收掉（spool 照旧留给启动补录）
-        lingering = [t for t in list(self._tasks) + [self._activation]
+        lingering = [t for t in list(self._tasks) + [self._activation, self._closing_task]
                      if t is not None and not t.done() and t is not self._room_cancel_task]
         for task in lingering:
             self._keep_background(task)

@@ -1917,6 +1917,64 @@ async def test_a_spool_that_fails_to_open_leaves_a_memory_off_state(tmp_path, mo
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_cancelled_first_join_still_finishes_its_bookkeeping(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = rt.journal.open
+
+    async def slow_open(**kw):
+        reached.set()
+        await gate.wait()                                     # 写上传头卡住
+        return await real_open(**kw)
+
+    rt.journal.open = slow_open
+    try:
+        joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
+        await asyncio.wait_for(reached.wait(), 5)
+        joining.cancel()                                      # 收包处理被取消（页面断开）
+        await asyncio.gather(joining, return_exceptions=True)
+        gate.set()
+        await wait_for(lambda: rt._first_join_gen is None)    # 代数照样收口：重连后的入房报告不会一直被搁着
+        assert rt.phase == "invite_ready"
+    finally:
+        gate.set()
+        rt.request_finalize("route_end")
+        await _finished(rt)
+
+
+async def test_an_overrun_channel_close_is_handed_to_stop_all(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    release = asyncio.Event()
+    rt.outbox.leave_done = lambda now=None: False            # 关闭通道到点也没完
+    try:
+        rt.request_finalize("route_end")
+        await asyncio.sleep(0.1)
+
+        async def stubborn_send(*args, **kwargs):
+            while not release.is_set():                       # 不理取消的最后一次写
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+            return True
+
+        rt.transport.send = stubborn_send
+        await asyncio.wait_for(_finished(rt), 15)
+        closing = rt._closing_task
+        assert closing is not None and not closing.done()
+        assert closing in rtm._detached                       # 注销之后交给模块级登记，stop_all 收得到
+    finally:
+        release.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_channel_close_that_overruns_is_retired_before_sealing(tmp_path, monkeypatch):
     monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
