@@ -43,6 +43,12 @@ _PREFIXED_CALL_OPENERS = (
 # Lowercase text every prefixed or seed opener contains (``strip_tool_call_leaks``),
 # taken from the openers themselves so a new prefix is never skipped.
 _OPENER_MARKERS = ("seed", *dict.fromkeys(steps[0][1] for steps in _PREFIXED_CALL_OPENERS))
+# How far past its first outer closer a call may stay open before the text
+# after that closer is taken back as reply. Waiting for the end of the stream
+# instead would make every unclosed call rescan the rest of the reply.
+_CALL_RECOVERY_WINDOW = 512
+# ``_consume_inline_call``: the call was given up, resume at ``_call_resume``.
+_CALL_GIVEN_UP = -2
 _OPENER_FAIL = ("fail", 0)
 _OPENER_PARTIAL = ("partial", 0)
 
@@ -104,6 +110,13 @@ class ToolLeakFilter:
         while text:
             if self._suppressing and self._suppression_pattern == _INLINE_CALL_PATTERN:
                 end = self._consume_inline_call(text)
+                if end == _CALL_GIVEN_UP:
+                    rest = self._call_resume
+                    self._suppressed_chars += len(text) - len(rest)
+                    event = self._finish_event(finalized=True)
+                    self._last_visible_char = ""
+                    text = rest
+                    continue
                 if end < 0:
                     self._suppressed_chars += len(text)
                     break
@@ -155,7 +168,11 @@ class ToolLeakFilter:
         return "".join(output), event
 
     def finalize(self) -> tuple[str, ToolLeakFilterEvent | None]:
-        if (
+        recovered: list[str] = []
+        first_event: ToolLeakFilterEvent | None = None
+        # A loop, not recursion: every recovered stretch can hold another
+        # call that never closes.
+        while (
             self._suppressing
             and self._suppression_pattern == _INLINE_CALL_PATTERN
             and self._call_recovery
@@ -163,20 +180,22 @@ class ToolLeakFilter:
             # The call never closed, but an outer closer went by (inside an
             # unclosed quote, or with an unclosed opener in a value): what
             # followed the first one is the reply, not the call.
-            rest = self._call_recovery
+            rest = "".join(self._call_recovery)
             self._suppressed_chars -= len(rest)
             event = self._finish_event(finalized=True)
+            first_event = first_event or event
+            self._last_visible_char = ""
             visible, _event = self.feed(rest)
-            tail, _event = self.finalize()
-            return visible + tail, event
+            recovered.append(visible)
         if self._suppressing:
             self._suppressed_chars += len(self._pending)
             self._pending = ""
-            return "", self._finish_event(finalized=True)
+            event = self._finish_event(finalized=True)
+            return "".join(recovered), first_event or event
 
-        visible = self._pending
+        recovered.append(self._pending)
         self._pending = ""
-        return visible, None
+        return "".join(recovered), first_event
 
     def reset(self) -> None:
         self._pending = ""
@@ -194,7 +213,8 @@ class ToolLeakFilter:
 
     def _reset_call_state(self) -> None:
         # Text after the first outer closer of a call still open; None until one.
-        self._call_recovery: str | None = None
+        self._call_recovery: list[str] | None = None
+        self._call_resume = ""
         self._call_closers: list[str] = []
         self._call_opened = False
         self._call_quote = ""
@@ -227,18 +247,24 @@ class ToolLeakFilter:
         closer that does not end the call (inside a quote never closed, or
         after a same-kind opener left open in a value) marks where the reply
         may resume: ``finalize`` gives back what followed the first one, and
-        reads it again for further calls.
+        reads it again for further calls. A call still open
+        ``_CALL_RECOVERY_WINDOW`` characters after that closer is given up
+        there and then (``_CALL_GIVEN_UP``, the text to read on in
+        ``_call_resume``), so a reply full of unclosed calls stays linear.
         """
         for index, char in enumerate(text):
             if self._call_recovery is not None:
-                self._call_recovery += char
+                self._call_recovery.append(char)
+                if len(self._call_recovery) > _CALL_RECOVERY_WINDOW:
+                    self._call_resume = "".join(self._call_recovery) + text[index + 1:]
+                    return _CALL_GIVEN_UP
             outer_closer = (
                 self._call_recovery is None
                 and bool(self._call_closers) and char == self._call_closers[0]
             )
             if self._call_quote:
                 if outer_closer:
-                    self._call_recovery = ""
+                    self._call_recovery = []
                 if self._call_escape:
                     self._call_escape = False
                 elif char == "\\":
@@ -259,7 +285,7 @@ class ToolLeakFilter:
                 if not self._call_closers:
                     return index + 1
                 if outer_closer:
-                    self._call_recovery = ""
+                    self._call_recovery = []
             elif char in _QUOTE_CHARS and self._call_opened and self._call_last in "([{=:,":
                 self._call_quote = char
             if not char.isspace():
@@ -375,13 +401,18 @@ class ToolLeakFilter:
                 lower_tool_name = tool_name.lower()
                 while True:
                     idx = lower_text.find(lower_tool_name, search_from)
-                    if idx < 0:
+                    # Only a start before the best one so far can win; past it
+                    # every further occurrence is wasted work (and slicing per
+                    # occurrence made a reply full of calls quadratic).
+                    if idx < 0 or (best is not None and idx >= best[0]):
                         break
-                    suffix = text[idx + len(tool_name):]
-                    name_close = _NAME_CLOSE_RE.match(suffix)
+                    name_close = _NAME_CLOSE_RE.match(text, idx + len(tool_name))
                     if name_close is not None:
-                        structured_suffix = suffix[name_close.end():]
-                        if _PARAMETER_RE.search(structured_suffix) or _FUNCTION_CLOSE_RE.search(structured_suffix):
+                        after_name = name_close.end()
+                        if (
+                            _PARAMETER_RE.search(text, after_name)
+                            or _FUNCTION_CLOSE_RE.search(text, after_name)
+                        ):
                             start = self._structured_tool_start(text, idx)
                             candidate = (start, idx + len(tool_name), "structured_tool_call")
                             if best is None or candidate[0] < best[0]:
@@ -809,9 +840,22 @@ def strip_tool_call_leaks(text: str, *, tool_names: Iterable[str] | None = None)
     if not text or not _may_hold_tool_call(text, names):
         return text
     leak_filter = ToolLeakFilter(tool_names=names)
-    visible, _event = leak_filter.feed(text)
+    visible = _feed_in_pieces(leak_filter, text)
     tail, _event = leak_filter.finalize()
     return visible + tail
+
+
+# Finished text is fed like a stream, a piece at a time: each ``feed`` scans
+# what it is given, so one call over a long text full of leaks would rescan
+# the remainder after every one of them.
+_FINISHED_TEXT_PIECE = 256
+
+
+def _feed_in_pieces(leak_filter: ToolLeakFilter, text: str) -> str:
+    return "".join(
+        leak_filter.feed(text[start:start + _FINISHED_TEXT_PIECE])[0]
+        for start in range(0, len(text), _FINISHED_TEXT_PIECE)
+    )
 
 
 def _may_hold_tool_call(text: str, tool_names: set[str]) -> bool:
@@ -840,7 +884,7 @@ def strip_tool_call_leaks_from_parts(
     if not _may_hold_tool_call("".join(texts), names):
         return list(texts)
     leak_filter = ToolLeakFilter(tool_names=names)
-    cleaned = [leak_filter.feed(text)[0] for text in texts]
+    cleaned = [_feed_in_pieces(leak_filter, text) for text in texts]
     tail, _event = leak_filter.finalize()
     if cleaned:
         cleaned[-1] += tail

@@ -685,6 +685,33 @@ def test_a_call_that_never_closes_gives_back_the_reply_after_its_outer_closer():
             assert events and events[0].finalized is True
 
 
+def test_many_calls_that_never_close_are_recovered_without_recursion():
+    """Each recovered stretch can hold another unclosed call; finalize walks
+    them in a loop."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter, strip_tool_call_leaks
+
+    leaked = "开始 " + "pvz_start(goal=(b) " * 1500 + "结束"
+    assert strip_tool_call_leaks(leaked, tool_names=_PVZ_TOOLS).split() == ["开始", "结束"]
+    visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [leaked])
+    assert visible.split() == ["开始", "结束"]
+    assert events and events[-1].finalized is True
+
+
+def test_a_call_left_open_long_after_its_outer_closer_is_given_up_there():
+    """Past the recovery window the reply after the outer closer comes back
+    at once (streamed, not held to the end), and what follows is read for
+    further calls."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    tail = "后面的正文很长。" * 100
+    leaked = f'前 default_api:pvz_start{{goal:"do it}}{tail}asynccall:pvz_start{{goal:a}}完'
+    leak_filter = ToolLeakFilter(tool_names=_PVZ_TOOLS)
+    streamed, _event = leak_filter.feed(leaked)
+    assert streamed.startswith("前 " + tail), "given back while streaming, not held to the end"
+    visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [leaked])
+    assert visible == "前 " + tail + "完"
+
+
 def test_finished_text_helpers_read_tool_names_once():
     """``tool_names`` may be a one-shot iterable: the pre-check must not use
     it up before the filter reads it."""

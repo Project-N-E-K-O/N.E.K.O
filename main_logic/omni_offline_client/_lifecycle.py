@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import asyncio
-import collections
 import contextlib
 import functools
 import inspect
@@ -896,11 +895,19 @@ class _LifecycleMixin:
         if persist_response:
             # Its rounds go to shared history ahead of its reply, which is
             # what a cancelled reply placed later must stop before
-            # (``_proactive_round_generation``). Only recent turns can matter.
-            registry = getattr(self, "_proactive_turn_rounds", None)
-            if registry is None:
-                registry = self._proactive_turn_rounds = collections.deque(maxlen=16)
-            registry.append((response_generation, _turn_tool_rounds))
+            # (``_proactive_round_generation``). An entry is kept while any of
+            # its rounds is still in history, however long an older reply
+            # stays suspended; a turn that saved no round drops its own.
+            in_history = {
+                id(message) for message in self._conversation_history
+                if isinstance(message, dict)
+            }
+            self._proactive_turn_rounds = [
+                (generation, rounds)
+                for generation, rounds in getattr(self, "_proactive_turn_rounds", ())
+                if any(id(round_) in in_history for round_ in rounds)
+            ]
+            self._proactive_turn_rounds.append((response_generation, _turn_tool_rounds))
 
         async def _flush_prefix_buffer() -> None:
             """Emit what the name-prefix buffer still holds once its segment
@@ -1163,6 +1170,12 @@ class _LifecycleMixin:
             interrupter_owned = self._take_interrupter_ownership(response_generation)
             self._release_tool_image_slots(_turn_tool_image_slots)
             self._finish_response_generation(response_generation)
+            if not _turn_tool_rounds:
+                # Nothing of this turn can mark a boundary.
+                self._proactive_turn_rounds = [
+                    entry for entry in getattr(self, "_proactive_turn_rounds", ())
+                    if entry[1] is not _turn_tool_rounds
+                ]
             # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             committed_text = _strip_nonverbal_directives(assistant_message_total).strip()

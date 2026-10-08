@@ -346,6 +346,50 @@ async def test_a_reply_cut_earlier_lands_before_a_later_callbacks_saved_round(po
     assert _history_shape(client)[2:] == expected
 
 
+async def test_round_boundaries_outlive_many_later_callbacks():
+    """A later callback's saved round stays known as a boundary however many
+    callbacks without rounds run while the cut reply is still suspended."""
+    gate = asyncio.Event()
+    cut = asyncio.Event()
+
+    async def on_text_delta(text, is_first, **_kw):
+        if text == "先说一句" and not cut.is_set():
+            await client.handle_interruption()
+            cut.set()
+            await gate.wait()
+
+    client = _seeded(_client(handler=_recording_handler([])))
+    client.on_text_delta = AsyncMock(side_effect=on_text_delta)
+    later = 25
+    client.script = [
+        [_text("先说一句"), _text("还没说完"), _text("", "stop")],
+        [_tool_calls("p1")],
+        [_text("", "stop")],
+    ]
+    for index in range(later):
+        client.script += [[_tool_calls(f"q{index}")], [_text("", "stop")]]
+    client.script += [[_text("", "stop")]] * 5
+    typed = asyncio.create_task(client.stream_text("Q"))
+    await cut.wait()
+    await client.prompt_ephemeral(_INSTRUCTION)
+    for _ in range(later):
+        await client.prompt_ephemeral(_INSTRUCTION)
+    for _ in range(5):
+        await client.prompt_ephemeral(_INSTRUCTION)
+    gate.set()
+    await typed
+
+    assert _history_shape(client)[2:6] == [
+        ("human", "Q", None),
+        ("ai", "先说一句", None),
+        ("assistant", "", ["p1"]),
+        ("tool", json.dumps({"ok": True}), None),
+    ]
+    assert len(client._proactive_turn_rounds) == 1 + later, (
+        "every turn that saved a round keeps its entry; turns without one keep none"
+    )
+
+
 async def test_a_callback_with_images_skips_tools_once_images_refused_them():
     """The images ride the instruction, which only the request view holds:
     the "refuses tools with images" memory must judge that view."""
