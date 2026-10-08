@@ -536,8 +536,8 @@ def test_interrupted_publish_restores_existing_target_before_retry(tmp_path, mon
     )
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _crash_after_publish(staged, target):
-        original_publish(staged, target)
+    def _crash_after_publish(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         if Path(staged).name == "config":
             raise KeyboardInterrupt("simulated process loss")
 
@@ -1309,8 +1309,8 @@ def test_interrupted_publish_is_kept_while_the_source_is_missing(tmp_path, monke
     config_manager, source_root, target_root = _overwrite_migration(tmp_path)
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _crash_after_publish(staged, target):
-        original_publish(staged, target)
+    def _crash_after_publish(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         raise KeyboardInterrupt("simulated process loss after publish")
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
@@ -1438,8 +1438,8 @@ def test_interrupted_publish_is_kept_when_a_source_entry_is_gone(tmp_path, monke
     config_manager, source_root, target_root = _overwrite_migration(tmp_path)
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _crash_after_publish(staged, target):
-        original_publish(staged, target)
+    def _crash_after_publish(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         raise KeyboardInterrupt("simulated process loss after publish")
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
@@ -1516,10 +1516,10 @@ def test_target_recreated_after_backup_keeps_both_copies(tmp_path, monkeypatch):
     config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _recreate_then_publish(staged, target):
+    def _recreate_then_publish(staged, target, **kwargs):
         Path(target).mkdir(parents=True, exist_ok=True)
         (Path(target) / "newcomer.json").write_text("newcomer", encoding="utf-8")
-        original_publish(staged, target)
+        original_publish(staged, target, **kwargs)
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _recreate_then_publish)
     result = run_pending_storage_migration(config_manager)
@@ -1630,10 +1630,10 @@ def test_publish_conflict_marker_does_not_outlive_its_transaction(tmp_path, monk
     config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _recreate_then_publish(staged, target):
+    def _recreate_then_publish(staged, target, **kwargs):
         Path(target).mkdir(parents=True, exist_ok=True)
         (Path(target) / "newcomer.json").write_text("newcomer", encoding="utf-8")
-        original_publish(staged, target)
+        original_publish(staged, target, **kwargs)
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _recreate_then_publish)
     assert run_pending_storage_migration(config_manager)["error_code"] == "migration_publish_conflict"
@@ -1642,8 +1642,8 @@ def test_publish_conflict_marker_does_not_outlive_its_transaction(tmp_path, monk
     shutil.rmtree(target_root / ".smtx")
 
     # The fresh attempt is interrupted after publishing ...
-    def _crash_after_publish(staged, target):
-        original_publish(staged, target)
+    def _crash_after_publish(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         raise KeyboardInterrupt("simulated process loss after publish")
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
@@ -1708,8 +1708,8 @@ def test_interrupted_publish_is_kept_when_a_file_inside_the_source_entry_is_gone
     config_manager, source_root, target_root = _overwrite_migration(tmp_path)
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _crash_after_publish(staged, target):
-        original_publish(staged, target)
+    def _crash_after_publish(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         raise KeyboardInterrupt("simulated process loss after publish")
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
@@ -1835,8 +1835,8 @@ def test_unreadable_source_during_recovery_stays_retryable(tmp_path, monkeypatch
     config_manager, source_root, target_root = _overwrite_migration(tmp_path)
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _crash_after_publish(staged, target):
-        original_publish(staged, target)
+    def _crash_after_publish(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         raise KeyboardInterrupt("simulated process loss after publish")
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
@@ -1869,10 +1869,10 @@ def test_status_migration_payload_carries_what_the_maintenance_view_reads(tmp_pa
     config_manager, source_root, target_root = _overwrite_migration(tmp_path)
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _recreate_then_publish(staged, target):
+    def _recreate_then_publish(staged, target, **kwargs):
         Path(target).mkdir(parents=True, exist_ok=True)
         (Path(target) / "newcomer.json").write_text("newcomer", encoding="utf-8")
-        original_publish(staged, target)
+        original_publish(staged, target, **kwargs)
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _recreate_then_publish)
     assert run_pending_storage_migration(config_manager)["error_code"] == "migration_publish_conflict"
@@ -2019,11 +2019,11 @@ def _crash_while_publishing(monkeypatch, config_manager, reserve):
 
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _crash_after_reserving(staged, target):
+    def _crash_after_reserving(staged, target, **kwargs):
         if Path(staged).name == "memory":
-            reserve(Path(staged), Path(target))
+            reserve(Path(staged), Path(target), kwargs.get("reserved"))
             raise KeyboardInterrupt("simulated process loss")
-        original_publish(staged, target)
+        original_publish(staged, target, **kwargs)
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_reserving)
     with pytest.raises(KeyboardInterrupt, match="simulated process loss"):
@@ -2031,12 +2031,40 @@ def _crash_while_publishing(monkeypatch, config_manager, reserve):
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", original_publish)
 
 
+def _reserve_and_record(staged, target, reserved):
+    """Reserve the name the way a publish without a no-replace rename does."""
+    os.mkdir(target)
+    reserved(target.lstat())
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="Windows publishes without a reservation")
+def test_publish_takes_back_its_reservation_when_recording_it_fails(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    monkeypatch.setattr(storage_migration_module, "_rename_no_replace", lambda source, target: False)
+    staged = tmp_path / "stage" / "memory"
+    staged.mkdir(parents=True)
+    (staged / "facts.json").write_bytes(b"{}")
+    target = tmp_path / "target" / "memory"
+    target.parent.mkdir()
+
+    def _disk_full(_reservation_stat):
+        raise OSError(28, "No space left on device")
+
+    with pytest.raises(OSError):
+        storage_migration_module._publish_without_overwrite(staged, target, reserved=_disk_full)
+
+    assert not os.path.lexists(target)
+    assert (staged / "facts.json").is_file()
+
+
 @pytest.mark.unit
 def test_recovery_keeps_what_was_written_into_an_interrupted_reservation(tmp_path, monkeypatch):
     """A crash between reserving the name and the move leaves a visible empty
     directory; whatever is written into it afterwards is not ours to delete."""
     config_manager, target_root = _start_migration_into_empty_target(tmp_path)
-    _crash_while_publishing(monkeypatch, config_manager, lambda staged, target: os.mkdir(target))
+    _crash_while_publishing(monkeypatch, config_manager, _reserve_and_record)
     (target_root / "memory" / "written-later.json").write_bytes(b"keep")
 
     retry = run_pending_storage_migration(config_manager)
@@ -2051,7 +2079,7 @@ def test_recovery_removes_its_own_empty_reservation(tmp_path, monkeypatch):
     from utils import storage_migration as storage_migration_module
 
     config_manager, target_root = _start_migration_into_empty_target(tmp_path)
-    _crash_while_publishing(monkeypatch, config_manager, lambda staged, target: os.mkdir(target))
+    _crash_while_publishing(monkeypatch, config_manager, _reserve_and_record)
 
     def _stop_after_recovery(*_args, **_kwargs):
         raise StorageMigrationError("stop_after_recovery", "inspect rolled back target")
@@ -2068,7 +2096,7 @@ def test_recovery_removes_its_own_empty_reservation(tmp_path, monkeypatch):
 def test_recovery_removes_its_own_hard_link_to_the_staged_file(tmp_path, monkeypatch):
     """A file is published by linking it in, then unlinking the staged name."""
     config_manager, target_root = _start_migration_into_empty_target(tmp_path, memory_as_file=True)
-    _crash_while_publishing(monkeypatch, config_manager, os.link)
+    _crash_while_publishing(monkeypatch, config_manager, lambda staged, target, _reserved: os.link(staged, target))
 
     retry = run_pending_storage_migration(config_manager)
 
@@ -2121,12 +2149,12 @@ def test_rollback_restores_the_mode_of_a_read_only_target_directory(tmp_path, mo
 def _recreate_target_at_publish(monkeypatch, storage_migration_module, *, then):
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _recreate_then_publish(staged, target):
+    def _recreate_then_publish(staged, target, **kwargs):
         Path(target).mkdir(parents=True, exist_ok=True)
         (Path(target) / "newcomer.json").write_text("newcomer", encoding="utf-8")
         if then == "crash":
             raise KeyboardInterrupt("simulated process loss")
-        original_publish(staged, target)
+        original_publish(staged, target, **kwargs)
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _recreate_then_publish)
 
@@ -2272,8 +2300,8 @@ def test_recovery_refuses_linked_transaction_directories(tmp_path, monkeypatch, 
     config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _crash_after_publish(staged, target):
-        original_publish(staged, target)
+    def _crash_after_publish(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         raise KeyboardInterrupt("simulated process loss")
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
@@ -2567,14 +2595,14 @@ def test_rebased_workshop_config_keeps_its_mode(tmp_path):
 
 
 @pytest.mark.unit
-@pytest.mark.skipif(os.name != "nt", reason="only Windows never reserves the name")
 def test_recovery_keeps_an_empty_entry_created_after_the_interruption(tmp_path, monkeypatch):
-    """Windows publishes with one plain rename, so even an empty entry at the
-    target after an interruption was created by someone else."""
+    """Stopped before any reservation was recorded (Windows never reserves;
+    POSIX needs none where the kernel has a no-replace rename): an empty
+    entry at the target since was created by someone else."""
     from utils import storage_migration as storage_migration_module
 
     config_manager, target_root = _start_migration_into_empty_target(tmp_path)
-    _crash_while_publishing(monkeypatch, config_manager, lambda staged, target: None)
+    _crash_while_publishing(monkeypatch, config_manager, lambda staged, target, _reserved: None)
     (target_root / "memory").mkdir()
 
     _stop_after_recovery(monkeypatch, storage_migration_module)
@@ -2605,10 +2633,10 @@ def _crash_publishing_memory_after_config(tmp_path, monkeypatch):
     )
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _crash_on_memory(staged, target):
+    def _crash_on_memory(staged, target, **kwargs):
         if Path(staged).name == "memory":
             raise KeyboardInterrupt("simulated process loss")
-        original_publish(staged, target)
+        original_publish(staged, target, **kwargs)
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_on_memory)
     with pytest.raises(KeyboardInterrupt):
@@ -2759,8 +2787,8 @@ def test_recovery_keeps_a_target_written_before_its_publish_was_recorded(tmp_pat
     config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _publish_then_written_then_crash(staged, target):
-        original_publish(staged, target)
+    def _publish_then_written_then_crash(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         (Path(target) / "characters.json").write_text("written since", encoding="utf-8")
         raise KeyboardInterrupt("simulated process loss")
 
@@ -2886,7 +2914,7 @@ def test_recovery_keeps_a_hard_link_written_through_before_recovery(tmp_path, mo
     the target: both names show the write, so only the staged manifest can
     show the file is no longer the staged copy."""
     config_manager, target_root = _start_migration_into_empty_target(tmp_path, memory_as_file=True)
-    _crash_while_publishing(monkeypatch, config_manager, os.link)
+    _crash_while_publishing(monkeypatch, config_manager, lambda staged, target, _reserved: os.link(staged, target))
     with open(target_root / "memory", "ab") as stream:
         stream.write(b" + written since")
 
@@ -2910,8 +2938,8 @@ def test_v1_checkpoint_keeps_the_transaction_id_it_is_given(tmp_path, monkeypatc
     save_storage_migration(config_manager, v1_payload)
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _crash_after_publish(staged, target):
-        original_publish(staged, target)
+    def _crash_after_publish(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         raise KeyboardInterrupt("simulated process loss")
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
@@ -3043,8 +3071,8 @@ def _checkpoint_marked_restoring(tmp_path, monkeypatch):
     config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _crash_after_publish(staged, target):
-        original_publish(staged, target)
+    def _crash_after_publish(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         raise KeyboardInterrupt("simulated process loss")
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _crash_after_publish)
@@ -3167,8 +3195,8 @@ def test_source_written_while_publishing_is_rolled_back(tmp_path, monkeypatch):
     config_manager, source_root, target_root = _overwrite_migration(tmp_path)
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _publish_then_source_changes(staged, target):
-        original_publish(staged, target)
+    def _publish_then_source_changes(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         (source_root / "config" / "characters.json").write_text("written while publishing", encoding="utf-8")
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_source_changes)
@@ -3191,8 +3219,8 @@ def test_source_entry_gone_while_publishing_keeps_the_published_copy(tmp_path, m
     config_manager, source_root, target_root = _overwrite_migration(tmp_path)
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _publish_then_source_gone(staged, target):
-        original_publish(staged, target)
+    def _publish_then_source_gone(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         shutil.rmtree(source_root / "config")
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_source_gone)
@@ -3236,8 +3264,8 @@ def test_source_entry_appearing_while_publishing_is_rolled_back(tmp_path, monkey
     config_manager, source_root, target_root = _overwrite_migration(tmp_path)
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _publish_then_new_source_entry(staged, target):
-        original_publish(staged, target)
+    def _publish_then_new_source_entry(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         (source_root / "pngtuber").mkdir(exist_ok=True)
         (source_root / "pngtuber" / "new.png").write_bytes(b"png")
 
@@ -3273,8 +3301,8 @@ def test_reused_target_entry_removed_before_commit_stops_the_migration(tmp_path,
     )
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _publish_then_reused_entry_gone(staged, target):
-        original_publish(staged, target)
+    def _publish_then_reused_entry_gone(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         shutil.rmtree(target_root / "memory", ignore_errors=True)
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_reused_entry_gone)
@@ -3311,8 +3339,8 @@ def test_authoritative_target_entry_removed_before_commit_stops_the_migration(tm
     )
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _publish_then_authoritative_entry_gone(staged, target):
-        original_publish(staged, target)
+    def _publish_then_authoritative_entry_gone(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         shutil.rmtree(target_root / "memory", ignore_errors=True)
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_authoritative_entry_gone)
@@ -3346,8 +3374,8 @@ def test_target_only_entry_removed_before_commit_stops_the_migration(tmp_path, m
     )
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _publish_then_target_only_entry_gone(staged, target):
-        original_publish(staged, target)
+    def _publish_then_target_only_entry_gone(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         shutil.rmtree(target_root / "memory", ignore_errors=True)
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_target_only_entry_gone)
@@ -3388,8 +3416,8 @@ def test_kept_target_config_edited_during_publish_stops_the_migration(tmp_path, 
     )
     original_publish = storage_migration_module._publish_without_overwrite
 
-    def _publish_then_config_points_into_source(staged, target):
-        original_publish(staged, target)
+    def _publish_then_config_points_into_source(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
         (target_root / "config" / "workshop_config.json").write_text(
             json.dumps({"user_mod_folder": str(source_root / "workshop" / "mods"), "kept": True, "edited": 1}),
             encoding="utf-8",

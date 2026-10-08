@@ -356,12 +356,31 @@ def _rename_no_replace(source: Path, target: Path) -> bool:
     raise OSError(error, os.strerror(error), str(source), None, str(target))
 
 
-def _publish_without_overwrite(staged: Path, target: Path) -> None:
+def _publish_without_overwrite(
+    staged: Path,
+    target: Path,
+    reserved: Callable[[os.stat_result], None] | None = None,
+) -> None:
     """Move a staged entry into place, failing instead of replacing anything.
 
     Raises ``FileExistsError`` when something already occupies ``target`` --
     including an entry that appeared after the caller last checked.
+
+    Where the name has to be reserved first, ``reserved`` gets the
+    reservation's stat right after it is made, so a recovery can later tell
+    that reservation from an empty entry someone else created. If it fails,
+    the reservation is taken back before the error is passed on.
     """
+
+    def _report_reservation(take_back: Callable[[Path], None]) -> None:
+        if reserved is None:
+            return
+        try:
+            reserved(target.lstat())
+        except BaseException:
+            with suppress(OSError):
+                take_back(target)
+            raise
     if os.name == "nt":
         # MoveFileEx without REPLACE_EXISTING refuses an existing target.
         os.rename(staged, target)
@@ -376,6 +395,8 @@ def _publish_without_overwrite(staged: Path, target: Path) -> None:
         # rename then replaces only our own empty reservation, and fails if
         # something was written into it meanwhile.
         os.mkdir(target)
+        # rmdir only removes it while it is still empty.
+        _report_reservation(os.rmdir)
         try:
             os.rename(staged, target)
         except OSError as exc:
@@ -399,9 +420,15 @@ def _publish_without_overwrite(staged: Path, target: Path) -> None:
         # A writer that opens the reservation in the instant before the
         # rename would lose its write; nothing atomic is left to use here.
         os.close(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+        _report_reservation(_unlink_if_empty)
         os.rename(staged, target)
         return
     os.unlink(staged)
+
+
+def _unlink_if_empty(path: Path) -> None:
+    if path.lstat().st_size == 0:
+        os.unlink(path)
 
 
 def _path_is_absent(path: Path) -> bool:
@@ -423,6 +450,7 @@ def _holds_only_own_publish_reservation(
     target: Path,
     staged: Path,
     expected_manifest: dict | None = None,
+    reservation: dict | None = None,
 ) -> bool:
     """Whether an interrupted publish left nothing but its own traces at ``target``.
 
@@ -434,7 +462,10 @@ def _holds_only_own_publish_reservation(
     Windows publishes with one plain rename and never reserves or links, so
     anything there at all is someone else's. On POSIX a reservation is made
     only where the kernel lacks a no-replace rename for the filesystem, and
-    emptiness is then the only sign of it.
+    ``reservation`` -- its device and inode, recorded right after it was
+    made -- is what tells it from an empty entry someone else created. With
+    no record (the process stopped in the instant between the two) an empty
+    entry is someone else's.
     """
     try:
         target_stat = target.lstat()
@@ -444,12 +475,17 @@ def _holds_only_own_publish_reservation(
         return False
     if _stat_is_reparse(target_stat) or stat.S_ISLNK(target_stat.st_mode):
         return False
+    is_own_reservation = (
+        isinstance(reservation, dict)
+        and reservation.get("dev") == target_stat.st_dev
+        and reservation.get("ino") == target_stat.st_ino
+    )
     if stat.S_ISDIR(target_stat.st_mode):
-        return not any(target.iterdir())
+        return is_own_reservation and not any(target.iterdir())
     if not stat.S_ISREG(target_stat.st_mode):
         return False
     if target_stat.st_size == 0:
-        return True
+        return is_own_reservation
     staged_stat = staged.lstat()
     if (target_stat.st_dev, target_stat.st_ino) != (staged_stat.st_dev, staged_stat.st_ino):
         return False
@@ -961,6 +997,8 @@ def _rollback_interrupted_publish(
     }
     raw_staged_targets = payload.get("staged_target_manifests")
     staged_target_manifests = raw_staged_targets if isinstance(raw_staged_targets, dict) else {}
+    raw_reservation = payload.get("publish_reservation")
+    reservation = raw_reservation if isinstance(raw_reservation, dict) else {}
     candidates = list(
         dict.fromkeys(
             entry_name
@@ -986,7 +1024,10 @@ def _rollback_interrupted_publish(
                 not was_published
                 and os.path.lexists(staged_entry)
                 and not _holds_only_own_publish_reservation(
-                    target_entry, staged_entry, staged_target_manifests.get(entry_name)
+                    target_entry,
+                    staged_entry,
+                    staged_target_manifests.get(entry_name),
+                    reservation if reservation.get("entry") == entry_name else None,
                 )
             )
 
@@ -1762,6 +1803,7 @@ def run_pending_storage_migration(
                 publishing_target_existed=False,
                 restoring_entries=[],
                 publish_conflict_entry="",
+                publish_reservation={},
                 resuming_v1_copy=False,
                 staged_source_manifests={},
                 staged_target_manifests={},
@@ -1972,6 +2014,7 @@ def run_pending_storage_migration(
             # by hand after a conflict): this attempt starts from a clean record,
             # so nothing a previous attempt left behind can steer a later rollback.
             publish_conflict_entry="",
+            publish_reservation={},
             staged_source_manifests={},
             staged_target_manifests={},
             copied_entries={},
@@ -2247,12 +2290,27 @@ def run_pending_storage_migration(
                     original_target_modes=dict(original_target_modes),
                     publishing_entry=entry_name,
                     publishing_target_existed=target_existed,
+                    publish_reservation={},
                 )
                 if target_existed:
                     _classify_no_follow(target_entry)
                     _move_entry_keeping_mode(target_entry, backup_entry)
+
+                def _record_reservation(reservation_stat: os.stat_result, entry_name: str = entry_name) -> None:
+                    nonlocal payload
+                    payload = _persist_migration_payload(
+                        config_manager,
+                        payload,
+                        anchor_root=normalized_anchor_root,
+                        publish_reservation={
+                            "entry": entry_name,
+                            "dev": reservation_stat.st_dev,
+                            "ino": reservation_stat.st_ino,
+                        },
+                    )
+
                 try:
-                    _publish_without_overwrite(stage_root / entry_name, target_entry)
+                    _publish_without_overwrite(stage_root / entry_name, target_entry, reserved=_record_reservation)
                 except FileExistsError as exc:
                     if target_existed:
                         # The original is in the backup and something new now
