@@ -372,7 +372,7 @@ async def test_peer_leave_waits_for_the_gap_then_keeps_the_late_line(tmp_path, m
     rt = host.rt
     # 掐掉真实客人那侧发来的帧：seq + 1 只能由用例自己补上（否则它的可靠消息可能先把缺口补齐）
     wire.drop = lambda role, payload: role == "guest"
-    await settle()
+    await asyncio.wait_for(wire.queues["guest"].join(), 5)   # 已在路上的帧都处理完
     seq = rt.sequencer.contiguous_seq
     try:
         await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload={
@@ -384,6 +384,7 @@ async def test_peer_leave_waits_for_the_gap_then_keeps_the_late_line(tmp_path, m
         assert rt.finalize_reason == "peer_left" and rt.peer_reason == "home"
         assert any(r["text"] == "最后一句。" for r in rt.journal.lines())
     finally:
+        wire.drop = None
         for g in gates:
             g.set()
         await teardown(host, guest, wire=wire, clock=clock)

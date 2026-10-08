@@ -2118,6 +2118,46 @@ async def test_settling_deliveries_also_waits_for_the_batch_queued_behind(tmp_pa
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_receive_waiting_when_the_receive_path_closes_takes_nothing(tmp_path, monkeypatch):
+    from main_routers.visit_router import runtime_rx
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    handled: list[int] = []
+
+    async def slow_wrap_up(rt_, m, from_vid, now):
+        await stuck.wait()
+        handled.append(m["seq"])
+
+    monkeypatch.setitem(runtime_rx._HANDLERS, "wrap_up", slow_wrap_up)
+    for st in rt.limiter._senders.values():
+        for bucket in (st.recv_bytes, st.recv_msgs, st.ctl, st.lossy, st.text):
+            bucket.rate = bucket.capacity = bucket.tokens = 10 ** 9
+
+    def wrap_up(seq):
+        return rt.on_recv(from_vid=GUEST_VID, cmd=1, payload={
+            "t": "wrap_up", "v": 1, "seq": seq, "lp": rt.room.max_lp_seen, "ph": "propose", "reason": "recall",
+            "initiated_by": "guest"}, nbytes=200)
+
+    try:
+        base = rt.sequencer.contiguous_seq
+        first = asyncio.ensure_future(wrap_up(base + 1))
+        await wait_for(lambda: rt._delivering is not None and not rt._delivering.done())
+        queued = asyncio.ensure_future(wrap_up(base + 2))    # 排在后面等
+        await settle()
+        rt._rx_closed = True                                  # 收尾划下封存的边界
+        stuck.set()
+        await asyncio.wait_for(asyncio.gather(first, queued), 5)
+        assert handled == [base + 1]                          # 边界之前收下的照常处理
+        assert rt.sequencer.contiguous_seq == base + 1        # 之后的那条不进序号器、不起交付
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_family_line_is_admitted_synchronously_before_its_commit_runs(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt

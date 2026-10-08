@@ -1903,6 +1903,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         # 已接纳的亲人发言还在落盘（对端先走 / 传输已断时关闭通道不等预留）、收下的那批对端消息还在处理：
         # 先等它们记进转录。这几段等待与写上传头、封存共用一个期限
         await self.settle_family_records(remaining())
+        self._rx_closed = True  # 封存的边界：从这里起不再收下新的对端消息
         await self._settle_delivering(remaining())
         self._start_journal_for_backlog()
         await self._settle_journal_open(min(_JOURNAL_OPEN_MAX_S, remaining()))
@@ -2172,6 +2173,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         await self.settle_family_records(left(_SHUTDOWN_TASK_WAIT_S))
         # 封存之前先收掉接收通道：之后 iframe 还送来的可靠整句不会被收下、回 ack，却落在封存之后
         unregister_transport_session(self.transport)
+        self._rx_closed = True  # 与注销同一刻：之前到的照常收下，之后到的（排着的 on_recv）不再收
         # 已收下（对端不会再重传）、还在处理的那批对端消息：先等它记进转录（限时），之后的任务取消才不会掐断它
         await self._settle_delivering(left(_SHUTDOWN_TASK_WAIT_S))
         self._start_journal_for_backlog()
