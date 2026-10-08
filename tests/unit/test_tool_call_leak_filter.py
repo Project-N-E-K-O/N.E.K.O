@@ -551,3 +551,156 @@ def test_event_metadata_does_not_include_raw_text_or_query():
     event_text = repr(events[0])
     assert query not in event_text
     assert "parameter" not in event_text
+
+
+# ── Calls written into the reply as text (inline tool-call syntax) ──────────
+
+_PVZ_TOOLS = {"pvz_instruction", "pvz_start", "recall_memory"}
+
+# (leaked text, what the user should see). Taken from replies that reached TTS:
+# the native tool calls had stopped and the model wrote them into the reply.
+_INLINE_CALL_CASES = [
+    (
+        "好的！declaration:default_api:pvz_instruction{instruction:立刻在第四和第五行交界处使用樱桃炸弹，…}",
+        "好的！",
+    ),
+    (
+        "冲呀asynccall:pvz_instruction{instruction:种豌豆}asynccall:pvz_instruction{instruction:种向日葵}"
+        "asynccall:pvz_instruction{instruction:补坚果}看我的",
+        "冲呀看我的",
+    ),
+    ("我来pvz_instruction(instruction='第三行种坚果')。", "我来。"),
+    ("先开局 default_api:pvz_start{goal:通关}，然后", "先开局 ，然后"),
+    ('好 default_api.pvz_start(goal="win") 走起', "好  走起"),
+    ('收到pvz_instruction{"instruction": "铲掉第一行"}喵', "收到喵"),
+]
+
+
+def _split_everywhere(text: str):
+    for cut in range(len(text) + 1):
+        yield [text[:cut], text[cut:]]
+    for first in range(0, len(text) + 1, 3):
+        for second in range(first, len(text) + 1, 5):
+            yield [text[:first], text[first:second], text[second:]]
+
+
+def test_inline_tool_calls_are_stripped_whole():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    for leaked, expected in _INLINE_CALL_CASES:
+        visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [leaked])
+        assert visible == expected, leaked
+        assert events and {e.pattern for e in events} == {"inline_tool_call"}
+        assert not any(e.finalized for e in events), "every call closed on its bracket"
+
+
+def test_inline_tool_calls_are_stripped_at_any_chunk_split():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    for leaked, expected in _INLINE_CALL_CASES:
+        for chunks in _split_everywhere(leaked):
+            visible, _events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), chunks)
+            assert visible == expected, chunks
+
+
+def test_inline_call_split_marks_the_event_cross_chunk():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, events = _drain(
+        ToolLeakFilter(tool_names=_PVZ_TOOLS),
+        ["好的 async", "call:pvz_instruction{instruction:种豌豆} 完毕"],
+    )
+    assert visible == "好的  完毕"
+    assert len(events) == 1 and events[0].cross_chunk is True
+
+
+def test_inline_call_brackets_nest_and_quoted_closers_do_not_end_it():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    leaked = (
+        'A pvz_instruction{"instruction": "a } b ) c", "plan": {"rows": [1, [2, 3]], '
+        '"note": "say \\"hi\\" }"}} B'
+    )
+    for chunks in _split_everywhere(leaked):
+        visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), chunks)
+        assert visible == "A  B", chunks
+        assert len(events) == 1 and events[0].finalized is False
+
+
+def test_an_apostrophe_inside_an_unquoted_value_does_not_swallow_the_reply():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, _events = _drain(
+        ToolLeakFilter(tool_names=_PVZ_TOOLS),
+        ["pvz_instruction{instruction: don't plant here} and that's all"],
+    )
+    assert visible == " and that's all"
+
+
+def test_an_unclosed_inline_call_is_dropped_on_finalize():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, events = _drain(
+        ToolLeakFilter(tool_names=_PVZ_TOOLS),
+        ["我来 asynccall:pvz_instruction{instruction:在第四行", "种樱桃"],
+    )
+    assert visible == "我来 "
+    assert len(events) == 1 and events[0].finalized is True
+
+
+def test_mentions_and_narration_of_tools_are_not_inline_calls():
+    """Only call syntax is stripped: talking about a tool, a bare ``name()``,
+    an unregistered ``name(x=1)``, a prefix glued to a longer word and the
+    full-width narration some models write are all kept as is."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    for text in [
+        "我刚用 pvz_instruction 下了指令，pvz_start 之后再说。",
+        "pvz_start() 不带参数也能开局",
+        "plant(row=3) 是我瞎编的函数名，unknown_tool{x: 1} 也是",
+        "（调用工具pvz_start，目标：先通关第一关）",
+        "（调用工具 pvz_instruction，指令：种坚果）",
+        "my_pvz_instruction(instruction=1) 和 xasynccall:foo{a:1} 都不是",
+        "the default value is fine, a default_api is just a word here",
+        "pvz_instruction（instruction=全角括号不算）",
+    ]:
+        for chunks in _split_everywhere(text):
+            visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), chunks)
+            assert visible == text, chunks
+            assert events == []
+
+
+def test_bare_tool_name_calls_need_a_registered_name():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    text = "我来pvz_instruction(instruction='第三行种坚果')。"
+    visible, events = _drain(ToolLeakFilter(tool_names={"recall_memory"}), [text])
+    assert visible == text and events == []
+
+
+def test_inline_call_inside_code_fence_is_replaced_not_revealed():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    text = "```\nasynccall:pvz_instruction{instruction:secret plan}\n```"
+    visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [text])
+    assert visible == "```\n[tool-call markup omitted]\n```"
+    assert "secret plan" not in visible
+    assert len(events) == 1 and events[0].pattern == "inline_tool_call"
+
+
+def test_strip_tool_call_leaks_without_tool_names_keeps_to_prefixed_syntax():
+    """Memory has no tool registry: only the forms that are call syntax
+    whatever the tool are removed there."""
+    from utils.llm_tool_leak_filter import strip_tool_call_leaks
+
+    assert strip_tool_call_leaks(
+        "好的！declaration:default_api:pvz_instruction{instruction:丢樱桃炸弹}"
+    ) == "好的！"
+    assert strip_tool_call_leaks(
+        "冲asynccall:pvz_instruction{instruction:a}asynccall:pvz_instruction{instruction:b}"
+    ) == "冲"
+    bare = "我来pvz_instruction(instruction='第三行种坚果')。"
+    assert strip_tool_call_leaks(bare) == bare
+    assert strip_tool_call_leaks(bare, tool_names={"pvz_instruction"}) == "我来。"
+    assert strip_tool_call_leaks("") == ""
+    assert strip_tool_call_leaks("（调用工具pvz_start，目标：…）") == "（调用工具pvz_start，目标：…）"

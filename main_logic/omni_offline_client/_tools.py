@@ -20,6 +20,7 @@ from ._shared import (
     _generation_check,
     _find_by_identity,
     _same_route,
+    HumanMessage,
     LLMStreamChunk,
     List,
     OnToolCallCallback,
@@ -52,6 +53,7 @@ from config.prompts.prompts_tool import (
     TOOL_IMAGE_OMITTED_WARNING,
     TOOL_IMAGE_RECALL_HANDLE,
     TOOL_IMAGE_RECALL_HINT,
+    TOOL_ROUND_PROMPT_PLACEHOLDER,
     normalize_tool_image_locale,
 )
 
@@ -69,14 +71,20 @@ _TOOLS_REFUSAL_REQUEST_QUALIFIERS = (
 
 
 class _ToolingMixin:
-    def _dialog_messages_for_provider(self, messages):
+    def _dialog_messages_for_provider(self, messages, *, instruction=None, own_rounds=None):
         """Build the request view of ``messages``; the saved history is untouched.
 
-        First, tool-call bookkeeping the provider would reject is dropped, on
+        ``instruction`` is a ``prompt_ephemeral`` turn's message, which the
+        request carries but history never saves. It goes right before the
+        first of ``own_rounds`` (that turn's tool rounds, by identity) still
+        in ``messages``, so each round follows the message it answers, or at
+        the end while the turn has none.
+
+        Then tool-call bookkeeping the provider would reject is dropped, on
         a copy: a round that is still executing (or was cancelled mid-batch)
         sits in the shared history while another turn builds its request, and
         an ``assistant(tool_calls)`` without its tool replies is a 400. This
-        comes first so the screen projection below judges the message order
+        comes before the screen projection so that it judges the message order
         the provider receives: a dropped tool reply no longer separates the
         assistant messages around it.
 
@@ -89,7 +97,58 @@ class _ToolingMixin:
         tool calls, tool results, tool images) is not cut, so the model sees
         every comment it really said and does not repeat one; only the source
         labels are removed from it. A retry re-sends those messages too.
+
+        Last, a tool round left with no user turn before it gets a stand-in
+        (``_seat_tool_rounds``).
         """
+        if instruction is not None:
+            messages = self._with_instruction(messages, instruction, own_rounds)
+        projected = self._projected_dialog_messages(messages)
+        return self._seat_tool_rounds(projected)
+
+    @staticmethod
+    def _with_instruction(messages, instruction, own_rounds):
+        """``messages`` with ``instruction`` before the first of ``own_rounds``
+        still in it, or at the end; a new list either way."""
+        positions = [
+            index for index in (
+                _find_by_identity(messages, -1, round_) for round_ in (own_rounds or ())
+            ) if index >= 0
+        ]
+        at = min(positions) if positions else len(messages)
+        return [*messages[:at], instruction, *messages[at:]]
+
+    def _seat_tool_rounds(self, messages):
+        """Put a stand-in user turn before each tool round that follows
+        neither a user turn nor a tool reply.
+
+        A ``prompt_ephemeral`` turn saves its tool rounds but never its
+        instruction, so in history the round follows an assistant message.
+        Gemini, natively and behind OpenAI-compatible gateways, rejects a
+        function call turn that does not come right after a user turn or a
+        function response; other providers read the stand-in as one more
+        user line. Returns ``messages`` itself when no round needs one.
+        """
+        seated: list = []
+        stand_in = None
+        for index, message in enumerate(messages):
+            before = messages[index - 1] if index else None
+            if (
+                isinstance(message, dict)
+                and message.get("role") == "assistant"
+                and message.get("tool_calls")
+                and not isinstance(before, HumanMessage)
+                and not (isinstance(before, dict) and before.get("role") in ("user", "tool"))
+            ):
+                if stand_in is None:
+                    stand_in = _loc(TOOL_ROUND_PROMPT_PLACEHOLDER, self._tool_image_locale())
+                seated.append({"role": "user", "content": stand_in})
+            seated.append(message)
+        return messages if stand_in is None else seated
+
+    def _projected_dialog_messages(self, messages):
+        """Pair tool rounds and project screen comments (see
+        ``_dialog_messages_for_provider``)."""
         paired = self._paired_tool_rounds(messages)
         turn_start = next(
             (index + 1 for index in range(len(paired) - 1, -1, -1)
@@ -796,9 +855,9 @@ class _ToolingMixin:
                 index = after + 1
         messages.insert(index, message)
 
-        # Remember the list too: ``prompt_ephemeral`` runs the tool loop over
-        # a scratch list rather than ``_conversation_history``, so an index
-        # alone would point into the wrong history.
+        # Remember the list too: a ``prompt_ephemeral`` reply that is not kept
+        # runs the tool loop over a copy rather than ``_conversation_history``,
+        # so an index alone would point into the wrong history.
         output = result.output if isinstance(result.output, dict) else {}
         shot_id = output.get("shot_id")
         recall_hint = output.get("recall_hint")
@@ -930,6 +989,7 @@ class _ToolingMixin:
         tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
         tool_rounds = overrides.pop("_tool_rounds", None)
         response_generation = overrides.pop("_response_generation", None)
+        instruction = overrides.pop("_instruction", None)
         if self._use_genai_sdk and not self._genai_tools_unsupported:
             # 跟踪本轮 Gemini 路径是否已经把 text chunk yield 给上游。如果
             # 已经吐过文本，再 fallback 到 OpenAI-compat 会让用户在同一轮
@@ -947,6 +1007,7 @@ class _ToolingMixin:
                     _tool_frames_turn_id=tool_frames_turn_id,
                     _tool_rounds=tool_rounds,
                     _response_generation=response_generation,
+                    _instruction=instruction,
                     **overrides,
                 ):
                     if getattr(chunk, "content", None):
@@ -988,6 +1049,7 @@ class _ToolingMixin:
             _tool_frames_turn_id=tool_frames_turn_id,
             _tool_rounds=tool_rounds,
             _response_generation=response_generation,
+            _instruction=instruction,
             **overrides,
         ):
             yield chunk
@@ -1098,8 +1160,18 @@ class _ToolingMixin:
         tool_image_slots = overrides.pop("_tool_image_slots", None)
         tool_bus_frames = overrides.pop("_tool_bus_frames", None)
         tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
+        # This turn's rounds place its instruction in every request view, so
+        # a loop called without the caller's list still keeps its own.
         tool_rounds = overrides.pop("_tool_rounds", None)
+        if tool_rounds is None:
+            tool_rounds = []
         response_generation = overrides.pop("_response_generation", None)
+        instruction = overrides.pop("_instruction", None)
+
+        def request_view(messages):
+            return self._dialog_messages_for_provider(
+                messages, instruction=instruction, own_rounds=tool_rounds,
+            )
 
         generation_is_active = _generation_check(self, response_generation)
 
@@ -1145,7 +1217,7 @@ class _ToolingMixin:
                 # Built here rather than inside the helper so both the first
                 # attempt and the retry-after-tools-refusal get the same view
                 # (screen-projected, tool rounds repaired).
-                self._dialog_messages_for_provider(messages),
+                request_view(messages),
                 overrides,
                 response_generation=response_generation,
             ):
@@ -1368,7 +1440,7 @@ class _ToolingMixin:
         # finally 才换回占位符），所以它也是一个真投递点，同样要抄送。漏掉它
         # 的话，"模型看到了但插件读不到"恰好发生在工具轮打满的那些回合上。
         tool_frames_published = False
-        async for chunk in self.llm.astream(self._dialog_messages_for_provider(messages), **final_overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+        async for chunk in self.llm.astream(request_view(messages), **final_overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
             if not tool_frames_published:
                 tool_frames_published = True
                 self._publish_pending_tool_frames(

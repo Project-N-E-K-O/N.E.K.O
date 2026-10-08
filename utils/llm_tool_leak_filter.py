@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Optional
+import string
+from typing import Iterable, Optional
 
 
 _DEFAULT_TOOL_NAMES = frozenset({"recall_memory"})
@@ -19,6 +20,35 @@ _PARAMETER_BOUNDARY_RE = re.compile(
 _FUNCTION_CLOSE_RE = re.compile(r"<\s*/\s*function\s*>", re.IGNORECASE)
 _FUNCTION_NAME_OPEN_TAIL_RE = re.compile(r"<\s*function\b[^>]*>\s*<\s*name\b[^>]*>\s*$", re.IGNORECASE)
 _NAME_CLOSE_RE = re.compile(r"</\s*name\s*>", re.IGNORECASE)
+
+# A call written into the reply as text instead of sent as a native tool call:
+#   declaration:default_api:NAME{...}   default_api:NAME{...} / default_api.NAME(...)
+#   asynccall:NAME{...}                 NAME(param=...)   NAME{param: ...}
+# The prefixed forms are tool-call syntax whatever NAME is; a bare NAME only
+# counts when it is a registered tool and an argument follows. Each opener is a
+# list of steps so a chunk ending inside one can be held back (see
+# ``_call_marker_tail_len``); the call then runs to its matching bracket.
+_INLINE_CALL_PATTERN = "inline_tool_call"
+_ASCII_WORD_CHARS = frozenset(string.ascii_letters + string.digits + "_")
+_IDENT_START_CHARS = frozenset(string.ascii_letters + "_")
+_IDENT_CHARS = frozenset(string.ascii_letters + string.digits + "_-")
+_QUOTE_CHARS = "'" + '"'
+_CALL_CLOSERS = {"(": ")", "[": "]", "{": "}"}
+_PREFIXED_CALL_OPENERS = (
+    (("lit", "declaration"), ("ws",), ("char", ":"), ("ws",), ("lit", "default_api"),
+     ("ws",), ("char", ":."), ("ws",), ("ident",), ("ws",), ("char", "({")),
+    (("lit", "default_api"), ("ws",), ("char", ":."), ("ws",), ("ident",), ("ws",), ("char", "({")),
+    (("lit", "asynccall"), ("ws",), ("char", ":"), ("ws",), ("ident",), ("ws",), ("char", "({")),
+)
+_OPENER_FAIL = ("fail", 0)
+_OPENER_PARTIAL = ("partial", 0)
+
+
+def _named_call_openers(tool_name: str) -> tuple:
+    return (
+        (("lit", tool_name), ("ws",), ("char", "("), ("ws",), ("param",), ("ws",), ("char", "=")),
+        (("lit", tool_name), ("ws",), ("char", "{"), ("ws",), ("param",), ("ws",), ("char", ":")),
+    )
 
 
 @dataclass(frozen=True)
@@ -45,6 +75,18 @@ class ToolLeakFilter:
         self._in_code_fence = False
         self._fence_marker = ""
         self._fence_line_buffer = ""
+        self._call_openers = _PREFIXED_CALL_OPENERS + tuple(
+            opener
+            for tool_name in sorted(self._tool_names, key=len, reverse=True)
+            for opener in _named_call_openers(tool_name)
+        )
+        self._call_first_chars = frozenset(
+            steps[0][1][0].lower() for steps in self._call_openers
+        )
+        # A call opener must not continue a word, including one whose end was
+        # already emitted with an earlier chunk.
+        self._last_visible_char = ""
+        self._reset_call_state()
 
     def feed(self, chunk: str) -> tuple[str, ToolLeakFilterEvent | None]:
         if not chunk:
@@ -57,6 +99,16 @@ class ToolLeakFilter:
         event: ToolLeakFilterEvent | None = None
 
         while text:
+            if self._suppressing and self._suppression_pattern == _INLINE_CALL_PATTERN:
+                end = self._consume_inline_call(text)
+                if end < 0:
+                    self._suppressed_chars += len(text)
+                    break
+                self._suppressed_chars += end
+                text = text[end:]
+                event = self._finish_event()
+                continue
+
             if self._suppressing:
                 close_match = self._suppression_close_match(text)
                 if close_match:
@@ -120,6 +172,15 @@ class ToolLeakFilter:
         self._in_code_fence = False
         self._fence_marker = ""
         self._fence_line_buffer = ""
+        self._last_visible_char = ""
+        self._reset_call_state()
+
+    def _reset_call_state(self) -> None:
+        self._call_closers: list[str] = []
+        self._call_opened = False
+        self._call_quote = ""
+        self._call_escape = False
+        self._call_last = ""
 
     def _finish_event(self, *, finalized: bool = False) -> ToolLeakFilterEvent:
         event = ToolLeakFilterEvent(
@@ -134,7 +195,39 @@ class ToolLeakFilter:
         self._cross_chunk = False
         self._structured_tail = ""
         self._structured_tail_depth = 0
+        self._reset_call_state()
         return event
+
+    def _consume_inline_call(self, text: str) -> int:
+        """Advance through a suppressed inline call; the index just past its
+        matching bracket, or -1 when ``text`` ends inside it.
+
+        Brackets nest; a quote opens a string only where a value starts (after
+        ``( [ { = : ,``), so an apostrophe inside an unquoted value such as
+        ``{instruction: don't}`` never swallows the rest of the reply.
+        """
+        for index, char in enumerate(text):
+            if self._call_quote:
+                if self._call_escape:
+                    self._call_escape = False
+                elif char == "\\":
+                    self._call_escape = True
+                elif char == self._call_quote:
+                    self._call_quote = ""
+                    self._call_last = char
+                continue
+            if char in _CALL_CLOSERS:
+                self._call_closers.append(_CALL_CLOSERS[char])
+                self._call_opened = True
+            elif self._call_closers and char == self._call_closers[-1]:
+                self._call_closers.pop()
+                if not self._call_closers:
+                    return index + 1
+            elif char in _QUOTE_CHARS and self._call_opened and self._call_last in "([{=:,":
+                self._call_quote = char
+            if not char.isspace():
+                self._call_last = char
+        return -1
 
     def _suppression_close_match(self, text: str) -> re.Match[str] | None:
         if self._suppression_pattern != "structured_tool_call":
@@ -232,6 +325,11 @@ class ToolLeakFilter:
         best: Optional[tuple[int, int, str]] = None
         if seed:
             best = (seed.start(), seed.end(), "seed_tool_call")
+        inline = self._inline_call_start(text, stop=best[0] if best else len(text))
+        if inline is not None:
+            best = inline
+            if best[0] == 0:
+                return best
 
         if self._tool_names:
             lower_text = text.lower()
@@ -256,6 +354,78 @@ class ToolLeakFilter:
                     search_from = idx + len(tool_name)
         return best
 
+    def _inline_call_start(self, text: str, *, stop: int) -> Optional[tuple[int, int, str]]:
+        """The first complete inline call opener starting before ``stop``."""
+        for start in range(min(stop, len(text))):
+            if not self._may_open_call_at(text, start):
+                continue
+            for steps in self._call_openers:
+                state, end = self._match_call_opener(text, start, steps)
+                if state == "full":
+                    return start, end, _INLINE_CALL_PATTERN
+        return None
+
+    def _may_open_call_at(self, text: str, start: int) -> bool:
+        before = text[start - 1] if start else self._last_visible_char
+        if before in _ASCII_WORD_CHARS:
+            return False
+        return text[start].lower() in self._call_first_chars
+
+    @classmethod
+    def _match_call_opener(cls, text: str, pos: int, steps) -> tuple[str, int]:
+        """Match ``steps`` at ``pos``: ``("full", end)``, ``("partial", 0)``
+        when ``text`` ends inside the opener, or ``("fail", 0)``."""
+        for step in steps:
+            kind = step[0]
+            if kind == "ws":
+                pos = cls._consume_whitespace(text, pos)
+                continue
+            if pos == len(text):
+                return _OPENER_PARTIAL
+            if kind == "lit":
+                ok, pos, partial = cls._consume_literal_prefix(text, pos, step[1])
+                if not ok:
+                    return _OPENER_FAIL
+                if partial:
+                    return _OPENER_PARTIAL
+            elif kind == "char":
+                if text[pos] not in step[1]:
+                    return _OPENER_FAIL
+                pos += 1
+            elif kind == "ident":
+                if text[pos] not in _IDENT_START_CHARS:
+                    return _OPENER_FAIL
+                while pos < len(text) and text[pos] in _IDENT_CHARS:
+                    pos += 1
+            elif kind == "param":
+                quote = text[pos] if text[pos] in _QUOTE_CHARS else ""
+                pos += len(quote)
+                if pos == len(text):
+                    return _OPENER_PARTIAL
+                if text[pos] not in _IDENT_START_CHARS:
+                    return _OPENER_FAIL
+                while pos < len(text) and text[pos] in _ASCII_WORD_CHARS:
+                    pos += 1
+                if quote:
+                    if pos == len(text):
+                        return _OPENER_PARTIAL
+                    if text[pos] != quote:
+                        return _OPENER_FAIL
+                    pos += 1
+        return "full", pos
+
+    def _call_marker_tail_len(self, text: str) -> int:
+        min_start = max(0, len(text) - self._max_tail)
+        for start in range(min_start, len(text)):
+            if not self._may_open_call_at(text, start):
+                continue
+            if any(
+                self._match_call_opener(text, start, steps) == _OPENER_PARTIAL
+                for steps in self._call_openers
+            ):
+                return len(text) - start
+        return 0
+
     @staticmethod
     def _structured_tool_start(text: str, tool_name_start: int) -> int:
         opener = _FUNCTION_NAME_OPEN_TAIL_RE.search(text[:tool_name_start])
@@ -271,6 +441,8 @@ class ToolLeakFilter:
 
     def _append_visible(self, output: list[str], text: str) -> None:
         output.append(text)
+        if text:
+            self._last_visible_char = text[-1]
         self._track_code_fences(text)
 
     def _track_code_fences(self, text: str) -> None:
@@ -295,6 +467,7 @@ class ToolLeakFilter:
 
     def _possible_marker_tail_len(self, text: str) -> int:
         best = self._seed_marker_tail_len(text)
+        best = max(best, self._call_marker_tail_len(text))
         return max(best, self._structured_marker_tail_len(text))
 
     def _seed_marker_tail_len(self, text: str) -> int:
@@ -584,6 +757,23 @@ class ToolLeakFilter:
             pos += 1
 
         return True, pos, True
+
+
+def strip_tool_call_leaks(text: str, *, tool_names: Iterable[str] | None = None) -> str:
+    """``text`` without the tool-call markup a ``ToolLeakFilter`` would hide.
+
+    For finished text (a reply handed to memory, a memory rendered back into a
+    prompt). Without ``tool_names`` only markup that is tool-call syntax
+    whatever the tool (``seed:tool_call``, ``default_api:``, ``asynccall:``,
+    the built-in default names) is removed: a bare ``name(param=...)`` only
+    counts for a registered tool.
+    """
+    if not text:
+        return text
+    leak_filter = ToolLeakFilter(tool_names=set(tool_names or ()))
+    visible, _event = leak_filter.feed(text)
+    tail, _event = leak_filter.finalize()
+    return visible + tail
 
 
 def log_tool_leak_filtered(

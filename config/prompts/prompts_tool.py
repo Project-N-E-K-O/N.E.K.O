@@ -18,7 +18,9 @@
 Every string a tool's picture drags into the conversation lives here: the
 caption that rides alongside the image part, the stand-in when the tool named
 no vision prompt, the budget-omission warning, and the placeholder that
-replaces the image turn once the tool loop lets go of it.
+replaces the image turn once the tool loop lets go of it. One more row, the
+stand-in for the unsaved message that prompted a tool round, is only ever put
+in a request view.
 
 All of it is read by the model, not by the user, so it follows the same rule as
 the rest of ``config/prompts``: one row per runtime locale, resolved through
@@ -142,4 +144,21 @@ TOOL_IMAGE_HISTORY_PLACEHOLDER = {
     "ru": "[Изображение от инструмента {tool_name} удалено из контекста; оно было доступно только в том ходе, в котором было создано{recall_suffix}]",
     "es": "[La imagen devuelta por la herramienta {tool_name} se eliminó del contexto; solo estuvo visible en el turno en que se generó{recall_suffix}]",
     "pt": "[A imagem retornada pela ferramenta {tool_name} foi removida do contexto; ela ficou visível apenas no turno em que foi gerada{recall_suffix}]",
+}
+
+
+# Request-view stand-in for the message that prompted a saved tool round. A
+# proactive reply's instruction is never saved, so its tool round follows an
+# assistant message in history; Gemini (native and OpenAI-compat) rejects a
+# function call turn that does not follow a user or function response turn.
+# Seated by ``_ToolingMixin._seat_tool_rounds`` only; never written to history.
+TOOL_ROUND_PROMPT_PLACEHOLDER = {
+    "zh": "[触发下面这次工具调用的消息未保留在上下文中]",
+    "zh-TW": "[觸發下面這次工具呼叫的訊息未保留在上下文中]",
+    "en": "[The message that prompted the tool call below was not kept in context]",
+    "ja": "[以下のツール呼び出しのきっかけとなったメッセージはコンテキストに残されていません]",
+    "ko": "[아래 도구 호출을 유발한 메시지는 컨텍스트에 남아 있지 않습니다]",
+    "ru": "[Сообщение, вызвавшее обращение к инструменту ниже, не сохранено в контексте]",
+    "es": "[El mensaje que motivó la llamada a herramienta de abajo no se conservó en el contexto]",
+    "pt": "[A mensagem que motivou a chamada de ferramenta abaixo não foi mantida no contexto]",
 }

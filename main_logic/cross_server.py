@@ -44,6 +44,7 @@ import httpx
 from utils.frontend_utils import replace_blank, is_only_punctuation
 from utils.internal_http_client import get_internal_http_client
 from utils.language_utils import is_supported_language_code
+from utils.llm_tool_leak_filter import strip_tool_call_leaks
 from utils.logger_config import get_module_logger
 from main_logic.agent_event_bus import publish_analyze_request_reliably
 
@@ -142,6 +143,18 @@ def normalize_text(text):  # 对文本进行基本预处理
     if is_only_punctuation(text):
         return ""
     return text
+
+
+def normalize_assistant_text(text, tool_names=None):
+    """``normalize_text`` for a reply, with any tool call it spoke as text cut.
+
+    A model that stops calling a tool natively writes the call into its reply
+    (``asynccall:name{...}``, ``name(param=...)``). Stored, that line is shown
+    to every later session as an example to copy, so it is cut before memory
+    sees it. ``tool_names`` are the registered tools, which also lets a bare
+    ``name(param=...)`` count.
+    """
+    return normalize_text(strip_tool_call_leaks(text, tool_names=tool_names))
 
 
 # Mirror schema + detection now lives in main_logic.mirror_meta;
@@ -788,6 +801,7 @@ async def run_sync_connector(
     user_language_provider=None,
     render_language_provider=None,
     monitor_auth_token: str | None = MONITOR_TOKEN or None,
+    tool_names_provider=None,
 ):
     """Async-native sync connector, running on the caller's main event loop.
 
@@ -815,6 +829,9 @@ async def run_sync_connector(
         monitor_auth_token: Monitor bearer token, defaulting to the configured
             ``MONITOR_TOKEN``. When set it is sent as an Authorization header on
             Monitor sync WebSocket connections.
+        tool_names_provider: optional callable returning the session's registered
+            tool names, used to cut tool calls a reply spoke as text
+            (``normalize_assistant_text``) before it is stored.
     """
     chat_history: list = []
     default_config = {'bullet': True, 'monitor': True}
@@ -841,6 +858,15 @@ async def run_sync_connector(
             logger.debug("[%s] render language provider failed: %s", lanlan_name, exc)
             return None
         return selected if is_supported_language_code(selected) else None
+
+    def _normalized_reply(text: str) -> str:
+        tool_names = None
+        if callable(tool_names_provider):
+            try:
+                tool_names = tool_names_provider()
+            except Exception as exc:
+                logger.debug("[%s] tool names provider failed: %s", lanlan_name, exc)
+        return normalize_assistant_text(text, tool_names)
 
     def _current_memory_languages() -> tuple[str | None, str | None]:
         """Snapshot mutually exclusive durable and render-only memory hints."""
@@ -1047,7 +1073,7 @@ async def run_sync_connector(
                                 
                                 # 再处理未完成的输出缓存（如果有）
                                 current_turn = 'user'
-                                text_output_cache = normalize_text(text_output_cache)
+                                text_output_cache = _normalized_reply(text_output_cache)
                                 if len(text_output_cache) > 0:
                                     chat_history.append(
                                             {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
@@ -1145,7 +1171,7 @@ async def run_sync_connector(
                                     logger.debug("[%s] mirror turn end skipped for ordinary memory/analyzer", lanlan_name)
                                     continue
                                 current_turn = 'user'
-                                text_output_cache = normalize_text(text_output_cache)
+                                text_output_cache = _normalized_reply(text_output_cache)
                                 if len(text_output_cache) > 0:
                                     chat_history.append(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
@@ -1362,7 +1388,7 @@ async def run_sync_connector(
                                 
                                 # 再处理未完成的输出缓存（如果有）
                                 current_turn = 'user'
-                                text_output_cache = normalize_text(text_output_cache)
+                                text_output_cache = _normalized_reply(text_output_cache)
                                 if len(text_output_cache) > 0:
                                     chat_history.append(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})

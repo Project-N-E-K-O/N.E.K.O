@@ -817,7 +817,15 @@ class _LifecycleMixin:
                 _ephemeral_msg = HumanMessage(content=instruction)
         else:
             _ephemeral_msg = HumanMessage(content=instruction)
-        messages_to_send = self._conversation_history + [_ephemeral_msg]
+        # The tool loop runs on history itself, as stream_text's does: this
+        # turn's tool rounds are saved where they ran, so the next request
+        # still sees which calls really happened. The instruction is not: it
+        # rides each request view only (``_dialog_messages_for_provider``). A
+        # reply that is not kept runs on a copy and leaves nothing behind.
+        _turn_messages = (
+            self._conversation_history if persist_response
+            else list(self._conversation_history)
+        )
         # This turn's place in history: the instruction itself is never saved,
         # so a cancelled reply is anchored to the last message it was shown.
         # Not a tool-round dict: a round still running may leave history with
@@ -840,6 +848,12 @@ class _LifecycleMixin:
         _turn_tool_image_slots: list = []
         # 同上：跨 attempt 存活的待抄送工具帧。
         _turn_tool_bus_frames: list = []
+        # The tool rounds this turn appended, across attempts: they place the
+        # instruction in the request view, and a cancelled turn trims only its
+        # own (``_last_tool_round_of``). ``segment_round`` is the round the
+        # last sentinel reported (see stream_text).
+        _turn_tool_rounds: list = []
+        segment_round = None
 
         # A non-user reply never begins over another reply that is live,
         # guard-paused or waiting on its completion: it would displace (cut)
@@ -858,7 +872,11 @@ class _LifecycleMixin:
         # 永远不知道为什么主动搭话不工作。
         max_retries = 3
         retry_delays = [1, 2]
+        # 与 stream_text 同：assistant_message 只装最后一段（上一个工具轮之后）
+        # 的可见文本，落进历史的就是它；工具轮之前的那段已经随工具轮写进历史。
+        # 整轮判定（提交了没有、提交了什么）看 assistant_message_total。
         assistant_message = ""
+        assistant_message_total = ""
         # Empty-completion 诊断重置：与 stream_text 对偶。
         self._last_finish_reason = None
         self._last_block_reason = None
@@ -875,6 +893,43 @@ class _LifecycleMixin:
         )
         response_generation = self._begin_response_generation(_completion_kind, reply_owner)
 
+        async def _flush_prefix_buffer() -> None:
+            """Emit what the name-prefix buffer still holds once its segment
+            ends: at the end of the stream, or at a tool round, which has
+            already saved that text."""
+            nonlocal prefix_checked, assistant_message, assistant_message_total
+            nonlocal is_first_chunk, emitted_any
+            if not prefix_buffer or prefix_checked:
+                return
+            prefix_checked = True
+            master_match = self._match_name_prefix(prefix_buffer, self.master_name)
+            lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
+            if master_match:
+                logger.info("OmniOfflineClient.prompt_ephemeral: 段末剥离主人名前缀")
+                flush_text = prefix_buffer[master_match:]
+            elif lanlan_match:
+                logger.info("OmniOfflineClient.prompt_ephemeral: 段末剥离角色名前缀")
+                flush_text = prefix_buffer[lanlan_match:]
+            else:
+                flush_text = prefix_buffer
+            if flush_text and flush_text.strip():
+                assistant_message += flush_text
+                assistant_message_total += flush_text
+                if self.on_text_delta:
+                    await self.on_text_delta(flush_text, is_first_chunk)
+                is_first_chunk = False
+                emitted_any = True
+                # 短于前缀缓冲阈值的回复整段走这条路，chunk 分支一次都不进
+                # —— 少了这一行，那类回合会照常提交却永远不报裁剪。
+                await _emit_pending_budget_notice()
+
+        # Streaming state the flush reads; every attempt resets it.
+        task_cancelled = False
+        prefix_buffer = ""
+        prefix_checked = True
+        is_first_chunk = True
+        emitted_any = False
+
         try:
             await self._run_displaced_followup()
             set_call_type("proactive")
@@ -882,6 +937,7 @@ class _LifecycleMixin:
                 # 每次 attempt 重置流式状态（assistant_message / prefix /
                 # is_first_chunk 全部归零）。
                 assistant_message = ""
+                assistant_message_total = ""
                 is_first_chunk = True
                 prefix_buffer = ""
                 prefix_checked = not bool(self._prefix_buffer_size)
@@ -903,7 +959,9 @@ class _LifecycleMixin:
                     # 主动搭话同样走 tool-aware streaming —— agent 注入的 stage
                     # direction 也可能让模型决定调用工具（比如 "讲一下今天天气"）。
                     async for chunk in self._astream_visible_with_tools(
-                        messages_to_send,
+                        _turn_messages,
+                        _instruction=_ephemeral_msg,
+                        _tool_rounds=_turn_tool_rounds,
                         # 与 stream_text 同：跨 attempt 存活，由下面的 finally
                         # 统一释放。
                         _tool_image_slots=_turn_tool_image_slots,
@@ -950,6 +1008,25 @@ class _LifecycleMixin:
                             if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
                                 logger.debug(f"🔍 [Meta-Proactive] {chunk.response_metadata}")
 
+                        # tool 轮 sentinel：与 stream_text 同一契约，工具轮之前的
+                        # 文本已经随 tool_calls 写进历史，最后一段要从头攒，否则
+                        # 收尾的 AIMessage 会把它再写一遍。
+                        if getattr(chunk, "tool_round_persisted", False):
+                            if self._response_generation_is_active(response_generation):
+                                # 还压在名字前缀缓冲里的工具前文本已经在工具轮
+                                # 里了，现在补发给用户，历史与所见一致。
+                                await _flush_prefix_buffer()
+                            else:
+                                # A cancelled round keeps only what was shown.
+                                self._trim_cancelled_round_text(
+                                    assistant_message, _turn_tool_rounds,
+                                )
+                            assistant_message = ""
+                            segment_round = self._last_tool_round_of(_turn_tool_rounds)
+                            # 下一段是新的语义单元，名字前缀重新检测。
+                            prefix_buffer = ""
+                            prefix_checked = not bool(self._prefix_buffer_size)
+                            continue
                         if not self._response_generation_is_active(response_generation):
                             break
                         content = chunk.content if hasattr(chunk, "content") else str(chunk)
@@ -977,6 +1054,7 @@ class _LifecycleMixin:
                                     continue  # 缓冲区未满，等更多 chunk
 
                             assistant_message += emit_content
+                            assistant_message_total += emit_content
                             if self.on_text_delta:
                                 await self.on_text_delta(emit_content, is_first_chunk)
                             is_first_chunk = False
@@ -985,31 +1063,8 @@ class _LifecycleMixin:
                             await _emit_pending_budget_notice()
 
                     # ── flush 前缀缓冲区（流提前结束时） ──
-                    if (
-                        self._response_generation_is_active(response_generation)
-                        and prefix_buffer and not prefix_checked
-                    ):
-                        prefix_checked = True
-                        master_match = self._match_name_prefix(prefix_buffer, self.master_name)
-                        lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
-                        if master_match:
-                            logger.info("OmniOfflineClient.prompt_ephemeral: 流结束时剥离主人名前缀")
-                            flush_text = prefix_buffer[master_match:]
-                        elif lanlan_match:
-                            logger.info("OmniOfflineClient.prompt_ephemeral: 流结束时剥离角色名前缀")
-                            flush_text = prefix_buffer[lanlan_match:]
-                        else:
-                            flush_text = prefix_buffer
-                        if flush_text and flush_text.strip():
-                            assistant_message += flush_text
-                            if self.on_text_delta:
-                                await self.on_text_delta(flush_text, is_first_chunk)
-                            is_first_chunk = False
-                            emitted_any = True
-                            # 短于前缀缓冲阈值的回复整段走这条路，chunk 分支
-                            # 一次都不进 —— 少了这一行，那类回合会照常提交却
-                            # 永远不报裁剪。
-                            await _emit_pending_budget_notice()
+                    if self._response_generation_is_active(response_generation):
+                        await _flush_prefix_buffer()
 
                     break  # 流正常结束，跳出 retry 循环
 
@@ -1025,12 +1080,14 @@ class _LifecycleMixin:
                         if self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "API_ARREARS"}))
                         assistant_message = ""
+                        assistant_message_total = ""
                         return False
                     elif _is_api_key_rejected_error(e):
                         logger.error(f"prompt_ephemeral: 检测到 API Key 错误，直接上报: {e}")
                         if self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))
                         assistant_message = ""
+                        assistant_message_total = ""
                         return False
                     elif 'quota' in error_str_lower or 'time limit' in error_str_lower:
                         logger.warning(f"prompt_ephemeral: 检测到配额错误，上报前端: {e}")
@@ -1063,6 +1120,7 @@ class _LifecycleMixin:
                         error_type, max_retries, str(e)[:200],
                     )
                     assistant_message = ""
+                    assistant_message_total = ""
                     return False
         except Exception as e:
             if _is_api_key_rejected_error(e):
@@ -1070,6 +1128,7 @@ class _LifecycleMixin:
                 if self.on_status_message:
                     await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))
                 assistant_message = ""
+                assistant_message_total = ""
                 return False
             # 兜底：非 API 错误（编程错误 / 数据异常）静默吞掉，截断错误文本
             # 防 HTML 错误页之类淹没日志。和上方 (APIConnectionError 等) 分支
@@ -1080,7 +1139,14 @@ class _LifecycleMixin:
                 exc_info=True,
             )
             assistant_message = ""
+            assistant_message_total = ""
             return False
+        except asyncio.CancelledError:
+            # The task itself was cancelled (close(), a torn-down caller) with
+            # its generation possibly still live: the commit below then
+            # places the shown text like a cancelled reply (see stream_text).
+            task_cancelled = True
+            raise
         finally:
             # 先于其它收尾：把 base64 从历史里摘掉。跨 attempt 存活的代价
             # 就是必须由这里统一释放，否则它会跟着这一轮之后的每次请求走。
@@ -1090,7 +1156,7 @@ class _LifecycleMixin:
             self._finish_response_generation(response_generation)
             # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
-            committed_text = _strip_nonverbal_directives(assistant_message).strip()
+            committed_text = _strip_nonverbal_directives(assistant_message_total).strip()
             content_committed = bool(committed_text)
             # 一条可见的 ephemeral 回复（greeting / agent 回调 / 戳头像的 quip）是
             # 用户接下来要回应的「新一条 AI 轮」，它让之前为「下一条用户回复」暂存的
@@ -1143,14 +1209,19 @@ class _LifecycleMixin:
                 # Tells a cancelled reply committed later whether this one
                 # began after it (_cancelled_turn_end).
                 setattr(reply, _REPLY_GENERATION_ATTR, response_generation)
-                if response_cancelled:
+                if response_cancelled or task_cancelled:
                     # Whoever cancelled it may already have appended its own
                     # user message; the half that was shown goes before it.
-                    self._commit_cancelled_reply(
-                        _history_anchor, reply, response_generation,
+                    # A round whose sentinel the cancellation lost already
+                    # holds that half instead.
+                    self._keep_shown_text_of_cut_stream(
+                        _history_anchor, reply, segment_round,
+                        response_generation, _turn_tool_rounds,
                         turn_history=_turn_history,
                     )
-                else:
+                elif _strip_nonverbal_directives(assistant_message).strip():
+                    # Only the segment after the last tool round: the text
+                    # before it is saved with that round.
                     self._conversation_history.append(reply)
             # 防复读 corpus 拆成两半：内存更新在收尾信号**之前**（同步，不含 await，
             # 所以不是取消点），落盘在**之后**。客户端看到 turn end 就可能立刻发下一
