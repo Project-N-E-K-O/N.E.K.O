@@ -879,7 +879,7 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
         elif conn.lost_as_current:
             # 回放写不出去、这条连接作为当前连接被弃（_abandon 已按新一次掉线起了重载期限）：把这次重载
             # 原来的期限写回，绝对期限不能被反复重连续上。被更新的连接顶掉的不算：新连接可能已经重入完了
-            _restore_reload_deadline(session, saved)
+            _restore_reload_deadline(link, session, saved)
             return
     if _is_current(link, conn):
         # 发帧期间 runtime 可能已经发了更新的 media（例如刚关掉摄像头）：
@@ -893,10 +893,10 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
             if _newer_media(conn, media_mark):
                 return
         if not await _send_on(conn, media, text=media_text) and conn.lost_as_current:
-            _restore_reload_deadline(session, saved)
+            _restore_reload_deadline(link, session, saved)
 
 
-def _restore_reload_deadline(session: VisitTransportSession, saved: Any) -> None:
+def _restore_reload_deadline(link: _Link, session: VisitTransportSession, saved: Any) -> None:
     """A rejoin whose writes failed: the page reload goes on under its original (absolute) deadline.
 
     The saved state is from before the rejoin (socket back); the socket was
@@ -904,6 +904,9 @@ def _restore_reload_deadline(session: VisitTransportSession, saved: Any) -> None
     absolute deadline (``min(now + socket stage, absolute)``).
     """
     if saved is None:
+        return
+    if _links.get((session.visit_id, session.side)) is not link or link.conn is not None:
+        # 被弃之后已经有新连接接上（或这场已注销）：期限归新连接管，不再拿旧的写回
         return
     try:
         session.liveness.restore_page_reload_state(saved)

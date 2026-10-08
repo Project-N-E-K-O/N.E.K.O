@@ -1221,6 +1221,38 @@ def test_a_superseded_rejoin_whose_replay_write_fails_does_not_touch_the_deadlin
     assert "page_restored" not in s.liveness.events[len(before):]   # 被顶掉的不写回，不覆盖新连接的重入
 
 
+def test_a_rejoin_restore_skips_when_a_new_socket_attached_meanwhile():
+    import asyncio
+
+    class _BrokenWS(_RecordingWS):
+        async def send_text(self, text):
+            raise OSError("socket gone")
+
+    async def scenario():
+        tw._reset_for_tests()
+        s = FakeSession()
+        tw.register_transport_session(s)
+        link = tw._links[(VISIT_ID, "guest")]
+        link.connections_seen = 1
+        real_lost = s.on_page_lost
+
+        def lost_then_new_socket(now):
+            real_lost(now)
+            link.conn = tw._Connection(websocket=_RecordingWS(), reattach=True)   # 被弃之后新连接马上接上
+
+        s.on_page_lost = lost_then_new_socket
+        conn = tw._attach(link, _BrokenWS())
+        conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = conn.sdk_seen = conn.sdk_ok = True
+        await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
+        return s
+
+    try:
+        s = asyncio.run(scenario())
+    finally:
+        tw._reset_for_tests()
+    assert "page_restored" not in s.liveness.events          # 期限归新连接管，不拿旧的写回
+
+
 def test_unserializable_downlink_is_dropped_not_a_disconnect():
     import asyncio
 
