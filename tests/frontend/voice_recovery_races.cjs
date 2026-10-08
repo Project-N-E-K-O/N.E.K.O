@@ -7,15 +7,22 @@ function createRecoveryServer() {
     const { server, state } = createVoiceManagerServer();
     const handler = server.listeners('request')[0];
     server.removeAllListeners('request');
-    const fixture = { phase: undefined, revision: 7, operation: 'prepared-owner', status: 'unknown', recoveries: [], pending: null };
+    const fixture = { phase: undefined, revision: 7, operation: 'prepared-owner', status: 'unknown', abandonies: [], abandonAllowed: false, recoveries: [], pending: null };
     state.voices[ref] = { local_ref: ref, provider: 'cosyvoice', origin: 'import', source: 'clone', remote_voice_id: 'ExistingVoice123', availability: 'available', overwrite_status: 'unknown', can_overwrite: true };
     const json = (response, data, status = 200) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(data)); };
     const snapshot = () => ({ local_ref: ref, operation_id: fixture.operation, record_revision: fixture.revision,
         overwrite_status: fixture.status, submission_phase: fixture.phase,
-        actions: fixture.status === 'failed' ? ['refresh', 'overwrite'] : fixture.phase === 'prepared' ? ['refresh', 'recover'] : ['refresh'] });
+        actions: fixture.status === 'failed' ? ['refresh', 'overwrite'] : fixture.phase === 'prepared' ? ['refresh', 'recover'] : fixture.abandonAllowed && fixture.status === 'unknown' ? ['refresh', 'abandon'] : ['refresh'] });
     server.on('request', async (request, response) => {
         const url = new URL(request.url, 'http://127.0.0.1');
         if (url.pathname.endsWith('/overwrite_status')) return json(response, { success: true, status: fixture.status, details: { voice_state: snapshot() } });
+        if (url.pathname.endsWith('/abandon_overwrite')) {
+            let body = ''; for await (const bytes of request) body += bytes;
+            const submitted = JSON.parse(body); fixture.abandonies.push(submitted);
+            if (!fixture.abandonAllowed || fixture.status !== 'unknown' || submitted.operation_id !== fixture.operation || submitted.record_revision !== fixture.revision) return json(response, { success: false, code: 'VOICE_STATE_CHANGED', details: { voice_state: snapshot() } }, 409);
+            fixture.status = 'failed'; fixture.revision++; fixture.abandonAllowed = false;
+            return json(response, { success: true, abandoned: true, status: 'failed', details: { voice_state: snapshot() } });
+        }
         if (url.pathname.endsWith('/recover_overwrite')) {
             let body = ''; for await (const bytes of request) body += bytes;
             fixture.recoveries.push(JSON.parse(body));
@@ -56,6 +63,23 @@ async function verifyRecoveryPage({ run, waitFor, controlled }) {
     assert.equal(await run("!!document.querySelector('.remote-voice-dialog input[type=file]')"), true);
     assert.equal(state.updates.length, 0);
 
+    // Query advice exposes an explicit risk exit, and cancellation sends no POST.
+    fixture.phase = 'submission_possible'; fixture.status = 'unknown'; fixture.revision = 9;
+    fixture.abandonAllowed = true; await open();
+    await waitFor("Array.from(document.querySelectorAll('.remote-voice-dialog button')).some(button => button.textContent === window.t('voice.remote.abandonUnknown') && !button.hidden && !button.disabled)");
+    await run("window.__originalConfirm = window.confirm; window.confirm = message => { window.__abandonPrompt = message; return false; }; true");
+    await click('abandonUnknown');
+    assert.equal(fixture.abandonies.length, 0);
+    assert.equal(await run("window.__abandonPrompt === window.t('voice.remote.abandonUnknownConfirm')"), true);
+    await run("window.confirm = message => { window.__abandonPrompt = message; return true; }; true");
+    await click('abandonUnknown');
+    await waitFor("document.querySelector('.remote-voice-status').textContent === window.t('voice.remote.unknownAbandoned') && document.querySelector('.remote-voice-dialog').getAttribute('aria-busy') === 'false'");
+    assert.deepEqual(fixture.abandonies[0], { context_token: 'controlled-context', operation_id: 'prepared-owner', record_revision: 9 });
+    assert.equal(await visible('abandonUnknown'), false);
+    assert.equal(await visible('overwriteAgain'), true);
+    assert.equal(state.updates.length, 0);
+    await run("window.confirm = window.__originalConfirm; true");
+
     // Closing the dialog retires its HTTP waiter, while server recovery may finish.
     fixture.phase = 'prepared'; fixture.status = 'unknown'; fixture.revision = 9;
     let release;
@@ -74,6 +98,6 @@ async function verifyRecoveryPage({ run, waitFor, controlled }) {
     await waitFor("document.querySelector('.remote-voice-table tbody tr')");
     assert.equal(await run("document.querySelector('#remoteVoiceTitle').textContent"), title);
     assert.equal(state.updates.length, 0);
-    return { preparedOnlyRecovery: true, exactOperationAndRevision: true, explicitOverwriteOnly: true, recoveryFocus: true, lateRecoveryDialogFenced: true };
+    return { explicitUnknownUnlock: true, duplicateRiskConfirmation: true, preparedOnlyRecovery: true, exactOperationAndRevision: true, explicitOverwriteOnly: true, recoveryFocus: true, lateRecoveryDialogFenced: true };
 }
 module.exports = { createRecoveryServer, verifyRecoveryPage };

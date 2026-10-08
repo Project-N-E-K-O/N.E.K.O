@@ -115,7 +115,7 @@ async def test_cosyvoice_diagnostics_without_nonacceptance_proof_keep_protection
     assert record["overwrite_status"] == "unknown"
     assert record["overwrite_submission_phase"] == "submission_possible"
     refreshed = await api.get(f"/api/characters/voices/{ref}/overwrite_status", params={"context_token": token})
-    assert refreshed.json()["details"]["voice_state"]["actions"] == ["refresh"]
+    assert refreshed.json()["details"]["voice_state"]["actions"] == ["refresh", "abandon"]
     retry = await api.post(f"/api/characters/voices/{ref}/overwrite", data={"context_token": token},
                           files={"audio": ("sample.wav", _wav(), "audio/wav")})
     assert retry.json()["code"] == "UPDATE_OUTCOME_UNKNOWN"
@@ -124,6 +124,16 @@ async def test_cosyvoice_diagnostics_without_nonacceptance_proof_keep_protection
     assert len(seen) == 1
     assert json.loads(seen[0].content)["input"]["action"] == "update_voice"
     assert len(adapter.mutations) == 1
+    snapshot = refreshed.json()["details"]["voice_state"]
+    abandoned = await api.post(f"/api/characters/voices/{ref}/abandon_overwrite", json={
+        "context_token": token, "operation_id": snapshot["operation_id"],
+        "record_revision": snapshot["record_revision"],
+    })
+    assert abandoned.status_code == 200
+    assert abandoned.json()["details"]["attempt_outcome"] == "unknown"
+    assert cm.get_imported_voice(ref)["overwrite_terminal_reason"] == "user_abandoned_unknown"
+    assert len(seen) == 1 and len(adapter.mutations) == 1
+
 
 
 @pytest.mark.asyncio

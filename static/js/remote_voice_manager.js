@@ -155,6 +155,7 @@
         if (state.more) state.more.disabled = value;
         if (state.refreshStatus) state.refreshStatus.disabled = value;
         if (state.recoverPrepared) state.recoverPrepared.disabled = value || !state.recoverySnapshot;
+        if (state.abandonUnknown) state.abandonUnknown.disabled = value || !state.abandonSnapshot;
         if (state.reopenOverwrite) state.reopenOverwrite.disabled = value || !state.overwriteAllowed;
         for (const control of state.importControls || []) control.disabled = !!state.importSubmitting;
         if (state.mode === 'list' && state.empty) state.empty.hidden = value || state.rows.children.length > 0;
@@ -393,6 +394,10 @@
             state.recoverySnapshot = valid && pending && actions.includes('recover') &&
                 typeof snapshot.operation_id === 'string' && snapshot.operation_id
                 ? { operation_id: snapshot.operation_id, record_revision: snapshot.record_revision } : null;
+            state.abandonSnapshot = valid && status === 'unknown' && actions.includes('abandon') &&
+                typeof snapshot.operation_id === 'string' && snapshot.operation_id
+                ? { operation_id: snapshot.operation_id, record_revision: snapshot.record_revision } : null;
+            if (state.abandonUnknown) state.abandonUnknown.hidden = !state.abandonSnapshot;
             if (state.recoverPrepared) state.recoverPrepared.hidden = !state.recoverySnapshot;
             if (state.recoveryHint) state.recoveryHint.hidden = !state.recoverySnapshot;
             if (state.reopenOverwrite) state.reopenOverwrite.hidden = !state.overwriteAllowed;
@@ -417,22 +422,28 @@
         state.recoverPrepared.hidden = true;
         state.recoverPrepared.disabled = true;
         state.footer.append(state.recoverPrepared);
+        state.abandonUnknown = button('abandonUnknown', () => recoverPreparedOverwrite(state, true));
+        state.abandonUnknown.hidden = true;
+        state.abandonUnknown.disabled = true;
+        state.footer.append(state.abandonUnknown);
     }
 
-    async function recoverPreparedOverwrite(state) {
-        if (active !== state || state.busy || !state.recoverySnapshot) return;
-        const expected = state.recoverySnapshot;
+    async function recoverPreparedOverwrite(state, abandon = false) {
+        const snapshotKey = abandon ? 'abandonSnapshot' : 'recoverySnapshot';
+        if (active !== state || state.busy || !state[snapshotKey]) return;
+        const expected = state[snapshotKey];
+        if (abandon && !root.confirm(t('abandonUnknownConfirm'))) return;
         const operation = operations.begin(state.provider);
         let recovered = false;
         let sent = false;
-        busy(state, true); state.status.textContent = t('recoveringPrepared');
+        busy(state, true); state.status.textContent = t(abandon ? 'abandoningUnknown' : 'recoveringPrepared');
         try {
             // Refresh account/project context before using the advisory action.
             const ctx = await context(state, operation);
-            if (!ctx || active !== state || !operations.owns(operation) || state.recoverySnapshot !== expected) return;
+            if (!ctx || active !== state || !operations.owns(operation) || state[snapshotKey] !== expected) return;
             sent = true;
             const result = await operations.request(operation,
-                '/api/characters/voices/' + encodeURIComponent(state.localRef) + '/recover_overwrite', {
+                '/api/characters/voices/' + encodeURIComponent(state.localRef) + (abandon ? '/abandon_overwrite' : '/recover_overwrite'), {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ context_token: ctx.context_token, ...expected })
                 });
@@ -442,10 +453,10 @@
             // A successful local transition can outlive the subsequent record
             // read. Keep a query exit without inventing an unlocked snapshot.
             if (!snapshot && state.refreshStatus) state.refreshStatus.hidden = false;
-            recovered = result.recovered === true && snapshot?.local_ref === state.localRef &&
+            recovered = (abandon ? result.abandoned : result.recovered) === true && snapshot?.local_ref === state.localRef &&
                 snapshot.operation_id === expected.operation_id && snapshot.record_revision > expected.record_revision &&
                 snapshot.record_revision === state.recordRevision && snapshot.overwrite_status === 'failed';
-            if (recovered) state.status.textContent = t('preparedRecovered');
+            if (recovered) state.status.textContent = t(abandon ? 'unknownAbandoned' : 'preparedRecovered');
             if (typeof root.loadVoices === 'function') await root.loadVoices();
         } catch (error) {
             if (active === state && operations.current === operation) {

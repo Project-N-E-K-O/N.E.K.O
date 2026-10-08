@@ -312,3 +312,26 @@ Chromium 与 Electron 的管理及准备恢复四个实际页面入口通过，�
 物理文件线程仍可能继续或停滞，持有的全局存储锁也不能由请求取消强行释放；本修复
 只保证上述新增等待的请求可退休，不承诺所有存储 IO、初始 claim 或后端 shutdown
 均有界。`submission_possible`、无阶段历史记录和没有服务商证据的未知结果继续保护。
+
+## 2026-10-08：维护者决定后的显式未知结果解锁
+
+按 [维护者决定](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3325#discussion_r4218143397)
+增加独立的 `abandon` 出口；本节取代此前“本 PR 不加入放弃并解锁”的范围结论。
+provider 错误码分类保持原样，HTTP 401/403/429 等不被解释为确定拒绝。
+
+- `unknown` 记录只有在成功 refresh 读到 ready 且远端 revision 与覆盖前相等时才获解锁动作；
+  该观察绑定持久化记录版本。前端二次确认明确提示受理无法确认、再次覆盖可能重复提交。
+- 解锁接口在音色锁内重新查询，核对上下文、操作 ID、记录 revision 与查询证明，
+  再通过现有原子 transition 写入 `failed/user_abandoned_unknown`。引用、角色绑定和原操作 ID 保留。
+  返回仍是 `attempt_outcome=unknown`，没有 provider mutation 或自动重投。
+- 已前进 revision 仍由 refresh 结算 completed；缺失/较旧/不可比较 revision、处理中远端、
+  查询错误、并发新 owner、账号变化、存储失败均不能静默解锁。旧结果写回仍受 revision CAS 保护。
+- 新文案同步八语言，递增语言缓存版本并更新 key 指纹。准备阶段恢复的权限边界保留。
+
+验证：相关 Python 776 项通过，Node 87 项通过；Chromium 153.0.8010.12 与 Windows
+Electron 41.2.0 的真实音色页面分别通过新解锁与原准备恢复场景，包含取消确认零请求、
+确认风险文案、精确身份提交、仅显式再次覆盖、关闭弹窗后的迟到响应隔离。
+使用隔离 HTTP、测试账号和真实 JSON 存储，不调用真实提供商。
+Ruff、异步阻塞、API 路径、i18n 同步、文档链接与 diff 检查通过。
+全套 pytest 退出阶段出现既有 token tracker 向已关闭输出写日志的诊断，不影响 776 项断言或退出码。
+未重新运行全仓库或真实账号合成验收；新 head 的 CI 与 review 以远端状态为准。

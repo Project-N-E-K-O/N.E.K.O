@@ -113,6 +113,10 @@ async def overwrite_result_details(
         if (runtime.api_key and status in {"processing", "unknown"}
                 and record.get("overwrite_submission_phase") == "prepared"):
             actions.append("recover")
+        if (runtime.api_key and capabilities.details and status == "unknown"
+                and record.get("overwrite_abandon_revision") == record.get("_record_revision", 0)
+                and not (lock and lock.locked())):
+            actions.append("abandon")
         return {"local_ref": local_ref, "operation_id": record.get("overwrite_operation_id"),
                 "record_revision": record.get("_record_revision", 0),
                 "submission_phase": record.get("overwrite_submission_phase"),
@@ -670,6 +674,12 @@ async def _reconcile_overwrite_status(
             "overwrite_status": status, "remote_status": remote.status,
             "can_overwrite": _overwrite_allowed(adapter, runtime, remote),
         })
+        # Bind this explicit risk exit to the exact persisted query observation.
+        values["overwrite_abandon_revision"] = (
+            record.get("_record_revision", 0) + 1
+            if status == "unknown" and adapter.compare_revisions(revision, previous) == 0
+            and remote.status in {"ready", "completed", "OK"} else None
+        )
         receipt = await evidence.write(cm.aupdate_imported_voice(local_ref, runtime.scope_id, values,
                                                 expected_operation_id=record.get("overwrite_operation_id") or "",
                                                 expected_record_revision=record.get("_record_revision", 0), return_receipt=True))

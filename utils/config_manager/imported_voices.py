@@ -199,8 +199,8 @@ class ImportedVoiceStorageMixin:
     def transition_imported_voice_overwrite(
         self, local_ref, scope_id, *, action, expected_operation_id, expected_record_revision,
     ):
-        """Atomically acquire submission permission or retire a prepared owner."""
-        if (action not in {"submit", "recover"} or not isinstance(expected_operation_id, str)
+        """Atomically acquire submission permission or retire an identified owner."""
+        if (action not in {"submit", "recover", "abandon"} or not isinstance(expected_operation_id, str)
                 or not expected_operation_id or type(expected_record_revision) is not int
                 or expected_record_revision < 0):
             raise ValueError("VOICE_TRANSITION_INVALID")
@@ -214,15 +214,22 @@ class ImportedVoiceStorageMixin:
             raise ValueError("VOICE_STORAGE_INVALID")
         if (record.get("overwrite_operation_id") != expected_operation_id
                 or revision != expected_record_revision
-                or record.get("overwrite_submission_phase") != "prepared"
-                or record.get("overwrite_status") not in {"processing", "unknown"}):
+                or (action != "abandon" and (
+                    record.get("overwrite_submission_phase") != "prepared"
+                    or record.get("overwrite_status") not in {"processing", "unknown"}))
+                or (action == "abandon" and (
+                    record.get("overwrite_status") != "unknown"
+                    or record.get("overwrite_abandon_revision") != revision))):
             return ImportedVoiceWriteResult(False, deepcopy(record))
         metadata = deepcopy(record)
         if action == "submit":
             metadata["overwrite_submission_phase"] = "submission_possible"
         else:
             metadata["overwrite_status"] = "failed"
-            metadata["overwrite_terminal_reason"] = "not_submitted_recovered"
+            metadata["overwrite_terminal_reason"] = (
+                "user_abandoned_unknown" if action == "abandon" else "not_submitted_recovered"
+            )
+            metadata["overwrite_abandon_revision"] = None
         metadata["_record_revision"] = revision + 1
         storage[found[0]][local_ref] = metadata
         self.save_voice_storage(storage)

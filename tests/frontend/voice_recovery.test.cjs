@@ -18,14 +18,14 @@ function harness() {
         context: { capabilities: { overwrite: true } }, panel: { setAttribute() {} },
         status: { textContent: '', classList: { remove() {} } },
         audio: { ...control(), files: [] }, submit: control(), refreshStatus: control(),
-        recoverPrepared: control(), recoveryHint: control(), reopenOverwrite: control()
+        abandonUnknown: control(), recoverPrepared: control(), recoveryHint: control(), reopenOverwrite: control()
     };
     const requests = [], contextGate = deferred();
     const operations = new RemoteVoiceOperation(async (url, options) => {
         const pending = deferred(); requests.push({ url, options, ...pending }); return pending.promise;
     });
     const context = vm.createContext({ active: state, operations, Number, Array,
-        root: { loadVoices: async () => {} },
+        root: { confirm: () => true, loadVoices: async () => {} },
         busy: (target, value) => { target.busy = value; }, t: key => key,
         showError: (target, error) => { target.status.textContent = error.code || 'requestFailed'; },
         context: async () => contextGate.promise
@@ -34,6 +34,7 @@ function harness() {
     return { state, context, requests, contextGate,
         apply: value => context.updateOverwriteView(state, result(value)),
         recover: () => context.recoverPreparedOverwrite(state),
+        abandon: () => context.recoverPreparedOverwrite(state, true),
         resolve: (value, status = 200) => requests[0].resolve({ ok: status < 400, status, json: async () => value }) };
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -108,7 +109,37 @@ test('save failure retains pending actions, unknown transport result requires a 
 test('all locales translate recovery controls and invalidate the language cache', () => {
     for (const locale of ['en', 'ja', 'ko', 'zh-CN', 'zh-TW', 'ru', 'es', 'pt']) {
         const translations = JSON.parse(fs.readFileSync(path.join(__dirname, '../../static/locales', locale + '.json'), 'utf8')).voice.remote;
-        for (const key of ['recoverPrepared', 'recoverPreparedHint', 'recoveringPrepared', 'preparedRecovered', 'overwriteAgain', 'recoveryUncertain']) assert.ok(translations[key], locale + ':' + key);
+        for (const key of ['recoverPrepared', 'recoverPreparedHint', 'recoveringPrepared', 'preparedRecovered', 'overwriteAgain', 'recoveryUncertain', 'abandonUnknown', 'abandonUnknownConfirm', 'abandoningUnknown', 'unknownAbandoned']) assert.ok(translations[key], locale + ':' + key);
     }
     assert.match(fs.readFileSync(path.join(__dirname, '../../static/i18n-i18next.js'), 'utf8'), /LOCALE_VERSION = '[^']*prepared-recovery'/);
+});
+
+
+test('unknown unlock requires server advice and explicit risk confirmation', async () => {
+    const h = harness(); h.apply(snapshot(7, ['refresh'], 'unknown'));
+    assert.equal(h.state.abandonUnknown.hidden, true);
+    h.apply(snapshot(8, ['refresh', 'abandon'], 'unknown'));
+    assert.equal(h.state.abandonUnknown.hidden, false);
+    let prompt;
+    h.context.root.confirm = message => { prompt = message; return false; };
+    await h.abandon();
+    assert.equal(prompt, 'abandonUnknownConfirm');
+    assert.equal(h.requests.length, 0);
+    h.context.root.confirm = () => true;
+    const pending = h.abandon();
+    h.contextGate.resolve({ context_token: 'fresh-context' }); await tick();
+    assert.ok(h.requests[0].url.endsWith('/abandon_overwrite'));
+    assert.deepEqual(JSON.parse(h.requests[0].options.body), { context_token: 'fresh-context', operation_id: 'prepared-owner', record_revision: 8 });
+    h.resolve({ ...result(snapshot(9, ['refresh', 'overwrite'], 'failed')), abandoned: true });
+    await pending;
+    assert.equal(h.state.status.textContent, 'unknownAbandoned');
+    assert.equal(h.state.submit.hidden, false);
+    assert.equal(h.state.abandonUnknown.hidden, true);
+    assert.equal(h.requests.length, 1);
+});
+test('changed unknown owner during context wait prevents unlock', async () => {
+    const h = harness(); h.apply(snapshot(7, ['refresh', 'abandon'], 'unknown'));
+    const pending = h.abandon(); h.apply(snapshot(8, ['refresh'], 'unknown', 'successor'));
+    h.contextGate.resolve({ context_token: 'fresh-context' }); await pending;
+    assert.equal(h.requests.length, 0);
 });
