@@ -1080,6 +1080,7 @@ async def test_stop_all_abandons_the_header_even_before_the_deferred_seal_starts
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 10)
         assert not opening.done()
+        await wait_for(lambda: bool(rtm._resolving_names))    # 前提：后台链确实还停在读角色名、没进 _seal_after_header
         await asyncio.wait_for(rtm.stop_all("shutdown"), 5)  # 取消落在读角色名那一步
         await wait_for(lambda: opening.done(), timeout=2)
         assert opening.cancelled() and rt.journal._open_abandoned
