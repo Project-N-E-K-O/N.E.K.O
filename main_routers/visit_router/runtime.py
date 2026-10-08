@@ -1996,9 +1996,14 @@ async def end_visit(lanlan_name: str, visit_id: str, reason: str) -> tuple[int, 
 async def stop_all(reason: str = "shutdown") -> None:
     """Shutdown hook (PR-09b, within ``VISIT_SHUTDOWN_BUDGET_S``): files first, never a ``leave``."""
     runtimes = list(_runtimes.values())
-    if not runtimes:
-        return
-    await asyncio.gather(*(rt.shutdown() for rt in runtimes), return_exceptions=True)
+    if runtimes:
+        await asyncio.gather(*(rt.shutdown() for rt in runtimes), return_exceptions=True)
+    # 脱离运行时的后台任务（账号映射补写、交还回调）也一并停掉，不留给事件循环销毁
+    detached = [t for t in _detached if not t.done()]
+    for task in detached:
+        task.cancel()
+    if detached:
+        await asyncio.wait(detached, timeout=_SHUTDOWN_TASK_WAIT_S)
 
 
 async def visit_sweep_loop() -> None:

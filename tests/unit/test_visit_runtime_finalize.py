@@ -687,3 +687,10 @@ async def test_a_global_goodbye_ends_the_visit_without_a_sound(tmp_path, monkeyp
         for g in gates:
             g.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_stop_all_also_stops_detached_background_work():
+    stuck = asyncio.Event()
+    task = rtm._detach(stuck.wait())                     # 例如还在退避等待的账号映射补写
+    await asyncio.wait_for(rtm.stop_all("shutdown"), 3)
+    assert task.cancelled()
