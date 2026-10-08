@@ -1170,7 +1170,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         now = self.clock()
         ack = self.sequencer.poll_ack(now, force=force_ack)
         if ack is not None and ack > 0:
-            self.outbox.send({"t": "ack", "v": 1, "seq": ack}, now=now)
+            if self.outbox.leave_done(now):
+                # 本侧 leave 已完成：队列不再出帧，排进去就送不出了（欠账却已清掉）。对端的 leave 等这个 ack，直接送
+                await self.transport.send(self.outbox.final_ack_frame(ack, now=now).to_ws())
+            else:
+                self.outbox.send({"t": "ack", "v": 1, "seq": ack}, now=now)
         if self.joined and self.peer is not None and not self.finalizing and self.liveness.heartbeat_due(now):
             lp_seen = self.room.max_lp_seen if self.room is not None else 0
             self.outbox.send({"t": "hb", "v": 1, "lp_seen": lp_seen, "crop": self.crop,
@@ -1499,6 +1503,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 }, now=self.clock())
         except Exception as exc:  # noqa: BLE001 - spool 打不开：本场不记串门记忆，对话照常
             logger.warning("visit %s: spool not opened: %s", self.visit_id[:6], type(exc).__name__)
+            if memory_on:
+                # 状态已按「记忆开」写下：改回记忆关，否则启动补录每次都去提交一份不存在的转录、这场永远结不清
+                try:
+                    await spool.update_state(memory_enabled=False)
+                except Exception as state_exc:  # noqa: BLE001
+                    logger.warning("visit %s: memory-off state not written: %s", self.visit_id[:6],
+                                   type(state_exc).__name__)
             memory_on = False
         self.memory_enabled = memory_on
         self.spool = spool

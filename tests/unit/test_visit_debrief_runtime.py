@@ -121,6 +121,34 @@ async def test_chips_and_ask_later_only_with_memory_on(tmp_path, monkeypatch):
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_stalled_debrief_state_write_does_not_hold_the_exit(tmp_path, monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(debrief, "_STATE_WRITE_MAX_S", 0.2)
+    host, guest, wire, clock, gates = await _visit_with_lines(tmp_path, monkeypatch)
+    host.replies.queue = [["我回来啦。"], ["聊得很开心。"]]
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_update = rt.spool.update_state
+
+    async def stalled_update(**changes):
+        if "debrief_chip_pending" in changes:
+            await stuck.wait()                                # 写 state.json 卡在磁盘上
+        return await real_update(**changes)
+
+    rt.spool.update_state = stalled_update
+    try:
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(finish(rt, clock), 15)         # 退出流程照常走完（交还、teardown）
+        assert [b for b in host.host.blocks if b[1] == f"visit-debrief:{rt.visit_id}"]  # 芯片照常出
+        assert not rtm.is_visit_route_active("Host")
+    finally:
+        stuck.set()
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_record_block_is_bounded_and_keeps_the_newest_lines():
     lines = [{"lp": i, "side": "host" if i % 2 else "guest", "from": "own_cat" if i % 2 else "peer_cat",
               "ts": float(i), "text": f"第{i}句话，说了一些关于天气和小鱼干的事情。", "truncated": False}

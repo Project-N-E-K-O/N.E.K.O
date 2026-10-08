@@ -54,6 +54,9 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
 
+_STATE_WRITE_MAX_S = 5.0
+"""Bound of the ``debrief_chip_pending`` state write (a stalled disk must not hold the exit flow)."""
+
 DEBRIEF_ACTION = "visit_debrief_choice"
 """``react-chat-window:action`` of the chip buttons (handled by the page, PR-12 / PR-14)."""
 
@@ -180,9 +183,16 @@ async def _offer_chips(rt: Any, *, has_lines: bool) -> None:
     spool = rt.spool
     if not rt.memory_enabled or spool is None or not has_lines:
         return
-    try:
-        await spool.update_state(debrief_choice=VISIT_DEBRIEF_DEFAULT, debrief_chip_pending=True)
-    except Exception as exc:  # noqa: BLE001 - 标记写不进：芯片照常出，下次启动由补录兜底
-        logger.warning("visit %s: debrief state not written: %s", rt.visit_id[:6], type(exc).__name__)
+    # 有界：磁盘卡住时不能让退出流程停在这里（交还回调、teardown 都在后面）；到点不等，写没写成由启动补录兜底
+    writing = asyncio.ensure_future(spool.update_state(debrief_choice=VISIT_DEBRIEF_DEFAULT, debrief_chip_pending=True))
+    writing.add_done_callback(lambda t: t.cancelled() or t.exception())
+    await asyncio.wait([writing], timeout=_STATE_WRITE_MAX_S)
+    if not writing.done():
+        logger.warning("visit %s: debrief state still writing; continuing", rt.visit_id[:6])
+        rt._keep_background(writing)
+    elif not writing.cancelled() and writing.exception() is not None:
+        # 标记写不进：芯片照常出，下次启动由补录兜底
+        logger.warning("visit %s: debrief state not written: %s", rt.visit_id[:6],
+                       type(writing.exception()).__name__)
     await show_chips(rt.host, rt.visit_id, own_char=rt.lanlan_name, lang=rt.lang)
     await _push_state(rt, "asked")

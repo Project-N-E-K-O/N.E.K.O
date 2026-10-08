@@ -2158,6 +2158,22 @@ async def test_a_receive_waiting_when_the_receive_path_closes_takes_nothing(tmp_
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_closing_the_session_hands_a_stray_generation_to_stop_all(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stray = asyncio.get_running_loop().create_future()        # 被撇下、还在跑的生成
+    rt.session.stray = stray
+    try:
+        rt._close_session_in_background()
+        assert stray in rtm._detached                         # 会话关了它也可能还在跑：交给模块级登记
+    finally:
+        stray.cancel()
+        rt.session.stray = None
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_family_line_is_admitted_synchronously_before_its_commit_runs(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt

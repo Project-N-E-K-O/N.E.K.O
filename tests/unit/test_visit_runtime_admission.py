@@ -1888,6 +1888,35 @@ async def test_an_activation_that_outlives_teardown_is_handed_to_stop_all(tmp_pa
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_an_owed_ack_after_the_local_leave_is_done_is_sent_directly(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        rt.sequencer.poll_ack = lambda now, force=False: 7     # 刚收下对端的 leave，欠着 ack
+        rt.outbox.leave_done = lambda now=None: True          # 本侧 leave 已完成
+        rt.outbox.due = lambda now: []                        # 队列不再出帧
+        await rt.flush()
+        assert [p for p in wire.sent["host"] if p.get("t") == "ack" and p.get("seq") == 7]  # 照样送到对端
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_spool_that_fails_to_open_leaves_a_memory_off_state(tmp_path, monkeypatch):
+    from main_logic.visit import spool as spool_mod
+
+    async def broken_open(self, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(spool_mod.VisitSpool, "open", broken_open)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    try:
+        assert host.rt.memory_enabled is False
+        state = await host.rt.spool.read_state()
+        assert state["memory_enabled"] is False               # 已写下的状态改回记忆关：启动补录不会反复去提交
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_channel_close_that_overruns_is_retired_before_sealing(tmp_path, monkeypatch):
     monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)

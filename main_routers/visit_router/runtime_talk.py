@@ -969,6 +969,10 @@ class TalkMixin:
 
         closing = self._session_closing
         if closing is None:
+            stray = getattr(self.session, "stray", None)
+            if stray is not None and not stray.done():
+                # 不理取消、被撇下的那次生成：会话关了它也可能还在跑，交给模块级登记，关机时 stop_all 收得到
+                self._keep_background(stray)
             closing = self._session_closing = asyncio.ensure_future(close_visit_session(self.session))
             closing.add_done_callback(lambda t: t.cancelled() or t.exception())  # 失败只是少关一次，取走异常
             self._keep_background(closing)
