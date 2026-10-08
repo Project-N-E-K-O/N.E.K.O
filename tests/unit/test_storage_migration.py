@@ -2963,3 +2963,47 @@ def test_reused_target_config_changed_after_staging_is_not_replaced(tmp_path, mo
 
     assert result["error_code"] == "target_changed_during_migration"
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "synced in"
+
+
+
+@pytest.mark.unit
+def test_an_unlistable_stage_counts_as_diverged(tmp_path, monkeypatch):
+    """Recovery cannot tell what the stage holds; it may hold the only copy
+    of an entry gone from the source, so the transaction must be kept."""
+    from utils import storage_migration as storage_migration_module
+
+    source_root = tmp_path / "source"
+    transaction_root = tmp_path / "tx"
+    (transaction_root / "stage").mkdir(parents=True)
+    source_root.mkdir()
+    original_iterdir = Path.iterdir
+
+    def _iterdir(self):
+        if self == transaction_root / "stage":
+            raise PermissionError(13, "listing denied", str(self))
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _iterdir)
+
+    diverged = storage_migration_module._transaction_entries_diverged_from_source(
+        payload={}, source_root=source_root, transaction_root=transaction_root
+    )
+
+    assert diverged == ["stage"]
+
+
+@pytest.mark.unit
+def test_recorded_staged_entries_are_checked_without_listing_the_stage(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    transaction_root = tmp_path / "tx"  # no stage directory at all
+
+    diverged = storage_migration_module._transaction_entries_diverged_from_source(
+        payload={"staged_source_manifests": {"memory": {"kind": "dir"}}},
+        source_root=source_root,
+        transaction_root=transaction_root,
+    )
+
+    assert diverged == ["memory"]

@@ -1111,12 +1111,20 @@ def _transaction_entries_diverged_from_source(
     once staged, so this is a comparison, not a guess."""
     entries = [str(entry) for entry in payload.get("published_entries") or []]
     entries.append(str(payload.get("publishing_entry") or ""))
-    with suppress(OSError):
-        entries.extend(child.name for child in (transaction_root / "stage").iterdir())
     recorded: dict[str, Any] = {}
     staged_records = payload.get("staged_source_manifests")
     if isinstance(staged_records, dict):
         recorded.update({str(name): manifest for name, manifest in staged_records.items() if isinstance(manifest, dict)})
+    # Staged entries are recorded once staged; the listing adds the one whose
+    # record may not have landed yet.
+    entries.extend(recorded)
+    stage_root = transaction_root / "stage"
+    if os.path.lexists(stage_root):
+        try:
+            entries.extend(child.name for child in stage_root.iterdir())
+        except OSError:
+            # Cannot tell what the stage holds; it may be the only copy left.
+            return ["stage"]
     for entry_name, proof in copy_evidence_entries(payload.get("copied_entries")).items():
         if isinstance(proof.get("source_manifest"), dict):
             recorded[entry_name] = proof["source_manifest"]

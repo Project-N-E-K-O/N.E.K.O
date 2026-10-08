@@ -349,9 +349,51 @@ def test_unknown_teardown_descendants_stay_unknown_despite_a_running_snapshot(mo
 
 
 @pytest.mark.unit
-def test_the_monitoring_loop_refreshes_the_running_snapshot():
+def test_the_running_snapshot_is_refreshed_from_startup_on():
+    """Before the monitoring loop's first sleep, and while waiting for the
+    servers to get ready: Main can end itself for a storage restart in
+    either window."""
+    import inspect
+
+    from launcher_core import runtime
+
     source = (LAUNCHER_CORE / "runtime.py").read_text(encoding="utf-8")
-    assert "            time.sleep(5)\n            _refresh_running_descendants()\n" in source
+    assert "            _refresh_running_descendants()\n            time.sleep(5)\n" in source
+    assert "_refresh_running_descendants()" in inspect.getsource(runtime.wait_for_servers)
+
+
+@pytest.mark.unit
+def test_a_failed_refresh_makes_the_teardown_snapshot_unknown(monkeypatch):
+    """Stale evidence may miss a newer descendant; the restart is blocked
+    until a refresh succeeds again."""
+    from launcher_core import runtime
+
+    snapshots = iter([None, [("found", True)]])
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: next(snapshots))
+    monkeypatch.setattr(runtime, "_running_descendants", [("seen-earlier", True)])
+    monkeypatch.setattr(runtime, "_running_descendants_known", True)
+    monkeypatch.setattr(runtime, "_teardown_snapshot_taken", False)
+    monkeypatch.setattr(runtime, "_teardown_descendants", [])
+
+    runtime._refresh_running_descendants()  # cannot inspect a running server
+    runtime._take_teardown_snapshot_once()  # the teardown itself succeeds
+
+    assert runtime._teardown_descendants is None
+
+
+@pytest.mark.unit
+def test_a_successful_refresh_clears_the_unknown_state(monkeypatch):
+    from launcher_core import runtime
+
+    snapshots = iter([None, []])
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: next(snapshots))
+    monkeypatch.setattr(runtime, "_running_descendants", [])
+    monkeypatch.setattr(runtime, "_running_descendants_known", True)
+
+    runtime._refresh_running_descendants()
+    runtime._refresh_running_descendants()
+
+    assert runtime._running_descendants_known is True
 
 
 # Spawning the base interpreter keeps a Windows venv's python.exe stub out of

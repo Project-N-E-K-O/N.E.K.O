@@ -115,6 +115,9 @@ _teardown_snapshot_taken = False
 # monitoring loop: in multiprocess mode a migration restart begins with Main
 # shutting itself down, before any teardown snapshot can see its children.
 _running_descendants: list = []
+# False while the latest refresh could not inspect a running server: what
+# was seen before may then miss a newer descendant.
+_running_descendants_known = True
 _expected_launcher_shutdown = False
 _existing_neko_services: set[str] = set()  # 已有 N.E.K.O 实例占用的端口键
 _partial_or_mixed_existing_backend = False
@@ -2187,6 +2190,9 @@ def wait_for_servers(timeout: int = 60) -> bool | str:
         if ready_count == len(SERVERS):
             break
 
+        # Servers can start plugin hosts while still getting ready, and a
+        # storage restart may already end Main here.
+        _refresh_running_descendants()
         time.sleep(0.5)
 
     # 第二步：等待所有服务器的 ready_event（同步初始化完成）
@@ -2402,13 +2408,15 @@ def _refresh_running_descendants() -> None:
     no longer reach the children it left behind. Exited ones are dropped
     (psutil compares creation times, so a recycled PID never matches).
     """
-    global _running_descendants
+    global _running_descendants, _running_descendants_known
     try:
         snapshot = _snapshot_server_descendants(SERVERS)
     except Exception:
-        return
+        snapshot = None
     if snapshot is None:
+        _running_descendants_known = False
         return
+    _running_descendants_known = True
     earlier = [(process, own) for process, own in _running_descendants if _still_running(process)]
     _running_descendants = _merge_descendant_snapshots(snapshot, earlier)
 
@@ -2435,6 +2443,8 @@ def _take_teardown_snapshot_once() -> None:
     try:
         current = _snapshot_server_descendants(list(_iter_servers_for_shutdown()))
     except Exception:
+        current = None
+    if not _running_descendants_known:
         current = None
     _teardown_descendants = _merge_descendant_snapshots(current, _running_descendants)
 
@@ -3342,8 +3352,10 @@ def main():
         _CRITICAL_MODULES = {"memory_server", "main_server"}
         _reported_exits: set[str] = set()
         while True:
-            time.sleep(5)
+            # Before the sleep, so the first refresh runs as soon as the
+            # loop starts rather than five seconds later.
             _refresh_running_descendants()
+            time.sleep(5)
             started = [s for s in SERVERS if s.get('process') is not None]
             any_critical_dead = False
             for s in started:
