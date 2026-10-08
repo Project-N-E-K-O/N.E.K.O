@@ -38,6 +38,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyClaude": "",
     "assistApiKeyOrcarouter": "",
     "assistApiKeyRequesty": "",
+    "assistApiKeyOpper": "",
     "assistApiKeyGrok": "",
     "assistApiKeyDoubao": "",
     "assistApiKeyDoubaoTts": "",
@@ -232,6 +233,15 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "google/gemini-2.5-flash",
         'AGENT_MODEL': "google/gemini-3-flash-preview",
     },
+    'opper': {
+        'OPENROUTER_URL': "https://api.opper.ai/v3/compat",
+        'CONVERSATION_MODEL': "gemini-3.8-flash",
+        'SUMMARY_MODEL': "gemini-3.8-flash",
+        'CORRECTION_MODEL': "gemini-3.8-flash",
+        'EMOTION_MODEL': "gpt-5.4-mini",
+        'VISION_MODEL': "gemini-3.8-flash",
+        'AGENT_MODEL': "gemini-3.8-flash",
+    },
     'grok': {
         'OPENROUTER_URL': "https://api.x.ai/v1",
         'CONVERSATION_MODEL': "grok-4-1-fast-non-reasoning",
@@ -284,6 +294,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'openrouter': 'ASSIST_API_KEY_OPENROUTER',
     'orcarouter': 'ASSIST_API_KEY_ORCAROUTER',
     'requesty': 'ASSIST_API_KEY_REQUESTY',
+    'opper': 'ASSIST_API_KEY_OPPER',
     'grok': 'ASSIST_API_KEY_GROK',
     'doubao': 'ASSIST_API_KEY_DOUBAO',
 }

@@ -61,6 +61,7 @@ class TestKeybookSaveLoad:
         'assistApiKeyMimoTokenPlan': 'ASSIST_API_KEY_MIMO_TOKEN_PLAN',
         'assistApiKeyGrok': 'ASSIST_API_KEY_GROK',
         'assistApiKeyRequesty': 'ASSIST_API_KEY_REQUESTY',
+        'assistApiKeyOpper': 'ASSIST_API_KEY_OPPER',
     }
 
     @pytest.mark.unit
@@ -106,6 +107,7 @@ class TestKeybookSaveLoad:
                        'ASSIST_API_KEY_CLAUDE', 'ASSIST_API_KEY_OPENROUTER',
                        'ASSIST_API_KEY_ORCAROUTER',
                        'ASSIST_API_KEY_REQUESTY',
+                       'ASSIST_API_KEY_OPPER',
                        'ASSIST_API_KEY_QWEN_INTL',
                        'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL',
                        'ASSIST_API_KEY_MIMO']:
@@ -886,6 +888,7 @@ class TestProviderExclusion:
             'openrouter',
             'orcarouter',
             'requesty',
+            'opper',
             'elevenlabs',
             'qwen_intl',
             'minimax_intl',

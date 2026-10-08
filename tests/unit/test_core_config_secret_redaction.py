@@ -16,6 +16,7 @@ _ASSIST_API_KEY_FIELDS = (
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
     'assistApiKeyOrcarouter',
     'assistApiKeyRequesty',
+    'assistApiKeyOpper',
 )
 
 _MODEL_TYPES = (
