@@ -3915,3 +3915,32 @@ def test_storage_location_cleanup_reports_copies_left_by_an_interrupted_cleanup(
     assert response.status_code == 409, response.json()
     assert response.json()["remaining_entries"] == [".neko-cleanup-0123456789ab"]
     assert (leftover / "recent.json").is_file()
+
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_reporting_entries_it_cannot_look_up(tmp_path, monkeypatch):
+    """An entry whose lookup fails (ACL, missing execute bit) is not gone;
+    reporting it as cleaned would end the cleanup with the data still there."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    blocked = source_root / "memory"
+    original_lstat = os.lstat
+
+    def _lstat(path, *args, **kwargs):
+        if Path(path) == blocked:
+            raise PermissionError(13, "access denied", str(path))
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", _lstat)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+    monkeypatch.undo()
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (blocked / "recent.json").is_file()
+

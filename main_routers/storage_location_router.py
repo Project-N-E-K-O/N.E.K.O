@@ -1608,6 +1608,22 @@ def _build_completed_migration_notice(
 _CLEANUP_PRIVATE_PREFIX = ".neko-cleanup-"
 
 
+def _entry_may_exist(path: Path) -> bool:
+    """``False`` only when ``path`` is known to be gone.
+
+    ``os.path.lexists`` also answers ``False`` when the lookup itself fails
+    (a directory ACL or execute bit removed); reporting such an entry as
+    cleaned would end the cleanup with the data still there.
+    """
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def _leftover_private_cleanup_entries(retained_path: Path) -> tuple[str, ...]:
     """Entries a cleanup renamed and could neither delete nor put back.
 
@@ -1708,11 +1724,17 @@ def _cleanup_retained_runtime_root(
             shutil.copytree(retained_entry, scratch_root / "config", symlinks=True)
             # copytree keeps read-only modes; the rewrite below must be able
             # to replace workshop_config.json in this throwaway copy.
+            # copytree kept links as links; chmod would follow one to a file
+            # outside the retained root, so links are left alone (the
+            # manifest comparison rejects them anyway).
             for scratch_dir, _dir_names, file_names in os.walk(scratch_root / "config"):
                 os.chmod(scratch_dir, stat.S_IMODE(os.stat(scratch_dir).st_mode) | stat.S_IRWXU)
                 for file_name in file_names:
                     scratch_file = os.path.join(scratch_dir, file_name)
-                    os.chmod(scratch_file, stat.S_IMODE(os.stat(scratch_file).st_mode) | stat.S_IRUSR | stat.S_IWUSR)
+                    file_stat = os.lstat(scratch_file)
+                    if not stat.S_ISREG(file_stat.st_mode):
+                        continue
+                    os.chmod(scratch_file, stat.S_IMODE(file_stat.st_mode) | stat.S_IRUSR | stat.S_IWUSR)
             rewrite_migrated_config_paths(
                 source_root=retained_path,
                 target_root=normalized_target,
@@ -1767,7 +1789,7 @@ def _cleanup_retained_runtime_root(
     remaining_entries = tuple(
         entry_name
         for entry_name in migrated_names
-        if os.path.lexists(retained_path / entry_name)
+        if _entry_may_exist(retained_path / entry_name)
     ) + _leftover_private_cleanup_entries(retained_path)
     retained_root_kept = paths_equal(retained_path, anchor_root)
     if not retained_root_kept:

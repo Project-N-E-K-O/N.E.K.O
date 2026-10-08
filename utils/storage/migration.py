@@ -382,11 +382,18 @@ def _holds_only_own_publish_reservation(target: Path, staged: Path) -> bool:
     so the target holds at most the empty name reservation made just before
     it, or a hard link to the staged file. Anything else was put there from
     outside after the interruption and is not ours to delete.
+
+    Windows publishes with one plain rename and never reserves or links, so
+    anything there at all is someone else's. On POSIX a reservation is made
+    only where the kernel lacks a no-replace rename for the filesystem, and
+    emptiness is then the only sign of it.
     """
     try:
         target_stat = target.lstat()
     except FileNotFoundError:
         return True
+    if os.name == "nt":
+        return False
     if _stat_is_reparse(target_stat) or stat.S_ISLNK(target_stat.st_mode):
         return False
     if stat.S_ISDIR(target_stat.st_mode):
@@ -647,14 +654,13 @@ def _rewrite_migrated_runtime_config_paths(
         return
 
     # The copy keeps the source's mode, and Windows refuses to replace a
-    # read-only file; lift it for the write and put it back afterwards.
+    # read-only file; lift it for the write. The replacement is created
+    # 0600, so the original mode goes back on afterwards in every case.
     original_mode = stat.S_IMODE(workshop_config_path.stat().st_mode)
-    read_only = not original_mode & stat.S_IWUSR
-    if read_only:
+    if not original_mode & stat.S_IWUSR:
         os.chmod(workshop_config_path, original_mode | stat.S_IWUSR)
     atomic_write_json(workshop_config_path, rewritten_payload, ensure_ascii=False, indent=2)
-    if read_only:
-        os.chmod(workshop_config_path, original_mode)
+    os.chmod(workshop_config_path, original_mode)
 
 
 def _source_entries_referenced_by_config(*, config_root: Path, source_root: Path) -> set[str]:

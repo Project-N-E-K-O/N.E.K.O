@@ -2044,6 +2044,7 @@ def test_recovery_keeps_what_was_written_into_an_interrupted_reservation(tmp_pat
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="Windows publishes without a reservation or link")
 def test_recovery_removes_its_own_empty_reservation(tmp_path, monkeypatch):
     from utils import storage_migration as storage_migration_module
 
@@ -2061,6 +2062,7 @@ def test_recovery_removes_its_own_empty_reservation(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="Windows publishes without a reservation or link")
 def test_recovery_removes_its_own_hard_link_to_the_staged_file(tmp_path, monkeypatch):
     """A file is published by linking it in, then unlinking the staged name."""
     config_manager, target_root = _start_migration_into_empty_target(tmp_path, memory_as_file=True)
@@ -2530,3 +2532,51 @@ def test_migrated_entry_content_ignores_noise_and_empty_directories(tmp_path):
 
     (root / "pngtuber" / "Alice" / "frames" / "idle.png").write_bytes(b"png")
     assert storage_migration_module.root_has_migrated_entry_content(root) is True
+
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_rebased_workshop_config_keeps_its_mode(tmp_path):
+    """The rewrite replaces the file with one created 0600; the published
+    config must keep the mode it had."""
+    import json
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    workshop_file = source_root / "config" / "workshop_config.json"
+    workshop_file.write_text(json.dumps({"user_mod_folder": str(source_root / "mods")}), encoding="utf-8")
+    workshop_file.chmod(0o644)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    published = target_root / "config" / "workshop_config.json"
+    assert json.loads(published.read_text(encoding="utf-8"))["user_mod_folder"] == str((target_root / "mods").resolve())
+    assert published.stat().st_mode & 0o777 == 0o644
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.name != "nt", reason="only Windows never reserves the name")
+def test_recovery_keeps_an_empty_entry_created_after_the_interruption(tmp_path, monkeypatch):
+    """Windows publishes with one plain rename, so even an empty entry at the
+    target after an interruption was created by someone else."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, target_root = _start_migration_into_empty_target(tmp_path)
+    _crash_while_publishing(monkeypatch, config_manager, lambda staged, target: None)
+    (target_root / "memory").mkdir()
+
+    _stop_after_recovery(monkeypatch, storage_migration_module)
+    stopped = run_pending_storage_migration(config_manager)
+
+    assert stopped["error_code"] == "stop_after_recovery"
+    assert (target_root / "memory").is_dir()
