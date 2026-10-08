@@ -720,6 +720,9 @@ def test_a_well_formed_long_call_is_never_given_up_halfway():
     for leaked, expected in (
         ('好的 default_api:pvz_start{"opts": {"lane": 1}, "goal": "' + long + '"} 好了', "好的  好了"),
         ('前 pvz_start(goal="build (a) then ' + long + '") 后', "前  后"),
+        # A call named inside a quoted value after a nested closer is data.
+        ('好 default_api:pvz_instruction{payload: {nested: 1}, note: "recall_memory{query: a}"} 了',
+         "好  了"),
     ):
         assert strip_tool_call_leaks(leaked, tool_names=_PVZ_TOOLS) == expected
         visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [leaked])

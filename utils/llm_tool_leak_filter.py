@@ -186,8 +186,7 @@ class ToolLeakFilter:
             event = self._finish_event(finalized=True)
             first_event = first_event or event
             self._last_visible_char = ""
-            visible, _event = self.feed(rest)
-            recovered.append(visible)
+            recovered.append(_feed_in_pieces(self, rest))
         if self._suppressing:
             self._suppressed_chars += len(self._pending)
             self._pending = ""
@@ -215,6 +214,8 @@ class ToolLeakFilter:
     def _reset_call_state(self) -> None:
         # Text after the first outer closer of a call still open; None until one.
         self._call_recovery: list[str] | None = None
+        # Whether that closer was inside a quote never closed (else nested).
+        self._call_recovery_in_quote = False
         self._call_resume = ""
         self._call_closers: list[str] = []
         self._call_opened = False
@@ -258,7 +259,13 @@ class ToolLeakFilter:
         for index, char in enumerate(text):
             if self._call_recovery is not None:
                 self._call_recovery.append(char)
-                if char in _OPENER_END_CHARS and self._opens_call_at_end(self._call_recovery):
+                if (
+                    char in _OPENER_END_CHARS
+                    # A recovery point a nested closer set: a call named in a
+                    # quoted value of this call is data, not a new call.
+                    and (self._call_recovery_in_quote or not self._call_quote)
+                    and self._opens_call_at_end(self._call_recovery)
+                ):
                     self._call_resume = "".join(self._call_recovery) + text[index + 1:]
                     return _CALL_GIVEN_UP
             outer_closer = (
@@ -268,6 +275,7 @@ class ToolLeakFilter:
             if self._call_quote:
                 if outer_closer:
                     self._call_recovery = []
+                    self._call_recovery_in_quote = True
                 if self._call_escape:
                     self._call_escape = False
                 elif char == "\\":
@@ -289,6 +297,7 @@ class ToolLeakFilter:
                     return index + 1
                 if outer_closer:
                     self._call_recovery = []
+                    self._call_recovery_in_quote = False
             elif char in _QUOTE_CHARS and self._call_opened and self._call_last in "([{=:,":
                 self._call_quote = char
             if not char.isspace():
