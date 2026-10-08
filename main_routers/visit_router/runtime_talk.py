@@ -743,15 +743,23 @@ class TalkMixin:
         if reservation is None:
             return None
         ref = LineRef(ln, lp, self.side)
-        try:
-            self.apply_effects(room.on_local_human_line(ref, now))
-            self.own_line_lp[ln] = lp
-            # 先落盘再发送：最坏是本侧记了一句还没发出去的话（Servers 比对标单侧）
-            await self.record_line("own_human", side=self.side, lp=lp, ln=ln, text=payload["txt"],
-                                   truncated=bool(payload["truncated"]))
-            self.outbox.send(payload, now=self.clock(), reservation=reservation)
-        finally:
-            reservation.release()
+
+        async def commit() -> None:
+            try:
+                self.apply_effects(room.on_local_human_line(ref, now))
+                self.own_line_lp[ln] = lp
+                # 先落盘再发送：最坏是本侧记了一句还没发出去的话（Servers 比对标单侧）
+                await self.record_line("own_human", side=self.side, lp=lp, ln=ln, text=payload["txt"],
+                                       truncated=bool(payload["truncated"]))
+                self.outbox.send(payload, now=self.clock(), reservation=reservation)
+            finally:
+                reservation.release()
+
+        # 接纳之后（改了 room、可能已记进转录）这一段不能半途而废：调用方被取消（关机等）也照样落盘、入队，
+        # 预留一直持有到入队，关闭通道的 leave 照样排在它后面
+        committing = asyncio.ensure_future(commit())
+        committing.add_done_callback(lambda t: t.cancelled() or t.exception())
+        await asyncio.shield(committing)
         self.last_text_at = self.clock()
         self.kick()
         self._add_own_human_history(ln, lp, payload["txt"])

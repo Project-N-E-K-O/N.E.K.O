@@ -323,9 +323,10 @@ class UploadJournal:
                     break
             fd = opening.result() if opening.done() and not opening.cancelled() \
                 and opening.exception() is None else None
-            if self._open_abandoned and self._abandoned_tail:
-                # 关机放弃：等上传头期间攒下的记录排在建文件之后由写线程补上（同一条单线程队列，先头后行），
-                # 留下一份完整的流水给下次启动补录；没建成就什么都不写
+            if self._open_abandoned:
+                # 关机放弃：等上传头期间攒下的记录（可能为空）排在建文件之后由写线程补上（同一条单线程队列，
+                # 先头后行）再关 fd。建成的流水一律留着给下次启动补录（只有头也要留：零行转录与用量也得上传）；
+                # 没建成就什么都不写
                 executor.submit(self._finish_abandoned_open, open_job, list(self._abandoned_tail))
             elif fd is not None:
                 with contextlib.suppress(OSError):

@@ -1604,6 +1604,35 @@ async def test_booking_a_line_survives_its_caller_being_cancelled(tmp_path, monk
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_an_admitted_family_line_is_sent_even_if_its_handler_is_cancelled(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_record = rt.record_line
+
+    async def slow_record(speaker, **kwargs):
+        if speaker == "own_human":
+            await stuck.wait()                                # 亲人那句落盘慢
+        return await real_record(speaker, **kwargs)
+
+    rt.record_line = slow_record
+    try:
+        sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
+            "input_type": "text", "data": "被取消也要发出去", "source": "neko_visit:guest_cat"}))
+        await wait_for(lambda: rt.outbox.reserved_bytes > 0)  # 已接纳（改了 room）
+        sending.cancel()                                      # 处理函数被取消（关机等）
+        await asyncio.gather(sending, return_exceptions=True)
+        stuck.set()
+        await rt.flush()
+        await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "text" and p.get("sp") == "h"],
+                       timeout=5)                             # 照样落盘、入队、发到对端
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_an_admitted_family_line_goes_out_before_leave(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt

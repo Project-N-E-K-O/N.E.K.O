@@ -191,6 +191,37 @@ async def test_an_abandoned_open_still_writes_the_buffered_records_after_the_hea
         tu._open_streams.discard(V1)
 
 
+async def test_an_abandoned_open_that_already_finished_keeps_its_header_only_stream(tmp_path, servers):
+    import threading
+
+    journal = tu.UploadJournal(tmp_path, V1)
+    release, created = threading.Event(), threading.Event()
+    real_open = journal._open_sync
+
+    def slow_open(data):
+        release.wait(10)
+        fd = real_open(data)
+        created.set()
+        return fd
+
+    journal._open_sync = slow_open
+    opening = asyncio.ensure_future(journal.open(role="host", own_visit_uid=OWN, own_char_uid=CHAR_UID,
+                                                 transport="trtc", started_at=1000.0, app_version="1.2"))
+    try:
+        await asyncio.sleep(0.05)
+        release.set()
+        created.wait(5)                                       # 建文件刚好已完成，open() 还没恢复
+        journal.abandon_open([])                              # 关机：没有攒下的记录
+        opening.cancel()
+        await asyncio.wait([opening], timeout=1)
+        await asyncio.sleep(0.1)
+        stream = _spool(tmp_path) / f"{V1}.upload.jsonl"
+        assert stream.exists()                                # 只有头也留着：零行转录与用量下次启动照样补录
+    finally:
+        release.set()
+        tu._open_streams.discard(V1)
+
+
 async def test_a_second_seal_while_the_first_is_writing_waits_for_the_same_write(tmp_path, servers):
     import threading
 

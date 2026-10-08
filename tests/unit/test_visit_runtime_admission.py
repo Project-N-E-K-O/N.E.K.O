@@ -1611,6 +1611,33 @@ async def test_a_bad_buffered_record_does_not_break_the_shutdown(tmp_path, monke
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_shutdown_retires_the_transport_before_sealing(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    order: list[str] = []
+    real_unregister = rtm.unregister_transport_session
+
+    def unregister(transport):
+        if transport is rt.transport:
+            order.append("unregister")
+        return real_unregister(transport)
+
+    monkeypatch.setattr(rtm, "unregister_transport_session", unregister)
+    real_seal = rt.journal.seal
+
+    async def seal(reason, **kw):
+        order.append("seal")
+        return await real_seal(reason, **kw)
+
+    rt.journal.seal = seal
+    try:
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
+        assert "unregister" in order and "seal" in order
+        assert order.index("unregister") < order.index("seal")  # 封存之前不再收对端的帧
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_the_spool_is_finalized_only_once(tmp_path, monkeypatch):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt

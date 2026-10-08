@@ -2058,6 +2058,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 await asyncio.wait_for(self.book_line(line), left(_SHUTDOWN_TASK_WAIT_S))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit %s: closed line not booked at shutdown: %r", self.visit_id[:6], exc)
+        # 封存之前先收掉接收通道：之后 iframe 还送来的可靠整句不会被收下、回 ack，却落在封存之后
+        unregister_transport_session(self.transport)
         await self._settle_journal_open(left(_SHUTDOWN_TASK_WAIT_S))
         self._flush_journal_backlog()
         sealed = False
