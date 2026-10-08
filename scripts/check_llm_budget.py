@@ -131,6 +131,11 @@ CODE_OUTPUT = "LLM_OUTPUT_BUDGET"
 
 LLM_CALL_ATTRS = {"ainvoke", "invoke", "astream", "ainvoke_raw", "invoke_raw"}
 
+# Shared helpers that forward a caller's prompt to ``.ainvoke`` internally
+# (their own call site carries a noqa). The rule is applied at the caller
+# instead, with the prompt at this positional index (or ``prompt=``).
+LLM_PROMPT_FORWARDERS = {"ainvoke_thinking": 1}
+
 # Names whose presence anywhere in the enclosing function marks it as
 # "budget-aware". The tokenize helpers do real truncation; a ``*_MAX_TOKENS``
 # constant reference signals a deliberate token cap is in play.
@@ -309,6 +314,8 @@ class LLMBudgetChecker(ast.NodeVisitor):
                 self._check_output_budget(node, name)
             if name in LLM_CALL_ATTRS:
                 self._check_input_budget(node, name)
+            elif name in LLM_PROMPT_FORWARDERS:
+                self._check_input_budget(node, name, prompt_index=LLM_PROMPT_FORWARDERS[name])
         self.generic_visit(node)
 
     def _check_output_budget(self, node: ast.Call, name: str) -> None:
@@ -335,14 +342,15 @@ class LLMBudgetChecker(ast.NodeVisitor):
         )
         self.violations.append((lineno, col, CODE_OUTPUT, msg))
 
-    def _check_input_budget(self, node: ast.Call, name: str) -> None:
-        # Resolve the prompt argument: first positional, or messages=/input=.
+    def _check_input_budget(self, node: ast.Call, name: str, prompt_index: int = 0) -> None:
+        # Resolve the prompt argument: positional at prompt_index, or
+        # messages=/input=/prompt=.
         prompt_arg: ast.AST | None = None
-        if node.args:
-            prompt_arg = node.args[0]
+        if len(node.args) > prompt_index:
+            prompt_arg = node.args[prompt_index]
         else:
             for kw in node.keywords:
-                if kw.arg in {"messages", "input"}:
+                if kw.arg in {"messages", "input", "prompt"}:
                     prompt_arg = kw.value
                     break
         # Constant-only prompts carry no unbounded input — skip.

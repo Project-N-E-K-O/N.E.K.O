@@ -2719,3 +2719,21 @@ async def test_recent_file_route_rejects_save_without_loaded_snapshot_tokens():
 
     assert response.status_code == 409
     assert "重新加载" in json.loads(response.body)["error"]
+
+
+def test_review_close_failure_does_not_mask_a_valid_review(tmp_path):
+    """Closing the review client is cleanup; a close error must not turn a
+    valid corrected dialogue into a failed review."""
+    snapshot = _review_snapshot()
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, snapshot)
+
+    class _CloseBoomLLM(_ReviewLLM):
+        async def aclose(self) -> None:
+            raise RuntimeError("close boom")
+
+    setattr(mgr, "_get_review_llm", lambda: _CloseBoomLLM(_review_corrected()))
+
+    result = asyncio.run(mgr.review_history(name, snapshot=list(snapshot)))
+
+    assert result[0] == 'patched'

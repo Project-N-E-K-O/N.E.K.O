@@ -2770,7 +2770,6 @@ class FactStore:
         from memory.thinking_llm import ainvoke_thinking, describe_output
 
         retries = 0
-        resp = None
         while retries < max_retries:
             resp = None
             try:

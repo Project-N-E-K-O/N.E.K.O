@@ -215,3 +215,35 @@ def test_repo_is_clean():
     assert result.returncode == 0, (
         f"check_llm_budget.py reported violations:\n{result.stdout}\n{result.stderr}"
     )
+
+
+def test_input_prompt_forwarder_checked_at_caller():
+    # ainvoke_thinking forwards its prompt to .ainvoke internally; the rule
+    # moves to the caller so a helper-level noqa cannot hide unbounded input.
+    src = """
+    async def f(api_config, prompt):
+        resp, _ = await ainvoke_thinking(api_config, prompt, timeout=90, call_label="x")
+    """
+    assert _codes(src).count("LLM_INPUT_BUDGET") == 1
+
+
+def test_input_prompt_forwarder_keyword_prompt_checked():
+    src = """
+    async def f(api_config, prompt):
+        await ainvoke_thinking(api_config, prompt=prompt, timeout=90, call_label="x")
+    """
+    assert _codes(src).count("LLM_INPUT_BUDGET") == 1
+
+
+def test_input_prompt_forwarder_budget_aware_or_noqa_clean():
+    aware = """
+    async def f(api_config, text):
+        prompt = truncate_to_tokens(text, 100)
+        await ainvoke_thinking(api_config, prompt, timeout=90, call_label="x")
+    """
+    noqa = """
+    async def f(api_config, prompt):
+        await ainvoke_thinking(api_config, prompt, timeout=90, call_label="x")  # noqa: LLM_INPUT_BUDGET  # capped upstream
+    """
+    assert _codes(aware) == []
+    assert _codes(noqa) == []

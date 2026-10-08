@@ -109,7 +109,7 @@ async def _acreate(api_config: dict, *, timeout: float, output_cap: int):
     )
 
 
-async def _aclose_quietly(llm, call_label: str) -> None:
+async def aclose_quietly(llm, call_label: str) -> None:
     # Closing is cleanup: a close failure must not mask the call outcome (a
     # raise here would replace a valid response or the original error).
     try:
@@ -138,12 +138,12 @@ async def ainvoke_thinking(
                 f"[MemoryThinking] {call_label}: 模型拒绝 {output_cap} 输出额度，"
                 f"改用 {LLM_OUTPUT_GUARD_MAX_TOKENS} 重试"
             )
-            await _aclose_quietly(llm, call_label)
+            await aclose_quietly(llm, call_label)
             output_cap = LLM_OUTPUT_GUARD_MAX_TOKENS
             llm = await _acreate(api_config, timeout=timeout, output_cap=output_cap)
             response = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # same budgeted prompt, lower output cap.
     finally:
-        await _aclose_quietly(llm, call_label)
+        await aclose_quietly(llm, call_label)
 
     if response_hit_output_limit(response, output_cap):
         logger.warning(

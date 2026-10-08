@@ -15,6 +15,7 @@
 from utils.config_manager import get_config_manager
 from utils.token_tracker import set_call_type
 from memory.thinking_llm import (
+    aclose_quietly,
     describe_output,
     output_cap_rejected,
     response_hit_output_limit,
@@ -2693,12 +2694,12 @@ class CompressedRecentHistoryManager:
                             f"[RecentHistory] {lanlan_name} 纠错模型拒绝 {review_cap} 输出额度，"
                             f"改用 {LLM_OUTPUT_GUARD_MAX_TOKENS} 重试"
                         )
-                        await review_llm.aclose()
+                        await aclose_quietly(review_llm, f"{lanlan_name} memory_review")
                         review_cap = LLM_OUTPUT_GUARD_MAX_TOKENS
                         review_llm = self._get_review_llm(review_cap)
                         response = await review_llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # same capped prompt, lower output cap.
                 finally:
-                    await review_llm.aclose()
+                    await aclose_quietly(review_llm, f"{lanlan_name} memory_review")
 
                 # 检查是否被取消（LLM调用后）
                 if cancel_event and cancel_event.is_set():

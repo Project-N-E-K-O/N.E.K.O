@@ -357,9 +357,9 @@ class ExternalFusionMixin:
             logger.warning(f"[PersonaFusion] {name}/{entity} 融合 LLM 构造失败: {exc}")
             return None
         try:
-            # cand_text 已 truncate_to_tokens 到 EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS；
             # 显式开 thinking，额度与回退见 memory.thinking_llm。
-            resp, _ = await ainvoke_thinking(
+            # noqa 理由：cand_text 已 truncate_to_tokens 到 EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS
+            resp, _ = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET
                 api_config, prompt,
                 timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,
                 call_label=f"{name}/{entity} persona_external_fusion",

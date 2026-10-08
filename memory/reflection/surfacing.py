@@ -478,9 +478,8 @@ class SurfacingMixin:
             # 转换误标为否定）。完全后台无锁，没人等结果，安全开 thinking。
             # 不做 SDK 自动重试，失败 cursor 不推进自然下轮重试；显式开 thinking，
             # 额度与回退见 memory.thinking_llm。
-            # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
             from memory.thinking_llm import ainvoke_thinking
-            resp, _ = await ainvoke_thinking(
+            resp, _ = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
                 api_config, prompt, timeout=90,
                 call_label="memory_rebuttal_check",
             )

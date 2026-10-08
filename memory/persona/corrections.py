@@ -582,9 +582,8 @@ class CorrectionsMixin:
                 # aapply_signal。
                 # 这里没业务 retry，单次即终态；显式开 thinking，额度与回退见
                 # memory.thinking_llm。
-                # correction prompt built from PERSONA_MERGE_POOL_MAX_TOKENS-capped entity pool.
                 from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
-                resp, _ = await ainvoke_thinking(
+                resp, _ = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # correction prompt built from PERSONA_MERGE_POOL_MAX_TOKENS-capped entity pool.
                     api_config, prompt,
                     timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,
                     call_label=f"{name} memory_correction",

@@ -91,7 +91,7 @@ def test_new_models_use_existing_dialect_constants():
         "google/gemini-3.5-flash", "google/gemini-3.6-flash", "google/gemini-3.8-flash",
     ):
         assert P.MODELS_EXTRA_BODY_MAP[model] is P.EXTRA_BODY_OPENROUTER_MINIMAL
-        assert P.MODELS_FOCUS_EXTRA_BODY_MAP[model] is P.EXTRA_BODY_OPENROUTER_MINIMAL_THINKING
+        assert P.MODELS_FOCUS_EXTRA_BODY_MAP[model] is P.EXTRA_BODY_OPENROUTER_THINKING
     # OpenRouter Gemini models that still accept effort=none keep it.
     assert P.MODELS_EXTRA_BODY_MAP["google/gemini-3.1-flash-lite"] is P.EXTRA_BODY_OPENROUTER
 

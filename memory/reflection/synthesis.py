@@ -319,10 +319,9 @@ class SynthesisMixin:
             # 无业务 retry，单次即终态，外层 try/except 兜底返回 []。
             # 显式开 thinking——synth 是创意+结构化合成，思考能改善 ontology
             # 字段的一致性和 reflection text 的质量；额度与回退见 memory.thinking_llm。
-            # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
             from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
             from memory.thinking_llm import ainvoke_thinking
-            resp, _ = await ainvoke_thinking(
+            resp, _ = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
                 api_config, prompt,
                 timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,
                 call_label=f"{lanlan_name} memory_reflection",

@@ -84,7 +84,6 @@ EXTRA_BODY_OPENROUTER_THINKING = {"reasoning": {"effort": "low"}}
 # 实测（2026-10-07）：google/gemini-3.5-flash / 3.6-flash / 3.8-flash 拒 none；
 # 3.1-flash-lite / 3-flash-preview 仍接受 none，留在 EXTRA_BODY_OPENROUTER。
 EXTRA_BODY_OPENROUTER_MINIMAL = {"reasoning": {"effort": "minimal"}}
-EXTRA_BODY_OPENROUTER_MINIMAL_THINKING = {"reasoning": {"effort": "low"}}
 
 # MiniMax 的 reasoning_split 只控制思考的「输出格式」，不是 on/off 开关：M2.x 始终
 # 内部推理、无法关闭；True=思考走独立 reasoning_details 字段，False/省略=思考以 <think>
@@ -247,7 +246,7 @@ _THINKING_ENABLE_FORM: dict[int, dict] = {
     id(EXTRA_BODY_GEMINI): EXTRA_BODY_GEMINI_THINKING,
     id(EXTRA_BODY_GEMINI_3): EXTRA_BODY_GEMINI_3_THINKING,
     id(EXTRA_BODY_OPENROUTER): EXTRA_BODY_OPENROUTER_THINKING,
-    id(EXTRA_BODY_OPENROUTER_MINIMAL): EXTRA_BODY_OPENROUTER_MINIMAL_THINKING,
+    id(EXTRA_BODY_OPENROUTER_MINIMAL): EXTRA_BODY_OPENROUTER_THINKING,
 }
 
 # model → 凝神 extra_body，与 MODELS_EXTRA_BODY_MAP 同源派生（共用 model 列表，不会

@@ -470,8 +470,7 @@ class MemoryRefineEngine:
         set_call_type("memory_refine")
         api_config = await self._cm.aget_model_api_config('correction')
         # 显式开 thinking（同 correction），额度与回退见 memory.thinking_llm。
-        # prompt assembled from token-capped memory components (refine clusters bounded upstream).
-        resp, _ = await ainvoke_thinking(
+        resp, _ = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (refine clusters bounded upstream).
             api_config, prompt,
             timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,
             call_label=f"memory_refine cluster_hash={cluster_hash}",
