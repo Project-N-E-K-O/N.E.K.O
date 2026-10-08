@@ -304,3 +304,21 @@ test('invalid committed UID becomes unavailable rather than a permanent loading 
     assert.equal(h.api.getIdentity(), null); assert.equal(h.api.getError().code, 'chat_avatar_unavailable');
     assert.throws(() => h.api.captureEdit(), { code: 'chat_avatar_unavailable' });
 });
+
+test('initial character lookup has a deadline and can recover on focus after timeout', async () => {
+    const h = harness(); h.api.initialize(); await h.settle();
+    const lookup = h.pending[0];
+    assert.ok(lookup.options.signal, 'bootstrap lookup must have an abortable deadline');
+    lookup.options.signal.addEventListener('abort', () => lookup.reject(new DOMException('abort', 'AbortError')), { once: true });
+    for (const timeout of h.timers.values()) timeout();
+    await h.settle();
+    assert.equal(h.api.getIdentity(), null);
+    assert.equal(h.api.getError().code, 'chat_avatar_timeout');
+    assert.equal(h.timers.size, 0);
+    h.listeners.get('focus')(); await h.settle();
+    h.pending[1].resolve(response({ '猫娘': { Alice: { _reserved: { character_uid: A } } } })); await h.settle();
+    h.pending[2].resolve(response(row(A))); await h.settle();
+    assert.equal(h.api.getIdentity().uid, A);
+    assert.equal(h.api.getError(), null);
+    assert.equal(h.timers.size, 0);
+});

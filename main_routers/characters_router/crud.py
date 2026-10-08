@@ -2031,11 +2031,17 @@ async def _delete_catgirl_by_name_serialized(name: str):
                 unsafe_targets,
                 Path(temp_dir),
             )
+            unsafe_config_deleted = False
             try:
                 # 非法名称救援仍要删除按角色归属的剧场数据；这些文件已进入上方事务快照。
                 await purge_numeric_v2_character_data(numeric_purge)
                 del characters['猫娘'][name]
-                await _config_manager.asave_characters(characters)
+                _, save_cancelled = await _await_coroutine_to_completion(
+                    _config_manager.asave_characters(characters)
+                )
+                unsafe_config_deleted = True
+                if save_cancelled:
+                    raise asyncio.CancelledError
 
                 remove_one_catgirl = get_remove_one_catgirl()
                 await remove_one_catgirl(name)
@@ -2043,6 +2049,12 @@ async def _delete_catgirl_by_name_serialized(name: str):
                 memory_server_reloaded = await notify_memory_server_reload(reason=f"救援删除非法角色名: {name}")
                 if not memory_server_reloaded:
                     raise RuntimeError("notify_memory_server_reload returned False")
+            except asyncio.CancelledError:
+                # The old rescue path leaves a published config delete committed
+                # on cancellation. Retire only its UID-owned display resource.
+                if unsafe_config_deleted:
+                    await _cleanup_deleted_chat_avatar(deleted_avatar_directory, deleted_character_uid)
+                raise
             except MaintenanceModeError as exc:
                 rollback_error = await _rollback_character_operation(
                     _config_manager,

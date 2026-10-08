@@ -156,7 +156,7 @@ async def delete_chat_avatar(uid: str, request: Request):
         expected_root = Path(config_manager.app_docs_dir)
         try:
             data = json.loads(await _bounded_body(request, 4096))
-        except ValueError as exc:
+        except (ValueError, RecursionError) as exc:
             raise ChatAvatarError("chat_avatar_invalid_request", 400) from exc
         if not isinstance(data, dict) or set(data) != {"base_revision", "operation_id"}:
             raise ChatAvatarError("chat_avatar_invalid_request", 400)

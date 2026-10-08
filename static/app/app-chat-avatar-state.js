@@ -248,9 +248,18 @@
         try {
             if (window.pageConfigReady) await window.pageConfigReady;
             if (generation !== bootstrapGeneration || switchOwner) return;
-            const response = await fetch('/api/characters', { credentials: 'same-origin', cache: 'no-store' });
-            if (!response.ok) throw failure('chat_avatar_read_failed', response.status);
-            const config = await response.json();
+            const controller = new AbortController();
+            const timer = window.setTimeout(function () { controller.abort(); }, REQUEST_TIMEOUT_MS);
+            let config;
+            try {
+                const response = await fetch('/api/characters', {
+                    credentials: 'same-origin', cache: 'no-store', signal: controller.signal
+                });
+                if (!response.ok) throw failure('chat_avatar_read_failed', response.status);
+                config = await response.json();
+            } finally {
+                window.clearTimeout(timer);
+            }
             if (generation !== bootstrapGeneration || switchOwner) return;
             const name = window.lanlan_config && window.lanlan_config.lanlan_name;
             const character = config && config['猫娘'] && config['猫娘'][name];
@@ -259,7 +268,7 @@
             await api.setIdentity({ uid: uid, name: name });
         } catch (cause) {
             if (generation === bootstrapGeneration) {
-                error = cause;
+                error = cause && cause.name === 'AbortError' ? failure('chat_avatar_timeout') : cause;
                 emit('bootstrap-error');
             }
         }

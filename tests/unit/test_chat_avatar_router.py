@@ -112,6 +112,14 @@ def test_invalid_delete_fields(backend, payload):
     assert client.request("DELETE", URL, headers=headers, json=payload).status_code == 400
 
 
+def test_deeply_nested_delete_body_has_stable_invalid_request_error(backend):
+    client, _, headers, _ = backend
+    response = client.request("DELETE", URL, headers=headers, content="[" * 1500 + "0" + "]" * 1500)
+    assert response.status_code == 400
+    assert response.json()["code"] == "chat_avatar_invalid_request"
+    assert client.get(URL).json()["revision"] == "0"
+
+
 def test_same_operation_retry_and_conflict(backend):
     client, _, headers, _ = backend
     first = save(client, headers)
@@ -465,3 +473,76 @@ async def test_cancel_started_workshop_commit_finishes_avatar_cleanup(tmp_path, 
     assert "Gone" not in manager.load_characters()["猫娘"]
     assert not (directory / f"{uid}.json").exists()
     assert steam_calls == [ITEM_ID]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["before_commit", "config_write", "remove_runtime", "reload"])
+async def test_unsafe_name_delete_cancellation_cleans_only_committed_avatar(tmp_path, monkeypatch, stage):
+    from tests.unit.test_character_uid import _backfilled_manager, _init_router_state
+    manager, _ = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, ".": {"昵称": "."}})
+    uid = get_character_uid(manager.load_characters()["猫娘"]["."])
+    directory = manager.app_docs_dir / "chat_avatars"
+    original_record = store.write_record(directory, uid, None, "0", "original")
+    entered, release = threading.Event(), threading.Event()
+
+    async def blocked(*args, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    with patch("utils.config_manager._config_manager", manager):
+        crud = _init_router_state(manager)
+        monkeypatch.setattr(crud, "notify_memory_server_reload", AsyncMock(return_value=True))
+        if stage == "before_commit":
+            monkeypatch.setattr(crud, "purge_numeric_v2_character_data", blocked)
+        elif stage == "remove_runtime":
+            monkeypatch.setattr(crud, "get_remove_one_catgirl", lambda: blocked)
+        elif stage == "reload":
+            monkeypatch.setattr(crud, "notify_memory_server_reload", blocked)
+        else:
+            save_characters = manager.save_characters
+
+            def blocked_save(data, *args, **kwargs):
+                result = save_characters(data, *args, **kwargs)
+                entered.set()
+                assert release.wait(5)
+                return result
+
+            monkeypatch.setattr(manager, "save_characters", blocked_save)
+
+        task = asyncio.create_task(crud.delete_catgirl("."))
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            task.cancel()
+            if stage == "config_write":
+                await asyncio.sleep(0)
+                assert character_config_mutation_lock.locked() and not task.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    if stage == "before_commit":
+        assert "." in manager.load_characters()["猫娘"]
+        assert store.read_record(directory, uid) == original_record
+    else:
+        assert "." not in manager.load_characters()["猫娘"]
+        assert not (directory / f"{uid}.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_unsafe_name_delete_rollback_preserves_avatar(tmp_path):
+    from tests.unit.test_character_uid import _backfilled_manager, _init_router_state
+    manager, _ = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, ".": {"昵称": "."}})
+    uid = get_character_uid(manager.load_characters()["猫娘"]["."])
+    directory = manager.app_docs_dir / "chat_avatars"
+    original_record = store.write_record(directory, uid, None, "0", "original")
+    with patch("utils.config_manager._config_manager", manager):
+        crud = _init_router_state(manager)
+        with patch.object(crud, "notify_memory_server_reload", AsyncMock(return_value=False)):
+            response = await crud.delete_catgirl(".")
+    assert response.status_code == 500
+    assert "." in manager.load_characters()["猫娘"]
+    assert store.read_record(directory, uid) == original_record
