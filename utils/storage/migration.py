@@ -1658,6 +1658,123 @@ def reconcile_finished_retained_cleanup(config_manager, *, anchor_root: Path | s
     return retained_root
 
 
+def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[str]:
+    """Copy over what a completed v1 migration never knew about.
+
+    v1 builds migrated only ``V1_MIGRATED_RUNTIME_ENTRY_NAMES``. Entries added
+    since (pngtuber, watch_together, ...) stayed in the old root while the app
+    moved on to the new one, so to the user they were gone. Each is staged,
+    checked and published without overwriting, as a migration does, and its
+    copy evidence lets cleanup remove the old copy. An entry the new root
+    already has is left alone on both sides: that copy is the one in use.
+
+    Runs once; an attempt stopped midway is safe to repeat (what was already
+    published is found in the new root and left alone). Returns the entries
+    copied.
+    """
+    normalized_anchor_root = normalize_runtime_root(anchor_root)
+    payload = load_storage_migration(config_manager, anchor_root=normalized_anchor_root)
+    if not isinstance(payload, dict) or is_storage_migration_pending(payload):
+        return []
+    if str(payload.get("status") or "").strip() != STORAGE_MIGRATION_STATUS_COMPLETED:
+        return []
+    if not is_legacy_unproven_checkpoint(payload) or str(payload.get("v1_catch_up_completed_at") or "").strip():
+        return []
+    if str(payload.get("retained_source_mode") or "").strip() == "cleaned":
+        return []
+    raw_source = str(
+        payload.get("retained_source_root") or payload.get("backup_root") or payload.get("source_root") or ""
+    ).strip()
+    raw_target = str(payload.get("target_root") or "").strip()
+    if not raw_source or not raw_target:
+        return []
+    source_root = normalize_runtime_root(raw_source)
+    target_root = normalize_runtime_root(raw_target)
+    if paths_equal(source_root, target_root) or _path_contains(source_root, target_root) or _path_contains(
+        target_root, source_root
+    ):
+        return []
+    # Only into the root the app really runs on now.
+    committed_policy = load_storage_policy(config_manager, anchor_root=normalized_anchor_root)
+    selected_root = str(committed_policy.get("selected_root") or "").strip() if isinstance(committed_policy, dict) else ""
+    if not selected_root or not paths_equal(normalize_runtime_root(selected_root), target_root):
+        return []
+    # Out of reach now (an unplugged drive): try again on a later launch.
+    if classify_entry_no_follow(source_root) != "dir" or classify_entry_no_follow(target_root) != "dir":
+        return []
+
+    copied_entries = dict(copy_evidence_entries(payload.get("copied_entries")))
+    candidates = [
+        entry_name
+        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES
+        if entry_name not in V1_MIGRATED_RUNTIME_ENTRY_NAMES
+        and entry_name not in copied_entries
+        and entry_parents_are_real_directories(source_root, entry_name)
+        and os.path.lexists(source_root / entry_name)
+    ]
+    copied: list[str] = []
+    if candidates:
+        # Recorded first, so a stopped attempt's stage is found and removed
+        # as a finished checkpoint's transaction leftover.
+        txid = uuid.uuid4().hex
+        payload = _persist_migration_payload(config_manager, payload, anchor_root=normalized_anchor_root, txid=txid)
+        transaction_root = _transaction_path(target_root, txid)
+        _ensure_transaction_parent(transaction_root)
+        stage_root = transaction_root / "stage"
+        try:
+            for entry_name in candidates:
+                target_entry = target_root / entry_name
+                if os.path.lexists(target_entry):
+                    continue
+                source_entry = source_root / entry_name
+                fingerprint = _metadata_fingerprint(source_entry)
+                source_manifest = _snapshot_path(source_entry)
+                staged_entry = stage_root / entry_name
+                widened = _copy_runtime_entry(source_entry, staged_entry) or []
+                if _snapshot_path(staged_entry) != source_manifest or _metadata_fingerprint(source_entry) != fingerprint:
+                    raise StorageMigrationError(
+                        "verification_failed",
+                        f"补迁旧版本未迁移的数据时校验失败，已停止，原数据未受影响：{entry_name}。",
+                    )
+                ensure_entry_parents(target_root, entry_name)
+                try:
+                    _publish_without_overwrite(staged_entry, target_entry)
+                except FileExistsError:
+                    # Appeared meanwhile: the new root's own, left alone.
+                    continue
+                for relative_dir, original_mode in widened:
+                    os.chmod(target_entry / relative_dir, original_mode)
+                target_manifest = _snapshot_path(target_entry)
+                if target_manifest != source_manifest:
+                    # Written to the moment it went live: no proof of the copy,
+                    # so the old copy stays.
+                    continue
+                copied_entries[entry_name] = {
+                    "source_manifest": source_manifest,
+                    "target_manifest": target_manifest,
+                    "transaction": txid,
+                }
+                payload = _persist_migration_payload(
+                    config_manager,
+                    payload,
+                    anchor_root=normalized_anchor_root,
+                    copied_entries=dict(copied_entries),
+                )
+                copied.append(entry_name)
+        finally:
+            try:
+                _remove_transaction(transaction_root)
+            except Exception as exc:
+                logger.warning("Failed to remove the v1 catch-up transaction: %s", exc)
+    _persist_migration_payload(
+        config_manager,
+        payload,
+        anchor_root=normalized_anchor_root,
+        v1_catch_up_completed_at=_utc_now_iso(),
+    )
+    return copied
+
+
 def run_pending_storage_migration(
     config_manager,
     *,
@@ -1676,10 +1793,16 @@ def run_pending_storage_migration(
     if not is_storage_migration_pending(migration_payload):
         _remove_completed_transaction_leftover(migration_payload)
         try:
-            if reconcile_finished_retained_cleanup(config_manager, anchor_root=normalized_anchor_root):
-                migration_payload = load_storage_migration(config_manager, anchor_root=normalized_anchor_root)
+            if catch_up_v1_migration(config_manager, anchor_root=normalized_anchor_root):
+                logger.info("Copied entries a v1 storage migration had left in the old root")
+        except Exception as exc:
+            logger.warning("Failed to copy what a v1 storage migration left behind: %s", exc)
+        try:
+            reconcile_finished_retained_cleanup(config_manager, anchor_root=normalized_anchor_root)
         except Exception as exc:
             logger.warning("Failed to reconcile a finished retained-root cleanup: %s", exc)
+        # Both steps above may have updated the checkpoint.
+        migration_payload = load_storage_migration(config_manager, anchor_root=normalized_anchor_root)
         return {
             "attempted": False,
             "completed": False,

@@ -1894,7 +1894,13 @@ def _cleanup_retained_runtime_root(
     leftovers = _private_cleanup_leftovers(retained_path)
     remaining_entries = tuple(
         dict.fromkeys(
-            [entry_name for entry_name in migrated_names if _entry_may_exist(retained_path / entry_name)]
+            # A v1 checkpoint also carries evidence for what was copied over
+            # later; those entries are reported like any other.
+            [
+                entry_name
+                for entry_name in dict.fromkeys([*migrated_names, *proofs])
+                if _entry_may_exist(retained_path / entry_name)
+            ]
             + [entry_name for entry_name, _private in leftovers or []]
             # Not listable: an entry may still hide under a private name, so
             # the cleanup must stay pending rather than be recorded as done.

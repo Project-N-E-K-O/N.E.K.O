@@ -4400,3 +4400,97 @@ def test_storage_cleanup_is_not_recorded_while_retained_game_scores_remain(tmp_p
     run_pending_storage_migration(reloaded_manager)
 
     assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "manual_retention"
+
+
+def _v1_migration_that_left_pngtuber_behind(tmp_path):
+    """A completed v1 migration: config went over, pngtuber (unknown to v1)
+    stayed in the old root."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+    (source_root / "pngtuber" / "set").mkdir(parents=True)
+    (source_root / "pngtuber" / "set" / "idle.png").write_bytes(b"png")
+    return source_root, target_root
+
+
+@pytest.mark.unit
+def test_v1_migration_left_entries_are_copied_over_at_the_next_launch(tmp_path):
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert (target_root / "pngtuber" / "set" / "idle.png").read_bytes() == b"png"
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert "pngtuber" in checkpoint["copied_entries"]
+    assert checkpoint["v1_catch_up_completed_at"]
+    assert not list(target_root.glob(".smtx/*"))
+
+    # With that evidence, cleanup can take the old root away entirely.
+    response = _cleanup_request(tmp_path, source_root)
+    assert response.status_code == 200, response.json()
+    assert not source_root.exists()
+
+
+@pytest.mark.unit
+def test_v1_catch_up_leaves_an_entry_the_new_root_already_has(tmp_path):
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (target_root / "pngtuber").mkdir()
+    (target_root / "pngtuber" / "own.png").write_bytes(b"made at the new root")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert sorted(child.name for child in (target_root / "pngtuber").iterdir()) == ["own.png"]
+    assert "pngtuber" not in (load_storage_migration(reloaded_manager).get("copied_entries") or {})
+    assert (source_root / "pngtuber" / "set" / "idle.png").is_file()
+
+
+@pytest.mark.unit
+def test_v1_catch_up_runs_only_once(tmp_path):
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+    (source_root / "watch_together").mkdir()
+    (source_root / "watch_together" / "later.json").write_text("{}", encoding="utf-8")
+
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+
+    assert not (target_root / "watch_together").exists()
+
+
+@pytest.mark.unit
+def test_v1_catch_up_leaves_a_v2_checkpoint_alone(tmp_path):
+    """A v2 migration copied everything it knew; nothing to catch up."""
+    source_root, target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "pngtuber").mkdir()
+    (source_root / "pngtuber" / "idle.png").write_bytes(b"png")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert not (target_root / "pngtuber").exists()
+
+
+@pytest.mark.unit
+def test_v1_cleanup_reports_a_caught_up_entry_changed_since(tmp_path):
+    """Copied over with evidence, then the old copy changed: it stays, and is
+    reported although v1 never knew the entry."""
+    source_root, _target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    (source_root / "pngtuber" / "set" / "idle.png").write_bytes(b"changed in the old root")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["pngtuber"]
