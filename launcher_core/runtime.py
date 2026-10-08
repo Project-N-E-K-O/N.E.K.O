@@ -2240,16 +2240,22 @@ def _snapshot_server_descendants(servers) -> list | None:
     plugin started, even through ``sys.executable`` -- and anything running
     another executable (an app or file manager opened for the user) is not.
 
-    ``None`` when the tree cannot be determined -- no psutil, or a server
-    that already exited or cannot be inspected, whose orphans are then out
-    of reach. A migration restart is not safe on that basis.
+    ``None`` when the tree cannot be determined -- no psutil, or a running
+    server that cannot be inspected. A server that already exited is
+    skipped: in multiprocessing mode that is how every migration restart
+    begins (Main exits on its own first), and its orphans could not be found
+    through it anyway.
     """
     try:
         import psutil
     except ImportError:
         return None
+    try:
+        launcher_exe = _process_exe(psutil.Process())
+    except psutil.Error:
+        launcher_exe = ""
     own_exes = {
-        _process_exe(psutil.Process()),
+        launcher_exe,
         os.path.normcase(sys.executable),
         os.path.normcase(getattr(sys, "_base_executable", "") or sys.executable),
     }
@@ -2262,11 +2268,14 @@ def _snapshot_server_descendants(servers) -> list | None:
             continue
         try:
             if not proc.is_alive():
-                return None
+                continue
             server_process = psutil.Process(pid)
             own_exes.add(_process_exe(server_process))
             server_pids.add(pid)
             descendants.extend(server_process.children(recursive=True))
+        except psutil.NoSuchProcess:
+            # Exited between the check and the lookup.
+            continue
         except (psutil.Error, OSError, ValueError):
             return None
     own_exes.discard("")

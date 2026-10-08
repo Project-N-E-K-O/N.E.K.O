@@ -176,7 +176,9 @@ def test_storage_restart_is_blocked_when_descendants_are_unknown(monkeypatch):
 
 
 @pytest.mark.unit
-def test_descendants_of_an_exited_server_are_unknown():
+def test_an_exited_server_is_skipped_not_unknown():
+    """In multiprocessing mode Main exits on its own before every migration
+    restart; that must not make the descendants count as unknown."""
     from launcher_core import runtime
 
     class _Exited:
@@ -185,7 +187,87 @@ def test_descendants_of_an_exited_server_are_unknown():
         def is_alive(self):
             return False
 
-    assert runtime._snapshot_server_descendants([{"process": _Exited()}]) is None
+    assert runtime._snapshot_server_descendants([{"process": _Exited()}]) == []
+
+
+@pytest.mark.unit
+def test_descendants_of_a_running_server_that_cannot_be_inspected_are_unknown(monkeypatch):
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    class _Running:
+        pid = os.getpid()
+
+        def is_alive(self):
+            return True
+
+    real_process = psutil.Process
+
+    def _server_denied(pid=None):
+        if pid == _Running.pid:
+            raise psutil.AccessDenied(pid)
+        return real_process(pid)
+
+    monkeypatch.setattr(psutil, "Process", _server_denied)
+
+    assert runtime._snapshot_server_descendants([{"process": _Running()}]) is None
+
+
+class _PopenServer:
+    """A real process behind the multiprocessing.Process surface cleanup_servers uses."""
+
+    def __init__(self, popen):
+        self._popen = popen
+        self.pid = popen.pid
+
+    def is_alive(self):
+        return self._popen.poll() is None
+
+    def join(self, timeout=None):
+        try:
+            self._popen.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return  # still running; cleanup_servers escalates
+
+    def terminate(self):
+        self._popen.terminate()
+
+    def kill(self):
+        self._popen.kill()
+
+    @property
+    def exitcode(self):
+        return self._popen.poll()
+
+
+@pytest.mark.unit
+def test_migration_restart_goes_ahead_after_main_exits_on_its_own(monkeypatch):
+    """The real cleanup_servers, no stand-in: Main has already shut itself
+    down for the migration while Memory still runs. The restart must still
+    be scheduled."""
+    pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    interpreter = getattr(sys, "_base_executable", "") or sys.executable
+    main = subprocess.Popen([interpreter, "-c", "pass"])
+    main.wait(timeout=20)
+    memory = subprocess.Popen([interpreter, "-c", "import time; time.sleep(120)"])
+    try:
+        servers = [
+            {"name": "Main", "module": "main_server", "process": _PopenServer(main), "graceful_shutdown_timeout": 0.2},
+            {"name": "Memory", "module": "memory_server", "process": _PopenServer(memory), "graceful_shutdown_timeout": 0.2},
+        ]
+        monkeypatch.setattr(runtime, "SERVERS", servers)
+        monkeypatch.setattr(runtime, "_cleanup_done", False)
+        monkeypatch.setattr(runtime, "_teardown_descendants", None)
+
+        runtime.cleanup_servers()
+
+        assert memory.poll() is not None
+        assert runtime._teardown_descendants == []
+        assert runtime._descendants_block_storage_restart(True) is False
+    finally:
+        memory.kill()
 
 
 @pytest.mark.unit
