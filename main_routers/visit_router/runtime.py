@@ -980,6 +980,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             pending, self._pending_join = self._pending_join, None
             if pending is not None:
                 await self.on_transport_state(pending)
+            elif self._sdk_ok and self._join_deadline is None:
+                # 新连接已过能力门 ③（那时 joined 还为真、没起入房期限），却还没报 joined：补起入房期限，
+                # 一直报不上就按 relay_lost 结束，不停在等待入房
+                self._join_deadline = self.clock() + VISIT_SELF_RECONNECT_S
             return
         if self.peer is not None:
             # 对端的 hello 先于本侧的入房报告到达、已核验并进了等待接待：阶段与期限已由核验接管，不翻回去

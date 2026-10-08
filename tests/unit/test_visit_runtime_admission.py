@@ -1947,6 +1947,42 @@ async def test_a_cancelled_first_join_still_finishes_its_bookkeeping(tmp_path, m
         await _finished(rt)
 
 
+async def test_a_reconnect_during_the_first_join_still_has_a_join_deadline(tmp_path, monkeypatch, clocks):
+    from config.visit_settings import VISIT_SELF_RECONNECT_S
+
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = rt.journal.open
+
+    async def slow_open(**kw):
+        reached.set()
+        await gate.wait()                                     # 写上传头卡住
+        return await real_open(**kw)
+
+    rt.journal.open = slow_open
+    try:
+        joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
+        await asyncio.wait_for(reached.wait(), 5)
+        rt.on_page_gone()                                     # 页面断开，新连接接上
+        await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})
+        assert rt._join_deadline is None                      # 那时 joined 还为真：能力门没起入房期限
+        gate.set()
+        await asyncio.wait_for(joining, 5)                    # 旧那次作废（代数不符），新连接还没报 joined
+        assert not rt.joined and rt._join_deadline is not None  # 补起入房期限
+        clock.advance(VISIT_SELF_RECONNECT_S + 1)
+        await rt.tick()
+        assert rt.finalize_reason == "relay_lost"             # 一直报不上就结束，不停在等待入房
+    finally:
+        gate.set()
+        rt.request_finalize("route_end")
+        await _finished(rt)
+
+
 async def test_an_overrun_channel_close_is_handed_to_stop_all(tmp_path, monkeypatch):
     monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
