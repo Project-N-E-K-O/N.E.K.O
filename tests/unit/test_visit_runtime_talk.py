@@ -1165,7 +1165,7 @@ async def test_peer_line_effects_apply_before_the_line_is_persisted(tmp_path, mo
         assert not receiving.done()
         assert produced[0].reply is None and not produced[0].say_goodbye  # 回复留到进了历史之后
         stuck.set()
-        await receiving
+        await asyncio.gather(receiving)
     finally:
         stuck.set()
         hgate.set()
