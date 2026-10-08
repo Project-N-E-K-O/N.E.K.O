@@ -22,6 +22,8 @@ for (let i = 0; i < samples; i++) {
     wav.writeInt16LE(offset * 2 < sentence.length - 44 ? Math.round(sentence.readInt16LE(44 + offset * 2) * 0.25) : 0, 44 + i * 2);
 }
 const wavPath = path.join(scratch, 'controlled-quiet-sentence.wav'); fs.writeFileSync(wavPath, wav);
+// Match the English CI host; the language API must override this preference.
+app.commandLine.appendSwitch('lang', 'en-US');
 app.commandLine.appendSwitch('use-fake-device-for-media-stream');
 app.commandLine.appendSwitch('use-fake-ui-for-media-stream');
 app.commandLine.appendSwitch('use-file-for-fake-audio-capture', wavPath);
@@ -51,7 +53,7 @@ app.whenReady().then(async () => {
         const url = new URL(request.url, 'http://127.0.0.1');
         const entry = { path: url.pathname, method: request.method }; requests.push(entry);
         if (url.pathname === '/api/config/page_config') return json(response, { autostart_csrf_token: 'controlled-electron-test' });
-        if (url.pathname === '/api/config/steam_language') return json(response, { ui_language: 'zh-CN' });
+        if (url.pathname === '/api/config/steam_language') return json(response, { uiLanguage: 'zh-CN' });
         if (url.pathname === '/api/voice-identity/status') return json(response, status());
         if (url.pathname === '/api/voice-identity/profile' && request.method === 'DELETE') {
             hasProfile = false;
@@ -102,7 +104,7 @@ app.whenReady().then(async () => {
     await win.loadURL(origin + '/voice_identity');
     await waitFor("!document.getElementById('voice-identity-test').disabled");
     assert.equal(await win.webContents.executeJavaScript("document.getElementById('voice-identity-start').disabled"), true);
-    await waitFor("typeof window.t === 'function' && window.t('voiceIdentity.resourcesReady') !== 'voiceIdentity.resourcesReady' && document.getElementById('voice-identity-resource-summary').textContent === window.t('voiceIdentity.resourcesReady')");
+    await waitFor("typeof window.changeLanguage === 'function' && window.i18n?.isInitialized && window.i18n.language === 'zh-CN' && window.t('voiceIdentity.resourcesReady') !== 'voiceIdentity.resourcesReady' && document.getElementById('voice-identity-resource-summary').textContent === window.t('voiceIdentity.resourcesReady')");
     const setup = await win.webContents.executeJavaScript("({ hint: document.getElementById('voice-identity-start-hint').textContent, describedBy: document.getElementById('voice-identity-start').getAttribute('aria-describedby'), detailsOpen: document.querySelector('.resource-details').open, summaryVisible: document.getElementById('voice-identity-resource-summary').getBoundingClientRect().height > 0, downloadDisabled: document.getElementById('voice-identity-download').disabled, downloadHelpVisible: !document.getElementById('voice-identity-download-help').hidden, downloadHelp: document.getElementById('voice-identity-download-help').textContent })");
     assert.match(setup.hint, /请先完成试录/);
     assert.equal(setup.describedBy, 'voice-identity-start-hint');
