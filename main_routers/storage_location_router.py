@@ -84,7 +84,7 @@ from utils.storage_migration import (
     load_storage_migration,
     move_entry_without_overwrite,
     rewrite_migrated_config_paths,
-    root_has_migrated_entry_content,
+    root_has_user_content,
     save_storage_migration,
     remove_runtime_entry,
     snapshot_runtime_entry,
@@ -832,23 +832,7 @@ def _estimate_runtime_payload_bytes(source_root: Path) -> int:
 
 
 def _target_root_has_user_content(target_root: Path, config_manager) -> bool:
-    try:
-        from utils.cloudsave_runtime import LEGACY_RUNTIME_DIR_NAMES, runtime_root_has_user_content
-
-        if runtime_root_has_user_content(target_root, config_manager=config_manager):
-            return True
-        # The cloud-save check only knows its own directories; a target that
-        # holds only entries the migration added later (pngtuber, runtimes,
-        # ...) is not empty either, and migrating into it would replace them.
-        extra_names = [name for name in MIGRATED_RUNTIME_ENTRY_NAMES if name not in LEGACY_RUNTIME_DIR_NAMES]
-        return root_has_migrated_entry_content(target_root, extra_names)
-    except Exception:
-        if not target_root.exists() or not target_root.is_dir():
-            return False
-        try:
-            return any(target_root.iterdir())
-        except OSError:
-            return False
+    return root_has_user_content(target_root, config_manager=config_manager)
 
 
 def _find_existing_ancestor(path: Path) -> Path:

@@ -2515,3 +2515,18 @@ def test_directory_publish_prefers_the_no_replace_rename(tmp_path, monkeypatch):
     storage_migration_module._publish_without_overwrite(staged, target)
 
     assert (target / "facts.json").read_bytes() == b"{}"
+
+
+@pytest.mark.unit
+def test_migrated_entry_content_ignores_noise_and_empty_directories(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    root = tmp_path / "N.E.K.O"
+    (root / "pngtuber" / "Alice" / "frames").mkdir(parents=True)
+    (root / "pngtuber" / ".DS_Store").write_bytes(b"finder")
+    (root / "runtimes" / "__pycache__").mkdir(parents=True)
+    (root / "runtimes" / "__pycache__" / "x.pyc").write_bytes(b"pyc")
+    assert storage_migration_module.root_has_migrated_entry_content(root) is False
+
+    (root / "pngtuber" / "Alice" / "frames" / "idle.png").write_bytes(b"png")
+    assert storage_migration_module.root_has_migrated_entry_content(root) is True

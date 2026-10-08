@@ -1053,24 +1053,58 @@ def _iter_existing_runtime_entries(root: Path) -> list[str]:
     ]
 
 
-def root_has_migrated_entry_content(root: Path, names: Any = MIGRATED_RUNTIME_ENTRY_NAMES) -> bool:
-    """Whether ``root`` holds any migrated entry with something in it.
+def _is_ignorable_content_name(name: str) -> bool:
+    # The same names the cloud-save probe skips: dot-named files (.DS_Store,
+    # atomic-write temporaries, locks) and Python caches are never user data.
+    return name.startswith(".") or name == "__pycache__"
 
-    The general user-content probe only knows the cloud-save directory list;
-    entries migrated beyond it (pngtuber, watch_together, ...) must count
-    too, or a target holding only those would be overwritten unasked.
+
+def _tree_has_user_file(path: Path) -> bool:
+    """Whether a directory holds a user file anywhere below it.
+
+    Empty subdirectories (an interrupted download, scaffolding) do not count;
+    a link does, and so does a tree that cannot be read.
     """
+
+    def _raise(error: OSError) -> None:
+        raise error
+
+    try:
+        for dirpath, dirnames, filenames in os.walk(path, onerror=_raise):
+            if any(not _is_ignorable_content_name(name) for name in filenames):
+                return True
+            kept: list[str] = []
+            for name in dirnames:
+                if _is_ignorable_content_name(name):
+                    continue
+                if os.path.islink(os.path.join(dirpath, name)):
+                    return True
+                kept.append(name)
+            dirnames[:] = kept
+    except OSError:
+        return True
+    return False
+
+
+def root_has_migrated_entry_content(root: Path, names: Any = MIGRATED_RUNTIME_ENTRY_NAMES) -> bool:
+    """Whether any of ``names`` under ``root`` holds user data."""
     for entry_name in names:
         entry = root / entry_name
         try:
-            if entry.is_file():
-                return True
-            if entry.is_dir() and any(child.name != ".gitkeep" for child in entry.iterdir()):
+            if not os.path.lexists(entry):
+                continue
+            if entry.is_symlink() or not entry.is_dir():
                 return True
         except OSError:
-            # Unreadable is not proof of emptiness; ask before overwriting.
+            return True
+        if _tree_has_user_file(entry):
             return True
     return False
+
+
+def root_has_user_content(root: Path, *, config_manager) -> bool:
+    """Whether ``root`` already holds runtime data a migration would replace."""
+    return _root_has_user_content(root, config_manager=config_manager)
 
 
 def _root_has_user_content(root: Path, *, config_manager) -> bool:
