@@ -2596,6 +2596,9 @@ def run_pending_storage_migration(
         # Target entries the migration keeps as they are instead of staging:
         # they must still be there when the roots are switched.
         reused_target_entries: set[str] = set()
+        # What each reused entry was when it was taken as is: replaced by
+        # something else since (a link, say), it is no longer that entry.
+        reused_target_kinds: dict[str, str | None] = {}
         if use_existing_target:
             # Entries only the target has never enter the loop below, yet are
             # kept just the same.
@@ -2608,6 +2611,7 @@ def run_pending_storage_migration(
                         "path_link_unsupported",
                         f"沿用的目标条目的上级是链接或 junction，已停止迁移: {entry_name}",
                     )
+                reused_target_kinds[entry_name] = classify_entry_no_follow(target_root / entry_name)
         source_fingerprints: dict[str, str] = {}
         for entry_name in existing_entries:
             source_entry = source_root / entry_name
@@ -2640,9 +2644,11 @@ def run_pending_storage_migration(
                     # Existing legacy/recovered entries are authoritative. They
                     # do not prove the source copy and are not cleanup-safe.
                     reused_target_entries.add(entry_name)
+                    reused_target_kinds[entry_name] = classify_entry_no_follow(target_entry)
                     continue
                 if entry_name != "config":
                     reused_target_entries.add(entry_name)
+                    reused_target_kinds[entry_name] = classify_entry_no_follow(target_entry)
                     identical_entries[entry_name] = {
                         "source_manifest": source_manifest,
                         "target_manifest": target_manifest,
@@ -2727,6 +2733,18 @@ def run_pending_storage_migration(
                     raise StorageMigrationError(
                         "target_changed_during_migration",
                         f"沿用的目标在迁移期间少了条目，已停止迁移: {entry_name}",
+                    )
+                if _has_linked_parent(target_root, entry_name):
+                    raise StorageMigrationError(
+                        "path_link_unsupported",
+                        f"沿用的目标条目的上级在迁移期间变成了链接或 junction，已停止迁移: {entry_name}",
+                    )
+                if classify_entry_no_follow(target_root / entry_name) != reused_target_kinds.get(entry_name):
+                    # Replaced since it was taken as is (by a link, say): what
+                    # is there now is not the entry that was reused.
+                    raise StorageMigrationError(
+                        "target_changed_during_migration",
+                        f"沿用的目标条目在迁移期间被替换，已停止迁移: {entry_name}",
                     )
             for entry_name, published_fingerprint in published_fingerprints.items():
                 try:

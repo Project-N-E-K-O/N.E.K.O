@@ -3778,3 +3778,68 @@ def test_a_completed_transaction_puts_user_data_from_its_trash_back_before_going
 
     assert (target_root / "pngtuber" / "arrived.png").read_bytes() == b"new root data"
     assert not storage_migration_module._transaction_path(target_root, txid).exists()
+
+
+def _reuse_target_with_memory(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    for root in (source_root, target_root):
+        (root / "config").mkdir(parents=True)
+        (root / "config" / "characters.json").write_text("same", encoding="utf-8")
+    (target_root / "memory").mkdir()
+    (target_root / "memory" / "facts.json").write_text("target only", encoding="utf-8")
+    (source_root / "pngtuber").mkdir()
+    (source_root / "pngtuber" / "idle.png").write_bytes(b"png")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+    return config_manager, target_root
+
+
+@pytest.mark.unit
+def test_a_reused_target_entry_replaced_by_a_link_before_commit_stops_the_migration(tmp_path, monkeypatch):
+    """Taken as is when the migration started, then swapped for a link to
+    somewhere else: switching roots would make that outside data live."""
+    import shutil
+
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, target_root = _reuse_target_with_memory(tmp_path)
+    elsewhere = tmp_path / "elsewhere-memory"
+    elsewhere.mkdir()
+    (elsewhere / "facts.json").write_text("not this root's", encoding="utf-8")
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_memory_swapped_for_a_link(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
+        if Path(target).name == "pngtuber":
+            shutil.rmtree(target_root / "memory")
+            _link_directory(target_root / "memory", elsewhere)
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_memory_swapped_for_a_link)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "target_changed_during_migration"
+
+
+@pytest.mark.unit
+def test_a_reused_target_entry_that_was_a_link_all_along_is_still_reused(tmp_path):
+    """A link the user keeps in the existing root (models elsewhere, say) was
+    reusable before; only a change since the start stops the migration."""
+    import shutil
+
+    config_manager, target_root = _reuse_target_with_memory(tmp_path)
+    elsewhere = tmp_path / "elsewhere-memory"
+    shutil.copytree(target_root / "memory", elsewhere)
+    shutil.rmtree(target_root / "memory")
+    _link_directory(target_root / "memory", elsewhere)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
