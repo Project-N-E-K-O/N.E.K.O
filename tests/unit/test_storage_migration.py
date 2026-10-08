@@ -1,4 +1,5 @@
 import os
+import stat
 from pathlib import Path
 from unittest.mock import patch
 
@@ -2068,3 +2069,45 @@ def test_recovery_removes_its_own_hard_link_to_the_staged_file(tmp_path, monkeyp
 
     assert retry["completed"] is True, retry
     assert (target_root / "memory").read_bytes() == b"memory file"
+
+
+def _crash_while_moving_read_only_target(monkeypatch, tmp_path, *, after_move):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, _source_root, target_root = _overwrite_migration(tmp_path)
+    (target_root / "config").chmod(0o555)
+    read_only_mode = stat.S_IMODE((target_root / "config").stat().st_mode)
+
+    def _crash_mid_move(source, destination):
+        mode = stat.S_IMODE(Path(source).lstat().st_mode)
+        os.chmod(source, mode | stat.S_IWUSR)
+        if after_move:
+            os.replace(source, destination)
+        raise KeyboardInterrupt("simulated process loss")
+
+    monkeypatch.setattr(storage_migration_module, "_move_entry_keeping_mode", _crash_mid_move)
+    with pytest.raises(KeyboardInterrupt):
+        run_pending_storage_migration(config_manager)
+    monkeypatch.undo()
+    _stop_after_recovery(monkeypatch, storage_migration_module)
+    try:
+        retry = run_pending_storage_migration(config_manager)
+        restored_mode = stat.S_IMODE((target_root / "config").stat().st_mode)
+    finally:
+        for leftover in [target_root / "config", *(target_root / ".smtx").glob("*/backup/config")]:
+            if leftover.exists():
+                leftover.chmod(0o755)
+    return retry, restored_mode, read_only_mode
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("after_move", [False, True], ids=["before-move", "after-move"])
+def test_rollback_restores_the_mode_of_a_read_only_target_directory(tmp_path, monkeypatch, after_move):
+    """The move into the backup widens a read-only directory; a process exit
+    before the mode is put back must not leave the original widened."""
+    retry, restored_mode, read_only_mode = _crash_while_moving_read_only_target(
+        monkeypatch, tmp_path, after_move=after_move
+    )
+
+    assert retry["error_code"] == "stop_after_recovery"
+    assert restored_mode == read_only_mode

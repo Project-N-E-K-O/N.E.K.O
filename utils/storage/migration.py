@@ -682,6 +682,17 @@ def _rollback_interrupted_publish(
         for entry in payload.get("original_target_entries") or []
         if str(entry) in MIGRATED_RUNTIME_ENTRY_NAMES
     }
+    raw_modes = payload.get("original_target_modes")
+    original_modes = {
+        str(entry): mode
+        for entry, mode in (raw_modes.items() if isinstance(raw_modes, dict) else [])
+        if str(entry) in MIGRATED_RUNTIME_ENTRY_NAMES and isinstance(mode, int)
+    }
+
+    def _restore_original_mode(entry_name: str, target_entry: Path) -> None:
+        mode = original_modes.get(entry_name)
+        if mode is not None and classify_entry_no_follow(target_entry) == "dir":
+            os.chmod(target_entry, stat.S_IMODE(mode))
     candidates = list(
         dict.fromkeys(
             entry_name
@@ -703,11 +714,13 @@ def _rollback_interrupted_publish(
                 restoring_entries.add(entry_name)
             _remove_existing_path(target_entry)
             _move_entry_keeping_mode(backup_entry, target_entry)
+            _restore_original_mode(entry_name, target_entry)
             continue
         if target_existed:
             if entry_name in restoring_entries and os.path.lexists(target_entry):
                 # An earlier rollback moved this backup back and stopped
                 # before removing the transaction.
+                _restore_original_mode(entry_name, target_entry)
                 continue
             if was_published:
                 raise StorageMigrationError(
@@ -715,7 +728,9 @@ def _rollback_interrupted_publish(
                     f"迁移事务缺少目标备份，拒绝继续: {entry_name}",
                 )
             # The checkpoint can precede the first replace. With no backup, the
-            # target is still the original and must remain untouched.
+            # target is still the original and must remain untouched -- apart
+            # from its mode, which the move may have widened before stopping.
+            _restore_original_mode(entry_name, target_entry)
             continue
         staged_entry = transaction_root / "stage" / entry_name
         if (
@@ -1256,6 +1271,7 @@ def run_pending_storage_migration(
                 copied_entries=copied_entries,
                 published_entries=[],
                 original_target_entries=[],
+                original_target_modes={},
                 publishing_entry="",
                 publishing_target_existed=False,
                 restoring_entries=[],
@@ -1435,6 +1451,7 @@ def run_pending_storage_migration(
                 copied_entries={},
                 published_entries=[],
                 original_target_entries=[],
+                original_target_modes={},
                 publishing_entry="",
                 publishing_target_existed=False,
                 restoring_entries=[],
@@ -1459,6 +1476,7 @@ def run_pending_storage_migration(
             copied_entries={},
             published_entries=[],
             original_target_entries=[],
+            original_target_modes={},
             publishing_entry="",
             publishing_target_existed=False,
             restoring_entries=[],
@@ -1505,6 +1523,7 @@ def run_pending_storage_migration(
         copied_entries: dict[str, dict[str, Any]] = {}
         entries_to_publish: list[str] = []
         original_target_entries: list[str] = []
+        original_target_modes: dict[str, int] = {}
         for entry_name in existing_entries:
             source_entry = source_root / entry_name
             target_entry = target_root / entry_name
@@ -1594,11 +1613,18 @@ def run_pending_storage_migration(
                     original_target_entries.append(entry_name)
                 elif not target_existed and entry_name in original_target_entries:
                     original_target_entries.remove(entry_name)
+                # Moving a read-only directory into the backup widens its mode
+                # for the move; record the original first, so a process exit
+                # in between cannot leave it widened for good.
+                original_target_modes.pop(entry_name, None)
+                if target_existed and classify_entry_no_follow(target_entry) == "dir":
+                    original_target_modes[entry_name] = stat.S_IMODE(target_entry.lstat().st_mode)
                 payload = _persist_migration_payload(
                     config_manager,
                     payload,
                     anchor_root=normalized_anchor_root,
                     original_target_entries=list(original_target_entries),
+                    original_target_modes=dict(original_target_modes),
                     publishing_entry=entry_name,
                     publishing_target_existed=target_existed,
                 )
