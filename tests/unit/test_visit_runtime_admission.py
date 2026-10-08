@@ -1280,3 +1280,67 @@ async def test_a_successor_join_reported_before_its_sdk_gate_survives_a_stale_fi
     finally:
         gate.set()
         await teardown(side, clock=clock)
+
+
+async def test_credentials_that_arrive_for_a_replaced_page_start_no_sdk_deadline(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    side.creds_gate = asyncio.Event()
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    try:
+        await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+        issuing = asyncio.ensure_future(rt.issue_credentials())
+        await wait_for(lambda: side.creds_calls)
+        rt.transport.on_page_attached(clock())                # 等凭证期间页面被顶替
+        side.creds_gate.set()
+        assert await issuing is None                          # 旧连接拿不到，也不替新连接装能力门期限
+        assert rt._sdk_deadline is None
+        assert await rt.issue_credentials() is not None       # 新连接自己来要
+        assert rt._sdk_deadline is not None
+    finally:
+        side.creds_gate.set()
+        await teardown(side, clock=clock)
+
+
+async def test_no_new_exit_flow_once_shutdown_started(tmp_path, monkeypatch, clocks):
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    stuck = asyncio.Event()
+    real_seal = rt.journal.seal
+
+    async def slow_seal(*args, **kwargs):
+        await stuck.wait()                                    # 关机封存期间
+        return await real_seal(*args, **kwargs)
+
+    rt.journal.seal = slow_seal
+    try:
+        stopping = asyncio.ensure_future(rtm.stop_all("shutdown"))
+        await wait_for(lambda: rt._shutdown_started)
+        assert rt.request_finalize("peer_left") is False      # 对端 leave / route_end 不再另起收尾流程
+        assert rt.exit_task is None
+        stuck.set()
+        await asyncio.wait_for(stopping, 3)
+    finally:
+        stuck.set()
+
+
+async def test_a_stuck_account_map_write_does_not_hold_the_visit(tmp_path, monkeypatch, clocks):
+    monkeypatch.setattr(rtm, "_ACCOUNT_RECORD_S", 0.1)
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    stuck = asyncio.Event()
+
+    async def hang(account, visit_uid):
+        await stuck.wait()                                    # 本地记账卡住
+
+    side.deps.record_account = hang
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    try:
+        await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+        assert await asyncio.wait_for(rt.issue_credentials(), 3) is not None
+    finally:
+        stuck.set()
+        await teardown(side, clock=clock)

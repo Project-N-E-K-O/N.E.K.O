@@ -1171,3 +1171,17 @@ async def test_peer_line_effects_apply_before_the_line_is_persisted(tmp_path, mo
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+
+async def test_a_line_whose_generation_failed_midway_is_marked_truncated(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(
+        tmp_path, monkeypatch,
+        host_replies=Replies(queue=[["说到一半，", "然后", RuntimeError("provider dropped the stream")]]),
+        guest_replies=Replies(gate=asyncio.Event()))
+    try:
+        await wait_for(lambda: [p for p in _texts(wire, "host") if p.get("trunc_reason") == "llm_error"], timeout=10)
+        failed = [p for p in _texts(wire, "host") if p.get("trunc_reason") == "llm_error"][0]
+        assert failed["truncated"] is True and failed["txt"]     # 有前缀也标截断，不当成说完的一句
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)

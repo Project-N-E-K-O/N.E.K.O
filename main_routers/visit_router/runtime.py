@@ -128,6 +128,7 @@ _CLOSE_WAIT_S = VISIT_LEAVE_GAP_GRACE_S * 2 + 2.0
 _HANDOFF_POLL_S = 0.25
 # 关机总预算 VISIT_SHUTDOWN_BUDGET_S：等在飞任务、收口当前行各 0.5 s，取消未配对房间 1 s，余下给封存
 _SHUTDOWN_TASK_WAIT_S = 0.5
+_ACCOUNT_RECORD_S = 3.0
 _SHUTDOWN_ROOM_CANCEL_S = 1.0
 _VOICE_STATUS_THROTTLE_S = 5.0
 
@@ -672,13 +673,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         """First ``credentials`` of a transport connection (first issue, or page re-entry)."""
         if self.finalizing:
             return None
+        gen = self._page_gen  # 期间这条连接被顶替 / 断开：期限不能装在新连接头上（它会自己来要凭证）
         if self.grant is None:
             if self._creds_task is None:
                 self._creds_task = asyncio.ensure_future(self._obtain_credentials())
             task = self._creds_task
             # 只等不连带取消（页面重连会再来要）；关机取消了它就按没领到
             await asyncio.wait([task])
-            if task.cancelled() or not task.result() or self.finalizing:
+            if task.cancelled() or not task.result() or self.finalizing or gen != self._page_gen:
                 return None
             self._sdk_deadline = self.clock() + VISIT_CAPS_SDK_TIMEOUT_S
         else:
@@ -694,7 +696,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             except cr.VisitServersError as exc:
                 # 续期失败沿用手里那份：凭证过期之前照样能重新入房
                 logger.warning("visit %s: vendor grant renewal failed (%s)", self.visit_id[:6], exc.code)
-            if self.finalizing:
+            if self.finalizing or gen != self._page_gen:
                 return None
             now = self.clock()
             remaining = (self.liveness.page_reload_deadline() or math.inf) - now
@@ -743,7 +745,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.grant = cr.VisitGrant(creds, display_name=self.lanlan_name,
                                    invite_code=self.invite_code if self.side == "guest" else None)
         try:
-            await self.deps.record_account(creds.account, creds.visit_uid)
+            # 有界：本地记账卡住（文件锁 / 磁盘）不能让这场停在 pending、一直占着路由
+            await asyncio.wait_for(self.deps.record_account(creds.account, creds.visit_uid), _ACCOUNT_RECORD_S)
         except Exception as exc:  # noqa: BLE001 - 映射写不进不挡串门
             logger.warning("visit %s: account mapping not recorded: %s", self.visit_id[:6], type(exc).__name__)
         if self.side == "host" and not creds.invite_code:
@@ -1399,7 +1402,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         family's typing goes to ordinary chat; before that it is refused);
         the slot stays locked until the exit flow completed.
         """
-        if self._exit_task is not None:
+        if self._exit_task is not None or self._terminated:
+            # 关机已开始（或已收尾完）：不再起新的收尾流程，免得它和关机的文件收口并发
             return False
         if reason not in FINALIZE_REASONS and reason not in ABORT_REASONS:
             logger.warning("visit %s: unknown finalize reason %r, using route_end", self.visit_id[:6], reason)

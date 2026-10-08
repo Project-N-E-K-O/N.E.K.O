@@ -460,7 +460,8 @@ class TalkMixin:
         h = line.header
         truncated = bool(result.truncated)
         reason = result.trunc_reason
-        if line.llm_error is not None and not result.text and not truncated:
+        if line.llm_error is not None and not truncated:
+            # 生成中途出错：已放出的前缀照常收口，但标成截断（不当成一句说完的话）
             truncated, reason = True, "llm_error"
         payload = self._final_payload(h, result.text, truncated=truncated, reason=reason, tail_ms=result.tail_ms)
         try:

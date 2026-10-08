@@ -303,6 +303,8 @@ class FakeClient:
                 # 生成途中的停顿点：测试在这里插入打断 / 结束
                 await chunk.wait()
                 continue
+            if isinstance(chunk, BaseException):
+                raise chunk                            # 生成到一半出错
             out.append(chunk)
             await self.on_text_delta(chunk, len(out) == 1)
         self._conversation_history.append(AIMessage(content="".join(out)))
