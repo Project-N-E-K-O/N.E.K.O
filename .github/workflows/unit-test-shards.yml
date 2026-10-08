@@ -230,7 +230,11 @@ jobs:
           "$RUNNER_TEMP/voice-enrollment-browser/node_modules/.bin/playwright" install --with-deps chromium
 
       - name: Run actual enrollment page and AudioWorklet with fixed quiet speech
-        run: NODE_PATH="$RUNNER_TEMP/voice-enrollment-browser/node_modules" node tests/frontend/voice_enrollment_duration_browser.cjs
+        env:
+          NODE_PATH: ${{ runner.temp }}/voice-enrollment-browser/node_modules
+        run: |
+          VOICE_ENROLLMENT_BROWSER_LOCALE=en-US node tests/frontend/voice_enrollment_duration_browser.cjs
+          VOICE_ENROLLMENT_BROWSER_LOCALE=zh-CN node tests/frontend/voice_enrollment_duration_browser.cjs
 
   voice-readiness-electron:
     name: voice readiness (Electron actual page)

@@ -126,7 +126,10 @@ async function main() {
             '--use-file-for-fake-audio-capture=' + inputPath,
             '--autoplay-policy=no-user-gesture-required',
         ] });
-        const page = await browser.newPage({ viewport: { width: 960, height: 900 } });
+        const page = await browser.newPage({
+            locale: process.env.VOICE_ENROLLMENT_BROWSER_LOCALE || 'en-US',
+            viewport: { width: 960, height: 900 },
+        });
         const pageErrors = [];
         page.on('pageerror', error => pageErrors.push(error.message));
         await page.addInitScript(() => {
@@ -161,6 +164,8 @@ async function main() {
             };
         });
         await page.goto(`http://127.0.0.1:${server.address().port}/voice_identity`);
+        await page.waitForFunction(() => typeof window.t === 'function'
+            && window.t('voiceIdentity.errorNoSpeechDetected') !== 'voiceIdentity.errorNoSpeechDetected');
         await page.waitForFunction(() => !document.getElementById('voice-identity-test').disabled);
         assert.equal(await page.locator('#voice-identity-start').isDisabled(), true);
         await page.locator('#voice-identity-test').click();
@@ -193,7 +198,8 @@ async function main() {
             assert.ok(samplesAtClick < sampleRate * (segment === 4 ? 5 : 3), 'manual save must precede automatic ending');
             await page.waitForFunction(index => window.__durationEvidence.captures[index].flushed, segment);
             if (segment < 4) await page.waitForFunction(() => !document.getElementById('voice-identity-next').hidden && !document.getElementById('voice-identity-next').disabled);
-            else await page.waitForFunction(() => document.getElementById('voice-identity-message').textContent.includes('有效人声'));
+            else await page.waitForFunction(() => document.getElementById('voice-identity-message').textContent
+                === window.t('voiceIdentity.errorNoSpeechDetected'));
             const captured = await page.evaluate(index => ({ ...window.__durationEvidence.captures[index] }), segment);
             const upload = requests.filter(entry => entry.path.endsWith('/enrollment/segment'))[segment - 1];
             assert.equal(upload.segment, segment);
@@ -209,6 +215,7 @@ async function main() {
         assert.deepEqual(pageErrors, []);
         const report = {
             browser: await browser.version(), actualPageAndWorklet: true,
+            locale: await page.evaluate(() => navigator.language),
             controlledApi: true, realBackend: false, realMicrophoneCaptured: false,
             fixture: 'rate4.wav', amplitude: 0.25, earlySamples,
             earlySubmissionBlocked: true, trial: check, manualCaptures,

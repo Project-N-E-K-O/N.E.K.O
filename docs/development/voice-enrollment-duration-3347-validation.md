@@ -32,7 +32,7 @@
 | Electron | Electron 41.2.0 的真实页面与 AudioWorklet，固定轻声样本与受控 HTTP API。过早手动提交受限，达标后上传，RMS 达标时长仍不足 1.5 秒；另覆盖设备回退、重复试录、迟到权限取消、合同变化和清理。 |
 
 固定 WAV 的来源、样本数和 SHA-256 见
-[`tests/fixtures/voice_identity/issue_3347/README.md`](../../tests/fixtures/voice_identity/issue_3347/README.md)。
+`tests/fixtures/voice_identity/issue_3347/README.md`。
 这些都是合成音频，不是 issue 报告者的原始录音，也不能代替真人麦克风质量验证。
 真实服务测试仅控制临时档案的密钥包装及运行时激活回执，音频处理、VAD、声纹推理、
 一致性与独立验证均为真实实现；它不证明运行时 ASR 激活或 Electron 打包发行物已验收。
