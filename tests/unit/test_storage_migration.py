@@ -2928,3 +2928,38 @@ def test_v1_checkpoint_keeps_the_transaction_id_it_is_given(tmp_path, monkeypatc
     # The interrupted publish was found and rolled back: the original target is back.
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "healthy"
     assert not (target_root / ".smtx").exists()
+
+
+
+@pytest.mark.unit
+def test_reused_target_config_changed_after_staging_is_not_replaced(tmp_path, monkeypatch):
+    """The reused target's config matched the source and was staged for the
+    path rewrite; a sync client changing it meanwhile must stop the
+    migration instead of having the change replaced by the staged copy."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    for root in (source_root, target_root):
+        (root / "config").mkdir(parents=True)
+        (root / "config" / "characters.json").write_text("same", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+    original_persist = storage_migration_module._persist_migration_payload
+
+    def _config_changed_at_verifying(*args, **kwargs):
+        if kwargs.get("status") == storage_migration_module.STORAGE_MIGRATION_STATUS_VERIFYING:
+            (target_root / "config" / "characters.json").write_text("synced in", encoding="utf-8")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", _config_changed_at_verifying)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "target_changed_during_migration"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "synced in"

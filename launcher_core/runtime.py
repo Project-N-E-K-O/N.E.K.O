@@ -111,6 +111,10 @@ _cleanup_done = False
 # None means they could not be determined.
 _teardown_descendants: list | None = None
 _teardown_snapshot_taken = False
+# The latest snapshot taken while every server still ran, refreshed by the
+# monitoring loop: in multiprocess mode a migration restart begins with Main
+# shutting itself down, before any teardown snapshot can see its children.
+_running_descendants: list = []
 _expected_launcher_shutdown = False
 _existing_neko_services: set[str] = set()  # 已有 N.E.K.O 实例占用的端口键
 _partial_or_mixed_existing_backend = False
@@ -2383,6 +2387,24 @@ def _descendants_block_storage_restart(allow_storage_restart: bool) -> bool:
     return _settle_surviving_descendants(_teardown_descendants)
 
 
+def _refresh_running_descendants() -> None:
+    global _running_descendants
+    try:
+        snapshot = _snapshot_server_descendants(SERVERS)
+    except Exception:
+        return
+    if snapshot is not None:
+        _running_descendants = snapshot
+
+
+def _merge_descendant_snapshots(current: list | None, earlier: list) -> list | None:
+    """The teardown snapshot plus processes only an earlier snapshot still saw."""
+    if current is None:
+        return None
+    seen = {process for process, _own in current}
+    return current + [(process, own) for process, own in earlier if process not in seen]
+
+
 def _take_teardown_snapshot_once() -> None:
     """Record the servers' descendants before the first teardown step.
 
@@ -2395,9 +2417,10 @@ def _take_teardown_snapshot_once() -> None:
         return
     _teardown_snapshot_taken = True
     try:
-        _teardown_descendants = _snapshot_server_descendants(list(_iter_servers_for_shutdown()))
+        current = _snapshot_server_descendants(list(_iter_servers_for_shutdown()))
     except Exception:
-        _teardown_descendants = None
+        current = None
+    _teardown_descendants = _merge_descendant_snapshots(current, _running_descendants)
 
 
 def cleanup_servers():
@@ -3304,6 +3327,7 @@ def main():
         _reported_exits: set[str] = set()
         while True:
             time.sleep(5)
+            _refresh_running_descendants()
             started = [s for s in SERVERS if s.get('process') is not None]
             any_critical_dead = False
             for s in started:

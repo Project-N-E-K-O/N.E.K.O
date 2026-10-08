@@ -305,15 +305,53 @@ def test_merged_mode_takes_the_snapshot_before_its_ordered_shutdown():
 def test_the_teardown_snapshot_is_taken_only_once(monkeypatch):
     from launcher_core import runtime
 
-    snapshots = iter([["first"], ["second"]])
+    snapshots = iter([[("first", True)], [("second", True)]])
     monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: next(snapshots))
     monkeypatch.setattr(runtime, "_teardown_snapshot_taken", False)
     monkeypatch.setattr(runtime, "_teardown_descendants", None)
+    monkeypatch.setattr(runtime, "_running_descendants", [])
 
     runtime._take_teardown_snapshot_once()
     runtime._take_teardown_snapshot_once()
 
-    assert runtime._teardown_descendants == ["first"]
+    assert runtime._teardown_descendants == [("first", True)]
+
+
+@pytest.mark.unit
+def test_teardown_keeps_descendants_only_the_running_snapshot_saw(monkeypatch):
+    """Multiprocess mode: Main shuts itself down for the migration before any
+    teardown snapshot; what the monitoring loop saw while it ran still
+    counts."""
+    from launcher_core import runtime
+
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: [("still-found", True)])
+    monkeypatch.setattr(runtime, "_teardown_snapshot_taken", False)
+    monkeypatch.setattr(runtime, "_teardown_descendants", None)
+    monkeypatch.setattr(runtime, "_running_descendants", [("orphan-of-main", True), ("still-found", True)])
+
+    runtime._take_teardown_snapshot_once()
+
+    assert runtime._teardown_descendants == [("still-found", True), ("orphan-of-main", True)]
+
+
+@pytest.mark.unit
+def test_unknown_teardown_descendants_stay_unknown_despite_a_running_snapshot(monkeypatch):
+    from launcher_core import runtime
+
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: None)
+    monkeypatch.setattr(runtime, "_teardown_snapshot_taken", False)
+    monkeypatch.setattr(runtime, "_teardown_descendants", [])
+    monkeypatch.setattr(runtime, "_running_descendants", [("seen-earlier", True)])
+
+    runtime._take_teardown_snapshot_once()
+
+    assert runtime._teardown_descendants is None
+
+
+@pytest.mark.unit
+def test_the_monitoring_loop_refreshes_the_running_snapshot():
+    source = (LAUNCHER_CORE / "runtime.py").read_text(encoding="utf-8")
+    assert "            time.sleep(5)\n            _refresh_running_descendants()\n" in source
 
 
 # Spawning the base interpreter keeps a Windows venv's python.exe stub out of

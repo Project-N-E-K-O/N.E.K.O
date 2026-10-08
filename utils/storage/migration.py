@@ -1873,6 +1873,7 @@ def run_pending_storage_migration(
         original_target_entries: list[str] = []
         original_target_modes: dict[str, int] = {}
         identical_entries: dict[str, dict[str, Any]] = {}
+        reused_target_manifests: dict[str, dict[str, int | str]] = {}
         source_fingerprints: dict[str, str] = {}
         for entry_name in existing_entries:
             source_entry = source_root / entry_name
@@ -1902,6 +1903,7 @@ def run_pending_storage_migration(
                 # An identical config still carries workshop paths bound to the
                 # source: stage and publish it like any copy so they are rebased
                 # (the target's own copy goes to the backup as usual).
+                reused_target_manifests[entry_name] = target_manifest
             staged_entry = stage_root / entry_name
             widened_modes[entry_name] = _copy_runtime_entry(source_entry, staged_entry) or []
             staged_manifest = _snapshot_path(staged_entry)
@@ -1992,6 +1994,17 @@ def run_pending_storage_migration(
                 target_entry = target_root / entry_name
                 backup_entry = backup_root / entry_name
                 target_existed = os.path.lexists(target_entry)
+                reused_manifest = reused_target_manifests.get(entry_name)
+                if reused_manifest is not None and (
+                    not target_existed or _snapshot_path(target_entry) != reused_manifest
+                ):
+                    # The reused target's own config was staged only because
+                    # it matched the source; changed or gone since (a sync
+                    # client), it must not be replaced by the staged copy.
+                    raise StorageMigrationError(
+                        "target_changed_during_migration",
+                        f"沿用的目标在迁移期间被改动，已停止迁移: {entry_name}",
+                    )
                 if use_existing_target and target_existed and entry_name not in target_entries_at_staging:
                     # Reusing a target makes its entries authoritative; one
                     # that appeared after staging (a sync client) must not be

@@ -1632,11 +1632,19 @@ def _private_cleanup_name(entry_name: str) -> str:
     return f"{_CLEANUP_PRIVATE_PREFIX}{entry_name}-{uuid.uuid4().hex[:12]}"
 
 
-def _private_cleanup_leftovers(retained_path: Path) -> list[tuple[str, Path]]:
+_UNLISTABLE_RETAINED_ROOT = ".neko-cleanup-*"
+
+
+def _private_cleanup_leftovers(retained_path: Path) -> list[tuple[str, Path]] | None:
+    """Entries left under a private cleanup name; ``None`` if they cannot be listed.
+
+    Their random suffix is only discoverable by listing the directory, so a
+    directory that can be entered but not listed may still hide one.
+    """
     try:
         children = sorted(retained_path.iterdir(), key=lambda child: child.name)
     except OSError:
-        return []
+        return None
     leftovers = []
     for child in children:
         entry_name = private_cleanup_entry_name(child.name)
@@ -1651,7 +1659,7 @@ def _restore_private_cleanup_leftovers(retained_path: Path) -> None:
     Only while their own name is free; otherwise both stay, and the entry is
     reported under its own name until the user has sorted it out.
     """
-    for entry_name, private in _private_cleanup_leftovers(retained_path):
+    for entry_name, private in _private_cleanup_leftovers(retained_path) or []:
         if classify_entry_no_follow(private) is None:
             continue
         entry = retained_path / entry_name
@@ -1841,10 +1849,14 @@ def _cleanup_retained_runtime_root(
     # The anchor root holds more than runtime data (state, cloud saves) and
     # always stays. Any other retained root goes once emptied; files the user
     # kept in it stay put.
+    leftovers = _private_cleanup_leftovers(retained_path)
     remaining_entries = tuple(
         dict.fromkeys(
             [entry_name for entry_name in migrated_names if _entry_may_exist(retained_path / entry_name)]
-            + [entry_name for entry_name, _private in _private_cleanup_leftovers(retained_path)]
+            + [entry_name for entry_name, _private in leftovers or []]
+            # Not listable: an entry may still hide under a private name, so
+            # the cleanup must stay pending rather than be recorded as done.
+            + ([_UNLISTABLE_RETAINED_ROOT] if leftovers is None else [])
         )
     )
     retained_root_kept = paths_equal(retained_path, anchor_root)

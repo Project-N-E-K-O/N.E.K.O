@@ -4122,3 +4122,26 @@ def test_storage_location_cleanup_restores_past_an_empty_reservation(tmp_path):
     assert response.json()["remaining_entries"] == ["memory"]
     assert (source_root / "memory" / "recent.json").read_text(encoding="utf-8") == "changed since"
     assert not list(source_root.glob(".neko-cleanup-*"))
+
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_stays_pending_when_the_retained_root_cannot_be_listed(tmp_path, monkeypatch):
+    """Entered but not listed (execute without read): an entry may still hide
+    under a private name, so the cleanup must not be recorded as done."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "memory").rename(source_root / ".neko-cleanup-memory-0123456789ab")
+    original_iterdir = Path.iterdir
+
+    def _iterdir(self):
+        if self == source_root:
+            raise PermissionError(13, "listing denied", str(self))
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _iterdir)
+    response = _cleanup_request(tmp_path, source_root)
+    monkeypatch.undo()
+
+    assert response.status_code == 409, response.json()
+    assert ".neko-cleanup-*" in response.json()["remaining_entries"]
+    assert (source_root / ".neko-cleanup-memory-0123456789ab" / "recent.json").is_file()
