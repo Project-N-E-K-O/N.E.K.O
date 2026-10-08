@@ -36,6 +36,7 @@ import inspect
 import stat
 import subprocess
 import tempfile
+import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -81,6 +82,7 @@ from utils.storage_migration import (
     is_retained_root_cleanup_available,
     is_storage_migration_pending,
     load_storage_migration,
+    move_entry_without_overwrite,
     rewrite_migrated_config_paths,
     root_has_migrated_entry_content,
     save_storage_migration,
@@ -1619,6 +1621,24 @@ def _build_completed_migration_notice(
     }
 
 
+_CLEANUP_PRIVATE_PREFIX = ".neko-cleanup-"
+
+
+def _leftover_private_cleanup_entries(retained_path: Path) -> tuple[str, ...]:
+    """Entries a cleanup renamed and could neither delete nor put back.
+
+    That includes the ones a cleanup stopped by a process exit left behind;
+    they are reported like any remaining entry instead of silently keeping
+    the root.
+    """
+    try:
+        return tuple(
+            sorted(child.name for child in retained_path.iterdir() if child.name.startswith(_CLEANUP_PRIVATE_PREFIX))
+        )
+    except OSError:
+        return ()
+
+
 def _cleanup_retained_runtime_root(
     retained_path: Path,
     *,
@@ -1677,36 +1697,21 @@ def _cleanup_retained_runtime_root(
     # An entry already gone from the retained root -- removed by an earlier
     # partial cleanup, or by the user after one was reported -- needs nothing
     # more and is not reported, so a repeated request finishes the checkpoint.
-    def _proof_still_holds(entry_name: str, proof: dict) -> bool:
-        source_entry = retained_path / entry_name
-        target_entry = normalized_target / entry_name
+    #
+    # Each entry is renamed to a private name next to it before its content
+    # is compared, and only that private copy is deleted: a writer still
+    # using the old path (a sync client, say) can then only create a new
+    # entry there, which stays, instead of losing what it wrote together
+    # with the copy that was checked.
+    def _target_still_holds_copy(entry_name: str, proof: dict) -> bool:
         target_manifest = proof.get("target_manifest")
         expected_kind = target_manifest.get("kind") if isinstance(target_manifest, dict) else None
         try:
-            return (
-                os.path.lexists(source_entry)
-                and classify_entry_no_follow(target_entry) == expected_kind
-                and snapshot_runtime_entry(source_entry) == proof.get("source_manifest")
-            )
+            return classify_entry_no_follow(normalized_target / entry_name) == expected_kind
         except (StorageMigrationError, OSError):
             return False
 
-    proved_entries = [
-        (entry_name, proof)
-        for entry_name, proof in proved_entries
-        if _proof_still_holds(entry_name, proof)
-    ]
-
-    def _legacy_entry_matches(entry_name: str) -> bool:
-        try:
-            return _legacy_entry_matches_unchecked(entry_name)
-        except (StorageMigrationError, OSError):
-            # Unreadable now (an app writing to the target, a locked file):
-            # keep the entry and report it instead of failing everything.
-            return False
-
-    def _legacy_entry_matches_unchecked(entry_name: str) -> bool:
-        retained_entry = retained_path / entry_name
+    def _matches_target(entry_name: str, retained_entry: Path) -> bool:
         retained_manifest = snapshot_runtime_entry(retained_entry)
         target_manifest = snapshot_runtime_entry(normalized_target / entry_name)
         if entry_name != "config" or retained_manifest["kind"] != "dir":
@@ -1731,17 +1736,46 @@ def _cleanup_retained_runtime_root(
             )
             return snapshot_runtime_entry(scratch_root / "config") == target_manifest
 
-    legacy_entries = [
-        entry_name for entry_name in legacy_entries if _legacy_entry_matches(entry_name)
-    ]
-    for entry_name in [name for name, _proof in proved_entries] + legacy_entries:
+    def _delete_if_still_matching(entry_name: str, matches: Callable[[Path], bool]) -> None:
+        entry = retained_path / entry_name
+        private = retained_path / f"{_CLEANUP_PRIVATE_PREFIX}{uuid.uuid4().hex[:12]}"
         try:
-            remove_runtime_entry(retained_path / entry_name)
-        except (StorageMigrationError, OSError) as exc:
-            # A file locked by an antivirus scan or Explorer preview: what
-            # is left of the entry stays and shows up in remaining_entries,
-            # so the user knows what to finish by hand.
+            os.rename(entry, private)
+        except OSError as exc:
+            # In use (Windows refuses to rename a directory with open files):
+            # it stays and shows up in remaining_entries.
             logger.warning("Retained root cleanup kept %s: %s", entry_name, exc)
+            return
+        try:
+            still_matches = matches(private)
+        except (StorageMigrationError, OSError):
+            # Unreadable now (an app writing to the target, a locked file).
+            still_matches = False
+        if still_matches:
+            try:
+                remove_runtime_entry(private)
+                return
+            except (StorageMigrationError, OSError) as exc:
+                # A file locked by an antivirus scan or Explorer preview: what
+                # is left goes back under its name and is reported, so the
+                # user knows what to finish by hand.
+                logger.warning("Retained root cleanup kept %s: %s", entry_name, exc)
+        try:
+            move_entry_without_overwrite(private, entry)
+        except OSError as exc:
+            # Something new took the name meanwhile: keep both; the private
+            # copy is reported under its own name.
+            logger.warning("Retained root cleanup left %s under %s: %s", entry_name, private.name, exc)
+
+    for entry_name, proof in proved_entries:
+        if os.path.lexists(retained_path / entry_name) and _target_still_holds_copy(entry_name, proof):
+            source_manifest = proof.get("source_manifest")
+            _delete_if_still_matching(
+                entry_name,
+                lambda path, expected=source_manifest: snapshot_runtime_entry(path) == expected,
+            )
+    for entry_name in legacy_entries:
+        _delete_if_still_matching(entry_name, lambda path, name=entry_name: _matches_target(name, path))
 
     # The anchor root holds more than runtime data (state, cloud saves) and
     # always stays. Any other retained root goes once emptied; files the user
@@ -1750,7 +1784,7 @@ def _cleanup_retained_runtime_root(
         entry_name
         for entry_name in migrated_names
         if os.path.lexists(retained_path / entry_name)
-    )
+    ) + _leftover_private_cleanup_entries(retained_path)
     retained_root_kept = paths_equal(retained_path, anchor_root)
     if not retained_root_kept:
         # Directories the app recreates (old logs, plugin install records)

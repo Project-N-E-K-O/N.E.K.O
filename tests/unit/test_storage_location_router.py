@@ -3166,7 +3166,8 @@ def test_storage_location_cleanup_keeps_an_entry_that_fails_to_delete(tmp_path, 
     original_remove = storage_location_router_module.remove_runtime_entry
 
     def _locked_memory(path):
-        if Path(path).name == "memory":
+        # Cleanup deletes a private rename of the entry; recognise memory by its file.
+        if (Path(path) / "recent.json").exists():
             raise PermissionError(32, "the file is being used by another process")
         return original_remove(path)
 
@@ -3190,7 +3191,8 @@ def test_storage_location_cleanup_keeps_an_entry_that_cannot_be_read(tmp_path, m
     original_snapshot = storage_location_router_module.snapshot_runtime_entry
 
     def _unreadable_memory(path):
-        if Path(path) == source_root / "memory":
+        # Cleanup compares a private rename of the entry; recognise memory by its file.
+        if Path(path).parent == source_root and (Path(path) / "recent.json").exists():
             raise PermissionError(32, "the file is being used by another process")
         return original_snapshot(path)
 
@@ -3836,3 +3838,80 @@ def test_storage_location_cleanup_keeps_regenerable_dirs_while_entries_remain(tm
     assert cleanup_response.json()["remaining_entries"] == ["memory"]
     assert (source_root / "logs" / "old.log").is_file()
     assert not (source_root / "config").exists()
+
+
+def _cleanup_with_snapshot_hook(tmp_path, monkeypatch, hook):
+    source_root, target_root = _migrate_config_and_memory(tmp_path)
+    original_snapshot = storage_location_router_module.snapshot_runtime_entry
+
+    def _snapshot(path):
+        manifest = original_snapshot(path)
+        if Path(path).parent == source_root and (Path(path) / "recent.json").exists():
+            return hook(source_root, Path(path), manifest)
+        return manifest
+
+    monkeypatch.setattr(storage_location_router_module, "snapshot_runtime_entry", _snapshot)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+    return source_root, response
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_spares_data_written_right_after_the_check(tmp_path, monkeypatch):
+    """A writer still using the old path between the check and the delete
+    must not lose what it wrote."""
+
+    def _writer_after_check(source_root, _checked_path, manifest):
+        (source_root / "memory").mkdir(exist_ok=True)
+        (source_root / "memory" / "written-later.json").write_text("keep", encoding="utf-8")
+        return manifest
+
+    source_root, response = _cleanup_with_snapshot_hook(tmp_path, monkeypatch, _writer_after_check)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "written-later.json").read_text(encoding="utf-8") == "keep"
+    assert not (source_root / "memory" / "recent.json").exists()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_reports_a_copy_it_could_not_put_back(tmp_path, monkeypatch):
+    """The copy no longer matches and its name was taken meanwhile: both
+    stay, the copy under its private name, and both are reported."""
+
+    def _changed_and_name_taken(source_root, _checked_path, _manifest):
+        (source_root / "memory").mkdir(exist_ok=True)
+        (source_root / "memory" / "written-later.json").write_text("keep", encoding="utf-8")
+        return {"kind": "changed"}
+
+    source_root, response = _cleanup_with_snapshot_hook(tmp_path, monkeypatch, _changed_and_name_taken)
+
+    assert response.status_code == 409, response.json()
+    remaining = response.json()["remaining_entries"]
+    private_names = [name for name in remaining if name.startswith(".neko-cleanup-")]
+    assert remaining == ["memory", *private_names] and len(private_names) == 1
+    assert (source_root / private_names[0] / "recent.json").is_file()
+    assert (source_root / "memory" / "written-later.json").read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_reports_copies_left_by_an_interrupted_cleanup(tmp_path):
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    leftover = source_root / ".neko-cleanup-0123456789ab"
+    leftover.mkdir()
+    (leftover / "recent.json").write_text("{}", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == [".neko-cleanup-0123456789ab"]
+    assert (leftover / "recent.json").is_file()

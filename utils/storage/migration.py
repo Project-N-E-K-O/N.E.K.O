@@ -423,6 +423,11 @@ def _move_entry_keeping_mode(source: Path, destination: Path) -> None:
         os.chmod(destination, mode)
 
 
+def move_entry_without_overwrite(source: Path, target: Path) -> None:
+    """Move an entry into place; ``FileExistsError`` instead of replacing anything."""
+    _publish_without_overwrite(source, target)
+
+
 def remove_runtime_entry(path: Path) -> None:
     """Remove a real file or directory tree; links and special files raise."""
     _remove_existing_path(path)
