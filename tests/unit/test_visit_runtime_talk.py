@@ -1246,16 +1246,63 @@ async def test_a_second_peer_line_on_the_same_lp_is_rejected(tmp_path, monkeypat
 
 
 async def test_a_ceremony_turn_gives_up_when_the_session_lock_stays_busy(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
+    stub = SimpleNamespace(turn_lock=asyncio.Lock(), history=[], set_sink=lambda sink: None,
+                           forget_untracked=lambda: None)
+    real_session, rt.session = rt.session, stub
     try:
-        await rt.session.turn_lock.acquire()                  # 收尾时没停下的那一轮还占着锁
-        try:
-            out = await asyncio.wait_for(rt.one_shot_turn("回家说一句", timeout=0.2), 3)
-        finally:
-            rt.session.turn_lock.release()
+        await stub.turn_lock.acquire()                        # 收尾时没停下的那一轮还占着锁
+        out = await asyncio.wait_for(rt.one_shot_turn("回家说一句", timeout=0.2), 3)
         assert out is None                                    # 用固定句，不无限等
     finally:
+        rt.session = real_session
         hgate.set()
         ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+
+async def test_a_ceremony_turn_shares_one_deadline_between_lock_and_generation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+
+    async def slow_stream(text, **kwargs):
+        await asyncio.sleep(2)
+
+    # 替身会话：只看 one_shot_turn 自己的计时，不受正在进行的那一轮占锁影响
+    stub = SimpleNamespace(turn_lock=asyncio.Lock(), history=[], client=SimpleNamespace(stream_text=slow_stream),
+                           set_sink=lambda sink: None, forget_untracked=lambda: None)
+    real_session, rt.session = rt.session, stub
+    try:
+        await stub.turn_lock.acquire()
+        asyncio.get_running_loop().call_later(0.45, stub.turn_lock.release)   # 锁快到期限才放出来
+        started = asyncio.get_running_loop().time()
+        out = await asyncio.wait_for(rt.one_shot_turn("回家说一句", timeout=0.5), 3)
+        # 整轮不超过一个时限（各给一个完整时限就会到 ~0.95 s）
+        assert out is None and asyncio.get_running_loop().time() - started < 0.75
+    finally:
+        rt.session = real_session
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+async def test_state_replay_keeps_the_full_visit_line_shape(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        await wait_for(lambda: len(rt.journal.lines()) >= 2)
+        await settle()
+        live = {f["line_id"]: f for f in host.host.frames if f.get("type") == "visit_line"}
+        replay = {r["line_id"]: r for r in rt.snapshot()["transcript"]}
+        common = set(live) & set(replay)
+        assert common
+        for ln in common:
+            for key in ("addressee", "reply_to", "goodbye", "i_done", "speaker", "text"):
+                assert replay[ln][key] == live[ln][key]       # 重载后与直播时同一份形状
+    finally:
         await teardown(host, guest, wire=wire, clock=clock)

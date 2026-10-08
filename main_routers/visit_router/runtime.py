@@ -1221,9 +1221,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         await self._after_start()
 
     async def _after_start(self) -> None:
+        # 前面 send_media 等页面写入可能卡了一阵：这期间已开始收尾就不再把页面翻回进行中
+        if self.finalizing:
+            return
         await self.push("started", peer_crop=self.room.peer_crop if self.side == "host" and self.room else None)
+        if self.finalizing:
+            return
         if self.side == "guest":
             await self.push("departed")
+            if self.finalizing:
+                return
         self.start_opening_line()
 
     # ── 激活 ─────────────────────────────────────────────────────────

@@ -99,6 +99,7 @@ class ReceiveMixin:
         self._peer_lines: dict[str, dict] = {}
         self._line_quota: dict[str, bool] = {}
         self._ln_by_key: dict[tuple, str] = {}
+        self._line_frames: dict[tuple, dict] = {}
         self._deltas = LineDeltaAssembler()
         self._rejected_lines: dict[str, None] = {}
         self._lp_owner: dict[Any, str] = {}
@@ -619,12 +620,19 @@ class ReceiveMixin:
         }
         if trunc_reason:
             payload["trunc_reason"] = trunc_reason
+        # 页面重载时 GET /state 按 (lp, side) 用同一份形状重放（收件人 / 回复 / 告别 / i_done 都在）
+        self._line_frames[(lp, side)] = payload
+        while len(self._line_frames) > 512:
+            self._line_frames.pop(next(iter(self._line_frames)))
         return payload
 
     def visit_line_payload_from_record(self, record: dict) -> dict:
         """A ``visit_line``-shaped entry of ``GET /state`` from an in-memory transcript record."""
         speaker_from = str(record.get("from") or "")
         side = record.get("side") or self.side
+        frame = self._line_frames.get((record.get("lp"), side))
+        if frame is not None:
+            return dict(frame)
         kind = "human" if speaker_from.endswith("_human") else "cat"
         return {
             "type": "visit_line", "visit_id": self.visit_id, "lp": record.get("lp"),

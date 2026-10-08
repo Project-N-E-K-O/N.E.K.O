@@ -1370,3 +1370,28 @@ async def test_a_failed_account_map_write_is_retried_in_the_background(tmp_path,
         assert len(attempts) == 5
     finally:
         await teardown(side, clock=clock)
+
+
+async def test_no_started_frame_once_the_visit_is_ending(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    hrt = host.rt
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_media = hrt.send_media
+
+    async def slow_media():
+        reached.set()
+        await gate.wait()                                     # 页面写入卡住
+        return await real_media()
+
+    hrt.send_media = slow_media
+    try:
+        accepting = asyncio.ensure_future(hrt.accept(True))
+        await asyncio.wait_for(reached.wait(), 5)
+        hrt.request_finalize("route_end")                     # 这期间结束了
+        gate.set()
+        await asyncio.gather(accepting)
+        await finish(hrt, clock)
+        assert not host.host.frames_of("visit_state_change", "started")
+    finally:
+        gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)

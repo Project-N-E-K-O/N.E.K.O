@@ -729,6 +729,8 @@ class TalkMixin:
         if session is None:
             return None
         chunks: list[str] = []
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
         try:
             # 拿锁也算进时限：收尾时没停下来的那一轮可能还占着锁
             await asyncio.wait_for(session.turn_lock.acquire(), timeout)
@@ -742,7 +744,8 @@ class TalkMixin:
                 session.history[:] = [m for m in saved if isinstance(m, SystemMessage)]
             session.set_sink(chunks.append)
             try:
-                await asyncio.wait_for(session.client.stream_text(prompt), timeout)
+                # 与拿锁共用同一个期限：整轮不超过 timeout
+                await asyncio.wait_for(session.client.stream_text(prompt), max(0.0, deadline - loop.time()))
             except Exception as exc:  # noqa: BLE001 - 超时 / 失败：调用方用固定句
                 logger.info("visit %s: home-coming turn failed: %s", self.visit_id[:6], type(exc).__name__)
                 return None
