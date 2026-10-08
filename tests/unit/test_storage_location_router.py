@@ -4227,16 +4227,94 @@ def test_storage_location_cleanup_whose_result_was_not_recorded_is_recorded_on_t
 
 
 @pytest.mark.unit
-def test_storage_cleanup_whose_result_was_not_recorded_is_recorded_at_the_next_launch(tmp_path):
+def test_storage_cleanup_whose_result_was_not_recorded_is_recorded_at_the_next_launch(tmp_path, monkeypatch):
     """The UI offers no cleanup for a retained root that is gone; the next
     launch records it instead."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+
+    def _disk_full(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(storage_location_router_module, "record_retained_cleanup_completed", _disk_full)
+    assert _cleanup_request(tmp_path, source_root).status_code == 500
+    monkeypatch.undo()
+    assert not source_root.exists()
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "cleaned"
+
+
+@pytest.mark.unit
+def test_storage_cleanup_is_not_recorded_for_a_retained_root_gone_without_a_cleanup(tmp_path):
+    """No cleanup ever started: a root that vanished while its parent stayed
+    is what an unmounted disk below a mount point looks like."""
     source_root, _target_root = _migrate_config_and_memory(tmp_path)
     shutil.rmtree(source_root)
 
     reloaded_manager = _make_real_config_manager(tmp_path)
     run_pending_storage_migration(reloaded_manager)
 
-    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "cleaned"
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "manual_retention"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_an_entry_the_live_config_points_into(tmp_path):
+    """Pointed at the retained workshop after the migration, the live config
+    still uses that copy; it stays."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "workshop" / "mods").mkdir(parents=True)
+    (source_root / "workshop" / "mods" / "item.txt").write_text("mod", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (target_root / "config" / "workshop_config.json").write_text(
+        json.dumps({"user_mod_folder": str(source_root / "workshop" / "mods")}), encoding="utf-8"
+    )
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["workshop"]
+    assert (source_root / "workshop" / "mods" / "item.txt").is_file()
+    assert not (source_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_anchor_cleanup_stays_available_while_the_anchor_cannot_be_listed(tmp_path, monkeypatch):
+    """The last entry may be waiting under its private name; not being able
+    to list the anchor right now is no proof that it is gone."""
+    from utils import storage_migration as storage_migration_module
+
+    anchor_root = tmp_path / "anchor" / "N.E.K.O"
+    (anchor_root / ".neko-cleanup-memory-0123456789ab").mkdir(parents=True)
+    current_root = tmp_path / "current" / "N.E.K.O"
+    current_root.mkdir(parents=True)
+    original_iterdir = Path.iterdir
+
+    def _iterdir(self):
+        if self == anchor_root:
+            raise PermissionError(13, "listing denied", str(self))
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _iterdir)
+
+    assert storage_migration_module.is_retained_root_cleanup_available(
+        anchor_root,
+        current_root=current_root,
+        anchor_root=anchor_root,
+        target_root=current_root,
+        allow_anchor_root=True,
+    ) is True
 
 
 @pytest.mark.unit

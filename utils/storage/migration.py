@@ -225,7 +225,9 @@ def _has_private_cleanup_leftover(root: Path) -> bool:
     try:
         return any(private_cleanup_entry_name(child.name) for child in root.iterdir())
     except OSError:
-        return False
+        # Not listable right now: a leftover may still hide there, and the
+        # cleanup is what reports that and stays pending.
+        return True
 
 
 def is_retained_root_cleanup_available(
@@ -799,8 +801,13 @@ def _rewrite_migrated_runtime_config_paths(
     os.chmod(workshop_config_path, original_mode)
 
 
+def source_entries_referenced_by_config(*, config_root: Path, source_root: Path) -> set[str]:
+    """Source entries the workshop paths in ``config_root`` point into."""
+    return _source_entries_referenced_by_config(config_root=config_root, source_root=source_root)
+
+
 def _source_entries_referenced_by_config(*, config_root: Path, source_root: Path) -> set[str]:
-    """Top-level source entries that ``config_root``'s workshop paths point into.
+    """Source entries that ``config_root``'s workshop paths point into.
 
     Deleting any of them from the retained source would break this config.
     A path at the source root itself, or a config that cannot be read,
@@ -830,7 +837,10 @@ def _source_entries_referenced_by_config(*, config_root: Path, source_root: Path
         relative = Path(str(value)).relative_to(normalize_runtime_root(marker_root)).parts
         if not relative:
             return set(MIGRATED_RUNTIME_ENTRY_NAMES)
-        referenced.add(relative[0])
+        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES:
+            entry_parts = tuple(entry_name.split("/"))
+            if relative[: len(entry_parts)] == entry_parts:
+                referenced.add(entry_name)
     return referenced
 
 
@@ -1525,6 +1535,20 @@ def create_pending_storage_migration(
     return save_storage_migration(config_manager, payload, anchor_root=anchor_root)
 
 
+def record_retained_cleanup_started(config_manager, *, anchor_root: Path) -> None:
+    """Record, before anything is deleted, that a retained-root cleanup runs.
+
+    A retained root found gone later counts as cleaned only with this record:
+    an unmounted disk can make it vanish too, and comes back with the data.
+    """
+    migration_payload = load_storage_migration(config_manager, anchor_root=anchor_root)
+    if not isinstance(migration_payload, dict):
+        return
+    updated_payload = dict(migration_payload)
+    updated_payload["cleanup_started_at"] = _utc_now_iso()
+    save_storage_migration(config_manager, updated_payload, anchor_root=anchor_root)
+
+
 def record_retained_cleanup_completed(config_manager, *, anchor_root: Path, retained_root: str) -> None:
     """Record that nothing migrated is left in the retained root."""
     from utils.root_state_lock import root_state_transaction
@@ -1557,7 +1581,7 @@ def record_retained_cleanup_completed(config_manager, *, anchor_root: Path, reta
         logger.warning("Failed to clear the pending cleanup in root_state: %s", exc)
 
 
-def _retained_root_holds_no_migrated_entries(retained_root: Path) -> bool:
+def _retained_root_holds_no_migrated_entries(retained_root: Path, *, cleanup_started: bool) -> bool:
     """Whether the retained root is known to hold nothing left to clean up.
 
     Not knowing counts as holding something: a retained root that cannot be
@@ -1566,6 +1590,10 @@ def _retained_root_holds_no_migrated_entries(retained_root: Path) -> bool:
     try:
         retained_stat = os.lstat(retained_root)
     except FileNotFoundError:
+        # Gone counts as removed only after a cleanup started: an unmounted
+        # disk leaves its mount point behind while the root vanishes.
+        if not cleanup_started:
+            return False
         # Removed, not out of reach: an unplugged drive or an offline share
         # takes the parent directory with it.
         try:
@@ -1617,7 +1645,10 @@ def reconcile_finished_retained_cleanup(config_manager, *, anchor_root: Path | s
     current_root = str(getattr(config_manager, "app_docs_dir", "") or "").strip()
     if current_root and paths_equal(normalize_runtime_root(retained_root), normalize_runtime_root(current_root)):
         return ""
-    if not _retained_root_holds_no_migrated_entries(normalize_runtime_root(retained_root)):
+    if not _retained_root_holds_no_migrated_entries(
+        normalize_runtime_root(retained_root),
+        cleanup_started=bool(str(payload.get("cleanup_started_at") or "").strip()),
+    ):
         return ""
     record_retained_cleanup_completed(
         config_manager,

@@ -91,6 +91,8 @@ from utils.storage_migration import (
     private_cleanup_name,
     reconcile_finished_retained_cleanup,
     record_retained_cleanup_completed,
+    record_retained_cleanup_started,
+    source_entries_referenced_by_config,
     rewrite_migrated_config_paths,
     root_has_user_content,
     save_storage_migration,
@@ -1744,6 +1746,12 @@ def _cleanup_retained_runtime_root(
     ]
     if normalized_target is None or (not proved_entries and not legacy_checkpoint):
         raise ValueError("迁移检查点没有可验证的复制证据，拒绝清理。")
+    # The live config may have been pointed into the retained root since the
+    # migration (a workshop folder, say); what it uses there stays.
+    referenced_by_live_config = source_entries_referenced_by_config(
+        config_root=normalized_target / "config",
+        source_root=retained_path,
+    )
 
     # The evidence proves each entry was copied completely. What is deleted is
     # the retained copy, so it must still be exactly what was copied. The
@@ -1860,6 +1868,8 @@ def _cleanup_retained_runtime_root(
             logger.warning("Retained root cleanup left %s under %s: %s", entry_name, private.name, exc)
 
     for entry_name, proof in proved_entries:
+        if entry_name in referenced_by_live_config:
+            continue
         if os.path.lexists(retained_path / entry_name) and _target_still_holds_copy(entry_name, proof):
             source_manifest = proof.get("source_manifest")
             _delete_if_still_matching(
@@ -1870,6 +1880,8 @@ def _cleanup_retained_runtime_root(
                 lambda name=entry_name, recorded=proof: _target_still_holds_copy(name, recorded),
             )
     for entry_name in legacy_entries:
+        if entry_name in referenced_by_live_config:
+            continue
         _delete_if_still_matching(
             entry_name,
             lambda path, name=entry_name: _matches_target(name, path),
@@ -2228,6 +2240,9 @@ async def _post_storage_location_retained_source_cleanup_locked(
         # lets the worker finish when the request is cancelled but then raises,
         # so a separate second job would never run and leave the checkpoint
         # pointing at a retained root that is already gone.
+        # Recorded before anything goes: a retained root found gone later
+        # counts as cleaned only after a cleanup really started.
+        record_retained_cleanup_started(config_manager, anchor_root=anchor_root)
         remaining, kept = _cleanup_retained_runtime_root(
             retained_path,
             current_root=current_root,
