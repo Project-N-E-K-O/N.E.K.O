@@ -4061,3 +4061,23 @@ def test_storage_location_cleanup_records_its_result_when_the_request_is_cancell
     assert not source_root.exists()
     checkpoint = load_storage_migration(_make_real_config_manager(tmp_path))
     assert checkpoint["retained_source_mode"] == "cleaned"
+
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_the_copy_when_the_target_vanishes_meanwhile(tmp_path, monkeypatch):
+    """The target went away while the retained copy was being compared: the
+    retained copy is then the only one left and must stay."""
+    import shutil
+
+    def _target_removed_during_comparison(source_root, _checked_path, manifest):
+        target_memory = source_root.parents[1] / "target-selected" / "N.E.K.O" / "memory"
+        if target_memory.exists():
+            shutil.rmtree(target_memory)
+        return manifest
+
+    source_root, response = _cleanup_with_snapshot_hook(tmp_path, monkeypatch, _target_removed_during_comparison)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "recent.json").is_file()

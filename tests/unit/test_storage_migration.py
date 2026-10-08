@@ -2773,3 +2773,31 @@ def test_recovery_keeps_a_target_written_before_its_publish_was_recorded(tmp_pat
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "written since"
     backups = list((target_root / ".smtx").glob("*/backup/config/characters.json"))
     assert [backup.read_text(encoding="utf-8") for backup in backups] == ["healthy"]
+
+
+
+@pytest.mark.unit
+def test_anchor_cleanup_stays_available_for_an_entry_left_under_its_private_name(tmp_path):
+    """The last migrated entry of the anchor root was renamed by a cleanup
+    that stopped: the cleanup must stay available to put it back."""
+    anchor_root = tmp_path / "anchor" / "N.E.K.O"
+    current_root = tmp_path / "current" / "N.E.K.O"
+    anchor_root.mkdir(parents=True)
+    current_root.mkdir(parents=True)
+    (anchor_root / "state").mkdir()
+
+    def _available():
+        return is_retained_root_cleanup_available(
+            anchor_root,
+            current_root=current_root,
+            anchor_root=anchor_root,
+            target_root=current_root,
+            require_exists=True,
+            allow_anchor_root=True,
+        )
+
+    assert not _available()
+    (anchor_root / ".neko-cleanup-memory-0123456789ab").mkdir()
+    assert _available()
+    (anchor_root / ".neko-cleanup-memory-0123456789ab").rename(anchor_root / ".neko-cleanup-notanentry-0123456789ab")
+    assert not _available()

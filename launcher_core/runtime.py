@@ -2229,6 +2229,16 @@ def _process_exe(process) -> str:
         return ""
 
 
+class _LauncherProcess:
+    """The launcher itself, standing in for the server process in merged mode."""
+
+    def __init__(self):
+        self.pid = os.getpid()
+
+    def is_alive(self) -> bool:
+        return True
+
+
 def _snapshot_server_descendants(servers) -> list | None:
     """Every live descendant of the tracked servers, as ``(process, own)``.
 
@@ -2261,6 +2271,13 @@ def _snapshot_server_descendants(servers) -> list | None:
     }
     server_pids: set[int] = set()
     descendants = []
+    if not any(server.get('process') for server in servers):
+        # Merged mode: the servers run inside the launcher, and plugin hosts
+        # are the launcher's own children.
+        try:
+            servers = [{"process": _LauncherProcess()}]
+        except psutil.Error:
+            return None
     for server in servers:
         proc = server.get('process')
         pid = getattr(proc, 'pid', None) if proc else None

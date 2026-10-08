@@ -1405,3 +1405,23 @@ def test_unreadable_lock_does_not_block_startup(monkeypatch):
 
     assert launcher._acquire_single_instance_ownership() is True
     assert [p["role"] for e, p in events if e == "single_instance"] == ["unverified"]
+
+
+
+@pytest.mark.unit
+def test_merged_mode_snapshots_the_launchers_own_children(tmp_path):
+    """Packaged builds run the servers inside the launcher; plugin hosts are
+    then the launcher's children and must still be seen."""
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    child = subprocess.Popen([_INTERPRETER, "-c", "import time; time.sleep(120)"])
+    try:
+        descendants = runtime._snapshot_server_descendants(
+            [{"name": "Main", "process": None}, {"name": "Memory", "process": None}]
+        )
+        ownership = {process.pid: own for process, own in descendants}
+        assert ownership.get(child.pid) is True
+    finally:
+        child.kill()
+        child.wait(timeout=10)

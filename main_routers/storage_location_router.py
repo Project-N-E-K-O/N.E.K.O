@@ -67,6 +67,7 @@ from utils.storage_location_bootstrap import (
     build_storage_location_bootstrap_payload,
 )
 from utils.storage_migration import (
+    CLEANUP_PRIVATE_PREFIX,
     MIGRATED_RUNTIME_ENTRY_NAMES,
     REGENERABLE_RUNTIME_ENTRY_NAMES,
     STORAGE_MIGRATION_STATUS_COMPLETED,
@@ -83,6 +84,7 @@ from utils.storage_migration import (
     is_storage_migration_pending,
     load_storage_migration,
     move_entry_without_overwrite,
+    private_cleanup_entry_name,
     rewrite_migrated_config_paths,
     root_has_user_content,
     save_storage_migration,
@@ -1605,7 +1607,7 @@ def _build_completed_migration_notice(
     }
 
 
-_CLEANUP_PRIVATE_PREFIX = ".neko-cleanup-"
+_CLEANUP_PRIVATE_PREFIX = CLEANUP_PRIVATE_PREFIX
 
 
 def _entry_may_exist(path: Path) -> bool:
@@ -1630,16 +1632,6 @@ def _private_cleanup_name(entry_name: str) -> str:
     return f"{_CLEANUP_PRIVATE_PREFIX}{entry_name}-{uuid.uuid4().hex[:12]}"
 
 
-def _entry_of_private_cleanup_name(name: str) -> str | None:
-    """The entry a private cleanup name belongs to; ``None`` for any other name."""
-    if not name.startswith(_CLEANUP_PRIVATE_PREFIX):
-        return None
-    entry_name, separator, suffix = name[len(_CLEANUP_PRIVATE_PREFIX):].rpartition("-")
-    if not separator or len(suffix) != 12 or any(char not in "0123456789abcdef" for char in suffix):
-        return None
-    return entry_name if entry_name in MIGRATED_RUNTIME_ENTRY_NAMES else None
-
-
 def _private_cleanup_leftovers(retained_path: Path) -> list[tuple[str, Path]]:
     try:
         children = sorted(retained_path.iterdir(), key=lambda child: child.name)
@@ -1647,7 +1639,7 @@ def _private_cleanup_leftovers(retained_path: Path) -> list[tuple[str, Path]]:
         return []
     leftovers = []
     for child in children:
-        entry_name = _entry_of_private_cleanup_name(child.name)
+        entry_name = private_cleanup_entry_name(child.name)
         if entry_name is not None:
             leftovers.append((entry_name, child))
     return leftovers
@@ -1774,6 +1766,9 @@ def _cleanup_retained_runtime_root(
             )
             return snapshot_runtime_entry(scratch_root / "config") == target_manifest
 
+    def _target_still_present(entry_name: str) -> bool:
+        return classify_entry_no_follow(normalized_target / entry_name) is not None
+
     def _delete_if_still_matching(entry_name: str, matches: Callable[[Path], bool]) -> None:
         entry = retained_path / entry_name
         if classify_entry_no_follow(entry) is None:
@@ -1790,7 +1785,10 @@ def _cleanup_retained_runtime_root(
             logger.warning("Retained root cleanup kept %s: %s", entry_name, exc)
             return
         try:
-            still_matches = matches(private)
+            # The target is checked again last: comparing a large entry takes
+            # a while, and the target must still be there when its retained
+            # copy goes.
+            still_matches = matches(private) and _target_still_present(entry_name)
         except (StorageMigrationError, OSError):
             # Unreadable now (an app writing to the target, a locked file).
             still_matches = False

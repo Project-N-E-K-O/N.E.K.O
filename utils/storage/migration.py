@@ -159,6 +159,31 @@ def _path_contains(parent: Path, child: Path) -> bool:
         return False
 
 
+CLEANUP_PRIVATE_PREFIX = ".neko-cleanup-"
+
+
+def private_cleanup_entry_name(name: str) -> str | None:
+    """The migrated entry a cleanup's private name belongs to; ``None`` otherwise.
+
+    Retained-root cleanup renames an entry to ``.neko-cleanup-<entry>-<12 hex>``
+    before checking and deleting it, so a cleanup that stopped midway can
+    leave one behind under that name.
+    """
+    if not name.startswith(CLEANUP_PRIVATE_PREFIX):
+        return None
+    entry_name, separator, suffix = name[len(CLEANUP_PRIVATE_PREFIX):].rpartition("-")
+    if not separator or len(suffix) != 12 or any(char not in "0123456789abcdef" for char in suffix):
+        return None
+    return entry_name if entry_name in MIGRATED_RUNTIME_ENTRY_NAMES else None
+
+
+def _has_private_cleanup_leftover(root: Path) -> bool:
+    try:
+        return any(private_cleanup_entry_name(child.name) for child in root.iterdir())
+    except OSError:
+        return False
+
+
 def is_retained_root_cleanup_available(
     retained_root: Path | str | None,
     *,
@@ -185,7 +210,11 @@ def is_retained_root_cleanup_available(
     if paths_equal(normalized_retained_root, normalized_anchor_root):
         if not allow_anchor_root:
             return False
-        return any((normalized_retained_root / name).exists() for name in MIGRATED_RUNTIME_ENTRY_NAMES)
+        # An entry a stopped cleanup left under its private name still
+        # needs this cleanup to be put back, even when it was the last one.
+        return any(
+            (normalized_retained_root / name).exists() for name in MIGRATED_RUNTIME_ENTRY_NAMES
+        ) or _has_private_cleanup_leftover(normalized_retained_root)
     if _path_contains(normalized_retained_root, normalized_anchor_root):
         return False
 
