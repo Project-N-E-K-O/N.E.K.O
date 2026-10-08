@@ -536,7 +536,12 @@ class TalkMixin:
         clean = clamp_text_utf8(text)
         self._ln_by_key[(lp, side)] = ln
         # 上传流水在前：它的内存记录一进来就算数，关机时 spool 写盘慢、封存先到也不会漏掉这一行
-        if self.journal.is_open:
+        opening = getattr(self, "_journal_opening", None)
+        if not self.journal.is_open and opening is not None and not opening.done():
+            # 上传头还没写完（磁盘慢）：先攒着，写完后按序补写，不让开头几句从转录里丢掉
+            self._journal_backlog.append(dict(lp=lp, side=side, speaker=speaker, ts=ts, text=clean,
+                                              truncated=bool(truncated)))
+        elif self.journal.is_open:
             try:
                 await self.journal.append_line(lp=lp, side=side, speaker=speaker, ts=ts, text=clean,
                                                truncated=bool(truncated))

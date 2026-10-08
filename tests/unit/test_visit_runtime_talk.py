@@ -1117,9 +1117,17 @@ async def test_the_display_queue_is_bounded_and_dropped_when_the_visit_ends(tmp_
 
     host.host.send_frame = slow_send
     try:
-        for i in range(400):
-            rt._post_display({"type": "visit_line", "line_id": f"g:{i}"})   # 整句也不能无限堆
-        assert len(rt._display) <= 256
+        for i in range(10):                                   # 队首是整句：满了也不能先丢它们
+            rt._post_display({"type": "visit_line", "line_id": f"g:{i}"})
+        for i in range(50):
+            rt._post_display({"type": "visit_line_delta", "line_id": f"g:{i}", "i": 0}, droppable=True)
+        for i in range(10, 250):
+            rt._post_display({"type": "visit_line", "line_id": f"g:{i}"})
+        queued = list(rt._display)
+        finals = [f for f in queued if f["type"] == "visit_line"]
+        # 满了先丢最旧的字幕分片；整句一条不丢（整句受每场句数上限约束，堆不到无限）
+        assert len(finals) == 250 and len(queued) == 256
+        assert len([f for f in queued if f["type"] == "visit_line_delta"]) == 6
         task = rt._display_task
         rt.request_finalize("route_end")
         await finish(rt, clock)

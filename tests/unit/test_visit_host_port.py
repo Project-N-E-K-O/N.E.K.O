@@ -121,3 +121,10 @@ async def test_session_start_answers_are_bounded(monkeypatch):
     await asyncio.wait_for(host.fail_session("audio", "r2"), 3)
     assert time.monotonic() - started < 1.0
     stuck.set()
+
+
+def test_family_spoke_reads_only_real_user_input():
+    # 回声 / 空转写 / start_session 都会刷新 last_user_activity_time；「亲人先开口」只认真实输入
+    mgr = SimpleNamespace(last_user_activity_time=200.0, last_user_message_time=100.0)
+    assert ManagerHost("Host", mgr).last_user_input() == 100.0
+    assert ManagerHost("Host", SimpleNamespace(last_user_activity_time=200.0)).last_user_input() == 0.0

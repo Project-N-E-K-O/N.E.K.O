@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -560,7 +561,8 @@ async def test_declining_sends_leave_declined(tmp_path, monkeypatch):
         assert status == 200
         assert (await host.rt.accept(True))[0] in (404, 409)
         await finish(host.rt, clock)
-        assert [p["reason"] for p in wire.sent["host"] if p.get("t") == "leave"] == ["declined"]
+        leaves = [p for p in wire.sent["host"] if p.get("t") == "leave"]
+        assert [p["reason"] for p in leaves] == ["declined"]
         assert host.clients == []
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1419,8 +1421,108 @@ async def test_a_stalled_journal_open_neither_hangs_entry_nor_finalization(tmp_p
         await asyncio.wait_for(rt.on_transport_state({"state": "joined", "peer_present": False}), 3)
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 10)             # 收尾也不无限等上传头
+        wall.advance(3600)                                    # 磁盘卡了一个小时
         gate.set()                                            # 上传头晚到写完
         await wait_for(lambda: rt.journal.sealed)             # 立刻封存，不留没封存的流水
         await wait_for(lambda: not list((side.config_dir / "visit_spool").glob("*.upload.jsonl")))
+        doc = json.loads((side.config_dir / "visit_spool" / f"{rt.visit_id}.upload.json").read_text(encoding="utf-8"))
+        assert doc["request"]["usage"]["duration_s"] < 600    # 时长按收尾那一刻算，不把卡盘的时间算进去
     finally:
         gate.set()
+        await teardown(side, clock=clock)
+
+
+async def test_a_page_that_comes_back_too_late_is_page_lost_not_unsupported(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        rt.transport.on_page_lost(clock())                    # 页面重载
+        clock.advance(19)
+        rt.transport.on_page_attached(clock())                # 第 19 s 连回
+        assert await rt.issue_credentials() is not None
+        page_deadline = rt.liveness.page_reload_deadline()
+        assert rt._sdk_deadline is not None and page_deadline is not None
+        assert abs(rt._sdk_deadline - page_deadline) < 1e-6   # 能力门期限按绝对期限剩余截短：同时到点
+        clock.advance(page_deadline - clock() + 0.01)         # SDK 一直没报（设计稿：第 31 s 才加载完）
+        await rt.tick()
+        assert rt.finalize_reason == "local_page_lost"        # 不是「本机不支持串门」
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_reliable_peer_messages_during_finalization_are_still_acked_and_recorded(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        await wait_for(lambda: len(rt.journal.lines()) >= 1)
+        stuck = asyncio.Event()
+
+        async def slow_close(*args, **kwargs):
+            await stuck.wait()                                # 收尾流程停在关闭数据通道之前
+
+        rt.close_current_line = slow_close
+        rt.request_finalize("route_end")
+        seq = rt.sequencer.contiguous_seq + 1
+        before = len(host.host.frames)
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:90", "lp": rt.room.max_lp_seen + 1, "seq": seq, "sp": "c", "ad": "hc",
+            "rt": "", "wu": False, "final": True, "txt": "临走前的最后一句", "truncated": False, "i_done": 0,
+        }, nbytes=200)
+        assert rt.sequencer.contiguous_seq == seq             # 推进序号（会回 ack），对端的 leave 才等得到确认
+        assert [r for r in rt.journal.lines() if r["text"] == "临走前的最后一句"]   # 进本侧转录
+        await settle()
+        assert not [f for f in host.host.frames[before:] if f.get("type") == "visit_line"]   # 不上屏
+        stuck.set()
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_lines_recorded_while_the_journal_header_is_late_are_backfilled(tmp_path, monkeypatch, clocks):
+    monkeypatch.setattr(rtm, "_JOURNAL_OPEN_MAX_S", 0.1)
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    gate = asyncio.Event()
+    real_open = rt.journal.open
+
+    async def slow_open(**kw):
+        await gate.wait()
+        await real_open(**kw)
+
+    rt.journal.open = slow_open
+    try:
+        await rt.on_transport_state({"state": "joined", "peer_present": False})
+        assert not rt.journal.is_open
+        await rt.record_line("own_human", side="host", lp=3, ln="h:3", text="上传头还没写完时说的", truncated=False)
+        gate.set()                                            # 上传头晚到写完
+        await wait_for(lambda: [r for r in rt.journal.lines() if r["text"] == "上传头还没写完时说的"])
+    finally:
+        gate.set()
+        await teardown(side, clock=clock)
+
+
+
+async def test_shutdown_closes_the_outbox_and_the_isolated_session(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 3)
+        assert host.clients[0].closed                         # 隔离会话的客户端关掉了
+        assert rt.outbox._executor is None                    # outbox 写线程停了、带正文的 .outbox.jsonl 删了
+        assert not list((host.config_dir / "visit_spool").glob("*.outbox.jsonl"))
+    finally:
+        await teardown(guest, wire=wire, clock=clock)
+
+
+async def test_a_joined_visit_is_not_ended_by_the_join_deadline(tmp_path, monkeypatch, clocks):
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    try:
+        assert rt.joined
+        rt._join_deadline = clocks[0]() - 1                   # 已报入房、只是上传头写得慢时入房期限到点
+        await rt.tick()
+        assert rt.finalize_reason != "relay_lost"
+    finally:
+        await teardown(side, wire=wire, clock=clocks[0])

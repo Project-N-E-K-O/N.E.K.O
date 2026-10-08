@@ -129,7 +129,6 @@ _HANDOFF_POLL_S = 0.25
 # 关机总预算 VISIT_SHUTDOWN_BUDGET_S：等在飞任务、收口当前行各 0.5 s，取消未配对房间 1 s，余下给封存
 _SHUTDOWN_TASK_WAIT_S = 0.5
 _JOURNAL_OPEN_MAX_S = 10.0
-_RESERVATION_WAIT_S = 3.0
 _ACCOUNT_RECORD_S = 3.0
 _ACCOUNT_RETRY_DELAYS_S = (1.0, 5.0, 30.0, 120.0, 600.0)
 _SHUTDOWN_ROOM_CANCEL_S = 1.0
@@ -613,6 +612,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._shutdown_started = False
         self._closing_task: Optional[asyncio.Task] = None
         self._journal_opening: Optional[asyncio.Task] = None
+        self._journal_backlog: list[dict] = []
         self._sdk_ok = False
         self._pending_join: Optional[dict] = None
         self._page_gen = 0
@@ -919,7 +919,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         await asyncio.wait([opening], timeout=_JOURNAL_OPEN_MAX_S)
         self._first_join_gen = None
         if not opening.done():
-            logger.warning("visit %s: upload journal still opening, continuing without it", self.visit_id[:6])
+            logger.warning("visit %s: upload journal still opening, buffering its lines", self.visit_id[:6])
+            opening.add_done_callback(lambda _t: _detach(self._flush_journal_backlog()))
         if opening.done() and not opening.cancelled() and opening.exception() is not None:
             # 上传流水建不起来：转录少一份，串门照常
             logger.warning("visit %s: upload journal not opened: %s", self.visit_id[:6],
@@ -1114,18 +1115,21 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if not self.host.is_current():
             self.request_finalize("manager_replaced")
             return
+        # 存活判定在建连期限之前：页面重载期间能力门期限按「绝对期限剩余」截短，两者同时到点时
+        # 是页面没在期限内回来（local_page_lost），不是这台机器不支持串门
+        verdict = self.liveness.tick(now)
+        if verdict is not None:
+            self.request_finalize(self.leave_verdict_reason(verdict), peer_reason=self.pending_peer_reason)
+            return
         if self._preflight_deadline is not None and now >= self._preflight_deadline:
             self.request_finalize("unsupported", status_details={"reason": "preflight_timeout"})
             return
         if self._sdk_deadline is not None and now >= self._sdk_deadline:
             self.request_finalize("unsupported", status_details={"reason": "sdk_timeout"})
             return
-        if self._join_deadline is not None and now >= self._join_deadline:
+        if self._join_deadline is not None and now >= self._join_deadline and not self.joined:
+            # 已报入房、只是还在写上传头（它本身有 _JOURNAL_OPEN_MAX_S 上限）：不按入房超时结束
             self.request_finalize("relay_lost")
-            return
-        verdict = self.liveness.tick(now)
-        if verdict is not None:
-            self.request_finalize(self.leave_verdict_reason(verdict), peer_reason=self.pending_peer_reason)
             return
         if self._accept_deadline is not None and now >= self._accept_deadline and not self.ready_exchanged:
             self.request_finalize("declined")
@@ -1557,9 +1561,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                     while not self.outbox.drain_done(self.clock()) and self.clock() < deadline:
                         self.kick()
                         await asyncio.sleep(0.1)
-                # 已接纳、正在落盘的亲人那句（持有预留）要排在 leave 前面：等它入队（有上限）
-                wait_until = self.clock() + _RESERVATION_WAIT_S
-                while self.outbox.reserved_bytes and self.clock() < wait_until:
+                # 已接纳、正在落盘的亲人那句（持有预留）要排在 leave 前面：等到它入队或放弃预留。
+                # 不设上限：等的期间收尾流程照常往下走（它只限时等这个关闭任务），关机会取消它
+                while self.outbox.reserved_bytes:
                     await asyncio.sleep(0.05)
                 try:
                     self.outbox.send({"t": "leave", "v": 1, "reason": leave_reason}, now=self.clock())
@@ -1615,11 +1619,30 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         await asyncio.wait([opening], timeout=_JOURNAL_OPEN_MAX_S if timeout is None else timeout)
         if not opening.done():
             reason = self.finalize_reason or "shutdown"
-            opening.add_done_callback(lambda _t: _detach(self._seal_late_journal(reason)))
+            ended_at = self.wall()  # 收尾这一刻：磁盘卡多久不该算进这场的时长
 
-    async def _seal_late_journal(self, reason: str) -> None:
+            def _late(task: asyncio.Task) -> None:
+                if task.cancelled() or task.exception() is not None:
+                    return  # 上传头没写成（异常在这里取走）：没有流水可封存
+                _detach(self._seal_late_journal(reason, ended_at))
+
+            opening.add_done_callback(_late)
+
+    async def _flush_journal_backlog(self) -> None:
+        """The upload header finally landed: write the lines recorded meanwhile, in order."""
+        backlog, self._journal_backlog = self._journal_backlog, []
+        for record in backlog:
+            if not self.journal.is_open:
+                return
+            try:
+                await self.journal.append_line(**record)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit %s: buffered line not recorded: %s", self.visit_id[:6], type(exc).__name__)
+
+    async def _seal_late_journal(self, reason: str, ended_at: float) -> None:
         try:
-            await self.journal.seal(reason, ended_at=self.wall())
+            await self._flush_journal_backlog()
+            await self.journal.seal(reason, ended_at=ended_at)
             self.deps.schedule_upload(self.visit_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit %s: late upload journal not sealed: %s", self.visit_id[:6], type(exc).__name__)
@@ -1791,6 +1814,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self._pump_task is not None:
             self._pump_task.cancel()
         self._stop_display()
+        # 正常收尾由关闭通道 / teardown 做的两件事，关机路径也要做（各自限时，不超关机预算）：
+        # .outbox.jsonl 带正文，不能比这场活得久；隔离会话的客户端要关掉它自己的任务与 HTTP 连接
+        for cleanup in (self.outbox.close(), self.close_session()):
+            try:
+                await asyncio.wait_for(cleanup, _SHUTDOWN_TASK_WAIT_S)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit %s: shutdown cleanup incomplete: %r", self.visit_id[:6], exc)
         unregister_transport_session(self.transport)
         slot = get_visit_route_state(self.lanlan_name)
         if slot is self.slot:

@@ -52,12 +52,13 @@ from main_routers.visit_router.runtime_common import (
     side_of_ln,
 )
 from utils.logger_config import get_module_logger
-from utils.visit_wire import LineDeltaAssembler, decode_msg, proto_compatible
+from utils.visit_wire import LineDeltaAssembler, decode_msg, is_reliable, proto_compatible
 
 logger = get_module_logger(__name__, "Main")
 
 _DISPLAY_BACKLOG_MAX = 64
 _DISPLAY_QUEUE_MAX = 256
+_DROPPABLE_DISPLAY_TYPES = frozenset({"visit_line_delta", "visit_typing"})
 """Queued display frames above which subtitle pieces / typing are dropped (final lines never)."""
 
 GATE_PASS = frozenset({"hello", "ready", "leave", "hb", "ack"})
@@ -142,8 +143,8 @@ class ReceiveMixin:
             # 核验之前只看 hello；其余的（含 ack）对端在核验后会重发 / 再回
             self.gate_dropped += 1
             return
-        if self.finalizing and t not in ("ack", "leave"):
-            # 收尾中只处理 ack（leave 的确认）与对端的 leave
+        if self.finalizing and t not in ("ack", "leave") and not is_reliable(str(t)):
+            # 收尾中不再处理可丢消息；可靠消息仍要过序号器（推进序号、记欠 ack），对端的 leave 才等得到确认
             return
         if self.peer is not None:
             self.liveness.on_peer_message(now)
@@ -167,6 +168,11 @@ class ReceiveMixin:
         # 先按序处理交付的消息，再看 leave：补齐 leave 之前缺口的那一条（常是最后一行
         # text{final}）必须先进转录，结束之后就不再处理台词了
         for item in res.deliver:
+            if self.finalizing and item.get("t") != "ack":
+                # 收尾中只把补到的整句记进转录，不上屏、不入史、不触发回复；ack 照常处理（leave 要等它确认）
+                if item.get("t") == "text":
+                    await self._record_late_text(item)
+                continue
             await self._dispatch(item, from_vid, now)
         if res.leave is not None:
             self._on_peer_leave(res.leave, now)
@@ -235,6 +241,8 @@ class ReceiveMixin:
 
     async def _rx_hello(self, m: dict, from_vid: str, now: float) -> None:
         if not proto_compatible(1, m.get("caps") or {}):
+            # decode_msg 对不兼容版本的 hello 只留 caps.proto（新版本的格式可能变了，身份票也不保留），
+            # 所以只能在核验之前认它：让对方看到「请升级」。进 vendor 房间本身要 Servers 签发的房间凭证
             await self.status("VISIT_PROTO_MISMATCH")
             self.request_finalize("proto_mismatch")
             return
@@ -410,9 +418,13 @@ class ReceiveMixin:
             self.display_dropped += 1
             return
         if len(self._display) >= _DISPLAY_QUEUE_MAX:
-            # 页面长时间不收：最旧的先丢（页面重连后由 GET /state 的转录补回）
-            self._display.popleft()
-            self.display_dropped += 1
+            # 页面长时间不收：先丢队列里最旧的可丢帧（字幕分片 / typing）；整句从不丢
+            # （整句受每场句数上限约束，堆不到无限）
+            for i, queued in enumerate(self._display):
+                if queued.get("type") in _DROPPABLE_DISPLAY_TYPES:
+                    del self._display[i]
+                    self.display_dropped += 1
+                    break
         self._display.append(frame)
         if self._display_task is None or self._display_task.done():
             self._display_task = self.spawn(self._drain_display())
@@ -427,6 +439,14 @@ class ReceiveMixin:
         task = self._display_task
         if task is not None and not task.done():
             task.cancel()
+
+    async def _record_late_text(self, m: dict) -> None:
+        ln, lp = m.get("ln"), m.get("lp")
+        if str(ln) in self._rejected_lines or not isinstance(lp, int) or isinstance(lp, bool):
+            return
+        speaker_from = "peer_human" if m.get("sp") == "h" else "peer_cat"
+        await self.record_line(speaker_from, side=self.peer_side, lp=lp, ln=str(ln), text=str(m.get("txt") or ""),
+                               truncated=m.get("truncated") is True)
 
     def _lp_reused(self, ln: Any, lp: Any) -> bool:
         """A second peer line claiming an ``lp`` another of its lines already holds: rejected whole.

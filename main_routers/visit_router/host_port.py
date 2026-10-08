@@ -256,7 +256,8 @@ class ManagerHost:
             park()
 
     def last_user_input(self) -> float:
-        value = getattr(self._mgr, "last_user_activity_time", None)
+        # 只认真实用户输入（非空、过了回声抑制）；last_user_activity_time 会被回声 / 空转写 / start_session 刷新
+        value = getattr(self._mgr, "last_user_message_time", None)
         return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
     async def wait_turn_idle(self, timeout: float, *, start_window: float = 0.0) -> None:
