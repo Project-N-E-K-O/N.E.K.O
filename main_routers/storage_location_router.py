@@ -86,6 +86,8 @@ from utils.storage_migration import (
     metadata_fingerprint,
     move_entry_without_overwrite,
     private_cleanup_entry_name,
+    reconcile_finished_retained_cleanup,
+    record_retained_cleanup_completed,
     rewrite_migrated_config_paths,
     root_has_user_content,
     save_storage_migration,
@@ -2148,6 +2150,26 @@ async def _post_storage_location_retained_source_cleanup_locked(
         persist_reconcile=True,
     )
     if notice.get("completed") is not True:
+        # A cleanup that finished but could not record it (a full or
+        # read-only disk) left the checkpoint pointing at a root with nothing
+        # left to clean; a retained root that is still there is handled by
+        # the cleanup below instead.
+        reconciled_root = await _run_locked_storage_job(
+            partial(
+                reconcile_finished_retained_cleanup,
+                config_manager,
+                anchor_root=compute_anchor_root(
+                    config_manager,
+                    current_root=normalize_runtime_root(config_manager.app_docs_dir),
+                ),
+            )
+        )
+        if reconciled_root:
+            return {
+                "ok": True,
+                "cleaned_root": reconciled_root,
+                "retained_root_kept": _entry_may_exist(Path(reconciled_root)),
+            }
         response.status_code = 404
         return {
             "ok": False,
@@ -2171,33 +2193,11 @@ async def _post_storage_location_retained_source_cleanup_locked(
     cleanup_checkpoint = load_storage_migration(config_manager, anchor_root=anchor_root) or {}
 
     def _persist_cleanup_result() -> None:
-        # 迁移检查点和 root_state 两次落盘放同一个 job：中间插一个 await 就能造出
-        # "检查点已标记 cleaned、root_state 还挂着 legacy_cleanup_pending" 的窗口，
-        # 而这个窗口正好会被存储页那条 1200ms 的轮询看到。
-        migration_payload = load_storage_migration(config_manager, anchor_root=anchor_root) or {}
-        if isinstance(migration_payload, dict):
-            updated_payload = dict(migration_payload)
-            updated_payload["backup_root"] = ""
-            updated_payload["retained_source_root"] = ""
-            updated_payload["retained_source_mode"] = "cleaned"
-            updated_payload["updated_at"] = _utc_now_iso()
-            updated_payload["cleanup_completed_at"] = _utc_now_iso()
-            save_storage_migration(config_manager, updated_payload, anchor_root=anchor_root)
-
-        # root_state 这一半保持 best-effort（与改动前一致）：清理已经真的做完了，
-        # 标记没落上不该把整个请求判失败。
-        try:
-            with root_state_transaction():
-                root_state = config_manager.load_root_state()
-                if isinstance(root_state, dict):
-                    updated_root_state = dict(root_state)
-                    updated_root_state["legacy_cleanup_pending"] = False
-                    if paths_equal(updated_root_state.get("last_migration_backup") or "", expected_retained_root):
-                        updated_root_state["last_migration_backup"] = ""
-                    config_manager.save_root_state(updated_root_state)
-        except Exception:
-            # best-effort：清理本身已经做完了，标记没落上不该把整个请求判失败
-            pass
+        record_retained_cleanup_completed(
+            config_manager,
+            anchor_root=anchor_root,
+            retained_root=expected_retained_root,
+        )
 
     def _cleanup_and_record() -> tuple[tuple[str, ...], bool]:
         # Deleting and recording the result are one job: _run_locked_storage_job

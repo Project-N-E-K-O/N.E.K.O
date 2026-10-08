@@ -4189,3 +4189,76 @@ def test_storage_location_cleanup_stays_pending_when_the_retained_root_cannot_be
     assert response.json()["retained_root_unlistable"] is True
     assert ".neko-cleanup-*" not in response.json()["remaining_entries"]
     assert (source_root / ".neko-cleanup-memory-0123456789ab" / "recent.json").is_file()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_whose_result_was_not_recorded_is_recorded_on_the_next_request(tmp_path, monkeypatch):
+    """Everything was deleted, then the final checkpoint write failed (a full
+    disk): the next request must finish the record instead of answering that
+    there is nothing to clean, forever."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+
+    def _disk_full(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(storage_location_router_module, "record_retained_cleanup_completed", _disk_full)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        first = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+    monkeypatch.undo()
+    assert first.status_code == 500
+    assert not source_root.exists()
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] != "cleaned"
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        second = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert second.status_code == 200, second.json()
+    assert second.json()["retained_root_kept"] is False
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "cleaned"
+    assert reloaded_manager.load_root_state().get("legacy_cleanup_pending") is False
+
+
+@pytest.mark.unit
+def test_storage_cleanup_whose_result_was_not_recorded_is_recorded_at_the_next_launch(tmp_path):
+    """The UI offers no cleanup for a retained root that is gone; the next
+    launch records it instead."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    shutil.rmtree(source_root)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "cleaned"
+
+
+@pytest.mark.unit
+def test_storage_cleanup_is_not_recorded_for_a_retained_root_out_of_reach(tmp_path):
+    """Its parent is gone too, as with an unplugged drive: the data may still
+    be there."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    shutil.rmtree(source_root.parent)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "manual_retention"
+
+
+@pytest.mark.unit
+def test_storage_cleanup_is_not_recorded_while_an_entry_waits_under_a_private_name(tmp_path):
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    shutil.rmtree(source_root / "config")
+    (source_root / "memory").rename(source_root / ".neko-cleanup-memory-0123456789ab")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "manual_retention"

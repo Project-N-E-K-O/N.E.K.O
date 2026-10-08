@@ -1403,6 +1403,105 @@ def create_pending_storage_migration(
     return save_storage_migration(config_manager, payload, anchor_root=anchor_root)
 
 
+def record_retained_cleanup_completed(config_manager, *, anchor_root: Path, retained_root: str) -> None:
+    """Record that nothing migrated is left in the retained root."""
+    from utils.root_state_lock import root_state_transaction
+
+    # The checkpoint and root_state are written in one go, without an await in
+    # between: the storage page polls on a 1200ms timer and must not see the
+    # checkpoint cleaned while root_state still has cleanup pending.
+    migration_payload = load_storage_migration(config_manager, anchor_root=anchor_root) or {}
+    if isinstance(migration_payload, dict):
+        updated_payload = dict(migration_payload)
+        updated_payload["backup_root"] = ""
+        updated_payload["retained_source_root"] = ""
+        updated_payload["retained_source_mode"] = "cleaned"
+        updated_payload["updated_at"] = _utc_now_iso()
+        updated_payload["cleanup_completed_at"] = _utc_now_iso()
+        save_storage_migration(config_manager, updated_payload, anchor_root=anchor_root)
+
+    # Best effort: the cleanup itself is done, a flag that did not land must
+    # not turn it into a failure.
+    try:
+        with root_state_transaction():
+            root_state = config_manager.load_root_state()
+            if isinstance(root_state, dict):
+                updated_root_state = dict(root_state)
+                updated_root_state["legacy_cleanup_pending"] = False
+                if paths_equal(updated_root_state.get("last_migration_backup") or "", retained_root):
+                    updated_root_state["last_migration_backup"] = ""
+                config_manager.save_root_state(updated_root_state)
+    except Exception as exc:
+        logger.warning("Failed to clear the pending cleanup in root_state: %s", exc)
+
+
+def _retained_root_holds_no_migrated_entries(retained_root: Path) -> bool:
+    """Whether the retained root is known to hold nothing left to clean up.
+
+    Not knowing counts as holding something: a retained root that cannot be
+    reached or listed may still hold data.
+    """
+    try:
+        retained_stat = os.lstat(retained_root)
+    except FileNotFoundError:
+        # Removed, not out of reach: an unplugged drive or an offline share
+        # takes the parent directory with it.
+        try:
+            return stat.S_ISDIR(os.stat(retained_root.parent).st_mode)
+        except OSError:
+            return False
+    except OSError:
+        return False
+    if not stat.S_ISDIR(retained_stat.st_mode) or _stat_is_reparse(retained_stat):
+        return False
+    try:
+        with os.scandir(retained_root) as iterator:
+            names = [child.name for child in iterator]
+    except OSError:
+        return False
+    return not any(
+        name in MIGRATED_RUNTIME_ENTRY_NAMES or private_cleanup_entry_name(name) is not None
+        for name in names
+    )
+
+
+def reconcile_finished_retained_cleanup(config_manager, *, anchor_root: Path | str) -> str:
+    """Record a retained-root cleanup that finished without being recorded.
+
+    The cleanup deletes first and records afterwards; a failed final write
+    (a full or read-only disk) leaves the checkpoint pointing at a retained
+    root with nothing left to clean, and every later cleanup request finds
+    nothing to do. Returns the retained root it recorded as cleaned, or "".
+    """
+    normalized_anchor_root = normalize_runtime_root(anchor_root)
+    payload = load_storage_migration(config_manager, anchor_root=normalized_anchor_root)
+    if not isinstance(payload, dict) or is_storage_migration_pending(payload):
+        return ""
+    if str(payload.get("status") or "").strip() != STORAGE_MIGRATION_STATUS_COMPLETED:
+        return ""
+    if str(payload.get("retained_source_mode") or "").strip() == "cleaned":
+        return ""
+    retained_root = str(
+        payload.get("retained_source_root")
+        or payload.get("backup_root")
+        or payload.get("source_root")
+        or ""
+    ).strip()
+    if not retained_root:
+        return ""
+    current_root = str(getattr(config_manager, "app_docs_dir", "") or "").strip()
+    if current_root and paths_equal(normalize_runtime_root(retained_root), normalize_runtime_root(current_root)):
+        return ""
+    if not _retained_root_holds_no_migrated_entries(normalize_runtime_root(retained_root)):
+        return ""
+    record_retained_cleanup_completed(
+        config_manager,
+        anchor_root=normalized_anchor_root,
+        retained_root=retained_root,
+    )
+    return retained_root
+
+
 def run_pending_storage_migration(
     config_manager,
     *,
@@ -1420,6 +1519,11 @@ def run_pending_storage_migration(
     )
     if not is_storage_migration_pending(migration_payload):
         _remove_completed_transaction_leftover(migration_payload)
+        try:
+            if reconcile_finished_retained_cleanup(config_manager, anchor_root=normalized_anchor_root):
+                migration_payload = load_storage_migration(config_manager, anchor_root=normalized_anchor_root)
+        except Exception as exc:
+            logger.warning("Failed to reconcile a finished retained-root cleanup: %s", exc)
         return {
             "attempted": False,
             "completed": False,
