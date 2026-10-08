@@ -270,21 +270,15 @@ def test_every_runtime_dir_under_state_is_migrated():
 
 @pytest.mark.unit
 def test_state_child_scan_sees_every_way_a_path_is_built():
-    tree = ast.parse(
-        "import os
-"
-        "def f(cm):
-"
-        "    base = cm.app_docs_dir
-"
-        "    a = base / 'state' / 'by_division'
-"
-        "    b = os.path.join(base, 'state', 'by_join')
-"
-        "    c = base.joinpath('state', 'by_joinpath')
-"
-        "    d = base / 'state/in_one_string'
-"
-    )
+    lines = [
+        "import os",
+        "def f(cm):",
+        "    base = cm.app_docs_dir",
+        "    a = base / 'state' / 'by_division'",
+        "    b = os.path.join(base, 'state', 'by_join')",
+        "    c = base.joinpath('state', 'by_joinpath')",
+        "    d = base / 'state/in_one_string'",
+    ]
+    tree = ast.parse(chr(10).join(lines))
 
     assert _scan_state_children(tree) == {"by_division", "by_join", "by_joinpath", "in_one_string"}
