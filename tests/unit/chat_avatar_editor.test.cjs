@@ -21,6 +21,7 @@ function fixture() {
         getError: () => null,
         getLimits: () => ({ normalized_size: 320, normalized_max_bytes: 1048576 }),
         isCurrent(binding) { return !!identity && binding.uid === identity.uid && binding.identityEpoch === identity.identityEpoch; },
+        cancelEdit() {},
         captureEdit() { return { ...identity, baseRevision: record.revision, operationId: 'operation' }; },
         refresh() { const task = deferred(); reads.push(task); return task.promise.then(value => { record = value; return value; }); },
         save(blob, binding) { const task = deferred(); writes.push({ blob, binding, ...task }); return task.promise; },

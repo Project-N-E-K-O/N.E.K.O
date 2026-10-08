@@ -178,6 +178,12 @@ app.whenReady().then(async()=>{
     await until(web,'!appChatAvatarEditor.getState().editing','native Escape cancels web draft');
     assert.equal(await evaluate(web,'appChatAvatarState.getRecord().revision'),webSaved.revision);
     evidence.push('ordinary web JPEG upload honors EXIF6 and synchronizes with native chat; corrupt PNG and Escape preserve confirmed avatar');
+    await choose(web,32,32);
+    await evaluate(web,'document.getElementById("avatar-cropper-save").click()');
+    await until(web,'appChatAvatarEditor.getState().ready','review cancellation candidate ready');
+    const cancelledBeforeSend=await evaluate(web,'(async()=>{const before=appChatAvatarState.getRecord().revision;const security=nekoLocalMutationSecurity, original=security.getMutationHeaders;const headers=await original.call(security);let release;security.getMutationHeaders=()=>new Promise(resolve=>release=resolve);try{const saving=appChatAvatar.saveCustomAvatar();appChatAvatar.hidePopup();release(headers);await saving;const confirmed=await appChatAvatarState.refresh("cancel-before-send");return confirmed.revision===before;}finally{security.getMutationHeaders=original;}})()');
+    assert.equal(cancelledBeforeSend,true,'closing while credentials are pending must not publish the draft');
+    evidence.push('native renderer closing during credential preparation cancels the unsubmitted save and preserves the backend revision');
     for (const [name,win] of Object.entries(windows)) {
       assert.equal(await evaluate(win,'document.getElementById("acceptance-errors").textContent'),'','uncaught script errors in '+name);
     }

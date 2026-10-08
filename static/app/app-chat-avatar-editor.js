@@ -80,6 +80,8 @@
         return { editing: !!candidate, ready: !!(candidate && candidate.blob), busy: busy, status: statusKey, operationId: candidate && candidate.binding.operationId };
     };
     api.cancel = function () {
+        state().cancelEdit(pendingBinding);
+        state().cancelEdit(candidate && candidate.binding);
         ++owner;
         candidate = null;
         busy = false;

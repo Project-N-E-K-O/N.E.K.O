@@ -77,6 +77,46 @@ function avatarCalls(h) {
     return calls;
 }
 
+for (const action of ['cancel', 'replace']) {
+    test('real editor ' + action + ' retires a save awaiting credentials', async () => {
+        const h = harness(); const headers = deferred(); const writes = [];
+        h.context.AbortController = AbortController;
+        h.context.FormData = FormData;
+        h.context.Blob = Blob;
+        h.window.crypto = { randomUUID: () => 'review-operation' };
+        h.window.setTimeout = setTimeout; h.window.clearTimeout = clearTimeout;
+        h.window.nekoLocalMutationSecurity = { getMutationHeaders: () => headers.promise };
+        h.window.appChatAvatar = {
+            refreshDisplayedAvatar() {}, cancelModelPreviewCapture() {}, closeUploadCropper() {},
+            openUploadCropper: async () => ({ cropRect: { size: 1 } }),
+            normalizeUploadCrop: async () => 'data:image/png;base64,YQ=='
+        };
+        h.window.appChatAvatarImage = {
+            decodeFile: async () => ({ url: 'blob:review', width: 1, height: 1, release() {} }),
+            pngBlob: () => new Blob(['png'])
+        };
+        h.context.fetch = async (_url, options) => {
+            if (options.method) writes.push(options.method);
+            return { ok: true, json: async () => ({
+                character_uid: UID_A, revision: '0', data_url: null,
+                limits: { normalized_size: 320, normalized_max_bytes: 1048576 }
+            }) };
+        };
+        h.load('static/app/app-chat-avatar-state.js');
+        h.load('static/app/app-chat-avatar-editor.js');
+        await h.window.appChatAvatarState.setIdentity({ uid: UID_A });
+        const editor = h.window.appChatAvatarEditor;
+        await editor.chooseFile(new Blob(['first']));
+        const saving = editor.save();
+        if (action === 'cancel') editor.cancel();
+        else await editor.chooseFile(new Blob(['replacement']));
+        headers.resolve({}); await saving;
+        assert.deepEqual(writes, []);
+        assert.equal(editor.getState().ready, action === 'replace');
+        assert.equal(h.window.appChatAvatarState.getRecord().revision, '0');
+    });
+}
+
 test('same-model character switch commits authoritative UID after switch succeeds', async () => {
     const h = harness(); const calls = avatarCalls(h);
     h.load('static/app/app-character.js');
@@ -264,6 +304,7 @@ function popupHarness() {
         getError: () => null,
         getLimits: () => ({ normalized_size: 320, normalized_max_bytes: 1048576 }),
         isCurrent: () => true,
+        cancelEdit() {},
         captureEdit: () => ({ ...identity, operationId: 'edit', baseRevision: '0' }),
         save: async () => { throw new Error('disk full'); }
     };

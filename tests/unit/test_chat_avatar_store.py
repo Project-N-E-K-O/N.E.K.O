@@ -43,6 +43,34 @@ def test_missing_and_clear_have_distinct_revisions(tmp_path):
     assert_error("chat_avatar_conflict", store.write_record, tmp_path, UID, store.normalize_png(png()), "0", "stale-save")
 
 
+def test_normalization_strips_embedded_color_profile_without_changing_rgba():
+    image = Image.new("RGBA", (320, 320), (12, 34, 56, 70))
+    output = io.BytesIO()
+    image.save(output, format="PNG", icc_profile=b"review-profile-metadata")
+    normalized = store.normalize_png(output.getvalue())
+    with Image.open(io.BytesIO(base64.b64decode(normalized.split(",", 1)[1]))) as result:
+        assert not result.info
+        assert result.getpixel((0, 0)) == (12, 34, 56, 70)
+
+
+def test_quota_ignores_directories_and_entries_removed_during_scan(tmp_path, monkeypatch):
+    (tmp_path / "not-a-record.json").mkdir()
+    disappeared = tmp_path / f"{'b' * 32}.json"
+    disappeared.write_text("gone")
+    original_stat = store.Path.stat
+
+    def stat_then_disappear(path, *args, **kwargs):
+        if path == disappeared:
+            path.unlink(missing_ok=True)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(store.Path, "stat", stat_then_disappear)
+    monkeypatch.setattr(store, "STORAGE_QUOTA_BYTES", 250)
+    saved = store.write_record(tmp_path, UID, None, "0", "save")
+    assert saved["last_operation_id"] == "save"
+    assert store.read_record(tmp_path, UID) == saved
+
+
 def test_idempotence_never_replays_older_operation(tmp_path):
     data = store.normalize_png(png())
     first = store.write_record(tmp_path, UID, data, "0", "first")

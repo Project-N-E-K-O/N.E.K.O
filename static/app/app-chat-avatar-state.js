@@ -14,6 +14,8 @@
     let initialized = false;
     let switchOwner = null;
     let bootstrapGeneration = 0;
+    const cancelledEdits = new WeakSet();
+    const submittedEdits = new WeakSet();
 
     function failure(code, status) {
         const result = new Error(code);
@@ -106,6 +108,10 @@
         };
     };
     api.isCurrent = matches;
+    api.cancelEdit = function (binding) {
+        // Once sent, a write may already be committed. Keep confirming its outcome.
+        if (binding && !submittedEdits.has(binding)) cancelledEdits.add(binding);
+    };
 
     api.refresh = async function (reason) {
         if (!identity) {
@@ -186,9 +192,9 @@
     api.onChanged = api.onBackendChanged;
 
     async function write(method, blob, binding) {
-        if (!matches(binding)) throw failure('chat_avatar_stale_edit');
+        if (!matches(binding) || cancelledEdits.has(binding)) throw failure('chat_avatar_stale_edit');
         const headers = await window.nekoLocalMutationSecurity.getMutationHeaders();
-        if (!matches(binding)) throw failure('chat_avatar_stale_edit');
+        if (!matches(binding) || cancelledEdits.has(binding)) throw failure('chat_avatar_stale_edit');
         let body;
         if (method === 'PUT') {
             body = new FormData();
@@ -202,6 +208,7 @@
         const generation = readGeneration;
         let saved;
         try {
+            submittedEdits.add(binding);
             saved = await request(binding.uid, { method: method, body: body, headers: headers });
         } catch (cause) {
             if (!matches(binding)) throw failure('chat_avatar_stale_edit');

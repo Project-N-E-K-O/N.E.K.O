@@ -11,6 +11,7 @@ import binascii
 import io
 import json
 import re
+import stat
 import uuid
 from pathlib import Path
 
@@ -71,6 +72,7 @@ def normalize_png(payload: bytes) -> str:
         with Image.open(io.BytesIO(payload)) as image:
             image.load()
             rgba = image.convert("RGBA")
+            rgba.info.clear()
             output = io.BytesIO()
             rgba.save(output, format="PNG")
             normalized = output.getvalue()
@@ -145,8 +147,16 @@ def write_record(directory: Path, uid: str, data_url: str | None,
     target = record_path(directory, uid)
     try:
         directory.mkdir(parents=True, exist_ok=True)
-        total = sum(entry.stat().st_size for entry in directory.iterdir()
-                    if entry.name != target.name and entry.suffix == ".json")
+        total = 0
+        for entry in directory.iterdir():
+            if entry.name == target.name or entry.suffix != ".json":
+                continue
+            try:
+                entry_stat = entry.stat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISREG(entry_stat.st_mode):
+                total += entry_stat.st_size
         if total + len(encoded.encode("utf-8")) > STORAGE_QUOTA_BYTES:
             raise ChatAvatarError("chat_avatar_quota_exceeded", 507)
         atomic_write_text(target, encoded, encoding="utf-8")

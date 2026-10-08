@@ -1,24 +1,25 @@
 """Run browser-module ownership regressions in the regular unit-test gate."""
 import json
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.node_harness import run_node_script
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_chat_avatar_browser_module_integration():
     node = shutil.which("node")
-    assert node is not None, "Node.js is required for the avatar integration harness"
-    result = subprocess.run(
-        [node, "--test", str(ROOT / "tests/frontend/chat_avatar_integration.test.cjs")],
-        cwd=ROOT,
+    if node is None:
+        pytest.skip("Node.js is required for the avatar integration harness")
+    suite = ROOT / "tests/frontend/chat_avatar_integration.test.cjs"
+    result = run_node_script(
+        node, "require(" + json.dumps(suite.as_posix()) + ");",
+        cwd=str(ROOT),
         capture_output=True,
-        encoding="utf-8",
         timeout=45,
-        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 

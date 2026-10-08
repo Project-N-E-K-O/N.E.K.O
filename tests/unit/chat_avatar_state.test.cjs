@@ -135,6 +135,26 @@ test('header await is fenced when role changes before write', async () => {
     assert.equal(h.pending.length, count);
 });
 
+test('cancel during credential preparation prevents a not-yet-submitted write', async () => {
+    const h = harness(); await h.identify(); const binding = h.api.captureEdit(); const headers = deferred();
+    h.window.nekoLocalMutationSecurity.getMutationHeaders = () => headers.promise;
+    const saving = h.api.save(new Blob(['png']), binding);
+    h.api.cancelEdit(binding);
+    headers.resolve({});
+    await assert.rejects(saving, { code: 'chat_avatar_stale_edit' });
+    assert.equal(h.pending.filter(p => p.options.method).length, 0);
+    await assert.rejects(h.api.save(new Blob(['png']), binding), { code: 'chat_avatar_stale_edit' });
+});
+
+test('cancel after transport submission still confirms the authoritative outcome', async () => {
+    const h = harness(); await h.identify(); const binding = h.api.captureEdit();
+    const saving = h.api.save(new Blob(['png']), binding); await h.settle();
+    h.api.cancelEdit(binding);
+    h.pending.at(-1).resolve(response(row(A, 'saved', 'confirmed', binding.operationId)));
+    await saving;
+    assert.equal(h.api.getDataUrl(), 'confirmed');
+});
+
 test('restore uses JSON CAS and keeps tombstone revision', async () => {
     const h = harness(); await h.identify(); const binding = h.api.captureEdit();
     const restore = h.api.restore(binding); await h.settle(); const request = h.pending.at(-1);

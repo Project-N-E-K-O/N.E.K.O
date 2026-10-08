@@ -1375,6 +1375,7 @@ async def test_workshop_abort_releases_owned_claims_for_active_and_deleted_names
 @pytest.mark.asyncio
 async def test_workshop_unsubscribe_revalidates_origin_after_config_lock_wait(
     monkeypatch,
+    tmp_path,
 ):
     """A stale origin-index hit must not delete a same-name replacement."""
     unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
@@ -1408,6 +1409,7 @@ async def test_workshop_unsubscribe_revalidates_origin_after_config_lock_wait(
             self.characters = characters
 
     config = _Config()
+    config.app_docs_dir = tmp_path
     discovery_finished = threading.Event()
     mutation_lock = asyncio.Lock()
     monkeypatch.setattr(
@@ -2629,7 +2631,7 @@ async def test_delete_catgirl_keeps_receipts_when_snapshot_read_fails(tmp_path, 
     receipt_path = receipt_root / ("theater_end_" + "0" * 40 + ".json")
     receipt_path.write_text("{invalid", encoding="utf-8")
     characters = {"猫娘": {name: {"昵称": name}}, "当前猫娘": ""}
-    config_manager = SimpleNamespace(aload_characters=AsyncMock(return_value=characters))
+    config_manager = SimpleNamespace(app_docs_dir=tmp_path, aload_characters=AsyncMock(return_value=characters))
 
     with patch.object(crud, "get_config_manager", return_value=config_manager), \
          patch.object(crud, "assert_cloudsave_writable"), \
@@ -2701,7 +2703,7 @@ async def test_character_rename_and_delete_name_unreadable_theater_file(tmp_path
         "当前猫娘": "",
     }
     original_characters = copy.deepcopy(characters)
-    config_manager = SimpleNamespace(aload_characters=AsyncMock(return_value=characters))
+    config_manager = SimpleNamespace(app_docs_dir=tmp_path, aload_characters=AsyncMock(return_value=characters))
     expected_file = f"numeric_v2/{kind}/{file_name}"
 
     with patch.object(crud, "get_config_manager", return_value=config_manager), \
