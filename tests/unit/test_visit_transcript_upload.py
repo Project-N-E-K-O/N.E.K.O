@@ -157,6 +157,40 @@ async def test_an_abandoned_open_stops_at_once_when_cancelled(tmp_path, servers)
         tu._open_streams.discard(V1)
 
 
+async def test_an_abandoned_open_still_writes_the_buffered_records_after_the_header(tmp_path, servers):
+    import threading
+
+    journal = tu.UploadJournal(tmp_path, V1)
+    release = threading.Event()
+    real_open = journal._open_sync
+
+    def slow_open(data):
+        release.wait(10)
+        return real_open(data)
+
+    journal._open_sync = slow_open
+    opening = asyncio.ensure_future(journal.open(role="host", own_visit_uid=OWN, own_char_uid=CHAR_UID,
+                                                 transport="trtc", started_at=1000.0, app_version="1.2"))
+    try:
+        await asyncio.sleep(0.05)
+        journal.abandon_open([{"kind": "line", "lp": 1, "side": "host", "from": "own_cat", "ts": 1001.0,
+                               "text": "等上传头时说的", "truncated": False}])
+        opening.cancel()
+        await asyncio.wait([opening], timeout=0.5)
+        release.set()                                         # 写线程这时才建好流水，接着补上攒下的记录
+        stream = _spool(tmp_path) / f"{V1}.upload.jsonl"
+        for _ in range(50):
+            if stream.exists() and "等上传头时说的" in stream.read_text(encoding="utf-8"):
+                break
+            await asyncio.sleep(0.05)
+        rows = [json.loads(line) for line in stream.read_text(encoding="utf-8").splitlines()]
+        assert [r["kind"] for r in rows] == ["header", "line"]   # 先头后行，下次启动补录拿得到
+    finally:
+        release.set()
+        await asyncio.sleep(0.1)
+        tu._open_streams.discard(V1)
+
+
 async def test_a_second_seal_while_the_first_is_writing_waits_for_the_same_write(tmp_path, servers):
     import threading
 

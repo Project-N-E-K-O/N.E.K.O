@@ -1692,7 +1692,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             # 关机：不起不设上限的后台封存链，并主动取消写上传头的任务（abandon_open 之后它被取消就立刻结束，
             # 不再等卡住的写盘），事件循环这一层不会被它挂住。注意线程池的写盘线程不是 daemon：磁盘一直卡着时，
             # 解释器退出仍会等它（所有走线程池写盘的地方都一样）。留在磁盘上的流水由下次启动补录
-            self.journal.abandon_open()
+            self.journal.abandon_open(self._backlog_stream_records())
+            self._journal_backlog = []
             opening.cancel()
             return
         if not opening.done():
@@ -1710,6 +1711,26 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         # 上传头没写成（异常在这里取走）：没有流水可封存，spool 照样收尾
         header_ok = not opening.cancelled() and opening.exception() is None
         await self._seal_late_journal(reason, ended_at, header_ok=header_ok, gen=gen)
+
+    def _backlog_stream_records(self) -> list[dict]:
+        """The buffered records in the upload stream's own format (written after the header at shutdown)."""
+        from main_routers.visit_router.transcript_upload import USAGE_KEYS
+
+        records: list[dict] = []
+        for record in self._journal_backlog:
+            kind = record.get("kind")
+            if kind == "line":
+                records.append({"kind": "line", "lp": int(record["lp"]), "side": record["side"],
+                                "from": record["speaker"], "ts": float(record["ts"]), "text": str(record["text"]),
+                                "truncated": bool(record["truncated"])})
+            elif kind == "usage":
+                delta = {k: int(v) for k, v in (record.get("d") or {}).items()
+                         if k in USAGE_KEYS and isinstance(v, int) and not isinstance(v, bool) and v > 0}
+                if delta:
+                    records.append({"kind": "usage", "ts": float(record["ts"]), "d": delta})
+            elif kind == "anomaly":
+                records.append({"kind": "anomaly", "ts": float(record["ts"])})
+        return records
 
     def _flush_journal_backlog(self) -> None:
         """The upload header landed: record what was buffered meanwhile (lines, usage, anomalies), in order.

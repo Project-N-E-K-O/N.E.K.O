@@ -1562,6 +1562,40 @@ async def test_a_channel_close_cancelled_mid_send_still_unregisters(tmp_path, mo
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_lines_buffered_before_a_shutdown_reach_the_stream_left_for_recovery(tmp_path, monkeypatch):
+    import threading
+
+    from main_routers.visit_router import transcript_upload
+
+    monkeypatch.setattr(rtm, "_JOURNAL_OPEN_MAX_S", 0.1)
+    release = threading.Event()
+    real_open_sync = transcript_upload.UploadJournal._open_sync
+
+    def slow_open_sync(self, data):
+        release.wait(10)                                      # 写上传头卡在写线程里
+        return real_open_sync(self, data)
+
+    monkeypatch.setattr(transcript_upload.UploadJournal, "_open_sync", slow_open_sync)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        await wait_for(lambda: any(r.get("kind") == "line" for r in rt._journal_backlog), timeout=5)
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # 关机：放弃等上传头
+        release.set()                                         # 之后写线程建好流水，补上攒下的行
+        stream = host.config_dir / "visit_spool" / f"{rt.visit_id}.upload.jsonl"
+        for _ in range(50):
+            if stream.exists() and '"kind":"line"' in stream.read_text(encoding="utf-8").replace(" ", ""):
+                break
+            await asyncio.sleep(0.05)
+        kinds = [json.loads(line)["kind"] for line in stream.read_text(encoding="utf-8").splitlines()]
+        assert kinds[0] == "header" and "line" in kinds        # 下次启动补录拿得到这些行
+    finally:
+        release.set()
+        await asyncio.sleep(0.1)
+        transcript_upload._open_streams.discard(rt.visit_id)
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_the_spool_is_finalized_only_once(tmp_path, monkeypatch):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt

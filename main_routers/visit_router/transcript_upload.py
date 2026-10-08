@@ -52,7 +52,7 @@ import os
 import time
 import weakref
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -209,6 +209,7 @@ class UploadJournal:
         self._sealed = False
         self._seal_write: asyncio.Future | None = None
         self._open_abandoned = False
+        self._abandoned_tail: list[bytes] = []
         self._failed_writes = 0
 
     @property
@@ -304,7 +305,8 @@ class UploadJournal:
         # 先登记再建文件：流水一出现在磁盘上，重试轮次就必须认得它还开着，不能趁建文件的间隙重封
         added = self.visit_id not in _open_streams
         _open_streams.add(self.visit_id)
-        opening = asyncio.wrap_future(executor.submit(self._open_sync, _encode_record(header)))
+        open_job = executor.submit(self._open_sync, _encode_record(header))
+        opening = asyncio.wrap_future(open_job)
         try:
             self._fd = await asyncio.shield(opening)
         except BaseException:
@@ -321,7 +323,11 @@ class UploadJournal:
                     break
             fd = opening.result() if opening.done() and not opening.cancelled() \
                 and opening.exception() is None else None
-            if fd is not None:
+            if self._open_abandoned and self._abandoned_tail:
+                # 关机放弃：等上传头期间攒下的记录排在建文件之后由写线程补上（同一条单线程队列，先头后行），
+                # 留下一份完整的流水给下次启动补录；没建成就什么都不写
+                executor.submit(self._finish_abandoned_open, open_job, list(self._abandoned_tail))
+            elif fd is not None:
                 with contextlib.suppress(OSError):
                     os.close(fd)
                 with contextlib.suppress(OSError):
@@ -371,13 +377,32 @@ class UploadJournal:
         self._records.append({"kind": "line", "lp": int(lp), "side": side, "from": speaker, "ts": float(ts),
                               "text": str(text), "truncated": bool(truncated)})
 
-    def abandon_open(self) -> None:
+    def abandon_open(self, records: Iterable[Mapping[str, Any]] = ()) -> None:
         """Shutdown: a cancelled :meth:`open` stops at once instead of waiting for the stalled create.
 
         The process is about to exit; whatever the writer thread leaves on
-        disk is a stream the startup recovery seals.
+        disk is a stream the startup recovery seals. ``records`` (stream
+        records buffered while the header was being written) are queued on
+        the writer thread right after the create, so that stream has them.
         """
         self._open_abandoned = True
+        self._abandoned_tail = [_encode_record(record) for record in records]
+
+    @staticmethod
+    def _finish_abandoned_open(open_job: concurrent.futures.Future, tail: list[bytes]) -> None:
+        # 写线程上、排在建文件之后：建成了就把攒下的记录补上再关 fd；建失败就什么都不做
+        try:
+            fd = open_job.result()
+        except BaseException:  # noqa: BLE001
+            return
+        try:
+            for data in tail:
+                _write_all(fd, data)
+        except OSError:
+            pass
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
     def _book(self, *, lp: int, side: str, speaker: str, ts: float, text: str, truncated: bool) -> dict:
         """Validate one final line and add it to the in-memory copy; returns the record to write."""
