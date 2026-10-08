@@ -60,7 +60,8 @@ const server = http.createServer((request, response) => {
     const entry = { path: url.pathname, method: request.method };
     requests.push(entry);
     if (url.pathname === '/api/config/page_config') return json(response, { autostart_csrf_token: 'controlled-browser' });
-    if (url.pathname === '/api/config/steam_language') return json(response, { ui_language: 'zh-CN' });
+    // Leave the server override unset so each run exercises its browser locale.
+    if (url.pathname === '/api/config/steam_language') return json(response, { uiLanguage: null });
     if (url.pathname === '/api/voice-identity/status') return json(response, status());
     if (url.pathname === '/api/voice-identity/resources') return json(response, { can_enroll: true, wake_enabled: false, resources: { campp: { state: 'ready' }, silero: { state: 'ready' }, noise_reduction: { state: 'ready' }, wake_model: { state: 'missing' }, wake_runtime: { state: 'missing' } } });
     if (url.pathname === '/api/voice-identity/audio/check/isolation') return json(response, { token: 'controlled-browser-ticket', ttl_seconds: 60 });
@@ -118,6 +119,9 @@ const server = http.createServer((request, response) => {
 async function main() {
     let browser;
     try {
+        const browserLocale = process.env.VOICE_ENROLLMENT_BROWSER_LOCALE || 'en-US';
+        const expectedPageLanguage = { 'en-US': 'en', 'zh-CN': 'zh-CN' }[browserLocale];
+        assert.ok(expectedPageLanguage, 'the browser acceptance supports en-US and zh-CN');
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
         browser = await chromium.launch({ headless: true,
             ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}),
@@ -127,7 +131,7 @@ async function main() {
             '--autoplay-policy=no-user-gesture-required',
         ] });
         const page = await browser.newPage({
-            locale: process.env.VOICE_ENROLLMENT_BROWSER_LOCALE || 'en-US',
+            locale: browserLocale,
             viewport: { width: 960, height: 900 },
         });
         const pageErrors = [];
@@ -166,6 +170,7 @@ async function main() {
         await page.goto(`http://127.0.0.1:${server.address().port}/voice_identity`);
         await page.waitForFunction(() => typeof window.t === 'function'
             && window.t('voiceIdentity.errorNoSpeechDetected') !== 'voiceIdentity.errorNoSpeechDetected');
+        assert.equal(await page.locator('html').getAttribute('lang'), expectedPageLanguage);
         await page.waitForFunction(() => !document.getElementById('voice-identity-test').disabled);
         assert.equal(await page.locator('#voice-identity-start').isDisabled(), true);
         await page.locator('#voice-identity-test').click();
@@ -198,8 +203,18 @@ async function main() {
             assert.ok(samplesAtClick < sampleRate * (segment === 4 ? 5 : 3), 'manual save must precede automatic ending');
             await page.waitForFunction(index => window.__durationEvidence.captures[index].flushed, segment);
             if (segment < 4) await page.waitForFunction(() => !document.getElementById('voice-identity-next').hidden && !document.getElementById('voice-identity-next').disabled);
-            else await page.waitForFunction(() => document.getElementById('voice-identity-message').textContent
-                === window.t('voiceIdentity.errorNoSpeechDetected'));
+            else {
+                await page.waitForFunction(() => document.getElementById('voice-identity-message').textContent
+                    === window.t('voiceIdentity.errorNoSpeechDetected'));
+                const pageLanguage = await page.locator('html').getAttribute('lang');
+                assert.equal(pageLanguage, expectedPageLanguage);
+                // Independent expectations catch missing keys hidden by i18next fallback.
+                const expectedNoSpeech = {
+                    en: 'Not enough valid speech was detected. Record this segment again.',
+                    'zh-CN': '未检测到足够的有效人声，请重录当前段。',
+                }[pageLanguage];
+                assert.equal(await page.locator('#voice-identity-message').textContent(), expectedNoSpeech);
+            }
             const captured = await page.evaluate(index => ({ ...window.__durationEvidence.captures[index] }), segment);
             const upload = requests.filter(entry => entry.path.endsWith('/enrollment/segment'))[segment - 1];
             assert.equal(upload.segment, segment);
@@ -216,6 +231,7 @@ async function main() {
         const report = {
             browser: await browser.version(), actualPageAndWorklet: true,
             locale: await page.evaluate(() => navigator.language),
+            pageLanguage: await page.locator('html').getAttribute('lang'),
             controlledApi: true, realBackend: false, realMicrophoneCaptured: false,
             fixture: 'rate4.wav', amplitude: 0.25, earlySamples,
             earlySubmissionBlocked: true, trial: check, manualCaptures,
