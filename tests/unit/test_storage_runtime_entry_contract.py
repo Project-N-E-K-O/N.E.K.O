@@ -71,6 +71,31 @@ _SAME_PATH_FUNCTIONS = {
     "expanduser",
 }
 _SAME_PATH_METHODS = {"resolve", "absolute", "expanduser"}
+# Given several arguments, these join them like os.path.join.
+_PATH_CONSTRUCTORS = {"Path", "PurePath", "PosixPath", "WindowsPath", "PurePosixPath", "PureWindowsPath"}
+
+
+def _call_name(node: ast.AST) -> str:
+    if not isinstance(node, ast.Call):
+        return ""
+    func = node.func
+    return func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+
+
+def _joined_call_args(node: ast.AST) -> list[ast.AST] | None:
+    """``[base, part, ...]`` for a call that joins paths; ``None`` otherwise.
+
+    ``os.path.join(base, ...)``, ``base.joinpath(...)`` and a path
+    constructor given more than one argument (``Path(base, "state")``).
+    """
+    name = _call_name(node)
+    if name == "joinpath" and isinstance(node.func, ast.Attribute):
+        return [node.func.value, *node.args]
+    if name == "join" and node.args:
+        return list(node.args)
+    if name in _PATH_CONSTRUCTORS and len(node.args) > 1:
+        return list(node.args)
+    return None
 
 
 def _unwrap_same_path(node: ast.AST) -> ast.AST | None:
@@ -95,11 +120,8 @@ def _is_runtime_root(node: ast.AST, aliases: set[str]) -> bool:
         return False
     # A join is a path below the root, like a division: it merely mentions
     # app_docs_dir inside.
-    if isinstance(node, ast.Call):
-        func = node.func
-        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-        if name in {"join", "joinpath"}:
-            return False
+    if _joined_call_args(node) is not None:
+        return False
     if isinstance(node, ast.Attribute) and node.attr == "parent":
         return False
     if isinstance(node, ast.Name) and node.id in aliases:
@@ -148,13 +170,9 @@ def _scan_module(tree: ast.Module) -> set[str]:
                     if value:
                         found.add(_first_segment(value))
             elif isinstance(node, ast.Call):
-                func = node.func
-                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-                if name not in {"join", "joinpath"}:
+                args = _joined_call_args(node)
+                if args is None:
                     continue
-                args = list(node.args)
-                if isinstance(func, ast.Attribute) and name == "joinpath":
-                    args = [func.value, *args]
                 for index, arg in enumerate(args[:-1]):
                     if _is_runtime_root(arg, aliases):
                         value = _string_value(args[index + 1], constants)
@@ -184,14 +202,10 @@ def _parts_after_runtime_root(node: ast.AST, aliases: set[str]) -> list[ast.AST]
         left = _parts_after_runtime_root(node.left, aliases)
         return None if left is None else [*left, node.right]
     if isinstance(node, ast.Call):
-        func = node.func
-        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-        if name == "joinpath" and isinstance(func, ast.Attribute):
-            base = _parts_after_runtime_root(func.value, aliases)
-            return None if base is None else [*base, *node.args]
-        if name == "join" and node.args:
-            base = _parts_after_runtime_root(node.args[0], aliases)
-            return None if base is None else [*base, *node.args[1:]]
+        joined = _joined_call_args(node)
+        if joined is not None:
+            base = _parts_after_runtime_root(joined[0], aliases)
+            return None if base is None else [*base, *joined[1:]]
         wrapped = _unwrap_same_path(node)
         if wrapped is not None:
             return _parts_after_runtime_root(wrapped, aliases)
@@ -365,6 +379,10 @@ def test_state_child_scan_sees_every_way_a_path_is_built():
         "Path(cm.app_docs_dir) / 'state' / 'new_child'",
         "Path(cm.app_docs_dir).resolve() / 'state' / 'new_child'",
         "(cm.app_docs_dir / 'state').resolve() / 'new_child'",
+        "Path(cm.app_docs_dir / 'state').resolve() / 'new_child'",
+        "Path(cm.app_docs_dir, 'state', 'new_child')",
+        "Path(cm.app_docs_dir, 'state') / 'new_child'",
+        "PurePosixPath(os.fspath(cm.app_docs_dir), 'state') / 'new_child'",
     ],
 )
 def test_a_path_joined_straight_from_app_docs_dir_is_scanned_below_the_root(expression):
@@ -373,4 +391,21 @@ def test_a_path_joined_straight_from_app_docs_dir_is_scanned_below_the_root(expr
     tree = ast.parse(chr(10).join(["import os", "def f(cm):", f"    target = {expression}"]))
 
     assert _scan_state_children(tree) == {"new_child"}
-    assert "new_child" not in _scan_module(tree)
+    assert _scan_module(tree) == {"state"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "expression",
+    [
+        # Same-named calls on something that is not the runtime root.
+        "other.resolve() / 'state' / 'new_child'",
+        "Path(other, 'state', 'new_child')",
+        "str(other) + 'state'",
+    ],
+)
+def test_a_wrapped_path_that_is_not_the_runtime_root_is_not_scanned(expression):
+    tree = ast.parse(chr(10).join(["import os", "def f(cm, other):", f"    target = {expression}"]))
+
+    assert _scan_state_children(tree) == set()
+    assert _scan_module(tree) == set()
