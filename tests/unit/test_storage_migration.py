@@ -831,8 +831,8 @@ def test_torn_config_copy_fails_staging_verification(tmp_path, monkeypatch):
     )
     original_copy = storage_migration_module._copy_runtime_entry
 
-    def _torn_copy(source_path, target_path):
-        original_copy(source_path, target_path)
+    def _torn_copy(source_path, target_path, **kwargs):
+        original_copy(source_path, target_path, **kwargs)
         if Path(target_path).name == "config":
             # The source changed between its manifest and the copy.
             (Path(target_path) / "characters.json").write_text("torn", encoding="utf-8")
@@ -1245,8 +1245,8 @@ def test_reused_target_emptied_during_staging_is_not_committed(tmp_path, monkeyp
     )
     original_copy = storage_migration_module._copy_runtime_entry
 
-    def _copy_then_lose_target(source_path, target_path):
-        original_copy(source_path, target_path)
+    def _copy_then_lose_target(source_path, target_path, **kwargs):
+        original_copy(source_path, target_path, **kwargs)
         if Path(target_path).name == "memory":
             # The target's own config -- skipped by staging -- disappears.
             shutil.rmtree(target_root / "config")
@@ -1372,8 +1372,8 @@ def test_interrupted_staging_is_kept_while_the_source_is_missing(tmp_path, monke
     )
     original_copy = storage_migration_module._copy_runtime_entry
 
-    def _crash_after_first_copy(source_path, target_path):
-        original_copy(source_path, target_path)
+    def _crash_after_first_copy(source_path, target_path, **kwargs):
+        original_copy(source_path, target_path, **kwargs)
         raise KeyboardInterrupt("simulated process loss while staging")
 
     monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _crash_after_first_copy)
@@ -1488,8 +1488,8 @@ def test_staged_copy_is_kept_when_its_source_entry_is_gone(tmp_path, monkeypatch
     )
     original_copy = storage_migration_module._copy_runtime_entry
 
-    def _crash_after_first_copy(source_path, target_path):
-        original_copy(source_path, target_path)
+    def _crash_after_first_copy(source_path, target_path, **kwargs):
+        original_copy(source_path, target_path, **kwargs)
         raise KeyboardInterrupt("simulated process loss while staging")
 
     monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _crash_after_first_copy)
@@ -1682,8 +1682,8 @@ def test_v1_copy_marker_survives_a_second_interruption(tmp_path, monkeypatch):
     save_storage_migration(config_manager, v1_payload)
     original_copy = storage_migration_module._copy_runtime_entry
 
-    def _interrupt(source_path, target_path):
-        original_copy(source_path, target_path)
+    def _interrupt(source_path, target_path, **kwargs):
+        original_copy(source_path, target_path, **kwargs)
         raise KeyboardInterrupt("simulated process loss while staging")
 
     monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _interrupt)
@@ -1746,12 +1746,12 @@ def test_staged_copy_is_kept_when_its_source_entry_was_edited(tmp_path, monkeypa
     original_copy = storage_migration_module._copy_runtime_entry
     copies = 0
 
-    def _crash_on_second_copy(source_path, target_path):
+    def _crash_on_second_copy(source_path, target_path, **kwargs):
         nonlocal copies
         copies += 1
         if copies == 2:
             raise KeyboardInterrupt("simulated process loss while staging")
-        return original_copy(source_path, target_path)
+        return original_copy(source_path, target_path, **kwargs)
 
     monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _crash_on_second_copy)
     with pytest.raises(KeyboardInterrupt):
@@ -1813,8 +1813,8 @@ def test_fresh_attempt_drops_publish_records_of_a_removed_transaction(tmp_path, 
     save_storage_migration(config_manager, stale)
     original_copy = storage_migration_module._copy_runtime_entry
 
-    def _interrupt(source_path, target_path):
-        original_copy(source_path, target_path)
+    def _interrupt(source_path, target_path, **kwargs):
+        original_copy(source_path, target_path, **kwargs)
         raise KeyboardInterrupt("simulated process loss while staging")
 
     monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _interrupt)
@@ -1908,12 +1908,12 @@ def test_failed_staging_leftover_is_removed_on_next_launch(tmp_path, monkeypatch
     original_remove = storage_migration_module._remove_transaction
     copies = 0
 
-    def _fail_second_copy(source_path, target_path):
+    def _fail_second_copy(source_path, target_path, **kwargs):
         nonlocal copies
         copies += 1
         if copies == 2:
             raise StorageMigrationError("copy_failed", "simulated copy failure")
-        return original_copy(source_path, target_path)
+        return original_copy(source_path, target_path, **kwargs)
 
     def _locked(_transaction_root):
         raise OSError("simulated locked staged file")
@@ -2462,8 +2462,8 @@ def test_source_written_after_staging_is_not_published(tmp_path, monkeypatch):
     config_manager, source_root, target_root = _overwrite_migration(tmp_path)
     original_copy = storage_migration_module._copy_runtime_entry
 
-    def _copy_then_source_changes(source_path, target_path):
-        widened = original_copy(source_path, target_path)
+    def _copy_then_source_changes(source_path, target_path, **kwargs):
+        widened = original_copy(source_path, target_path, **kwargs)
         (Path(source_path) / "characters.json").write_text("newer", encoding="utf-8")
         return widened
 
@@ -3187,8 +3187,8 @@ def test_source_entry_appearing_during_staging_stops_the_migration(tmp_path, mon
     config_manager, source_root, target_root = _overwrite_migration(tmp_path)
     original_copy = storage_migration_module._copy_runtime_entry
 
-    def _copy_then_new_source_entry(source_path, target_path):
-        widened = original_copy(source_path, target_path)
+    def _copy_then_new_source_entry(source_path, target_path, **kwargs):
+        widened = original_copy(source_path, target_path, **kwargs)
         (source_root / "pngtuber").mkdir(exist_ok=True)
         (source_root / "pngtuber" / "new.png").write_bytes(b"png")
         return widened
@@ -3260,8 +3260,8 @@ def test_source_entry_gone_after_staging_keeps_the_staged_copy(tmp_path, monkeyp
     config_manager, source_root, target_root = _overwrite_migration(tmp_path)
     original_copy = storage_migration_module._copy_runtime_entry
 
-    def _copy_then_source_gone(source_path, target_path):
-        widened = original_copy(source_path, target_path)
+    def _copy_then_source_gone(source_path, target_path, **kwargs):
+        widened = original_copy(source_path, target_path, **kwargs)
         shutil.rmtree(source_path)
         return widened
 
@@ -3549,3 +3549,60 @@ def test_game_scores_are_never_published_through_a_linked_state(tmp_path):
     assert result["completed"] is False
     assert result["error_code"] == "entry_parent_not_directory"
     assert not any(elsewhere.iterdir())
+
+
+@pytest.mark.unit
+def test_a_migrated_file_is_read_once_from_the_source_and_once_staged(tmp_path, monkeypatch):
+    """The copy hashes what it reads and the published copy is the staged one
+    verified just before: two full reads per file, not four."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, target_root = _start_migration_into_empty_target(tmp_path)
+    source_root = config_manager.app_docs_dir
+    hashed: list[Path] = []
+    copied: list[Path] = []
+    original_hash = storage_migration_module._hash_regular_file
+    original_copy_file = storage_migration_module._copy_regular_file_no_follow
+
+    def _counting_hash(path):
+        hashed.append(Path(path))
+        return original_hash(path)
+
+    def _counting_copy(source_path, target_path):
+        copied.append(Path(source_path))
+        return original_copy_file(source_path, target_path)
+
+    monkeypatch.setattr(storage_migration_module, "_hash_regular_file", _counting_hash)
+    monkeypatch.setattr(storage_migration_module, "_copy_regular_file_no_follow", _counting_copy)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    assert copied == [source_root / "memory" / "facts.json"]
+    assert len(hashed) == 1 and ".smtx" in hashed[0].parts
+    evidence = result["payload"]["copied_entries"]["memory"]
+    assert evidence["target_manifest"] == storage_migration_module._snapshot_path(target_root / "memory")
+    assert evidence["source_manifest"] == evidence["target_manifest"]
+
+
+@pytest.mark.unit
+def test_metadata_fingerprint_sees_a_same_size_rewrite_with_its_mtime_set_back(tmp_path):
+    """POSIX ctime and the NTFS change time move on every write and on
+    setting the timestamps back; the mtime alone would not show it."""
+    import time
+
+    from utils import storage_migration as storage_migration_module
+
+    entry = tmp_path / "memory"
+    entry.mkdir()
+    data = entry / "facts.json"
+    data.write_bytes(b"aaaa")
+    before_stat = os.stat(data)
+    before = storage_migration_module._metadata_fingerprint(entry)
+    time.sleep(0.1)
+    with open(data, "r+b") as stream:
+        stream.write(b"bbbb")
+    os.utime(data, ns=(before_stat.st_atime_ns, before_stat.st_mtime_ns))
+
+    assert os.stat(data).st_mtime_ns == before_stat.st_mtime_ns
+    assert storage_migration_module._metadata_fingerprint(entry) != before

@@ -649,13 +649,9 @@ def _hash_regular_file(path: Path) -> tuple[int, str]:
 def _manifest_path(path: Path) -> dict[str, int | str]:
     kind, _root_stat = _classify_no_follow(path)
     records: list[tuple[str, str, int, str]] = []
-    total_bytes = 0
-    file_count = 0
     if kind == "file":
         size, digest = _hash_regular_file(path)
         records.append(("", "file", size, digest))
-        total_bytes = size
-        file_count = 1
     else:
         records.append(("", "dir", 0, ""))
         pending = [path]
@@ -679,9 +675,11 @@ def _manifest_path(path: Path) -> dict[str, int | str]:
                 else:
                     size, digest = _hash_regular_file(child_path)
                     records.append((relative, "file", size, digest))
-                    total_bytes += size
-                    file_count += 1
-    records.sort(key=lambda record: (record[0], record[1]))
+    return _manifest_from_records(kind, records)
+
+
+def _manifest_from_records(kind: str, records: list[tuple[str, str, int, str]]) -> dict[str, int | str]:
+    records = sorted(records, key=lambda record: (record[0], record[1]))
     # A POSIX name that is not valid UTF-8 arrives as surrogate escapes;
     # surrogateescape turns those back into the original bytes, so every
     # name a filesystem allows gets a manifest (valid names are unaffected).
@@ -692,14 +690,15 @@ def _manifest_path(path: Path) -> dict[str, int | str]:
     ).encode("utf-8", "surrogateescape")
     return {
         "kind": kind,
-        "file_count": file_count,
-        "total_bytes": total_bytes,
+        "file_count": sum(1 for record in records if record[1] == "file"),
+        "total_bytes": sum(record[2] for record in records if record[1] == "file"),
         "manifest_digest": hashlib.sha256(encoded).hexdigest(),
     }
 
 
-def _copy_regular_file_no_follow(source_path: Path, target_path: Path) -> None:
-    _classify_no_follow(source_path)
+def _copy_regular_file_no_follow(source_path: Path, target_path: Path) -> tuple[int, str]:
+    """Copy one file; returns the size and SHA-256 of the bytes copied."""
+    _kind, before = _classify_no_follow(source_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     flags = os.O_RDONLY | int(getattr(os, "O_BINARY", 0))
     if hasattr(os, "O_NOFOLLOW"):
@@ -712,28 +711,60 @@ def _copy_regular_file_no_follow(source_path: Path, target_path: Path) -> None:
                 "path_not_file",
                 f"迁移源对象不是普通文件: {source_path}",
             )
+        digest = hashlib.sha256()
+        size = 0
         with os.fdopen(os.dup(source_fd), "rb") as source_stream:
             with target_path.open("xb") as target_stream:
-                shutil.copyfileobj(source_stream, target_stream, length=1024 * 1024)
+                # Hashed as it is copied: the manifest of what was copied
+                # comes without reading the source a second time.
+                while True:
+                    chunk = source_stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    digest.update(chunk)
+                    target_stream.write(chunk)
                 target_stream.flush()
                 os.fsync(target_stream.fileno())
         shutil.copystat(source_path, target_path, follow_symlinks=False)
     finally:
         os.close(source_fd)
+    after = source_path.lstat()
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    ) or size != int(after.st_size):
+        raise StorageMigrationError(
+            "source_changed_during_migration",
+            f"迁移源文件在复制期间发生变化: {source_path}",
+        )
+    return size, digest.hexdigest()
 
 
-def _copy_runtime_entry(source_path: Path, target_path: Path) -> list[tuple[Path, int]]:
+def _copy_runtime_entry(
+    source_path: Path,
+    target_path: Path,
+    manifest_out: dict[str, Any] | None = None,
+) -> list[tuple[Path, int]]:
     """Copy one runtime entry without following links.
 
     Returns the directories (relative to ``target_path``) given owner write
     access only for the move, with the mode to put back once published.
+    ``manifest_out["manifest"]`` receives the manifest of what was copied,
+    hashed while copying.
     """
     _remove_existing_path(target_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     kind, _source_stat = _classify_no_follow(source_path)
+    records: list[tuple[str, str, int, str]] = []
     if kind == "file":
-        _copy_regular_file_no_follow(source_path, target_path)
+        size, digest = _copy_regular_file_no_follow(source_path, target_path)
+        if manifest_out is not None:
+            manifest_out["manifest"] = _manifest_from_records(kind, [("", "file", size, digest)])
         return []
+    records.append(("", "dir", 0, ""))
     target_path.mkdir()
     pending = [(source_path, target_path)]
     created_dirs = [(source_path, target_path)]
@@ -745,12 +776,15 @@ def _copy_runtime_entry(source_path: Path, target_path: Path) -> list[tuple[Path
             child_source = Path(child.path)
             child_target = target_dir / child.name
             child_kind, _child_stat = _classify_no_follow(child_source)
+            relative = child_source.relative_to(source_path).as_posix()
             if child_kind == "dir":
                 child_target.mkdir()
                 pending.append((child_source, child_target))
                 created_dirs.append((child_source, child_target))
+                records.append((relative, "dir", 0, ""))
             else:
-                _copy_regular_file_no_follow(child_source, child_target)
+                size, digest = _copy_regular_file_no_follow(child_source, child_target)
+                records.append((relative, "file", size, digest))
     # Keep directory modes and timestamps as ``copytree`` did. Apply them
     # children first, after every file is in place: a read-only directory
     # could not receive its children, and writing a child would bump the
@@ -764,7 +798,38 @@ def _copy_runtime_entry(source_path: Path, target_path: Path) -> list[tuple[Path
         if not mode & stat.S_IWUSR:
             os.chmod(target_dir, mode | stat.S_IWUSR)
             widened.append((target_dir.relative_to(target_path), mode))
+    if manifest_out is not None:
+        manifest_out["manifest"] = _manifest_from_records(kind, records)
     return widened
+
+
+def _copy_and_verify_entry(
+    source_path: Path,
+    staged_path: Path,
+    *,
+    expected_manifest: dict | None = None,
+) -> tuple[dict[str, int | str], list[tuple[Path, int]]]:
+    """Stage a copy and check it: the source is read once, the copy once.
+
+    Returns the manifest of what was copied -- which the staged copy is
+    verified to match -- and the widened directory modes. With
+    ``expected_manifest`` (the source already read for a comparison) the
+    copy must match that too.
+    """
+    copy_record: dict[str, Any] = {}
+    widened = _copy_runtime_entry(source_path, staged_path, manifest_out=copy_record) or []
+    copied_manifest = copy_record.get("manifest")
+    if not isinstance(copied_manifest, dict) or _snapshot_path(staged_path) != copied_manifest:
+        raise StorageMigrationError(
+            "verification_failed",
+            f"迁移 staging 校验失败：{staged_path.name}。",
+        )
+    if expected_manifest is not None and copied_manifest != expected_manifest:
+        raise StorageMigrationError(
+            "verification_failed",
+            f"迁移 staging 校验失败：{staged_path.name}。",
+        )
+    return copied_manifest, widened
 
 
 def _rewrite_migrated_runtime_config_paths(
@@ -844,16 +909,94 @@ def _source_entries_referenced_by_config(*, config_root: Path, source_root: Path
     return referenced
 
 
+class _FileBasicInfo(ctypes.Structure):
+    _fields_ = [
+        ("CreationTime", ctypes.c_longlong),
+        ("LastAccessTime", ctypes.c_longlong),
+        ("LastWriteTime", ctypes.c_longlong),
+        ("ChangeTime", ctypes.c_longlong),
+        ("FileAttributes", ctypes.c_ulong),
+    ]
+
+
+@functools.lru_cache(maxsize=1)
+def _windows_file_info_api() -> Any:
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandleEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    return kernel32
+
+
+_BACKSLASH = chr(92)
+
+
+def _windows_extended_path(path: Path) -> str:
+    raw = str(path)
+    extended_prefix = _BACKSLASH * 2 + "?" + _BACKSLASH
+    if raw.startswith(extended_prefix):
+        return raw
+    if raw.startswith(_BACKSLASH * 2):
+        return extended_prefix + "UNC" + _BACKSLASH + raw[2:]
+    return extended_prefix + raw
+
+
+def _windows_change_time_ns(path: Path) -> int:
+    """NTFS change time: updated by every write and every metadata change.
+
+    Unlike the modification time, setting the timestamps back afterwards
+    (SetFileTime) does not restore it -- that is itself a change.
+    """
+    kernel32 = _windows_file_info_api()
+    handle = kernel32.CreateFileW(
+        _windows_extended_path(path),
+        0x0080,  # FILE_READ_ATTRIBUTES: no data access needed
+        0x0001 | 0x0002 | 0x0004,  # share read, write and delete
+        None,
+        3,  # OPEN_EXISTING
+        0x02000000 | 0x00200000,  # BACKUP_SEMANTICS (directories), OPEN_REPARSE_POINT
+        None,
+    )
+    if handle is None or handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        info = _FileBasicInfo()
+        if not kernel32.GetFileInformationByHandleEx(handle, 0, ctypes.byref(info), ctypes.sizeof(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return int(info.ChangeTime) * 100
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _metadata_fingerprint(path: Path) -> str:
     """Digest of an entry's metadata, without reading any file.
 
     Writing, creating, removing or renaming anything inside changes a size or
     an mtime, so comparing two fingerprints tells whether the entry was
-    touched in between -- far cheaper than another content manifest. On
-    POSIX the ctime is included too: any write updates it, and unlike the
-    mtime it cannot be set back afterwards.
+    touched in between -- far cheaper than another content manifest. Neither
+    can a write hide by setting the mtime back afterwards: the POSIX ctime
+    (``st_ctime_ns``) and, on Windows, where that is the creation time, the
+    NTFS change time are included, and setting timestamps updates both.
     """
-    records: list[tuple[str, int, int, int, int]] = []
+    records: list[tuple[str, int, int, int, int, int]] = []
     pending = [(path, "")]
     try:
         while pending:
@@ -867,6 +1010,7 @@ def _metadata_fingerprint(path: Path) -> str:
                     0 if is_dir else current_stat.st_size,
                     current_stat.st_mtime_ns,
                     current_stat.st_ctime_ns,
+                    _windows_change_time_ns(current) if os.name == "nt" else 0,
                 )
             )
             if is_dir and not _stat_is_reparse(current_stat):
@@ -1728,10 +1872,9 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
                     continue
                 source_entry = source_root / entry_name
                 fingerprint = _metadata_fingerprint(source_entry)
-                source_manifest = _snapshot_path(source_entry)
                 staged_entry = stage_root / entry_name
-                widened = _copy_runtime_entry(source_entry, staged_entry) or []
-                if _snapshot_path(staged_entry) != source_manifest or _metadata_fingerprint(source_entry) != fingerprint:
+                source_manifest, widened = _copy_and_verify_entry(source_entry, staged_entry)
+                if _metadata_fingerprint(source_entry) != fingerprint:
                     raise StorageMigrationError(
                         "verification_failed",
                         f"补迁旧版本未迁移的数据时校验失败，已停止，原数据未受影响：{entry_name}。",
@@ -1744,11 +1887,8 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
                     continue
                 for relative_dir, original_mode in widened:
                     os.chmod(target_entry / relative_dir, original_mode)
-                target_manifest = _snapshot_path(target_entry)
-                if target_manifest != source_manifest:
-                    # Written to the moment it went live: no proof of the copy,
-                    # so the old copy stays.
-                    continue
+                # The verified staged copy itself was moved into place.
+                target_manifest = source_manifest
                 copied_entries[entry_name] = {
                     "source_manifest": source_manifest,
                     "target_manifest": target_manifest,
@@ -2299,9 +2439,12 @@ def run_pending_storage_migration(
             # it is config; nothing else there needs the fingerprint.
             if not (use_existing_target and os.path.lexists(target_entry)) or entry_name == "config":
                 source_fingerprints[entry_name] = _metadata_fingerprint(source_entry)
-            source_manifest = _snapshot_path(source_entry)
-            source_snapshots[entry_name] = source_manifest
+            # Read up front only where it is compared before copying (an entry
+            # the reused target already has); otherwise the copy hashes it.
+            source_manifest: dict[str, int | str] | None = None
             if use_existing_target and os.path.lexists(target_entry):
+                source_manifest = _snapshot_path(source_entry)
+                source_snapshots[entry_name] = source_manifest
                 target_manifest = _snapshot_path(target_entry)
                 if target_manifest != source_manifest:
                     # Existing legacy/recovered entries are authoritative. They
@@ -2321,13 +2464,11 @@ def run_pending_storage_migration(
                 # (the target's own copy goes to the backup as usual).
                 reused_target_manifests[entry_name] = target_manifest
             staged_entry = stage_root / entry_name
-            widened_modes[entry_name] = _copy_runtime_entry(source_entry, staged_entry) or []
-            staged_manifest = _snapshot_path(staged_entry)
-            if staged_manifest != source_manifest:
-                raise StorageMigrationError(
-                    "verification_failed",
-                    f"迁移 staging 校验失败：{entry_name}。",
-                )
+            source_manifest, widened_modes[entry_name] = _copy_and_verify_entry(
+                source_entry, staged_entry, expected_manifest=source_manifest
+            )
+            source_snapshots[entry_name] = source_manifest
+            staged_manifest = source_manifest
             if entry_name == "config":
                 # Verify the verbatim copy first; only then apply the one
                 # intended change and take the manifest the target must match.
@@ -2554,9 +2695,10 @@ def run_pending_storage_migration(
                         f"迁移目标在发布期间出现了新条目，已停止迁移: {entry_name}",
                     ) from exc
                 published_entries.append(entry_name)
-                actual_manifest = _snapshot_path(target_entry)
-                expected_manifest = staged_manifests[entry_name]
-                if actual_manifest != expected_manifest:
+                # The publish moved the staged copy itself, verified just
+                # before; reading it a third time would prove nothing more.
+                actual_manifest = staged_manifests[entry_name]
+                if classify_entry_no_follow(target_entry) != actual_manifest.get("kind"):
                     raise StorageMigrationError(
                         "verification_failed",
                         f"迁移发布校验失败：{entry_name}。",
