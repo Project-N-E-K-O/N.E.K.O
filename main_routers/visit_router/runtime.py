@@ -820,8 +820,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.video_ok = caps.get("video_ok") is True
         self.codecs = list(caps.get("codecs") or [])
         self._sdk_ok = True
-        pending, self._pending_join = self._pending_join, None
-        if pending is not None and not self.joined:
+        if self._pending_join is not None and not self.joined:
+            # 旧连接的首次入房还没结束（joined 仍为真）时不取走：留给它作废时补做
+            pending, self._pending_join = self._pending_join, None
             await self.on_transport_state(pending)
             return
         if not self.joined and self._join_deadline is None:

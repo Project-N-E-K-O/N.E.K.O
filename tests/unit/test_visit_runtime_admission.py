@@ -1250,3 +1250,33 @@ async def test_a_successor_join_during_a_stale_first_join_is_kept(tmp_path, monk
     finally:
         gate.set()
         await teardown(side, clock=clock)
+
+
+async def test_a_successor_join_reported_before_its_sdk_gate_survives_a_stale_first_join(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    gate, reached = asyncio.Event(), asyncio.Event()
+    real_open = rt.journal.open
+
+    async def slow_open(**kw):
+        reached.set()
+        await gate.wait()
+        await real_open(**kw)
+
+    rt.journal.open = slow_open
+    try:
+        joining = asyncio.ensure_future(rt.on_transport_state({"state": "joined", "peer_present": False}))
+        await asyncio.wait_for(reached.wait(), 5)
+        rt.transport.on_page_attached(clock())                # 旧连接被顶替
+        await rt.on_transport_state({"state": "joined", "peer_present": False})   # 新连接先报入房
+        await rt.on_sdk_caps({"stage": "sdk", "transport_ok": True, "video_ok": True, "codecs": []})  # 再过能力门
+        gate.set()                                            # 旧的上传头这时才写完
+        await asyncio.gather(joining)
+        await wait_for(lambda: rt.joined and rt.phase == "invite_ready")
+    finally:
+        gate.set()
+        await teardown(side, clock=clock)
