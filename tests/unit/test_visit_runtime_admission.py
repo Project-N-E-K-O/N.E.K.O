@@ -1970,6 +1970,8 @@ async def test_an_overrun_channel_close_is_handed_to_stop_all(tmp_path, monkeypa
         closing = rt._closing_task
         assert closing is not None and not closing.done()
         assert closing in rtm._detached                       # 注销之后交给模块级登记，stop_all 收得到
+        pump = rt._pump_task                                  # 卡在同一个写里的发送泵也一样
+        assert pump is not None and not pump.done() and pump in rtm._detached
     finally:
         release.set()
         await teardown(host, guest, wire=wire, clock=clock)
