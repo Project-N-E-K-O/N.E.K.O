@@ -132,6 +132,7 @@ _HANDOFF_POLL_S = 0.25
 _SHUTDOWN_TASK_WAIT_S = 0.5
 _JOURNAL_OPEN_MAX_S = 10.0
 _SESSION_CLOSE_S = 5.0
+_RESERVED_SEND_MAX_S = 10.0
 _SEAL_MAX_S = 10.0
 _DISPLAY_FLUSH_S = 2.0
 _ACCOUNT_RECORD_S = 3.0
@@ -1028,7 +1029,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         keep = ("tx_fps", "enc_fps", "tx_kbps", "rx_fps", "rx_kbps", "rtt_ms", "loss_pct", "dc_queue",
                 "rx_w", "rx_h")
         self.stats = {k: msg.get(k) for k in keep if isinstance(msg.get(k), (int, float))
-                      and not isinstance(msg.get(k), bool) and msg.get(k) >= 0}
+                      and not isinstance(msg.get(k), bool) and math.isfinite(msg.get(k)) and msg.get(k) >= 0}
         if msg.get("softenc_overloaded") is True:
             _vp8_next_visit = True
         if self.peer is None or not self.ready_exchanged or self.finalizing:
@@ -1547,10 +1548,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                     self.handoff.skip("ritual")  # 不会再播：交还不等它
         await self._settle_activation()
         # ⑤ 等关闭任务结束（数据通道要靠 iframe 发 leave，所以 iframe 留到这时）
-        try:
-            await asyncio.wait_for(asyncio.shield(closing), _CLOSE_WAIT_S)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("visit %s: channel close did not finish: %r", self.visit_id[:6], exc)
+        await asyncio.wait([closing], timeout=_CLOSE_WAIT_S)
+        if not closing.done() and self.outbox.reserved_bytes:
+            # 已接纳的亲人那句还在落盘（持有预留）：它入队、leave 跟上之前 teardown 不能先拆掉 pump 与传输，
+            # 否则这句已落盘、已改过 room 的话到不了对端。再多等一段（有界：磁盘一直卡着就放弃）
+            await asyncio.wait([closing], timeout=_RESERVED_SEND_MAX_S)
+        if not closing.done():
+            logger.warning("visit %s: channel close did not finish", self.visit_id[:6])
         flushed = await self._flush_display(_DISPLAY_FLUSH_S)  # 告别句等整句先上屏，再发「已结束」
         self._ended_published = True  # 从这里起不再往显示队列放帧（收尾中补到的整句只进转录）
         if not flushed:

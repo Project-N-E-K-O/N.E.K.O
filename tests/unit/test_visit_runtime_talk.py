@@ -1514,6 +1514,39 @@ async def test_own_line_frames_reach_the_page_in_order(tmp_path, monkeypatch):
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_an_admitted_family_line_still_reaches_the_peer_after_the_close_wait(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_record = rt.record_line
+
+    async def slow_record(speaker, **kwargs):
+        if speaker == "own_human":
+            await stuck.wait()                                # 亲人那句落盘慢过关闭通道的等待
+        return await real_record(speaker, **kwargs)
+
+    rt.record_line = slow_record
+    try:
+        sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
+            "input_type": "text", "data": "等一下再走", "source": "neko_visit:guest_cat"}))
+        await wait_for(lambda: rt.outbox.reserved_bytes > 0)
+        rt.request_finalize("delivery_failed")
+        await asyncio.sleep(1.0)                              # 已超过 _CLOSE_WAIT_S
+        assert not rt._ended_published                        # 预留还在：退出流程仍在等关闭任务，不往下走
+        assert rtm.get_runtime("Host") is rt                  # teardown 不先拆发送通道
+        stuck.set()
+        await asyncio.gather(sending)
+        await finish(rt, clock)
+        humans = [p for p in wire.sent["host"] if p.get("t") == "text" and p.get("sp") == "h"]
+        assert humans and humans[0].get("txt") == "等一下再走"     # 这句照样送到对端
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_an_admitted_family_line_goes_out_before_leave(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt

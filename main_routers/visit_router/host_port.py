@@ -160,7 +160,13 @@ class ManagerHost:
         # 打断与等 turn end 共用一个期限。不用 wait_for：它到点后还会等被取消的协程真正结束，
         # 不肯停的打断会把发凭证（以及占着的串门路由）一直挂住
         deadline = time.monotonic() + timeout
-        interrupting = asyncio.ensure_future(session.handle_interruption())
+        # 离线会话：打断会接管这条回复的收尾（它自己的完成回调不再跑），必须走管理器的
+        # _interrupt_offline_reply 把这一轮关掉，否则下一条普通回复会并进这一轮
+        interrupt_reply = getattr(self._mgr, "_interrupt_offline_reply", None)
+        if callable(interrupt_reply):
+            interrupting = asyncio.ensure_future(interrupt_reply(session))
+        else:
+            interrupting = asyncio.ensure_future(session.handle_interruption())
         interrupting.add_done_callback(lambda t: t.cancelled() or t.exception())
         try:
             await asyncio.wait([interrupting], timeout=timeout)

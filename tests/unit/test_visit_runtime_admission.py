@@ -1241,6 +1241,20 @@ async def test_shutdown_stays_within_its_total_budget(tmp_path, monkeypatch):
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_non_finite_transport_stats_are_not_kept(tmp_path, monkeypatch):
+    import json
+
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        rt.on_transport_stats({"rtt_ms": float("inf"), "rx_fps": float("nan"), "tx_fps": 30, "rx_kbps": 500,
+                               "loss_pct": 0.0, "rx_w": 640, "rx_h": 480})
+        assert "rtt_ms" not in rt.stats and "rx_fps" not in rt.stats and rt.stats["tx_fps"] == 30
+        json.dumps(rt.snapshot(), allow_nan=False)            # /state 照样能序列化
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_the_spool_is_finalized_only_once(tmp_path, monkeypatch):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt

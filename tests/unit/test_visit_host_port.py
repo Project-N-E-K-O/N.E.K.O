@@ -85,6 +85,20 @@ async def test_main_turn_interruption_is_cancelled_with_its_caller():
     await asyncio.wait_for(cancelled.wait(), 1)       # 打断任务跟着取消，不再去打断亲人的对话
 
 
+async def test_main_turn_interruption_goes_through_the_turn_closing_helper():
+    session = _Session(responding=True)
+    used = []
+
+    async def interrupt_offline_reply(sess):
+        used.append(sess)
+        sess._is_responding = False
+        return True
+
+    host = ManagerHost("Host", SimpleNamespace(session=session, _interrupt_offline_reply=interrupt_offline_reply))
+    assert await host.interrupt_main_turn(1.0) is True
+    assert used == [session]                          # 走管理器的收口方法：被打断的这一轮会被关掉
+
+
 async def test_family_turn_wait_covers_a_reply_that_starts_late(monkeypatch):
     monkeypatch.setattr(host_port, "_TURN_IDLE_POLL_S", 0.02)
     session = _Session(responding=False)
