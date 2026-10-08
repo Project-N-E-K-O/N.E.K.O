@@ -275,8 +275,10 @@ async def test_human_interrupt_stops_now_and_keeps_only_the_released_prefix(tmp_
         await settle()
         assert all("第二" not in p.get("txt", "") for p in wire.sent["host"])
         await wait_for(lambda: rt._line is None)
-        history = [getattr(m, "content", "") for m in host.clients[0]._conversation_history]
-        assert any(c.startswith("第一句话。") and "第二" not in c and c != "第一句话。" for c in history)
+        # 入史是拿 turn_lock 的后台任务（「等一下」引出的下一轮可能正持有它）：等它写进去，不在收口后立刻读
+        await wait_for(lambda: any(
+            c.startswith("第一句话。") and "第二" not in c and c != "第一句话。"
+            for c in (getattr(m, "content", "") for m in host.clients[0]._conversation_history)), timeout=10)
     finally:
         pause.set()
         await teardown(host, guest, wire=wire, clock=clock)
