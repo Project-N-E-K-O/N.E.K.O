@@ -1047,6 +1047,22 @@ async def test_a_late_seal_that_fails_still_schedules_the_upload(tmp_path, monke
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_stop_all_abandons_a_header_left_to_a_deferred_seal(tmp_path, monkeypatch):
+    host, guest, wire, clock, gate = await _bring_up_with_a_pending_header(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        opening = rt._journal_opening
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(rt), 10)             # 正常收尾等上传头超时：运行时已注销
+        assert rtm.has_visit_background_tasks("Host") and not opening.done()  # 只剩后台封存链在等它
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
+        await wait_for(lambda: opening.done(), timeout=2)
+        assert opening.cancelled() and rt.journal._open_abandoned  # 后台链被取消时一并放弃并取消写上传头
+    finally:
+        gate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_late_seal_is_the_one_seal_of_the_visit(tmp_path, monkeypatch):
     import threading
 

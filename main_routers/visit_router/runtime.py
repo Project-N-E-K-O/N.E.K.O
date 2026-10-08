@@ -1704,17 +1704,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return
         await asyncio.wait([opening], timeout=_JOURNAL_OPEN_MAX_S if timeout is None else timeout)
         if not opening.done() and self._shutdown_started:
-            # 关机：不起不设上限的后台封存链，并主动取消写上传头的任务（abandon_open 之后它被取消就立刻结束，
-            # 不再等卡住的写盘），事件循环这一层不会被它挂住。注意线程池的写盘线程不是 daemon：磁盘一直卡着时，
-            # 解释器退出仍会等它（所有走线程池写盘的地方都一样）。留在磁盘上的流水由下次启动补录
-            try:
-                self.journal.abandon_open(self._backlog_stream_records())
-            except Exception as exc:  # noqa: BLE001 - 转换失败也照样放弃并取消：关机后面的步骤一定要走到
-                logger.warning("visit %s: buffered records not kept at shutdown: %s", self.visit_id[:6],
-                               type(exc).__name__)
-                self.journal.abandon_open()
-            self._journal_backlog = []
-            opening.cancel()
+            # 关机：不起不设上限的后台封存链，并主动取消写上传头的任务
+            self._abandon_journal_open(opening)
             return
         if not opening.done():
             reason = self.finalize_reason or "shutdown"
@@ -1726,8 +1717,28 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             spawn_visit_background(self.character_uid,
                                    lambda: self._seal_after_header(opening, reason, ended_at, gen))
 
+    def _abandon_journal_open(self, opening: asyncio.Future) -> None:
+        # abandon_open 之后写上传头的任务被取消就立刻结束（不再等卡住的写盘），事件循环这一层不会被它挂住；
+        # 等待期间攒下的记录排在建文件之后由写线程补上。注意线程池的写盘线程不是 daemon：磁盘一直卡着时，
+        # 解释器退出仍会等它（所有走线程池写盘的地方都一样）。留在磁盘上的流水由下次启动补录
+        try:
+            self.journal.abandon_open(self._backlog_stream_records())
+        except Exception as exc:  # noqa: BLE001 - 转换失败也照样放弃并取消：关机后面的步骤一定要走到
+            logger.warning("visit %s: buffered records not kept at shutdown: %s", self.visit_id[:6],
+                           type(exc).__name__)
+            self.journal.abandon_open()
+        self._journal_backlog = []
+        opening.cancel()
+
     async def _seal_after_header(self, opening: asyncio.Future, reason: str, ended_at: float, gen: int) -> None:
-        await asyncio.wait([opening])
+        try:
+            await asyncio.wait([opening])
+        except asyncio.CancelledError:
+            # stop_all 取消这条后台链：运行时已注销，没有别人再替它收掉写上传头的任务，与关机路径一样放弃并取消，
+            # 不让它在事件循环销毁时走「等写盘结束」那条路把关机挂住
+            if not opening.done():
+                self._abandon_journal_open(opening)
+            raise
         # 上传头没写成（异常在这里取走）：没有流水可封存，spool 照样收尾
         header_ok = not opening.cancelled() and opening.exception() is None
         await self._seal_late_journal(reason, ended_at, header_ok=header_ok, gen=gen)
@@ -2428,7 +2439,7 @@ async def stop_all(reason: str = "shutdown") -> None:
         for rt, result in zip(runtimes, results):
             if isinstance(result, BaseException):
                 # 这一场没封存 / 没 finalize，留给下次启动补录：至少在日志里能查到是哪一场、出了什么错
-                logger.warning("visit %s: shutdown failed: %r", rt.visit_id[:6], result)
+                logger.error("visit %s: shutdown failed: %r", rt.visit_id[:6], result, exc_info=result)
         # 脱离运行时的后台任务（账号映射补写、交还回调、没关完的会话）也一并停掉，不留给事件循环销毁
         # 按角色登记的后台写入（digest、最后总结、延后的 spool 收尾、启动补录）同样停掉：没写完的留给下次启动补录
         # 还没完成的撤销房间请求（某一场 shutdown() 半路出错、没走到它自己的撤销等待）同样取消再限时等
