@@ -1255,7 +1255,9 @@ def test_reused_target_emptied_during_staging_is_not_committed(tmp_path, monkeyp
     result = run_pending_storage_migration(config_manager)
 
     assert result["completed"] is False
-    assert result["error_code"] == "target_missing_runtime"
+    # The reused entry itself is checked now, so the more specific code wins
+    # over the whole-root "no runtime data left" check; nothing is published.
+    assert result["error_code"] == "target_changed_during_migration"
     assert not (target_root / "memory").exists()
 
 
@@ -3217,6 +3219,44 @@ def test_reused_target_entry_removed_before_commit_stops_the_migration(tmp_path,
         shutil.rmtree(target_root / "memory", ignore_errors=True)
 
     monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_reused_entry_gone)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "target_changed_during_migration"
+
+
+
+@pytest.mark.unit
+def test_authoritative_target_entry_removed_before_commit_stops_the_migration(tmp_path, monkeypatch):
+    """A target entry that differs from the source is kept as authoritative
+    rather than staged; if it is gone by commit time, the target would go
+    live without it."""
+    import shutil
+
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    for root in (source_root, target_root):
+        (root / "config").mkdir(parents=True)
+        (root / "config" / "characters.json").write_text("same", encoding="utf-8")
+        (root / "memory").mkdir()
+    (source_root / "memory" / "facts.json").write_text("source", encoding="utf-8")
+    (target_root / "memory" / "facts.json").write_text("target's own", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="legacy",
+    )
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_authoritative_entry_gone(staged, target):
+        original_publish(staged, target)
+        shutil.rmtree(target_root / "memory", ignore_errors=True)
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_authoritative_entry_gone)
 
     result = run_pending_storage_migration(config_manager)
 

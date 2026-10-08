@@ -1889,6 +1889,9 @@ def run_pending_storage_migration(
         original_target_modes: dict[str, int] = {}
         identical_entries: dict[str, dict[str, Any]] = {}
         reused_target_manifests: dict[str, dict[str, int | str]] = {}
+        # Target entries the migration keeps as they are instead of staging:
+        # they must still be there when the roots are switched.
+        reused_target_entries: set[str] = set()
         source_fingerprints: dict[str, str] = {}
         for entry_name in existing_entries:
             source_entry = source_root / entry_name
@@ -1907,8 +1910,10 @@ def run_pending_storage_migration(
                 if target_manifest != source_manifest:
                     # Existing legacy/recovered entries are authoritative. They
                     # do not prove the source copy and are not cleanup-safe.
+                    reused_target_entries.add(entry_name)
                     continue
                 if entry_name != "config":
+                    reused_target_entries.add(entry_name)
                     identical_entries[entry_name] = {
                         "source_manifest": source_manifest,
                         "target_manifest": target_manifest,
@@ -1980,8 +1985,8 @@ def run_pending_storage_migration(
                         "verification_failed",
                         f"迁移期间原始数据被修改，已停止迁移，原始数据未受影响：{entry_name}。",
                     )
-            for entry_name in identical_entries:
-                if use_existing_target and not os.path.lexists(target_root / entry_name):
+            for entry_name in sorted(reused_target_entries):
+                if not os.path.lexists(target_root / entry_name):
                     # Reused as the target's own copy, not staged: gone now,
                     # switching roots would leave it out.
                     raise StorageMigrationError(
