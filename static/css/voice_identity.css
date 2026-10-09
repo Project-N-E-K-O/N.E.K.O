@@ -24,21 +24,6 @@
     font-weight: 700;
 }
 
-.setup-step {
-    display: inline-flex;
-    width: 30px;
-    height: 30px;
-    align-items: center;
-    justify-content: center;
-    flex: 0 0 auto;
-    border-radius: 9px;
-    color: var(--voice-blue-dark);
-    background: var(--voice-panel-soft);
-    font-size: 0.75rem;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-}
-
 .readiness-card label {
     display: block;
     margin: 0 0 8px;
@@ -278,8 +263,6 @@
 
 :root {
     --voice-page: #f4f8fc;
-    --voice-page-mid: #f4f8fc;
-    --voice-page-end: #edf4fa;
     --voice-panel-soft: #f0f7fc;
     --voice-blue: #55bdf2;
     --voice-blue-strong: #087bb4;
@@ -312,8 +295,6 @@
 
 [data-theme="dark"] {
     --voice-page: #101c25;
-    --voice-page-mid: #17232c;
-    --voice-page-end: #0f1c25;
     --voice-panel-soft: #19303e;
     --voice-blue-strong: #8acff3;
     --voice-progress-current-text: #102e40;
@@ -1268,24 +1249,7 @@ button:disabled {
     }
 }
 
-@media (max-width: 560px) {
-    .readiness-card {
-        display: block;
-        padding: 20px;
-    }
-
-    .input-level-panel {
-        margin: 20px 0;
-    }
-
-    .input-test-actions button {
-        width: 100%;
-    }
-
-    .resource-card {
-        padding: 16px 20px;
-    }
-
+@media (max-width: 680px) {
     .voice-identity-content {
         width: min(100% - 20px, 760px);
         padding-top: 14px;
@@ -1311,6 +1275,25 @@ button:disabled {
 
     .profile-actions {
         justify-content: flex-start;
+    }
+}
+
+@media (max-width: 560px) {
+    .readiness-card {
+        display: block;
+        padding: 20px;
+    }
+
+    .input-level-panel {
+        margin: 20px 0;
+    }
+
+    .input-test-actions button {
+        width: 100%;
+    }
+
+    .resource-card {
+        padding: 16px 20px;
     }
 }
 

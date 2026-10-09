@@ -155,7 +155,53 @@ test('optional wake resources do not block enrollment and explain disabled downl
     assert.equal(h.elements.get('voice-identity-download-help').hidden, false);
     assert.equal(h.elements.get('voice-identity-resource-summary').textContent, 'voiceIdentity.resourcesReady');
     assert.equal(h.elements.get('voice-identity-wake-summary').textContent, 'voiceIdentity.wakeOptional');
-    assert.equal(h.elements.get('voice-identity-download-help').textContent, 'voiceIdentity.downloadNeedsRuntime');
+    assert.equal(h.elements.get('voice-identity-download-help').textContent, 'voiceIdentity.downloadNeedsWakeOn');
+    await h.elements.get('voice-identity-test').emit('click');
+    assert.equal(h.controller.startHintKey(), 'voiceIdentity.enrollmentReady');
+    assert.equal(h.controller.canStart(), true);
+});
+
+test('repair is offered only for required resources; optional wake parts point to their own step', async () => {
+    let payload;
+    const h = harness({ translate: key => key, requestRouter: async url => url === '/resources' ? payload : {} });
+    const ready = { state: 'ready', required: true };
+    const show = async (wakeEnabled, model, runtime) => {
+        payload = { can_enroll: true, wake_enabled: wakeEnabled, resources: { campp: ready, silero: ready,
+            wake_model: { state: model, required: wakeEnabled }, wake_runtime: { state: runtime, required: wakeEnabled } } };
+        await h.controller.refreshResources();
+        const el = name => h.elements.get('voice-identity-' + name);
+        return { repair: !el('repair').hidden, help: el('download-help').hidden ? '' : el('download-help').textContent,
+            summary: el('resource-summary').textContent, wake: el('wake-summary').textContent };
+    };
+    // Fresh install: wake word off and no model downloaded.
+    assert.deepEqual(await show(false, 'missing', 'unchecked'), { repair: false, help: '', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeOptional' });
+    assert.deepEqual(await show(false, 'missing', 'missing'), { repair: false, help: 'voiceIdentity.downloadNeedsWakeOn', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeOptional' });
+    assert.deepEqual(await show(true, 'missing', 'unchecked'), { repair: false, help: '', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeNeedsModel' });
+    assert.deepEqual(await show(true, 'missing', 'missing'), { repair: true, help: 'voiceIdentity.downloadNeedsRuntime', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeNeedsResources' });
+    payload = { can_enroll: false, wake_enabled: false, resources: { campp: { state: 'missing', required: true }, silero: ready } };
+    await h.controller.refreshResources();
+    assert.equal(h.elements.get('voice-identity-repair').hidden, false);
+});
+
+test('loading resources after a passed test asks for a retest instead of still showing it passed', async () => {
+    let prepared = false;
+    const h = harness({ requestRouter: async url => {
+        if (url === '/resources') return { can_enroll: prepared, wake_enabled: false, audio_contract: { revision: 1, noise_reduction_enabled: false },
+            resources: { campp: { state: prepared ? 'ready' : 'unchecked', required: true } } };
+        if (url === '/audio/check/isolation') return { token: 'opaque-ticket', ttl_seconds: 60 };
+        if (url === '/audio/check') return { accepted: true, audio_contract: { revision: 1, noise_reduction_enabled: false } };
+        if (url === '/resources/operations') return { operation_id: 'prepare-id', state: 'reserved' };
+        if (url === '/resources/operations/prepare-id') { prepared = true; return { state: 'succeeded' }; }
+        return {};
+    } });
+    await h.controller.refreshResources();
+    await h.elements.get('voice-identity-test').emit('click');
+    assert.equal(h.elements.get('voice-identity-test-result').textContent, 'Input test passed.');
+    assert.equal(h.controller.startHintKey(), 'voiceIdentity.resourcesNeeded');
+    await h.elements.get('voice-identity-prepare').emit('click');
+    assert.equal(h.controller.startHintKey(), 'voiceIdentity.inputTestRequired');
+    assert.equal(h.controller.canStart(), false);
+    assert.equal(h.elements.get('voice-identity-test-result').textContent, 'Resources changed. Repeat the input test.');
     await h.elements.get('voice-identity-test').emit('click');
     assert.equal(h.controller.startHintKey(), 'voiceIdentity.enrollmentReady');
     assert.equal(h.controller.canStart(), true);

@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 声纹页资源说明补回模型所在机器，刷新八语言客户端缓存。
-    const LOCALE_VERSION = '2026-10-09-pr3345-resource-location-copy';
+    // 声纹页资源卡前置并补试录作废、唤醒模型提示，刷新八语言客户端缓存。
+    const LOCALE_VERSION = '2026-10-09-pr3345-resource-first-retest';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

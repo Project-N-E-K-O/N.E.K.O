@@ -48,6 +48,35 @@ function measurePcm(pcm) {
 async function waitFor(expression) {
     return win.webContents.executeJavaScript(`new Promise((resolve,reject)=>{const condition=()=>(${expression});if(condition())return resolve(true);const observer=new MutationObserver(()=>{if(condition()){clearTimeout(timer);observer.disconnect();resolve(true);}});observer.observe(document.body,{subtree:true,attributes:true,childList:true,characterData:true});const timer=setTimeout(()=>{observer.disconnect();reject(new Error('UI condition timed out'));},12000);})`);
 }
+// Native Windows resizing and Chromium's media-query style update can arrive
+// on different frames. Wait for the requested viewport and its breakpoint
+// styles, rather than assuming a fixed number of frames suffices.
+async function resizeViewport(width, height) {
+    win.setContentSize(width, height);
+    return win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+        let frame;
+        const timer = setTimeout(() => {
+            cancelAnimationFrame(frame);
+            reject(new Error('Viewport styles did not settle: ' + JSON.stringify({
+                width: innerWidth,
+                display: getComputedStyle(document.querySelector('.readiness-card')).display,
+                margin: getComputedStyle(document.querySelector('.input-level-panel')).marginTop
+            })));
+        }, 12000);
+        const check = () => {
+            const card = getComputedStyle(document.querySelector('.readiness-card'));
+            const level = getComputedStyle(document.querySelector('.input-level-panel'));
+            const twoColumns = ${width} > 560 && ${width} <= 860;
+            const expectedMargin = ${width} <= 560 ? '20px' : twoColumns ? '0px' : '16px';
+            if (innerWidth === ${width} && card.display === (twoColumns ? 'grid' : 'block')
+                && level.marginTop === expectedMargin) {
+                clearTimeout(timer);
+                resolve(true);
+            } else frame = requestAnimationFrame(check);
+        };
+        check();
+    })`);
+}
 async function verifyInputLayout(noticeVisible) {
     const layouts = [];
     const cases = ['light', 'dark'].flatMap(theme =>
@@ -56,36 +85,11 @@ async function verifyInputLayout(noticeVisible) {
         cases.push({ theme: 'light', width: 680, language });
     }
     for (const { theme, width, language } of cases) {
-        win.setContentSize(width, 900);
-        const layout = await win.webContents.executeJavaScript(`(async () => {
-            await window.changeLanguage(${JSON.stringify(language)});
+        await win.webContents.executeJavaScript(`window.changeLanguage(${JSON.stringify(language)}).then(() => {
             document.documentElement.setAttribute('data-theme', ${JSON.stringify(theme)});
-            // Native Windows resizing and Chromium's media-query style update
-            // can arrive on different frames. Wait for the requested viewport
-            // and breakpoint styles, rather than assuming two frames suffice.
-            await new Promise((resolve, reject) => {
-                let frame;
-                const timer = setTimeout(() => {
-                    cancelAnimationFrame(frame);
-                    reject(new Error('Viewport styles did not settle: ' + JSON.stringify({
-                        width: innerWidth,
-                        display: getComputedStyle(document.querySelector('.readiness-card')).display,
-                        margin: getComputedStyle(document.querySelector('.input-level-panel')).marginTop
-                    })));
-                }, 12000);
-                const check = () => {
-                    const card = getComputedStyle(document.querySelector('.readiness-card'));
-                    const level = getComputedStyle(document.querySelector('.input-level-panel'));
-                    const twoColumns = ${width} > 560 && ${width} <= 860;
-                    const expectedMargin = ${width} <= 560 ? '20px' : twoColumns ? '0px' : '16px';
-                    if (innerWidth === ${width} && card.display === (twoColumns ? 'grid' : 'block')
-                        && level.marginTop === expectedMargin) {
-                        clearTimeout(timer);
-                        resolve();
-                    } else frame = requestAnimationFrame(check);
-                };
-                check();
-            });
+        })`);
+        await resizeViewport(width, 900);
+        const layout = await win.webContents.executeJavaScript(`(async () => {
             const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON();
             return { device: rect('.input-device-field'), level: rect('.input-level-panel'),
                 notice: rect('#voice-identity-input-notice'), help: rect('.input-test-help'),
@@ -113,7 +117,7 @@ async function verifyInputLayout(noticeVisible) {
         assert.ok(layout.help.top >= Math.max(layout.level.bottom, layout.notice.bottom), `${label}: help follows input controls and notice`);
         layouts.push({ width, theme, language, noticeVisible });
     }
-    win.setContentSize(960, 900);
+    await resizeViewport(960, 900);
     await win.webContents.executeJavaScript("window.changeLanguage('zh-CN').then(() => { document.documentElement.setAttribute('data-theme', 'light'); })");
     return layouts;
 }
@@ -274,15 +278,16 @@ app.whenReady().then(async () => {
     const profileLayout = await win.webContents.executeJavaScript("({ input: document.querySelector('.readiness-card').getBoundingClientRect().toJSON(), profile: document.querySelector('.profile-card').getBoundingClientRect().toJSON(), resources: document.querySelector('.resource-card').getBoundingClientRect().toJSON(), hint: document.getElementById('voice-identity-reenroll-hint').textContent })");
     assert.equal(profileLayout.profile.top, profileLayout.input.top);
     assert.ok(profileLayout.profile.left >= profileLayout.input.right);
-    assert.ok(profileLayout.resources.top >= Math.max(profileLayout.profile.bottom, profileLayout.input.bottom));
+    // Resources come first: loading them later would discard a passed input test.
+    assert.ok(profileLayout.resources.bottom <= Math.min(profileLayout.profile.top, profileLayout.input.top));
     assert.match(profileLayout.hint, /请先完成试录/);
-    win.setContentSize(390, 844);
-    await win.webContents.executeJavaScript('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    await resizeViewport(390, 844);
     const mobileProfile = await win.webContents.executeJavaScript("({ input: document.querySelector('.readiness-card').getBoundingClientRect().toJSON(), profile: document.querySelector('.profile-card').getBoundingClientRect().toJSON(), resources: document.querySelector('.resource-card').getBoundingClientRect().toJSON(), width: document.documentElement.scrollWidth, viewport: innerWidth })");
+    assert.equal(mobileProfile.viewport, 390);
+    assert.ok(mobileProfile.input.top >= mobileProfile.resources.bottom);
     assert.ok(mobileProfile.profile.top >= mobileProfile.input.bottom);
-    assert.ok(mobileProfile.resources.top >= mobileProfile.profile.bottom);
     assert.equal(mobileProfile.width, mobileProfile.viewport);
-    win.setContentSize(960, 900);
+    await resizeViewport(960, 900);
     const deletesBefore = requests.filter(r => r.path === '/api/voice-identity/profile' && r.method === 'DELETE').length;
     await win.webContents.executeJavaScript("window.showConfirm=()=>new Promise(resolve=>{window.__resolveProfileDelete=resolve;});document.getElementById('voice-identity-delete').click();true;");
     await waitFor("document.getElementById('voice-identity-delete').disabled && document.getElementById('voice-identity-profile-controls').hidden");
@@ -300,7 +305,7 @@ app.whenReady().then(async () => {
     const deletedLayout = await win.webContents.executeJavaScript("({ input: document.querySelector('.readiness-card').getBoundingClientRect().toJSON(), enrollment: document.getElementById('voice-identity-enrollment').getBoundingClientRect().toJSON(), resources: document.querySelector('.resource-card').getBoundingClientRect().toJSON() })");
     assert.equal(deletedLayout.enrollment.top, deletedLayout.input.top);
     assert.ok(deletedLayout.enrollment.left >= deletedLayout.input.right);
-    assert.ok(deletedLayout.resources.top >= Math.max(deletedLayout.enrollment.bottom, deletedLayout.input.bottom));
+    assert.ok(deletedLayout.resources.bottom <= Math.min(deletedLayout.enrollment.top, deletedLayout.input.top));
     const report = { electron: process.versions.electron, actualPageAndWorklet: true, controlledApi: true, realMicrophoneCaptured: false, realBackend: false, quietFixedSentenceUploaded: true, prematureManualFinishBlocked: true, quietManualFinishUploaded: true, cancelledFormalInputReleased: true, manualRmsActiveSeconds: segment.rmsActiveSeconds, trialRmsActiveSeconds: check.rmsActiveSeconds, titleAccessibility, inputLayouts, fallbackRequiresSecondTest: true, inputResourcesReleasedAfterTrial: true, repeatedTrialReacquiresStream: true, cancelledLatePermissionStopped: true, formalReopensAndChecksContract: true, changedServerContractRequiresRetest: true, pcmBytes: check.bytes, gainChangeInvalidatesTest: true, cancelledDeletionPreservesProfile: true, profileDeletionRestoresLayoutWithoutReload: true, ui };
     fs.writeFileSync(path.join(scratch, 'result.json'), JSON.stringify(report, null, 2));
     console.log('VOICE_READINESS_ELECTRON ' + JSON.stringify(report));

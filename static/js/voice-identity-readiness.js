@@ -53,7 +53,10 @@
             el.download.disabled = pending || !!operation || hooks.enrolling() || !resources || !resources.resources || !resources.resources.wake_runtime || ['missing', 'unavailable'].includes(resources.resources.wake_runtime.state);
             el['wake-enable'].disabled = pending || hooks.enrolling() || !resources || resources.wake_managed === true;
             el['wake-enable'].checked = !!(resources && resources.wake_enabled);
-            el.repair.hidden = !resources || !Object.values(resources.resources || {}).some(value => ['missing', 'unavailable'].includes(value.state));
+            // Wake components only become required once wake word is on, and a
+            // missing wake model is fixed by its download button, not repair.
+            el.repair.hidden = !resources || !Object.entries(resources.resources || {}).some(([name, value]) => value.required
+                && ['missing', 'unavailable'].includes(value.state) && !(name === 'wake_model' && value.state === 'missing'));
             el.repair.disabled = pending || hooks.enrolling();
             el['resource-cancel'].hidden = !operation;
             el['gain-value'].textContent = gainDb + ' dB';
@@ -70,12 +73,15 @@
             }
             const wakeSummary = document.getElementById('voice-identity-wake-summary');
             if (wakeSummary) {
-                const wakeReady = resources && ['wake_model', 'wake_runtime'].every(name => resources.resources && resources.resources[name] && resources.resources[name].state === 'ready');
+                const wakeState = name => resources && resources.resources && resources.resources[name] && resources.resources[name].state;
+                const wakeReady = wakeState('wake_model') === 'ready' && wakeState('wake_runtime') === 'ready';
                 const [key, fallback] = !resources || !resources.wake_enabled
                     ? ['voiceIdentity.wakeOptional', 'Wake word is off. This does not block voice enrollment.']
                     : wakeReady
                         ? ['voiceIdentity.wakeReady', 'Wake word components are ready.']
-                        : ['voiceIdentity.wakeNeedsResources', 'Wake word is on. Check and load its components.'];
+                        : wakeState('wake_model') === 'missing' && !['missing', 'unavailable'].includes(wakeState('wake_runtime'))
+                            ? ['voiceIdentity.wakeNeedsModel', 'Wake word is on. Download the wake-word model.']
+                            : ['voiceIdentity.wakeNeedsResources', 'Wake word is on. Check and load its components.'];
                 const text = !resources ? '' : t(key, fallback);
                 if (wakeSummary.textContent !== text) wakeSummary.textContent = text;
             }
@@ -83,7 +89,11 @@
             if (downloadHelp) {
                 const runtime = resources && resources.resources && resources.resources.wake_runtime;
                 downloadHelp.hidden = !runtime || !['missing', 'unavailable'].includes(runtime.state);
-                const text = downloadHelp.hidden ? '' : t('voiceIdentity.downloadNeedsRuntime', 'Install or repair the wake word runtime before downloading the model.');
+                // The repair button only appears once the runtime is required,
+                // that is, once wake word is on; until then, point there first.
+                const text = downloadHelp.hidden ? '' : runtime.required
+                    ? t('voiceIdentity.downloadNeedsRuntime', 'Install or repair the wake word runtime before downloading the model.')
+                    : t('voiceIdentity.downloadNeedsWakeOn', 'The wake-word runtime is missing. Turn on wake word, then repair the runtime and download the model.');
                 if (downloadHelp.textContent !== text) downloadHelp.textContent = text;
             }
             if (updateParent) hooks.render();
@@ -290,10 +300,16 @@
             if (reason === 'runtime_degraded') return t('voiceIdentity.reasonRuntimeDegraded', 'Voice activation is temporarily unavailable; standby audio will not be uploaded.');
             return t('voiceIdentity.resourceReason_' + reason, t('voiceIdentity.resourceRepair', 'Check or repair this resource.'));
         }
+        // Resource changes may alter audio processing, so a passed test no
+        // longer counts. Replace its "passed" result, which would now mislead.
+        function discardTestForResources() {
+            if (accepted) message('voiceIdentity.inputRetestAfterResources', 'Resources changed. Repeat the input test.', false);
+            accepted = null;
+        }
         async function runResource(kind) {
             if (pending || operation || hooks.enrolling()) return;
             const at = ++epoch;
-            accepted = null; pending = true;
+            discardTestForResources(); pending = true;
             requestAbort = new AbortController(); render();
             let ownedOperation = null;
             try {
@@ -380,7 +396,7 @@
             if (pending || hooks.enrolling()) return;
             const desired = el['wake-enable'].checked;
             const at = ++epoch;
-            accepted = null;
+            discardTestForResources();
             requestAbort = new AbortController();
             pending = true; render();
             try { await hooks.request('/resources/wake-word/preference', { method: 'POST', signal: requestAbort.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: desired }) }); if (at === epoch) await refreshResources(); }
@@ -442,16 +458,18 @@
             if (pollTimer !== null) root.clearTimeout(pollTimer);
         });
         enumerate().catch(() => {});
+        // The single enrollment gate; canStart and the button hint both read it.
+        function startHintKey() {
+            if (pending) return 'voiceIdentity.setupBusy';
+            if (!resources) return 'voiceIdentity.resourcesChecking';
+            if (resources.can_enroll !== true) return 'voiceIdentity.resourcesNeeded';
+            if (!accepted || accepted.inputSnapshot !== snapshot()) return 'voiceIdentity.inputTestRequired';
+            return 'voiceIdentity.enrollmentReady';
+        }
         return {
             refreshResources, receivedStream, controls: () => render(false), isPending: () => pending,
-            startHintKey: () => {
-                if (pending) return 'voiceIdentity.setupBusy';
-                if (!resources) return 'voiceIdentity.resourcesChecking';
-                if (resources.can_enroll !== true) return 'voiceIdentity.resourcesNeeded';
-                if (!accepted || accepted.inputSnapshot !== snapshot()) return 'voiceIdentity.inputTestRequired';
-                return 'voiceIdentity.enrollmentReady';
-            },
-            canStart: () => !pending && !!accepted && accepted.inputSnapshot === snapshot() && !!resources && resources.can_enroll === true,
+            startHintKey,
+            canStart: () => startHintKey() === 'voiceIdentity.enrollmentReady',
             canResume: () => !inputChangedDuringEnrollment,
             requireTest: () => message('voiceIdentity.inputTestRequired', 'Complete the input test before enrollment.', true),
             contractChanged: () => { accepted = null; message('voiceIdentity.inputChanged', 'Input settings changed. Repeat the input test.', true); render(); },

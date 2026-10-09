@@ -623,7 +623,7 @@
             if (!hint) continue;
             hint.hidden = hidden;
             let text = '';
-            if (state.initializationError) text = translate('voiceIdentity.setupConnectionFailed', '连接失败，请重试连接。');
+            if (state.initializationError) text = translate('voiceIdentity.setupConnectionFailed', '连接失败，请点击“重试连接”。');
             else if (enrollmentUnavailable) text = state.runtimeDisabled
                 ? reasonMessage() : enrollmentErrorMessage(new Error(state.effectiveReason));
             else if (pending) text = translate('voiceIdentity.setupBusy', '正在准备或检查，请稍候。');
