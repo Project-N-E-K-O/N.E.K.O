@@ -4103,10 +4103,8 @@ async def test_guest_does_not_redeem_the_invite_after_an_account_switch(tmp_path
     side = make_side(tmp_path, "guest", clock=clock, wall=wall)
     rt = await start_side(side, invite_code=INVITE, clock=clock, wall=wall)
 
-    async def switched():
-        return "someone-else"
-
-    monkeypatch.setattr(rtm, "_local_account", switched)
+    # 准入之后有过一次登出 / 换账号（account_change 抬过代数）
+    monkeypatch.setattr(rtm, "_account_gen", rtm._account_gen + 1)
     try:
         await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
         assert await rt.issue_credentials() is None

@@ -751,7 +751,7 @@ async def test_transcript_reads_memory_when_the_spool_is_gone(env, monkeypatch):
         uid, short_id = HOST_UID, HOST_UID[:6].upper()
 
     class Creds:
-        transport, visit_uid = "livekit", OWN
+        transport, visit_uid, account = "livekit", OWN, "acct"
 
     class Recent:
         visit_id, peer, creds, started_at_wall, ended_at_mono = VISIT_ID, Peer(), Creds(), NOW, 50.0
@@ -944,7 +944,7 @@ async def test_memory_transcript_after_forget_has_no_peer_identity(env, monkeypa
         uid, short_id = HOST_UID, HOST_UID[:6].upper()
 
     class Creds:
-        transport, visit_uid = "trtc", OWN
+        transport, visit_uid, account = "trtc", OWN, "acct"
 
     class Recent:
         visit_id, peer, creds, started_at_wall, ended_at_mono = VISIT_ID, Peer(), Creds(), NOW, None
@@ -987,7 +987,7 @@ async def test_a_spool_that_lost_lines_gives_way_to_a_complete_source(env):
 
 async def test_memory_copy_of_another_account_is_not_served(env, monkeypatch):
     class Creds:
-        transport, visit_uid = "trtc", OTHER_OWN
+        transport, visit_uid, account = "trtc", OTHER_OWN, "someone-else"
 
     class Recent:
         visit_id, peer, creds, started_at_wall, ended_at_mono = VISIT_ID, None, Creds(), NOW, None
@@ -1063,7 +1063,7 @@ async def test_a_live_runtime_wins_over_a_spool_that_missed_a_line(env, monkeypa
     await _write_spool(env.host.config_dir)
 
     class Creds:
-        transport, visit_uid = "trtc", OWN
+        transport, visit_uid, account = "trtc", OWN, "acct"
 
     class Live:
         visit_id, peer, creds, started_at_wall, ended_at_mono = VISIT_ID, None, Creds(), NOW, None
@@ -1225,12 +1225,17 @@ async def test_a_preview_is_reused_only_by_the_account_that_fetched_it(env):
 
 
 async def test_a_preview_fetched_across_an_account_switch_is_not_cached(env, monkeypatch):
-    async def switched():
-        return "someone-else"         # 请求途中本机已换成别的账号
-
-    monkeypatch.setattr(accounts, "local_account", switched)
+    epochs = iter([7, 9])     # 请求途中有过一次登出 / 换账号（A→B→A 也一样会让代数变）
+    monkeypatch.setattr(rtm, "account_epoch", lambda: next(epochs, 9))
     await http._fetch_preview(INVITE, "acct")
     assert http._previews == {}
+    # 期间没有账号变更：照常缓存
+    monkeypatch.setattr(rtm, "account_epoch", lambda: 9)
+    await http._fetch_preview(INVITE, "acct")
+    assert list(http._previews) == [("acct", INVITE)]
+    # 缓存之后发生账号变更：不再复用
+    monkeypatch.setattr(rtm, "account_epoch", lambda: 10)
+    assert http._recent_preview("acct", INVITE) is None
 
 
 async def test_join_refuses_when_the_account_changes_after_the_preview(env, monkeypatch):
@@ -1265,3 +1270,39 @@ async def test_cloud_cursor_cycles_are_rejected_at_once(env, monkeypatch):
     monkeypatch.setattr(env.servers, "_details", cycling)
     resp = await _transcript(env)
     assert resp.status_code == 404 and calls == ["", "p1", "p2"]
+
+
+async def test_an_owned_runtime_is_served_while_the_account_map_is_unwritten(env, monkeypatch):
+    env.own_uid = None        # 领到凭证了、账号映射还没写成（后台补写中）
+
+    class Creds:
+        transport, visit_uid, account = "trtc", OWN, "acct"
+
+    class Live:
+        visit_id, peer, creds, started_at_wall, ended_at_mono = VISIT_ID, None, Creds(), NOW, None
+
+        def transcript_records(self):
+            return [{k: v for k, v in line.items() if k != "ln"} for line in LINES]
+
+        def visit_line_payload_from_record(self, record):
+            return {}
+
+        def anomaly_count(self):
+            return 0
+
+    monkeypatch.setattr(rtm, "get_runtime_by_visit", lambda visit_id: Live())
+    body = (await _transcript(env)).json()
+    assert body["source"] == "memory" and len(body["lines"]) == 3
+
+
+async def test_a_shorter_upload_does_not_replace_a_longer_partial_spool(env):
+    spool = await _write_spool(env.host.config_dir)
+    with open(spool.jsonl_path, "ab") as handle:
+        handle.write(b'{"lp": 9, "side": "host", "ts"')       # spool 丢了一行半行
+    doc = _upload_doc()
+    doc["request"]["lines"] = doc["request"]["lines"][:1]      # 上传流水静默少了两行
+    path = env.host.config_dir / "visit_spool" / f"{VISIT_ID}.upload.json"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    env.servers.details_mode = "503"
+    body = (await _transcript(env)).json()
+    assert body["source"] == "spool" and body["dropped_lines"] == 1 and len(body["lines"]) == 3

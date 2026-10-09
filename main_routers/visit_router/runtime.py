@@ -358,6 +358,16 @@ _account_change_lock: Optional[tuple[asyncio.AbstractEventLoop, asyncio.Lock]] =
 """Serializes account changes (created per event loop: a lock binds to the loop that first waits on it)."""
 
 
+def account_epoch() -> Optional[int]:
+    """The account-change generation, or None while a logout / account switch is in progress.
+
+    Every logout / switch (:func:`account_change`) bumps it, so two equal
+    readings around an await prove no account change happened in between
+    (an A→B→A switch included).
+    """
+    return None if _account_changes else _account_gen
+
+
 def _account_change_mutex() -> asyncio.Lock:
     global _account_change_lock
     loop = asyncio.get_running_loop()
@@ -595,6 +605,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.grant: Optional[cr.VisitGrant] = None
         # 准入检查（清除进行中、被封缓存）按的社区账号：领到的凭证必须属于它
         self.admitted_account: Optional[str] = None
+        # 准入时的账号变更代数（account_epoch）：领凭证之前必须仍是它
+        self.admitted_epoch: Optional[int] = None
         self._livekit_codec: Optional[str] = None
         self._creds_task: Optional[asyncio.Task] = None
         self.preflight_ok: Optional[bool] = None
@@ -860,9 +872,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.finalizing:
             # 等主对话轮期间这场已被结束：不再去领凭证（guest 会兑掉一次性邀请码、扣配额，且撤不回）
             return False
-        if self.admitted_account is not None and await _local_account() != self.admitted_account:
-            # 准入之后换了社区账号：领凭证是撤不回的（guest 兑掉一次性邀请码），发请求之前就结束。
-            # 请求途中才换的由登出 / 切换账号前的收尾（account_change）先结束本场兜住
+        if self.admitted_epoch is not None and account_epoch() != self.admitted_epoch:
+            # 准入之后有过登出 / 换账号（或正在进行）：领凭证撤不回（guest 兑掉一次性邀请码），发请求之前就结束。
+            # 同步判断、紧接着发请求；此后才开始的账号变更会先结束本场、等它收尾，再改本机会话——
+            # 这次请求用的仍是准入时的会话
             self.request_finalize("busy")
             return False
         try:
@@ -2660,6 +2673,7 @@ async def start_visit(
         raise
     rt.slot = slot
     rt.admitted_account = account
+    rt.admitted_epoch = account_gen
     rt.start()
     _pending_visits.pop(key, None)
     return rt

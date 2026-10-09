@@ -132,8 +132,8 @@ async def char_admission_lock(character_uid: str) -> AsyncIterator[None]:
 
 # ── 邀请预览（入房复用其中的 host 身份比对黑名单）─────────────────────
 
-_previews: dict[tuple[str, str], tuple[float, cr.InvitePreview]] = {}
-"""(community account, invite_code) → (monotonic time, preview) of recent successful previews.
+_previews: dict[tuple[str, str], tuple[float, cr.InvitePreview, int]] = {}
+"""(community account, invite_code) → (monotonic time, preview, account epoch) of recent successful previews.
 
 ``join`` reuses one only for the account that fetched it: another account must ask Servers itself
 (it may be banned or signed out).
@@ -142,25 +142,26 @@ _previews: dict[tuple[str, str], tuple[float, cr.InvitePreview]] = {}
 _PREVIEWS_MAX = 32
 
 
-def _remember_preview(account: Optional[str], invite_code: str, preview: cr.InvitePreview) -> None:
+def _remember_preview(account: Optional[str], invite_code: str, preview: cr.InvitePreview, epoch: int) -> None:
     if not account:
         return
     now = time.monotonic()
-    for key in [k for k, (at, _p) in _previews.items() if now - at > VISIT_INVITE_PREVIEW_REUSE_S]:
+    for key in [k for k, (at, _p, _e) in _previews.items() if now - at > VISIT_INVITE_PREVIEW_REUSE_S]:
         del _previews[key]
     _previews.pop((account, invite_code), None)
-    _previews[(account, invite_code)] = (now, preview)
+    _previews[(account, invite_code)] = (now, preview, epoch)
     while len(_previews) > _PREVIEWS_MAX:
         _previews.pop(next(iter(_previews)))
 
 
 def _recent_preview(account: Optional[str], invite_code: str) -> Optional[cr.InvitePreview]:
+    """A cached preview of this account still valid, fetched with no account change since (else None)."""
     if not account:
         return None
     key = (account, invite_code)
     hit = _previews.get(key)
     if (hit is None or time.monotonic() - hit[0] > VISIT_INVITE_PREVIEW_REUSE_S
-            or time.time() >= hit[1].expires_at):
+            or time.time() >= hit[1].expires_at or hit[2] != runtime.account_epoch()):
         # 邀请已到期的预览不复用：重新代转一次，过期的邀请在占位之前就被拒
         _previews.pop(key, None)
         return None
@@ -168,6 +169,7 @@ def _recent_preview(account: Optional[str], invite_code: str) -> Optional[cr.Inv
 
 
 async def _fetch_preview(invite_code: str, account: Optional[str]) -> cr.InvitePreview:
+    epoch = runtime.account_epoch()
     lang = prompt_lang()
     ctx = await load_character_context()
     preview = await cr.fetch_invite_preview(
@@ -175,9 +177,9 @@ async def _fetch_preview(invite_code: str, account: Optional[str]) -> cr.InviteP
         generic_label=speaker_label("peer_cat", lang),
         protected_names=protected_display_names(lang, ctx.family_names, ctx.char_names),
     )
-    # 请求期间换了账号：这份预览可能是按新账号的会话授权的，不能记在旧账号名下
-    if await accounts.local_account() == account:
-        _remember_preview(account, invite_code, preview)
+    # 请求期间有过登出 / 换账号（含 A→B→A）：这份预览可能是按别的会话授权的，不进缓存
+    if epoch is not None and runtime.account_epoch() == epoch:
+        _remember_preview(account, invite_code, preview, epoch)
     return preview
 
 
@@ -432,10 +434,6 @@ def _memory_runtime(visit_id: str) -> Optional[runtime.VisitRuntime]:
     return runtime.get_runtime_by_visit(visit_id) or runtime.recent_runtime(visit_id)
 
 
-def _runtime_owner(rt: runtime.VisitRuntime) -> Optional[str]:
-    return rt.creds.visit_uid if rt.creds is not None else None
-
-
 async def _peer_forgotten(config_dir: Path, visit_id: str) -> bool:
     """Whether this visit's peer identity may no longer be shown.
 
@@ -532,13 +530,15 @@ async def visit_transcript(request: Request, visit_id: str = ""):
     if not isinstance(visit_id, str) or not VISIT_ID_RE.fullmatch(visit_id):
         return _error(400, "visit_id_format")
     config_dir = _config_dir()
-    owner = await accounts.own_visit_uid()
+    account = await accounts.local_account()
+    owner = await accounts.lookup_visit_uid(account)
     partial: Optional[dict] = None
+    # 进程里还有这一场：内存里的流水最完整（spool 某一行写失败时只记了日志、行仍在流水里）。
+    # 按社区账号认属主：账号映射一时没写成（后台还在补写）也不该把它挡掉
+    rt = _memory_runtime(visit_id)
+    if rt is not None and account and rt.creds is not None and rt.creds.account == account:
+        return JSONResponse(await _memory_transcript(config_dir, rt))
     if owner:
-        # 进程里还有这一场：内存里的流水最完整（spool 某一行写失败时只记了日志、行仍在流水里）
-        rt = _memory_runtime(visit_id)
-        if rt is not None and _runtime_owner(rt) == owner:
-            return JSONResponse(await _memory_transcript(config_dir, rt))
         spooled = await _spool_transcript(config_dir, visit_id, owner)
         pending = await _pending_upload(config_dir, visit_id)
         # 较早的上传文件不记属主：与补传同一规则，从 state.json / 流水头行认回来
@@ -560,7 +560,8 @@ async def visit_transcript(request: Request, visit_id: str = ""):
             request_body = upload_doc["request"]
             body = {"source": "upload", "visit_id": visit_id, "role": request_body["role"],
                     "lines": request_body["lines"]}
-            if not dropped:
+            # 待传流水也可能静默少行：比残缺的 spool 短就不顶掉它（spool 丢的多半是写到一半、也没进流水的那半行）
+            if not dropped and (partial is None or len(body["lines"]) >= len(partial["lines"])):
                 return JSONResponse(body)
             # 崩溃流水里也有丢掉的记录：同样先去云端找完整的那份
             if partial is None:
