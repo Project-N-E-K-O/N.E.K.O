@@ -2272,3 +2272,81 @@ async def test_a_cancelled_mutation_keeps_the_write_lock_until_it_finishes(tmp_p
         assert load_registry(tmp_path).packs["demo-memes"].auto_context is True
     finally:
         await service.stop()
+
+
+async def test_sampling_skips_entries_the_snapshot_disables(tmp_path):
+    entries = [
+        {"title": "Hidden", "tags": ["snack"], "content": "hidden snack"},
+        {"title": "Shown", "tags": ["snack"], "content": "shown snack"},
+    ]
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack(entries=entries))
+        await service.set_entry_disabled("demo-memes", "Hidden", True)
+        # Re-enabling writes the index first; the registry still says disabled.
+        await asyncio.to_thread(service._store.set_disabled, "demo-memes", "Hidden", False)
+        for _ in range(20):
+            result = await service.query(query="snack", mode="sample", limit=1)
+            assert result["result"] == "matched"
+            assert result["hits"][0]["title"] == "Shown"
+    finally:
+        await service.stop()
+
+
+async def test_leftover_write_temporaries_count_toward_byte_capacity(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        one = _raw(_pack("pack-one"))
+        monkeypatch.setattr(service_module, "MAX_TOTAL_PACK_BYTES", int(len(one) * 1.5))
+        (tmp_path / "packs" / ".neko-deadbeef.tmp").write_bytes(b"x" * len(one))
+        result = await service.import_pack(one)
+        assert result == {"ok": False, "reason": "capacity_bytes"}
+    finally:
+        await service.stop()
+
+
+async def test_a_cancelled_import_keeps_its_parse_slot_until_parsing_ends(tmp_path, monkeypatch):
+    import threading
+
+    service = await _started(tmp_path)
+    try:
+        parsing = threading.Event()
+        release = threading.Event()
+        real_prepare = service._prepare_import
+
+        def slow_prepare(raw):
+            parsing.set()
+            release.wait(5)
+            return real_prepare(raw)
+
+        monkeypatch.setattr(service, "_prepare_import", slow_prepare)
+        task = asyncio.create_task(service.import_pack(_raw(_pack())))
+        await asyncio.to_thread(parsing.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert service._parsing == 1  # the parse thread still holds the pack
+        release.set()
+        for _ in range(200):
+            if service._parsing == 0:
+                break
+            await asyncio.sleep(0.01)
+        assert service._parsing == 0
+    finally:
+        await service.stop()
+
+
+async def test_pending_removal_sets_are_immutable(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "WRITE_LOCK_TIMEOUT_SECONDS", 5.0)
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        async with service._write_lock:
+            removing = asyncio.create_task(service.remove_pack("demo-memes"))
+            await asyncio.sleep(0.05)
+            # Read by the import's cancellation check on a worker thread.
+            assert isinstance(service._pending_removals["demo-memes"], frozenset)
+        await removing
+        assert "demo-memes" not in service._pending_removals
+    finally:
+        await service.stop()

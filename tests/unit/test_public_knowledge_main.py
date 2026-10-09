@@ -335,6 +335,17 @@ def test_evicting_a_dead_plugin_gives_the_name_back_to_the_builtin(monkeypatch):
     assert restored is not None and public_knowledge.is_builtin_definition(restored)
 
 
+async def test_a_fresh_flag_still_gets_a_refresh_timer(monkeypatch):
+    import time
+
+    # A management reply noted the flag before any session asked for it.
+    monkeypatch.setattr(public_knowledge, "_next_check_at", time.monotonic() + 30)
+    assert public_knowledge._refresh_timer is None
+    public_knowledge.schedule_availability_refresh(48912)
+    assert public_knowledge._refresh_timer is not None
+    assert public_knowledge._timer_due > time.monotonic()
+
+
 async def test_availability_expires_after_prolonged_refresh_failures(memory_server, monkeypatch):
     import asyncio
 

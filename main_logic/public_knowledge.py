@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import math
 import time
 import weakref
 from typing import Any, Callable
@@ -66,6 +67,7 @@ _confirmed_at = 0.0
 _next_check_at = 0.0
 _refresh_task: asyncio.Task[None] | None = None
 _refresh_timer: asyncio.TimerHandle | None = None
+_timer_due = 0.0
 _listeners: "weakref.WeakSet[Any]" = weakref.WeakSet()
 
 
@@ -107,7 +109,17 @@ def _set_tool_available(value: bool) -> None:
 def schedule_availability_refresh(memory_server_port: int, *, force: bool = False) -> None:
     """Refresh the flag in the background when it is stale; never blocks."""
     global _refresh_task
-    if not force and time.monotonic() < _next_check_at:
+    now = time.monotonic()
+    if not force and now < _next_check_at:
+        # Fresh (e.g. noted from a management reply before any session
+        # existed): make sure a timer will still refresh it when it expires,
+        # since nothing else calls this periodically.
+        if _timer_due <= now and math.isfinite(_next_check_at):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            _arm_refresh_timer(memory_server_port, _next_check_at - now)
         return
     if _refresh_task is not None and not _refresh_task.done():
         return
@@ -152,17 +164,19 @@ async def _refresh_availability(memory_server_port: int) -> None:
 
 
 def _arm_refresh_timer(memory_server_port: int, delay: float) -> None:
-    global _refresh_timer
+    global _refresh_timer, _timer_due
     if _refresh_timer is not None:
         _refresh_timer.cancel()
+    _timer_due = time.monotonic() + delay
     _refresh_timer = asyncio.get_running_loop().call_later(
         delay, functools.partial(schedule_availability_refresh, memory_server_port, force=True)
     )
 
 
 def reset_for_tests() -> None:
-    global _tool_available, _next_check_at, _refresh_task, _refresh_timer, _confirmed_at
+    global _tool_available, _next_check_at, _refresh_task, _refresh_timer, _confirmed_at, _timer_due
     _tool_available = False
+    _timer_due = 0.0
     _confirmed_at = 0.0
     _next_check_at = 0.0
     _refresh_task = None

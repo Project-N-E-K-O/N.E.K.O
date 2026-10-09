@@ -546,16 +546,17 @@ class KnowledgeStore:
             )
         return exact, ranked
 
-    def entry_ids_with_tag(self, tag: str, pack_ids: Sequence[str]) -> list[int]:
+    def entries_with_tag(self, tag: str, pack_ids: Sequence[str]) -> list[tuple[int, str, str]]:
+        """Enabled entries carrying ``tag``: (id, pack_id, title)."""
         if not pack_ids:
             return []
         placeholders = ",".join("?" for _ in pack_ids)
         needle = json.dumps(tag, ensure_ascii=False)
         with self._read() as conn:
             return [
-                int(row[0])
+                (int(row[0]), str(row[1]), str(row[2]))
                 for row in conn.execute(
-                    f"SELECT id FROM entries WHERE disabled=0 AND pack_id IN ({placeholders})"
+                    f"SELECT id, pack_id, title FROM entries WHERE disabled=0 AND pack_id IN ({placeholders})"
                     " AND instr(tags_json, ?) > 0",
                     (*pack_ids, needle),
                 )

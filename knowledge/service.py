@@ -247,9 +247,12 @@ class KnowledgeService:
         # those still waiting.
         self._request_seq = 0
         self._removed_at: dict[str, int] = {}
-        self._pending_removals: dict[str, set[int]] = {}
+        # Values are frozensets, replaced rather than mutated: the import's
+        # cancellation check reads them from a worker thread.
+        self._pending_removals: dict[str, frozenset[int]] = {}
         self._query_pool: concurrent.futures.ThreadPoolExecutor | None = None
         self._parsing = 0
+        self._parse_pool: concurrent.futures.ThreadPoolExecutor | None = None
         # Set (and replaced) whenever a removal finishes, committed or not.
         self._removal_settled = asyncio.Event()
         self._vectors_built_for: tuple[int, str] | None = None
@@ -289,8 +292,9 @@ class KnowledgeService:
             task.cancel()
         if tasks:
             await asyncio.wait(tasks, timeout=2.0)
-        if self._query_pool is not None:
-            self._query_pool.shutdown(wait=False, cancel_futures=True)
+        for pool in (self._query_pool, self._parse_pool):
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
 
     def _open_blocking(self) -> None:
         (self.root / PACKS_DIR).mkdir(parents=True, exist_ok=True)
@@ -351,7 +355,9 @@ class KnowledgeService:
         leftovers += [
             path
             for path in (self.root / PACKS_DIR).iterdir()
-            if path.is_file() and path.suffix == ".json" and path.name not in referenced
+            if path.is_file()
+            and path.suffix in (".json", ".tmp")
+            and path.name not in referenced
         ]
         for path in leftovers:
             try:
@@ -527,7 +533,7 @@ class KnowledgeService:
             raise KnowledgeUnavailable("not_found")
         self._request_seq += 1
         my_seq = self._request_seq
-        self._pending_removals.setdefault(pack_id, set()).add(my_seq)
+        self._pending_removals[pack_id] = self._pending_removals.get(pack_id, frozenset()) | {my_seq}
 
         async def run() -> dict[str, Any]:
             record = self._registry.packs.get(pack_id)
@@ -562,9 +568,10 @@ class KnowledgeService:
         try:
             result = await self._locked(run)
         finally:
-            pending = self._pending_removals.get(pack_id, set())
-            pending.discard(my_seq)
-            if not pending:
+            pending = self._pending_removals.get(pack_id, frozenset()) - {my_seq}
+            if pending:
+                self._pending_removals[pack_id] = pending
+            else:
                 self._pending_removals.pop(pack_id, None)
             settled, self._removal_settled = self._removal_settled, asyncio.Event()
             settled.set()
@@ -598,14 +605,39 @@ class KnowledgeService:
         # unchanged-file check, which reads from disk) or admitted, so parsed
         # copies of a pack never pile up uncounted.
         self._parsing += 1
+        parse_work: list[concurrent.futures.Future[Any]] = []
+        deferred = False
         try:
-            return await self._import_parsed(raw, arrived_at)
+            return await self._import_parsed(raw, arrived_at, parse_work)
+        except asyncio.CancelledError:
+            # A cancelled request stops waiting, but its parse thread runs on
+            # with the pack in memory: the slot is freed when that ends.
+            running = [future for future in parse_work if not future.done()]
+            if running:
+                deferred = True
+                loop = asyncio.get_running_loop()
+                running[0].add_done_callback(
+                    lambda _future: loop.call_soon_threadsafe(self._release_parse_slot)
+                )
+            raise
         finally:
-            self._parsing -= 1
+            if not deferred:
+                self._parsing -= 1
 
-    async def _import_parsed(self, raw: bytes, arrived_at: int) -> dict[str, Any]:
+    def _release_parse_slot(self) -> None:
+        self._parsing -= 1
+
+    async def _import_parsed(
+        self, raw: bytes, arrived_at: int, parse_work: list[concurrent.futures.Future[Any]]
+    ) -> dict[str, Any]:
+        if self._parse_pool is None:
+            self._parse_pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=MAX_PENDING_IMPORTS, thread_name_prefix="knowledge-parse"
+            )
+        future = self._parse_pool.submit(self._prepare_import, raw)
+        parse_work.append(future)
         try:
-            pack, canonical, chunks = await asyncio.to_thread(self._prepare_import, raw)
+            pack, canonical, chunks = await asyncio.wrap_future(future)
         except KnowledgePackError as exc:
             return {"ok": False, "reason": exc.reason}
         if len(canonical) > MAX_PACK_BYTES:
@@ -731,7 +763,8 @@ class KnowledgeService:
             except OSError:
                 continue
             for path in paths:
-                if path.suffix != ".json":
+                # .tmp: an atomic write that could neither finish nor clean up.
+                if path.suffix not in (".json", ".tmp"):
                     continue
                 if directory == PACKS_DIR and path.name == skip:
                     continue
@@ -1205,7 +1238,7 @@ class KnowledgeService:
             try:
                 async with asyncio.timeout(max(deadline - time.monotonic(), 0.01)):
                     if mode == "sample":
-                        ranked = await self._sample(query, allowed, limit)
+                        ranked = await self._sample(query, allowed, limit, registry)
                         retrieval_mode = "sample"
                     else:
                         ranked, retrieval_mode = await self._lookup(
@@ -1271,8 +1304,18 @@ class KnowledgeService:
         work.append(future)
         return await asyncio.wrap_future(future)
 
-    async def _sample(self, tag: str, allowed: list[str], limit: int) -> list[RankedHit]:
-        ids = await self._query_thread(self._store.entry_ids_with_tag, tag, allowed)
+    async def _sample(
+        self, tag: str, allowed: list[str], limit: int, registry: Registry
+    ) -> list[RankedHit]:
+        rows = await self._query_thread(self._store.entries_with_tag, tag, allowed)
+        # Drop entries the query's registry snapshot disables before choosing,
+        # or one of them could take a slot and then be rejected at rendering.
+        ids = [
+            entry_id
+            for entry_id, pack_id, title in rows
+            if (record := registry.packs.get(pack_id)) is None
+            or title_key(title) not in record.disabled_titles
+        ]
         return [
             RankedHit(entry_id=i, score=0.0, exact=False, lexical_rank=None, semantic_score=None)
             for i in random.sample(ids, min(limit, len(ids)))
