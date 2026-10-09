@@ -1661,6 +1661,8 @@ def test_loose_surface_rules():
     assert loose_surface(".NET") == ""
     assert loose_surface("Hello, World!") == "helloworld"
     assert loose_surface("re zero") == loose_surface("Re:Zero") == "rezero"
+    assert loose_surface('"Python"') == loose_surface("'Python'") == "python"
+    assert loose_surface('"C++"') == ""
 
 
 async def test_cancel_after_the_commit_point_is_refused(tmp_path, monkeypatch):
@@ -1927,6 +1929,8 @@ def test_names_in_questions_respect_symbols():
     assert names_in_query("is C# hard?", entry("C#")) is True
     assert names_in_query("C++ tutorial", entry("C")) is False
     assert names_in_query("Tell me about Python", entry("Python")) is True
+    assert names_in_query('What is "Python"?', entry("Python")) is True
+    assert names_in_query("is `C++` hard?", entry("C++")) is True
     assert names_in_query("介绍一下猫", entry("猫")) is True
 
 

@@ -170,6 +170,8 @@ def word_runs(value: str) -> set[str]:
 
 
 _TRAILING_PUNCT = frozenset("?!.。？！,，、;；:：…")
+# Straight quotes and backticks have no open/close category; they wrap names too.
+_EDGE_QUOTES = frozenset("\"'`")
 
 
 def loose_surface(value: object) -> str:
@@ -182,10 +184,15 @@ def loose_surface(value: object) -> str:
     """
     text = strict_surface(value)
     start, end = 0, len(text)
-    while start < end and (text[start] == " " or unicodedata.category(text[start]) in ("Ps", "Pi")):
+    while start < end and (
+        text[start] == " "
+        or text[start] in _EDGE_QUOTES
+        or unicodedata.category(text[start]) in ("Ps", "Pi")
+    ):
         start += 1
     while end > start and (
         text[end - 1] == " "
+        or text[end - 1] in _EDGE_QUOTES
         or text[end - 1] in _TRAILING_PUNCT
         or unicodedata.category(text[end - 1]) in ("Pe", "Pf")
     ):
