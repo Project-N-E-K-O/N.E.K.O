@@ -1663,6 +1663,9 @@ def test_loose_surface_rules():
     assert loose_surface("re zero") == loose_surface("Re:Zero") == "rezero"
     assert loose_surface('"Python"') == loose_surface("'Python'") == "python"
     assert loose_surface('"C++"') == ""
+    # A lone straight quote belongs to the name.
+    assert loose_surface("Lil'") == loose_surface("'Tis") == ""
+    assert loose_surface('"Python"?') == "python"
 
 
 async def test_cancel_after_the_commit_point_is_refused(tmp_path, monkeypatch):
@@ -1930,6 +1933,8 @@ def test_names_in_questions_respect_symbols():
     assert names_in_query("C++ tutorial", entry("C")) is False
     assert names_in_query("Tell me about Python", entry("Python")) is True
     assert names_in_query('What is "Python"?', entry("Python")) is True
+    assert names_in_query("Lil", entry("Lil'")) is False
+    assert names_in_query("who is Lil'?", entry("Lil'")) is True
     assert names_in_query("is `C++` hard?", entry("C++")) is True
     assert names_in_query("介绍一下猫", entry("猫")) is True
 
@@ -1999,3 +2004,17 @@ async def test_turning_knowledge_off_mid_batch_stops_indexing(tmp_path, fast_ind
         assert stats["demo-memes"]["ready"] == 0
     finally:
         await service.stop()
+
+
+@pytest.mark.parametrize("terms", [[], "", False, 0])
+def test_falsy_non_object_terms_are_rejected(terms):
+    payload = _pack(entries=[{"title": "t", "content": "c", "terms": terms}])
+    with pytest.raises(KnowledgePackError) as excinfo:
+        parse_pack(payload)
+    assert excinfo.value.reason == "invalid_entry"
+
+
+def test_missing_or_null_terms_default_to_empty():
+    for entry in ({"title": "t", "content": "c"}, {"title": "t", "content": "c", "terms": None}):
+        (parsed,) = parse_pack(_pack(entries=[entry])).entries
+        assert all(values == () for values in parsed.terms.values())

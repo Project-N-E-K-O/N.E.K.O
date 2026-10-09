@@ -184,19 +184,22 @@ def loose_surface(value: object) -> str:
     """
     text = strict_surface(value)
     start, end = 0, len(text)
-    while start < end and (
-        text[start] == " "
-        or text[start] in _EDGE_QUOTES
-        or unicodedata.category(text[start]) in ("Ps", "Pi")
-    ):
-        start += 1
-    while end > start and (
-        text[end - 1] == " "
-        or text[end - 1] in _EDGE_QUOTES
-        or text[end - 1] in _TRAILING_PUNCT
-        or unicodedata.category(text[end - 1]) in ("Pe", "Pf")
-    ):
-        end -= 1
+    while True:
+        before = (start, end)
+        while start < end and (text[start] == " " or unicodedata.category(text[start]) in ("Ps", "Pi")):
+            start += 1
+        while end > start and (
+            text[end - 1] == " "
+            or text[end - 1] in _TRAILING_PUNCT
+            or unicodedata.category(text[end - 1]) in ("Pe", "Pf")
+        ):
+            end -= 1
+        # A straight quote only goes as one of a pair around the name: in
+        # "Lil'" or "'Tis" it is part of the name.
+        if end - start >= 2 and text[start] in _EDGE_QUOTES and text[end - 1] == text[start]:
+            start, end = start + 1, end - 1
+        if (start, end) == before:
+            break
     core = text[start:end]
     if not core or not core[0].isalnum() or not core[-1].isalnum():
         return ""

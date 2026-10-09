@@ -146,7 +146,10 @@ def _parse_entry(raw: object) -> KnowledgeEntry:
     content = sanitize_external_text(entry.get("content"), max_chars=MAX_CONTENT_CHARS)
     if not title or not content:
         raise KnowledgePackError("invalid_entry", "title and content are required")
-    raw_terms = entry.get("terms") or {}
+    # Only a missing (or null) field defaults to empty; [] or "" is malformed.
+    raw_terms = entry.get("terms")
+    if raw_terms is None:
+        raw_terms = {}
     terms_map = _require_mapping(raw_terms, "invalid_entry")
     if not set(terms_map).issubset(TERM_ROLES):
         raise KnowledgePackError("unexpected_entry_field")
