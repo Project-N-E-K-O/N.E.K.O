@@ -5035,3 +5035,32 @@ def test_v1_cleanup_removes_the_parent_a_caught_up_nested_entry_leaves(tmp_path)
 
     assert response.status_code == 200, response.json()
     assert not source_root.exists()
+
+
+
+@pytest.mark.unit
+def test_storage_cleanup_leaves_the_root_while_entries_remain(tmp_path, monkeypatch):
+    """pngtuber has no evidence and stays; a sync client removed it right after
+    the scan. The root must not be removed under a result that says it stays
+    -- the next cleanup finds it empty and records it cleaned."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "pngtuber").mkdir()
+    (source_root / "pngtuber" / "idle.png").write_bytes(b"png")
+    original_may_exist = storage_location_router_module._entry_may_exist
+
+    def _may_exist_then_vanish(path):
+        result = original_may_exist(path)
+        if result and Path(path).name == "pngtuber":
+            shutil.rmtree(path)
+        return result
+
+    monkeypatch.setattr(storage_location_router_module, "_entry_may_exist", _may_exist_then_vanish)
+    first = _cleanup_request(tmp_path, source_root)
+    monkeypatch.undo()
+
+    assert first.status_code == 409, first.json()
+    assert source_root.is_dir()
+    second = _cleanup_request(tmp_path, source_root)
+    assert second.status_code == 200, second.json()
+    assert not source_root.exists()
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] == "cleaned"
