@@ -1333,11 +1333,11 @@ async def test_a_ceremony_turn_shares_one_deadline_between_lock_and_generation(t
     real_session, rt.session = rt.session, stub
     try:
         await stub.turn_lock.acquire()
-        asyncio.get_running_loop().call_later(0.45, stub.turn_lock.release)   # 锁快到期限才放出来
+        asyncio.get_running_loop().call_later(0.3, stub.turn_lock.release)    # 锁用掉大半个期限才放出来（留 200 ms 余量给调度）
         out = await asyncio.wait_for(rt.one_shot_turn("回家说一句", timeout=0.5), 3)
         assert out is None
-        # 生成只拿到拿锁之后剩下的那点时限（约 0.05 s），不是另给一个完整的 0.5 s；看参数、不靠墙钟
-        assert len(budgets) == 1 and budgets[0] < 0.25
+        # 生成只拿到拿锁之后剩下的那点时限（约 0.2 s），不是另给一个完整的 0.5 s；看参数、不靠墙钟
+        assert len(budgets) == 1 and budgets[0] < 0.35
     finally:
         rt.session = real_session
         hgate.set()
