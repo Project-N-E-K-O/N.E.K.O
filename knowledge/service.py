@@ -460,7 +460,8 @@ class KnowledgeService:
         # undone if the removal itself fails (busy, not found).
         previous_mark = self._removed_at.get(pack_id)
         self._removal_clock += 1
-        self._removed_at[pack_id] = self._removal_clock
+        my_mark = self._removal_clock
+        self._removed_at[pack_id] = my_mark
         flagged = [
             job
             for job in self._jobs.values()
@@ -497,13 +498,16 @@ class KnowledgeService:
         try:
             result = await self._locked(run)
         except BaseException:
-            for job in flagged:
-                if job.state in ACTIVE_JOB_STATES:
-                    job.cancel_requested = False
-            if previous_mark is None:
-                self._removed_at.pop(pack_id, None)
-            else:
-                self._removed_at[pack_id] = previous_mark
+            # Undo only if no later removal of the same pack took over: that
+            # one relies on the same marks and is still in progress.
+            if self._removed_at.get(pack_id) == my_mark:
+                for job in flagged:
+                    if job.state in ACTIVE_JOB_STATES:
+                        job.cancel_requested = False
+                if previous_mark is None:
+                    self._removed_at.pop(pack_id, None)
+                else:
+                    self._removed_at[pack_id] = previous_mark
             raise
         self._schedule_vector_refresh()
         return result

@@ -1451,3 +1451,23 @@ async def test_a_failed_removal_leaves_a_pending_import_alone(tmp_path, monkeypa
         assert "brand-new" in load_registry(tmp_path).packs
     finally:
         await service.stop()
+
+
+async def test_a_failed_removal_does_not_undo_a_later_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "WRITE_LOCK_TIMEOUT_SECONDS", 0.2)
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        async with service._write_lock:
+            first = asyncio.create_task(service.remove_pack("demo-memes"))
+            await asyncio.sleep(0.1)
+            later = asyncio.create_task(service.remove_pack("demo-memes"))
+            await asyncio.sleep(0.01)
+            later_mark = service._removed_at["demo-memes"]
+            with pytest.raises(service_module.KnowledgeUnavailable):
+                await first  # times out first
+            assert service._removed_at["demo-memes"] == later_mark
+        await later
+        assert "demo-memes" not in load_registry(tmp_path).packs
+    finally:
+        await service.stop()
