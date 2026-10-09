@@ -589,6 +589,13 @@ async def test_semantic_search_skips_packs_with_local_vectors_off(tmp_path, monk
 
     try:
         await _import(service, _pack())
+        # Freeze background work so nothing replaces the snapshot below: no
+        # new rebuilds (a finishing one may schedule another), then drain.
+        monkeypatch.setattr(service, "_schedule_vector_refresh", lambda: None)
+        for task in service._tasks:
+            task.cancel()
+        while service._vector_task is not None and not service._vector_task.done():
+            await asyncio.gather(service._vector_task, return_exceptions=True)
         service._vectors = service_module.VectorSnapshot(
             model_id="fake-16",
             entry_ids=np.zeros(0, dtype=np.int64),
@@ -597,11 +604,10 @@ async def test_semantic_search_skips_packs_with_local_vectors_off(tmp_path, monk
             matrix=np.zeros((0, 16), dtype=np.float32),
         )
         monkeypatch.setattr(service_module, "semantic_candidates", record)
-        # Keep the hand-made snapshot in place for both queries.
-        monkeypatch.setattr(service, "_schedule_vector_refresh", lambda: None)
         await service.query(query="绝绝子")
         await service.set_pack_local_embedding("demo-memes", False)
-        await service.query(query="绝绝子")
+        second = await service.query(query="绝绝子")
+        assert second["result"] == "matched"
         assert seen == [["demo-memes"], []]
     finally:
         await service.stop()
