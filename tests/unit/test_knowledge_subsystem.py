@@ -1430,3 +1430,24 @@ async def test_supplementary_han_characters_are_bigram_indexed(tmp_path):
         assert (await service.query(query=word[1:3]))["result"] == "matched"
     finally:
         await service.stop()
+
+
+async def test_a_failed_removal_leaves_a_pending_import_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "WRITE_LOCK_TIMEOUT_SECONDS", 0.05)
+    service = await _started(tmp_path)
+    try:
+        async with service._write_lock:  # keeps the first import queued
+            result = await service.import_pack(_raw(_pack("brand-new")))
+            assert result["ok"] is True
+            with pytest.raises(service_module.KnowledgeUnavailable) as excinfo:
+                await service.remove_pack("brand-new")  # the lock is busy
+            assert excinfo.value.reason == "knowledge_busy"
+        for _ in range(200):
+            states = [job["state"] for job in service.list_jobs()]
+            if states and states[0] not in ("queued", "building"):
+                break
+            await asyncio.sleep(0.01)
+        assert states == ["active"]
+        assert "brand-new" in load_registry(tmp_path).packs
+    finally:
+        await service.stop()

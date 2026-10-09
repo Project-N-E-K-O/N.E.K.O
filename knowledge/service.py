@@ -453,13 +453,21 @@ class KnowledgeService:
         return await self._locked(run)
 
     async def remove_pack(self, pack_id: str) -> dict[str, Any]:
-        # An import still in admission is not a job yet; the epoch tells it
-        # that a removal started after it, so it must not reinstall the pack.
+        # Imports of this pack are told to stand down before the lock is
+        # taken: one may be holding it while it builds. An import still in
+        # admission is not a job yet; the removal clock tells it a removal
+        # started after it, so it must not reinstall the pack. Both marks are
+        # undone if the removal itself fails (busy, not found).
+        previous_mark = self._removed_at.get(pack_id)
         self._removal_clock += 1
         self._removed_at[pack_id] = self._removal_clock
-        for job in self._jobs.values():
-            if job.pack_id == pack_id and job.state in ACTIVE_JOB_STATES:
-                job.cancel_requested = True
+        flagged = [
+            job
+            for job in self._jobs.values()
+            if job.pack_id == pack_id and job.state in ACTIVE_JOB_STATES and not job.cancel_requested
+        ]
+        for job in flagged:
+            job.cancel_requested = True
 
         async def run() -> dict[str, Any]:
             record = self._registry.packs.get(pack_id)
@@ -486,7 +494,17 @@ class KnowledgeService:
             await asyncio.to_thread(cleanup)
             return {"pack_id": pack_id, "removed_entries": record.entries}
 
-        result = await self._locked(run)
+        try:
+            result = await self._locked(run)
+        except BaseException:
+            for job in flagged:
+                if job.state in ACTIVE_JOB_STATES:
+                    job.cancel_requested = False
+            if previous_mark is None:
+                self._removed_at.pop(pack_id, None)
+            else:
+                self._removed_at[pack_id] = previous_mark
+            raise
         self._schedule_vector_refresh()
         return result
 

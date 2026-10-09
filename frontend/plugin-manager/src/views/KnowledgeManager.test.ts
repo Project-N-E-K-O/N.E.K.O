@@ -280,4 +280,17 @@ describe('KnowledgeManager job polling', () => {
     expect(api.setEntryDisabled).toHaveBeenCalledWith({ pack_id: 'fixture-pack', title: 'Kotatsu', disabled: true })
     expect(api.entries.mock.calls.length).toBeGreaterThan(before)
   })
+
+  it('reloads the open catalog when an import finishes', async () => {
+    vi.useFakeTimers()
+    api.packJobs
+      .mockResolvedValueOnce({ ok: true, jobs: [job('building')] })
+      .mockResolvedValue({ ok: true, jobs: [job('active')] })
+    await mount()
+    await openTab('catalog')
+    const before = api.entries.mock.calls.length
+    await vi.advanceTimersByTimeAsync(2_100)
+    await flush()
+    expect(api.entries.mock.calls.length).toBeGreaterThan(before)
+  })
 })

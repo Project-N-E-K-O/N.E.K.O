@@ -882,6 +882,11 @@ function applyJobs(jobs: KnowledgePackJob[]) {
   // the finish; once no job is running nothing else would reload them.
   if (transitions.length) {
     void Promise.allSettled([loadStatus({ silent: true }), loadPacks({ silent: true })])
+    // A finished import changes the catalog too; the open page would
+    // otherwise keep showing the rows from before it.
+    if (activeTab.value === 'catalog' && transitions.some(({ outcome }) => outcome === 'active')) {
+      void loadEntries()
+    }
   }
 }
 
