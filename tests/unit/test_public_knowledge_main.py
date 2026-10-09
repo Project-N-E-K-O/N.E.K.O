@@ -260,3 +260,21 @@ async def test_availability_check_retries_until_the_runtime_is_ready(memory_serv
         await asyncio.sleep(0.01)
     assert public_knowledge.tool_available() is True
     assert len(client.requests) == 3
+
+
+async def test_availability_keeps_refreshing_after_ready(memory_server, monkeypatch):
+    """A pack that finishes importing later must still reach running sessions."""
+    import asyncio
+
+    monkeypatch.setattr(public_knowledge, "AVAILABILITY_TTL_SECONDS", 0.02)
+    replies = iter([
+        httpx.Response(200, json={"ok": True, "ready": True, "tool_available": False}),
+        httpx.Response(200, json={"ok": True, "ready": True, "tool_available": True}),
+    ] + [httpx.Response(200, json={"ok": True, "ready": True, "tool_available": True})] * 50)
+    memory_server(lambda request: next(replies))
+    public_knowledge.schedule_availability_refresh(48912, force=True)
+    for _ in range(100):
+        if public_knowledge.tool_available():
+            break
+        await asyncio.sleep(0.01)
+    assert public_knowledge.tool_available() is True

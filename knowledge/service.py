@@ -95,6 +95,7 @@ QUERY_CONCURRENCY = 4
 DEFAULT_QUERY_BUDGET_MS = 1_500
 MAX_QUERY_BUDGET_MS = 5_000
 QUERY_RENDER_RESERVE_SECONDS = 0.15
+MAX_QUERY_EMBEDDINGS = 2
 MAX_QUERY_CHARS = 2_000
 MAX_QUERY_LIMIT = 10
 MAX_TRACKED_JOBS = 50
@@ -185,6 +186,7 @@ class KnowledgeService:
         self._vector_generation = 0
         self._vectors_dirty = False
         self._index_model_id: str | None = None
+        self._query_embeddings: set[asyncio.Task[Any]] = set()
         self._vectors_built_for: tuple[int, str] | None = None
         self._vector_task: asyncio.Task[Any] | None = None
         self._availability_listeners: list[Callable[[], None]] = []
@@ -250,15 +252,18 @@ class KnowledgeService:
             self._store.delete_pack(pack_id)
         broken: list[str] = []
         for pack_id, record in registry.packs.items():
-            if indexed.get(pack_id) == record.pack_sha256:
-                # Disabled flags are written to the index and then the
-                # registry; the registry wins if the process died in between.
-                self._store.sync_disabled(pack_id, record.disabled_titles)
-                continue
+            # The raw file is the source of truth even when the index is
+            # current: a pack whose file is gone or altered cannot be rebuilt
+            # and is not served.
             try:
                 raw = (self.root / PACKS_DIR / record.file_name).read_bytes()
                 if pack_sha256(raw) != record.pack_sha256:
                     raise KnowledgePackError("pack_file_mismatch")
+                if indexed.get(pack_id) == record.pack_sha256:
+                    # Disabled flags are written to the index and then the
+                    # registry; the registry wins if the process died in between.
+                    self._store.sync_disabled(pack_id, record.disabled_titles)
+                    continue
                 pack = decode_pack_bytes(raw)
             except (OSError, KnowledgePackError) as exc:
                 logger.warning("[Knowledge] pack %s cannot be rebuilt: %s", pack_id, exc)
@@ -392,6 +397,7 @@ class KnowledgeService:
             if record is None:
                 raise KnowledgeUnavailable("not_found")
             key = title_key(title)
+            was_disabled = key in record.disabled_titles
             found = await asyncio.to_thread(self._store.set_disabled, pack_id, title, bool(disabled))
             if not found:
                 raise KnowledgeUnavailable("not_found")
@@ -402,7 +408,12 @@ class KnowledgeService:
                 keys.discard(key)
             updated = replace(record, disabled_titles=tuple(sorted(keys)), updated_at=utc_now())
             registry = self._registry.with_pack(updated)
-            await asyncio.to_thread(save_registry, self.root, registry)
+            try:
+                await asyncio.to_thread(save_registry, self.root, registry)
+            except BaseException:
+                # The registry still says the old thing; so must the index.
+                await asyncio.to_thread(self._store.set_disabled, pack_id, title, was_disabled)
+                raise
             self._publish_registry(registry)
             return {"pack_id": pack_id, "disabled": bool(disabled), "disabled_entries": len(keys)}
 
@@ -852,9 +863,18 @@ class KnowledgeService:
         embed_task: asyncio.Task[Any] | None = None
         model_id = self._current_model_id()
         snapshot = self._vectors
-        if model_id is not None and snapshot is not None and snapshot.model_id == model_id:
+        if (
+            model_id is not None
+            and snapshot is not None
+            and snapshot.model_id == model_id
+            # A lookup that ran out of budget leaves its embedding running.
+            # Cap those, or slow inference piles up on the shared model.
+            and len(self._query_embeddings) < MAX_QUERY_EMBEDDINGS
+        ):
             embed_task = asyncio.create_task(self.embedder.embed(query))
             embed_task.add_done_callback(_consume)
+            self._query_embeddings.add(embed_task)
+            embed_task.add_done_callback(self._query_embeddings.discard)
         exact_ids, lexical_ids = await asyncio.to_thread(
             self._store.lexical_candidates, query, pack_ids=allowed, limit=LEXICAL_CANDIDATES
         )

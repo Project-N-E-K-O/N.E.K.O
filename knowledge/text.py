@@ -33,7 +33,9 @@ import re
 import unicodedata
 
 
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# Control characters, plus lone UTF-16 surrogates: JSON can carry "\ud800",
+# but such a string cannot be encoded as UTF-8 again.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff]")
 _CHAT_TOKEN_RE = re.compile(
     r"<\|\s*(?:im_start|im_end|im_sep|endoftext|system|user|assistant|"
     r"start_header_id|end_header_id|eot_id|begin_of_text)\s*\|>",

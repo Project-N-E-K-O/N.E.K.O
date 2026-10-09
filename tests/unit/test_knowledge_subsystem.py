@@ -693,3 +693,69 @@ async def test_failed_chunks_are_retried_after_a_model_change(tmp_path, fast_ind
         assert pack["vector_state"] == "complete"
     finally:
         await service.stop()
+
+
+async def test_altered_raw_pack_is_not_served_even_with_a_current_index(tmp_path):
+    service = await _started(tmp_path)
+    await _import(service, _pack())
+    await service.stop()
+    (raw_file,) = (tmp_path / "packs").iterdir()
+    raw_file.write_bytes(raw_file.read_bytes() + b" ")
+
+    restarted = await _started(tmp_path)
+    try:
+        assert (await restarted.status())["broken_packs"] == ["demo-memes"]
+        assert (await restarted.query(query="绝绝子"))["result"] == "miss"
+    finally:
+        await restarted.stop()
+
+
+async def test_failed_registry_write_reverts_a_disabled_flag(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+
+        def fail(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(service_module, "save_registry", fail)
+        with pytest.raises(OSError):
+            await service.set_entry_disabled("demo-memes", "绝绝子", True)
+        assert (await service.query(query="绝绝子"))["result"] == "matched"
+    finally:
+        await service.stop()
+
+
+def test_lone_surrogates_are_dropped_not_crashing_serialization():
+    payload = _pack()
+    payload["entries"][0]["summary"] = "bad \ud800 summary"
+    payload["source"]["name"] = "Demo\udfff"
+    pack = parse_pack(payload)
+    assert decode_pack_bytes(canonical_pack_bytes(pack)) == pack
+    assert pack.entries[0].summary == "bad summary"
+
+
+async def test_abandoned_query_embeddings_are_bounded(tmp_path, fast_indexer):
+    embedder = FakeEmbedder()
+    service = await _started(tmp_path, embedder)
+    try:
+        await _import(service, _pack())
+        for _ in range(300):
+            if service._vectors is not None:
+                break
+            await asyncio.sleep(0.02)
+        embedder.delay = 1.0
+        started = []
+        original = embedder.embed
+
+        async def counting(text):
+            started.append(text)
+            return await original(text)
+
+        embedder.embed = counting
+        for _ in range(6):
+            result = await service.query(query="绝绝子", budget_ms=250)
+            assert result["result"] == "matched"
+        assert len(started) == service_module.MAX_QUERY_EMBEDDINGS
+    finally:
+        await service.stop()

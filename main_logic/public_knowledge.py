@@ -63,6 +63,7 @@ AVAILABILITY_RETRY_SECONDS = 15.0
 _tool_available = False
 _next_check_at = 0.0
 _refresh_task: asyncio.Task[None] | None = None
+_refresh_timer: asyncio.TimerHandle | None = None
 _listeners: "weakref.WeakSet[Any]" = weakref.WeakSet()
 
 
@@ -114,6 +115,7 @@ def schedule_availability_refresh(memory_server_port: int, *, force: bool = Fals
 
 async def _refresh_availability(memory_server_port: int) -> None:
     global _next_check_at
+    delay = AVAILABILITY_RETRY_SECONDS
     try:
         from utils.internal_http_client import get_internal_http_client
 
@@ -125,24 +127,34 @@ async def _refresh_availability(memory_server_port: int) -> None:
             payload = response.json()
             note_availability(payload)
             if isinstance(payload, dict) and payload.get("ready") is True:
-                return
+                delay = AVAILABILITY_TTL_SECONDS
     except Exception as exc:
         logger.debug("[public-knowledge] availability check failed: %s", type(exc).__name__)
-    # Still starting or unreachable: actually come back soon. Nothing else may
-    # call schedule_availability_refresh again (a session that is already up
-    # does not re-register its tools), so the retry has to be armed here.
-    _next_check_at = time.monotonic() + AVAILABILITY_RETRY_SECONDS
-    asyncio.get_running_loop().call_later(
-        AVAILABILITY_RETRY_SECONDS,
-        functools.partial(schedule_availability_refresh, memory_server_port, force=True),
+    # Keep the flag fresh on our own: an import finishes in the background and
+    # may be started by a page that closes before seeing it complete, and a
+    # session that is already up does not re-register its tools. Retry soon
+    # while the runtime is starting or unreachable, otherwise once per TTL.
+    _next_check_at = time.monotonic() + delay
+    _arm_refresh_timer(memory_server_port, delay)
+
+
+def _arm_refresh_timer(memory_server_port: int, delay: float) -> None:
+    global _refresh_timer
+    if _refresh_timer is not None:
+        _refresh_timer.cancel()
+    _refresh_timer = asyncio.get_running_loop().call_later(
+        delay, functools.partial(schedule_availability_refresh, memory_server_port, force=True)
     )
 
 
 def reset_for_tests() -> None:
-    global _tool_available, _next_check_at, _refresh_task
+    global _tool_available, _next_check_at, _refresh_task, _refresh_timer
     _tool_available = False
     _next_check_at = 0.0
     _refresh_task = None
+    if _refresh_timer is not None:
+        _refresh_timer.cancel()
+    _refresh_timer = None
     _listeners.clear()
 
 
