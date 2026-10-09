@@ -108,16 +108,31 @@ async def _parse_upload(request):
     return await asyncio.to_thread(normalize_png, payload), base_revision, operation_id
 
 
-async def _save(config_manager, uid, expected_root, data_url, base_revision, operation_id):
-    async with character_config_mutation_lock:
-        # Caller cancellation must not release either fence while its worker writes.
-        record = await await_retirement(asyncio.to_thread(
-            _commit, config_manager, uid, expected_root, data_url, base_revision, operation_id,
-        ))
+async def _notify(uid, revision):
     try:
-        await notify_chat_avatar_changed(uid, record["revision"])
+        await notify_chat_avatar_changed(uid, revision)
     except Exception as exc:
         logger.warning("Chat avatar persisted; invalidation notification failed: %s", type(exc).__name__)
+
+
+async def _save(config_manager, uid, expected_root, data_url, base_revision, operation_id):
+    cancelled = None
+    async with character_config_mutation_lock:
+        # Caller cancellation must not release either fence while its worker writes.
+        commit = asyncio.ensure_future(asyncio.to_thread(
+            _commit, config_manager, uid, expected_root, data_url, base_revision, operation_id,
+        ))
+        try:
+            record = await await_retirement(commit)
+        except asyncio.CancelledError as exc:
+            if not commit.done() or commit.cancelled() or commit.exception() is not None:
+                raise
+            # The write landed before the cancellation; other windows still need its revision.
+            record, cancelled = commit.result(), exc
+    if cancelled is not None:
+        await asyncio.shield(_notify(uid, record["revision"]))
+        raise cancelled
+    await _notify(uid, record["revision"])
     return _response(record)
 
 

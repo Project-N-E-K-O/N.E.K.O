@@ -196,6 +196,36 @@ async def test_cancelled_commit_holds_character_lock_until_worker_finishes(backe
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("base_revision,committed", [("0", True), ("stale", False)], ids=["committed", "rejected"])
+async def test_cancelled_request_still_announces_a_commit_that_landed(backend, monkeypatch, base_revision, committed):
+    _, manager, _, _ = backend
+    entered, release = threading.Event(), threading.Event()
+    real_commit = route._commit
+    notify = AsyncMock()
+
+    def blocked(*args):
+        entered.set()
+        assert release.wait(5)
+        return real_commit(*args)
+
+    monkeypatch.setattr(route, "_commit", blocked)
+    monkeypatch.setattr(route, "notify_chat_avatar_changed", notify)
+    task = asyncio.create_task(route._save(manager, UID, Path(manager.app_docs_dir), None, base_revision, "cancelled"))
+    assert await asyncio.to_thread(entered.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    record = store.read_record(manager.app_docs_dir / "chat_avatars", UID)
+    if committed:
+        notify.assert_awaited_once_with(UID, record["revision"])
+    else:
+        assert record["revision"] == "0"
+        notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_overlap_same_revision_exactly_one_wins(backend):
     _, _, headers, app = backend
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
