@@ -86,6 +86,28 @@ logger = get_module_logger(__name__, "Main")
 
 _IMAGE_ANALYSIS_PENDING_DESCRIPTION = "[实时屏幕截图或相机画面正在分析中。先不要瞎编内容，可以稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
 
+# OpenAI Realtime GA 拒收超过 32 字符的 item.id（invalid_request_error /
+# string_above_max_length），条目建不成、整轮没有回复（#3350）。客户端自己生成的
+# item id 一律走 new_client_item_id，不要在调用点手拼「前缀 + 完整 uuid hex」。
+CLIENT_ITEM_ID_MAX_LENGTH = 32
+# 截断后至少留这么多位随机 hex（80 bit），同一连接里撞 id 的概率可以忽略。
+_CLIENT_ITEM_ID_MIN_RANDOM_HEX = 20
+
+
+def new_client_item_id(kind: str = "") -> str:
+    """Return a client-assigned conversation item id within provider limits.
+
+    ``kind`` is a short tag that only makes the id readable in logs
+    (``neko_vis_...``); nothing parses it back.
+    """
+
+    prefix = f"neko_{kind}_" if kind else "neko_"
+    random_len = CLIENT_ITEM_ID_MAX_LENGTH - len(prefix)
+    if random_len < _CLIENT_ITEM_ID_MIN_RANDOM_HEX:
+        raise ValueError(f"client item id kind too long: {kind!r}")
+    return prefix + uuid.uuid4().hex[:random_len]
+
+
 class TurnDetectionMode(Enum):
     SERVER_VAD = "server_vad"
     MANUAL = "manual"

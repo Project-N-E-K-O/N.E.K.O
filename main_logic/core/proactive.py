@@ -26,6 +26,7 @@ from main_logic.omni_realtime_client import (
     MultimodalTurnDelivery,
     OmniRealtimeClient,
     RealtimeImagePayloadTooLargeError,
+    new_client_item_id,
 )
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
@@ -2522,9 +2523,7 @@ class ProactiveMixin:
                                 "type": "conversation.item.create",
                                 "event_id": description_event_id,
                                 "item": {
-                                    "id": (
-                                        f"item_neko_callback_visual_{uuid4().hex}"
-                                    ),
+                                    "id": new_client_item_id("cbvis"),
                                     "type": "message",
                                     "role": "user",
                                     "content": [{

@@ -3348,7 +3348,13 @@ class _TransportMixin:
                                 event.get("response_id")
                             ),
                         )
-                elif event_type == "conversation.item.created":
+                elif (
+                    event_type
+                    in self._realtime_protocol_capabilities.item_ack_event_types
+                ):
+                    # OpenAI GA acknowledges with ``conversation.item.added``,
+                    # every other route with ``.created``; the route's profile
+                    # names which (#3350).
                     self._response_arbiter.notify_item_created(event)
                 elif event_type == "conversation.item.deleted":
                     self._response_arbiter.notify_item_deleted(event)
