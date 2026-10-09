@@ -48,13 +48,26 @@
         const RESOURCE_HINT_FALLBACKS = {
             'voiceIdentity.resourcesChecking': 'Enrollment resources are not confirmed. Check and load them.',
             'voiceIdentity.resourcesReady': 'Voice enrollment resources are ready',
+            'voiceIdentity.resourcesReadyWakeRepair': 'Voice enrollment resources are ready. Wake word components need repair: select “Repair resources”.',
             'voiceIdentity.resourcesNeeded': 'Enrollment resources are not ready. Check and load resources.',
             'voiceIdentity.resourcesNeedRepair': 'Required enrollment resources are missing or unavailable. Select “Repair resources”.'
         };
+        // Wake components only become required once wake word is on, and a
+        // missing cache-managed wake model is fixed by its download button.
+        // A configured model directory takes precedence, so download cannot.
+        function needsRepair(name, value) {
+            return !!value && value.required && ['missing', 'unavailable'].includes(value.state)
+                && !(name === 'wake_model' && value.state === 'missing' && !resources.wake_configured);
+        }
+        function wakeNeedsRepair() {
+            const items = resources && resources.resources || {};
+            return ['wake_model', 'wake_runtime'].some(name => needsRepair(name, items[name]));
+        }
         // Loading cannot fix a missing or unavailable enrollment resource; repair can.
+        // The details are folded away, so name a wake repair in the visible summary.
         function resourcesHintKey() {
             if (!resources) return 'voiceIdentity.resourcesChecking';
-            if (resources.can_enroll === true) return 'voiceIdentity.resourcesReady';
+            if (resources.can_enroll === true) return wakeNeedsRepair() ? 'voiceIdentity.resourcesReadyWakeRepair' : 'voiceIdentity.resourcesReady';
             const items = resources.resources || {};
             return ['campp', 'silero', 'noise_reduction'].some(name => items[name] && ['missing', 'unavailable'].includes(items[name].state))
                 ? 'voiceIdentity.resourcesNeedRepair' : 'voiceIdentity.resourcesNeeded';
@@ -67,11 +80,7 @@
             el.download.disabled = pending || !!operation || hooks.enrolling() || !resources || !resources.resources || !resources.resources.wake_runtime || ['missing', 'unavailable'].includes(resources.resources.wake_runtime.state);
             el['wake-enable'].disabled = pending || hooks.enrolling() || !resources || resources.wake_managed === true;
             el['wake-enable'].checked = !!(resources && resources.wake_enabled);
-            // Wake components only become required once wake word is on, and a
-            // missing cache-managed wake model is fixed by its download button.
-            // A configured model directory takes precedence, so download cannot.
-            el.repair.hidden = !resources || !Object.entries(resources.resources || {}).some(([name, value]) => value.required
-                && ['missing', 'unavailable'].includes(value.state) && !(name === 'wake_model' && value.state === 'missing' && !resources.wake_configured));
+            el.repair.hidden = !resources || !Object.entries(resources.resources || {}).some(([name, value]) => needsRepair(name, value));
             el.repair.disabled = pending || hooks.enrolling();
             el['resource-cancel'].hidden = !operation;
             el['gain-value'].textContent = gainDb + ' dB';
@@ -90,9 +99,11 @@
                     ? ['voiceIdentity.wakeOptional', 'Wake word is off. This does not block voice enrollment.']
                     : wakeReady
                         ? ['voiceIdentity.wakeReady', 'Wake word components are ready.']
-                        : wakeState('wake_model') === 'missing' && !resources.wake_configured && !['missing', 'unavailable'].includes(wakeState('wake_runtime'))
-                            ? ['voiceIdentity.wakeNeedsModel', 'Wake word is on. Download the wake-word model.']
-                            : ['voiceIdentity.wakeNeedsResources', 'Wake word is on. Check and load its components.'];
+                        : wakeNeedsRepair()
+                            ? ['voiceIdentity.wakeNeedsRepair', 'Wake word components are missing or unavailable. Select “Repair resources”.']
+                            : wakeState('wake_model') === 'missing'
+                                ? ['voiceIdentity.wakeNeedsModel', 'Wake word is on. Download the wake-word model.']
+                                : ['voiceIdentity.wakeNeedsResources', 'Wake word is on. Check and load its components.'];
                 const text = !resources ? '' : t(key, fallback);
                 if (wakeSummary.textContent !== text) wakeSummary.textContent = text;
             }

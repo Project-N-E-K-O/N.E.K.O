@@ -140,8 +140,7 @@
 
 #voice-identity-input-notice:empty,
 #voice-identity-test-result:empty,
-#voice-identity-resource-message:empty,
-.enrollment-message:empty {
+#voice-identity-resource-message:empty {
     display: none;
 }
 
@@ -525,11 +524,6 @@ input:focus-visible,
     gap: 4px 16px;
 }
 
-.status-card h2 {
-    margin: 0;
-    font-size: 0.85rem;
-}
-
 .status-card p {
     font-size: 0.85rem;
 }
@@ -902,10 +896,6 @@ input:focus-visible,
     font-weight: 700;
 }
 
-.step-count:empty {
-    display: none;
-}
-
 .voice-prompt {
     position: relative;
     margin: 18px auto 0;
@@ -1072,6 +1062,11 @@ input:focus-visible,
     justify-content: flex-end;
     padding-top: 20px;
     border-top: 1px solid var(--voice-border);
+}
+
+.profile-card .start-hint {
+    margin-top: 10px;
+    text-align: right;
 }
 
 .primary-button,
@@ -1275,6 +1270,10 @@ button:disabled {
 
     .profile-actions {
         justify-content: flex-start;
+    }
+
+    .profile-card .start-hint {
+        text-align: left;
     }
 }
 

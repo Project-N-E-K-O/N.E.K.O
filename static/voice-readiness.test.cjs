@@ -178,13 +178,16 @@ test('repair is offered only for required resources; optional wake parts point t
     assert.deepEqual(await show(false, 'missing', 'unchecked'), { repair: false, help: '', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeOptional' });
     assert.deepEqual(await show(false, 'missing', 'missing'), { repair: false, help: 'voiceIdentity.downloadNeedsWakeOn', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeOptional' });
     assert.deepEqual(await show(true, 'missing', 'unchecked'), { repair: false, help: '', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeNeedsModel' });
-    assert.deepEqual(await show(true, 'missing', 'missing'), { repair: true, help: 'voiceIdentity.downloadNeedsRuntime', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeNeedsResources' });
+    // Only repair fixes this; the folded details are not the only place that says so.
+    assert.deepEqual(await show(true, 'missing', 'missing'), { repair: true, help: 'voiceIdentity.downloadNeedsRuntime', summary: 'voiceIdentity.resourcesReadyWakeRepair', wake: 'voiceIdentity.wakeNeedsRepair' });
+    assert.deepEqual(await show(true, 'ready', 'unchecked'), { repair: false, help: '', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeNeedsResources' });
     // A configured model directory wins over the download cache: repair, not download.
     payload = { can_enroll: true, wake_enabled: true, wake_configured: true, resources: { campp: ready, silero: ready,
         wake_model: { state: 'missing', required: true }, wake_runtime: { state: 'unchecked', required: true } } };
     await h.controller.refreshResources();
     assert.equal(h.elements.get('voice-identity-repair').hidden, false);
-    assert.equal(h.elements.get('voice-identity-wake-summary').textContent, 'voiceIdentity.wakeNeedsResources');
+    assert.equal(h.elements.get('voice-identity-wake-summary').textContent, 'voiceIdentity.wakeNeedsRepair');
+    assert.equal(h.elements.get('voice-identity-resource-summary').textContent, 'voiceIdentity.resourcesReadyWakeRepair');
     // A managed preference cannot be switched on here, so do not ask for it.
     payload = { can_enroll: true, wake_enabled: false, wake_managed: true, resources: { campp: ready, silero: ready, wake_runtime: { state: 'unavailable', required: false } } };
     await h.controller.refreshResources();
