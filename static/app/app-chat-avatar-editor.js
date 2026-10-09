@@ -58,7 +58,12 @@
             save.disabled = busy || !!(candidate && candidate.conflict);
         }
         if (cancel) { cancel.hidden = !candidate; cancel.disabled = false; }
-        if (restore) { restore.hidden = !confirmed; restore.disabled = busy || !identity || !!state().getError(); }
+        if (restore) {
+            // A failed read must not lock out the retry that confirms an uncertain restore first.
+            const confirmable = !!uncertainRestore && state().isCurrent(uncertainRestore);
+            restore.hidden = !confirmed;
+            restore.disabled = busy || !identity || (!!state().getError() && !confirmable);
+        }
         if (refresh) refresh.hidden = !!confirmed || !!candidate;
         if (status) {
             let key = statusKey;

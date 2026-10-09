@@ -280,7 +280,8 @@
             const timer = window.setTimeout(function () { controller.abort(); }, REQUEST_TIMEOUT_MS);
             let config;
             try {
-                const response = await fetch('/api/characters', {
+                // Only the UID is read: skip persona translation, which may call an LLM.
+                const response = await fetch('/api/characters?language=zh-CN', {
                     credentials: 'same-origin', cache: 'no-store', signal: controller.signal
                 });
                 if (!response.ok) throw failure('chat_avatar_read_failed', response.status);

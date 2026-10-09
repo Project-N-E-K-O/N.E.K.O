@@ -322,16 +322,16 @@ test('notification for another role is ignored and current revision avoids redun
     h.pending.at(-1).resolve(response(row(A, 'changed'))); await h.settle();
 });
 
-test('initialize waits for config, resolves stable UID, and focus/pageshow supplement notifications', async () => {
+test('initialize waits for config, resolves stable UID untranslated, and focus/pageshow supplement notifications', async () => {
     const h = harness(); const configReady = deferred(); h.window.pageConfigReady = configReady.promise;
     h.api.initialize(); h.api.initialize(); await h.settle(); assert.equal(h.pending.length, 0);
-    configReady.resolve({}); await h.settle(); assert.equal(h.pending[0].url, '/api/characters');
+    configReady.resolve({}); await h.settle(); assert.equal(h.pending[0].url, '/api/characters?language=zh-CN');
     h.pending[0].resolve(response({ '猫娘': { Alice: { _reserved: { character_uid: A } } } })); await h.settle();
     h.pending[1].resolve(response(row(A, 'saved', 'custom'))); await h.settle();
     assert.equal(h.api.getIdentity().uid, A); assert.equal(h.api.getDataUrl(), 'custom');
     h.listeners.get('focus')(); h.pending.at(-1).resolve(response(row(A, 'saved', 'custom'))); await h.settle();
     h.listeners.get('pageshow')(); h.pending.at(-1).resolve(response(row(A, 'saved', 'custom'))); await h.settle();
-    assert.equal(h.pending.filter(p => p.url === '/api/characters').length, 1);
+    assert.equal(h.pending.filter(p => p.url === '/api/characters?language=zh-CN').length, 1);
 });
 
 test('failed character bootstrap is unavailable and focus retries without deleting any avatar', async () => {

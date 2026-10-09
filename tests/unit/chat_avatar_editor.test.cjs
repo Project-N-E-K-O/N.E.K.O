@@ -157,6 +157,26 @@ test('uncertain restore is confirmed with GET before retrying and reuses the ori
     assert.equal(h.restores.length, 1); assert.equal(h.api.getState().status, '');
 });
 
+test('uncertain restore stays retryable after its confirming read fails, other read errors still disable it', async () => {
+    const h = fixture(); h.setRecord({ revision: 'custom', data_url: 'png', last_operation_id: 'old' });
+    let readError = null; h.state.getError = () => readError;
+    const restore = h.elements.get('chat-avatar-restore');
+    readError = { code: 'chat_avatar_read_failed' }; h.api.update();
+    assert.equal(restore.hidden, false); assert.equal(restore.disabled, true);
+    readError = null;
+    const first = h.api.restore();
+    readError = { code: 'chat_avatar_network_error' };
+    const error = new Error('uncertain'); error.code = 'chat_avatar_unknown_outcome'; h.restores[0].reject(error); await first;
+    assert.equal(h.api.getState().status, 'unknownOutcome');
+    assert.equal(restore.hidden, false); assert.equal(restore.disabled, false);
+    const retry = h.api.restore(); assert.equal(h.reads.length, 1); assert.equal(h.restores.length, 1);
+    readError = null;
+    h.reads[0].resolve({ revision: 'cleared', data_url: null, last_operation_id: 'operation' }); await retry;
+    assert.equal(h.restores.length, 1); assert.equal(h.api.getState().status, '');
+    readError = { code: 'chat_avatar_read_failed' }; h.setRecord({ revision: 'custom2', data_url: 'png', last_operation_id: 'x' }); h.api.update();
+    assert.equal(restore.disabled, true);
+});
+
 test('failed uncertain-save GET does not lose uncertainty or permit a blind later PUT', async () => {
     const h = fixture(); await h.candidate(); const first = h.api.save();
     const error = new Error('uncertain'); error.code = 'chat_avatar_unknown_outcome'; h.writes[0].reject(error); await first;
