@@ -490,3 +490,59 @@ test('committed real returns preserve one summary for every supported avatar', (
   assert.equal(png.win.nekoCatMind.getState().active, false);
   assert.ok(png.win.nekoCatMind.getReturnSummaryDraft());
 });
+
+test('short action burst guard prevents an immediate autonomous repeat', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  runtime.advanceNeed(15);
+  assert.equal(runtime.requests.length, 1);
+  const request = runtime.requests[0];
+  startRequest(runtime, request, 'burst-guard-run');
+  reportResult(runtime, request, 'burst-guard-run', 'done', 'runner_done');
+
+  runtime.advanceTime(30000);
+  runtime.observe('cat_elapsed', { elapsedMs: 30000 }, 'cat1', 'cat-mind-clock');
+  assert.equal(runtime.requests.length, 1, 'autonomous tick inside the short guard must not start another action');
+});
+
+test('repeated hover observations inside the short window count once', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  runtime.observe('cat_hover_reaction', { reason: 'return-hover' });
+  runtime.observe('cat_hover_reaction', { reason: 'return-hover' });
+  const hovers = runtime.win.nekoCatMind.getRecentEvents()
+    .filter((event) => event.type === 'cat_hover_reaction');
+  assert.equal(hovers.length, 1);
+});
+
+test('identical compact surface facts do not create repeated opportunities', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  const detail = {
+    source: 'compact-surface',
+    available: true,
+    visible: true,
+    screenRect: { left: 10, top: 20, width: 80, height: 80 },
+    timestamp: runtime.now() + 1,
+  };
+  runtime.win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', { detail }));
+  runtime.win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {
+    detail: { ...detail, timestamp: detail.timestamp + 1 },
+  }));
+  runtime.flush();
+  const compactFacts = runtime.win.nekoCatMind.getRecentEvents()
+    .filter((event) => event.type === 'chat_compact_surface_visible');
+  assert.equal(compactFacts.length, 1);
+});
+
+test('position presentation busy is a shared Cat Mind hard gate', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.gates.cat1PositionPresentationBusy = true;
+  runtime.enter();
+  runtime.advanceNeed(15);
+  assert.equal(runtime.requests.length, 0);
+  assert.equal(
+    runtime.win.nekoCatMind.getDebugSnapshot().lastDecision.reason,
+    'cat1_position_presentation_busy',
+  );
+});

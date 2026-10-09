@@ -494,6 +494,7 @@ function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {})
         edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button),
         returnPending: _isNekoCatMindReturnPending(button) || _isAnyNekoCatMindReturnPending(),
         transitionActive: _isNekoCatMindTransitionActive(button), compactSurfaceDragging: _isNekoIdleCompactSurfaceDragging(),
+        cat1PositionPresentationBusy: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1PositionPresentationBusy(button),
         independentActionActive: _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive(),
         audioEnabled: isNekoIdleCatAudioEnabled(), ambientAudioActive: !!_nekoIdleCat1AmbientSoundState.active,
         playYarnCapability,
@@ -631,6 +632,7 @@ function _evaluateNekoCatMindActionProvider(actionId, context = {}) {
     else if (facts.compactSurfaceDragging) reason = 'compact_surface_dragging';
     else if (facts.returnPending) reason = 'return_pending';
     else if (facts.transitionActive) reason = 'transition_active';
+    else if (facts.cat1PositionPresentationBusy) reason = 'cat1_position_presentation_busy';
     else if (facts.independentActionActive) reason = 'active_independent_action';
     else if (!facts.returnBallVisible) reason = 'return_ball_not_visible';
     else if (facts.edgePeekActive) reason = 'edge_peek_active';

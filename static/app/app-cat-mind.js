@@ -155,6 +155,9 @@
     ]);
     var CHAT_MOVED_FAR_DISTANCE_PX = 24;
     var AUTONOMOUS_TICK_INTERVAL_MS = 30 * 1000;
+    // 防止重复桥接事件或连续 hover 在极短时间内造成动作连播。
+    var HOVER_DEDUPE_WINDOW_MS = 1500;
+    var ACTION_START_BURST_GUARD_MS = 60 * 1000;
     var ACTION_REQUEST_LEASE_MS = 5 * 1000;
     var ACTION_ACCEPTED_START_LEASE_MS = 12 * 1000;
     var TIME_RATE_PER_MINUTE = Object.freeze({
@@ -376,6 +379,8 @@
             lastChatMinimizedRect: null,
             lastChatMinimizedState: null,
             lastChatIdleDocked: false,
+            lastCompactSurfaceSignature: '',
+            lastHoverObservationAt: 0,
             returnSummaryDraft: null,
             returnEpisodeAccumulator: createReturnEpisodeAccumulator(),
             lastDecision: null,
@@ -1349,6 +1354,7 @@
         if (gates.yarnDragActive) return 'chat_yarn_dragging';
         if (gates.yarnSettling) return 'chat_yarn_settling';
         if (gates.edgePeekActive) return 'edge_peek_active';
+        if (gates.cat1PositionPresentationBusy) return 'cat1_position_presentation_busy';
         return '';
     }
 
@@ -1607,6 +1613,25 @@
                 request: settledAction,
             });
             queueDeferredDecisionIfNeeded();
+            return;
+        }
+
+        var sinceLastActionStarted = scheduler.lastEvaluatedAt -
+            (Number(runtimeState.clock.lastActionStartedAt) || 0);
+        if (runtimeState.clock.lastActionStartedAt &&
+            sinceLastActionStarted >= 0 &&
+            sinceLastActionStarted < ACTION_START_BURST_GUARD_MS &&
+            !triggerTypes.some(isUserInteractionObservationType) &&
+            !hasFreshActionIntent(scheduler.lastEvaluatedAt)) {
+            deferUserDecisionTriggers(triggerTypes);
+            recordDecision({
+                trigger: 'queued',
+                triggerTypes: triggerTypes,
+                outcome: ACTION_IDS.STAY_IDLE,
+                reason: 'action_start_burst_guard',
+                timestamp: scheduler.lastEvaluatedAt,
+                candidates: [],
+            });
             return;
         }
 
@@ -2413,6 +2438,14 @@
         if (!runtimeState.active && observation.type !== OBSERVATION_TYPES.CAT_ENTERED) {
             return null;
         }
+        if (observation.type === OBSERVATION_TYPES.CAT_HOVER_REACTION) {
+            var lastHoverAt = Number(runtimeState.lastHoverObservationAt) || 0;
+            if (lastHoverAt && observation.timestamp - lastHoverAt >= 0 &&
+                observation.timestamp - lastHoverAt < HOVER_DEDUPE_WINDOW_MS) {
+                return null;
+            }
+            runtimeState.lastHoverObservationAt = observation.timestamp;
+        }
         if (rememberObservationKey(observationKey(observation))) {
             return null;
         }
@@ -2771,6 +2804,16 @@
         if (!visible && !detail.screenRect && !detail.left && !detail.width) {
             return;
         }
+        var rect = normalizeRect(detail.screenRect);
+        var compactSignature = [
+            visible ? 'visible' : 'hidden',
+            rect ? [rect.left, rect.top, rect.width, rect.height].join(',') : '',
+            typeof detail.lifecycleSequence === 'number' ? detail.lifecycleSequence : '',
+        ].join('|');
+        if (compactSignature && compactSignature === runtimeState.lastCompactSurfaceSignature) {
+            return;
+        }
+        runtimeState.lastCompactSurfaceSignature = compactSignature;
         observe({
             type: OBSERVATION_TYPES.CHAT_COMPACT_SURFACE_VISIBLE,
             source: detail.source || 'compact-surface',
