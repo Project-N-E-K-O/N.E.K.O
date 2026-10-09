@@ -783,3 +783,39 @@ async def test_worker_dying_while_the_end_marker_waits_fails_and_hands_over(monk
     await _settle()
     assert failed == [True] and mgr.interrupts[0] == first.speech_id
     assert first._released.done()
+
+
+# ── 评审第 3 轮（云端）────────────────────────────────────────────────
+
+
+async def test_finish_without_worker_hands_over_only_after_its_interrupt():
+    # 与中止同理：finish 当场报 no_worker 时，被取消的后台任务不抢先交出；
+    # 后继在打断清理做完之后才认领，它的待发文字不会被这次清理一并清掉
+    mgr = _mgr(ready=False)
+    order: list[str] = []
+
+    async def slow_interrupt():
+        order.append(f"interrupt-start:{mgr.current_speech_id}")
+        await asyncio.sleep(0.05)
+        mgr.tts_pending_chunks.clear()
+        order.append(f"interrupt-end:{mgr.current_speech_id}")
+
+    mgr.interrupt_mirror_speech = slow_interrupt
+    first = _open(mgr)
+    first.push("前一句")
+    await _settle()
+    second = _open(mgr)
+    second.push("后一句。")
+    await _settle()
+    mgr.tts_thread = _DeadThread()
+    assert first.finish() == MirrorSpeechStream.NO_WORKER
+
+    async def revived():
+        mgr.tts_thread = _FakeAliveThread()
+
+    mgr.ensure_tts_pipeline_alive = revived
+    await asyncio.sleep(0.1)
+    await _settle()
+    assert order == [f"interrupt-start:{first.speech_id}", f"interrupt-end:{first.speech_id}"]
+    assert mgr.current_speech_id == second.speech_id
+    assert mgr.tts_pending_chunks == [(second.speech_id, "后一句。")]

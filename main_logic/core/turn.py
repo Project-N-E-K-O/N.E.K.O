@@ -129,6 +129,8 @@ class MirrorSpeechStream:
         self._predecessor: Optional["MirrorSpeechStream"] = None
         self._handing_over = False
         self._giving_up: Optional[asyncio.Future] = None
+        # finish() 当场发现没有 worker：轮次由打断做完之后交出，被取消的后台任务不抢先交出
+        self._release_after_interrupt = False
         # 打开时的当前语音：认领时它若被普通对话换掉（亲人先开口），本流不抢那一轮
         self._base_speech_id = getattr(mgr, "current_speech_id", None)
         self._end_deferred = False
@@ -161,6 +163,7 @@ class MirrorSpeechStream:
         if self._started and not self._worker_alive():
             # 已经知道没有 worker 接得住结束标记：当场告诉调用方（它据此改按估时放字幕）
             self._close()
+            self._release_after_interrupt = True
             task = self._task
             if task is not None and not task.done():
                 task.cancel()                  # 后台任务可能正等着下一段文字：一并结束，不留着它
@@ -272,7 +275,7 @@ class MirrorSpeechStream:
             if self._claimed:
                 await self._mgr._interrupt_mirror_stream(self._speech_id)
         finally:
-            if not self._aborted and not self._end_deferred:
+            if not self._aborted and not self._end_deferred and not self._release_after_interrupt:
                 # 中止由 abort() 那边在打断清理做完之后交出轮次；结束标记推迟到 worker 就绪的，
                 # 等它真正入队（_request_tts_done_locked 回调）再交出——这里都不能抢先交出
                 self._release()
