@@ -51,7 +51,7 @@ from fastapi.responses import JSONResponse
 from config.visit_settings import VISIT_INVITE_PREVIEW_REUSE_S
 from main_logic.visit import local_chars, memory_bridge
 from main_logic.visit.limits import Blocklist
-from main_logic.visit.recovery import read_pending_upload_doc_sync
+from main_logic.visit.recovery import pending_upload_owner, read_pending_upload_doc_sync
 from main_logic.visit.spool import VisitSpool
 from main_logic.visit.subjects import derive_short_code
 from main_routers.system_router._shared import _read_json_object
@@ -234,8 +234,9 @@ async def _admit(name: str, side: str, **kwargs: Any) -> runtime.VisitRuntime | 
             rt = await runtime.start_visit(name, side, **kwargs)
         except runtime.VisitRefused as exc:
             return _refused(exc.status, exc.body)
-        # 清除检查按的角色 / 账号，必须就是这一场的：期间改了名、名字被占或换了社区账号，这次检查不作数
-        if rt.character_uid != uid or await accounts.local_account() != account:
+        # 清除检查按的角色 / 账号，必须就是这一场的：期间改了名、名字被占或换了社区账号，这次检查不作数。
+        # 账号比的是运行时自己记下的那个（领凭证时还要与它核对），中途换走又换回也认得出
+        if rt.character_uid != uid or rt.admitted_account != account:
             logger.warning("visit %s: character or account changed during admission, refusing", rt.visit_id[:6])
             rt.request_finalize("busy")
             return _refused(409, {"reason": "busy"})
@@ -477,10 +478,10 @@ async def _pending_upload(config_dir: Path, visit_id: str) -> Optional[tuple[dic
 async def visit_transcript(request: Request, visit_id: str = ""):
     """One visit's transcript for export / report attachments.
 
-    Local spool → in-memory transcript (``VISIT_TRANSCRIPT_MEMORY_TTL_S``
-    after the end) → the local pending upload (``.upload.json`` /
+    In-memory transcript (while the visit lives and ``VISIT_TRANSCRIPT_MEMORY_TTL_S``
+    after the end) → local spool → the local pending upload (``.upload.json`` /
     ``.upload.jsonl``) → Servers details (this side, every page). The first
-    two answer the full local shape (``source: spool | memory``), the last two
+    two answer the full local shape (``source: memory | spool``), the last two
     the compact shape of the uploaded lines (``source: upload | cloud``).
     Local copies are served only to the community account that took part
     (visit data is partitioned by account); a spool or upload stream that lost
@@ -496,6 +497,10 @@ async def visit_transcript(request: Request, visit_id: str = ""):
     owner = await accounts.own_visit_uid()
     partial: Optional[dict] = None
     if owner:
+        # 进程里还有这一场：内存里的流水最完整（spool 某一行写失败时只记了日志、行仍在流水里）
+        rt = _memory_runtime(visit_id)
+        if rt is not None and _runtime_owner(rt) == owner:
+            return JSONResponse(await _memory_transcript(config_dir, rt))
         spooled = await _spool_transcript(config_dir, visit_id, owner)
         if spooled is not None:
             doc, dropped = spooled
@@ -503,11 +508,10 @@ async def visit_transcript(request: Request, visit_id: str = ""):
                 return JSONResponse(doc)
             # 崩溃留下的半行 / 坏行被丢掉了：先找完整的来源，都没有再退回这份
             partial = {**doc, "dropped_lines": dropped}
-        rt = _memory_runtime(visit_id)
-        if rt is not None and _runtime_owner(rt) == owner:
-            return JSONResponse(await _memory_transcript(config_dir, rt))
         pending = await _pending_upload(config_dir, visit_id)
-        if pending is not None and pending[0].get("own_visit_uid") == owner:
+        # 较早的上传文件不记属主：与补传同一规则，从 state.json / 流水头行认回来
+        if pending is not None and (pending[0].get("own_visit_uid")
+                                    or await pending_upload_owner(config_dir, visit_id)) == owner:
             upload_doc, dropped = pending
             request_body = upload_doc["request"]
             body = {"source": "upload", "visit_id": visit_id, "role": request_body["role"],

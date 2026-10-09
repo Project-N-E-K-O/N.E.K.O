@@ -1075,6 +1075,16 @@ async def _pending_upload_owner(config_dir: Path, visit_id: str) -> str | None:
     return owner
 
 
+async def pending_upload_owner(config_dir: Path, visit_id: str) -> str | None:
+    """Community ``visit_uid`` owning the visit's pending transcript (the rule uploads follow).
+
+    The sealed upload's own owner, else ``state.json``, else the upload
+    stream header: legacy ownerless files are attributed the same way the
+    upload path backfills them.
+    """
+    return await _pending_upload_owner(Path(config_dir), visit_id)
+
+
 def _upload_stream_owner_sync(spool_dir: Path, visit_id: str) -> str | None:
     """``own_visit_uid`` named by this visit's upload stream header; None when absent or not this visit's."""
     try:

@@ -1902,9 +1902,14 @@ class VisitSpool:
     @classmethod
     def _unreclaimable_bytes_sync(cls, config_dir: Path, live_ids: frozenset[str]) -> int:
         by_visit: dict[str, list[tuple[str, os.stat_result]]] = {}
-        for visit_id, suffix, _path, st in _scan(_spool_dir(config_dir)):
+        for visit_id, suffix, path in _list_names(_spool_dir(config_dir)):
             if suffix == OUTBOX_SUFFIX or visit_id in live_ids:
                 continue
+            try:
+                st = path.stat()
+            except FileNotFoundError:
+                continue
+            # 其余 stat 错误（共享冲突、权限）上抛：大小不明的文件不能当作不占额度，调用方按已满拒绝
             by_visit.setdefault(visit_id, []).append((suffix, st))
         total = 0
         for visit_id, files in by_visit.items():
@@ -1930,6 +1935,8 @@ class VisitSpool:
         the admission cap ``VISIT_UPLOAD_PENDING_CAP_BYTES`` bounds them. Visits
         for which ``is_live`` answers True are left out (the visit in flight
         has its own per-file limits); ``is_live`` runs on the event loop only.
+        Raises ``OSError`` when a counted file cannot be ``stat``-ed (unknown
+        size: the admission check fails closed).
         """
         live_ids: frozenset[str] = frozenset()
         if is_live is not None:

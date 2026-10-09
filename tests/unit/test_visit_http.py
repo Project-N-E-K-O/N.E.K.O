@@ -1046,3 +1046,69 @@ async def test_cloud_text_that_cannot_be_utf8_is_a_dropped_row_not_500(env, monk
     monkeypatch.setattr(env.servers, "_details", with_lone_surrogate)
     resp = await _transcript(env)
     assert resp.status_code == 200 and [line["lp"] for line in resp.json()["lines"]] == [1]
+
+
+async def test_admission_compares_the_account_the_runtime_recorded(env, monkeypatch):
+    async def runtime_saw(*_a):
+        return "someone-else"     # start_visit 读本机账号那一刻是别的账号（中途换走又换回）
+
+    monkeypatch.setattr(rtm, "_local_account", runtime_saw)
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "busy"
+    assert env.host.rt.finalize_reason == "busy"
+
+
+async def test_a_live_runtime_wins_over_a_spool_that_missed_a_line(env, monkeypatch):
+    spool = VisitSpool(env.host.config_dir, VISIT_ID)
+    await _write_spool(env.host.config_dir)
+
+    class Creds:
+        transport, visit_uid = "trtc", OWN
+
+    class Live:
+        visit_id, peer, creds, started_at_wall, ended_at_mono = VISIT_ID, None, Creds(), NOW, None
+
+        def transcript_records(self):
+            extra = {"lp": 3, "side": "host", "ts": 1004.0, "from": "own_cat", "text": "spool 没写进去的那句",
+                     "truncated": False}
+            return [{k: v for k, v in line.items() if k != "ln"} for line in LINES] + [extra]
+
+        def visit_line_payload_from_record(self, record):
+            return {}
+
+        def anomaly_count(self):
+            return 0
+
+    monkeypatch.setattr(rtm, "get_runtime_by_visit", lambda visit_id: Live())
+    body = (await _transcript(env)).json()
+    assert spool.jsonl_path.exists()
+    assert body["source"] == "memory" and len(body["lines"]) == 4
+
+
+async def test_a_legacy_upload_without_owner_is_attributed_from_its_state(env):
+    from main_logic.visit.spool import new_state
+
+    path = env.host.config_dir / "visit_spool" / f"{VISIT_ID}.upload.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({**_upload_doc(), "own_visit_uid": None}), encoding="utf-8")
+    env.servers.details_mode = "503"
+    assert (await _transcript(env)).json()["code"] == "transcript_gone_local"
+    await VisitSpool(env.host.config_dir, VISIT_ID).write_state(new_state(
+        own_uid=OWN, own_char="Host", own_char_uid=HOST_CHAR_UID, pair_id=derive_pair_id(OWN, HOST_UID),
+        peer_uid=HOST_UID, peer_char_id=derive_peer_char_id(HOST_UID, "f" * 32), memory_enabled=False))
+    body = (await _transcript(env)).json()
+    assert body["source"] == "upload" and len(body["lines"]) == 3
+
+
+async def test_backlog_entry_that_cannot_be_statted_refuses(env, monkeypatch):
+    from main_logic.visit import spool as spool_mod
+
+    class Locked:
+        name = f"{VISIT_ID}.upload.json"
+
+        def stat(self):
+            raise PermissionError("sharing violation")
+
+    monkeypatch.setattr(spool_mod, "_list_names", lambda _d: [(VISIT_ID, ".upload.json", Locked())])
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["code"] == "VISIT_UPLOAD_BACKLOG" and _no_slot()
