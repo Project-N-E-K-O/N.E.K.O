@@ -91,6 +91,7 @@ from utils.storage_migration import (
     reconcile_finished_retained_cleanup,
     record_retained_cleanup_completed,
     record_retained_root_removal_started,
+    clear_retained_root_removal_started,
     source_entries_referenced_by_config,
     v1_catch_up_skipped_entries,
     v1_catch_up_unfinished_entries,
@@ -1772,6 +1773,12 @@ def _cleanup_retained_runtime_root(
     }
 
     def _referenced_by_live_config(entry_name: str) -> bool:
+        config_root = normalized_target / "config"
+        if os.path.lexists(config_root) and classify_entry_no_follow(config_root) != "dir":
+            # A link (or anything but a real directory): its fingerprint would
+            # not change when what it points at is edited, so every entry
+            # counts as possibly referenced and stays.
+            return True
         # Scanned again when the config changed meanwhile: cleaning a large
         # entry takes a while, and an edit could point at one not done yet.
         fingerprint = _live_config_fingerprint()
@@ -2313,6 +2320,10 @@ async def _post_storage_location_retained_source_cleanup_locked(
         )
         if not remaining:
             _persist_cleanup_result()
+        else:
+            # Something came back while the root was being removed: it stays,
+            # and must not later pass for removed (an unmounted disk).
+            clear_retained_root_removal_started(config_manager, anchor_root=anchor_root)
         return remaining, kept
 
     try:

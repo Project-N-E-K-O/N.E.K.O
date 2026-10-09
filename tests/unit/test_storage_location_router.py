@@ -4929,3 +4929,74 @@ def test_an_entry_below_a_plain_file_counts_as_gone(tmp_path, monkeypatch):
     monkeypatch.setattr(storage_location_router_module.os, "lstat", _lstat)
 
     assert storage_location_router_module._entry_may_exist(tmp_path / "state" / "game_scores") is False
+
+
+@pytest.mark.unit
+def test_storage_cleanup_withdraws_the_removal_record_when_the_root_stays(tmp_path, monkeypatch):
+    """memory came back while the old logs were removed; the root stays, and
+    a later unmount must not make it pass for removed."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "logs").mkdir()
+    (source_root / "logs" / "old.log").write_text("old", encoding="utf-8")
+    original_remove = storage_location_router_module.remove_runtime_entry
+
+    def _remove_while_memory_comes_back(path):
+        original_remove(path)
+        if Path(path).name == "logs":
+            (source_root / "memory").mkdir(exist_ok=True)
+            (source_root / "memory" / "restored.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(storage_location_router_module, "remove_runtime_entry", _remove_while_memory_comes_back)
+    assert _cleanup_request(tmp_path, source_root).status_code == 409
+    monkeypatch.undo()
+    shutil.rmtree(source_root)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] != "cleaned"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_everything_while_the_live_config_is_a_link(tmp_path):
+    """Edits behind a linked config would not change its fingerprint, so what
+    it might reference cannot be followed: nothing goes."""
+    source_root, target_root = _migrate_config_and_memory(tmp_path)
+    elsewhere = tmp_path / "config-elsewhere"
+    shutil.copytree(target_root / "config", elsewhere)
+    shutil.rmtree(target_root / "config")
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(elsewhere), str(target_root / "config"))
+    else:
+        os.symlink(elsewhere, target_root / "config")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert (source_root / "memory" / "recent.json").is_file()
+
+
+@pytest.mark.unit
+def test_v1_catch_up_remembers_an_earlier_transaction_before_replacing_its_id(tmp_path, monkeypatch):
+    """An earlier catch-up left user data in its transaction that could not be
+    put back, and the catch-up runs again: that transaction must stay tracked."""
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    old_txid = "0123456789abcdef0123456789abcdef"
+    payload = dict(load_storage_migration(_make_real_config_manager(tmp_path)))
+    payload["txid"] = old_txid
+    save_storage_migration(_make_real_config_manager(tmp_path), payload)
+    trashed = storage_migration_module._transaction_path(target_root, old_txid) / "trash" / "watch_together"
+    trashed.mkdir(parents=True)
+    (trashed / "arrived.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(storage_migration_module, "_rescue_from_trash", lambda trashed, target: False)
+
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    monkeypatch.undo()
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+
+    assert (target_root / "watch_together" / "arrived.json").is_file()
+    assert not storage_migration_module._transaction_path(target_root, old_txid).exists()

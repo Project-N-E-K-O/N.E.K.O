@@ -1853,6 +1853,16 @@ def record_retained_root_removal_started(config_manager, *, anchor_root: Path) -
     save_storage_migration(config_manager, updated_payload, anchor_root=anchor_root)
 
 
+def clear_retained_root_removal_started(config_manager, *, anchor_root: Path) -> None:
+    """Withdraw the root-removal record when the root turned out to stay."""
+    migration_payload = load_storage_migration(config_manager, anchor_root=anchor_root)
+    if not isinstance(migration_payload, dict) or not migration_payload.get("retained_root_removal_started_at"):
+        return
+    updated_payload = dict(migration_payload)
+    updated_payload["retained_root_removal_started_at"] = ""
+    save_storage_migration(config_manager, updated_payload, anchor_root=anchor_root)
+
+
 def record_retained_cleanup_completed(config_manager, *, anchor_root: Path, retained_root: str) -> None:
     """Record that nothing migrated is left in the retained root."""
     from utils.root_state_lock import root_state_transaction
@@ -2050,6 +2060,9 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
     # Set when user data could not be put anywhere but the transaction.
     keep_transaction = False
     if candidates:
+        # An earlier attempt's transaction may still hold user data its
+        # rescue could not put back; replacing the id would lose track of it.
+        _remember_transaction_leftover(config_manager, anchor_root=normalized_anchor_root)
         # Recorded first, so a stopped attempt's stage is found and removed
         # as a finished checkpoint's transaction leftover.
         txid = uuid.uuid4().hex
