@@ -1414,7 +1414,12 @@ def _target_entry_proof(path: Path) -> str:
     """
     proof = _metadata_fingerprint(path, across_move=True)
     if classify_entry_no_follow(path) == "file":
-        proof += ":" + str(_manifest_path(path).get("manifest_digest") or "")
+        try:
+            proof += ":" + str(_manifest_path(path).get("manifest_digest") or "")
+        except OSError as exc:
+            # Locked for now (a Windows sharing violation): unreadable, which
+            # every caller already treats as changed.
+            raise StorageMigrationError("manifest_read_failed", f"无法读取迁移目标条目: {path}") from exc
     return proof
 
 
@@ -1621,9 +1626,12 @@ def _published_copy_has_files_source_lost(published: Path, source: Path) -> bool
     try:
         for current, dirnames, filenames in os.walk(published, followlinks=False):
             relative = Path(current).relative_to(published)
-            for name in [*filenames, *dirnames]:
-                if not os.path.lexists(source / relative / name):
-                    return True
+            # Same name is not enough: a file replaced by a directory or a
+            # link is gone from the source just the same.
+            for names, kind in ((filenames, "file"), (dirnames, "dir")):
+                for name in names:
+                    if classify_entry_no_follow(source / relative / name) != kind:
+                        return True
     except OSError:
         return True
     return False

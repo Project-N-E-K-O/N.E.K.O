@@ -1980,14 +1980,20 @@ def _cleanup_retained_runtime_root(
                     remove_runtime_entry(retained_path / entry_name)
                 except (StorageMigrationError, OSError) as exc:
                     logger.warning("Retained root cleanup kept %s: %s", entry_name, exc)
-        try:
-            retained_path.rmdir()
-        except FileNotFoundError:
-            # Already gone, e.g. removed by the user meanwhile: nothing is kept.
-            pass
-        except OSError:
+        if remaining_entries:
+            # Not even tried: had the last of them gone just now (a sync
+            # client), the root would be removed while this result still says
+            # it stays, and with no removal record a later run could not
+            # tell it apart from an unmounted disk. The next cleanup removes it.
             retained_root_kept = True
-            if not remaining_entries:
+        else:
+            try:
+                retained_path.rmdir()
+            except FileNotFoundError:
+                # Already gone, e.g. removed by the user meanwhile: nothing is kept.
+                pass
+            except OSError:
+                retained_root_kept = True
                 # Removing large regenerable directories takes a while; an
                 # entry put back meanwhile (a sync client) must keep the
                 # cleanup pending rather than be left there unannounced.

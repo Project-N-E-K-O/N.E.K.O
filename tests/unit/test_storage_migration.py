@@ -4651,3 +4651,82 @@ def test_a_same_sized_rewrite_of_a_file_target_entry_is_noticed(tmp_path, monkey
     assert result["completed"] is False
     assert result["error_code"] == "target_changed_during_migration"
     assert (target_root / "memory").read_bytes() == b"target BBBB"
+
+
+
+@pytest.mark.unit
+def test_a_published_copy_is_kept_when_a_nested_source_file_becomes_a_directory(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "memory").mkdir(parents=True)
+    (source_root / "memory" / "facts.json").write_text("only here", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_a_file_becomes_a_directory(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
+        if Path(target).name == "memory":
+            (source_root / "memory" / "facts.json").unlink()
+            (source_root / "memory" / "facts.json").mkdir()
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_a_file_becomes_a_directory)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "migration_source_missing"
+    assert (target_root / "memory" / "facts.json").read_text(encoding="utf-8") == "only here"
+
+
+@pytest.mark.unit
+def test_a_locked_file_backup_keeps_the_transaction_and_completes(tmp_path, monkeypatch):
+    """The original target memory file is locked while the finished migration
+    checks its backup: unreadable counts as changed, the transaction stays,
+    and the migration still completes."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_root.mkdir(parents=True)
+    target_root.mkdir(parents=True)
+    (source_root / "memory").write_bytes(b"source memory")
+    (target_root / "memory").write_bytes(b"target's original")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+        confirmed_existing_target_content=True,
+    )
+    original_persist = storage_migration_module._persist_migration_payload
+    original_manifest = storage_migration_module._manifest_path
+    locked = {"on": False}
+
+    def _persist(*args, **kwargs):
+        if kwargs.get("status") == "completed":
+            locked["on"] = True
+        return original_persist(*args, **kwargs)
+
+    def _manifest(path):
+        if locked["on"] and Path(path).parent.name == "backup":
+            raise PermissionError(13, "locked by a scanner")
+        return original_manifest(path)
+
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", _persist)
+    monkeypatch.setattr(storage_migration_module, "_manifest_path", _manifest)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    assert (target_root / "memory").read_bytes() == b"source memory"
+    kept = list(target_root.glob(".smtx/*/backup/memory"))
+    assert len(kept) == 1 and kept[0].read_bytes() == b"target's original"
