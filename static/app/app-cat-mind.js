@@ -2775,6 +2775,8 @@
 
     function observeCompactSurface(detail) {
         if (!detail || typeof detail !== 'object') {
+            // web 宿主关闭聊天框时清锚点会派发 detail=null；原地重开要能被重新观测。
+            runtimeState.lastCompactSurfaceSignature = '';
             return;
         }
         if (detail.available === false) {

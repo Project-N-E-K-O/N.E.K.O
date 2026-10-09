@@ -665,3 +665,22 @@ test('compact surface dedupe also reads flat web-host layout geometry', () => {
   send({ left: 200, top: 20, width: 80, height: 80 });
   assert.equal(count(), 2, 'a moved flat rect is a new observation');
 });
+
+test('clearing the web compact surface lets a same-place reopen be observed again', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  const send = (detail) => {
+    runtime.advanceTime(1);
+    // CustomEventLike turns a null detail into {}; the browser keeps it null.
+    runtime.win.dispatchEvent({ type: 'neko:compact-surface-layout-change', detail });
+    runtime.flush();
+  };
+  const count = () => runtime.win.nekoCatMind.getRecentEvents()
+    .filter((event) => event.type === 'chat_compact_surface_visible').length;
+  const rect = { left: 10, top: 20, width: 80, height: 80, dragging: false };
+  send(rect);
+  assert.equal(count(), 1);
+  send(null);
+  send(rect);
+  assert.equal(count(), 2, 'reopening at the same rect after a null clear must be observed');
+});
