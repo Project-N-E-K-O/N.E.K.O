@@ -4103,3 +4103,66 @@ def test_a_checkpoint_dropped_while_its_target_is_out_of_reach_is_still_remember
     storage_migration_module.remove_remembered_transaction_leftovers(config_manager, anchor_root=None)
 
     assert not storage_migration_module._transaction_path(target_root, txid).exists()
+
+
+
+def _leftover_with_checkpoint_dropped(tmp_path, txid):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, target_root = _start_migration_into_empty_target(tmp_path)
+    payload = dict(load_storage_migration(config_manager))
+    payload.update({"status": "failed", "txid": txid, "target_root": str(target_root)})
+    save_storage_migration(config_manager, payload)
+    (storage_migration_module._transaction_path(target_root, txid) / "stage").mkdir(parents=True)
+    return config_manager, target_root
+
+
+@pytest.mark.unit
+def test_an_unreadable_leftover_list_keeps_its_earlier_records(tmp_path, monkeypatch):
+    """The list is locked when another record is added: neither the earlier
+    record nor the new one may be lost."""
+    import json
+
+    from utils import storage_migration as storage_migration_module
+
+    newer_txid = "fedcba9876543210fedcba9876543210"
+    config_manager, target_root = _leftover_with_checkpoint_dropped(tmp_path, newer_txid)
+    earlier_txid = "0123456789abcdef0123456789abcdef"
+    (storage_migration_module._transaction_path(target_root, earlier_txid) / "stage").mkdir(parents=True)
+    storage_migration_module._transaction_leftovers_path(config_manager, anchor_root=None).write_text(
+        json.dumps([{"status": "completed", "target_root": str(target_root), "txid": earlier_txid}]),
+        encoding="utf-8",
+    )
+    leftovers_path = storage_migration_module._transaction_leftovers_path(config_manager, anchor_root=None)
+    real_read_json = storage_migration_module.read_json
+
+    def _locked(path, *args, **kwargs):
+        if Path(path) == leftovers_path:
+            raise PermissionError(13, "locked by a sync client")
+        return real_read_json(path, *args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "read_json", _locked)
+    storage_migration_module.delete_storage_migration(config_manager)
+    monkeypatch.undo()
+    storage_migration_module.remove_remembered_transaction_leftovers(config_manager, anchor_root=None)
+
+    assert not storage_migration_module._transaction_path(target_root, earlier_txid).exists()
+    assert not storage_migration_module._transaction_path(target_root, newer_txid).exists()
+    assert not list(leftovers_path.parent.glob("storage_migration_leftovers*"))
+
+
+@pytest.mark.unit
+def test_a_corrupt_leftover_list_is_put_aside_before_being_rewritten(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    txid = "fedcba9876543210fedcba9876543210"
+    config_manager, target_root = _leftover_with_checkpoint_dropped(tmp_path, txid)
+    leftovers_path = storage_migration_module._transaction_leftovers_path(config_manager, anchor_root=None)
+    leftovers_path.write_text("{not json", encoding="utf-8")
+
+    storage_migration_module.delete_storage_migration(config_manager)
+
+    kept = list(leftovers_path.parent.glob("storage_migration_leftovers.json.corrupt-*"))
+    assert len(kept) == 1 and kept[0].read_text(encoding="utf-8") == "{not json"
+    storage_migration_module.remove_remembered_transaction_leftovers(config_manager, anchor_root=None)
+    assert not storage_migration_module._transaction_path(target_root, txid).exists()

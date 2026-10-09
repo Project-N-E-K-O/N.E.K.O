@@ -379,6 +379,14 @@ def test_the_running_snapshot_is_refreshed_from_startup_on():
     assert all(
         calls.index("_refresh_running_descendants") < calls.index("time.sleep") for calls in monitor_loops
     )
+    # The one-by-one import waits, too: Main runs while Agent imports.
+    import_waits = [
+        node.body
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.While) and "evt.wait" in ast.unparse(node)
+    ]
+    assert import_waits
+    assert all(_calls(body)[0] == "_refresh_running_descendants" for body in import_waits)
     wait_source = inspect.getsource(runtime.wait_for_servers)
     # Before the early-exit check of each poll, so a Main that ends itself
     # during startup was seen at least once while it ran.
@@ -1739,3 +1747,33 @@ def test_uncertainty_from_a_scan_without_tracked_servers_does_not_clear(monkeypa
     runtime._refresh_running_descendants()
 
     assert runtime._running_descendants_known is False
+
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("failure", ["exited", "denied"])
+def test_merged_mode_snapshot_is_unknown_when_a_childs_executable_cannot_be_read(monkeypatch, failure):
+    """A child whose executable cannot be read may be a plugin host: skipped
+    as a non-host, what it started would never be checked."""
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    hosts = [subprocess.Popen([_INTERPRETER, "-c", "import time; time.sleep(120)"]) for _ in range(2)]
+    unreadable_pid = hosts[0].pid
+    real_exe = psutil.Process.exe
+
+    def _exe(self):
+        if self.pid == unreadable_pid:
+            if failure == "exited":
+                raise psutil.NoSuchProcess(self.pid)
+            raise psutil.AccessDenied(self.pid)
+        return real_exe(self)
+
+    monkeypatch.setattr(psutil.Process, "exe", _exe)
+    try:
+        assert runtime._snapshot_server_descendants([{"name": "Main", "process": None}]) is None
+    finally:
+        monkeypatch.undo()
+        for host in hosts:
+            host.kill()
+            host.wait(timeout=10)

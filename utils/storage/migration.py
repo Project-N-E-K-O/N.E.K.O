@@ -1732,6 +1732,18 @@ def _transaction_leftovers_path(config_manager, *, anchor_root: Path | str | Non
     )
 
 
+def _transaction_leftover_side_path(leftovers_path: Path, txid: str) -> Path:
+    """Where a record goes while the shared list cannot be read (a lock)."""
+    return leftovers_path.with_name(f"storage_migration_leftovers.{txid}.json")
+
+
+def _transaction_leftover_side_paths(leftovers_path: Path) -> list[Path]:
+    try:
+        return sorted(leftovers_path.parent.glob("storage_migration_leftovers.*.json"))
+    except OSError:
+        return []
+
+
 def _remember_transaction_leftover(config_manager, *, anchor_root: Path | str | None) -> None:
     """Note the transaction a finished checkpoint about to be dropped points at.
 
@@ -1764,15 +1776,36 @@ def _remember_transaction_leftover(config_manager, *, anchor_root: Path | str | 
     if classify_entry_no_follow(target_root) == "dir" and _path_is_absent(transaction_root):
         return
     leftovers_path = _transaction_leftovers_path(config_manager, anchor_root=anchor_root)
+    entry = {"status": status, "target_root": raw_target_root, "txid": txid}
     try:
         entries = read_json(leftovers_path)
     except FileNotFoundError:
         entries = []
-    except Exception:
-        entries = []
+    except ValueError:
+        # Not JSON: rewritten from scratch below, after the old content is
+        # put aside for a person to look at.
+        entries = None
+    except Exception as exc:
+        # Unreadable for now (locked by a scanner or a sync client): writing
+        # the list would drop every earlier record, so this one goes to a
+        # file of its own, merged in on the next start.
+        logger.warning("Failed to read leftover migration transactions: %s", exc)
+        try:
+            atomic_write_json(_transaction_leftover_side_path(leftovers_path, txid), [entry])
+        except Exception as side_exc:
+            logger.warning("Failed to remember a leftover migration transaction: %s", side_exc)
+        return
     if not isinstance(entries, list):
+        try:
+            os.replace(leftovers_path, leftovers_path.with_name(f"{leftovers_path.name}.corrupt-{uuid.uuid4().hex[:12]}"))
+        except OSError as exc:
+            logger.warning("Failed to put aside unreadable leftover migration transactions: %s", exc)
+            try:
+                atomic_write_json(_transaction_leftover_side_path(leftovers_path, txid), [entry])
+            except Exception as side_exc:
+                logger.warning("Failed to remember a leftover migration transaction: %s", side_exc)
+            return
         entries = []
-    entry = {"status": status, "target_root": raw_target_root, "txid": txid}
     if entry not in entries:
         entries.append(entry)
         try:
@@ -1787,11 +1820,30 @@ def remove_remembered_transaction_leftovers(config_manager, *, anchor_root: Path
     try:
         entries = read_json(leftovers_path)
     except FileNotFoundError:
-        return
+        entries = []
     except Exception as exc:
         logger.warning("Failed to read leftover migration transactions: %s", exc)
         return
     if not isinstance(entries, list):
+        return
+    # Records written beside the list while it could not be read.
+    side_paths = []
+    for side_path in _transaction_leftover_side_paths(leftovers_path):
+        try:
+            side_entries = read_json(side_path)
+        except Exception as exc:
+            logger.warning("Failed to read a leftover migration transaction: %s", exc)
+            continue
+        side_paths.append(side_path)
+        if isinstance(side_entries, list):
+            entries.extend(item for item in side_entries if item not in entries)
+    if not entries and not side_paths:
+        try:
+            os.unlink(leftovers_path)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.warning("Failed to update leftover migration transactions: %s", exc)
         return
     kept = []
     for entry in entries:
@@ -1822,6 +1874,15 @@ def remove_remembered_transaction_leftovers(config_manager, *, anchor_root: Path
         pass
     except Exception as exc:
         logger.warning("Failed to update leftover migration transactions: %s", exc)
+        return
+    # Only once the list holds what they carried.
+    for side_path in side_paths:
+        try:
+            os.unlink(side_path)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.warning("Failed to remove a merged leftover migration transaction: %s", exc)
 
 
 def create_pending_storage_migration(

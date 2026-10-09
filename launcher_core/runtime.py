@@ -2266,6 +2266,12 @@ def _snapshot_server_descendants(servers) -> list | None:
     skipped: in multiprocessing mode that is how every migration restart
     begins (Main exits on its own first), and its orphans could not be found
     through it anyway.
+
+    Known limit, accepted: a descendant a server starts after the latest
+    periodic refresh and leaves behind as it exits is in no snapshot, so it
+    does not block the restart. Treating every exited server as unknown
+    instead would block every multiprocessing restart; closing the gap needs
+    the server to hand over its own list as it shuts down.
     """
     try:
         import psutil
@@ -2296,7 +2302,18 @@ def _snapshot_server_descendants(servers) -> list | None:
             return None
         host_vanished = False
         for child in launcher_children:
-            if _process_exe(child) not in own_exes:
+            try:
+                child_exe = os.path.normcase(child.exe())
+            except psutil.NoSuchProcess:
+                # Exited during the lookup: it may have been a host, and what
+                # it started is out of reach now -- as for one vanishing below.
+                host_vanished = True
+                continue
+            except (psutil.Error, OSError, ValueError):
+                # Unreadable (access denied): whether it is a host cannot be
+                # told, so neither can whether the result is complete.
+                return None
+            if child_exe not in own_exes:
                 continue
             try:
                 host_descendants = child.children(recursive=True)
@@ -3314,6 +3331,10 @@ def main():
                 remaining = import_timeout
                 import_ok = False
                 while remaining > 0:
+                    # Servers started earlier already run (Main before Agent)
+                    # and may end themselves for a storage restart during
+                    # this wait: what they started is seen while they live.
+                    _refresh_running_descendants()
                     if evt.wait(timeout=min(poll_interval, remaining)):
                         import_ok = True
                         break
