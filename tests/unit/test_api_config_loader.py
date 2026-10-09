@@ -43,11 +43,11 @@ def test_user_preferred_model_skipped_for_intl(monkeypatch):
 
 
 def test_fallback_profiles_mirror_api_providers_json():
-    """api_profiles 的兜底默认值必须与 api_providers.json 一致。
+    """Fallback profiles in config/api_profiles.py must mirror api_providers.json.
 
-    JSON 缺失 / 损坏时 loader 会整份退回到这些常量；两边不同步会让回退后的
-    provider 悄悄换成下架模型（曾出现 claude 回退到 sonnet-4-6、openrouter 回退到
-    gpt-4.1 的漂移）。改 JSON 预设时请同步 config/api_profiles.py。
+    The loader falls back to these constants wholesale when the JSON file is
+    missing or broken; letting them drift silently swaps every fallback
+    provider onto retired models. Update both together.
     """
     import json
 

@@ -15,8 +15,11 @@
 
 from __future__ import annotations
 import base64
+import copy
 import json as _json
+import threading
 import weakref
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, AsyncIterator
 from urllib.parse import urlparse
 
@@ -33,6 +36,98 @@ from .thinking import strip_thinking_segments
 Anthropic: Any = None
 
 AsyncAnthropic: Any = None
+
+# Anthropic 要求工具轮里的 thinking / redacted_thinking block 原样回传（Sonnet 5.5 的
+# between_tools 也会在工具调用之间以 thinking block 返回进度说明）。调用方保存的是
+# OpenAI 形状的历史，放不下这些 block，所以这里按 tool_use id 记住原始 assistant
+# 内容，回传当前工具轮时原样换回去。只回放最后一条 user 消息之后的工具轮：更早的轮次
+# 文档允许省略，且 system prompt 跨轮会变，回放旧 block 反而会撞 preserved-thinking
+# 的前缀校验（新账号默认 400）。
+_TOOL_TURN_REPLAY_MAX = 256
+_tool_turn_replay: "OrderedDict[str, list[dict]]" = OrderedDict()
+_tool_turn_replay_lock = threading.Lock()
+_REPLAY_BLOCK_FIELDS = {
+    "thinking": ("thinking", "signature"),
+    "redacted_thinking": ("data",),
+    "text": ("text",),
+    "tool_use": ("id", "name", "input"),
+}
+
+
+def _replay_block_from_sdk(block: Any) -> dict | None:
+    """Copy one response content block into a request-shaped dict, or None if unsupported."""
+    block_type = getattr(block, "type", None)
+    if isinstance(block, dict):
+        block_type = block.get("type")
+    fields = _REPLAY_BLOCK_FIELDS.get(block_type)
+    if fields is None:
+        return None
+    out: dict[str, Any] = {"type": block_type}
+    for field in fields:
+        value = block.get(field) if isinstance(block, dict) else getattr(block, field, None)
+        if value is None:
+            if field == "input":
+                value = {}
+            elif field in ("thinking", "text", "signature"):
+                value = ""
+            else:
+                return None
+        out[field] = value
+    return out
+
+
+def _remember_tool_turn(blocks: list[dict]) -> None:
+    """Remember a tool-calling assistant turn that carries thinking blocks."""
+    if not any(b.get("type") in ("thinking", "redacted_thinking") for b in blocks):
+        return
+    ids = [str(b.get("id") or "") for b in blocks if b.get("type") == "tool_use"]
+    if not ids or not all(ids):
+        return
+    frozen = copy.deepcopy(blocks)
+    with _tool_turn_replay_lock:
+        for tool_use_id in ids:
+            _tool_turn_replay[tool_use_id] = frozen
+            _tool_turn_replay.move_to_end(tool_use_id)
+        while len(_tool_turn_replay) > _TOOL_TURN_REPLAY_MAX:
+            _tool_turn_replay.popitem(last=False)
+
+
+def _remember_tool_turn_from_response(resp: Any) -> None:
+    blocks = []
+    for block in getattr(resp, "content", None) or []:
+        converted = _replay_block_from_sdk(block)
+        if converted is None:
+            return
+        blocks.append(converted)
+    _remember_tool_turn(blocks)
+
+
+def _remember_streamed_tool_turn(blocks: dict[int, dict], tool_json: dict[int, str]) -> None:
+    ordered = []
+    for index in sorted(blocks):
+        block = blocks[index]
+        if block.get("type") == "tool_use" and tool_json.get(index):
+            try:
+                block["input"] = _json.loads(tool_json[index])
+            except ValueError:
+                return
+        ordered.append(block)
+    _remember_tool_turn(ordered)
+
+
+def _replay_tool_turn(blocks: list[dict]) -> list[dict] | None:
+    """Return the original content of this tool turn when every tool_use id matches it."""
+    ids = [b.get("id") for b in blocks if isinstance(b, dict) and b.get("type") == "tool_use"]
+    if not ids:
+        return None
+    with _tool_turn_replay_lock:
+        cached = _tool_turn_replay.get(str(ids[0]))
+    if cached is None:
+        return None
+    if [b.get("id") for b in cached if b.get("type") == "tool_use"] != ids:
+        return None
+    return copy.deepcopy(cached)
+
 
 def _parse_base_url(base_url: str | None):
     if not base_url:
@@ -397,8 +492,12 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
     pending_fallback_tool_uses: list[tuple[str, str]] = []
     emitted_tool_use_ids: set[str] = set()
     fallback_tool_use_seq = 0
+    last_user_index = max(
+        (i for i, m in enumerate(normalized) if m.get("role") == "user"),
+        default=-1,
+    )
 
-    for msg in normalized:
+    for msg_index, msg in enumerate(normalized):
         role = msg.get("role", "")
         content = msg.get("content", None)
         if role == "system":
@@ -520,6 +619,10 @@ def _normalize_messages_to_anthropic(messages: Any) -> tuple[str, list[dict]]:
                             (converted_id, str(converted.get("name") or ""))
                         )
             pending_tool_use_ids |= seen_tool_use_ids
+            if msg_index > last_user_index:
+                replayed = _replay_tool_turn(blocks)
+                if replayed is not None:
+                    blocks = replayed
         elif role == "user":
             _drop_unanswered_anthropic_tool_uses(anthropic_messages, pending_tool_use_ids)
             pending_tool_use_ids.clear()
@@ -806,6 +909,11 @@ class ChatAnthropic:
         payload = self._build_payload_for_call(messages, overrides)
         stream = self._aclient.messages.stream(**payload)
         usage_dict: dict[str, Any] = {}
+        # 按 index 累积本轮的完整 content；含 thinking + tool_use 时在 message_delta
+        # （所有 content block 已结束）处记下来供回传，消费方读到结束信号就停也不丢。
+        replay_blocks: dict[int, dict] = {}
+        replay_json: dict[int, str] = {}
+        replay_ok = True
         try:
             async with stream as response_stream:
                 async for event in response_stream:
@@ -815,6 +923,12 @@ class ChatAnthropic:
                         _merge_anthropic_usage(usage_dict, getattr(message, "usage", None))
                     elif event_type == "content_block_start":
                         block = getattr(event, "content_block", None)
+                        if block is not None:
+                            replay_block = _replay_block_from_sdk(block)
+                            if replay_block is None:
+                                replay_ok = False
+                            else:
+                                replay_blocks[int(getattr(event, "index", 0) or 0)] = replay_block
                         if block and getattr(block, "type", "") == "tool_use":
                             index = int(getattr(event, "index", 0) or 0)
                             raw_input = getattr(block, "input", None)
@@ -835,12 +949,23 @@ class ChatAnthropic:
                             )
                     elif event_type == "content_block_delta":
                         delta = getattr(event, "delta", None)
-                        if delta and getattr(delta, "type", "") == "text_delta":
+                        delta_type = getattr(delta, "type", "") if delta else ""
+                        replay_block = replay_blocks.get(int(getattr(event, "index", 0) or 0))
+                        if replay_block is not None:
+                            if delta_type == "text_delta":
+                                replay_block["text"] += getattr(delta, "text", "") or ""
+                            elif delta_type == "thinking_delta":
+                                replay_block["thinking"] += getattr(delta, "thinking", "") or ""
+                            elif delta_type == "signature_delta":
+                                replay_block["signature"] = getattr(delta, "signature", "") or ""
+                        if delta and delta_type == "text_delta":
                             text = getattr(delta, "text", "") or ""
                             if text:
                                 yield LLMStreamChunk(content=text)
-                        elif delta and getattr(delta, "type", "") == "input_json_delta":
+                        elif delta and delta_type == "input_json_delta":
                             partial_json = getattr(delta, "partial_json", "") or ""
+                            index = int(getattr(event, "index", 0) or 0)
+                            replay_json[index] = replay_json.get(index, "") + partial_json
                             if partial_json:
                                 yield LLMStreamChunk(
                                     content="",
@@ -858,6 +983,9 @@ class ChatAnthropic:
                             finish_reason = getattr(delta, "stop_reason", None)
                         _merge_anthropic_usage(usage_dict, getattr(delta, "usage", None))
                         _merge_anthropic_usage(usage_dict, getattr(event, "usage", None))
+                        if replay_ok and replay_blocks:
+                            _remember_streamed_tool_turn(replay_blocks, replay_json)
+                            replay_blocks = {}
                         if finish_reason:
                             mapped_reason = _anthropic_stop_reason_to_finish_reason(finish_reason)
                             yield LLMStreamChunk(content="", finish_reason=mapped_reason)
@@ -880,6 +1008,7 @@ class ChatAnthropic:
         payload = self._build_payload_for_call(messages, overrides)
         resp = await self._aclient.messages.create(**payload)
         _record_anthropic_token_usage(self.model, _anthropic_usage_to_dict(getattr(resp, "usage", None)))
+        _remember_tool_turn_from_response(resp)
         return resp
 
     def invoke_raw(self, messages: Any, **overrides: Any):
@@ -887,6 +1016,7 @@ class ChatAnthropic:
         payload = self._build_payload_for_call(messages, overrides)
         resp = self._client.messages.create(**payload)
         _record_anthropic_token_usage(self.model, _anthropic_usage_to_dict(getattr(resp, "usage", None)))
+        _remember_tool_turn_from_response(resp)
         return resp
 
     async def alist_models(self, *, limit: int) -> list[dict[str, str]]:
