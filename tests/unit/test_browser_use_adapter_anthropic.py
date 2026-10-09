@@ -306,6 +306,36 @@ def test_forced_mode_keeps_browser_use_tool_choice(monkeypatch):
     assert result.completion == _Answer(value="forced")
     assert calls[0]["tool_choice"] == {"type": "tool", "name": "_Answer"}
     assert "temperature" not in calls[0]
+    system_text = calls[0]["system"] if isinstance(calls[0]["system"], str) else " ".join(
+        block["text"] for block in calls[0]["system"]
+    )
+    assert "only tool" not in system_text
+
+
+@pytest.mark.parametrize("mode", ["forced_tool", "auto_tool"])
+def test_structured_refusal_raises_category_in_both_modes(monkeypatch, mode):
+    from browser_use.llm.exceptions import ModelProviderError
+
+    response = _message([], stop_reason="refusal")
+    response.stop_details = {"type": "refusal", "category": "cyber"}
+    llm, _calls = _llm_with_fake_client(monkeypatch, response, mode=mode)
+
+    with pytest.raises(ModelProviderError, match="category=cyber"):
+        asyncio.run(llm.ainvoke(_MESSAGES, _Answer))
+
+
+@pytest.mark.parametrize("mode", ["forced_tool", "auto_tool"])
+def test_structured_output_truncated_by_max_tokens_says_so(monkeypatch, mode):
+    from browser_use.llm.exceptions import ModelProviderError
+
+    response = _message(
+        [{"type": "tool_use", "id": "toolu_1", "name": "_Answer", "input": {}}],
+        stop_reason="max_tokens",
+    )
+    llm, _calls = _llm_with_fake_client(monkeypatch, response, mode=mode)
+
+    with pytest.raises(ModelProviderError, match="max_tokens"):
+        asyncio.run(llm.ainvoke(_MESSAGES, _Answer))
 
 
 def test_auto_tool_rejects_call_to_a_different_tool(monkeypatch):

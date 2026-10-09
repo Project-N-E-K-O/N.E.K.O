@@ -29,7 +29,7 @@ browser-use 0.11's ``ChatAnthropic`` has two problems on current models:
 ``NekoChatAnthropic.structured_output`` picks how structured output is asked
 for:
 
-* ``"forced_tool"``: browser-use's original forced tool call.
+* ``"forced_tool"``: the same request as browser-use's forced tool call.
 * ``"auto_tool"``: the output tool with ``tool_choice="auto"`` plus a
   system-prompt instruction that actions belong inside its input; only a
   call to that tool counts, otherwise a JSON object in the text reply.
@@ -157,9 +157,6 @@ class NekoChatAnthropic(ChatAnthropic):
     async def ainvoke(
         self, messages: list[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
-        if output_format is not None and self.structured_output == "forced_tool":
-            return await super().ainvoke(messages, output_format, **kwargs)
-
         anthropic_messages, system_prompt = AnthropicMessageSerializer.serialize_messages(messages)
         try:
             if output_format is None:
@@ -179,18 +176,24 @@ class NekoChatAnthropic(ChatAnthropic):
                 input_schema=_output_schema(output_format),
                 cache_control=CacheControlEphemeralParam(type="ephemeral"),
             )
-            instruction = (
-                f"`{tool_name}` is your only tool. Always respond by calling it exactly "
-                "once with your complete answer as its input; anything else described "
-                "above (such as actions) goes inside that input, not into separate tool "
-                "calls. Do not answer in plain text."
-            )
+            if self.structured_output == "forced_tool":
+                system: Any = system_prompt or omit
+                tool_choice: dict[str, Any] = {"type": "tool", "name": tool_name}
+            else:
+                system = _append_system_instruction(system_prompt, (
+                    f"`{tool_name}` is your only tool. Always respond by calling it exactly "
+                    "once with your complete answer as its input; anything else described "
+                    "above (such as actions) goes inside that input, not into separate tool "
+                    "calls. Do not answer in plain text."
+                ))
+                tool_choice = {"type": "auto", "disable_parallel_tool_use": True}
             response = await self._create(
-                messages=anthropic_messages,
-                tools=[tool],
-                system=_append_system_instruction(system_prompt, instruction),
-                tool_choice={"type": "auto", "disable_parallel_tool_use": True},
+                messages=anthropic_messages, tools=[tool], system=system, tool_choice=tool_choice,
             )
+            if response.stop_reason == "max_tokens":
+                raise ValueError(
+                    "Response truncated (stop_reason=max_tokens) before structured output completed"
+                )
             tool_uses = [
                 block for block in response.content if getattr(block, "type", None) == "tool_use"
             ]
