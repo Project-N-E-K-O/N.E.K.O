@@ -105,6 +105,8 @@ def _remember_tool_turn(blocks: list[dict], context_key: str) -> None:
 
 
 def _remember_tool_turn_from_response(resp: Any, context_key: str) -> None:
+    if getattr(resp, "stop_reason", None) != "tool_use":
+        return
     blocks = []
     for block in getattr(resp, "content", None) or []:
         converted = _replay_block_from_sdk(block)
@@ -148,7 +150,16 @@ def _replay_tool_turn(blocks: Any, context_key: str) -> list[dict] | None:
     cached_key, cached = entry
     if cached_key != context_key:
         return None
-    if [b.get("id") for b in cached if b.get("type") == "tool_use"] != ids:
+    # 工具调用（id / name / input）必须与当前历史一致，否则换回去的是过期参数，
+    # 会和后面的 tool_result 对不上。文本不比：调用方会清洗 assistant 文本，原样
+    # 回放模型实际写的内容反而更准。
+    def _calls(content: list) -> list:
+        return [
+            (b.get("id"), b.get("name"), b.get("input"))
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        ]
+    if _calls(cached) != _calls(blocks):
         return None
     return copy.deepcopy(cached)
 
@@ -1028,7 +1039,7 @@ class ChatAnthropic:
                             finish_reason = getattr(delta, "stop_reason", None)
                         _merge_anthropic_usage(usage_dict, getattr(delta, "usage", None))
                         _merge_anthropic_usage(usage_dict, getattr(event, "usage", None))
-                        if replay_ok and replay_blocks:
+                        if replay_ok and replay_blocks and finish_reason == "tool_use":
                             _remember_streamed_tool_turn(replay_blocks, replay_json, replay_context_key)
                             replay_blocks = {}
                         if finish_reason:

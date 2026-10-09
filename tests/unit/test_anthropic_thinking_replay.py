@@ -143,6 +143,35 @@ def test_unknown_tool_ids_keep_the_built_blocks(client):
     assert all(b["type"] != "thinking" for b in content)
 
 
+def test_changed_tool_arguments_do_not_replay(client):
+    _remember_for(client)
+    history = _history()
+    history[2]["tool_calls"][0]["function"]["arguments"] = "{\"city\": \"Osaka\"}"
+    assert all(b["type"] != "thinking" for b in _assistant_content(client, history))
+
+
+def test_sanitized_assistant_text_still_replays(client):
+    _remember_for(client)
+    history = _history()
+    history[2]["content"] = "Checking"
+    assert _assistant_content(client, history) == _TURN
+
+
+@pytest.mark.asyncio
+async def test_astream_skips_turns_that_did_not_stop_for_tool_use(client):
+    client._events_box["events"] = [
+        NS(type="content_block_start", index=0, content_block=NS(type="thinking", thinking="", signature="s")),
+        NS(type="content_block_start", index=1, content_block=NS(type="tool_use", id="toolu_1", name="weather", input={"city": "Tokyo"})),
+        NS(type="message_delta", delta=NS(stop_reason="max_tokens", usage=None), usage=None),
+    ]
+    try:
+        async for _chunk in client.astream([{"role": "user", "content": "weather?"}]):
+            pass
+    finally:
+        await client.aclose()
+    assert not anthropic_client_module._tool_turn_replay
+
+
 def test_lookup_refreshes_the_entry(client, monkeypatch):
     monkeypatch.setattr(anthropic_client_module, "_TOOL_TURN_REPLAY_MAX", 2)
     key = anthropic_client_module._replay_context_key(client._build_payload_for_call(_history(), {}))
