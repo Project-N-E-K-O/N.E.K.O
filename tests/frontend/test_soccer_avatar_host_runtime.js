@@ -283,7 +283,8 @@ async function main() {
             this.renderer = { domElement: { style: {} } };
           } };
           this.animation = new windowMock.VRMAnimation(this);
-          this.expression = { loadMoodMap: async () => {
+          this.expression = { loadMoodMap: async (modelName) => {
+            calls.moodName = modelName;
             if (stage === 'mood') await wait();
           } };
         }
@@ -317,7 +318,7 @@ async function main() {
       } } };
       const vrmHost = windowMock.createSoccerAvatarHost({ onAvatarChanged() { calls.changed += 1; } });
       const mount = vrmHost.mount({
-        slot, model: { type: 'vrm', path: '/models/delayed.vrm' },
+        slot, model: { type: 'vrm', path: '/models/%E7%8C%AB%E5%A8%98%20%23%2520.VRM' },
         viewport: { mode: 'fixed', width: 200, height: 300 },
         fit: { mode: 'contain', align: 'bottom-center', padding: 0, scaleMultiplier: 1 },
         resize: { mode: 'fixed' },
@@ -326,6 +327,7 @@ async function main() {
       if (stage === 'success') {
         const controller = await mount;
         assert(!controller.code && controller.getState().ready, `${slot}: healthy VRM mount failed`);
+        assert(calls.moodName === '猫娘 #%20', 'mood mapping must decode URL basename exactly once');
         assert(calls.changed === 1 && calls.animated === 1, `${slot}: healthy VRM was not published`);
         const frame = { active: true, mouthFrame: { bins: Array(16).fill(100), rms: 0.2, sampleRate: 12000 } };
         await controller.setSpeechPlayback(frame);

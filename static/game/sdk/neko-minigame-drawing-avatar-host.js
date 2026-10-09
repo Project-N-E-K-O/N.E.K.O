@@ -187,6 +187,11 @@
     if (!vrmPath && (type === 'vrm' || (type === 'live3d' && subtype === 'vrm'))) vrmPath = modelPath;
     if (!mmdPath && (type === 'mmd' || (type === 'live3d' && subtype === 'mmd'))) mmdPath = modelPath;
     if (!live2dPath && type === 'live2d') live2dPath = modelPath;
+    // Character fields are raw paths. Relative references are resolved by the
+    // SDK projection below; known absolute local paths become URLs here.
+    if (/^\/(?:user_vrm|static\/vrm|workshop)\//.test(vrmPath)) {
+      vrmPath = vrmPath.split('/').map(encodeURIComponent).join('/');
+    }
     let effective = type;
     if (effective === 'live3d') effective = subtype === 'mmd' ? 'mmd' : 'vrm';
     if (!effective || effective === 'default') {

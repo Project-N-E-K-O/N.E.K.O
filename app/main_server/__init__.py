@@ -1030,6 +1030,12 @@ async def _rollback_partial_main_runtime_startup() -> None:
     _preload_task = None
     await _cancel_task_if_running(_game_cleanup_task, name="game cleanup", timeout=1.0)
     _game_cleanup_task = None
+    try:
+        from main_routers.visit_router.background import cancel_visit_background_tasks
+
+        cancel_visit_background_tasks()
+    except Exception as exc:
+        logger.debug("Visit background rollback failed: %s", exc, exc_info=True)
 
     await _cancel_workshop_background_tasks_for_startup_rollback()
 
@@ -1130,6 +1136,14 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 
             if _game_cleanup_task is None or _game_cleanup_task.done():
                 _game_cleanup_task = asyncio.create_task(cleanup_expired_sessions())
+            # 猫娘串门：计时 sweep 与启动补录（转录补传、崩溃场次芯片、digest / 摘要补做）。
+            # 两个都以 create_task 挂到后台，不在启动链路上等
+            try:
+                from main_routers.visit_router.background import start_visit_background_tasks
+
+                start_visit_background_tasks()
+            except Exception as e:
+                logger.warning(f"Visit background tasks not started: {e}")
             try:
                 agent_event_bridge = MainServerAgentBridge(
                     on_agent_event=_handle_agent_event
@@ -1440,6 +1454,20 @@ async def on_shutdown():
         # 总预算耗尽才跳过后续异步步骤，末尾统一 re-raise 第一次取消。
         shutdown_cancellation: asyncio.CancelledError | None = None
         cancellation_budget = _ShutdownCancellationBudget()
+        # 猫娘串门最先收：先封存上传文件、再写 finalized，不发 leave（VISIT_SHUTDOWN_BUDGET_S 内，
+        # 到点不挡后面的钩子；没收口的留给下次启动补录）
+        try:
+            from main_routers.visit_router.background import SHUTDOWN_STEP_BUDGET_S, stop_visit_background_tasks
+
+            shutdown_cancellation = await _run_shutdown_step(
+                stop_visit_background_tasks,
+                what="visit shutdown",
+                deadline_monotonic=time.monotonic() + SHUTDOWN_STEP_BUDGET_S,
+                pending_cancellation=shutdown_cancellation,
+                cancellation_budget=cancellation_budget,
+            )
+        except Exception as e:
+            logger.debug(f"visit shutdown failed: {e}")
         try:
             from .voice_identity_runtime import close_voice_identity_runtime
 

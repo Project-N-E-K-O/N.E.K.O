@@ -1608,9 +1608,16 @@ _settled_leftovers: set[str] = set()
 """visit_ids whose sealed upload is settled but could not be deleted yet (the next round only deletes it)."""
 
 
-def _reset_for_tests() -> None:
-    for task in _workers.values():
+def cancel_retry_workers() -> list[asyncio.Task]:
+    """Cancel every background upload / report retry worker (startup rollback); returns them."""
+    tasks = [task for task in _workers.values() if not task.done()]
+    for task in tasks:
         task.cancel()
+    return tasks
+
+
+def _reset_for_tests() -> None:
+    cancel_retry_workers()
     _workers.clear()
     _recent_anomalies.clear()
     _terminal_reasons.clear()

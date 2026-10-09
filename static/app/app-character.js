@@ -1223,6 +1223,10 @@
                     modelUrl = '/static/vrm/sister1.0.vrm';
                 }
 
+                // Character configuration stores raw filenames; encode only at the URL boundary.
+                if (/^\/(?:user_vrm|static\/vrm|workshop)\//.test(modelUrl)) {
+                    modelUrl = modelUrl.split('/').map(encodeURIComponent).join('/');
+                }
                 // 加载 VRM 模型（vrm-core.js 内部已实现备用路径机制，会自动尝试 /user_vrm/ 和 /static/vrm/）
                 console.log('[猫娘切换] 开始加载VRM模型:', modelUrl);
                 await window.vrmManager.loadModel(modelUrl);
