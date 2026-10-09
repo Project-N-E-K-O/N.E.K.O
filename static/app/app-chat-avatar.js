@@ -305,6 +305,8 @@
 
     function setPreviewStatus(text, options = {}) {
         if (options.rememberModel !== false) modelPreviewStatus = text;
+        // Background model progress is remembered but never replaces an open cropper's title.
+        if (options.background && cropperState) return;
         if (S.dom.chatAvatarPreviewStatus) {
             const candidate = window.appChatAvatarEditor?.getCandidateDataUrl();
             const custom = window.appChatAvatarState?.getDataUrl();
@@ -791,7 +793,8 @@
 
         setPreviewImage(cachedPreview.dataUrl);
         setPreviewStatus(
-            translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
+            translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType),
+            { background: true }
         );
         setPreviewNote(translateLabel('chat.avatarPreviewReadyHint', '这是从当前模型画布实时提取的头像预览。'));
         window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
@@ -1371,7 +1374,7 @@
         setLoadingState(true);
         setPreviewStatus(forceRefresh
             ? translateLabel('chat.avatarPreviewRefreshing', '正在刷新当前头像...')
-            : translateLabel('chat.avatarPreviewGenerating', '正在生成当前头像...'));
+            : translateLabel('chat.avatarPreviewGenerating', '正在生成当前头像...'), { background: !showCard });
         setPreviewNote(translateLabel('chat.avatarPreviewCardNote', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
 
         try {
@@ -1456,7 +1459,7 @@
 
             if (showCard || activeCaptureCardVisible) {
                 setPreviewImage('');
-                setPreviewStatus(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
+                setPreviewStatus(translateLabel('chat.avatarPreviewFailed', '生成头像失败'), { background: !showCard });
                 setPreviewNote(getErrorMessage(error));
             }
             if (!silent && typeof window.showStatusToast === 'function') {
@@ -1860,7 +1863,8 @@
         if (externalAvatarDataUrl && card && !card.hidden && !hasLocalPortrait) {
             setPreviewImage(externalAvatarDataUrl);
             setPreviewStatus(
-                translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(externalAvatarModelType)
+                translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(externalAvatarModelType),
+                { background: true }
             );
             setPreviewNote(translateLabel('chat.avatarPreviewReadyHint', '这是从当前模型画布实时提取的头像预览。'));
         }

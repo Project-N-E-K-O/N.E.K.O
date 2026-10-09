@@ -529,3 +529,34 @@ test('Escape closes the popup but only keeps a key aimed at it from other handle
     h.context.document.activeElement = inside;
     assert.equal(press(outside).stopped, true, 'focus inside the popup also counts');
 });
+
+test('a background model capture keeps the upload cropper title and its status shows afterwards', async () => {
+    const h = popupHarness(); const core = h.window.appChatAvatar; const capture = deferred();
+    const node = () => ({
+        hidden: false, disabled: false, style: {}, dataset: {},
+        classList: { add() {}, remove() {}, contains() { return false; } },
+        addEventListener() {}, removeEventListener() {}, setAttribute() {}, getAttribute() { return null; },
+        querySelector() { return null; }, querySelectorAll() { return []; }, focus() {},
+        getBoundingClientRect() { return { left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 }; }
+    });
+    const cropperDom = new Map(['avatar-cropper-wrap', 'avatar-cropper-img', 'avatar-cropper-mask', 'avatar-cropper-box',
+        'avatar-cropper-retake', 'avatar-cropper-cancel', 'avatar-cropper-save'].map(id => [id, node()]));
+    h.context.document.getElementById = id => cropperDom.get(id) || h.elements.get(id);
+    h.context.document.removeEventListener = () => {};
+    h.dom.chatAvatarPreviewCard = node();
+    h.window.requestAnimationFrame = h.context.requestAnimationFrame = () => 0;
+    h.window.cubism4Model = 'model-a';
+    h.window.avatarPortrait = { capture: () => capture.promise };
+
+    const cropping = core.openUploadCropper({ url: 'blob:upload', width: 64, height: 64 });
+    assert.equal(h.dom.chatAvatarPreviewStatus.textContent, 'chat.avatarCropperTitle');
+    const running = core.showPopup(null, { showCard: false, silent: true, forceRefresh: true });
+    assert.equal(h.dom.chatAvatarPreviewStatus.textContent, 'chat.avatarCropperTitle');
+    capture.resolve({ dataUrl: MODEL_AVATAR, modelType: 'live2d' }); await running;
+    assert.equal(h.dom.chatAvatarPreviewStatus.textContent, 'chat.avatarCropperTitle');
+    assert.equal(core.getModelAvatarDataUrl(), MODEL_AVATAR);
+
+    core.closeUploadCropper(); assert.equal(await cropping, null);
+    core.refreshDisplayedAvatar();
+    assert.match(h.dom.chatAvatarPreviewStatus.textContent, /^chat\.avatarPreviewReady/);
+});
