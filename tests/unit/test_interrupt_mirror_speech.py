@@ -30,11 +30,18 @@ LLM = core_module.LLMSessionManager
 
 
 class _RealtimeSession(core_module.OmniRealtimeClient):
-    def __init__(self, calls):  # noqa: D107 - 不走真实初始化
-        self._calls = calls
+    """Only ``isinstance`` and ``cancel_response`` matter here; built without the real initializer."""
+
+    _calls: list
 
     async def cancel_response(self):
         self._calls.append(("cancel_response",))
+
+
+def _realtime_session(calls):
+    session = object.__new__(_RealtimeSession)
+    session._calls = calls
+    return session
 
 
 def _spy(mgr, *, realtime: bool):
@@ -58,7 +65,7 @@ def _spy(mgr, *, realtime: bool):
     mgr.release_speech_playback_gain = release
     mgr.send_user_activity = activity
     if realtime:
-        mgr.session = _RealtimeSession(calls)
+        mgr.session = _realtime_session(calls)
     return calls
 
 

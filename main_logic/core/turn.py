@@ -67,35 +67,59 @@ class MirrorSpeechStream:
     """One streaming mirror speech of :meth:`TurnMixin.open_mirror_speech_stream` (OD-15 v3).
 
     ``push`` / ``finish`` / ``abort`` are synchronous: they only record the
-    request. One task per stream applies them in order -- it first makes
-    the stream's speech id the current one and starts the TTS pipeline,
-    then feeds each text through ``_enqueue_tts_text_chunk`` (or
-    ``tts_pending_chunks`` while the worker is not ready) and the end
-    through ``_request_tts_done_locked``, all under ``tts_cache_lock``. Text
-    is never mirrored to the page (``mirror_text=False``) and never enters
-    the private chat history.
+    request. One task per stream applies them in order. Streams of one
+    manager take the TTS turn one after another, in the order they were
+    opened: a stream claims it (its speech id becomes the current one, the
+    turn's done flags are reset, the TTS pipeline is started) only once the
+    stream opened before it requested its end marker, was aborted -- and
+    its interruption finished -- or failed; ``_PREDECESSOR_WAIT_S`` bounds
+    that wait for a stream that is never finished. Each text then goes
+    through ``_enqueue_tts_text_chunk`` (``tts_pending_chunks`` while the
+    worker is not ready) and the end through ``_request_tts_done_locked``,
+    under ``tts_cache_lock``, and only while its speech id is still the
+    current one: a stream whose turn was taken over (ordinary chat, a newer
+    stream after the bound) stops touching the shared TTS state. Text is
+    never mirrored to the page (``mirror_text=False``) and never enters the
+    private chat history.
 
     ``push`` / ``finish`` return False once the stream is closed (finished,
-    aborted, or the TTS worker is gone); ``finish`` returns ``"no_worker"``
-    when it already knows no worker can take the end marker. ``abort`` is
-    terminal and idempotent: it stops the task, drops the stream's
-    ``on_enqueued`` registration and, when this speech is the current one,
-    runs :meth:`TurnMixin.interrupt_mirror_speech`.
+    aborted, failed); ``finish`` returns ``"no_worker"`` when it already
+    knows no worker can take the end marker. ``abort`` is terminal and
+    idempotent: it stops the task, drops the ``on_enqueued`` registration
+    and, while this speech is still the current one, runs
+    :meth:`TurnMixin.interrupt_mirror_speech`. ``on_failed()`` is called
+    once when the stream stops without its end marker for any reason but
+    ``abort`` (no worker, a TTS start or enqueue error, turn taken over); an
+    enqueue error after text reached TTS also interrupts the partial line.
     """
 
     NO_WORKER = "no_worker"
+    _PREDECESSOR_WAIT_S = 30.0
 
-    def __init__(self, mgr: Any, speech_id: str, *, metadata: dict, request_id: str) -> None:
+    def __init__(
+        self,
+        mgr: Any,
+        speech_id: str,
+        *,
+        metadata: dict,
+        request_id: str,
+        on_failed: Optional[Callable[[], None]] = None,
+    ) -> None:
         self._mgr = mgr
         self._speech_id = speech_id
         self.metadata = dict(metadata or {})
         self.request_id = request_id
+        self._on_failed = on_failed
         self._ops: deque = deque()
         self._wake = asyncio.Event()
         self._closed = False
         self._aborted = False
         self._started = False
+        self._claimed = False
         self._task: Optional[asyncio.Future] = None
+        self._predecessor: Optional[asyncio.Future] = None
+        # 本流交出 TTS 轮次的时刻（结束标记已请求 / 中止且打断清理完 / 失败）：下一条流等它
+        self._released = asyncio.get_running_loop().create_future()
 
     @property
     def speech_id(self) -> str:
@@ -105,7 +129,8 @@ class MirrorSpeechStream:
     def closed(self) -> bool:
         return self._closed
 
-    def _start(self) -> None:
+    def _start(self, predecessor: Optional[asyncio.Future]) -> None:
+        self._predecessor = predecessor
         self._task = self._mgr._fire_task(self._run())
 
     def push(self, delta: str) -> bool:
@@ -122,6 +147,7 @@ class MirrorSpeechStream:
         if self._started and not self._worker_alive():
             # 已经知道没有 worker 接得住结束标记：当场告诉调用方（它据此改按估时放字幕）
             self._close()
+            self._release()
             return self.NO_WORKER
         self._closed = True
         self._ops.append(None)
@@ -138,13 +164,36 @@ class MirrorSpeechStream:
         task = self._task
         if task is not None and not task.done():
             task.cancel()
-        self._mgr._fire_task(self._mgr._interrupt_mirror_stream(self._speech_id))
+        # 打断清理做完才交出轮次：下一条流不会在清理途中写进待发缓存、随后被一并清掉
+        self._mgr._fire_task(self._abort_then_release())
         return True
+
+    async def _abort_then_release(self) -> None:
+        try:
+            await self._mgr._interrupt_mirror_stream(self._speech_id)
+        finally:
+            self._release()
 
     def _close(self) -> None:
         self._closed = True
         self._ops.clear()
         self._mgr._mirror_stream_callbacks.pop(self._speech_id, None)
+
+    def _release(self) -> None:
+        if not self._released.done():
+            self._released.set_result(None)
+
+    def _fail(self) -> None:
+        self._close()
+        callback, self._on_failed = self._on_failed, None
+        if callback is not None:
+            try:
+                callback()
+            except Exception as exc:
+                logger.warning("[%s] mirror speech failure callback failed: %s", self._mgr.lanlan_name, exc)
+
+    def _owns_turn(self) -> bool:
+        return self._mgr.current_speech_id == self._speech_id
 
     def _worker_alive(self) -> bool:
         mgr = self._mgr
@@ -159,16 +208,27 @@ class MirrorSpeechStream:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            # 起不了 TTS / 入队出错：关掉本流，之后的 push 返回 False，调用方改按估时放字幕
+            # 起不了 TTS / 入队出错：已有文字进了 TTS 就打断这半句，再关掉本流（之后的 push 返回 False）
             logger.warning("[%s] mirror speech stream failed: %s", self._mgr.lanlan_name, exc)
-            self._close()
+            self._fail()
+            if self._claimed:
+                await self._mgr._interrupt_mirror_stream(self._speech_id)
+        finally:
+            if not self._aborted:
+                # 中止由 abort() 那边在打断清理做完之后交出轮次；这里（任务被取消）不能抢先交出
+                self._release()
 
     async def _drain(self) -> None:
         mgr = self._mgr
+        predecessor = self._predecessor
+        if predecessor is not None and not predecessor.done():
+            # 按打开顺序轮流认领：前一条流交出轮次之前，本流不能覆盖它的 speech id 与 done 标记
+            await asyncio.wait([predecessor], timeout=self._PREDECESSOR_WAIT_S)
         async with mgr.lock:
             mgr.current_speech_id = self._speech_id
             mgr._tts_done_queued_for_turn = False
             mgr._tts_done_pending_until_ready = False
+        self._claimed = True
         mgr.remember_speech_playback_gain(self._speech_id, 1.0)
         await mgr.ensure_tts_pipeline_alive()
         self._started = True
@@ -179,16 +239,20 @@ class MirrorSpeechStream:
             async with mgr.tts_cache_lock:
                 if self._aborted:
                     return
+                if not self._owns_turn():
+                    # 轮次被别人接走（普通聊天、超过等待上限后认领的下一条流）：不再碰共享的 TTS 状态
+                    self._fail()
+                    return
                 if not self._worker_alive():
                     # worker 不在 / 不出音频：之后的 push 立刻返回 False，调用方改按估时放字幕
-                    self._close()
+                    self._fail()
                     return
                 while self._ops:
                     item = self._ops.popleft()
                     if item is None:
                         status = mgr._request_tts_done_locked()
                         if status == self.NO_WORKER:
-                            self._close()
+                            self._fail()
                         return
                     if mgr.tts_ready:
                         mgr._enqueue_tts_text_chunk(self._speech_id, item)
@@ -3066,6 +3130,7 @@ class TurnMixin:
         metadata: dict,
         request_id: str,
         on_enqueued: Optional[Callable[[int], None]] = None,
+        on_failed: Optional[Callable[[], None]] = None,
     ) -> MirrorSpeechStream:
         """Open one streaming mirror speech with its own speech id (OD-15 v3).
 
@@ -3074,8 +3139,11 @@ class TurnMixin:
         whole line), ``abort`` to stop it. ``on_enqueued(n)`` is told how
         many characters of this speech reached the TTS request queue (text
         cleaned to nothing is not reported); it stays registered until the
-        speech's end marker is queued or the stream is aborted. Ordinary
-        chat never opens one and is unaffected.
+        speech's end marker is queued or the stream is aborted.
+        ``on_failed()`` reports a stream that stopped without its end marker
+        (see :class:`MirrorSpeechStream`). Streams take the TTS turn in the
+        order they are opened. Ordinary chat never opens one and is
+        unaffected.
         """
         speech_id = str(uuid4())
         if on_enqueued is not None:
@@ -3084,8 +3152,10 @@ class TurnMixin:
             while len(callbacks) > 64:
                 # 兜底上限：异常路径（别处清了管线、结束标记再没入队）留下的登记不无限增长
                 callbacks.pop(next(iter(callbacks)))
-        stream = MirrorSpeechStream(self, speech_id, metadata=metadata, request_id=request_id)
-        stream._start()
+        stream = MirrorSpeechStream(self, speech_id, metadata=metadata, request_id=request_id,
+                                    on_failed=on_failed)
+        predecessor, self._mirror_stream_tail = self._mirror_stream_tail, stream._released
+        stream._start(predecessor)
         return stream
 
     async def mirror_assistant_speech(

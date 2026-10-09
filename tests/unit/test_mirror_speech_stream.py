@@ -37,6 +37,7 @@ def _mgr(*, ready=True, alive=True):
     mgr.tts_thread = _FakeAliveThread() if alive else _DeadThread()
     mgr.tts_ready = ready
     mgr._mirror_stream_callbacks = {}
+    mgr._mirror_stream_tail = None
     mgr.interrupts = []
 
     async def interrupt():
@@ -59,10 +60,11 @@ async def _settle(n=20):
         await asyncio.sleep(0)
 
 
-def _open(mgr, counted=None):
-    on_enqueued = (lambda n: counted.append(n)) if counted is not None else None
+def _open(mgr, counted=None, failed=None):
+    on_enqueued = counted.append if counted is not None else None
+    on_failed = (lambda: failed.append(True)) if failed is not None else None
     return LLM.open_mirror_speech_stream(mgr, metadata={"source": "neko_visit"}, request_id="r",
-                                         on_enqueued=on_enqueued)
+                                         on_enqueued=on_enqueued, on_failed=on_failed)
 
 
 async def test_push_then_finish_queues_text_and_one_end_marker():
@@ -257,3 +259,172 @@ async def test_visit_host_adapter_opens_a_real_stream():
     stream.finish()
     await _settle()
     assert counted == [len("到家了。")]
+
+
+# ── 评审第 1 轮：轮流认领 TTS 轮次、失去归属、失败信号 ──────────────────
+
+
+async def test_back_to_back_streams_play_in_open_order():
+    # 回家仪式句与简述：两条流各自一次 push + finish，同一拍里接连打开
+    mgr = _mgr()
+    counted: list[int] = []
+    failed: list[bool] = []
+    ritual = _open(mgr, counted, failed)
+    ritual.push("我回来啦。")
+    assert ritual.finish() is True
+    summary = _open(mgr, counted, failed)
+    summary.push("今天去串门了。")
+    assert summary.finish() is True
+    await _settle(60)
+    assert _queued(mgr) == [(ritual.speech_id, "我回来啦。"), (None, None),
+                            (summary.speech_id, "今天去串门了。"), (None, None)]
+    assert counted == [len("我回来啦。"), len("今天去串门了。")]
+    assert failed == [] and mgr._mirror_stream_callbacks == {}
+
+
+async def test_a_newer_stream_waits_until_the_older_one_finishes():
+    mgr = _mgr()
+    older = _open(mgr)
+    older.push("第一句，")
+    await _settle()
+    newer = _open(mgr)
+    newer.push("第二句。")
+    newer.finish()
+    await _settle()
+    # 旧流还没收尾：新流不认领，旧流的 speech id 与 done 标记不被覆盖
+    assert mgr.current_speech_id == older.speech_id
+    assert _queued(mgr) == [(older.speech_id, "第一句，")]
+    older.push("说完了。")
+    older.finish()
+    await _settle(60)
+    assert _queued(mgr) == [(older.speech_id, "说完了。"), (None, None),
+                            (newer.speech_id, "第二句。"), (None, None)]
+
+
+async def test_stream_that_lost_the_turn_stops_touching_tts_state():
+    mgr = _mgr()
+    failed: list[bool] = []
+    stream = _open(mgr, failed=failed)
+    stream.push("串门的话，")
+    await _settle()
+    async with mgr.lock:
+        mgr.current_speech_id = "main-turn"     # 普通聊天接走了轮次
+    stream.push("被打断的后半句。")
+    assert stream.finish() is True
+    await _settle()
+    assert _queued(mgr) == [(stream.speech_id, "串门的话，")]
+    assert mgr._tts_done_queued_for_turn is False   # 没替主聊天这一轮请求结束标记
+    assert failed == [True] and stream.closed and stream.push("x") is False
+    assert stream.speech_id not in mgr._mirror_stream_callbacks
+
+
+async def test_abort_cleanup_finishes_before_the_next_stream_claims(monkeypatch):
+    mgr = _mgr(ready=False)
+    order: list[str] = []
+
+    async def slow_interrupt():
+        order.append("interrupt-start")
+        await asyncio.sleep(0.05)
+        mgr.tts_pending_chunks.clear()          # 与 _finish_tts_clear 一样清掉待发缓存
+        order.append("interrupt-end")
+
+    mgr.interrupt_mirror_speech = slow_interrupt
+    first = _open(mgr)
+    first.push("前一句")
+    await _settle()
+    first.abort()
+    second = _open(mgr)
+    second.push("后一句。")
+    await asyncio.sleep(0.1)
+    await _settle()
+    # 后一条流在前一条的打断清理做完之后才认领：它的待发文字没被一并清掉
+    assert order == ["interrupt-start", "interrupt-end"]
+    assert mgr.tts_pending_chunks == [(second.speech_id, "后一句。")]
+    assert mgr.current_speech_id == second.speech_id
+
+
+async def test_enqueue_error_after_partial_text_interrupts_and_reports_failure():
+    mgr = _mgr()
+    failed: list[bool] = []
+    stream = _open(mgr, failed=failed)
+    stream.push("第一段，")
+    await _settle()
+    real = LLM._enqueue_tts_text_chunk
+
+    def broken(m, sid, text):
+        raise RuntimeError("tts queue gone")
+
+    mgr._enqueue_tts_text_chunk = lambda sid, text: broken(mgr, sid, text)
+    stream.push("第二段。")
+    await _settle()
+    assert failed == [True] and stream.closed
+    assert mgr.interrupts == [stream.speech_id]   # 已进 TTS 的半句被打断
+    assert real is not None
+
+
+async def test_start_failure_reports_failure_once():
+    mgr = _mgr()
+    failed: list[bool] = []
+
+    async def broken():
+        raise RuntimeError("no tts")
+
+    mgr.ensure_tts_pipeline_alive = broken
+    stream = _open(mgr, failed=failed)
+    stream.push("你好。")
+    stream.finish()
+    await _settle()
+    assert failed == [True]
+
+
+async def test_no_failure_signal_for_finish_or_abort():
+    mgr = _mgr()
+    failed: list[bool] = []
+    done = _open(mgr, failed=failed)
+    done.push("好。")
+    done.finish()
+    await _settle()
+    gone = _open(mgr, failed=failed)
+    gone.push("算了")
+    await _settle()
+    gone.abort()
+    await _settle()
+    assert failed == []
+
+
+async def test_a_stream_never_finished_only_holds_the_turn_for_a_bounded_time(monkeypatch):
+    monkeypatch.setattr(MirrorSpeechStream, "_PREDECESSOR_WAIT_S", 0.05)
+    mgr = _mgr()
+    failed: list[bool] = []
+    stuck = _open(mgr, failed=failed)
+    stuck.push("说到一半")
+    await _settle()
+    nxt = _open(mgr)
+    nxt.push("下一句。")
+    nxt.finish()
+    await asyncio.sleep(0.1)
+    await _settle()
+    assert mgr.current_speech_id == nxt.speech_id
+    # 晚到的旧流发现轮次已被接走：不再入队、报失败
+    stuck.push("后半句")
+    await _settle()
+    assert failed == [True]
+    assert (stuck.speech_id, "后半句") not in _queued(mgr)
+
+
+async def test_visit_host_adapter_passes_the_failure_signal():
+    from main_routers.visit_router.host_port import ManagerHost
+
+    mgr = _mgr()
+
+    async def broken():
+        raise RuntimeError("no tts")
+
+    mgr.ensure_tts_pipeline_alive = broken
+    mgr.open_mirror_speech_stream = lambda **kw: LLM.open_mirror_speech_stream(mgr, **kw)
+    failed: list[bool] = []
+    stream = ManagerHost("Lan", mgr).open_speech_stream(metadata={}, request_id="r", on_enqueued=lambda n: None,
+                                                        on_failed=lambda: failed.append(True))
+    stream.push("你好。")
+    await _settle()
+    assert failed == [True]

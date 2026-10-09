@@ -226,11 +226,12 @@ class FakeHost:
         self.resubmitted.extend(callbacks)
         self.events.append("resubmit")
 
-    def open_speech_stream(self, *, metadata, request_id, on_enqueued):
+    def open_speech_stream(self, *, metadata, request_id, on_enqueued, on_failed=None):
         if not self.voice_streams:
             return None
         stream = FakeStream(self, request_id, on_enqueued)
         stream.metadata = metadata
+        stream.on_failed = on_failed
         if self.dead_worker_prefix and request_id.startswith(self.dead_worker_prefix):
             stream.closed = True           # TTS worker 已关：push / finish 都收不下
         self.streams.append(stream)

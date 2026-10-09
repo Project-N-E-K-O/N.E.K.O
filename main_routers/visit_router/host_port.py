@@ -107,8 +107,13 @@ class VisitHost(Protocol):
 
     def open_speech_stream(
         self, *, metadata: dict, request_id: str, on_enqueued: Callable[[int], None],
+        on_failed: Optional[Callable[[], None]] = None,
     ) -> Optional[SpeechStream]:
-        """One streaming mirror speech (``SessionManager.open_mirror_speech_stream``, PR-09b)."""
+        """One streaming mirror speech (``SessionManager.open_mirror_speech_stream``, PR-09b).
+
+        ``on_failed()`` is called once if the stream stops without its end
+        marker (TTS start / enqueue error, no worker, turn taken over).
+        """
 
     async def mirror_user_input(self, text: str, *, metadata: dict, request_id: Optional[str]) -> None:
         """Record the family's visit line in the sync stream (never in private chat history)."""
@@ -302,12 +307,13 @@ class ManagerHost:
 
     def open_speech_stream(
         self, *, metadata: dict, request_id: str, on_enqueued: Callable[[int], None],
+        on_failed: Optional[Callable[[], None]] = None,
     ) -> Optional[SpeechStream]:
         opener = getattr(self._mgr, "open_mirror_speech_stream", None)
         if not callable(opener):
-            # PR-09b 才提供：没有时本场按估时放字幕（与 TTS 未就绪同一条路径）
+            # 管理器没有流式入口：本场按估时放字幕（与 TTS 未就绪同一条路径）
             return None
-        return opener(metadata=metadata, request_id=request_id, on_enqueued=on_enqueued)
+        return opener(metadata=metadata, request_id=request_id, on_enqueued=on_enqueued, on_failed=on_failed)
 
     async def mirror_user_input(self, text: str, *, metadata: dict, request_id: Optional[str]) -> None:
         await self._mgr.mirror_user_input(text, metadata=metadata, request_id=request_id, send_to_frontend=False)

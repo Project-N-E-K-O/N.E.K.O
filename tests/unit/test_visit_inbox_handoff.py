@@ -182,3 +182,25 @@ def test_abandon_skips_only_the_segments_not_queued_yet():
     assert not h.due()                               # 仪式句还没播完
     ih.route_progress("sp-r", ended=True, final=True)
     assert h.due()
+
+
+async def test_home_segment_whose_stream_fails_later_is_not_waited_for():
+    # finish() 当场返回 True（流还没认领 TTS 轮次），之后才发现 TTS 起不来：交还不再等这一段
+    from types import SimpleNamespace
+
+    from main_routers.visit_router.line_speaker import VoiceState
+    from main_routers.visit_router.runtime_talk import TalkMixin
+    from tests.unit.visit_runtime_harness import FakeHost
+
+    clock = Clock()
+    handoff = ih.InboxHandoff("v" * 22, finalize_at=clock(), clock=clock)
+    host = FakeHost("Host")
+    host.auto_play = False
+    rt = SimpleNamespace(handoff=handoff, host=host, voice=VoiceState(enabled=True), visit_id="v" * 22,
+                         _handoff_stamps={}, _mirror_meta=lambda kind: {"kind": kind})
+    await TalkMixin.speak_home_segment(rt, "ritual", "我回来啦。", kind="ritual")
+    stream = host.streams[-1]
+    seg = handoff._segments["ritual"]
+    assert seg.queued_at is not None and not seg.done and not rt.voice.fallen_back
+    stream.on_failed()
+    assert seg.done and rt.voice.fallen_back
