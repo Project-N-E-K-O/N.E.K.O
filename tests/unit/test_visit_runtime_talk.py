@@ -1311,8 +1311,18 @@ async def test_a_ceremony_turn_gives_up_when_the_session_lock_stays_busy(tmp_pat
 async def test_a_ceremony_turn_shares_one_deadline_between_lock_and_generation(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
+    from main_routers.visit_router import runtime_talk
+
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
+    budgets: list[float] = []
+    real_bounded = runtime_talk._stream_bounded
+
+    async def spy_bounded(session, prompt, timeout):
+        budgets.append(timeout)
+        return await real_bounded(session, prompt, timeout)
+
+    monkeypatch.setattr(runtime_talk, "_stream_bounded", spy_bounded)
 
     async def slow_stream(text, **kwargs):
         await asyncio.sleep(2)
@@ -1324,10 +1334,10 @@ async def test_a_ceremony_turn_shares_one_deadline_between_lock_and_generation(t
     try:
         await stub.turn_lock.acquire()
         asyncio.get_running_loop().call_later(0.45, stub.turn_lock.release)   # 锁快到期限才放出来
-        started = asyncio.get_running_loop().time()
         out = await asyncio.wait_for(rt.one_shot_turn("回家说一句", timeout=0.5), 3)
-        # 整轮不超过一个时限（各给一个完整时限就会到 ~0.95 s）
-        assert out is None and asyncio.get_running_loop().time() - started < 0.75
+        assert out is None
+        # 生成只拿到拿锁之后剩下的那点时限（约 0.05 s），不是另给一个完整的 0.5 s；看参数、不靠墙钟
+        assert len(budgets) == 1 and budgets[0] < 0.25
     finally:
         rt.session = real_session
         hgate.set()
@@ -1453,6 +1463,8 @@ async def test_an_abandoned_generation_cannot_leak_into_the_next_line(tmp_path, 
         rt.schedule_reply(None)                               # 撇下的还在跑时轮到下一行（已有一行在排 / 在说就排在它后面）
         await wait_for(lambda: rt.finalize_reason is not None, timeout=10)
         assert rt.finalize_reason == "llm_error"              # 等满一个时限还停不下：这场说不了话，按 llm_error 收尾
+        # 先置 finalize_reason，那一行的收口在 _run_line 的 finally 里稍后才到
+        await wait_for(lambda: any(line is not opening for line in finished), timeout=10)
         later = [line for line in finished if line is not opening]
         assert later and all(line.llm_error == "timeout" for line in later)
         assert calls[id(session.client)] == 1                 # 不开新流（同一个 client 上不并发两次生成）

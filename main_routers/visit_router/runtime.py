@@ -2726,8 +2726,12 @@ async def stop_all(reason: str = "shutdown") -> None:
             waits.append(asyncio.wait(late_writes + late_cleanups, timeout=left))
         if waits:
             await asyncio.gather(*waits)
-        for task in late_cleanups:
+        stuck = [t for t in late_cleanups if not t.done()]
+        for task in stuck:
             task.cancel()
+        if stuck:
+            # 与开头那批一样：取消之后再给它处理取消的机会（截到剩余预算，用完也至少让出一轮）
+            await asyncio.wait(stuck, timeout=max(0.0, budget_end - loop.time()))
     finally:
         _stop_gen += 1  # stop_all 进行中才开始、它结束后才醒的入场：代数已变，同样不登记
         _stopping = False
