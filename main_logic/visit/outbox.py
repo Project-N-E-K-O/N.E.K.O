@@ -843,8 +843,11 @@ class VisitOutbox:
 
     def _transmitted(self, item: _Item, now: float) -> bool:
         """Book-keeping after a reliable item went on the wire; True when this is its first transmission."""
-        first = item.emitted == 0 or item.unsent_first
+        was_unsent = item.unsent_first
+        first = item.emitted == 0 or was_unsent
         item.unsent_first = False
+        if was_unsent:
+            item.emitted = 0  # 那次没写出去的不算：重试间隔从第一档起
         if first:
             item.first_active = self.active_time(now)
             if item.seq == self._leave_seq:

@@ -103,6 +103,9 @@ class _Outbox:
     def set_backpressure(self, on: bool) -> None:
         self.backpressure = on
 
+    def write_failed(self, frame, now=None) -> None:
+        self.log.append(("write_failed", frame.seq))
+
 
 def _creds(side: str = "guest") -> VisitCredentials:
     return VisitCredentials(
@@ -1185,6 +1188,7 @@ def test_a_rejoin_whose_replay_write_fails_keeps_the_original_reload_deadline():
     events = s.liveness.events
     assert events[-2:] == ["page_restored", "page_lost"]   # 被弃之后写回原来的期限，再按这次掉线重算 socket 阶段
     assert s.liveness.reload_state is original        # 反复重连续不上绝对期限
+    assert [e for e in s.outbox.log if e[0] == "write_failed"]  # 没写出去的帧回滚记账（与泵一样），不算已发
 
 
 def test_a_superseded_rejoin_whose_replay_write_fails_does_not_touch_the_deadline():

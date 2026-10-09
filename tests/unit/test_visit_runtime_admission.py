@@ -724,6 +724,29 @@ async def test_an_activation_cancelled_while_opening_the_spool_leaves_a_memory_o
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_an_activation_cancelled_while_writing_the_state_still_leaves_memory_off(tmp_path, monkeypatch):
+    from main_logic.visit import spool as spool_mod
+
+    monkeypatch.setattr(rtm, "VISIT_ACTIVATION_ALLOWANCE_S", 0.3)
+    real_write = spool_mod.VisitSpool.write_state
+
+    async def slow_write(self, state):
+        asyncio.ensure_future(real_write(self, state))   # 像写盘线程一样：await 被取消了它照样写完
+        await asyncio.sleep(5)                           # 取消落在写 state 期间
+
+    monkeypatch.setattr(spool_mod.VisitSpool, "write_state", slow_write)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    hrt = host.rt
+    try:
+        status, _ = await hrt.accept(True)
+        assert status == 200
+        await asyncio.wait_for(_finished(hrt), 15)
+        state = await spool_mod.VisitSpool(hrt.config_dir, hrt.visit_id).read_state()
+        assert state["memory_enabled"] is False           # 照样由收尾改回记忆关
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_activation_that_finishes_after_the_end_publishes_nothing(tmp_path, monkeypatch):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
     hrt = host.rt

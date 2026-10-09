@@ -1537,13 +1537,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return
         spool = VisitSpool(self.config_dir, self.visit_id)
         memory_on = bool(self.memory_enabled and subjects)
-        state_written = False
         try:
             await spool.write_state(new_state(
                 own_uid=creds.visit_uid, own_char=self.lanlan_name, own_char_uid=self.character_uid,
                 pair_id=pair_id, peer_uid=peer.uid, peer_char_id=peer_char_id, memory_enabled=memory_on,
             ))
-            state_written = True
             if memory_on:
                 await spool.open({
                     "v": 1, "visit_id": self.visit_id, "role": self.side, "own_uid": creds.visit_uid,
@@ -1552,13 +1550,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                     "started_at": self.wall(), "lang": self.lang or "und",
                 }, now=self.clock())
         except asyncio.CancelledError:
-            if state_written:
-                # 激活在打开 spool 途中被取消（超出激活时限 / 收尾）：state 已按记忆开写下却不会有转录。
-                # 交给收尾：写 finalized 时一并改回记忆关（否则启动补录每次都去提交一份不存在的转录、永远结不清）
-                self.memory_enabled = False
+            self.memory_enabled = False
+            if memory_on:
+                # 激活在写 state / 打开 spool 途中被取消（超出激活时限 / 收尾）：state 按记忆开写下了（取消落在
+                # 写 state 期间也一样：线程照样会写完）却不会有转录。交给收尾：写 finalized 时一并改回记忆关，
+                # 否则启动补录每次都去提交一份不存在的转录、永远结不清。state 真没写成时收尾那次写会报错、只记日志
                 self.spool = spool
-                if memory_on:
-                    self._memory_off_unsaved = True
+                self._memory_off_unsaved = True
             raise
         except Exception as exc:  # noqa: BLE001 - spool 打不开：本场不记串门记忆，对话照常
             logger.warning("visit %s: spool not opened: %s", self.visit_id[:6], type(exc).__name__)

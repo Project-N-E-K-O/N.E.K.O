@@ -807,6 +807,8 @@ async def test_a_first_send_that_failed_to_write_is_retried_as_a_first_send(tmp_
     tx.write_failed(first, now=0.0)                  # 传输没写出去
     again = [f for f in tx.due(0.0) if f.t == "text"]
     assert again and again[0].retransmit is False    # 马上重试，且仍算首发
+    item = tx._unacked[again[0].seq]
+    assert item.emitted == 1 and item.next_due == tx._retry[0]  # 重试间隔从第一档起
     await tx.close()
 
 

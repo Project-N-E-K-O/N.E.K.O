@@ -874,14 +874,22 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
         return
     conn.rejoined = True
     media_mark = conn.media_seq
-    for frame in frames:
+    for index, frame in enumerate(frames):
         if await _send_on(conn, frame.to_ws()):
             # 与泵发出的帧同一套记账（存活计时、收尾步骤计时器），不然重入时发出的首发就漏掉了
             try:
                 session.on_frame_sent(frame)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit transport: on_frame_sent failed: %s", type(exc).__name__)
-        elif conn.lost_as_current:
+            continue
+        # 没写出去：与泵一样回滚记账（due 放出时已记成「已发」）。连接这就被弃的话，后面没送的也一并回滚
+        unsent = frames[index:] if conn.lost_as_current else [frame]
+        for failed in unsent:
+            try:
+                session.outbox.write_failed(failed)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit transport: write_failed failed: %s", type(exc).__name__)
+        if conn.lost_as_current:
             # 回放写不出去、这条连接作为当前连接被弃（_abandon 已按新一次掉线起了重载期限）：把这次重载
             # 原来的期限写回，绝对期限不能被反复重连续上。被更新的连接顶掉的不算：新连接可能已经重入完了
             _restore_reload_deadline(link, session, saved)
