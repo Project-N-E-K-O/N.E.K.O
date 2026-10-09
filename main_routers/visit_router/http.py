@@ -150,7 +150,9 @@ def _remember_preview(invite_code: str, preview: cr.InvitePreview) -> None:
 
 def _recent_preview(invite_code: str) -> Optional[cr.InvitePreview]:
     hit = _previews.get(invite_code)
-    if hit is None or time.monotonic() - hit[0] > VISIT_INVITE_PREVIEW_REUSE_S:
+    if (hit is None or time.monotonic() - hit[0] > VISIT_INVITE_PREVIEW_REUSE_S
+            or time.time() >= hit[1].expires_at):
+        # 邀请已到期的预览不复用：重新代转一次，过期的邀请在占位之前就被拒
         _previews.pop(invite_code, None)
         return None
     return hit[1]
@@ -223,17 +225,18 @@ async def _admit(name: str, side: str, **kwargs: Any) -> runtime.VisitRuntime | 
     """Forget check and :func:`runtime.start_visit` under the character's admission lock."""
     uid = await _resolve_uid(name)
     async with (char_admission_lock(uid) if uid else contextlib.nullcontext()):
+        account = await accounts.local_account()
         if uid:
-            own_uid = await accounts.own_visit_uid()
+            own_uid = await accounts.lookup_visit_uid(account)
             if await memory_bridge.char_forget_in_progress(_config_dir(), uid, own_uid=own_uid):
                 return _error(409, "VISIT_FORGET_IN_PROGRESS")
         try:
             rt = await runtime.start_visit(name, side, **kwargs)
         except runtime.VisitRefused as exc:
             return _refused(exc.status, exc.body)
-        if rt.character_uid != uid:
-            # 查清除时认的角色与人设闸认的不是同一个（期间改了名 / 名字被占）：这次的清除检查不作数
-            logger.warning("visit %s: character changed during admission, refusing", rt.visit_id[:6])
+        # 清除检查按的角色 / 账号，必须就是这一场的：期间改了名、名字被占或换了社区账号，这次检查不作数
+        if rt.character_uid != uid or await accounts.local_account() != account:
+            logger.warning("visit %s: character or account changed during admission, refusing", rt.visit_id[:6])
             rt.request_finalize("busy")
             return _refused(409, {"reason": "busy"})
         return rt
@@ -383,15 +386,32 @@ def _memory_runtime(visit_id: str) -> Optional[runtime.VisitRuntime]:
     return runtime.get_runtime_by_visit(visit_id) or runtime.recent_runtime(visit_id)
 
 
-def _memory_transcript(rt: runtime.VisitRuntime) -> dict:
+def _runtime_owner(rt: runtime.VisitRuntime) -> Optional[str]:
+    return rt.creds.visit_uid if rt.creds is not None else None
+
+
+async def _peer_forgotten(config_dir: Path, visit_id: str) -> bool:
+    """Whether "forget this person" erased this visit's peer identity (its ``state.json`` peer fields are null)."""
+    try:
+        state = await VisitSpool(config_dir, visit_id).read_state()
+    except (OSError, ValueError) as exc:
+        # 判不出有没有被清除：不露对端身份（正文照给）
+        logger.warning("visit transcript %s: state unreadable: %s", visit_id[:6], type(exc).__name__)
+        return True
+    return state is not None and not state.get("peer_uid")
+
+
+async def _memory_transcript(config_dir: Path, rt: runtime.VisitRuntime) -> dict:
     lines = []
     for record in rt.transcript_records():
         frame = rt.visit_line_payload_from_record(record)
         lines.append(_local_line(frame.get("line_id"), record, frame))
+    # 刚结束的场次还在内存里：「清除这个人」之后同样不再给出对端身份
+    peer = None if rt.peer is None or await _peer_forgotten(config_dir, rt.visit_id) else rt.peer
     out = {
         "visit_id": rt.visit_id,
-        "peer_short_id": rt.peer.short_id if rt.peer else None,
-        "peer_uid": rt.peer.uid if rt.peer else None,
+        "peer_short_id": peer.short_id if peer else None,
+        "peer_uid": peer.uid if peer else None,
         "started_at": rt.started_at_wall,
         "transport": rt.creds.transport if rt.creds else None,
         "lines": lines, "anomalies": rt.anomaly_count(), "source": "memory",
@@ -401,14 +421,16 @@ def _memory_transcript(rt: runtime.VisitRuntime) -> dict:
     return out
 
 
-async def _spool_transcript(config_dir: Path, visit_id: str) -> Optional[dict]:
+async def _spool_transcript(config_dir: Path, visit_id: str, owner: str) -> Optional[tuple[dict, int]]:
+    """``(local transcript, dropped line count)`` of this account's spool, or None."""
     try:
         contents = await VisitSpool(config_dir, visit_id).read_back()
     except OSError as exc:
         logger.warning("visit transcript %s: spool unreadable: %s", visit_id[:6], type(exc).__name__)
         return None
     header = contents.header
-    if header is None:
+    if header is None or header.get("own_uid") != owner:
+        # 共用电脑上另一个社区账号的场次：本机副本不给，由云端按参与者判定
         return None
     peer_uid = header.get("peer_uid")
     peer_uid = peer_uid if isinstance(peer_uid, str) and peer_uid else None  # 「清除这个人」后已抹掉
@@ -417,7 +439,7 @@ async def _spool_transcript(config_dir: Path, visit_id: str) -> Optional[dict]:
     if transport is None:
         pending = await _pending_upload(config_dir, visit_id)
         transport = pending.get("transport") if pending else None
-    return {
+    doc = {
         "visit_id": visit_id,
         "peer_short_id": derive_short_code(peer_uid) if peer_uid else None,
         "peer_uid": peer_uid,
@@ -427,6 +449,7 @@ async def _spool_transcript(config_dir: Path, visit_id: str) -> Optional[dict]:
         "anomalies": rt.anomaly_count() if rt is not None else await tu.visit_anomalies(config_dir, visit_id),
         "source": "spool",
     }
+    return doc, contents.dropped_lines
 
 
 async def _pending_upload(config_dir: Path, visit_id: str) -> Optional[dict]:
@@ -446,6 +469,9 @@ async def visit_transcript(request: Request, visit_id: str = ""):
     ``.upload.jsonl``) → Servers details (this side, every page). The first
     two answer the full local shape (``source: spool | memory``), the last two
     the compact shape of the uploaded lines (``source: upload | cloud``).
+    Local copies are served only to the community account that took part
+    (visit data is partitioned by account); a spool that lost lines in a crash
+    gives way to a complete source and is the last resort (``dropped_lines``).
     """
     denied = http_denied(request)
     if denied is not None:
@@ -453,22 +479,33 @@ async def visit_transcript(request: Request, visit_id: str = ""):
     if not isinstance(visit_id, str) or not VISIT_ID_RE.fullmatch(visit_id):
         return _error(400, "visit_id_format")
     config_dir = _config_dir()
-    spooled = await _spool_transcript(config_dir, visit_id)
-    if spooled is not None:
-        return JSONResponse(spooled)
-    rt = _memory_runtime(visit_id)
-    if rt is not None:
-        return JSONResponse(_memory_transcript(rt))
-    pending = await _pending_upload(config_dir, visit_id)
-    if pending is not None:
-        request_body = pending["request"]
-        return JSONResponse({"source": "upload", "visit_id": visit_id, "role": request_body["role"],
-                             "lines": request_body["lines"]})
+    owner = await accounts.own_visit_uid()
+    partial: Optional[dict] = None
+    if owner:
+        spooled = await _spool_transcript(config_dir, visit_id, owner)
+        if spooled is not None:
+            doc, dropped = spooled
+            if not dropped:
+                return JSONResponse(doc)
+            # 崩溃留下的半行 / 坏行被丢掉了：先找完整的来源，都没有再退回这份
+            partial = {**doc, "dropped_lines": dropped}
+        rt = _memory_runtime(visit_id)
+        if rt is not None and _runtime_owner(rt) == owner:
+            return JSONResponse(await _memory_transcript(config_dir, rt))
+        pending = await _pending_upload(config_dir, visit_id)
+        if pending is not None and pending.get("own_visit_uid") == owner:
+            request_body = pending["request"]
+            return JSONResponse({"source": "upload", "visit_id": visit_id, "role": request_body["role"],
+                                 "lines": request_body["lines"]})
     try:
         return JSONResponse(await cloud_routes.fetch_cloud_transcript(visit_id))
     except cloud_routes.CloudTranscriptIncomplete:
+        if partial is not None:
+            return JSONResponse(partial)
         return _error(502, "cloud_transcript_incomplete")
     except cloud_routes.CloudError:
+        if partial is not None:
+            return JSONResponse(partial)
         # 未登录 / 离线 / Servers 不可达 / 云端没有：如实说本机副本已清理
         return _error(404, "transcript_gone_local")
 

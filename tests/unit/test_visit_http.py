@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from urllib.parse import parse_qs
 
 import httpx
@@ -87,11 +88,13 @@ class Env:
         self.servers = FakeServers()
         self.preview_mode = "ok"
         self.preview_visit_id = VISIT_ID
+        self.preview_expires = NOW + 600
         self.preview_calls: list[str] = []
         self.account: str | None = "u1"
         self.own_uid: str | None = OWN
         self.gate = PersonaGate(ok=True, state="ok", text="一只活泼的猫娘。")
         self.gate_wait: asyncio.Event | None = None
+        self.gate_entered = asyncio.Event()
         self.uids = {"Host": HOST_CHAR_UID, "Guest": GUEST_CHAR_UID}
         self.app = FastAPI()
         self.app.include_router(visit_router)
@@ -109,6 +112,7 @@ class Env:
             return cr._ServersSession(base_url=BASE, access_token="bearer-x", client_id="c1", account=env.account)
 
         async def gate(name):
+            env.gate_entered.set()
             if env.gate_wait is not None:
                 await env.gate_wait.wait()
             return PersonaGate(ok=env.gate.ok, state=env.gate.state, character_uid=env.uids.get(name),
@@ -117,8 +121,8 @@ class Env:
         async def local_account():
             return env.account
 
-        async def own_visit_uid():
-            return env.own_uid
+        async def lookup_visit_uid(account):
+            return env.own_uid if account is not None and account == env.account else None
 
         async def resolve_uid(name):
             return env.uids.get(name)
@@ -138,7 +142,8 @@ class Env:
         monkeypatch.setattr(persona, "persona_gate", gate)
         monkeypatch.setattr(rtm, "_local_account", local_account)
         monkeypatch.setattr(rtm, "start_visit", start)
-        monkeypatch.setattr(accounts, "own_visit_uid", own_visit_uid)
+        monkeypatch.setattr(accounts, "local_account", local_account)
+        monkeypatch.setattr(accounts, "lookup_visit_uid", lookup_visit_uid)
         monkeypatch.setattr(local_chars, "resolve_char_uid", resolve_uid)
         monkeypatch.setattr(http, "load_character_context", context)
         monkeypatch.setattr(http, "prompt_lang", lambda: "zh")
@@ -160,7 +165,7 @@ class Env:
                 return httpx.Response(status, json=body)
             return httpx.Response(200, json={
                 "visit_id": self.preview_visit_id, "host_visit_uid": HOST_UID,
-                "host_short_code": HOST_UID[:6].upper(), "cross_region": False, "expires_at": NOW + 600,
+                "host_short_code": HOST_UID[:6].upper(), "cross_region": False, "expires_at": self.preview_expires,
                 "host_display_name": "Mimi",
             })
         return self.servers.handler(request)
@@ -376,7 +381,7 @@ async def test_rooms_waits_for_a_clearing_holding_the_admission_lock(env):
 async def test_admission_lock_is_held_until_the_runtime_is_registered(env):
     env.gate_wait = asyncio.Event()
     request = asyncio.ensure_future(_rooms(env))
-    await settle(60)
+    await asyncio.wait_for(env.gate_entered.wait(), 5)   # 建房已持锁、停在人设闸里
 
     async def clearing_sees_visit():
         async with http.char_admission_lock(HOST_CHAR_UID):
@@ -746,7 +751,7 @@ async def test_transcript_reads_memory_when_the_spool_is_gone(env, monkeypatch):
         uid, short_id = HOST_UID, HOST_UID[:6].upper()
 
     class Creds:
-        transport = "livekit"
+        transport, visit_uid = "livekit", OWN
 
     class Recent:
         visit_id, peer, creds, started_at_wall, ended_at_mono = VISIT_ID, Peer(), Creds(), NOW, 50.0
@@ -895,3 +900,103 @@ async def test_cloud_cursor_that_does_not_advance_is_a_failure(env, monkeypatch)
     resp = await _transcript(env)
     assert resp.status_code == 404 and resp.json()["code"] == "transcript_gone_local"
     assert env.servers.count(f"/api/visit/details/{VISIT_ID}") == 2
+
+
+async def test_account_switch_during_admission_is_refused(env, monkeypatch):
+    seen = iter(["u1", "u2"])   # 占位前一次、登记后一次
+
+    async def switching():
+        return next(seen, "u2")
+
+    monkeypatch.setattr(accounts, "local_account", switching)
+    resp = await _rooms(env)
+    # 清除检查按 u1 查的，这一场却已是 u2 的：作废
+    assert resp.status_code == 409 and resp.json()["reason"] == "busy"
+    assert env.host.rt.finalize_reason == "busy"
+
+
+async def test_a_preview_past_its_invite_deadline_is_not_reused(env):
+    env.preview_expires = time.time() - 1
+    await _preview(env)
+    env.preview_mode = "410"
+    resp = await _join(env)
+    assert env.preview_calls == [INVITE, INVITE]
+    assert resp.status_code == 409 and resp.json()["details"] == {"reason": "invite_expired"}
+    assert _no_slot("Guest")
+
+
+async def test_local_copies_of_another_account_are_not_served(env, monkeypatch):
+    await _write_spool(env.host.config_dir)
+    _write_sealed(env.host.config_dir)
+    env.own_uid = OTHER_OWN
+    env.servers.details_lines = _details_rows(3)
+    body = (await _transcript(env)).json()
+    # 本机三份都属于另一个社区账号：只走云端（Servers 按参与者判定）
+    assert body["source"] == "cloud"
+    env.account = None
+    assert (await _transcript(env)).json()["code"] == "transcript_gone_local"
+
+
+async def test_memory_transcript_after_forget_has_no_peer_identity(env, monkeypatch):
+    from main_logic.visit.spool import new_state
+
+    class Peer:
+        uid, short_id = HOST_UID, HOST_UID[:6].upper()
+
+    class Creds:
+        transport, visit_uid = "trtc", OWN
+
+    class Recent:
+        visit_id, peer, creds, started_at_wall, ended_at_mono = VISIT_ID, Peer(), Creds(), NOW, None
+
+        def transcript_records(self):
+            return []
+
+        def anomaly_count(self):
+            return 0
+
+    monkeypatch.setattr(rtm, "recent_runtime", lambda visit_id: Recent())
+    assert (await _transcript(env)).json()["peer_uid"] == HOST_UID
+    state = new_state(own_uid=OWN, own_char="Host", own_char_uid=HOST_CHAR_UID,
+                      pair_id=derive_pair_id(OWN, HOST_UID), peer_uid=HOST_UID,
+                      peer_char_id=derive_peer_char_id(HOST_UID, "f" * 32), memory_enabled=False)
+    # 「清除这个人」抹掉了 state.json 的对端字段
+    await VisitSpool(env.host.config_dir, VISIT_ID).write_state(
+        {**state, "peer_uid": None, "pair_id": None, "peer_char_id": None})
+    body = (await _transcript(env)).json()
+    assert body["source"] == "memory" and body["peer_uid"] is None and body["peer_short_id"] is None
+    assert HOST_UID not in json.dumps(body)
+
+
+async def test_a_spool_that_lost_lines_gives_way_to_a_complete_source(env):
+    spool = await _write_spool(env.host.config_dir)
+    with open(spool.jsonl_path, "ab") as handle:
+        handle.write(b'{"lp": 9, "side": "host", "ts"')      # 崩溃留下的半行
+    _write_sealed(env.host.config_dir)
+    assert (await _transcript(env)).json()["source"] == "upload"
+    (env.host.config_dir / "visit_spool" / f"{VISIT_ID}.upload.json").unlink()
+    env.servers.details_mode = "503"   # 云端也取不到：退回这份不完整的，并如实标出丢了几行
+    body = (await _transcript(env)).json()
+    assert body["source"] == "spool" and body["dropped_lines"] == 1 and len(body["lines"]) == 3
+
+
+async def test_memory_copy_of_another_account_is_not_served(env, monkeypatch):
+    class Creds:
+        transport, visit_uid = "trtc", OTHER_OWN
+
+    class Recent:
+        visit_id, peer, creds, started_at_wall, ended_at_mono = VISIT_ID, None, Creds(), NOW, None
+
+        def transcript_records(self):
+            return [{k: v for k, v in line.items() if k != "ln"} for line in LINES]
+
+        def visit_line_payload_from_record(self, record):
+            return {}
+
+        def anomaly_count(self):
+            return 0
+
+    monkeypatch.setattr(rtm, "recent_runtime", lambda visit_id: Recent())
+    env.servers.details_mode = "403"     # 云端按参与者判定：这一场不是当前账号的
+    resp = await _transcript(env)
+    assert resp.status_code == 404 and resp.json()["code"] == "transcript_gone_local"
