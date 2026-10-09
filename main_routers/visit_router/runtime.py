@@ -354,6 +354,17 @@ _account_changes = 0
 _account_gen = 0
 """Bumped when an account change starts: a ``start_visit`` that was awaiting meanwhile does not register."""
 
+_account_change_lock: Optional[tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = None
+"""Serializes account changes (created per event loop: a lock binds to the loop that first waits on it)."""
+
+
+def _account_change_mutex() -> asyncio.Lock:
+    global _account_change_lock
+    loop = asyncio.get_running_loop()
+    if _account_change_lock is None or _account_change_lock[0] is not loop:
+        _account_change_lock = (loop, asyncio.Lock())
+    return _account_change_lock[1]
+
 
 def has_visit_background_tasks(lanlan_name: str) -> bool:
     """Registry ``has_background_tasks``: this character's visit background writes are running."""
@@ -2728,7 +2739,8 @@ async def account_change(
     On entry the admission fence goes up (a start already past its account
     lookup is refused as well), then every live visit is ended and its
     upload seal awaited (:func:`end_visits_for_account_change`); the caller
-    changes the credentials inside the block. ``ends_visits()`` (asked once
+    changes the credentials inside the block. Account changes run one at a
+    time (the fence goes up before queuing). ``ends_visits()`` (asked once
     the fence is up, so no visit is admitted while it decides) can keep live
     visits running, e.g. for a re-login as the same account. Ending visits
     never raises.
@@ -2737,12 +2749,15 @@ async def account_change(
     _account_changes += 1
     _account_gen += 1
     try:
-        if _runtimes and (ends_visits is None or await ends_visits()):
-            try:
-                await end_visits_for_account_change(timeout)
-            except Exception as exc:  # noqa: BLE001 - 收尾失败不挡登出 / 登录；没封存的留给下次启动补录
-                logger.warning("visit: ending live visits before the account change failed: %r", exc)
-        yield
+        # 准入闸先立起再排队：前一次变更还在等某场封存时，那场可能已从 _runtimes 注销，
+        # 后一次看到空表就会抢先改凭证——账号变更一次一个
+        async with _account_change_mutex():
+            if _runtimes and (ends_visits is None or await ends_visits()):
+                try:
+                    await end_visits_for_account_change(timeout)
+                except Exception as exc:  # noqa: BLE001 - 收尾失败不挡登出 / 登录；没封存的留给下次启动补录
+                    logger.warning("visit: ending live visits before the account change failed: %r", exc)
+            yield
     finally:
         _account_changes -= 1
 

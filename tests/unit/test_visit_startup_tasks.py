@@ -434,3 +434,36 @@ def test_sync_session_clear_rechecks_the_account_inside_the_fence():
     fenced = sync.split("async with community_oauth.visit_account_change():", 1)[1].split("cleared = await", 1)[0]
     # 等收尾期间别的登录可能已换账号：闸内、清除之前再核对一次令牌
     assert "_access_token" in fenced and "local_session_mismatch" in fenced
+
+
+async def test_account_changes_run_one_at_a_time(monkeypatch):
+    # 前一次变更还在等封存（那场可能已注销）：后一次不能看着空表抢先改凭证
+    order: list[str] = []
+    release = asyncio.Event()
+
+    async def slow_end(timeout=None):
+        order.append("first:end-start")
+        monkeypatch.setattr(runtime, "_runtimes", {})          # 那场已从登记表注销
+        await release.wait()
+        order.append("first:end-done")
+        return 1
+
+    monkeypatch.setattr(runtime, "_runtimes", {"A": object()})
+    monkeypatch.setattr(runtime, "end_visits_for_account_change", slow_end)
+
+    async def first():
+        async with runtime.account_change():
+            order.append("first:write")
+
+    async def second():
+        async with runtime.account_change():
+            order.append("second:write")
+
+    a = asyncio.ensure_future(first())
+    await asyncio.sleep(0.01)
+    b = asyncio.ensure_future(second())
+    await asyncio.sleep(0.05)
+    assert "second:write" not in order and runtime._account_changes == 2   # 后一次排队时闸照样立着
+    release.set()
+    await asyncio.gather(a, b)
+    assert order == ["first:end-start", "first:end-done", "first:write", "second:write"]
