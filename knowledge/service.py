@@ -104,6 +104,8 @@ QUERY_CONCURRENCY = 4
 DEFAULT_QUERY_BUDGET_MS = 1_500
 MAX_QUERY_BUDGET_MS = 5_000
 QUERY_RENDER_RESERVE_SECONDS = 0.15
+# How often one import may give way to removals that then fail.
+MAX_IMPORT_YIELDS = 8
 MAX_QUERY_EMBEDDINGS = 2
 MAX_QUERY_CHARS = 2_000
 MAX_QUERY_LIMIT = 10
@@ -235,6 +237,8 @@ class KnowledgeService:
         self._request_seq = 0
         self._removed_at: dict[str, int] = {}
         self._pending_removals: dict[str, set[int]] = {}
+        # Set (and replaced) whenever a removal finishes, committed or not.
+        self._removal_settled = asyncio.Event()
         self._vectors_built_for: tuple[int, str] | None = None
         self._vector_task: asyncio.Task[Any] | None = None
         self._availability_listeners: list[Callable[[], None]] = []
@@ -533,6 +537,8 @@ class KnowledgeService:
             pending.discard(my_seq)
             if not pending:
                 self._pending_removals.pop(pack_id, None)
+            settled, self._removal_settled = self._removal_settled, asyncio.Event()
+            settled.set()
         self._schedule_vector_refresh()
         return result
 
@@ -565,6 +571,9 @@ class KnowledgeService:
             existing is not None
             and existing.pack_sha256 == sha
             and pack.pack_id not in self._broken_packs
+            # An older removal still waiting will delete what is installed;
+            # this newer import must then land after it, so it needs a job.
+            and not any(seq < arrived_at for seq in self._pending_removals.get(pack.pack_id, ()))
             # The raw file is the source of truth; if it went missing or was
             # altered since startup, import again so it gets rewritten.
             and await asyncio.to_thread(self._raw_file_intact, existing)
@@ -719,7 +728,23 @@ class KnowledgeService:
                 continue
             job.state, job.updated_at = "building", utc_now()
             try:
-                await self._locked(lambda job=job: self._commit_job(job), wait=True)
+                for attempt in range(MAX_IMPORT_YIELDS + 1):
+                    try:
+                        await self._locked(lambda job=job: self._commit_job(job), wait=True)
+                        break
+                    except InterruptedError:
+                        if (
+                            self._stopping
+                            or job.cancel_requested
+                            or self._removed_at.get(job.pack_id, -1) > job.arrived_at
+                            # Never spin the single runner on one job.
+                            or attempt == MAX_IMPORT_YIELDS
+                        ):
+                            raise
+                    # It only gave way to a removal that has not committed:
+                    # wait for that removal's outcome. If it fails, this
+                    # import goes ahead; if it commits, the import is dropped.
+                    await self._await_pending_removals(job)
                 self._finish_job(job, "active")
                 self._vector_generation += 1
                 self._index_wakeup.set()
@@ -738,6 +763,10 @@ class KnowledgeService:
                 self._finish_job(job, "failed", type(exc).__name__)
             finally:
                 await self._discard_staging(job_id)
+
+    async def _await_pending_removals(self, job: ImportJob) -> None:
+        while any(seq > job.arrived_at for seq in self._pending_removals.get(job.pack_id, ())):
+            await self._removal_settled.wait()
 
     async def _commit_job(self, job: ImportJob) -> None:
         if self._superseded(job):

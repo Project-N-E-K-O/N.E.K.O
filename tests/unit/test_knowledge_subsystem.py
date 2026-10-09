@@ -1580,7 +1580,7 @@ async def test_a_building_import_yields_to_a_pending_removal_of_its_pack(tmp_pat
         await asyncio.wait_for(building.wait(), 2)
         await service.remove_pack("demo-memes")  # would time out if the import held on
         assert "demo-memes" not in load_registry(tmp_path).packs
-        assert service.list_jobs()[0]["state"] == "cancelled"
+        assert (await _wait_for_last_job(service))[0] == "cancelled"
     finally:
         await service.stop()
 
@@ -1752,3 +1752,79 @@ def test_only_later_removals_supersede_an_import(tmp_path):
     service._pending_removals.clear()
     service._removed_at["demo-memes"] = 6
     assert service._superseded(job) is True
+
+
+async def test_an_unchanged_import_behind_a_pending_removal_lands_after_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "WRITE_LOCK_TIMEOUT_SECONDS", 5.0)
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        async with service._write_lock:  # the removal waits for the lock
+            removing = asyncio.create_task(service.remove_pack("demo-memes"))
+            await asyncio.sleep(0.05)
+            job = await service.import_pack(_raw(_pack()))  # same bytes, asked for later
+            assert job.get("unchanged") is not True
+        assert (await removing)["pack_id"] == "demo-memes"
+        for _ in range(200):
+            states = {item["job_id"]: item["state"] for item in service.list_jobs()}
+            if states[job["job_id"]] not in ("queued", "building"):
+                break
+            await asyncio.sleep(0.01)
+        assert states[job["job_id"]] == "active"
+        assert "demo-memes" in load_registry(tmp_path).packs
+    finally:
+        await service.stop()
+
+
+async def test_an_import_that_yielded_to_a_failed_removal_goes_ahead(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "WRITE_LOCK_TIMEOUT_SECONDS", 2.0)
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        real_replace = service._store.replace_pack
+        building = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        calls = {"replace": 0, "save": 0}
+
+        def slow_first_replace(pack, *, pack_sha256, disabled_keys=(), should_cancel=None, commit_gate=None):
+            import time
+
+            calls["replace"] += 1
+            if calls["replace"] == 1:  # only the first attempt waits to be told to yield
+                loop.call_soon_threadsafe(building.set)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if should_cancel is not None and should_cancel():
+                        raise InterruptedError("cancelled")
+                    time.sleep(0.02)
+            return real_replace(
+                pack, pack_sha256=pack_sha256, disabled_keys=disabled_keys,
+                should_cancel=should_cancel, commit_gate=commit_gate,
+            )
+
+        real_save = service_module.save_registry
+
+        def save_failing_once(root, registry):
+            calls["save"] += 1
+            if calls["save"] == 1:  # the removal's write
+                raise OSError("disk full")
+            real_save(root, registry)
+
+        monkeypatch.setattr(service._store, "replace_pack", slow_first_replace)
+        monkeypatch.setattr(service_module, "save_registry", save_failing_once)
+        job = await service.import_pack(_raw(_updated_pack()))
+        await asyncio.wait_for(building.wait(), 2)
+        with pytest.raises(OSError):
+            await service.remove_pack("demo-memes")
+        for _ in range(200):
+            states = {item["job_id"]: item["state"] for item in service.list_jobs()}
+            if states[job["job_id"]] not in ("queued", "building"):
+                break
+            await asyncio.sleep(0.01)
+        assert states[job["job_id"]] == "active"
+        assert calls["replace"] == 2  # it yielded once, then went ahead
+        assert load_registry(tmp_path).packs["demo-memes"].pack_sha256 == hashlib.sha256(
+            canonical_pack_bytes(parse_pack(_updated_pack()))
+        ).hexdigest()
+    finally:
+        await service.stop()
