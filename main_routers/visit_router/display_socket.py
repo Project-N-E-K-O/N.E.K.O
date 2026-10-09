@@ -144,6 +144,9 @@ async def refuse_unbound(websocket: Any, message: Any) -> bool:
 
 async def handle_bind(websocket: Any, lanlan_name: str, message: Any) -> bool:
     """``visit_bind``: authorize this connection and replay what it missed (in the background)."""
+    if is_bound(websocket):
+        # 每条连接只 bind 一次：重复的 bind 不再扫描 / 重推（重连是新连接，照常重放）
+        return True
     if not bind_allowed(websocket, message):
         logger.warning("visit display: %s (bind refused)", _UNAUTHORIZED)
         await refuse(websocket)
@@ -224,6 +227,8 @@ async def _replay_chips(websocket: Any, lanlan_name: str) -> None:
             continue
         if state["finalized"] == "crash":
             await _send_status(websocket, "VISIT_INTERRUPTED_LAST_TIME", {"visit_id": visit_id})
+            if await own_visit_uid() != state["own_uid"]:
+                return  # 写提示的这段 await 里登出 / 换了账号：芯片不再发
         await _send(websocket, chat_blocks_frame(chip_blocks(visit_id, lang), request_id=request_id,
                                                  source_name=lanlan_name))
 

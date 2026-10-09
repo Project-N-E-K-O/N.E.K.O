@@ -663,3 +663,45 @@ async def test_recovery_sends_no_chips_when_the_interrupted_notice_failed(monkey
     monkeypatch.setattr(host_port.ManagerHost, "for_character", classmethod(lambda cls, name: fake))
     assert await debrief.render_chips("v" * 22, own_char="Host", status="interrupted") is False
     assert fake.blocks == []
+
+
+# ── 评审第 9 轮 ───────────────────────────────────────────────────────
+
+
+async def test_repeated_bind_on_the_same_connection_replays_once(monkeypatch):
+    manager = _ProtocolManager()
+    rt = FakeRuntime([INVITE])
+    install(monkeypatch, manager, visit_active=True, rt=rt)
+    socket = VisitSocket([bind(), bind(), bind()])
+    await run(socket, manager)
+    assert rt.replayed == [[INVITE]] and socket.statuses() == []
+
+
+async def test_crash_notice_then_account_change_sends_no_chip(monkeypatch, tmp_path):
+    from main_routers.visit_router import accounts
+
+    await _pending(tmp_path, 15, finalized="crash")
+    calls = {"n": 0}
+
+    async def switching():
+        calls["n"] += 1
+        return OWN_A if calls["n"] <= 2 else OWN_B      # 扫描与提示前是 A，写完提示后换成 B
+
+    monkeypatch.setattr(accounts, "own_visit_uid", switching)
+    socket = VisitSocket([])
+    setattr(socket, VISIT_SOCKET_BOUND_ATTR, True)
+    await display_socket.replay_chips(socket, NAME)
+    assert socket.statuses() == ["VISIT_INTERRUPTED_LAST_TIME"] and _chip_ids(socket) == []
+
+
+async def test_runtime_statuses_only_reach_a_bound_connection():
+    unbound = VisitSocket([])
+    bound = VisitSocket([])
+    setattr(bound, VISIT_SOCKET_BOUND_ATTR, True)
+    mgr = DownlinkManager(unbound)
+    host = host_port.ManagerHost(NAME, mgr)
+    assert await host.send_status("VISIT_VOICE_UNAVAILABLE", {"visit_id": "v"}) is False
+    assert unbound.sent == []
+    mgr.websocket = bound
+    assert await host.send_status("VISIT_VOICE_UNAVAILABLE", {"visit_id": "v"}) is True
+    assert bound.statuses() == ["VISIT_VOICE_UNAVAILABLE"]

@@ -23,11 +23,11 @@ the display socket). :class:`ManagerHost` is the production adapter.
 Display-socket frames (``visit_*`` / ``status``) go out through
 :meth:`VisitHost.send_frame` / :meth:`VisitHost.send_status`. The visit
 downlink of design §4.5 -- ``visit_*`` frames (invite code, transcript,
-debrief state) and the debrief chips -- is written only on a display socket
-that passed ``visit_bind`` (``display_socket.is_bound``), checked and written
-on the same connection object. Status codes carry no content and the
-after-visit summary bubble is ordinary assistant output (it is also spoken
-aloud): neither is filtered.
+debrief state) and the debrief chips -- and the visit status codes (they carry the visit
+id) are written only on a display socket that passed ``visit_bind``
+(``display_socket.is_bound``), checked and written on the same connection
+object. The after-visit summary bubble is ordinary assistant output (it is
+also spoken aloud) and is not filtered.
 """
 
 from __future__ import annotations
@@ -288,13 +288,10 @@ class ManagerHost:
             return False
 
     async def send_status(self, code: str, details: Optional[dict] = None) -> bool:
+        # 串门的状态码带 visit_id（有的还带 request_id / 失败细节）：与 visit_* 帧同一出口——锁定连接、
+        # 只发给已 visit_bind 的。未绑定连接的未授权回复由 display_socket 直接发回发起连接
         message = json.dumps({"code": code, "details": dict(details or {})}, ensure_ascii=False)
-        try:
-            # 与 send_frame 一样有界：页面卡住不能把收尾流程（封存、注销）一起卡住
-            return bool(await asyncio.wait_for(self._mgr.send_status(message), _FRAME_TIMEOUT_S))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("visit: status %s not written: %s", code, type(exc).__name__)
-            return False
+        return await self.send_frame({"type": "status", "message": message})
 
     def acquire_takeover(self, dispatcher: Callable[..., Awaitable[bool]], sink: Callable[[dict], bool]) -> Any:
         return self._mgr.acquire_takeover(TAKEOVER_OWNER, dispatcher, callback_sink=sink)
