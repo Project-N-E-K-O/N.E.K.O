@@ -108,8 +108,10 @@ async def render_chips(visit_id: str, *, own_char: str, status: Optional[str] = 
         return False
     if status == "interrupted":
         # 与芯片同一出口：校验 bind 与写入用同一个连接对象（send_status 会重读 mgr.websocket）
-        await host.send_frame({"type": "status", "message": json.dumps(
-            {"code": "VISIT_INTERRUPTED_LAST_TIME", "details": {"visit_id": visit_id}}, ensure_ascii=False)})
+        if not await host.send_frame({"type": "status", "message": json.dumps(
+                {"code": "VISIT_INTERRUPTED_LAST_TIME", "details": {"visit_id": visit_id}}, ensure_ascii=False)}):
+            # 提示没送出（连接刚被换掉等）：芯片也不单独发，下次 visit_bind 连同提示一起重放
+            return False
     return await show_chips(host, visit_id, own_char=own_char, lang=prompt_lang())
 
 

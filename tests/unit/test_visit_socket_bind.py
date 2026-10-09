@@ -648,3 +648,18 @@ async def test_recovery_interrupted_status_is_pinned_to_the_bound_connection(mon
                         classmethod(lambda cls, name: host_port.ManagerHost(name, mgr)))
     await debrief.render_chips("v" * 22, own_char=NAME, status="interrupted")
     assert all(f.get("type") != "status" for f in unbound.sent)
+
+
+async def test_recovery_sends_no_chips_when_the_interrupted_notice_failed(monkeypatch):
+    from main_routers.visit_router import debrief
+    from tests.unit.visit_runtime_harness import FakeHost
+
+    fake = FakeHost("Host")
+
+    async def refuse(payload):
+        return False if payload.get("type") == "status" else True
+
+    fake.send_frame = refuse
+    monkeypatch.setattr(host_port.ManagerHost, "for_character", classmethod(lambda cls, name: fake))
+    assert await debrief.render_chips("v" * 22, own_char="Host", status="interrupted") is False
+    assert fake.blocks == []
