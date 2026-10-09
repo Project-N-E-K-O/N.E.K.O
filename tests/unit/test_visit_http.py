@@ -1160,3 +1160,35 @@ async def test_another_account_cannot_answer_a_waiting_guest(env):
     finally:
         del rtm._runtimes["Host"]
     assert resp.status_code == 404 and calls == []
+
+
+async def test_a_spool_that_silently_missed_a_line_gives_way_to_the_pending_upload(env):
+    spool = VisitSpool(env.host.config_dir, VISIT_ID)
+    await spool.open({
+        "v": 1, "visit_id": VISIT_ID, "role": "host", "own_uid": OWN, "own_char": "Host",
+        "own_char_uid": HOST_CHAR_UID, "pair_id": derive_pair_id(OWN, HOST_UID), "peer_uid": HOST_UID,
+        "peer_char_id": derive_peer_char_id(HOST_UID, "f" * 32), "peer_char_tag": "f" * 32,
+        "started_at": NOW, "lang": "zh-CN",
+    }, now=0.0)
+    for line in LINES[:2]:          # 第三行写 spool 失败（只记了日志），上传流水里有
+        await spool.append(line)
+    await spool.close()
+    _write_sealed(env.host.config_dir)
+    body = (await _transcript(env)).json()
+    assert body["source"] == "upload" and len(body["lines"]) == 3
+
+
+async def test_a_recovery_sealed_upload_keeps_its_drop_count(env):
+    from main_logic.visit import recovery
+
+    path = _write_stream(env.host.config_dir)
+    with open(path, "ab") as handle:
+        handle.write(b'{"kind": "line", "lp": 9')       # 崩溃留下的半行
+    # 启动补录把流水封成 .upload.json、删掉流水
+    doc = recovery._seal_stream_sync(env.host.config_dir / "visit_spool", VISIT_ID, None)
+    assert doc["dropped_records"] == 1 and not path.exists()
+    env.servers.details_lines = _details_rows(5)
+    assert (await _transcript(env)).json()["source"] == "cloud"     # 不完整：先找云端
+    env.servers.details_mode = "503"
+    body = (await _transcript(env)).json()
+    assert body["source"] == "upload" and body["dropped_lines"] == 1

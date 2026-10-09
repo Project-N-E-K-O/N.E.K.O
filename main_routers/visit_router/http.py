@@ -514,16 +514,22 @@ async def visit_transcript(request: Request, visit_id: str = ""):
         if rt is not None and _runtime_owner(rt) == owner:
             return JSONResponse(await _memory_transcript(config_dir, rt))
         spooled = await _spool_transcript(config_dir, visit_id, owner)
-        if spooled is not None:
-            doc, dropped = spooled
-            if not dropped:
-                return JSONResponse(doc)
-            # 崩溃留下的半行 / 坏行被丢掉了：先找完整的来源，都没有再退回这份
-            partial = {**doc, "dropped_lines": dropped}
         pending = await _pending_upload(config_dir, visit_id)
         # 较早的上传文件不记属主：与补传同一规则，从 state.json / 流水头行认回来
         if pending is not None and (pending[0].get("own_visit_uid")
-                                    or await pending_upload_owner(config_dir, visit_id)) == owner:
+                                    or await pending_upload_owner(config_dir, visit_id)) != owner:
+            pending = None
+        if spooled is not None:
+            doc, dropped = spooled
+            # spool 某一行写失败时只记日志、结构照样完整：待传文件（同一场的上传流水）比它多行就让给它
+            upload_complete = (pending is not None and not pending[1]
+                               and len(pending[0]["request"]["lines"]) > len(doc["lines"]))
+            if not dropped and not upload_complete:
+                return JSONResponse(doc)
+            # 崩溃留下的半行 / 坏行被丢掉了：先找完整的来源，都没有再退回这份
+            if dropped:
+                partial = {**doc, "dropped_lines": dropped}
+        if pending is not None:
             upload_doc, dropped = pending
             request_body = upload_doc["request"]
             body = {"source": "upload", "visit_id": visit_id, "role": request_body["role"],
