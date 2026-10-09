@@ -778,7 +778,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             task = self._creds_task
             # 只等不连带取消（页面重连会再来要）；关机取消了它就按没领到
             await asyncio.wait([task])
-            if task.cancelled() or not task.result() or self.finalizing or gen != self._page_gen:
+            if task.cancelled():
+                return None
+            if task.exception() is not None:
+                # 契约外的本地失败（例如打断主对话的适配层抛错）：这场开不起来，与打断不了同样按忙收尾、
+                # 释放路由；不把异常抛进传输回调，也不留一个失败的任务让重连反复等它
+                logger.warning("visit %s: credential setup failed: %r", self.visit_id[:6], task.exception())
+                self.request_finalize("busy")
+                return None
+            if not task.result() or self.finalizing or gen != self._page_gen:
                 return None
             self._sdk_deadline = self.clock() + VISIT_CAPS_SDK_TIMEOUT_S
         else:

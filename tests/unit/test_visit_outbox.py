@@ -761,6 +761,16 @@ def test_leave_follows_queued_reliables_and_its_grace_starts_when_sent(tmp_path)
     assert tx.leave_done(leave_at + 5.0)
 
 
+async def test_an_ack_cannot_cover_an_item_that_was_never_written(tmp_path):
+    tx = make_outbox(tmp_path)
+    tx.send(text(1), now=0.0)
+    first = [f for f in tx.due(0.0) if f.t == "text"][0]
+    tx.write_failed(first, now=0.0)                   # 一次都没写出去
+    assert tx.on_ack(first.seq, now=0.1) == []        # 越界的累计 ack 不能把它确认掉
+    assert tx.ack_beyond_sent == 1 and first.seq in tx.unacked_seqs
+    await tx.close()
+
+
 async def test_the_leave_grace_starts_when_the_leave_is_written_not_when_released(tmp_path):
     tx = make_outbox(tmp_path, leave_grace_s=5.0)
     tx.send({"t": "leave", "reason": "home"}, now=0.0)

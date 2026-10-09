@@ -3368,6 +3368,24 @@ async def test_ending_while_the_main_turn_is_interrupted_fetches_no_credentials(
     assert side.host.takeovers == []
 
 
+async def test_credential_setup_that_raises_ends_the_visit(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "guest", clock=clock, wall=wall)
+
+    async def broken_interrupt(timeout):
+        raise RuntimeError("adapter")                       # 打断主对话的适配层契约外失败
+
+    side.host.interrupt_main_turn = broken_interrupt
+    rt = await start_side(side, invite_code=INVITE, clock=clock, wall=wall)
+    Wire().attach(rt, None, GUEST_VID)
+    await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+    assert await rt.issue_credentials() is None             # 不把异常抛进传输回调
+    assert rt.finalize_reason == "busy"                     # 收尾、释放路由，不挂在 pending
+    await _finished(rt)
+    assert side.creds_calls == []
+
+
 async def test_a_first_join_whose_socket_was_replaced_meanwhile_does_not_count(tmp_path, monkeypatch, clocks):
     patch_admission(monkeypatch)
     clock, wall = clocks

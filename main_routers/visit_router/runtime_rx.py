@@ -626,6 +626,13 @@ class ReceiveMixin:
             return
         ln, lp = m.get("ln"), m.get("lp")
         if self._lp_rejected(self.room.observe_lp(lp, ln=ln, reliable=True, closes_line=True)):
+            # 收口这条已被 seq 消费、回过 ack，不会再来：这一行在这里收口（与 _record_late_text 同一处理）——
+            # 之后的分片不再上屏，已开出的半截气泡撤掉，room 也不再把它当成未收口的行
+            self._deltas.close(m)
+            if self._peer_lines.pop(ln, None) is not None:
+                self._post_display({"type": "visit_line_abort", "visit_id": self.visit_id, "line_id": ln,
+                                    "i_done": 0, "reason": "rejected", "ts": self.wall()})
+            self.apply_effects(self.room.on_incoming_abort(str(ln), now, "rejected"))
             return
         if self._lp_reused(ln, lp):
             self._deltas.close(m)

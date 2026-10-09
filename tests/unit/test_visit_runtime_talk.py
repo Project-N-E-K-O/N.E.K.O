@@ -308,6 +308,35 @@ async def test_peer_cannot_use_our_line_prefix(tmp_path, monkeypatch):
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_final_text_rejected_for_its_lp_closes_the_shown_line(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    seq = rt.sequencer.contiguous_seq + 1
+    lp = rt.room.max_lp_seen + 5
+    try:
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "line_delta", "v": 1, "ln": "g:700", "i": 0, "lp": lp, "txt": "半截", "sp": "c", "ad": "hc",
+            "rt": "", "wu": False}, nbytes=200)
+        await settle()
+        assert [f for f in host.host.frames if f.get("type") == "visit_line_delta" and f.get("line_id") == "g:700"]
+        before = len(host.host.frames)
+        # 收口这条换了 lp（lp_changed）：被拒，但 seq 照常消费、回 ack，之后不会再来
+        await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
+            "t": "text", "v": 1, "ln": "g:700", "lp": lp + 1, "seq": seq, "sp": "c", "ad": "hc", "rt": "",
+            "wu": False, "final": True, "txt": "半截话", "truncated": False, "i_done": 1}, nbytes=200)
+        await settle()
+        assert rt.sequencer.contiguous_seq == seq
+        aborts = [f for f in host.host.frames[before:] if f.get("type") == "visit_line_abort"
+                  and f.get("line_id") == "g:700"]
+        assert aborts                                       # 已上屏的半截气泡撤掉，不留一句永远不完整的话
+        assert "g:700" not in rt.room._peer_open            # room 不再当它未收口
+        assert rt._deltas.closed("g:700")                   # 之后的分片不再上屏
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_peer_text_flood_is_acked_dropped_and_ends_the_visit(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
