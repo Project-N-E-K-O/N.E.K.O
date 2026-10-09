@@ -99,6 +99,7 @@ class MirrorSpeechStream:
 
     NO_WORKER = "no_worker"
     _PREDECESSOR_WAIT_S = 30.0
+    _DEFERRED_POLL_S = 0.25
 
     def __init__(
         self,
@@ -228,6 +229,8 @@ class MirrorSpeechStream:
     async def _run(self) -> None:
         try:
             await self._drain()
+            if self._end_deferred:
+                await self._watch_deferred_end()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -241,6 +244,24 @@ class MirrorSpeechStream:
                 # 中止由 abort() 那边在打断清理做完之后交出轮次；结束标记推迟到 worker 就绪的，
                 # 等它真正入队（_request_tts_done_locked 回调）再交出——这里都不能抢先交出
                 self._release()
+
+    async def _watch_deferred_end(self) -> None:
+        """The end marker waits for the worker: fail and hand over if that pending work is discarded.
+
+        An interruption or a session restart clears ``tts_pending_chunks`` and
+        the deferred flag without queuing the marker; this speech then never
+        ends, so the stream reports failure instead of holding the turn.
+        """
+        mgr = self._mgr
+        while not self._released.done():
+            await asyncio.wait([self._released], timeout=self._DEFERRED_POLL_S)
+            if self._released.done():
+                return
+            if not (getattr(mgr, "_tts_done_pending_until_ready", False) and self._owns_turn()):
+                # 推迟的结束标记被别处清掉了（打断 / 会话重建）：它不会再入队
+                self._fail()
+                self._release()
+                return
 
     def _end_queued(self) -> None:
         """``_request_tts_done_locked`` queued this speech's end marker: hand the turn over."""

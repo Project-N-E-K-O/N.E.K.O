@@ -495,3 +495,25 @@ async def test_timed_out_predecessor_is_failed_and_interrupted_before_the_claim(
     assert failed == [True] and stuck.closed
     assert mgr.current_speech_id == nxt.speech_id
     assert _queued(mgr)[-2:] == [(nxt.speech_id, "下一句。"), (None, None)]
+
+
+async def test_deferred_end_discarded_elsewhere_fails_and_hands_over(monkeypatch):
+    # 推迟到 worker 就绪的结束标记被别处清掉（普通对话打断 / 会话重建）：本流报失败并交出轮次，
+    # 下一条不必等满上限
+    monkeypatch.setattr(MirrorSpeechStream, "_DEFERRED_POLL_S", 0.01)
+    mgr = _mgr(ready=False)
+    failed: list[bool] = []
+    first = _open(mgr, failed=failed)
+    first.push("第一句。")
+    first.finish()
+    second = _open(mgr)
+    second.push("第二句。")
+    await _settle()
+    assert mgr._tts_done_pending_until_ready is True and failed == []
+    mgr.tts_pending_chunks.clear()                 # _finish_tts_clear 同款清理
+    mgr._tts_done_pending_until_ready = False
+    await asyncio.sleep(0.05)
+    await _settle()
+    assert failed == [True]
+    assert mgr.current_speech_id == second.speech_id
+    assert first.speech_id not in mgr._mirror_stream_ends
