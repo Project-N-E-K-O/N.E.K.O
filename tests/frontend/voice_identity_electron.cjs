@@ -60,13 +60,41 @@ async function verifyInputLayout(noticeVisible) {
         const layout = await win.webContents.executeJavaScript(`(async () => {
             await window.changeLanguage(${JSON.stringify(language)});
             document.documentElement.setAttribute('data-theme', ${JSON.stringify(theme)});
-            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            // Native Windows resizing and Chromium's media-query style update
+            // can arrive on different frames. Wait for the requested viewport
+            // and breakpoint styles, rather than assuming two frames suffice.
+            await new Promise((resolve, reject) => {
+                let frame;
+                const timer = setTimeout(() => {
+                    cancelAnimationFrame(frame);
+                    reject(new Error('Viewport styles did not settle: ' + JSON.stringify({
+                        width: innerWidth,
+                        display: getComputedStyle(document.querySelector('.readiness-card')).display,
+                        margin: getComputedStyle(document.querySelector('.input-level-panel')).marginTop
+                    })));
+                }, 12000);
+                const check = () => {
+                    const card = getComputedStyle(document.querySelector('.readiness-card'));
+                    const level = getComputedStyle(document.querySelector('.input-level-panel'));
+                    const twoColumns = ${width} > 560 && ${width} <= 860;
+                    const expectedMargin = ${width} <= 560 ? '20px' : twoColumns ? '0px' : '16px';
+                    if (innerWidth === ${width} && card.display === (twoColumns ? 'grid' : 'block')
+                        && level.marginTop === expectedMargin) {
+                        clearTimeout(timer);
+                        resolve();
+                    } else frame = requestAnimationFrame(check);
+                };
+                check();
+            });
             const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON();
             return { device: rect('.input-device-field'), level: rect('.input-level-panel'),
                 notice: rect('#voice-identity-input-notice'), help: rect('.input-test-help'),
-                width: document.documentElement.scrollWidth, viewport: innerWidth };
+                width: document.documentElement.scrollWidth, viewport: innerWidth,
+                gridRows: getComputedStyle(document.querySelector('.readiness-card')).gridTemplateRows,
+                levelRow: getComputedStyle(document.querySelector('.input-level-panel')).gridRow,
+                levelMargin: getComputedStyle(document.querySelector('.input-level-panel')).marginTop };
         })()`);
-        const label = `${width}px ${theme} ${language}, notice=${noticeVisible}`;
+        const label = `${width}px ${theme} ${language}, notice=${noticeVisible}: ${JSON.stringify(layout)}`;
         assert.equal(layout.viewport, width, label);
         assert.equal(layout.width, layout.viewport, `${label}: no horizontal overflow`);
         assert.equal(layout.notice.height > 0, noticeVisible, `${label}: notice visibility`);
