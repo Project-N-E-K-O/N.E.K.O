@@ -199,3 +199,16 @@ def test_only_the_generated_time_stamp_is_set_aside():
     assert normalize_assistant_text("[Action complete] asynccall:pvz_start{goal:a}") == "[Action complete]"
     assert normalize_assistant_text("[20261008 Thu 12:00] asynccall:pvz_start{goal:a}") == ""
     assert normalize_assistant_text("[20261008 周四 12:00] asynccall:pvz_start{goal:a}") == ""
+
+
+def test_a_multipart_reply_left_with_no_text_is_not_rendered():
+    """Renderers show text parts only: a reply whose text was all call markup
+    is dropped even if an image part remains."""
+    from app.memory_server.routes import _screen_guarded_recent_history
+    from utils.llm_client import AIMessage, HumanMessage
+
+    stored = [HumanMessage(content="hi"), AIMessage(content=[
+        {"type": "text", "text": _ASYNC_ONLY},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ])]
+    assert [m.content for m in _screen_guarded_recent_history(stored)] == ["hi"]

@@ -44,6 +44,7 @@ from ._shared import (
     Optional,
     SystemMessage,
     _REPLY_GENERATION_ATTR,
+    _find_by_identity,
     _is_api_key_rejected_error,
     _llm_retry_error_types,
     _strip_nonverbal_directives,
@@ -1182,6 +1183,14 @@ class _LifecycleMixin:
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             committed_text = _strip_nonverbal_directives(assistant_message_total).strip()
             content_committed = bool(committed_text)
+            # A call that ran had its side effect and its round stays in the
+            # turn's history: the turn was delivered even with nothing said,
+            # or a caller retrying it (a requeued agent callback) runs the
+            # tool again.
+            tool_round_kept = any(
+                _find_by_identity(_turn_messages, -1, round_) >= 0
+                for round_ in _turn_tool_rounds
+            )
             # 一条可见的 ephemeral 回复（greeting / agent 回调 / 戳头像的 quip）是
             # 用户接下来要回应的「新一条 AI 轮」，它让之前为「下一条用户回复」暂存的
             # 屏幕截图过时——清掉它。persist_response=False 的回复（如头像 quip）不进
@@ -1208,19 +1217,18 @@ class _LifecycleMixin:
                     getattr(self, "model", None),
                     completion_mode,
                 )
-            else:
-                if on_committed_text:
-                    try:
-                        on_committed_text(committed_text)
-                    except Exception:
-                        logger.exception(
-                            "prompt_ephemeral on_committed_text callback failed"
-                        )
-                if on_committed:
-                    try:
-                        on_committed()
-                    except Exception:
-                        logger.exception("prompt_ephemeral on_committed callback failed")
+            elif on_committed_text:
+                try:
+                    on_committed_text(committed_text)
+                except Exception:
+                    logger.exception(
+                        "prompt_ephemeral on_committed_text callback failed"
+                    )
+            if (content_committed or tool_round_kept) and on_committed:
+                try:
+                    on_committed()
+                except Exception:
+                    logger.exception("prompt_ephemeral on_committed callback failed")
             cut = response_cancelled or task_cancelled
             if persist_response and (content_committed or cut):
                 # Greetings, agent/topic callbacks and voice nudges answer an
@@ -1298,7 +1306,7 @@ class _LifecycleMixin:
             # its completion was skipped. Only a cancellation mid-reply makes a
             # response-mode turn report False. Callers that hand state to the
             # completion (the avatar path's turn meta) check it themselves.
-            reported_committed = content_committed and not (
+            reported_committed = (content_committed or tool_round_kept) and not (
                 completion_mode == "response" and response_cancelled
             )
             if completion_mode == "response":

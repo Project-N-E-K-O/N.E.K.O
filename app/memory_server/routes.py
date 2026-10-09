@@ -1674,9 +1674,11 @@ def _without_tool_call_leaks(history) -> list:
             if parts == content:
                 cleaned.append(message)
                 continue
+            # The renderers show text parts only: a reply left with nothing
+            # but other parts would render as an empty line.
             if not any(
-                not (isinstance(part, dict) and part.get("type") == "text")
-                or str(part.get("text") or "").strip()
+                isinstance(part, dict) and part.get("type") == "text"
+                and str(part.get("text") or "").strip()
                 for part in parts
             ):
                 continue

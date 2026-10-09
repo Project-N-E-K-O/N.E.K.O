@@ -126,9 +126,19 @@ class _ToolingMixin:
 
     def _proactive_round_generation(self, message):
         """The generation of the ``prompt_ephemeral`` reply that saved the
-        tool round ``message``; None when no recent one did."""
+        tool round ``message``; None when no recent one did.
+
+        The request view rewrites some rounds into copies (screen labels cut
+        from their text) that keep the saved round's ``tool_calls`` list, so
+        that list identifies a round as well as the round itself.
+        """
+        calls = message.get("tool_calls") if isinstance(message, dict) else None
         for generation, rounds in getattr(self, "_proactive_turn_rounds", ()):
-            if any(round_ is message for round_ in rounds):
+            if any(
+                round_ is message
+                or (calls is not None and round_.get("tool_calls") is calls)
+                for round_ in rounds
+            ):
                 return generation
         return None
 

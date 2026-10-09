@@ -484,3 +484,47 @@ async def test_the_first_round_of_each_callback_gets_its_own_stand_in():
         if message == {"role": "user", "content": stand_in}
     ]
     assert seated == ["a1", "b1"]
+
+
+@pytest.mark.parametrize("persist_response", [True, False])
+async def test_a_callback_that_only_called_a_tool_counts_as_delivered(persist_response):
+    """The call already had its side effect: reporting the turn undelivered
+    would requeue the callback and run the tool again."""
+    executed = []
+    committed = []
+    client = _seeded(_client(handler=_recording_handler(executed)))
+    client.script = [[_tool_calls("c1")], [_text("", "stop")]]
+    delivered = await client.prompt_ephemeral(
+        _INSTRUCTION, persist_response=persist_response,
+        on_committed=lambda: committed.append(True),
+    )
+    assert delivered is True
+    assert committed == [True]
+    assert executed == ["c1"]
+    assert _emitted(client) == []
+
+
+async def test_a_callback_whose_call_never_ran_is_not_delivered():
+    client = _seeded(_client(handler=_recording_handler([])))
+    client.on_tool_round_start = client.handle_interruption
+    client.script = [[_tool_calls("c1")]]
+    assert await client.prompt_ephemeral(_INSTRUCTION) is False
+
+
+async def test_round_ownership_survives_a_request_view_copy():
+    """The screen projection rewrites some rounds into copies; the copy keeps
+    the saved round's tool_calls list, which still tells its turn."""
+    client = _seeded(_client(handler=_recording_handler([])))
+    client.script = [[_tool_calls("a1")], [_text("", "stop")], [_tool_calls("b1")], [_text("", "stop")]]
+    await client.prompt_ephemeral(_INSTRUCTION)
+    await client.prompt_ephemeral(_INSTRUCTION)
+    view = [
+        {**m, "content": "改写过的文本"} if isinstance(m, dict) and m.get("tool_calls")
+        and m["tool_calls"][0]["id"] == "b1" else m
+        for m in client._conversation_history
+    ]
+    seated = client._seat_tool_rounds(view)
+    stand_in = {"role": "user", "content": TOOL_ROUND_PROMPT_PLACEHOLDER["zh"]}
+    at = next(i for i, m in enumerate(seated) if isinstance(m, dict) and m.get("tool_calls")
+              and m["tool_calls"][0]["id"] == "b1")
+    assert seated[at - 1] == stand_in
