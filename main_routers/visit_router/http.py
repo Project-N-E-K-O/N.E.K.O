@@ -175,7 +175,9 @@ async def _fetch_preview(invite_code: str, account: Optional[str]) -> cr.InviteP
         generic_label=speaker_label("peer_cat", lang),
         protected_names=protected_display_names(lang, ctx.family_names, ctx.char_names),
     )
-    _remember_preview(account, invite_code, preview)
+    # 请求期间换了账号：这份预览可能是按新账号的会话授权的，不能记在旧账号名下
+    if await accounts.local_account() == account:
+        _remember_preview(account, invite_code, preview)
     return preview
 
 
@@ -230,11 +232,20 @@ async def _resolve_uid(name: str) -> Optional[str]:
         return None
 
 
-async def _admit(name: str, side: str, **kwargs: Any) -> runtime.VisitRuntime | JSONResponse:
-    """Forget check and :func:`runtime.start_visit` under the character's admission lock."""
+async def _admit(
+    name: str, side: str, *, expect_account: Optional[str] = None, **kwargs: Any,
+) -> runtime.VisitRuntime | JSONResponse:
+    """Forget check and :func:`runtime.start_visit` under the character's admission lock.
+
+    ``expect_account`` (join): the account the invite preview was checked for;
+    admission under any other account is refused.
+    """
     uid = await _resolve_uid(name)
     async with (char_admission_lock(uid) if uid else contextlib.nullcontext()):
         account = await accounts.local_account()
+        if expect_account is not None and account != expect_account:
+            # 预览（黑名单、邀请有效期）是按另一个账号查的：换了账号就不作数
+            return _refused(409, {"reason": "busy"})
         if uid:
             own_uid = await accounts.lookup_visit_uid(account)
             if await memory_bridge.char_forget_in_progress(_config_dir(), uid, own_uid=own_uid):
@@ -306,9 +317,14 @@ async def join_room(request: Request, visit_id: str):
             return _servers_error(exc)
     if preview.visit_id != visit_id:
         return _servers_error(cr.VisitInviteInvalid("invite_invalid"))
+    if time.time() >= preview.expires_at:
+        # 刚取回的预览也可能在路上过了期：占位之前就按过期拒，不先 202 再等领凭证失败
+        return _servers_error(cr.VisitInviteInvalid("invite_expired"))
     if await _locally_blocked(preview):
         return _servers_error(cr.VisitInviteInvalid("peer_blocked"))
-    admitted = await _admit(name, "guest", invite_code=invite_code, visit_id=visit_id)
+    if not account:
+        return _servers_error(cr.VisitLoginRequired())
+    admitted = await _admit(name, "guest", expect_account=account, invite_code=invite_code, visit_id=visit_id)
     if isinstance(admitted, JSONResponse):
         return admitted
     return JSONResponse({"ok": True, "visit_id": admitted.visit_id, "phase": "pending"}, status_code=202)

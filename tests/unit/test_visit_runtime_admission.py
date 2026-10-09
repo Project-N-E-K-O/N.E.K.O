@@ -4095,3 +4095,22 @@ async def test_credentials_of_another_account_end_the_visit_and_cancel_the_room(
         assert side.cancelled and side.cancelled[0][0] == rt.visit_id
     finally:
         await teardown(side, clock=clock)
+
+
+async def test_guest_does_not_redeem_the_invite_after_an_account_switch(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)      # 准入时本机账号是 acct
+    clock, wall = clocks
+    side = make_side(tmp_path, "guest", clock=clock, wall=wall)
+    rt = await start_side(side, invite_code=INVITE, clock=clock, wall=wall)
+
+    async def switched():
+        return "someone-else"
+
+    monkeypatch.setattr(rtm, "_local_account", switched)
+    try:
+        await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+        assert await rt.issue_credentials() is None
+        # 一次性邀请码没被兑掉：领凭证请求一次都没发
+        assert side.creds_calls == [] and rt.finalize_reason == "busy"
+    finally:
+        await teardown(side, clock=clock)

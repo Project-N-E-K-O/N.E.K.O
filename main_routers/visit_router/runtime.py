@@ -860,6 +860,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.finalizing:
             # 等主对话轮期间这场已被结束：不再去领凭证（guest 会兑掉一次性邀请码、扣配额，且撤不回）
             return False
+        if self.admitted_account is not None and await _local_account() != self.admitted_account:
+            # 准入之后换了社区账号：领凭证是撤不回的（guest 兑掉一次性邀请码），发请求之前就结束。
+            # 请求途中才换的由登出 / 切换账号前的收尾（account_change）先结束本场兜住
+            self.request_finalize("busy")
+            return False
         try:
             creds = await self.deps.fetch_credentials(
                 role=self.side, visit_id=self.visit_id, char_tag=self.character_uid,

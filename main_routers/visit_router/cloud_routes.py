@@ -223,6 +223,7 @@ async def fetch_cloud_transcript(visit_id: str) -> dict:
     lines: list[dict] = []
     rejected = 0
     cursor = ""
+    seen_cursors = {cursor}
     for _page in range(VISIT_DETAILS_MAX_PAGES):
         body = await fetch_details_page(visit_id, cursor=cursor, limit=DETAILS_PAGE_LIMIT)
         page_role = body.get("requester_role")
@@ -245,11 +246,12 @@ async def fetch_cloud_transcript(visit_id: str) -> dict:
                 memory_bridge.diag("cloud_transcript_rows_rejected", count=rejected)
             lines.sort(key=lambda line: (line["lp"], SIDE_RANK.get(line["side"], 2)))
             return {"source": "cloud", "visit_id": visit_id, "role": role, "lines": lines}
-        if not isinstance(next_cursor, str) or not _CURSOR_RE.fullmatch(next_cursor) or next_cursor == cursor:
-            # 原地不动的游标会把同一页重复拼进来：按坏响应处理
+        if not isinstance(next_cursor, str) or not _CURSOR_RE.fullmatch(next_cursor) or next_cursor in seen_cursors:
+            # 回到请求过的游标（原地不动或绕圈）会把同一页重复拼进来：按坏响应处理，不白等满页数
             logger.warning("visit servers details: malformed next_cursor")
             raise CloudError(_error(503, "servers_unreachable"))
         cursor = next_cursor
+        seen_cursors.add(cursor)
     memory_bridge.diag("cloud_transcript_incomplete", pages=VISIT_DETAILS_MAX_PAGES)
     raise CloudTranscriptIncomplete(visit_id)
 

@@ -1222,3 +1222,46 @@ async def test_a_preview_is_reused_only_by_the_account_that_fetched_it(env):
     resp = await _join(env)
     assert env.preview_calls == [INVITE, INVITE]
     assert resp.status_code == 403 and resp.json()["code"] == "VISIT_BANNED" and _no_slot("Guest")
+
+
+async def test_a_preview_fetched_across_an_account_switch_is_not_cached(env, monkeypatch):
+    async def switched():
+        return "someone-else"         # 请求途中本机已换成别的账号
+
+    monkeypatch.setattr(accounts, "local_account", switched)
+    await http._fetch_preview(INVITE, "acct")
+    assert http._previews == {}
+
+
+async def test_join_refuses_when_the_account_changes_after_the_preview(env, monkeypatch):
+    seen = iter(["acct", "someone-else"])   # 查预览时一个账号、准入时另一个
+
+    async def switching():
+        return next(seen, "someone-else")
+
+    monkeypatch.setattr(accounts, "local_account", switching)
+    resp = await _join(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "busy"
+    assert _no_slot("Guest") and env.guest.creds_calls == []
+
+
+async def test_join_refuses_a_freshly_fetched_preview_that_already_expired(env):
+    env.preview_expires = time.time() - 1
+    resp = await _join(env)
+    assert resp.status_code == 409 and resp.json()["details"] == {"reason": "invite_expired"}
+    assert _no_slot("Guest") and env.guest.creds_calls == []
+
+
+async def test_cloud_cursor_cycles_are_rejected_at_once(env, monkeypatch):
+    calls = []
+
+    def cycling(request):
+        cursor = parse_qs(request.url.query.decode()).get("cursor", [""])[0]
+        calls.append(cursor)
+        nxt = {"": "p1", "p1": "p2", "p2": "p1"}[cursor]
+        return httpx.Response(200, json={"visit_id": VISIT_ID, "lines": [], "requester_role": "host",
+                                         "next_cursor": nxt})
+
+    monkeypatch.setattr(env.servers, "_details", cycling)
+    resp = await _transcript(env)
+    assert resp.status_code == 404 and calls == ["", "p1", "p2"]
