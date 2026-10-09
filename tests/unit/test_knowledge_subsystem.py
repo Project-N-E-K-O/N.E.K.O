@@ -21,7 +21,6 @@ import knowledge.service as service_module
 from knowledge.models import KnowledgePackError, canonical_pack_bytes, decode_pack_bytes, parse_pack
 from knowledge.registry import REGISTRY_FILE, load_registry
 from knowledge.render import RenderCard, render_reference_block
-from knowledge.service import KnowledgeService
 from knowledge.text import (
     fts_match_expression,
     neutralize_fence,
@@ -98,13 +97,13 @@ def fast_indexer(monkeypatch):
     monkeypatch.setattr(service_module, "INDEX_ROUND_PAUSE_SECONDS", 0.01)
 
 
-async def _started(root: Path, embedder=None) -> KnowledgeService:
-    service = KnowledgeService(root, embedder=embedder)
+async def _started(root: Path, embedder=None) -> service_module.KnowledgeService:
+    service = service_module.KnowledgeService(root, embedder=embedder)
     await service.start()
     return service
 
 
-async def _import(service: KnowledgeService, payload: dict) -> dict:
+async def _import(service: service_module.KnowledgeService, payload: dict) -> dict:
     result = await service.import_pack(_raw(payload))
     assert result["ok"] is True, result
     if result.get("unchanged"):
@@ -538,5 +537,159 @@ async def test_capacity_is_rechecked_when_racing_imports_commit(tmp_path, monkey
         assert states["pack-two"]["reason"] == "capacity_entries"
         assert set(load_registry(tmp_path).packs) == {"pack-one"}
         assert len(list((tmp_path / "packs").iterdir())) == 1
+    finally:
+        await service.stop()
+
+
+# ── review fixes (PR #3378) ─────────────────────────────────────────
+
+
+def _entries(prefix: str, count: int, word: str = "kotatsu") -> list[dict]:
+    return [
+        {"title": f"{prefix} {i}", "summary": word, "content": f"{word} {word} note {i}"}
+        for i in range(count)
+    ]
+
+
+async def test_lookup_filters_material_type_before_the_candidate_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "LEXICAL_CANDIDATES", 2)
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack("corpus-pack", material_type="corpus", entries=_entries("c", 5)))
+        await _import(
+            service,
+            _pack("fact-pack", entries=[{"title": "Fact", "content": "a kotatsu fact"}]),
+        )
+        result = await service.query(query="kotatsu", material_type="knowledge")
+        assert result["result"] == "matched"
+        assert [hit["pack_id"] for hit in result["hits"]] == ["fact-pack"]
+    finally:
+        await service.stop()
+
+
+async def test_catalog_search_filters_pack_before_pagination(tmp_path):
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack("aaa-pack", entries=_entries("a", 6)))
+        await _import(service, _pack("bbb-pack", entries=[{"title": "B one", "content": "kotatsu"}]))
+        page = await service.list_entries(query="kotatsu", pack_id="bbb-pack", limit=1)
+        assert [item["title"] for item in page["items"]] == ["B one"]
+    finally:
+        await service.stop()
+
+
+async def test_semantic_search_skips_packs_with_local_vectors_off(tmp_path, monkeypatch):
+    embedder = FakeEmbedder()
+    service = await _started(tmp_path, embedder)
+    seen: list[list[str]] = []
+
+    def record(snapshot, vector, *, allowed_pack_ids, **_kwargs):
+        seen.append(list(allowed_pack_ids))
+        return []
+
+    try:
+        await _import(service, _pack())
+        service._vectors = service_module.VectorSnapshot(
+            model_id="fake-16",
+            entry_ids=np.zeros(0, dtype=np.int64),
+            pack_ids=(),
+            chunk_pack_index=np.zeros(0, dtype=np.int32),
+            matrix=np.zeros((0, 16), dtype=np.float32),
+        )
+        monkeypatch.setattr(service_module, "semantic_candidates", record)
+        await service.query(query="绝绝子")
+        await service.set_pack_local_embedding("demo-memes", False)
+        await service.query(query="绝绝子")
+        assert seen == [["demo-memes"], []]
+    finally:
+        await service.stop()
+
+
+async def test_byte_capacity_is_rechecked_when_racing_imports_commit(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        one = _raw(_pack("pack-one"))
+        monkeypatch.setattr(service_module, "MAX_TOTAL_PACK_BYTES", int(len(one) * 1.5))
+        async with service._write_lock:
+            await service.import_pack(one)
+            await service.import_pack(_raw(_pack("pack-two")))
+        for _ in range(200):
+            jobs = {job["pack_id"]: job for job in service.list_jobs()}
+            if all(job["state"] not in ("queued", "building") for job in jobs.values()):
+                break
+            await asyncio.sleep(0.01)
+        assert jobs["pack-two"]["reason"] == "capacity_bytes"
+        assert set(load_registry(tmp_path).packs) == {"pack-one"}
+    finally:
+        await service.stop()
+
+
+async def test_failed_registry_write_restores_the_previous_index(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        updated = _pack()
+        updated["entries"][0]["summary"] = "UPDATED SUMMARY"
+
+        def fail(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(service_module, "save_registry", fail)
+        job = await _import(service, updated)
+        assert job["state"] == "failed"
+        hit = await service.query(query="绝绝子")
+        assert "UPDATED SUMMARY" not in hit["context"]
+        assert "表示极好的网络用语" in hit["context"]
+    finally:
+        await service.stop()
+
+
+def test_cancel_inside_the_write_transaction_rolls_back(tmp_path):
+    from knowledge.store import KnowledgeStore
+
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    pack = parse_pack(_pack())
+    calls = {"n": 0}
+
+    def cancel_once_writing() -> bool:
+        calls["n"] += 1
+        return calls["n"] > len(pack.entries) + 1  # past preparation
+
+    with pytest.raises(InterruptedError):
+        store.replace_pack(pack, pack_sha256="0" * 64, should_cancel=cancel_once_writing)
+    assert store.pack_versions() == {}
+    assert store.count_entries() == 0
+
+
+async def test_failed_chunks_are_retried_after_a_model_change(tmp_path, fast_indexer):
+    class Flaky(FakeEmbedder):
+        fail = True
+
+        async def embed_batch(self, texts):
+            self.batches.append(len(texts))
+            if self.fail:
+                return [None] * len(texts)
+            return [self.vector(text) for text in texts]
+
+    embedder = Flaky()
+    service = await _started(tmp_path, embedder)
+    try:
+        await _import(service, _pack())
+        for _ in range(300):
+            (pack,) = await service.list_packs()
+            if pack["chunks_failed"] == pack["chunks_total"]:
+                break
+            await asyncio.sleep(0.02)
+        assert pack["vector_state"] == "partial"
+        embedder.fail = False
+        embedder._model_id = "fake-16-v2"
+        service._index_wakeup.set()
+        for _ in range(300):
+            (pack,) = await service.list_packs()
+            if pack["vector_state"] == "complete":
+                break
+            await asyncio.sleep(0.02)
+        assert pack["vector_state"] == "complete"
     finally:
         await service.stop()

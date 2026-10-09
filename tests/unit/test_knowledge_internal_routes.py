@@ -138,3 +138,13 @@ async def test_not_started_reports_starting(monkeypatch):
         assert (await http.get("/internal/knowledge/availability")).json()["tool_available"] is False
         response = await http.post("/internal/knowledge/query", json={"query": "x"})
         assert response.status_code == 503
+
+
+async def test_multipart_import_uses_the_uploaded_file(client):
+    http, _service = client
+    files = {"pack": ("pack.json", json.dumps(PACK).encode(), "application/json")}
+    response = (await http.post("/internal/knowledge/packs/import", files=files)).json()
+    assert response["ok"] is True and response["pack_id"] == "route-pack"
+    await _wait_active(http)
+    bad = await http.post("/internal/knowledge/packs/import", files={"a": ("a", b"1"), "b": ("b", b"2")})
+    assert bad.status_code == 400

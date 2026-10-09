@@ -265,6 +265,9 @@ class KnowledgeStore:
             self._delete_pack_rows(conn, pack.pack_id)
             chunk_total = 0
             for entry, tokens, surfaces, chunks in prepared:
+                # Raising here rolls the whole transaction back.
+                if should_cancel is not None and should_cancel():
+                    raise InterruptedError("cancelled")
                 cursor = conn.execute(
                     "INSERT INTO entries (pack_id, title, title_key, terms_json, tags_json,"
                     " summary, content, disabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -387,28 +390,19 @@ class KnowledgeStore:
         self, query: str, *, pack_id: str = "", limit: int, offset: int
     ) -> list[StoredEntry]:
         """Management search: exact surface hits first, then BM25 order."""
-        expression = fts_match_expression(query)
-        surface = fold_surface(query)
+        pack_ids = (pack_id,) if pack_id else None
         with self._read() as conn:
-            exact = [
-                int(row[0])
-                for row in conn.execute(
-                    "SELECT DISTINCT entry_id FROM surfaces WHERE surface=?", (surface,)
-                )
-            ] if surface else []
-            ranked = [
-                int(row[0])
-                for row in conn.execute(
-                    "SELECT rowid FROM entries_fts WHERE entries_fts MATCH ?"
-                    " ORDER BY bm25(entries_fts) LIMIT ?",
-                    (expression, offset + limit + len(exact)),
-                )
-            ] if expression else []
+            exact = self._exact_ids(conn, query, pack_ids=pack_ids, include_disabled=True)
+            ranked = self._ranked_ids(
+                conn,
+                query,
+                pack_ids=pack_ids,
+                include_disabled=True,
+                limit=offset + limit + len(exact),
+            )
             ordered = list(dict.fromkeys([*exact, *ranked]))
             rows = self._fetch(conn, ordered)
         entries = [rows[i] for i in ordered if i in rows]
-        if pack_id:
-            entries = [entry for entry in entries if entry.pack_id == pack_id]
         return entries[offset:offset + limit]
 
     def get_entry(self, pack_id: str, title: str) -> StoredEntry | None:
@@ -437,26 +431,74 @@ class KnowledgeStore:
         with self._read() as conn:
             return self._fetch(conn, entry_ids)
 
-    def lexical_candidates(self, query: str, *, limit: int) -> tuple[list[int], list[int]]:
-        """Return (exact surface hits, BM25-ranked hits) as entry ids."""
+    @staticmethod
+    def _pack_clause(pack_ids: Sequence[str] | None, include_disabled: bool) -> tuple[str, tuple]:
+        clauses: list[str] = []
+        args: tuple = ()
+        if not include_disabled:
+            clauses.append("e.disabled=0")
+        if pack_ids is not None:
+            clauses.append(f"e.pack_id IN ({','.join('?' for _ in pack_ids)})")
+            args = tuple(pack_ids)
+        return "".join(f" AND {clause}" for clause in clauses), args
+
+    def _exact_ids(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        *,
+        pack_ids: Sequence[str] | None,
+        include_disabled: bool,
+        limit: int = -1,
+    ) -> list[int]:
         surface = fold_surface(query)
+        if not surface or (pack_ids is not None and not pack_ids):
+            return []
+        clause, args = self._pack_clause(pack_ids, include_disabled)
+        return [
+            int(row[0])
+            for row in conn.execute(
+                "SELECT DISTINCT s.entry_id FROM surfaces s JOIN entries e ON e.id=s.entry_id"
+                f" WHERE s.surface=?{clause} LIMIT ?",
+                (surface, *args, limit),
+            )
+        ]
+
+    def _ranked_ids(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        *,
+        pack_ids: Sequence[str] | None,
+        include_disabled: bool,
+        limit: int,
+    ) -> list[int]:
         expression = fts_match_expression(query)
+        if not expression or (pack_ids is not None and not pack_ids):
+            return []
+        clause, args = self._pack_clause(pack_ids, include_disabled)
+        # Filter before LIMIT: otherwise matches from other packs (or disabled
+        # entries) fill the window and push the wanted ones out.
+        return [
+            int(row[0])
+            for row in conn.execute(
+                "SELECT f.rowid FROM entries_fts f JOIN entries e ON e.id=f.rowid"
+                f" WHERE entries_fts MATCH ?{clause} ORDER BY bm25(entries_fts) LIMIT ?",
+                (expression, *args, limit),
+            )
+        ]
+
+    def lexical_candidates(
+        self, query: str, *, pack_ids: Sequence[str], limit: int
+    ) -> tuple[list[int], list[int]]:
+        """Return (exact surface hits, BM25-ranked hits) among enabled entries of ``pack_ids``."""
         with self._read() as conn:
-            exact = [
-                int(row[0])
-                for row in conn.execute(
-                    "SELECT DISTINCT entry_id FROM surfaces WHERE surface=? LIMIT ?",
-                    (surface, limit),
-                )
-            ] if surface else []
-            ranked = [
-                int(row[0])
-                for row in conn.execute(
-                    "SELECT rowid FROM entries_fts WHERE entries_fts MATCH ?"
-                    " ORDER BY bm25(entries_fts) LIMIT ?",
-                    (expression, limit),
-                )
-            ] if expression else []
+            exact = self._exact_ids(
+                conn, query, pack_ids=pack_ids, include_disabled=False, limit=limit
+            )
+            ranked = self._ranked_ids(
+                conn, query, pack_ids=pack_ids, include_disabled=False, limit=limit
+            )
         return exact, ranked
 
     def entry_ids_with_tag(self, tag: str, pack_ids: Sequence[str]) -> list[int]:
@@ -515,9 +557,16 @@ class KnowledgeStore:
                 stored += cursor.rowcount
         return stored, failed
 
-    def reset_attempts(self) -> None:
+    def reset_attempts(self, pack_id: str = "") -> int:
+        """Give chunks that hit ``MAX_EMBED_ATTEMPTS`` another chance."""
         with self._write() as conn:
-            conn.execute("UPDATE chunks SET attempts=0 WHERE attempts > 0")
+            if pack_id:
+                cursor = conn.execute(
+                    "UPDATE chunks SET attempts=0 WHERE attempts > 0 AND pack_id=?", (pack_id,)
+                )
+            else:
+                cursor = conn.execute("UPDATE chunks SET attempts=0 WHERE attempts > 0")
+            return cursor.rowcount
 
     def chunk_stats(self, model_id: str | None) -> dict[str, dict[str, int]]:
         """Per pack: total chunks, chunks ready for ``model_id``, failed chunks."""

@@ -32,6 +32,7 @@ needs:
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 import weakref
 from typing import Any, Callable
@@ -95,10 +96,10 @@ def note_availability(payload: object) -> None:
             )
 
 
-def schedule_availability_refresh(memory_server_port: int) -> None:
+def schedule_availability_refresh(memory_server_port: int, *, force: bool = False) -> None:
     """Refresh the flag in the background when it is stale; never blocks."""
     global _refresh_task
-    if time.monotonic() < _next_check_at:
+    if not force and time.monotonic() < _next_check_at:
         return
     if _refresh_task is not None and not _refresh_task.done():
         return
@@ -123,13 +124,18 @@ async def _refresh_availability(memory_server_port: int) -> None:
         if response.is_success:
             payload = response.json()
             note_availability(payload)
-            if isinstance(payload, dict) and payload.get("ready") is not True:
-                # Still starting: look again soon instead of after a full TTL.
-                _next_check_at = time.monotonic() + AVAILABILITY_RETRY_SECONDS
-            return
+            if isinstance(payload, dict) and payload.get("ready") is True:
+                return
     except Exception as exc:
         logger.debug("[public-knowledge] availability check failed: %s", type(exc).__name__)
+    # Still starting or unreachable: actually come back soon. Nothing else may
+    # call schedule_availability_refresh again (a session that is already up
+    # does not re-register its tools), so the retry has to be armed here.
     _next_check_at = time.monotonic() + AVAILABILITY_RETRY_SECONDS
+    asyncio.get_running_loop().call_later(
+        AVAILABILITY_RETRY_SECONDS,
+        functools.partial(schedule_availability_refresh, memory_server_port, force=True),
+    )
 
 
 def reset_for_tests() -> None:

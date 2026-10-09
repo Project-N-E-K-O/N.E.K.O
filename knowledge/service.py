@@ -94,6 +94,7 @@ WRITE_LOCK_TIMEOUT_SECONDS = 5.0
 QUERY_CONCURRENCY = 4
 DEFAULT_QUERY_BUDGET_MS = 1_500
 MAX_QUERY_BUDGET_MS = 5_000
+QUERY_RENDER_RESERVE_SECONDS = 0.15
 MAX_QUERY_CHARS = 2_000
 MAX_QUERY_LIMIT = 10
 MAX_TRACKED_JOBS = 50
@@ -114,13 +115,17 @@ VECTOR_REFRESH_SECONDS = 60.0
 class Embedder(Protocol):
     """What the knowledge subsystem needs from the shared EmbeddingService."""
 
-    def state(self) -> str: ...
+    def state(self) -> str:
+        """``ready`` / ``loading`` / ``disabled`` / ``unavailable``."""
 
-    def model_id(self) -> str | None: ...
+    def model_id(self) -> str | None:
+        """Id of the loaded model; vectors are only comparable within one id."""
 
-    async def embed(self, text: str) -> list[float] | None: ...
+    async def embed(self, text: str) -> list[float] | None:
+        """One vector, or ``None`` when the service cannot produce it."""
 
-    async def embed_batch(self, texts: list[str]) -> list[list[float] | None]: ...
+    async def embed_batch(self, texts: list[str]) -> list[list[float] | None]:
+        """Vectors aligned with ``texts``; ``None`` where one failed."""
 
 
 class KnowledgeUnavailable(Exception):
@@ -179,6 +184,7 @@ class KnowledgeService:
         self._vectors: VectorSnapshot | None = None
         self._vector_generation = 0
         self._vectors_dirty = False
+        self._index_model_id: str | None = None
         self._vectors_built_for: tuple[int, str] | None = None
         self._vector_task: asyncio.Task[Any] | None = None
         self._availability_listeners: list[Callable[[], None]] = []
@@ -361,6 +367,12 @@ class KnowledgeService:
 
     async def set_pack_local_embedding(self, pack_id: str, enabled: bool) -> dict[str, Any]:
         record = await self._update_record(pack_id, local_embedding=bool(enabled))
+        if enabled:
+            # Turning vectors back on is the user's retry for chunks that
+            # previously failed to embed.
+            await self._locked(lambda: asyncio.to_thread(self._store.reset_attempts, pack_id))
+        self._vector_generation += 1
+        self._schedule_vector_refresh()
         self._index_wakeup.set()
         return {"pack_id": pack_id, "local_embedding": record.local_embedding}
 
@@ -564,6 +576,8 @@ class KnowledgeService:
                 raise KnowledgePackError("capacity_entries")
             if sum(r.chunks for r in others) + job.chunks_total > MAX_TOTAL_CHUNKS:
                 raise KnowledgePackError("capacity_chunks")
+            if self._installed_pack_bytes(others) + len(raw) > MAX_TOTAL_PACK_BYTES:
+                raise KnowledgePackError("capacity_bytes")
             now = utc_now()
             keys = {entry.key for entry in pack.entries}
             record = PackRecord(
@@ -584,6 +598,7 @@ class KnowledgeService:
             )
             final_path = self.root / PACKS_DIR / record.file_name
             atomic_write_bytes(final_path, raw)
+            indexed = False
             try:
                 self._store.replace_pack(
                     pack,
@@ -591,9 +606,14 @@ class KnowledgeService:
                     disabled_keys=record.disabled_titles,
                     should_cancel=lambda: job.cancel_requested or self._stopping,
                 )
+                indexed = True
                 registry = self._registry.with_pack(record)
                 save_registry(self.root, registry)
             except BaseException:
+                if indexed:
+                    # The registry still describes the old version: put the
+                    # index back so a failed import does not change answers.
+                    self._restore_index_blocking(pack.pack_id, previous)
                 if previous is None or previous.file_name != record.file_name:
                     final_path.unlink(missing_ok=True)
                 raise
@@ -604,6 +624,20 @@ class KnowledgeService:
         registry, _record = await asyncio.to_thread(blocking)
         self._broken_packs = tuple(p for p in self._broken_packs if p != job.pack_id)
         self._publish_registry(registry)
+
+    def _restore_index_blocking(self, pack_id: str, previous: PackRecord | None) -> None:
+        try:
+            if previous is None:
+                return self._store.delete_pack(pack_id)
+            raw = (self.root / PACKS_DIR / previous.file_name).read_bytes()
+            self._store.replace_pack(
+                decode_pack_bytes(raw),
+                pack_sha256=previous.pack_sha256,
+                disabled_keys=previous.disabled_titles,
+            )
+        except Exception:
+            # Startup reconcile repairs the index from the registry anyway.
+            logger.warning("[Knowledge] could not restore index after a failed import", exc_info=True)
 
     # ── vectors ─────────────────────────────────────────────────────
 
@@ -669,7 +703,7 @@ class KnowledgeService:
             try:
                 await asyncio.wait_for(self._index_wakeup.wait(), timeout=delay)
             except asyncio.TimeoutError:
-                pass
+                pass  # the idle delay elapsed without a wake-up; run another round
 
     async def _index_round(self) -> int:
         if self._state != "ready" or not self._registry.enabled or self.embedder is None:
@@ -677,6 +711,11 @@ class KnowledgeService:
         model_id = self._current_model_id()
         if model_id is None:
             return 0
+        if self._index_model_id != model_id:
+            # Failure counts belong to the model (and process) that produced
+            # them: a new model, or a restart, retries every chunk once more.
+            await self._locked(lambda: asyncio.to_thread(self._store.reset_attempts), wait=True)
+            self._index_model_id = model_id
         pack_ids = [
             record.pack_id for record in self._registry.packs.values() if record.local_embedding
         ]
@@ -817,17 +856,28 @@ class KnowledgeService:
             embed_task = asyncio.create_task(self.embedder.embed(query))
             embed_task.add_done_callback(_consume)
         exact_ids, lexical_ids = await asyncio.to_thread(
-            self._store.lexical_candidates, query, limit=LEXICAL_CANDIDATES
+            self._store.lexical_candidates, query, pack_ids=allowed, limit=LEXICAL_CANDIDATES
         )
         query_vector: np.ndarray | None = None
         if embed_task is not None:
             remaining = deadline - time.monotonic()
-            done, _pending = await asyncio.wait({embed_task}, timeout=max(remaining - 0.05, 0))
+            # Leave room for fetching and rendering the cards; a late vector
+            # is dropped and the lookup goes on with BM25 alone.
+            done, _pending = await asyncio.wait(
+                {embed_task}, timeout=max(remaining - QUERY_RENDER_RESERVE_SECONDS, 0)
+            )
             if embed_task in done and embed_task.exception() is None and embed_task.result():
                 blob = normalize_vector(embed_task.result())
                 if blob is not None:
                     query_vector = np.frombuffer(blob, dtype="<f4")
-        semantic = semantic_candidates(snapshot, query_vector, allowed_pack_ids=allowed)
+        # A pack with local vectors turned off is keyword-only, even if
+        # vectors from before the switch are still in the snapshot.
+        vector_packs = [
+            pack_id
+            for pack_id in allowed
+            if (record := self._registry.packs.get(pack_id)) is not None and record.local_embedding
+        ]
+        semantic = semantic_candidates(snapshot, query_vector, allowed_pack_ids=vector_packs)
         candidate_ids = list(dict.fromkeys([*exact_ids, *lexical_ids, *(i for i, _ in semantic)]))
         entries = await asyncio.to_thread(self._store.fetch_entries, candidate_ids)
         allowed_set = set(allowed)

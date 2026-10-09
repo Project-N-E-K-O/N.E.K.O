@@ -41,6 +41,8 @@ from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
+from starlette.datastructures import UploadFile
+from starlette.formparsers import MultiPartParser
 
 from knowledge.models import MAX_PACK_BYTES
 from knowledge.service import KnowledgeService, KnowledgeUnavailable
@@ -316,11 +318,42 @@ async def knowledge_settings(request: Request):
     return await _call(lambda svc: svc.set_enabled(payload["enabled"]))
 
 
+async def _pack_from_multipart(request: Request, body: bytes) -> bytes | None:
+    """Return the uploaded file of a ``multipart/form-data`` import body.
+
+    The ``pack`` field wins; otherwise the only uploaded file is used.
+    """
+
+    async def stream():
+        yield body
+
+    try:
+        form = await MultiPartParser(
+            request.headers, stream(), max_files=1, max_fields=8,
+            max_part_size=_JSON_BODY_MAX_BYTES,
+        ).parse()
+    except Exception:
+        return None
+    try:
+        uploads = [value for value in form.values() if isinstance(value, UploadFile)]
+        upload = form.get("pack") if isinstance(form.get("pack"), UploadFile) else None
+        upload = upload or (uploads[0] if len(uploads) == 1 else None)
+        return await upload.read() if upload is not None else None
+    finally:
+        await form.close()
+
+
 @router.post("/packs/import")
 async def knowledge_import_pack(request: Request):
+    """Import a pack sent as the raw JSON body or as a multipart file upload."""
     raw = await _read_body(request, max_bytes=_PACK_BODY_MAX_BYTES)
     if raw is None:
         return _failure("pack_too_large", 413)
+    content_type = request.headers.get("content-type", "").lower()
+    if content_type.startswith("multipart/form-data"):
+        raw = await _pack_from_multipart(request, raw)
+        if raw is None:
+            return _failure("invalid_request", 400)
     return await _call(lambda svc: svc.import_pack(raw))
 
 

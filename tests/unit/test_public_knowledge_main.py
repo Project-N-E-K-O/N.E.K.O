@@ -241,3 +241,22 @@ async def test_memory_server_failures_map_to_stable_reasons(proxy, memory_server
     response = await proxy.get("/api/public-knowledge/status")
     assert response.status_code == status
     assert response.json() == {"ok": False, "reason": reason}
+
+
+async def test_availability_check_retries_until_the_runtime_is_ready(memory_server, monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(public_knowledge, "AVAILABILITY_RETRY_SECONDS", 0.02)
+    replies = iter([
+        httpx.Response(503, json={"ok": False}),
+        httpx.Response(200, json={"ok": True, "ready": False, "tool_available": False}),
+        httpx.Response(200, json={"ok": True, "ready": True, "tool_available": True}),
+    ])
+    client = memory_server(lambda request: next(replies))
+    public_knowledge.schedule_availability_refresh(48912, force=True)
+    for _ in range(100):
+        if public_knowledge.tool_available():
+            break
+        await asyncio.sleep(0.01)
+    assert public_knowledge.tool_available() is True
+    assert len(client.requests) == 3
