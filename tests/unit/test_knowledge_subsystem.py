@@ -991,27 +991,38 @@ def test_semantic_match_reports_the_best_chunk_and_scales_with_many_packs():
     from knowledge.retrieval import semantic_candidates
     from knowledge.store import VectorSnapshot
 
-    count = 20_000
+    class CountingPackIds(tuple):
+        """Counts per-pack lookups; a linear filter needs none of them."""
+
+        lookups = 0
+
+        def index(self, *args):
+            CountingPackIds.lookups += 1
+            return super().index(*args)
+
+        def __contains__(self, item):
+            CountingPackIds.lookups += 1
+            return super().__contains__(item)
+
+    count = 2_000
     matrix = np.zeros((count, 4), dtype=np.float32)
     matrix[:, 0] = 1.0
     matrix[-1] = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
     snapshot = VectorSnapshot(
         model_id="m",
         entry_ids=np.arange(count, dtype=np.int64),
-        pack_ids=tuple(f"pack-{i:05d}" for i in range(count)),
+        pack_ids=CountingPackIds(f"pack-{i:05d}" for i in range(count)),
         chunk_pack_index=np.arange(count, dtype=np.int32),
         matrix=matrix,
         chunk_indexes=np.full(count, 3, dtype=np.int32),
     )
-    import time
-
-    started = time.perf_counter()
     matches = semantic_candidates(
         snapshot,
         np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
-        allowed_pack_ids=snapshot.pack_ids,
+        allowed_pack_ids=list(snapshot.pack_ids),
     )
-    assert time.perf_counter() - started < 1.0
+    # Filtering by pack must not search the snapshot tuple once per pack.
+    assert CountingPackIds.lookups == 0
     assert [(m.entry_id, m.chunk_index) for m in matches] == [(count - 1, 3)]
 
 
