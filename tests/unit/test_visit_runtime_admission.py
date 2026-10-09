@@ -1218,7 +1218,32 @@ async def test_stop_all_waits_for_a_seal_write_started_during_shutdown(tmp_path,
         await asyncio.wait_for(rtm.stop_all("shutdown"), 10)   # 这一场的封存在关机途中才起
         write = rt.journal.seal_write
         assert write is not None and write.done() and not write.cancelled()   # stop_all 最后那遍等到它写完
-        assert rt.journal.sealed
+        assert rt.journal.sealed_path.exists()            # .upload.json 真的落盘了
+    finally:
+        release.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_seal_wrapper_left_by_shutdown_is_retired_by_stop_all(tmp_path, monkeypatch):
+    import threading
+
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    release = threading.Event()
+    real_seal = rt.journal._seal_sync
+
+    def stuck_seal(doc):
+        release.wait(10)                                  # 写盘卡过整个关机预算
+        real_seal(doc)
+
+    rt.journal._seal_sync = stuck_seal
+    try:
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
+        write = rt.journal.seal_write
+        assert write is not None and not write.done()     # 写盘只等不取消：还在线程里
+        assert rt._sealing is not None and rt._sealing.done()   # 外层（只是 shield 着等）被 stop_all 收掉，没留到事件循环销毁
+        release.set()
+        await wait_for(lambda: write.done() and rt.journal.sealed_path.exists(), timeout=5)
     finally:
         release.set()
         await teardown(host, guest, wire=wire, clock=clock)

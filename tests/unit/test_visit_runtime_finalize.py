@@ -399,7 +399,10 @@ async def test_unacked_reliable_messages_end_with_delivery_failed(tmp_path, monk
         await step(clock, 34, host.rt, guest.rt, every=2.0)
         assert host.rt.finalize_reason == "delivery_failed"
         await finish(host.rt, clock)
-        assert [p["reason"] for p in wire.sent["host"] if p.get("t") == "leave"] == ["delivery_failed"]
+        # host 发的全被丢掉、没有 ack：同一条 leave 会按 seq 每 1 s 重传，但只有这一条
+        leaves = [p for p in wire.sent["host"] if p.get("t") == "leave"]
+        assert leaves and {p["reason"] for p in leaves} == {"delivery_failed"}
+        assert len({p["seq"] for p in leaves}) == 1
     finally:
         for g in gates:
             g.set()
