@@ -1943,7 +1943,10 @@ def _cleanup_retained_runtime_root(
                     entry_name
                     # So is what it had to leave behind because the new root
                     # had its own: never deleted here, only reported.
-                    for entry_name in dict.fromkeys([*migrated_names, *proofs, *catch_up_skipped])
+                    # Every migrated name counts here, a v1 checkpoint's too:
+                    # one restored in the old root after its catch-up (a sync
+                    # client) is data the cleanup must not pass over.
+                    for entry_name in dict.fromkeys([*MIGRATED_RUNTIME_ENTRY_NAMES, *proofs, *catch_up_skipped])
                     if _entry_may_exist(retained_path / entry_name)
                 ]
                 + [entry_name for entry_name, _private in leftovers or []]

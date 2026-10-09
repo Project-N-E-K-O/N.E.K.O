@@ -1793,14 +1793,18 @@ def remove_remembered_transaction_leftovers(config_manager, *, anchor_root: Path
     for entry in entries:
         if not isinstance(entry, dict):
             continue
+        raw_target_root = str(entry.get("target_root") or "").strip()
+        if not raw_target_root:
+            continue
+        target_root = normalize_runtime_root(raw_target_root)
+        if classify_entry_no_follow(target_root) != "dir":
+            # Out of reach (an unplugged drive, an offline share): the record
+            # is the only way back to it once the target returns.
+            kept.append(entry)
+            continue
         _remove_completed_transaction_leftover(entry)
         try:
-            still_there = os.path.lexists(
-                _transaction_path(
-                    normalize_runtime_root(str(entry.get("target_root") or "")),
-                    str(entry.get("txid") or ""),
-                )
-            )
+            still_there = not _path_is_absent(_transaction_path(target_root, str(entry.get("txid") or "")))
         except StorageMigrationError:
             still_there = False
         if still_there:
@@ -2714,6 +2718,10 @@ def run_pending_storage_migration(
 
         source_snapshots: dict[str, dict[str, int | str]] = {}
         existing_entries = _iter_existing_runtime_entries(source_root)
+        # What the target holds before anything is staged: an entry appearing
+        # while earlier (large) entries are being copied was never confirmed
+        # for replacing either.
+        target_entries_before_staging = set(_iter_existing_runtime_entries(target_root))
 
         payload = _persist_migration_payload(
             config_manager,
@@ -2977,7 +2985,7 @@ def run_pending_storage_migration(
         )
 
         published_entries: list[str] = []
-        target_entries_at_staging = set(original_target_entries)
+        target_entries_at_staging = set(original_target_entries) & target_entries_before_staging
         try:
             for entry_name in entries_to_publish:
                 target_entry = target_root / entry_name

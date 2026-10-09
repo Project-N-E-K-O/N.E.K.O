@@ -5000,3 +5000,21 @@ def test_v1_catch_up_remembers_an_earlier_transaction_before_replacing_its_id(tm
 
     assert (target_root / "watch_together" / "arrived.json").is_file()
     assert not storage_migration_module._transaction_path(target_root, old_txid).exists()
+
+
+@pytest.mark.unit
+def test_v1_cleanup_reports_an_entry_restored_after_the_catch_up(tmp_path):
+    """The catch-up is done; then a sync client put watch_together back into
+    the old root. It has no evidence, so it stays -- and must be reported."""
+    source_root, _target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["v1_catch_up_completed_at"]
+    (source_root / "watch_together").mkdir()
+    (source_root / "watch_together" / "library.json").write_text("{}", encoding="utf-8")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert "watch_together" in response.json()["remaining_entries"]
+    assert (source_root / "watch_together" / "library.json").is_file()
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] != "cleaned"

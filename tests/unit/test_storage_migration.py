@@ -4022,3 +4022,64 @@ def test_rolling_back_a_file_entry_keeps_a_file_recreated_meanwhile(tmp_path, mo
     assert result["error_code"] == "migration_publish_conflict"
     assert (target_root / "memory").read_bytes() == b"recreated by a sync client"
     assert list(target_root.glob(".smtx/*/backup/memory"))[0].read_bytes() == b"target's original"
+
+
+@pytest.mark.unit
+def test_an_entry_appearing_in_the_target_while_staging_stops_the_migration(tmp_path, monkeypatch):
+    """The target was empty; a sync client created memory there while config
+    was being staged. It was never confirmed for replacing either."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "facts.json").write_text("source facts", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_copy = storage_migration_module._copy_runtime_entry
+
+    def _copy_while_memory_appears(source_path, target_path, **kwargs):
+        result = original_copy(source_path, target_path, **kwargs)
+        if Path(source_path).name == "config":
+            (target_root / "memory").mkdir(parents=True)
+            (target_root / "memory" / "facts.json").write_text("arrived from a sync client", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _copy_while_memory_appears)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "target_changed_during_migration"
+    assert (target_root / "memory" / "facts.json").read_text(encoding="utf-8") == "arrived from a sync client"
+
+
+@pytest.mark.unit
+def test_a_leftover_record_outlives_a_target_that_is_out_of_reach(tmp_path):
+    """The target drive is unplugged at startup: its transaction looks absent,
+    but the record is the only way back to it once the drive returns."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, target_root = _start_migration_into_empty_target(tmp_path)
+    txid = "fedcba9876543210fedcba9876543210"
+    payload = dict(load_storage_migration(config_manager))
+    payload.update({"status": "failed", "txid": txid, "target_root": str(target_root)})
+    save_storage_migration(config_manager, payload)
+    stage = storage_migration_module._transaction_path(target_root, txid) / "stage"
+    stage.mkdir(parents=True)
+    storage_migration_module.delete_storage_migration(config_manager)
+    unplugged = tmp_path / "unplugged"
+    target_root.rename(unplugged)
+
+    storage_migration_module.remove_remembered_transaction_leftovers(config_manager, anchor_root=None)
+    unplugged.rename(target_root)
+    storage_migration_module.remove_remembered_transaction_leftovers(config_manager, anchor_root=None)
+
+    assert not storage_migration_module._transaction_path(target_root, txid).exists()
