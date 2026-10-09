@@ -528,3 +528,28 @@ async def test_round_ownership_survives_a_request_view_copy():
     at = next(i for i, m in enumerate(seated) if isinstance(m, dict) and m.get("tool_calls")
               and m["tool_calls"][0]["id"] == "b1")
     assert seated[at - 1] == stand_in
+
+
+@pytest.mark.parametrize("failure", ["retries_exhausted", "unclassified"])
+async def test_a_callback_failing_after_its_tool_ran_still_counts_as_delivered(failure):
+    """The follow-up request after the round fails for good: the text is
+    dropped as before, but the call already ran, so a caller that only reads
+    the return value must not retry (and run) it again."""
+    executed = []
+    client = _seeded(_client(handler=_recording_handler(executed)))
+    error = (
+        APIConnectionError(request=httpx.Request("POST", "http://provider.invalid"))
+        if failure == "retries_exhausted" else RuntimeError("boom")
+    )
+    client.script = [[_tool_calls("c1")], error]
+    with patch(_SLEEP, _no_backoff):
+        assert await client.prompt_ephemeral(_INSTRUCTION) is True
+    assert executed == ["c1"]
+    assert _emitted(client) == []
+
+
+async def test_a_callback_failing_before_any_tool_is_not_delivered():
+    client = _seeded(_client(handler=_recording_handler([])))
+    client.script = [APIConnectionError(request=httpx.Request("POST", "http://provider.invalid"))]
+    with patch(_SLEEP, _no_backoff):
+        assert await client.prompt_ephemeral(_INSTRUCTION) is False

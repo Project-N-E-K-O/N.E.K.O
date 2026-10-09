@@ -1100,14 +1100,14 @@ class _LifecycleMixin:
                             await self.on_status_message(json.dumps({"code": "API_ARREARS"}))
                         assistant_message = ""
                         assistant_message_total = ""
-                        return False
+                        break
                     elif _is_api_key_rejected_error(e):
                         logger.error(f"prompt_ephemeral: 检测到 API Key 错误，直接上报: {e}")
                         if self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))
                         assistant_message = ""
                         assistant_message_total = ""
-                        return False
+                        break
                     elif 'quota' in error_str_lower or 'time limit' in error_str_lower:
                         logger.warning(f"prompt_ephemeral: 检测到配额错误，上报前端: {e}")
                         if self.on_status_message:
@@ -1140,7 +1140,7 @@ class _LifecycleMixin:
                     )
                     assistant_message = ""
                     assistant_message_total = ""
-                    return False
+                    break
         except Exception as e:
             if _is_api_key_rejected_error(e):
                 logger.error(f"prompt_ephemeral: 检测到 API Key 错误，直接上报: {e}")
@@ -1148,18 +1148,17 @@ class _LifecycleMixin:
                     await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))
                 assistant_message = ""
                 assistant_message_total = ""
-                return False
-            # 兜底：非 API 错误（编程错误 / 数据异常）静默吞掉，截断错误文本
-            # 防 HTML 错误页之类淹没日志。和上方 (APIConnectionError 等) 分支
-            # 语义对偶 —— 都不向前端发 status_message。
-            logger.error(
-                "OmniOfflineClient.prompt_ephemeral 未分类异常 %s: %s",
-                type(e).__name__, str(e)[:200],
-                exc_info=True,
-            )
-            assistant_message = ""
-            assistant_message_total = ""
-            return False
+            else:
+                # 兜底：非 API 错误（编程错误 / 数据异常）静默吞掉，截断错误文本
+                # 防 HTML 错误页之类淹没日志。和上方 (APIConnectionError 等) 分支
+                # 语义对偶 —— 都不向前端发 status_message。
+                logger.error(
+                    "OmniOfflineClient.prompt_ephemeral 未分类异常 %s: %s",
+                    type(e).__name__, str(e)[:200],
+                    exc_info=True,
+                )
+                assistant_message = ""
+                assistant_message_total = ""
         except asyncio.CancelledError:
             # The task itself was cancelled (close(), a torn-down caller) with
             # its generation possibly still live: the commit below then
@@ -1306,6 +1305,8 @@ class _LifecycleMixin:
             # its completion was skipped. Only a cancellation mid-reply makes a
             # response-mode turn report False. Callers that hand state to the
             # completion (the avatar path's turn meta) check it themselves.
+            # Error paths fall through to here too, their text dropped: a tool
+            # round that already ran still makes the turn count as delivered.
             reported_committed = (content_committed or tool_round_kept) and not (
                 completion_mode == "response" and response_cancelled
             )
