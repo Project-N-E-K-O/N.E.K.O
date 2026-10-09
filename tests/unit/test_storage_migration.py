@@ -4166,3 +4166,91 @@ def test_a_corrupt_leftover_list_is_put_aside_before_being_rewritten(tmp_path):
     assert len(kept) == 1 and kept[0].read_text(encoding="utf-8") == "{not json"
     storage_migration_module.remove_remembered_transaction_leftovers(config_manager, anchor_root=None)
     assert not storage_migration_module._transaction_path(target_root, txid).exists()
+
+
+
+@pytest.mark.unit
+def test_a_confirmed_target_entry_edited_during_staging_is_not_replaced(tmp_path, monkeypatch):
+    """The user confirmed replacing the target's memory; a sync client edited
+    it while config was being staged. That edit must not go into the backup
+    and be dropped with it."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "facts.json").write_text("source facts", encoding="utf-8")
+    (target_root / "memory").mkdir(parents=True)
+    (target_root / "memory" / "facts.json").write_text("target facts", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+        confirmed_existing_target_content=True,
+    )
+    original_copy = storage_migration_module._copy_runtime_entry
+
+    def _copy_while_memory_is_edited(source_path, target_path, **kwargs):
+        result = original_copy(source_path, target_path, **kwargs)
+        if Path(source_path).name == "config":
+            (target_root / "memory" / "facts.json").write_text("edited by a sync client", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _copy_while_memory_is_edited)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "target_changed_during_migration"
+    assert (target_root / "memory" / "facts.json").read_text(encoding="utf-8") == "edited by a sync client"
+
+
+@pytest.mark.unit
+def test_a_record_lands_beside_the_list_when_the_list_cannot_be_replaced(tmp_path, monkeypatch):
+    """The list reads fine but cannot be replaced (a scanner holds it): the
+    checkpoint is dropped anyway, so the record must still be kept."""
+    from utils import storage_migration as storage_migration_module
+
+    txid = "fedcba9876543210fedcba9876543210"
+    config_manager, target_root = _leftover_with_checkpoint_dropped(tmp_path, txid)
+    leftovers_path = storage_migration_module._transaction_leftovers_path(config_manager, anchor_root=None)
+    real_write = storage_migration_module.atomic_write_json
+
+    def _held_open(path, *args, **kwargs):
+        if Path(path) == leftovers_path:
+            raise PermissionError(13, "held open by a scanner")
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "atomic_write_json", _held_open)
+    storage_migration_module.delete_storage_migration(config_manager)
+    monkeypatch.undo()
+    storage_migration_module.remove_remembered_transaction_leftovers(config_manager, anchor_root=None)
+
+    assert not storage_migration_module._transaction_path(target_root, txid).exists()
+
+
+@pytest.mark.unit
+def test_side_records_are_merged_even_when_the_list_is_malformed(tmp_path):
+    """A list of the wrong shape must not keep the records beside it hidden."""
+    import json
+
+    from utils import storage_migration as storage_migration_module
+
+    txid = "fedcba9876543210fedcba9876543210"
+    config_manager, target_root = _leftover_with_checkpoint_dropped(tmp_path, txid)
+    leftovers_path = storage_migration_module._transaction_leftovers_path(config_manager, anchor_root=None)
+    leftovers_path.write_text('{"not": "a list"}', encoding="utf-8")
+    storage_migration_module._transaction_leftover_side_path(leftovers_path, txid).write_text(
+        json.dumps([{"status": "failed", "target_root": str(target_root), "txid": txid}]),
+        encoding="utf-8",
+    )
+
+    storage_migration_module.remove_remembered_transaction_leftovers(config_manager, anchor_root=None)
+
+    assert not storage_migration_module._transaction_path(target_root, txid).exists()
+    kept = list(leftovers_path.parent.glob("storage_migration_leftovers.json.corrupt-*"))
+    assert len(kept) == 1 and kept[0].read_text(encoding="utf-8") == '{"not": "a list"}'

@@ -1737,6 +1737,23 @@ def _transaction_leftover_side_path(leftovers_path: Path, txid: str) -> Path:
     return leftovers_path.with_name(f"storage_migration_leftovers.{txid}.json")
 
 
+def _write_transaction_leftover_side_record(leftovers_path: Path, entry: dict[str, str]) -> None:
+    try:
+        atomic_write_json(_transaction_leftover_side_path(leftovers_path, entry["txid"]), [entry])
+    except Exception as exc:
+        logger.warning("Failed to remember a leftover migration transaction: %s", exc)
+
+
+def _put_aside_malformed_leftovers(leftovers_path: Path) -> bool:
+    """Move an unusable list out of the way for a person to look at."""
+    try:
+        os.replace(leftovers_path, leftovers_path.with_name(f"{leftovers_path.name}.corrupt-{uuid.uuid4().hex[:12]}"))
+    except OSError as exc:
+        logger.warning("Failed to put aside unreadable leftover migration transactions: %s", exc)
+        return False
+    return True
+
+
 def _transaction_leftover_side_paths(leftovers_path: Path) -> list[Path]:
     try:
         return sorted(leftovers_path.parent.glob("storage_migration_leftovers.*.json"))
@@ -1790,20 +1807,11 @@ def _remember_transaction_leftover(config_manager, *, anchor_root: Path | str | 
         # the list would drop every earlier record, so this one goes to a
         # file of its own, merged in on the next start.
         logger.warning("Failed to read leftover migration transactions: %s", exc)
-        try:
-            atomic_write_json(_transaction_leftover_side_path(leftovers_path, txid), [entry])
-        except Exception as side_exc:
-            logger.warning("Failed to remember a leftover migration transaction: %s", side_exc)
+        _write_transaction_leftover_side_record(leftovers_path, entry)
         return
     if not isinstance(entries, list):
-        try:
-            os.replace(leftovers_path, leftovers_path.with_name(f"{leftovers_path.name}.corrupt-{uuid.uuid4().hex[:12]}"))
-        except OSError as exc:
-            logger.warning("Failed to put aside unreadable leftover migration transactions: %s", exc)
-            try:
-                atomic_write_json(_transaction_leftover_side_path(leftovers_path, txid), [entry])
-            except Exception as side_exc:
-                logger.warning("Failed to remember a leftover migration transaction: %s", side_exc)
+        if not _put_aside_malformed_leftovers(leftovers_path):
+            _write_transaction_leftover_side_record(leftovers_path, entry)
             return
         entries = []
     if entry not in entries:
@@ -1811,7 +1819,10 @@ def _remember_transaction_leftover(config_manager, *, anchor_root: Path | str | 
         try:
             atomic_write_json(leftovers_path, entries)
         except Exception as exc:
-            logger.warning("Failed to remember a leftover migration transaction: %s", exc)
+            # Readable but not replaceable (a scanner holding it open): the
+            # checkpoint is about to go, so the record must land somewhere.
+            logger.warning("Failed to update leftover migration transactions: %s", exc)
+            _write_transaction_leftover_side_record(leftovers_path, entry)
 
 
 def remove_remembered_transaction_leftovers(config_manager, *, anchor_root: Path | str | None) -> None:
@@ -1821,11 +1832,17 @@ def remove_remembered_transaction_leftovers(config_manager, *, anchor_root: Path
         entries = read_json(leftovers_path)
     except FileNotFoundError:
         entries = []
+    except ValueError:
+        entries = None
     except Exception as exc:
         logger.warning("Failed to read leftover migration transactions: %s", exc)
         return
     if not isinstance(entries, list):
-        return
+        # Unusable: put aside, so the records beside it are still merged in
+        # and the list can be written again.
+        if not _put_aside_malformed_leftovers(leftovers_path):
+            return
+        entries = []
     # Records written beside the list while it could not be read.
     side_paths = []
     for side_path in _transaction_leftover_side_paths(leftovers_path):
@@ -2787,6 +2804,14 @@ def run_pending_storage_migration(
         # while earlier (large) entries are being copied was never confirmed
         # for replacing either.
         target_entries_before_staging = set(_iter_existing_runtime_entries(target_root))
+        # And what each of them was: the confirmation covered that version,
+        # not one a sync client writes while the source is being staged.
+        target_fingerprints_before_staging: dict[str, str | None] = {}
+        for entry_name in target_entries_before_staging:
+            try:
+                target_fingerprints_before_staging[entry_name] = _metadata_fingerprint(target_root / entry_name)
+            except StorageMigrationError:
+                target_fingerprints_before_staging[entry_name] = None
 
         payload = _persist_migration_payload(
             config_manager,
@@ -3079,6 +3104,20 @@ def run_pending_storage_migration(
                         "target_changed_during_migration",
                         f"迁移目标在迁移期间出现了新条目，已停止迁移: {entry_name}",
                     )
+                if target_existed:
+                    try:
+                        target_unchanged = (
+                            _metadata_fingerprint(target_entry) == target_fingerprints_before_staging.get(entry_name)
+                        )
+                    except StorageMigrationError:
+                        target_unchanged = False
+                    if not target_unchanged:
+                        # Edited since staging began: moved into the backup and
+                        # dropped with it on success, that edit would be lost.
+                        raise StorageMigrationError(
+                            "target_changed_during_migration",
+                            f"迁移目标的条目在迁移期间被改动，已停止迁移: {entry_name}",
+                        )
                 # Record what the target holds right now, not what staging saw:
                 # an entry gone since has no original to restore.
                 if not target_existed and entry_name in original_target_entries:
