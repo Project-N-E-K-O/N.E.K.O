@@ -154,8 +154,8 @@ def _remember_preview(account: Optional[str], invite_code: str, preview: cr.Invi
         _previews.pop(next(iter(_previews)))
 
 
-def _recent_preview(account: Optional[str], invite_code: str) -> Optional[cr.InvitePreview]:
-    """A cached preview of this account still valid, fetched with no account change since (else None)."""
+def _recent_preview(account: Optional[str], invite_code: str) -> Optional[tuple[cr.InvitePreview, int]]:
+    """``(preview, account epoch)`` cached for this account, still valid, no account change since (else None)."""
     if not account:
         return None
     key = (account, invite_code)
@@ -165,10 +165,11 @@ def _recent_preview(account: Optional[str], invite_code: str) -> Optional[cr.Inv
         # 邀请已到期的预览不复用：重新代转一次，过期的邀请在占位之前就被拒
         _previews.pop(key, None)
         return None
-    return hit[1]
+    return hit[1], hit[2]
 
 
-async def _fetch_preview(invite_code: str, account: Optional[str]) -> cr.InvitePreview:
+async def _fetch_preview(invite_code: str, account: Optional[str]) -> tuple[cr.InvitePreview, Optional[int]]:
+    """``(preview, account epoch)``; the epoch is None when an account change happened meanwhile."""
     epoch = runtime.account_epoch()
     lang = prompt_lang()
     ctx = await load_character_context()
@@ -178,9 +179,10 @@ async def _fetch_preview(invite_code: str, account: Optional[str]) -> cr.InviteP
         protected_names=protected_display_names(lang, ctx.family_names, ctx.char_names),
     )
     # 请求期间有过登出 / 换账号（含 A→B→A）：这份预览可能是按别的会话授权的，不进缓存
-    if epoch is not None and runtime.account_epoch() == epoch:
-        _remember_preview(account, invite_code, preview, epoch)
-    return preview
+    if epoch is None or runtime.account_epoch() != epoch:
+        return preview, None
+    _remember_preview(account, invite_code, preview, epoch)
+    return preview, epoch
 
 
 async def _locally_blocked(preview: cr.InvitePreview) -> bool:
@@ -201,7 +203,7 @@ async def preview_invite(request: Request, invite_code: str):
     if not isinstance(invite_code, str) or cr.INVITE_CODE_RE.fullmatch(invite_code) is None:
         return _servers_error(cr.VisitInviteFormat())
     try:
-        preview = await _fetch_preview(invite_code, await accounts.local_account())
+        preview, _epoch = await _fetch_preview(invite_code, await accounts.local_account())
     except cr.VisitServersError as exc:
         return _servers_error(exc)
     return JSONResponse(preview.to_public(locally_blocked=await _locally_blocked(preview)))
@@ -235,15 +237,22 @@ async def _resolve_uid(name: str) -> Optional[str]:
 
 
 async def _admit(
-    name: str, side: str, *, expect_account: Optional[str] = None, **kwargs: Any,
+    name: str, side: str, *, expect_account: Optional[str] = None, expect_epoch: Optional[int] = None,
+    **kwargs: Any,
 ) -> runtime.VisitRuntime | JSONResponse:
     """Forget check and :func:`runtime.start_visit` under the character's admission lock.
 
-    ``expect_account`` (join): the account the invite preview was checked for;
-    admission under any other account is refused.
+    ``expect_account`` / ``expect_epoch`` (join): the account and account-change
+    epoch the invite preview was checked under; admission after any account
+    change is refused. The epoch read here must also be the one the runtime
+    recorded, so a logout / switch anywhere in between refuses the visit.
     """
     uid = await _resolve_uid(name)
     async with (char_admission_lock(uid) if uid else contextlib.nullcontext()):
+        epoch = runtime.account_epoch()
+        if epoch is None or (expect_epoch is not None and epoch != expect_epoch):
+            # 登出 / 换账号正在进行，或取预览之后发生过
+            return _refused(409, {"reason": "busy"})
         account = await accounts.local_account()
         if expect_account is not None and account != expect_account:
             # 预览（黑名单、邀请有效期）是按另一个账号查的：换了账号就不作数
@@ -258,7 +267,7 @@ async def _admit(
             return _refused(exc.status, exc.body)
         # 清除检查按的角色 / 账号，必须就是这一场的：期间改了名、名字被占或换了社区账号，这次检查不作数。
         # 账号比的是运行时自己记下的那个（领凭证时还要与它核对），中途换走又换回也认得出
-        if rt.character_uid != uid or rt.admitted_account != account:
+        if rt.character_uid != uid or rt.admitted_account != account or rt.admitted_epoch != epoch:
             logger.warning("visit %s: character or account changed during admission, refusing", rt.visit_id[:6])
             rt.request_finalize("busy")
             return _refused(409, {"reason": "busy"})
@@ -309,10 +318,12 @@ async def join_room(request: Request, visit_id: str):
         return refused
     # 黑名单在占位与领凭证之前比对：命中不扣双方配额、不进 vendor 房
     account = await accounts.local_account()
-    preview = _recent_preview(account, invite_code)
-    if preview is None:
+    cached = _recent_preview(account, invite_code)
+    if cached is not None:
+        preview, preview_epoch = cached
+    else:
         try:
-            preview = await _fetch_preview(invite_code, account)
+            preview, preview_epoch = await _fetch_preview(invite_code, account)
         except cr.VisitServersError as exc:
             if isinstance(exc, (cr.VisitInviteNotFound, cr.VisitInviteExpired)):
                 return _servers_error(cr.VisitInviteInvalid(exc.code))
@@ -326,7 +337,11 @@ async def join_room(request: Request, visit_id: str):
         return _servers_error(cr.VisitInviteInvalid("peer_blocked"))
     if not account:
         return _servers_error(cr.VisitLoginRequired())
-    admitted = await _admit(name, "guest", expect_account=account, invite_code=invite_code, visit_id=visit_id)
+    if preview_epoch is None:
+        # 取预览途中有过登出 / 换账号（含 A→B→A）：这份预览不能代表此刻的账号
+        return _refused(409, {"reason": "busy"})
+    admitted = await _admit(name, "guest", expect_account=account, expect_epoch=preview_epoch,
+                            invite_code=invite_code, visit_id=visit_id)
     if isinstance(admitted, JSONResponse):
         return admitted
     return JSONResponse({"ok": True, "visit_id": admitted.visit_id, "phase": "pending"}, status_code=202)
@@ -510,6 +525,47 @@ async def _pending_upload(config_dir: Path, visit_id: str) -> Optional[tuple[dic
         return None
 
 
+async def _local_transcript(
+    config_dir: Path, visit_id: str, account: Optional[str], owner: Optional[str],
+) -> tuple[Optional[dict], Optional[dict]]:
+    """``(complete local copy, partial local copy)`` of this account's transcript (either may be None)."""
+    partial: Optional[dict] = None
+    # 进程里还有这一场：内存里的流水最完整（spool 某一行写失败时只记了日志、行仍在流水里）。
+    # 按社区账号认属主：账号映射一时没写成（后台还在补写）也不该把它挡掉
+    rt = _memory_runtime(visit_id)
+    if rt is not None and account and rt.creds is not None and rt.creds.account == account:
+        return await _memory_transcript(config_dir, rt), None
+    if owner:
+        spooled = await _spool_transcript(config_dir, visit_id, owner)
+        pending = await _pending_upload(config_dir, visit_id)
+        # 较早的上传文件不记属主：与补传同一规则，从 state.json / 流水头行认回来
+        if pending is not None and (pending[0].get("own_visit_uid")
+                                    or await pending_upload_owner(config_dir, visit_id)) != owner:
+            pending = None
+        if spooled is not None:
+            doc, dropped = spooled
+            # spool 某一行写失败时只记日志、结构照样完整：待传文件（同一场的上传流水）比它多行就让给它
+            upload_complete = (pending is not None and not pending[1]
+                               and len(pending[0]["request"]["lines"]) > len(doc["lines"]))
+            if not dropped and not upload_complete:
+                return doc, None
+            # 崩溃留下的半行 / 坏行被丢掉了：先找完整的来源，都没有再退回这份
+            if dropped:
+                partial = {**doc, "dropped_lines": dropped}
+        if pending is not None:
+            upload_doc, dropped = pending
+            request_body = upload_doc["request"]
+            body = {"source": "upload", "visit_id": visit_id, "role": request_body["role"],
+                    "lines": request_body["lines"]}
+            # 待传流水也可能静默少行：比残缺的 spool 短就不顶掉它（spool 丢的多半是写到一半、也没进流水的那半行）
+            if not dropped and (partial is None or len(body["lines"]) >= len(partial["lines"])):
+                return body, None
+            # 崩溃流水里也有丢掉的记录：同样先去云端找完整的那份
+            if partial is None:
+                partial = {**body, "dropped_lines": dropped}
+    return None, partial
+
+
 @data_router.get("/transcript")
 async def visit_transcript(request: Request, visit_id: str = ""):
     """One visit's transcript for export / report attachments.
@@ -530,42 +586,18 @@ async def visit_transcript(request: Request, visit_id: str = ""):
     if not isinstance(visit_id, str) or not VISIT_ID_RE.fullmatch(visit_id):
         return _error(400, "visit_id_format")
     config_dir = _config_dir()
+    epoch = runtime.account_epoch()
     account = await accounts.local_account()
     owner = await accounts.lookup_visit_uid(account)
+    local: Optional[dict] = None
     partial: Optional[dict] = None
-    # 进程里还有这一场：内存里的流水最完整（spool 某一行写失败时只记了日志、行仍在流水里）。
-    # 按社区账号认属主：账号映射一时没写成（后台还在补写）也不该把它挡掉
-    rt = _memory_runtime(visit_id)
-    if rt is not None and account and rt.creds is not None and rt.creds.account == account:
-        return JSONResponse(await _memory_transcript(config_dir, rt))
-    if owner:
-        spooled = await _spool_transcript(config_dir, visit_id, owner)
-        pending = await _pending_upload(config_dir, visit_id)
-        # 较早的上传文件不记属主：与补传同一规则，从 state.json / 流水头行认回来
-        if pending is not None and (pending[0].get("own_visit_uid")
-                                    or await pending_upload_owner(config_dir, visit_id)) != owner:
-            pending = None
-        if spooled is not None:
-            doc, dropped = spooled
-            # spool 某一行写失败时只记日志、结构照样完整：待传文件（同一场的上传流水）比它多行就让给它
-            upload_complete = (pending is not None and not pending[1]
-                               and len(pending[0]["request"]["lines"]) > len(doc["lines"]))
-            if not dropped and not upload_complete:
-                return JSONResponse(doc)
-            # 崩溃留下的半行 / 坏行被丢掉了：先找完整的来源，都没有再退回这份
-            if dropped:
-                partial = {**doc, "dropped_lines": dropped}
-        if pending is not None:
-            upload_doc, dropped = pending
-            request_body = upload_doc["request"]
-            body = {"source": "upload", "visit_id": visit_id, "role": request_body["role"],
-                    "lines": request_body["lines"]}
-            # 待传流水也可能静默少行：比残缺的 spool 短就不顶掉它（spool 丢的多半是写到一半、也没进流水的那半行）
-            if not dropped and (partial is None or len(body["lines"]) >= len(partial["lines"])):
-                return JSONResponse(body)
-            # 崩溃流水里也有丢掉的记录：同样先去云端找完整的那份
-            if partial is None:
-                partial = {**body, "dropped_lines": dropped}
+    if epoch is not None:
+        local, partial = await _local_transcript(config_dir, visit_id, account, owner)
+        if runtime.account_epoch() != epoch:
+            # 读的过程中有过登出 / 换账号：本机副本按的是旧账号，不交给此刻登录的人，只走云端
+            local = partial = None
+    if local is not None:
+        return JSONResponse(local)
     try:
         cloud = await cloud_routes.fetch_cloud_transcript(visit_id)
     except cloud_routes.CloudTranscriptIncomplete:

@@ -1306,3 +1306,36 @@ async def test_a_shorter_upload_does_not_replace_a_longer_partial_spool(env):
     env.servers.details_mode = "503"
     body = (await _transcript(env)).json()
     assert body["source"] == "spool" and body["dropped_lines"] == 1 and len(body["lines"]) == 3
+
+
+def _epochs(monkeypatch, *values):
+    seq = iter(values)
+    last = values[-1]
+    monkeypatch.setattr(rtm, "account_epoch", lambda: next(seq, last))
+
+
+async def test_join_refuses_a_preview_fetched_across_an_account_change(env, monkeypatch):
+    _epochs(monkeypatch, 3, 4)            # 取预览前后代数不同（A→B→A 也一样）
+    resp = await _join(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "busy"
+    assert _no_slot("Guest") and env.guest.creds_calls == []
+
+
+async def test_join_refuses_an_account_change_between_preview_and_admission(env, monkeypatch):
+    _epochs(monkeypatch, 3, 3, 4)         # 预览按代数 3 取到，准入时已是 4
+    resp = await _join(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "busy" and _no_slot("Guest")
+
+
+async def test_rooms_refuse_while_an_account_change_is_in_progress(env, monkeypatch):
+    monkeypatch.setattr(rtm, "account_epoch", lambda: None)
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "busy" and _no_slot()
+
+
+async def test_local_transcript_read_across_an_account_change_falls_back_to_the_cloud(env, monkeypatch):
+    await _write_spool(env.host.config_dir)
+    env.servers.details_lines = _details_rows(2)
+    _epochs(monkeypatch, 5, 6)            # 读本机副本的过程中有过登出 / 换账号
+    body = (await _transcript(env)).json()
+    assert body["source"] == "cloud"
