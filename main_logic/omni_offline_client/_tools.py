@@ -161,8 +161,9 @@ class _ToolingMixin:
         A ``prompt_ephemeral`` turn saves its tool rounds but never its
         instruction, so in history the round follows an assistant message, or
         the tool reply of an earlier turn that ended on a round: the first
-        round of every such turn gets one (``_proactive_round_generation``),
-        later rounds of the same turn answer its own tool replies.
+        round of every such turn gets one (``_proactive_round_generation``)
+        unless its own instruction or a user turn is right before it; later
+        rounds of the same turn answer its own tool replies.
         Gemini, natively and behind OpenAI-compatible gateways, rejects a
         function call turn that does not come right after a user turn or a
         function response; other providers read the stand-in as one more
@@ -179,15 +180,18 @@ class _ToolingMixin:
                 and message.get("tool_calls")
             ):
                 turn = self._proactive_round_generation(message)
-                follows_prompt = isinstance(before, HumanMessage) or (
-                    isinstance(before, dict) and before.get("role") == "user"
-                )
-                follows_own_round = (
-                    isinstance(before, dict) and before.get("role") == "tool"
-                    and (turn is None or turn == previous_turn)
-                )
+                first_of_turn = turn is not None and turn != previous_turn
                 previous_turn = turn
-                if not (follows_prompt or follows_own_round):
+                if first_of_turn:
+                    # Only its own (unsaved) instruction, or a real user turn,
+                    # prompted it: a tool reply or a tool image placeholder
+                    # before it belongs to an earlier turn.
+                    prompted = isinstance(before, HumanMessage)
+                else:
+                    prompted = isinstance(before, HumanMessage) or (
+                        isinstance(before, dict) and before.get("role") in ("user", "tool")
+                    )
+                if not prompted:
                     if stand_in is None:
                         stand_in = _loc(TOOL_ROUND_PROMPT_PLACEHOLDER, self._tool_image_locale())
                     seated.append({"role": "user", "content": stand_in})

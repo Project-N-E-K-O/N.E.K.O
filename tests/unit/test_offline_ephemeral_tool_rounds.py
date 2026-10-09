@@ -553,3 +553,32 @@ async def test_a_callback_failing_before_any_tool_is_not_delivered():
     client.script = [APIConnectionError(request=httpx.Request("POST", "http://provider.invalid"))]
     with patch(_SLEEP, _no_backoff):
         assert await client.prompt_ephemeral(_INSTRUCTION) is False
+
+
+async def test_a_callback_round_after_an_earlier_tool_image_still_gets_its_stand_in():
+    """Callback A ends on a tool that returned a picture, so its image turn
+    stays as a user-role placeholder; callback B's first round follows it,
+    yet that placeholder did not prompt B."""
+    from main_logic.tool_calling import ToolImage
+    from tests.unit.test_offline_provider_frame_publish import _png_b64
+
+    image = ToolImage(data_b64=_png_b64(4, 4, (5, 6, 7)), mime="image/png")
+
+    async def handler(call):
+        images = [image] if call.call_id == "a1" else []
+        return ToolResult(call_id=call.call_id, name=call.name, output={}, images=images)
+
+    client = _seeded(_client(handler=handler))
+    client.script = [
+        [_tool_calls("a1")], [_text("", "stop")],
+        [_tool_calls("b1")], [_text("", "stop")],
+        [_text("嗯"), _text("", "stop")],
+    ]
+    await client.prompt_ephemeral(_INSTRUCTION)
+    await client.prompt_ephemeral(_INSTRUCTION)
+    await client.stream_text("下一句")
+    request = client.requests[-1]
+    at = next(i for i, m in enumerate(request) if isinstance(m, dict) and m.get("tool_calls")
+              and m["tool_calls"][0]["id"] == "b1")
+    assert request[at - 1] == {"role": "user", "content": TOOL_ROUND_PROMPT_PLACEHOLDER["zh"]}
+    assert request[at - 2].get("role") == "user", "A's image placeholder is still there"
