@@ -640,9 +640,13 @@ async def visit_transcript(request: Request, visit_id: str = ""):
     if partial is None:
         return JSONResponse(cloud)
     local_keys = {_line_key(line) for line in partial["lines"]}
-    if local_keys <= {_line_key(line) for line in cloud["lines"]}:
-        # 云端那份包含本机残缺副本的每一行：用它
+    cloud_keys = {_line_key(line) for line in cloud["lines"]}
+    if local_keys < cloud_keys:
+        # 云端那份包含本机残缺副本的每一行、还多出行：用它
         return JSONResponse(cloud)
+    if local_keys == cloud_keys:
+        # 两边一模一样：丢掉的那条两边都没有，留着本机这份与它的丢行提示
+        return JSONResponse(partial)
     # 两边各有对方没有的行（独立写入、各自可能漏行）：并到本机这份里，丢行数照报
     merged = _merge_lines(partial["lines"], cloud["lines"], local_shape=partial.get("source") == "spool")
     return JSONResponse({**partial, "lines": merged})

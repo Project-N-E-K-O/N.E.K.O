@@ -1408,3 +1408,12 @@ async def test_an_account_change_during_the_cloud_fetch_returns_nothing(env, mon
     _epochs(monkeypatch, 5, 5, 5, 6)      # 本机读取前后不变，云端请求途中变了
     resp = await _transcript(env)
     assert resp.status_code == 409 and resp.json()["reason"] == "account_change" and "lines" not in resp.json()
+
+
+async def test_a_cloud_copy_with_exactly_the_local_rows_keeps_the_drop_notice(env):
+    spool = await _write_spool(env.host.config_dir)
+    with open(spool.jsonl_path, "ab") as handle:
+        handle.write(b'{"lp": 9, "side": "host", "ts"')      # 两边都丢了最后一条
+    env.servers.details_lines = _cloud_rows_covering(extra=0)
+    body = (await _transcript(env)).json()
+    assert body["source"] == "spool" and body["dropped_lines"] == 1 and len(body["lines"]) == 3
