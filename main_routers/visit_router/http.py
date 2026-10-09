@@ -526,6 +526,23 @@ async def _pending_upload(config_dir: Path, visit_id: str) -> Optional[tuple[dic
         return None
 
 
+def _line_key(line: Mapping[str, Any]) -> tuple:
+    return line["lp"], line["side"]
+
+
+def _merge_lines(base: list, more: list, *, local_shape: bool) -> list:
+    """``base`` plus the rows of ``more`` whose ``(lp, side)`` it lacks, in ``(lp, side_rank)`` order.
+
+    ``more`` rows are compact (``{lp, side, from, ts, text, truncated}``); with
+    ``local_shape`` they are converted to the local full line shape first.
+    """
+    have = {_line_key(line) for line in base}
+    extra = [(_local_line(None, row) if local_shape else dict(row)) for row in more if _line_key(row) not in have]
+    if not extra:
+        return list(base)
+    return sorted(list(base) + extra, key=lambda line: (line["lp"], SIDE_RANK.get(line["side"], 2)))
+
+
 async def _local_transcript(
     config_dir: Path, visit_id: str, account: Optional[str], owner: Optional[str],
 ) -> tuple[Optional[dict], Optional[dict]]:
@@ -552,17 +569,10 @@ async def _local_transcript(
         doc, dropped = spooled
         if pending is not None:
             # spool 与上传流水各自独立写盘，各自可能漏掉不同的行（写失败只记日志）：按 (lp, side) 取并集。
-            # 一边丢掉的记录（解析不了、认不出是哪一行）按另一边补进来的行数抵扣，剩下的按两边较大者如实报
+            # 丢掉的记录解析不了、认不出是哪一行，没法证明被另一边补回：丢行数照报（两边较大者）
             upload_doc, upload_dropped = pending
-            have = {(line["lp"], line["side"]) for line in doc["lines"]}
-            uploaded = {(record["lp"], record["side"]) for record in upload_doc["request"]["lines"]}
-            extra = [_local_line(None, record) for record in upload_doc["request"]["lines"]
-                     if (record["lp"], record["side"]) not in have]
-            only_in_spool = len(have - uploaded)
-            if extra:
-                lines = sorted(doc["lines"] + extra, key=lambda line: (line["lp"], SIDE_RANK.get(line["side"], 2)))
-                doc = {**doc, "lines": lines}
-            dropped = max(dropped - len(extra), upload_dropped - only_in_spool, 0)
+            doc = {**doc, "lines": _merge_lines(doc["lines"], upload_doc["request"]["lines"], local_shape=True)}
+            dropped = max(dropped, upload_dropped)
         if not dropped:
             return doc, None
         # 崩溃留下的半行 / 坏行被丢掉了：先找完整的来源，都没有再退回这份
@@ -611,21 +621,31 @@ async def visit_transcript(request: Request, visit_id: str = ""):
             local = partial = None
     if local is not None:
         return JSONResponse(local)
-    try:
-        cloud = await cloud_routes.fetch_cloud_transcript(visit_id)
-    except cloud_routes.CloudTranscriptIncomplete:
-        if partial is not None:
-            return JSONResponse(partial)
-        return _error(502, "cloud_transcript_incomplete")
-    except cloud_routes.CloudError:
-        if partial is not None:
-            return JSONResponse(partial)
-        # 未登录 / 离线 / Servers 不可达 / 云端没有：如实说本机副本已清理
-        return _error(404, "transcript_gone_local")
-    if partial is not None and len(cloud["lines"]) <= len(partial["lines"]):
-        # 云端那份不比本机残缺的多（本侧转录还没传上去时只有对端的半边）：不拿它顶掉本机还剩的行
-        return JSONResponse(partial)
-    return JSONResponse(cloud)
+    cloud_epoch = runtime.account_epoch()
+    cloud: Optional[dict] = None
+    failure: Optional[JSONResponse] = None
+    if cloud_epoch is not None:
+        try:
+            cloud = await cloud_routes.fetch_cloud_transcript(visit_id)
+        except cloud_routes.CloudTranscriptIncomplete:
+            failure = _error(502, "cloud_transcript_incomplete")
+        except cloud_routes.CloudError:
+            # 未登录 / 离线 / Servers 不可达 / 云端没有：如实说本机副本已清理
+            failure = _error(404, "transcript_gone_local")
+    if cloud_epoch is None or runtime.account_epoch() != cloud_epoch:
+        # 云端请求途中（或此刻）有登出 / 换账号：这份结果按的可能是另一个账号的会话，什么都不给
+        return _error(409, "VISIT_E_BUSY", reason="account_change")
+    if cloud is None:
+        return JSONResponse(partial) if partial is not None else failure
+    if partial is None:
+        return JSONResponse(cloud)
+    local_keys = {_line_key(line) for line in partial["lines"]}
+    if local_keys <= {_line_key(line) for line in cloud["lines"]}:
+        # 云端那份包含本机残缺副本的每一行：用它
+        return JSONResponse(cloud)
+    # 两边各有对方没有的行（独立写入、各自可能漏行）：并到本机这份里，丢行数照报
+    merged = _merge_lines(partial["lines"], cloud["lines"], local_shape=partial.get("source") == "spool")
+    return JSONResponse({**partial, "lines": merged})
 
 
 def _reset_for_tests() -> None:

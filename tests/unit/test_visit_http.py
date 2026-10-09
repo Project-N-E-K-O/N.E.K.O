@@ -807,6 +807,17 @@ def _details_rows(n, role="host"):
     return rows
 
 
+def _cloud_rows_covering(extra: int = 2):
+    """Cloud details rows (requester = host) holding every line of ``LINES`` plus ``extra`` more."""
+    rows = [{"lp": line["lp"], "side": line["side"], "status": "agree", "guest": None,
+             "host": {"from": line["from"], "ts": line["ts"], "text": line["text"], "truncated": line["truncated"]}}
+            for line in LINES]
+    rows += [{"lp": 10 + i, "side": "host", "status": "only_host", "guest": None,
+              "host": {"from": "own_cat", "ts": 2000.0 + i, "text": f"extra {i}", "truncated": False}}
+             for i in range(extra)]
+    return rows
+
+
 async def test_transcript_falls_back_to_every_cloud_page(env):
     env.servers.details_lines = _details_rows(1200)
     resp = await _transcript(env)
@@ -978,8 +989,8 @@ async def test_a_spool_that_lost_lines_gives_way_to_a_complete_source(env):
     with open(spool.jsonl_path, "ab") as handle:
         handle.write(b'{"lp": 9, "side": "host", "ts"')      # 崩溃留下的半行
     _write_sealed(env.host.config_dir)
-    env.servers.details_lines = _details_rows(5)
-    # 待传文件补不回这半行：合并后仍不完整，先找云端（这里云端更全）
+    env.servers.details_lines = _cloud_rows_covering()
+    # 待传文件补不回这半行：合并后仍不完整，先找云端（这里云端包含本机的每一行）
     assert (await _transcript(env)).json()["source"] == "cloud"
     (env.host.config_dir / "visit_spool" / f"{VISIT_ID}.upload.json").unlink()
     env.servers.details_mode = "503"   # 云端也取不到：退回这份不完整的，并如实标出丢了几行
@@ -1023,7 +1034,7 @@ async def test_an_upload_stream_that_lost_records_gives_way_to_the_cloud(env):
     path = _write_stream(env.host.config_dir)
     with open(path, "ab") as handle:
         handle.write(b'{"kind": "line", "lp": 9')       # 崩溃留下的半行
-    env.servers.details_lines = _details_rows(5)
+    env.servers.details_lines = _cloud_rows_covering()
     assert (await _transcript(env)).json()["source"] == "cloud"
     env.servers.details_mode = "503"
     body = (await _transcript(env)).json()
@@ -1210,7 +1221,7 @@ async def test_a_recovery_sealed_upload_keeps_its_drop_count(env):
     # 启动补录把流水封成 .upload.json、删掉流水
     doc = recovery._seal_stream_sync(env.host.config_dir / "visit_spool", VISIT_ID, None)
     assert doc["dropped_records"] == 1 and not path.exists()
-    env.servers.details_lines = _details_rows(5)
+    env.servers.details_lines = _cloud_rows_covering()
     assert (await _transcript(env)).json()["source"] == "cloud"     # 不完整：先找云端
     env.servers.details_mode = "503"
     body = (await _transcript(env)).json()
@@ -1221,10 +1232,12 @@ async def test_a_cloud_copy_with_fewer_lines_does_not_replace_a_partial_one(env)
     spool = await _write_spool(env.host.config_dir)
     with open(spool.jsonl_path, "ab") as handle:
         handle.write(b'{"lp": 9, "side": "host", "ts"')      # 崩溃留下的半行
-    # 本侧转录还没传上去：云端只有对端那一半
+    # 本侧转录还没传上去：云端只有另一行，不是本机副本的超集
     env.servers.details_lines = _details_rows(1)
     body = (await _transcript(env)).json()
-    assert body["source"] == "spool" and body["dropped_lines"] == 1 and len(body["lines"]) == 3
+    # 不拿它顶掉本机还剩的行：并进来，丢行数照报
+    assert body["source"] == "spool" and body["dropped_lines"] == 1 and len(body["lines"]) == 4
+    assert [line["text"] for line in body["lines"]][:2] == ["line 0", "你好"]
 
 
 async def test_cloud_rows_past_the_wire_bounds_are_dropped(env):
@@ -1362,3 +1375,36 @@ async def test_local_transcript_read_across_an_account_change_falls_back_to_the_
     _epochs(monkeypatch, 5, 6)            # 读本机副本的过程中有过登出 / 换账号
     body = (await _transcript(env)).json()
     assert body["source"] == "cloud"
+
+
+async def test_dropped_spool_records_are_not_offset_by_merged_rows(env):
+    spool = await _write_spool(env.host.config_dir)
+    with open(spool.jsonl_path, "ab") as handle:
+        handle.write(b'{"lp": 9, "side": "host", "ts"')      # spool 坏了一条（认不出是哪一行）
+    doc = _upload_doc()
+    doc["request"]["lines"] = doc["request"]["lines"] + [
+        {"lp": 3, "side": "host", "from": "own_cat", "ts": 1005.0, "text": "spool 漏写的另一句", "truncated": False}]
+    path = env.host.config_dir / "visit_spool" / f"{VISIT_ID}.upload.json"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    env.servers.details_mode = "503"
+    body = (await _transcript(env)).json()
+    # 补进来一行不代表坏掉的那条找回来了：仍报不完整
+    assert len(body["lines"]) == 4 and body["dropped_lines"] == 1
+
+
+async def test_cloud_rows_missing_a_local_row_are_merged_not_swapped(env):
+    spool = await _write_spool(env.host.config_dir)
+    with open(spool.jsonl_path, "ab") as handle:
+        handle.write(b'{"lp": 9, "side": "host", "ts"')
+    rows = _cloud_rows_covering(extra=3)
+    del rows[1]                       # 云端恰好漏了本机有的那一行（独立写入）
+    env.servers.details_lines = rows
+    body = (await _transcript(env)).json()
+    assert body["source"] == "spool" and len(body["lines"]) == 6 and body["dropped_lines"] == 1
+
+
+async def test_an_account_change_during_the_cloud_fetch_returns_nothing(env, monkeypatch):
+    env.servers.details_lines = _cloud_rows_covering()
+    _epochs(monkeypatch, 5, 5, 5, 6)      # 本机读取前后不变，云端请求途中变了
+    resp = await _transcript(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "account_change" and "lines" not in resp.json()
