@@ -268,7 +268,10 @@ class ManagerHost:
         ws = getattr(self._mgr, "websocket", None)
         if ws is None or not hasattr(ws, "send_json"):
             return False
-        if not self.display_bound():
+        from main_routers.visit_router.display_socket import is_bound
+
+        # 校验与写入用同一个连接对象：校验之后 mgr.websocket 被新连接替换也写不到它身上
+        if not is_bound(ws):
             return False
         state = getattr(ws, "client_state", None)
         if state is not None and state != state.CONNECTED:
@@ -342,15 +345,14 @@ class ManagerHost:
             logger.warning("visit: assistant mirror timed out")
 
     async def render_chat_blocks(self, blocks: list[dict], *, request_id: str, source_name: str) -> bool:
-        if not self.display_bound():
+        # 与 SessionManager.render_chat_blocks 同一帧形状，但写给校验过的那个连接对象本身：
+        # 管理器的方法发送时会重读 mgr.websocket，校验之后被替换就会写给未 bind 的新连接
+        from main_routers.visit_router.display_socket import chat_blocks_frame
+
+        frame = chat_blocks_frame(blocks, request_id=request_id, source_name=source_name)
+        if not frame["blocks"]:
             return False
-        try:
-            return bool(await asyncio.wait_for(self._mgr.render_chat_blocks(
-                blocks, request_id=request_id, source="system", source_name=source_name,
-            ), _FRAME_TIMEOUT_S))
-        except asyncio.TimeoutError:
-            logger.warning("visit: chat blocks timed out")
-            return False
+        return await self.send_frame(frame)
 
     def park_proactive(self) -> None:
         park = getattr(self._mgr, "_park_proactive_for_goodbye", None)

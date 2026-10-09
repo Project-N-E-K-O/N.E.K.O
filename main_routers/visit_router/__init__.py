@@ -52,13 +52,14 @@ runtime.register_visit_route_kind()
 
 def _wire_memory_routes() -> None:
     # 记忆管理端点的运行时钩子：本机登录账号的 visit_uid（#3312 的映射）、角色是否正在串门
-    # （占位到退出流程结束都算）、拉黑时结束与此人的在飞串门
+    # （占位到退出流程结束都算）、清除期间挡住改名 / 删除、拉黑时结束与此人的在飞串门
     from main_routers.visit_router.accounts import own_visit_uid
     from main_routers.visit_router.display_socket import end_visits_with_peer
 
     memory_routes.configure_memory_routes(
         own_visit_uid=own_visit_uid,
         is_visit_active=runtime.is_visit_route_locked,
+        lifecycle_guard=runtime.hold_character_lifecycle,
         on_blocked=end_visits_with_peer,
     )
 

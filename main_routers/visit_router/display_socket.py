@@ -130,21 +130,22 @@ async def handle_bind(websocket: Any, lanlan_name: str, message: Any) -> bool:
         return False
     setattr(websocket, VISIT_SOCKET_BOUND_ATTR, True)
     _delivered(websocket)
-    # 重放要读磁盘（state.json）：放后台，不占住这条连接的收消息循环
-    task = asyncio.ensure_future(replay(websocket, str(lanlan_name or "")))
+    from main_routers.visit_router import runtime
+
+    rt = runtime.get_runtime(str(lanlan_name or ""))
+    if rt is not None:
+        # 与打标记同步、排进串门自己的有序显示队列：之前排着的帧先发、之后的阶段帧后发，
+        # 旧快照不会落在新阶段之后
+        rt.replay_for_bind()
+    # 芯片重放要读磁盘（state.json）：放后台，不占住这条连接的收消息循环
+    task = asyncio.ensure_future(replay_chips(websocket, str(lanlan_name or "")))
     _replays.add(task)
     task.add_done_callback(_replays.discard)
     return True
 
 
-async def replay(websocket: Any, lanlan_name: str) -> None:
-    """Frames a freshly bound connection gets again: live invite frames, then pending chips."""
-    from main_routers.visit_router import runtime
-
-    rt = runtime.get_runtime(lanlan_name)
-    if rt is not None:
-        for frame in rt.bind_replay_frames():
-            await _send(websocket, frame)
+async def replay_chips(websocket: Any, lanlan_name: str) -> None:
+    """Debrief chips a freshly bound connection gets again (live invite frames go through the runtime)."""
     try:
         await _replay_chips(websocket, lanlan_name)
     except Exception as exc:  # noqa: BLE001 - 读不出就等下次 bind / 启动补录
@@ -161,8 +162,8 @@ async def _pending_debriefs(lanlan_name: str) -> list[dict]:
     pending: list[dict] = []
     names: dict[str, Optional[str]] = {}
     for visit_id in await VisitSpool.list_visit_ids(config_dir, (STATE_SUFFIX,)):
-        if runtime.is_visit_live(visit_id):
-            continue
+        # 还登记着的场次（退出流程中）也重放：芯片标记已落盘、而收尾时页面恰好重连没 bind，
+        # 之后再没有别的重放时机；与收尾那次重复时前端按 request_id 去重
         try:
             state = await VisitSpool(config_dir, visit_id).read_state()
         except Exception as exc:  # noqa: BLE001 - 一场坏了不挡其余场次
@@ -195,12 +196,18 @@ async def _replay_chips(websocket: Any, lanlan_name: str) -> None:
             continue
         if state["finalized"] == "crash":
             await _send_status(websocket, "VISIT_INTERRUPTED_LAST_TIME", {"visit_id": visit_id})
-        await _send(websocket, {
-            "type": "chat_blocks",
-            "blocks": chip_blocks(visit_id, lang),
-            "request_id": request_id,
-            "metadata": {"source": "system", "source_name": lanlan_name, "passthrough": True},
-        })
+        await _send(websocket, chat_blocks_frame(chip_blocks(visit_id, lang), request_id=request_id,
+                                                 source_name=lanlan_name))
+
+
+def chat_blocks_frame(blocks: list, *, request_id: str, source_name: str) -> dict:
+    """The ``chat_blocks`` frame of a system message (same shape as ``SessionManager.render_chat_blocks``)."""
+    return {
+        "type": "chat_blocks",
+        "blocks": [dict(block) for block in blocks if isinstance(block, dict)],
+        "request_id": request_id,
+        "metadata": {"source": "system", "source_name": source_name or "", "passthrough": True},
+    }
 
 
 async def handle_chip_ack(websocket: Any, lanlan_name: str, message: Any) -> None:

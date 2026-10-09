@@ -28,8 +28,8 @@ those branches. Hijack points now ask the registry instead:
   ``is_locked``, which a kind can keep true while its exit flow is still
   running after ``is_active`` has turned false.
 
-``is_character_lifecycle_locked`` is the predicate for a character
-rename / delete guard; no endpoint consults it yet.
+``is_character_lifecycle_locked`` is the predicate of the character
+rename / delete guard (``characters_router/crud.py``).
 
 The registry stores callables only. It lives in ``utils/`` so that
 ``main_logic/`` can consult it without importing ``main_routers/``; route
@@ -201,7 +201,7 @@ def is_route_slot_taken(
 
 
 def is_character_lifecycle_locked(lanlan_name: str) -> bool:
-    """Predicate for a character rename / delete guard (no endpoint uses it yet).
+    """Predicate of the character rename / delete guard (``characters_router/crud.py``).
 
     Besides an occupied slot, a kind may still be writing data keyed to this
     character in the background after its route ended. Those tasks would

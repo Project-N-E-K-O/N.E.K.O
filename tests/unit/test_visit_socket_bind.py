@@ -81,9 +81,14 @@ class FakeRuntime:
         self.frames = frames
         self.finalized: list[str] = []
         self.peer = None
+        self.replayed: list[list[dict]] = []
 
     def bind_replay_frames(self):
         return [dict(f) for f in self.frames]
+
+    def replay_for_bind(self):
+        # 真运行时排进有序显示队列（见 test_bind_replay_rides_the_ordered_display_queue）
+        self.replayed.append(self.bind_replay_frames())
 
     def request_finalize(self, reason):
         self.finalized.append(reason)
@@ -133,7 +138,7 @@ def install(monkeypatch, manager, *, visit_active=False, rt=None):
     async def start_session(_name, _message):
         return False
 
-    monkeypatch.setattr(websocket_router, "get_config_manager", lambda: object())
+    monkeypatch.setattr(websocket_router, "get_config_manager", object)
     monkeypatch.setattr(websocket_router, "get_session_manager", lambda: {NAME: manager})
     monkeypatch.setattr(websocket_router, "get_session_id", lambda: {})
     registry.register_external_route_kind(registry.ExternalRouteKind(
@@ -161,32 +166,37 @@ async def run(socket, manager):
 
 async def test_valid_bind_marks_the_connection_and_replays_the_invite(monkeypatch):
     manager = _ProtocolManager()
-    install(monkeypatch, manager, visit_active=True, rt=FakeRuntime([INVITE]))
+    rt = FakeRuntime([INVITE])
+    install(monkeypatch, manager, visit_active=True, rt=rt)
     socket = VisitSocket([bind()])
     await run(socket, manager)
     assert getattr(socket, VISIT_SOCKET_BOUND_ATTR) is True
-    assert socket.visit_frames() == [INVITE]
+    assert rt.replayed == [[INVITE]]
     assert socket.statuses() == [] and manager.statuses == []
 
 
 @pytest.mark.parametrize("header", ["X-Forwarded-For", "Forwarded", "X-Real-IP"])
 async def test_proxy_header_refuses_bind_even_from_loopback(monkeypatch, header):
     manager = _ProtocolManager()
-    install(monkeypatch, manager, visit_active=True, rt=FakeRuntime([INVITE]))
+    rt = FakeRuntime([INVITE])
+    install(monkeypatch, manager, visit_active=True, rt=rt)
     socket = VisitSocket([bind()], headers={header: "127.0.0.1"})
     await run(socket, manager)
     assert not display_socket.is_bound(socket)
     assert socket.statuses() == ["VISIT_E_UNAUTHORIZED"] and socket.visit_frames() == []
+    assert rt.replayed == []
 
 
 async def test_behind_proxy_refuses_a_rewritten_loopback_peer(monkeypatch):
     # uvicorn proxy_headers 已把 client.host 改写成 127.0.0.1：只看 client.host 会放行
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
     manager = _ProtocolManager()
-    install(monkeypatch, manager, visit_active=True, rt=FakeRuntime([INVITE]))
+    rt = FakeRuntime([INVITE])
+    install(monkeypatch, manager, visit_active=True, rt=rt)
     socket = VisitSocket([bind()])
     await run(socket, manager)
     assert not display_socket.is_bound(socket) and socket.visit_frames() == []
+    assert rt.replayed == []
     assert socket.statuses() == ["VISIT_E_UNAUTHORIZED"]
 
 
@@ -194,41 +204,48 @@ async def test_allow_nonlocal_lets_both_through(monkeypatch):
     monkeypatch.setattr(visit_settings, "NEKO_VISIT_ALLOW_NONLOCAL", True)
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
     manager = _ProtocolManager()
-    install(monkeypatch, manager, visit_active=True, rt=FakeRuntime([INVITE]))
+    rt = FakeRuntime([INVITE])
+    install(monkeypatch, manager, visit_active=True, rt=rt)
     a = VisitSocket([bind()], headers={"X-Forwarded-For": "10.0.0.2"})
     await run(a, manager)
     b = VisitSocket([bind()], host="192.168.1.20")
     await run(b, manager)
     assert display_socket.is_bound(a) and display_socket.is_bound(b)
+    assert len(rt.replayed) == 2
 
 
 async def test_non_loopback_peer_is_refused_with_valid_token_and_origin(monkeypatch):
     manager = _ProtocolManager()
-    install(monkeypatch, manager, visit_active=True, rt=FakeRuntime([INVITE]))
+    rt = FakeRuntime([INVITE])
+    install(monkeypatch, manager, visit_active=True, rt=rt)
     socket = VisitSocket([bind()], host="192.168.1.20")
     await run(socket, manager)
     assert not display_socket.is_bound(socket)
     assert socket.statuses() == ["VISIT_E_UNAUTHORIZED"] and socket.visit_frames() == []
+    assert rt.replayed == []
 
 
 @pytest.mark.parametrize("token,origin", [("wrong" * 6, ORIGIN), (TOKEN, "http://evil.example"), ("", ORIGIN)])
 async def test_bad_token_or_origin_is_refused(monkeypatch, token, origin):
     manager = _ProtocolManager()
-    install(monkeypatch, manager, visit_active=True, rt=FakeRuntime([INVITE]))
+    rt = FakeRuntime([INVITE])
+    install(monkeypatch, manager, visit_active=True, rt=rt)
     socket = VisitSocket([bind(token)], headers={"origin": origin})
     await run(socket, manager)
     assert not display_socket.is_bound(socket)
     assert socket.statuses() == ["VISIT_E_UNAUTHORIZED"] and socket.visit_frames() == []
+    assert rt.replayed == []
 
 
 async def test_rebinding_after_reconnect_replays_the_invite_again(monkeypatch):
     manager = _ProtocolManager()
-    install(monkeypatch, manager, visit_active=True, rt=FakeRuntime([INVITE]))
+    rt = FakeRuntime([INVITE])
+    install(monkeypatch, manager, visit_active=True, rt=rt)
     first = VisitSocket([bind()])
     await run(first, manager)
     second = VisitSocket([bind()])
     await run(second, manager)
-    assert first.visit_frames() == [INVITE] and second.visit_frames() == [INVITE]
+    assert rt.replayed == [[INVITE], [INVITE]]
 
 
 # ── 未绑定连接的输入 ───────────────────────────────────────────────────
@@ -298,8 +315,39 @@ async def test_unbound_socket_gets_no_visit_downlink_until_it_binds(monkeypatch)
     assert await host.send_frame(INVITE) is False
     assert await host.render_chat_blocks([{"type": "text", "text": "x"}], request_id="q2", source_name=NAME) is False
     await host.mirror_assistant_output("简述2", metadata={}, request_id="s2")
-    assert a.sent == [INVITE] and b.sent == []
-    assert mgr.blocks == ["q"] and mgr.outputs == ["简述"]
+    chips = {"type": "chat_blocks", "blocks": [{"type": "text", "text": "x"}], "request_id": "q",
+             "metadata": {"source": "system", "source_name": NAME, "passthrough": True}}
+    # 芯片直接写给校验过的那个连接（同 render_chat_blocks 的帧形状），不经管理器重读 websocket
+    assert a.sent == [INVITE, chips] and b.sent == []
+    assert mgr.blocks == [] and mgr.outputs == ["简述"]
+
+
+class SwappingManager(DownlinkManager):
+    """``websocket`` returns the next socket on every read (a replacement landing between two reads)."""
+
+    def __init__(self, *sockets):
+        super().__init__(sockets[0])
+        self._sockets = list(sockets)
+
+    @property
+    def websocket(self):
+        return self._sockets.pop(0) if len(self._sockets) > 1 else self._sockets[0]
+
+    @websocket.setter
+    def websocket(self, _value):
+        pass
+
+
+async def test_frames_are_checked_and_written_on_the_same_connection():
+    unbound = VisitSocket([])
+    bound = VisitSocket([])
+    setattr(bound, VISIT_SOCKET_BOUND_ATTR, True)
+    # 第一次读到未 bind 的新连接、第二次读到已 bind 的旧连接：不能拿旧连接的校验结果写给新连接
+    host = host_port.ManagerHost(NAME, SwappingManager(unbound, bound))
+    assert await host.send_frame(INVITE) is False
+    host = host_port.ManagerHost(NAME, SwappingManager(unbound, bound))
+    assert await host.render_chat_blocks([{"type": "text", "text": "x"}], request_id="q", source_name=NAME) is False
+    assert unbound.sent == [] and bound.sent == []
 
 
 # ── debrief 芯片重放 ──────────────────────────────────────────────────
@@ -368,7 +416,7 @@ async def test_ack_is_per_connection_and_never_clears_the_flag(monkeypatch, tmp_
     assert getattr(first, "neko_visit_delivered_debrief") == {rid}
     assert (await spool.read_state())["debrief_chip_pending"] is True
     # 同一条连接再 bind：已送达的不重推
-    await display_socket.replay(first, NAME)
+    await display_socket.replay_chips(first, NAME)
     assert _chip_ids(first) == [rid]
     # 新连接（刷新 / 新窗口）首次 bind 照常重放
     second = VisitSocket([bind()])
@@ -385,3 +433,39 @@ async def test_ack_from_an_unbound_connection_is_ignored(monkeypatch, tmp_path):
     await run(socket, manager)
     assert getattr(socket, "neko_visit_delivered_debrief", set()) == set()
     assert manager.statuses == []      # 不再当未知 action
+
+
+async def test_chips_of_a_visit_still_in_its_exit_flow_are_replayed(monkeypatch, tmp_path):
+    # 收尾时页面恰好重连没 bind：芯片标记已落盘、运行时还登记着，bind 时照样重放
+    await _pending(tmp_path, 9, debrief_choice="ask_later")
+    monkeypatch.setattr(runtime, "is_visit_live", lambda visit_id: True)
+    manager = _ProtocolManager()
+    install(monkeypatch, manager)
+    socket = VisitSocket([bind()])
+    await run(socket, manager)
+    assert _chip_ids(socket) == [chips_request_id(vid(9))]
+
+
+async def test_bind_replay_rides_the_ordered_display_queue(tmp_path, monkeypatch):
+    from main_routers.visit_router import transport_ws
+    from tests.unit.visit_runtime_harness import bring_up, settle, teardown
+    from utils import visit_route_state
+
+    runtime.register_visit_route_kind()
+    host, guest, wire, clock, _wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    try:
+        hrt = host.rt
+        assert hrt.phase == "awaiting_accept"
+        await settle()
+        before = len(host.host.frames)
+        # 绑定那一刻同步排队：之后的阶段帧排在快照后面，旧快照不会落在新阶段之后
+        hrt.replay_for_bind()
+        hrt._post_display({"type": "visit_later", "visit_id": hrt.visit_id})
+        await settle()
+        later = [f["type"] for f in host.host.frames[before:]]
+        assert later == ["visit_invite", "visit_later"]
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+        runtime._reset_for_tests()
+        transport_ws._reset_for_tests()
+        visit_route_state._reset_for_tests()

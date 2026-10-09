@@ -23,7 +23,6 @@ from main_routers import websocket_router
 from main_routers.visit_router import display_socket, runtime
 from tests.fastapi_routes import effective_path, iter_routes
 from tests.unit.test_visit_socket_bind import (  # noqa: F401 - _env 是 autouse 夹具
-    NAME,
     FakeRuntime,
     VisitSocket,
     _env,
@@ -176,14 +175,13 @@ def test_visit_router_is_mounted_before_the_pages_fallback():
 def test_memory_route_hooks_are_wired_to_the_runtime(monkeypatch):
     import copy
 
-    import main_routers.visit_router as visit_pkg
-    from main_routers.visit_router import accounts, memory_routes
+    from main_routers.visit_router import _wire_memory_routes, accounts, memory_routes
 
     # 包导入时即接线（模块级调用）；别的测试会改钩子，这里在副本上重跑一次再核对
-    source = Path(visit_pkg.__file__).read_text(encoding="utf-8")
+    source = (Path(memory_routes.__file__).parent / "__init__.py").read_text(encoding="utf-8")
     assert "_wire_memory_routes()" in source.splitlines()
     monkeypatch.setattr(memory_routes, "_hooks", copy.copy(memory_routes._hooks))
-    visit_pkg._wire_memory_routes()
+    _wire_memory_routes()
     hooks = memory_routes._hooks
     assert hooks.own_visit_uid is accounts.own_visit_uid
     assert hooks.is_visit_active is runtime.is_visit_route_locked

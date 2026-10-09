@@ -45,6 +45,7 @@ connects ``websocket_router`` / ``turn.py``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import random
 import secrets
@@ -407,6 +408,36 @@ def spawn_visit_background(character_uid: str, factory: Callable[[], Awaitable[A
     task = asyncio.ensure_future(run())
     bucket.add(task)
     return task
+
+
+@contextlib.asynccontextmanager
+async def hold_character_lifecycle(character_uids: Iterable[str]):
+    """``lifecycle_guard`` of the clearing endpoints: rename / delete of these characters answer 400 while held.
+
+    Entered under the character-config mutation lock (the one rename and
+    delete run under), so a rename already in progress finishes first and
+    the clearing then re-reads the new name; once entered, the characters
+    count as having visit background work (``is_character_lifecycle_locked``).
+    """
+    from utils.character_memory import character_config_mutation_lock
+
+    held = asyncio.get_running_loop().create_future()
+    buckets: list[tuple[str, set]] = []
+    try:
+        async with character_config_mutation_lock:
+            for uid in sorted({str(u) for u in character_uids if u}):
+                await _remember_name(uid)
+                bucket = _visit_bg_tasks.setdefault(uid, set())
+                bucket.add(held)
+                buckets.append((uid, bucket))
+        yield
+    finally:
+        if not held.done():
+            held.set_result(None)
+        for uid, bucket in buckets:
+            bucket.discard(held)
+            if not bucket and _visit_bg_tasks.get(uid) is bucket:
+                _visit_bg_tasks.pop(uid, None)
 
 
 def current_instance(lanlan_name: str) -> Optional[str]:
@@ -1185,6 +1216,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.side == "host" and self.phase == PHASE_AWAITING and self._invite_frame is not None:
             frames.append(dict(self._invite_frame))
         return frames
+
+    def replay_for_bind(self) -> None:
+        """Queue :meth:`bind_replay_frames` on the ordered display queue (``visit_bind``).
+
+        Taken and queued synchronously when the socket binds: frames queued
+        earlier go out first, frames of later transitions after, so an older
+        snapshot never lands behind a newer phase.
+        """
+        for frame in self.bind_replay_frames():
+            self._post_display(frame)
 
     # ── 媒体 ─────────────────────────────────────────────────────────
 
@@ -2799,4 +2840,5 @@ __all__ = [
     "visit_sweep_loop", "is_visit_live", "is_visit_route_active", "is_visit_route_locked",
     "has_visit_background_tasks", "spawn_visit_background", "register_visit_route_kind",
     "get_runtime", "get_runtime_by_visit", "recent_runtime", "live_runtimes", "on_page_signal",
+    "hold_character_lifecycle",
 ]
