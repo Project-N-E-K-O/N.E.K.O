@@ -765,13 +765,14 @@ class VisitOutbox:
         return self._frame(item, retransmit=False)
 
     def leave_done(self, now: Optional[float] = None) -> bool:
-        """True once ``leave`` is acked, or ``VISIT_LEAVE_GAP_GRACE_S`` passed since it was sent.
+        """True once ``leave`` is acked, or ``VISIT_LEAVE_GAP_GRACE_S`` passed since it was written.
 
-        The grace starts when the ``leave`` frame is first transmitted (it is
-        queued behind every earlier reliable first send, so the receiver's
-        gap window never opens before those are on the wire). A ``leave``
-        still unsent ``2 × grace`` after it was queued (peer absent, bucket
-        starved) ends the outbox anyway.
+        The grace starts when the ``leave`` frame is first written by the
+        transport (:meth:`written`; it is queued behind every earlier
+        reliable first send, so the receiver's gap window never opens before
+        those are on the wire). A ``leave`` still not written ``2 × grace``
+        after it was queued (peer absent, bucket starved, writes stuck or
+        failing) ends the outbox anyway.
         """
         if self._leave_started is None:
             return False
@@ -779,7 +780,7 @@ class VisitOutbox:
         if self._leave_acked:
             return True
         if self._leave_sent_at is not None:
-            # 宽限从 leave 真正发出时起算：它按 FIFO 排在此前已入队的必达消息之后，
+            # 宽限从 leave 第一次真正写出去时起算：它按 FIFO 排在此前已入队的必达消息之后，
             # 接收方的补齐窗口也就不会在那些消息发出之前开始
             return now - self._leave_sent_at >= self._leave_grace_s
         # 兜底：入队后 2×宽限仍没发出去（对端不在、桶一直满），不再等
@@ -818,10 +819,11 @@ class VisitOutbox:
     def written(self, frame: OutboundFrame, now: Optional[float] = None) -> None:
         """The transport wrote ``frame``: the first such write of a reliable item anchors its timers.
 
-        ``due`` books the release time; the first write that actually
-        succeeds (possibly a resend on a replacement connection, after the
-        first attempt failed or is still stuck) moves the ``leave`` grace and
-        the delivery timeout to its own time. Later writes change nothing.
+        ``due`` books the release time for the delivery timeout; the first
+        write that actually succeeds (possibly a resend on a replacement
+        connection, after the first attempt failed or is still stuck) moves
+        it to its own time and starts the ``leave`` grace, which nothing else
+        starts. Later writes change nothing.
         """
         if not frame.seq:
             return
@@ -874,9 +876,8 @@ class VisitOutbox:
         if was_unsent:
             item.emitted = 0  # 那次没写出去的不算：重试间隔从第一档起
         if first:
+            # leave 的宽限不在这里起算：放出不等于写出去（写可能卡住、失败），由 written() 按第一次写成功起算
             item.first_active = self.active_time(now)
-            if item.seq == self._leave_seq:
-                self._leave_sent_at = now
         item.emitted += 1
         if self._leave_started is not None:
             item.next_due = now + _LEAVE_RESEND_INTERVAL_S

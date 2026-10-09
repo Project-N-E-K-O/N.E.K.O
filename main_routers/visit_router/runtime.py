@@ -612,6 +612,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._pump_stop = False
         self._ended_sending: Optional[asyncio.Future] = None
         self._memory_off_unsaved = False
+        self._state_writing: Optional[asyncio.Future] = None  # 激活被取消时还在写的那次 state（收尾先等它落定）
         self._renew_task: Optional[asyncio.Task] = None
         self._renew_failures = 0
         self._renew_retry_at: Optional[float] = None
@@ -1227,7 +1228,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         frames = self.outbox.due(now)
         for frame in frames:
             if await self.transport.send(frame.to_ws()):
-                self.on_frame_sent(frame)
+                try:
+                    self.on_frame_sent(frame)
+                except Exception as exc:  # noqa: BLE001 - 记账出错不能让这一批后面的帧既不发出、也不回滚
+                    logger.warning("visit %s: on_frame_sent failed: %r", self.visit_id[:6], exc)
             else:
                 # 没写出去：必达项马上重试；首发没写出去不算发过（leave 的宽限、wrap_up 的步骤计时都不从这里起算）
                 self.outbox.write_failed(frame, now=self.clock())
@@ -1542,11 +1546,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return
         spool = VisitSpool(self.config_dir, self.visit_id)
         memory_on = bool(self.memory_enabled and subjects)
+        # 写 state 在线程里，取消等它的人撤不掉写：单独成任务，激活被取消时留给收尾先等它落定
+        writing = asyncio.ensure_future(spool.write_state(new_state(
+            own_uid=creds.visit_uid, own_char=self.lanlan_name, own_char_uid=self.character_uid,
+            pair_id=pair_id, peer_uid=peer.uid, peer_char_id=peer_char_id, memory_enabled=memory_on,
+        )))
+        writing.add_done_callback(lambda t: t.cancelled() or t.exception())
         try:
-            await spool.write_state(new_state(
-                own_uid=creds.visit_uid, own_char=self.lanlan_name, own_char_uid=self.character_uid,
-                pair_id=pair_id, peer_uid=peer.uid, peer_char_id=peer_char_id, memory_enabled=memory_on,
-            ))
+            await asyncio.shield(writing)
             if memory_on:
                 await spool.open({
                     "v": 1, "visit_id": self.visit_id, "role": self.side, "own_uid": creds.visit_uid,
@@ -1561,6 +1568,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             # state 真没写成时收尾那次写会报错、只记日志
             self.memory_enabled = False
             self.spool = spool
+            if not writing.done():
+                # 收尾那次 update_state 不能抢在它前面：文件还没建出来会报错，随后这次写才落地、留下没收尾的 state
+                self._state_writing = writing
             if memory_on:
                 self._memory_off_unsaved = True
             raise
@@ -2053,8 +2063,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return
         self.sealed_doc = sealing.result()
 
+    async def _settle_state_write(self) -> None:
+        writing = self._state_writing
+        if writing is not None and not writing.done():
+            await asyncio.wait([writing])  # 调用方各自限时（收尾 / 关机都有上限）
+
     async def _finalize_spool_at_shutdown(self, spool: Any) -> None:
         try:
+            await self._settle_state_write()
             await spool.close()
             changes: dict[str, Any] = {"finalized": "shutdown"}
             if self._memory_off_unsaved:
@@ -2075,6 +2091,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.spool is not None and not self._spool_finalized:
             self._spool_finalized = True
             try:
+                await self._settle_state_write()
                 await self.spool.close()
                 changes: dict[str, Any] = {"finalized": reason}
                 if self._memory_off_unsaved:
@@ -2291,6 +2308,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             if sealed:
                 self._take_seal(sealing)
             else:
+                # 外层只是 shield 着等写盘，取消它撤不掉写：交给模块级登记一并收；真正的写盘已登记为只等不取消
+                self._keep_background(sealing)
                 # 磁盘卡住：写盘在线程里照样落地；spool 不标 finalized（顺序是先封存后 finalized），下次启动补录
                 logger.warning("visit %s: upload seal still writing at shutdown", self.visit_id[:6])
         if self.spool is not None and sealed and not self._spool_finalized:
@@ -2690,8 +2709,10 @@ async def stop_all(reason: str = "shutdown") -> None:
         detached += _transport_ws.pending_close_tasks()
         for task in detached:
             task.cancel()
-        if detached:
-            await asyncio.wait(detached, timeout=_SHUTDOWN_TASK_WAIT_S)
+        # 关机途中才登记的线程池写盘（各场 shutdown() 里才起的上传封存）：开头那次快照里没有，这里同样只等不取消
+        late_writes = [t for t in _awaited_writes if not t.done() and t not in writes]
+        if detached or late_writes:
+            await asyncio.wait(detached + late_writes, timeout=_SHUTDOWN_TASK_WAIT_S)
     finally:
         _stop_gen += 1  # stop_all 进行中才开始、它结束后才醒的入场：代数已变，同样不登记
         _stopping = False

@@ -143,6 +143,7 @@ def pump(sender: VisitOutbox, rx: Receiver, now: float,
     """One step of the link: release frames, deliver the surviving ones, return the ack."""
     frames = sender.due(now)
     for f in frames:
+        sender.written(f, now)            # 本侧写出去了；drop 模拟的是链路上丢了
         if drop is not None and drop(f, now):
             continue
         rx.feed(f.payload, now, cmd=f.cmd)
@@ -749,6 +750,7 @@ def test_leave_follows_queued_reliables_and_its_grace_starts_when_sent(tmp_path)
     leave_at = None
     for t in ticks(0.0, 12.0):
         for f in tx.due(t):
+            tx.written(f, t)
             if not f.retransmit:
                 order.append(f.t)
                 if f.t == "leave":
@@ -757,6 +759,17 @@ def test_leave_follows_queued_reliables_and_its_grace_starts_when_sent(tmp_path)
     assert leave_at is not None and leave_at > 0.0
     assert not tx.leave_done(leave_at + 4.9)
     assert tx.leave_done(leave_at + 5.0)
+
+
+async def test_the_leave_grace_starts_when_the_leave_is_written_not_when_released(tmp_path):
+    tx = make_outbox(tmp_path, leave_grace_s=5.0)
+    tx.send({"t": "leave", "reason": "home"}, now=0.0)
+    leave = [f for f in tx.due(0.0) if f.t == "leave"][0]    # 放出了，写还卡着
+    assert not tx.leave_done(5.0)                            # 没写出去：宽限不从放出时起算
+    tx.written(leave, now=3.0)                               # 3 s 后才写出去
+    assert not tx.leave_done(7.9)
+    assert tx.leave_done(8.0)
+    await tx.close()
 
 
 def test_unsent_leave_gives_up_after_twice_the_grace(tmp_path):
@@ -826,6 +839,19 @@ async def test_a_late_failure_of_a_first_send_written_since_keeps_the_resend(tmp
     assert item.next_due == 2.0                              # 也不多催一次重发（仍按补发后的 1 s 间隔）
     assert not tx.leave_done(5.9)                            # 宽限从真正写出去的那次（补发）起算
     assert tx.leave_done(6.0)
+    await tx.close()
+
+
+async def test_a_stuck_first_send_written_after_its_resend_failed_counts_as_sent(tmp_path):
+    tx = make_outbox(tmp_path)
+    tx.send(text(1), now=0.0)
+    stuck = [f for f in tx.due(0.0) if f.t == "text"][0]    # 旧连接上的首发，还卡在写
+    tx.replay_after_reload(0.5)
+    resent = [f for f in tx.due(0.5) if f.t == "text"][0]
+    tx.write_failed(resent, now=0.6)                         # 新连接上的补发没写出去
+    tx.written(stuck, now=0.7)                               # 卡住的首发最终写出去了
+    again = [f for f in tx.due(0.8) if f.t == "text"]
+    assert again and again[0].retransmit is True             # 已写出去过：之后的都是重传，不再当首发
     await tx.close()
 
 

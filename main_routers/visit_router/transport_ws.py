@@ -876,7 +876,7 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
     media_mark = conn.media_seq
     for index, frame in enumerate(frames):
         if await _send_on(conn, frame.to_ws()):
-            # 与泵发出的帧同一套记账（存活计时、收尾步骤计时器），不然重入时发出的首发就漏掉了
+            # 与泵发出的帧同一套记账（写出去的时刻、存活计时、收尾步骤计时器），不然重入时写出去的帧（首发或补发）就漏掉了
             try:
                 session.on_frame_sent(frame)
             except Exception as exc:  # noqa: BLE001

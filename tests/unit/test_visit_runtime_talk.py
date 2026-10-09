@@ -982,6 +982,34 @@ async def test_frames_sent_elsewhere_get_the_same_bookkeeping(tmp_path, monkeypa
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_failing_sent_bookkeeping_does_not_stop_the_rest_of_the_batch(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    frames = [SimpleNamespace(seq=n, t="text", retransmit=False, to_ws=lambda n=n: {"n": n}) for n in (1, 2)]
+    sent, failed = [], []
+
+    async def send(msg):
+        sent.append(msg["n"])
+        return True
+
+    def broken(frame):
+        raise RuntimeError("bookkeeping")
+
+    monkeypatch.setattr(rt.outbox, "due", lambda now=None: list(frames))
+    monkeypatch.setattr(rt.outbox, "write_failed", lambda frame, now=None: failed.append(frame.seq))
+    monkeypatch.setattr(rt.transport, "send", send)
+    monkeypatch.setattr(rt, "on_frame_sent", broken)
+    try:
+        await rt.flush()
+        assert sent == [1, 2] and failed == []                 # 记账出错：这一批后面的帧照样发出
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_line_abort_after_the_final_text_changes_nothing(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
@@ -1510,7 +1538,8 @@ async def test_own_line_frames_reach_the_page_in_order(tmp_path, monkeypatch):
     slowed = []
 
     async def send_frame(payload):
-        if payload.get("type") == "visit_line_delta" and not slowed:
+        if (payload.get("type") == "visit_line_delta" and not slowed
+                and payload.get("speaker", {}).get("side") == "host"):  # 只拖本侧这一行（客人那行也会上屏）
             slowed.append(payload)
             await asyncio.sleep(0.2)                          # 第一片写页面时被背压
         return await real_send(payload)
@@ -1519,8 +1548,8 @@ async def test_own_line_frames_reach_the_page_in_order(tmp_path, monkeypatch):
     before = len(host.host.frames)
     try:
         rt.schedule_reply(None)
-        await wait_for(lambda: [f for f in host.host.frames[before:] if f.get("type") == "visit_line"
-                                and f.get("speaker", {}).get("side") == "host"], timeout=5)
+        await wait_for(lambda: slowed and [f for f in host.host.frames[before:] if f.get("type") == "visit_line"
+                                           and f.get("line_id") == slowed[0]["line_id"]], timeout=5)
         await settle()
         own = [f for f in host.host.frames[before:] if f.get("type") in ("visit_line_delta", "visit_line")
                and f.get("speaker", {}).get("side") == "host"]

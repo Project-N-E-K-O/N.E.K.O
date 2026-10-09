@@ -1135,11 +1135,13 @@ class VisitRoom:
         return eff
 
     def on_wrap_up_sent(self, phase: WrapUpPhase, now: float) -> None:
-        """Runtime: one of this side's ``wrap_up`` frames was first transmitted.
+        """Runtime: one of this side's ``wrap_up`` frames was written (any transmission).
 
-        ``begin`` starts the host's 15 s step timer (waiting for the guest's
-        goodbye to start); it does not start before the guest can have
-        received the instruction. Other phases are ignored.
+        The first ``begin`` written starts the host's 15 s step timer
+        (waiting for the guest's goodbye to start); it does not start before
+        the guest can have received the instruction, and later writes
+        (retransmissions) neither restart nor push it back. Other phases are
+        ignored.
         """
         w = self._wrap
         if (phase == "begin" and self.side == "host" and w.step_awaiting_begin

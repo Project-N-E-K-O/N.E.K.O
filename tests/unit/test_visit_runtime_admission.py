@@ -731,9 +731,13 @@ async def test_an_activation_cancelled_while_writing_the_state_still_leaves_memo
     monkeypatch.setattr(rtm, "VISIT_ACTIVATION_ALLOWANCE_S", 0.3)
     real_write = spool_mod.VisitSpool.write_state
 
+    async def late_write(self, state):
+        await asyncio.sleep(1.0)                         # 取消落在写 state 期间，写比收尾那次 update 晚落地
+        await real_write(self, state)
+
     async def slow_write(self, state):
-        asyncio.ensure_future(real_write(self, state))   # 像写盘线程一样：await 被取消了它照样写完
-        await asyncio.sleep(5)                           # 取消落在写 state 期间
+        # 像写盘线程一样：等它的人被取消了，它照样写完
+        await asyncio.shield(asyncio.ensure_future(late_write(self, state)))
 
     monkeypatch.setattr(spool_mod.VisitSpool, "write_state", slow_write)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False,
@@ -743,9 +747,14 @@ async def test_an_activation_cancelled_while_writing_the_state_still_leaves_memo
         status, _ = await hrt.accept(True)
         assert status == 200
         await asyncio.wait_for(_finished(hrt), 15)
-        state = await spool_mod.VisitSpool(hrt.config_dir, hrt.visit_id).read_state()
+        state = None
+        for _ in range(50):
+            state = await spool_mod.VisitSpool(hrt.config_dir, hrt.visit_id).read_state()
+            if state and state.get("finalized"):
+                break
+            await asyncio.sleep(0.1)
+        assert state and state["finalized"]               # 收尾等那次写落定才写 finalized（记忆关的场次也照常收尾）
         assert state["memory_enabled"] is False           # 照样由收尾改回记忆关
-        assert state["finalized"]                         # 记忆关的场次也照常收尾，启动补录不当成崩溃中断
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -1186,6 +1195,30 @@ async def test_a_seal_outliving_the_exit_flow_is_handed_to_stop_all(tmp_path, mo
         assert not write.cancelled()                          # 关机不取消它：排着的封存放开后照样写成
         release.set()
         await wait_for(lambda: write.done() and rt.journal.sealed, timeout=5)
+    finally:
+        release.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_stop_all_waits_for_a_seal_write_started_during_shutdown(tmp_path, monkeypatch):
+    import threading
+
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    release = threading.Event()
+    real_seal = rt.journal._seal_sync
+
+    def slow_seal(doc):
+        threading.Timer(0.8, release.set).start()         # 写盘拖过这一场自己的关机等待
+        release.wait(10)
+        real_seal(doc)
+
+    rt.journal._seal_sync = slow_seal
+    try:
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 10)   # 这一场的封存在关机途中才起
+        write = rt.journal.seal_write
+        assert write is not None and write.done() and not write.cancelled()   # stop_all 最后那遍等到它写完
+        assert rt.journal.sealed
     finally:
         release.set()
         await teardown(host, guest, wire=wire, clock=clock)
