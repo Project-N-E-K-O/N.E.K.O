@@ -472,6 +472,11 @@ class UploadJournal:
         duration = max(0, int(end - start)) if start is not None and end is not None else 0
         return {"duration_s": duration, **self._usage}
 
+    @property
+    def seal_write(self) -> "asyncio.Future | None":
+        """The (single) seal write started by :meth:`seal`, or None before it."""
+        return self._seal_write
+
     async def seal(self, finalized_reason: str, *, ended_at: float | None = None) -> dict | None:
         """Write ``.upload.json`` from memory, then delete the stream; returns the document.
 

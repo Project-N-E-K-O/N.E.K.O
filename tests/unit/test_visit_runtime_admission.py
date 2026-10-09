@@ -1130,9 +1130,9 @@ async def test_a_seal_outliving_the_exit_flow_is_handed_to_stop_all(tmp_path, mo
     try:
         rt.request_finalize("route_end")
         await asyncio.wait_for(_finished(rt), 15)
-        sealing = rt._sealing
-        assert sealing is not None and not sealing.done()
-        assert sealing in rtm._detached                       # 封存本身也登记：关机时取消外层后台链也收得到它
+        write = rt.journal.seal_write                         # 真正写盘的那个任务（外层只是 shield 着等它）
+        assert write is not None and not write.done()
+        assert write in rtm._detached                         # 它本身登记了：关机时取消外层后台链也收得到它
     finally:
         release.set()
         await teardown(host, guest, wire=wire, clock=clock)

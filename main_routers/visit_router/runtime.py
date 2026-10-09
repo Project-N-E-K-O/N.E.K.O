@@ -1979,8 +1979,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: upload seal still writing; finishing it in the background", self.visit_id[:6])
             # 按 uid 登记：后台这段跑完（会写 spool 与串门记忆）之前，这个角色不能改名 / 删除
             gen = _stop_gen
-            # 外层后台链被取消不会传到封存本身（asyncio.wait 不传取消）：它也登记，关机时一并取消、限时等
-            self._keep_background(sealing)
+            # 封存真正写盘的那个任务已在 _start_seal 里登记（外层后台链被取消也收得到）
             spawn_visit_background(self.character_uid, lambda: self._finalize_after_seal(sealing, reason, gen))
             return False
         self._take_seal(sealing)
@@ -2008,7 +2007,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             sealing = self._sealing = asyncio.ensure_future(self.journal.seal(
                 reason, ended_at=self.wall() if ended_at is None else ended_at))
             sealing.add_done_callback(lambda t: t.cancelled() or t.exception())  # 结果由 _take_seal 取
+            # 真正写盘的是 seal() 第一步里起的 journal.seal_write（外层只是 shield 着等它，取消外层传不到它）：
+            # 等外层跑完第一步再把它交给模块级登记，三个调用方（正常收尾、后台补封、关机）都覆盖到
+            asyncio.get_running_loop().call_soon(self._keep_seal_write)
         return sealing
+
+    def _keep_seal_write(self) -> None:
+        write = self.journal.seal_write
+        if write is not None and not write.done():
+            self._keep_background(write)
 
     def _seal_settled(self) -> bool:
         return not self._header_pending() and (self._sealing is None or self._sealing.done())
