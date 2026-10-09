@@ -38,8 +38,8 @@ VISIT_ROUTE_KIND = "neko_visit"
 VISIT_SOCKET_BOUND_ATTR = "neko_visit_authorized"
 """Attribute set on a display-socket connection object once it passed ``visit_bind`` (design §4.5)."""
 
-DISPLAY_SOCKET_VISIT_BOUND: ContextVar[Optional[bool]] = ContextVar("neko_display_socket_visit_bound", default=None)
-"""Set by ``websocket_router`` around a ``stream_data`` dispatch: whether that connection passed ``visit_bind``."""
+DISPLAY_SOCKET_CONNECTION: ContextVar[Optional[object]] = ContextVar("neko_display_socket_connection", default=None)
+"""Set by ``websocket_router`` around a ``stream_data`` dispatch: the display-socket connection it came from."""
 
 VISIT_SOCKET_DELIVERED_ATTR = "neko_visit_delivered_debrief"
 """Attribute holding the debrief block request ids this display-socket connection acknowledged."""

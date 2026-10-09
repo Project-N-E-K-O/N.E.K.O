@@ -40,6 +40,7 @@ recovery (PR-09b wires it).
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, Optional
 
 from config.visit_settings import (
@@ -106,7 +107,9 @@ async def render_chips(visit_id: str, *, own_char: str, status: Optional[str] = 
         # 页面还没 bind（启动补录通常早于页面连上）：芯片与「意外中断」都等 visit_bind 重放，不先发半套
         return False
     if status == "interrupted":
-        await host.send_status("VISIT_INTERRUPTED_LAST_TIME", {"visit_id": visit_id})
+        # 与芯片同一出口：校验 bind 与写入用同一个连接对象（send_status 会重读 mgr.websocket）
+        await host.send_frame({"type": "status", "message": json.dumps(
+            {"code": "VISIT_INTERRUPTED_LAST_TIME", "details": {"visit_id": visit_id}}, ensure_ascii=False)})
     return await show_chips(host, visit_id, own_char=own_char, lang=prompt_lang())
 
 

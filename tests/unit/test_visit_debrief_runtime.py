@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import json
+
 import asyncio
 import builtins
 
@@ -162,7 +164,9 @@ async def test_render_chips_recovery_callback(monkeypatch):
     fake = FakeHost("Host")
     monkeypatch.setattr(host_port.ManagerHost, "for_character", classmethod(lambda cls, name: fake))
     assert await debrief.render_chips("v" * 22, own_char="Host", status="interrupted") is True
-    assert fake.status_codes() == ["VISIT_INTERRUPTED_LAST_TIME"]
+    # 「意外中断」与芯片走同一个锁定连接的出口（send_frame），不经会重读 mgr.websocket 的 send_status
+    status = [json.loads(f["message"])["code"] for f in fake.frames if f.get("type") == "status"]
+    assert status == ["VISIT_INTERRUPTED_LAST_TIME"] and fake.status_codes() == []
     assert fake.blocks[0][1] == "visit-debrief:" + "v" * 22
     monkeypatch.setattr(host_port.ManagerHost, "for_character", classmethod(lambda cls, name: None))
     assert await debrief.render_chips("v" * 22, own_char="Gone", status=None) is False

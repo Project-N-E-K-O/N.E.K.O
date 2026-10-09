@@ -507,13 +507,13 @@ async def test_chips_written_by_the_runtime_count_as_sent(tmp_path):
 
 
 async def test_dispatch_carries_whether_the_connection_is_bound(monkeypatch):
-    from utils.visit_route_state import DISPLAY_SOCKET_VISIT_BOUND
+    from utils.visit_route_state import DISPLAY_SOCKET_CONNECTION
 
     manager = _ProtocolManager()
     seen: list = []
 
     async def route(_name, message):
-        seen.append(DISPLAY_SOCKET_VISIT_BOUND.get())
+        seen.append(DISPLAY_SOCKET_CONNECTION.get())
         return True
 
     async def zero(_name):
@@ -524,14 +524,17 @@ async def test_dispatch_carries_whether_the_connection_is_bound(monkeypatch):
         kind="game", is_active=lambda _n: True, route_stream_message=route, on_start_session=None,
         finalize_for_character=zero, current_instance=lambda _n: "g", audio_passthrough=True,
     ))
-    await run(VisitSocket([{"action": "stream_data", "input_type": "text", "data": "a"}]), manager)
-    await run(VisitSocket([bind(), {"action": "stream_data", "input_type": "text", "data": "b"}]), manager)
-    assert seen == [False, True]
-    assert DISPLAY_SOCKET_VISIT_BOUND.get() is None       # 分派之后复位
+    a = VisitSocket([{"action": "stream_data", "input_type": "text", "data": "a"}])
+    await run(a, manager)
+    b = VisitSocket([bind(), {"action": "stream_data", "input_type": "text", "data": "b"}])
+    await run(b, manager)
+    assert seen[0] is a and seen[1] is b
+    assert not display_socket.is_bound(seen[0]) and display_socket.is_bound(seen[1])
+    assert DISPLAY_SOCKET_CONNECTION.get() is None        # 分派之后复位
 
 
 async def test_visit_refuses_input_dispatched_from_an_unbound_connection():
-    from utils.visit_route_state import DISPLAY_SOCKET_VISIT_BOUND
+    from utils.visit_route_state import DISPLAY_SOCKET_CONNECTION
 
     class Rt:
         phase = "started"
@@ -551,19 +554,25 @@ async def test_visit_refuses_input_dispatched_from_an_unbound_connection():
     rt = Rt()
     runtime._runtimes[NAME] = rt
     try:
-        token = DISPLAY_SOCKET_VISIT_BOUND.set(False)
+        unbound = VisitSocket([])
+        token = DISPLAY_SOCKET_CONNECTION.set(unbound)
         try:
             assert await runtime.route_stream_message(NAME, {"data": "x", "request_id": "r9"}) is True
         finally:
-            DISPLAY_SOCKET_VISIT_BOUND.reset(token)
-        assert rt.accepted == [] and rt.statuses == [("VISIT_E_UNAUTHORIZED", {"request_id": "r9"})]
+            DISPLAY_SOCKET_CONNECTION.reset(token)
+        # 未授权提示发回发起输入的那条连接，不经运行时（mgr.websocket）
+        assert rt.accepted == [] and rt.statuses == []
+        status = [json.loads(f["message"]) for f in unbound.sent if f.get("type") == "status"]
+        assert status == [{"code": "VISIT_E_UNAUTHORIZED", "details": {"request_id": "r9"}}]
         # 没经 display socket 分派（变量未设置）或已绑定：照常交给串门
         assert await runtime.route_stream_message(NAME, {"data": "y"}) is True
-        token = DISPLAY_SOCKET_VISIT_BOUND.set(True)
+        bound = VisitSocket([])
+        setattr(bound, VISIT_SOCKET_BOUND_ATTR, True)
+        token = DISPLAY_SOCKET_CONNECTION.set(bound)
         try:
             assert await runtime.route_stream_message(NAME, {"data": "z"}) is True
         finally:
-            DISPLAY_SOCKET_VISIT_BOUND.reset(token)
+            DISPLAY_SOCKET_CONNECTION.reset(token)
         assert [m["data"] for m in rt.accepted] == ["y", "z"]
     finally:
         runtime._runtimes.pop(NAME, None)
@@ -609,3 +618,33 @@ async def test_replay_stops_when_the_account_changes_midway(monkeypatch, tmp_pat
     setattr(socket, VISIT_SOCKET_BOUND_ATTR, True)
     await display_socket.replay_chips(socket, NAME)
     assert _chip_ids(socket) == [chips_request_id(vid(13))]
+
+
+async def test_recovery_interrupted_status_is_pinned_to_the_bound_connection(monkeypatch):
+    from main_routers.visit_router import debrief
+
+    unbound = VisitSocket([])
+    bound = VisitSocket([])
+    setattr(bound, VISIT_SOCKET_BOUND_ATTR, True)
+
+    class Swapping(DownlinkManager):
+        reads = 0
+
+        @property
+        def websocket(self):
+            Swapping.reads += 1
+            return bound if Swapping.reads == 1 else unbound      # 校验时是已 bind 的，之后被换掉
+
+        @websocket.setter
+        def websocket(self, _v):
+            pass
+
+        async def send_status(self, message):
+            unbound.sent.append({"type": "status", "message": message})   # 走管理器会写到新连接上
+            return True
+
+    mgr = Swapping(bound)
+    monkeypatch.setattr(host_port.ManagerHost, "for_character",
+                        classmethod(lambda cls, name: host_port.ManagerHost(name, mgr)))
+    await debrief.render_chips("v" * 22, own_char=NAME, status="interrupted")
+    assert all(f.get("type") != "status" for f in unbound.sent)
