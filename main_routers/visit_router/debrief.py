@@ -142,7 +142,8 @@ async def run_debrief(rt: Any, *, input_stamp: float) -> None:
     """Finalize step 4 for ``rt`` (a ``VisitRuntime``): summary, chips, ``ask_later``."""
     from config.prompts.prompts_visit import build_visit_debrief_prompt, get_visit_debrief_fallback
 
-    lines = rt.journal.lines()
+    # 上传头卡住、超过封存期限时台词还在积压里：与 /state 一样合并进来，不因此退成通用简述
+    lines = rt._replay_lines()
     peer_lines = [str(line.get("text") or "") for line in lines if str(line.get("from")).startswith("peer_")]
     text: Optional[str] = None
     if lines:
@@ -168,7 +169,9 @@ async def run_debrief(rt: Any, *, input_stamp: float) -> None:
     else:
         await rt.speak_home_segment("debrief", text, kind="visit_debrief", silent=rt.finalize_reason == "goodbye")
     await _push_state(rt, "summary")
-    # 日记读的是 spool：有没有可记的句子按 spool 实际写进去的算（与上传流水各自独立）
+    # 日记读的是 spool：有没有可记的句子按 spool 实际写进去的算（与上传流水各自独立）。
+    # 还有句子正在写 spool（落盘慢、收尾没等它）：先限时等它落定再判断，不把这一场当成「没有可记的」
+    await rt.settle_spool_appends(_STATE_WRITE_MAX_S)
     await _offer_chips(rt, has_lines=rt.spool_lines > 0)
 
 
@@ -186,10 +189,11 @@ async def _offer_chips(rt: Any, *, has_lines: bool) -> None:
     # 有条件写入：芯片先出、用户选得快时，晚到的这次写不会把已记下的选择改回「以后再说」
     writing = asyncio.ensure_future(spool.mark_debrief_pending())
     writing.add_done_callback(lambda t: t.cancelled() or t.exception())
+    # 一创建就登记（做完即移除）：退出流程在这里被取消时也不会漏掉它
+    rt._keep_background(writing)
     await asyncio.wait([writing], timeout=_STATE_WRITE_MAX_S)
     if not writing.done():
         logger.warning("visit %s: debrief state still writing; continuing", rt.visit_id[:6])
-        rt._keep_background(writing)
     elif not writing.cancelled() and writing.exception() is not None:
         # 标记写不进：芯片照常出，下次启动由补录兜底
         logger.warning("visit %s: debrief state not written: %s", rt.visit_id[:6],

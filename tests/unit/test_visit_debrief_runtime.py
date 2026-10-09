@@ -227,6 +227,110 @@ async def test_no_diary_chip_when_nothing_reached_the_spool(tmp_path, monkeypatc
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_the_debrief_reads_lines_still_buffered_before_the_header(tmp_path, monkeypatch):
+    from main_routers.visit_router import transcript_upload
+
+    gate = asyncio.Event()
+    real_open = transcript_upload.UploadJournal.open
+
+    async def slow_open(self, **kw):
+        await gate.wait()                                     # 上传头一直写不完（磁盘卡住）
+        await real_open(self, **kw)
+
+    monkeypatch.setattr(transcript_upload.UploadJournal, "open", slow_open)
+    monkeypatch.setattr(rtm, "_JOURNAL_OPEN_MAX_S", 0.1)
+    monkeypatch.setattr(rtm, "_SEAL_MAX_S", 0.2)
+    hgate, ggate = asyncio.Event(), asyncio.Event()
+    host_replies = Replies(queue=[["主人家开场。"], ["我回来啦。"], ["聊得很开心。"]])
+    guest_replies = Replies(queue=[["客人开场，我带了小鱼干。"]])
+    host_replies.default = [hgate, "之后。"]
+    guest_replies.default = [ggate, "之后。"]
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, host_replies=host_replies,
+                                                    guest_replies=guest_replies)
+    rt = host.rt
+    try:
+        await wait_for(lambda: len([r for r in rt._journal_backlog if r.get("kind") == "line"]) >= 2)
+        assert not rt.journal.lines()                         # 台词都还在积压里
+        rt.request_finalize("route_end")
+        await finish(rt, clock)
+        assert any("小鱼干" in p for p in host.clients[0].prompts)  # 简述照样看得到这场的话，不退成通用文案
+    finally:
+        gate.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_the_debrief_state_write_is_registered_as_soon_as_it_starts(tmp_path, monkeypatch):
+    monkeypatch.setattr(debrief, "_STATE_WRITE_MAX_S", 5.0)
+    host, guest, wire, clock, gates = await _visit_with_lines(tmp_path, monkeypatch)
+    host.replies.queue = [["我回来啦。"], ["聊得很开心。"]]
+    rt = host.rt
+    stuck, reached = asyncio.Event(), asyncio.Event()
+    real_mark = rt.spool.mark_debrief_pending
+
+    async def stalled_mark():
+        reached.set()
+        await stuck.wait()
+        return await real_mark()
+
+    rt.spool.mark_debrief_pending = stalled_mark
+    try:
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(reached.wait(), 15)
+        await asyncio.sleep(0)
+        # 还在等它（没到 5 s 的上限）时就已登记：退出流程此刻被取消也不会漏掉它
+        assert [t for t in rtm._detached if not t.done()
+                and getattr(t.get_coro(), "__qualname__", "").endswith("stalled_mark")]
+    finally:
+        stuck.set()
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_chips_are_offered_when_a_slow_spool_append_lands(tmp_path, monkeypatch):
+    from main_logic.visit.spool import VisitSpool
+
+    release = asyncio.Event()
+    real_append = VisitSpool.append
+
+    async def append(self, line):
+        if line.get("from") != "own_human":
+            raise OSError("disk full")                        # 猫的句子没写进 spool：spool 里原本一句没有
+        await release.wait()                                  # 亲人那句已进上传流水，spool 写盘还在排队
+        return await real_append(self, line)
+
+    monkeypatch.setattr(VisitSpool, "append", append)
+    monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)           # 这句持有预留：关闭通道别等满上限
+    monkeypatch.setattr(rtm, "_RESERVED_SEND_MAX_S", 0.2)
+    host, guest, wire, clock, gates = await _visit_with_lines(tmp_path, monkeypatch)
+    host.replies.queue = [["我回来啦。"], ["聊得很开心。"]]
+    rt = host.rt
+    real_settle = rt.settle_spool_appends
+
+    async def settle_then_release(timeout):
+        asyncio.get_running_loop().call_later(0.1, release.set)  # 收口 spool 前开始等时它才落定
+        return await real_settle(timeout)
+
+    rt.settle_spool_appends = settle_then_release
+    try:
+        sending = asyncio.ensure_future(rtm.route_stream_message("Host", {   # 它在等这句的 spool 写入
+            "input_type": "text", "data": "亲人说一句", "source": "neko_visit:guest_cat"}))
+        await wait_for(lambda: any(r["from"] == "own_human" for r in rt.journal.lines()))
+        assert rt.spool_lines == 0
+        rt.request_finalize("route_end")
+        await finish(rt, clock)
+        assert rt.spool_lines == 1                            # 关 spool 之前等它落定：这句进了串门记忆
+        assert [b for b in host.host.blocks if b[1] == f"visit-debrief:{rt.visit_id}"]  # 芯片照出
+        await asyncio.gather(sending, return_exceptions=True)
+    finally:
+        release.set()
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_the_debrief_turn_sees_only_its_bounded_record(tmp_path, monkeypatch):
     host, guest, wire, clock, gates = await _visit_with_lines(tmp_path, monkeypatch)
     host.replies.queue = [["我回来啦。"], ["聊得很开心。"]]

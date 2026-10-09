@@ -126,6 +126,10 @@ class TalkMixin:
         self._session_closing: Optional[asyncio.Future] = None
         # 已接纳、还没记进转录的亲人发言（每句一个 future，落盘结束即完成）：封存之前限时等它们
         self.family_records: set[asyncio.Future] = set()
+        # 正在写 spool 的句数：简述判断「有没有可记的句子」之前限时等它们落定
+        self._spool_appending = 0
+        self._spool_idle = asyncio.Event()
+        self._spool_idle.set()
 
     # ── 小工具 ───────────────────────────────────────────────────────
 
@@ -623,12 +627,18 @@ class TalkMixin:
             on_journaled()
         spool = self.spool
         if spool is not None and self.memory_enabled and spool.is_open:
+            self._spool_appending += 1
+            self._spool_idle.clear()
             try:
                 await spool.append({"lp": lp, "side": side, "ts": ts, "from": speaker, "text": clean,
                                     "ln": ln, "truncated": bool(truncated)})
                 self.spool_lines += 1
             except Exception as exc:  # noqa: BLE001 - 写不进 spool：这一句不进串门记忆
                 logger.warning("visit %s: spool append failed: %s", self.visit_id[:6], type(exc).__name__)
+            finally:
+                self._spool_appending -= 1
+                if not self._spool_appending:
+                    self._spool_idle.set()
 
     def _history_add(self, ln: str, message: Any, key: tuple[int, int]) -> None:
         """Insert a history message at its sorted place, inside the session turn lock (never blocks the caller)."""
@@ -832,6 +842,14 @@ class TalkMixin:
         except Exception as exc:  # noqa: BLE001 - 这句已发出，只记诊断
             logger.warning("visit %s: family line %s failed after send: %s",
                            self.visit_id[:6], label, type(exc).__name__)
+
+    async def settle_spool_appends(self, timeout: float) -> None:
+        """Wait (at most ``timeout``) until no line is being appended to the spool."""
+        if self._spool_appending and timeout > 0:
+            try:
+                await asyncio.wait_for(self._spool_idle.wait(), timeout)
+            except asyncio.TimeoutError:
+                pass
 
     async def settle_family_records(self, timeout: float) -> None:
         """Wait (at most ``timeout``) until every admitted family line has been recorded."""

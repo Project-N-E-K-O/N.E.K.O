@@ -2057,6 +2057,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.spool is not None and not self._spool_finalized:
             self._spool_finalized = True
             try:
+                # 还有句子正在写 spool（落盘慢、封存只等了上传流水）：先等它落定再关，否则关了之后它就写不进来，
+                # 这场在简述看来「没有可记的句子」、不出芯片。本身在 _SEAL_MAX_S 的限时里
+                await self.settle_spool_appends(_SEAL_MAX_S)
                 await self.spool.close()
                 changes: dict[str, Any] = {"finalized": reason}
                 if self._memory_off_unsaved:
