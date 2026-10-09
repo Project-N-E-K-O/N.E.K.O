@@ -211,6 +211,9 @@ async def preview_invite(request: Request, invite_code: str):
     if epoch is None or runtime.account_epoch() != epoch:
         # 请求途中（或读黑名单时）有过登出 / 换账号：这份预览可能是按别的账号授权的，不给此刻的人
         return _error(409, "VISIT_E_BUSY", reason="account_change")
+    if time.time() >= preview.expires_at:
+        # Servers 校验时还有效、到这里已过期：与 Servers 的 410 同样回，前端不弹确认框
+        return _servers_error(cr.VisitInviteExpired())
     return JSONResponse(preview.to_public(locally_blocked=blocked))
 
 

@@ -1457,3 +1457,10 @@ async def test_state_read_across_an_account_change_only_says_busy(env, monkeypat
     async with env.client() as c:
         body = (await c.get("/api/visit/state?catgirl=Host", headers=GOOD)).json()
     assert body == {**http.IDLE_STATE, "active": True, "phase": "pending"}
+
+
+async def test_preview_that_expired_on_the_way_is_410(env):
+    env.preview_expires = time.time() - 1
+    resp = await _preview(env)
+    assert resp.status_code == 410 and resp.json()["code"] == "invite_expired"
+    assert "host_display_name" not in resp.text
