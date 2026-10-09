@@ -726,7 +726,21 @@ class StreamingMixin:
                     # 里挂——后者也被 proactive abort 流程调用做清理（见
                     # main_routers/system_router.py），那不算用户活动。
                     # text 进 buffer 给 emotion-tier 用。
-                    self._note_user_turn(text=record_data)
+                    observer_id = getattr(self, '_conversation_observer_id', None)
+                    if observer_id:
+                        # Keep the identity on the accepted input envelope so a
+                        # queued retry cannot become an independent observation.
+                        observed_turn_id = message.setdefault(
+                            '_conversation_input_id',
+                            str(message.get('request_id') or uuid4().hex),
+                        )
+                        self._note_user_turn(
+                            text=record_data, now=_user_input_time,
+                            input_mode='text', turn_id=observed_turn_id,
+                            synthetic=bool(message_source or message.get('synthetic')),
+                        )
+                    else:
+                        self._note_user_turn(text=record_data)
                     # Telemetry：D1 漏斗——本进程首条用户消息（lazy import 防循环）。
                     try:
                         from utils.token_tracker import TokenTracker as _TT

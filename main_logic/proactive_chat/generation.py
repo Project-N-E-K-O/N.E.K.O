@@ -533,6 +533,7 @@ class Phase2GuardedOutput:
     selected_music_link: dict[str, Any] | None = None
     music_content: dict[str, Any] | None = None
     is_music_used: bool = False
+    recommendation_subject_id: str | None = None
 
 
 async def _run_unified_phase1(
@@ -731,6 +732,8 @@ async def _run_phase2_generation(
     is_playing_music: bool,
     music_cooldown: bool,
     log: logging.Logger | None = None,
+    recommendation_snapshot: Any = None,
+    recommendation_input_budget: int | None = None,
 ) -> Phase2GuardedOutput:
     """Own Phase 2 messages, model stream, and output guards."""
     active_logger = log or logger
@@ -771,6 +774,11 @@ async def _run_phase2_generation(
     )
 
     make_llm = partial(_make_proactive_llm, model_config)
+    if recommendation_input_budget is not None:
+        from main_logic.topic.recommendation.adapters import RecommendationBudgetedClient
+        base_make_llm = make_llm
+        async def make_llm(**kwargs):
+            return RecommendationBudgetedClient(await base_make_llm(**kwargs), recommendation_input_budget)
     silence_since_before_generation = _proactive_silence_since(mgr)
     generated = await _generate_phase2_stream(
         mgr=mgr,
@@ -835,6 +843,8 @@ async def _run_phase2_generation(
         proactive_lang=proactive_lang,
         master_name=master_name,
         log=active_logger,
+        **({'recommendation_snapshot': recommendation_snapshot}
+           if recommendation_snapshot is not None else {}),
     )
 
 
@@ -843,9 +853,10 @@ def _decide_phase1_channels(
     vision_content: str | None,
     *,
     has_unfinished_thread: bool,
+    has_recommendation: bool = False,
 ) -> Phase1Decision:
     """Finalize Phase 1 without changing source order or continuation rules."""
-    if not phase1_topics and not vision_content and not has_unfinished_thread:
+    if not phase1_topics and not vision_content and not has_unfinished_thread and not has_recommendation:
         return Phase1Decision(
             result=ProactiveChatResult(
                 body=_proactive_pass_body(
@@ -860,6 +871,8 @@ def _decide_phase1_channels(
         )
 
     active_channels = [channel for channel, _topic in phase1_topics]
+    if has_recommendation:
+        active_channels.append('chat')
     web_topic = None
     music_topic = None
     for channel, topic in phase1_topics:
@@ -1243,9 +1256,21 @@ async def _guard_phase2_output(
     proactive_lang: str,
     master_name: str,
     log: logging.Logger | None = None,
+    recommendation_snapshot: Any = None,
 ) -> Phase2GuardedOutput:
     """Apply Phase 2 dedup and data guards in their established order."""
     active_logger = log or logger
+    recommendation_subject_id = None
+    if recommendation_snapshot is not None:
+        from main_logic.topic.recommendation.adapters import parse_recommendation_choice
+        response_text, recommendation_subject_id, valid_choice = parse_recommendation_choice(
+            response_text, recommendation_snapshot,
+        )
+        full_text = response_text
+        if not valid_choice or (recommendation_subject_id is not None and source_tag != 'CHAT'):
+            return Phase2GuardedOutput(result=ProactiveChatResult(body=_proactive_pass_body(
+                PROACTIVE_REASON_PASS_MODEL_PASS, message='recommendation choice was not confirmed',
+            )))
 
     def _output(
         *,
@@ -1260,6 +1285,7 @@ async def _guard_phase2_output(
             selected_music_link=selected_music_link,
             music_content=music_content,
             is_music_used=is_music_used,
+            recommendation_subject_id=recommendation_subject_id,
         )
 
     music_only_pending = (
@@ -1655,6 +1681,16 @@ async def _guard_phase2_output(
         cleaned = (regen_text or "").strip()
         cleaned, regen_source_tag = _parse_proactive_phase2_prefix(cleaned, final=True)
         cleaned = _strip_proactive_intent_label_leak(cleaned)
+        if recommendation_snapshot is not None:
+            cleaned, recommendation_subject_id, valid_choice = parse_recommendation_choice(
+                cleaned, recommendation_snapshot,
+            )
+            if recommendation_subject_id is not None and regen_source_tag != 'CHAT':
+                valid_choice = False
+            if not valid_choice:
+                return _output(result=ProactiveChatResult(body=_proactive_pass_body(
+                    PROACTIVE_REASON_PASS_MODEL_PASS, message='regenerated recommendation choice was not confirmed',
+                )))
         if (
             regen_source_tag == "PASS"
             or (expects_source_tag and not regen_source_tag)

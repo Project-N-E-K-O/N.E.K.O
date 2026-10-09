@@ -3614,6 +3614,29 @@
         "resourceReason_model_unavailable": "必要なモデルを利用できません。修復ガイドに従ってください。"
     },
     "settings": {
+        "recommendation": {
+            "recover": "話題分析を再開（プロフィール保持）",
+            "recoverConfirm": "プロフィール、拒否の記録、元の会話を保持して話題分析を再開します。以前の候補には新しい会話の根拠が必要です。スイッチは変わりません。続行しますか？",
+            "recovering": "話題分析を再開中…",
+            "recoverDone": "分析を再開しました。会話を続けてください。以前の候補には新しい根拠が必要です",
+            "checking": "おすすめ状態を確認中…",
+            "capability_disabled": "このバージョンでは話題おすすめを利用できません",
+            "user_disabled": "話題おすすめは一時停止中",
+            "waiting_context": "最近の会話を理解しています",
+            "ready": "話題おすすめの準備完了（文字チャットのみ）",
+            "degraded": "おすすめを利用できません。クリックで再試行",
+            "maintenance": "メンテナンス中です。後で再試行してください",
+            "closing": "サービスを終了中",
+            "reset": "話題おすすめの記録をリセット",
+            "resetConfirm": "現在のキャラクターの話題・推定した関心・反応・重複記録のみ削除します。元の会話と記憶は残り、関心は後で再発見される場合があります。スイッチは変わりません。続行しますか？",
+            "resetting": "リセット中…",
+            "resetDone": "このキャラクターのおすすめ記録をリセットしました",
+            "roleMissing": "キャラクターが存在しないか、切り替え中です",
+            "conflict": "別のウィンドウで記録が変更されました。確認して再試行してください",
+            "accessFailed": "アクセス確認に失敗しました。再接続して再試行してください",
+            "requestFailed": "結果を確認できません。クリックで再試行してください。リセットの再試行は同じ要求を使い、新しい記録を再び削除しません。",
+            "saveFailed": "設定がサーバーに反映されていません。保存を再試行してください"
+        },
         "menu": {
             "live2dSettings": "Live2D設定",
             "modelSettings": "キャラ外見",
@@ -3684,6 +3707,8 @@
             "proactiveMemeChatTooltip": "面白いミームを共有して話しかける",
             "proactiveMiniGameInviteChat": "ミニゲームへのお誘い",
             "proactiveMiniGameInviteChatTooltip": "条件が整ったときミニゲームに誘って話しかける",
+            "proactiveTopicRecommendation": "話題おすすめ（ベータ）",
+            "proactiveTopicRecommendationTooltip": "現在のキャラクターの文字会話と既存の記憶から話題を提案します。自発会話が必要です。記録はこの端末に保存します。",
             "agentMaster": "ネコクローマスタースイッチ",
             "showTaskHud": "フローティングウィンドウを表示",
             "keyboardControl": "キーボード/マウス操作",

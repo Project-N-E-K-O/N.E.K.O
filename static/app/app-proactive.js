@@ -626,7 +626,7 @@
         return S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveCommunityChatEnabled ||
             S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled ||
             S.proactiveMusicEnabled || S.proactiveMemeEnabled ||
-            S.proactiveMiniGameInviteEnabled;
+            S.proactiveMiniGameInviteEnabled || S.proactiveTopicRecommendationEnabled;
     }
     mod.hasAnyChatModeEnabled = hasAnyChatModeEnabled;
 
@@ -740,7 +740,7 @@
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled && !S.proactiveCommunityChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
-            !S.proactiveMiniGameInviteEnabled) {
+            !S.proactiveMiniGameInviteEnabled && !S.proactiveTopicRecommendationEnabled) {
             return false;
         }
 
@@ -748,7 +748,7 @@
         if (S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled && !S.proactiveCommunityChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
-            !S.proactiveMiniGameInviteEnabled) {
+            !S.proactiveMiniGameInviteEnabled && !S.proactiveTopicRecommendationEnabled) {
             return isProactiveVisionEnabledNow();
         }
 
@@ -756,7 +756,7 @@
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled && !S.proactiveCommunityChatEnabled &&
             !S.proactiveVideoChatEnabled && S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
-            !S.proactiveMiniGameInviteEnabled) {
+            !S.proactiveMiniGameInviteEnabled && !S.proactiveTopicRecommendationEnabled) {
             return S.proactivePersonalChatEnabled;
         }
 
@@ -1260,6 +1260,10 @@
                 availableModes.push('meme');
             }
 
+            if (S.proactiveTopicRecommendationEnabled && S.proactiveChatEnabled) {
+                availableModes.push('topic_recommendation');
+            }
+
             // 如果没有选择任何搭话方式，跳过本次搭话——除非 mini-game 邀请独立开着
             // （那条路径与 enabled_modes 解耦，后端短路通道仍可能掷骰投递邀请）。
             if (availableModes.length === 0) {
@@ -1365,6 +1369,9 @@
                 if (S.proactiveMemeEnabled && S.proactiveChatEnabled) {
                     latestModes.push('meme');
                 }
+                if (S.proactiveTopicRecommendationEnabled && S.proactiveChatEnabled) {
+                    latestModes.push('topic_recommendation');
+                }
                 availableModes = availableModes.filter(function (m) { return latestModes.includes(m); });
                 requestBody.enabled_modes = availableModes;
                 if (availableModes.length === 0) {
@@ -1453,6 +1460,11 @@
                 }
             }
 
+            if (!S.proactiveTopicRecommendationEnabled) {
+                requestBody.enabled_modes = requestBody.enabled_modes.filter(function (mode) { return mode !== 'topic_recommendation'; });
+                if (requestBody.enabled_modes.length === 0 && !S.proactiveMiniGameInviteEnabled) return;
+            }
+
             var proactiveSec = window.nekoLocalMutationSecurity;
             var proactiveBody = JSON.stringify(requestBody);
 
@@ -1460,6 +1472,13 @@
                 var hdrs = { 'Content-Type': 'application/json' };
                 if (proactiveSec && typeof proactiveSec.getMutationHeaders === 'function') {
                     try { Object.assign(hdrs, await proactiveSec.getMutationHeaders()); } catch (_) { }
+                }
+                // Token bootstrap and CSRF recovery can outlive a local opt-out.
+                if (!S.proactiveChatEnabled) return null;
+                if (!S.proactiveTopicRecommendationEnabled) {
+                    requestBody.enabled_modes = requestBody.enabled_modes.filter(function (mode) { return mode !== 'topic_recommendation'; });
+                    if (requestBody.enabled_modes.length === 0 && !S.proactiveMiniGameInviteEnabled) return null;
+                    proactiveBody = JSON.stringify(requestBody);
                 }
                 return fetch('/api/proactive_chat', {
                     method: 'POST',
@@ -1469,6 +1488,7 @@
             }
 
             var response = await _sendProactive();
+            if (!response) return false;
 
             // CSRF-403 retry-once: 只在 error_code === 'csrf_validation_failed'
             // 时调 refreshToken() + 重试一次。其它 403 走真实失败分支，避免把所有
@@ -1481,6 +1501,7 @@
                 try {
                     await proactiveSec.refreshToken();
                     response = await _sendProactive();
+                    if (!response) return false;
                 } catch (_) { /* fall through to 403 handling below */ }
             }
 

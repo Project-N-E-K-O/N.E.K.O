@@ -42,6 +42,7 @@ _VALID_MODES = ("off", "normal", "focus", "frequent")
 # 必须由用户自己在 UI 决定，插件不能越权写入。
 _USER_OWNED_FIELDS = frozenset({
     "proactiveVisionEnabled",
+    "proactiveTopicRecommendationEnabled",
     "visitEnabled",
     "visitMemoryEnabled",
 })

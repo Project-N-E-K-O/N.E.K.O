@@ -375,9 +375,10 @@ def _decide_empty_source_gate(
     enabled_modes: Any,
     *,
     has_unfinished_thread: bool,
+    has_recommendation: bool = False,
 ) -> ProactiveChatResult | None:
     """Pass after the mini-game opportunity when no source or thread remains."""
-    if enabled_modes or has_unfinished_thread:
+    if enabled_modes or has_unfinished_thread or has_recommendation:
         return None
     return ProactiveChatResult(
         body=_proactive_pass_body(

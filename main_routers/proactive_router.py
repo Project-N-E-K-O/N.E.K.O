@@ -38,6 +38,7 @@ import asyncio
 from typing import Any, Mapping
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.logger_config import get_module_logger
@@ -45,6 +46,7 @@ from utils.preferences import (
     aload_global_conversation_settings,
     save_global_conversation_settings,
 )
+from .recommendation_controls import recommendation_aware_save
 
 
 router = APIRouter(prefix="/api/proactive", tags=["proactive"])
@@ -56,6 +58,7 @@ logger = get_module_logger(__name__, "Main")
 # (``is_privacy_mode_enabled() == not proactiveVisionEnabled``)，
 # 涉及屏幕内容采集，必须由用户本人在 UI 决定，任何 API 写入路径都要拒绝。
 _USER_OWNED_FIELDS = frozenset({
+    "proactiveTopicRecommendationEnabled",
     "proactiveVisionEnabled",
     # 串门开关与串门记忆开关：让她出门、记不记串门内容都由用户本人决定
     # （visitVoiceEnabled 只管本地出声，不在此列）。
@@ -78,6 +81,7 @@ _PROACTIVE_BOOL_FIELDS = (
     "proactiveMusicEnabled",
     "proactiveMemeEnabled",
     "proactiveMiniGameInviteEnabled",
+    "proactiveTopicRecommendationEnabled",
 )
 _PROACTIVE_INT_FIELDS = (
     "proactiveChatInterval",
@@ -249,7 +253,7 @@ async def set_proactive_mode(request: Request):
             }
 
         preset = PROACTIVE_PRESETS[mode]
-        if not await asyncio.to_thread(save_global_conversation_settings, dict(preset)):
+        if not await recommendation_aware_save(save_global_conversation_settings, dict(preset)):
             return {"success": False, "error": "保存失败"}
 
         applied, rejected = await _readback_persisted(preset)
@@ -297,7 +301,7 @@ async def update_proactive_settings(request: Request):
                 err["rejected_user_owned"] = rejected_user_owned
             return err
 
-        if not await asyncio.to_thread(save_global_conversation_settings, payload):
+        if not await recommendation_aware_save(save_global_conversation_settings, payload):
             return {"success": False, "error": "保存失败"}
 
         applied, rejected = await _readback_persisted(payload)
@@ -315,3 +319,114 @@ async def update_proactive_settings(request: Request):
     except Exception as e:
         logger.exception(f"更新主动搭话设置失败: {e}")
         return {"success": False, "error": "Internal server error"}
+
+
+async def _recommendation_owner(character_id: str):
+    from .shared_state import get_config_manager
+    from main_logic.topic.recommendation.contracts import RecommendationError
+    from main_logic.topic.recommendation.registry import get_recommendation_service
+    from utils.config_manager.reserved_schema import get_reserved, normalize_character_id
+
+    if not normalize_character_id(character_id):
+        raise RecommendationError('invalid_character_id')
+    characters = await asyncio.to_thread(get_config_manager().load_characters, require_authoritative=True)
+    identifiers = {normalize_character_id(get_reserved(data, 'character_id', default=''))
+                   for data in characters.get('猫娘', {}).values()}
+    if character_id not in identifiers:
+        raise RecommendationError('character_not_found')
+    service = get_recommendation_service()
+    if service is None:
+        raise RecommendationError('service_unavailable')
+    return service
+
+
+def _recommendation_error_response(exc):
+    from main_logic.topic.recommendation.contracts import RecommendationError
+    code = exc.code if isinstance(exc, RecommendationError) else 'service_unavailable'
+    status = {'invalid_character_id': 400, 'invalid_request': 400,
+              'character_not_found': 404, 'epoch_conflict': 409,
+              'revision_conflict': 409, 'stale_operation': 409}.get(code, 503)
+    return JSONResponse(status_code=status, content={'success': False, 'error_code': code},
+                        headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/recommendation/status')
+async def get_topic_recommendation_status(character_id: str):
+    from main_logic.topic.recommendation.contracts import RecommendationError
+    try:
+        service = await _recommendation_owner(character_id)
+        generation = service.reset_generation
+        result = await service.status(character_id)
+        await _verify_recommendation_response_owner(service)
+        if generation != service.reset_generation:
+            raise RecommendationError('stale_operation')
+        return JSONResponse(content={'success': True, 'reset_generation': generation, **result},
+                            headers={'Cache-Control': 'no-store'})
+    except Exception as exc:
+        return _recommendation_error_response(exc)
+
+
+async def _verify_recommendation_response_owner(service):
+    from main_logic.topic.recommendation.contracts import RecommendationError
+    from main_logic.topic.recommendation.registry import get_recommendation_service
+    generation = service.store.root_generation
+    if service is not get_recommendation_service():
+        raise RecommendationError('stale_operation')
+    if not await service.store.root_ready():
+        raise RecommendationError('maintenance')
+    if service is not get_recommendation_service() or generation != service.store.root_generation:
+        raise RecommendationError('stale_operation')
+
+
+@router.post('/recommendation/reset')
+async def reset_topic_recommendation(request: Request):
+    return await _reset_topic_recommendation_context(request, preserve_profile=False)
+
+
+@router.post('/recommendation/recover')
+async def recover_topic_recommendation(request: Request):
+    return await _reset_topic_recommendation_context(request, preserve_profile=True)
+
+
+async def _reset_topic_recommendation_context(request: Request, *, preserve_profile: bool):
+    from .system_router import _validate_local_mutation_request
+    from main_logic.topic.recommendation.contracts import RecommendationError
+    from utils.character_memory import character_config_mutation_lock
+    try:
+        raw = await request.body()
+        if len(raw) > 4096:
+            raise RecommendationError('invalid_request')
+        import json
+        try:
+            data = json.loads(raw)
+        except (ValueError, UnicodeError):
+            raise RecommendationError('invalid_request') from None
+        if not isinstance(data, dict):
+            raise RecommendationError('invalid_request')
+        rejected = _validate_local_mutation_request(request, payload=data,
+                                                  error_defaults={'success': False})
+        if rejected is not None:
+            return rejected
+        fields = ('character_id', 'expected_epoch', 'request_id', 'expected_reset_generation', 'expected_confirmation')
+        if (set(data) - set(fields) - {'_csrf_token'} or
+                any(not isinstance(data.get(key), str) or not data[key] or len(data[key]) > 128
+                    for key in fields)):
+            raise RecommendationError('invalid_request')
+        if len(data['expected_confirmation']) != 64 or any(c not in '0123456789abcdef' for c in data['expected_confirmation']):
+            raise RecommendationError('invalid_request')
+        async with character_config_mutation_lock:
+            service = await _recommendation_owner(data['character_id'])
+            # A persisted epoch survives restart/restore. The confirmation also
+            # belongs to one root owner and uninterrupted control generation.
+            if data['expected_reset_generation'] != service.reset_generation:
+                raise RecommendationError('stale_operation')
+            result = await service.reset(data['character_id'], data['expected_epoch'], data['request_id'],
+                expected_confirmation=data['expected_confirmation'],
+                **({'preserve_profile': True} if preserve_profile else {}))
+            await _verify_recommendation_response_owner(service)
+            if data['expected_reset_generation'] != service.reset_generation:
+                raise RecommendationError('stale_operation')
+        return JSONResponse(content={'success': True, 'reset_generation': data['expected_reset_generation'], **result},
+                            headers={'Cache-Control': 'no-store'})
+    except Exception as exc:
+        return _recommendation_error_response(exc)

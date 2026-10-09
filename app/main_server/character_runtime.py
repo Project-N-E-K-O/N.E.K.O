@@ -1775,6 +1775,8 @@ async def _refresh_character_globals():
     facade.setting_store = setting_store
     facade.recent_log = recent_log
     facade.catgirl_names = catgirl_names
+    from .topic_recommendation_runtime import synchronize_topic_recommendation_characters
+    await synchronize_topic_recommendation_characters(_config_manager)
 
 
 def _ensure_character_slots(k: str) -> bool:
@@ -1895,6 +1897,8 @@ async def _init_character_resources(k: str, is_new_character: bool):
                     False,
                 )
                 await unregister_voice_identity_manager(rs.session_manager)
+                from .topic_recommendation_runtime import unbind_topic_recommendation_manager
+                unbind_topic_recommendation_manager(rs.session_manager)
                 try:
                     rs.session_manager.shutdown()
                 except Exception as e:
@@ -1932,6 +1936,11 @@ async def _init_character_resources(k: str, is_new_character: bool):
         from .voice_identity_runtime import register_voice_identity_manager
 
         if rs.session_manager is not None:
+            from .topic_recommendation_runtime import bind_topic_recommendation_manager
+            bind_topic_recommendation_manager(
+                rs.session_manager,
+                lanlan_basic_config.get(k, {}) if isinstance(lanlan_basic_config, dict) else {},
+            )
             await register_voice_identity_manager(rs.session_manager)
 
     # 检查并启动同步连接器 task
@@ -2084,6 +2093,8 @@ async def _unregister_character_voice_identity_manager_locked(rs) -> None:
     if rs.session_manager is None:
         return
     from .voice_identity_runtime import unregister_voice_identity_manager
+    from .topic_recommendation_runtime import unbind_topic_recommendation_manager
+    unbind_topic_recommendation_manager(rs.session_manager)
 
     await unregister_voice_identity_manager(rs.session_manager)
 

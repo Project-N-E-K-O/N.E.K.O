@@ -3614,6 +3614,29 @@
         "resourceReason_model_unavailable": "所需模型不可用，请按修复指南处理。"
     },
     "settings": {
+        "recommendation": {
+            "recover": "恢复话题分析（保留画像）",
+            "recoverConfirm": "保留画像、拒绝记录和原聊天，重新开始话题分析。旧候选需有新的聊天依据才会再次使用。开关保持不变。继续吗？",
+            "recovering": "正在恢复话题分析…",
+            "recoverDone": "分析已恢复，请继续聊天；旧候选需有新依据",
+            "checking": "正在确认推荐状态…",
+            "capability_disabled": "此版本尚未开放话题推荐",
+            "user_disabled": "话题推荐已暂停",
+            "waiting_context": "正在理解最近的聊天",
+            "ready": "话题推荐已就绪（仅文字聊天）",
+            "degraded": "推荐暂不可用，点击重试",
+            "maintenance": "正在维护，请稍后重试",
+            "closing": "服务正在关闭",
+            "reset": "重置话题推荐记录",
+            "resetConfirm": "仅清除当前猫娘的事情、推测兴趣、反馈和重复记录。原聊天与记忆保留，之后可能重新发现兴趣；开关保持不变。继续吗？",
+            "resetting": "正在重置…",
+            "resetDone": "当前猫娘的推荐记录已重置",
+            "roleMissing": "当前猫娘已不存在或正在切换",
+            "conflict": "记录已在其他窗口变化，请重新确认后重试",
+            "accessFailed": "访问验证失败，请重新连接后重试",
+            "requestFailed": "操作结果无法确认。点击重试；重置重试会使用同一请求，不会重复清空。",
+            "saveFailed": "选项尚未在服务器生效，请重试保存"
+        },
         "menu": {
             "live2dSettings": "Live2D设置",
             "modelSettings": "角色外形",
@@ -3684,6 +3707,8 @@
             "proactiveMemeChatTooltip": "使用有趣表情包进行搭话",
             "proactiveMiniGameInviteChat": "小游戏邀请",
             "proactiveMiniGameInviteChatTooltip": "符合条件时邀请你一起玩小游戏",
+            "proactiveTopicRecommendation": "话题推荐（测试版）",
+            "proactiveTopicRecommendationTooltip": "根据当前猫娘的文字聊天和现有记忆推荐话题，需要开启主动搭话；记录仅在本机保存。",
             "agentMaster": "猫爪总开关",
             "showTaskHud": "显示悬浮窗",
             "keyboardControl": "键鼠控制",

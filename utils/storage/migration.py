@@ -41,6 +41,7 @@ from .policy import (
     save_storage_policy,
 )
 from .path_rewrite import WORKSHOP_CONFIG_PATH_FIELDS, rebase_runtime_bound_workshop_config_paths
+from .reparse import is_name_surrogate
 
 logger = get_module_logger(__name__)
 
@@ -93,6 +94,9 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     # directory is written with forward slashes and handled as one unit; the
     # directories above it are created as needed and must be real directories.
     "state/game_scores",
+    # Local per-character topic recommendation state. It is not a cloud-save
+    # entry; migrate only this child, preserving the anchor-local state files.
+    "state/recommendation",
 )
 
 # What v1 builds migrated. A v1 checkpoint is judged against these only:
@@ -595,8 +599,7 @@ def _stat_is_reparse(path_stat: os.stat_result) -> bool:
     files and app execution aliases also carry the reparse attribute but are
     ordinary data, so the attribute alone must not reject them.
     """
-    tag = int(getattr(path_stat, "st_reparse_tag", 0) or 0)
-    return bool(tag & _WINDOWS_IO_REPARSE_TAG_NAME_SURROGATE)
+    return is_name_surrogate(path_stat)
 
 
 def _classify_no_follow(path: Path) -> tuple[str, os.stat_result]:

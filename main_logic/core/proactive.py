@@ -21,7 +21,7 @@ Method-only mixin: every instance attribute is assigned in
 
 import asyncio
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from main_logic.omni_realtime_client import (
     MultimodalTurnDelivery,
     OmniRealtimeClient,
@@ -382,6 +382,8 @@ class ProactiveMixin:
         text: str,
         expected_speech_id: str | None = None,
         expected_user_engagement_time: Any = Ellipsis,
+        *,
+        publish_if: Callable[[], bool] | None = None,
     ) -> bool:
         """Feed text to the TTS pipeline only, without sending it to the frontend display.
 
@@ -396,11 +398,15 @@ class ProactiveMixin:
         ``None``), drop if genuine UI engagement advanced while this call waited
         for the TTS lock. Returns whether the chunk was accepted.
         """
+        if publish_if is not None and not publish_if():
+            return False
         if getattr(self, "_takeover_active", False):
             return False
         if not self.use_tts:
             return True
         async with self.tts_cache_lock:
+            if publish_if is not None and not publish_if():
+                return False
             if getattr(self, "_takeover_active", False):
                 return False
             if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
@@ -444,6 +450,9 @@ class ProactiveMixin:
         source_tag: str | None = None,
         vision_screenshot_b64: str | None = None,
         expected_user_engagement_time: Any = Ellipsis,
+        *,
+        publish_if: Callable[[], bool] | None = None,
+        on_published: Callable[[float], None] | None = None,
     ) -> bool:
         """Wrap-up after streaming completes: deliver the full text in one shot + record history + TTS/turn end signals.
 
@@ -490,6 +499,8 @@ class ProactiveMixin:
         undelivered content is never recorded as "delivered".
         """
         async with self._proactive_write_lock:
+            if publish_if is not None and not publish_if():
+                return False
             if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
                 logger.info(
                     "[%s] finish_proactive_delivery skip: sid changed (expected=%s current=%s)，用户已接管本轮",
@@ -523,13 +534,19 @@ class ProactiveMixin:
             # 也不会漏出过期气泡。
             await self.state.fire(SessionEvent.PROACTIVE_COMMITTING)
             publication_times: list[float] = []
+            def record_publication(published_at: float) -> None:
+                publication_times.append(published_at)
+                if on_published is not None:
+                    on_published(published_at)
+
             published = await self.send_lanlan_response(
                 full_text,
                 is_first_chunk=True,
                 turn_id=commit_sid,
                 expected_speech_id=expected_speech_id,
                 expected_user_engagement_time=expected_user_engagement_time,
-                on_published=publication_times.append,
+                on_published=record_publication,
+                **({'publish_if': publish_if} if publish_if is not None else {}),
             )
             if published is None:
                 logger.info(

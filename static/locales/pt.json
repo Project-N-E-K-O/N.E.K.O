@@ -3614,6 +3614,29 @@
         "resourceReason_model_unavailable": "O modelo necessário está indisponível. Siga o guia de reparo."
     },
     "settings": {
+        "recommendation": {
+            "recover": "Retomar análise de temas (manter perfil)",
+            "recoverConfirm": "Manter o perfil, as recusas e as conversas originais e reiniciar a análise. Os candidatos anteriores precisam de novas evidências da conversa. As opções não mudam. Continuar?",
+            "recovering": "Retomando análise de temas…",
+            "recoverDone": "Análise retomada. Continue conversando; candidatos anteriores precisam de novas evidências",
+            "checking": "Verificando o estado das recomendações…",
+            "capability_disabled": "Recomendações de assuntos indisponíveis nesta versão",
+            "user_disabled": "Recomendações de assuntos pausadas",
+            "waiting_context": "Entendendo a conversa recente",
+            "ready": "Recomendações prontas (apenas chat de texto)",
+            "degraded": "Recomendações indisponíveis; clique para tentar novamente",
+            "maintenance": "Manutenção em andamento; tente mais tarde",
+            "closing": "O serviço está encerrando",
+            "reset": "Redefinir registros de recomendações",
+            "resetConfirm": "Apagar apenas os assuntos, interesses inferidos, feedback e repetições desta personagem. Conversas e memórias originais serão mantidas; interesses podem ser redescobertos. Os interruptores não mudam. Continuar?",
+            "resetting": "Redefinindo…",
+            "resetDone": "Os registros de recomendações desta personagem foram redefinidos",
+            "roleMissing": "Esta personagem não existe mais ou está sendo trocada",
+            "conflict": "Os registros mudaram em outra janela. Confira e tente novamente",
+            "accessFailed": "Falha na verificação de acesso. Reconecte e tente novamente",
+            "requestFailed": "Não foi possível confirmar o resultado. Clique para tentar novamente; uma nova tentativa usa o mesmo pedido e não apaga registros novos novamente.",
+            "saveFailed": "A opção ainda não entrou em vigor no servidor. Tente salvar novamente"
+        },
         "menu": {
             "live2dSettings": "Configurações Live2D",
             "modelSettings": "Aparência de Chara",
@@ -3684,6 +3707,8 @@
             "proactiveMemeChatTooltip": "Compartilhe memes engraçados para um bate-papo proativo",
             "proactiveMiniGameInviteChat": "Convites para minijogos",
             "proactiveMiniGameInviteChatTooltip": "Convidar você para um minijogo quando as condições forem ideais",
+            "proactiveTopicRecommendation": "Recomendações de assuntos (Beta)",
+            "proactiveTopicRecommendationTooltip": "Sugere assuntos com base nas conversas de texto e memórias desta personagem. Requer conversa proativa; os registros ficam neste dispositivo.",
             "agentMaster": "Interruptor mestre NekoClaw",
             "showTaskHud": "Mostrar janela flutuante",
             "keyboardControl": "Controle de teclado/mouse",

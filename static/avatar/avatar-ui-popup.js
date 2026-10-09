@@ -462,6 +462,273 @@ function finalizePopupClosedState(popup) {
 /**
  * 创建设置弹窗内容（通用）
  */
+// Recommendation operations share the existing local mutation protection.
+// Every response is scoped to the panel operation and the character incarnation.
+function topicRecommendationText(key, fallback) {
+    const translated = typeof window.t === 'function' ? window.t(key) : '';
+    return translated && translated !== key ? translated : fallback;
+}
+
+function captureTopicRecommendationCharacter() {
+    const config = window.lanlan_config;
+    const state = window.appState || {};
+    if (!config || !config.lanlan_name || state.isSwitchingCatgirl) {
+        throw Object.assign(new Error('Character unavailable'), { code: 'character_not_found' });
+    }
+    return { config, name: config.lanlan_name, switchCounter: state._switchAttemptCounter || 0 };
+}
+
+function topicRecommendationCharacterIsCurrent(binding) {
+    const state = window.appState || {};
+    return !!binding && window.lanlan_config === binding.config
+        && binding.config.lanlan_name === binding.name
+        && (state._switchAttemptCounter || 0) === binding.switchCounter
+        && !state.isSwitchingCatgirl;
+}
+
+async function topicRecommendationRequest(url, options, isCurrent) {
+    const controller = new AbortController();
+    let timer;
+    const deadline = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+            controller.abort();
+            reject(Object.assign(new Error('Request timed out'), { code: 'request_timeout' }));
+        }, 15000);
+    });
+    async function request() {
+        const mutation = options && options.method === 'POST';
+        const security = window.nekoLocalMutationSecurity;
+        let headers = mutation ? { 'Content-Type': 'application/json' } : {};
+        if (mutation) {
+            if (!security || typeof security.getMutationHeaders !== 'function') {
+                throw Object.assign(new Error('Mutation protection unavailable'), { code: 'csrf_validation_failed' });
+            }
+            Object.assign(headers, await security.getMutationHeaders());
+        }
+        const send = () => {
+            // Includes the token bootstrap await: a switched character must
+            // never submit an old panel's request.
+            if (controller.signal.aborted || !isCurrent()) throw Object.assign(new Error('Stale operation'), { code: 'stale_operation' });
+            return fetch(url, Object.assign({}, options, {
+                headers, credentials: 'same-origin', cache: 'no-store', signal: controller.signal
+            }));
+        };
+        let response = await send();
+        let data = await response.json();
+        if (mutation && response.status === 403 && data.error_code === 'csrf_validation_failed') {
+            await security.refreshToken();
+            headers = Object.assign({ 'Content-Type': 'application/json' }, await security.getMutationHeaders());
+            response = await send();
+            data = await response.json();
+        }
+        if (!response.ok || (data && data.success === false)) {
+            throw Object.assign(new Error('Request failed'), {
+                code: data && data.error_code || 'request_failed', status: response.status
+            });
+        }
+        if (!isCurrent()) throw Object.assign(new Error('Stale operation'), { code: 'stale_operation' });
+        return data;
+    }
+    try { return await Promise.race([request(), deadline]); }
+    finally { clearTimeout(timer); controller.abort(); }
+}
+
+async function resolveTopicRecommendationCharacter(binding, isCurrent) {
+    // Read the server identity; a display name is never a storage identity.
+    const characters = await topicRecommendationRequest('/api/characters?language=zh-CN', null, isCurrent);
+    const cat = characters && characters['猫娘'] && characters['猫娘'][binding.name];
+    const characterId = cat && ((cat._reserved && cat._reserved.character_id) || cat.character_id);
+    if (typeof characterId !== 'string' || !/^character_[0-9a-f]{32}$/.test(characterId)) {
+        throw Object.assign(new Error('Character unavailable'), { code: 'character_not_found' });
+    }
+    return characterId;
+}
+
+function topicRecommendationErrorKey(error, mutationSent = false) {
+    if (error && ['character_not_found', 'invalid_character_id'].includes(error.code)) return 'roleMissing';
+    if (error && ['epoch_conflict', 'request_id_conflict', 'reset_conflict', 'revision_conflict', 'stale_operation'].includes(error.code)) return 'conflict';
+    if (error && ['maintenance', 'closing', 'closing_timeout', 'storage_changed'].includes(error.code)) return 'maintenance';
+    if (error && ['store_unavailable', 'service_unavailable', 'storage_unavailable'].includes(error.code)) return 'degraded';
+    if (error && ['csrf_validation_failed', 'access_denied'].includes(error.code)) return 'accessFailed';
+    return mutationSent ? 'requestFailed' : 'degraded';
+}
+
+function attachTopicRecommendationControls(panel, prefix) {
+    const status = document.createElement('button');
+    status.type = 'button';
+    status.id = `${prefix}-topic-recommendation-status`;
+    status.setAttribute('aria-live', 'polite');
+    status.setAttribute('data-topic-recommendation-status', '');
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.id = `${prefix}-topic-recommendation-reset`;
+    reset.setAttribute('data-i18n', 'settings.recommendation.reset');
+    reset.textContent = topicRecommendationText('settings.recommendation.reset', '重置话题推荐记录');
+    const recover = document.createElement('button');
+    recover.type = 'button';
+    recover.id = `${prefix}-topic-recommendation-recover`;
+    recover.setAttribute('data-i18n', 'settings.recommendation.recover');
+    recover.textContent = topicRecommendationText('settings.recommendation.recover', '恢复话题分析（保留画像）');
+    [recover, reset, status].forEach(button => Object.assign(button.style, {
+        display: 'block', background: 'transparent', border: '0', textAlign: 'left',
+        color: 'var(--neko-popup-text, #333)', font: 'inherit', fontSize: '12px',
+        cursor: 'pointer', padding: '6px 10px', borderRadius: '6px', width: '100%',
+        whiteSpace: 'normal', maxWidth: '280px', boxSizing: 'border-box'
+    }));
+    panel.appendChild(recover);
+    panel.appendChild(reset);
+    panel.appendChild(status);
+    let operation = 0;
+    let busy = false;
+    let pendingReset = null;
+    let refreshAfterMutation = false;
+    const setStatus = key => {
+        status.setAttribute('data-i18n', `settings.recommendation.${key}`);
+        status.textContent = topicRecommendationText(`settings.recommendation.${key}`, key);
+    };
+    setStatus('checking');
+    const newOperation = () => {
+        const binding = captureTopicRecommendationCharacter();
+        const id = ++operation;
+        const isCurrent = () => operation === id && panel.isConnected !== false
+            && topicRecommendationCharacterIsCurrent(binding);
+        return { binding, isCurrent };
+    };
+    async function getStatus(binding, isCurrent, characterId) {
+        const id = characterId || await resolveTopicRecommendationCharacter(binding, isCurrent);
+        const result = await topicRecommendationRequest(
+            '/api/proactive/recommendation/status?character_id=' + encodeURIComponent(id), null, isCurrent);
+        if (!result || result.success !== true || result.character_id !== id
+            || typeof result.reset_generation !== 'string' || !result.reset_generation
+            || (result.epoch !== null && typeof result.epoch !== 'string')
+            || (result.revision !== null && !Number.isInteger(result.revision))) {
+            throw Object.assign(new Error('Invalid status response'), { code: 'request_failed' });
+        }
+        return result;
+    }
+    panel._refreshRecommendationStatus = async (pending) => {
+        if (busy) { refreshAfterMutation = true; return; }
+        if (pending) { operation += 1; setStatus('checking'); return; }
+        let task;
+        try {
+            task = newOperation();
+            setStatus('checking');
+            const result = await getStatus(task.binding, task.isCurrent);
+            if (!task.isCurrent()) return;
+            const states = ['capability_disabled', 'user_disabled', 'waiting_context', 'ready', 'degraded', 'maintenance', 'closing'];
+            if (!states.includes(result.availability)) throw new Error('Invalid availability');
+            const state = window.appState || {};
+            if (result.capability_enabled === true
+                && result.controls_enabled !== !!(state.proactiveChatEnabled && state.proactiveTopicRecommendationEnabled)) {
+                setStatus('saveFailed');
+            } else setStatus(result.availability);
+        } catch (error) {
+            if (task && !task.isCurrent()) return;
+            setStatus(topicRecommendationErrorKey(error));
+        }
+    };
+    status.addEventListener('click', event => {
+        event.stopPropagation();
+        panel._refreshRecommendationStatus();
+    });
+    const contextOperation = preserveProfile => async event => {
+        event.stopPropagation();
+        if (busy) return;
+        let task;
+        let mutationSent = false;
+        busy = true;
+        reset.disabled = true;
+        recover.disabled = true;
+        try {
+            task = newOperation();
+            const characterId = await resolveTopicRecommendationCharacter(task.binding, task.isCurrent);
+            // The same name can have been recreated; never reuse its old request.
+            if (pendingReset && (pendingReset.binding.config !== task.binding.config
+                || pendingReset.binding.name !== task.binding.name
+                || pendingReset.binding.switchCounter !== task.binding.switchCounter
+                || pendingReset.body.character_id !== characterId
+                || pendingReset.preserveProfile !== preserveProfile)) pendingReset = null;
+            if (!pendingReset) {
+                const result = await getStatus(task.binding, task.isCurrent, characterId);
+                if (!task.isCurrent()) return;
+                if (['maintenance', 'closing'].includes(result.availability)) {
+                    throw Object.assign(new Error('Service unavailable'), { code: 'maintenance' });
+                }
+                if (typeof result.epoch !== 'string' || !result.epoch) {
+                    throw Object.assign(new Error('State not loaded'), { code: 'store_unavailable' });
+                }
+                if (typeof result.reset_confirmation !== 'string' || !/^[a-f0-9]{64}$/.test(result.reset_confirmation)) {
+                    throw Object.assign(new Error('Confirmation not loaded'), { code: 'store_unavailable' });
+                }
+                const confirmText = preserveProfile
+                    ? topicRecommendationText('settings.recommendation.recoverConfirm',
+                        '保留画像、拒绝记录和原聊天，重新开始话题分析。旧候选需有新的聊天依据才会再次使用。继续吗？')
+                    : topicRecommendationText('settings.recommendation.resetConfirm',
+                        '只清除当前猫娘的话题推荐记录。原聊天与记忆保留，之后可能重新发现兴趣。开关保持不变。继续吗？');
+                if (!window.confirm(confirmText) || !task.isCurrent()) return;
+                pendingReset = { binding: task.binding, preserveProfile,
+                    url: preserveProfile ? '/api/proactive/recommendation/recover' : '/api/proactive/recommendation/reset', body: {
+                    character_id: characterId, expected_epoch: result.epoch,
+                    expected_reset_generation: result.reset_generation,
+                    expected_confirmation: result.reset_confirmation,
+                    request_id: window.crypto.randomUUID()
+                } };
+            }
+            setStatus(preserveProfile ? 'recovering' : 'resetting');
+            // Re-resolve immediately before mutation, including for an uncertain
+            // retry. A reset never silently targets a deleted/recreated role.
+            const verifiedId = await resolveTopicRecommendationCharacter(task.binding, task.isCurrent);
+            if (verifiedId !== pendingReset.body.character_id) {
+                pendingReset = null;
+                throw Object.assign(new Error('Character changed'), { code: 'character_not_found' });
+            }
+            const submitted = pendingReset;
+            mutationSent = true;
+            const result = await topicRecommendationRequest(submitted.url, {
+                method: 'POST', body: JSON.stringify(submitted.body)
+            }, task.isCurrent);
+            if (!task.isCurrent()) return;
+            if (result && result.reset_generation !== submitted.body.expected_reset_generation) {
+                throw Object.assign(new Error('Reset confirmation expired'), { code: 'stale_operation', status: 409 });
+            }
+            if (!result || result.success !== true || result.character_id !== characterId
+                || result.request_id !== submitted.body.request_id || typeof result.epoch !== 'string'
+                || result.epoch === submitted.body.expected_epoch) throw new Error('Invalid reset receipt');
+            pendingReset = null;
+            const currentId = await resolveTopicRecommendationCharacter(task.binding, task.isCurrent);
+            if (currentId !== characterId) {
+                throw Object.assign(new Error('Character changed'), { code: 'character_not_found' });
+            }
+            setStatus(preserveProfile ? 'recoverDone' : 'resetDone');
+        } catch (error) {
+            if (task && !task.isCurrent()) return;
+            // Uncertain transport/IO failures retain the exact idempotency key.
+            // A confirmed conflict permits a fresh reviewed operation next time.
+            if (error && error.status === 409) pendingReset = null;
+            setStatus(topicRecommendationErrorKey(error, mutationSent));
+        } finally {
+            busy = false;
+            reset.disabled = false;
+            recover.disabled = false;
+            if (refreshAfterMutation) {
+                refreshAfterMutation = false;
+                panel._refreshRecommendationStatus();
+            }
+        }
+    };
+    reset.addEventListener('click', contextOperation(false));
+    recover.addEventListener('click', contextOperation(true));
+    return { status, reset, recover };
+}
+
+window.refreshTopicRecommendationStatus = function (pending) {
+    document.querySelectorAll('[data-neko-sidepanel-type="interval-proactive-chat"]').forEach(panel => {
+        if (panel.style.display !== 'none' && panel._refreshRecommendationStatus) {
+            panel._refreshRecommendationStatus(pending);
+        }
+    });
+};
+
 function createSettingsPopupContent(manager, prefix, popup) {
     // 1. 对话设置按钮
     const chatSettingsBtn = manager._createSettingsMenuButton({
@@ -542,6 +809,7 @@ function createSettingsPopupContent(manager, prefix, popup) {
                     setTimeout(() => { isOpening = false; }, 500);
                 });
                 sidePanel.appendChild(authLink);
+                attachTopicRecommendationControls(sidePanel, prefix);
             }
 
             manager._attachSidePanelHover(toggleItem, sidePanel);
@@ -2207,6 +2475,7 @@ function createIntervalControl(manager, prefix, toggle) {
 
     container._expand = () => {
         if (container.style.display === 'flex' && container.style.opacity !== '0') return;
+        if (container._refreshRecommendationStatus) container._refreshRecommendationStatus();
         const visibilityRevision = (container._visibilityRevision || 0) + 1;
         container._visibilityRevision = visibilityRevision;
         if (container._expandFrameId) {

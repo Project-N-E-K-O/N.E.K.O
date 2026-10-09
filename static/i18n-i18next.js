@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并自定义聊天头像与上游声纹提示，刷新八语言客户端缓存。
-    const LOCALE_VERSION = '2026-10-09-pr3340-avatar-wake-hints-rebase';
+    // 合并聊天头像、声纹提示与话题推荐恢复入口，刷新八语言客户端缓存。
+    const LOCALE_VERSION = '2026-10-09-avatar-topic-recommendation-confirmation';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

@@ -3614,6 +3614,29 @@
         "resourceReason_model_unavailable": "El modelo necesario no está disponible. Sigue la guía de reparación."
     },
     "settings": {
+        "recommendation": {
+            "recover": "Reanudar análisis de temas (conservar perfil)",
+            "recoverConfirm": "Conservar el perfil, las negativas y los chats originales y reiniciar el análisis. Los candidatos anteriores necesitan nuevas pruebas del chat. Las opciones no cambian. ¿Continuar?",
+            "recovering": "Reanudando análisis de temas…",
+            "recoverDone": "Análisis reanudado. Continúa conversando; los candidatos anteriores necesitan nuevas pruebas",
+            "checking": "Comprobando el estado de las recomendaciones…",
+            "capability_disabled": "Las recomendaciones de temas no están disponibles en esta versión",
+            "user_disabled": "Recomendaciones de temas en pausa",
+            "waiting_context": "Comprendiendo la conversación reciente",
+            "ready": "Recomendaciones listas (solo chat de texto)",
+            "degraded": "Recomendaciones no disponibles; pulsa para reintentar",
+            "maintenance": "Mantenimiento en curso; inténtalo más tarde",
+            "closing": "El servicio se está cerrando",
+            "reset": "Restablecer registros de recomendaciones",
+            "resetConfirm": "Borrar solo los asuntos, intereses inferidos, respuestas y repeticiones de este personaje. El chat y los recuerdos originales se conservan; los intereses pueden volver a descubrirse. Los interruptores no cambian. ¿Continuar?",
+            "resetting": "Restableciendo…",
+            "resetDone": "Se han restablecido las recomendaciones de este personaje",
+            "roleMissing": "Este personaje ya no existe o está cambiando",
+            "conflict": "Los registros cambiaron en otra ventana. Revísalos y reintenta",
+            "accessFailed": "Falló la verificación de acceso. Vuelve a conectar y reintenta",
+            "requestFailed": "No se pudo confirmar el resultado. Pulsa para reintentar; el restablecimiento usa la misma solicitud y no vuelve a borrar los registros nuevos.",
+            "saveFailed": "La opción todavía no se ha aplicado en el servidor. Vuelve a guardar"
+        },
         "menu": {
             "live2dSettings": "Configuración de Live2D",
             "modelSettings": "Aspecto de Chara",
@@ -3684,6 +3707,8 @@
             "proactiveMemeChatTooltip": "Comparte memes divertidos para un chat proactivo",
             "proactiveMiniGameInviteChat": "Invitaciones a minijuegos",
             "proactiveMiniGameInviteChatTooltip": "Invitarte a un minijuego cuando se cumplan las condiciones",
+            "proactiveTopicRecommendation": "Recomendaciones de temas (Beta)",
+            "proactiveTopicRecommendationTooltip": "Sugiere temas a partir del chat de texto y la memoria de este personaje. Requiere conversación proactiva; los registros se guardan en este dispositivo.",
             "agentMaster": "Interruptor maestro NekoClaw",
             "showTaskHud": "Mostrar ventana flotante",
             "keyboardControl": "Control de teclado/ratón",

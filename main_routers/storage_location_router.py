@@ -45,9 +45,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from config import APP_NAME
+from main_logic.topic.recommendation.maintenance import recommendation_maintenance
+from main_logic.topic.recommendation.contracts import RecommendationError
 from main_routers.shared_state import (
     get_config_manager,
     get_request_app_shutdown,
@@ -2379,7 +2382,26 @@ async def post_storage_location_select(
     response: Response,
 ):
     async with _storage_mutation_lock:
-        return await _post_storage_location_select_locked(payload, response)
+        return await _run_recommendation_storage_mutation(
+            partial(_post_storage_location_select_locked, payload, response)
+        )
+
+
+async def _run_recommendation_storage_mutation(operation):
+    """Pause topic output before storage work crosses its first await.
+
+    A completed/failed HTTP request is not proof that root recovery finished.
+    Only the same application owner, with its strict physical root fence
+    verified, may resume. A changed root requires the existing restart path.
+    """
+    try:
+        async with recommendation_maintenance():
+            return await operation()
+    except RecommendationError as exc:
+        if exc.code != "closing_timeout":
+            raise
+        return JSONResponse({"ok": False, "error_code": "storage_operation_failed",
+                             "reason_code": "recommendation_writer_busy"}, status_code=503)
 
 
 async def _post_storage_location_select_locked(
@@ -2642,7 +2664,9 @@ async def post_storage_location_restart(
     response: Response,
 ):
     async with _storage_mutation_lock:
-        return await _post_storage_location_restart_locked(payload, response)
+        return await _run_recommendation_storage_mutation(
+            partial(_post_storage_location_restart_locked, payload, response)
+        )
 
 
 async def _post_storage_location_restart_locked(

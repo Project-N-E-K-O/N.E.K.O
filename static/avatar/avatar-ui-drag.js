@@ -474,6 +474,12 @@ window.CHAT_MODE_CONFIG = [
         labelKey: 'settings.toggles.proactiveMiniGameInviteChat',
         tooltipKey: 'settings.toggles.proactiveMiniGameInviteChatTooltip',
         globalVarName: 'proactiveMiniGameInviteEnabled'
+    },
+    {
+        mode: 'topic_recommendation',
+        labelKey: 'settings.toggles.proactiveTopicRecommendation',
+        tooltipKey: 'settings.toggles.proactiveTopicRecommendationTooltip',
+        globalVarName: 'proactiveTopicRecommendationEnabled'
     }
 ];
 

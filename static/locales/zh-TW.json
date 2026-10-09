@@ -3614,6 +3614,29 @@
         "resourceReason_model_unavailable": "所需模型不可用，請依修復指南處理。"
     },
     "settings": {
+        "recommendation": {
+            "recover": "恢復話題分析（保留畫像）",
+            "recoverConfirm": "保留畫像、拒絕紀錄與原聊天，重新開始話題分析。舊候選須有新的聊天依據才會再次使用。開關保持不變。繼續嗎？",
+            "recovering": "正在恢復話題分析…",
+            "recoverDone": "分析已恢復，請繼續聊天；舊候選須有新依據",
+            "checking": "正在確認推薦狀態…",
+            "capability_disabled": "此版本尚未開放話題推薦",
+            "user_disabled": "話題推薦已暫停",
+            "waiting_context": "正在理解最近的聊天",
+            "ready": "話題推薦已就緒（僅文字聊天）",
+            "degraded": "推薦暫不可用，點擊重試",
+            "maintenance": "正在維護，請稍後重試",
+            "closing": "服務正在關閉",
+            "reset": "重置話題推薦記錄",
+            "resetConfirm": "僅清除目前貓娘的事情、推測興趣、回饋和重複記錄。原聊天與記憶保留，之後可能重新發現興趣；開關保持不變。繼續嗎？",
+            "resetting": "正在重置…",
+            "resetDone": "目前貓娘的推薦記錄已重置",
+            "roleMissing": "目前貓娘已不存在或正在切換",
+            "conflict": "記錄已在其他視窗變更，請重新確認後重試",
+            "accessFailed": "存取驗證失敗，請重新連線後重試",
+            "requestFailed": "無法確認操作結果。點擊重試；重置重試會使用相同請求，不會重複清空。",
+            "saveFailed": "選項尚未在伺服器生效，請重試儲存"
+        },
         "menu": {
             "live2dSettings": "Live2D設置",
             "modelSettings": "角色外形",
@@ -3684,6 +3707,8 @@
             "proactiveMemeChatTooltip": "使用有趣表情包進行搭話",
             "proactiveMiniGameInviteChat": "小遊戲邀請",
             "proactiveMiniGameInviteChatTooltip": "符合條件時邀請你一起玩小遊戲",
+            "proactiveTopicRecommendation": "話題推薦（測試版）",
+            "proactiveTopicRecommendationTooltip": "根據目前貓娘的文字聊天與現有記憶推薦話題，需要開啟主動搭話；記錄僅存於本機。",
             "agentMaster": "貓爪總開關",
             "showTaskHud": "顯示懸浮視窗",
             "keyboardControl": "鍵鼠控製",

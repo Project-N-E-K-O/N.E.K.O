@@ -18,7 +18,7 @@
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from config import MEMORY_SERVER_PORT
 from config.prompts.prompts_proactive import build_proactive_action_note
@@ -201,6 +201,8 @@ async def _commit_proactive_delivery(
     proactive_lang: str,
     master_name: str,
     log: logging.Logger | None = None,
+    publish_if: Callable[[], bool] | None = None,
+    on_published: Callable[[float], None] | None = None,
 ) -> DeliveryCommit:
     """Build, feed, and atomically finish one proactive delivery."""
     active_logger = log or logger
@@ -271,17 +273,22 @@ async def _commit_proactive_delivery(
         "last_user_engagement_time",
         None,
     )
+    if publish_if is not None and not publish_if():
+        return DeliveryCommit(result=ProactiveChatResult(body=_proactive_pass_body(
+            PROACTIVE_REASON_DELIVERY_PREEMPTED, message='recommendation context changed',
+        )), delivery=None)
     try:
         tts_accepted = await mgr.feed_tts_chunk(
             response_text,
             expected_speech_id=proactive_sid,
             expected_user_engagement_time=expected_user_engagement_time,
+            **({'publish_if': publish_if} if publish_if is not None else {}),
         )
-        if tts_accepted is False and _proactive_feed_rejected_for_takeover(
+        if tts_accepted is False and ((publish_if is not None and not publish_if()) or _proactive_feed_rejected_for_takeover(
             mgr,
             proactive_sid,
             expected_user_engagement_time,
-        ):
+        )):
             active_logger.info(
                 "[%s] buffered proactive TTS dropped after user interaction or takeover",
                 lanlan_name,
@@ -311,6 +318,8 @@ async def _commit_proactive_delivery(
             action_note=action_note,
             source_tag=delivered_tag,
             vision_screenshot_b64=staged_screenshot,
+            **({'publish_if': publish_if, 'on_published': on_published}
+               if publish_if is not None else {}),
         )
     except Exception as exc:
         active_logger.warning(

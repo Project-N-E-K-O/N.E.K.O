@@ -3614,6 +3614,29 @@
         "resourceReason_model_unavailable": "The required model is unavailable. Follow the repair guide."
     },
     "settings": {
+        "recommendation": {
+            "recover": "Resume topic analysis (keep profile)",
+            "recoverConfirm": "Keep the profile, refusals and original chats, and restart topic analysis. Previous candidates need new chat evidence before use. Switches stay unchanged. Continue?",
+            "recovering": "Resuming topic analysis…",
+            "recoverDone": "Analysis resumed. Continue chatting; previous candidates need new evidence",
+            "checking": "Checking recommendation status…",
+            "capability_disabled": "Topic recommendations are unavailable in this release",
+            "user_disabled": "Topic recommendations are paused",
+            "waiting_context": "Understanding recent chat",
+            "ready": "Topic recommendations are ready (text chat only)",
+            "degraded": "Recommendations unavailable; click to retry",
+            "maintenance": "Maintenance in progress; try again later",
+            "closing": "Service is closing",
+            "reset": "Reset topic recommendation records",
+            "resetConfirm": "Clear only this character’s matters, inferred interests, feedback and repetition records. Original chat and memory are kept; interests may be rediscovered later. Switches stay unchanged. Continue?",
+            "resetting": "Resetting…",
+            "resetDone": "This character’s recommendation records have been reset",
+            "roleMissing": "This character no longer exists or is switching",
+            "conflict": "Records changed in another window. Review and retry",
+            "accessFailed": "Access verification failed. Reconnect and retry",
+            "requestFailed": "The result could not be confirmed. Click to retry; a reset retry uses the same request and will not clear newer records again.",
+            "saveFailed": "The setting has not taken effect on the server. Retry saving"
+        },
         "menu": {
             "live2dSettings": "Live2D Settings",
             "modelSettings": "Chara Appearance",
@@ -3684,6 +3707,8 @@
             "proactiveMemeChatTooltip": "Share funny memes for proactive chat",
             "proactiveMiniGameInviteChat": "Mini-game Invites",
             "proactiveMiniGameInviteChatTooltip": "Invite you to play a mini-game when conditions are right",
+            "proactiveTopicRecommendation": "Topic Recommendations (Beta)",
+            "proactiveTopicRecommendationTooltip": "Suggest topics from this character’s text chats and existing memory. Requires Proactive Chat; records stay on this device.",
             "agentMaster": "NekoClaw Master Switch",
             "showTaskHud": "Show floating window",
             "keyboardControl": "Keyboard/Mouse Control",

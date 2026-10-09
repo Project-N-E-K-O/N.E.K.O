@@ -762,6 +762,10 @@ _QUERY_MEMORY_ROUTE_DEFINITION = "app/memory_server/routes.py"
 _KNOWN_RECALL_CLIENTS = {
     "main_logic/core/tool_calling.py",
 }
+# Structured evidence is consumed as JSON by the summary model rather than
+# displayed in chat. Its contract is exercised end-to-end below: stable refs,
+# non-recent attribution, per-row limits and the final serialized input ceiling.
+_STRUCTURED_RECALL_CLIENTS = {"main_logic/topic/recommendation/adapters.py"}
 
 
 def test_every_query_memory_client_renders_through_the_entry_point():
@@ -784,16 +788,67 @@ def test_every_query_memory_client_renders_through_the_entry_point():
         sources, "/query_memory",
     ) - {_QUERY_MEMORY_ROUTE_DEFINITION}
 
-    assert clients == _KNOWN_RECALL_CLIENTS, (
-        f"/query_memory 的调用方集合变了：新增 {sorted(clients - _KNOWN_RECALL_CLIENTS)}，"
-        f"消失 {sorted(_KNOWN_RECALL_CLIENTS - clients)}。\n"
+    expected = _KNOWN_RECALL_CLIENTS | _STRUCTURED_RECALL_CLIENTS
+    assert clients == expected, (
+        f"/query_memory 的调用方集合变了：新增 {sorted(clients - expected)}，"
+        f"消失 {sorted(expected - clients)}。\n"
         f"新调用方请把结果交给 memory.recall_render.render_recall_block 渲染，"
         f"再加进 _KNOWN_RECALL_CLIENTS"
     )
     entry_module = _ENTRY_POINT[:-3].replace("/", ".")
     not_rendering = sorted(
-        rel for rel in clients if entry_module not in sources[rel]
+        rel for rel in _KNOWN_RECALL_CLIENTS if entry_module not in sources[rel]
     )
     assert not_rendering == [], (
         f"{not_rendering} 拿了召回结果却没走 {entry_module}——召回段就没有 token 上限了"
     )
+
+
+@pytest.mark.asyncio
+async def test_structured_recall_consumer_bounds_actual_model_messages_and_retains_evidence_contract():
+    import json
+    from main_logic.topic.recommendation.adapters import ReadOnlyMemoryAdapter
+    from main_logic.topic.recommendation.analysis import RecommendationAnalyzer
+    from main_logic.topic.recommendation.contracts import TurnEvidence, empty_state, RecommendationError
+    from config.topic_recommendation_settings import TopicRecommendationSettings
+    from dataclasses import replace
+
+    assert _STRUCTURED_RECALL_CLIENTS == {"main_logic/topic/recommendation/adapters.py"}
+    rows = [{"id": f"fact-{i}", "text": "password=secretvalue " + "ordinary context " * 20000,
+             "created_at": "2099-01-01", "event_time": "2099-01-01"} for i in range(25)]
+    client = SimpleNamespace(post=AsyncMock(return_value=SimpleNamespace(status_code=200, json=lambda: {"results": rows})))
+    memories = await ReadOnlyMemoryAdapter(client_provider=lambda: client).read(
+        display_name="Yui", subjects=None, query="api_key=secretquery painting", language="en", allow_private=True)
+    assert len(memories) == 6
+    assert [m["ref"] for m in memories] == [f"fact-{i}" for i in range(6)]
+    assert all(count_tokens(m["text"]) <= 200 for m in memories)
+    assert "secretquery" not in client.post.call_args.kwargs["json"]["query"]
+    calls = []
+    invent_memory_evidence = [False]
+    async def invoke(**kwargs):
+        calls.append(kwargs)
+        if invent_memory_evidence[0]:
+            return json.dumps({"subjects": [{"subject_id": None, "summary": "painting", "angle": "palette",
+                "basis": "explicit", "status": "active", "evidence_refs": ["fact-0"]}]})
+        return '{"subjects":[]}'
+    settings = TopicRecommendationSettings()
+    analyzer = RecommendationAnalyzer(settings, invoke=invoke)
+    evidence = TurnEvidence("u1", "u1", "s1", "user", "I am painting", "en", 10, 1, "binding")
+    state = empty_state("character_" + "a" * 32)
+    await analyzer.analyze((evidence,), state, memories=memories)
+    wire = json.dumps(calls[0]["messages"], ensure_ascii=False)
+    assert count_tokens(wire) <= settings.candidate_input_tokens
+    assert calls[0]["timeout"] > 0 and calls[0]["max_completion_tokens"] == settings.candidate_output_tokens
+    assert "secretvalue" not in wire and "2099-01-01" not in wire
+    payload = json.loads(calls[0]["messages"][1]["content"])
+    assert [m["ref"] for m in payload["memories"]] == [f"fact-{i}" for i in range(6)]
+    assert all(m["recent_evidence"] is False and m["source"] == "memory_context" for m in payload["memories"])
+    assert [t["ref"] for t in payload["turns"]] == ["u1"]
+    invent_memory_evidence[0] = True
+    with pytest.raises(RecommendationError, match="invalid_evidence"):
+        await analyzer.analyze((evidence,), state, memories=memories)
+    calls.clear()
+    too_small = RecommendationAnalyzer(replace(settings, candidate_input_tokens=64), invoke=invoke)
+    with pytest.raises(RecommendationError, match="input_budget_exceeded"):
+        await too_small.analyze((evidence,), state, memories=memories)
+    assert not calls, "An oversized final message must never reach the model"

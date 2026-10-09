@@ -3614,6 +3614,29 @@
         "resourceReason_model_unavailable": "필요한 모델을 사용할 수 없습니다. 복구 안내를 따라 주세요."
     },
     "settings": {
+        "recommendation": {
+            "recover": "주제 분석 재개 (프로필 유지)",
+            "recoverConfirm": "프로필, 거절 기록과 원래 대화를 유지하고 주제 분석을 다시 시작합니다. 이전 후보는 새 대화 근거가 있어야 사용됩니다. 스위치는 유지됩니다. 계속할까요?",
+            "recovering": "주제 분석 재개 중…",
+            "recoverDone": "분석이 재개되었습니다. 대화를 이어가세요. 이전 후보에는 새 근거가 필요합니다",
+            "checking": "추천 상태 확인 중…",
+            "capability_disabled": "이 버전에서는 주제 추천을 사용할 수 없습니다",
+            "user_disabled": "주제 추천이 일시 중지되었습니다",
+            "waiting_context": "최근 대화를 이해하는 중",
+            "ready": "주제 추천 준비 완료 (텍스트 대화 전용)",
+            "degraded": "추천을 사용할 수 없습니다. 클릭하여 재시도",
+            "maintenance": "점검 중입니다. 나중에 다시 시도하세요",
+            "closing": "서비스 종료 중",
+            "reset": "주제 추천 기록 초기화",
+            "resetConfirm": "현재 캐릭터의 일, 추정 관심사, 반응 및 반복 기록만 지웁니다. 원래 대화와 기억은 유지되며 관심사는 나중에 다시 발견될 수 있습니다. 스위치는 변경되지 않습니다. 계속할까요?",
+            "resetting": "초기화 중…",
+            "resetDone": "현재 캐릭터의 추천 기록을 초기화했습니다",
+            "roleMissing": "캐릭터가 없거나 전환 중입니다",
+            "conflict": "다른 창에서 기록이 바뀌었습니다. 확인 후 재시도하세요",
+            "accessFailed": "접근 확인에 실패했습니다. 다시 연결 후 재시도하세요",
+            "requestFailed": "결과를 확인할 수 없습니다. 클릭하여 재시도하세요. 초기화 재시도는 같은 요청을 사용하여 새 기록을 다시 지우지 않습니다.",
+            "saveFailed": "서버에 설정이 적용되지 않았습니다. 저장을 다시 시도하세요"
+        },
         "menu": {
             "live2dSettings": "Live2D 설정",
             "modelSettings": "차라 외형",
@@ -3684,6 +3707,8 @@
             "proactiveMemeChatTooltip": "재미있는 밈을 공유하여 채팅",
             "proactiveMiniGameInviteChat": "미니게임 초대",
             "proactiveMiniGameInviteChatTooltip": "조건이 맞을 때 미니게임에 초대하여 말걸기",
+            "proactiveTopicRecommendation": "주제 추천 (베타)",
+            "proactiveTopicRecommendationTooltip": "현재 캐릭터의 텍스트 대화와 기존 기억으로 주제를 추천합니다. 먼저 말 걸기가 필요하며 기록은 이 기기에 저장됩니다.",
             "agentMaster": "네코클로 마스터 스위치",
             "showTaskHud": "플로팅 창 표시",
             "keyboardControl": "키보드/마우스 제어",

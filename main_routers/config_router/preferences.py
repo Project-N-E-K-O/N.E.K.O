@@ -39,6 +39,7 @@ from utils.preferences import (
     validate_model_preferences,
 )
 from utils.cloudsave_runtime import MaintenanceModeError
+from ..recommendation_controls import recommendation_aware_save
 
 
 _CONVERSATION_SETTINGS_ASR_DECISION_HEADER = "x-conversation-settings-asr-decision"
@@ -402,7 +403,7 @@ async def save_conversation_settings(request: Request):
                 content={"success": False, "error": str(exc)},
             )
 
-        result = await asyncio.to_thread(
+        result = await recommendation_aware_save(
             save_global_conversation_settings_versioned,
             data,
             expected_revision=expected_revision,

@@ -1248,6 +1248,15 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             _runtime_startup_init_completed = True
             _disable_main_storage_limited_mode()
 
+            try:
+                from .topic_recommendation_runtime import initialize_topic_recommendation_runtime
+                await initialize_topic_recommendation_runtime(
+                    _config_manager, tuple(_iter_session_managers()), lanlan_basic_config,
+                )
+            except Exception as exc:
+                # Optional beta failure cannot disable ordinary conversation.
+                logger.warning('topic recommendation initialization unavailable: %s', type(exc).__name__)
+
             # runtime init 完成后再起后台预热：把已改 lazy 的重模块（genai+mcp /
             # translatepy / 功能路由依赖）提前 import 好，用户首次用到时不等。放在
             # 这里而非 on_startup 开头，是为了不在关键启动路径上和 runtime init 抢 GIL。
@@ -1440,6 +1449,15 @@ async def on_shutdown():
         # 总预算耗尽才跳过后续异步步骤，末尾统一 re-raise 第一次取消。
         shutdown_cancellation: asyncio.CancelledError | None = None
         cancellation_budget = _ShutdownCancellationBudget()
+        from .topic_recommendation_runtime import close_topic_recommendation_runtime
+        recommendation_deadline = time.monotonic() + 5.5
+        shutdown_cancellation = await _run_shutdown_step(
+            lambda: close_topic_recommendation_runtime(deadline=recommendation_deadline),
+            what='topic recommendation cleanup',
+            deadline_monotonic=recommendation_deadline,
+            pending_cancellation=shutdown_cancellation,
+            cancellation_budget=cancellation_budget,
+        )
         try:
             from .voice_identity_runtime import close_voice_identity_runtime
 

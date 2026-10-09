@@ -57,6 +57,8 @@ from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_PASS_BUSY,
     PROACTIVE_REASON_PASS_DISABLED,
     PROACTIVE_REASON_PASS_DUPLICATE,
+    PROACTIVE_REASON_PASS_USER_DIRECTIVE,
+    PROACTIVE_REASON_PASS_MODEL_PASS,
     ProactiveChatCommand,
     ProactiveChatResult,
     _proactive_chat_body,
@@ -509,6 +511,12 @@ async def handle_proactive_chat(
     Proactive chat: two-phase architecture — Phase 1 merged LLM (web screening + music/meme keywords, 1 call), Phase 2 persona-aware chat generation.
     """
     lifecycle: ProactiveLifecycle | None = None
+    from main_logic.topic.recommendation.registry import get_recommendation_service
+    from main_logic.topic.recommendation.adapters import build_candidate_prompt
+    recommendation_service = get_recommendation_service()
+    recommendation_snapshot = None
+    recommendation_control = None
+    recommendation_restrictions = ()
     try:
         _config_manager = config_manager
         # Character data is intentionally fetched by the Router before JSON
@@ -1276,6 +1284,22 @@ async def handle_proactive_chat(
                 )
             )
 
+        recommendation_character_id = getattr(mgr, '_recommendation_character_id', None)
+        if recommendation_service is not None and recommendation_character_id and not command.voice_mode:
+            recommendation_control = recommendation_service.control_token(recommendation_character_id)
+            recommendation_restrictions = recommendation_service.restrictions_snapshot(recommendation_character_id)
+            if (isinstance(command.enabled_modes, list)
+                    and 'topic_recommendation' in enabled_modes
+                    and not source_mode_selection.restricted_to_vision
+                    and not source_mode_selection.text_only_followup):
+                recommendation_snapshot = recommendation_service.snapshot(
+                    recommendation_character_id, getattr(mgr, '_conversation_observer_id', None),
+                )
+        # Internal candidates never become an external source-fetch request or
+        # a legacy home/news fallback. An explicit [] retains its old meaning.
+        if isinstance(enabled_modes, (list, tuple)):
+            enabled_modes = [mode for mode in enabled_modes if mode != 'topic_recommendation']
+
         print(f"[{lanlan_name}] 启用的搭话模式: {enabled_modes}")
 
         # ========== Mini-game 邀请短路 ==========
@@ -1330,6 +1354,7 @@ async def handle_proactive_chat(
         source_result = _decide_empty_source_gate(
             enabled_modes,
             has_unfinished_thread=_has_unfinished_thread,
+            has_recommendation=recommendation_snapshot is not None,
         )
         if source_result is not None:
             print(
@@ -1359,7 +1384,7 @@ async def handle_proactive_chat(
             # 例外：未收尾话题模式下 enabled_modes 可能本就被清空（restricted_screen_only
             # + 无 vision），sources 必定为空但不应当 pass —— 让 Phase 2 拿对话
             # 历史 + state_section 跑 text-only [CHAT] 跟进。
-            if not _has_unfinished_thread:
+            if not _has_unfinished_thread and recommendation_snapshot is None:
                 return await _end_proactive(
                     ProactiveChatResult(
                         body=_proactive_pass_body(
@@ -2055,6 +2080,8 @@ async def handle_proactive_chat(
             phase1_topics,
             vision_content,
             has_unfinished_thread=_has_unfinished_thread,
+            has_recommendation=(recommendation_snapshot is not None
+                                and recommendation_service.is_current(recommendation_snapshot)),
         )
         if phase1_decision.result is not None:
             print(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
@@ -2246,7 +2273,14 @@ async def handle_proactive_chat(
         # 格式泄漏 drop（Codex P1）。
         _expects_source_tag = (
             bool(external_section) or bool(music_section) or bool(meme_section)
+            or recommendation_snapshot is not None
         )
+        if recommendation_snapshot is not None and not (
+            external_section or music_section or meme_section
+        ):
+            # The recommendation adapter supplies the tagged format. Avoid
+            # simultaneously telling a candidate-only model to output no tags.
+            output_format_section = ''
         music_playing_hint = _build_music_playing_hint(
             is_playing_music=is_playing_music,
             current_track=current_track,
@@ -2317,6 +2351,13 @@ async def handle_proactive_chat(
         # generation.py 的 _proactive_directive_hits。两级都不额外烧 LLM。
         phase2_memory_context = _append_directives_section(
             phase2_memory_context, lanlan_name, proactive_lang,
+        )
+        if recommendation_snapshot is not None and not recommendation_service.is_current(recommendation_snapshot):
+            return await _end_proactive(ProactiveChatResult(body=_proactive_pass_body(
+                PROACTIVE_REASON_DELIVERY_PREEMPTED, message='recommendation context changed before generation',
+            )))
+        phase2_memory_context += build_candidate_prompt(
+            recommendation_snapshot, proactive_lang, restrictions=recommendation_restrictions,
         )
 
         phase2_prompt_context = Phase2PromptContext(
@@ -2429,6 +2470,10 @@ async def handle_proactive_chat(
             is_playing_music=is_playing_music,
             music_cooldown=music_cooldown,
             log=logger,
+            **({'recommendation_snapshot': recommendation_snapshot}
+               if recommendation_snapshot is not None else {}),
+            **({'recommendation_input_budget': recommendation_service.settings.phase2_text_input_tokens}
+               if recommendation_snapshot is not None or recommendation_restrictions else {}),
         )
         if guarded_output.result is not None:
             return await _end_proactive(
@@ -2442,6 +2487,48 @@ async def handle_proactive_chat(
         phase2_use_vision = bool(
             screenshot_b64_for_phase2 and model_config.has_vision_model
         )
+        selected_recommendation = getattr(guarded_output, 'recommendation_subject_id', None)
+        if (recommendation_snapshot is not None and selected_recommendation is None
+                and not _has_unfinished_thread and not phase1_topics and not vision_content):
+            return await _end_proactive(ProactiveChatResult(body=_proactive_pass_body(
+                PROACTIVE_REASON_PASS_MODEL_PASS, message='no recommendation or other source was selected',
+            )))
+        if selected_recommendation is not None:
+            if not await recommendation_service.validate_selection(
+                recommendation_snapshot, selected_recommendation, response_text, proactive_lang,
+            ):
+                return await _end_proactive(ProactiveChatResult(body=_proactive_pass_body(
+                    PROACTIVE_REASON_PASS_MODEL_PASS, message='recommendation adoption was not confirmed',
+                )))
+            # The internal source declaration cannot attach a personal topic
+            # receipt to a song/image selected by another source.
+            source_tag = 'CHAT'
+            active_channels = ['chat']
+            selected_music_link = None
+            is_music_used = False
+        recommendation_guard = None
+        recommendation_capture = None
+        if selected_recommendation is not None or recommendation_restrictions:
+            def recommendation_guard():
+                return (recommendation_service is get_recommendation_service()
+                        and recommendation_service.control_token_current(recommendation_control)
+                        and (selected_recommendation is None
+                             or recommendation_service.is_current(recommendation_snapshot)))
+            if (not recommendation_guard() or
+                    not await recommendation_service.output_allowed(
+                        recommendation_character_id, response_text, proactive_lang,
+                    ) or not recommendation_guard()):
+                return await _end_proactive(ProactiveChatResult(body=_proactive_pass_body(
+                    PROACTIVE_REASON_PASS_USER_DIRECTIVE, message='recommendation output unavailable or restricted',
+                )))
+        if selected_recommendation is not None:
+            recommendation_delivery_id = uuid4().hex
+            def recommendation_capture(published_at):
+                recommendation_service.capture_publication(
+                    recommendation_snapshot, selected_recommendation,
+                    recommendation_delivery_id, response_text,
+                    published_at=published_at, speech_id=str(proactive_sid),
+                )
         delivery_commit = await _commit_proactive_delivery(
             mgr=mgr,
             proactive_sid=proactive_sid,
@@ -2462,6 +2549,8 @@ async def handle_proactive_chat(
             proactive_lang=proactive_lang,
             master_name=master_name_current,
             log=logger,
+            **({'publish_if': recommendation_guard, 'on_published': recommendation_capture}
+               if recommendation_guard is not None else {}),
         )
         if delivery_commit.result is not None:
             return await _end_proactive(

@@ -25,6 +25,7 @@ ALLOWED_CONVERSATION_SETTINGS = frozenset({
     "proactiveMusicEnabled",
     "proactiveMemeEnabled",
     "proactiveMiniGameInviteEnabled",
+    "proactiveTopicRecommendationEnabled",
     "mergeMessagesEnabled",
     "focusModeEnabled",
     "focusCognitionEnabled",

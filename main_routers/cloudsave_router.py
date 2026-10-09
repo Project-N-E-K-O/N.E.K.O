@@ -31,6 +31,7 @@ from contextlib import suppress
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from main_logic.topic.recommendation.maintenance import recommendation_maintenance
 
 from .shared_state import ensure_steamworks, get_config_manager, get_initialize_character_data, get_role_state, get_session_manager
 from .characters_router import (
@@ -683,7 +684,7 @@ async def post_cloudsave_character_download(name: str, request: Request):
         # is polled without blocking the event loop; Windows mutex ownership
         # still stays on this thread for both acquire and release.
         async with _character_download_apply_lock:
-            async with async_cloud_apply_fence(
+            async with recommendation_maintenance(), async_cloud_apply_fence(
                 config_manager,
                 mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
                 reason=f"single_character_download:{name}",

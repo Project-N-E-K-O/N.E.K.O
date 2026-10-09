@@ -284,7 +284,9 @@ class TurnMixin:
         if dispatcher is not None:
             dispatcher.set_language(language)
 
-    def _note_user_turn(self, *, text: str | None = None, now: float | None = None) -> None:
+    def _note_user_turn(self, *, text: str | None = None, now: float | None = None,
+                        input_mode: str | None = None, turn_id: str | None = None,
+                        synthetic: bool = False) -> None:
         # Master 情绪画像：异步分析用户这轮说的话（节流 + 开关都在 tracker 内部）。
         # 语音转写 / 文本输入两条路径的对偶 chokepoint。fire-and-forget、best-effort，
         # 绝不阻塞 turn 记录、不让分析异常冒泡。
@@ -307,17 +309,31 @@ class TurnMixin:
 
         dispatcher = getattr(self, '_turn_dispatcher', None)
         if dispatcher is not None:
-            dispatcher.note_user_message(text=text, now=now)
+            if input_mode is None:
+                dispatcher.note_user_message(text=text, now=now)
+            else:
+                dispatcher.note_user_message(
+                    text=text, now=now, input_mode=input_mode, turn_id=turn_id,
+                    session_id=getattr(self, '_conversation_observer_id', None),
+                    synthetic=synthetic,
+                )
             return
         if now is None:
             self._activity_tracker.on_user_message(text=text)
         else:
             self._activity_tracker.on_user_message(text=text, now=now)
 
-    def _note_ai_turn(self, *, text: str | None = None, now: float | None = None) -> None:
+    def _note_ai_turn(self, *, text: str | None = None, now: float | None = None,
+                      input_mode: str | None = None, turn_id: str | None = None) -> None:
         dispatcher = getattr(self, '_turn_dispatcher', None)
         if dispatcher is not None:
-            dispatcher.note_ai_message(text=text, now=now)
+            if input_mode is None:
+                dispatcher.note_ai_message(text=text, now=now)
+            else:
+                dispatcher.note_ai_message(
+                    text=text, now=now, input_mode=input_mode, turn_id=turn_id,
+                    session_id=getattr(self, '_conversation_observer_id', None),
+                )
             return
         if now is None:
             self._activity_tracker.on_ai_message(text=text)
@@ -360,7 +376,13 @@ class TurnMixin:
         turn_id = getattr(self, "_current_ai_turn_id", "")
         started_at = float(getattr(self, "_current_ai_turn_started_at", 0.0) or 0.0)
         client_owned = getattr(self, "_current_ai_turn_client_owned", False)
-        self._note_ai_turn(text=ai_text or None)
+        observer_id = getattr(self, '_conversation_observer_id', None)
+        if (observer_id and getattr(self, 'input_mode', None) == 'text'
+                and isinstance(getattr(self, 'session', None), OmniOfflineClient)):
+            self._note_ai_turn(text=ai_text or None, now=started_at or None,
+                               input_mode='text', turn_id=turn_id or None)
+        else:
+            self._note_ai_turn(text=ai_text or None)
         self._reset_ai_turn_buffer()
         self._discarded_turn_open = False
         self._publish_ai_message_to_plugin_bus(
