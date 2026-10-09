@@ -365,7 +365,7 @@ async def knowledge_cancel_job(request: Request):
         return _failure("invalid_request", 400)
 
     async def run(svc: KnowledgeService) -> dict[str, Any]:
-        return {"ok": svc.cancel_job(job_id), "job_id": job_id}
+        return {"ok": await svc.cancel_job(job_id), "job_id": job_id}
 
     return await _call(run)
 

@@ -307,7 +307,7 @@ async def test_cancelled_queued_job_leaves_nothing_behind(tmp_path):
     try:
         async with service._write_lock:  # hold the writer so the job stays queued
             result = await service.import_pack(_raw(_pack()))
-            assert service.cancel_job(result["job_id"]) is True
+            assert await service.cancel_job(result["job_id"]) is True
         for _ in range(100):
             if not any((tmp_path / ".staging").iterdir()):
                 break
@@ -845,5 +845,78 @@ async def test_abandoned_query_embeddings_are_bounded(tmp_path, fast_indexer):
             result = await service.query(query="绝绝子", budget_ms=250)
             assert result["result"] == "matched"
         assert len(started) == service_module.MAX_QUERY_EMBEDDINGS
+    finally:
+        await service.stop()
+
+
+async def test_cancelled_request_still_finishes_admission(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        gate = asyncio.Event()
+        real_write = service_module.atomic_write_bytes
+
+        def slow_write(path, data):
+            import time
+
+            time.sleep(0.2)
+            real_write(path, data)
+
+        monkeypatch.setattr(service_module, "atomic_write_bytes", slow_write)
+        async with service._write_lock:
+            request = asyncio.create_task(service.import_pack(_raw(_pack())))
+            await asyncio.sleep(0.05)
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            for _ in range(100):
+                if service.list_jobs():
+                    break
+                await asyncio.sleep(0.01)
+            # The staged file is owned by a job, and the reservation is gone.
+            assert [job["state"] for job in service.list_jobs()] == ["queued"]
+            assert service._admitting == {}
+            gate.set()
+    finally:
+        await service.stop()
+
+
+async def test_vector_snapshot_catches_up_with_changes_made_while_rebuilding(tmp_path):
+    service = await _started(tmp_path, FakeEmbedder())
+    try:
+        loads = []
+        real_load = service._store.load_vectors
+
+        def slow_load(model_id):
+            import time
+
+            loads.append(model_id)
+            time.sleep(0.1)
+            return real_load(model_id)
+
+        service._store.load_vectors = slow_load
+        service._vector_generation += 1
+        service._schedule_vector_refresh()
+        await asyncio.sleep(0.02)
+        service._vector_generation += 1  # changes while the first rebuild runs
+        service._schedule_vector_refresh()  # skipped: one is in flight
+        for _ in range(100):
+            if service._vectors_built_for == (service._vector_generation, "fake-16"):
+                break
+            await asyncio.sleep(0.02)
+        assert service._vectors_built_for == (service._vector_generation, "fake-16")
+        assert len(loads) >= 2
+    finally:
+        await service.stop()
+
+
+async def test_cancelling_a_queued_job_deletes_its_staged_file_at_once(tmp_path):
+    service = await _started(tmp_path)
+    try:
+        for task in service._tasks:  # keep the job queued: no runner picks it up
+            task.cancel()
+        result = await service.import_pack(_raw(_pack()))
+        assert [job["state"] for job in service.list_jobs()] == ["queued"]
+        assert await service.cancel_job(result["job_id"]) is True
+        assert not any((tmp_path / ".staging").iterdir())
     finally:
         await service.stop()

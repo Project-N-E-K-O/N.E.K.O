@@ -473,10 +473,17 @@ class KnowledgeService:
             return {"ok": False, "reason": "knowledge_busy"}
         staged_bytes = sum(job.staged_bytes for job in pending) + sum(self._admitting.values())
         self._admitting[pack.pack_id] = len(canonical)
-        try:
-            return await self._admit_import(pack, canonical, chunks, staged_bytes)
-        finally:
-            self._admitting.pop(pack.pack_id, None)
+
+        async def admit() -> dict[str, Any]:
+            try:
+                return await self._admit_import(pack, canonical, chunks, staged_bytes)
+            finally:
+                self._admitting.pop(pack.pack_id, None)
+
+        # Shielded: if the request goes away mid-way, admission still runs to
+        # the end, so a staging file is never written without a job (and
+        # reservation) accounting for it.
+        return await asyncio.shield(asyncio.ensure_future(admit()))
 
     async def _admit_import(
         self, pack: KnowledgePack, canonical: bytes, chunks: int, staged_bytes: int
@@ -539,13 +546,16 @@ class KnowledgeService:
     def list_jobs(self) -> list[dict[str, Any]]:
         return [job.to_json() for job in reversed(self._jobs.values())]
 
-    def cancel_job(self, job_id: str) -> bool:
+    async def cancel_job(self, job_id: str) -> bool:
         job = self._jobs.get(job_id)
         if job is None or job.state not in ACTIVE_JOB_STATES:
             return False
         job.cancel_requested = True
         if job.state == "queued":
             self._finish_job(job, "cancelled")
+            # A cancelled job no longer counts toward the staging limits, so
+            # its file must go now, not when the runner reaches the job.
+            await asyncio.to_thread(self._staging_path(job_id).unlink, missing_ok=True)
         return True
 
     def discard_job(self, job_id: str) -> bool:
@@ -702,21 +712,28 @@ class KnowledgeService:
         if self._vector_task is not None and not self._vector_task.done():
             return
 
-        async def rebuild() -> None:
+        async def rebuild() -> bool:
             try:
                 snapshot = await asyncio.to_thread(self._store.load_vectors, model_id)
-                self._vectors = snapshot
-                self._vectors_built_for = key
             except Exception:
                 logger.warning("[Knowledge] vector snapshot rebuild failed", exc_info=True)
+                return False
+            self._vectors = snapshot
+            self._vectors_built_for = key
+            return True
+
+        def rebuilt(task: asyncio.Task[bool]) -> None:
+            # A change that arrived while this rebuild ran was skipped above.
+            # Re-check once the task is done (from inside it, it still counts
+            # as running); a failed rebuild waits for the indexer instead of
+            # retrying in a tight loop.
+            if task.cancelled() or task.exception() is not None or not task.result():
                 return
-            # A change that arrived while this rebuild ran was skipped above;
-            # pick it up now instead of waiting for the indexer's idle round.
             if not self._stopping:
                 self._schedule_vector_refresh()
 
         self._vector_task = asyncio.create_task(rebuild(), name="knowledge-vector-snapshot")
-        self._vector_task.add_done_callback(_consume)
+        self._vector_task.add_done_callback(rebuilt)
 
     async def _index_loop(self) -> None:
         last_refresh = time.monotonic()
