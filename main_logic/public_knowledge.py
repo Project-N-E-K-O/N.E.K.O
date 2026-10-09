@@ -221,6 +221,15 @@ async def query_public_knowledge(
     return no_result
 
 
+_BUILTIN_METADATA = {"source": "builtin", "domain": "public_knowledge"}
+
+
+def is_builtin_definition(tool: ToolDefinition) -> bool:
+    """Whether ``tool`` is this builtin (and not another source using the name)."""
+    metadata = getattr(tool, "metadata", None) or {}
+    return all(metadata.get(key) == value for key, value in _BUILTIN_METADATA.items())
+
+
 def build_tool_definition(
     language: str | None, handler: Callable[[dict], Any]
 ) -> ToolDefinition:
@@ -249,5 +258,5 @@ def build_tool_definition(
             "required": ["query"],
         },
         handler=handler,
-        metadata={"source": "builtin", "domain": "public_knowledge"},
+        metadata=dict(_BUILTIN_METADATA),
     )

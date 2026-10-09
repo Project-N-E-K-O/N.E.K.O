@@ -249,6 +249,11 @@ class ToolCallingMixin:
             port = getattr(self, "memory_server_port", None)
             if port is not None:
                 public_knowledge.schedule_availability_refresh(port)
+            # 同名工具若是插件等其他来源注册的，不覆盖也不删除。
+            current = self.tool_registry.get(public_knowledge.TOOL_NAME)
+            ours = current is None or public_knowledge.is_builtin_definition(current)
+            if not ours:
+                return
             if public_knowledge.tool_available():
                 self.tool_registry.register(
                     public_knowledge.build_tool_definition(
@@ -256,7 +261,7 @@ class ToolCallingMixin:
                     ),
                     replace=True,
                 )
-            else:
+            elif current is not None:
                 self.tool_registry.unregister(public_knowledge.TOOL_NAME)
         except Exception as e:
             logger.warning(

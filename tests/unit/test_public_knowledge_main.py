@@ -278,3 +278,19 @@ async def test_availability_keeps_refreshing_after_ready(memory_server, monkeypa
             break
         await asyncio.sleep(0.01)
     assert public_knowledge.tool_available() is True
+
+
+def test_a_plugin_tool_with_the_same_name_is_left_alone():
+    from main_logic.tool_calling import ToolDefinition
+
+    manager = _manager()
+    plugin_tool = ToolDefinition(
+        name=public_knowledge.TOOL_NAME, description="plugin", handler=None,
+        metadata={"source": "plugin:other"},
+    )
+    manager.tool_registry.register(plugin_tool)
+    manager._register_builtin_tools()
+    public_knowledge.note_availability({"tool_available": True})
+    assert manager.tool_registry.get(public_knowledge.TOOL_NAME) is plugin_tool
+    public_knowledge.note_availability({"tool_available": False})
+    assert manager.tool_registry.get(public_knowledge.TOOL_NAME) is plugin_tool

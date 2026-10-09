@@ -68,6 +68,7 @@ _CJK_RANGES = (
     "一-鿿"  # CJK unified ideographs
     "가-힯"  # hangul syllables
     "豈-﫿"  # CJK compatibility ideographs
+    "𠀀-𿿿"  # supplementary planes: CJK extensions B and later
 )
 _TOKEN_RE = re.compile(rf"[{_CJK_RANGES}]+|[^\W_{_CJK_RANGES}]+")
 _CJK_RUN_RE = re.compile(rf"^[{_CJK_RANGES}]+$")

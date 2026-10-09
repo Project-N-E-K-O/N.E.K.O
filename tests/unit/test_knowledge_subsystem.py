@@ -1419,3 +1419,14 @@ async def test_reimporting_an_unchanged_pack_restores_a_lost_raw_file(tmp_path):
         assert raw_file.exists()
     finally:
         await service.stop()
+
+
+async def test_supplementary_han_characters_are_bigram_indexed(tmp_path):
+    word = "\U00020000\U00020001\U00020002"
+    assert search_tokens(word) == [word[0:2], word[1:3]]
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack(entries=[{"title": "Rare", "content": f"text {word} text"}]))
+        assert (await service.query(query=word[1:3]))["result"] == "matched"
+    finally:
+        await service.stop()
