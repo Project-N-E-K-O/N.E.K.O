@@ -1662,10 +1662,13 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 await _visit_display.handle_chip_ack(websocket, lanlan_name, message)
 
             elif action == "visit_speech_progress":
-                if _visit_owns_input(lanlan_name) and not _visit_socket_bound(websocket):
-                    from main_routers.visit_router import display_socket as _visit_display
+                if not _visit_socket_bound(websocket):
+                    # 只认已 visit_bind 的连接：串门结束后回家仪式句 / 简述的进度（决定插件回调何时交还）
+                    # 同样不收未绑定连接的。串门占着输入时回未授权，否则静默丢弃
+                    if _visit_owns_input(lanlan_name):
+                        from main_routers.visit_router import display_socket as _visit_display
 
-                    await _visit_display.refuse(websocket)
+                        await _visit_display.refuse(websocket)
                     continue
                 # 交给注册表：没有 on_page_signal 的路由（game）不认领，忽略即可
                 await route_external_page_signal(lanlan_name, message)

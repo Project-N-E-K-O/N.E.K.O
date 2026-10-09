@@ -503,3 +503,32 @@ async def test_workshop_unsubscribe_refuses_a_character_held_by_a_route(tmp_path
     assert body["success"] is False and body["code"] == "EXTERNAL_ROUTE_ACTIVE"
     assert body["character_name"] == "Lan"
     assert steam_calls == [] and config.saved == [] and config.characters == before
+    assert registry._mutating_characters == set()
+
+
+async def test_workshop_unsubscribe_holds_its_characters_until_the_config_is_written(tmp_path, monkeypatch):
+    # 检查通过之后到写完 characters.json：这些角色不能再开串门 / 小游戏（与改名 / 删除同一做法）
+    from utils import external_route_registry as registry
+
+    config = _Config(tmp_path, {
+        "当前猫娘": "Other",
+        "猫娘": {
+            "Lan": _workshop_character("character_11111111111111111111111111111111"),
+            "Other": {"_reserved": {"character_id": "character_22222222222222222222222222222222"}},
+        },
+    })
+    unsubscribe, _steam_calls = _install_unsubscribe(monkeypatch, config, candidate="Lan")
+    seen: list[bool] = []
+    real_save = config.asave_characters
+
+    async def save(characters):
+        seen.append(registry.is_external_route_locked("Lan"))
+        await real_save(characters)
+
+    config.asave_characters = save
+    result = await unsubscribe._unsubscribe_workshop_item(
+        _DummyRequest({"item_id": str(ITEM_ID)}), asyncio.Event(),
+    )
+    assert result["success"] is True, result
+    assert seen and all(seen)
+    assert not registry.is_external_route_locked("Lan")

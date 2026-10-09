@@ -60,13 +60,22 @@ async def test_progress_from_an_unbound_socket_while_visiting_is_refused(monkeyp
 
 
 async def test_progress_after_the_visit_still_reaches_the_handoff(monkeypatch):
-    # 串门已结束（路由不再活动）：仪式句 / 简述的进度照常交给注册表（交还表认领）
+    # 串门已结束（路由不再活动）：已绑定连接的仪式句 / 简述进度照常交给注册表（交还表认领）
+    manager = _ProtocolManager()
+    calls = install(monkeypatch, manager, visit_active=False)
+    socket = VisitSocket([bind(), PROGRESS])
+    await run(socket, manager)
+    assert [m["speech_id"] for m in calls["signal"]] == ["sp-1"]
+    assert socket.statuses() == []
+
+
+async def test_progress_after_the_visit_from_an_unbound_connection_is_dropped(monkeypatch):
+    # 未绑定连接不能左右交还时机；没有串门占着输入时静默丢弃、不回状态
     manager = _ProtocolManager()
     calls = install(monkeypatch, manager, visit_active=False)
     socket = VisitSocket([PROGRESS])
     await run(socket, manager)
-    assert [m["speech_id"] for m in calls["signal"]] == ["sp-1"]
-    assert socket.statuses() == []
+    assert calls["signal"] == [] and socket.statuses() == [] and manager.statuses == []
 
 
 async def test_progress_with_only_the_game_kind_is_ignored(monkeypatch):
@@ -84,7 +93,7 @@ async def test_progress_with_only_the_game_kind_is_ignored(monkeypatch):
         kind="game", is_active=lambda _n: True, route_stream_message=route_none, on_start_session=None,
         finalize_for_character=finalize_none, current_instance=lambda _n: "g", audio_passthrough=True,
     ))
-    socket = VisitSocket([PROGRESS])
+    socket = VisitSocket([bind(), PROGRESS])
     await run(socket, manager)
     assert manager.statuses == [] and socket.statuses() == []
 

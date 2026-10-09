@@ -415,6 +415,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
     steamworks = get_steamworks()
     released_derived_task_claims: dict[str, str] = {}
     mutation_lock_acquired = False
+    reserved_names: list[str] = []  # 事务期间占住、不准入路由的角色名
 
     # 检查Steamworks是否初始化成功
     if steamworks is None:
@@ -551,12 +552,12 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
         # 候选角色正在串门 / 小游戏、或串门还在按它的名字写后台数据（收尾、摘要、清除记忆）：
         # 退订会删掉它，与改名 / 删除同一个守卫（OD-13）。此时已持有角色配置变更锁，
         # 清除记忆的守卫也在这把锁下登记，两边不会交错
-        from utils.external_route_registry import is_character_lifecycle_locked
+        from utils.external_route_registry import begin_character_mutation, is_character_lifecycle_locked
 
-        busy_names = sorted(
-            name for name in candidate_names
-            if _is_confirmed_workshop_character(current_characters, name) and is_character_lifecycle_locked(name)
+        confirmed_names = sorted(
+            name for name in candidate_names if _is_confirmed_workshop_character(current_characters, name)
         )
+        busy_names = [name for name in confirmed_names if is_character_lifecycle_locked(name)]
         if busy_names:
             logger.warning(f"取消订阅被阻止: item_id={item_id_int} 对应角色 {busy_names} 正在串门或小游戏中")
             return JSONResponse({
@@ -566,6 +567,9 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 "character_name": busy_names[0],
                 "details": {"character_name": busy_names[0]},
             }, status_code=400)
+        # 与上面的检查之间没有 await：从这里到写完 characters.json，这些角色不能再开串门 / 小游戏
+        reserved_names = confirmed_names
+        begin_character_mutation(*reserved_names)
 
         # 前置尝试释放 memory_server 对候选角色的 SQLite 句柄（best-effort + 并行）。
         # 与 delete_catgirl 不同：取消订阅场景下，memory_server 对非活跃角色
@@ -1274,6 +1278,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
         try:
             if mutation_lock_acquired:
                 character_config_mutation_lock.release()
+            _end_reservation(reserved_names)
         finally:
             if released_derived_task_claims:
                 await _finish_resume_preserving_cancellation(
@@ -1283,3 +1288,11 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                         item_id_int,
                     )
                 )
+
+
+def _end_reservation(names: list[str]) -> None:
+    """Lift the route-admission reservation of an unsubscribe transaction (no-op when empty)."""
+    if names:
+        from utils.external_route_registry import end_character_mutation
+
+        end_character_mutation(*names)
