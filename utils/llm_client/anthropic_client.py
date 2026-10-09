@@ -16,6 +16,7 @@
 from __future__ import annotations
 import base64
 import copy
+import hashlib
 import json as _json
 import threading
 import weakref
@@ -59,13 +60,15 @@ _REPLAY_BLOCK_FIELDS = {
 
 
 def _replay_context_key(payload: dict[str, Any], prior_messages: Any) -> str:
-    """Key of everything a thinking block is bound to: system, tools and earlier messages."""
-    return _json.dumps(
+    """Digest of everything a thinking block is bound to: system, tools and earlier messages."""
+    # 只存摘要：历史里可能有 base64 截图，原样当 key 存进缓存会占满内存。
+    raw = _json.dumps(
         {"system": payload.get("system"), "tools": payload.get("tools"), "messages": prior_messages},
         sort_keys=True,
         ensure_ascii=False,
         default=str,
     )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _replay_block_from_sdk(block: Any) -> dict | None:

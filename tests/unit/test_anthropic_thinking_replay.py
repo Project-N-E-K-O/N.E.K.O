@@ -241,3 +241,10 @@ async def test_astream_remembers_thinking_tool_turn(client):
         assert _assistant_content(client, _history()) == _TURN
     finally:
         await client.aclose()
+
+
+def test_context_key_is_a_compact_digest(client):
+    history = _history()
+    history[1] = {"role": "user", "content": "x" * 100_000}
+    key = _first_request_key(client, history)
+    assert len(key) == 64
