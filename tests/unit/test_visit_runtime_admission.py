@@ -2141,6 +2141,30 @@ async def test_runtime_tasks_surviving_shutdown_cancellation_are_handed_to_stop_
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+@pytest.mark.parametrize("attr", ["_exit_task", "_creds_task", "_activation", "_closing_task"])
+async def test_lifecycle_tasks_surviving_shutdown_cancellation_are_handed_to_stop_all(tmp_path, monkeypatch, attr):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    release = asyncio.Event()
+
+    async def stubborn():
+        while not release.is_set():                           # 卡在不理取消的依赖里
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    task = asyncio.ensure_future(stubborn())
+    setattr(rt, attr, task)
+    try:
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 15)
+        assert not task.done() and task in rtm._detached      # 注销之后交给模块级登记，没有被丢下
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_ended_waits_behind_a_display_write_that_never_retired(tmp_path, monkeypatch):
     monkeypatch.setattr(rtm, "_DISPLAY_FLUSH_S", 0.2)
     monkeypatch.setattr(rtm, "_ENDED_AFTER_DISPLAY_S", 10.0)  # 后台排队等得够久：写在到点前退下

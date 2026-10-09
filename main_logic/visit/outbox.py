@@ -822,6 +822,9 @@ class VisitOutbox:
         it was the first transmission it is not counted as sent: the
         ``leave`` grace and the delivery timeout do not start from it, and the
         next transmission is flagged as the first one (``retransmit`` False).
+        A failed first send whose item was released again since (another
+        connection resent it) only makes the item due again: that later
+        transmission stands.
         """
         if not frame.seq:
             return
@@ -829,7 +832,9 @@ class VisitOutbox:
         if item is None or item.acked:
             return
         now = self._now(now)
-        if not frame.retransmit:
+        if not frame.retransmit and item.emitted == 1:
+            # 放出之后没再发过（emitted 仍是这一次）才回滚：被顶掉的旧连接写失败得晚、新连接已补发过时，
+            # 那次补发照样算数，不能把它的首发时刻与 leave 宽限抹掉
             item.unsent_first = True
             item.first_active = None
             if item.seq == self._leave_seq:

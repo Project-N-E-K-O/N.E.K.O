@@ -2319,7 +2319,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self._pump_stop = True
             self._pump_task.cancel()
         # 取消之后还活着的（卡在不理取消的依赖里）：注销之后 stop_all 看不到这个运行时，交给模块级登记一并收
-        for task in list(self._tasks) + [self._pump_task]:
+        for task in list(self._tasks) + [self._pump_task] + inflight:
             if task is not None and not task.done():
                 self._keep_background(task)
         self._stop_display()

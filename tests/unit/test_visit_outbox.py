@@ -812,6 +812,20 @@ async def test_a_first_send_that_failed_to_write_is_retried_as_a_first_send(tmp_
     await tx.close()
 
 
+async def test_a_late_failure_of_a_first_send_resent_since_keeps_the_resend(tmp_path):
+    tx = make_outbox(tmp_path)
+    tx.send({"t": "leave", "reason": "home"}, now=0.0)
+    stale = [f for f in tx.due(0.0) if f.t == "leave"][0]     # 旧连接上的首发，还卡在写
+    tx.replay_after_reload(1.0)                              # 新连接顶掉它、重入时补发
+    resent = [f for f in tx.due(1.0) if f.t == "leave"]
+    assert resent and resent[0].retransmit is True
+    tx.write_failed(stale, now=2.0)                          # 旧连接这时才报写失败
+    item = tx._unacked[stale.seq]
+    assert not item.unsent_first                             # 补发照样算数：不回滚成「没发过」
+    assert tx.leave_done(5.0)                                # 宽限仍从当初发出时起算
+    await tx.close()
+
+
 async def test_a_leave_that_failed_to_write_does_not_start_its_grace(tmp_path):
     tx = make_outbox(tmp_path)
     tx.send({"t": "leave", "reason": "home"}, now=0.0)
