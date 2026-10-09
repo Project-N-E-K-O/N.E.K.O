@@ -1453,7 +1453,7 @@ async def test_a_failed_removal_leaves_a_pending_import_alone(tmp_path, monkeypa
         await service.stop()
 
 
-async def test_a_failed_removal_does_not_undo_a_later_one(tmp_path, monkeypatch):
+async def test_overlapping_removals_where_only_the_later_succeeds(tmp_path, monkeypatch):
     monkeypatch.setattr(service_module, "WRITE_LOCK_TIMEOUT_SECONDS", 0.2)
     service = await _started(tmp_path)
     try:
@@ -1462,12 +1462,93 @@ async def test_a_failed_removal_does_not_undo_a_later_one(tmp_path, monkeypatch)
             first = asyncio.create_task(service.remove_pack("demo-memes"))
             await asyncio.sleep(0.1)
             later = asyncio.create_task(service.remove_pack("demo-memes"))
-            await asyncio.sleep(0.01)
-            later_mark = service._removed_at["demo-memes"]
-            with pytest.raises(service_module.KnowledgeUnavailable):
-                await first  # times out first
-            assert service._removed_at["demo-memes"] == later_mark
+            (outcome,) = await asyncio.gather(first, return_exceptions=True)
+            assert isinstance(outcome, service_module.KnowledgeUnavailable)  # timed out first
         await later
         assert "demo-memes" not in load_registry(tmp_path).packs
+    finally:
+        await service.stop()
+
+
+async def test_overlapping_removals_that_all_fail_leave_the_import_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "WRITE_LOCK_TIMEOUT_SECONDS", 0.1)
+    service = await _started(tmp_path)
+    try:
+        async with service._write_lock:  # keeps the import waiting and both removals busy
+            assert (await service.import_pack(_raw(_pack("brand-new"))))["ok"] is True
+            first = asyncio.create_task(service.remove_pack("brand-new"))
+            await asyncio.sleep(0.05)
+            second = asyncio.create_task(service.remove_pack("brand-new"))
+            outcomes = await asyncio.gather(first, second, return_exceptions=True)
+            assert all(isinstance(o, service_module.KnowledgeUnavailable) for o in outcomes)
+        for _ in range(200):
+            states = [job["state"] for job in service.list_jobs()]
+            if states and states[0] not in ("queued", "building"):
+                break
+            await asyncio.sleep(0.01)
+        assert states == ["active"]
+        assert "brand-new" in load_registry(tmp_path).packs
+    finally:
+        await service.stop()
+
+
+async def test_a_question_naming_the_title_matches_without_vectors(tmp_path):
+    entry = {"title": "Python", "content": "A programming language."}
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack(entries=[entry]))
+        result = await service.query(query="Tell me about Python", language="en")
+        assert result["result"] == "matched"
+        assert result["retrieval_mode"] == "bm25"
+    finally:
+        await service.stop()
+
+
+def test_an_oversized_registry_is_never_read_whole(tmp_path, monkeypatch):
+    from knowledge import registry as registry_module
+
+    monkeypatch.setattr(registry_module, "MAX_REGISTRY_BYTES", 16)
+    (tmp_path / registry_module.REGISTRY_FILE).write_bytes(b"x" * 1_000)
+    reads = []
+    real_read = registry_module.Path.read_bytes
+
+    def no_whole_read(self):
+        reads.append(self)
+        return real_read(self)
+
+    monkeypatch.setattr(registry_module.Path, "read_bytes", no_whole_read)
+    with pytest.raises(registry_module.KnowledgeRegistryError):
+        registry_module.load_registry(tmp_path)
+    assert reads == []
+
+
+async def test_a_building_import_yields_to_a_pending_removal_of_its_pack(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "WRITE_LOCK_TIMEOUT_SECONDS", 2.0)
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        real_replace = service._store.replace_pack
+        building = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def slow_replace(pack, *, pack_sha256, disabled_keys=(), should_cancel=None):
+            import time
+
+            loop.call_soon_threadsafe(building.set)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if should_cancel is not None and should_cancel():
+                    raise InterruptedError("cancelled")
+                time.sleep(0.02)
+            return real_replace(pack, pack_sha256=pack_sha256, disabled_keys=disabled_keys)
+
+        monkeypatch.setattr(service._store, "replace_pack", slow_replace)
+        updated = _pack()
+        updated["entries"][0]["summary"] = "NEWER"
+        await service.import_pack(_raw(updated))
+        await asyncio.wait_for(building.wait(), 2)
+        await service.remove_pack("demo-memes")  # would time out if the import held on
+        assert "demo-memes" not in load_registry(tmp_path).packs
+        assert service.list_jobs()[0]["state"] == "cancelled"
     finally:
         await service.stop()

@@ -180,7 +180,10 @@ def load_registry(root: Path) -> Registry:
     """Read ``registry.json``; a missing file is an empty registry."""
     path = Path(root) / REGISTRY_FILE
     try:
-        raw = path.read_bytes()
+        # Never read more than the limit: a damaged or replaced file of any
+        # size must not be loaded whole into the shared Memory Server.
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_REGISTRY_BYTES + 1)
     except FileNotFoundError:
         return Registry()
     except OSError as exc:

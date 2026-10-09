@@ -158,6 +158,7 @@ class ImportJob:
     chunks_total: int = 0
     reason: str = ""
     cancel_requested: bool = False
+    arrived_at: int = 0
     staged_bytes: int = 0
 
     def to_json(self) -> dict[str, Any]:
@@ -206,6 +207,7 @@ class KnowledgeService:
         # request arrives (before parsing) and gives way to any later removal.
         self._removal_clock = 0
         self._removed_at: dict[str, int] = {}
+        self._pending_removals: dict[str, int] = {}
         self._vectors_built_for: tuple[int, str] | None = None
         self._vector_task: asyncio.Task[Any] | None = None
         self._availability_listeners: list[Callable[[], None]] = []
@@ -453,22 +455,11 @@ class KnowledgeService:
         return await self._locked(run)
 
     async def remove_pack(self, pack_id: str) -> dict[str, Any]:
-        # Imports of this pack are told to stand down before the lock is
-        # taken: one may be holding it while it builds. An import still in
-        # admission is not a job yet; the removal clock tells it a removal
-        # started after it, so it must not reinstall the pack. Both marks are
-        # undone if the removal itself fails (busy, not found).
-        previous_mark = self._removed_at.get(pack_id)
-        self._removal_clock += 1
-        my_mark = self._removal_clock
-        self._removed_at[pack_id] = my_mark
-        flagged = [
-            job
-            for job in self._jobs.values()
-            if job.pack_id == pack_id and job.state in ACTIVE_JOB_STATES and not job.cancel_requested
-        ]
-        for job in flagged:
-            job.cancel_requested = True
+        # Nothing is marked up front, so a failed removal has nothing to undo.
+        # While this removal is pending, imports of the pack yield (one may be
+        # holding the lock this removal waits for); once it succeeds, the
+        # removal clock makes every import that arrived earlier stand down.
+        self._pending_removals[pack_id] = self._pending_removals.get(pack_id, 0) + 1
 
         async def run() -> dict[str, Any]:
             record = self._registry.packs.get(pack_id)
@@ -489,6 +480,12 @@ class KnowledgeService:
                     logger.warning("[Knowledge] could not delete the file of %s", pack_id)
 
             await asyncio.to_thread(save_registry, self.root, registry)
+            self._removal_clock += 1
+            self._removed_at[pack_id] = self._removal_clock
+            for job in self._jobs.values():
+                if job.pack_id == pack_id and job.state == "queued":
+                    job.cancel_requested = True
+                    self._finish_job(job, "cancelled")
             self._broken_packs = tuple(p for p in self._broken_packs if p != pack_id)
             self._publish_registry(registry)
             self._vector_generation += 1
@@ -497,20 +494,22 @@ class KnowledgeService:
 
         try:
             result = await self._locked(run)
-        except BaseException:
-            # Undo only if no later removal of the same pack took over: that
-            # one relies on the same marks and is still in progress.
-            if self._removed_at.get(pack_id) == my_mark:
-                for job in flagged:
-                    if job.state in ACTIVE_JOB_STATES:
-                        job.cancel_requested = False
-                if previous_mark is None:
-                    self._removed_at.pop(pack_id, None)
-                else:
-                    self._removed_at[pack_id] = previous_mark
-            raise
+        finally:
+            remaining = self._pending_removals.get(pack_id, 1) - 1
+            if remaining > 0:
+                self._pending_removals[pack_id] = remaining
+            else:
+                self._pending_removals.pop(pack_id, None)
         self._schedule_vector_refresh()
         return result
+
+    def _superseded(self, job: ImportJob) -> bool:
+        """Whether a removal of the job's pack overrides this import."""
+        return (
+            job.cancel_requested
+            or self._pending_removals.get(job.pack_id, 0) > 0
+            or self._removed_at.get(job.pack_id, -1) > job.arrived_at
+        )
 
     # ── imports ─────────────────────────────────────────────────────
 
@@ -593,6 +592,7 @@ class KnowledgeService:
         )
         await asyncio.to_thread(atomic_write_bytes, self._staging_path(job.job_id), canonical)
         self._remember_job(job)
+        job.arrived_at = arrived_at
         if self._removed_at.get(pack.pack_id, -1) > arrived_at:
             # The pack was removed while this import was being admitted.
             job.cancel_requested = True
@@ -700,7 +700,7 @@ class KnowledgeService:
                 await self._discard_staging(job_id)
 
     async def _commit_job(self, job: ImportJob) -> None:
-        if job.cancel_requested:
+        if self._superseded(job):
             raise InterruptedError("cancelled")
         previous = self._registry.packs.get(job.pack_id)
 
@@ -745,7 +745,7 @@ class KnowledgeService:
                     pack,
                     pack_sha256=sha,
                     disabled_keys=record.disabled_titles,
-                    should_cancel=lambda: job.cancel_requested or self._stopping,
+                    should_cancel=lambda: self._superseded(job) or self._stopping,
                 )
                 indexed = True
                 registry = self._registry.with_pack(record)

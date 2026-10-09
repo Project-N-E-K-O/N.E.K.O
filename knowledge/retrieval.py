@@ -84,6 +84,20 @@ def token_coverage(query: str, entry: StoredEntry) -> float:
     return present / len(wanted)
 
 
+def names_in_query(query: str, entry: StoredEntry) -> bool:
+    """Whether the query mentions the entry by its title or an alias.
+
+    "Tell me about Python" names the entry "Python" even though most of its
+    words are not in the entry; such a BM25 hit qualifies on its own.
+    """
+    wanted = set(search_tokens(query))
+    for name in (entry.title, *entry.terms.get("alias", ())):
+        tokens = set(search_tokens(name))
+        if tokens and tokens <= wanted:
+            return True
+    return False
+
+
 def semantic_candidates(
     snapshot: VectorSnapshot | None,
     query_vector: np.ndarray | None,
@@ -146,7 +160,10 @@ def fuse(
         for entry_id in lexical_ids
         if entry_id in usable
         and entry_id in entries
-        and token_coverage(query, entries[entry_id]) >= MIN_TOKEN_COVERAGE
+        and (
+            token_coverage(query, entries[entry_id]) >= MIN_TOKEN_COVERAGE
+            or names_in_query(query, entries[entry_id])
+        )
     ]
     semantic_scores = {match.entry_id: match.score for match in semantic if match.entry_id in usable}
     semantic_chunks = {match.entry_id: match.chunk_index for match in semantic}
