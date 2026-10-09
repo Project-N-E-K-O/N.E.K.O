@@ -1042,6 +1042,17 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         }
     }
 
+    function getIdleCat1CompactMirrorDefaultSrc() {
+        var registry = window.NekoCatResourceRegistry;
+        if (!registry || typeof registry.getAppearance !== 'function') return '';
+        try {
+            var resource = registry.getAppearance('idle.cat1', { random: false });
+            return resource && resource.available && resource.url ? String(resource.url) : '';
+        } catch (_) {
+            return '';
+        }
+    }
+
     function normalizeIdleCat1CompactMirrorAssetUrl(value) {
         return String(value || '').split(/[?#]/, 1)[0];
     }
@@ -1068,8 +1079,8 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         idleCat1CompactMirrorLastDetail = Object.assign({}, detail || {});
         var image = element.querySelector('.neko-idle-cat1-compact-mirror-art');
         if (image) {
-            var src = detail && detail.assetUrl ? String(detail.assetUrl) : '/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif';
-            if (image.getAttribute('src') !== src) image.setAttribute('src', src);
+            var src = detail && detail.assetUrl ? String(detail.assetUrl) : getIdleCat1CompactMirrorDefaultSrc();
+            if (src && image.getAttribute('src') !== src) image.setAttribute('src', src);
             if (isIdleCat1CompactMirrorWideArt(src)) {
                 element.setAttribute('data-neko-cat1-wide-art', 'true');
             } else {

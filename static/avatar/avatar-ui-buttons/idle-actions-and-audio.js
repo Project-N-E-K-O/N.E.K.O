@@ -120,8 +120,7 @@ function _finishNekoIdleCat1EatAction(button, token) {
 
 function _playNekoIdleCat1EatAction(button) {
     const catMindRunOptions = arguments[1] || {};
-    if (typeof _getNekoCatActionResourceCapability !== 'function' ||
-        !_getNekoCatActionResourceCapability('cat1_eat_snack').available) return false;
+    if (!_isNekoCatActionResourceAvailable('cat1_eat_snack')) return false;
     if (!button) return false;
     if (_isNekoIdleDesktopWindowInteractionActionActive(button)) return false;
     if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return false;
@@ -411,10 +410,7 @@ function _findNekoIdleCat1StretchPresentationButton() {
 }
 
 function _requestNekoIdleCat1HissStretchPresentation() {
-    const resourceCapability = typeof _getNekoCatActionResourceCapability === 'function'
-        ? _getNekoCatActionResourceCapability('cat1_hiss_stretch')
-        : { available: false, reason: 'resource_registry_unavailable' };
-    if (!resourceCapability.available) return false;
+    if (!_isNekoCatActionResourceAvailable('cat1_hiss_stretch')) return false;
     const button = _findNekoIdleCat1StretchPresentationButton();
     if (!button || !_playNekoIdleCat1StretchAction(button)) return false;
     _playNekoIdleSound(
@@ -754,8 +750,7 @@ function _finishNekoIdleCat1PlayAction(button, token) {
 function _playNekoIdleCat1PlayAction(button) {
     const catMindRunOptions = arguments[1] || {};
     const isCatMindRun = catMindRunOptions.source === 'cat_mind';
-    if (typeof _getNekoCatActionResourceCapability !== 'function' ||
-        !_getNekoCatActionResourceCapability('cat1_play_yarn').available) return false;
+    if (!_isNekoCatActionResourceAvailable('cat1_play_yarn')) return false;
     if (!button) return false;
     if (_isNekoIdleDesktopWindowInteractionActionActive(button)) return false;
     if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return false;
@@ -1085,10 +1080,7 @@ function _playNekoIdleSleepSound(tier, token) {
     const actionId = tier === _NEKO_IDLE_TIER_CAT3
         ? _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK
         : _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK;
-    const resourceCapability = typeof _getNekoCatActionResourceCapability === 'function'
-        ? _getNekoCatActionResourceCapability(actionId)
-        : { available: false, reason: 'resource_registry_unavailable' };
-    if (!resourceCapability.available) return false;
+    if (!_isNekoCatActionResourceAvailable(actionId)) return false;
 
     const run = _beginNekoCatMindStateAction(_nekoIdleSleepSoundState, actionId, tier, {
         source: catMindRunOptions.source || 'sleep-feedback-runner', requestId: catMindRunOptions.requestId
@@ -1172,10 +1164,7 @@ function _playNekoIdleCat1AmbientSound(token) {
         return false;
     }
 
-    const resourceCapability = typeof _getNekoCatActionResourceCapability === 'function'
-        ? _getNekoCatActionResourceCapability(_NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING)
-        : { available: false, reason: 'resource_registry_unavailable' };
-    if (!resourceCapability.available) return false;
+    if (!_isNekoCatActionResourceAvailable(_NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING)) return false;
 
     const run = _beginNekoCatMindStateAction(_nekoIdleCat1AmbientSoundState, _NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING, _NEKO_IDLE_TIER_CAT1, {
         source: catMindRunOptions.source || 'cat1-social-ping-runner', requestId: catMindRunOptions.requestId

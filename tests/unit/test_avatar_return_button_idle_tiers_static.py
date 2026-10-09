@@ -2565,7 +2565,7 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
     app_ui_source = read_js_parts(APP_UI_PATH)
 
     assert "_NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL = _getNekoCatAppearanceUrl('drag.rapid', { random: false })" in source
-    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL = _getNekoCatVoiceUrl('cat1.rapid_drag', { random: false })" in source
+    assert "_getNekoCatVoiceUrl('cat1.rapid_drag')" in source
     assert "_NEKO_IDLE_CAT1_RAPID_DRAG_REACTION_MS = 5000" in source
     assert "_NEKO_IDLE_CAT1_RAPID_DRAG_WINDOW_MS = 1100" in source
     assert "_NEKO_IDLE_CAT1_RAPID_DRAG_MIN_DISTANCE_PX = 28" in source
@@ -3462,8 +3462,7 @@ def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
     assert "srcs: Object.freeze([" in source
     assert "..._getNekoCatVoiceUrls('cat2.sleep')" in source
     assert "..._getNekoCatVoiceUrls('cat3.sleep')" in source
-    assert "function _pickNekoIdleSleepSoundSrc(config)" in source
-    assert "Math.floor(Math.random() * srcs.length)" in source
+    assert "function _pickNekoIdleSleepSoundSrc" not in source
     assert "_playNekoIdleSound(" in source
     assert "_getNekoCatVoiceUrl(sleepSlot)" in source
     assert "audio.volume = Math.max(0, Math.min(1, Number(volume) || 0.2))" in source
@@ -3485,9 +3484,14 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME = 0.10" in source
     assert "_NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME = 0.12" in source
     assert "_NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS = 900" in source
-    assert "_getNekoCatVoiceUrls('cat1.ambient')" in source
-    assert "_NEKO_IDLE_CAT1_DRAG_SOUND_URL = _getNekoCatVoiceUrl('cat1.drag', { random: false })" in source
-    assert "_NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL = _getNekoCatVoiceUrl('cat1.rapid_drag', { random: false })" in source
+    assert "_getNekoCatVoiceUrl('cat1.ambient')" in source
+    assert "_getNekoCatVoiceUrl('cat1.drag')" in source
+    assert "_getNekoCatVoiceUrl('cat1.rapid_drag')" in source
+    # Sounds are looked up per call; no load-time URL constants linger beside the registry.
+    for retired in ("_NEKO_IDLE_CAT1_AMBIENT_SOUND_URLS", "_NEKO_IDLE_CAT1_DRAG_SOUND_URL",
+                    "_NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL", "_NEKO_IDLE_CAT1_EAT_SOUND_URL",
+                    "_NEKO_IDLE_CAT1_PLAY_SOUND_URL", "_NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL"):
+        assert retired not in source, retired
     assert "const _nekoIdleCat1RapidDragSoundState = {" in source
     assert "function _scheduleNekoIdleCat1AmbientSoundInterval" not in source
     assert "urls[Math.floor(Math.random() * urls.length)]" in source

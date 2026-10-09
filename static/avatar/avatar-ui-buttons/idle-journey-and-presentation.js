@@ -1603,8 +1603,7 @@ function _startNekoIdleCat1PairMove(button) {
     const catMindRunOptions = arguments[1] || {};
     const isCatMindRun = catMindRunOptions.source === 'cat_mind';
     if (!isCatMindRun) return false;
-    if (typeof _getNekoCatActionResourceCapability !== 'function' ||
-        !_getNekoCatActionResourceCapability('cat1_small_move').available) return false;
+    if (!_isNekoCatActionResourceAvailable('cat1_small_move')) return false;
     const state = _getNekoIdleCat1Journey(button);
     _prepareNekoIdleCat1PairMoveStart(button, state);
     if (_isNekoIdleCat1MovementAnchored(button)) {

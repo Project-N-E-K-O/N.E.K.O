@@ -37,14 +37,26 @@ function loadRegistry(source = fs.readFileSync(REGISTRY_PATH, 'utf8'), overrides
   return window.NekoCatResourceRegistry;
 }
 
-function assertManifestMatchesRegistry(manifest, readSlot) {
+// Slot ids the registry source declares for one group block, so extra registry
+// slots that the manifest does not describe are caught too.
+function registrySlotIds(blockStart, blockEnd) {
+  const source = fs.readFileSync(REGISTRY_PATH, 'utf8');
+  const start = source.indexOf(blockStart);
+  const end = source.indexOf(blockEnd, start);
+  assert.ok(start >= 0 && end > start, `registry block ${blockStart}`);
+  return [...source.slice(start, end).matchAll(/^\s*'([a-z0-9_.]+)':/gm)].map((match) => match[1]).sort();
+}
+
+function assertManifestMatchesRegistry(manifest, readSlot, registrySlots) {
   assert.equal(manifest.group_id, 'dev_neko');
+  assert.deepEqual(Object.keys(manifest.slots).sort(), registrySlots, `${manifest.kind} slot sets differ`);
   for (const [slot, entry] of Object.entries(manifest.slots)) {
     const expectedUrls = entry.resources.map((resource) => resource.path);
     const actual = readSlot(slot, { random: false });
     assert.equal(actual.available, true, `${manifest.kind}:${slot} should be available`);
     assert.equal(actual.groupId, 'dev_neko', `${manifest.kind}:${slot} group`);
     assert.deepEqual(Array.from(actual.urls), expectedUrls, `${manifest.kind}:${slot} paths`);
+    assert.deepEqual({ ...actual.metadata }, entry.metadata || {}, `${manifest.kind}:${slot} metadata`);
     for (const resource of entry.resources) {
       assert.equal(
         fs.existsSync(path.join(PROJECT_ROOT, resource.path.slice(1))),
@@ -67,8 +79,10 @@ test('static cat manifests and registry stay slot-compatible', () => {
 
   assert.equal(registry.selectedAppearanceGroupId, 'dev_neko');
   assert.equal(registry.selectedVoiceGroupId, 'dev_neko');
-  assertManifestMatchesRegistry(appearance, registry.getAppearance);
-  assertManifestMatchesRegistry(voice, registry.getVoice);
+  assertManifestMatchesRegistry(appearance, registry.getAppearance,
+    registrySlotIds('const appearanceGroups', 'const voiceGroups'));
+  assertManifestMatchesRegistry(voice, registry.getVoice,
+    registrySlotIds('const voiceGroups', 'const actionDependencies'));
 
   assert.equal(registry.getAppearance('action.cat1.play_yarn', { random: false }).metadata.wideArt, true);
   for (const actionId of [

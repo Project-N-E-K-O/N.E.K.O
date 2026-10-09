@@ -132,12 +132,6 @@ function _getNekoIdleSleepSoundConfig(tier) {
     return _NEKO_IDLE_SLEEP_SOUND_BY_TIER[_normalizeNekoIdleReturnTier(tier)] || null;
 }
 
-function _pickNekoIdleSleepSoundSrc(config) {
-    const srcs = config && config.srcs;
-    if (!srcs || !srcs.length) return '';
-    return srcs[Math.floor(Math.random() * srcs.length)] || srcs[0] || '';
-}
-
 function _buildNekoIdleSoundUrl(src) {
     return src ? src + _getNekoIdleReturnAssetVersionSuffix() : '';
 }
@@ -456,6 +450,9 @@ function _getNekoCatActionResourceCapability(actionId) {
         };
     }
     return { available: true, reason: 'allowed', actionId, capability };
+}
+function _isNekoCatActionResourceAvailable(actionId) {
+    return _getNekoCatActionResourceCapability(actionId).available === true;
 }
 
 function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {}) {

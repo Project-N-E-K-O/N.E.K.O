@@ -504,7 +504,6 @@ function _getNekoCatVoiceUrls(slot) {
     return result && result.available ? result.urls : [];
 }
 const _NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL = _getNekoCatAppearanceUrl('drag.rapid', { random: false });
-const _NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL = _getNekoCatVoiceUrl('cat1.rapid_drag', { random: false });
 const _NEKO_IDLE_CAT1_RAPID_DRAG_REACTION_MS = 5000;
 const _NEKO_IDLE_CAT1_RAPID_DRAG_WINDOW_MS = 1100;
 const _NEKO_IDLE_CAT1_RAPID_DRAG_MIN_DISTANCE_PX = 28;
@@ -601,13 +600,10 @@ const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL = '/static/assets/neko-idle/chat
 let _nekoIdleCat1PlaygroundViewportBottomPx = null;
 let _nekoIdleCat1PlaygroundViewportBottomRefreshSeq = 0;
 const _NEKO_IDLE_CAT1_EAT_ASSET_URL = _getNekoCatAppearanceUrl('action.cat1.eat', { random: false });
-const _NEKO_IDLE_CAT1_EAT_SOUND_URL = _getNekoCatVoiceUrl('cat1.eat', { random: false });
 const _NEKO_IDLE_CAT1_EAT_SOUND_VOLUME = 0.12;
 const _NEKO_IDLE_CAT1_EAT_SOUND_FALLBACK_MS = 5000;
 const _NEKO_IDLE_CAT1_PLAY_ASSET_URL = _getNekoCatAppearanceUrl('action.cat1.play_yarn', { random: false });
-const _NEKO_IDLE_CAT1_PLAY_SOUND_URL = _getNekoCatVoiceUrl('cat1.play_yarn', { random: false });
 const _NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME = 0.10;
-const _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL = _getNekoCatVoiceUrl('cat1.hiss', { random: false });
 const _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_VOLUME = 0.12;
 const _NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS = 5000;
 const _NEKO_IDLE_THOUGHT_BUBBLE_SLEEPING_FALLBACK_VISIBLE_MS = 8000;
@@ -621,10 +617,6 @@ const _NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME = 0.12;
 const _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS = 900;
 const _NEKO_IDLE_RETURN_DEFAULT_Z_INDEX = '99999';
 const _NEKO_IDLE_RETURN_COMPACT_SURFACE_Z_INDEX = '100050';
-const _NEKO_IDLE_CAT1_AMBIENT_SOUND_URLS = Object.freeze(
-    _getNekoCatVoiceUrls('cat1.ambient').slice()
-);
-const _NEKO_IDLE_CAT1_DRAG_SOUND_URL = _getNekoCatVoiceUrl('cat1.drag', { random: false });
 const _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000;
 const _NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.06;
 const _NEKO_IDLE_SLEEP_SOUND_BY_TIER = Object.freeze({

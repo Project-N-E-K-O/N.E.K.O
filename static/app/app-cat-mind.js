@@ -155,7 +155,7 @@
     ]);
     var CHAT_MOVED_FAR_DISTANCE_PX = 24;
     var AUTONOMOUS_TICK_INTERVAL_MS = 30 * 1000;
-    // 防止重复桥接事件或连续 hover 在极短时间内造成动作连播。
+    // 防止连续 hover 在极短时间内反复唤起决策、造成动作连播。
     var HOVER_DEDUPE_WINDOW_MS = 1500;
     var ACTION_START_BURST_GUARD_MS = 60 * 1000;
     var ACTION_REQUEST_LEASE_MS = 5 * 1000;
@@ -380,7 +380,7 @@
             lastChatMinimizedState: null,
             lastChatIdleDocked: false,
             lastCompactSurfaceSignature: '',
-            lastHoverObservationAt: 0,
+            lastHoverScheduledAt: 0,
             returnSummaryDraft: null,
             returnEpisodeAccumulator: createReturnEpisodeAccumulator(),
             lastDecision: null,
@@ -1619,25 +1619,6 @@
             return;
         }
 
-        var lastConfirmedActionStartedAt = Number(runtimeState.clock.lastConfirmedActionStartedAt) || 0;
-        var sinceLastActionStarted = scheduler.lastEvaluatedAt - lastConfirmedActionStartedAt;
-        if (lastConfirmedActionStartedAt &&
-            sinceLastActionStarted >= 0 &&
-            sinceLastActionStarted < ACTION_START_BURST_GUARD_MS &&
-            !triggerTypes.some(isUserInteractionObservationType) &&
-            !hasFreshActionIntent(scheduler.lastEvaluatedAt)) {
-            deferUserDecisionTriggers(triggerTypes);
-            recordDecision({
-                trigger: 'queued',
-                triggerTypes: triggerTypes,
-                outcome: ACTION_IDS.STAY_IDLE,
-                reason: 'action_start_burst_guard',
-                timestamp: scheduler.lastEvaluatedAt,
-                candidates: [],
-            });
-            return;
-        }
-
         if (scheduler.deferredTriggers.length) {
             scheduler.deferredTriggers.forEach(function (type) {
                 appendUniqueTrigger(triggerTypes, type);
@@ -1663,6 +1644,20 @@
             if (hasFreshActionIntent(scheduler.lastEvaluatedAt)) {
                 scheduler.providerRecheckNeeded = true;
             }
+            recordDecision(base);
+            return;
+        }
+
+        // 排在硬闸门之后、且合并完 deferredTriggers 之后：既不盖掉硬闸门原因，
+        // 也不会把此前被延后的用户触发再多压一个窗口。
+        var lastConfirmedActionStartedAt = Number(runtimeState.clock.lastConfirmedActionStartedAt) || 0;
+        var sinceLastActionStarted = scheduler.lastEvaluatedAt - lastConfirmedActionStartedAt;
+        if (lastConfirmedActionStartedAt &&
+            sinceLastActionStarted >= 0 &&
+            sinceLastActionStarted < ACTION_START_BURST_GUARD_MS &&
+            !triggerTypes.some(isUserInteractionObservationType) &&
+            !hasFreshActionIntent(scheduler.lastEvaluatedAt)) {
+            base.reason = 'action_start_burst_guard';
             recordDecision(base);
             return;
         }
@@ -1814,6 +1809,16 @@
         if (type === OBSERVATION_TYPES.CAT1_LOCAL_PLAY_DONE ||
             type === OBSERVATION_TYPES.CAT1_LOCAL_PLAY_CANCELLED) {
             return false;
+        }
+        // 短时间内连续 hover 只唤起一次决策；观测本身照常计入 need、intent、
+        // 互动时间和回归摘要。乱序的旧时间戳不会把窗口往回拨。
+        if (type === OBSERVATION_TYPES.CAT_HOVER_REACTION) {
+            var hoverAt = Number(observation.timestamp) || 0;
+            var lastHoverAt = Number(runtimeState.lastHoverScheduledAt) || 0;
+            if (lastHoverAt && hoverAt - lastHoverAt < HOVER_DEDUPE_WINDOW_MS) {
+                return false;
+            }
+            runtimeState.lastHoverScheduledAt = hoverAt;
         }
         return true;
     }
@@ -2441,14 +2446,6 @@
         if (!runtimeState.active && observation.type !== OBSERVATION_TYPES.CAT_ENTERED) {
             return null;
         }
-        if (observation.type === OBSERVATION_TYPES.CAT_HOVER_REACTION) {
-            var lastHoverAt = Number(runtimeState.lastHoverObservationAt) || 0;
-            if (lastHoverAt && observation.timestamp - lastHoverAt >= 0 &&
-                observation.timestamp - lastHoverAt < HOVER_DEDUPE_WINDOW_MS) {
-                return null;
-            }
-            runtimeState.lastHoverObservationAt = observation.timestamp;
-        }
         if (rememberObservationKey(observationKey(observation))) {
             return null;
         }
@@ -2809,7 +2806,8 @@
             runtimeState.lastCompactSurfaceSignature = '';
             return;
         }
-        var rect = normalizeRect(detail.screenRect);
+        // Electron 带 screenRect；单窗口 web 宿主的 layout 事件把几何直接平铺在 detail 上。
+        var rect = normalizeRect(detail.screenRect) || normalizeRect(detail);
         var compactSignature = [
             visible ? 'visible' : 'hidden',
             rect ? [rect.left, rect.top, rect.width, rect.height].join(',') : '',

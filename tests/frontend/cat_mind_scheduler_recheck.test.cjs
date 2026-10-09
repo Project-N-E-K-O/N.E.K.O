@@ -515,14 +515,55 @@ test('entering idle alone does not arm the short action burst guard', () => {
   assert.notEqual(decision.reason, 'action_start_burst_guard');
 });
 
-test('repeated hover observations inside the short window count once', () => {
+test('repeated hovers inside the short window wake only one decision but are all observed', () => {
   const runtime = createRuntime('cat1_social_ping');
   runtime.enter();
+  const lastEvaluatedAt = () => runtime.win.nekoCatMind.getDebugSnapshot().scheduler.lastEvaluatedAt;
   runtime.observe('cat_hover_reaction', { reason: 'return-hover' });
-  runtime.observe('cat_hover_reaction', { reason: 'return-hover' });
+  const firstEvaluatedAt = lastEvaluatedAt();
+  assert.equal(firstEvaluatedAt, runtime.now());
+  runtime.observe('cat_hover_reaction', { reason: 'subaction-interactive' });
+  assert.equal(lastEvaluatedAt(), firstEvaluatedAt, 'a hover inside the window must not wake another decision');
   const hovers = runtime.win.nekoCatMind.getRecentEvents()
     .filter((event) => event.type === 'cat_hover_reaction');
-  assert.equal(hovers.length, 1);
+  assert.equal(hovers.length, 2, 'need, intent and episode bookkeeping still see every hover');
+  assert.equal(runtime.win.nekoCatMind.getDebugSnapshot().clock.lastUserInteractionAt, runtime.now());
+
+  runtime.advanceTime(1500);
+  runtime.observe('cat_hover_reaction', { reason: 'return-hover' });
+  assert.equal(lastEvaluatedAt(), runtime.now(), 'a hover after the window wakes a decision again');
+});
+
+test('a deferred user trigger is not held back by the short action burst guard', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  runtime.advanceNeed(15);
+  const request = runtime.requests[0];
+  startRequest(runtime, request, 'deferred-hover-run');
+  reportResult(runtime, request, 'deferred-hover-run', 'done', 'runner_done');
+
+  runtime.gates.dragging = true;
+  runtime.advanceTime(10000);
+  runtime.observe('cat_hover_reaction', { reason: 'return-hover' });
+  assert.equal(runtime.win.nekoCatMind.getDebugSnapshot().lastDecision.reason, 'dragging');
+  runtime.gates.dragging = false;
+  runtime.advanceTime(20000);
+  runtime.observe('cat_elapsed', { elapsedMs: 30000 }, 'cat1', 'cat-mind-clock');
+  assert.notEqual(runtime.win.nekoCatMind.getDebugSnapshot().lastDecision.reason, 'action_start_burst_guard');
+});
+
+test('the short action burst guard does not hide a hard gate reason', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  runtime.advanceNeed(15);
+  const request = runtime.requests[0];
+  startRequest(runtime, request, 'hard-gate-run');
+  reportResult(runtime, request, 'hard-gate-run', 'done', 'runner_done');
+
+  runtime.gates.yarnDragActive = true;
+  runtime.advanceTime(30000);
+  runtime.observe('cat_elapsed', { elapsedMs: 30000 }, 'cat1', 'cat-mind-clock');
+  assert.equal(runtime.win.nekoCatMind.getDebugSnapshot().lastDecision.reason, 'chat_yarn_dragging');
 });
 
 test('identical compact surface facts do not create repeated opportunities', () => {
@@ -604,4 +645,23 @@ test('compact visibility can recover at the same rect after a geometry-free term
     send(visible);
     assert.equal(count(), 2, 'a stale terminal must not clear the newer visible signature');
   }
+});
+
+test('compact surface dedupe also reads flat web-host layout geometry', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  const send = (rect) => {
+    runtime.advanceTime(1);
+    runtime.win.dispatchEvent(new CustomEventLike('neko:compact-surface-layout-change', {
+      detail: { ...rect, dragging: false },
+    }));
+    runtime.flush();
+  };
+  const count = () => runtime.win.nekoCatMind.getRecentEvents()
+    .filter((event) => event.type === 'chat_compact_surface_visible').length;
+  send({ left: 10, top: 20, width: 80, height: 80 });
+  send({ left: 10, top: 20, width: 80, height: 80 });
+  assert.equal(count(), 1, 'an unchanged flat rect is a duplicate');
+  send({ left: 200, top: 20, width: 80, height: 80 });
+  assert.equal(count(), 2, 'a moved flat rect is a new observation');
 });

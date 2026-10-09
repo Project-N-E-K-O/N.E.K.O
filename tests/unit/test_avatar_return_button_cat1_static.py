@@ -91,7 +91,7 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     interpage_source = read_js_parts(APP_INTERPAGE_PATH)
 
     assert "_NEKO_IDLE_CAT1_PLAY_ASSET_URL = _getNekoCatAppearanceUrl('action.cat1.play_yarn', { random: false })" in source
-    assert "_NEKO_IDLE_CAT1_PLAY_SOUND_URL = _getNekoCatVoiceUrl('cat1.play_yarn', { random: false })" in source
+    assert "_getNekoCatVoiceUrl('cat1.play_yarn')" in source
     assert "function _playNekoIdleCat1PlayAction(button)" in source
 
     play_block = source.split("function _playNekoIdleCat1PlayAction(button)", 1)[1].split(

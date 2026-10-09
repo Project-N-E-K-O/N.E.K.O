@@ -101,7 +101,7 @@ test('small_move capability check is pure while actual start owns hover preparat
         _canNekoIdleCat1MoveSoloWithExpandedChat: () => true,
         _hasNekoIdleCat1MoveVectorSpace: () => true,
         _getNekoIdleCat1Journey: () => state,
-        _getNekoCatActionResourceCapability: () => ({ available: true, reason: 'allowed' }),
+        _isNekoCatActionResourceAvailable: () => true,
         _cancelNekoIdleCat1Journey: () => {
             throw new Error('edge-peek cancellation should not run');
         },
@@ -137,7 +137,7 @@ test('small_move capability check is pure while actual start owns hover preparat
 
 test('small_move runner rejects missing resources before preparing state', () => {
     const context = vm.createContext({
-        _getNekoCatActionResourceCapability: () => ({ available: false, reason: 'appearance_unavailable' }),
+        _isNekoCatActionResourceAvailable: () => false,
         _getNekoIdleCat1Journey: () => {
             throw new Error('runner state must not be touched when resources are unavailable');
         },
