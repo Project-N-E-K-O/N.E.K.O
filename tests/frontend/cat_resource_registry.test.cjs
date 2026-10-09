@@ -51,6 +51,11 @@ function assertManifestMatchesRegistry(manifest, readSlot) {
         true,
         `${manifest.kind}:${slot} missing ${resource.path}`,
       );
+      assert.equal(
+        fs.existsSync(path.join(PROJECT_ROOT, 'static/assets/neko-idle', path.basename(resource.path))),
+        false,
+        `${manifest.kind}:${slot} still ships a copy in the retired media location`,
+      );
     }
   }
 }
@@ -179,6 +184,64 @@ test('unknown slots return an explicit unavailable result without throwing', () 
     assert.equal(result.groupId, 'dev_neko');
     assert.deepEqual({ ...result.metadata }, {});
   }
+});
+
+test('missing optional hover art preserves the cat and does not pause or cancel movement', () => {
+  const registry = registryWithEmptySlot('click.cat1');
+  assert.equal(registry.getActionCapabilities('cat1_social_ping').available, true);
+  const source = fs.readFileSync(path.join(PROJECT_ROOT,
+    'static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js'), 'utf8');
+  const start = source.indexOf('function _playNekoIdleHoverArt(');
+  const end = source.indexOf('function _finishNekoIdleHoverArtAfterPlayback(', start);
+  const profile = { walkingSubstate: 'walking', assets: { interactive: () => '' } };
+  const state = { profile, substate: 'idle', targetKind: 'compact-top-edge' };
+  const art = {
+    src: 'idle.gif',
+    getAttribute: (name) => name === 'src' ? art.src : '',
+  };
+  let effects = 0;
+  const context = vm.createContext({
+    _NEKO_IDLE_TIER_NONE: 'none',
+    _normalizeNekoIdleReturnTier: (tier) => tier,
+    _getNekoIdleReturnButtonFromArt: () => ({ __nekoIdleCat1Journey: state }),
+    _isNekoIdleReturnDragActionActive: () => false,
+    _isNekoIdleCat1IndependentActionActive: () => false,
+    _getNekoIdleReturnSubactionProfile: () => profile,
+    _getNekoIdleReturnClickAssetUrl: () => registry.getAppearance('click.cat1').url || '',
+    _cleanupNekoIdleArtTransition: () => {},
+    _cancelNekoIdleCat1PairMove: () => { effects += 1; },
+    _pauseNekoIdleCat1Journey: () => { effects += 1; },
+    _clearNekoIdleHoverPlayback: () => {},
+    _clearNekoIdleGifPlaybackSource: () => {},
+    _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForArt: () => {},
+  });
+  vm.runInContext(source.slice(start, end), context);
+  context._playNekoIdleHoverArt(art, 'cat1');
+  state.substate = 'walking';
+  context._playNekoIdleHoverArt(art, 'cat1');
+  assert.equal(art.src, 'idle.gif');
+  assert.equal(art.__nekoIdleHoverSrc, undefined);
+  assert.equal(effects, 0);
+});
+
+test('return transition restarts canonical cat GIFs and preserves their version', () => {
+  const source = fs.readFileSync(path.join(PROJECT_ROOT,
+    'static/app/app-ui/return-transitions.js'), 'utf8');
+  const start = source.indexOf('function buildNekoModelCatRevealPlaybackUrl(');
+  const end = source.indexOf('I.restartNekoModelCatRevealArt =', start);
+  assert.ok(start >= 0 && end > start);
+  const context = vm.createContext({ URL, window: { location: { href: 'http://localhost/' } } });
+  vm.runInContext(source.slice(start, end), context);
+  const registry = loadRegistry();
+  for (const slot of ['idle.cat1', 'idle.cat2', 'idle.cat3']) {
+    const src = registry.getAppearance(slot, { random: false }).url;
+    const result = new URL(context.buildNekoModelCatRevealPlaybackUrl(`${src}?v=123`, 42));
+    assert.equal(result.pathname, src);
+    assert.equal(result.searchParams.get('v'), '123');
+    assert.equal(result.searchParams.get('reveal'), '42');
+  }
+  assert.equal(context.buildNekoModelCatRevealPlaybackUrl('/user_pngtuber/custom.gif', 42),
+    '/user_pngtuber/custom.gif');
 });
 
 test('registry loads before core in every Avatar and chat template', () => {

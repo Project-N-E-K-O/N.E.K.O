@@ -79,8 +79,42 @@ function loadMixin() {
         vm.runInContext(source, context, { filename: name });
     }
     vm.runInContext('globalThis.__avatarButtonMixin = AvatarButtonMixin;', context);
-    return { mixin: context.__avatarButtonMixin, cancelledAnimationFrames, window, listeners };
+    return { mixin: context.__avatarButtonMixin, cancelledAnimationFrames, window, listeners, context };
 }
+
+test('provider itself rejects busy CAT1 presentation and allows it again after settling', () => {
+    const { context } = loadMixin();
+    let tier = 'cat1';
+    const state = { profile: { idleSubstate: 'idle' }, substate: 'idle', actionSettled: true };
+    const button = { __nekoIdleCat1Journey: state, querySelector: () => ({}) };
+    Object.assign(context, {
+        _getActiveNekoIdleReturnTier: () => tier,
+        _isNekoCatMindButtonContainerVisible: () => true,
+        _isAnyNekoCatMindReturnPending: () => false,
+        _isNekoCatMindTransitionActive: () => false,
+        _isNekoIdleCompactSurfaceDragging: () => false,
+        _isAnyNekoIdleCat1IndependentActionActive: () => false,
+        _isNekoCatMindAudioActionActive: () => false,
+        _isNekoIdleCat1EdgePeekActive: () => false,
+        isNekoIdleCatAudioEnabled: () => true,
+        _isNekoCatMindCat1NearChat: () => true,
+        _isNekoIdleReturnDragActionBlocking: () => false,
+        _isAnyNekoIdleReturnDragActionBlocking: () => false,
+    });
+    const evaluate = () => context._evaluateNekoCatMindActionProvider('cat1_eat_snack', { button });
+    assert.equal(evaluate().allowed, true);
+    for (const busy of [{ frame: 1 }, { paused: true }, { pendingWalkReady: true }, { pairMovePlan: {} }]) {
+        Object.assign(state, busy);
+        assert.equal(evaluate().allowed, false);
+        assert.equal(evaluate().reason, 'cat1_position_presentation_busy');
+        for (const key of Object.keys(busy)) delete state[key];
+        assert.equal(evaluate().allowed, true);
+    }
+    tier = 'cat2';
+    state.frame = 1;
+    vm.runInContext("_nekoIdleSleepSoundState.tier = 'cat2';", context);
+    assert.equal(context._evaluateNekoCatMindActionProvider('cat2_nap_feedback', { button }).allowed, true);
+});
 
 test('avatar button parts install the unchanged method contract for every backend', () => {
     const discoveredParts = fs.readdirSync(PARTS_DIR)

@@ -2705,6 +2705,7 @@
         if (detail.available === false) {
             // 用户关闭/窗口隐藏是「目标不存在」，不是一次聊天框展开体验。
             retireDesktopChatMinimizedLifecycle();
+            runtimeState.lastCompactSurfaceSignature = '';
             return;
         }
         var rect = normalizeRect(detail.screenRect);
@@ -2802,6 +2803,7 @@
             retireDesktopChatMinimizedLifecycle();
         }
         if (!visible && !detail.screenRect && !detail.left && !detail.width) {
+            runtimeState.lastCompactSurfaceSignature = '';
             return;
         }
         var rect = normalizeRect(detail.screenRect);

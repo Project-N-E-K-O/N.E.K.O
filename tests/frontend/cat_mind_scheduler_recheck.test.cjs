@@ -546,3 +546,31 @@ test('position presentation busy is a shared Cat Mind hard gate', () => {
     'cat1_position_presentation_busy',
   );
 });
+
+test('compact visibility can recover at the same rect after a geometry-free terminal', () => {
+  for (const terminal of [{ visible: false }, { available: false }]) {
+    const runtime = createRuntime('cat1_social_ping');
+    runtime.enter();
+    const visible = {
+      source: 'compact-surface', available: true, visible: true,
+      screenRect: { left: 10, top: 20, width: 80, height: 80 },
+    };
+    const send = (detail) => {
+      runtime.advanceTime(1);
+      runtime.win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {
+        detail: { timestamp: runtime.now(), ...detail },
+      }));
+      runtime.flush();
+    };
+    const count = () => runtime.win.nekoCatMind.getRecentEvents()
+      .filter((event) => event.type === 'chat_compact_surface_visible').length;
+    send(visible);
+    send(terminal);
+    assert.equal(count(), 1, 'terminal without geometry must not invent a visible observation');
+    send(visible);
+    assert.equal(count(), 2, 'reopening at the same position must be observable');
+    send({ ...terminal, timestamp: runtime.now() - 2 });
+    send(visible);
+    assert.equal(count(), 2, 'a stale terminal must not clear the newer visible signature');
+  }
+});

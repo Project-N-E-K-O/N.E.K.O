@@ -1068,7 +1068,7 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         idleCat1CompactMirrorLastDetail = Object.assign({}, detail || {});
         var image = element.querySelector('.neko-idle-cat1-compact-mirror-art');
         if (image) {
-            var src = detail && detail.assetUrl ? String(detail.assetUrl) : '/static/assets/neko-idle/cat-idle-cat1.gif';
+            var src = detail && detail.assetUrl ? String(detail.assetUrl) : '/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif';
             if (image.getAttribute('src') !== src) image.setAttribute('src', src);
             if (isIdleCat1CompactMirrorWideArt(src)) {
                 element.setAttribute('data-neko-cat1-wide-art', 'true');

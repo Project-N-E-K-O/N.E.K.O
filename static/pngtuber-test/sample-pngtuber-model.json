@@ -3,8 +3,8 @@
   "description": "A lightweight PNGTuber test model using bundled local GIF and PNG assets.",
   "model_type": "pngtuber",
   "pngtuber": {
-    "idle_image": "/static/assets/neko-idle/cat-idle-cat1.gif",
-    "talking_image": "/static/assets/neko-idle/cat-idle-cat1-click.gif",
+    "idle_image": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif",
+    "talking_image": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat1-click.gif",
     "happy_image": "/static/icons/happy_cat.png",
     "sad_image": "/static/icons/sad_cat.png",
     "angry_image": "/static/icons/angry_cat.png",

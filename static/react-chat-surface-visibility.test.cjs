@@ -236,5 +236,5 @@ test('compact mirror wide art follows play-yarn metadata instead of a filename',
 
 test('compact mirror keeps the narrow fallback when registry metadata is unavailable', () => {
     const matcher = createCompactMirrorWideArtMatcher(null);
-    assert.equal(matcher('/static/assets/neko-idle/cat-idle-cat-play-1.gif'), false);
+    assert.equal(matcher('/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.gif'), false);
 });

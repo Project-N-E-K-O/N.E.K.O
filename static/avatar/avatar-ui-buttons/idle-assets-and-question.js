@@ -621,6 +621,7 @@ function _evaluateNekoCatMindActionProvider(actionId, context = {}) {
     const facts = { tier: _getActiveNekoIdleReturnTier(), buttonFound: !!button,
         returnBallVisible: _isNekoCatMindButtonContainerVisible(button), returnPending: _isAnyNekoCatMindReturnPending(),
         transitionActive: _isNekoCatMindTransitionActive(button), compactSurfaceDragging: _isNekoIdleCompactSurfaceDragging(),
+        cat1PositionPresentationBusy: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1PositionPresentationBusy(button),
         independentActionActive: _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive(),
         edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button),
         audioEnabled: isNekoIdleCatAudioEnabled(),

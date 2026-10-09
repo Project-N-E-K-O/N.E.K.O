@@ -4,7 +4,7 @@
     "idle_image": "/static/pngtuber-test/sample-pngtuber-model/idle.gif",
     "talking_image": "/static/pngtuber-test/sample-pngtuber-model/talking.gif",
     "click_image": "/static/pngtuber-test/sample-pngtuber-model/talking.gif",
-    "drag_image": "/static/assets/neko-idle/cat-idle-cat-move-1.gif",
+    "drag_image": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-1.gif",
     "happy_image": "/static/pngtuber-test/sample-pngtuber-model/happy.png",
     "sad_image": "/static/pngtuber-test/sample-pngtuber-model/sad.png",
     "angry_image": "/static/pngtuber-test/sample-pngtuber-model/angry.png",

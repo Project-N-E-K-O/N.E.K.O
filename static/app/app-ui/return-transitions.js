@@ -347,7 +347,7 @@
         if (!src) return '';
         try {
             const url = new URL(src, window.location.href);
-            if (!/\/static\/assets\/neko-idle\/.+\.gif$/i.test(url.pathname)) {
+            if (!/\/static\/assets\/cat-resources\/appearance\/.+\.gif$/i.test(url.pathname)) {
                 return src;
             }
             url.searchParams.set('reveal', String(playbackToken || Date.now()));
