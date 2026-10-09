@@ -41,7 +41,7 @@ from .text import (
     search_view,
     strict_surface,
     unglued_tokens,
-    word_runs,
+    unglued_word_runs,
 )
 
 
@@ -78,15 +78,18 @@ def token_coverage(query: str, entry: StoredEntry) -> float:
     each token is looked up as a substring of the normalized text. The query
     side is bounded like the FTS query, so a long query cannot multiply that
     work.
+
+    Words glued to a symbol count on neither side: "C" does not cover "C++"
+    (whose "c" FTS indexes all the same), nor "C++" a plain "C".
     """
-    wanted = set(query_tokens(query))
+    wanted = set(query_tokens(query, unglued=True))
     if not wanted:
         return 0.0
     parts = [entry.title, entry.summary, entry.content, *entry.tags]
     for values in entry.terms.values():
         parts.extend(values)
     haystack = search_view("\n".join(parts))
-    words = word_runs(haystack)
+    words = unglued_word_runs(haystack)
     # CJK bigrams may sit anywhere inside a run; other tokens are whole words,
     # matching how FTS indexed them ("he" is not in "the").
     present = sum(

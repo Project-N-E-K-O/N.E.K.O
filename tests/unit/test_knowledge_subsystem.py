@@ -2260,8 +2260,8 @@ async def test_a_cancelled_mutation_keeps_the_write_lock_until_it_finishes(tmp_p
         task = asyncio.create_task(service.set_pack_auto_context("demo-memes", True))
         await asyncio.wait_for(saving.wait(), 5)
         task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        await asyncio.wait({task})
+        assert task.cancelled()
         assert service._write_lock.locked()  # the registry write is still running
         release.set()
         for _ in range(200):
@@ -2323,8 +2323,8 @@ async def test_a_cancelled_import_keeps_its_parse_slot_until_parsing_ends(tmp_pa
         task = asyncio.create_task(service.import_pack(_raw(_pack())))
         await asyncio.to_thread(parsing.wait, 5)
         task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        await asyncio.wait({task})
+        assert task.cancelled()
         assert service._parsing == 1  # the parse thread still holds the pack
         release.set()
         for _ in range(200):
@@ -2346,7 +2346,33 @@ async def test_pending_removal_sets_are_immutable(tmp_path, monkeypatch):
             await asyncio.sleep(0.05)
             # Read by the import's cancellation check on a worker thread.
             assert isinstance(service._pending_removals["demo-memes"], frozenset)
-        await removing
+        assert (await removing)["pack_id"] == "demo-memes"
         assert "demo-memes" not in service._pending_removals
+    finally:
+        await service.stop()
+
+
+def test_coverage_ignores_words_glued_to_symbols():
+    from knowledge.retrieval import token_coverage
+    from knowledge.store import StoredEntry
+
+    def entry(title, content):
+        return StoredEntry(
+            entry_id=1, pack_id="p", title=title, terms={}, tags=[], summary="", content=content, disabled=False
+        )
+
+    cpp = entry("C++", "The C++ language.")
+    assert token_coverage("C", cpp) == 0.0
+    assert token_coverage("C++ language", cpp) == 1.0  # "language" still counts
+    assert token_coverage("C++", entry("C", "The C language.")) == 0.0
+    assert token_coverage("C language", entry("C", "The C language.")) == 1.0
+
+
+async def test_a_bare_letter_does_not_match_a_symbol_name_without_vectors(tmp_path):
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack(entries=[{"title": "C++", "content": "The C++ language."}]))
+        assert (await service.query(query="C"))["result"] == "miss"
+        assert (await service.query(query="C++"))["result"] == "matched"
     finally:
         await service.stop()

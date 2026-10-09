@@ -593,11 +593,7 @@ class KnowledgeService:
         # Parsing a large pack holds several copies of it in memory: refuse
         # before parsing when imports are already at their limit, and never
         # parse more than that many at once.
-        pending = sum(1 for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES)
-        if (
-            pending + len(self._admitting) >= MAX_PENDING_IMPORTS
-            or self._parsing >= MAX_PENDING_IMPORTS
-        ):
+        if self.import_busy():
             return {"ok": False, "reason": "knowledge_busy"}
         self._request_seq += 1
         arrived_at = self._request_seq
@@ -623,6 +619,14 @@ class KnowledgeService:
         finally:
             if not deferred:
                 self._parsing -= 1
+
+    def import_busy(self) -> bool:
+        """Whether a new import would be refused for lack of room right now."""
+        pending = sum(1 for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES)
+        return (
+            pending + len(self._admitting) >= MAX_PENDING_IMPORTS
+            or self._parsing >= MAX_PENDING_IMPORTS
+        )
 
     def _release_parse_slot(self) -> None:
         self._parsing -= 1

@@ -45,7 +45,7 @@ from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartParser
 
 from knowledge.models import MAX_PACK_BYTES
-from knowledge.service import KnowledgeService, KnowledgeUnavailable
+from knowledge.service import MAX_PENDING_IMPORTS, KnowledgeService, KnowledgeUnavailable
 
 from ._shared import logger
 
@@ -55,6 +55,8 @@ router = APIRouter(prefix="/internal/knowledge", tags=["knowledge"])
 _JSON_BODY_MAX_BYTES = 64 * 1024
 _PACK_BODY_MAX_BYTES = MAX_PACK_BYTES + 64 * 1024
 _service: KnowledgeService | None = None
+# Import requests currently reading their body (see knowledge_import_pack).
+_import_requests = 0
 _start_task: asyncio.Task[None] | None = None
 
 
@@ -348,15 +350,28 @@ async def _pack_from_multipart(request: Request, body: bytes) -> bytes | None:
 @router.post("/packs/import")
 async def knowledge_import_pack(request: Request):
     """Import a pack sent as the raw JSON body or as a multipart file upload."""
-    raw = await _read_body(request, max_bytes=_PACK_BODY_MAX_BYTES)
-    if raw is None:
-        return _failure("pack_too_large", 413)
-    content_type = request.headers.get("content-type", "").lower()
-    if content_type.startswith("multipart/form-data"):
-        raw = await _pack_from_multipart(request, raw)
+    global _import_requests
+    service = _service
+    if service is None:
+        return _failure("knowledge_starting", 503)
+    # A body up to the pack limit is read into memory: refuse before reading
+    # when imports are already full, and never buffer more bodies than the
+    # service would take.
+    if _import_requests >= MAX_PENDING_IMPORTS or service.import_busy():
+        return {"ok": False, "reason": "knowledge_busy", **service.availability()}
+    _import_requests += 1
+    try:
+        raw = await _read_body(request, max_bytes=_PACK_BODY_MAX_BYTES)
         if raw is None:
-            return _failure("invalid_request", 400)
-    return await _call(lambda svc: svc.import_pack(raw))
+            return _failure("pack_too_large", 413)
+        content_type = request.headers.get("content-type", "").lower()
+        if content_type.startswith("multipart/form-data"):
+            raw = await _pack_from_multipart(request, raw)
+            if raw is None:
+                return _failure("invalid_request", 400)
+        return await _call(lambda svc: svc.import_pack(raw))
+    finally:
+        _import_requests -= 1
 
 
 @router.post("/packs/jobs/cancel")

@@ -157,3 +157,23 @@ async def test_long_catalog_searches_are_cut_not_refused(client):
     response = await http.get("/internal/knowledge/entries", params={"query": "kotatsu " * 100})
     assert response.status_code == 200
     assert response.json()["ok"] is True
+
+
+async def test_imports_are_refused_before_their_body_is_read_when_full(client, monkeypatch):
+    http, _service = client
+    read = []
+    real_read = knowledge_routes._read_body
+
+    async def recording(request, *, max_bytes):
+        read.append(max_bytes)
+        return await real_read(request, max_bytes=max_bytes)
+
+    monkeypatch.setattr(knowledge_routes, "_read_body", recording)
+    monkeypatch.setattr(knowledge_routes, "_import_requests", knowledge_routes.MAX_PENDING_IMPORTS)
+    result = (await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK))).json()
+    assert result["ok"] is False and result["reason"] == "knowledge_busy"
+    assert read == []
+    monkeypatch.setattr(knowledge_routes, "_import_requests", 0)
+    result = (await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK))).json()
+    assert result["ok"] is True
+    assert knowledge_routes._import_requests == 0  # released after the request

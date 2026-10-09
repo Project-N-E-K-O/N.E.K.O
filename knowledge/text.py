@@ -230,22 +230,34 @@ def _is_name_symbol(ch: str) -> bool:
     return ch in _NAME_SYMBOLS or unicodedata.category(ch).startswith("S")
 
 
-def unglued_tokens(value: object) -> list[str]:
-    """Query tokens (with CJK unigrams) of word runs not touching a symbol.
-
-    In "c++tutorial" or "c#developer" the "c" belongs to another name, so it
-    is left out; separators ("re:zero", "x-ray") do not count as symbols.
-    """
-    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
-    tokens: list[str] = []
+def _unglued_runs(text: str) -> list[str]:
+    runs = []
     for match in _TOKEN_RE.finditer(text):
         start, end = match.span()
         if (start > 0 and _is_name_symbol(text[start - 1])) or (
             end < len(text) and _is_name_symbol(text[end])
         ):
             continue
-        tokens.extend(search_tokens(match.group(), unigrams=True))
+        runs.append(match.group())
+    return runs
+
+
+def unglued_tokens(value: object, *, unigrams: bool = True) -> list[str]:
+    """Query tokens of word runs not touching a symbol.
+
+    In "c++tutorial" or "c#developer" the "c" belongs to another name, so it
+    is left out; separators ("re:zero", "x-ray") do not count as symbols.
+    """
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    tokens: list[str] = []
+    for run in _unglued_runs(text):
+        tokens.extend(search_tokens(run, unigrams=unigrams))
     return tokens
+
+
+def unglued_word_runs(value: str) -> set[str]:
+    """Like ``word_runs``, without runs touching a symbol (the "c" of "c++")."""
+    return set(_unglued_runs(value))
 
 
 def search_view(value: object) -> str:
@@ -281,13 +293,15 @@ def search_tokens(value: object, *, unigrams: bool = False) -> list[str]:
     return tokens
 
 
-def query_tokens(value: object, *, unigrams: bool = False) -> list[str]:
+def query_tokens(value: object, *, unigrams: bool = False, unglued: bool = False) -> list[str]:
     """Distinct query tokens, at most ``MAX_QUERY_TOKENS`` of them.
 
     A long query is sampled across its whole length rather than cut, since
-    the term that matters may come last.
+    the term that matters may come last. ``unglued`` leaves out words glued
+    to a symbol (see ``unglued_tokens``).
     """
-    unique = list(dict.fromkeys(search_tokens(value, unigrams=unigrams)))
+    tokens = unglued_tokens(value, unigrams=unigrams) if unglued else search_tokens(value, unigrams=unigrams)
+    unique = list(dict.fromkeys(tokens))
     if len(unique) <= MAX_QUERY_TOKENS:
         return unique
     last = len(unique) - 1
