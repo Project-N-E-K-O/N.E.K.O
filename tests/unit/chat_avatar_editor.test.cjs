@@ -56,7 +56,7 @@ function fixture() {
         encodes.at(-1).resolve('data:image/png;base64,image'); await pending;
     }
     function switchToB() { identity = { uid: B, identityEpoch: 2 }; record = { revision: 'b', data_url: null }; listeners.get('chat-avatar-display-updated')(); }
-    return { api, state, window, elements, listeners, releases, decodes, crops, encodes, writes, reads, restores, tick, source, candidate, switchToB, setRecord(value) { record = value; } };
+    return { api, state, window, elements, listeners, releases, decodes, crops, encodes, writes, reads, restores, tick, source, candidate, switchToB, setRecord(value) { record = value; }, setIdentity(value) { identity = value; } };
 }
 
 test('selection is fenced before first refresh await, so A file cannot become B candidate', async () => {
@@ -175,6 +175,35 @@ test('uncertain restore stays retryable after its confirming read fails, other r
     assert.equal(h.restores.length, 1); assert.equal(h.api.getState().status, '');
     readError = { code: 'chat_avatar_read_failed' }; h.setRecord({ revision: 'custom2', data_url: 'png', last_operation_id: 'x' }); h.api.update();
     assert.equal(restore.disabled, true);
+});
+
+test('uncertain restore follows a switch rollback to the same character and is dropped for another', async () => {
+    const h = fixture(); h.setRecord({ revision: 'custom', data_url: 'png', last_operation_id: 'old' });
+    let readError = null; h.state.getError = () => readError;
+    const restore = h.elements.get('chat-avatar-restore');
+    const display = reason => h.listeners.get('chat-avatar-display-updated')({ detail: { reason } });
+    async function uncertainRestore() {
+        const first = h.api.restore();
+        readError = { code: 'chat_avatar_network_error' };
+        const error = new Error('uncertain'); error.code = 'chat_avatar_unknown_outcome'; h.restores.at(-1).reject(error); await first;
+    }
+    await uncertainRestore();
+    // A switch starts, then rolls back to the same character under a new epoch while reads keep failing.
+    h.setIdentity(null); display('switch-start');
+    h.setIdentity({ uid: A, identityEpoch: 3 }); display('switch-rollback');
+    assert.equal(restore.disabled, false);
+    const retry = h.api.restore(); assert.equal(h.reads.length, 1); assert.equal(h.restores.length, 1);
+    h.reads[0].resolve({ revision: 'cleared', data_url: null, last_operation_id: 'operation' }); await retry;
+    assert.equal(h.restores.length, 1); assert.equal(h.api.getState().status, '');
+
+    readError = null; h.setRecord({ revision: 'custom2', data_url: 'png', last_operation_id: 'x' });
+    await uncertainRestore();
+    h.setIdentity({ uid: B, identityEpoch: 4 }); display('identity');
+    assert.equal(restore.disabled, true, 'another character does not inherit the uncertainty');
+    h.setIdentity({ uid: A, identityEpoch: 5 }); display('identity');
+    readError = null; h.api.update();
+    const fresh = h.api.restore(); assert.equal(h.reads.length, 1, 'no confirmation read for a dropped uncertainty');
+    assert.equal(h.restores.length, 3); h.restores.at(-1).resolve({}); await fresh;
 });
 
 test('failed uncertain-save GET does not lose uncertainty or permit a blind later PUT', async () => {

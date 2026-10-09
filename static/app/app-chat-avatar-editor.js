@@ -231,6 +231,14 @@
         if (cancel) cancel.addEventListener('click', api.cancel);
         if (restore) restore.addEventListener('click', api.restore);
         window.addEventListener('chat-avatar-display-updated', function (event) {
+            const identity = state().getIdentity();
+            if (uncertainRestore && identity && !state().isCurrent(uncertainRestore)) {
+                // A rollback or re-read returns to the same character under a new epoch; the
+                // uncertainty still belongs to it. Another character never inherits it.
+                uncertainRestore = identity.uid === uncertainRestore.uid
+                    ? Object.assign({}, uncertainRestore, { identityEpoch: identity.identityEpoch })
+                    : null;
+            }
             // Model captures are keyed to their model, so an identity change only closes a cropper.
             if (['identity', 'switch-start', 'switch-rollback'].includes(event && event.detail && event.detail.reason)) {
                 core().closeUploadCropper();
