@@ -1404,6 +1404,20 @@ def _rollback_publish_or_require_recovery(
         ) from exc
 
 
+def _target_entry_proof(path: Path) -> str:
+    """What a confirmed target entry is, still comparable once it is moved.
+
+    The move-independent fingerprint leaves out the moved root's own change
+    time; for a file entry that leaves mode, size and mtime only, and a
+    same-sized rewrite with the mtime put back would pass. A file entry's
+    content digest is added (one file of the target's, not migrated data).
+    """
+    proof = _metadata_fingerprint(path, across_move=True)
+    if classify_entry_no_follow(path) == "file":
+        proof += ":" + str(_manifest_path(path).get("manifest_digest") or "")
+    return proof
+
+
 def _backups_written_since_moved(payload: dict[str, Any], transaction_root: Path) -> list[str]:
     """Backups no longer what the target held when they were moved in.
 
@@ -1417,9 +1431,7 @@ def _backups_written_since_moved(payload: dict[str, Any], transaction_root: Path
     written: list[str] = []
     for entry_name, expected in recorded.items():
         try:
-            unchanged = (
-                _metadata_fingerprint(transaction_root / "backup" / str(entry_name), across_move=True) == expected
-            )
+            unchanged = _target_entry_proof(transaction_root / "backup" / str(entry_name)) == expected
         except StorageMigrationError:
             unchanged = False
         if not unchanged:
@@ -2907,9 +2919,7 @@ def run_pending_storage_migration(
         target_fingerprints_before_staging: dict[str, str | None] = {}
         for entry_name in target_entries_before_staging:
             try:
-                target_fingerprints_before_staging[entry_name] = _metadata_fingerprint(
-                    target_root / entry_name, across_move=True
-                )
+                target_fingerprints_before_staging[entry_name] = _target_entry_proof(target_root / entry_name)
             except StorageMigrationError:
                 target_fingerprints_before_staging[entry_name] = None
         # Backups checked once moved; checked again before committing, as a
@@ -3047,7 +3057,7 @@ def run_pending_storage_migration(
 
         def _require_backup_unchanged(entry_name: str, expected: str | None) -> None:
             try:
-                unchanged = _metadata_fingerprint(backup_root / entry_name, across_move=True) == expected
+                unchanged = _target_entry_proof(backup_root / entry_name) == expected
             except StorageMigrationError:
                 unchanged = False
             if not unchanged:
@@ -3235,9 +3245,9 @@ def run_pending_storage_migration(
                     )
                 if target_existed:
                     try:
-                        target_unchanged = _metadata_fingerprint(
-                            target_entry, across_move=True
-                        ) == target_fingerprints_before_staging.get(entry_name)
+                        target_unchanged = _target_entry_proof(target_entry) == target_fingerprints_before_staging.get(
+                            entry_name
+                        )
                     except StorageMigrationError:
                         target_unchanged = False
                     if not target_unchanged:

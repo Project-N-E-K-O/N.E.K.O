@@ -4610,3 +4610,44 @@ def test_a_backup_written_to_while_committing_keeps_its_transaction(tmp_path, mo
     storage_migration_module.delete_storage_migration(config_manager)
     storage_migration_module.remove_remembered_transaction_leftovers(config_manager, anchor_root=None)
     assert kept[0].read_text(encoding="utf-8") == "written through an open handle"
+
+
+
+@pytest.mark.unit
+def test_a_same_sized_rewrite_of_a_file_target_entry_is_noticed(tmp_path, monkeypatch):
+    """The target's memory is a file. A sync client rewrote it with other
+    bytes of the same size and put the mtime back while the source was being
+    staged: replacing it would drop that rewrite with the backup."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_root.mkdir(parents=True)
+    target_root.mkdir(parents=True)
+    (source_root / "memory").write_bytes(b"source memory")
+    (target_root / "memory").write_bytes(b"target AAAA")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+        confirmed_existing_target_content=True,
+    )
+    original_copy = storage_migration_module._copy_runtime_entry
+
+    def _copy_while_target_is_rewritten(source_path, target_path, **kwargs):
+        result = original_copy(source_path, target_path, **kwargs)
+        target_file = target_root / "memory"
+        before = target_file.stat()
+        target_file.write_bytes(b"target BBBB")
+        os.utime(target_file, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return result
+
+    monkeypatch.setattr(storage_migration_module, "_copy_runtime_entry", _copy_while_target_is_rewritten)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "target_changed_during_migration"
+    assert (target_root / "memory").read_bytes() == b"target BBBB"
