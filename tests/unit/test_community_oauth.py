@@ -1295,7 +1295,8 @@ async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
     response = await O._handle_oauth_callback("auth-code", "expected-state")
 
     assert response.status_code == 200
-    assert len(worker_threads) == 4
+    # 读 pending 两次（开头校验 + 写凭证前确认没被新的 /oauth/start 顶掉）、两份凭证、删 pending
+    assert len(worker_threads) == 5
     assert all(thread_id != event_loop_thread for thread_id in worker_threads)
 
 
