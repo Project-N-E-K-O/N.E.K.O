@@ -28,8 +28,8 @@ ordinary chat never loads the visit package:
   ``state.json.debrief_chip_pending`` is set.
 * ``visit_debrief_chip_ack`` (:func:`handle_chip_ack`): remembered per
   connection only; it never clears ``debrief_chip_pending``.
-* every visit downlink (``visit_*`` frames, chips, the after-visit summary)
-  goes to bound connections only (:func:`is_bound`, used by ``host_port``).
+* the visit downlink (``visit_*`` frames, debrief chips) goes to bound
+  connections only (:func:`is_bound`, used by ``host_port``).
 * :func:`refuse_unbound` answers ``status{VISIT_E_UNAUTHORIZED}`` to input
   from an unbound connection while a visit owns the character.
 * :func:`finalize_on_goodbye`: a global goodbye (``goodbye_state{active}``)
@@ -47,7 +47,11 @@ import secrets
 from typing import Any, Optional
 
 from utils.logger_config import get_module_logger
-from utils.visit_route_state import VISIT_SOCKET_BOUND_ATTR, VISIT_SOCKET_DELIVERED_ATTR
+from utils.visit_route_state import (
+    VISIT_SOCKET_BOUND_ATTR,
+    VISIT_SOCKET_DELIVERED_ATTR,
+    VISIT_SOCKET_SENT_ATTR,
+)
 
 logger = get_module_logger(__name__, "Main")
 
@@ -93,9 +97,25 @@ def bind_allowed(websocket: Any, message: Any) -> bool:
     )
 
 
+def _sent(websocket: Any) -> set:
+    sent = getattr(websocket, VISIT_SOCKET_SENT_ATTR, None)
+    if not isinstance(sent, set):
+        sent = set()
+        setattr(websocket, VISIT_SOCKET_SENT_ATTR, sent)
+    return sent
+
+
+def record_sent(websocket: Any, payload: dict) -> None:
+    """Remember a ``chat_blocks`` frame written on this connection (an ack is only taken for one of them)."""
+    request_id = payload.get("request_id") if isinstance(payload, dict) else None
+    if payload.get("type") == "chat_blocks" and isinstance(request_id, str) and request_id:
+        _sent(websocket).add(request_id)
+
+
 async def _send(websocket: Any, payload: dict) -> bool:
     try:
         await asyncio.wait_for(websocket.send_text(json.dumps(payload, ensure_ascii=False)), _SEND_TIMEOUT_S)
+        record_sent(websocket, payload)
         return True
     except Exception as exc:  # noqa: BLE001 - 页面不在 / 卡住：下次 bind 再重放
         logger.debug("visit display: %s not written: %s", payload.get("type"), type(exc).__name__)
@@ -229,8 +249,10 @@ async def handle_chip_ack(websocket: Any, lanlan_name: str, message: Any) -> Non
         return
     if state is None or not state.get("debrief_chip_pending"):
         return
-    # 只认当前状态应投递的那一块：旧芯片迟到的 ack 不能把还没送达的下一块标成已送达
-    if state["debrief_choice"] in _CHIP_CHOICES and request_id == chips_request_id(visit_id):
+    # 只认当前状态应投递的那一块：旧芯片迟到的 ack 不能把还没送达的下一块标成已送达；
+    # 也只认这条连接确实发过的块：先到的 ack 不能让还没重放到这条连接的芯片被跳过
+    if (state["debrief_choice"] in _CHIP_CHOICES and request_id == chips_request_id(visit_id)
+            and request_id in _sent(websocket)):
         _delivered(websocket).add(request_id)
 
 

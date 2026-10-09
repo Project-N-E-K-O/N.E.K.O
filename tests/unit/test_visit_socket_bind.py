@@ -319,7 +319,8 @@ async def test_unbound_socket_gets_no_visit_downlink_until_it_binds(monkeypatch)
              "metadata": {"source": "system", "source_name": NAME, "passthrough": True}}
     # 芯片直接写给校验过的那个连接（同 render_chat_blocks 的帧形状），不经管理器重读 websocket
     assert a.sent == [INVITE, chips] and b.sent == []
-    assert mgr.blocks == [] and mgr.outputs == ["简述"]
+    # 回家简述是猫娘的普通发言（同一句也念出声、进 sync 流），§4.5 不要求按 bind 过滤
+    assert mgr.blocks == [] and mgr.outputs == ["简述", "简述2"]
 
 
 class SwappingManager(DownlinkManager):
@@ -469,3 +470,28 @@ async def test_bind_replay_rides_the_ordered_display_queue(tmp_path, monkeypatch
         runtime._reset_for_tests()
         transport_ws._reset_for_tests()
         visit_route_state._reset_for_tests()
+
+
+async def test_ack_before_the_chip_reached_this_connection_is_ignored(monkeypatch, tmp_path):
+    # ack 先于重放到达：不能让这条连接跳过还没发给它的芯片
+    await _pending(tmp_path, 10, debrief_choice="ask_later")
+    rid = chips_request_id(vid(10))
+    socket = VisitSocket([])
+    setattr(socket, VISIT_SOCKET_BOUND_ATTR, True)
+    await display_socket.handle_chip_ack(socket, NAME, {"action": "visit_debrief_chip_ack", "visit_id": vid(10),
+                                                        "request_id": rid})
+    assert getattr(socket, "neko_visit_delivered_debrief", set()) == set()
+    await display_socket.replay_chips(socket, NAME)
+    assert _chip_ids(socket) == [rid]
+    await display_socket.handle_chip_ack(socket, NAME, {"action": "visit_debrief_chip_ack", "visit_id": vid(10),
+                                                        "request_id": rid})
+    assert getattr(socket, "neko_visit_delivered_debrief") == {rid}
+
+
+async def test_chips_written_by_the_runtime_count_as_sent(tmp_path):
+    socket = VisitSocket([])
+    setattr(socket, VISIT_SOCKET_BOUND_ATTR, True)
+    host = host_port.ManagerHost(NAME, DownlinkManager(socket))
+    assert await host.render_chat_blocks([{"type": "text", "text": "x"}], request_id="visit-debrief:q",
+                                         source_name=NAME)
+    assert getattr(socket, "neko_visit_sent_debrief") == {"visit-debrief:q"}

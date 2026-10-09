@@ -40,6 +40,9 @@ VISIT_SOCKET_BOUND_ATTR = "neko_visit_authorized"
 VISIT_SOCKET_DELIVERED_ATTR = "neko_visit_delivered_debrief"
 """Attribute holding the debrief block request ids this display-socket connection acknowledged."""
 
+VISIT_SOCKET_SENT_ATTR = "neko_visit_sent_debrief"
+"""Attribute holding the debrief block request ids written on this display-socket connection."""
+
 _visit_route_states: Dict[str, dict] = {}
 
 # Per-character lock registry. Entries outlive the state slot on purpose: a

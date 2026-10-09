@@ -79,7 +79,7 @@ async def test_guard_waits_for_a_rename_already_in_progress(monkeypatch):
     await asyncio.wait_for(entered.wait(), 1.0)
     # 守卫拿到的是改名之后的名字：挡的是新名字
     assert registry.is_character_lifecycle_locked("New")
-    await task
+    assert await task is None
 
 
 async def test_guard_survives_cancellation_by_shutdown(monkeypatch):

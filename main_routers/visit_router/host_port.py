@@ -21,12 +21,13 @@ not have yet (``open_mirror_speech_stream`` and the ``visit_bind`` filter of
 the display socket). :class:`ManagerHost` is the production adapter.
 
 Display-socket frames (``visit_*`` / ``status``) go out through
-:meth:`VisitHost.send_frame` / :meth:`VisitHost.send_status`. Every visit
-downlink that carries visit content -- ``visit_*`` frames, the debrief chips
-and the after-visit summary bubble -- is written only when the character's
-current display socket passed ``visit_bind`` (design §4.5,
-``display_socket.is_bound``); status codes carry no content and are not
-filtered.
+:meth:`VisitHost.send_frame` / :meth:`VisitHost.send_status`. The visit
+downlink of design §4.5 -- ``visit_*`` frames (invite code, transcript,
+debrief state) and the debrief chips -- is written only on a display socket
+that passed ``visit_bind`` (``display_socket.is_bound``), checked and written
+on the same connection object. Status codes carry no content and the
+after-visit summary bubble is ordinary assistant output (it is also spoken
+aloud): neither is filtered.
 """
 
 from __future__ import annotations
@@ -278,6 +279,9 @@ class ManagerHost:
             return False
         try:
             await asyncio.wait_for(ws.send_json(payload), _FRAME_TIMEOUT_S)
+            from main_routers.visit_router.display_socket import record_sent
+
+            record_sent(ws, payload)
             return True
         except Exception as exc:  # noqa: BLE001 - 页面不在 / 卡住：串门照常进行
             logger.debug("visit: display frame %s not written: %s", payload.get("type"), type(exc).__name__)
@@ -334,8 +338,7 @@ class ManagerHost:
         await self._mgr.mirror_user_input(text, metadata=metadata, request_id=request_id, send_to_frontend=False)
 
     async def mirror_assistant_output(self, text: str, *, metadata: dict, request_id: str) -> None:
-        if not self.display_bound():
-            return
+        # 不按 visit_bind 过滤（§4.5 只限 visit_* 帧与芯片）：回家简述是猫娘的普通发言，同一句也照常念出声、进 sync 流
         # 有界：收尾流程在它之后才封存文件、注销，页面卡住不能把这些一起卡住
         try:
             await asyncio.wait_for(
