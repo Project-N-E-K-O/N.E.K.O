@@ -214,6 +214,35 @@ test('cancel or role change during CSRF refresh prevents the resend', async () =
     assert.equal(h.pending.length, afterSwitch);
 });
 
+test('cancel while the rejected first send was pending also stops the CSRF resend', async () => {
+    const h = harness(); await h.identify(); const refreshes = rotatingToken(h); const binding = h.api.captureEdit();
+    const saving = h.api.save(new Blob(['png']), binding); await h.settle();
+    h.api.cancelEdit(binding);
+    h.pending.at(-1).resolve(csrfRejected()); await h.settle();
+    refreshes.forEach(refresh => refresh.resolve());
+    await assert.rejects(saving, { code: 'chat_avatar_stale_edit' });
+    assert.equal(h.pending.filter(p => p.options.method === 'PUT').length, 1);
+});
+
+test('a cancel during an earlier uncertain send does not block an explicit retry of that edit', async () => {
+    const h = harness(); await h.identify(); const refreshes = rotatingToken(h); const binding = h.api.captureEdit();
+    const first = h.api.save(new Blob(['png']), binding); await h.settle();
+    h.api.cancelEdit(binding);
+    h.pending.at(-1).reject(new TypeError('offline')); await h.settle();
+    h.pending.at(-1).resolve(response(row(A)));
+    await assert.rejects(first, { code: 'chat_avatar_unknown_outcome' });
+
+    const retry = h.api.save(new Blob(['png']), binding); await h.settle();
+    h.pending.at(-1).resolve(csrfRejected()); await h.settle();
+    refreshes[0].resolve(); await h.settle();
+    const resent = h.pending.at(-1);
+    assert.equal(resent.options.method, 'PUT');
+    assert.equal(resent.options.headers['X-CSRF-Token'], 'fresh');
+    assert.equal(resent.options.body.get('operation_id'), binding.operationId);
+    resent.resolve(response(row(A, 'saved', 'new', binding.operationId))); await retry;
+    assert.equal(h.api.getDataUrl(), 'new');
+});
+
 test('CSRF rejection retries only once and other 403s are not retried', async () => {
     const h = harness(); await h.identify(); const refreshes = rotatingToken(h); const binding = h.api.captureEdit();
     const saving = h.api.save(new Blob(['png']), binding); await h.settle();

@@ -16,6 +16,8 @@
     let bootstrapGeneration = 0;
     const cancelledEdits = new WeakSet();
     const submittedEdits = new WeakSet();
+    // Cancelled while a send was pending; cleared by every new send of the edit.
+    const cancelledInFlight = new WeakSet();
 
     function failure(code, status) {
         const result = new Error(code);
@@ -109,8 +111,10 @@
     };
     api.isCurrent = matches;
     api.cancelEdit = function (binding) {
+        if (!binding) return;
         // Once sent, a write may already be committed. Keep confirming its outcome.
-        if (binding && !submittedEdits.has(binding)) cancelledEdits.add(binding);
+        if (submittedEdits.has(binding)) cancelledInFlight.add(binding);
+        else cancelledEdits.add(binding);
     };
 
     api.refresh = async function (reason) {
@@ -217,6 +221,7 @@
         let generation;
         function submit(headers) {
             generation = readGeneration;
+            cancelledInFlight.delete(binding);
             submittedEdits.add(binding);
             return request(binding.uid, { method: method, body: body, headers: headers });
         }
@@ -228,7 +233,9 @@
                 if (cause.status !== 403 || cause.code !== 'csrf_validation_failed') throw cause;
                 // The guard rejects before the handler runs, so nothing was written. A restarted
                 // backend rotates the token: refresh it once and resend the same operation.
+                // The resend is a new send, so a cancel made while the first was pending applies.
                 submittedEdits.delete(binding);
+                if (cancelledInFlight.has(binding)) cancelledEdits.add(binding);
                 saved = await submit(await mutationHeaders(binding, method, true));
             }
         } catch (cause) {
