@@ -410,6 +410,26 @@ test('invalid committed UID becomes unavailable rather than a permanent loading 
     assert.throws(() => h.api.captureEdit(), { code: 'chat_avatar_unavailable' });
 });
 
+test('pending page config has a deadline and a late config still finishes the identity lookup', async () => {
+    const h = harness(); const configReady = deferred(); h.window.pageConfigReady = configReady.promise;
+    h.api.initialize(); await h.settle();
+    assert.equal(h.pending.length, 0);
+    assert.equal(h.timers.size, 1, 'waiting for page config must have a deadline');
+    for (const timeout of [...h.timers.values()]) timeout();
+    await h.settle();
+    assert.equal(h.api.getIdentity(), null);
+    assert.equal(h.api.getError().code, 'chat_avatar_timeout');
+    assert.equal(h.timers.size, 0);
+    assert.equal(h.pending.length, 0);
+    configReady.resolve({}); await h.settle();
+    assert.equal(h.pending[0].url, '/api/characters?language=zh-CN');
+    h.pending[0].resolve(response({ '猫娘': { Alice: { _reserved: { character_uid: A } } } })); await h.settle();
+    h.pending[1].resolve(response(row(A))); await h.settle();
+    assert.equal(h.api.getIdentity().uid, A);
+    assert.equal(h.api.getError(), null);
+    assert.equal(h.timers.size, 0);
+});
+
 test('initial character lookup has a deadline and can recover on focus after timeout', async () => {
     const h = harness(); h.api.initialize(); await h.settle();
     const lookup = h.pending[0];

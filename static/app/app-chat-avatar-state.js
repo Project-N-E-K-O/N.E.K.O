@@ -14,6 +14,7 @@
     let initialized = false;
     let switchOwner = null;
     let bootstrapGeneration = 0;
+    let lateConfigRetry = false;
     const cancelledEdits = new WeakSet();
     const submittedEdits = new WeakSet();
     // Cancelled while a send was pending; cleared by every new send of the edit.
@@ -271,10 +272,28 @@
     api.save = function (blob, binding) { return write('PUT', blob, binding); };
     api.restore = function (binding) { return write('DELETE', null, binding || api.captureEdit()); };
 
+    function waitForPageConfig() {
+        const ready = window.pageConfigReady;
+        if (!ready || typeof ready.then !== 'function') return Promise.resolve();
+        let timer;
+        const deadline = new Promise(function (_, reject) {
+            timer = window.setTimeout(function () {
+                if (!lateConfigRetry) {
+                    // The rest of the page goes on without page config; finish once it lands.
+                    lateConfigRetry = true;
+                    const retry = function () { if (!identity && !switchOwner) bootstrap(); };
+                    ready.then(retry, retry);
+                }
+                reject(failure('chat_avatar_timeout'));
+            }, REQUEST_TIMEOUT_MS);
+        });
+        return Promise.race([ready, deadline]).finally(function () { window.clearTimeout(timer); });
+    }
+
     async function bootstrap() {
         const generation = ++bootstrapGeneration;
         try {
-            if (window.pageConfigReady) await window.pageConfigReady;
+            await waitForPageConfig();
             if (generation !== bootstrapGeneration || switchOwner) return;
             const controller = new AbortController();
             const timer = window.setTimeout(function () { controller.abort(); }, REQUEST_TIMEOUT_MS);
