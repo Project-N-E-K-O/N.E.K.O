@@ -1237,6 +1237,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     def on_frame_sent(self, frame: Any) -> None:
         """Bookkeeping after an outbox frame went out (the pump, or the page re-entry flush)."""
         now = self.clock()
+        if frame.seq:
+            # 第一次真正写出去的那次才是 leave 宽限、投递计时的起点（首发可能没写出去，写出去的是补发）
+            self.outbox.written(frame, now=now)
         if frame.seq or frame.t == "hb":
             self.liveness.on_message_sent(now)
         if frame.t == "wrap_up" and self.room is not None:

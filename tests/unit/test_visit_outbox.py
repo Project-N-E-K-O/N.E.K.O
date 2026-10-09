@@ -812,17 +812,34 @@ async def test_a_first_send_that_failed_to_write_is_retried_as_a_first_send(tmp_
     await tx.close()
 
 
-async def test_a_late_failure_of_a_first_send_resent_since_keeps_the_resend(tmp_path):
-    tx = make_outbox(tmp_path)
+async def test_a_late_failure_of_a_first_send_written_since_keeps_the_resend(tmp_path):
+    tx = make_outbox(tmp_path, leave_grace_s=5.0)
     tx.send({"t": "leave", "reason": "home"}, now=0.0)
     stale = [f for f in tx.due(0.0) if f.t == "leave"][0]     # 旧连接上的首发，还卡在写
     tx.replay_after_reload(1.0)                              # 新连接顶掉它、重入时补发
     resent = [f for f in tx.due(1.0) if f.t == "leave"]
     assert resent and resent[0].retransmit is True
-    tx.write_failed(stale, now=2.0)                          # 旧连接这时才报写失败
+    tx.written(resent[0], now=1.0)                           # 补发写出去了
+    tx.write_failed(stale, now=1.5)                          # 旧连接这时才报写失败
     item = tx._unacked[stale.seq]
     assert not item.unsent_first                             # 补发照样算数：不回滚成「没发过」
-    assert tx.leave_done(5.0)                                # 宽限仍从当初发出时起算
+    assert item.next_due == 2.0                              # 也不多催一次重发（仍按补发后的 1 s 间隔）
+    assert not tx.leave_done(5.9)                            # 宽限从真正写出去的那次（补发）起算
+    assert tx.leave_done(6.0)
+    await tx.close()
+
+
+async def test_a_first_send_and_its_resend_both_unwritten_do_not_count_as_sent(tmp_path):
+    tx = make_outbox(tmp_path, leave_grace_s=5.0)
+    tx.send({"t": "leave", "reason": "home"}, now=0.0)
+    stale = [f for f in tx.due(0.0) if f.t == "leave"][0]     # 旧连接上的首发，还卡在写
+    tx.replay_after_reload(1.0)
+    resent = [f for f in tx.due(1.0) if f.t == "leave"][0]   # 新连接上的补发
+    tx.write_failed(resent, now=1.5)                         # 补发也没写出去
+    tx.write_failed(stale, now=2.0)                          # 旧连接迟到的失败
+    assert not tx.leave_done(6.0)                            # 一次都没写出去：宽限不从放出时起算
+    again = [f for f in tx.due(6.0) if f.t == "leave"]
+    assert again and again[0].retransmit is False            # 下一次仍算首发
     await tx.close()
 
 

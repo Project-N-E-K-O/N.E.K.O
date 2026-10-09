@@ -242,6 +242,7 @@ class _Item:
     next_due: float = 0.0
     acked: bool = False
     unsent_first: bool = False  # 首发没写出去（write_failed）：下一次发出仍算首发
+    written: bool = False       # 传输确认至少写出去过一次（written）：之后迟到的写失败不再回滚
 
 
 @dataclass
@@ -814,27 +815,46 @@ class VisitOutbox:
         self._bytes.charge(item.nbytes)
         self._msgs.charge(item.pieces)
 
-    def write_failed(self, frame: OutboundFrame, now: Optional[float] = None) -> None:
-        """The transport did not write ``frame``: retry a reliable one at once; a failed first send does not count.
+    def written(self, frame: OutboundFrame, now: Optional[float] = None) -> None:
+        """The transport wrote ``frame``: the first such write of a reliable item anchors its timers.
 
-        ``due`` books a frame as transmitted when it releases it. If the
-        write then fails, the reliable item is due again right away, and when
-        it was the first transmission it is not counted as sent: the
-        ``leave`` grace and the delivery timeout do not start from it, and the
-        next transmission is flagged as the first one (``retransmit`` False).
-        A failed first send whose item was released again since (another
-        connection resent it) only makes the item due again: that later
-        transmission stands.
+        ``due`` books the release time; the first write that actually
+        succeeds (possibly a resend on a replacement connection, after the
+        first attempt failed or is still stuck) moves the ``leave`` grace and
+        the delivery timeout to its own time. Later writes change nothing.
         """
         if not frame.seq:
             return
         item = self._unacked.get(frame.seq)
-        if item is None or item.acked:
+        if item is None or item.acked or item.written:
             return
         now = self._now(now)
-        if not frame.retransmit and item.emitted == 1:
-            # 放出之后没再发过（emitted 仍是这一次）才回滚：被顶掉的旧连接写失败得晚、新连接已补发过时，
-            # 那次补发照样算数，不能把它的首发时刻与 leave 宽限抹掉
+        item.written = True
+        item.unsent_first = False
+        item.first_active = self.active_time(now)
+        if item.seq == self._leave_seq:
+            self._leave_sent_at = now
+
+    def write_failed(self, frame: OutboundFrame, now: Optional[float] = None) -> None:
+        """The transport did not write ``frame``: retry a reliable one at once; an unwritten item does not count as sent.
+
+        ``due`` books a frame as transmitted when it releases it. If the
+        write then fails and the item was never written (:meth:`written`),
+        it is due again right away and not counted as sent: the ``leave``
+        grace and the delivery timeout do not start from it, and the next
+        transmission is flagged as the first one (``retransmit`` False). A
+        failure of an item already written elsewhere (a stale connection
+        reporting late) changes nothing.
+        """
+        if not frame.seq:
+            return
+        item = self._unacked.get(frame.seq)
+        if item is None or item.acked or item.written:
+            # 已经写出去过（例如顶掉旧连接的新连接补发成功了）：旧连接迟到的失败不回滚、也不再多催一次重发
+            return
+        now = self._now(now)
+        if item.emitted:
+            # 一次都没写出去（首发与之后的补发都失败）：都不算发过
             item.unsent_first = True
             item.first_active = None
             if item.seq == self._leave_seq:

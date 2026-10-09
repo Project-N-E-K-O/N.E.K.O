@@ -966,12 +966,14 @@ async def test_frames_sent_elsewhere_get_the_same_bookkeeping(tmp_path, monkeypa
 
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
-    calls, sent = [], []
+    calls, sent, written = [], [], []
     monkeypatch.setattr(rt.room, "on_wrap_up_sent", lambda ph, now: calls.append(ph))
     monkeypatch.setattr(rt.liveness, "on_message_sent", lambda now: sent.append(now))
+    monkeypatch.setattr(rt.outbox, "written", lambda frame, now=None: written.append(frame.seq))
     try:
         rt.on_frame_sent(SimpleNamespace(seq=9, t="wrap_up", retransmit=False, payload={"ph": "begin"}))
         assert calls == ["begin"] and len(sent) == 1        # 收尾步骤计时器照常起，存活计时也记上
+        assert written == [9]                               # outbox 记下真正写出去的时刻（宽限 / 投递计时的起点）
         rt.on_frame_sent(SimpleNamespace(seq=9, t="wrap_up", retransmit=True, payload={"ph": "begin"}))
         assert calls == ["begin", "begin"]                  # 重传也报：首发可能没写出去，room 只认第一次
     finally:
