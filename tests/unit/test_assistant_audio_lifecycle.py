@@ -16,7 +16,9 @@ def test_audio_queue_and_decoder_lifecycle():
     source = (root / "tests/frontend/assistant-audio-lifecycle.test.cjs").read_text(encoding="utf-8")
     # The shared launcher stages the script outside the repo; resolve its assets
     # from the explicit test cwd rather than the launcher's temporary directory.
-    source = source.replace("path.resolve(__dirname, '../..')", "process.cwd()")
+    root_marker = "path.resolve(__dirname, '../..')"
+    assert root_marker in source, "audio lifecycle harness root marker changed"
+    source = source.replace(root_marker, "process.cwd()")
     result: subprocess.CompletedProcess[str] = run_node_script(
         node, source, cwd=root, capture_output=True, check=False, timeout=30,
     )
