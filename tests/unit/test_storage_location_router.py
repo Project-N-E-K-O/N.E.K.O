@@ -5018,3 +5018,20 @@ def test_v1_cleanup_reports_an_entry_restored_after_the_catch_up(tmp_path):
     assert "watch_together" in response.json()["remaining_entries"]
     assert (source_root / "watch_together" / "library.json").is_file()
     assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] != "cleaned"
+
+
+
+@pytest.mark.unit
+def test_v1_cleanup_removes_the_parent_a_caught_up_nested_entry_leaves(tmp_path):
+    """The catch-up copied state/game_scores; once it is cleaned, the empty
+    state directory must not keep the old root alive."""
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (source_root / "state" / "game_scores").mkdir(parents=True)
+    (source_root / "state" / "game_scores" / "badminton_scores.db").write_bytes(b"scores")
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    assert (target_root / "state" / "game_scores" / "badminton_scores.db").read_bytes() == b"scores"
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 200, response.json()
+    assert not source_root.exists()

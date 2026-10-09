@@ -27,7 +27,7 @@ import uuid
 from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Collection
 
 from utils.file_utils import atomic_write_json, read_json
 from utils.logger_config import get_module_logger
@@ -1402,6 +1402,9 @@ def _remove_completed_transaction_leftover(payload: dict[str, Any] | None) -> No
         transaction_root = _transaction_path(normalize_runtime_root(raw_target_root), txid)
         if not os.path.lexists(transaction_root):
             return
+        # Nothing is looked at or moved through a link or junction: rescuing
+        # from a linked trash would pull another directory's files in.
+        _ensure_transaction_dirs_not_linked(transaction_root)
         if status == STORAGE_MIGRATION_STATUS_FAILED:
             backup_root = transaction_root / "backup"
             if os.path.lexists(backup_root) and any(backup_root.iterdir()):
@@ -1413,6 +1416,9 @@ def _remove_completed_transaction_leftover(payload: dict[str, Any] | None) -> No
             # cannot, the transaction stays.
             trash_root = transaction_root / "trash"
             for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES:
+                if _has_linked_parent(trash_root, entry_name):
+                    logger.warning("Kept a transaction with a linked trash directory: %s", trash_root)
+                    return
                 trashed = trash_root / entry_name
                 if not os.path.lexists(trashed) or not _tree_has_user_file(trashed):
                     continue
@@ -1530,6 +1536,26 @@ def _is_ignorable_content_name(name: str) -> bool:
     # The same names the cloud-save probe skips: dot-named files (.DS_Store,
     # atomic-write temporaries, locks) and Python caches are never user data.
     return name.startswith(".") or name == "__pycache__"
+
+
+def _published_copy_has_files_source_lost(published: Path, source: Path) -> bool:
+    """Whether the published copy holds a file the source no longer has.
+
+    Only names are compared (no file is read): an edited file is still in
+    the source, newer than the copy, but a removed one would then exist only
+    in the copy. Unreadable counts as lost -- it is no proof of the opposite.
+    """
+    if classify_entry_no_follow(published) != "dir":
+        return False
+    try:
+        for current, dirnames, filenames in os.walk(published, followlinks=False):
+            relative = Path(current).relative_to(published)
+            for name in [*filenames, *dirnames]:
+                if not os.path.lexists(source / relative / name):
+                    return True
+    except OSError:
+        return True
+    return False
 
 
 def _tree_has_user_file(path: Path) -> bool:
@@ -2942,7 +2968,7 @@ def run_pending_storage_migration(
         # recorded target manifest describing something it no longer is.
         published_fingerprints: dict[str, str] = {}
 
-        def _require_sources_unchanged() -> None:
+        def _require_sources_unchanged(published: Collection[str] = ()) -> None:
             appeared = set(_iter_existing_runtime_entries(source_root)) - set(existing_entries)
             if appeared:
                 # Absent when the source was first listed, so never staged: the
@@ -2967,6 +2993,17 @@ def run_pending_storage_migration(
                 except StorageMigrationError:
                     unchanged = False
                 if not unchanged:
+                    if entry_name in published and _published_copy_has_files_source_lost(
+                        target_root / entry_name, source_root / entry_name
+                    ):
+                        # A file inside was removed after the entry went out:
+                        # the published copy may now be its only one. Keep the
+                        # transaction, as a restart's recovery would.
+                        raise StorageMigrationError(
+                            "migration_source_missing",
+                            "原始数据目录中的条目在迁移期间少了文件，迁移未完成，已保留目标与事务目录，恢复后会继续处理: "
+                            + entry_name,
+                        )
                     raise StorageMigrationError(
                         "verification_failed",
                         f"迁移期间原始数据被修改，已停止迁移，原始数据未受影响：{entry_name}。",
@@ -3231,7 +3268,7 @@ def run_pending_storage_migration(
             # Publishing hashes every target and takes a while: a source
             # written meanwhile must not go live as its older copy. Raised
             # here, the publish is rolled back like any other failure.
-            _require_sources_unchanged()
+            _require_sources_unchanged(published_entries)
             # Until the policy points at the target, a failed checkpoint
             # write must undo the publish like any other failure here.
             payload = _persist_migration_payload(

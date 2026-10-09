@@ -1969,8 +1969,9 @@ def _cleanup_retained_runtime_root(
         if not remaining_entries:
             if before_root_removal is not None:
                 before_root_removal()
-            # Parents of nested entries, now empty, would keep it too.
-            for entry_name in migrated_names:
+            # Parents of nested entries, now empty, would keep it too -- a v1
+            # catch-up's (state/game_scores) as well; only empty ones go.
+            for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES:
                 for parent in reversed(_nested_entry_parents(retained_path, entry_name)):
                     with suppress(OSError):
                         parent.rmdir()

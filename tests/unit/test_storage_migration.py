@@ -4254,3 +4254,95 @@ def test_side_records_are_merged_even_when_the_list_is_malformed(tmp_path):
     assert not storage_migration_module._transaction_path(target_root, txid).exists()
     kept = list(leftovers_path.parent.glob("storage_migration_leftovers.json.corrupt-*"))
     assert len(kept) == 1 and kept[0].read_text(encoding="utf-8") == '{"not": "a list"}'
+
+
+
+@pytest.mark.unit
+def test_a_published_copy_is_kept_when_a_file_inside_its_source_is_removed(tmp_path, monkeypatch):
+    """memory was published; then a sync client removed one of its files from
+    the source. The published copy may be that file's only one: no rollback."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "facts.json").write_text("facts", encoding="utf-8")
+    (source_root / "memory" / "recent.json").write_text("recent", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_a_file_goes(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
+        if Path(target).name == "memory":
+            (source_root / "memory" / "facts.json").unlink()
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_a_file_goes)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "migration_source_missing"
+    assert (target_root / "memory" / "facts.json").read_text(encoding="utf-8") == "facts"
+
+
+@pytest.mark.unit
+def test_a_leftover_catch_up_trash_that_is_a_link_is_left_alone(tmp_path):
+    """The trash of a finished catch-up's transaction was replaced by a link:
+    nothing is pulled in from where it points."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, target_root = _start_migration_into_empty_target(tmp_path)
+    txid = "fedcba9876543210fedcba9876543210"
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "pngtuber").mkdir(parents=True)
+    (elsewhere / "pngtuber" / "someone_elses.png").write_bytes(b"not ours")
+    transaction_root = storage_migration_module._transaction_path(target_root, txid)
+    transaction_root.mkdir(parents=True)
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(elsewhere), str(transaction_root / "trash"))
+    else:
+        os.symlink(elsewhere, transaction_root / "trash")
+
+    storage_migration_module._remove_completed_transaction_leftover(
+        {"status": "completed", "target_root": str(target_root), "txid": txid}
+    )
+
+    assert (elsewhere / "pngtuber" / "someone_elses.png").read_bytes() == b"not ours"
+    assert not os.path.lexists(target_root / "pngtuber")
+
+
+@pytest.mark.unit
+def test_a_leftover_catch_up_trash_with_a_linked_parent_is_left_alone(tmp_path):
+    """trash/state is a link: state/game_scores below it is not ours."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, target_root = _start_migration_into_empty_target(tmp_path)
+    txid = "fedcba9876543210fedcba9876543210"
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "game_scores").mkdir(parents=True)
+    (elsewhere / "game_scores" / "someone_elses.db").write_bytes(b"not ours")
+    trash_root = storage_migration_module._transaction_path(target_root, txid) / "trash"
+    trash_root.mkdir(parents=True)
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(elsewhere), str(trash_root / "state"))
+    else:
+        os.symlink(elsewhere, trash_root / "state")
+
+    storage_migration_module._remove_completed_transaction_leftover(
+        {"status": "completed", "target_root": str(target_root), "txid": txid}
+    )
+
+    assert (elsewhere / "game_scores" / "someone_elses.db").read_bytes() == b"not ours"
+    assert not os.path.lexists(target_root / "state" / "game_scores")
