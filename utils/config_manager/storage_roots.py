@@ -159,6 +159,10 @@ class StorageRootsMixin:
         self.docs_dir = self.app_docs_dir.parent
         self.config_dir = self.app_docs_dir / "config"
         self.memory_dir = self.app_docs_dir / "memory"
+        # Public knowledge packs (registry + raw packs + derived index). Kept
+        # apart from memory; owned by the knowledge subsystem in the Memory
+        # Server and migrated as one top-level entry.
+        self.knowledge_dir = self.app_docs_dir / "knowledge"
         self.plugins_dir = self.app_docs_dir / "plugins"
         self.live2d_dir = self.app_docs_dir / "live2d"
         # VRM模型存储在用户文档目录下（与Live2D保持一致）

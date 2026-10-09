@@ -383,6 +383,7 @@ from main_routers.mmd_router import router as mmd_router  # noqa
 from main_routers.music_router import router as music_router  # noqa
 from main_routers.pages_router import router as pages_router  # noqa
 from main_routers.pngtuber_router import router as pngtuber_router  # noqa
+from main_routers.public_knowledge_router import router as public_knowledge_router  # noqa
 from main_routers.numeric_theater_router import router as numeric_theater_router  # noqa
 from main_routers.storage_location_router import router as storage_location_router  # noqa
 from main_routers.plugin_card_router import router as plugin_card_router  # noqa
@@ -768,6 +769,7 @@ app.include_router(pngtuber_router)
 app.include_router(jukebox_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
+app.include_router(public_knowledge_router)
 app.include_router(cloudsave_router)
 app.include_router(storage_location_router)
 app.include_router(plugin_card_router)

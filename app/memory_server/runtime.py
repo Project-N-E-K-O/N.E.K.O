@@ -1153,6 +1153,16 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         # 在 to_thread 里跑，绝不阻塞 event loop / 拖慢端口就绪。
         _spawn_background_task(_bootstrap_embedding_worker())
 
+        # Public knowledge: own root, own DB, own tasks; started in the
+        # background so a slow or broken knowledge root never delays memory.
+        try:
+            from . import knowledge_routes
+            knowledge_dir = getattr(_config_manager, "knowledge_dir", None)
+            if knowledge_dir is not None:
+                knowledge_routes.spawn_knowledge_runtime(knowledge_dir)
+        except Exception as e:
+            logger.warning(f"[Memory] knowledge runtime 启动失败（不影响记忆）: {e}")
+
         _memory_runtime_init_completed = True
         logger.info("[Memory] 运行态初始化完成 (reason=%s)", reason or "manual")
         return True
@@ -1257,6 +1267,10 @@ async def shutdown_event_handler():
     worker_stop_task: asyncio.Task | None = None
     if embedding_warmup_worker is not None:
         worker_stop_task = asyncio.create_task(embedding_warmup_worker.stop())
+    # Knowledge borrows the same EmbeddingService; stop its background work
+    # alongside the worker so both are quiet before the service is released.
+    from . import knowledge_routes
+    knowledge_stop_task = asyncio.create_task(knowledge_routes.stop_knowledge_runtime())
 
     managers_to_cleanup: list[TimeIndexedMemory] = []
     async with _reload_lock:
@@ -1278,9 +1292,16 @@ async def shutdown_event_handler():
         except Exception as e:
             logger.warning(f"[Memory] embedding worker stop 失败: {e}")
 
+    async def _await_knowledge_stop() -> None:
+        try:
+            await knowledge_stop_task
+        except Exception as e:
+            logger.warning("[Memory] knowledge stop 失败: %s", e)
+
     shutdown_coros: list = [_cleanup_one(m) for m in managers_to_cleanup]
     if worker_stop_task is not None:
         shutdown_coros.append(_await_worker_stop())
+    shutdown_coros.append(_await_knowledge_stop())
     if shutdown_coros:
         await asyncio.gather(*shutdown_coros)
     # The worker is stopped before releasing the process-scoped singleton, so

@@ -30,6 +30,7 @@ from plugin.server.routes import (
     llm_tools_router,
     logs_router,
     market_bridge_router,
+    knowledge_bridge_router,
     media_router,
     messages_router,
     metrics_router,
@@ -344,6 +345,7 @@ def build_plugin_server_app(
     )
     app.include_router(plugin_cli_router)
     app.include_router(llm_tools_router)
+    app.include_router(knowledge_bridge_router)
     app.include_router(market_bridge_router)
     # Keep the Host/Origin guard outside CORS and the cache-header middleware;
     # untrusted requests must not be short-circuited before the guard runs.
