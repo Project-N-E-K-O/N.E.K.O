@@ -36,6 +36,9 @@ the rest of the Memory Server carries on.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextlib
+import contextvars
 import logging
 import random
 import threading
@@ -44,7 +47,7 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Protocol, Sequence, TypeVar
+from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, Sequence, TypeVar
 
 import numpy as np
 
@@ -181,6 +184,12 @@ class ImportJob:
         }
 
 
+# The thread work of the query running in the current task (see _query_lease).
+_QUERY_WORK: contextvars.ContextVar[list[concurrent.futures.Future[Any]] | None] = (
+    contextvars.ContextVar("knowledge_query_work", default=None)
+)
+
+
 def _disabled_in(entry: StoredEntry, registry: Registry) -> bool:
     """Disabled per the index or per the query's registry snapshot.
 
@@ -237,6 +246,7 @@ class KnowledgeService:
         self._request_seq = 0
         self._removed_at: dict[str, int] = {}
         self._pending_removals: dict[str, set[int]] = {}
+        self._query_pool: concurrent.futures.ThreadPoolExecutor | None = None
         # Set (and replaced) whenever a removal finishes, committed or not.
         self._removal_settled = asyncio.Event()
         self._vectors_built_for: tuple[int, str] | None = None
@@ -276,6 +286,8 @@ class KnowledgeService:
             task.cancel()
         if tasks:
             await asyncio.wait(tasks, timeout=2.0)
+        if self._query_pool is not None:
+            self._query_pool.shutdown(wait=False, cancel_futures=True)
 
     def _open_blocking(self) -> None:
         (self.root / PACKS_DIR).mkdir(parents=True, exist_ok=True)
@@ -622,7 +634,9 @@ class KnowledgeService:
             return {"ok": False, "reason": "capacity_chunks"}
         if chunks > MAX_CHUNKS_PER_PACK:
             return {"ok": False, "reason": "too_many_chunks"}
-        installed_bytes = await asyncio.to_thread(self._installed_pack_bytes, pack.pack_id)
+        installed_bytes = await asyncio.to_thread(
+            self._installed_pack_bytes, pack.pack_id, self._active_job_ids()
+        )
         if installed_bytes + staged_bytes + len(canonical) > MAX_TOTAL_PACK_BYTES:
             return {"ok": False, "reason": "capacity_bytes"}
         now = utc_now()
@@ -660,26 +674,36 @@ class KnowledgeService:
         except OSError:
             return False
 
-    def _installed_pack_bytes(self, replacing: str) -> int:
-        """Bytes of raw pack files on disk, except the one ``replacing`` swaps out.
+    def _active_job_ids(self) -> frozenset[str]:
+        return frozenset(job.job_id for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES)
 
-        Every file counts, not just registered ones: an old version whose
-        deletion failed still takes disk space until a later cleanup.
+    def _installed_pack_bytes(self, replacing: str, active_jobs: frozenset[str] = frozenset()) -> int:
+        """Bytes of pack files on disk, except the one ``replacing`` swaps out.
+
+        Every file counts, not just registered ones: an old version or a
+        staged upload whose deletion failed still takes disk space until a
+        later cleanup. Staged files of active jobs are left out here; the
+        callers count those from the jobs themselves.
         """
         record = self._registry.packs.get(replacing)
         skip = record.file_name if record is not None else None
         total = 0
-        try:
-            paths = list((self.root / PACKS_DIR).iterdir())
-        except OSError:
-            return 0
-        for path in paths:
-            if path.name == skip or path.suffix != ".json":
-                continue
+        for directory in (PACKS_DIR, STAGING_DIR):
             try:
-                total += path.stat().st_size
+                paths = list((self.root / directory).iterdir())
             except OSError:
                 continue
+            for path in paths:
+                if path.suffix != ".json":
+                    continue
+                if directory == PACKS_DIR and path.name == skip:
+                    continue
+                if directory == STAGING_DIR and path.stem in active_jobs:
+                    continue
+                try:
+                    total += path.stat().st_size
+                except OSError:
+                    continue
         return total
 
     def _staging_path(self, job_id: str) -> Path:
@@ -788,6 +812,7 @@ class KnowledgeService:
         if self._superseded(job):
             raise InterruptedError("cancelled")
         previous = self._registry.packs.get(job.pack_id)
+        active_jobs = self._active_job_ids()
 
         def commit_gate() -> bool:
             with job.gate:
@@ -809,7 +834,7 @@ class KnowledgeService:
                 raise KnowledgePackError("capacity_entries")
             if sum(r.chunks for r in others) + job.chunks_total > MAX_TOTAL_CHUNKS:
                 raise KnowledgePackError("capacity_chunks")
-            if self._installed_pack_bytes(pack.pack_id) + len(raw) > MAX_TOTAL_PACK_BYTES:
+            if self._installed_pack_bytes(pack.pack_id, active_jobs) + len(raw) > MAX_TOTAL_PACK_BYTES:
                 raise KnowledgePackError("capacity_bytes")
             now = utc_now()
             keys = {entry.key for entry in pack.entries}
@@ -957,6 +982,12 @@ class KnowledgeService:
             except asyncio.TimeoutError:
                 pass  # the idle delay elapsed without a wake-up; run another round
 
+    def _vector_pack_ids(self) -> list[str] | None:
+        """Packs whose chunks may be embedded now; ``None`` when indexing is off."""
+        if self._stopping or self._state != "ready" or not self._registry.enabled:
+            return None
+        return [record.pack_id for record in self._registry.packs.values() if record.local_embedding]
+
     async def _index_round(self) -> int:
         if self._state != "ready" or not self._registry.enabled or self.embedder is None:
             return 0
@@ -968,11 +999,13 @@ class KnowledgeService:
             # them: a new model, or a restart, retries every chunk once more.
             await self._locked(lambda: asyncio.to_thread(self._store.reset_attempts), wait=True)
             self._index_model_id = model_id
-        pack_ids = [
-            record.pack_id for record in self._registry.packs.values() if record.local_embedding
-        ]
         processed = 0
         while processed < INDEX_ROUND_CHUNKS and not self._stopping:
+            # Re-read the switches every batch: the user may turn knowledge or
+            # a pack's vectors off while a batch is embedding.
+            pack_ids = self._vector_pack_ids()
+            if pack_ids is None:
+                break
             rows = await asyncio.to_thread(
                 self._store.pending_chunks, model_id=model_id, pack_ids=pack_ids, limit=INDEX_BATCH_SIZE
             )
@@ -982,13 +1015,16 @@ class KnowledgeService:
             vectors = await self.embedder.embed_batch([text for _id, _hash, text in rows])
             if self._current_model_id() != model_id:
                 break
+            pack_ids = self._vector_pack_ids()
+            if pack_ids is None:
+                break
             blobs = [
                 (chunk_id, text_hash, normalize_vector(vector) if vector is not None else None)
                 for (chunk_id, text_hash, _text), vector in zip(rows, vectors)
             ]
             stored, failed = await self._locked(
-                lambda blobs=blobs: asyncio.to_thread(
-                    self._store.store_vectors, model_id=model_id, rows=blobs
+                lambda blobs=blobs, pack_ids=pack_ids: asyncio.to_thread(
+                    self._store.store_vectors, model_id=model_id, rows=blobs, pack_ids=pack_ids
                 ),
                 wait=True,
             )
@@ -1091,7 +1127,7 @@ class KnowledgeService:
             return finish("miss")
         if self._query_slots.locked():
             return finish("busy")
-        async with self._query_slots:
+        async with self._query_lease():
             deadline = started + budget
             try:
                 async with asyncio.timeout(max(deadline - time.monotonic(), 0.01)):
@@ -1105,7 +1141,7 @@ class KnowledgeService:
                     if not ranked:
                         return finish("miss", retrieval_mode=retrieval_mode)
                     excerpt_query = query if mode == "lookup" else ""
-                    hits, context = await asyncio.to_thread(
+                    hits, context = await self._query_thread(
                         self._render, ranked, excerpt_query, language, registry
                     )
             except TimeoutError:
@@ -1117,8 +1153,53 @@ class KnowledgeService:
             return finish("miss", retrieval_mode=retrieval_mode)
         return finish("matched", hits=hits, context=context, retrieval_mode=retrieval_mode)
 
+    @contextlib.asynccontextmanager
+    async def _query_lease(self) -> AsyncIterator[None]:
+        """Hold a query slot until the query and all its thread work are done.
+
+        A timeout only stops waiting for a thread; the work itself runs on.
+        Releasing the slot only when that work ends keeps the number of
+        running scans at ``QUERY_CONCURRENCY``, whatever the budgets.
+        """
+        await self._query_slots.acquire()
+        work: list[concurrent.futures.Future[Any]] = []
+        token = _QUERY_WORK.set(work)
+        try:
+            yield
+        finally:
+            _QUERY_WORK.reset(token)
+            running = [future for future in work if not future.done()]
+            if not running:
+                self._query_slots.release()
+            else:
+                loop = asyncio.get_running_loop()
+                left = [len(running)]
+
+                def one_done(_future: concurrent.futures.Future[Any]) -> None:
+                    left[0] -= 1
+                    if left[0] == 0:
+                        self._query_slots.release()
+
+                for future in running:
+                    future.add_done_callback(
+                        lambda f: loop.call_soon_threadsafe(one_done, f)
+                    )
+
+    async def _query_thread(self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+        """Run query work in a thread that the query's slot stays tied to."""
+        work = _QUERY_WORK.get()
+        if work is None:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+        if self._query_pool is None:
+            self._query_pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=QUERY_CONCURRENCY, thread_name_prefix="knowledge-query"
+            )
+        future = self._query_pool.submit(contextvars.copy_context().run, fn, *args, **kwargs)
+        work.append(future)
+        return await asyncio.wrap_future(future)
+
     async def _sample(self, tag: str, allowed: list[str], limit: int) -> list[RankedHit]:
-        ids = await asyncio.to_thread(self._store.entry_ids_with_tag, tag, allowed)
+        ids = await self._query_thread(self._store.entry_ids_with_tag, tag, allowed)
         return [
             RankedHit(entry_id=i, score=0.0, exact=False, lexical_rank=None, semantic_score=None)
             for i in random.sample(ids, min(limit, len(ids)))
@@ -1151,7 +1232,7 @@ class KnowledgeService:
             embed_task.add_done_callback(_consume)
             self._query_embeddings.add(embed_task)
             embed_task.add_done_callback(self._query_embeddings.discard)
-        exact_ids, lexical_ids = await asyncio.to_thread(
+        exact_ids, lexical_ids = await self._query_thread(
             self._store.lexical_candidates, query, pack_ids=allowed, limit=LEXICAL_CANDIDATES
         )
         query_vector: np.ndarray | None = None
@@ -1167,24 +1248,24 @@ class KnowledgeService:
                 if blob is not None:
                     query_vector = np.frombuffer(blob, dtype="<f4")
         semantic = (
-            await asyncio.to_thread(
+            await self._query_thread(
                 semantic_candidates, snapshot, query_vector, allowed_pack_ids=vector_packs
             )
             if query_vector is not None
             else []
         )
         candidate_ids = list(dict.fromkeys([*exact_ids, *lexical_ids, *(m.entry_id for m in semantic)]))
-        entries = await asyncio.to_thread(self._store.fetch_entries, candidate_ids)
+        entries = await self._query_thread(self._store.fetch_entries, candidate_ids)
         # Read the versions after the rows: rows of a pack replaced in between
         # then show a newer version and are left out, never mislabelled.
-        allowed_set = await asyncio.to_thread(self._current_packs, allowed, registry)
+        allowed_set = await self._query_thread(self._current_packs, allowed, registry)
         usable = {
             entry_id
             for entry_id, entry in entries.items()
             if not _disabled_in(entry, registry) and entry.pack_id in allowed_set
         }
         # Coverage scoring scans entry text: keep it off the event loop.
-        ranked = await asyncio.to_thread(
+        ranked = await self._query_thread(
             fuse,
             query,
             exact_ids=exact_ids,

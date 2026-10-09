@@ -33,7 +33,15 @@ from typing import Iterable, Mapping, Sequence
 import numpy as np
 
 from .store import StoredEntry, VectorSnapshot
-from .text import is_cjk_token, query_tokens, search_tokens, search_view, word_runs
+from .text import (
+    is_cjk_token,
+    loose_surface,
+    query_tokens,
+    search_tokens,
+    search_view,
+    strict_surface,
+    word_runs,
+)
 
 
 RRF_K = 60
@@ -91,13 +99,50 @@ def names_in_query(query: str, entry: StoredEntry) -> bool:
 
     "Tell me about Python" names the entry "Python" even though most of its
     words are not in the entry; such a BM25 hit qualifies on its own.
+
+    Symbols count: a name that begins or ends with one ("C++", "C#") must
+    appear as written, and a query word glued to a symbol ("c++") does not
+    name a plain entry ("C").
     """
-    wanted = set(search_tokens(query, unigrams=True))
+    wanted: set[str] | None = None
+    query_surface = ""
     for name in (entry.title, *entry.terms.get("alias", ())):
+        surface = strict_surface(name)
+        if not surface:
+            continue
+        if not loose_surface(name):
+            query_surface = query_surface or strict_surface(query)
+            if _contains_word(query_surface, surface):
+                return True
+            continue
+        if wanted is None:
+            wanted = _plain_query_tokens(query)
         tokens = set(search_tokens(name))
         if tokens and tokens <= wanted:
             return True
     return False
+
+
+def _contains_word(text: str, word: str) -> bool:
+    """``word`` occurs in ``text`` with no letter or digit glued to either side."""
+    start = text.find(word)
+    while start != -1:
+        end = start + len(word)
+        if (start == 0 or not text[start - 1].isalnum()) and (end == len(text) or not text[end].isalnum()):
+            return True
+        start = text.find(word, start + 1)
+    return False
+
+
+def _plain_query_tokens(query: str) -> set[str]:
+    """Query tokens, leaving out words glued to a symbol ("c++", ".net")."""
+    words = strict_surface(query).split(" ")
+    return {
+        token
+        for word in words
+        if loose_surface(word) or not any(ch.isalnum() for ch in word)
+        for token in search_tokens(word, unigrams=True)
+    }
 
 
 def semantic_candidates(

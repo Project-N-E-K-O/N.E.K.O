@@ -1893,7 +1893,7 @@ async def test_no_unchanged_answer_when_a_removal_starts_during_the_file_check(t
         async with service._write_lock:
             result = await service.import_pack(_raw(_pack()))
             assert result.get("unchanged") is not True
-        await tasks[0]
+        assert (await tasks[0])["pack_id"] == "demo-memes"
         assert (await _wait_for_last_job(service))[0] == "cancelled"  # it came before the removal
         assert "demo-memes" not in load_registry(tmp_path).packs
     finally:
@@ -1909,5 +1909,89 @@ async def test_undeleted_old_pack_files_count_toward_byte_capacity(tmp_path, mon
         (tmp_path / "packs" / "pack-old.0000000000000000.json").write_bytes(b"x" * len(one))
         result = await service.import_pack(one)
         assert result == {"ok": False, "reason": "capacity_bytes"}
+    finally:
+        await service.stop()
+
+
+def test_names_in_questions_respect_symbols():
+    from knowledge.retrieval import names_in_query
+    from knowledge.store import StoredEntry
+
+    def entry(title):
+        return StoredEntry(
+            entry_id=1, pack_id="p", title=title, terms={}, tags=[], summary="", content="", disabled=False
+        )
+
+    assert names_in_query("C", entry("C++")) is False
+    assert names_in_query("Tell me about C++", entry("C++")) is True
+    assert names_in_query("is C# hard?", entry("C#")) is True
+    assert names_in_query("C++ tutorial", entry("C")) is False
+    assert names_in_query("Tell me about Python", entry("Python")) is True
+    assert names_in_query("介绍一下猫", entry("猫")) is True
+
+
+async def test_undeleted_staged_files_count_toward_byte_capacity(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        one = _raw(_pack("pack-one"))
+        monkeypatch.setattr(service_module, "MAX_TOTAL_PACK_BYTES", int(len(one) * 1.5))
+        # A finished job whose staged file could not be deleted.
+        (tmp_path / ".staging").mkdir(exist_ok=True)
+        (tmp_path / ".staging" / "deadbeef.json").write_bytes(b"x" * len(one))
+        result = await service.import_pack(one)
+        assert result == {"ok": False, "reason": "capacity_bytes"}
+    finally:
+        await service.stop()
+
+
+async def test_a_timed_out_query_keeps_its_slot_until_its_thread_work_ends(tmp_path, monkeypatch):
+    import time
+
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        real_fuse = service_module.fuse
+
+        def slow_fuse(*args, **kwargs):
+            time.sleep(0.6)
+            return real_fuse(*args, **kwargs)
+
+        monkeypatch.setattr(service_module, "fuse", slow_fuse)
+        result = await service.query(query="绝绝子", budget_ms=100)
+        assert result["result"] == "timeout"
+        assert service._query_slots._value == service_module.QUERY_CONCURRENCY - 1
+        for _ in range(100):
+            if service._query_slots._value == service_module.QUERY_CONCURRENCY:
+                break
+            await asyncio.sleep(0.02)
+        assert service._query_slots._value == service_module.QUERY_CONCURRENCY
+    finally:
+        await service.stop()
+
+
+async def test_turning_knowledge_off_mid_batch_stops_indexing(tmp_path, fast_indexer):
+    class SwitchingEmbedder(FakeEmbedder):
+        service = None
+
+        async def embed_batch(self, texts):
+            self.batches.append(len(texts))
+            if len(self.batches) == 1:
+                await self.service.set_enabled(False)
+            return [self.vector(text) for text in texts]
+
+    embedder = SwitchingEmbedder()
+    service = service_module.KnowledgeService(tmp_path, embedder=embedder)
+    embedder.service = service
+    await service.start()
+    try:
+        await _import(service, _pack(entries=_entries("k", 30)))
+        for _ in range(100):
+            if embedder.batches:
+                break
+            await asyncio.sleep(0.02)
+        await asyncio.sleep(0.3)
+        assert embedder.batches == [service_module.INDEX_BATCH_SIZE]
+        stats = await asyncio.to_thread(service._store.chunk_stats, "fake-16")
+        assert stats["demo-memes"]["ready"] == 0
     finally:
         await service.stop()

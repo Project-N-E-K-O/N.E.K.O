@@ -568,22 +568,34 @@ class KnowledgeStore:
             ]
 
     def store_vectors(
-        self, *, model_id: str, rows: Sequence[tuple[int, str, bytes | None]]
+        self,
+        *,
+        model_id: str,
+        rows: Sequence[tuple[int, str, bytes | None]],
+        pack_ids: Sequence[str] | None = None,
     ) -> tuple[int, int]:
-        """Write vectors for unchanged chunks; return (stored, failed)."""
+        """Write vectors for unchanged chunks; return (stored, failed).
+
+        With ``pack_ids``, chunks of other packs are left untouched (their
+        pack stopped allowing vectors while the batch was embedding).
+        """
+        if pack_ids is not None and not pack_ids:
+            return 0, 0
+        clause = f" AND pack_id IN ({','.join('?' for _ in pack_ids)})" if pack_ids is not None else ""
+        extra = tuple(pack_ids) if pack_ids is not None else ()
         stored = failed = 0
         with self._write() as conn:
             for chunk_id, text_hash, blob in rows:
                 if blob is None:
                     cursor = conn.execute(
-                        "UPDATE chunks SET attempts=attempts+1 WHERE id=? AND text_hash=?",
-                        (chunk_id, text_hash),
+                        f"UPDATE chunks SET attempts=attempts+1 WHERE id=? AND text_hash=?{clause}",
+                        (chunk_id, text_hash, *extra),
                     )
                     failed += cursor.rowcount
                     continue
                 cursor = conn.execute(
-                    "UPDATE chunks SET model_id=?, vector=?, attempts=0 WHERE id=? AND text_hash=?",
-                    (model_id, blob, chunk_id, text_hash),
+                    f"UPDATE chunks SET model_id=?, vector=?, attempts=0 WHERE id=? AND text_hash=?{clause}",
+                    (model_id, blob, chunk_id, text_hash, *extra),
                 )
                 stored += cursor.rowcount
         return stored, failed
