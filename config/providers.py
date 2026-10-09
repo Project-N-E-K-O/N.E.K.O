@@ -64,7 +64,13 @@ EXTRA_BODY_CLAUDE_THINKING = {"thinking": {"type": "enabled"}}
 # 是否支持还要逐个验证 OpenAI-compat 行为。本 PR 暂只用 disabled（平时关思考），且
 # 故意不配 enable 对偶 —— 凝神对 claude 保持 thinking-off（安全退化，绝不 400），
 # adaptive 的正确 per-model 接入留 follow-up。
+# Haiku 5.5 仍收 disabled（仅限 effort ≤ high；默认 medium，项目不发 effort）。
 EXTRA_BODY_ANTHROPIC = {"thinking": {"type": "disabled"}}
+# Sonnet 5.5 起 {type:disabled} 直接 400，关思考只能发 {type:between_tools}（同样
+# 仅限 effort ≤ high，默认 high；不得带 display / budget_tokens 等其它字段）。
+# Opus 5.5 / Fable 5.1 除 adaptive 外的任何显式 thinking 都 400，思考关不掉，
+# 故不登记（get_extra_body → {} → 不发 thinking，走原生 adaptive）。
+EXTRA_BODY_ANTHROPIC_BETWEEN_TOOLS = {"thinking": {"type": "between_tools"}}
 
 EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
 # Gemini 2.5: budget 0 = 关；凝神给一个低固定预算 800 token（开思考但不深思）。
@@ -182,6 +188,8 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     # 平时下发 disabled、凝神由 focus_extra_body flip 成 enabled。
     "free-model": EXTRA_BODY_CLAUDE,
     # Claude 系列（Anthropic 原生：enable 须用 adaptive，本 PR 暂不翻，见 EXTRA_BODY_ANTHROPIC）
+    "claude-sonnet-5-5": EXTRA_BODY_ANTHROPIC_BETWEEN_TOOLS,
+    "claude-haiku-5-5": EXTRA_BODY_ANTHROPIC,
     "claude-sonnet-5": EXTRA_BODY_ANTHROPIC,
     "claude-sonnet-4-6": EXTRA_BODY_ANTHROPIC,
     "claude-haiku-4-5-20251001": EXTRA_BODY_ANTHROPIC,
