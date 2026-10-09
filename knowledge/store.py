@@ -374,35 +374,33 @@ class KnowledgeStore:
                 )
             }
 
-    def count_entries(self, *, pack_id: str = "") -> int:
+    def count_entries(self, *, pack_ids: Sequence[str] | None = None) -> int:
+        """Entries of ``pack_ids`` (all packs when ``None``)."""
+        if pack_ids is not None and not pack_ids:
+            return 0
+        clause, args = self._pack_clause(pack_ids, include_disabled=True)
         with self._read() as conn:
-            if pack_id:
-                row = conn.execute(
-                    "SELECT COUNT(*) FROM entries WHERE pack_id=?", (pack_id,)
-                ).fetchone()
-            else:
-                row = conn.execute("SELECT COUNT(*) FROM entries").fetchone()
+            row = conn.execute(f"SELECT COUNT(*) FROM entries e WHERE 1=1{clause}", args).fetchone()
             return int(row[0])
 
-    def list_entries(self, *, pack_id: str = "", limit: int, offset: int) -> list[StoredEntry]:
+    def list_entries(
+        self, *, pack_ids: Sequence[str] | None = None, limit: int, offset: int
+    ) -> list[StoredEntry]:
+        if pack_ids is not None and not pack_ids:
+            return []
+        clause, args = self._pack_clause(pack_ids, include_disabled=True)
         with self._read() as conn:
-            if pack_id:
-                rows = conn.execute(
-                    "SELECT * FROM entries WHERE pack_id=? ORDER BY title_key LIMIT ? OFFSET ?",
-                    (pack_id, limit, offset),
-                )
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM entries ORDER BY pack_id, title_key LIMIT ? OFFSET ?",
-                    (limit, offset),
-                )
+            rows = conn.execute(
+                f"SELECT * FROM entries e WHERE 1=1{clause}"
+                " ORDER BY e.pack_id, e.title_key LIMIT ? OFFSET ?",
+                (*args, limit, offset),
+            )
             return [_row_to_entry(row) for row in rows]
 
     def search_entries(
-        self, query: str, *, pack_id: str = "", limit: int, offset: int
+        self, query: str, *, pack_ids: Sequence[str] | None = None, limit: int, offset: int
     ) -> list[StoredEntry]:
         """Management search: exact surface hits first, then BM25 order."""
-        pack_ids = (pack_id,) if pack_id else None
         with self._read() as conn:
             exact = self._exact_ids(
                 conn, query, pack_ids=pack_ids, include_disabled=True, limit=offset + limit

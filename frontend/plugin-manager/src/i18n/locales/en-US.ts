@@ -246,6 +246,7 @@ export default {
       capacity_entries: 'The total entry limit has been reached',
       capacity_chunks: 'The total chunk limit has been reached',
       capacity_bytes: 'The total pack storage limit has been reached',
+      capacity_packs: 'The maximum number of packs has been reached',
       too_many_chunks: 'This pack produces too many chunks',
       pack_too_large: 'The pack file is larger than 10 MiB',
       payload_too_large: 'The request body is too large',

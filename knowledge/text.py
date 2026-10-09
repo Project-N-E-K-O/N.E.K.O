@@ -68,6 +68,7 @@ _CJK_RUN_RE = re.compile(rf"^[{_CJK_RANGES}]+$")
 MAX_QUERY_TOKENS = 64
 
 
+_MAX_MARKUP_PASSES = 16
 _UNICODE_LINE_BREAKS = str.maketrans({"\u0085": "\n", "\u2028": "\n", "\u2029": "\n"})
 
 
@@ -78,12 +79,17 @@ def strip_chat_markup(value: str) -> str:
     one of them starts a line for a reader, but not for ``^`` in a regex.
     """
     text = _INVISIBLE_RE.sub("", str(value or "").translate(_UNICODE_LINE_BREAKS))
-    while True:
+    for _ in range(_MAX_MARKUP_PASSES):
         cleaned = _CHAT_TOKEN_RE.sub("", text)
         cleaned = _ROLE_MARKER_RE.sub("", cleaned)
         if cleaned == text:
             return cleaned
         text = cleaned
+    # Deliberately nested markup: stop rescanning (each pass is linear, an
+    # unbounded loop is not) and defuse what is left in one pass, without
+    # deleting anything that could expose yet another marker.
+    text = text.replace("<", "\u2039").replace(">", "\u203a")
+    return _ROLE_MARKER_RE.sub(lambda match: match.group(0)[:-1] + "\u2236", text)
 
 
 def neutralize_fence(value: str) -> str:

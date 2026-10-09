@@ -246,6 +246,7 @@ export default {
       capacity_entries: '전체 항목 수 한도에 도달했습니다',
       capacity_chunks: '전체 청크 수 한도에 도달했습니다',
       capacity_bytes: '데이터 팩 전체 용량 한도에 도달했습니다',
+      capacity_packs: '데이터 팩 개수 한도에 도달했습니다',
       too_many_chunks: '이 팩은 청크가 너무 많습니다',
       pack_too_large: '데이터 팩 파일이 10 MiB를 초과합니다',
       payload_too_large: '요청 내용이 너무 큽니다',

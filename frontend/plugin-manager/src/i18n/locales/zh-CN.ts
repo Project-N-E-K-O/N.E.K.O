@@ -246,6 +246,7 @@ export default {
       capacity_entries: '词条总数已达上限',
       capacity_chunks: '分块总数已达上限',
       capacity_bytes: '数据包总容量已达上限',
+      capacity_packs: '数据包数量已达上限',
       too_many_chunks: '该数据包的分块过多',
       pack_too_large: '数据包文件超过 10 MiB',
       payload_too_large: '请求内容过大',

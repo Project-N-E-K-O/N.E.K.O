@@ -246,6 +246,7 @@ export default {
       capacity_entries: '項目の総数が上限に達しました',
       capacity_chunks: 'チャンクの総数が上限に達しました',
       capacity_bytes: 'データパックの総容量が上限に達しました',
+      capacity_packs: 'データパックの数が上限に達しました',
       too_many_chunks: 'このパックはチャンク数が多すぎます',
       pack_too_large: 'データパックファイルが 10 MiB を超えています',
       payload_too_large: 'リクエストの内容が大きすぎます',

@@ -108,6 +108,9 @@ MAX_QUERY_CHARS = 2_000
 MAX_QUERY_LIMIT = 10
 MAX_TRACKED_JOBS = 50
 MAX_PENDING_IMPORTS = 3
+# Packs are listed whole on the management page; keep that list small.
+MAX_PACKS = 200
+STATUS_SOURCES = 12
 ACTIVE_JOB_STATES = frozenset({"queued", "building"})
 TERMINAL_JOB_STATES = frozenset({"active", "failed", "cancelled"})
 
@@ -522,6 +525,8 @@ class KnowledgeService:
     ) -> dict[str, Any]:
         registry = self._registry
         others = [record for record in registry.packs.values() if record.pack_id != pack.pack_id]
+        if len(others) + 1 > MAX_PACKS:
+            return {"ok": False, "reason": "capacity_packs"}
         if sum(record.entries for record in others) + len(pack.entries) > MAX_TOTAL_ENTRIES:
             return {"ok": False, "reason": "capacity_entries"}
         if sum(record.chunks for record in others) + chunks > MAX_TOTAL_CHUNKS:
@@ -650,6 +655,8 @@ class KnowledgeService:
             # Admission checked capacity without the lock; two imports racing
             # through it must not both land, so check again under the lock.
             others = [r for r in self._registry.packs.values() if r.pack_id != pack.pack_id]
+            if len(others) + 1 > MAX_PACKS:
+                raise KnowledgePackError("capacity_packs")
             if sum(r.entries for r in others) + len(pack.entries) > MAX_TOTAL_ENTRIES:
                 raise KnowledgePackError("capacity_entries")
             if sum(r.chunks for r in others) + job.chunks_total > MAX_TOTAL_CHUNKS:
@@ -974,10 +981,19 @@ class KnowledgeService:
         embed_task: asyncio.Task[Any] | None = None
         model_id = self._current_model_id()
         snapshot = self._vectors
+        # A pack with local vectors turned off is keyword-only, even if
+        # vectors from before the switch are still in the snapshot; when no
+        # eligible pack has vectors, the query is not embedded at all.
+        vector_packs = [
+            pack_id
+            for pack_id in allowed
+            if (record := registry.packs.get(pack_id)) is not None and record.local_embedding
+        ]
         if (
             model_id is not None
             and snapshot is not None
             and snapshot.model_id == model_id
+            and set(vector_packs) & set(snapshot.pack_ids)
             # A lookup that ran out of budget leaves its embedding running.
             # Cap those, or slow inference piles up on the shared model.
             and len(self._query_embeddings) < MAX_QUERY_EMBEDDINGS
@@ -1001,13 +1017,6 @@ class KnowledgeService:
                 blob = normalize_vector(embed_task.result())
                 if blob is not None:
                     query_vector = np.frombuffer(blob, dtype="<f4")
-        # A pack with local vectors turned off is keyword-only, even if
-        # vectors from before the switch are still in the snapshot.
-        vector_packs = [
-            pack_id
-            for pack_id in allowed
-            if (record := registry.packs.get(pack_id)) is not None and record.local_embedding
-        ]
         semantic = (
             await asyncio.to_thread(
                 semantic_candidates, snapshot, query_vector, allowed_pack_ids=vector_packs
@@ -1102,17 +1111,24 @@ class KnowledgeService:
         if pack_id and not pack_id_is_valid(pack_id):
             raise KnowledgeUnavailable("invalid_request")
         query = query.strip()[:200]
+        # Only registered packs whose rows are current: leftovers of a removal
+        # whose cleanup failed (or of an import in flight) stay hidden.
+        registry = self._registry
+        visible = await asyncio.to_thread(
+            self._current_packs, [pack_id] if pack_id else list(registry.packs), registry
+        )
+        pack_ids = sorted(visible)
         if query:
             entries = await asyncio.to_thread(
-                self._store.search_entries, query, pack_id=pack_id, limit=limit + 1, offset=offset
+                self._store.search_entries, query, pack_ids=pack_ids, limit=limit + 1, offset=offset
             )
             has_more = len(entries) > limit
             entries = entries[:limit]
             total = None
         else:
-            total = await asyncio.to_thread(self._store.count_entries, pack_id=pack_id)
+            total = await asyncio.to_thread(self._store.count_entries, pack_ids=pack_ids)
             entries = await asyncio.to_thread(
-                self._store.list_entries, pack_id=pack_id, limit=limit, offset=offset
+                self._store.list_entries, pack_ids=pack_ids, limit=limit, offset=offset
             )
             has_more = offset + len(entries) < total
         return {
@@ -1127,6 +1143,9 @@ class KnowledgeService:
         self._require_ready()
         if not pack_id_is_valid(pack_id):
             raise KnowledgeUnavailable("invalid_request")
+        registry = self._registry
+        if not await asyncio.to_thread(self._current_packs, [pack_id], registry):
+            raise KnowledgeUnavailable("not_found")
         entry = await asyncio.to_thread(self._store.get_entry, pack_id, title)
         if entry is None:
             raise KnowledgeUnavailable("not_found")
@@ -1213,9 +1232,10 @@ class KnowledgeService:
                 "chunks_failed": sum(p["chunks_failed"] for p in packs),
                 "indexed_percent": round(chunks_ready * 100 / chunks_total, 1) if chunks_total else 0.0,
                 "broken_packs": list(self._broken_packs),
+                # The largest packs only: this is an overview, not a pack list.
                 "sources": [
                     {"pack_id": p["pack_id"], "name": p["source"]["name"], "entries": p["entries"]}
-                    for p in packs
+                    for p in sorted(packs, key=lambda p: -p["entries"])[:STATUS_SOURCES]
                 ],
             }
         )

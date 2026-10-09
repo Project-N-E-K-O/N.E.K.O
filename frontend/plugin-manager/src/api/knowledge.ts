@@ -32,6 +32,7 @@ export const KNOWLEDGE_FAILURE_REASONS = [
   'capacity_entries',
   'capacity_chunks',
   'capacity_bytes',
+  'capacity_packs',
   'too_many_chunks',
   'pack_too_large',
   'payload_too_large',

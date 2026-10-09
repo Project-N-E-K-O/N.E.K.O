@@ -246,6 +246,7 @@ export default {
       capacity_entries: '詞條總數已達上限',
       capacity_chunks: '分塊總數已達上限',
       capacity_bytes: '資料包總容量已達上限',
+      capacity_packs: '資料包數量已達上限',
       too_many_chunks: '此資料包的分塊過多',
       pack_too_large: '資料包檔案超過 10 MiB',
       payload_too_large: '請求內容過大',

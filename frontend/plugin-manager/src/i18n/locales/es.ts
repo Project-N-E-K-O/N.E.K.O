@@ -246,6 +246,7 @@ export default {
       capacity_entries: 'Se alcanzó el límite total de entradas',
       capacity_chunks: 'Se alcanzó el límite total de fragmentos',
       capacity_bytes: 'Se alcanzó el límite total de almacenamiento de paquetes',
+      capacity_packs: 'Se alcanzó el número máximo de paquetes',
       too_many_chunks: 'Este paquete genera demasiados fragmentos',
       pack_too_large: 'El archivo del paquete supera los 10 MiB',
       payload_too_large: 'El cuerpo de la solicitud es demasiado grande',
