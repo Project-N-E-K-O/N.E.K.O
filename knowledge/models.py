@@ -104,7 +104,8 @@ class KnowledgePack:
 
 
 def pack_id_is_valid(value: object) -> bool:
-    return isinstance(value, str) and bool(_PACK_ID_RE.match(value))
+    # fullmatch: ``$`` alone would accept a trailing newline.
+    return isinstance(value, str) and bool(_PACK_ID_RE.fullmatch(value))
 
 
 def _one_line(value: object, *, max_chars: int) -> str:

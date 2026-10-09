@@ -83,6 +83,11 @@ def _pieces(paragraph: str) -> list[str]:
     return pieces
 
 
+def chunk_bodies(content: str) -> list[str]:
+    """The content part of each chunk, in order (what an excerpt can show)."""
+    return _bodies(content)
+
+
 def _bodies(content: str) -> list[str]:
     bodies: list[str] = []
     current = ""

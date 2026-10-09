@@ -52,6 +52,7 @@ from utils.file_utils import atomic_write_bytes
 from .diagnostics import KnowledgeDiagnostics
 from .models import (
     MATERIAL_TYPES,
+    MAX_PACK_BYTES,
     MAX_TOTAL_PACK_BYTES,
     MAX_TOTAL_ENTRIES,
     KnowledgePack,
@@ -70,8 +71,15 @@ from .registry import (
     save_registry,
     utc_now,
 )
+from .chunking import chunk_bodies
 from .render import RenderCard, render_reference_block
-from .retrieval import LEXICAL_CANDIDATES, fuse, semantic_candidates
+from .retrieval import (
+    LEXICAL_CANDIDATES,
+    RankedHit,
+    best_excerpt_index,
+    fuse,
+    semantic_candidates,
+)
 from .store import (
     MAX_CHUNKS_PER_PACK,
     MAX_TOTAL_CHUNKS,
@@ -433,17 +441,23 @@ class KnowledgeService:
                 raise KnowledgeUnavailable("not_found")
             registry = self._registry.without_pack(pack_id)
 
-            def blocking() -> None:
-                # Registry first: if the process dies after this, the startup
-                # reconcile drops the orphaned rows and file.
-                save_registry(self.root, registry)
-                self._store.delete_pack(pack_id)
-                (self.root / PACKS_DIR / record.file_name).unlink(missing_ok=True)
+            def cleanup() -> None:
+                # Best effort: the removal is committed by the registry write,
+                # and the startup reconcile drops leftover rows and files.
+                try:
+                    self._store.delete_pack(pack_id)
+                except Exception:
+                    logger.warning("[Knowledge] index cleanup of %s failed", pack_id, exc_info=True)
+                try:
+                    (self.root / PACKS_DIR / record.file_name).unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("[Knowledge] could not delete the file of %s", pack_id)
 
-            await asyncio.to_thread(blocking)
+            await asyncio.to_thread(save_registry, self.root, registry)
             self._broken_packs = tuple(p for p in self._broken_packs if p != pack_id)
             self._publish_registry(registry)
             self._vector_generation += 1
+            await asyncio.to_thread(cleanup)
             return {"pack_id": pack_id, "removed_entries": record.entries}
 
         result = await self._locked(run)
@@ -458,6 +472,10 @@ class KnowledgeService:
             pack, canonical, chunks = await asyncio.to_thread(self._prepare_import, raw)
         except KnowledgePackError as exc:
             return {"ok": False, "reason": exc.reason}
+        if len(canonical) > MAX_PACK_BYTES:
+            # Normalization fills in omitted fields and can grow the file; the
+            # staged canonical form is what gets read back, so it is what counts.
+            return {"ok": False, "reason": "pack_too_large"}
         sha = pack_sha256(canonical)
         registry = self._registry
         existing = registry.packs.get(pack.pack_id)
@@ -883,13 +901,16 @@ class KnowledgeService:
             try:
                 async with asyncio.timeout(max(deadline - time.monotonic(), 0.01)):
                     if mode == "sample":
-                        ranked_ids = await self._sample(query, allowed, limit)
+                        ranked = await self._sample(query, allowed, limit)
                         retrieval_mode = "sample"
                     else:
-                        ranked_ids, retrieval_mode = await self._lookup(query, allowed, limit, deadline)
-                    if not ranked_ids:
+                        ranked, retrieval_mode = await self._lookup(query, allowed, limit, deadline)
+                    if not ranked:
                         return finish("miss", retrieval_mode=retrieval_mode)
-                    hits, context = await asyncio.to_thread(self._render, ranked_ids, language)
+                    excerpt_query = query if mode == "lookup" else ""
+                    hits, context = await asyncio.to_thread(
+                        self._render, ranked, excerpt_query, language
+                    )
             except TimeoutError:
                 return finish("timeout")
             except Exception as exc:
@@ -899,9 +920,12 @@ class KnowledgeService:
             return finish("miss", retrieval_mode=retrieval_mode)
         return finish("matched", hits=hits, context=context, retrieval_mode=retrieval_mode)
 
-    async def _sample(self, tag: str, allowed: list[str], limit: int) -> list[int]:
+    async def _sample(self, tag: str, allowed: list[str], limit: int) -> list[RankedHit]:
         ids = await asyncio.to_thread(self._store.entry_ids_with_tag, tag, allowed)
-        return random.sample(ids, min(limit, len(ids)))
+        return [
+            RankedHit(entry_id=i, score=0.0, exact=False, lexical_rank=None, semantic_score=None)
+            for i in random.sample(ids, min(limit, len(ids)))
+        ]
 
     async def _lookup(
         self, query: str, allowed: list[str], limit: int, deadline: float
@@ -943,8 +967,14 @@ class KnowledgeService:
             for pack_id in allowed
             if (record := self._registry.packs.get(pack_id)) is not None and record.local_embedding
         ]
-        semantic = semantic_candidates(snapshot, query_vector, allowed_pack_ids=vector_packs)
-        candidate_ids = list(dict.fromkeys([*exact_ids, *lexical_ids, *(i for i, _ in semantic)]))
+        semantic = (
+            await asyncio.to_thread(
+                semantic_candidates, snapshot, query_vector, allowed_pack_ids=vector_packs
+            )
+            if query_vector is not None
+            else []
+        )
+        candidate_ids = list(dict.fromkeys([*exact_ids, *lexical_ids, *(m.entry_id for m in semantic)]))
         entries = await asyncio.to_thread(self._store.fetch_entries, candidate_ids)
         allowed_set = set(allowed)
         usable = {
@@ -961,24 +991,30 @@ class KnowledgeService:
             usable=usable,
             limit=limit,
         )
-        return [hit.entry_id for hit in ranked], ("hybrid" if query_vector is not None else "bm25")
+        return ranked, ("hybrid" if query_vector is not None else "bm25")
 
-    def _render(self, entry_ids: list[int], language: str | None) -> tuple[list[dict[str, Any]], str]:
-        entries = self._store.fetch_entries(entry_ids)
+    def _render(
+        self, ranked: list[RankedHit], query: str, language: str | None
+    ) -> tuple[list[dict[str, Any]], str]:
+        entries = self._store.fetch_entries([hit.entry_id for hit in ranked])
         registry = self._registry
         cards: list[RenderCard] = []
         hits: list[dict[str, Any]] = []
-        for entry_id in entry_ids:
-            entry = entries.get(entry_id)
+        for ranked_hit in ranked:
+            entry = entries.get(ranked_hit.entry_id)
             record = registry.packs.get(entry.pack_id) if entry is not None else None
             if entry is None or record is None or entry.disabled:
                 continue
+            # Show the passage that matched, not just the start of the entry.
+            bodies = chunk_bodies(entry.content) or [entry.content]
+            index = best_excerpt_index(query, bodies, ranked_hit.semantic_chunk)
+            excerpt = bodies[index] if index == 0 else f"... {bodies[index]}"
             cards.append(
                 RenderCard(
                     title=entry.title,
                     material_type=record.effective_material_type,
                     summary=entry.summary,
-                    content=entry.content,
+                    content=excerpt,
                     source_name=record.source.name,
                     source_license=record.source.license,
                 )

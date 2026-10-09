@@ -50,6 +50,16 @@ class RankedHit:
     exact: bool
     lexical_rank: int | None
     semantic_score: float | None
+    # Chunk that carried a vector-only match; lexical matches pick their
+    # excerpt by token overlap instead.
+    semantic_chunk: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticMatch:
+    entry_id: int
+    score: float
+    chunk_index: int | None
 
 
 def token_coverage(query: str, entry: StoredEntry) -> float:
@@ -70,25 +80,43 @@ def semantic_candidates(
     *,
     allowed_pack_ids: Iterable[str],
     limit: int = SEMANTIC_CANDIDATES,
-) -> list[tuple[int, float]]:
-    """Best cosine per entry over the allowed packs: [(entry_id, score)]."""
+) -> list[SemanticMatch]:
+    """Best-scoring chunk per entry over the allowed packs, best first."""
     if snapshot is None or query_vector is None:
         return []
     if query_vector.shape[0] != snapshot.matrix.shape[1]:
         return []
-    allowed = {snapshot.pack_ids.index(p) for p in allowed_pack_ids if p in snapshot.pack_ids}
+    wanted = set(allowed_pack_ids)
+    allowed = [index for index, pack_id in enumerate(snapshot.pack_ids) if pack_id in wanted]
     if not allowed:
         return []
-    mask = np.isin(snapshot.chunk_pack_index, np.fromiter(allowed, dtype=np.int32))
+    mask = np.isin(snapshot.chunk_pack_index, np.asarray(allowed, dtype=np.int32))
     if not mask.any():
         return []
     scores = snapshot.matrix[mask] @ query_vector
-    entry_ids = snapshot.entry_ids[mask]
-    best: dict[int, float] = {}
-    for entry_id, score in zip(entry_ids.tolist(), scores.tolist()):
-        if score >= SEMANTIC_THRESHOLD and score > best.get(entry_id, -1.0):
-            best[entry_id] = score
-    return sorted(best.items(), key=lambda item: -item[1])[:limit]
+    entry_ids = snapshot.entry_ids[mask].tolist()
+    chunk_indexes = (
+        snapshot.chunk_indexes[mask].tolist()
+        if snapshot.chunk_indexes is not None
+        else [None] * len(entry_ids)
+    )
+    best: dict[int, SemanticMatch] = {}
+    for entry_id, score, chunk_index in zip(entry_ids, scores.tolist(), chunk_indexes):
+        current = best.get(entry_id)
+        if score >= SEMANTIC_THRESHOLD and (current is None or score > current.score):
+            best[entry_id] = SemanticMatch(entry_id, score, chunk_index)
+    return sorted(best.values(), key=lambda match: -match.score)[:limit]
+
+
+def best_excerpt_index(query: str, bodies: Sequence[str], semantic_chunk: int | None) -> int:
+    """Pick the chunk to show: the vector match, else the best token overlap."""
+    if semantic_chunk is not None and 0 <= semantic_chunk < len(bodies):
+        return semantic_chunk
+    wanted = set(search_tokens(query))
+    if not wanted or len(bodies) <= 1:
+        return 0
+    overlaps = [len(wanted & set(search_tokens(body))) for body in bodies]
+    return max(range(len(bodies)), key=lambda index: (overlaps[index], -index))
 
 
 def fuse(
@@ -96,7 +124,7 @@ def fuse(
     *,
     exact_ids: Sequence[int],
     lexical_ids: Sequence[int],
-    semantic: Sequence[tuple[int, float]],
+    semantic: Sequence[SemanticMatch],
     entries: Mapping[int, StoredEntry],
     usable: set[int],
     limit: int,
@@ -110,7 +138,8 @@ def fuse(
         and entry_id in entries
         and token_coverage(query, entries[entry_id]) >= MIN_TOKEN_COVERAGE
     ]
-    semantic_scores = {entry_id: score for entry_id, score in semantic if entry_id in usable}
+    semantic_scores = {match.entry_id: match.score for match in semantic if match.entry_id in usable}
+    semantic_chunks = {match.entry_id: match.chunk_index for match in semantic}
     scores: dict[int, float] = {}
     for rank, entry_id in enumerate(lexical):
         scores[entry_id] = scores.get(entry_id, 0.0) + 1.0 / (RRF_K + rank + 1)
@@ -131,6 +160,11 @@ def fuse(
             exact=entry_id in exact_set,
             lexical_rank=lexical_rank.get(entry_id),
             semantic_score=semantic_scores.get(entry_id),
+            semantic_chunk=(
+                semantic_chunks.get(entry_id)
+                if entry_id not in exact_set and entry_id not in lexical_rank
+                else None
+            ),
         )
         for entry_id in ordered[:limit]
     ]

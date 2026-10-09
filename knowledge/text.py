@@ -63,9 +63,16 @@ _CJK_RUN_RE = re.compile(rf"^[{_CJK_RANGES}]+$")
 MAX_QUERY_TOKENS = 64
 
 
+_UNICODE_LINE_BREAKS = str.maketrans({"\u0085": "\n", "\u2028": "\n", "\u2029": "\n"})
+
+
 def strip_chat_markup(value: str) -> str:
-    """Remove chat-control tokens and role markers until a fixed point."""
-    text = str(value or "")
+    """Remove chat-control tokens and role markers until a fixed point.
+
+    Unicode line breaks (NEL, LS, PS) become ``\n`` first: a role marker after
+    one of them starts a line for a reader, but not for ``^`` in a regex.
+    """
+    text = str(value or "").translate(_UNICODE_LINE_BREAKS)
     while True:
         cleaned = _CHAT_TOKEN_RE.sub("", text)
         cleaned = _ROLE_MARKER_RE.sub("", cleaned)

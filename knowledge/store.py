@@ -106,6 +106,7 @@ class VectorSnapshot:
     pack_ids: tuple[str, ...]
     chunk_pack_index: np.ndarray
     matrix: np.ndarray
+    chunk_indexes: np.ndarray | None = None
 
 
 def _row_to_entry(row: sqlite3.Row) -> StoredEntry:
@@ -595,7 +596,7 @@ class KnowledgeStore:
         """Load every ready vector of ``model_id`` into one normalized matrix."""
         with self._read() as conn:
             rows = conn.execute(
-                "SELECT entry_id, pack_id, vector FROM chunks"
+                "SELECT entry_id, pack_id, vector, chunk_index FROM chunks"
                 " WHERE model_id=? AND vector IS NOT NULL ORDER BY id",
                 (model_id,),
             ).fetchall()
@@ -606,8 +607,9 @@ class KnowledgeStore:
         pack_index: dict[str, int] = {}
         entry_ids: list[int] = []
         chunk_pack: list[int] = []
+        chunk_indexes: list[int] = []
         blobs: list[bytes] = []
-        for entry_id, pack_id, blob in rows:
+        for entry_id, pack_id, blob, chunk_index in rows:
             if len(blob) != dim * 4:
                 continue
             if pack_id not in pack_index:
@@ -615,6 +617,7 @@ class KnowledgeStore:
                 pack_ids.append(pack_id)
             entry_ids.append(int(entry_id))
             chunk_pack.append(pack_index[pack_id])
+            chunk_indexes.append(int(chunk_index))
             blobs.append(blob)
         if not blobs:
             return None
@@ -625,4 +628,5 @@ class KnowledgeStore:
             pack_ids=tuple(pack_ids),
             chunk_pack_index=np.asarray(chunk_pack, dtype=np.int32),
             matrix=np.ascontiguousarray(matrix, dtype=np.float32),
+            chunk_indexes=np.asarray(chunk_indexes, dtype=np.int32),
         )
