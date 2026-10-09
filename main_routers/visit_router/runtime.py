@@ -2665,6 +2665,8 @@ async def stop_all(reason: str = "shutdown") -> None:
     global _stop_gen, _stopping
     _stop_gen += 1  # 还挂在入场途中的 start_visit 醒来后看到它就不登记
     _stopping = True  # stop_all 进行中新到的入场同样拒绝
+    loop = asyncio.get_running_loop()
+    budget_end = loop.time() + VISIT_SHUTDOWN_BUDGET_S
     try:
         runtimes = list(_runtimes.values())
         # 已拆掉的场次发出的撤销房间请求（邀请码与配额占用）：与各场关机并行限时等它发完，到点才取消，
@@ -2709,10 +2711,18 @@ async def stop_all(reason: str = "shutdown") -> None:
         detached += _transport_ws.pending_close_tasks()
         for task in detached:
             task.cancel()
-        # 关机途中才登记的线程池写盘（各场 shutdown() 里才起的上传封存）：开头那次快照里没有，这里同样只等不取消
+        # 关机途中才登记的线程池写盘（各场 shutdown() 里才起的上传封存）：开头那次快照里没有，这里同样只等不取消，
+        # 只用关机总预算剩下的部分（各场自己已经等过一轮）
         late_writes = [t for t in _awaited_writes if not t.done() and t not in writes]
-        if detached or late_writes:
-            await asyncio.wait(detached + late_writes, timeout=_SHUTDOWN_TASK_WAIT_S)
+        waits = []
+        if detached:
+            waits.append(asyncio.wait(detached, timeout=_SHUTDOWN_TASK_WAIT_S))
+        if late_writes:
+            left = min(_SHUTDOWN_TASK_WAIT_S, budget_end - loop.time())
+            if left > 0:
+                waits.append(asyncio.wait(late_writes, timeout=left))
+        if waits:
+            await asyncio.gather(*waits)
     finally:
         _stop_gen += 1  # stop_all 进行中才开始、它结束后才醒的入场：代数已变，同样不登记
         _stopping = False

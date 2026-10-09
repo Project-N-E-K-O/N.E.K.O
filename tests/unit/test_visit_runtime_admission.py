@@ -1209,7 +1209,7 @@ async def test_stop_all_waits_for_a_seal_write_started_during_shutdown(tmp_path,
     real_seal = rt.journal._seal_sync
 
     def slow_seal(doc):
-        threading.Timer(0.8, release.set).start()         # 写盘拖过这一场自己的关机等待
+        threading.Timer(0.7, release.set).start()         # 写盘拖过这一场自己的关机等待
         release.wait(10)
         real_seal(doc)
 
