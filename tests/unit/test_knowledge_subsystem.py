@@ -1464,7 +1464,8 @@ async def test_overlapping_removals_where_only_the_later_succeeds(tmp_path, monk
             later = asyncio.create_task(service.remove_pack("demo-memes"))
             (outcome,) = await asyncio.gather(first, return_exceptions=True)
             assert isinstance(outcome, service_module.KnowledgeUnavailable)  # timed out first
-        await later
+        removed = await later
+        assert removed["pack_id"] == "demo-memes"
         assert "demo-memes" not in load_registry(tmp_path).packs
     finally:
         await service.stop()
