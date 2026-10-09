@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+from services.theater.numeric_v2_archive import NumericV2ArchiveStore, quarantined_file_name
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime
 from tests.unit.test_character_memory_regression import _DummyRequest, reload_module
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _branch_story, _opening
@@ -128,7 +128,7 @@ async def test_workshop_unsubscribe_cascades_theater_data(tmp_path, monkeypatch)
     other_session_path, _ = await _seed_theater(theater, other_binding)
     quarantine = archive_store.public_archive_quarantine_root
     quarantine.mkdir(parents=True)
-    own_quarantined = quarantine / f"invalid-1-{'0' * 32}-{hashlib.sha256(b'x').hexdigest()}.json"
+    own_quarantined = quarantine / quarantined_file_name("invalid", f"{hashlib.sha256(b'x').hexdigest()}.json")
     own_quarantined.write_text(
         json.dumps({"story_id": "s", "character_id": binding["character_id"]}), encoding="utf-8",
     )

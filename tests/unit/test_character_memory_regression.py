@@ -5356,7 +5356,7 @@ async def test_delete_catgirl_erases_quarantined_public_archives_inside_snapshot
             memory_dir.mkdir(parents=True, exist_ok=True)
             (memory_dir / "recent.json").write_text("[]", encoding="utf-8")
 
-            from services.theater.numeric_v2_archive import NumericV2ArchiveStore
+            from services.theater.numeric_v2_archive import NumericV2ArchiveStore, quarantined_file_name
 
             store = NumericV2ArchiveStore(Path(cm.app_docs_dir) / "theater")
             quarantine_root = store.public_archive_quarantine_root
@@ -5364,7 +5364,7 @@ async def test_delete_catgirl_erases_quarantined_public_archives_inside_snapshot
 
             def quarantined(label: str, content: str) -> Path:
                 key = hashlib.sha256(label.encode("utf-8")).hexdigest()
-                path = quarantine_root / f"invalid-1-{'0' * 32}-{key}.json"
+                path = quarantine_root / quarantined_file_name("invalid", f"{key}.json")
                 path.write_text(content, encoding="utf-8")
                 return path
 

@@ -2890,7 +2890,7 @@ async def test_story_delete_erases_attributable_quarantined_public_archives(tmp_
 
     def quarantined(session_id: str, content: str) -> Path:
         key = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
-        path = quarantine_root / f"invalid-1-{'0' * 32}-{key}.json"
+        path = quarantine_root / numeric_v2_archive.quarantined_file_name("invalid", f"{key}.json")
         path.write_text(content, encoding="utf-8")
         return path
 

@@ -106,12 +106,13 @@ test('save failure retains pending actions, unknown transport result requires a 
         assert.equal(h.state.busy, false);
     }
 });
-test('all locales translate recovery controls and invalidate the language cache', () => {
+// Bumping LOCALE_VERSION for new keys is enforced for every locale change by
+// tests/unit/test_locale_cache_bust_contract.py, so its value is not pinned here.
+test('all locales translate recovery controls', () => {
     for (const locale of ['en', 'ja', 'ko', 'zh-CN', 'zh-TW', 'ru', 'es', 'pt']) {
         const translations = JSON.parse(fs.readFileSync(path.join(__dirname, '../../static/locales', locale + '.json'), 'utf8')).voice.remote;
         for (const key of ['recoverPrepared', 'recoverPreparedHint', 'recoveringPrepared', 'preparedRecovered', 'overwriteAgain', 'recoveryUncertain', 'abandonUnknown', 'abandonUnknownConfirm', 'abandoningUnknown', 'unknownAbandoned']) assert.ok(translations[key], locale + ':' + key);
     }
-    assert.match(fs.readFileSync(path.join(__dirname, '../../static/i18n-i18next.js'), 'utf8'), /LOCALE_VERSION = '[^']*prepared-recovery'/);
 });
 
 
