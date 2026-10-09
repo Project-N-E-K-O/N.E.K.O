@@ -419,7 +419,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         callback.finish_requested_speech_id = current_speech_id if round_end else None
         sent = True
         try:
-            synthesizer.ws.send(synthesizer.request.getFinishRequest())
+            synthesizer.ws.send(synthesizer.request.get_finish_request())
         except Exception as e:
             logger.warning(f"发送TTS完成信号失败: {e}")
             # FINISH 没发出去，服务端不会给这一轮的完成通知；撤回标记，
