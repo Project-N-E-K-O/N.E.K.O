@@ -1298,7 +1298,19 @@ def _rollback_interrupted_publish(
                 mark_restoring(entry_name)
                 restoring_entries.add(entry_name)
             ensure_entry_parents(target_root, entry_name)
-            _move_entry_keeping_mode(backup_entry, target_entry)
+            if classify_entry_no_follow(backup_entry) == "file":
+                # A file put at the target since the trash move (the mark is a
+                # checkpoint write in between) would be silently replaced by
+                # os.replace; a directory there makes the move fail instead.
+                try:
+                    _publish_without_overwrite(backup_entry, target_entry)
+                except FileExistsError as exc:
+                    raise StorageMigrationError(
+                        "migration_publish_conflict",
+                        f"迁移目标在回滚期间被重新创建，原目标仍在事务备份中，等待人工处理: {entry_name}",
+                    ) from exc
+            else:
+                _move_entry_keeping_mode(backup_entry, target_entry)
             _restore_original_mode(entry_name, target_entry)
             continue
         if target_existed:

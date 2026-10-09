@@ -3981,3 +3981,44 @@ def test_an_entry_appearing_in_a_fresh_target_after_staging_stops_the_migration(
     assert result["completed"] is False
     assert result["error_code"] == "target_changed_during_migration"
     assert (target_root / "memory" / "facts.json").read_text(encoding="utf-8") == "arrived from a sync client"
+
+
+@pytest.mark.unit
+def test_rolling_back_a_file_entry_keeps_a_file_recreated_meanwhile(tmp_path, monkeypatch):
+    """memory is a file. While the rollback recorded the restore, a sync client
+    put a new memory file at the target; putting the backup back must not
+    replace it."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_root.mkdir(parents=True)
+    target_root.mkdir(parents=True)
+    (source_root / "memory").write_bytes(b"source memory")
+    (target_root / "memory").write_bytes(b"target's original")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+        confirmed_existing_target_content=True,
+    )
+    original_persist = storage_migration_module._persist_migration_payload
+
+    def _persist(*args, **kwargs):
+        if kwargs.get("status") == "committing":
+            raise RuntimeError("simulated failure before committing")
+        result = original_persist(*args, **kwargs)
+        if kwargs.get("restoring_entries"):
+            (target_root / "memory").write_bytes(b"recreated by a sync client")
+        return result
+
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", _persist)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "migration_publish_conflict"
+    assert (target_root / "memory").read_bytes() == b"recreated by a sync client"
+    assert list(target_root.glob(".smtx/*/backup/memory"))[0].read_bytes() == b"target's original"
