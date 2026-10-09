@@ -991,8 +991,9 @@ async def test_a_spool_that_lost_lines_gives_way_to_a_complete_source(env):
         handle.write(b'{"lp": 9, "side": "host", "ts"')      # 崩溃留下的半行
     _write_sealed(env.host.config_dir)
     env.servers.details_lines = _cloud_rows_covering()
-    # 待传文件补不回这半行：合并后仍不完整，先找云端（这里云端包含本机的每一行）
-    assert (await _transcript(env)).json()["source"] == "cloud"
+    # 待传文件补不回这半行：合并后仍不完整，先找云端；云端多出的行并进来，但证明不了丢的那条回来了
+    body = (await _transcript(env)).json()
+    assert body["source"] == "spool" and len(body["lines"]) == 5 and body["dropped_lines"] == 1
     (env.host.config_dir / "visit_spool" / f"{VISIT_ID}.upload.json").unlink()
     env.servers.details_mode = "503"   # 云端也取不到：退回这份不完整的，并如实标出丢了几行
     body = (await _transcript(env)).json()
@@ -1036,7 +1037,8 @@ async def test_an_upload_stream_that_lost_records_gives_way_to_the_cloud(env):
     with open(path, "ab") as handle:
         handle.write(b'{"kind": "line", "lp": 9')       # 崩溃留下的半行
     env.servers.details_lines = _cloud_rows_covering()
-    assert (await _transcript(env)).json()["source"] == "cloud"
+    body = (await _transcript(env)).json()
+    assert body["source"] == "upload" and len(body["lines"]) == 5 and body["dropped_lines"] == 1
     env.servers.details_mode = "503"
     body = (await _transcript(env)).json()
     assert body["source"] == "upload" and body["dropped_lines"] == 1 and len(body["lines"]) == 3
@@ -1223,7 +1225,8 @@ async def test_a_recovery_sealed_upload_keeps_its_drop_count(env):
     doc = recovery._seal_stream_sync(env.host.config_dir / "visit_spool", VISIT_ID, None)
     assert doc["dropped_records"] == 1 and not path.exists()
     env.servers.details_lines = _cloud_rows_covering()
-    assert (await _transcript(env)).json()["source"] == "cloud"     # 不完整：先找云端
+    body = (await _transcript(env)).json()           # 不完整：先找云端，多出的行并进来、丢行提示照留
+    assert body["source"] == "upload" and len(body["lines"]) == 5 and body["dropped_lines"] == 1
     env.servers.details_mode = "503"
     body = (await _transcript(env)).json()
     assert body["source"] == "upload" and body["dropped_lines"] == 1
@@ -1446,3 +1449,11 @@ async def test_preview_fetched_across_an_account_change_is_not_returned(env, mon
     assert "host_display_name" not in resp.text
     _epochs(monkeypatch, 3, 4)             # 取预览途中就变了
     assert (await _preview(env)).status_code == 409
+
+
+async def test_state_read_across_an_account_change_only_says_busy(env, monkeypatch):
+    await _rooms(env)
+    _epochs(monkeypatch, 7, 8)       # 读属主的过程中有过登出 / 换账号
+    async with env.client() as c:
+        body = (await c.get("/api/visit/state?catgirl=Host", headers=GOOD)).json()
+    assert body == {**http.IDLE_STATE, "active": True, "phase": "pending"}

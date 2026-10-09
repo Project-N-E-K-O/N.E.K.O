@@ -405,9 +405,17 @@ async def end_route(request: Request):
 
 
 async def _owned_by_current_account(rt: runtime.VisitRuntime) -> bool:
-    """Whether the signed-in community account is the one this visit runs under (credentials, else admission)."""
+    """Whether the signed-in community account is the one this visit runs under (credentials, else admission).
+
+    False as well when a logout / account switch happened (or is in progress)
+    while the account was being read: the answer could describe the old one.
+    """
+    epoch = runtime.account_epoch()
     owner = rt.creds.account if rt.creds is not None else rt.admitted_account
-    return owner is not None and owner == await accounts.local_account()
+    current = await accounts.local_account()
+    if epoch is None or runtime.account_epoch() != epoch:
+        return False
+    return owner is not None and owner == current
 
 
 IDLE_STATE: Mapping[str, Any] = {
@@ -649,13 +657,14 @@ async def visit_transcript(request: Request, visit_id: str = ""):
         return JSONResponse(cloud)
     local_keys = {_line_key(line) for line in partial["lines"]}
     cloud_keys = {_line_key(line) for line in cloud["lines"]}
-    if local_keys < cloud_keys:
-        # 云端那份包含本机残缺副本的每一行、还多出行：用它
+    if local_keys < cloud_keys and not partial.get("dropped_lines"):
+        # 本机这份没报丢行（只是可能静默少行）、云端包含它的每一行还多出行：用云端
         return JSONResponse(cloud)
     if local_keys == cloud_keys:
         # 两边一模一样：丢掉的那条两边都没有，留着本机这份与它的丢行提示
         return JSONResponse(partial)
-    # 两边各有对方没有的行（独立写入、各自可能漏行）：并到本机这份里，丢行数照报
+    # 两边各有对方没有的行（独立写入、各自可能漏行），或本机报过丢行（认不出是哪一行，云端多出的行证明不了
+    # 它回来了）：把云端的行并到本机这份里，丢行数照报
     merged = _merge_lines(partial["lines"], cloud["lines"], local_shape=partial.get("source") == "spool")
     return JSONResponse({**partial, "lines": merged})
 
