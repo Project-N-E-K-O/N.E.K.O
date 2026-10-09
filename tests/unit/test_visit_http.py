@@ -1192,3 +1192,33 @@ async def test_a_recovery_sealed_upload_keeps_its_drop_count(env):
     env.servers.details_mode = "503"
     body = (await _transcript(env)).json()
     assert body["source"] == "upload" and body["dropped_lines"] == 1
+
+
+async def test_a_cloud_copy_with_fewer_lines_does_not_replace_a_partial_one(env):
+    spool = await _write_spool(env.host.config_dir)
+    with open(spool.jsonl_path, "ab") as handle:
+        handle.write(b'{"lp": 9, "side": "host", "ts"')      # 崩溃留下的半行
+    # 本侧转录还没传上去：云端只有对端那一半
+    env.servers.details_lines = _details_rows(1)
+    body = (await _transcript(env)).json()
+    assert body["source"] == "spool" and body["dropped_lines"] == 1 and len(body["lines"]) == 3
+
+
+async def test_cloud_rows_past_the_wire_bounds_are_dropped(env):
+    good = {"from": "own_cat", "ts": 1.0, "text": "好", "truncated": False}
+    env.servers.details_lines = [
+        {"lp": 1, "side": "host", "host": good, "guest": None, "status": "only_host"},
+        {"lp": visit_settings.VISIT_LP_MAX + 1, "side": "host", "host": good, "guest": None, "status": "x"},
+        {"lp": 2, "side": "host", "host": {**good, "text": "长" * visit_settings.VISIT_TEXT_MAX_BYTES},
+         "guest": None, "status": "only_host"},
+    ]
+    assert [line["lp"] for line in (await _transcript(env)).json()["lines"]] == [1]
+
+
+async def test_a_preview_is_reused_only_by_the_account_that_fetched_it(env):
+    await _preview(env)
+    env.account = "someone-else"      # 共用电脑上换了账号：要用自己的账号再问一次 Servers
+    env.preview_mode = "403"
+    resp = await _join(env)
+    assert env.preview_calls == [INVITE, INVITE]
+    assert resp.status_code == 403 and resp.json()["code"] == "VISIT_BANNED" and _no_slot("Guest")

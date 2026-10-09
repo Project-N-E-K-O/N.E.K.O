@@ -132,33 +132,42 @@ async def char_admission_lock(character_uid: str) -> AsyncIterator[None]:
 
 # ── 邀请预览（入房复用其中的 host 身份比对黑名单）─────────────────────
 
-_previews: dict[str, tuple[float, cr.InvitePreview]] = {}
-"""invite_code → (monotonic time, preview) of recent successful previews (``join`` reuses them)."""
+_previews: dict[tuple[str, str], tuple[float, cr.InvitePreview]] = {}
+"""(community account, invite_code) → (monotonic time, preview) of recent successful previews.
+
+``join`` reuses one only for the account that fetched it: another account must ask Servers itself
+(it may be banned or signed out).
+"""
 
 _PREVIEWS_MAX = 32
 
 
-def _remember_preview(invite_code: str, preview: cr.InvitePreview) -> None:
+def _remember_preview(account: Optional[str], invite_code: str, preview: cr.InvitePreview) -> None:
+    if not account:
+        return
     now = time.monotonic()
-    for code in [c for c, (at, _p) in _previews.items() if now - at > VISIT_INVITE_PREVIEW_REUSE_S]:
-        del _previews[code]
-    _previews.pop(invite_code, None)
-    _previews[invite_code] = (now, preview)
+    for key in [k for k, (at, _p) in _previews.items() if now - at > VISIT_INVITE_PREVIEW_REUSE_S]:
+        del _previews[key]
+    _previews.pop((account, invite_code), None)
+    _previews[(account, invite_code)] = (now, preview)
     while len(_previews) > _PREVIEWS_MAX:
         _previews.pop(next(iter(_previews)))
 
 
-def _recent_preview(invite_code: str) -> Optional[cr.InvitePreview]:
-    hit = _previews.get(invite_code)
+def _recent_preview(account: Optional[str], invite_code: str) -> Optional[cr.InvitePreview]:
+    if not account:
+        return None
+    key = (account, invite_code)
+    hit = _previews.get(key)
     if (hit is None or time.monotonic() - hit[0] > VISIT_INVITE_PREVIEW_REUSE_S
             or time.time() >= hit[1].expires_at):
         # 邀请已到期的预览不复用：重新代转一次，过期的邀请在占位之前就被拒
-        _previews.pop(invite_code, None)
+        _previews.pop(key, None)
         return None
     return hit[1]
 
 
-async def _fetch_preview(invite_code: str) -> cr.InvitePreview:
+async def _fetch_preview(invite_code: str, account: Optional[str]) -> cr.InvitePreview:
     lang = prompt_lang()
     ctx = await load_character_context()
     preview = await cr.fetch_invite_preview(
@@ -166,7 +175,7 @@ async def _fetch_preview(invite_code: str) -> cr.InvitePreview:
         generic_label=speaker_label("peer_cat", lang),
         protected_names=protected_display_names(lang, ctx.family_names, ctx.char_names),
     )
-    _remember_preview(invite_code, preview)
+    _remember_preview(account, invite_code, preview)
     return preview
 
 
@@ -188,7 +197,7 @@ async def preview_invite(request: Request, invite_code: str):
     if not isinstance(invite_code, str) or cr.INVITE_CODE_RE.fullmatch(invite_code) is None:
         return _servers_error(cr.VisitInviteFormat())
     try:
-        preview = await _fetch_preview(invite_code)
+        preview = await _fetch_preview(invite_code, await accounts.local_account())
     except cr.VisitServersError as exc:
         return _servers_error(exc)
     return JSONResponse(preview.to_public(locally_blocked=await _locally_blocked(preview)))
@@ -286,10 +295,11 @@ async def join_room(request: Request, visit_id: str):
     if refused is not None:
         return refused
     # 黑名单在占位与领凭证之前比对：命中不扣双方配额、不进 vendor 房
-    preview = _recent_preview(invite_code)
+    account = await accounts.local_account()
+    preview = _recent_preview(account, invite_code)
     if preview is None:
         try:
-            preview = await _fetch_preview(invite_code)
+            preview = await _fetch_preview(invite_code, account)
         except cr.VisitServersError as exc:
             if isinstance(exc, (cr.VisitInviteNotFound, cr.VisitInviteExpired)):
                 return _servers_error(cr.VisitInviteInvalid(exc.code))
@@ -540,7 +550,7 @@ async def visit_transcript(request: Request, visit_id: str = ""):
             if partial is None:
                 partial = {**body, "dropped_lines": dropped}
     try:
-        return JSONResponse(await cloud_routes.fetch_cloud_transcript(visit_id))
+        cloud = await cloud_routes.fetch_cloud_transcript(visit_id)
     except cloud_routes.CloudTranscriptIncomplete:
         if partial is not None:
             return JSONResponse(partial)
@@ -550,6 +560,10 @@ async def visit_transcript(request: Request, visit_id: str = ""):
             return JSONResponse(partial)
         # 未登录 / 离线 / Servers 不可达 / 云端没有：如实说本机副本已清理
         return _error(404, "transcript_gone_local")
+    if partial is not None and len(cloud["lines"]) <= len(partial["lines"]):
+        # 云端那份不比本机残缺的多（本侧转录还没传上去时只有对端的半边）：不拿它顶掉本机还剩的行
+        return JSONResponse(partial)
+    return JSONResponse(cloud)
 
 
 def _reset_for_tests() -> None:

@@ -45,7 +45,9 @@ from fastapi.responses import JSONResponse
 
 from config.visit_settings import (
     VISIT_DETAILS_MAX_PAGES,
+    VISIT_LP_MAX,
     VISIT_REPORT_NOTE_MAX_CHARS,
+    VISIT_TEXT_MAX_BYTES,
     VISIT_UPLOAD_RETRY_BACKOFF_S,
 )
 from main_logic.visit import memory_bridge
@@ -194,11 +196,12 @@ def _cloud_line(row: Any, role: str) -> dict | None:
         return _MALFORMED
     ts = mine.get("ts")
     if (
-        not isinstance(lp, int) or isinstance(lp, bool) or lp < 0
+        not isinstance(lp, int) or isinstance(lp, bool) or not 0 <= lp <= VISIT_LP_MAX
         or row.get("side") not in ("host", "guest")
         or mine.get("from") not in tu.SPEAKERS
         or not _finite_number(ts)
         or not _utf8_str(mine.get("text"))
+        or len(mine["text"].encode("utf-8")) > VISIT_TEXT_MAX_BYTES
         or not isinstance(mine.get("truncated"), bool)
     ):
         return _MALFORMED

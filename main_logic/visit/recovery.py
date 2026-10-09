@@ -533,8 +533,10 @@ def _seal_stream_sync(
         return None
     dropped += _dropped_line_records(records, doc)
     if dropped:
-        # 封存后流水就删了：丢掉多少条要随文件留下，导出时才知道这份不完整（上传只发 request，不受影响）
+        # 封存后流水就删了：丢掉多少条要随文件留下，导出时才知道这份不完整（上传只发 request，不受影响）；
+        # 上传成功后文件也删了，本机日志里留一条诊断
         doc[DROPPED_RECORDS_KEY] = dropped
+        memory_bridge.diag("upload_stream_dropped_records", visit_id=visit_id, count=dropped)
     if doc["own_char_uid"] is None:
         # 角色 id 哪儿都补不回来（多半是 state.json 一时读不出）：封出来的文件会被当成坏文件
         # 删掉，连同刚删的流水一起丢掉整份转录。不写文件、留着流水，下次启动再封
