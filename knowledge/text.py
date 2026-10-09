@@ -41,10 +41,16 @@ _CHAT_TOKEN_RE = re.compile(
     r"start_header_id|end_header_id|eot_id|begin_of_text)\s*\|>",
     re.IGNORECASE,
 )
-# Invisible format characters (zero-width spaces/joiners, bidi controls, BOM,
-# soft hyphen). They are removed from pack text, and the role-marker pattern
-# also tolerates them, so an invisible prefix cannot hide a line-leading role.
-_INVISIBLE = "\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff"
+# Unicode default-ignorable code points, rendered as nothing: soft hyphen,
+# combining grapheme joiner, zero-width spaces/joiners, bidi controls, BOM,
+# Hangul fillers, variation selectors, tags. They are removed from pack text,
+# and the role-marker pattern also tolerates them, so an invisible prefix
+# cannot hide a line-leading role.
+_INVISIBLE = (
+    "\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f"
+    "\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0"
+    "\U0001d173-\U0001d17a\U000e0000-\U000e0fff"
+)
 _INVISIBLE_RE = re.compile(f"[{_INVISIBLE}]")
 _ROLE_MARKER_RE = re.compile(
     rf"(?im)^[ \t{_INVISIBLE}]*(?:system|developer|assistant|user|human)[ \t{_INVISIBLE}]*[:：]"
@@ -72,6 +78,23 @@ _MAX_MARKUP_PASSES = 16
 _UNICODE_LINE_BREAKS = str.maketrans({"\u0085": "\n", "\u2028": "\n", "\u2029": "\n"})
 
 
+def _drop_orphan_marks(text: str) -> str:
+    """Remove combining marks that start a line: they attach to nothing and
+    would otherwise sit, invisible, in front of a role marker."""
+    if not any(unicodedata.combining(ch) for ch in text):
+        return text
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        start = 0
+        while start < len(line) and (
+            unicodedata.category(line[start]).startswith("M") or line[start] in " \t"
+        ):
+            start += 1
+        if start and any(unicodedata.category(ch).startswith("M") for ch in line[:start]):
+            lines[index] = line[start:]
+    return "\n".join(lines)
+
+
 def strip_chat_markup(value: str) -> str:
     """Remove chat-control tokens and role markers until a fixed point.
 
@@ -81,6 +104,7 @@ def strip_chat_markup(value: str) -> str:
     text = _INVISIBLE_RE.sub("", str(value or "").translate(_UNICODE_LINE_BREAKS))
     for _ in range(_MAX_MARKUP_PASSES):
         cleaned = _CHAT_TOKEN_RE.sub("", text)
+        cleaned = _drop_orphan_marks(cleaned)
         cleaned = _ROLE_MARKER_RE.sub("", cleaned)
         if cleaned == text:
             return cleaned

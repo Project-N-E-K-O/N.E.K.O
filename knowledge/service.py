@@ -201,7 +201,11 @@ class KnowledgeService:
         self._index_model_id: str | None = None
         self._query_embeddings: set[asyncio.Task[Any]] = set()
         self._admitting: dict[str, int] = {}
-        self._removal_epochs: dict[str, int] = {}
+        # Removal ordering: a global counter, and the counter value of each
+        # pack's latest removal. An import remembers the counter when the
+        # request arrives (before parsing) and gives way to any later removal.
+        self._removal_clock = 0
+        self._removed_at: dict[str, int] = {}
         self._vectors_built_for: tuple[int, str] | None = None
         self._vector_task: asyncio.Task[Any] | None = None
         self._availability_listeners: list[Callable[[], None]] = []
@@ -451,7 +455,8 @@ class KnowledgeService:
     async def remove_pack(self, pack_id: str) -> dict[str, Any]:
         # An import still in admission is not a job yet; the epoch tells it
         # that a removal started after it, so it must not reinstall the pack.
-        self._removal_epochs[pack_id] = self._removal_epochs.get(pack_id, 0) + 1
+        self._removal_clock += 1
+        self._removed_at[pack_id] = self._removal_clock
         for job in self._jobs.values():
             if job.pack_id == pack_id and job.state in ACTIVE_JOB_STATES:
                 job.cancel_requested = True
@@ -489,6 +494,7 @@ class KnowledgeService:
 
     async def import_pack(self, raw: bytes) -> dict[str, Any]:
         self._require_ready()
+        arrived_at = self._removal_clock
         try:
             pack, canonical, chunks = await asyncio.to_thread(self._prepare_import, raw)
         except KnowledgePackError as exc:
@@ -500,7 +506,14 @@ class KnowledgeService:
         sha = pack_sha256(canonical)
         registry = self._registry
         existing = registry.packs.get(pack.pack_id)
-        if existing is not None and existing.pack_sha256 == sha and pack.pack_id not in self._broken_packs:
+        if (
+            existing is not None
+            and existing.pack_sha256 == sha
+            and pack.pack_id not in self._broken_packs
+            # The raw file is the source of truth; if it went missing or was
+            # altered since startup, import again so it gets rewritten.
+            and await asyncio.to_thread(self._raw_file_intact, existing)
+        ):
             return {"ok": True, "pack_id": pack.pack_id, "unchanged": True, "state": "active"}
         # Admission is checked and reserved without an await in between, so
         # two requests for the same pack cannot both get through, and staged
@@ -512,11 +525,10 @@ class KnowledgeService:
             return {"ok": False, "reason": "knowledge_busy"}
         staged_bytes = sum(job.staged_bytes for job in pending) + sum(self._admitting.values())
         self._admitting[pack.pack_id] = len(canonical)
-        epoch = self._removal_epochs.get(pack.pack_id, 0)
 
         async def admit() -> dict[str, Any]:
             try:
-                return await self._admit_import(pack, canonical, chunks, staged_bytes, epoch)
+                return await self._admit_import(pack, canonical, chunks, staged_bytes, arrived_at)
             finally:
                 self._admitting.pop(pack.pack_id, None)
 
@@ -531,7 +543,7 @@ class KnowledgeService:
         canonical: bytes,
         chunks: int,
         staged_bytes: int,
-        removal_epoch: int,
+        arrived_at: int,
     ) -> dict[str, Any]:
         registry = self._registry
         others = [record for record in registry.packs.values() if record.pack_id != pack.pack_id]
@@ -559,7 +571,7 @@ class KnowledgeService:
         )
         await asyncio.to_thread(atomic_write_bytes, self._staging_path(job.job_id), canonical)
         self._remember_job(job)
-        if self._removal_epochs.get(pack.pack_id, 0) != removal_epoch:
+        if self._removed_at.get(pack.pack_id, -1) > arrived_at:
             # The pack was removed while this import was being admitted.
             job.cancel_requested = True
             self._finish_job(job, "cancelled")
@@ -572,6 +584,12 @@ class KnowledgeService:
     def _prepare_import(raw: bytes) -> tuple[KnowledgePack, bytes, int]:
         pack = decode_pack_bytes(raw)
         return pack, canonical_pack_bytes(pack), count_pack_chunks(pack)
+
+    def _raw_file_intact(self, record: PackRecord) -> bool:
+        try:
+            return pack_sha256((self.root / PACKS_DIR / record.file_name).read_bytes()) == record.pack_sha256
+        except OSError:
+            return False
 
     def _installed_pack_bytes(self, records: Sequence[PackRecord]) -> int:
         total = 0
