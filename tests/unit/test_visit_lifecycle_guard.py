@@ -27,13 +27,16 @@ from main_logic.visit import local_chars
 from main_routers.visit_router import runtime
 from tests.unit.test_character_uid import _backfilled_manager, _DummyRequest, _init_router_state
 from utils import external_route_registry as registry
-from utils.character_memory import character_config_mutation_lock
+from utils import character_memory
 from utils.config_manager import get_character_uid
 
 
 @pytest.fixture(autouse=True)
-def _clean():
+def _clean(monkeypatch):
     runtime._reset_for_tests()
+    # 模块级 asyncio.Lock 第一次被争用时绑定到当时的事件循环；别的用例在另一个循环里争用过它，
+    # 这里再争用就会报错。每个用例换一把新锁（crud 在 _init_router_state 里重新加载，会拿到这把）
+    monkeypatch.setattr(character_memory, "character_config_mutation_lock", asyncio.Lock())
     yield
     runtime._reset_for_tests()
 
@@ -71,7 +74,7 @@ async def test_guard_waits_for_a_rename_already_in_progress(monkeypatch):
             entered.set()
             await asyncio.sleep(0.05)
 
-    async with character_config_mutation_lock:      # 改名事务进行中
+    async with character_memory.character_config_mutation_lock:      # 改名事务进行中
         task = asyncio.ensure_future(clearing())
         await asyncio.sleep(0.02)
         assert not entered.is_set()
@@ -188,3 +191,53 @@ async def test_rename_without_any_route_is_unchanged(tmp_path):
     with patch("utils.config_manager._config_manager", cm):
         status, body = await _rename(cm, "Old", "New")
     assert status == 200 and body.get("success") is True, body
+
+
+# ── 评审第 3 轮：改名 / 删除事务期间占住角色名 ─────────────────────────
+
+
+async def test_no_route_can_start_while_the_rename_transaction_runs(tmp_path):
+    cm, _path = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}})
+    seen: list[tuple[bool, bool]] = []
+    crud = _init_router_state(cm)
+
+    async def release(*_a, **_k):
+        # 事务中途（已过守卫、在 await 里）：新旧两个名字都不能开串门 / 小游戏
+        seen.append((registry.is_external_route_locked("Old"), registry.is_external_route_locked("New")))
+        return True
+
+    with patch("utils.config_manager._config_manager", cm), \
+         patch.object(crud, "release_memory_server_character", release), \
+         patch.object(crud, "notify_memory_server_reload", AsyncMock(return_value=True)):
+        status, body = _result(await crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"})))
+    assert body.get("success") is True, body
+    assert seen and all(a and b for a, b in seen)
+    assert not registry.is_external_route_locked("Old") and not registry.is_external_route_locked("New")
+
+
+async def test_no_route_can_start_while_the_delete_transaction_runs(tmp_path):
+    cm, _path = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, "Gone": {"昵称": "Gone"}})
+    seen: list[bool] = []
+    crud = _init_router_state(cm)
+
+    async def release(*_a, **_k):
+        seen.append(registry.is_external_route_locked("Gone"))
+        return True
+
+    with patch("utils.config_manager._config_manager", cm), \
+         patch.object(crud, "release_memory_server_character", release), \
+         patch.object(crud, "notify_memory_server_reload", AsyncMock(return_value=True)):
+        status, body = _result(await crud.delete_catgirl("Gone"))
+    assert body.get("success") is True, body
+    assert seen and all(seen)
+    assert not registry.is_external_route_locked("Gone")
+
+
+async def test_refused_rename_holds_nothing(tmp_path):
+    cm, _path = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}})
+    _register("game", is_active=lambda n: n == "Old", on_start_session=None, current_instance=lambda _n: "g",
+              audio_passthrough=True)
+    with patch("utils.config_manager._config_manager", cm):
+        status, _body = await _rename(cm, "Old", "New")
+    assert status == 400
+    assert registry._mutating_characters == set()

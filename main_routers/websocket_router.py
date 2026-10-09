@@ -64,7 +64,7 @@ from utils.external_route_registry import (
 )
 from utils.theater_activity import is_theater_active
 from utils.external_route_registry import is_external_route_active
-from utils.visit_route_state import VISIT_ROUTE_KIND, VISIT_SOCKET_BOUND_ATTR
+from utils.visit_route_state import DISPLAY_SOCKET_VISIT_BOUND, VISIT_ROUTE_KIND, VISIT_SOCKET_BOUND_ATTR
 from utils.icebreaker_route_state import (
     finalize_icebreaker_route,
     get_active_icebreaker_route_session_id,
@@ -1333,7 +1333,13 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     if await route_external_microphone_audio(lanlan_name):
                         continue
                 else:
-                    claim = await route_external_stream_message(lanlan_name, message)
+                    # 分派途中路由可能换主（别的路由放手、串门刚好起来）：把这条连接有没有 visit_bind
+                    # 带进分派，串门据此拒绝未绑定连接的输入
+                    bound_token = DISPLAY_SOCKET_VISIT_BOUND.set(_visit_socket_bound(websocket))
+                    try:
+                        claim = await route_external_stream_message(lanlan_name, message)
+                    finally:
+                        DISPLAY_SOCKET_VISIT_BOUND.reset(bound_token)
                     if claim is RouteClaim.UNSETTLED:
                         # The owner kept changing: the input reached no route
                         # and must not leak into ordinary chat, but its request

@@ -495,3 +495,69 @@ async def test_chips_written_by_the_runtime_count_as_sent(tmp_path):
     assert await host.render_chat_blocks([{"type": "text", "text": "x"}], request_id="visit-debrief:q",
                                          source_name=NAME)
     assert getattr(socket, "neko_visit_sent_debrief") == {"visit-debrief:q"}
+
+
+# ── 评审第 3 轮：分派途中路由换成串门 ───────────────────────────────────
+
+
+async def test_dispatch_carries_whether_the_connection_is_bound(monkeypatch):
+    from utils.visit_route_state import DISPLAY_SOCKET_VISIT_BOUND
+
+    manager = _ProtocolManager()
+    seen: list = []
+
+    async def route(_name, message):
+        seen.append(DISPLAY_SOCKET_VISIT_BOUND.get())
+        return True
+
+    async def zero(_name):
+        return 0
+
+    install(monkeypatch, manager, visit_active=False)
+    registry.register_external_route_kind(registry.ExternalRouteKind(
+        kind="game", is_active=lambda _n: True, route_stream_message=route, on_start_session=None,
+        finalize_for_character=zero, current_instance=lambda _n: "g", audio_passthrough=True,
+    ))
+    await run(VisitSocket([{"action": "stream_data", "input_type": "text", "data": "a"}]), manager)
+    await run(VisitSocket([bind(), {"action": "stream_data", "input_type": "text", "data": "b"}]), manager)
+    assert seen == [False, True]
+    assert DISPLAY_SOCKET_VISIT_BOUND.get() is None       # 分派之后复位
+
+
+async def test_visit_refuses_input_dispatched_from_an_unbound_connection():
+    from utils.visit_route_state import DISPLAY_SOCKET_VISIT_BOUND
+
+    class Rt:
+        phase = "started"
+        takeover_token = object()
+
+        def __init__(self):
+            self.statuses = []
+            self.accepted = []
+
+        async def status(self, code, **details):
+            self.statuses.append((code, details))
+
+        async def on_stream_message(self, message):
+            self.accepted.append(message)
+            return True
+
+    rt = Rt()
+    runtime._runtimes[NAME] = rt
+    try:
+        token = DISPLAY_SOCKET_VISIT_BOUND.set(False)
+        try:
+            assert await runtime.route_stream_message(NAME, {"data": "x", "request_id": "r9"}) is True
+        finally:
+            DISPLAY_SOCKET_VISIT_BOUND.reset(token)
+        assert rt.accepted == [] and rt.statuses == [("VISIT_E_UNAUTHORIZED", {"request_id": "r9"})]
+        # 没经 display socket 分派（变量未设置）或已绑定：照常交给串门
+        assert await runtime.route_stream_message(NAME, {"data": "y"}) is True
+        token = DISPLAY_SOCKET_VISIT_BOUND.set(True)
+        try:
+            assert await runtime.route_stream_message(NAME, {"data": "z"}) is True
+        finally:
+            DISPLAY_SOCKET_VISIT_BOUND.reset(token)
+        assert [m["data"] for m in rt.accepted] == ["y", "z"]
+    finally:
+        runtime._runtimes.pop(NAME, None)

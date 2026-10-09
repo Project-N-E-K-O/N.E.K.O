@@ -2651,9 +2651,16 @@ async def _local_account() -> Optional[str]:
 
 
 async def route_stream_message(lanlan_name: str, message: dict) -> bool:
+    from utils.visit_route_state import DISPLAY_SOCKET_VISIT_BOUND
+
     rt = _runtimes.get(str(lanlan_name or ""))
     if rt is None or not is_visit_route_active(lanlan_name):
         return False
+    if DISPLAY_SOCKET_VISIT_BOUND.get() is False:
+        # 来自没 visit_bind 的 display socket（分派途中路由换成了串门）：吞掉、回未授权，不代亲人发言
+        request_id = message.get("request_id") if isinstance(message, dict) else None
+        await rt.status("VISIT_E_UNAUTHORIZED", request_id=request_id if isinstance(request_id, str) else None)
+        return True
     return await rt.on_stream_message(message)
 
 
