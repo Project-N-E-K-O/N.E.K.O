@@ -32,7 +32,10 @@ _NAME_CLOSE_RE = re.compile(r"</\s*name\s*>", re.IGNORECASE)
 _INLINE_CALL_PATTERN = "inline_tool_call"
 _ASCII_WORD_CHARS = frozenset(string.ascii_letters + string.digits + "_")
 _IDENT_START_CHARS = frozenset(string.ascii_letters + "_")
-_IDENT_CHARS = frozenset(string.ascii_letters + string.digits + "_-")
+# A tool name in a prefixed call: the plugin SDK's grammar
+# (plugin/sdk/plugin/llm_tool.py ``_TOOL_NAME_PATTERN``), dots and a leading
+# digit included.
+_TOOL_NAME_CHARS = frozenset(string.ascii_letters + string.digits + "_.-")
 _QUOTE_CHARS = "'" + '"'
 _CALL_CLOSERS = {"(": ")", "[": "]", "{": "}"}
 _PREFIXED_CALL_OPENERS = (
@@ -435,7 +438,18 @@ class ToolLeakFilter:
         return tail_len
 
     def _find_leak_start(self, text: str) -> Optional[tuple[int, int, str]]:
-        seed = _SEED_OPEN_RE.search(text)
+        seed = next(
+            (
+                match for match in _SEED_OPEN_RE.finditer(text)
+                # ``\bseed`` cannot see the character emitted with the piece
+                # before: at the start of this one it may continue a word.
+                if not (
+                    match.start() == 0 and text[0] != "<"
+                    and self._is_word_char(self._last_visible_char or " ")
+                )
+            ),
+            None,
+        )
         best: Optional[tuple[int, int, str]] = None
         if seed:
             start = seed.start()
@@ -518,9 +532,9 @@ class ToolLeakFilter:
                     return _OPENER_FAIL
                 pos += 1
             elif kind == "ident":
-                if text[pos] not in _IDENT_START_CHARS:
+                if text[pos] not in _TOOL_NAME_CHARS:
                     return _OPENER_FAIL
-                while pos < len(text) and text[pos] in _IDENT_CHARS:
+                while pos < len(text) and text[pos] in _TOOL_NAME_CHARS:
                     pos += 1
             elif kind == "param":
                 quote = text[pos] if text[pos] in _QUOTE_CHARS else ""

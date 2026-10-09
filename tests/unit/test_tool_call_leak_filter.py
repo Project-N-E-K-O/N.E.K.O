@@ -882,3 +882,24 @@ def test_text_parts_with_nothing_cut_keep_their_boundaries():
     assert strip_tool_call_leaks_from_parts(
         ["前面 async", "后面 asynccall:x{a:1} 完"],
     ) == ["前面 async", "后面  完"]
+
+
+def test_prefixed_calls_take_every_plugin_tool_name():
+    """The plugin SDK allows dots and a leading digit in tool names."""
+    from utils.llm_tool_leak_filter import strip_tool_call_leaks
+
+    for name in ("calendar.lookup", "3d-render", ".hidden_tool"):
+        leaked = f"好 asynccall:{name}{{query:x}} 完"
+        assert strip_tool_call_leaks(leaked) == "好  完", name
+        assert strip_tool_call_leaks(leaked, tool_names={name}) == "好  完", name
+
+
+def test_a_seed_word_continuing_a_previous_piece_is_not_a_marker():
+    """``xseed:tool_call`` is one word whichever piece the ``x`` came in."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    text = "it is xseed:tool_call is a literal identifier here"
+    for chunks in _split_everywhere(text):
+        visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), chunks)
+        assert visible == text, chunks
+        assert events == []
