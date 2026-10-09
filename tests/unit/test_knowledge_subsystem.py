@@ -1669,6 +1669,9 @@ def test_loose_surface_rules():
     # Curly quotes too: a pair goes, a lone apostrophe stays.
     assert loose_surface("\u201cPython\u201d") == loose_surface("\u00abPython\u00bb") == "python"
     assert loose_surface("Lil\u2019") == loose_surface("\u2018Tis") == ""
+    # A symbol inside the name also makes it another name.
+    assert loose_surface("AT&T") == loose_surface("C++17") == ""
+    assert loose_surface("AT T") == "att"
 
 
 async def test_cancel_after_the_commit_point_is_refused(tmp_path, monkeypatch):
@@ -1936,6 +1939,8 @@ def test_names_in_questions_respect_symbols():
     assert names_in_query("C++ tutorial", entry("C")) is False
     assert names_in_query("C++tutorial", entry("C")) is False
     assert names_in_query("C#developer", entry("C")) is False
+    assert names_in_query("AT T", entry("AT&T")) is False
+    assert names_in_query("is AT&T a carrier?", entry("AT&T")) is True
     assert names_in_query("re:zero season 2", entry("Re:Zero")) is True
     assert names_in_query("x-ray machines", entry("X-ray")) is True
     assert names_in_query("Tell me about Python", entry("Python")) is True
@@ -2071,5 +2076,81 @@ async def test_vectors_report_paused_while_knowledge_is_off(tmp_path):
         await _import(service, _pack())
         (pack,) = await service.list_packs()
         assert pack["vector_state"] == "paused"
+    finally:
+        await service.stop()
+
+
+def test_disabled_entries_do_not_crowd_out_semantic_candidates():
+    from knowledge.retrieval import SEMANTIC_CANDIDATES, semantic_candidates
+    from knowledge.store import VectorSnapshot
+
+    count = SEMANTIC_CANDIDATES + 6
+    matrix = np.zeros((count, 4), dtype=np.float32)
+    matrix[:, 0] = 1.0  # perfect matches, all disabled ...
+    matrix[-1] = np.array([0.8, 0.6, 0.0, 0.0], dtype=np.float32)  # ... and one enabled, weaker
+    snapshot = VectorSnapshot(
+        model_id="m",
+        entry_ids=np.arange(count, dtype=np.int64),
+        pack_ids=("p",),
+        chunk_pack_index=np.zeros(count, dtype=np.int32),
+        matrix=matrix,
+    )
+    matches = semantic_candidates(
+        snapshot,
+        np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        allowed_pack_ids=["p"],
+        exclude_entry_ids=set(range(count - 1)),
+    )
+    assert [m.entry_id for m in matches] == [count - 1]
+
+
+async def test_parsing_is_bounded_before_it_starts(tmp_path, monkeypatch):
+    import threading
+    import time
+
+    service = await _started(tmp_path)
+    try:
+        lock = threading.Lock()
+        running = {"now": 0, "max": 0, "calls": 0}
+        real_prepare = service._prepare_import
+
+        def slow_prepare(raw):
+            with lock:
+                running["calls"] += 1
+                running["now"] += 1
+                running["max"] = max(running["max"], running["now"])
+            time.sleep(0.2)
+            with lock:
+                running["now"] -= 1
+            return real_prepare(raw)
+
+        monkeypatch.setattr(service, "_prepare_import", slow_prepare)
+        async with service._write_lock:  # nothing gets installed meanwhile
+            results = await asyncio.gather(
+                *(service.import_pack(_raw(_pack(f"pack-{i}"))) for i in range(8))
+            )
+        limit = service_module.MAX_PENDING_IMPORTS
+        assert running["max"] <= limit
+        assert running["calls"] <= limit  # the rest were refused before parsing
+        assert sum(1 for r in results if r.get("reason") == "knowledge_busy") >= 8 - limit
+    finally:
+        await service.stop()
+
+
+async def test_lookup_passes_disabled_entries_to_semantic_search(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        await service.set_entry_disabled("demo-memes", "绝绝子", True)
+        seen = {}
+
+        def record(snapshot, vector, *, allowed_pack_ids, exclude_entry_ids=(), **_kwargs):
+            seen["excluded"] = set(exclude_entry_ids)
+            return []
+
+        monkeypatch.setattr(service_module, "semantic_candidates", record)
+        await asyncio.to_thread(service._semantic_search, None, np.zeros(4, dtype=np.float32), ["demo-memes"])
+        (row,) = [r for r in await asyncio.to_thread(service._store.list_entries, limit=10, offset=0) if r.disabled]
+        assert seen["excluded"] == {row.entry_id}
     finally:
         await service.stop()

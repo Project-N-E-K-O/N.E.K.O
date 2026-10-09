@@ -186,7 +186,8 @@ def loose_surface(value: object) -> str:
     Surrounding brackets/quotes and trailing sentence punctuation are ignored
     (corner brackets around a CJK name, "Python?"), and separators inside a name may differ ("Re:Zero",
     "re zero"). A name that still begins or ends with a symbol ("C++", "C#",
-    ".NET") gets no loose form: dropping the symbol would make it another name.
+    ".NET") gets no loose form, and neither does one with a symbol inside
+    ("AT&T"): dropping the symbol would make it another name.
     """
     text = strict_surface(value)
     start, end = 0, len(text)
@@ -208,6 +209,9 @@ def loose_surface(value: object) -> str:
             break
     core = text[start:end]
     if not core or not core[0].isalnum() or not core[-1].isalnum():
+        return ""
+    if any(_is_name_symbol(ch) for ch in core):
+        # "AT&T" is not "AT T": dropping the symbol would make another name.
         return ""
     return "".join(ch for ch in core if ch.isalnum())
 

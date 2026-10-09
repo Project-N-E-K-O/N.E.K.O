@@ -28,7 +28,7 @@ pinned in front.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Mapping, Sequence
+from typing import Collection, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -155,9 +155,14 @@ def semantic_candidates(
     query_vector: np.ndarray | None,
     *,
     allowed_pack_ids: Iterable[str],
+    exclude_entry_ids: Collection[int] = (),
     limit: int = SEMANTIC_CANDIDATES,
 ) -> list[SemanticMatch]:
-    """Best-scoring chunk per entry over the allowed packs, best first."""
+    """Best-scoring chunk per entry over the allowed packs, best first.
+
+    ``exclude_entry_ids`` (disabled entries) are skipped before the cut to
+    ``limit``, so they cannot crowd out entries that may be served.
+    """
     if snapshot is None or query_vector is None:
         return []
     if query_vector.shape[0] != snapshot.matrix.shape[1]:
@@ -176,8 +181,11 @@ def semantic_candidates(
         if snapshot.chunk_indexes is not None
         else [None] * len(entry_ids)
     )
+    excluded = set(exclude_entry_ids)
     best: dict[int, SemanticMatch] = {}
     for entry_id, score, chunk_index in zip(entry_ids, scores.tolist(), chunk_indexes):
+        if entry_id in excluded:
+            continue
         current = best.get(entry_id)
         if score >= SEMANTIC_THRESHOLD and (current is None or score > current.score):
             best[entry_id] = SemanticMatch(entry_id, score, chunk_index)

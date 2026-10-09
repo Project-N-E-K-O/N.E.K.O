@@ -372,6 +372,20 @@ class KnowledgeStore:
             )
             return cursor.rowcount
 
+    def disabled_entry_ids(self, pack_ids: Sequence[str]) -> set[int]:
+        """Ids of disabled entries in ``pack_ids``."""
+        if not pack_ids:
+            return set()
+        placeholders = ",".join("?" for _ in pack_ids)
+        with self._read() as conn:
+            return {
+                int(row[0])
+                for row in conn.execute(
+                    f"SELECT id FROM entries WHERE disabled=1 AND pack_id IN ({placeholders})",
+                    tuple(pack_ids),
+                )
+            }
+
     # ── management reads ────────────────────────────────────────────
 
     def entry_counts(self) -> dict[str, tuple[int, int]]:

@@ -80,6 +80,7 @@ from .render import RenderCard, render_reference_block
 from .retrieval import (
     LEXICAL_CANDIDATES,
     RankedHit,
+    SemanticMatch,
     best_excerpt_index,
     fuse,
     semantic_candidates,
@@ -247,6 +248,7 @@ class KnowledgeService:
         self._removed_at: dict[str, int] = {}
         self._pending_removals: dict[str, set[int]] = {}
         self._query_pool: concurrent.futures.ThreadPoolExecutor | None = None
+        self._parsing = 0
         # Set (and replaced) whenever a removal finishes, committed or not.
         self._removal_settled = asyncio.Event()
         self._vectors_built_for: tuple[int, str] | None = None
@@ -566,12 +568,24 @@ class KnowledgeService:
 
     async def import_pack(self, raw: bytes) -> dict[str, Any]:
         self._require_ready()
+        # Parsing a large pack holds several copies of it in memory: refuse
+        # before parsing when imports are already at their limit, and never
+        # parse more than that many at once.
+        pending = sum(1 for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES)
+        if (
+            pending + len(self._admitting) >= MAX_PENDING_IMPORTS
+            or self._parsing >= MAX_PENDING_IMPORTS
+        ):
+            return {"ok": False, "reason": "knowledge_busy"}
         self._request_seq += 1
         arrived_at = self._request_seq
+        self._parsing += 1
         try:
             pack, canonical, chunks = await asyncio.to_thread(self._prepare_import, raw)
         except KnowledgePackError as exc:
             return {"ok": False, "reason": exc.reason}
+        finally:
+            self._parsing -= 1
         if len(canonical) > MAX_PACK_BYTES:
             # Normalization fills in omitted fields and can grow the file; the
             # staged canonical form is what gets read back, so it is what counts.
@@ -1255,9 +1269,7 @@ class KnowledgeService:
                 if blob is not None:
                     query_vector = np.frombuffer(blob, dtype="<f4")
         semantic = (
-            await self._query_thread(
-                semantic_candidates, snapshot, query_vector, allowed_pack_ids=vector_packs
-            )
+            await self._query_thread(self._semantic_search, snapshot, query_vector, vector_packs)
             if query_vector is not None
             else []
         )
@@ -1283,6 +1295,16 @@ class KnowledgeService:
             limit=limit,
         )
         return ranked, ("hybrid" if query_vector is not None else "bm25")
+
+    def _semantic_search(
+        self, snapshot: VectorSnapshot | None, query_vector: np.ndarray, pack_ids: list[str]
+    ) -> list[SemanticMatch]:
+        return semantic_candidates(
+            snapshot,
+            query_vector,
+            allowed_pack_ids=pack_ids,
+            exclude_entry_ids=self._store.disabled_entry_ids(pack_ids),
+        )
 
     def _render(
         self, ranked: list[RankedHit], query: str, language: str | None, registry: Registry
