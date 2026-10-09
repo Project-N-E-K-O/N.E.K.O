@@ -1924,24 +1924,28 @@ def _cleanup_retained_runtime_root(
     # The anchor root holds more than runtime data (state, cloud saves) and
     # always stays. Any other retained root goes once emptied; files the user
     # kept in it stay put.
-    leftovers = _private_cleanup_leftovers(retained_path)
-    remaining_entries = tuple(
-        dict.fromkeys(
-            # A v1 checkpoint also carries evidence for what was copied over
-            # later; those entries are reported like any other.
-            [
-                entry_name
-                # So is what it had to leave behind because the new root had
-                # its own: never deleted here, only reported.
-                for entry_name in dict.fromkeys([*migrated_names, *proofs, *catch_up_skipped])
-                if _entry_may_exist(retained_path / entry_name)
-            ]
-            + [entry_name for entry_name, _private in leftovers or []]
-            # Not listable: an entry may still hide under a private name, so
-            # the cleanup must stay pending rather than be recorded as done.
-            + ([_UNLISTABLE_RETAINED_ROOT] if leftovers is None else [])
+    def _collect_remaining() -> tuple[str, ...]:
+        leftovers = _private_cleanup_leftovers(retained_path)
+        return tuple(
+            dict.fromkeys(
+                # A v1 checkpoint also carries evidence for what was copied
+                # over later; those entries are reported like any other.
+                [
+                    entry_name
+                    # So is what it had to leave behind because the new root
+                    # had its own: never deleted here, only reported.
+                    for entry_name in dict.fromkeys([*migrated_names, *proofs, *catch_up_skipped])
+                    if _entry_may_exist(retained_path / entry_name)
+                ]
+                + [entry_name for entry_name, _private in leftovers or []]
+                # Not listable: an entry may still hide under a private name,
+                # so the cleanup must stay pending rather than be recorded as
+                # done.
+                + ([_UNLISTABLE_RETAINED_ROOT] if leftovers is None else [])
+            )
         )
-    )
+
+    remaining_entries = _collect_remaining()
     retained_root_kept = paths_equal(retained_path, anchor_root)
     if not retained_root_kept:
         # Directories the app recreates (old logs, plugin install records)
@@ -1970,6 +1974,11 @@ def _cleanup_retained_runtime_root(
             pass
         except OSError:
             retained_root_kept = True
+            if not remaining_entries:
+                # Removing large regenerable directories takes a while; an
+                # entry put back meanwhile (a sync client) must keep the
+                # cleanup pending rather than be left there unannounced.
+                remaining_entries = _collect_remaining()
     return remaining_entries, retained_root_kept
 
 

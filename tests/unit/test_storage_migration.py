@@ -3903,3 +3903,49 @@ def test_a_live_config_that_cannot_be_looked_up_references_every_entry(tmp_path,
     )
 
     assert referenced == set(storage_migration_module.MIGRATED_RUNTIME_ENTRY_NAMES)
+
+
+@pytest.mark.unit
+def test_a_dropped_failed_checkpoint_still_gets_its_transaction_removed(tmp_path):
+    """The failed migration's stage could not be removed (a locked file); the
+    checkpoint holding its id is then deleted by the recovery. The next start
+    must still find and remove the stage."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, target_root = _start_migration_into_empty_target(tmp_path)
+    txid = "fedcba9876543210fedcba9876543210"
+    payload = dict(load_storage_migration(config_manager))
+    payload.update({"status": "failed", "txid": txid, "target_root": str(target_root)})
+    save_storage_migration(config_manager, payload)
+    stage = storage_migration_module._transaction_path(target_root, txid) / "stage" / "memory"
+    stage.mkdir(parents=True)
+    (stage / "facts.json").write_bytes(b"{}")
+
+    storage_migration_module.delete_storage_migration(config_manager)
+    run_pending_storage_migration(config_manager)
+
+    assert not storage_migration_module._transaction_path(target_root, txid).exists()
+
+
+@pytest.mark.unit
+def test_a_replaced_checkpoint_still_gets_its_transaction_removed(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, target_root = _start_migration_into_empty_target(tmp_path)
+    txid = "fedcba9876543210fedcba9876543210"
+    payload = dict(load_storage_migration(config_manager))
+    payload.update({"status": "failed", "txid": txid, "target_root": str(target_root)})
+    save_storage_migration(config_manager, payload)
+    stage = storage_migration_module._transaction_path(target_root, txid) / "stage"
+    stage.mkdir(parents=True)
+
+    other_target = tmp_path / "other-target" / "N.E.K.O"
+    create_pending_storage_migration(
+        config_manager,
+        source_root=config_manager.app_docs_dir,
+        target_root=other_target,
+        selection_source="recommended",
+    )
+    run_pending_storage_migration(config_manager)
+
+    assert not storage_migration_module._transaction_path(target_root, txid).exists()

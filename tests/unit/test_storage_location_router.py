@@ -4873,3 +4873,27 @@ def test_v1_catch_up_names_an_entry_whose_new_copy_changed_while_others_were_cop
     checkpoint = load_storage_migration(reloaded_manager)
     assert "pngtuber" not in checkpoint["copied_entries"]
     assert checkpoint["v1_catch_up_skipped"] == ["pngtuber"]
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_pending_when_an_entry_comes_back_while_finishing(tmp_path, monkeypatch):
+    """Nothing migrated was left, then a sync client put memory back while the
+    old logs were being removed: the root stays, and so must the cleanup."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "logs").mkdir()
+    (source_root / "logs" / "old.log").write_text("old", encoding="utf-8")
+    original_remove = storage_location_router_module.remove_runtime_entry
+
+    def _remove_while_memory_comes_back(path):
+        original_remove(path)
+        if Path(path).name == "logs":
+            (source_root / "memory").mkdir(exist_ok=True)
+            (source_root / "memory" / "restored.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(storage_location_router_module, "remove_runtime_entry", _remove_while_memory_comes_back)
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] != "cleaned"

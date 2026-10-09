@@ -1714,6 +1714,96 @@ def save_storage_migration(
     return payload
 
 
+def _transaction_leftovers_path(config_manager, *, anchor_root: Path | str | None) -> Path:
+    return get_storage_migration_path(config_manager, anchor_root=anchor_root).with_name(
+        "storage_migration_leftovers.json"
+    )
+
+
+def _remember_transaction_leftover(config_manager, *, anchor_root: Path | str | None) -> None:
+    """Note the transaction a finished checkpoint about to be dropped points at.
+
+    A failed or completed checkpoint is the only record of its transaction
+    id; its removal is retried on every start. Once the checkpoint is
+    deleted (recovery from a failed migration) or replaced by a new one, a
+    transaction that could not be removed yet (a file locked on Windows)
+    would stay under the target's ``.smtx`` for good without this.
+    """
+    try:
+        payload = load_storage_migration(config_manager, anchor_root=anchor_root)
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+    status = str(payload.get("status") or "").strip().lower()
+    raw_target_root = str(payload.get("target_root") or "").strip()
+    txid = str(payload.get("txid") or "").strip()
+    if status not in {STORAGE_MIGRATION_STATUS_COMPLETED, STORAGE_MIGRATION_STATUS_FAILED}:
+        return
+    if not raw_target_root or not txid:
+        return
+    try:
+        if not os.path.lexists(_transaction_path(normalize_runtime_root(raw_target_root), txid)):
+            return
+    except StorageMigrationError:
+        return
+    leftovers_path = _transaction_leftovers_path(config_manager, anchor_root=anchor_root)
+    try:
+        entries = read_json(leftovers_path)
+    except FileNotFoundError:
+        entries = []
+    except Exception:
+        entries = []
+    if not isinstance(entries, list):
+        entries = []
+    entry = {"status": status, "target_root": raw_target_root, "txid": txid}
+    if entry not in entries:
+        entries.append(entry)
+        try:
+            atomic_write_json(leftovers_path, entries)
+        except Exception as exc:
+            logger.warning("Failed to remember a leftover migration transaction: %s", exc)
+
+
+def remove_remembered_transaction_leftovers(config_manager, *, anchor_root: Path | str | None) -> None:
+    """Retry removing transactions whose checkpoints are gone, by the same rules."""
+    leftovers_path = _transaction_leftovers_path(config_manager, anchor_root=anchor_root)
+    try:
+        entries = read_json(leftovers_path)
+    except FileNotFoundError:
+        return
+    except Exception as exc:
+        logger.warning("Failed to read leftover migration transactions: %s", exc)
+        return
+    if not isinstance(entries, list):
+        return
+    kept = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        _remove_completed_transaction_leftover(entry)
+        try:
+            still_there = os.path.lexists(
+                _transaction_path(
+                    normalize_runtime_root(str(entry.get("target_root") or "")),
+                    str(entry.get("txid") or ""),
+                )
+            )
+        except StorageMigrationError:
+            still_there = False
+        if still_there:
+            kept.append(entry)
+    try:
+        if kept:
+            atomic_write_json(leftovers_path, kept)
+        else:
+            os.unlink(leftovers_path)
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        logger.warning("Failed to update leftover migration transactions: %s", exc)
+
+
 def create_pending_storage_migration(
     config_manager,
     *,
@@ -1724,6 +1814,7 @@ def create_pending_storage_migration(
     backup_root: Path | str | None = None,
     confirmed_existing_target_content: bool = False,
 ) -> dict[str, Any]:
+    _remember_transaction_leftover(config_manager, anchor_root=anchor_root)
     payload = build_pending_storage_migration_payload(
         source_root=source_root,
         target_root=target_root,
@@ -2129,6 +2220,10 @@ def run_pending_storage_migration(
         config_manager,
         anchor_root=normalized_anchor_root,
     )
+    try:
+        remove_remembered_transaction_leftovers(config_manager, anchor_root=normalized_anchor_root)
+    except Exception as exc:
+        logger.warning("Failed to retry removing leftover migration transactions: %s", exc)
     if not is_storage_migration_pending(migration_payload):
         _remove_completed_transaction_leftover(migration_payload)
         try:
@@ -3056,6 +3151,7 @@ def delete_storage_migration(
     *,
     anchor_root: Path | str | None = None,
 ) -> None:
+    _remember_transaction_leftover(config_manager, anchor_root=anchor_root)
     migration_path = get_storage_migration_path(config_manager, anchor_root=anchor_root)
     try:
         os.unlink(migration_path)
