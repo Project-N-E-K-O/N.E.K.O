@@ -735,7 +735,8 @@ async def test_transcript_reads_the_local_spool(env):
     assert [(line["line_id"], line["speaker_kind"], line["text"]) for line in body["lines"]] == [
         ("h:1", "cat", "你好"), ("g:1", "cat", "喵"), ("g:2", "human", "hi")]
     assert body["lines"][2]["truncated"] is True
-    assert env.servers.count(f"/api/visit/details/{VISIT_ID}") == 0
+    # 待传文件已结清：拿云端那份对了一遍（这里云端是空的，什么都没并进来）
+    assert env.servers.count(f"/api/visit/details/{VISIT_ID}") == 1
 
 
 async def test_transcript_after_forget_has_no_peer_identity(env):
@@ -1417,3 +1418,31 @@ async def test_a_cloud_copy_with_exactly_the_local_rows_keeps_the_drop_notice(en
     env.servers.details_lines = _cloud_rows_covering(extra=0)
     body = (await _transcript(env)).json()
     assert body["source"] == "spool" and body["dropped_lines"] == 1 and len(body["lines"]) == 3
+
+
+async def test_a_settled_spool_that_silently_missed_a_line_is_completed_from_the_cloud(env):
+    spool = VisitSpool(env.host.config_dir, VISIT_ID)
+    await spool.open({
+        "v": 1, "visit_id": VISIT_ID, "role": "host", "own_uid": OWN, "own_char": "Host",
+        "own_char_uid": HOST_CHAR_UID, "pair_id": derive_pair_id(OWN, HOST_UID), "peer_uid": HOST_UID,
+        "peer_char_id": derive_peer_char_id(HOST_UID, "f" * 32), "peer_char_tag": "f" * 32,
+        "started_at": NOW, "lang": "zh-CN",
+    }, now=0.0)
+    for line in LINES[:2]:          # 第 3 句写 spool 失败（只记日志），上传早已结清、待传文件已删
+        await spool.append(line)
+    await spool.close()
+    env.servers.details_lines = _cloud_rows_covering(extra=0)
+    body = (await _transcript(env)).json()
+    assert body["source"] == "cloud" and [line["text"] for line in body["lines"]] == ["你好", "喵", "hi"]
+    env.servers.details_mode = "503"       # 云端取不到：只给 spool
+    body = (await _transcript(env)).json()
+    assert body["source"] == "spool" and len(body["lines"]) == 2
+
+
+async def test_preview_fetched_across_an_account_change_is_not_returned(env, monkeypatch):
+    _epochs(monkeypatch, 3, 3, 4)          # 取预览时代数没变，读黑名单的时候变了
+    resp = await _preview(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "account_change"
+    assert "host_display_name" not in resp.text
+    _epochs(monkeypatch, 3, 4)             # 取预览途中就变了
+    assert (await _preview(env)).status_code == 409

@@ -204,10 +204,14 @@ async def preview_invite(request: Request, invite_code: str):
     if not isinstance(invite_code, str) or cr.INVITE_CODE_RE.fullmatch(invite_code) is None:
         return _servers_error(cr.VisitInviteFormat())
     try:
-        preview, _epoch = await _fetch_preview(invite_code, await accounts.local_account())
+        preview, epoch = await _fetch_preview(invite_code, await accounts.local_account())
     except cr.VisitServersError as exc:
         return _servers_error(exc)
-    return JSONResponse(preview.to_public(locally_blocked=await _locally_blocked(preview)))
+    blocked = await _locally_blocked(preview)
+    if epoch is None or runtime.account_epoch() != epoch:
+        # 请求途中（或读黑名单时）有过登出 / 换账号：这份预览可能是按别的账号授权的，不给此刻的人
+        return _error(409, "VISIT_E_BUSY", reason="account_change")
+    return JSONResponse(preview.to_public(locally_blocked=blocked))
 
 
 # ── 建房 / 入房 ────────────────────────────────────────────────────────
@@ -573,10 +577,14 @@ async def _local_transcript(
             upload_doc, upload_dropped = pending
             doc = {**doc, "lines": _merge_lines(doc["lines"], upload_doc["request"]["lines"], local_shape=True)}
             dropped = max(dropped, upload_dropped)
-        if not dropped:
-            return doc, None
-        # 崩溃留下的半行 / 坏行被丢掉了：先找完整的来源，都没有再退回这份
-        return None, {**doc, "dropped_lines": dropped}
+        if dropped:
+            # 崩溃留下的半行 / 坏行被丢掉了：先找完整的来源，都没有再退回这份
+            return None, {**doc, "dropped_lines": dropped}
+        if pending is None:
+            # 待传文件已经没了（上传已结清）：spool 某一行写失败只记日志、不留坏行，看不出少了什么。
+            # 云端那份就是这一侧的上传流水：拿来对一遍、缺的并进来，取不到再只给 spool
+            return None, doc
+        return doc, None
     if pending is not None:
         upload_doc, dropped = pending
         request_body = upload_doc["request"]
