@@ -88,19 +88,23 @@ export function jobStateSnapshot(jobs: readonly KnowledgePackJob[]): Map<string,
 
 export const KNOWLEDGE_JOB_POLL_MS = 2_000
 export const KNOWLEDGE_VECTOR_POLL_MS = 10_000
+export const KNOWLEDGE_STARTING_POLL_MS = 3_000
 
 /**
  * Delay before the next background refresh, or null to stop polling.
- * Import jobs poll fast. Other background progress (service starting,
- * embedding model loading, vectors building) polls slowly and only while a
+ * Import jobs poll fast. A service that is still starting is polled on every
+ * tab, since every tab's data waits for it. Other background progress
+ * (embedding model loading, vectors building) polls slowly and only while a
  * tab that shows that progress is open.
  */
 export function nextKnowledgePollDelay(options: {
   jobs: readonly Pick<KnowledgePackJob, 'state'>[]
   backgroundProgress: boolean
   showsVectorProgress: boolean
+  serviceStarting?: boolean
 }): number | null {
   if (options.jobs.some(isActiveKnowledgeJob)) return KNOWLEDGE_JOB_POLL_MS
+  if (options.serviceStarting) return KNOWLEDGE_STARTING_POLL_MS
   if (options.backgroundProgress && options.showsVectorProgress) return KNOWLEDGE_VECTOR_POLL_MS
   return null
 }

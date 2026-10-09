@@ -48,7 +48,9 @@ _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS packs ("
     " pack_id TEXT PRIMARY KEY, pack_sha256 TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS entries ("
-    " id INTEGER PRIMARY KEY,"
+    # AUTOINCREMENT: ids are never reused, so a vector snapshot loaded before
+    # a pack update can only miss rows, never point at an unrelated entry.
+    " id INTEGER PRIMARY KEY AUTOINCREMENT,"
     " pack_id TEXT NOT NULL,"
     " title TEXT NOT NULL,"
     " title_key TEXT NOT NULL,"
@@ -392,7 +394,9 @@ class KnowledgeStore:
         """Management search: exact surface hits first, then BM25 order."""
         pack_ids = (pack_id,) if pack_id else None
         with self._read() as conn:
-            exact = self._exact_ids(conn, query, pack_ids=pack_ids, include_disabled=True)
+            exact = self._exact_ids(
+                conn, query, pack_ids=pack_ids, include_disabled=True, limit=offset + limit
+            )
             ranked = self._ranked_ids(
                 conn,
                 query,

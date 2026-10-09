@@ -99,6 +99,7 @@ MAX_QUERY_EMBEDDINGS = 2
 MAX_QUERY_CHARS = 2_000
 MAX_QUERY_LIMIT = 10
 MAX_TRACKED_JOBS = 50
+MAX_PENDING_IMPORTS = 3
 ACTIVE_JOB_STATES = frozenset({"queued", "building"})
 TERMINAL_JOB_STATES = frozenset({"active", "failed", "cancelled"})
 
@@ -146,6 +147,7 @@ class ImportJob:
     chunks_total: int = 0
     reason: str = ""
     cancel_requested: bool = False
+    staged_bytes: int = 0
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -187,6 +189,7 @@ class KnowledgeService:
         self._vectors_dirty = False
         self._index_model_id: str | None = None
         self._query_embeddings: set[asyncio.Task[Any]] = set()
+        self._admitting: dict[str, int] = {}
         self._vectors_built_for: tuple[int, str] | None = None
         self._vector_task: asyncio.Task[Any] | None = None
         self._availability_listeners: list[Callable[[], None]] = []
@@ -460,11 +463,25 @@ class KnowledgeService:
         existing = registry.packs.get(pack.pack_id)
         if existing is not None and existing.pack_sha256 == sha and pack.pack_id not in self._broken_packs:
             return {"ok": True, "pack_id": pack.pack_id, "unchanged": True, "state": "active"}
-        if any(
-            job.pack_id == pack.pack_id and job.state in ACTIVE_JOB_STATES
-            for job in self._jobs.values()
-        ):
+        # Admission is checked and reserved without an await in between, so
+        # two requests for the same pack cannot both get through, and staged
+        # files (written before the single runner gets to them) stay bounded.
+        pending = [job for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES]
+        if pack.pack_id in self._admitting or any(job.pack_id == pack.pack_id for job in pending):
             return {"ok": False, "reason": "job_in_progress"}
+        if len(pending) + len(self._admitting) >= MAX_PENDING_IMPORTS:
+            return {"ok": False, "reason": "knowledge_busy"}
+        staged_bytes = sum(job.staged_bytes for job in pending) + sum(self._admitting.values())
+        self._admitting[pack.pack_id] = len(canonical)
+        try:
+            return await self._admit_import(pack, canonical, chunks, staged_bytes)
+        finally:
+            self._admitting.pop(pack.pack_id, None)
+
+    async def _admit_import(
+        self, pack: KnowledgePack, canonical: bytes, chunks: int, staged_bytes: int
+    ) -> dict[str, Any]:
+        registry = self._registry
         others = [record for record in registry.packs.values() if record.pack_id != pack.pack_id]
         if sum(record.entries for record in others) + len(pack.entries) > MAX_TOTAL_ENTRIES:
             return {"ok": False, "reason": "capacity_entries"}
@@ -473,7 +490,7 @@ class KnowledgeService:
         if chunks > MAX_CHUNKS_PER_PACK:
             return {"ok": False, "reason": "too_many_chunks"}
         installed_bytes = await asyncio.to_thread(self._installed_pack_bytes, others)
-        if installed_bytes + len(canonical) > MAX_TOTAL_PACK_BYTES:
+        if installed_bytes + staged_bytes + len(canonical) > MAX_TOTAL_PACK_BYTES:
             return {"ok": False, "reason": "capacity_bytes"}
         now = utc_now()
         job = ImportJob(
@@ -484,6 +501,7 @@ class KnowledgeService:
             updated_at=now,
             entries_total=len(pack.entries),
             chunks_total=chunks,
+            staged_bytes=len(canonical),
         )
         await asyncio.to_thread(atomic_write_bytes, self._staging_path(job.job_id), canonical)
         self._remember_job(job)
@@ -629,7 +647,12 @@ class KnowledgeService:
                     final_path.unlink(missing_ok=True)
                 raise
             if previous is not None and previous.file_name != record.file_name:
-                (self.root / PACKS_DIR / previous.file_name).unlink(missing_ok=True)
+                # The new version is committed; a leftover old file is only
+                # clutter and is removed by the startup cleanup.
+                try:
+                    (self.root / PACKS_DIR / previous.file_name).unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("[Knowledge] could not delete the old file of %s", pack.pack_id)
             return registry, record
 
         registry, _record = await asyncio.to_thread(blocking)
@@ -686,6 +709,11 @@ class KnowledgeService:
                 self._vectors_built_for = key
             except Exception:
                 logger.warning("[Knowledge] vector snapshot rebuild failed", exc_info=True)
+                return
+            # A change that arrived while this rebuild ran was skipped above;
+            # pick it up now instead of waiting for the indexer's idle round.
+            if not self._stopping:
+                self._schedule_vector_refresh()
 
         self._vector_task = asyncio.create_task(rebuild(), name="knowledge-vector-snapshot")
         self._vector_task.add_done_callback(_consume)
@@ -1051,10 +1079,11 @@ class KnowledgeService:
         total, ready = chunk["total"], chunk["ready"]
         if total <= 0:
             return "none"
-        if ready >= total:
-            return "complete"
+        # Policy first: vectors kept from before the switch are not used.
         if not record.local_embedding:
             return "off"
+        if ready >= total:
+            return "complete"
         if embedding_state != "ready":
             return "waiting"
         if ready + chunk["failed"] >= total:

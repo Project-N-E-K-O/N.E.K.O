@@ -7,6 +7,7 @@ import {
   jobStateSnapshot,
   KNOWLEDGE_JOB_POLL_MS,
   KNOWLEDGE_VECTOR_POLL_MS,
+  KNOWLEDGE_STARTING_POLL_MS,
   nextKnowledgePollDelay,
   vectorProgressPercent,
   visibleDiagnosticQueries,
@@ -92,6 +93,13 @@ describe('knowledge job polling', () => {
       backgroundProgress: true,
       showsVectorProgress: false,
     })).toBeNull()
+    // A starting service is polled whatever tab is open.
+    expect(nextKnowledgePollDelay({
+      jobs: [],
+      backgroundProgress: true,
+      showsVectorProgress: false,
+      serviceStarting: true,
+    })).toBe(KNOWLEDGE_STARTING_POLL_MS)
   })
 
   it('clamps vector progress', () => {

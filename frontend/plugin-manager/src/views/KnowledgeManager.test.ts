@@ -239,4 +239,26 @@ describe('KnowledgeManager job polling', () => {
     await vi.advanceTimersByTimeAsync(30_000)
     expect(api.packJobs.mock.calls.length).toBe(callsAfterFinish)
   })
+
+  it('keeps polling a starting service on the catalog tab and loads it once ready', async () => {
+    vi.useFakeTimers()
+    const starting = {
+      ok: true,
+      ready: false,
+      enabled: false,
+      tool_available: false,
+      status: { state: 'starting', error_code: '', ready: false, enabled: false, tool_available: false },
+    }
+    api.status.mockResolvedValue(starting)
+    api.entries.mockRejectedValue(new KnowledgeApiError('knowledge_starting'))
+    await mount()
+    await openTab('catalog')
+    const entriesWhileStarting = api.entries.mock.calls.length
+
+    api.status.mockResolvedValue(readyStatus())
+    api.entries.mockResolvedValue({ ok: true, total: 0, offset: 0, limit: 50, has_more: false, items: [] })
+    await vi.advanceTimersByTimeAsync(3_100)
+    await flush()
+    expect(api.entries.mock.calls.length).toBeGreaterThan(entriesWhileStarting)
+  })
 })

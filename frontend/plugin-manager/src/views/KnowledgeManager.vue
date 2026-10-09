@@ -975,6 +975,7 @@ function schedulePoll() {
     jobs: packJobs.value,
     backgroundProgress: hasBackgroundProgress.value,
     showsVectorProgress: activeTab.value === 'overview' || activeTab.value === 'packs',
+    serviceStarting: status.value?.state === 'starting',
   })
   if (delay === null) {
     clearPollTimer()
@@ -1191,6 +1192,17 @@ watch(activeTab, (tab, previousTab) => {
 })
 
 watch([packJobs, hasBackgroundProgress, activeTab], schedulePoll)
+
+// A tab opened while the service was starting got its first request refused;
+// load it again once the service is ready.
+watch(
+  () => status.value?.state,
+  (state, previous) => {
+    if (state !== 'ready' || previous === 'ready' || previous === undefined) return
+    if (activeTab.value === 'catalog') void loadEntries()
+    if (activeTab.value === 'diagnostics') void loadDiagnostics()
+  },
+)
 
 onMounted(() => {
   void refreshOverview()

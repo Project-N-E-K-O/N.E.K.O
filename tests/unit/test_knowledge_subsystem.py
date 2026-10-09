@@ -605,21 +605,109 @@ async def test_semantic_search_skips_packs_with_local_vectors_off(tmp_path, monk
         await service.stop()
 
 
-async def test_byte_capacity_is_rechecked_when_racing_imports_commit(tmp_path, monkeypatch):
+async def test_staged_imports_count_toward_byte_capacity(tmp_path, monkeypatch):
     service = await _started(tmp_path)
     try:
         one = _raw(_pack("pack-one"))
         monkeypatch.setattr(service_module, "MAX_TOTAL_PACK_BYTES", int(len(one) * 1.5))
+        async with service._write_lock:  # pack-one stays staged, not installed
+            assert (await service.import_pack(one))["ok"] is True
+            second = await service.import_pack(_raw(_pack("pack-two")))
+        assert second == {"ok": False, "reason": "capacity_bytes"}
+        assert len(list((tmp_path / ".staging").iterdir())) <= 1
+    finally:
+        await service.stop()
+
+
+async def test_pending_imports_are_bounded_and_same_pack_is_serialized(tmp_path):
+    service = await _started(tmp_path)
+    try:
         async with service._write_lock:
-            await service.import_pack(one)
-            await service.import_pack(_raw(_pack("pack-two")))
-        for _ in range(200):
-            jobs = {job["pack_id"]: job for job in service.list_jobs()}
-            if all(job["state"] not in ("queued", "building") for job in jobs.values()):
+            results = await asyncio.gather(
+                service.import_pack(_raw(_pack("same-pack"))),
+                service.import_pack(_raw(_pack("same-pack", entries=_entries("x", 2)))),
+            )
+            assert sorted(r["ok"] for r in results) == [False, True]
+            assert [r["reason"] for r in results if not r["ok"]] == ["job_in_progress"]
+            for name in ("p-two", "p-three"):
+                assert (await service.import_pack(_raw(_pack(name))))["ok"] is True
+            over = await service.import_pack(_raw(_pack("p-four")))
+            assert over == {"ok": False, "reason": "knowledge_busy"}
+    finally:
+        await service.stop()
+
+
+async def test_updated_pack_never_maps_stale_vectors_to_new_rows(tmp_path):
+    """Entry ids are never reused, so an old snapshot cannot alias new entries."""
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        before = set((await asyncio.to_thread(service._store.fetch_entries, range(1, 50))).keys())
+        await service.remove_pack("demo-memes")
+        await _import(service, _pack())
+        after = set((await asyncio.to_thread(service._store.fetch_entries, range(1, 50))).keys())
+        assert before and after and not (before & after)
+    finally:
+        await service.stop()
+
+
+async def test_vector_state_reports_off_even_when_vectors_exist(tmp_path, fast_indexer):
+    service = await _started(tmp_path, FakeEmbedder())
+    try:
+        await _import(service, _pack())
+        for _ in range(300):
+            (pack,) = await service.list_packs()
+            if pack["vector_state"] == "complete":
                 break
-            await asyncio.sleep(0.01)
-        assert jobs["pack-two"]["reason"] == "capacity_bytes"
-        assert set(load_registry(tmp_path).packs) == {"pack-one"}
+            await asyncio.sleep(0.02)
+        await service.set_pack_local_embedding("demo-memes", False)
+        (pack,) = await service.list_packs()
+        assert pack["chunks_ready"] == pack["chunks_total"]
+        assert pack["vector_state"] == "off"
+    finally:
+        await service.stop()
+
+
+async def test_failed_cleanup_of_old_file_does_not_fail_a_committed_update(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        (old_file,) = (tmp_path / "packs").iterdir()
+        real_unlink = Path.unlink
+
+        def unlink(self, *args, **kwargs):
+            if self == old_file:
+                raise PermissionError("locked")
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+        updated = _pack()
+        updated["entries"][0]["summary"] = "NEW SUMMARY"
+        job = await _import(service, updated)
+        assert job["state"] == "active"
+        assert "NEW SUMMARY" in (await service.query(query="绝绝子"))["context"]
+    finally:
+        await service.stop()
+
+
+async def test_catalog_exact_matches_are_bounded_by_the_page(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        entries = [
+            {"title": f"t{i}", "terms": {"alias": ["shared"]}, "content": f"body {i}"} for i in range(30)
+        ]
+        await _import(service, _pack(entries=entries))
+        fetched: list[int] = []
+        original = service._store._fetch
+
+        def spy(conn, ids):
+            fetched.append(len(ids))
+            return original(conn, ids)
+
+        monkeypatch.setattr(service._store, "_fetch", spy)
+        page = await service.list_entries(query="shared", limit=5)
+        assert len(page["items"]) == 5
+        assert max(fetched) <= 6 + 6
     finally:
         await service.stop()
 
