@@ -463,15 +463,23 @@ async def _send(
     op: str,
     headers: Mapping[str, str] | None = None,
     json_body: Any = None,
+    content: bytes | None = None,
+    params: Mapping[str, str] | None = None,
     timeout: float,
 ) -> httpx.Response:
+    """One Servers request; ``content`` sends pre-encoded JSON bytes (sized by the caller)."""
     client = get_external_http_client()
+    request_headers = dict(headers or {})
+    if content is not None:
+        request_headers["Content-Type"] = "application/json"
     try:
         return await client.request(
             method,
             url,
-            headers=dict(headers or {}),
+            headers=request_headers,
             json=json_body,
+            content=content,
+            params=dict(params) if params else None,
             timeout=timeout,
             # bearer 只发给 Servers 自己：任何跳转都不跟
             follow_redirects=False,

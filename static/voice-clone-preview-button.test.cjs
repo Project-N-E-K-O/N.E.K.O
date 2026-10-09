@@ -69,6 +69,10 @@ function createHarness({ playError = null, deferPlay = false } = {}) {
         emit(type) {
             this.listeners.get(type)?.();
         }
+
+        pause() { this.paused = true; }
+        removeAttribute(name) { if (name === 'src') this.src = ''; }
+        load() { this.released = true; }
     }
 
     const context = {

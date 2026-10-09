@@ -248,7 +248,7 @@ async def test_multipart_overwrite_permission_rejection_is_not_retried(client):
     ref = await _import(client)
 
     async def denied():
-        raise VoiceManagementError("PERMISSION_DENIED", 403)
+        raise VoiceManagementError("PERMISSION_DENIED", 403, {"attempt_outcome": "rejected"})
 
     adapter.on_mutation = denied
     response = await session.post(f"/api/characters/voices/{ref}/overwrite", data={"context_token": payload(adapter, cm)["context_token"]}, files={"audio": ("reference.wav", _wav(), "audio/wav")})

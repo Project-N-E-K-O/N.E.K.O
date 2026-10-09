@@ -3,6 +3,7 @@
 import asyncio
 import threading
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import wraps
 from uuid import uuid4
@@ -12,6 +13,14 @@ from utils.voice_config import is_imported_voice_ref
 
 VOICE_STORAGE_LOCK = threading.RLock()
 REMOTE_VOICE_BUCKET_PREFIX = "__REMOTE_VOICES__"
+
+
+@dataclass(frozen=True)
+class ImportedVoiceWriteResult:
+    """A persisted winner is distinct from permission acquired by this caller."""
+
+    applied: bool
+    record: dict
 
 
 def voice_storage_transaction(function):
@@ -142,6 +151,7 @@ class ImportedVoiceStorageMixin:
     @voice_storage_transaction
     def update_imported_voice(
         self, local_ref, scope_id, voice_data, *, expected_operation_id=None, expected_record_revision=None,
+        return_receipt=False,
     ):
         """Update an owned record; a stale conditional refresh returns the stored winner."""
         storage = self._load_voice_storage_for_write()
@@ -158,7 +168,8 @@ class ImportedVoiceStorageMixin:
         if expected_record_revision is not None and revision != expected_record_revision:
             # Scope and operation ownership were checked first. Return only an
             # already persisted record, never the rejected upstream observation.
-            return deepcopy(found[1])
+            winner = deepcopy(found[1])
+            return ImportedVoiceWriteResult(False, winner) if return_receipt else winner
         metadata = deepcopy(found[1])
         immutable = {
             "local_ref", "scope_id", "provider", "remote_voice_id", "source",
@@ -170,15 +181,66 @@ class ImportedVoiceStorageMixin:
         metadata["_record_revision"] = revision + 1
         storage[found[0]][local_ref] = metadata
         self.save_voice_storage(storage)
-        return deepcopy(metadata)
+        saved = deepcopy(metadata)
+        return ImportedVoiceWriteResult(True, saved) if return_receipt else saved
 
     async def aupdate_imported_voice(
         self, local_ref, scope_id, voice_data, *, expected_operation_id=None, expected_record_revision=None,
+        return_receipt=False,
     ):
         return await asyncio.to_thread(
             self.update_imported_voice, local_ref, scope_id, voice_data,
             expected_operation_id=expected_operation_id,
             expected_record_revision=expected_record_revision,
+            return_receipt=return_receipt,
+        )
+
+    @voice_storage_transaction
+    def transition_imported_voice_overwrite(
+        self, local_ref, scope_id, *, action, expected_operation_id, expected_record_revision,
+    ):
+        """Atomically acquire submission permission or retire an identified owner."""
+        if (action not in {"submit", "recover", "abandon"} or not isinstance(expected_operation_id, str)
+                or not expected_operation_id or type(expected_record_revision) is not int
+                or expected_record_revision < 0):
+            raise ValueError("VOICE_TRANSITION_INVALID")
+        storage = self._load_voice_storage_for_write()
+        found = self._find_imported_voice(storage, local_ref)
+        if not found or found[1].get("scope_id") != scope_id:
+            raise ValueError("VOICE_CONTEXT_CHANGED")
+        record = found[1]
+        revision = record.get("_record_revision", 0)
+        if type(revision) is not int or revision < 0:
+            raise ValueError("VOICE_STORAGE_INVALID")
+        if (record.get("overwrite_operation_id") != expected_operation_id
+                or revision != expected_record_revision
+                or (action != "abandon" and (
+                    record.get("overwrite_submission_phase") != "prepared"
+                    or record.get("overwrite_status") not in {"processing", "unknown"}))
+                or (action == "abandon" and (
+                    record.get("overwrite_status") != "unknown"
+                    or record.get("overwrite_abandon_revision") != revision))):
+            return ImportedVoiceWriteResult(False, deepcopy(record))
+        metadata = deepcopy(record)
+        if action == "submit":
+            metadata["overwrite_submission_phase"] = "submission_possible"
+        else:
+            metadata["overwrite_status"] = "failed"
+            metadata["overwrite_terminal_reason"] = (
+                "user_abandoned_unknown" if action == "abandon" else "not_submitted_recovered"
+            )
+            metadata["overwrite_abandon_revision"] = None
+        metadata["_record_revision"] = revision + 1
+        storage[found[0]][local_ref] = metadata
+        self.save_voice_storage(storage)
+        return ImportedVoiceWriteResult(True, deepcopy(metadata))
+
+    async def atransition_imported_voice_overwrite(
+        self, local_ref, scope_id, *, action, expected_operation_id, expected_record_revision,
+    ):
+        return await asyncio.to_thread(
+            self.transition_imported_voice_overwrite, local_ref, scope_id, action=action,
+            expected_operation_id=expected_operation_id, expected_record_revision=expected_record_revision,
         )
 
     @voice_storage_transaction

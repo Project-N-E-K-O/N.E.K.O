@@ -6061,10 +6061,11 @@ class AsrRuntimeMixin:
                                 # provider 侧的取代判据（后继回合已经 prepare，
                                 # arbiter 的 admission 闸把这张 ticket 拒了）比
                                 # Core 的 invalidated 更晚也更权威。被拒时已提交
-                                # 的 item 已经删干净，provider 侧不留痕迹 ——
-                                # 但这一轮的**话**不能跟着帧一起消失。与
-                                # visual_ownership_lost 那三处同一判据：丢帧降级
-                                # 成纯文本，绝不丢用户的句子。
+                                # 的 item 已经确认删干净，provider 侧不留痕迹 ——
+                                # 但这一轮的**话**不能跟着帧一起消失。路由若已离开
+                                # Core，就到此为止：不再提交，也不清后继回合的暂停。
+                                if not route_still_core():
+                                    return
                                 logger.info(
                                     "[%s] independent ASR turn %s lost its "
                                     "provider admission window; submitting "

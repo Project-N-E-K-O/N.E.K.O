@@ -6,7 +6,24 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Protocol
+
+
+class AttemptOutcome(str, Enum):
+    NOT_SUBMITTED = "not_submitted"
+    REJECTED = "rejected"
+    ACCEPTED = "accepted"
+    UNKNOWN = "unknown"
+
+
+class StateSync(str, Enum):
+    """Outcome of synchronizing this request's result, independent of its snapshot."""
+
+    SAVED = "saved"
+    UNCHANGED = "unchanged"
+    FAILED = "failed"
+    UNKNOWN = "unknown"  # The write may outlive its cancelled/deadline-expired waiter.
 
 
 def build_voice_scope(

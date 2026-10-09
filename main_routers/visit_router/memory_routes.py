@@ -34,8 +34,6 @@ are wired the account is unknown: the list is empty and changes answer
 
 from __future__ import annotations
 
-import ipaddress
-import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,7 +42,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from config.visit_settings import NEKO_VISIT_ALLOW_NONLOCAL, VISIT_MEMORY_PLATFORM
+from config.visit_settings import VISIT_MEMORY_PLATFORM
 from main_logic.visit import local_chars, memory_bridge
 from main_logic.visit.forget_runner import (
     AdmissionLock,
@@ -69,7 +67,8 @@ from main_logic.visit.subjects import (
     is_finite_number,
     participant_subject,
 )
-from main_routers.system_router._shared import _read_json_object, _validate_local_mutation_request
+from main_routers.system_router._shared import _read_json_object
+from main_routers.visit_router.local_guard import http_denied
 from memory.scoped_client import ScopedMemoryClient, ScopedMemoryError
 from utils.logger_config import get_module_logger
 
@@ -77,7 +76,6 @@ logger = get_module_logger(__name__, "Main")
 
 router = APIRouter()
 
-_FORWARDING_HEADERS = ("forwarded", "x-forwarded-for", "x-real-ip")
 _UID_MAX_LEN = 64
 
 
@@ -133,38 +131,14 @@ def _error(status: int, code: str, **extra: Any) -> JSONResponse:
     return JSONResponse({"ok": False, "code": code, **extra}, status_code=status)
 
 
-def _behind_proxy() -> bool:
-    return os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
-
-
-def _is_loopback(host: str | None) -> bool:
-    if not host:
-        return False
-    try:
-        address = ipaddress.ip_address(host.split("%", 1)[0])
-    except ValueError:
-        return False
-    # ::ffff:127.0.0.1 之类 IPv4 映射地址：3.11.11 之前的 is_loopback 认不出，先拆开
-    mapped = getattr(address, "ipv4_mapped", None)
-    return (mapped or address).is_loopback
-
-
 def local_visit_gate(request: Request, payload: dict | None = None) -> JSONResponse | None:
     """Return a 403 response unless the request comes from this machine's own UI.
 
-    Primary gate: the real peer address is loopback, proxy mode is off and no
-    forwarding header is present (all skipped when ``NEKO_VISIT_ALLOW_NONLOCAL``
-    is on). Second layer: the shared Origin / Host + CSRF check.
+    Same gate as every other visit endpoint (``local_guard.http_denied``):
+    loopback peer without proxy mode or forwarding headers (unless
+    ``NEKO_VISIT_ALLOW_NONLOCAL``), then the shared Origin / Host + CSRF check.
     """
-    if not NEKO_VISIT_ALLOW_NONLOCAL:
-        client_host = request.client.host if request.client else None
-        if (
-            _behind_proxy()
-            or any(header in request.headers for header in _FORWARDING_HEADERS)
-            or not _is_loopback(client_host)
-        ):
-            return _error(403, "VISIT_E_UNAUTHORIZED")
-    return _validate_local_mutation_request(request, payload=payload)
+    return http_denied(request, payload)
 
 
 def _clean_uid(value: Any) -> str | None:

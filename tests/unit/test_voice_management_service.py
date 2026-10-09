@@ -247,7 +247,8 @@ async def test_refresh_does_not_credit_a_revision_that_existed_before_overwrite(
     result = await service.overwrite_remote_voice(adapter, cm, ref, token=token, audio=b"audio", filename="v.wav")
     assert result["status"] == "processing"
     refreshed = await service.refresh_overwrite_status(adapter, cm, ref, token=token)
-    assert refreshed["status"] == "processing"
+    # No live owner and a ready unchanged revision remain uncertain, not completed.
+    assert refreshed["status"] == "unknown"
     adapter.remote = replace(adapter.remote, metadata={"remote_revision": "3"})
     assert (await service.refresh_overwrite_status(adapter, cm, ref, token=token))["status"] == "completed"
 
@@ -350,7 +351,7 @@ async def test_rejected_overwrite_stays_failed_after_external_revision_change(fi
     cm, adapter, ref = await imported(fixture)
 
     async def rejected():
-        raise VoiceManagementError("UPSTREAM_REJECTED", 400)
+        raise VoiceManagementError("UPSTREAM_REJECTED", 400, {"attempt_outcome": "rejected"})
 
     adapter.on_mutation = rejected
     token = payload(adapter, cm)["context_token"]
@@ -499,7 +500,8 @@ async def test_configuration_change_after_claim_records_failed_without_remote_su
     async def change_after_commit(local_ref, scope, values, **kwargs):
         saved = await original(local_ref, scope, values, **kwargs)
         if values.get("overwrite_status") == "processing":
-            claimed.append(saved["overwrite_operation_id"])
+            claimed.append(saved.record["overwrite_operation_id"] if kwargs.get("return_receipt")
+                           else saved["overwrite_operation_id"])
             cm.key = "switched-after-local-claim"
         return saved
 

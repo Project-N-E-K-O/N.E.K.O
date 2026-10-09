@@ -30,6 +30,7 @@
                     const error = new Error(data.code || data.error || 'request_failed');
                     error.code = data.code || data.error;
                     error.status = response.status;
+                    error.details = data.details;
                     throw error;
                 }
                 return data;
@@ -150,8 +151,12 @@
         state.busy = value;
         state.panel.setAttribute('aria-busy', String(value));
         if (state.submit) state.submit.disabled = value || (state.mode === 'list' && !state.selection) || (state.mode === 'manual' && !state.id.value.trim());
+        if (state.mode === 'overwrite' && state.submit) state.submit.disabled = value || !state.overwriteAllowed || !state.audio.files.length;
         if (state.more) state.more.disabled = value;
         if (state.refreshStatus) state.refreshStatus.disabled = value;
+        if (state.recoverPrepared) state.recoverPrepared.disabled = value || !state.recoverySnapshot;
+        if (state.abandonUnknown) state.abandonUnknown.disabled = value || !state.abandonSnapshot;
+        if (state.reopenOverwrite) state.reopenOverwrite.disabled = value || !state.overwriteAllowed;
         for (const control of state.importControls || []) control.disabled = !!state.importSubmitting;
         if (state.mode === 'list' && state.empty) state.empty.hidden = value || state.rows.children.length > 0;
     }
@@ -193,6 +198,7 @@
         for (const specification of state.context ? state.context.required_fields || [] : []) {
             const spec = typeof specification === 'string' ? { key: specification, required: true } : specification;
             const field = input(spec.key, spec.key, spec.required, spec.default_value || '');
+            field.readOnly = spec.readonly === true;
             const translated = spec.label_key && root.t ? root.t(spec.label_key) : '';
             const label = translated && translated !== spec.label_key ? translated : t(spec.key);
             field.parentElement.firstChild.textContent = label;
@@ -366,6 +372,111 @@
         listView(state); refresh(state);
     }
 
+    function updateOverwriteView(state, result, error = null, sent = true) {
+        if (active !== state) return;
+        if (error?.code === 'CONTEXT_CHANGED') state.context = null;
+        const snapshot = error?.code === 'CONTEXT_CHANGED' ? null : (error ? error.details : result && result.details)?.voice_state;
+        const valid = snapshot && snapshot.local_ref === state.localRef && Number.isInteger(snapshot.record_revision) && snapshot.record_revision >= 0;
+        const stale = valid && Number.isInteger(state.recordRevision) && snapshot.record_revision < state.recordRevision;
+        const status = stale ? state.currentOverwriteStatus : valid ? snapshot.overwrite_status : result && result.status;
+        const pending = status === 'processing' || status === 'unknown';
+        // A stale snapshot cannot change actions or preparation identity, but
+        // this request's feedback must still replace transient progress text.
+        if (!stale) {
+            if (valid) state.recordRevision = snapshot.record_revision;
+            state.currentOverwriteStatus = status;
+            // Only a current server snapshot may reopen submission. Missing fields
+            // (including an older server) leave an explicit query exit after sending.
+            const actions = valid && Array.isArray(snapshot.actions) ? snapshot.actions : ['refresh'];
+            state.overwriteAllowed = ['completed', 'failed'].includes(status) && actions.includes('overwrite') && !!state.context?.capabilities.overwrite;
+            if (state.submit) state.submit.hidden = !state.overwriteAllowed;
+            if (state.refreshStatus) state.refreshStatus.hidden = !actions.includes('refresh');
+            state.recoverySnapshot = valid && pending && actions.includes('recover') &&
+                typeof snapshot.operation_id === 'string' && snapshot.operation_id
+                ? { operation_id: snapshot.operation_id, record_revision: snapshot.record_revision } : null;
+            state.abandonSnapshot = valid && status === 'unknown' && actions.includes('abandon') &&
+                typeof snapshot.operation_id === 'string' && snapshot.operation_id
+                ? { operation_id: snapshot.operation_id, record_revision: snapshot.record_revision } : null;
+            if (state.abandonUnknown) state.abandonUnknown.hidden = !state.abandonSnapshot;
+            if (state.recoverPrepared) state.recoverPrepared.hidden = !state.recoverySnapshot;
+            if (state.recoveryHint) state.recoveryHint.hidden = !state.recoverySnapshot;
+            if (state.reopenOverwrite) state.reopenOverwrite.hidden = !state.overwriteAllowed;
+        }
+        if (error) {
+            const uncertain = sent && !['not_submitted', 'rejected'].includes(error.details?.attempt_outcome) &&
+                (!valid || pending) && !['OPERATION_IN_PROGRESS', 'CONTEXT_CHANGED'].includes(error.code);
+            showError(state, error, uncertain);
+        } else {
+            state.status.classList.remove('remote-voice-error');
+            state.status.textContent = t(status === 'completed' ? 'completed' : status === 'failed' ? 'failed' :
+                status === 'processing' ? 'processing' : 'uncertain');
+        }
+        busy(state, state.busy);
+    }
+
+    function recoveryControls(state) {
+        state.recoveryHint = node('p', 'remote-voice-hint', t('recoverPreparedHint'));
+        state.recoveryHint.hidden = true;
+        state.body.append(state.recoveryHint);
+        state.recoverPrepared = button('recoverPrepared', () => recoverPreparedOverwrite(state));
+        state.recoverPrepared.hidden = true;
+        state.recoverPrepared.disabled = true;
+        state.footer.append(state.recoverPrepared);
+        state.abandonUnknown = button('abandonUnknown', () => recoverPreparedOverwrite(state, true));
+        state.abandonUnknown.hidden = true;
+        state.abandonUnknown.disabled = true;
+        state.footer.append(state.abandonUnknown);
+    }
+
+    async function recoverPreparedOverwrite(state, abandon = false) {
+        const snapshotKey = abandon ? 'abandonSnapshot' : 'recoverySnapshot';
+        if (active !== state || state.busy || !state[snapshotKey]) return;
+        const expected = state[snapshotKey];
+        if (abandon && !root.confirm(t('abandonUnknownConfirm'))) return;
+        const operation = operations.begin(state.provider);
+        let recovered = false;
+        let sent = false;
+        busy(state, true); state.status.textContent = t(abandon ? 'abandoningUnknown' : 'recoveringPrepared');
+        try {
+            // Refresh account/project context before using the advisory action.
+            const ctx = await context(state, operation);
+            if (!ctx || active !== state || !operations.owns(operation) || state[snapshotKey] !== expected) return;
+            sent = true;
+            const result = await operations.request(operation,
+                '/api/characters/voices/' + encodeURIComponent(state.localRef) + (abandon ? '/abandon_overwrite' : '/recover_overwrite'), {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ context_token: ctx.context_token, ...expected })
+                });
+            if (active !== state || !operations.owns(operation)) return;
+            updateOverwriteView(state, result);
+            const snapshot = result.details?.voice_state;
+            // A successful local transition can outlive the subsequent record
+            // read. Keep a query exit without inventing an unlocked snapshot.
+            if (!snapshot && state.refreshStatus) state.refreshStatus.hidden = false;
+            recovered = (abandon ? result.abandoned : result.recovered) === true && snapshot?.local_ref === state.localRef &&
+                snapshot.operation_id === expected.operation_id && snapshot.record_revision > expected.record_revision &&
+                snapshot.record_revision === state.recordRevision && snapshot.overwrite_status === 'failed';
+            if (recovered) state.status.textContent = t(abandon ? 'unknownAbandoned' : 'preparedRecovered');
+            if (typeof root.loadVoices === 'function') await root.loadVoices();
+        } catch (error) {
+            if (active === state && operations.current === operation) {
+                updateOverwriteView(state, null, error, false);
+                const definiteFailure = ['CONTEXT_CHANGED', 'VOICE_STATE_CHANGED', 'VOICE_NOT_FOUND',
+                    'CONFIG_MISSING', 'MANAGEMENT_CONFIG_MISSING', 'AUTH_FAILED', 'PERMISSION_DENIED',
+                    'INVALID_METADATA', 'INVALID_JSON', 'OVERWRITE_UNSUPPORTED'].includes(error.code);
+                if (sent && !error.details?.voice_state && !definiteFailure) state.status.textContent = t('recoveryUncertain');
+            }
+        } finally {
+            if (active === state && operations.current === operation) {
+                busy(state, false);
+                if (recovered) {
+                    const next = state.reopenOverwrite && !state.reopenOverwrite.hidden ? state.reopenOverwrite : state.audio;
+                    if (next) next.focus();
+                }
+            }
+        }
+    }
+
     function openOverwrite(localRef, voice) {
         const state = dialog(voice.provider, 'overwrite');
         state.localRef = localRef;
@@ -374,9 +485,11 @@
         state.body.append(node('p', 'remote-voice-id', voice.remote_voice_id || localRef));
         const label = node('label', 'remote-voice-field', t('audio'));
         const audio = node('input'); audio.type = 'file'; audio.accept = 'audio/*'; label.append(audio);
+        state.audio = audio;
+        state.overwriteAllowed = !['processing', 'unknown'].includes(voice.overwrite_status);
         state.body.append(label);
         state.submit = button('overwrite', async () => {
-            if (state.busy || !audio.files.length) return;
+            if (state.busy || !state.overwriteAllowed || !audio.files.length) return;
             const operation = operations.begin(state.provider);
             busy(state, true); state.status.textContent = t('submitting');
             let sent = false;
@@ -388,29 +501,28 @@
                 sent = true;
                 const result = await operations.request(operation, '/api/characters/voices/' + encodeURIComponent(localRef) + '/overwrite', { method: 'POST', body });
                 if (active !== state || !operations.owns(operation)) return;
-                state.status.textContent = t(result.status === 'completed' ? 'completed' : result.status === 'failed' ? 'failed' : result.status === 'unknown' ? 'uncertain' : 'processing');
-                state.submit.hidden = true;
-                state.refreshStatus.hidden = result.status === 'completed' || result.status === 'failed';
+                updateOverwriteView(state, result);
                 if (typeof root.loadVoices === 'function') await root.loadVoices();
             } catch (error) {
                 if (active === state && operations.current === operation) {
-                    const uncertain = sent && (!error.status || error.status >= 500 || /uncertain/.test(error.code || ''));
-                    showError(state, error, uncertain);
-                    if (uncertain || error.code === 'OPERATION_IN_PROGRESS') {
-                        state.submit.hidden = true;
-                        state.refreshStatus.hidden = false;
-                        if (typeof root.loadVoices === 'function') await root.loadVoices();
-                    }
+                    // Context transport failed before an overwrite request
+                    // existed. Retain the user's file and existing controls;
+                    // an explicit retry obtains and validates context again.
+                    if (!sent && !error.code) showError(state, error);
+                    else updateOverwriteView(state, null, error, sent);
+                    if (sent && typeof root.loadVoices === 'function') await root.loadVoices();
                 }
             } finally { if (active === state && operations.current === operation) busy(state, false); }
         });
         state.submit.disabled = true;
-        audio.addEventListener('change', () => { state.submit.disabled = state.busy || !audio.files.length; });
+        audio.addEventListener('change', () => busy(state, state.busy));
         state.footer.append(state.submit);
         const refreshStatus = button('refreshStatus', () => fetchOverwriteStatus(state, localRef));
-        refreshStatus.hidden = true;
+        refreshStatus.hidden = state.overwriteAllowed;
         state.footer.append(refreshStatus);
         state.refreshStatus = refreshStatus;
+        state.submit.hidden = !state.overwriteAllowed;
+        recoveryControls(state);
     }
 
     async function fetchOverwriteStatus(state, localRef) {
@@ -424,9 +536,13 @@
             const params = new URLSearchParams({ context_token: ctx.context_token });
             const result = await operations.request(operation, '/api/characters/voices/' + encodeURIComponent(localRef) + '/overwrite_status?' + params);
             if (active !== state || !operations.owns(operation)) return;
-            state.status.textContent = t(result.status === 'completed' ? 'completed' : result.status === 'processing' ? 'processing' : result.status === 'failed' ? 'failed' : 'uncertain');
+            updateOverwriteView(state, result);
             if (typeof root.loadVoices === 'function') await root.loadVoices();
-        } catch (error) { if (active === state && operations.current === operation) showError(state, error); }
+        } catch (error) {
+            if (active === state && operations.current === operation) {
+                updateOverwriteView(state, null, error, false);
+            }
+        }
         finally {
             if (active === state && operations.current === operation) {
                 busy(state, false);
@@ -442,6 +558,13 @@
         state.body.append(node('p', 'remote-voice-id', voice.remote_voice_id || localRef));
         state.refreshStatus = button('refreshStatus', () => fetchOverwriteStatus(state, localRef));
         state.footer.append(state.refreshStatus);
+        state.reopenOverwrite = button('overwriteAgain', () => {
+            if (active !== state || state.busy || !state.overwriteAllowed) return;
+            openOverwrite(localRef, { ...voice, overwrite_status: state.currentOverwriteStatus });
+        });
+        state.reopenOverwrite.hidden = true;
+        state.footer.append(state.reopenOverwrite);
+        recoveryControls(state);
         fetchOverwriteStatus(state, localRef);
     }
 

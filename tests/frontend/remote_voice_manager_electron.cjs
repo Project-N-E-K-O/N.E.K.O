@@ -3,15 +3,54 @@
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
 const assert = require('node:assert/strict');
 const { createVoiceManagerServer } = require('./remote_voice_manager_server.cjs');
 const { verifyVoiceRaces } = require('./remote_voice_manager_races.cjs');
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'neko-remote-voice-ui-'));
-app.setPath('userData', path.join(scratch, 'user-data'));
+const { verifyManagementSettings } = require('./remote_voice_management_settings.cjs');
+const { createPageDiagnostics, closeTestServer } = require('./remote_voice_page_diagnostics.cjs');
+const diagnostics = createPageDiagnostics('electron');
+const scratch = diagnostics.directory;
+if (!process.env.NEKO_TEST_ELECTRON_PROFILE) throw new Error('Run through remote_voice_electron_runner.cjs to own and clean the profile');
+app.setPath('userData', process.env.NEKO_TEST_ELECTRON_PROFILE);
 const { server, state } = createVoiceManagerServer();
 let win;
-const watchdog = setTimeout(() => { console.error('REMOTE_VOICE_ELECTRON_TIMEOUT'); app.exit(2); }, 60000);
+let finished = false;
+app.on('window-all-closed', () => {});
+function bounded(operation, milliseconds, label) {
+    let timer;
+    return Promise.race([operation, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label + ' timed out')), milliseconds);
+    })]).finally(() => clearTimeout(timer));
+}
+async function finish(code, result, error) {
+    let failure = code ? (error instanceof Error ? error : new Error(String(error))) : undefined;
+    if (code) diagnostics.error(failure);
+    if (finished) return;
+    finished = true;
+    clearTimeout(watchdog);
+    if (failure) {
+        console.error(failure);
+        if (win && !win.isDestroyed()) await bounded(screenshot('failure'), 2000, 'Failure screenshot').catch(captureError => diagnostics.log('screenshot-error', captureError));
+    }
+    try { if (win && !win.isDestroyed()) win.destroy(); }
+    catch (reason) {
+        const cleanupError = reason instanceof Error ? reason : new Error(String(reason));
+        diagnostics.error(cleanupError); failure ||= cleanupError; code = 1;
+    }
+    try { await bounded(closeTestServer(server), 5000, 'HTTP cleanup'); }
+    catch (reason) {
+        const cleanupError = reason instanceof Error ? reason : new Error(String(reason));
+        diagnostics.error(cleanupError); failure ||= cleanupError; code = 1;
+    }
+    await new Promise(resolve => setImmediate(resolve));
+    try { diagnostics.assertClean(); }
+    catch (lateError) { failure ||= lateError; code = 1; }
+    diagnostics.finish(result, failure);
+    app.exit(code);
+}
+const watchdog = setTimeout(() => { void finish(2, undefined, new Error('REMOTE_VOICE_ELECTRON_TIMEOUT')); }, 60000);
+process.on('unhandledRejection', error => { void finish(1, undefined, error); });
+process.on('uncaughtException', error => { void finish(1, undefined, error); });
 const run = code => win.webContents.executeJavaScript(code, true).catch(error => { console.error('UI expression failed:', code); throw error; });
 async function waitFor(expression) {
     return run(`new Promise((resolve,reject)=>{const check=()=>(${expression});if(check())return resolve(true);const observer=new MutationObserver(()=>{if(check()){clearTimeout(timer);observer.disconnect();resolve(true);}});observer.observe(document.body,{subtree:true,attributes:true,childList:true,characterData:true});const timer=setTimeout(()=>{observer.disconnect();reject(new Error('UI timeout: '+${JSON.stringify(expression)}));},10000);})`);
@@ -23,9 +62,20 @@ app.whenReady().then(async () => {
     const origin = 'http://127.0.0.1:' + server.address().port;
     win = new BrowserWindow({ show: false, width: 1120, height: 880, skipTaskbar: true,
         webPreferences: { contextIsolation: false, nodeIntegration: false, sandbox: false, backgroundThrottling: false } });
-    const errors = [];
-    win.webContents.on('console-message', (event, level, message) => { if (level >= 3) { errors.push(message); console.error('Renderer:', message); } });
+    win.webContents.on('console-message', event => diagnostics.log(event.level, event.message));
+    win.webContents.on('render-process-gone', (_event, details) => diagnostics.error(new Error('Renderer process gone: ' + JSON.stringify(details))));
+    win.webContents.debugger.attach('1.3');
+    win.webContents.debugger.on('message', (_event, method, params) => {
+        if (method === 'Runtime.exceptionThrown') {
+            const detail = params.exceptionDetails;
+            diagnostics.error(new Error(detail.exception?.description || detail.text));
+        } else if (method === 'Runtime.consoleAPICalled' && params.type === 'error') {
+            diagnostics.consoleError(params.args);
+        }
+    });
+    const runtimeCapture = win.webContents.debugger.sendCommand('Runtime.enable');
     await win.loadURL(origin + '/voice_clone?lanlan_name=Test');
+    await runtimeCapture;
     await waitFor("typeof window.t==='function' && document.getElementById('voiceProvider').value==='cosyvoice' && !document.getElementById('importExistingVoice').hidden && !document.getElementById('importExistingVoice').disabled");
     const entryPlacement = await run("(()=>{const button=document.getElementById('importExistingVoice').getBoundingClientRect();const select=document.querySelector('.remote-voice-provider-controls .api-provider-dropdown').getBoundingClientRect();return button.left>=select.right-1 && Math.abs(button.top-select.top)<12;})()");
     if (!entryPlacement) {
@@ -97,22 +147,14 @@ app.whenReady().then(async () => {
     win.setSize(1120, 880);
     const races = await verifyVoiceRaces({ run, waitFor, state });
     await win.loadURL(origin + '/api_key');
-    await waitFor("document.getElementById('doubaoVoiceManagementAccessKey') && document.getElementById('doubaoVoiceManagementAccessKey').dataset.maskedSecret==='true'");
-    assert.equal(await run("getRealKey(document.getElementById('doubaoVoiceManagementAccessKey'))"), '__NEKO_SECRET_MASKED__');
-    assert.equal(await run("document.getElementById('doubaoVoiceManagementSecretKey').dataset.realKey"), '');
-    await run("document.getElementById('doubaoVoiceManagementProjectName').value='Controlled Project';document.getElementById('api-key-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));true;");
-    await waitFor("document.getElementById('warning-modal').style.display==='flex'");
-    await run("confirmApiKeyChange();true;");
-    await waitFor("!document.getElementById('main-content').inert && document.getElementById('status').textContent.length>0");
-    assert.equal(state.settings.length, 1);
-    assert.equal(state.settings[0].doubaoVoiceManagementAccessKey, '__NEKO_SECRET_MASKED__');
-    assert.equal(state.settings[0].doubaoVoiceManagementSecretKey, '__NEKO_SECRET_MASKED__');
-    assert.equal(state.settings[0].doubaoVoiceManagementProjectName, 'Controlled Project');
-    console.log(JSON.stringify({ electron: process.versions.electron, chromium: process.versions.chrome,
+    const managementSettings = await verifyManagementSettings({ run, waitFor, state });
+    diagnostics.assertClean();
+    const result = { electron: process.versions.electron, chromium: process.versions.chrome,
         actualProductAssets: true, controlledApiOnly: true, importWithoutBinding: true, localReferenceBinding: true,
-        ...races,
+        ...races, ...managementSettings,
         originalRemoteIdVisible: true, manualImport: true, uncertainUpdateNoRetry: true, explicitStatusRefresh: true,
-        keyboardImeAndFocus: true, narrowWindow: true, tutorialDeferredAndResumed: true, maskedManagementCredentialRoundTrip: true,
-        listScreenshot, manualScreenshot, narrowScreenshot, consoleErrors: errors }, null, 2));
-    clearTimeout(watchdog); win.destroy(); server.close(); app.quit();
-}).catch(error => { console.error(error); clearTimeout(watchdog); if (win) win.destroy(); server.close(); app.exit(1); });
+        keyboardImeAndFocus: true, narrowWindow: true, tutorialDeferredAndResumed: true,
+        listScreenshot, manualScreenshot, narrowScreenshot };
+    console.log(JSON.stringify(result, null, 2));
+    await finish(0, result);
+}).catch(error => { void finish(1, undefined, error); });

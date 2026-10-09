@@ -354,7 +354,6 @@ class PromotionMergeMixin:
         skip_retry_pending per §3.9.4.
         """
         from config.prompts.prompts_memory import get_promotion_merge_prompt
-        from utils.llm_client import create_chat_llm_async
 
         now = datetime.now()
         # Build the impression pool block with stable ordering — protected
@@ -407,21 +406,13 @@ class PromotionMergeMixin:
         # （persona pollution），已有 throttle/backoff/dead-letter 兜底，开
         # thinking 完全在收益侧。LLM 调用本身在锁外（pre/post 短临界区分别拿
         # reflection 锁做 stamp 和 CAS），所以 90s 不阻塞同角色其他 reflection 写。
-        # max_retries=0: 禁 SDK 自动重试，由 throttle/dead-letter 兜底。
-        # extra_body=None: 显式开 thinking。
-        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-        llm = await create_chat_llm_async(
-            api_config['model'],
-            api_config['base_url'], api_config['api_key'],
-            timeout=90, max_retries=0,
-            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
-            extra_body=None,
-            provider_type=api_config.get('provider_type'),
+        # 不做 SDK 自动重试，由 throttle/dead-letter 兜底；显式开 thinking，
+        # 额度与回退见 memory.thinking_llm。
+        from memory.thinking_llm import ainvoke_thinking
+        resp, _ = await ainvoke_thinking(
+            api_config, prompt, timeout=90,
+            call_label=f"{lanlan_name} memory_promote_merge",
         )
-        try:
-            resp = await llm.ainvoke(prompt)
-        finally:
-            await llm.aclose()
         raw = resp.content.strip()
         if raw.startswith("```"):
             raw = raw.replace("```json", "").replace("```", "").strip()

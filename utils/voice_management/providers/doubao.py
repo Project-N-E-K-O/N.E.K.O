@@ -82,7 +82,7 @@ class DoubaoVoiceAdapter(ImportOnlyAdapter):
         return {"doubao_base_url": runtime.base_url, "doubao_resource_id": runtime.resource_id, "clone_model": runtime.resource_id}
 
     def manual_fields(self, runtime):
-        return [{"key": "doubao_resource_id", "label_key": "voice.remote.resource", "required": True, "default_value": runtime.resource_id}]
+        return [{"key": "doubao_resource_id", "label_key": "voice.remote.resource", "required": True, "readonly": True, "default_value": runtime.resource_id}]
 
     def compare_revisions(self, current, previous):
         # AppID and ProjectName APIs document V1 and v1 respectively; both
@@ -191,11 +191,17 @@ class DoubaoVoiceAdapter(ImportOnlyAdapter):
         client = DoubaoVoiceCloneClient(runtime.api_key, base_url=runtime.base_url, resource_id=runtime.resource_id)
         try:
             returned = await client.clone_voice(io.BytesIO(audio), speaker_id=voice_id, display_name=current.name, audio_format="wav")
-        except DoubaoTtsError:
+        except DoubaoTtsError as exc:
             # Existing client errors contain response bodies; never forward their text.
-            # This legacy client does not expose the response status/code as
-            # structured fields; fail closed rather than infer non-commit.
-            raise VoiceManagementError("UPDATE_OUTCOME_UNKNOWN", 502) from None
+            # Keep bounded structural diagnostics, never the response message.
+            # No v3 error code currently has a verified non-acceptance contract.
+            diagnostics = {"http_status": exc.http_status}
+            code = exc.business_code
+            if isinstance(code, int) or (isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", code)):
+                diagnostics["business_code"] = code
+            raise VoiceManagementError("UPDATE_OUTCOME_UNKNOWN", 502, {
+                "attempt_outcome": "unknown", "provider_error": diagnostics,
+            }) from None
         if returned != voice_id:
             raise VoiceManagementError("UPDATE_OUTCOME_UNKNOWN", 502)
         try:

@@ -2692,3 +2692,359 @@ async def test_expired_state_is_kept_for_checking_a_lone_ownerless_upload(tmp_pa
     # 第一遍回收不能先删 state.json：只剩上传文件时要拿它核对身份、给无主文件补账号
     (visit_id, doc), = uploads.calls
     assert doc["own_visit_uid"] == OWN_A
+
+
+async def test_terminal_rejection_leaves_another_accounts_report_unmarked(tmp_path):
+    v = vid(104)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    sealed_doc = _sealed(v)
+    sealed = d / f"{v}.upload.json"
+    sealed.write_text(json.dumps(sealed_doc), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    other = "f" * 24
+    assert sealed_doc.get("own_visit_uid") and sealed_doc["own_visit_uid"] != other
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": other}), encoding="utf-8")
+
+    async def reject(_visit_id, _doc):
+        return "parts_out_of_range"
+
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
+    for _visit_id, doc in reports.calls:
+        assert "transcript_unavailable" not in doc        # 共用电脑上另一账号的举报不带这份转录的原因
+    on_disk = json.loads((reports_dir / f"{v}.json").read_text(encoding="utf-8")) \
+        if (reports_dir / f"{v}.json").exists() else {}
+    assert "transcript_unavailable" not in on_disk
+
+
+
+async def test_an_unverified_reason_is_not_attached_to_another_accounts_report(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+
+    v = vid(105)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    (d / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    other = "f" * 24
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": other}), encoding="utf-8")
+    def unreadable(*_a, **_k):
+        raise OSError("in use")                              # 核对归属时读不了举报
+
+    monkeypatch.setattr(recovery, "_mark_report_sync", unreadable)
+
+    async def reject(_visit_id, _doc):
+        return "parts_out_of_range"
+
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
+    assert any(visit_id == v for visit_id, _doc in reports.calls), "目标举报必须提交"
+    for _visit_id, doc in reports.calls:
+        assert "transcript_unavailable" not in doc          # 提交前复核：属于另一账号的举报不带原因
+
+
+
+@pytest.mark.parametrize("damage", ["sealed_only", "stream_only"])
+async def test_a_corrupt_upload_leaves_another_accounts_report_unmarked(tmp_path, damage):
+    v = vid(106)
+    await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_A)
+    d = _spool_dir(tmp_path)
+    if damage == "sealed_only":
+        (d / f"{v}.upload.json").write_text("{torn", encoding="utf-8")
+    else:
+        _write_stream(tmp_path, v, [{"kind": "line"}])                       # 流水没有头行：损坏
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    other = "f" * 24
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": other}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
+    # 损坏的是 OWN_A 那一侧的转录：另一账号排的举报不带这个原因
+    for _visit_id, doc in reports.calls:
+        assert "transcript_unavailable" not in doc
+    if (reports_dir / f"{v}.json").exists():
+        assert "transcript_unavailable" not in json.loads((reports_dir / f"{v}.json").read_text(encoding="utf-8"))
+
+
+
+async def test_a_transiently_unreadable_upload_rearms_the_background_retry(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+
+    v = vid(107)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    (d / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    real_load = recovery._load_json
+
+    def locked(path):
+        if path.name == f"{v}.upload.json":
+            raise PermissionError("in use")                   # Windows 共享冲突
+        return real_load(path)
+
+    monkeypatch.setattr(recovery, "_load_json", locked)
+    armed = []
+    pending = await recovery._upload_pending(
+        tmp_path, live=lambda _v: False, upload_transcript=Uploads(), submit_report=None,
+        report=recovery.RecoveryReport(), retry_later=armed.append,
+    )
+    assert v in pending and armed == [v]
+
+
+async def test_an_expired_upload_leaves_another_accounts_report_unmarked(tmp_path):
+    v = vid(108)
+    await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_A)
+    d = _spool_dir(tmp_path)
+    sealed = d / f"{v}.upload.json"
+    sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    old = time.time() - 8 * 86400
+    os.utime(sealed, (old, old))
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": "f" * 24}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
+    # 到期放弃的是 OWN_A 那一侧的转录：另一账号排的举报不带这个原因
+    assert not sealed.exists()
+    assert any(visit_id == v for visit_id, _doc in reports.calls)
+    for _visit_id, doc in reports.calls:
+        assert "transcript_unavailable" not in doc
+
+
+@pytest.mark.parametrize("beside", ["nothing", "corrupt_sealed"])
+async def test_a_transient_seal_failure_rearms_the_retry_only_for_a_lone_stream(tmp_path, monkeypatch, beside):
+    from main_logic.visit import recovery
+
+    v = vid(109)
+    _write_stream(tmp_path, v, _stream_records(v))
+    if beside == "corrupt_sealed":
+        (_spool_dir(tmp_path) / f"{v}.upload.json").write_text("{torn", encoding="utf-8")
+
+    def locked(*_a, **_k):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(recovery, "_seal_stream_sync", locked)
+    armed = []
+    pending = await recovery._upload_pending(
+        tmp_path, live=lambda _v: False, upload_transcript=Uploads(), submit_report=None,
+        report=recovery.RecoveryReport(), retry_later=armed.append,
+    )
+    # 只剩流水：后台会从流水重封；旁边有坏封存文件：后台重封不了，不白排一个立刻退出的重试
+    assert v in pending and armed == ([v] if beside == "nothing" else [])
+
+
+async def test_another_accounts_pending_upload_does_not_hold_back_a_report(tmp_path):
+    v = vid(110)
+    await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_A)
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": "f" * 24}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
+    # 待传的是 OWN_A 那一侧的转录：另一账号的附转录举报不等它
+    assert [visit_id for visit_id, _doc in reports.calls] == [v]
+
+
+
+async def test_the_report_gate_reads_the_owner_from_the_upload_when_state_is_gone(tmp_path):
+    v = vid(111)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    newer = {**_sealed(v), "v": 99, "own_visit_uid": OWN_A}           # 新版本写的、本版本留着不动
+    (d / f"{v}.upload.json").write_text(json.dumps(newer), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": "f" * 24}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
+    # 没有 state.json：归属从封存文件里取，另一账号的附转录举报不等这份
+    assert [visit_id for visit_id, _doc in reports.calls] == [v]
+
+
+
+async def test_the_report_gate_prefers_the_owner_named_by_the_upload_itself(tmp_path):
+    v = vid(112)
+    await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_B)                   # state.json 记的是 B
+    newer = {**_sealed(v), "v": 99, "own_visit_uid": OWN_A}                 # 留着的新版本转录是 A 的
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(newer), encoding="utf-8")
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": OWN_A}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
+    # 待传的是 A 自己那一侧的转录：A 的附转录举报照样等它，不能按 state.json 的 B 放行
+    assert reports.calls == []
+
+
+
+async def test_the_report_gate_ignores_the_owner_of_a_file_from_another_visit(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+
+    v = vid(113)
+    await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_B)
+    wrong = {**_sealed(vid(114)), "own_visit_uid": OWN_A}                    # 别场的文件，写着 A
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(wrong), encoding="utf-8")
+
+    async def undeletable(_spool_dir, _visit_id):
+        return False                                                    # 一时删不掉，留着待处理
+
+    monkeypatch.setattr(recovery, "_drop_corrupt_sealed", undeletable)
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": OWN_B}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
+    # 别场文件里写的 A 不算：按 state.json 的 B，B 的附转录举报照旧等
+    assert reports.calls == []
+
+
+
+async def test_an_expired_self_contained_upload_keeps_its_owner_for_the_report(tmp_path):
+    v = vid(115)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    sealed = d / f"{v}.upload.json"
+    sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")       # 自带 A 的归属，没有 state.json
+    old = time.time() - 8 * 86400
+    os.utime(sealed, (old, old))
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": "f" * 24}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
+    # 到期放弃的是 A 的转录（归属在删之前取）：另一账号的举报不带这个原因
+    assert not sealed.exists()
+    assert [visit_id for visit_id, _doc in reports.calls] == [v]
+    assert all("transcript_unavailable" not in doc for _visit_id, doc in reports.calls)
+
+
+
+async def test_the_report_gate_uses_the_state_owner_for_a_rejected_current_file(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+
+    v = vid(116)
+    await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_B)                   # state.json 记的是 B
+    conflicting = {**_sealed(v), "own_visit_uid": OWN_A}                     # 本场格式，却写着 A
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(conflicting), encoding="utf-8")
+
+    async def undeletable(_spool_dir, _visit_id):
+        return False
+
+    monkeypatch.setattr(recovery, "_drop_corrupt_sealed", undeletable)
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": OWN_B}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
+    # 与 state.json 对不上的文件被拒：按 state 的 B 算，B 的附转录举报照旧等，不当作别人的转录放行
+    assert reports.calls == []
+
+
+
+async def test_a_transiently_unreadable_queued_report_rearms_the_retry(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+
+    v = vid(117)
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": False, "own_visit_uid": OWN_A}), encoding="utf-8")
+    real_load = recovery._load_json
+
+    def locked(path):
+        if path.parent.name == "visit_reports":
+            raise PermissionError("in use")
+        return real_load(path)
+
+    monkeypatch.setattr(recovery, "_load_json", locked)
+    armed, reports = [], Reports()
+    await recovery._submit_reports(tmp_path, skip=set(), submit_report=reports,
+                                   report=recovery.RecoveryReport(), retry_later=armed.append)
+    # 只交举报、没有上传任务的场次：一时读不了就交给后台，不等下次启动
+    assert reports.calls == [] and armed == [v]
+
+
+
+async def test_an_upload_callback_failing_before_its_own_scheduling_rearms_the_retry(tmp_path):
+    from main_logic.visit import recovery
+
+    v = vid(118)
+    d = _spool_dir(tmp_path)
+    d.mkdir(parents=True)
+    (d / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
+
+    async def setup_failed(_visit_id, _doc):
+        raise PermissionError("progress file in use")                   # 回调自己排重试之前就出错
+
+    armed = []
+    pending = await recovery._upload_pending(
+        tmp_path, live=lambda _v: False, upload_transcript=setup_failed, submit_report=None,
+        report=recovery.RecoveryReport(), retry_later=armed.append,
+    )
+    assert v in pending and armed == [v]
+
+
+
+async def test_a_lone_streams_header_names_the_pending_owner(tmp_path):
+    from main_logic.visit import recovery
+
+    v = vid(119)
+    _write_stream(tmp_path, v, _stream_records(v))                       # 没有 state.json、没有封存文件
+    assert await recovery._pending_upload_owner(tmp_path, v) == OWN_A
+    other = vid(120)
+    _write_stream(tmp_path, other, [_header(v)])                         # 头行写的是别场
+    assert await recovery._pending_upload_owner(tmp_path, other) is None
+
+
+
+async def test_recovery_does_not_mark_a_transcript_free_report(tmp_path):
+    from main_logic.visit import recovery
+
+    v = vid(121)
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    path = reports_dir / f"{v}.json"
+    path.write_text(json.dumps({"visit_id": v, "include_transcript": False, "own_visit_uid": OWN_A}),
+                    encoding="utf-8")
+    report = recovery.RecoveryReport()
+    await recovery._mark_report_transcript_unavailable(tmp_path, v, "expired", report)
+    assert "transcript_unavailable" not in json.loads(path.read_text(encoding="utf-8"))
+    assert v not in report.transcript_unavailable
+
+
+
+async def test_a_corrupt_streams_header_owner_guards_another_accounts_report(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+
+    v = vid(122)
+    _write_stream(tmp_path, v, [{**_header(v), "transport": 42}, {"kind": "line"}])   # 头行归属有效、其余坏了
+    reports_dir = tmp_path / "visit_reports"
+    reports_dir.mkdir()
+    (reports_dir / f"{v}.json").write_text(
+        json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": "f" * 24}), encoding="utf-8")
+    reports = Reports()
+    await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
+    # 没有 state.json：归属按流水头的 OWN_A 记，另一账号的举报不带「corrupt」
+    for _visit_id, doc in reports.calls:
+        assert "transcript_unavailable" not in doc
+
+
+def test_a_transcript_line_that_cannot_be_written_is_corrupt():
+    from main_logic.visit import recovery
+
+    line = {"lp": 1, "side": "host", "from": "own_cat", "ts": 1.0, "text": "ok", "truncated": False}
+    assert recovery._valid_line(line) is True
+    assert recovery._valid_line({**line, "text": "x" + chr(0xD800)}) is False

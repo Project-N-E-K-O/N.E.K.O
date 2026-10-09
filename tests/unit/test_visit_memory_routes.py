@@ -35,7 +35,7 @@ from main_logic.visit.subjects import (
     participant_subject,
 )
 from main_routers.system_router import AUTOSTART_CSRF_TOKEN
-from main_routers.visit_router import memory_routes
+from main_routers.visit_router import local_guard, memory_routes
 from tests.fastapi_routes import iter_routes
 from tests.unit.visit_memory_test_helpers import (
     CHAR_UID_A,
@@ -294,8 +294,8 @@ def test_forget_voids_unwritten_debriefs_of_that_person(env):
 
 def test_ipv4_mapped_loopback_is_local(env):
     client, *_ = env
-    assert memory_routes._is_loopback("::ffff:127.0.0.1")
-    assert not memory_routes._is_loopback("::ffff:192.168.1.20")
+    assert local_guard.is_loopback_host("::ffff:127.0.0.1")
+    assert not local_guard.is_loopback_host("::ffff:192.168.1.20")
     mapped = TestClient(client.app, client=("::ffff:127.0.0.1", 5000))
     assert mapped.get("/api/visit/memory/peers?catgirl=A", headers=GOOD).status_code == 200
 

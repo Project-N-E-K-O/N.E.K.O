@@ -81,7 +81,7 @@ def create_app() -> FastAPI:
         JavaScript boots and hydrates each workspace.
         """
         return templates.TemplateResponse(
-            "index.html",
+            request, "index.html",
             {
                 "request": request,
                 "app_name": "N.E.K.O. Testbench",

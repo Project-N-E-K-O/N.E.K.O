@@ -25,6 +25,7 @@ CONFIG = {'model': 'qwen3.8-flash', 'base_url': 'https://trial.cn-beijing.maas.a
 @pytest.mark.parametrize('changes,enabled', [
     ({}, True),
     ({'model': 'qwen3.8-max'}, True),
+    ({'model': 'qwen3.8-omni-flash'}, True),
     ({'model': 'qwen3.8-flash-2026-09-01'}, True),
     ({'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1/'}, True),
     ({'model': 'qwen3.5-flash'}, False),

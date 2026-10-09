@@ -2,6 +2,8 @@
 
 from urllib.parse import quote
 
+from utils.tts.providers.elevenlabs import ELEVENLABS_TTS_PREVIEW_MODEL
+
 from ..types import ManagementCapabilities, RemoteVoice, VoiceManagementError, VoicePage
 from ._shared import ImportOnlyAdapter, filter_voices, remote_date, request_json, runtime_for, voice_rows
 
@@ -11,7 +13,7 @@ class ElevenLabsVoiceAdapter(ImportOnlyAdapter):
     capabilities = ManagementCapabilities(list_voices=True, details=True, overwrite=False)
 
     def resolve_runtime(self, config_manager, *, voice_data=None):
-        return runtime_for(self.provider, config_manager.get_tts_api_key(self.provider), "https://api.elevenlabs.io", model="eleven_v3")
+        return runtime_for(self.provider, config_manager.get_tts_api_key(self.provider), "https://api.elevenlabs.io", model=ELEVENLABS_TTS_PREVIEW_MODEL)
 
     def import_metadata(self, runtime):
         return {"elevenlabs_base_url": runtime.base_url}

@@ -115,7 +115,8 @@ class _VerifiedAssetFileResponse(FileResponse):
             raise RangeNotSatisfiable(file_size)
         return FileResponse._parse_range_header(http_range, file_size)
 
-    async def _handle_simple(self, send, send_header_only: bool) -> None:
+    async def _handle_simple(self, send, send_header_only: bool, send_pathsend: bool = False) -> None:
+        # Path-send reopens the file; serve the bytes already verified instead.
         await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})
         body = b"" if send_header_only else self._verified_content
         await send({"type": "http.response.body", "body": body, "more_body": False})
@@ -137,9 +138,9 @@ class _VerifiedAssetFileResponse(FileResponse):
             ranges, boundary, file_size, self.headers["content-type"]
         )
         body = b"".join(
-            header(start, end) + self._verified_content[start:end] + b"\n"
+            header(start, end) + self._verified_content[start:end] + b"\r\n"
             for start, end in ranges
-        ) + f"\n--{boundary}--\n".encode("latin-1")
+        ) + f"--{boundary}--".encode("latin-1")
         self.headers["content-type"] = f"multipart/byteranges; boundary={boundary}"
         self.headers["content-length"] = str(len(body))
         await send({"type": "http.response.start", "status": 206, "headers": self.raw_headers})

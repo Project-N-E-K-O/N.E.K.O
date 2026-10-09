@@ -621,7 +621,7 @@ class _ResponseMixin:
         #   pre_commit（dispatch、_worker_send 之前）—— 覆盖 arbiter 内部的等待
         #     （等活跃响应结束、等发送信号量），那段窗口调用方够不着。
         # 两次都只摘图、保留 transcript，不走"整条拒"：拒是**提交之后**才发生的，
-        # 要付一次未经确认的补偿删除（issue #2982）。
+        # 要等待补偿删除确认后才能降级（issue #2982）。
         _downgrade_if_visual_ownership_lost(item_event)
 
         item_payload = json.dumps(item_event)
@@ -655,7 +655,7 @@ class _ResponseMixin:
         # 时机不同，admission_check 覆盖不了这一段。
         #
         # 就地摘掉图片、保留 transcript，而不是让 admission_check 去拒整条：
-        # 那是**提交之后**才拒，需要一次未经确认的补偿删除（见 issue #2982），
+        # 那是**提交之后**才拒，需要等待补偿删除确认（见 issue #2982），
         # 比在提交前把帧摘掉贵得多。丢帧只降级成纯文本，话照送。
         arbiter = self._ensure_response_arbiter()
         # send_event's boolean is the only place the transport ever says "these

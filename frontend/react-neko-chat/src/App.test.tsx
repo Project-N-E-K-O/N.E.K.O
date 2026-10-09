@@ -8248,7 +8248,7 @@ describe('App', () => {
   it('keeps compact tool wheel detent audio silent for an empty URL and plays every detent when configured', () => {
     const playSfx = vi.fn();
     const preloadSfx = vi.fn();
-    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
+    const GameAudioSystem = vi.fn().mockImplementation(function () { return { playSfx, preloadSfx }; });
     (window as Window & {
       NekoGameSystem?: {
         GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof preloadSfx };
@@ -8281,7 +8281,7 @@ describe('App', () => {
     const malformedAudioSystems: unknown[] = [
       {},
       { GameAudioSystem: 'not-a-constructor' },
-      { GameAudioSystem: vi.fn().mockImplementation(() => ({})) },
+      { GameAudioSystem: vi.fn().mockImplementation(function () { return {}; }) },
     ];
 
     malformedAudioSystems.forEach(audioSystemShape => {
@@ -8302,7 +8302,7 @@ describe('App', () => {
   it('preloads compact tool wheel sounds when the chat UI mounts before the wheel opens', async () => {
     const playSfx = vi.fn();
     const preloadSfx = vi.fn();
-    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
+    const GameAudioSystem = vi.fn().mockImplementation(function () { return { playSfx, preloadSfx }; });
     (window as Window & {
       NekoGameSystem?: {
         GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof preloadSfx };
@@ -8330,7 +8330,7 @@ describe('App', () => {
     vi.useFakeTimers();
     const playSfx = vi.fn();
     const preloadSfx = vi.fn();
-    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
+    const GameAudioSystem = vi.fn().mockImplementation(function () { return { playSfx, preloadSfx }; });
 
     try {
       render(
@@ -8367,8 +8367,8 @@ describe('App', () => {
     const secondPreloadSfx = vi.fn();
     const playSfx = vi.fn();
     const GameAudioSystem = vi.fn()
-      .mockImplementationOnce(() => ({ playSfx, preloadSfx: firstPreloadSfx }))
-      .mockImplementationOnce(() => ({ playSfx, preloadSfx: secondPreloadSfx }));
+      .mockImplementationOnce(function () { return { playSfx, preloadSfx: firstPreloadSfx }; })
+      .mockImplementationOnce(function () { return { playSfx, preloadSfx: secondPreloadSfx }; });
     (window as Window & {
       NekoGameSystem?: {
         GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof secondPreloadSfx };
@@ -8400,7 +8400,7 @@ describe('App', () => {
 
   it('uses the configured compact tool wheel prompt sound', () => {
     const playSfx = vi.fn();
-    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx }));
+    const GameAudioSystem = vi.fn().mockImplementation(function () { return { playSfx }; });
     (window as Window & {
       NekoGameSystem?: {
         GameAudioSystem: new () => { playSfx: typeof playSfx };
@@ -8433,7 +8433,7 @@ describe('App', () => {
   it('keeps compact tool wheel rebound audio disabled', () => {
     const playSfx = vi.fn();
     const preloadSfx = vi.fn();
-    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
+    const GameAudioSystem = vi.fn().mockImplementation(function () { return { playSfx, preloadSfx }; });
     (window as Window & {
       NekoGameSystem?: {
         GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof preloadSfx };
@@ -8683,7 +8683,7 @@ describe('App', () => {
     vi.useFakeTimers();
     const playSfx = vi.fn();
     const preloadSfx = vi.fn();
-    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
+    const GameAudioSystem = vi.fn().mockImplementation(function () { return { playSfx, preloadSfx }; });
     (window as Window & {
       NekoGameSystem?: {
         GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof preloadSfx };

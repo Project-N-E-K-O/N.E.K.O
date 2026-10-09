@@ -78,6 +78,13 @@ EXTRA_BODY_OPENROUTER = {"reasoning": {"effort": "none"}}
 # OpenRouter: effort none→low（开思考但取最低努力档）。
 EXTRA_BODY_OPENROUTER_THINKING = {"reasoning": {"effort": "low"}}
 
+# OpenRouter 上的 Gemini 3.5 起思考不能关：发 effort=none 直接 400
+# "Reasoning is mandatory for this endpoint and cannot be disabled."。
+# minimal 实测思考 0 token，作为 none 的替代；凝神照样翻成 low。
+# 实测（2026-10-07）：google/gemini-3.5-flash / 3.6-flash / 3.8-flash 拒 none；
+# 3.1-flash-lite / 3-flash-preview 仍接受 none，留在 EXTRA_BODY_OPENROUTER。
+EXTRA_BODY_OPENROUTER_MINIMAL = {"reasoning": {"effort": "minimal"}}
+
 # MiniMax 的 reasoning_split 只控制思考的「输出格式」，不是 on/off 开关：M2.x 始终
 # 内部推理、无法关闭；True=思考走独立 reasoning_details 字段，False/省略=思考以 <think>
 # 标签嵌进 content。凝神保持 True（不收录进下方 _THINKING_ENABLE_FORM 即「不翻」）：
@@ -125,6 +132,10 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "qwen3.7-flash": EXTRA_BODY_OPENAI,
     "qwen3.7-flash-2026-07-15": EXTRA_BODY_OPENAI,
     "qwen3.8-flash": EXTRA_BODY_OPENAI,
+    # 全模态非实时版（实时版带 -realtime 后缀，走 WebSocket，不经这张表）：
+    # 协议跟普通文本模型一样，只是输入多了音视频，输出只有文本；默认开思考，
+    # enable_thinking=False 生效（实测 2026-10-07）。
+    "qwen3.8-omni-flash": EXTRA_BODY_OPENAI,
     # GLM 系列
     "glm-4.5-air": EXTRA_BODY_CLAUDE,
     "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
@@ -188,12 +199,16 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "gemini-3-flash-preview": EXTRA_BODY_GEMINI_3,
     "gemini-3.1-flash-lite": EXTRA_BODY_GEMINI_3,
     "gemini-3.5-flash": EXTRA_BODY_GEMINI_3,
+    "gemini-3.6-flash": EXTRA_BODY_GEMINI_3,
+    "gemini-3.8-flash": EXTRA_BODY_GEMINI_3,
     # OpenRouter 格式 (provider/model) — OpenRouter 使用统一的 reasoning 参数
     "google/gemini-2.5-flash": EXTRA_BODY_OPENROUTER,
     "google/gemini-2.5-flash-lite": EXTRA_BODY_OPENROUTER,
     "google/gemini-3-flash-preview": EXTRA_BODY_OPENROUTER,
     "google/gemini-3.1-flash-lite": EXTRA_BODY_OPENROUTER,
-    "google/gemini-3.5-flash": EXTRA_BODY_OPENROUTER,
+    "google/gemini-3.5-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
+    "google/gemini-3.6-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
+    "google/gemini-3.8-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
     "qwen/qwen3.5-9b": EXTRA_BODY_OPENROUTER,
 }
 
@@ -231,6 +246,7 @@ _THINKING_ENABLE_FORM: dict[int, dict] = {
     id(EXTRA_BODY_GEMINI): EXTRA_BODY_GEMINI_THINKING,
     id(EXTRA_BODY_GEMINI_3): EXTRA_BODY_GEMINI_3_THINKING,
     id(EXTRA_BODY_OPENROUTER): EXTRA_BODY_OPENROUTER_THINKING,
+    id(EXTRA_BODY_OPENROUTER_MINIMAL): EXTRA_BODY_OPENROUTER_THINKING,
 }
 
 # model → 凝神 extra_body，与 MODELS_EXTRA_BODY_MAP 同源派生（共用 model 列表，不会
@@ -255,7 +271,8 @@ def focus_extra_body(model: str) -> dict | None:
       - thinking.type: disabled -> enabled              (GLM / Kimi / Doubao / Claude / free)
       - thinking_budget: 0 -> 800 (low fixed budget)    (Gemini 2.5)
       - thinking_level low (kept minimal), include_thoughts->True (Gemini 3)
-      - reasoning.effort: none -> low                   (OpenRouter)
+      - reasoning.effort: none|minimal -> low           (OpenRouter; minimal
+        for Gemini 3.5+ there, which rejects none)
       - reasoning_effort: none|minimal -> low           (OpenAI native; the
         floor differs per model, low is the one both generations accept)
       - reasoning_effort: low kept (cannot disable)     (Step flash / step-5-preview)
@@ -271,6 +288,49 @@ def focus_extra_body(model: str) -> dict | None:
     # (Gemini's thinking_config); a caller mutating the result must not poison
     # the registry. Cheap — focus_extra_body runs once per focus turn.
     return copy.deepcopy(enabled) if enabled else None
+
+
+# 记忆系统里有意开思考的后台调用（审阅、信号检测、refine、反思合成…）默认不发
+# extra_body，让模型走原生思考。原生思考常常没有边：大到撞输出额度或超时，所以
+# 按端点显式压一档（登记在 CacheProviderConfig.memory_thinking_extra_body）。
+# 压思考的旋钮是**端点**的方言，不是模型的：同一个 deepseek-v4-flash，官方认
+# reasoning_effort，百炼只认 thinking_budget（发 reasoning_effort 被忽略，思考反而
+# 6.4k~7.6k）。按端点登记也让 deepseek-v4-flash-0731 这类快照名天然命中。
+# 实测（2026-10-07/08，同一条推理题 / 信号检测提示词）：
+#   - DeepSeek 官方：默认思考 5.4k~6.5k；reasoning_effort=low 降到 2.0k~2.4k
+#     （minimal 反而 3.4k~4.2k，不稳定，不用）。思考默认就开，不必再发 thinking。
+#   - 百炼（DashScope）：thinking_budget 对 qwen3.7/3.8、omni、max、百炼上的
+#     DeepSeek 都精确生效；对不开思考的模型（qwen-plus）无作用、不报错，也不会
+#     把思考打开。不发参数时 qwen3.7-flash 思考打满 8192，DeepSeek 快照版到 12k。
+#   - 硅基流动：max_tokens 只封正文，不发参数时思考跑到请求超时；必须
+#     enable_thinking + thinking_budget 才封得住（只发 thinking_budget 会让 DeepSeek
+#     系直接不思考）。对不支持思考的模型（Ling-mini-2.0 / Qwen2.5-7B-Instruct /
+#     GLM-4-9B-0414 / DeepSeek-V3）enable_thinking 被忽略、不报错、不产生思考；
+#     实测的混合模型（Qwen3-8B、DeepSeek-V3.2 / V4-Flash、Qwen3.5）原生默认就开
+#     思考，所以按端点下发不会把关着的思考打开（2026-10-08）。
+# 预算取共享输出护栏同值，给 8192 额度里的 JSON 正文留出至少一半。
+# 未登记的端点保持原样（返回 None = 不发 extra_body = 原生思考）。
+EXTRA_BODY_DEEPSEEK_MEMORY_THINKING = {"reasoning_effort": "low"}
+EXTRA_BODY_DASHSCOPE_MEMORY_THINKING = {"thinking_budget": 4096}
+EXTRA_BODY_SILICON_MEMORY_THINKING = {"enable_thinking": True, "thinking_budget": 4096}
+
+
+def memory_thinking_extra_body(base_url: str | None, output_cap: int) -> dict | None:
+    """extra_body for a memory call that deliberately keeps thinking on.
+
+    Resolved per endpoint (see ``CacheProviderConfig.memory_thinking_extra_body``).
+    ``None`` means "send no extra_body" (the model's native thinking), which is
+    what those call sites did before. A ``thinking_budget`` is clamped to half
+    of ``output_cap`` so the answer keeps room when the request falls back to
+    a smaller cap on endpoints where the cap bounds thinking + answer."""
+    provider = resolve_cache_provider(base_url)
+    body = provider.memory_thinking_extra_body if provider is not None else None
+    if not body:
+        return None
+    body = copy.deepcopy(body)
+    if "thinking_budget" in body:
+        body["thinking_budget"] = min(body["thinking_budget"], max(1, output_cap // 2))
+    return body
 
 
 def leaks_thinking_in_content(model: str) -> bool:
@@ -290,6 +350,8 @@ def leaks_thinking_in_content(model: str) -> bool:
     # qwen3.8 is deliberately absent: on DashScope it streams reasoning via
     # ``reasoning_content`` with a clean ``content`` (checked 2026-09-27), and
     # the stripper would hold a clean Focus answer until the end of the stream.
+    # qwen3.8-omni-flash behaves the same with thinking on + streaming (checked
+    # 2026-10-08: reasoning only in ``reasoning_content``, no think tags in content).
     return any(tag in m for tag in ("qwen3.5", "qwen3.6", "qwen3.7"))
 
 
@@ -325,6 +387,20 @@ class CacheProviderConfig:
     auto_cache: bool = True
     cache_price: float = 0.10
     creation_price: float = 0.10
+    # OpenAI 兼容请求里输出上限用哪个字段。各家对两个字段的语义不一致
+    # （实测 2026-10-07，开思考）：
+    #   - max_completion_tokens：OpenAI 新规范，封「思考 + 正文」总量。
+    #     DeepSeek 官方 / GLM 官方 / 硅基流动不认，**静默忽略**，上限形同虚设。
+    #   - max_tokens：老字段。DeepSeek / GLM 当总量上限用；DashScope、Doubao、
+    #     硅基只拿它封正文，思考不受限；OpenAI 新模型直接 400。
+    # 所以默认留在 max_completion_tokens，只有不认它的厂商改发 max_tokens。
+    # 两个字段不能同时发：Doubao / Gemini / OpenAI 会 400。
+    # 百炼（DashScope）上 qwen 与 DeepSeek 实测都是 max_completion_tokens 封总量
+    # （2026-10-08），默认值即正确，不必登记。
+    token_limit_field: str = "max_completion_tokens"
+    # 记忆系统开思考调用压思考用的 extra_body（端点方言，见
+    # memory_thinking_extra_body 上方的实测记录）；None = 原生思考。
+    memory_thinking_extra_body: dict | None = None
 
     # 兼容测试里 config["xxx"] 字典式访问
     def __getitem__(self, key: str) -> Any:
@@ -339,6 +415,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
     # dict 顺序做 substring 匹配，区域域名需要先命中自己的配置。
     "qwen_intl": CacheProviderConfig(
         provider_id="qwen_intl",
+        memory_thinking_extra_body=EXTRA_BODY_DASHSCOPE_MEMORY_THINKING,
         name="阿里云 DashScope (Intl)",
         base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         base_url_pattern="dashscope-intl.aliyuncs.com",
@@ -354,6 +431,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
     ),
     "qwen_us": CacheProviderConfig(
         provider_id="qwen_us",
+        memory_thinking_extra_body=EXTRA_BODY_DASHSCOPE_MEMORY_THINKING,
         name="阿里云 DashScope (US)",
         base_url="https://dashscope-us.aliyuncs.com/compatible-mode/v1",
         base_url_pattern="dashscope-us.aliyuncs.com",
@@ -369,6 +447,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
     ),
     "qwen": CacheProviderConfig(
         provider_id="qwen",
+        memory_thinking_extra_body=EXTRA_BODY_DASHSCOPE_MEMORY_THINKING,
         name="阿里云 DashScope",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         base_url_pattern="dashscope.aliyuncs.com",
@@ -401,6 +480,20 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         requires_header=False,
         min_cache_tokens=1024,
         cached_token_field="cached_tokens",
+        token_limit_field="max_tokens",
+    ),
+    # 智谱国际站（Z.ai）：与 open.bigmodel.cn 同一套 API，同样静默忽略
+    # max_completion_tokens（实测 2026-10-08，glm-5.1 上限 300 实出 1,434）。
+    "glm_intl": CacheProviderConfig(
+        provider_id="glm_intl",
+        name="Z.ai GLM (Intl)",
+        base_url="https://api.z.ai/api/paas/v4",
+        base_url_pattern="api.z.ai",
+        cache_mode="auto",
+        requires_header=False,
+        min_cache_tokens=1024,
+        cached_token_field="cached_tokens",
+        token_limit_field="max_tokens",
     ),
     "step": CacheProviderConfig(
         provider_id="step",
@@ -414,6 +507,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
     ),
     "silicon": CacheProviderConfig(
         provider_id="silicon",
+        memory_thinking_extra_body=EXTRA_BODY_SILICON_MEMORY_THINKING,
         name="硅基流动 Silicon",
         base_url="https://api.siliconflow.cn/v1",
         base_url_pattern="api.siliconflow.cn",
@@ -421,6 +515,32 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         requires_header=False,
         min_cache_tokens=1024,
         cached_token_field="prompt_cache_hit_tokens",
+        token_limit_field="max_tokens",
+    ),
+    # 硅基国际站：按与国内站同一套实现处理（未实测，无可用 key）。
+    "silicon_intl": CacheProviderConfig(
+        provider_id="silicon_intl",
+        memory_thinking_extra_body=EXTRA_BODY_SILICON_MEMORY_THINKING,
+        name="SiliconFlow (Intl)",
+        base_url="https://api.siliconflow.com/v1",
+        base_url_pattern="api.siliconflow.com",
+        cache_mode="upstream",
+        requires_header=False,
+        min_cache_tokens=1024,
+        cached_token_field="prompt_cache_hit_tokens",
+        token_limit_field="max_tokens",
+    ),
+    "deepseek": CacheProviderConfig(
+        provider_id="deepseek",
+        memory_thinking_extra_body=EXTRA_BODY_DEEPSEEK_MEMORY_THINKING,
+        name="DeepSeek",
+        base_url="https://api.deepseek.com/v1",
+        base_url_pattern="api.deepseek.com",
+        cache_mode="auto",
+        requires_header=False,
+        min_cache_tokens=64,
+        cached_token_field="prompt_cache_hit_tokens",
+        token_limit_field="max_tokens",
     ),
     "gemini": CacheProviderConfig(
         provider_id="gemini",
@@ -503,3 +623,15 @@ def get_cache_kwargs(base_url: str | None) -> dict[str, Any]:
         "default_headers": headers,
         "enable_cache_control": provider.requires_body_flag,
     }
+
+
+def get_token_limit_field(base_url: str | None) -> str:
+    """Return the output-cap field an OpenAI-compatible endpoint honours.
+
+    Unknown endpoints keep ``max_completion_tokens`` (the OpenAI spec field);
+    see ``CacheProviderConfig.token_limit_field`` for the providers that ignore
+    it. Anthropic-protocol clients do not consult this."""
+    provider = resolve_cache_provider(base_url)
+    if provider is None:
+        return "max_completion_tokens"
+    return provider.token_limit_field

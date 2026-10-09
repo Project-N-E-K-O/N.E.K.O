@@ -2344,6 +2344,18 @@ function voicePreviewCacheIdentity(options) {
         : '';
 }
 
+// Preview owns its response until the complete body arrives. Do not swallow a
+// transport/abort error here: the attempt deadline and cancellation cover it too.
+async function readVoicePreviewResponse(response) {
+    const text = await response.text();
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+    if (contentType.includes('application/json') || /\+json(\s*;|\s*$)/.test(contentType)) {
+        try { return { data: JSON.parse(text), nonJson: false, text: '' }; }
+        catch (_) { /* Keep malformed JSON available for the existing diagnostic. */ }
+    }
+    return { data: null, nonJson: true, text };
+}
+
 async function playPreview(voiceId, btn, options = {}) {
     if (btn.disabled) return;
 
@@ -2405,6 +2417,7 @@ async function playPreview(voiceId, btn, options = {}) {
             const ttsMaxAttempts = isRealtimeRegisteredVoice ? 2 : 3;
             let lastTtsError = null;
             let response = null;
+            let result = null;
             for (let attempt = 1; attempt <= ttsMaxAttempts; attempt += 1) {
                 if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
                 response = null;
@@ -2416,14 +2429,23 @@ async function playPreview(voiceId, btn, options = {}) {
                         `/api/characters/voice_preview?voice_id=${encodeURIComponent(voiceId)}&language=${encodeURIComponent(previewLanguage)}`,
                         { signal: ctrl.signal }
                     );
+                    if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
+                    result = await readVoicePreviewResponse(response);
+                    if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
+                    ctrl.signal.throwIfAborted();
                     if (response.ok || response.status < 500 || attempt >= ttsMaxAttempts) break;
                     lastTtsError = new Error(`API returned ${response.status}`);
                 } catch (error) {
+                    response = null;
+                    result = null;
+                    if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
                     lastTtsError = (voiceSource === 'design' && error && error.name === 'AbortError')
                         ? new Error(window.t ? window.t('voice.previewTimeout') : '试听生成超时，请稍后重试')
                         : error;
                     if (attempt >= ttsMaxAttempts) break;
                 } finally {
+                    // Abort also releases an unread/failed body before another attempt.
+                    ctrl.abort();
                     clearTimeout(tid);
                     if (session.controller === ctrl) session.controller = null;
                 }
@@ -2431,7 +2453,7 @@ async function playPreview(voiceId, btn, options = {}) {
                 await sleepVoiceCloneLoaderRetry(VOICE_CLONE_LOADER_FETCH_BACKOFF_MS * attempt);
             }
             if (!response) throw lastTtsError || new Error('请求失败');
-            const { data, nonJson, text } = await safeReadResponse(response);
+            const { data, nonJson, text } = result;
             if (activeVoicePreviewSessions.get(voiceIdKey) !== session) return;
             if (!response.ok) {
                 if (data && (data.error || data.detail)) {

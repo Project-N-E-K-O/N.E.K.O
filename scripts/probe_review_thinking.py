@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from openai import OpenAI  # noqa: E402
 
-from config import MEMORY_REVIEW_OUTPUT_MAX_TOKENS  # noqa: E402
+from config import MEMORY_THINKING_OUTPUT_MAX_TOKENS  # noqa: E402
 from config.prompts.prompts_memory import get_history_review_prompt  # noqa: E402
 from utils.config_manager import get_config_manager  # noqa: E402
 
@@ -70,7 +70,7 @@ def _run(client: OpenAI, model: str, name: str, *, shallow: bool, extra_body: di
         response = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": _build_prompt(shallow)}],
-            max_tokens=MEMORY_REVIEW_OUTPUT_MAX_TOKENS,
+            max_tokens=MEMORY_THINKING_OUTPUT_MAX_TOKENS,
             extra_body=extra_body,
             timeout=90,
         )

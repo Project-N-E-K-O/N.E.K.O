@@ -102,12 +102,6 @@ def _detect_fact_extraction_prompt_language(
 _ARCHIVE_AGE_DAYS = 7          # absorbed 且创建超过此天数的 facts 被归档
 _ARCHIVE_COOLDOWN_HOURS = 24   # 两次归档尝试之间的最小间隔
 
-# Sentinel：让 _allm_call_with_retries 区分"调用方没指定 extra_body"（默认走
-# create_chat_llm 自动解析）和"调用方显式传 None"（关闭 extra_body 自动解析，
-# 保留 thinking）。Phase D：Stage-2 signal detection 显式传 None 开 thinking。
-_DEFAULT_EXTRA_BODY = object()
-
-
 def safe_importance(f: dict, default: int = 5) -> int:
     """Defensively coerce ``f['importance']`` to int.
 
@@ -2747,7 +2741,7 @@ class FactStore:
         self, prompt: str, lanlan_name: str, tier: str, call_type: str,
         max_retries: int = 3,
         timeout: float = 60,
-        extra_body=_DEFAULT_EXTRA_BODY,
+        thinking: bool = False,
     ):
         """Shared LLM helper: retry on network errors + JSON errors, same
         policy as the old `extract_facts`. Returns parsed JSON or None on
@@ -2764,37 +2758,42 @@ class FactStore:
         max_retries=0 avoids double-layer retries (the business layer already
         controls retries via its max_retries parameter).
 
-        extra_body: the default _DEFAULT_EXTRA_BODY lets create_chat_llm resolve
-        it per model (for most providers this disables thinking); explicitly
-        passing None means "send no extra_body" → the model's default behavior
-        (thinking models enter thinking mode).
-        Phase D: Stage-2 signal detection explicitly passes None to enable thinking."""
+        thinking: False lets create_chat_llm resolve extra_body per model (for
+        most providers this disables thinking) under the shared 4096 guard.
+        True keeps thinking on through ``memory.thinking_llm`` — the larger
+        ``MEMORY_THINKING_OUTPUT_MAX_TOKENS`` cap with a one-shot fallback, and
+        a log line when the output is exhausted (#3319: the 4096 guard was hit
+        with an empty answer and only surfaced as a JSON parse error).
+        Phase D: Stage-2 signal detection passes True."""
         from openai import APIConnectionError, InternalServerError, RateLimitError
         from utils.llm_client import create_chat_llm_async
+        from memory.thinking_llm import ainvoke_thinking, describe_output
 
         retries = 0
         while retries < max_retries:
+            resp = None
             try:
                 set_call_type(call_type)
                 api_config = await self._config_manager.aget_model_api_config(tier)
-                from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-                _llm_kwargs = dict(
-                    timeout=timeout,
-                    max_retries=0,
-                    max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,
-                    provider_type=api_config.get('provider_type'),
-                )
-                if extra_body is not _DEFAULT_EXTRA_BODY:
-                    _llm_kwargs['extra_body'] = extra_body
-                llm = await create_chat_llm_async(  # noqa: LLM_OUTPUT_BUDGET  # budget + timeout live in _llm_kwargs above (splat invisible to the lint); guard is generous for variable-length JSON.
-                    api_config['model'],
-                    api_config['base_url'], api_config['api_key'],
-                    **_llm_kwargs,
-                )
-                try:
-                    resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # extract-facts prompt assembled from token-capped recent history components.
-                finally:
-                    await llm.aclose()
+                if thinking:
+                    resp, _ = await ainvoke_thinking(
+                        api_config, prompt, timeout=timeout,
+                        call_label=f"{lanlan_name} {call_type}",
+                    )
+                else:
+                    from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+                    llm = await create_chat_llm_async(
+                        api_config['model'],
+                        api_config['base_url'], api_config['api_key'],
+                        timeout=timeout,
+                        max_retries=0,
+                        max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous for variable-length JSON.
+                        provider_type=api_config.get('provider_type'),
+                    )
+                    try:
+                        resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # extract-facts prompt assembled from token-capped recent history components.
+                    finally:
+                        await llm.aclose()
                 raw = resp.content.strip()
                 raw = self._strip_code_fence(raw)
                 return robust_json_loads(raw)
@@ -2811,7 +2810,7 @@ class FactStore:
                 retries += 1
                 logger.warning(
                     f"[FactStore] {lanlan_name}: {call_type} JSON 解析失败 "
-                    f"(重试 {retries}/{max_retries}): {e}"
+                    f"(重试 {retries}/{max_retries}): {e} ({describe_output(resp)})"
                 )
                 if retries < max_retries:
                     await asyncio.sleep(2 ** (retries - 1))
@@ -4600,12 +4599,14 @@ class FactStore:
         # 现有 [memory/facts.py:670-708](memory/facts.py:670) 防御代码本身就是
         # 在补 LLM 幻觉，思考能减少 target_id 错位。完全后台 (signal extraction
         # loop)，无人等。timeout 拉到 90s 给 thinking 模型留余量。
+        # 思考量由提示词开头的推理限制压住（#3319：不加限制时 qwen3.8-flash
+        # 思考 8k~10k token、耗时超过 90s），额度走 MEMORY_THINKING_OUTPUT_MAX_TOKENS。
         parsed = await self._allm_call_with_retries(
             prompt, lanlan_name,
             tier=EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
             call_type="memory_signal_detection",
             timeout=90,
-            extra_body=None,
+            thinking=True,
         )
         if parsed is None:
             return None
@@ -5880,12 +5881,15 @@ class FactStore:
             set_call_type("memory_recheck_fact")
             api_config = await self._config_manager.aget_model_api_config('summary')
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
+            # 不开思考（走工厂默认的关思考 extra_body）：同一个 event_when 字段在
+            # Stage-1 抽取里本来就是关思考标的，那边输入还更难（整段对话、多条
+            # fact 同时标）；这里只给单条老 fact 补标，开思考只多一条
+            # 「思考过长→截断/超时→耗尽重试后永远停在 v1」的失败路径。
             llm = await create_chat_llm_async(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
                 timeout=60, max_retries=0,
-                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; generous so variable-length JSON (incl. thinking) isn't truncated
-                extra_body=None,
+                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; the answer is one small event_when JSON
                 provider_type=api_config.get('provider_type'),
             )
             try:

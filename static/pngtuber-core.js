@@ -3548,6 +3548,18 @@
         updateLockIconPosition() {
             const lockIcon = this._lockIconElement || document.getElementById('pngtuber-lock-icon');
             if (!lockIcon) return;
+            // 告别/猫咪态期间锁图标必须保持隐藏。setLocked、scheduleLayout（原生
+            // 窗口收缩触发 resize）、setupHTMLLockIcon 重建、updateFloatingButtonsPosition
+            // 的 isLocked 分支等回写路径都汇聚到本方法，末尾非 important 的
+            // display:block 会直接覆盖中央 goodbye handler 刚写上的
+            // display:none!important，让锁图标在离开瞬间重新冒出。
+            // 与 live2d showButtons 的 _goodbyeClicked 守卫对称。
+            if (this._goodbyeClicked || this._isInReturnState) {
+                lockIcon.style.setProperty('display', 'none', 'important');
+                lockIcon.style.setProperty('visibility', 'hidden', 'important');
+                lockIcon.style.setProperty('opacity', '0', 'important');
+                return;
+            }
             if (isYuiGuideFloatingToolbarSuppressed()) {
                 lockIcon.style.display = 'none';
                 lockIcon.style.visibility = 'hidden';

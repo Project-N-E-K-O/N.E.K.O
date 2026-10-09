@@ -14,6 +14,11 @@ function createVoiceManagerServer() {
         doubaoVoiceManagementProjectName: '', ttsModelProvider: 'follow_core' };
     const capabilities = { list: true, details: true, manual_import: true, overwrite: true };
     const management = provider => ({ ...capabilities, overwrite: ['cosyvoice', 'cosyvoice_intl', 'doubao_tts'].includes(provider) });
+    const voiceState = (ref, actions) => ({ local_ref: ref,
+        operation_id: state.voices[ref]?.overwrite_operation_id || 'controlled-operation',
+        record_revision: state.voices[ref]?._record_revision || 0,
+        overwrite_status: state.voices[ref]?.overwrite_status || 'completed',
+        actions: actions || (['processing', 'unknown'].includes(state.voices[ref]?.overwrite_status) ? ['refresh'] : ['refresh', 'overwrite']) });
     const json = (response, value, status = 200) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(value)); };
     const read = request => new Promise(resolve => { let bytes = ''; request.on('data', chunk => { bytes += chunk; }); request.on('end', () => resolve(bytes)); });
     const server = http.createServer(async (request, response) => {
@@ -37,7 +42,7 @@ function createVoiceManagerServer() {
         if (url.pathname.startsWith('/api/characters/catgirl/voice_id/')) { state.binding = JSON.parse(await read(request)).voice_id; return json(response, { success: true }); }
         if (url.pathname === '/api/characters/voices') return json(response, { success: true, voices: state.voices });
         if (url.pathname === '/api/characters/remote_voices/context') return json(response, { success: true, provider, configured: true,
-            context_token: 'controlled-context', capabilities: management(provider), required_fields: provider.startsWith('cosyvoice') ? [{ key: 'clone_model', required: true, label_key: 'voice.remote.model', default_value: 'cosyvoice-v3-plus' }] : [] });
+            context_token: 'controlled-context', capabilities: management(provider), required_fields: provider.startsWith('cosyvoice') ? [{ key: 'clone_model', required: true, label_key: 'voice.remote.model', default_value: 'cosyvoice-v3-plus' }] : provider === 'doubao_tts' ? [{ key: 'doubao_resource_id', required: true, readonly: true, default_value: 'server-resource' }] : [] });
         if (url.pathname === '/api/characters/remote_voices') {
             const query = url.searchParams.get('query') || '';
             const cursor = url.searchParams.get('cursor');
@@ -70,18 +75,56 @@ function createVoiceManagerServer() {
             return json(response, { success: true });
         }
         if (url.pathname.endsWith('/overwrite')) {
+            const ref = url.pathname.split('/')[4];
+            if (state.overwriteMode) {
+                const body = await read(request);
+                (state.overwriteAttempts ||= []).push(body);
+                const mode = state.overwriteMode;
+                if (mode === 'deleted') {
+                    delete state.voices[ref];
+                    return json(response, { success: false, code: 'VOICE_NOT_FOUND', details: {
+                        attempt_outcome: 'not_submitted', state_sync: 'unchanged', voice_state: null
+                    } }, 404);
+                }
+                const voice = state.voices[ref];
+                voice.overwrite_operation_id = mode === 'stale-pending' ? 'previous-operation' : 'current-operation';
+                voice._record_revision = (voice._record_revision || 0) + 1;
+                voice.overwrite_status = mode === 'rejected' ? 'failed' : mode === 'stale-pending' ? 'unknown' : 'processing';
+                if (mode === 'rejected' || mode === 'save-failure') state.updates.push(body);
+                const details = {
+                    attempt_outcome: mode === 'rejected' || mode === 'save-failure' ? 'rejected' : 'not_submitted',
+                    state_sync: mode === 'save-failure' ? 'failed' : mode === 'rejected' ? 'saved' : 'unchanged',
+                    voice_state: voiceState(ref)
+                };
+                if (state.beforeOverwriteResponse) await state.beforeOverwriteResponse();
+                return json(response, { success: false,
+                    code: mode === 'stale-pending' ? 'UPDATE_OUTCOME_UNKNOWN' : mode === 'active' ? 'OPERATION_IN_PROGRESS' :
+                        mode === 'save-failure' ? 'LOCAL_SAVE_FAILED_AFTER_UPDATE' : 'UPSTREAM_REJECTED', details
+                }, mode === 'save-failure' ? 500 : mode === 'rejected' ? 400 : 409);
+            }
             if (state.overwriteConflict) {
                 (state.rejectedUpdates ||= []).push(await read(request));
-                return json(response, { success: false, code: 'VOICE_STATE_CHANGED' }, 409);
+                return json(response, { success: false, code: 'VOICE_STATE_CHANGED', details: {
+                    attempt_outcome: 'not_submitted', state_sync: 'unchanged', voice_state: voiceState(ref, ['overwrite'])
+                } }, 409);
             }
-            state.updates.push(await read(request)); const ref = url.pathname.split('/')[4];
+            state.updates.push(await read(request));
             if (state.voices[ref]) state.voices[ref].overwrite_status = 'unknown';
-            return json(response, { success: false, code: 'UPDATE_OUTCOME_UNKNOWN' }, 504);
+            return json(response, { success: false, code: 'UPDATE_OUTCOME_UNKNOWN', details: {
+                attempt_outcome: 'unknown', state_sync: 'saved', voice_state: voiceState(ref)
+            } }, 504);
         }
         if (url.pathname.endsWith('/overwrite_status')) {
             state.statusQueries = (state.statusQueries || 0) + 1;
-            const ref = url.pathname.split('/')[4]; if (state.voices[ref]) state.voices[ref].overwrite_status = 'completed';
-            return json(response, { success: true, status: 'completed', voice_data: state.voices[ref] });
+            const ref = url.pathname.split('/')[4];
+            const status = state.statusResult || 'completed';
+            if (state.voices[ref]) {
+                state.voices[ref].overwrite_status = status;
+                state.voices[ref]._record_revision = (state.voices[ref]._record_revision || 0) + 1;
+            }
+            return json(response, { success: true, status, voice_data: state.voices[ref], details: {
+                attempt_outcome: 'not_submitted', state_sync: 'saved', voice_state: voiceState(ref)
+            } });
         }
         if (url.pathname === '/voice_clone' || url.pathname === '/' || url.pathname === '/api_key') {
             const name = url.pathname === '/api_key' ? 'api_key_settings.html' : 'voice_clone.html';

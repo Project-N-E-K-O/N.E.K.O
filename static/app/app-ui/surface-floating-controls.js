@@ -1363,6 +1363,14 @@
             if (window.mmdManager) {
                 window.mmdManager._goodbyeClicked = true;
             }
+            // pngtuber 也要设：Electron 输入区域桥（pet-input-region-bridge 的
+            // isCurrentModelInGoodbyeMode）按当前模型类型只读对应 manager 的
+            // _goodbyeClicked；漏设会让猫咪态的点击穿透命中测试与鼠标轮询
+            // 走"模型在场"分支，长按拖动返回球期间穿透状态抖动、位移事件断流，
+            // 松手被兜底判成无位移点击而误触发"请她回来"。
+            if (window.pngtuberManager) {
+                window.pngtuberManager._goodbyeClicked = true;
+            }
             if (window.appInterpage && typeof window.appInterpage.postGoodbyeChatComposerHiddenState === 'function') {
                 window.appInterpage.postGoodbyeChatComposerHiddenState(true, 'live2d-goodbye-click');
             } else if (typeof window.postGoodbyeChatComposerHiddenState === 'function') {
@@ -1686,7 +1694,10 @@
                 }
             }
             if (usePngtuberReturn && pngtuberReturnButtonContainer) {
-                activeReturnButtonContainer = I.showReturnBallContainer(pngtuberReturnButtonContainer, savedGoodbyeRect);
+                // 与 MMD/VRM/Live2D 分支一致延迟显形：等 model-to-cat 烟雾转场
+                // 收尾再 reveal。早显会让返回球在转场期间就可交互，且桌面桥的
+                // 窗口收缩（return-ball-show）与转场抢窗口几何，拖拽起步易丢位移。
+                activeReturnButtonContainer = I.showReturnBallContainer(pngtuberReturnButtonContainer, savedGoodbyeRect, { deferReveal: true });
             } else {
                 I.hideReturnBallContainer(pngtuberReturnButtonContainer);
             }
@@ -2018,6 +2029,11 @@
             }
             if (window.mmdManager) {
                 window.mmdManager._goodbyeClicked = false;
+            }
+            // 与 goodbye 入口对称：pngtuber 的标志不清会让 Electron 输入桥
+            // 一直按猫咪态处理命中测试，回来后模型区域持续点击穿透。
+            if (window.pngtuberManager) {
+                window.pngtuberManager._goodbyeClicked = false;
             }
             console.log('[App] 标志清除后 - live2dManager._goodbyeClicked:', window.live2dManager?._goodbyeClicked);
             console.log('[App] 标志清除后 - vrmManager._goodbyeClicked:', window.vrmManager?._goodbyeClicked);

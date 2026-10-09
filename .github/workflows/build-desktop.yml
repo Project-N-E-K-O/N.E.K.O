@@ -78,7 +78,7 @@ concurrency:
 
 env:
   PYTHON_VERSION: '3.11'
-  NODE_VERSION: '20'
+  NODE_VERSION: '22'
   # Anonymous embedding profile id (compatibility contract — bumped only when
   # the upstream weights/tokenizer become incompatible with previously-cached
   # vectors). The repo + revision together pin the actual artifacts.

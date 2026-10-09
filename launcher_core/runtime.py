@@ -1473,7 +1473,7 @@ def run_memory_server(
                 shutdown_complete_event.set()
                 _teardown_print("[Memory Server] Shutdown lifecycle complete")
 
-            memory_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
+            memory_server.app.router.add_event_handler("shutdown", _notify_shutdown_complete)
 
         # 组级信号（属主猝死、强制兜底）不走 launcher 的有序关闭，
         # 由本进程自己驱动 uvicorn 的优雅退出，保持释放/清理顺序。
@@ -1512,7 +1512,7 @@ def run_memory_server(
                 ready_event.set()
 
             # 将 startup 添加到服务器的启动事件
-            server.config.app.add_event_handler("startup", startup)
+            server.config.app.router.add_event_handler("startup", startup)
 
             # 运行服务器
             loop.run_until_complete(server.serve())
@@ -1587,7 +1587,7 @@ def run_agent_server(
                 shutdown_complete_event.set()
                 _teardown_print("[Agent Server] Shutdown lifecycle complete")
 
-            agent_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
+            agent_server.app.router.add_event_handler("shutdown", _notify_shutdown_complete)
 
         # 组级信号（属主猝死、强制兜底）不走 launcher 的有序关闭，
         # 由本进程自己驱动 uvicorn 的优雅退出，保持释放/清理顺序。
@@ -1679,7 +1679,7 @@ def run_main_server(
                 shutdown_complete_event.set()
                 _teardown_print("[Main Server] Shutdown lifecycle complete")
 
-            main_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
+            main_server.app.router.add_event_handler("shutdown", _notify_shutdown_complete)
 
         # 组级信号（属主猝死、强制兜底）不走 launcher 的有序关闭，
         # 由本进程自己驱动 uvicorn 的优雅退出，保持释放/清理顺序。
@@ -1705,7 +1705,7 @@ def run_main_server(
             ready_event.set()
 
         # 将 startup 添加到服务器的启动事件
-        main_server.app.add_event_handler("startup", startup)
+        main_server.app.router.add_event_handler("startup", startup)
 
         # 运行服务器
         server.run()

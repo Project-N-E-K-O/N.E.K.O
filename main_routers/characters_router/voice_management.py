@@ -27,7 +27,7 @@ def _adapter(provider: object):
     return adapter
 
 
-def _error(exc: Exception):
+def _error(exc: Exception, *, details: dict | None = None):
     if isinstance(exc, ValueError) and exc.args == ("VOICE_CONTEXT_CHANGED",):
         exc = VoiceManagementError("CONTEXT_CHANGED", 409)
     elif isinstance(exc, (json.JSONDecodeError, OSError)) or (
@@ -35,6 +35,8 @@ def _error(exc: Exception):
     ):
         exc = VoiceManagementError("STORAGE_ERROR", 500)
     if isinstance(exc, VoiceManagementError):
+        if details is not None:
+            exc.details.update(details)
         return _json_no_store_response({
             "success": False, "code": exc.code, "error": exc.code, "details": exc.details,
         }, status_code=exc.status_code)
@@ -42,6 +44,7 @@ def _error(exc: Exception):
     logger.error("code=VOICE_MANAGEMENT_FAILED exception_type=%s", type(exc).__name__)
     return _json_no_store_response({
         "success": False, "code": "LOCAL_OPERATION_FAILED", "error": "LOCAL_OPERATION_FAILED",
+        "details": details or {},
     }, status_code=500)
 
 
@@ -97,6 +100,8 @@ async def _record_adapter(cm, local_ref: str):
 async def overwrite_existing_voice(
     local_ref: str, audio: UploadFile = File(...), context_token: str = Form(...)
 ):
+    cm = adapter = None
+    service_entered = False
     try:
         cm = get_config_manager()
         adapter = await _record_adapter(cm, local_ref)
@@ -114,13 +119,25 @@ async def overwrite_existing_voice(
             )
         except ValueError:
             raise VoiceManagementError("INVALID_AUDIO", 400) from None
+        service_entered = True
         result = await service.overwrite_remote_voice(
             adapter, cm, local_ref, token=context_token,
             audio=normalized.getvalue(), filename=filename,
         )
         return _json_no_store_response(result)
     except Exception as exc:
-        return _error(exc)
+        # Only validation before service entry proves no submission or result
+        # write. Preserve service evidence; an unclassified fallback is unknown.
+        details = None
+        if not isinstance(exc, VoiceManagementError) or "attempt_outcome" not in exc.details:
+            details = await service.overwrite_result_details(
+                adapter, cm, local_ref, token=context_token,
+                attempt_outcome="unknown" if service_entered else "not_submitted",
+                state_sync="unknown" if service_entered else "unchanged",
+            ) if adapter else {
+                "attempt_outcome": "not_submitted", "voice_state": None, "state_sync": "unchanged",
+            }
+        return _error(exc, details=details)
     finally:
         await audio.close()
 
@@ -131,6 +148,54 @@ async def existing_voice_overwrite_status(local_ref: str, context_token: str):
         cm = get_config_manager()
         adapter = await _record_adapter(cm, local_ref)
         result = await service.refresh_overwrite_status(adapter, cm, local_ref, token=context_token)
+        return _json_no_store_response(result)
+    except Exception as exc:
+        return _error(exc)
+
+
+@router.post('/voices/{local_ref}/recover_overwrite')
+async def recover_existing_voice_overwrite(local_ref: str, request: Request):
+    try:
+        try:
+            payload = await request.json()
+        except Exception:
+            raise VoiceManagementError("INVALID_JSON", 400) from None
+        if not isinstance(payload, dict) or set(payload) != {
+            "context_token", "operation_id", "record_revision",
+        }:
+            raise VoiceManagementError("INVALID_METADATA", 400)
+        cm = get_config_manager()
+        adapter = await _record_adapter(cm, local_ref)
+        from utils.voice_management.overwrite_recovery import recover_prepared_overwrite
+
+        result = await recover_prepared_overwrite(
+            adapter, cm, local_ref, token=payload["context_token"],
+            operation_id=payload["operation_id"], record_revision=payload["record_revision"],
+        )
+        return _json_no_store_response(result)
+    except Exception as exc:
+        return _error(exc)
+
+
+@router.post('/voices/{local_ref}/abandon_overwrite')
+async def abandon_existing_voice_overwrite(local_ref: str, request: Request):
+    try:
+        try:
+            payload = await request.json()
+        except Exception:
+            raise VoiceManagementError("INVALID_JSON", 400) from None
+        if not isinstance(payload, dict) or set(payload) != {
+            "context_token", "operation_id", "record_revision",
+        }:
+            raise VoiceManagementError("INVALID_METADATA", 400)
+        cm = get_config_manager()
+        adapter = await _record_adapter(cm, local_ref)
+        from utils.voice_management.overwrite_recovery import abandon_unknown_overwrite
+
+        result = await abandon_unknown_overwrite(
+            adapter, cm, local_ref, token=payload["context_token"],
+            operation_id=payload["operation_id"], record_revision=payload["record_revision"],
+        )
         return _json_no_store_response(result)
     except Exception as exc:
         return _error(exc)
