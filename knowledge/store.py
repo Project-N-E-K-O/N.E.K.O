@@ -33,7 +33,7 @@ import numpy as np
 
 from .chunking import derive_chunks
 from .models import KnowledgeEntry, KnowledgePack
-from .text import fold_surface, fts_match_expression, search_tokens, title_key
+from .text import fold_surface, fts_match_expression, search_tokens, strict_surface, title_key
 
 
 SCHEMA_VERSION = 1
@@ -130,8 +130,11 @@ def _entry_tokens(entry: KnowledgeEntry) -> str:
 
 
 def _entry_surfaces(entry: KnowledgeEntry) -> set[str]:
+    """Strict (``s:``) and loose (``l:``) exact-match keys of an entry."""
     values = [entry.title, *entry.terms.get("alias", ()), *entry.terms.get("recognition", ())]
-    return {surface for surface in (fold_surface(value) for value in values) if surface}
+    surfaces = {f"s:{strict}" for strict in map(strict_surface, values) if strict}
+    surfaces |= {f"l:{loose}" for loose in map(fold_surface, values) if loose}
+    return surfaces
 
 
 def normalize_vector(values: Sequence[float]) -> bytes | None:
@@ -455,18 +458,26 @@ class KnowledgeStore:
         include_disabled: bool,
         limit: int = -1,
     ) -> list[int]:
-        surface = fold_surface(query)
-        if not surface or (pack_ids is not None and not pack_ids):
+        if pack_ids is not None and not pack_ids:
             return []
         clause, args = self._pack_clause(pack_ids, include_disabled)
-        return [
-            int(row[0])
-            for row in conn.execute(
-                "SELECT DISTINCT s.entry_id FROM surfaces s JOIN entries e ON e.id=s.entry_id"
-                f" WHERE s.surface=?{clause} LIMIT ?",
-                (surface, *args, limit),
-            )
-        ]
+        # Strict first, so "C" does not pull in "C++"; the loose form (symbols
+        # and spaces dropped) only answers when nothing matches strictly, e.g.
+        # a recognition phrase typed with different punctuation.
+        for key in (f"s:{strict_surface(query)}", f"l:{fold_surface(query)}"):
+            if len(key) <= 2:
+                continue
+            ids = [
+                int(row[0])
+                for row in conn.execute(
+                    "SELECT DISTINCT s.entry_id FROM surfaces s JOIN entries e ON e.id=s.entry_id"
+                    f" WHERE s.surface=?{clause} LIMIT ?",
+                    (key, *args, limit),
+                )
+            ]
+            if ids:
+                return ids
+        return []
 
     def _ranked_ids(
         self,

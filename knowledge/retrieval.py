@@ -33,7 +33,7 @@ from typing import Iterable, Mapping, Sequence
 import numpy as np
 
 from .store import StoredEntry, VectorSnapshot
-from .text import search_tokens, search_view
+from .text import is_cjk_token, search_tokens, search_view, word_runs
 
 
 RRF_K = 60
@@ -75,7 +75,13 @@ def token_coverage(query: str, entry: StoredEntry) -> float:
     for values in entry.terms.values():
         parts.extend(values)
     haystack = search_view("\n".join(parts))
-    return sum(1 for token in wanted if token in haystack) / len(wanted)
+    words = word_runs(haystack)
+    # CJK bigrams may sit anywhere inside a run; other tokens are whole words,
+    # matching how FTS indexed them ("he" is not in "the").
+    present = sum(
+        1 for token in wanted if (token in haystack if is_cjk_token(token) else token in words)
+    )
+    return present / len(wanted)
 
 
 def semantic_candidates(

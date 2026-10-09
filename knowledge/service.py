@@ -359,18 +359,19 @@ class KnowledgeService:
         finally:
             self._write_lock.release()
 
-    async def _update_record(self, pack_id: str, **changes: Any) -> PackRecord:
-        async def run() -> PackRecord:
-            record = self._registry.packs.get(pack_id)
-            if record is None:
-                raise KnowledgeUnavailable("not_found")
-            updated = replace(record, updated_at=utc_now(), **changes)
-            registry = self._registry.with_pack(updated)
-            await asyncio.to_thread(save_registry, self.root, registry)
-            self._publish_registry(registry)
-            return updated
+    async def _apply_record_update(self, pack_id: str, **changes: Any) -> PackRecord:
+        """Persist and publish a policy change; the caller holds the write lock."""
+        record = self._registry.packs.get(pack_id)
+        if record is None:
+            raise KnowledgeUnavailable("not_found")
+        updated = replace(record, updated_at=utc_now(), **changes)
+        registry = self._registry.with_pack(updated)
+        await asyncio.to_thread(save_registry, self.root, registry)
+        self._publish_registry(registry)
+        return updated
 
-        return await self._locked(run)
+    async def _update_record(self, pack_id: str, **changes: Any) -> PackRecord:
+        return await self._locked(lambda: self._apply_record_update(pack_id, **changes))
 
     async def set_enabled(self, enabled: bool) -> dict[str, Any]:
         async def run() -> None:
@@ -387,11 +388,19 @@ class KnowledgeService:
         return {"pack_id": pack_id, "auto_context": record.auto_context}
 
     async def set_pack_local_embedding(self, pack_id: str, enabled: bool) -> dict[str, Any]:
-        record = await self._update_record(pack_id, local_embedding=bool(enabled))
-        if enabled:
-            # Turning vectors back on is the user's retry for chunks that
-            # previously failed to embed.
-            await self._locked(lambda: asyncio.to_thread(self._store.reset_attempts, pack_id))
+        async def run() -> PackRecord:
+            record = await self._apply_record_update(pack_id, local_embedding=bool(enabled))
+            if enabled:
+                # Turning vectors back on is the user's retry for chunks that
+                # failed to embed. The policy is already saved, so a failed
+                # reset must not report the change itself as failed.
+                try:
+                    await asyncio.to_thread(self._store.reset_attempts, pack_id)
+                except Exception:
+                    logger.warning("[Knowledge] could not reset embed attempts of %s", pack_id)
+            return record
+
+        record = await self._locked(run)
         self._vector_generation += 1
         self._schedule_vector_refresh()
         self._index_wakeup.set()
@@ -578,7 +587,7 @@ class KnowledgeService:
             self._finish_job(job, "cancelled")
             # A cancelled job no longer counts toward the staging limits, so
             # its file must go now, not when the runner reaches the job.
-            await asyncio.to_thread(self._staging_path(job_id).unlink, missing_ok=True)
+            await self._discard_staging(job_id)
         return True
 
     def discard_job(self, job_id: str) -> bool:
@@ -593,12 +602,19 @@ class KnowledgeService:
         job.reason = reason
         job.updated_at = utc_now()
 
+    async def _discard_staging(self, job_id: str) -> None:
+        """Best effort: a staged file that cannot go now is removed at the next start."""
+        try:
+            await asyncio.to_thread(self._staging_path(job_id).unlink, missing_ok=True)
+        except OSError:
+            logger.warning("[Knowledge] could not delete staged file of job %s", job_id)
+
     async def _job_loop(self) -> None:
         while not self._stopping:
             job_id = await self._job_queue.get()
             job = self._jobs.get(job_id)
             if job is None or job.state != "queued":
-                await asyncio.to_thread(self._staging_path(job_id).unlink, missing_ok=True)
+                await self._discard_staging(job_id)
                 continue
             job.state, job.updated_at = "building", utc_now()
             try:
@@ -620,7 +636,7 @@ class KnowledgeService:
                 logger.warning("[Knowledge] import of %s failed: %s", job.pack_id, exc, exc_info=True)
                 self._finish_job(job, "failed", type(exc).__name__)
             finally:
-                await asyncio.to_thread(self._staging_path(job_id).unlink, missing_ok=True)
+                await self._discard_staging(job_id)
 
     async def _commit_job(self, job: ImportJob) -> None:
         if job.cancel_requested:
@@ -837,11 +853,11 @@ class KnowledgeService:
 
     # ── queries ─────────────────────────────────────────────────────
 
-    def _allowed_pack_ids(self, material_type: str) -> list[str]:
+    def _allowed_pack_ids(self, registry: Registry, material_type: str) -> list[str]:
         wanted = MATERIAL_TYPES if material_type in ("", "auto", "all") else (material_type,)
         return [
             record.pack_id
-            for record in self._registry.packs.values()
+            for record in registry.packs.values()
             if record.effective_material_type in wanted and record.pack_id not in self._broken_packs
         ]
 
@@ -896,7 +912,10 @@ class KnowledgeService:
             return finish("disabled")
         if not query:
             return finish("miss")
-        allowed = self._allowed_pack_ids(str(material_type or "auto"))
+        # One registry snapshot decides eligibility, vector policy and the
+        # labels in the rendered cards, even if a policy changes mid-query.
+        registry = self._registry
+        allowed = self._allowed_pack_ids(registry, str(material_type or "auto"))
         if not allowed:
             return finish("miss")
         if self._query_slots.locked():
@@ -909,12 +928,14 @@ class KnowledgeService:
                         ranked = await self._sample(query, allowed, limit)
                         retrieval_mode = "sample"
                     else:
-                        ranked, retrieval_mode = await self._lookup(query, allowed, limit, deadline)
+                        ranked, retrieval_mode = await self._lookup(
+                            query, allowed, limit, deadline, registry
+                        )
                     if not ranked:
                         return finish("miss", retrieval_mode=retrieval_mode)
                     excerpt_query = query if mode == "lookup" else ""
                     hits, context = await asyncio.to_thread(
-                        self._render, ranked, excerpt_query, language
+                        self._render, ranked, excerpt_query, language, registry
                     )
             except TimeoutError:
                 return finish("timeout")
@@ -933,8 +954,8 @@ class KnowledgeService:
         ]
 
     async def _lookup(
-        self, query: str, allowed: list[str], limit: int, deadline: float
-    ) -> tuple[list[int], str]:
+        self, query: str, allowed: list[str], limit: int, deadline: float, registry: Registry
+    ) -> tuple[list[RankedHit], str]:
         embed_task: asyncio.Task[Any] | None = None
         model_id = self._current_model_id()
         snapshot = self._vectors
@@ -970,7 +991,7 @@ class KnowledgeService:
         vector_packs = [
             pack_id
             for pack_id in allowed
-            if (record := self._registry.packs.get(pack_id)) is not None and record.local_embedding
+            if (record := registry.packs.get(pack_id)) is not None and record.local_embedding
         ]
         semantic = (
             await asyncio.to_thread(
@@ -999,10 +1020,9 @@ class KnowledgeService:
         return ranked, ("hybrid" if query_vector is not None else "bm25")
 
     def _render(
-        self, ranked: list[RankedHit], query: str, language: str | None
+        self, ranked: list[RankedHit], query: str, language: str | None, registry: Registry
     ) -> tuple[list[dict[str, Any]], str]:
         entries = self._store.fetch_entries([hit.entry_id for hit in ranked])
-        registry = self._registry
         cards: list[RenderCard] = []
         hits: list[dict[str, Any]] = []
         for ranked_hit in ranked:

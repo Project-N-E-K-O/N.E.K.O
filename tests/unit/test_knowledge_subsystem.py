@@ -1082,3 +1082,111 @@ def test_registry_too_large_to_read_back_is_never_written(tmp_path, monkeypatch)
     with pytest.raises(registry_module.KnowledgeRegistryError):
         registry_module.save_registry(tmp_path, registry_module.Registry())
     assert not (tmp_path / registry_module.REGISTRY_FILE).exists()
+
+
+async def test_undeletable_staged_file_does_not_stop_the_job_runner(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        real_unlink = Path.unlink
+        failures = {"left": 1}
+
+        def unlink(self, *args, **kwargs):
+            if self.parent.name == ".staging" and failures["left"]:
+                failures["left"] -= 1
+                raise PermissionError("held open")
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+        first = await _import(service, _pack("pack-one"))
+        second = await _import(service, _pack("pack-two"))
+        assert first["state"] == "active" and second["state"] == "active"
+    finally:
+        await service.stop()
+
+
+async def test_enabling_vectors_succeeds_even_if_the_retry_reset_fails(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        await service.set_pack_local_embedding("demo-memes", False)
+
+        def fail(*_args, **_kwargs):
+            raise sqlite3.OperationalError("locked")
+
+        monkeypatch.setattr(service._store, "reset_attempts", fail)
+        result = await service.set_pack_local_embedding("demo-memes", True)
+        assert result["local_embedding"] is True
+        assert load_registry(tmp_path).packs["demo-memes"].local_embedding is True
+    finally:
+        await service.stop()
+
+
+def test_latin_coverage_counts_whole_words_only():
+    from knowledge.retrieval import token_coverage
+    from knowledge.store import StoredEntry
+
+    entry = StoredEntry(
+        entry_id=1, pack_id="p", title="Cats", terms={}, tags=[], summary="",
+        content="the cat sat", disabled=False,
+    )
+    assert token_coverage("he cat", entry) == 0.5
+    assert token_coverage("猫咪 cat", StoredEntry(
+        entry_id=2, pack_id="p", title="t", terms={}, tags=[], summary="",
+        content="一只猫咪 cat", disabled=False,
+    )) == 1.0
+
+
+async def test_windows_device_names_are_safe_pack_ids(tmp_path):
+    service = await _started(tmp_path)
+    try:
+        job = await _import(service, _pack("con"))
+        assert job["state"] == "active"
+        (raw_file,) = (tmp_path / "packs").iterdir()
+        assert raw_file.name.startswith("pack-con.")
+    finally:
+        await service.stop()
+
+
+async def test_cards_are_labelled_from_the_registry_snapshot_of_the_query(tmp_path):
+    from knowledge.retrieval import RankedHit
+
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        snapshot = service._registry
+        await service.set_pack_material_type("demo-memes", "corpus")
+        (entry_id,) = (await asyncio.to_thread(
+            service._store.lexical_candidates, "绝绝子", pack_ids=["demo-memes"], limit=5
+        ))[0]
+        hit = RankedHit(entry_id=entry_id, score=1.0, exact=True, lexical_rank=None, semantic_score=None)
+        hits, _context = service._render([hit], "绝绝子", "en", snapshot)
+        assert hits[0]["material_type"] == "knowledge"
+    finally:
+        await service.stop()
+
+
+async def test_exact_matches_keep_meaningful_symbols(tmp_path):
+    entries = [
+        {"title": "C", "content": "The C language."},
+        {"title": "C++", "content": "The C++ language."},
+        {"title": "C#", "content": "The C# language."},
+        {"title": "😂", "content": "Face with tears of joy."},
+        {"title": "绝绝子", "terms": {"recognition": ["绝绝子是什么意思"]}, "content": "网络用语。"},
+    ]
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack(entries=entries))
+        store = service._store
+        rows = await asyncio.to_thread(store.list_entries, limit=10, offset=0)
+        by_title = {row.title: row.entry_id for row in rows}
+
+        def exact(query):
+            return store.lexical_candidates(query, pack_ids=["demo-memes"], limit=10)[0]
+
+        assert exact("C") == [by_title["C"]]
+        assert exact("c++") == [by_title["C++"]]
+        assert exact("😂") == [by_title["😂"]]
+        # Loose fallback: different punctuation still finds the phrase.
+        assert exact("绝绝子是什么意思？") == [by_title["绝绝子"]]
+    finally:
+        await service.stop()

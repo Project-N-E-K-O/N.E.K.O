@@ -117,6 +117,21 @@ def title_key(value: object) -> str:
     return _TITLE_SPACE_RE.sub(" ", normalized).strip().casefold()
 
 
+def strict_surface(value: object) -> str:
+    """Exact-match form that keeps symbols: ``C``, ``C++`` and ``C#`` differ."""
+    normalized = _strip_marks(unicodedata.normalize("NFKC", str(value or "")).casefold())
+    return _TITLE_SPACE_RE.sub(" ", normalized).strip()
+
+
+def is_cjk_token(token: str) -> bool:
+    return bool(_CJK_RUN_RE.match(token))
+
+
+def word_runs(value: str) -> set[str]:
+    """Distinct word runs of already-normalized text (see ``search_view``)."""
+    return set(_TOKEN_RE.findall(value))
+
+
 def fold_surface(value: object) -> str:
     """Comparison form for exact title / alias / recognition matching."""
     normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()

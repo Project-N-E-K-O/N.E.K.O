@@ -76,7 +76,8 @@ class PackRecord:
 
     @property
     def file_name(self) -> str:
-        return f"{self.pack_id}.{self.pack_sha256[:16]}.json"
+        # Prefixed so an id like ``con`` or ``nul`` never names a Windows device.
+        return f"pack-{self.pack_id}.{self.pack_sha256[:16]}.json"
 
     def to_json(self) -> dict[str, Any]:
         return {
