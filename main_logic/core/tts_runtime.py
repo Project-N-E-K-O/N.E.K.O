@@ -616,10 +616,15 @@ class TtsRuntimeMixin:
             self._put_tts_text(self._tts_norm_speech_id, flushed)
 
         self.tts_request_queue.put((None, None))
-        # 流式 mirror 的入队回调登记到它的结束标记真正入队为止（立即入队或就绪后补发都走这里）
+        # 流式 mirror 的入队回调登记到它的结束标记真正入队为止（立即入队或就绪后补发都走这里），
+        # 同一刻把 TTS 轮次交给下一条流
         callbacks = getattr(self, "_mirror_stream_callbacks", None)
         if callbacks:
             callbacks.pop(self.current_speech_id, None)
+        ends = getattr(self, "_mirror_stream_ends", None)
+        end_queued = ends.pop(self.current_speech_id, None) if ends else None
+        if end_queued is not None:
+            end_queued()
         self._tts_replay_done = True
         self._tts_done_queued_for_turn = True
         self._tts_done_pending_until_ready = False

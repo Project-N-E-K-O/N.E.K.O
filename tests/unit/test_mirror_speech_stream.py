@@ -38,6 +38,7 @@ def _mgr(*, ready=True, alive=True):
     mgr.tts_ready = ready
     mgr._mirror_stream_callbacks = {}
     mgr._mirror_stream_tail = None
+    mgr._mirror_stream_ends = {}
     mgr.interrupts = []
 
     async def interrupt():
@@ -428,3 +429,69 @@ async def test_visit_host_adapter_passes_the_failure_signal():
     stream.push("你好。")
     await _settle()
     assert failed == [True]
+
+
+# ── 评审第 2 轮 ───────────────────────────────────────────────────────
+
+
+async def test_family_turn_started_after_open_is_not_taken_over():
+    # 回家段落打开之后、认领之前，亲人先开口（普通对话开了新一轮）：本流放弃，不抢那一轮
+    mgr = _mgr()
+    failed: list[bool] = []
+    stream = _open(mgr, failed=failed)
+    stream.push("我回来啦。")
+    stream.finish()
+    mgr.current_speech_id = "family-turn"
+    await _settle()
+    assert mgr.current_speech_id == "family-turn"
+    assert _queued(mgr) == [] and mgr.tts_pending_chunks == []
+    assert failed == [True] and stream.closed
+
+
+async def test_deferred_end_marker_keeps_lines_apart():
+    # worker 未就绪：前一行的结束标记只是推迟，后一行要等它真正入队再认领，两行不会合成一句
+    mgr = _mgr(ready=False)
+    first = _open(mgr)
+    first.push("第一句。")
+    first.finish()
+    second = _open(mgr)
+    second.push("第二句。")
+    second.finish()
+    await _settle(60)
+    assert mgr.current_speech_id == first.speech_id
+    assert mgr.tts_pending_chunks == [(first.speech_id, "第一句。")]
+    assert mgr._tts_done_pending_until_ready is True
+    mgr.tts_ready = True
+    mgr._snapshot_tts_runtime = lambda: None
+    mgr._tts_runtime_is_current = lambda _r: True
+    mgr._tts_output_is_current = lambda: True
+    await LLM._flush_tts_pending_chunks(mgr)
+    await _settle(60)
+    assert _queued(mgr) == [(first.speech_id, "第一句。"), (None, None),
+                            (second.speech_id, "第二句。"), (None, None)]
+    assert mgr._mirror_stream_ends == {}
+
+
+async def test_timed_out_predecessor_is_failed_and_interrupted_before_the_claim(monkeypatch):
+    monkeypatch.setattr(MirrorSpeechStream, "_PREDECESSOR_WAIT_S", 0.05)
+    mgr = _mgr()
+    order: list[str] = []
+
+    async def interrupt():
+        order.append(f"interrupt:{mgr.current_speech_id}")
+
+    mgr.interrupt_mirror_speech = interrupt
+    failed: list[bool] = []
+    stuck = _open(mgr, failed=failed)
+    stuck.push("说到一半")
+    await _settle()
+    nxt = _open(mgr)
+    nxt.push("下一句。")
+    nxt.finish()
+    await asyncio.sleep(0.1)
+    await _settle()
+    # 先打断旧行（当时它还是当前语音），再由新行认领
+    assert order == [f"interrupt:{stuck.speech_id}"]
+    assert failed == [True] and stuck.closed
+    assert mgr.current_speech_id == nxt.speech_id
+    assert _queued(mgr)[-2:] == [(nxt.speech_id, "下一句。"), (None, None)]

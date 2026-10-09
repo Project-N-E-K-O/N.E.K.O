@@ -71,9 +71,13 @@ class MirrorSpeechStream:
     manager take the TTS turn one after another, in the order they were
     opened: a stream claims it (its speech id becomes the current one, the
     turn's done flags are reset, the TTS pipeline is started) only once the
-    stream opened before it requested its end marker, was aborted -- and
-    its interruption finished -- or failed; ``_PREDECESSOR_WAIT_S`` bounds
-    that wait for a stream that is never finished. Each text then goes
+    stream opened before it got its end marker into the TTS queue (not just
+    deferred until the worker is ready), was aborted -- and its interruption
+    finished -- or failed. ``_PREDECESSOR_WAIT_S`` bounds that wait; a
+    predecessor still holding the turn then is failed and interrupted
+    before the claim. A stream does not claim at all when an ordinary turn
+    started after it was opened (the family spoke first): it fails instead.
+    Each text then goes
     through ``_enqueue_tts_text_chunk`` (``tts_pending_chunks`` while the
     worker is not ready) and the end through ``_request_tts_done_locked``,
     under ``tts_cache_lock``, and only while its speech id is still the
@@ -117,8 +121,11 @@ class MirrorSpeechStream:
         self._started = False
         self._claimed = False
         self._task: Optional[asyncio.Future] = None
-        self._predecessor: Optional[asyncio.Future] = None
-        # 本流交出 TTS 轮次的时刻（结束标记已请求 / 中止且打断清理完 / 失败）：下一条流等它
+        self._predecessor: Optional["MirrorSpeechStream"] = None
+        # 打开时的当前语音：认领时它若被普通对话换掉（亲人先开口），本流不抢那一轮
+        self._base_speech_id = getattr(mgr, "current_speech_id", None)
+        self._end_deferred = False
+        # 本流交出 TTS 轮次的时刻（结束标记真正入队 / 中止且打断清理完 / 失败）：下一条流等它
         self._released = asyncio.get_running_loop().create_future()
 
     @property
@@ -129,7 +136,7 @@ class MirrorSpeechStream:
     def closed(self) -> bool:
         return self._closed
 
-    def _start(self, predecessor: Optional[asyncio.Future]) -> None:
+    def _start(self, predecessor: Optional["MirrorSpeechStream"]) -> None:
         self._predecessor = predecessor
         self._task = self._mgr._fire_task(self._run())
 
@@ -161,6 +168,7 @@ class MirrorSpeechStream:
         self._closed = True
         self._ops.clear()
         self._mgr._mirror_stream_callbacks.pop(self._speech_id, None)
+        self._mgr._mirror_stream_ends.pop(self._speech_id, None)
         task = self._task
         if task is not None and not task.done():
             task.cancel()
@@ -178,6 +186,21 @@ class MirrorSpeechStream:
         self._closed = True
         self._ops.clear()
         self._mgr._mirror_stream_callbacks.pop(self._speech_id, None)
+        self._mgr._mirror_stream_ends.pop(self._speech_id, None)
+
+    async def _give_up(self) -> None:
+        """A successor waited too long: fail this stream and interrupt what it queued, then hand over."""
+        if self._released.done():
+            return
+        self._fail()
+        task = self._task
+        if task is not None and not task.done():
+            task.cancel()
+        try:
+            if self._claimed:
+                await self._mgr._interrupt_mirror_stream(self._speech_id)
+        finally:
+            self._release()
 
     def _release(self) -> None:
         if not self._released.done():
@@ -214,20 +237,36 @@ class MirrorSpeechStream:
             if self._claimed:
                 await self._mgr._interrupt_mirror_stream(self._speech_id)
         finally:
-            if not self._aborted:
-                # 中止由 abort() 那边在打断清理做完之后交出轮次；这里（任务被取消）不能抢先交出
+            if not self._aborted and not self._end_deferred:
+                # 中止由 abort() 那边在打断清理做完之后交出轮次；结束标记推迟到 worker 就绪的，
+                # 等它真正入队（_request_tts_done_locked 回调）再交出——这里都不能抢先交出
                 self._release()
+
+    def _end_queued(self) -> None:
+        """``_request_tts_done_locked`` queued this speech's end marker: hand the turn over."""
+        self._release()
 
     async def _drain(self) -> None:
         mgr = self._mgr
         predecessor = self._predecessor
-        if predecessor is not None and not predecessor.done():
+        if predecessor is not None and not predecessor._released.done():
             # 按打开顺序轮流认领：前一条流交出轮次之前，本流不能覆盖它的 speech id 与 done 标记
-            await asyncio.wait([predecessor], timeout=self._PREDECESSOR_WAIT_S)
+            await asyncio.wait([predecessor._released], timeout=self._PREDECESSOR_WAIT_S)
+            if not predecessor._released.done():
+                # 前一条一直不收尾：先让它失败、打断它已入队的半句，两行不会被合成一句
+                await predecessor._give_up()
         async with mgr.lock:
+            expected = {self._base_speech_id}
+            if predecessor is not None:
+                expected.add(predecessor.speech_id)
+            if mgr.current_speech_id not in expected:
+                # 打开之后普通对话开了新一轮（亲人先开口）：不抢那一轮，本流放弃
+                self._fail()
+                return
             mgr.current_speech_id = self._speech_id
             mgr._tts_done_queued_for_turn = False
             mgr._tts_done_pending_until_ready = False
+            mgr._mirror_stream_ends[self._speech_id] = self._end_queued
         self._claimed = True
         mgr.remember_speech_playback_gain(self._speech_id, 1.0)
         await mgr.ensure_tts_pipeline_alive()
@@ -253,6 +292,9 @@ class MirrorSpeechStream:
                         status = mgr._request_tts_done_locked()
                         if status == self.NO_WORKER:
                             self._fail()
+                        elif status == "deferred":
+                            # worker 还没就绪：结束标记补发时才交出轮次（下一条流认领会清掉推迟标记）
+                            self._end_deferred = True
                         return
                     if mgr.tts_ready:
                         mgr._enqueue_tts_text_chunk(self._speech_id, item)
@@ -3154,7 +3196,7 @@ class TurnMixin:
                 callbacks.pop(next(iter(callbacks)))
         stream = MirrorSpeechStream(self, speech_id, metadata=metadata, request_id=request_id,
                                     on_failed=on_failed)
-        predecessor, self._mirror_stream_tail = self._mirror_stream_tail, stream._released
+        predecessor, self._mirror_stream_tail = self._mirror_stream_tail, stream
         stream._start(predecessor)
         return stream
 
