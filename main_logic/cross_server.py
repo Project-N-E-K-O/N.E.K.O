@@ -145,8 +145,9 @@ def normalize_text(text):  # 对文本进行基本预处理
     return text
 
 
-# The time stamp ``run_sync_connector`` starts every reply buffer with.
-_REPLY_STAMP_RE = re.compile(r"\[[^\]\n]*\] ")
+# The time stamp ``run_sync_connector`` starts every reply buffer with
+# (``strftime('[%Y%m%d %a %H:%M] ')``; the weekday may be localized).
+_REPLY_STAMP_RE = re.compile(r"\[\d{8} [^\]\s]+ \d{2}:\d{2}\] ")
 
 
 def normalize_assistant_text(text, tool_names=None):

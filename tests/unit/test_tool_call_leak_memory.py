@@ -189,3 +189,13 @@ def test_a_call_split_across_text_parts_is_still_cut():
     ])]
     rendered = _screen_guarded_recent_history(stored)
     assert [part["text"] for part in rendered[1].content] == ["好的 ", "", " 完毕"]
+
+
+def test_only_the_generated_time_stamp_is_set_aside():
+    """A reply that opens with its own bracketed words keeps them: only the
+    connector's time stamp is not reply text."""
+    from main_logic.cross_server import normalize_assistant_text
+
+    assert normalize_assistant_text("[Action complete] asynccall:pvz_start{goal:a}") == "[Action complete]"
+    assert normalize_assistant_text("[20261008 Thu 12:00] asynccall:pvz_start{goal:a}") == ""
+    assert normalize_assistant_text("[20261008 周四 12:00] asynccall:pvz_start{goal:a}") == ""
