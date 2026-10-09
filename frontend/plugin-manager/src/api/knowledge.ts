@@ -37,6 +37,7 @@ export const KNOWLEDGE_FAILURE_REASONS = [
   'pack_too_large',
   'payload_too_large',
   'invalid_json',
+  'invalid_pack',
   'unexpected_pack_field',
   'unsupported_schema_version',
   'invalid_pack_id',

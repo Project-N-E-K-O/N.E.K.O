@@ -2154,3 +2154,44 @@ async def test_lookup_passes_disabled_entries_to_semantic_search(tmp_path, monke
         assert seen["excluded"] == {row.entry_id}
     finally:
         await service.stop()
+
+
+@pytest.mark.parametrize("version", [1.0, True, "1"])
+def test_schema_version_must_be_an_integer(version):
+    payload = _pack()
+    payload["schema_version"] = version
+    with pytest.raises(KnowledgePackError) as excinfo:
+        parse_pack(payload)
+    assert excinfo.value.reason == "unsupported_schema_version"
+
+
+async def test_an_import_reports_active_only_with_current_vector_ids(tmp_path, fast_indexer, monkeypatch):
+    service = await _started(tmp_path, FakeEmbedder())
+    try:
+        await _import(service, _pack())
+        for _ in range(300):
+            if service._vectors is not None and len(service._vectors.entry_ids):
+                break
+            await asyncio.sleep(0.02)
+        assert service._vectors is not None and len(service._vectors.entry_ids)
+        # Only the reload done before "active" may update the snapshot.
+        monkeypatch.setattr(service, "_schedule_vector_refresh", lambda: None)
+        updated = _pack()
+        updated["entries"].append({"title": "Newcomer", "content": "brand new entry"})
+        await _import(service, updated)  # every row is reinserted with a new id
+        rows = await asyncio.to_thread(service._store.list_entries, limit=50, offset=0)
+        current = {row.entry_id for row in rows}
+        snapshot_ids = set(service._vectors.entry_ids.tolist())
+        assert snapshot_ids and snapshot_ids <= current
+    finally:
+        await service.stop()
+
+
+def test_an_older_vector_snapshot_never_replaces_a_newer_one(tmp_path):
+    service = service_module.KnowledgeService(tmp_path)
+    newer, older = object(), object()
+    service._install_vectors(newer, (5, "m"))
+    service._install_vectors(older, (3, "m"))  # a slow rebuild finishing late
+    assert service._vectors is newer
+    service._install_vectors(older, (1, "other-model"))  # a model switch always wins
+    assert service._vectors is older

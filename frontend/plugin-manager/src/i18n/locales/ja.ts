@@ -252,6 +252,7 @@ export default {
       pack_too_large: 'データパックファイルが 10 MiB を超えています',
       payload_too_large: 'リクエストの内容が大きすぎます',
       invalid_json: 'ファイルが有効な JSON ではありません',
+      invalid_pack: 'ファイルがナレッジデータパックではありません',
       unexpected_pack_field: 'データパックにサポートされていないフィールドがあります',
       unsupported_schema_version: 'サポートされていないデータパック形式のバージョンです',
       invalid_pack_id: 'データパック ID が無効です',

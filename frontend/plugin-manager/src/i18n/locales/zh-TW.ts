@@ -252,6 +252,7 @@ export default {
       pack_too_large: '資料包檔案超過 10 MiB',
       payload_too_large: '請求內容過大',
       invalid_json: '檔案不是有效的 JSON',
+      invalid_pack: '檔案不是知識資料包',
       unexpected_pack_field: '資料包含有不支援的欄位',
       unsupported_schema_version: '不支援的資料包格式版本',
       invalid_pack_id: '資料包 ID 無效',

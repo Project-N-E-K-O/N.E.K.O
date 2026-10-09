@@ -252,6 +252,7 @@ export default {
       pack_too_large: 'Файл пакета больше 10 MiB',
       payload_too_large: 'Тело запроса слишком большое',
       invalid_json: 'Файл не является корректным JSON',
+      invalid_pack: 'Файл не является пакетом знаний',
       unexpected_pack_field: 'Пакет содержит неподдерживаемое поле',
       unsupported_schema_version: 'Неподдерживаемая версия формата пакета',
       invalid_pack_id: 'Некорректный ID пакета',

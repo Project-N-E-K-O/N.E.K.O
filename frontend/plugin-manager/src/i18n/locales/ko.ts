@@ -252,6 +252,7 @@ export default {
       pack_too_large: '데이터 팩 파일이 10 MiB를 초과합니다',
       payload_too_large: '요청 내용이 너무 큽니다',
       invalid_json: '파일이 올바른 JSON이 아닙니다',
+      invalid_pack: '파일이 지식 데이터 팩이 아닙니다',
       unexpected_pack_field: '데이터 팩에 지원되지 않는 필드가 있습니다',
       unsupported_schema_version: '지원되지 않는 데이터 팩 형식 버전입니다',
       invalid_pack_id: '데이터 팩 ID가 잘못되었습니다',

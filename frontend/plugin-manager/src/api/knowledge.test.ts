@@ -186,10 +186,25 @@ describe('knowledge API client', () => {
     })
   })
 
+  it('has a translation for every failure reason in every locale', async () => {
+    const { KNOWLEDGE_FAILURE_REASONS } = await loadKnowledgeApi()
+    const locales = import.meta.glob('../i18n/locales/*.ts', { eager: true }) as Record<
+      string,
+      { default: { knowledge: { reasons: Record<string, string> } } }
+    >
+    expect(Object.keys(locales).length).toBeGreaterThanOrEqual(8)
+    for (const [file, module] of Object.entries(locales)) {
+      const reasons = module.default.knowledge.reasons
+      const missing = KNOWLEDGE_FAILURE_REASONS.filter((reason) => !reasons[reason])
+      expect(missing, file).toEqual([])
+    }
+  })
+
   it('maps unknown reasons to operation_failed', async () => {
     const { KnowledgeApiError, knowledgeFailureReason } = await loadKnowledgeApi()
 
     expect(knowledgeFailureReason(new KnowledgeApiError('capacity_chunks'))).toBe('capacity_chunks')
+    expect(knowledgeFailureReason(new KnowledgeApiError('invalid_pack'))).toBe('invalid_pack')
     expect(knowledgeFailureReason(new KnowledgeApiError('something_new'))).toBe('operation_failed')
     expect(knowledgeFailureReason(new Error('boom'))).toBe('operation_failed')
   })

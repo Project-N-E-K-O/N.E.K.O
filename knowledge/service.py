@@ -799,8 +799,12 @@ class KnowledgeService:
                     # wait for that removal's outcome. If it fails, this
                     # import goes ahead; if it commits, the import is dropped.
                     await self._await_pending_removals(job)
-                self._finish_job(job, "active")
+                # The replaced rows got new entry ids; reload the vector
+                # snapshot before reporting "active", or vector lookups would
+                # still point at the old ids until a background refresh.
                 self._vector_generation += 1
+                await self._refresh_vectors_now()
+                self._finish_job(job, "active")
                 self._index_wakeup.set()
                 self._schedule_vector_refresh()
             except InterruptedError:
@@ -943,6 +947,28 @@ class KnowledgeService:
         except Exception:
             return None
 
+    def _install_vectors(self, snapshot: VectorSnapshot, key: tuple[int, str]) -> None:
+        """Use ``snapshot`` unless one loaded for a later generation is in place."""
+        built = self._vectors_built_for
+        if built is not None and built[1] == key[1] and built[0] > key[0]:
+            return
+        self._vectors = snapshot
+        self._vectors_built_for = key
+
+    async def _refresh_vectors_now(self) -> None:
+        model_id = self._current_model_id()
+        if model_id is None or self._state != "ready":
+            return
+        key = (self._vector_generation, model_id)
+        try:
+            snapshot = await asyncio.to_thread(self._store.load_vectors, model_id)
+        except Exception:
+            # The scheduled refresh retries; lookups meanwhile skip ids that
+            # no longer exist.
+            logger.warning("[Knowledge] vector snapshot reload failed", exc_info=True)
+            return
+        self._install_vectors(snapshot, key)
+
     def _schedule_vector_refresh(self) -> None:
         model_id = self._current_model_id()
         if model_id is None or self._state != "ready":
@@ -959,8 +985,7 @@ class KnowledgeService:
             except Exception:
                 logger.warning("[Knowledge] vector snapshot rebuild failed", exc_info=True)
                 return False
-            self._vectors = snapshot
-            self._vectors_built_for = key
+            self._install_vectors(snapshot, key)
             return True
 
         def rebuilt(task: asyncio.Task[bool]) -> None:

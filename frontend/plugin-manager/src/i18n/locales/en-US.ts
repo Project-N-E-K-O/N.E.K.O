@@ -252,6 +252,7 @@ export default {
       pack_too_large: 'The pack file is larger than 10 MiB',
       payload_too_large: 'The request body is too large',
       invalid_json: 'The file is not valid JSON',
+      invalid_pack: 'The file is not a knowledge pack',
       unexpected_pack_field: 'The pack contains an unsupported field',
       unsupported_schema_version: 'Unsupported pack format version',
       invalid_pack_id: 'Invalid pack ID',

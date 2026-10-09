@@ -173,9 +173,8 @@ def parse_pack(payload: object) -> KnowledgePack:
     pack = _require_mapping(payload, "invalid_pack")
     if set(pack) != _PACK_KEYS:
         raise KnowledgePackError("unexpected_pack_field")
-    if pack.get("schema_version") != PACK_SCHEMA_VERSION or isinstance(
-        pack.get("schema_version"), bool
-    ):
+    # type() rather than isinstance(): True and 1.0 also equal 1.
+    if type(pack.get("schema_version")) is not int or pack.get("schema_version") != PACK_SCHEMA_VERSION:
         raise KnowledgePackError("unsupported_schema_version")
     pack_id = pack.get("pack_id")
     if not pack_id_is_valid(pack_id):

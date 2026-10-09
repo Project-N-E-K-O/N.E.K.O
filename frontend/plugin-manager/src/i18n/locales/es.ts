@@ -252,6 +252,7 @@ export default {
       pack_too_large: 'El archivo del paquete supera los 10 MiB',
       payload_too_large: 'El cuerpo de la solicitud es demasiado grande',
       invalid_json: 'El archivo no es un JSON válido',
+      invalid_pack: 'El archivo no es un paquete de conocimiento',
       unexpected_pack_field: 'El paquete contiene un campo no admitido',
       unsupported_schema_version: 'Versión de formato de paquete no admitida',
       invalid_pack_id: 'ID de paquete no válido',
