@@ -381,8 +381,11 @@ def test_every_credential_change_runs_inside_the_visit_fence():
     logout = _body_of(oauth, "async def oauth_logout_endpoint(")
     assert "async with visit_account_change():" in logout and "return await _oauth_logout()" in logout
     callback = _body_of(oauth, "async def _handle_oauth_callback(")
-    fence = callback.index("async with visit_account_change(local_user_id), _oauth_start_lock:")
-    assert fence < callback.index("_persist_oauth_credentials")
+    # 先拿登录锁、确认这次尝试没被新的 /oauth/start 顶掉，才立闸收尾串门，再写凭证
+    lock = callback.index("async with _oauth_start_lock:")
+    recheck = callback.index("if not await _oauth_attempt_still_current(expected_state):", lock)
+    fence = callback.index("async with visit_account_change(local_user_id):", lock)
+    assert lock < recheck < fence < callback.index("_persist_oauth_credentials", lock)
     card = (REPO / "main_routers" / "card_drop_router.py").read_text(encoding="utf-8")
     sync = _body_of(card, "async def sync_session_endpoint(")
     assert sync.index("async with community_oauth.visit_account_change():") < sync.index("_clear_auth)")
@@ -466,3 +469,16 @@ async def test_account_changes_run_one_at_a_time(monkeypatch):
     release.set()
     await asyncio.gather(a, b)
     assert order == ["first:end-start", "first:end-done", "first:write", "second:write"]
+
+
+
+async def test_stale_oauth_attempt_is_recognized(monkeypatch):
+    # 被新的 /oauth/start 顶掉的回调：不为它结束在飞的串门（凭证写入本来也会拒）
+    from main_routers import community_oauth
+
+    pending = {"state": "new-attempt"}
+    monkeypatch.setattr(community_oauth, "_load_oauth_pending", lambda: (Path("p"), pending))
+    assert await community_oauth._oauth_attempt_still_current("new-attempt") is True
+    assert await community_oauth._oauth_attempt_still_current("old-attempt") is False
+    monkeypatch.setattr(community_oauth, "_load_oauth_pending", lambda: (None, None))
+    assert await community_oauth._oauth_attempt_still_current("new-attempt") is False

@@ -507,6 +507,12 @@ def _load_oauth_logout_records() -> tuple[dict, dict, dict]:
     )
 
 
+async def _oauth_attempt_still_current(expected_state: str) -> bool:
+    """Whether ``expected_state`` is still the pending OAuth attempt (no newer ``/oauth/start`` replaced it)."""
+    _path, pending = await asyncio.to_thread(_load_oauth_pending)
+    return bool(pending) and pending.get("state") == expected_state
+
+
 def _load_oauth_pending() -> tuple[Path | None, dict | None]:
     """Resolve and read the pending OAuth record on a worker thread."""
     path = _oauth_pending_path()
@@ -1107,15 +1113,20 @@ async def _handle_oauth_callback(
         "oauth_attempt_state": hashlib.sha256(expected_state.encode()).hexdigest(),
         "oauth_attempt_identity": pending.get("instance_identity") or "local",
     }
-    # 换成另一个社区账号：在飞的串门先收尾、等上传文件封存，写入新账号登录态期间不准入新串门
-    async with visit_account_change(local_user_id), _oauth_start_lock:
-        credentials_saved = await asyncio.to_thread(
-            _persist_oauth_credentials, auth_payload, social_base=social_base,
-            access_token=access_token, refresh_token=refresh_token,
-            local_user_id=local_user_id, auth_public_url=auth_public_url,
-            client_id=client_id, expected_pending_state=expected_state,
-            authorized_request=authorized_request,
-        )
+    async with _oauth_start_lock:
+        if not await _oauth_attempt_still_current(expected_state):
+            # 这次登录已被新的 /oauth/start 顶掉：凭证写入本来就会拒绝，不能为它先结束在飞的串门
+            credentials_saved = False
+        else:
+            # 换成另一个社区账号：在飞的串门先收尾、等上传文件封存，写入新账号登录态期间不准入新串门
+            async with visit_account_change(local_user_id):
+                credentials_saved = await asyncio.to_thread(
+                    _persist_oauth_credentials, auth_payload, social_base=social_base,
+                    access_token=access_token, refresh_token=refresh_token,
+                    local_user_id=local_user_id, auth_public_url=auth_public_url,
+                    client_id=client_id, expected_pending_state=expected_state,
+                    authorized_request=authorized_request,
+                )
         await asyncio.to_thread(_unlink_pending, expected_state)
     if not credentials_saved:
         return _callback_html(
