@@ -12,12 +12,16 @@ rem Usage:
 rem     setup_win7.bat
 rem     setup_win7.bat "C:\path\to\python.exe"
 
+set "PY_EXE=%~1"
+if "%PY_EXE%"=="" set "PY_EXE=python"
+rem Resolve an interpreter given as a relative path before changing directory.
+rem A bare name such as "python" is not a file here and keeps its PATH lookup.
+if not "%~1"=="" if exist "%~f1" set "PY_EXE=%~f1"
+
 set "ROOT_DIR=%~dp0"
 if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
 cd /d "%ROOT_DIR%"
 
-set "PY_EXE=%~1"
-if "%PY_EXE%"=="" set "PY_EXE=python"
 set "VENV_PY=.venv\Scripts\python.exe"
 rem Version checks use the exit code instead of parsing "python --version"
 rem output, so interpreter paths with spaces or parentheses keep working.
@@ -41,6 +45,16 @@ echo [N.E.K.O] creating virtual environment .venv ...
 if errorlevel 1 goto :venv_failed
 
 :venv_ready
+rem build_frontend.bat steps 0 and 1, without uv or tar.exe. They only need
+rem the standard library, so run them before pip: a failed pip install (for
+rem example a network error) then still leaves the models in place.
+echo [N.E.K.O] unpacking built-in PNGTuber models ...
+"%VENV_PY%" scripts\unpack_builtin_pngtuber.py
+if errorlevel 1 goto :unpack_failed
+echo [N.E.K.O] unpacking built-in Live2D models ...
+"%VENV_PY%" scripts\unpack_builtin_live2d.py
+if errorlevel 1 goto :unpack_failed
+
 "%VENV_PY%" -m pip --version >nul 2>&1
 if not errorlevel 1 goto :pip_ready
 echo [N.E.K.O] pip is missing in .venv, bootstrapping it with ensurepip ...
@@ -55,14 +69,6 @@ if errorlevel 1 echo [N.E.K.O] WARN: pip upgrade failed, continuing with the bun
 echo [N.E.K.O] installing pinned dependencies with pip, this may take a few minutes ...
 "%VENV_PY%" -m pip install -r requirements.txt
 if errorlevel 1 goto :pip_failed
-
-rem build_frontend.bat steps 0 and 1, without uv or tar.exe.
-echo [N.E.K.O] unpacking built-in PNGTuber models ...
-"%VENV_PY%" scripts\unpack_builtin_pngtuber.py
-if errorlevel 1 goto :unpack_failed
-echo [N.E.K.O] unpacking built-in Live2D models ...
-"%VENV_PY%" scripts\unpack_builtin_live2d.py
-if errorlevel 1 goto :unpack_failed
 
 set "FRONTEND_MISSING=0"
 if not exist "static\react\neko-chat\neko-chat-window.iife.js" set "FRONTEND_MISSING=1"

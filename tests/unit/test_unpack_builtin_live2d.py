@@ -30,20 +30,15 @@ def _write_archive(assets_root: Path, members: dict[str, bytes], model: str = MO
     return archive_path
 
 
-def test_production_live2d_archives_unpack_for_static_serving(tmp_path):
-    static_root = tmp_path / "static"
-
+def test_production_live2d_archives_pass_member_checks(tmp_path):
+    # Only inspect the member list: the extraction path itself is covered by
+    # the synthetic archives below, and the real archives are ~60 MB unpacked.
     for model in unpack_builtin_live2d.MODELS:
-        target = unpack_builtin_live2d.unpack_model(
-            model, PROJECT_ROOT / "assets", static_root
-        )
-        assert target == static_root / model
-        assert unpack_builtin_live2d._missing_files(target, model) == []
-        assert (target / unpack_builtin_live2d.COMPLETE_MARKER).is_file()
-
-    assert sorted(path.name for path in static_root.iterdir()) == sorted(
-        unpack_builtin_live2d.MODELS
-    )
+        with tarfile.open(PROJECT_ROOT / "assets" / f"{model}.tar.gz", "r:gz") as archive:
+            members = unpack_builtin_live2d._safe_members(archive, model)
+        names = {member.name for member in members if member.isfile()}
+        for required in unpack_builtin_live2d.REQUIRED_FILES:
+            assert f"{model}/{required.format(model=model)}" in names
 
 
 def test_unpack_skips_up_to_date_model_and_refreshes_newer_archive(tmp_path):
@@ -150,6 +145,36 @@ def test_publish_failure_restores_previous_model(monkeypatch, tmp_path):
 
     assert (target / "previous.txt").read_text(encoding="utf-8") == "previous"
     assert sorted(path.name for path in static_root.iterdir()) == [MODEL]
+
+
+def test_backup_cleanup_failure_does_not_fail_unpack(monkeypatch, tmp_path, capsys):
+    assets_root = _write_archive(tmp_path / "assets", _required_members()).parent
+    static_root = tmp_path / "static"
+    target = static_root / MODEL
+    target.mkdir(parents=True)
+    (target / "previous.txt").write_text("previous", encoding="utf-8")
+
+    original_rmtree = unpack_builtin_live2d.shutil.rmtree
+
+    def locked_backup_rmtree(path, *args, **kwargs):
+        # Simulate a file held open in the old copy: rmtree raises, or with
+        # ignore_errors=True returns without removing it.
+        if Path(path).name.startswith(f".{MODEL}.backup-"):
+            if kwargs.get("ignore_errors"):
+                return None
+            raise PermissionError("file in use")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(unpack_builtin_live2d.shutil, "rmtree", locked_backup_rmtree)
+
+    result = unpack_builtin_live2d.unpack_model(MODEL, assets_root, static_root)
+
+    assert result == target
+    assert unpack_builtin_live2d._missing_files(target, MODEL) == []
+    assert not (target / "previous.txt").exists()
+    leftovers = list(static_root.glob(f".{MODEL}.backup-*"))
+    assert len(leftovers) == 1
+    assert "please delete it manually" in capsys.readouterr().out
 
 
 def test_missing_archive_is_an_error(tmp_path):

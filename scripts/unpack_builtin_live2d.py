@@ -104,8 +104,16 @@ def unpack_model(
             if backup_dir.exists() and not model_dir.exists():
                 backup_dir.rename(model_dir)
             raise
+        # The new model is already in place: a cleanup failure (for example an
+        # antivirus scanner holding a file) must not fail the whole unpack.
+        shutil.rmtree(backup_dir, ignore_errors=True)
         if backup_dir.exists():
-            shutil.rmtree(backup_dir)
+            # find_models() walks static/ recursively and would list the
+            # leftover copy as an extra model, so ask the user to remove it.
+            print(
+                f"[unpack_live2d] WARN: could not remove old copy {backup_dir}, "
+                "please delete it manually"
+            )
         print(f"[unpack_live2d] {model} done: {model_dir}")
         return model_dir
     finally:

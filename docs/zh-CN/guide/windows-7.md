@@ -65,17 +65,17 @@ setup_win7.bat "C:\path\to\python.exe"
 
 1. 确认解释器是 Python 3.11；
 2. 创建 `.venv`（已有 `.venv` 时先确认它也是 3.11，不是就报错，请删掉 `.venv` 后重跑）；
-3. 用 pip 安装 `requirements.txt` 中锁定的全部依赖；
-4. 解包内置的 PNGTuber 与 Live2D 模型（默认角色要用）；
+3. 解包内置的 PNGTuber 与 Live2D 模型（默认角色要用；只用标准库，放在 pip 之前，pip 失败也不影响）；
+4. 用 pip 安装 `requirements.txt` 中锁定的全部依赖；
 5. 检查聊天窗口、插件管理页的构建产物，缺失时打印提示。
 
 **方式 B：手动**
 
 ```bat
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt
 .venv\Scripts\python.exe scripts\unpack_builtin_pngtuber.py
 .venv\Scripts\python.exe scripts\unpack_builtin_live2d.py
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 ::: tip
@@ -95,7 +95,7 @@ python -m venv .venv
 | `static/react/neko-chat/` | 主页没有聊天窗口，无法文字对话 |
 | `frontend/plugin-manager/dist/` | 插件管理页打不开 |
 
-缺这两份产物时，启动日志会打印「前端资源未构建」警告。
+缺这两份产物时，`setup_win7.bat` 结束时会列出缺失的目录；用 `launcher.py` 启动时不会再提示。
 
 ## 第四步：启动
 
@@ -131,7 +131,7 @@ Win7 上最后一代可用浏览器：**Chrome 109**（最终版）、**Firefox 
 | `python -m venv` 报错 | 确认用的是 Win7 构建的 3.11，且已装 VC++ 2015-2022 运行库 |
 | `setup_win7.bat` 提示已有 `.venv` 不可用 | `.venv` 是别的 Python 版本建的或从别的机器拷来的，删掉 `.venv` 文件夹后重跑 |
 | 启动即报 `os.add_dll_directory` 相关的 `OSError` | 没装 KB2533623 / KB3063858，见前置条件 |
-| 主页没有聊天窗口，日志提示前端资源未构建 | 见[第三步](#第三步-拷贝前端构建产物) |
+| 主页没有聊天窗口，或 `setup_win7.bat` 提示前端构建产物缺失 | 见[第三步](#第三步-拷贝前端构建产物) |
 | 端口被占用 | 见 [安装渠道](./install-options) 与启动日志中的端口提示 |
 | 中文路径乱码 / 崩溃 | 启动器已自动处理 UTF-8；如仍异常，手动设 `PYTHONUTF8=1` 后重试 |
 
