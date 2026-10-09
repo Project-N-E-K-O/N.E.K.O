@@ -4913,3 +4913,19 @@ def test_storage_location_cleanup_finishes_when_state_is_a_plain_file(tmp_path):
 
     assert response.status_code == 200, response.json()
     assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] == "cleaned"
+
+
+@pytest.mark.unit
+def test_an_entry_below_a_plain_file_counts_as_gone(tmp_path, monkeypatch):
+    """POSIX reports ENOTDIR for a path through a plain file (Windows reports
+    it as not found): either way the entry cannot exist."""
+    original_lstat = os.lstat
+
+    def _lstat(path, *args, **kwargs):
+        if Path(path).name == "game_scores":
+            raise NotADirectoryError(20, "Not a directory", str(path))
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(storage_location_router_module.os, "lstat", _lstat)
+
+    assert storage_location_router_module._entry_may_exist(tmp_path / "state" / "game_scores") is False
