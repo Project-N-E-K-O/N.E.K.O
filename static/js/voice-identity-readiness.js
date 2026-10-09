@@ -68,9 +68,10 @@
             el['wake-enable'].disabled = pending || hooks.enrolling() || !resources || resources.wake_managed === true;
             el['wake-enable'].checked = !!(resources && resources.wake_enabled);
             // Wake components only become required once wake word is on, and a
-            // missing wake model is fixed by its download button, not repair.
+            // missing cache-managed wake model is fixed by its download button.
+            // A configured model directory takes precedence, so download cannot.
             el.repair.hidden = !resources || !Object.entries(resources.resources || {}).some(([name, value]) => value.required
-                && ['missing', 'unavailable'].includes(value.state) && !(name === 'wake_model' && value.state === 'missing'));
+                && ['missing', 'unavailable'].includes(value.state) && !(name === 'wake_model' && value.state === 'missing' && !resources.wake_configured));
             el.repair.disabled = pending || hooks.enrolling();
             el['resource-cancel'].hidden = !operation;
             el['gain-value'].textContent = gainDb + ' dB';
@@ -89,7 +90,7 @@
                     ? ['voiceIdentity.wakeOptional', 'Wake word is off. This does not block voice enrollment.']
                     : wakeReady
                         ? ['voiceIdentity.wakeReady', 'Wake word components are ready.']
-                        : wakeState('wake_model') === 'missing' && !['missing', 'unavailable'].includes(wakeState('wake_runtime'))
+                        : wakeState('wake_model') === 'missing' && !resources.wake_configured && !['missing', 'unavailable'].includes(wakeState('wake_runtime'))
                             ? ['voiceIdentity.wakeNeedsModel', 'Wake word is on. Download the wake-word model.']
                             : ['voiceIdentity.wakeNeedsResources', 'Wake word is on. Check and load its components.'];
                 const text = !resources ? '' : t(key, fallback);
