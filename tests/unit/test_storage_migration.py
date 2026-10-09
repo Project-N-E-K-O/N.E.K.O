@@ -904,7 +904,10 @@ def test_storage_migration_refuses_a_linked_transaction_directory(tmp_path):
 
 
 @pytest.mark.unit
-def test_target_entry_appearing_after_staging_survives_rollback(tmp_path, monkeypatch):
+def test_target_entry_appearing_after_staging_is_left_alone(tmp_path, monkeypatch):
+    """Staging found no target config; one appears before publish. It was
+    never confirmed for replacing, so the migration stops without moving it
+    into the backup or publishing over it."""
     from utils import storage_migration as storage_migration_module
 
     config_manager = _make_config_manager(tmp_path)
@@ -922,23 +925,15 @@ def test_target_entry_appearing_after_staging_survives_rollback(tmp_path, monkey
 
     def _persist(*args, **kwargs):
         if kwargs.get("status") == "verifying":
-            # Staging recorded no target config; one appears before publish.
             (target_root / "config").mkdir(parents=True, exist_ok=True)
             (target_root / "config" / "late.json").write_text("late", encoding="utf-8")
-        if kwargs.get("status") == "committing":
-            raise KeyboardInterrupt("simulated process loss after publish")
         return original_persist(*args, **kwargs)
 
     monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", _persist)
-    with pytest.raises(KeyboardInterrupt):
-        run_pending_storage_migration(config_manager)
-    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", original_persist)
 
-    # The next start recovers from the checkpoint on disk alone. The restored
-    # target now holds data, so the retry stops to ask before overwriting it.
-    retry = run_pending_storage_migration(config_manager)
+    result = run_pending_storage_migration(config_manager)
 
-    assert retry["error_code"] == "target_confirmation_required"
+    assert result["error_code"] == "target_changed_during_migration"
     assert (target_root / "config" / "late.json").read_text(encoding="utf-8") == "late"
     assert not (target_root / "config" / "characters.json").exists()
 
@@ -3949,3 +3944,40 @@ def test_a_replaced_checkpoint_still_gets_its_transaction_removed(tmp_path):
     run_pending_storage_migration(config_manager)
 
     assert not storage_migration_module._transaction_path(target_root, txid).exists()
+
+
+@pytest.mark.unit
+def test_an_entry_appearing_in_a_fresh_target_after_staging_stops_the_migration(tmp_path, monkeypatch):
+    """The target was empty; a sync client created memory there while config
+    was being published. Nobody confirmed replacing it: it must not go into
+    the backup and be dropped with the transaction."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "facts.json").write_text("source facts", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_memory_appears(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
+        if Path(target).name == "config":
+            (target_root / "memory").mkdir()
+            (target_root / "memory" / "facts.json").write_text("arrived from a sync client", encoding="utf-8")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_memory_appears)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is False
+    assert result["error_code"] == "target_changed_during_migration"
+    assert (target_root / "memory" / "facts.json").read_text(encoding="utf-8") == "arrived from a sync client"

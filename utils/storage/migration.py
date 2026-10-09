@@ -2970,21 +2970,20 @@ def run_pending_storage_migration(
                         "target_changed_during_migration",
                         f"沿用的目标在迁移期间被改动，已停止迁移: {entry_name}",
                     )
-                if use_existing_target and target_existed and entry_name not in target_entries_at_staging:
-                    # Reusing a target makes its entries authoritative; one
-                    # that appeared after staging (a sync client) must not be
-                    # replaced by the source copy and then dropped with the
-                    # backup. Stop instead; nothing is published yet for it.
+                if target_existed and entry_name not in target_entries_at_staging:
+                    # Appeared after staging (a sync client): nobody confirmed
+                    # replacing it -- the confirmation covered what the target
+                    # held then -- and reusing a target makes its entries
+                    # authoritative anyway. Replaced by the source copy, it
+                    # would go with the backup once the migration succeeds.
+                    # Stop instead; nothing is published yet for it.
                     raise StorageMigrationError(
                         "target_changed_during_migration",
-                        f"沿用的目标在迁移期间出现了新条目，已停止迁移: {entry_name}",
+                        f"迁移目标在迁移期间出现了新条目，已停止迁移: {entry_name}",
                     )
                 # Record what the target holds right now, not what staging saw:
-                # rollback restores from this, and an entry that appeared since
-                # would otherwise be deleted together with its backup.
-                if target_existed and entry_name not in original_target_entries:
-                    original_target_entries.append(entry_name)
-                elif not target_existed and entry_name in original_target_entries:
+                # an entry gone since has no original to restore.
+                if not target_existed and entry_name in original_target_entries:
                     original_target_entries.remove(entry_name)
                 # Moving a read-only directory into the backup widens its mode
                 # for the move; record the original first, so a process exit
