@@ -11,8 +11,12 @@ from launcher_core import bootstrap
 def windows7(monkeypatch):
     monkeypatch.setattr(bootstrap, "_is_windows7", lambda: True)
     monkeypatch.setattr(bootstrap, "IS_FROZEN", False)
-    monkeypatch.delenv("NEKO_WIN7_SILENT", raising=False)
-    monkeypatch.delenv("_NEKO_WIN7_BANNER", raising=False)
+    # setenv before delenv so monkeypatch records an undo even when the
+    # variable is absent; otherwise the marker set by _warn_if_windows7()
+    # would leak into the rest of the pytest process.
+    for name in ("NEKO_WIN7_SILENT", "_NEKO_WIN7_BANNER"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
 
 
 @pytest.mark.parametrize(

@@ -27,19 +27,22 @@ rem Version checks use the exit code instead of parsing "python --version"
 rem output, so interpreter paths with spaces or parentheses keep working.
 set "PY311_CHECK=import sys; sys.exit(0 if sys.version_info[:2] == (3, 11) else 1)"
 
-echo [N.E.K.O] Windows 7 bootstrap, interpreter: "%PY_EXE%"
-"%PY_EXE%" --version
-if errorlevel 1 goto :no_python
-"%PY_EXE%" -c "%PY311_CHECK%"
-if errorlevel 1 goto :wrong_python
-
+echo [N.E.K.O] Windows 7 bootstrap
 if not exist "%VENV_PY%" goto :create_venv
+rem Every later step runs inside .venv, so a rerun does not need PY_EXE to be
+rem runnable (for example when the interpreter was only passed the first time).
 echo [N.E.K.O] checking existing virtual environment .venv ...
+"%VENV_PY%" --version
 "%VENV_PY%" -c "%PY311_CHECK%"
 if errorlevel 1 goto :bad_venv
 goto :venv_ready
 
 :create_venv
+echo [N.E.K.O] interpreter: "%PY_EXE%"
+"%PY_EXE%" --version
+if errorlevel 1 goto :no_python
+"%PY_EXE%" -c "%PY311_CHECK%"
+if errorlevel 1 goto :wrong_python
 echo [N.E.K.O] creating virtual environment .venv ...
 "%PY_EXE%" -m venv .venv
 if errorlevel 1 goto :venv_failed

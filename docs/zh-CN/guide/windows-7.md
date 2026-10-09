@@ -63,8 +63,8 @@ setup_win7.bat "C:\path\to\python.exe"
 
 脚本会：
 
-1. 确认解释器是 Python 3.11；
-2. 创建 `.venv`（已有 `.venv` 时先确认它也是 3.11，不是就报错，请删掉 `.venv` 后重跑）；
+1. 没有 `.venv` 时，确认解释器是 Python 3.11 后创建 `.venv`；
+2. 已有 `.venv` 时，确认它是 3.11 且有 pip（不是就报错，请删掉 `.venv` 后重跑）。这时不需要再传解释器路径；
 3. 解包内置的 PNGTuber 与 Live2D 模型（默认角色要用；只用标准库，放在 pip 之前，pip 失败也不影响）；
 4. 用 pip 安装 `requirements.txt` 中锁定的全部依赖；
 5. 检查聊天窗口、插件管理页的构建产物，缺失时打印提示。
@@ -126,7 +126,7 @@ Win7 上最后一代可用浏览器：**Chrome 109**（最终版）、**Firefox 
 
 | 现象 | 处理 |
 | --- | --- |
-| PowerShell 下载报 `Could not create SSL/TLS secure channel` | 先执行 `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12` 再重试 |
+| PowerShell 下载报 `Could not create SSL/TLS secure channel` | 最省事的是直接用 Chrome 109 / Firefox 115 ESR 下载。坚持用 PowerShell 的话，先执行 `[Net.ServicePointManager]::SecurityProtocol = 3072`（3072 即 TLS 1.2）再重试：Win7 自带的 PowerShell 2.0 跑在 .NET 3.5 上，没有 `Tls12` 这个枚举名，并且要先装 KB3154518 才支持 TLS 1.2；升级到 PowerShell 3.0+（WMF 3.0+）后则直接可用 |
 | pip 安装慢或超时 | `python -m pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple`（换回官方源同理去掉即可） |
 | `python -m venv` 报错 | 确认用的是 Win7 构建的 3.11，且已装 VC++ 2015-2022 运行库 |
 | `setup_win7.bat` 提示已有 `.venv` 不可用 | `.venv` 是别的 Python 版本建的或从别的机器拷来的，删掉 `.venv` 文件夹后重跑 |

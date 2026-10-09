@@ -41,6 +41,12 @@ def test_production_live2d_archives_pass_member_checks(tmp_path):
             assert f"{model}/{required.format(model=model)}" in names
 
 
+def test_models_match_builtin_live2d_model_names():
+    from config.character_defaults import BUILTIN_LIVE2D_MODEL_NAMES
+
+    assert sorted(unpack_builtin_live2d.MODELS) == sorted(BUILTIN_LIVE2D_MODEL_NAMES)
+
+
 def test_unpack_skips_up_to_date_model_and_refreshes_newer_archive(tmp_path):
     assets_root = tmp_path / "assets"
     static_root = tmp_path / "static"
