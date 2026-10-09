@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import html
 import json
@@ -833,24 +834,27 @@ async def oauth_status_endpoint(request: Request):
     }
 
 
-async def _end_visits_before_account_change(new_local_user_id: str | None = None) -> None:
-    """Logout (``None``) or a login as another account: end live visits and wait for their upload seal.
+@contextlib.asynccontextmanager
+async def visit_account_change(new_local_user_id: str | None = None):
+    """Wrap a credential change: logout (``None``) or a login as ``new_local_user_id``.
 
-    A re-login as the same account changes nothing. The visit package is
-    only touched when it is loaded and has a live visit.
+    While the block runs no visit is admitted, and live visits are ended
+    and their upload files sealed before it starts (they record the account
+    they ran under). A re-login as the same account changes nothing; without
+    the visit package loaded there is nothing to fence.
     """
     runtime = sys.modules.get("main_routers.visit_router.runtime")
-    if runtime is None or not runtime.live_visit_count():
+    if runtime is None:
+        yield
         return
     if new_local_user_id is not None:
         from main_routers.visit_router.accounts import local_account
 
         if await local_account() == new_local_user_id:
+            yield
             return
-    try:
-        await runtime.end_visits_for_account_change()
-    except Exception as exc:  # noqa: BLE001 - 收尾失败不挡登出 / 登录；没封存的留给下次启动补录
-        logger.warning("community oauth: ending live visits failed: %r", exc)
+    async with runtime.account_change():
+        yield
 
 
 @router.post("/oauth/logout", summary="清除社区 OAuth 本地会话（best-effort revoke）")
@@ -860,8 +864,12 @@ async def oauth_logout_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
 
-    # 在飞的串门先收尾、等它把上传文件封存（记着这场跑在哪个账号下），再清本机登录态
-    await _end_visits_before_account_change()
+    # 在飞的串门先收尾、等它把上传文件封存（记着这场跑在哪个账号下），清本机登录态期间不准入新串门
+    async with visit_account_change():
+        return await _oauth_logout()
+
+
+async def _oauth_logout() -> dict:
     snapshot, auth, social = await asyncio.to_thread(_load_oauth_logout_records)
     client_id = (
         str(auth.get("client_id") or "").strip()
@@ -1095,9 +1103,8 @@ async def _handle_oauth_callback(
         "oauth_attempt_state": hashlib.sha256(expected_state.encode()).hexdigest(),
         "oauth_attempt_identity": pending.get("instance_identity") or "local",
     }
-    # 换成另一个社区账号：在飞的串门先收尾、等上传文件封存，再写入新账号的登录态
-    await _end_visits_before_account_change(local_user_id)
-    async with _oauth_start_lock:
+    # 换成另一个社区账号：在飞的串门先收尾、等上传文件封存，写入新账号登录态期间不准入新串门
+    async with visit_account_change(local_user_id), _oauth_start_lock:
         credentials_saved = await asyncio.to_thread(
             _persist_oauth_credentials, auth_payload, social_base=social_base,
             access_token=access_token, refresh_token=refresh_token,

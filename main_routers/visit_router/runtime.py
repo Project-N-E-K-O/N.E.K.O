@@ -50,6 +50,7 @@ import random
 import secrets
 import time
 from collections.abc import Awaitable, Callable, Iterable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -347,6 +348,12 @@ _stop_gen = 0
 _stopping = False
 """True while ``stop_all`` runs: a ``start_visit`` arriving meanwhile is refused (it would not be stopped)."""
 
+_account_changes = 0
+"""Community logouts / account switches in progress (:func:`account_change`): no visit is admitted."""
+
+_account_gen = 0
+"""Bumped when an account change starts: a ``start_visit`` that was awaiting meanwhile does not register."""
+
 
 def has_visit_background_tasks(lanlan_name: str) -> bool:
     """Registry ``has_background_tasks``: this character's visit background writes are running."""
@@ -438,6 +445,8 @@ def _reset_for_tests() -> None:
     _room_cancels.clear()
     _outbox_cleanups.clear()
     _awaited_writes.clear()
+    global _account_changes
+    _account_changes = 0
     _runtimes.clear()
     _pending_visits.clear()
     _resolving_names.clear()
@@ -2546,6 +2555,9 @@ async def start_visit(
     if side not in ("host", "guest"):
         raise ValueError("side must be 'host' or 'guest'")
     stop_gen = _stop_gen
+    account_gen = _account_gen
+    if _account_changes:
+        raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "account_change"})
     gate = await persona_gate(name)
     if not gate.ok:
         raise VisitRefused(409, {"code": "VISIT_PERSONA_UNREVIEWED", "state": gate.state})
@@ -2576,6 +2588,9 @@ async def start_visit(
         if failure is not None:
             raise VisitRefused(409, {"reason": failure})
         account = await _local_account()
+        if _account_gen != account_gen or _account_changes:
+            # 入场途中开始了登出 / 换账号：这一场会跑在已不存在 / 别人的账号下，不登记
+            raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "account_change"})
         if _stop_gen != stop_gen or _stopping:
             # 入场途中 stop_all 跑过 / 正在跑（它只看得到已登记的运行时）：不再登记、不再起传输
             raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "shutdown"})
@@ -2690,6 +2705,29 @@ async def end_visit(lanlan_name: str, visit_id: str, reason: str) -> tuple[int, 
 def live_visit_count() -> int:
     """How many visit runtimes are registered (cheap check before an account change)."""
     return len(_runtimes)
+
+
+@asynccontextmanager
+async def account_change(timeout: float = _ACCOUNT_CHANGE_SEAL_WAIT_S):
+    """Hold across a community logout / account switch: no visit is admitted, live ones end first.
+
+    On entry the admission fence goes up (a start already past its account
+    lookup is refused as well), then every live visit is ended and its
+    upload seal awaited (:func:`end_visits_for_account_change`); the caller
+    changes the credentials inside the block. Ending visits never raises.
+    """
+    global _account_changes, _account_gen
+    _account_changes += 1
+    _account_gen += 1
+    try:
+        if _runtimes:
+            try:
+                await end_visits_for_account_change(timeout)
+            except Exception as exc:  # noqa: BLE001 - 收尾失败不挡登出 / 登录；没封存的留给下次启动补录
+                logger.warning("visit: ending live visits before the account change failed: %r", exc)
+        yield
+    finally:
+        _account_changes -= 1
 
 
 async def end_visits_for_account_change(timeout: float = _ACCOUNT_CHANGE_SEAL_WAIT_S) -> int:
@@ -2836,5 +2874,5 @@ __all__ = [
     "visit_sweep_loop", "is_visit_live", "is_visit_route_active", "is_visit_route_locked",
     "has_visit_background_tasks", "spawn_visit_background", "register_visit_route_kind",
     "get_runtime", "get_runtime_by_visit", "recent_runtime", "on_page_signal",
-    "end_visits_for_account_change", "live_visit_count",
+    "end_visits_for_account_change", "live_visit_count", "account_change",
 ]

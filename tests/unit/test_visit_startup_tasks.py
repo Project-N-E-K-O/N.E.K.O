@@ -20,6 +20,7 @@ import ast
 import asyncio
 import time
 from pathlib import Path
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -135,7 +136,7 @@ async def test_start_returns_at_once_and_injects_the_runtime_callbacks(monkeypat
     assert captured["config_dir"] == tmp_path and captured["family_names"] == ("妈妈",)
     assert callable(captured["summary_llm"]) and callable(captured["void_pending"])
     gate.set()
-    await rec
+    assert await rec is None
     assert not sweep.done()
 
 
@@ -145,7 +146,7 @@ async def test_recovery_failure_is_logged_not_raised(monkeypatch, caplog):
 
     monkeypatch.setattr(background, "run_startup_recovery", broken)
     background.start_visit_background_tasks()
-    await background._recovery_task
+    assert await background._recovery_task is None
     assert "visit recovery failed" in caplog.text
 
 
@@ -246,49 +247,104 @@ async def test_real_visit_is_sealed_before_the_account_change_returns(tmp_path, 
         visit_route_state._reset_for_tests()
 
 
-async def test_oauth_hook_is_a_no_op_without_live_visits(monkeypatch):
-    from main_routers import community_oauth
+async def test_account_change_fences_admission_and_ends_live_visits(monkeypatch):
+    ended = []
 
-    called = []
+    async def spy(timeout=None):
+        ended.append(True)
+        return 1
 
-    async def spy(*_a, **_k):
-        called.append(True)
-        return 0
-
-    monkeypatch.setattr(runtime, "_runtimes", {})
     monkeypatch.setattr(runtime, "end_visits_for_account_change", spy)
-    await community_oauth._end_visits_before_account_change()
-    await community_oauth._end_visits_before_account_change("someone")
-    assert called == []
+    monkeypatch.setattr(runtime, "_runtimes", {"A": object()})
+    async with runtime.account_change():
+        assert ended == [True]
+        # 换账号期间建房一律拒（占位之前就拒，不动槽位）
+        with pytest.raises(runtime.VisitRefused) as exc:
+            await runtime.start_visit("A", "host")
+        assert exc.value.body == {"code": "VISIT_E_BUSY", "reason": "account_change"}
+    assert runtime._account_changes == 0
 
 
-async def test_oauth_hook_ends_visits_on_logout_and_on_another_account(monkeypatch):
+async def test_start_awaiting_its_account_lookup_is_refused_after_an_account_change(monkeypatch):
+    from main_routers.visit_router import persona
+    from main_routers.visit_router.persona import PersonaGate
+    from utils import visit_route_state
+
+    runtime._reset_for_tests()
+    visit_route_state._reset_for_tests()
+    gate = asyncio.Event()
+
+    async def persona_ok(name):
+        return PersonaGate(ok=True, state="ok", character_uid="uid-a", text="猫娘")
+
+    async def slow_account():
+        await gate.wait()
+        return "acct"
+
+    class Host:
+        lanlan_name = "A"
+
+        def precondition_failure(self):
+            return None
+
+        def is_current(self):
+            return True
+
+    monkeypatch.setattr(persona, "persona_gate", persona_ok)
+    monkeypatch.setattr(runtime, "_local_account", slow_account)
+    starting = asyncio.ensure_future(runtime.start_visit("A", "host", host=Host(),
+                                                         deps=SimpleNamespace(config_dir=lambda: Path("."))))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    async with runtime.account_change():
+        gate.set()
+        with pytest.raises(runtime.VisitRefused) as exc:
+            await starting
+    assert exc.value.body["reason"] == "account_change"
+    assert visit_route_state.get_visit_route_state("A") is None      # 占位已放掉
+    runtime._reset_for_tests()
+
+
+async def test_oauth_fence_skips_a_relogin_as_the_same_account(monkeypatch):
     from main_routers import community_oauth
     from main_routers.visit_router import accounts
 
-    called = []
+    entered = []
 
-    async def spy(*_a, **_k):
-        called.append(True)
-        return 1
+    @asynccontextmanager
+    async def fence(timeout=None):
+        entered.append(True)
+        yield
 
     async def current():
         return "acct-1"
 
-    monkeypatch.setattr(runtime, "_runtimes", {"A": object()})
-    monkeypatch.setattr(runtime, "end_visits_for_account_change", spy)
+    monkeypatch.setattr(runtime, "account_change", fence)
     monkeypatch.setattr(accounts, "local_account", current)
-    await community_oauth._end_visits_before_account_change()             # 登出
-    await community_oauth._end_visits_before_account_change("acct-2")     # 换账号
-    await community_oauth._end_visits_before_account_change("acct-1")     # 同一账号重登：不动
-    assert called == [True, True]
+    async with community_oauth.visit_account_change():               # 登出
+        pass
+    async with community_oauth.visit_account_change("acct-2"):       # 换账号
+        pass
+    async with community_oauth.visit_account_change("acct-1"):       # 同一账号重登：不设闸
+        pass
+    assert entered == [True, True]
 
 
-def test_oauth_entry_points_end_visits_before_touching_the_login_state():
-    source = (REPO / "main_routers" / "community_oauth.py").read_text(encoding="utf-8")
-    logout = source.split("async def oauth_logout_endpoint(", 1)[1].split("\n@", 1)[0]
-    assert logout.index("_end_visits_before_account_change()") < logout.index("_revoke_tokens_best_effort")
-    assert logout.index("_end_visits_before_account_change()") < logout.index("C._clear_auth")
-    callback = source.split("async def _handle_oauth_callback(", 1)[1].split("\n@", 1)[0]
-    assert callback.index("_end_visits_before_account_change(local_user_id)") < callback.index(
-        "_persist_oauth_credentials")
+def _body_of(source: str, signature: str) -> str:
+    return source.split(signature, 1)[1].split(chr(10) + "@", 1)[0]
+
+
+def test_every_credential_change_runs_inside_the_visit_fence():
+    oauth = (REPO / "main_routers" / "community_oauth.py").read_text(encoding="utf-8")
+    logout = _body_of(oauth, "async def oauth_logout_endpoint(")
+    assert "async with visit_account_change():" in logout and "return await _oauth_logout()" in logout
+    callback = _body_of(oauth, "async def _handle_oauth_callback(")
+    fence = callback.index("async with visit_account_change(local_user_id), _oauth_start_lock:")
+    assert fence < callback.index("_persist_oauth_credentials")
+    card = (REPO / "main_routers" / "card_drop_router.py").read_text(encoding="utf-8")
+    sync = _body_of(card, "async def sync_session_endpoint(")
+    assert sync.index("async with community_oauth.visit_account_change():") < sync.index("_clear_auth)")
+    assert sync.index("community_oauth.visit_account_change(_normalize_local_user_id(") < sync.index(
+        "await _store_session(")
+    logout2 = _body_of(card, "async def logout_endpoint(")
+    assert logout2.index("async with community_oauth.visit_account_change():") < logout2.index("_clear_auth)")
