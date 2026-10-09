@@ -505,6 +505,16 @@ test('short action burst guard prevents an immediate autonomous repeat', () => {
   assert.equal(runtime.requests.length, 1, 'autonomous tick inside the short guard must not start another action');
 });
 
+test('entering idle alone does not arm the short action burst guard', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  runtime.advanceTime(10000);
+  runtime.observe('cat_elapsed', { elapsedMs: 10000 }, 'cat1', 'cat-mind-clock');
+  const decision = runtime.win.nekoCatMind.getDebugSnapshot().lastDecision;
+  assert.ok(decision, 'expected an autonomous evaluation');
+  assert.notEqual(decision.reason, 'action_start_burst_guard');
+});
+
 test('repeated hover observations inside the short window count once', () => {
   const runtime = createRuntime('cat1_social_ping');
   runtime.enter();
@@ -530,6 +540,27 @@ test('identical compact surface facts do not create repeated opportunities', () 
     detail: { ...detail, timestamp: detail.timestamp + 1 },
   }));
   runtime.flush();
+  const compactFacts = runtime.win.nekoCatMind.getRecentEvents()
+    .filter((event) => event.type === 'chat_compact_surface_visible');
+  assert.equal(compactFacts.length, 1);
+});
+
+test('compact surface dedupe ignores the per-notification lifecycle sequence', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  const detail = {
+    source: 'compact-surface',
+    available: true,
+    visible: true,
+    screenRect: { left: 10, top: 20, width: 80, height: 80 },
+  };
+  for (let sequence = 1; sequence <= 3; sequence += 1) {
+    runtime.advanceTime(1);
+    runtime.win.dispatchEvent(new CustomEventLike('neko:idle-chat-compact-surface-state', {
+      detail: { ...detail, timestamp: runtime.now(), lifecycleSequence: sequence },
+    }));
+    runtime.flush();
+  }
   const compactFacts = runtime.win.nekoCatMind.getRecentEvents()
     .filter((event) => event.type === 'chat_compact_surface_visible');
   assert.equal(compactFacts.length, 1);

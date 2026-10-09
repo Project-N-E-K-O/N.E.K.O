@@ -403,6 +403,8 @@
                 lastTickAt: 0,
                 lastUserInteractionAt: 0,
                 lastActionStartedAt: 0,
+                // 只记 runner 确认 started 的时间；lastActionStartedAt 在进场时也会被设为锚点。
+                lastConfirmedActionStartedAt: 0,
                 dragInterruptionRecoveryActive: false,
             },
             lastResetReason: '',
@@ -1019,6 +1021,7 @@
                 fullCooldownMs: scoreConfig ? scoreConfig.cooldownMs : 0,
             };
             runtimeState.clock.lastActionStartedAt = timestamp;
+            runtimeState.clock.lastConfirmedActionStartedAt = timestamp;
             runtimeState.clock.dragInterruptionRecoveryActive = false;
             // Intent is consumed only after the existing runner proves it
             // really started. accepted/rejected/provider dry-run never spend it.
@@ -1616,9 +1619,9 @@
             return;
         }
 
-        var sinceLastActionStarted = scheduler.lastEvaluatedAt -
-            (Number(runtimeState.clock.lastActionStartedAt) || 0);
-        if (runtimeState.clock.lastActionStartedAt &&
+        var lastConfirmedActionStartedAt = Number(runtimeState.clock.lastConfirmedActionStartedAt) || 0;
+        var sinceLastActionStarted = scheduler.lastEvaluatedAt - lastConfirmedActionStartedAt;
+        if (lastConfirmedActionStartedAt &&
             sinceLastActionStarted >= 0 &&
             sinceLastActionStarted < ACTION_START_BURST_GUARD_MS &&
             !triggerTypes.some(isUserInteractionObservationType) &&
@@ -2810,7 +2813,6 @@
         var compactSignature = [
             visible ? 'visible' : 'hidden',
             rect ? [rect.left, rect.top, rect.width, rect.height].join(',') : '',
-            typeof detail.lifecycleSequence === 'number' ? detail.lifecycleSequence : '',
         ].join('|');
         if (compactSignature && compactSignature === runtimeState.lastCompactSurfaceSignature) {
             return;

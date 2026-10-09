@@ -494,7 +494,7 @@ function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {})
         edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button),
         returnPending: _isNekoCatMindReturnPending(button) || _isAnyNekoCatMindReturnPending(),
         transitionActive: _isNekoCatMindTransitionActive(button), compactSurfaceDragging: _isNekoIdleCompactSurfaceDragging(),
-        cat1PositionPresentationBusy: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1PositionPresentationBusy(button),
+        cat1PositionPresentationBusy: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoCatMindCat1PositionBusy(button),
         independentActionActive: _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive(),
         audioEnabled: isNekoIdleCatAudioEnabled(), ambientAudioActive: !!_nekoIdleCat1AmbientSoundState.active,
         playYarnCapability,
@@ -621,7 +621,7 @@ function _evaluateNekoCatMindActionProvider(actionId, context = {}) {
     const facts = { tier: _getActiveNekoIdleReturnTier(), buttonFound: !!button,
         returnBallVisible: _isNekoCatMindButtonContainerVisible(button), returnPending: _isAnyNekoCatMindReturnPending(),
         transitionActive: _isNekoCatMindTransitionActive(button), compactSurfaceDragging: _isNekoIdleCompactSurfaceDragging(),
-        cat1PositionPresentationBusy: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1PositionPresentationBusy(button),
+        cat1PositionPresentationBusy: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoCatMindCat1PositionBusy(button),
         independentActionActive: _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive(),
         edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button),
         audioEnabled: isNekoIdleCatAudioEnabled(),
@@ -748,14 +748,25 @@ function _getNekoCatMindYarnRuntimeGateSnapshot() {
         return { yarnDragActive: false, yarnSettling: false };
     }
 }
-function _isNekoIdleCat1PositionPresentationBusy(button) {
-    const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
-    if (!state) return false;
-    if (state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) return true;
+function _isNekoIdleCat1PositionStateMoving(state) {
     if (state.paused || state.frame || state.pendingWalkTimer || state.pendingWalkReady ||
         state.pairMovePlan || state.pairMoveFrame) return true;
     if (!state.profile) return true;
     return state.substate !== state.profile.idleSubstate || state.actionSettled !== true;
+}
+function _isNekoIdleCat1PositionPresentationBusy(button) {
+    const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    if (!state) return false;
+    if (state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) return true;
+    return _isNekoIdleCat1PositionStateMoving(state);
+}
+// Cat Mind only yields while the cat is moving or unsettled. A settled compact
+// top-edge perch is a resting spot that the social-ping reaction is built for;
+// desktop-window interactions still treat that perch as occupied (see above).
+function _isNekoCatMindCat1PositionBusy(button) {
+    const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    if (!state) return false;
+    return _isNekoIdleCat1PositionStateMoving(state);
 }
 function _getNekoCatMindRuntimeGateSnapshot() {
     const tier = _getActiveNekoIdleReturnTier(); const button = _findNekoCatMindVisibleButtonForTier(tier);
@@ -763,7 +774,7 @@ function _getNekoCatMindRuntimeGateSnapshot() {
     return Object.freeze({ returnPending: _isAnyNekoCatMindReturnPending(), dragPending: _isAnyNekoIdleReturnDragActionBlocking(), dragging: _isAnyNekoIdleReturnDragActionActive(),
         edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button),
         transitionActive: _isNekoCatMindTransitionActive(button), activeIndependentAction: _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive(),
-        cat1PositionPresentationBusy: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1PositionPresentationBusy(button),
+        cat1PositionPresentationBusy: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoCatMindCat1PositionBusy(button),
         returnBallVisible: !!button, validCatRuntime: tier !== _NEKO_IDLE_TIER_NONE, chatSurfaceDragging: _isNekoIdleCompactSurfaceDragging(),
         yarnDragActive: yarnGate.yarnDragActive, yarnSettling: yarnGate.yarnSettling, tier });
 }
