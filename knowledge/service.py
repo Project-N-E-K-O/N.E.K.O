@@ -227,12 +227,14 @@ class KnowledgeService:
         self._index_model_id: str | None = None
         self._query_embeddings: set[asyncio.Task[Any]] = set()
         self._admitting: dict[str, int] = {}
-        # Removal ordering: a global counter, and the counter value of each
-        # pack's latest removal. An import remembers the counter when the
-        # request arrives (before parsing) and gives way to any later removal.
-        self._removal_clock = 0
+        # Request order: imports and removals each take the next number when
+        # the request arrives (before parsing or waiting for the lock). An
+        # import gives way only to removals of its pack that arrived later:
+        # ``_removed_at`` holds the latest committed one, ``_pending_removals``
+        # those still waiting.
+        self._request_seq = 0
         self._removed_at: dict[str, int] = {}
-        self._pending_removals: dict[str, int] = {}
+        self._pending_removals: dict[str, set[int]] = {}
         self._vectors_built_for: tuple[int, str] | None = None
         self._vector_task: asyncio.Task[Any] | None = None
         self._availability_listeners: list[Callable[[], None]] = []
@@ -481,15 +483,18 @@ class KnowledgeService:
 
     async def remove_pack(self, pack_id: str) -> dict[str, Any]:
         # Nothing is marked up front, so a failed removal has nothing to undo.
-        # While this removal is pending, imports of the pack yield (one may be
-        # holding the lock this removal waits for); once it succeeds, the
-        # removal clock makes every import that arrived earlier stand down.
+        # While this removal is pending, earlier imports of the pack yield (one
+        # may be holding the lock this removal waits for); once it succeeds,
+        # every import that arrived before it stands down. Imports that
+        # arrived after it are left alone: they are the newer request.
         if pack_id not in self._registry.packs:
             # Not installed (a first import may still be building): there is
             # nothing this removal could commit, so it must not make that
             # import yield either.
             raise KnowledgeUnavailable("not_found")
-        self._pending_removals[pack_id] = self._pending_removals.get(pack_id, 0) + 1
+        self._request_seq += 1
+        my_seq = self._request_seq
+        self._pending_removals.setdefault(pack_id, set()).add(my_seq)
 
         async def run() -> dict[str, Any]:
             record = self._registry.packs.get(pack_id)
@@ -510,10 +515,9 @@ class KnowledgeService:
                     logger.warning("[Knowledge] could not delete the file of %s", pack_id)
 
             await asyncio.to_thread(save_registry, self.root, registry)
-            self._removal_clock += 1
-            self._removed_at[pack_id] = self._removal_clock
+            self._removed_at[pack_id] = max(self._removed_at.get(pack_id, 0), my_seq)
             for job in self._jobs.values():
-                if job.pack_id == pack_id and job.state == "queued":
+                if job.pack_id == pack_id and job.state == "queued" and job.arrived_at < my_seq:
                     job.cancel_requested = True
                     self._finish_job(job, "cancelled")
             self._broken_packs = tuple(p for p in self._broken_packs if p != pack_id)
@@ -525,10 +529,9 @@ class KnowledgeService:
         try:
             result = await self._locked(run)
         finally:
-            remaining = self._pending_removals.get(pack_id, 1) - 1
-            if remaining > 0:
-                self._pending_removals[pack_id] = remaining
-            else:
+            pending = self._pending_removals.get(pack_id, set())
+            pending.discard(my_seq)
+            if not pending:
                 self._pending_removals.pop(pack_id, None)
         self._schedule_vector_refresh()
         return result
@@ -537,7 +540,7 @@ class KnowledgeService:
         """Whether a removal of the job's pack overrides this import."""
         return (
             job.cancel_requested
-            or self._pending_removals.get(job.pack_id, 0) > 0
+            or any(seq > job.arrived_at for seq in self._pending_removals.get(job.pack_id, ()))
             or self._removed_at.get(job.pack_id, -1) > job.arrived_at
         )
 
@@ -545,7 +548,8 @@ class KnowledgeService:
 
     async def import_pack(self, raw: bytes) -> dict[str, Any]:
         self._require_ready()
-        arrived_at = self._removal_clock
+        self._request_seq += 1
+        arrived_at = self._request_seq
         try:
             pack, canonical, chunks = await asyncio.to_thread(self._prepare_import, raw)
         except KnowledgePackError as exc:

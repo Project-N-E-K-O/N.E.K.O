@@ -41,13 +41,14 @@ _CHAT_TOKEN_RE = re.compile(
     r"start_header_id|end_header_id|eot_id|begin_of_text)\s*\|>",
     re.IGNORECASE,
 )
-# Unicode default-ignorable code points, rendered as nothing: soft hyphen,
-# combining grapheme joiner, zero-width spaces/joiners, bidi controls, BOM,
-# Hangul fillers, variation selectors, tags. They are removed from pack text,
-# and the role-marker pattern also tolerates them, so an invisible prefix
-# cannot hide a line-leading role.
+# Unicode default-ignorable code points, rendered as nothing: C1 controls
+# (NEL becomes a line break before these are removed), soft hyphen, combining
+# grapheme joiner, zero-width spaces/joiners, bidi controls, BOM, Hangul
+# fillers, variation selectors, tags. They are removed from pack text, and the
+# role-marker pattern also tolerates them, so an invisible prefix cannot hide
+# a line-leading role.
 _INVISIBLE = (
-    "\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f"
+    "\x80-\x9f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f"
     "\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0"
     "\U0001d173-\U0001d17a\U000e0000-\U000e0fff"
 )
