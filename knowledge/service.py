@@ -167,6 +167,7 @@ class ImportJob:
     cancel_requested: bool = False
     arrived_at: int = 0
     staged_bytes: int = 0
+    staged_sha256: str = ""
     # Set once the index write commits; from then on the import is no longer
     # cancellable. The lock makes "cancel" and "commit" exclusive.
     committed: bool = False
@@ -409,10 +410,24 @@ class KnowledgeService:
                 await asyncio.wait_for(self._write_lock.acquire(), WRITE_LOCK_TIMEOUT_SECONDS)
             except asyncio.TimeoutError as exc:
                 raise KnowledgeUnavailable("knowledge_busy") from exc
+        # The mutation runs as its own task: a cancelled caller stops waiting,
+        # but thread work it started cannot be stopped, so the lock is only
+        # released once the mutation has really finished.
+        task = asyncio.ensure_future(func())
         try:
-            return await func()
-        finally:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                self._write_lock.release()
+            else:
+                task.add_done_callback(_consume)
+                task.add_done_callback(lambda _task: self._write_lock.release())
+            raise
+        except BaseException:
             self._write_lock.release()
+            raise
+        self._write_lock.release()
+        return result
 
     async def _apply_record_update(self, pack_id: str, **changes: Any) -> PackRecord:
         """Persist and publish a policy change; the caller holds the write lock."""
@@ -579,13 +594,20 @@ class KnowledgeService:
             return {"ok": False, "reason": "knowledge_busy"}
         self._request_seq += 1
         arrived_at = self._request_seq
+        # The reservation lasts until the request is answered (including the
+        # unchanged-file check, which reads from disk) or admitted, so parsed
+        # copies of a pack never pile up uncounted.
         self._parsing += 1
+        try:
+            return await self._import_parsed(raw, arrived_at)
+        finally:
+            self._parsing -= 1
+
+    async def _import_parsed(self, raw: bytes, arrived_at: int) -> dict[str, Any]:
         try:
             pack, canonical, chunks = await asyncio.to_thread(self._prepare_import, raw)
         except KnowledgePackError as exc:
             return {"ok": False, "reason": exc.reason}
-        finally:
-            self._parsing -= 1
         if len(canonical) > MAX_PACK_BYTES:
             # Normalization fills in omitted fields and can grow the file; the
             # staged canonical form is what gets read back, so it is what counts.
@@ -663,6 +685,7 @@ class KnowledgeService:
             entries_total=len(pack.entries),
             chunks_total=chunks,
             staged_bytes=len(canonical),
+            staged_sha256=pack_sha256(canonical),
         )
         await asyncio.to_thread(atomic_write_bytes, self._staging_path(job.job_id), canonical)
         self._remember_job(job)
@@ -841,8 +864,12 @@ class KnowledgeService:
 
         def blocking() -> tuple[Registry, PackRecord]:
             raw = _read_bounded(self._staging_path(job.job_id))
-            pack = decode_pack_bytes(raw)
             sha = pack_sha256(raw)
+            if sha != job.staged_sha256:
+                # The staged file changed after admission; its capacity checks
+                # and chunk count were for other bytes.
+                raise KnowledgeUnavailable("knowledge_error")
+            pack = decode_pack_bytes(raw)
             # Admission checked capacity without the lock; two imports racing
             # through it must not both land, so check again under the lock.
             others = [r for r in self._registry.packs.values() if r.pack_id != pack.pack_id]

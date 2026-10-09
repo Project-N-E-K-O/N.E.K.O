@@ -2195,3 +2195,80 @@ def test_an_older_vector_snapshot_never_replaces_a_newer_one(tmp_path):
     assert service._vectors is newer
     service._install_vectors(older, (1, "other-model"))  # a model switch always wins
     assert service._vectors is older
+
+
+async def test_a_swapped_staging_file_is_not_committed(tmp_path):
+    service = await _started(tmp_path)
+    try:
+        async with service._write_lock:  # the job waits in the queue
+            job = await service.import_pack(_raw(_pack()))
+            other = canonical_pack_bytes(parse_pack(_pack("other-pack")))
+            service._staging_path(job["job_id"]).write_bytes(other)
+        states = {}
+        for _ in range(200):
+            states = {item["job_id"]: item for item in service.list_jobs()}
+            if states[job["job_id"]]["state"] not in ("queued", "building"):
+                break
+            await asyncio.sleep(0.01)
+        assert states[job["job_id"]]["state"] == "failed"
+        assert states[job["job_id"]]["reason"] == "knowledge_error"
+        assert load_registry(tmp_path).packs == {}
+    finally:
+        await service.stop()
+
+
+async def test_the_parse_reservation_covers_the_unchanged_file_check(tmp_path, monkeypatch):
+    import time
+
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        seen = []
+        real_intact = service._raw_file_intact
+
+        def slow_intact(record):
+            seen.append(service._parsing)
+            time.sleep(0.1)
+            return real_intact(record)
+
+        monkeypatch.setattr(service, "_raw_file_intact", slow_intact)
+        result = await service.import_pack(_raw(_pack()))
+        assert result.get("unchanged") is True
+        assert seen == [1]
+        assert service._parsing == 0
+    finally:
+        await service.stop()
+
+
+async def test_a_cancelled_mutation_keeps_the_write_lock_until_it_finishes(tmp_path, monkeypatch):
+    import threading
+
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        loop = asyncio.get_running_loop()
+        saving = asyncio.Event()
+        release = threading.Event()
+        real_save = service_module.save_registry
+
+        def slow_save(root, registry):
+            loop.call_soon_threadsafe(saving.set)
+            release.wait(5)
+            real_save(root, registry)
+
+        monkeypatch.setattr(service_module, "save_registry", slow_save)
+        task = asyncio.create_task(service.set_pack_auto_context("demo-memes", True))
+        await asyncio.wait_for(saving.wait(), 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert service._write_lock.locked()  # the registry write is still running
+        release.set()
+        for _ in range(200):
+            if not service._write_lock.locked():
+                break
+            await asyncio.sleep(0.01)
+        assert not service._write_lock.locked()
+        assert load_registry(tmp_path).packs["demo-memes"].auto_context is True
+    finally:
+        await service.stop()
