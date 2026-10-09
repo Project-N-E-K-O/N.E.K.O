@@ -1639,6 +1639,7 @@ async def test_an_admitted_family_line_is_sent_even_if_its_handler_is_cancelled(
         await wait_for(lambda: rt.outbox.reserved_bytes > 0)  # 已接纳（改了 room）
         sending.cancel()                                      # 处理函数被取消（关机等）
         await asyncio.gather(sending, return_exceptions=True)
+        assert [t for t in rtm._detached if not t.done()]     # 还在跑的提交登记在模块级，关机收得到
         stuck.set()
         await rt.flush()
         await wait_for(lambda: [p for p in wire.sent["host"] if p.get("t") == "text" and p.get("sp") == "h"],

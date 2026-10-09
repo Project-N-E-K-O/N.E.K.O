@@ -1979,6 +1979,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: upload seal still writing; finishing it in the background", self.visit_id[:6])
             # 按 uid 登记：后台这段跑完（会写 spool 与串门记忆）之前，这个角色不能改名 / 删除
             gen = _stop_gen
+            # 外层后台链被取消不会传到封存本身（asyncio.wait 不传取消）：它也登记，关机时一并取消、限时等
+            self._keep_background(sealing)
             spawn_visit_background(self.character_uid, lambda: self._finalize_after_seal(sealing, reason, gen))
             return False
         self._take_seal(sealing)

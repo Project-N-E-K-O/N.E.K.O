@@ -1113,6 +1113,31 @@ async def test_the_header_wait_shares_the_seal_deadline(tmp_path, monkeypatch):
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_seal_outliving_the_exit_flow_is_handed_to_stop_all(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(rtm, "_SEAL_MAX_S", 0.2)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    release = threading.Event()
+    real_seal = rt.journal._seal_sync
+
+    def slow_seal(doc):
+        release.wait(10)                                      # 封存写盘卡住
+        real_seal(doc)
+
+    rt.journal._seal_sync = slow_seal
+    try:
+        rt.request_finalize("route_end")
+        await asyncio.wait_for(_finished(rt), 15)
+        sealing = rt._sealing
+        assert sealing is not None and not sealing.done()
+        assert sealing in rtm._detached                       # 封存本身也登记：关机时取消外层后台链也收得到它
+    finally:
+        release.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_late_seal_is_the_one_seal_of_the_visit(tmp_path, monkeypatch):
     import threading
 
