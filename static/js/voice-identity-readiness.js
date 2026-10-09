@@ -52,12 +52,18 @@
             'voiceIdentity.resourcesNeeded': 'Enrollment resources are not ready. Check and load resources.',
             'voiceIdentity.resourcesNeedRepair': 'Required enrollment resources are missing or unavailable. Select “Repair resources”.'
         };
-        // Wake components only become required once wake word is on, and a
-        // missing cache-managed wake model is fixed by its download button.
-        // A configured model directory takes precedence, so download cannot.
+        // A missing or corrupt cache-managed wake model is fixed by downloading
+        // a fresh bundle. A configured model directory takes precedence over
+        // the cache, so download cannot fix that one.
+        function wakeModelDownloadable() {
+            const model = resources && resources.resources && resources.resources.wake_model;
+            return !!model && !resources.wake_configured && (model.state === 'missing'
+                || (model.state === 'unavailable' && model.reason === 'WAKE_WORD_MODEL_INVALID'));
+        }
+        // Wake components only become required once wake word is on.
         function needsRepair(name, value) {
             return !!value && value.required && ['missing', 'unavailable'].includes(value.state)
-                && !(name === 'wake_model' && value.state === 'missing' && !resources.wake_configured);
+                && !(name === 'wake_model' && wakeModelDownloadable());
         }
         function wakeNeedsRepair() {
             const items = resources && resources.resources || {};
@@ -69,7 +75,7 @@
             if (!resources) return 'voiceIdentity.resourcesChecking';
             if (resources.can_enroll === true) return wakeNeedsRepair() ? 'voiceIdentity.resourcesReadyWakeRepair' : 'voiceIdentity.resourcesReady';
             const items = resources.resources || {};
-            return ['campp', 'silero', 'noise_reduction'].some(name => items[name] && ['missing', 'unavailable'].includes(items[name].state))
+            return ['campp', 'silero', 'noise_reduction'].some(name => needsRepair(name, items[name]))
                 ? 'voiceIdentity.resourcesNeedRepair' : 'voiceIdentity.resourcesNeeded';
         }
         function message(key, fallback, error) { currentMessage = { key, fallback, error }; el['test-result'].textContent = t(key, fallback); el['test-result'].classList.toggle('is-error', !!error); }
@@ -89,7 +95,7 @@
             if (summary) {
                 const text = t(resourcesKey, RESOURCE_HINT_FALLBACKS[resourcesKey]);
                 if (summary.textContent !== text) summary.textContent = text;
-                summary.classList.toggle('is-ready', !!resources && resources.can_enroll === true);
+                summary.classList.toggle('is-ready', resourcesKey === 'voiceIdentity.resourcesReady');
             }
             const wakeSummary = document.getElementById('voice-identity-wake-summary');
             if (wakeSummary) {
@@ -101,7 +107,7 @@
                         ? ['voiceIdentity.wakeReady', 'Wake word components are ready.']
                         : wakeNeedsRepair()
                             ? ['voiceIdentity.wakeNeedsRepair', 'Wake word components are missing or unavailable. Select “Repair resources”.']
-                            : wakeState('wake_model') === 'missing'
+                            : wakeModelDownloadable()
                                 ? ['voiceIdentity.wakeNeedsModel', 'Wake word is on. Download the wake-word model.']
                                 : ['voiceIdentity.wakeNeedsResources', 'Wake word is on. Check and load its components.'];
                 const text = !resources ? '' : t(key, fallback);

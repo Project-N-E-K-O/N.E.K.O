@@ -15,7 +15,9 @@ function trackStream(readyState = 'live') {
 }
 function element() {
     const handlers = new Map();
-    return { value: '', textContent: '', checked: false, children: [], style: {}, disabled: false, hidden: false, classList: { toggle() {} }, setAttribute() {}, removeAttribute() {}, addEventListener(name, fn) { handlers.set(name, fn); }, appendChild(child) { this.children.push(child); }, append(...children) { this.children.push(...children); }, replaceChildren() { this.children = []; }, emit(name, event = { target: this }) { return handlers.get(name)?.(event); } };
+    const classes = new Set();
+    const classList = { toggle(name, force) { const on = force === undefined ? !classes.has(name) : !!force; if (on) classes.add(name); else classes.delete(name); return on; }, contains: name => classes.has(name) };
+    return { value: '', textContent: '', checked: false, children: [], style: {}, disabled: false, hidden: false, classList, setAttribute() {}, removeAttribute() {}, addEventListener(name, fn) { handlers.set(name, fn); }, appendChild(child) { this.children.push(child); }, append(...children) { this.children.push(...children); }, replaceChildren() { this.children = []; }, emit(name, event = { target: this }) { return handlers.get(name)?.(event); } };
 }
 function harness({ checkGate, captureGate, accepted = true, reason = 'no_speech_detected', diagnostics, resourceReady = true, desktopGate, requestRouter, translate = (_, fallback) => fallback, status = async () => {}, errorFormatter = error => error.message, clock = Date, enrolling = () => false, cancel = () => {} } = {}) {
     const elements = new Map();
@@ -38,7 +40,7 @@ function harness({ checkGate, captureGate, accepted = true, reason = 'no_speech_
         async request(url, config) {
             calls.push({ url, config });
             if (requestRouter) return requestRouter(url, config);
-            if (url === '/resources') return { can_enroll: resourceReady, resources: { campp: { state: resourceReady ? 'ready' : 'missing' }, wake_runtime: { state: 'ready' } }, wake_enabled: false };
+            if (url === '/resources') return { can_enroll: resourceReady, resources: { campp: { state: resourceReady ? 'ready' : 'missing', required: true }, wake_runtime: { state: 'ready', required: false } }, wake_enabled: false };
             if (url === '/audio/check/isolation') return { token: 'opaque-ticket', ttl_seconds: 60 };
             if (url === '/audio/check') { if (checkGate) await checkGate.promise; return { accepted, reason: accepted ? null : reason, diagnostics, audio_contract: { revision: 1, noise_reduction_enabled: false } }; }
             return {};
@@ -174,12 +176,25 @@ test('repair is offered only for required resources; optional wake parts point t
         return { repair: !el('repair').hidden, help: el('download-help').hidden ? '' : el('download-help').textContent,
             summary: el('resource-summary').textContent, wake: el('wake-summary').textContent };
     };
+    const summaryGreen = () => h.elements.get('voice-identity-resource-summary').classList.contains('is-ready');
     // Fresh install: wake word off and no model downloaded.
     assert.deepEqual(await show(false, 'missing', 'unchecked'), { repair: false, help: '', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeOptional' });
     assert.deepEqual(await show(false, 'missing', 'missing'), { repair: false, help: 'voiceIdentity.downloadNeedsWakeOn', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeOptional' });
     assert.deepEqual(await show(true, 'missing', 'unchecked'), { repair: false, help: '', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeNeedsModel' });
     // Only repair fixes this; the folded details are not the only place that says so.
     assert.deepEqual(await show(true, 'missing', 'missing'), { repair: true, help: 'voiceIdentity.downloadNeedsRuntime', summary: 'voiceIdentity.resourcesReadyWakeRepair', wake: 'voiceIdentity.wakeNeedsRepair' });
+    assert.equal(summaryGreen(), false, 'a pending repair is not shown as success');
+    // A corrupt cache-managed model is replaced by downloading a fresh bundle.
+    payload = { can_enroll: true, wake_enabled: true, resources: { campp: ready, silero: ready,
+        wake_model: { state: 'unavailable', reason: 'WAKE_WORD_MODEL_INVALID', required: true }, wake_runtime: { state: 'unchecked', required: true } } };
+    await h.controller.refreshResources();
+    assert.equal(h.elements.get('voice-identity-repair').hidden, true);
+    assert.equal(h.elements.get('voice-identity-wake-summary').textContent, 'voiceIdentity.wakeNeedsModel');
+    assert.equal(h.elements.get('voice-identity-resource-summary').textContent, 'voiceIdentity.resourcesReady');
+    assert.equal(summaryGreen(), true);
+    payload.wake_configured = true;
+    await h.controller.refreshResources();
+    assert.equal(h.elements.get('voice-identity-repair').hidden, false);
     assert.deepEqual(await show(true, 'ready', 'unchecked'), { repair: false, help: '', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeNeedsResources' });
     // A configured model directory wins over the download cache: repair, not download.
     payload = { can_enroll: true, wake_enabled: true, wake_configured: true, resources: { campp: ready, silero: ready,
