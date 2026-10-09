@@ -398,3 +398,42 @@ async def test_character_rebuild_replays_remote_tools(monkeypatch):
                 # The connector stub is cancelled on purpose; how it ends is not
                 # under test, only that no task outlives the test.
                 pass
+
+
+@pytest.mark.asyncio
+async def test_foreign_registration_and_unregister_preserve_replay_owner(monkeypatch):
+    alpha = _Mgr("Alpha")
+    _use_managers(monkeypatch, alpha)
+    await _register("owned", source="plugin:a")
+    result = await _register("owned", source="plugin:b")
+    assert result["ok"] is False
+    result = await tr.unregister_tool(tr.ToolUnregisterRequest(name="owned", expected_source="plugin:b"))
+    assert result["refused_roles"]
+    fresh = _rebuilt("Alpha")
+    tr.replay_remote_tools(fresh, "Alpha")
+    assert fresh.tool_registry.get("owned").metadata["source"] == "plugin:a"
+    assert alpha.tool_registry.get("owned").metadata["source"] == "plugin:a"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_foreign_registration_cannot_replace_reserved_owner(monkeypatch):
+    entered = asyncio.Event()
+    resume = asyncio.Event()
+
+    class _Slow(_Mgr):
+        async def register_tool_and_sync(self, tool, *, replace=True):
+            self.tool_registry.register(tool, replace=replace)
+            entered.set()
+            await resume.wait()
+
+    alpha = _Slow("Alpha")
+    _use_managers(monkeypatch, alpha, _Mgr("Beta"))
+    first = asyncio.create_task(_register("owned", source="plugin:a"))
+    await entered.wait()
+    result = await _register("owned", source="plugin:b")
+    resume.set()
+    await first
+    assert result["ok"] is False
+    fresh = _rebuilt("Beta")
+    tr.replay_remote_tools(fresh, "Beta")
+    assert fresh.tool_registry.get("owned").metadata["source"] == "plugin:a"

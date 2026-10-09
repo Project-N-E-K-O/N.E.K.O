@@ -30,6 +30,8 @@ async def _start_runtime_with_callback_candidates(
     sessions = [
         SimpleNamespace(
             is_ready=True,
+            last_failure_code=None,
+            failure_started_at=None,
             connect=AsyncMock(),
             close=AsyncMock(),
         )

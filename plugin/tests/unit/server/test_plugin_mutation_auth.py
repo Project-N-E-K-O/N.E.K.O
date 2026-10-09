@@ -479,14 +479,17 @@ def package_app(monkeypatch: pytest.MonkeyPatch, tmp_path) -> _BodyReadTracker:
 @pytest.fixture
 def package_actions(monkeypatch: pytest.MonkeyPatch) -> dict[str, AsyncMock]:
     """Replace install side effects; uploads still write to the temp root."""
-    from plugin.server.routes import plugin_cli as plugin_cli_routes
-
     actions = {
         "upload_and_install": AsyncMock(return_value={"upload": _UPLOAD_RESULT, "install": _INSTALL_RESULT}),
         "install": AsyncMock(return_value=_INSTALL_RESULT),
     }
+    from plugin.server.application import plugin_cli as cli_application
+    from plugin.server.application.plugin_cli.service import PluginCliService
+
+    service = PluginCliService()
+    monkeypatch.setattr(cli_application, "_service", service)
     for name, action in actions.items():
-        monkeypatch.setattr(plugin_cli_routes.service, name, action)
+        monkeypatch.setattr(service, name, action)
     return actions
 
 

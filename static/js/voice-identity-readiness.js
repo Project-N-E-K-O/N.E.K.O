@@ -67,6 +67,10 @@
         function invalidate(key) {
             epoch += 1;
             accepted = null;
+            if (hooks.enrolling()) {
+                inputChangedDuringEnrollment = true;
+                try { localStorage.setItem('neko_voice_enrollment_input_changed', '1'); } catch (_) {}
+            }
             if (requestAbort) requestAbort.abort();
             if (pollTimer !== null) root.clearTimeout(pollTimer);
             if (pollResolve) pollResolve();
@@ -241,8 +245,7 @@
                     try { localStorage.removeItem('neko_voice_enrollment_input_changed'); } catch (_) {}
                     message('voiceIdentity.inputPassed', 'Input test passed. You can start enrollment.', false);
                 } else {
-                    const diagnostics = payload.diagnostics;
-                    const reason = payload.reason === 'volume_too_low' && diagnostics && diagnostics.rms >= 0.008 && diagnostics.active_seconds < 1.5 ? 'speech_too_short' : payload.reason;
+                    const reason = payload.reason;
                     message('voiceIdentity.inputReason_' + reason, hooks.error(new Error(reason || 'no_speech_detected')), true);
                 }
             } catch (error) {

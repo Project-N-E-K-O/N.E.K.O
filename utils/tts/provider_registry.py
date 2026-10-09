@@ -44,10 +44,11 @@ defined, via :func:`register`.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from utils.logger_config import get_module_logger
+from utils.voice_management.types import VoiceManagementAdapter
 
 if TYPE_CHECKING:
     from utils.config_manager import ConfigManager
@@ -312,6 +313,8 @@ class TTSProvider:
     # configured base URL to reach the stream endpoint the worker connects to
     # (e.g. '/audio/speech/stream'). Data, not hardcoded in the frontend probe.
     probe_ws_path: str = ""
+    # Hosted-voice management is orthogonal to preset / clone / design sources.
+    voice_management: VoiceManagementAdapter | None = None
 
 
 _REGISTRY: dict[str, TTSProvider] = {}
@@ -320,6 +323,17 @@ _REGISTRY: dict[str, TTSProvider] = {}
 def register(provider: TTSProvider) -> None:
     """Register (or replace) a TTS provider. Idempotent by key so tests and
     hot-reload can re-register without piling up duplicates."""
+    from utils.voice_management.providers import get_adapter, register_adapter
+
+    if provider.voice_management is None:
+        adapter = get_adapter(provider.key)
+        if adapter is not None:
+            provider = replace(provider, voice_management=adapter)
+    else:
+        register_adapter(provider.key, provider.voice_management)
+        for alias in provider.aliases:
+            if get_adapter(alias) is None:
+                register_adapter(alias, provider.voice_management)
     _REGISTRY[provider.key] = provider
 
 
@@ -335,6 +349,13 @@ def get(key: str | None) -> TTSProvider | None:
 def all_providers() -> list[TTSProvider]:
     """All registered providers, lowest ``priority`` first (dispatch order)."""
     return sorted(_REGISTRY.values(), key=lambda p: p.priority)
+
+
+def get_voice_management(key: str) -> VoiceManagementAdapter | None:
+    """Management regions need not create additional dispatch entries."""
+    from utils.voice_management.providers import get_adapter
+
+    return get_adapter(key)
 
 
 def _log_provider_predicate_failure(provider: TTSProvider) -> None:
@@ -559,6 +580,10 @@ def ui_metadata() -> list[dict[str, Any]]:
             "kind": p.kind,
             "capabilities": sorted(p.capabilities),
             "voice_design": p.voice_design.for_ui() if p.voice_design is not None else None,
+            "voice_management": (
+                p.voice_management.capabilities.to_dict()
+                if p.voice_management is not None else None
+            ),
             "tts_dropdown_only": p.tts_dropdown_only,
             "tts_config_visible": p.tts_config_visible,
             "default_url": p.default_url,

@@ -124,7 +124,9 @@ def _load_from_disk() -> dict[str, RuntimeOverride]:
     try:
         from utils.config_manager import get_config_manager
 
-        cm = get_config_manager()
+        # This sidecar needs storage paths, not main-application config/avatar/
+        # memory migration. Normal config consumers still request migration.
+        cm = get_config_manager(migrate=False)
         raw = cm.load_json_config(OVERRIDES_FILENAME)
     except FileNotFoundError:
         _cache_write_blocked_by_invalid_content = False
@@ -154,7 +156,7 @@ def _save_to_disk(overrides: dict[str, RuntimeOverride]) -> None:
     try:
         from utils.config_manager import get_config_manager
 
-        cm = get_config_manager()
+        cm = get_config_manager(migrate=False)
         cm.save_json_config(OVERRIDES_FILENAME, dict(overrides))
     except Exception as exc:
         logger.error(

@@ -208,6 +208,7 @@ from .voice_cloning import (  # noqa: F401
     voice_clone_direct,
 )
 from . import voice_design as _voice_design  # noqa: F401 - register Voice Design routes
+from . import voice_management as _voice_management  # noqa: F401 - register voice management routes
 from .cards import (  # noqa: F401
     _embed_zip_in_png_chunk,
     get_character_cards,

@@ -4,7 +4,7 @@
 
 ### 远程首次连接与社区账户
 
-远程网页/Windows Electron 使用 HTTPS 首次输入实例 key，之后复用连接会话。
+远程网页/Windows Electron 首次输入实例 key，之后复用连接会话。默认允许明文 HTTP（`http://宿主地址:48911`、`DISABLE_SSL=1`、SSH 隧道），配对页会提示 key 与会话未加密；条件允许时优先 HTTPS（`https://宿主地址:48912`）。设置 `NEKO_REQUIRE_HTTPS=1` 可拒绝明文远程配对与凭证。浏览器只在 HTTPS 或 `localhost` 下允许麦克风，`http://IP` 访问时语音输入不可用。
 管理员运行 docker compose exec --user neko -w /app neko-main uv run python -m utils.instance_access
 配置HTTPS public origin即声明外层TLS网关：80端口关闭或仅HTTPS重定向，不可转发同Host明文请求，私有HTTP upstream不能暴露；Host相等不代表请求已加密。
 取得持久化凭证；服务不在日志打印。多服务共享存储或设置同一 NEKO_INSTANCE_ACCESS_KEY。
@@ -26,6 +26,7 @@ docker/
 ├── Dockerfile              # Docker 镜像构建文件
 ├── docker-compose.yml      # Docker Compose 配置
 ├── .env.example           # 环境变量模板
+├── watchdog/              # 可选宿主机自愈看门狗（见下文「低配云服务器」）
 └── config/                # 配置示例（运行时不挂载此目录）
     ├── core_config.json.example
     ├── characters.json.example
@@ -201,6 +202,15 @@ volumes:
   - ./logs:/app/logs
 ```
 
+首次启动前、以及迁入数据之后，建议在 `docker/` 下执行一次宿主机预检（不拉取任何镜像）：
+
+```bash
+sudo sh preflight.sh                      # 默认检查 ./neko-home 和 ./logs
+sudo sh preflight.sh /覆盖文件里的/neko-home /覆盖文件里的/logs   # 覆盖文件挂载了其他目录时原样传入，相对路径按 docker/ 解析
+```
+
+它拒绝本身是、或路径中经过符号链接的挂载来源（Docker 会挂载链接目标，容器会接管它的属主），创建缺失的目录，并只把这两个目录本身的属主设为 uid/gid 1000。数据目录内部的属主由入口脚本每次启动时对齐。回归测试：`sudo bash test-preflight.sh`。
+
 ## 🔍 配置优先级
 
 配置加载优先级（从高到低）：
@@ -296,6 +306,10 @@ A: 运行 `docker exec neko python -c "from utils.config_manager import get_conf
      - no-new-privileges:true
    read_only: true
    ```
+
+## 🪶 低配云服务器
+
+2 核 2G 等低配服务器同样使用本目录的 `docker-compose.yml`。宿主机内存（ZRAM/Swap）、磁盘、安全配置，以及可选的宿主机自愈看门狗（`docker/watchdog/`）见[低配云服务器部署](../docs/zh-CN/deployment/low-spec-server.md)。
 
 ## 📚 更多资源
 

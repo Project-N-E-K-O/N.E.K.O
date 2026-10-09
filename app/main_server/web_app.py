@@ -115,7 +115,8 @@ class _VerifiedAssetFileResponse(FileResponse):
             raise RangeNotSatisfiable(file_size)
         return FileResponse._parse_range_header(http_range, file_size)
 
-    async def _handle_simple(self, send, send_header_only: bool) -> None:
+    async def _handle_simple(self, send, send_header_only: bool, send_pathsend: bool = False) -> None:
+        # Path-send reopens the file; serve the bytes already verified instead.
         await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})
         body = b"" if send_header_only else self._verified_content
         await send({"type": "http.response.body", "body": body, "more_body": False})
@@ -137,9 +138,9 @@ class _VerifiedAssetFileResponse(FileResponse):
             ranges, boundary, file_size, self.headers["content-type"]
         )
         body = b"".join(
-            header(start, end) + self._verified_content[start:end] + b"\n"
+            header(start, end) + self._verified_content[start:end] + b"\r\n"
             for start, end in ranges
-        ) + f"\n--{boundary}--\n".encode("latin-1")
+        ) + f"--{boundary}--".encode("latin-1")
         self.headers["content-type"] = f"multipart/byteranges; boundary={boundary}"
         self.headers["content-length"] = str(len(body))
         await send({"type": "http.response.start", "status": 206, "headers": self.raw_headers})
@@ -376,6 +377,7 @@ from main_routers.mmd_router import router as mmd_router  # noqa
 from main_routers.music_router import router as music_router  # noqa
 from main_routers.pages_router import router as pages_router  # noqa
 from main_routers.pngtuber_router import router as pngtuber_router  # noqa
+from main_routers.numeric_theater_router import router as numeric_theater_router  # noqa
 from main_routers.storage_location_router import router as storage_location_router  # noqa
 from main_routers.plugin_card_router import router as plugin_card_router  # noqa
 from main_routers.plugin_media_router import router as plugin_media_router  # noqa
@@ -689,7 +691,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     # Browser cookies are signed for the public host, not this private HTTP
     # hop. Replace any caller-supplied proof after the main entry guard passed;
     # retain Market's independent Authorization credential unchanged.
-    from utils.instance_access import instance_key, market_internal_proof, remote_instance_identity
+    from utils.instance_access import instance_key, market_internal_proof, remote_instance_identity, request_public_origin
     from utils.deployment import has_forwarding_metadata
     from filelock import Timeout as FileLockTimeout
 
@@ -702,7 +704,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
         # it using browser-supplied metadata from the preceding public hop.
         headers = {name: value for name, value in headers.items()
                    if not has_forwarding_metadata({name: value})}
-        public_origin = os.environ.get("NEKO_INSTANCE_PUBLIC_ORIGIN", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+        public_origin = request_public_origin(request)
         try:
             signing_key = await asyncio.to_thread(instance_key)
         except (OSError, ValueError, FileLockTimeout):
@@ -780,6 +782,7 @@ app.include_router(watch_together_router)
 app.include_router(drawing_guess_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
+app.include_router(numeric_theater_router)
 app.include_router(card_drop_router)  # Must precede the pages fallback router.
 app.include_router(community_oauth_router)
 app.include_router(community_oauth_callback_router)  # Exact /oauth/callback before pages.

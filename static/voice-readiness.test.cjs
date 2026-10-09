@@ -17,7 +17,7 @@ function element() {
     const handlers = new Map();
     return { value: '', textContent: '', checked: false, children: [], style: {}, disabled: false, hidden: false, classList: { toggle() {} }, setAttribute() {}, removeAttribute() {}, addEventListener(name, fn) { handlers.set(name, fn); }, appendChild(child) { this.children.push(child); }, append(...children) { this.children.push(...children); }, replaceChildren() { this.children = []; }, emit(name, event = { target: this }) { return handlers.get(name)?.(event); } };
 }
-function harness({ checkGate, captureGate, accepted = true, resourceReady = true, desktopGate, requestRouter, translate = (_, fallback) => fallback, status = async () => {}, errorFormatter = error => error.message, clock = Date, enrolling = () => false, cancel = () => {} } = {}) {
+function harness({ checkGate, captureGate, accepted = true, reason = 'no_speech_detected', diagnostics, resourceReady = true, desktopGate, requestRouter, translate = (_, fallback) => fallback, status = async () => {}, errorFormatter = error => error.message, clock = Date, enrolling = () => false, cancel = () => {} } = {}) {
     const elements = new Map();
     const events = new Map();
     const mediaEvents = new Map();
@@ -40,7 +40,7 @@ function harness({ checkGate, captureGate, accepted = true, resourceReady = true
             if (requestRouter) return requestRouter(url, config);
             if (url === '/resources') return { can_enroll: resourceReady, resources: { campp: { state: resourceReady ? 'ready' : 'missing' }, wake_runtime: { state: 'ready' } }, wake_enabled: false };
             if (url === '/audio/check/isolation') return { token: 'opaque-ticket', ttl_seconds: 60 };
-            if (url === '/audio/check') { if (checkGate) await checkGate.promise; return { accepted, reason: accepted ? null : 'no_speech_detected', audio_contract: { revision: 1, noise_reduction_enabled: false } }; }
+            if (url === '/audio/check') { if (checkGate) await checkGate.promise; return { accepted, reason: accepted ? null : reason, diagnostics, audio_contract: { revision: 1, noise_reduction_enabled: false } }; }
             return {};
         }
     };
@@ -48,6 +48,28 @@ function harness({ checkGate, captureGate, accepted = true, resourceReady = true
     controller = root.createVoiceIdentityReadiness(hooks);
     return { controller, calls, elements, events, mediaEvents, hooks, root, storage, stopped: () => stopped };
 }
+test('shared microphone capture disables AGC for selected and fallback devices', async () => {
+    const calls = [];
+    const selected = trackStream();
+    await input.open({ async getUserMedia(config) { calls.push(config); return selected; } }, 'selected-device', () => true);
+    const fallback = trackStream();
+    await input.open({ async getUserMedia(config) {
+        calls.push(config);
+        if (config.audio.deviceId) {
+            const error = new Error('selected device unavailable');
+            error.name = 'OverconstrainedError';
+            throw error;
+        }
+        return fallback;
+    } }, 'missing-device', () => true);
+    assert.equal(calls.length, 3);
+    assert.equal(calls[0].audio.deviceId.exact, 'selected-device');
+    assert.equal(calls[1].audio.deviceId.exact, 'missing-device');
+    assert.equal(calls[2].audio.deviceId, undefined);
+    for (const call of calls) assert.equal(call.audio.autoGainControl, false);
+    input.stop(selected);
+    input.stop(fallback);
+});
 test('opening a selected unavailable device reports the real fallback device', async () => {
     const stream = trackStream(); const constraints = [];
     const result = await input.open({ async getUserMedia(config) { constraints.push(config); if (constraints.length === 1) { const e = new Error(); e.name = 'OverconstrainedError'; throw e; } return stream; } }, 'foreign-id', () => true);
@@ -86,6 +108,22 @@ test('postprocessing rejection keeps enrollment blocked', async () => {
     assert.equal(h.controller.canStart(), false);
     assert.match(h.elements.get('voice-identity-test-result').textContent, /no_speech_detected/);
 });
+for (const reason of ['volume_too_low', 'speech_too_short', 'no_speech_detected']) {
+    test(`input test preserves backend reason independently of RMS (${reason})`, async () => {
+        const translated = [];
+        const h = harness({
+            accepted: false, reason, diagnostics: { rms: 0.02, active_seconds: 1.2 },
+            translate(key, fallback) { translated.push(key); return fallback; },
+        });
+        await h.controller.refreshResources();
+        await h.elements.get('voice-identity-test').emit('click');
+        assert.equal(h.controller.canStart(), false);
+        assert.equal(h.elements.get('voice-identity-test-result').textContent, reason);
+        assert.ok(translated.includes('voiceIdentity.inputReason_' + reason));
+        assert.equal(h.calls.filter(call => call.url === '/audio/check/isolation/release').length, 1);
+    });
+}
+
 test('changing gain during a delayed input check fences its successful result', async () => {
     const gate = deferred(); const h = harness({ checkGate: gate }); await h.controller.refreshResources();
     const pending = h.elements.get('voice-identity-test').emit('click');
@@ -575,6 +613,14 @@ test('device fallback during existing enrollment persistently blocks continuatio
     const fresh = harness();
     fresh.controller.receivedStream({ deviceId: 'fallback-device', fallback: true });
     assert.equal(fresh.controller.canResume(), true);
+});
+
+test('selected device change during paused enrollment also fences continuation', () => {
+    const h = harness({ enrolling: () => true });
+    const device = h.elements.get('voice-identity-microphone');
+    device.value = 'another-device';
+    device.emit('change');
+    assert.equal(h.controller.canResume(), false);
 });
 
 test('a download still running after 120 seconds is allowed to finish within the backend budget', async () => {

@@ -11,6 +11,7 @@ out of scope for this feature, so we expose a minimal get/set API.
 from __future__ import annotations
 
 import threading
+import os
 
 from plugin.server.application.install_source.manager import (
     InstallSourceError,
@@ -66,12 +67,19 @@ def build_install_source_manager() -> InstallSourceManager:
     from plugin.settings import (
         get_builtin_plugin_config_root,
         get_user_plugin_config_root,
+        get_plugin_state_root,
     )
 
+    state_root = (
+        get_plugin_state_root()
+        if not os.getenv("PLUGIN_CONFIG_ROOT")
+        or not os.getenv("NEKO_PLUGIN_INSTALL_LOCK_PATH", "").strip()
+        else None
+    )
     builtin_root = get_builtin_plugin_config_root()
-    user_root = get_user_plugin_config_root()
+    user_root = get_user_plugin_config_root(state_root=state_root)
+    lock_path = resolve_lock_path(state_root=state_root)
     scanner = PluginDirectoryScanner(builtin_root, user_root)
-    lock_path = resolve_lock_path()
     return InstallSourceManager(
         lock_path=lock_path,
         builtin_root=builtin_root,

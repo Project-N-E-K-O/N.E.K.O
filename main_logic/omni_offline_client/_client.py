@@ -85,6 +85,10 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
             Callback when a response is complete.
     """
 
+    # 连续高重复时清空对话历史（只留系统指令）。历史由调用方按序维护的会话关掉它：
+    # 清空会抹掉其中每一条发言，调用方按条目打的标记也随之丢失
+    repetition_reset_enabled: bool = True
+
     def __init__(
         self,
         base_url: str,

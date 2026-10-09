@@ -2445,6 +2445,10 @@ class _TransportMixin:
         """Apply the host-side state shared by all accepted start evidence."""
 
         self._current_response_id = response_id
+        arbiter = getattr(self, "_response_arbiter", None)
+        self._current_response_source = (
+            arbiter.response_source_for(response_id) if arbiter is not None else None
+        )
         self._is_responding = True
         self._turn_epoch += 1
         self._current_turn_epoch = self._turn_epoch
@@ -3083,8 +3087,15 @@ class _TransportMixin:
                     # omit it entirely — the helper handles all three.
                     err_obj = event.get('error') if isinstance(event.get('error'), dict) else {}
                     err_event_id = err_obj.get('event_id') or event.get('event_id')
+                    err_item_id = err_obj.get('item_id')
+                    if not isinstance(err_item_id, str) or not err_item_id:
+                        err_item_id = None
                     self._route_inject_rejection(err_event_id, error_msg)
-                    self._response_arbiter.notify_error(err_event_id, error_msg)
+                    self._response_arbiter.notify_error(
+                        err_event_id,
+                        error_msg,
+                        item_id=err_item_id,
+                    )
 
                     # 致命性判定只看语义字段，绝不看回显的 event_id（见
                     # _error_classification_text 的注释）。日志、路由和
@@ -3337,8 +3348,16 @@ class _TransportMixin:
                                 event.get("response_id")
                             ),
                         )
-                elif event_type == "conversation.item.created":
+                elif (
+                    event_type
+                    in self._realtime_protocol_capabilities.item_ack_event_types
+                ):
+                    # OpenAI GA acknowledges with ``conversation.item.added``,
+                    # every other route with ``.created``; the route's profile
+                    # names which (#3350).
                     self._response_arbiter.notify_item_created(event)
+                elif event_type == "conversation.item.deleted":
+                    self._response_arbiter.notify_item_deleted(event)
                 elif event_type == "response.done":
                     # No further function call can name this response, so its
                     # tool batch may answer as soon as its own calls settle.

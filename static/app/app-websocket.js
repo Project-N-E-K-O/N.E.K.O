@@ -1821,6 +1821,8 @@
     function finalizeAssistantTurn(assistantTurnId, options) {
         options = options || {};
         var enableMusic = options.enableMusic !== false;
+        var reactionTarget = options.enableReactions !== false ? S.messageReactionTarget : null;
+        S.messageReactionTarget = null;
 
         var bufferedFullText = typeof window._geminiTurnFullText === 'string'
             ? window._geminiTurnFullText
@@ -1857,6 +1859,9 @@
                 });
                 var emotionResult = await Promise.race([emotionPromise, timeoutPromise]);
                 if (emotionResult && emotionResult.emotion) {
+                    if (typeof window.applyMessageReactionFromEmotion === 'function') {
+                        try { window.applyMessageReactionFromEmotion(reactionTarget, emotionResult); } catch (_) { }
+                    }
                     console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
                     if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
                     if (assistantTurnId) {
@@ -1925,6 +1930,10 @@
         );
         window._nekoAssistantTurnId = S.assistantTurnId;
         S.assistantTurnStartedAt = Date.now();
+        S.messageReactionTarget = typeof window.captureMessageReactionTarget === 'function'
+            && !(responseMeta && (responseMeta.passthrough
+                || ['proactive', 'agent_callback', 'game_route', 'new_user_icebreaker'].indexOf(responseMeta.source) >= 0))
+            ? window.captureMessageReactionTarget(resolveAssistantRequestId(requestId, responseMeta)) : null;
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
             turnId: S.assistantTurnId,
@@ -3547,7 +3556,16 @@
                     if (window.DEBUG_AUDIO) {
                         console.log(window.t('console.audioChunkHeaderReceived'), response);
                     }
-                    if (!S.assistantTurnId && S.assistantTurnAwaitingBubble) {
+                    var speechId = response.speech_id;
+                    var shouldSkip = false;
+                    var speechCorrelationId = String(response.sdk_speech_correlation_id || '');
+                    if (speechCorrelationId.indexOf('theater_speech_') === 0) {
+                        var theaterRuntime = window.nekoTheaterRuntime;
+                        shouldSkip = !theaterRuntime ||
+                            typeof theaterRuntime.allowsSpeechCorrelation !== 'function' ||
+                            !theaterRuntime.allowsSpeechCorrelation(speechCorrelationId);
+                    }
+                    if (!shouldSkip && !S.assistantTurnId && S.assistantTurnAwaitingBubble) {
                         ensureAssistantTurnStarted(
                             'audio_chunk_header_fallback',
                             response.turn_id,
@@ -3555,8 +3573,6 @@
                             response.request_id
                         );
                     }
-                    var speechId = response.speech_id;
-                    var shouldSkip = false;
                     var playbackGain = Number(response.playback_gain);
                     if (!Number.isFinite(playbackGain)) playbackGain = 1;
                     playbackGain = Math.max(0, Math.min(2, playbackGain));
@@ -3566,7 +3582,7 @@
                             console.log(window.t('console.discardInterruptedAudio'), speechId);
                         }
                         shouldSkip = true;
-                    } else if (speechId && speechId !== S.currentPlayingSpeechId) {
+                    } else if (!shouldSkip && speechId && speechId !== S.currentPlayingSpeechId) {
                         if (S.pendingDecoderReset) {
                             console.log(window.t('console.newConversationResetDecoder'), speechId);
                             S.decoderResetPromise = (async function () {
@@ -3583,7 +3599,7 @@
                             response.sdk_speech_correlation_id || ''
                         );
                         S.interruptedSpeechId = null;
-                    } else if (speechId && response.sdk_speech_correlation_id) {
+                    } else if (!shouldSkip && speechId && response.sdk_speech_correlation_id) {
                         S.currentPlayingSpeechCorrelationId = String(
                             response.sdk_speech_correlation_id
                         );
@@ -3764,6 +3780,13 @@
                         }
                     } catch (_) { }
 
+                    if (['ASR_RECOVERY_STARTED', 'ASR_RECOVERY_READY', 'ASR_RECOVERY_FAILED',
+                        'ASR_TURN_INCOMPLETE'].includes(statusCode)) {
+                        if (_thisSocket !== S.socket) return;
+                        window.appAudioCapture?.handleAutomaticRecoveryStatus(statusCode, statusDetails);
+                        return;
+                    }
+
                     if (statusCode === 'ASR_INPUT_CONNECTING'
                         || statusCode === 'ASR_INPUT_DELIVERY_FAILED'
                         || statusCode === 'ASR_INPUT_DELIVERY_UNCERTAIN') {
@@ -3783,6 +3806,13 @@
                     }
 
                     if (statusCode === 'ASR_LIFECYCLE_STATE') {
+                        if (statusDetails?.recovery_id != null) {
+                            if (_thisSocket !== S.socket) return;
+                            const accepted = statusDetails.state === 'blocked'
+                                ? window.appAudioCapture?.handleAutomaticRecoveryBlocked(statusDetails)
+                                : window.appAudioCapture?.matchesAutomaticRecoveryOperation(statusDetails);
+                            if (!accepted) return;
+                        }
                         var lifecycleState = (statusDetails && statusDetails.state) || '';
                         var allowedLifecycleStates = [
                             'off', 'local_listen', 'prewarming', 'active',
@@ -4257,6 +4287,22 @@
                     }
 
                     if (statusCode === 'GAME_ROUTE_MEDIA_SKIPPED') {
+                        return;
+                    }
+
+                    if (statusCode === 'THEATER_SESSION_ACTIVE') {
+                        // 服务端兜底拒绝了普通语音启动（session_failed 已先行复位启动状态），
+                        // 或拒绝了普通文字/图片/头像互动；复用前端剧场守卫的同一文案，不显示原始错误码。
+                        var declinedInput = statusDetails && statusDetails.input_type;
+                        var declinedOrdinaryChat = !!declinedInput && declinedInput !== 'audio';
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                declinedOrdinaryChat
+                                    ? (window.t ? window.t('theater.chatUnavailable') : '小剧场演绎期间暂不支持普通对话')
+                                    : (window.t ? window.t('theater.voiceUnavailable') : '小剧场演绎期间暂不支持语音对话'),
+                                3500
+                            );
+                        }
                         return;
                     }
 
@@ -5201,7 +5247,7 @@
                     // 与正常 'turn end' 走同一套收尾（emotion + 字幕）。music 关闭——
                     // 主动消息不自动放歌；也不在此调 scheduleProactiveChat（见上方
                     // "skipping proactive chat schedule"），防 proactive 自触发。
-                    finalizeAssistantTurn(agentCallbackTurnId, { enableMusic: false });
+                    finalizeAssistantTurn(agentCallbackTurnId, { enableMusic: false, enableReactions: false });
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {

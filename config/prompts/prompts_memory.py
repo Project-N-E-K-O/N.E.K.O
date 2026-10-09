@@ -1073,6 +1073,182 @@ NO_RECENT_HISTORY = {
 }
 
 
+THEATER_MEMORY_CONTEXT = {
+    "zh": "{name}记得自己曾和{master}共同演绎小剧场{title}。以下内容属于虚构剧情，不代表现实经历。",
+    "zh-TW": "{name}記得自己曾和{master}共同演繹小劇場{title}。以下內容屬於虛構劇情，不代表現實經歷。",
+    "en": "{name} remembers performing the theater story {title} with {master}. The following belongs to a fictional performance, not real-life events.",
+    "ja": "{name}は{master}と小劇場{title}を演じたことを覚えています。以下は現実の出来事ではなく、架空の演目です。",
+    "ko": "{name}은(는) {master}와 함께 소극장 이야기 {title}을 연기했던 일을 기억합니다. 다음 내용은 현실의 사건이 아니라 허구의 연기입니다.",
+    "ru": "{name} помнит, как разыгрывала с {master} театральную историю {title}. Ниже описан вымышленный сюжет, а не реальные события.",
+    "es": "{name} recuerda haber interpretado con {master} la historia teatral {title}. Lo siguiente pertenece a una ficción representada, no a hechos reales.",
+    "pt": "{name} se lembra de ter encenado com {master} a história teatral {title}. O conteúdo a seguir pertence a uma ficção encenada, não a acontecimentos reais.",
+}
+
+_THEATER_MEMORY_TITLE_MARKS = (
+    ("《", "》"),
+    ("〈", "〉"),
+    ("『", "』"),
+    ("「", "」"),
+    ("“", "”"),
+    ("«", "»"),
+    ("‹", "›"),
+    ('"', '"'),
+)
+
+_THEATER_MEMORY_TITLE_WRAPPERS = {
+    "zh": ("《", "》"),
+    "zh-TW": ("《", "》"),
+    "en": ("“", "”"),
+    "ja": ("『", "』"),
+    "ko": ("《", "》"),
+    "ru": ("«", "»"),
+    "es": ("«", "»"),
+    "pt": ("“", "”"),
+}
+
+
+def _format_theater_memory_title(title: str, lang: str) -> str:
+    """只为没有成对标题符号的剧本名补充当前语言的标题符号。"""  # noqa: DOCSTRING_CJK
+
+    normalized = str(title or "").strip()
+    if not normalized:
+        return normalized
+    if any(
+        normalized.startswith(left) and normalized.endswith(right)
+        for left, right in _THEATER_MEMORY_TITLE_MARKS
+    ):
+        return normalized
+    left, right = _THEATER_MEMORY_TITLE_WRAPPERS[lang]
+    return f"{left}{normalized}{right}"
+
+
+THEATER_MEMORY_PAUSED = {
+    "zh": "这次演绎在剧情尚未结束时暂停，之后仍可从原进度继续。",
+    "zh-TW": "這次演繹在劇情尚未結束時暫停，之後仍可從原進度繼續。",
+    "en": "This performance was paused before the story ended and can continue from the same progress.",
+    "ja": "この演目は物語の途中で一時停止しており、同じ進行状況から再開できます。",
+    "ko": "이 연기는 이야기가 끝나기 전에 일시 중지되었으며 같은 진행 지점에서 이어갈 수 있습니다.",
+    "ru": "Эта постановка была приостановлена до завершения сюжета и может быть продолжена с того же места.",
+    "es": "La representación se pausó antes de terminar la historia y puede continuar desde el mismo progreso.",
+    "pt": "A encenação foi pausada antes do fim da história e pode continuar do mesmo ponto.",
+}
+
+THEATER_MEMORY_COMPLETED = {
+    "zh": "这次演绎已经完成，达成结局《{ending}》。{summary}",
+    "zh-TW": "這次演繹已經完成，達成結局《{ending}》。{summary}",
+    "en": "This performance is complete and reached the ending “{ending}”. {summary}",
+    "ja": "この演目は完結し、エンディング『{ending}』に到達しました。{summary}",
+    "ko": "이 연기는 완료되었으며 결말 《{ending}》에 도달했습니다. {summary}",
+    "ru": "Постановка завершена и достигла финала «{ending}». {summary}",
+    "es": "La representación terminó y alcanzó el final «{ending}». {summary}",
+    "pt": "A encenação foi concluída e alcançou o final “{ending}”. {summary}",
+}
+
+THEATER_MEMORY_COMPLETED_UNTITLED = {
+    "zh": "这次演绎已经完成。{summary}",
+    "zh-TW": "這次演繹已經完成。{summary}",
+    "en": "This performance is complete. {summary}",
+    "ja": "この演目は完結しました。{summary}",
+    "ko": "이 연기는 완료되었습니다. {summary}",
+    "ru": "Постановка завершена. {summary}",
+    "es": "La representación terminó. {summary}",
+    "pt": "A encenação foi concluída. {summary}",
+}
+
+THEATER_MEMORY_RUN = {
+    "zh": "这是双方第 {run_index} 次演绎这个剧本。",
+    "zh-TW": "這是雙方第 {run_index} 次演繹這個劇本。",
+    "en": "This was their performance number {run_index} of this story.",
+    "ja": "これは二人がこの物語を演じた第 {run_index} 回目です。",
+    "ko": "두 사람이 이 이야기를 연기한 {run_index}번째 기록입니다.",
+    "ru": "Это была их постановка этой истории № {run_index}.",
+    "es": "Esta fue la representación número {run_index} de esta historia.",
+    "pt": "Esta foi a encenação número {run_index} desta história.",
+}
+
+THEATER_MEMORY_STORY_HISTORY = {
+    "zh": "截至目前，双方共演绎这个剧本 {count} 次；记录过的结局包括：{endings}。",
+    "zh-TW": "截至目前，雙方共演繹這個劇本 {count} 次；記錄過的結局包括：{endings}。",
+    "en": "So far, they have performed this story {count} times; recorded endings include: {endings}.",
+    "ja": "これまで二人はこの物語を {count} 回演じ、記録された結末は次のとおりです：{endings}。",
+    "ko": "지금까지 두 사람은 이 이야기를 {count}번 연기했으며, 기록된 결말은 다음과 같습니다: {endings}.",
+    "ru": "На данный момент они разыграли эту историю {count} раз; записанные финалы: {endings}.",
+    "es": "Hasta ahora, han representado esta historia {count} veces; los finales registrados incluyen: {endings}.",
+    "pt": "Até agora, eles encenaram esta história {count} vezes; os finais registrados incluem: {endings}.",
+}
+
+THEATER_MEMORY_STORY_COUNT = {
+    "zh": "截至目前，双方共演绎这个剧本 {count} 次。",
+    "zh-TW": "截至目前，雙方共演繹這個劇本 {count} 次。",
+    "en": "So far, they have performed this story {count} times.",
+    "ja": "これまで二人はこの物語を {count} 回演じました。",
+    "ko": "지금까지 두 사람은 이 이야기를 {count}번 연기했습니다.",
+    "ru": "На данный момент они разыграли эту историю {count} раз.",
+    "es": "Hasta ahora, han representado esta historia {count} veces.",
+    "pt": "Até agora, eles encenaram esta história {count} vezes.",
+}
+
+
+def get_theater_memory_context(
+    lang: str,
+    *,
+    name: str,
+    master: str,
+    title: str,
+    status: str,
+    ending: str = "",
+    summary: str = "",
+    run_index: int = 0,
+    story_run_count: int = 0,
+    ending_titles: list[str] | None = None,
+) -> str:
+    """把可信剧场元数据渲染成自然记忆上下文，不改写演绎正文。"""  # noqa: DOCSTRING_CJK
+
+    normalized = _normalize_memory_prompt_lang(lang)
+    context = _loc(THEATER_MEMORY_CONTEXT, normalized).format(
+        name=name,
+        master=master,
+        title=_format_theater_memory_title(title, normalized),
+    )
+    run_context = ""
+    if isinstance(run_index, int) and not isinstance(run_index, bool) and run_index > 0:
+        run_context = _loc(THEATER_MEMORY_RUN, normalized).format(run_index=run_index)
+    story_context = ""
+    if (
+        isinstance(story_run_count, int)
+        and not isinstance(story_run_count, bool)
+        and story_run_count > 1
+    ):
+        normalized_endings = [
+            str(item or "").strip()
+            for item in (ending_titles or [])
+            if str(item or "").strip()
+        ]
+        if normalized_endings:
+            separator = "、" if normalized in {"zh", "zh-TW", "ja"} else ", "
+            story_context = _loc(THEATER_MEMORY_STORY_HISTORY, normalized).format(
+                count=story_run_count,
+                endings=separator.join(dict.fromkeys(normalized_endings)),
+            )
+        else:
+            story_context = _loc(THEATER_MEMORY_STORY_COUNT, normalized).format(
+                count=story_run_count,
+            )
+    if status == "completed":
+        template = THEATER_MEMORY_COMPLETED if ending else THEATER_MEMORY_COMPLETED_UNTITLED
+        state = _loc(template, normalized).format(
+            ending=ending,
+            summary=summary,
+        ).strip()
+    else:
+        state = _loc(THEATER_MEMORY_PAUSED, normalized)
+        if summary:
+            state = f"{state} {summary}".strip()
+    return "\n".join(
+        part for part in (context, run_context, story_context, state) if part
+    ).strip()
+
+
 # ---------- Locale-independent /new_dialog splitter ----------
 # new_dialog 的文本结构固定为三段拼接：
 #   [PERSONA_HEADER + 长期记忆] + [INNER_THOUGHTS_HEADER + INNER_THOUGHTS_DYNAMIC] + [对话历史]
@@ -2313,7 +2489,9 @@ fact_extraction_prompt = FACT_EXTRACTION_PROMPT["zh"]
 # prompt 结构互斥（RFC §3.4.2）。
 
 SIGNAL_DETECTION_PROMPT = {
-    "zh": """你是一个记忆关系判定专家。给你一组新提取的事实，和一组系统已经记录过的观察，请判断每条新事实对已有观察的关系。
+    "zh": """推理限制：内部思考最多四句，不要复述原文，不要列举备选方案。思考结束后立刻输出 JSON，不要把思考过程写进 reason。
+
+你是一个记忆关系判定专家。给你一组新提取的事实，和一组系统已经记录过的观察，请判断每条新事实对已有观察的关系。
 
 ======以下为新提取的事实======
 {NEW_FACTS}
@@ -2341,7 +2519,9 @@ target_id 必须来自上面"已有观察"区，不要凭空生成；若某条�
     ...
   ]
 }""",
-    "zh-TW": """你是一個記憶關係判定專家。給你一組新擷取的事實，和一組系統已經紀錄過的觀察，請判斷每條新事實對已有觀察的關係。
+    "zh-TW": """推理限制：內部思考最多四句，不要複述原文，不要列舉備選方案。思考結束後立刻輸出 JSON，不要把思考過程寫進 reason。
+
+你是一個記憶關係判定專家。給你一組新擷取的事實，和一組系統已經紀錄過的觀察，請判斷每條新事實對已有觀察的關係。
 
 ======以下为新提取的事实======
 {NEW_FACTS}
@@ -2369,7 +2549,9 @@ target_id 必須來自上面「已有觀察」區，不要憑空生成；若某�
     ...
   ]
 }""",
-    "en": """You are a memory relationship analyst. Given a set of newly extracted facts and a set of observations the system already remembers, judge the relationship between each new fact and the existing observations.
+    "en": """Reasoning limit: at most four sentences of internal thinking. Do not restate the source text and do not list alternatives. After thinking, output JSON immediately. Do not put the thinking process into reason.
+
+You are a memory relationship analyst. Given a set of newly extracted facts and a set of observations the system already remembers, judge the relationship between each new fact and the existing observations.
 
 ======以下为新提取的事实======
 {NEW_FACTS}
@@ -2397,7 +2579,9 @@ Return JSON (empty array if nothing matches):
     ...
   ]
 }""",
-    "ja": """あなたは記憶関係の判定者です。新しく抽出された事実の一覧と、システムが既に記憶している観察の一覧が与えられます。各新事実が既存観察に対してどのような関係にあるかを判断してください。
+    "ja": """推論の制限：内部思考は最大4文まで。原文の復唱や代替案の列挙はしないでください。思考が終わったら直ちにJSONを出力し、思考過程を reason に書かないでください。
+
+あなたは記憶関係の判定者です。新しく抽出された事実の一覧と、システムが既に記憶している観察の一覧が与えられます。各新事実が既存観察に対してどのような関係にあるかを判断してください。
 
 ======以下为新提取的事实======
 {NEW_FACTS}
@@ -2425,7 +2609,9 @@ JSON で返す（該当なしなら空配列）:
     ...
   ]
 }""",
-    "ko": """당신은 기억 관계 판정자입니다. 새로 추출된 사실들과 시스템이 이미 기억하고 있는 관찰들을 비교하여, 각 새 사실이 기존 관찰에 어떤 관계를 갖는지 판단해 주세요.
+    "ko": """추론 제한: 내부 사고는 최대 네 문장입니다. 원문을 반복하거나 대안을 나열하지 마세요. 사고가 끝나면 즉시 JSON을 출력하고, 사고 과정을 reason에 넣지 마세요.
+
+당신은 기억 관계 판정자입니다. 새로 추출된 사실들과 시스템이 이미 기억하고 있는 관찰들을 비교하여, 각 새 사실이 기존 관찰에 어떤 관계를 갖는지 판단해 주세요.
 
 ======以下为新提取的事实======
 {NEW_FACTS}
@@ -2453,7 +2639,9 @@ JSON으로 반환 (일치 없으면 빈 배열):
     ...
   ]
 }""",
-    "ru": """Вы — аналитик связей в памяти. Дан набор новых извлечённых фактов и набор наблюдений, которые система уже помнит. Определите отношение каждого нового факта к существующим наблюдениям.
+    "ru": """Ограничение рассуждения: внутренние рассуждения — не больше четырёх предложений. Не пересказывайте исходный текст и не перечисляйте варианты. После рассуждения сразу выведите JSON. Не помещайте ход рассуждения в reason.
+
+Вы — аналитик связей в памяти. Дан набор новых извлечённых фактов и набор наблюдений, которые система уже помнит. Определите отношение каждого нового факта к существующим наблюдениям.
 
 ======以下为新提取的事实======
 {NEW_FACTS}
@@ -2481,7 +2669,9 @@ target_id ДОЛЖЕН быть из раздела "существующие н
     ...
   ]
 }""",
-    "es": """Eres analista de relaciones de memoria. Recibirás un conjunto de hechos recién extraídos y un conjunto de observaciones que el sistema ya recuerda; juzga la relación entre cada hecho nuevo y las observaciones existentes.
+    "es": """Límite de razonamiento: como máximo cuatro frases de pensamiento interno. No repitas el texto original ni enumeres alternativas. Al terminar, devuelve JSON de inmediato. No escribas el proceso de pensamiento en reason.
+
+Eres analista de relaciones de memoria. Recibirás un conjunto de hechos recién extraídos y un conjunto de observaciones que el sistema ya recuerda; juzga la relación entre cada hecho nuevo y las observaciones existentes.
 
 ======以下为新提取的事实======
 {NEW_FACTS}
@@ -2509,7 +2699,9 @@ Devuelve JSON (si no hay coincidencias, devuelve {"signals": []}):
     ...
   ]
 }""",
-    "pt": """Você é analista de relações de memória. Você receberá um conjunto de fatos recém-extraídos e um conjunto de observações que o sistema já lembra; julgue a relação entre cada fato novo e as observações existentes.
+    "pt": """Limite de raciocínio: no máximo quatro frases de pensamento interno. Não repita o texto original nem liste alternativas. Ao terminar, retorne JSON imediatamente. Não escreva o processo de pensamento em reason.
+
+Você é analista de relações de memória. Você receberá um conjunto de fatos recém-extraídos e um conjunto de observações que o sistema já lembra; julgue a relação entre cada fato novo e as observações existentes.
 
 ======以下为新提取的事实======
 {NEW_FACTS}

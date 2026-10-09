@@ -502,6 +502,22 @@
         }
     };
 
+    I.handleTheaterSuggestedInputSelect = function handleTheaterSuggestedInputSelect(text) {
+        if (typeof I.state.onTheaterSuggestedInputSelect === 'function') {
+            I.state.onTheaterSuggestedInputSelect(String(text || ''));
+        }
+    };
+
+    I.handleTheaterSubmit = function handleTheaterSubmit(text) {
+        if (typeof I.state.onTheaterSubmit === 'function') {
+            I.state.onTheaterSubmit(String(text || ''));
+        }
+    };
+
+    I.handleTheaterEnd = function handleTheaterEnd() {
+        if (typeof I.state.onTheaterEnd === 'function') I.state.onTheaterEnd();
+    };
+
     I.handleAvatarInteraction = function handleAvatarInteraction(payload) {
         var detail = payload || {};
 
@@ -1123,10 +1139,20 @@
         }
     }
 
+    function isTheaterPresentationActive(viewProps) {
+        return !!(viewProps && viewProps.theaterPresentation && viewProps.theaterPresentation.active === true);
+    }
+
+    I.isTheaterPresentationActive = function () {
+        return isTheaterPresentationActive(I.state.viewProps);
+    };
+
     I.fetchGalgameOptionsForLatestTurn = function fetchGalgameOptionsForLatestTurn() {
         var requestOptions = arguments[0] && typeof arguments[0] === 'object' ? arguments[0] : {};
         if (isGalgameModeTemporarilyDisabled()) return;
         if (!I.state.galgameModeEnabled) return;
+        // 小剧场演绎期间选项槽由剧场推荐输入占用；普通聊天的 A/B/C 既不显示也不应再花一次 summary 模型调用。
+        if (isTheaterPresentationActive(I.state.viewProps)) return;
         // icebreaker 脚本选项激活期间不抢选项槽——含揭示延迟内 prompt 已就位、按钮尚未
         // 露出（choicePrompt 非 null 但 getRevealedChoicePrompt 返回 null）的那段。否则
         // icebreaker 台词的 turn-end 会触发 galgame A/B/C，在脚本选项露出前挤进同一槽位
@@ -1817,16 +1843,26 @@
                 // the switch is lost on reload (readChatSurfaceModePreference
                 // returns the stale value). persistChatSurfaceModePreference
                 // no-ops for minimized, which still restores via lastRestorable.
-                I.persistChatSurfaceModePreference(normalizedChatSurfaceMode);
+                // A theater presentation forces compact as a temporary override
+                // (entering render included, before viewProps is merged), never
+                // as the user's preference.
+                if (!isTheaterPresentationActive(Object.assign({}, I.state.viewProps, nextProps))) {
+                    I.persistChatSurfaceModePreference(normalizedChatSurfaceMode);
+                }
             }
         }
         if (Object.prototype.hasOwnProperty.call(nextProps, 'compactChatState')) {
             I.state.compactChatState = I.normalizeCompactChatState(nextProps.compactChatState);
         }
+        var theaterWasActive = isTheaterPresentationActive(I.state.viewProps);
         I.state.viewProps = Object.assign({}, I.ensureViewProps(), nextProps, {
             chatSurfaceMode: I.getCurrentChatSurfaceMode(),
             compactChatState: I.getCurrentCompactChatState()
         });
+        if (!theaterWasActive && isTheaterPresentationActive(I.state.viewProps)) {
+            // 进入小剧场时丢弃普通聊天仍在进行的 Galgame 请求，避免迟到的 A/B/C 写进剧场选项槽。
+            I.invalidatePendingGalgameRequest();
+        }
         I.renderWindow();
         // setViewProps can now land a real surface change (e.g. compact -> the
         // revived `full`) because normalizeChatSurfaceMode preserves all three
@@ -1862,6 +1898,7 @@
     }
 
     I.setMessages = function setMessages(messages) {
+        cancelMessageReactions();
         // Compute fallback start past any explicit sortKey in incoming batch
         var maxIncomingSortKey = Array.isArray(messages)
             ? messages.reduce(function (max, message) {
@@ -2082,6 +2119,71 @@
         return I.state.composerAttachments;
     }
 
+    var reactionGeneration = 0;
+    var reactionCandidates = new Map();
+    var reactionAttempts = new Set();
+    var REACTION_EMOJIS = ['😊', '😄', '🥰', '✨', '🎉', '😢', '🥺', '🤗', '💧', '😮', '😲', '👀', '❗', '😤', '😠', '💢', '😾'];
+
+    function getReactionCharacterName() {
+        return (window.appState && window.appState.lanlan_name)
+            || (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+    }
+    function getReactionMessageText(message) {
+        return (message.blocks || []).filter(function (block) {
+            return block && block.type === 'text' && typeof block.text === 'string';
+        }).map(function (block) { return block.text; }).join('\n').trim();
+    }
+    function cancelMessageReactions() {
+        reactionGeneration++;
+        reactionAttempts.clear();
+        reactionCandidates.clear();
+    }
+    function pruneMessageReactions() {
+        var ids = new Set(I.state.messages.map(function (m) { return m.id; }));
+        reactionAttempts.forEach(function (id) { if (!ids.has(id)) reactionAttempts.delete(id); });
+        reactionCandidates.forEach(function (target, id) {
+            if (!I.state.messages.some(function (m) { return m === target.message; })) reactionCandidates.delete(id);
+        });
+    }
+    function scheduleMessageReaction(message) {
+        // Capture identity when the optimistic message is created, before a
+        // later send can replace the shared submission ID during async work.
+        if (!message || message.role !== 'user' || ['sending', 'sent'].indexOf(message.status) < 0 || message.reaction || reactionAttempts.has(message.id)
+                || isYuiGuideChatMessage(message) || isNewUserIcebreakerChatMessage(message)
+                || (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive())) return;
+        var text = getReactionMessageText(message);
+        var name = getReactionCharacterName();
+        var previous = reactionCandidates.get(message.id);
+        if (text && name) reactionCandidates.set(message.id, { message: message, text: text, name: name,
+            generation: reactionGeneration, requestId: previous ? previous.requestId : (window._lastSubmittedRequestId || null) });
+    }
+    window.captureMessageReactionTarget = function (requestId) {
+        // Transcripts without turn identity can arrive after reply start. Never
+        // guess which user message belongs to such a reply from arrival order.
+        if (!requestId) return null;
+        var targets = Array.from(reactionCandidates.values());
+        var target = targets.find(function (item) {
+            return item.requestId === requestId && item.message.status === 'sent';
+        });
+        if (!target) return null;
+        reactionCandidates.delete(target.message.id);
+        reactionAttempts.add(target.message.id);
+        return target;
+    };
+    window.applyMessageReactionFromEmotion = function (target, result) {
+        if (!target || target.generation !== reactionGeneration || getReactionCharacterName() !== target.name
+                || !result || result.error || !result.reaction
+                || result.reaction.author !== target.name || REACTION_EMOJIS.indexOf(result.reaction.emoji) < 0
+                || (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive())) return;
+        var current = I.state.messages.find(function (m) { return m.id === target.message.id; });
+        if (current !== target.message || current.role !== 'user' || current.status !== 'sent'
+                || current.reaction || getReactionMessageText(current) !== target.text) return;
+        I.updateMessage(current.id, { reaction: { emoji: result.reaction.emoji, author: target.name } });
+        if (window.appChatExport && typeof window.appChatExport.refreshMessageReaction === 'function') {
+            window.appChatExport.refreshMessageReaction(current.id);
+        }
+    };
+
     var MAX_MESSAGES = 50;
 
     function getNextAppendSortKey() {
@@ -2122,6 +2224,8 @@
             I.invalidatePendingGalgameRequest();
         }
         I.renderWindow();
+        pruneMessageReactions();
+        scheduleMessageReaction(normalized);
         return normalized;
     }
 
@@ -2136,6 +2240,7 @@
 
         I.state.messages = I.sortMessages(I.state.messages);
         I.renderWindow();
+        scheduleMessageReaction(updatedMessage);
         return updatedMessage;
     }
 
@@ -2144,6 +2249,7 @@
         I.state.messages = I.state.messages.filter(function (message) {
             return String(message.id) !== String(messageId);
         });
+        pruneMessageReactions();
         var changed = I.state.messages.length !== beforeLength;
         if (changed) {
             I.renderWindow();
@@ -2171,6 +2277,7 @@
     }
 
     I.clearMessages = function clearMessages() {
+        cancelMessageReactions();
         I.state.messages = [];
         I.state.pendingIcebreakerGalgameHandoffMessageId = '';
         I._sortKeySeq = 0;
@@ -2196,7 +2303,10 @@
             composerAttachments: I.state.composerAttachments.slice(),
             composerHidden: I.getEffectiveComposerHidden(),
             composerHiddenRequested: I.state.composerHidden,
-            goodbyeComposerHidden: I.state.goodbyeComposerHidden
+            goodbyeComposerHidden: I.state.goodbyeComposerHidden,
+            // External input locks (home tutorial) the theater must compose with
+            // instead of overwriting composerDisabled.
+            composerExternallyLocked: !!(I.state.homeTutorialInteractionLocked || I.state.homeTutorialInputLocked)
         };
     }
 

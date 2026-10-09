@@ -411,7 +411,14 @@ async def delete_voice(voice_id: str):
     """Delete the specified voice."""
     try:
         _config_manager = get_config_manager()
-        deleted = _config_manager.delete_voice_for_current_api(voice_id)
+        try:
+            deleted = await asyncio.to_thread(_config_manager.delete_voice_for_current_api, voice_id)
+        except ValueError as exc:
+            if exc.args != ("VOICE_OPERATION_IN_PROGRESS",):
+                raise
+            return _json_no_store_response({
+                "success": False, "code": "OPERATION_IN_PROGRESS", "error": "OPERATION_IN_PROGRESS",
+            }, status_code=409)
 
         if deleted:
             # 清理所有角色中使用该音色的引用

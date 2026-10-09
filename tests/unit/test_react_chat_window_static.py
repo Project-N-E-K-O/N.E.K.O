@@ -481,8 +481,8 @@ def test_web_chat_compact_endpoint_uses_index_template_with_initial_compact_surf
         '@router.get("/subtitle"',
         1,
     )[0]
-    assert 'TemplateResponse("templates/index.html"' in route_block
-    assert 'TemplateResponse("templates/chat.html"' not in route_block
+    assert 'TemplateResponse(request, "templates/index.html"' in route_block
+    assert 'TemplateResponse(request, "templates/chat.html"' not in route_block
     assert '"initial_chat_surface_mode": "compact"' in route_block
     assert '"initial_chat_surface_mode": "full"' not in route_block
 
@@ -670,8 +670,8 @@ def test_home_tutorial_input_lock_blocks_compact_capsule_input_state():
     assert "var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();" in input_lock_block
     assert "syncComposerAttachmentsVisibility(previousAttachmentsVisible);" in input_lock_block
     assert "setHomeTutorialInteractionLocked(next" not in input_lock_block
-    assert "disabled={compactCapsuleEntryLocked}" in capsule_block
-    assert "if (compactCapsuleEntryLocked) return;" in capsule_block
+    assert "disabled={compactTextEntryLocked}" in capsule_block
+    assert "if (compactTextEntryLocked) return;" in capsule_block
 
 
 def test_home_tutorial_events_lock_chat_buttons_and_collapse_compact_input():
@@ -710,7 +710,7 @@ def test_home_tutorial_events_lock_chat_buttons_and_collapse_compact_input():
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-completed');" in completed_block
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-skipped');" in skipped_block
     assert "setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');" in ended_block
-    assert "disabled={composerDisabled}" in history_handle_block
+    assert "disabled={composerDisabled || theaterActive}" in history_handle_block
 
 
 def test_home_tutorial_host_wires_avatar_tool_requests():

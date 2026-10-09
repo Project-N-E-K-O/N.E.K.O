@@ -9,7 +9,7 @@ try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     import tomli as tomllib  # type: ignore[no-redef]
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import partial
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +18,10 @@ from typing import Any, Protocol, runtime_checkable
 from fastapi import HTTPException
 
 from plugin._types.exceptions import PluginError, PluginLifecycleError
-from plugin.core.host import PluginProcessHost
+from plugin._types.isolated_metadata import (
+    IsolatedPluginMetadata,
+    handler_key_belongs_to_plugin as _handler_key_belongs_to_plugin,
+)
 from plugin.server.application.plugins import development as development_store
 from plugin.core.registry import (
     _collect_plugin_python_requirements,
@@ -40,7 +43,10 @@ from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.application.plugins.operation_lock import (
     bounded_operation_wait,
+    _HeldPluginOperationLock,
+    _operation_lock_is_held_by_current_task,
     PluginOperationBusy,
+    plugin_operation_lock,
     serialized_plugin_operation,
 )
 from plugin.server.application.plugins.registry_service import (
@@ -55,20 +61,19 @@ from plugin.server.application.plugins.installation_transactions import (
     retry_deferred_profile_cleanup_sync,
     uninstall_plugin,
 )
-from plugin.server.application.plugins.metadata_scanner import (
-    _DEFAULT_SCAN_TIMEOUT_SECONDS as _DEFAULT_METADATA_SCAN_TIMEOUT,
-    _handler_key_belongs_to_plugin,
-    IsolatedPluginMetadata,
-    install_isolated_plugin_metadata,
-    scan_plugin_metadata_isolated,
+from plugin.server.application.plugins._env_budgets import env_seconds
+from plugin.server.application.plugins._metadata_scan_settings import (
+    METADATA_SCAN_TIMEOUT_SECONDS as _DEFAULT_METADATA_SCAN_TIMEOUT,
 )
 from plugin.server.infrastructure.packaged_metadata import (
     SourceTreeSnapshot,
     entries_config_digest,
+    packaged_metadata_needs_rebuild,
     read_packaged_metadata,
     refresh_stale_packaged_metadata,
-    snapshot_source_tree,
+    snapshot_packaged_metadata_rebuild_tree,
     stale_packaged_schema_version,
+    write_local_packaged_metadata,
 )
 from plugin.server.application.install_source import (
     InstallSourceError,
@@ -86,11 +91,9 @@ from plugin.server.infrastructure.runtime_overrides import (
     set_runtime_override,
 )
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
-from plugin.server.messaging.llm_tool_registry import (
-    clear_plugin_tools as clear_plugin_llm_tools,
-)
 from plugin.settings import (
     BUILTIN_PLUGIN_CONFIG_ROOT,
+    PLUGIN_AUTOSTART_CONCURRENCY,
     PLUGIN_CONFIG_ROOTS,
     PLUGIN_SHUTDOWN_TIMEOUT,
     PLUGIN_STARTUP_TIMEOUT,
@@ -101,8 +104,68 @@ from plugin.server.infrastructure.autostart_approvals import (
     is_autostart_approved,
 )
 from plugin.utils import parse_bool_config
+from plugin.utils.asyncio_utils import await_cancellation_safe
 
 logger = get_logger("server.application.plugins.lifecycle")
+
+
+def create_plugin_host(
+    *, plugin_id: str, entry_point: str, config_path: Path, source_only: bool = False
+) -> PluginHostContract:
+    from plugin.core.host import PluginProcessHost
+
+    return PluginProcessHost(
+        plugin_id, entry_point, config_path, source_only=source_only
+    )
+
+
+def scan_plugin_metadata_isolated(
+    *,
+    plugin_id: str,
+    module_path: str,
+    class_name: str,
+    config_path: Path,
+    conf: Mapping[str, object],
+    pdata: Mapping[str, object],
+    python_requirement_paths: list[Path],
+    timeout: float,
+    source_only: bool = False,
+) -> IsolatedPluginMetadata:
+    from plugin.server.application.plugins.metadata_scanner import (
+        scan_plugin_metadata_isolated as scan,
+    )
+
+    return scan(
+        plugin_id=plugin_id,
+        module_path=module_path,
+        class_name=class_name,
+        config_path=config_path,
+        conf=conf,
+        pdata=pdata,
+        python_requirement_paths=python_requirement_paths,
+        timeout=timeout,
+        source_only=source_only,
+    )
+
+
+def install_isolated_plugin_metadata(
+    plugin_id: str, metadata: IsolatedPluginMetadata
+) -> None:
+    from plugin.server.application.plugins.metadata_scanner import (
+        install_isolated_plugin_metadata as install,
+    )
+
+    install(plugin_id, metadata)
+
+
+async def clear_plugin_llm_tools(
+    plugin_id: str, *, timeout: float | None = None
+) -> dict[str, object]:
+    from plugin.server.messaging.llm_tool_registry import clear_plugin_tools
+
+    return await clear_plugin_tools(plugin_id, timeout=timeout)
+
+
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
 # 被整轮预算压缩后，一步至少还能拿到这么久。
@@ -213,7 +276,7 @@ def _read_packaged_isolated_metadata(
     (writing state, sending a notification, launching a helper) happened twice
     (codex). An artifact written under an older schema is refused by the reader
     and takes the worker path; ``start_plugin`` then rewrites it from that scan
-    (``_upgrade_stale_packaged_metadata``), so the cost is one import, not one
+    (``_refresh_scanned_packaged_metadata``), so the cost is one import, not one
     per start. Schema 3 never shipped in a release, so no in-memory migration.
 
     Returns ``None`` when there is no usable metadata at all.
@@ -259,19 +322,56 @@ def _read_packaged_isolated_metadata(
     )
 
 
-def _snapshot_stale_package_tree(config_path: Path) -> SourceTreeSnapshot | None:
-    """Fingerprint the tree before the scan imports it, if an upgrade is in prospect.
-
-    Only a stale-schema package can be upgraded, so only that case pays for
-    the snapshot; every other start skips this entirely.
-    """
-    plugin_dir = Path(config_path).parent
-    if stale_packaged_schema_version(plugin_dir) is None:
+def _metadata_rebuild_manifest(
+    config_path: Path,
+    plugin_id: str | None,
+    conf: object,
+    pdata: object,
+) -> dict[str, object] | None:
+    """Return the manifest only when scanned metadata may describe this package."""
+    try:
+        manifest = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return None
-    return snapshot_source_tree(plugin_dir)
+    manifest_pdata = (
+        manifest.get("plugin") if isinstance(manifest.get("plugin"), dict) else {}
+    )
+    if plugin_id is not None and str(manifest_pdata.get("id") or "") != plugin_id:
+        logger.info(
+            "packaged metadata rebuild skipped: runtime id differs from manifest id; "
+            "plugin_id={}, path={}",
+            plugin_id, config_path,
+        )
+        return None
+    if conf is not None and entries_config_digest(conf, pdata) != entries_config_digest(
+        manifest, manifest_pdata
+    ):
+        logger.info(
+            "packaged metadata rebuild skipped: effective configuration overrides entries; "
+            "plugin_id={}, path={}",
+            plugin_id, config_path,
+        )
+        return None
+    return manifest
 
 
-def _upgrade_stale_packaged_metadata(
+def _snapshot_package_tree_for_rebuild(
+    config_path: Path,
+    *,
+    plugin_id: str | None = None,
+    conf: object = None,
+    pdata: object = None,
+) -> SourceTreeSnapshot | None:
+    """Fingerprint eligible packages before scanning, without hashing overrides."""
+    plugin_dir = Path(config_path).parent
+    if not packaged_metadata_needs_rebuild(plugin_dir):
+        return None
+    if _metadata_rebuild_manifest(config_path, plugin_id, conf, pdata) is None:
+        return None
+    return snapshot_packaged_metadata_rebuild_tree(plugin_dir)
+
+
+def _refresh_scanned_packaged_metadata(
     config_path: Path,
     plugin_id: str,
     scanned: IsolatedPluginMetadata,
@@ -280,7 +380,11 @@ def _upgrade_stale_packaged_metadata(
     conf: object,
     pdata: object,
 ) -> None:
-    """Turn the scan a stale package forced into the package's next fast path.
+    """Turn the scan a refused package forced into the next start's fast path.
+
+    两种"被拒"，两种落盘位置（见函数末尾的分派）：schema 过期 → 就地改写包内那份；
+    ``build_env`` 不是本机的 → 写宿主运行时缓存，发行产物字节不动。
+    两者写成功之后，下次启动直接命中，不再扫描。
 
     Only when the effective ``entries`` table is the manifest's own: the file
     describes the package, and an active profile or runtime override that
@@ -291,30 +395,12 @@ def _upgrade_stale_packaged_metadata(
     if before_scan is None:
         return
     plugin_dir = Path(config_path).parent
-    try:
-        manifest = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    # Revalidate after the scan as the manifest may have changed in the meantime.
+    manifest = _metadata_rebuild_manifest(config_path, plugin_id, conf, pdata)
+    if manifest is None:
         return
     manifest_pdata = manifest.get("plugin") if isinstance(manifest.get("plugin"), dict) else {}
-    if str(manifest_pdata.get("id") or "") != plugin_id:
-        # handler 键里嵌着运行时 id。id 冲突把这个插件改名成 foo_1 之后，扫描出的
-        # 键全是 foo_1.*；写进 foo 的包里，冲突一消失就再也对不上归属检查（coderabbit）。
-        logger.info(
-            "stale packaged metadata left as is; the runtime id differs from the "
-            "manifest id: plugin_id={}, manifest_id={}",
-            plugin_id,
-            manifest_pdata.get("id"),
-        )
-        return
-    if entries_config_digest(conf, pdata) != entries_config_digest(manifest, manifest_pdata):
-        logger.info(
-            "stale packaged metadata left as is; the effective configuration "
-            "overrides the entries table: plugin_id={}",
-            plugin_id,
-        )
-        return
-    refresh_stale_packaged_metadata(
-        plugin_dir,
+    write_kwargs = dict(
         before_scan=before_scan,
         entries=scanned.entries_preview,
         handlers=scanned.handlers,
@@ -322,6 +408,10 @@ def _upgrade_stale_packaged_metadata(
         conf=manifest,
         pdata=manifest_pdata,
     )
+    if stale_packaged_schema_version(plugin_dir) is not None:
+        refresh_stale_packaged_metadata(plugin_dir, **write_kwargs)
+    else:
+        write_local_packaged_metadata(plugin_dir, **write_kwargs)
 
 
 def _clamp_step_timeout(
@@ -910,7 +1000,6 @@ async def _start_host_with_timeout(
 # 已经停掉的照常汇报，剩下的留在原地——比让整个请求超时、而操作又在后台继续
 # 落地要好。
 # Env: NEKO_PLUGIN_RELOAD_ALL_BUDGET
-from plugin.server.application.plugins._env_budgets import env_seconds
 
 _RELOAD_ALL_BUDGET_SECONDS = env_seconds("NEKO_PLUGIN_RELOAD_ALL_BUDGET", 20.0)
 
@@ -926,6 +1015,34 @@ class PluginLifecycleService:
         persist_user_intent: bool = False,
         start_deadline: float | None = None,
     ) -> dict[str, object]:
+        return await self._start_plugin_under_lock(
+            plugin_id,
+            restore_state,
+            refresh_registry=refresh_registry,
+            persist_user_intent=persist_user_intent,
+            start_deadline=start_deadline,
+        )
+
+    async def _start_plugin_under_lock(
+        self,
+        plugin_id: str,
+        restore_state: bool = False,
+        *,
+        refresh_registry: bool = True,
+        persist_user_intent: bool = False,
+        start_deadline: float | None = None,
+        operation_scope: _HeldPluginOperationLock | None = None,
+    ) -> dict[str, object]:
+        """Start under a caller-owned operation lock without reacquiring it.
+
+        Batch tasks borrow their parent's serialization scope. This method and
+        its callees must not acquire the operation lock: its reentrancy is tied
+        to the owning asyncio task, and batch children are different tasks.
+        """
+        if operation_scope is not None:
+            operation_scope.require_active()
+        elif not _operation_lock_is_held_by_current_task():
+            raise RuntimeError("Plugin startup requires the operation lock")
         _hot_reload_failed.discard(plugin_id)
         if _operations_shutting_down:
             # 关停已经开始了：这时候拉起的插件会落在 host 快照之后，变成没人
@@ -1215,7 +1332,7 @@ class PluginLifecycleService:
 
             _emit_lifecycle_event(event_type="plugin_start_requested", plugin_id=current_plugin_id)
             created_host = await asyncio.to_thread(
-                PluginProcessHost,
+                create_plugin_host,
                 plugin_id=current_plugin_id,
                 entry_point=entry,
                 config_path=config_path,
@@ -1275,12 +1392,19 @@ class PluginLifecycleService:
                     _remaining_step_budget(start_deadline),
                     floor=_MIN_CLAMPED_START_TIMEOUT,
                 )
-                # 包里那份元数据如果只是 schema 过期，这次扫描学到的就是打包器本
-                # 该写的那份：写回去，下次启动走快路径。指纹在 import 之前先取一份，
-                # 之后比对，和打包器一样拒绝"import 改动了树"的情况。reload_all 有
-                # 总预算，可选的优化不放进去；应用启动的自动拉起没有截止期，在那里做。
+                # 包里那份元数据如果 schema 过期、**或者 build_env 不是本机的**，这次
+                # 扫描学到的就是打包器本该写的那份：写回去，下次启动走快路径。指纹在
+                # import 之前先取一份，之后比对，和打包器一样拒绝"import 改动了树"的
+                # 情况。reload_all 有总预算，可选的优化不放进去；应用启动的自动拉起没有
+                # 截止期，在那里做。
                 before_scan = (
-                    await asyncio.to_thread(_snapshot_stale_package_tree, config_path)
+                    await asyncio.to_thread(
+                        _snapshot_package_tree_for_rebuild,
+                        config_path,
+                        plugin_id=current_plugin_id,
+                        conf=conf,
+                        pdata=pdata,
+                    )
                     if start_deadline is None and development_snapshot is None
                     else None
                 )
@@ -1297,7 +1421,7 @@ class PluginLifecycleService:
                     **({"source_only": True} if development_snapshot is not None else {}),
                 )
                 await asyncio.to_thread(
-                    _upgrade_stale_packaged_metadata,
+                    _refresh_scanned_packaged_metadata,
                     config_path,
                     current_plugin_id,
                     isolated_metadata,
@@ -1461,6 +1585,125 @@ class PluginLifecycleService:
             ) from exc
         finally:
             _active_startup_timeouts.pop(original_plugin_id, None)
+
+    async def start_plugins_batch(
+        self,
+        independent_plugin_ids: Sequence[str],
+        ordered_plugin_ids: Sequence[str] = (),
+        *,
+        concurrency: int | None = None,
+        refresh_registry: bool = False,
+    ) -> dict[str, object]:
+        """Start independent plugins concurrently, then dependents in order.
+
+        Each concurrent wave excludes external mutations until its active
+        starts finish, then yields the operation lock to queued callers. Child
+        tasks use the undecorated implementation inside that scope. Serial
+        starts use the public entry point's cancellation-safe per-plugin lock.
+        """
+        limit = (
+            PLUGIN_AUTOSTART_CONCURRENCY if concurrency is None else int(concurrency)
+        )
+        limit = max(1, limit)
+        started: list[str] = []
+        failed: list[str] = []
+
+        async def _start_one(
+            plugin_id: str, *, operation_scope: _HeldPluginOperationLock | None = None
+        ) -> None:
+            try:
+                if operation_scope is not None:
+                    # Drain every active start before releasing the wave lock.
+                    # A spawned host must register or finish its cleanup.
+                    operation = asyncio.create_task(
+                        self._start_plugin_under_lock(
+                            plugin_id,
+                            refresh_registry=refresh_registry,
+                            operation_scope=operation_scope,
+                        )
+                    )
+                    await await_cancellation_safe(operation)
+                else:
+                    # This primitive also cancels an unstarted lock waiter.
+                    # Shielding it again would prevent that cancellation.
+                    await self.start_plugin(
+                        plugin_id, refresh_registry=refresh_registry
+                    )
+            except Exception as error:
+                failed.append(plugin_id)
+                logger.error(
+                    "failed to autostart plugin at startup: plugin_id={}, err_type={}, err={}",
+                    plugin_id,
+                    type(error).__name__,
+                    str(error),
+                )
+            else:
+                started.append(plugin_id)
+                logger.debug("autostart plugin started: plugin_id={}", plugin_id)
+
+        independent = list(dict.fromkeys(
+            str(plugin_id) for plugin_id in independent_plugin_ids if plugin_id
+        ))
+        independent_set = set(independent)
+        ordered = list(dict.fromkeys(
+            str(plugin_id) for plugin_id in ordered_plugin_ids
+            if plugin_id and str(plugin_id) not in independent_set
+        ))
+
+        if limit <= 1 or len(independent) <= 1:
+            for plugin_id in independent:
+                await _start_one(plugin_id)
+        else:
+            # Limit the lock scope to one wave. With a single lock around all
+            # queued starts, management requests can exhaust their wait budget
+            # even when each individual plugin starts within its own timeout.
+            for offset in range(0, len(independent), limit):
+                wave = independent[offset : offset + limit]
+                try:
+                    async with plugin_operation_lock.hold() as operation_scope:
+                        # Collect unexpected task errors only after every sibling
+                        # has finished; otherwise the wave lock releases too early.
+                        outcomes = await asyncio.gather(
+                            *(
+                                _start_one(plugin_id, operation_scope=operation_scope)
+                                for plugin_id in wave
+                            ),
+                            return_exceptions=True,
+                        )
+                        for plugin_id, outcome in zip(wave, outcomes):
+                            if isinstance(outcome, BaseException):
+                                # A startup failure was already recorded by
+                                # _start_one; retain any unexpected task failure.
+                                if plugin_id not in failed and plugin_id not in started:
+                                    failed.append(plugin_id)
+                                    logger.error(
+                                        "autostart task failed unexpectedly: plugin_id={}, err_type={}, err={}",
+                                        plugin_id,
+                                        type(outcome).__name__,
+                                        str(outcome),
+                                    )
+                except Exception as error:
+                    # A failed lock acquisition must not abort server startup.
+                    for plugin_id in wave:
+                        if plugin_id not in started and plugin_id not in failed:
+                            failed.append(plugin_id)
+                    logger.error(
+                        "autostart wave failed: plugin_ids={}, err_type={}, err={}",
+                        wave, type(error).__name__, str(error),
+                    )
+
+        # Providers have completed; dependents keep their existing order and
+        # yield the operation lock after each plugin, as serial autostart did.
+        for plugin_id in ordered:
+            await _start_one(plugin_id)
+
+        logger.info(
+            "autostart batch finished: started={}, failed={}, concurrency_limit={}",
+            len(started),
+            len(failed),
+            limit,
+        )
+        return {"started": started, "failed": failed}
 
     @serialized_plugin_operation
     async def stop_plugin(

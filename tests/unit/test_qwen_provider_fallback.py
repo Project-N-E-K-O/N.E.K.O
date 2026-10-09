@@ -684,6 +684,10 @@ async def test_external_sender_cancel_during_getter_join_propagates(cancel_count
 
 
 async def test_provider_failure_at_fallback_due_releases_sender(monkeypatch):
+    from main_logic.asr_client import connection_cleanup
+    # This integration retains the physical close owner instead of skipping a
+    # suspended handshake on second cancellation. Scale its bounded budget.
+    monkeypatch.setattr(connection_cleanup, "CLOSE_TIMEOUT_SECONDS", 0.1)
     monkeypatch.setattr(qwen, "_QWEN_LOCAL_FINISH_GRACE_SECONDS", 0)
     close_release = asyncio.Event()
     errors = []

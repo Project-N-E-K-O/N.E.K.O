@@ -166,7 +166,7 @@ async def test_recovery_failed_status_drops_after_lease_takeover() -> None:
     source_token = runtime._capture_ingress_token()
     first_send_entered = asyncio.Event()
     release_first_send = asyncio.Event()
-    payloads = []
+    payloads: list[dict] = []
 
     async def ordered_send_status(payload: str) -> bool:
         payloads.append(json.loads(payload))
@@ -234,6 +234,14 @@ async def test_recovery_failed_status_carries_current_lease_generation() -> None
     ]
     assert payloads[-1]["code"] == "VOICE_INPUT_RECOVERY_FAILED"
     assert payloads[-1]["details"]["lease_generation"] == 7
+    assert payloads[-1] == {
+        "code": "VOICE_INPUT_RECOVERY_FAILED",
+        "details": {
+            "session_epoch": epoch,
+            "lease_generation": 7,
+            "reason": "ASR_INDEPENDENT_FAILED",
+        },
+    }
 
 
 async def test_independent_failure_retries_only_undelivered_recovery_notice() -> None:

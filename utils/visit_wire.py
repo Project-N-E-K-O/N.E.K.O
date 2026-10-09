@@ -65,6 +65,7 @@ from typing import (
     Union,
 )
 
+import regex
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -371,6 +372,27 @@ def _splits_cluster(s: str, p: int) -> bool:
             q -= 1
         return run % 2 == 1
     return False
+
+
+_GRAPHEME = regex.compile(r"\X")
+
+
+def grapheme_safe_cut(s: str, p: int) -> int:
+    """Largest cut ``<= p`` of ``s`` that does not split an extended grapheme cluster (UAX #29).
+
+    Unlike the budget's bounded backoff, this uses full cluster segmentation
+    (emoji, flags, combining marks, Hangul jamo ...) and walks back as far as
+    needed; meant for short texts such as a capped goodbye line.
+    """
+    q = min(max(p, 0), len(s))
+    if q == len(s):
+        return q
+    cut = 0
+    for m in _GRAPHEME.finditer(s):
+        if m.end() > q:
+            break
+        cut = m.end()
+    return cut
 
 
 def _safe_cut(s: str, p: int, *, floor: int = 0) -> int:
@@ -1594,8 +1616,10 @@ class ClauseSplitter:
     hard cuts the last ``holdback_chars`` characters before the overflow
     point are not released in that clause (they start the next one); pass
     ``max(len(protected word)) - 1`` so a protected word whose tail has not
-    arrived yet cannot be cut. Punctuation boundaries need no holdback
-    because protected words contain no clause punctuation.
+    arrived yet cannot be cut. Punctuation boundaries get no holdback: a
+    caller whose protected words may contain clause punctuation or spaces
+    (``"J. Smith"``) must keep a trailing prefix of such a word out of
+    ``feed`` until it is complete or the line ends.
 
     Redact injection contract (``redact(raw_buffer)``):
 
@@ -1916,6 +1940,10 @@ class LineDeltaAssembler:
         while len(self._final) > self._lru:
             self._final.popitem(last=False)
         return txt
+
+    def closed(self, ln: str) -> bool:
+        """True once ``ln`` was closed by its ``text`` or dropped (its tombstone is still kept)."""
+        return ln in self._final or ln in self._stalled
 
     def drop(self, ln: str) -> None:
         """Forget an open line locally (stall truncation) without a ``text``.

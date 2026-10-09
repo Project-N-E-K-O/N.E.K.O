@@ -18,12 +18,13 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from config.visit_settings import VISIT_DEV_KID, VISIT_HOST_CREDENTIAL_TTL_S
+from config.visit_settings import VISIT_DEV_KID, VISIT_HOST_CREDENTIAL_TTL_S, VISIT_PUBKEYS_CACHE_S
 from main_logic.visit import identity as idm
 from main_logic.visit.identity import (
     BadSignature,
@@ -407,6 +408,24 @@ def test_fetched_key_without_window_is_skipped_and_revoked(priv):
     payload = {"keys": [{"kid": "k2", "alg": "Ed25519", "pub": _pub_b64(priv)}], "revoked": ["x"], "ttl_s": 60}
     fetched = parse_pubkeys_response(payload, fetched_at=NOW)
     assert fetched.keys == {} and fetched.revoked == frozenset({"x", "k2"})
+
+
+@pytest.mark.parametrize(("ttl", "expected"), [
+    (60, 60.0),
+    (10 ** 300, float(VISIT_PUBKEYS_CACHE_S)),  # 合法但偏大：截到上限
+    (10 ** 400, float(VISIT_PUBKEYS_CACHE_S)),  # 超出 float 范围：同样截到上限，不溢出
+    (math.inf, float(VISIT_PUBKEYS_CACHE_S)),
+    (-(10 ** 400), float(VISIT_PUBKEYS_CACHE_S)),  # 负数 / NaN / 非数字：回落默认
+    (-math.inf, float(VISIT_PUBKEYS_CACHE_S)),
+    (math.nan, float(VISIT_PUBKEYS_CACHE_S)),
+    ("60", float(VISIT_PUBKEYS_CACHE_S)),
+    (True, float(VISIT_PUBKEYS_CACHE_S)),
+], ids=["normal", "1e300", "1e400", "inf", "neg-1e400", "neg-inf", "nan", "str", "bool"])
+def test_fetched_ttl_is_capped_or_defaulted_without_failing(ttl, expected):
+    # ttl_s 坏不能让整次拉取作废：吊销名单照常生效
+    fetched = parse_pubkeys_response({"keys": [], "revoked": ["x"], "ttl_s": ttl}, fetched_at=NOW)
+    assert fetched.ttl_s == expected
+    assert fetched.revoked == frozenset({"x"})
 
 
 def test_malformed_pubkeys_envelope_raises():

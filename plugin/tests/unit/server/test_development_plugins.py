@@ -120,7 +120,7 @@ async def test_degraded_startup_error_survives_view_refresh_and_stop(monkeypatch
             assert kwargs["startup_failure"] == "warn"
             return {"startup_error": "startup hook failed"}
 
-    monkeypatch.setattr(lifecycle_service, "PluginProcessHost", WarnHost)
+    monkeypatch.setattr(lifecycle_service, "create_plugin_host", WarnHost)
     result = await lifecycle_service.PluginLifecycleService().start_plugin(record.plugin_id)
     assert result["startup_degraded"] is True
     service._record_runtime_failure_sync(record, None)
@@ -302,7 +302,7 @@ async def test_restored_association_does_not_stop_ordinary_host_started_during_s
         def is_alive(self):
             return self.started and super().is_alive()
 
-    monkeypatch.setattr(lifecycle_service, "PluginProcessHost", Host)
+    monkeypatch.setattr(lifecycle_service, "create_plugin_host", Host)
     monkeypatch.setattr(lifecycle_service, "scan_plugin_metadata_isolated", lambda **kwargs: IsolatedPluginMetadata(
         entries_preview=[], handlers={}, entry_methods={}))
     cleanup = AsyncMock()
@@ -365,9 +365,22 @@ async def test_corrupt_store_preserves_ordinary_startup_discovery(tmp_path, monk
     async def start(plugin_id, **kwargs):
         assert store.registration_for_plugin_sync(plugin_id) is None
         started.append(plugin_id)
+
+    async def start_batch(independent, ordered=(), **kwargs):
+        # 自启动走分波并发入口，波次之间释放锁给排队的管理操作。
+        # 这个桩复刻它对外可观测的效果：并发组在前、按序组在后，每个插件各启动一次。
+        # 本测试关心的是"哪些插件被启动、顺序如何"，不关心并发本身
+        # （并发行为由 test_autostart_concurrency.py 专门钉住）。
+        for plugin_id in list(independent) + list(ordered):
+            await start(plugin_id)
+        return {"started": list(independent) + list(ordered), "failed": []}
+
     lifecycle = ServerLifecycleService()
     lifecycle._plugin_registry_service = manager
-    lifecycle._plugin_lifecycle_service = SimpleNamespace(start_plugin=start)
+    lifecycle._plugin_lifecycle_service = SimpleNamespace(
+        start_plugin=start,
+        start_plugins_batch=start_batch,
+    )
     await lifecycle._refresh_registry_and_start_autostart_plugins()
     assert started == ["ordinary"]
     assert store._store_path().read_text(encoding="utf-8") == corruption
@@ -414,7 +427,7 @@ async def test_ordinary_lifecycle_can_start_after_corrupt_development_store(tmp_
         def is_alive(self):
             return self.started
 
-    monkeypatch.setattr(lifecycle, "PluginProcessHost", Host)
+    monkeypatch.setattr(lifecycle, "create_plugin_host", Host)
     monkeypatch.setattr(lifecycle, "scan_plugin_metadata_isolated", lambda **kwargs: IsolatedPluginMetadata(
         entries_preview=[], handlers={}, entry_methods={}))
     result = await lifecycle.PluginLifecycleService().start_plugin("ordinary", refresh_registry=False)
@@ -1069,7 +1082,7 @@ async def test_start_integrates_source_policy_and_does_not_write_metadata_to_sou
         return scanner(**kwargs)
     def forbid_packaged_metadata(*args, **kwargs):
         raise AssertionError("Development plugins must scan their current source")
-    monkeypatch.setattr(lifecycle_service, "PluginProcessHost", Host)
+    monkeypatch.setattr(lifecycle_service, "create_plugin_host", Host)
     monkeypatch.setattr(lifecycle_service, "scan_plugin_metadata_isolated", scan)
     monkeypatch.setattr(lifecycle_service, "_read_packaged_isolated_metadata", forbid_packaged_metadata)
     result = await lifecycle_service.PluginLifecycleService().start_plugin(record.plugin_id)

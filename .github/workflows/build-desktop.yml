@@ -78,7 +78,7 @@ concurrency:
 
 env:
   PYTHON_VERSION: '3.11'
-  NODE_VERSION: '20'
+  NODE_VERSION: '22'
   # Anonymous embedding profile id (compatibility contract — bumped only when
   # the upstream weights/tokenizer become incompatible with previously-cached
   # vectors). The repo + revision together pin the actual artifacts.
@@ -517,6 +517,7 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=brain"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_logic"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=services"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=memory"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=utils"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=steamworks"
@@ -673,6 +674,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=brain
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_logic
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_routers
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=services
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=memory
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=utils
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=steamworks

@@ -26,6 +26,7 @@ from main_logic.omni_realtime_client import (
     MultimodalTurnDelivery,
     OmniRealtimeClient,
     RealtimeImagePayloadTooLargeError,
+    new_client_item_id,
 )
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
@@ -542,7 +543,7 @@ class ProactiveMixin:
             # (only the agent-direct-reply path in main_server.py does), so
             # without this the buffer would carry the proactive text forward
             # and contaminate the next user-initiated turn's AI message.
-            self._flush_ai_turn_text_to_tracker()
+            self._flush_ai_turn_text_to_tracker(turn_type="proactive_reply")
 
             if self.session and hasattr(self.session, '_conversation_history'):
                 # action_note 只进历史，不进 send_lanlan_response（前端不展示）
@@ -2522,9 +2523,7 @@ class ProactiveMixin:
                                 "type": "conversation.item.create",
                                 "event_id": description_event_id,
                                 "item": {
-                                    "id": (
-                                        f"item_neko_callback_visual_{uuid4().hex}"
-                                    ),
+                                    "id": new_client_item_id("cbvis"),
                                     "type": "message",
                                     "role": "user",
                                     "content": [{

@@ -98,7 +98,7 @@ def get_plugin_state_root() -> Path:
     return Path(get_plugins_directory()).resolve()
 
 
-def get_user_plugin_exec_root() -> Path:
+def get_user_plugin_exec_root(*, state_root: Path | None = None) -> Path:
     """Return the writable root for user-installed plugin code.
 
     An explicit legacy ``PLUGIN_CONFIG_ROOT`` override is still honoured as the
@@ -111,13 +111,13 @@ def get_user_plugin_exec_root() -> Path:
     if custom_path:
         return Path(custom_path).expanduser().resolve()
     return (
-        get_plugin_state_root().parent
+        (state_root if state_root is not None else get_plugin_state_root()).parent
         / ".neko-plugin-installations"
         / "plugins"
     ).resolve()
 
 
-def get_user_plugin_config_root() -> Path:
+def get_user_plugin_config_root(*, state_root: Path | None = None) -> Path:
     """Compatibility alias for the user plugin execution root.
 
     New code should use :func:`get_user_plugin_exec_root`. The old helper name
@@ -125,7 +125,7 @@ def get_user_plugin_config_root() -> Path:
     configuration/state.
     """
 
-    return get_user_plugin_exec_root()
+    return get_user_plugin_exec_root(state_root=state_root)
 
 
 def ensure_plugin_exec_state_roots_separated(
@@ -165,16 +165,16 @@ def get_plugin_config_root() -> Path:
     return BUILTIN_PLUGIN_CONFIG_ROOT
 
 
-def get_plugin_config_roots() -> tuple[Path, ...]:
+def get_plugin_config_roots(*, state_root: Path | None = None) -> tuple[Path, ...]:
     """Return executable plugin roots in effective-source priority order."""
     roots: list[Path] = []
-    for root in (get_user_plugin_exec_root(), get_builtin_plugin_config_root()):
+    for root in (get_user_plugin_exec_root(state_root=state_root), get_builtin_plugin_config_root()):
         if root not in roots:
             roots.append(root)
     return tuple(roots)
 
 
-def get_user_package_profiles_root() -> Path:
+def get_user_package_profiles_root(*, state_root: Path | None = None) -> Path:
     """获取用户插件包 profile 根目录。
 
     - Env: ``PACKAGE_PROFILES_ROOT``
@@ -191,10 +191,10 @@ def get_user_package_profiles_root() -> Path:
             Path(legacy_plugin_root).expanduser().resolve().parent
             / ".neko-package-profiles"
         ).resolve()
-    return (get_plugin_state_root().parent / ".neko-package-profiles").resolve()
+    return ((state_root if state_root is not None else get_plugin_state_root()).parent / ".neko-package-profiles").resolve()
 
 
-def get_user_plugin_packages_root() -> Path:
+def get_user_plugin_packages_root(*, state_root: Path | None = None) -> Path:
     """获取用户插件包（``.neko-plugin`` / ``.neko-bundle``）落地目录。
 
     - Env: ``PLUGIN_PACKAGES_ROOT``
@@ -211,18 +211,20 @@ def get_user_plugin_packages_root() -> Path:
             Path(legacy_plugin_root).expanduser().resolve().parent
             / ".neko-plugin-packages"
         ).resolve()
-    return (get_plugin_state_root().parent / ".neko-plugin-packages").resolve()
+    return ((state_root if state_root is not None else get_plugin_state_root()).parent / ".neko-plugin-packages").resolve()
 
 
+# Resolve one coherent set of default roots. Public helpers stay fresh outside
+# this scope, including after environment or storage-policy changes.
 BUILTIN_PLUGIN_CONFIG_ROOT = get_builtin_plugin_config_root()
 PLUGIN_STATE_ROOT = get_plugin_state_root()
-USER_PLUGIN_EXEC_ROOT = get_user_plugin_exec_root()
+USER_PLUGIN_EXEC_ROOT = get_user_plugin_exec_root(state_root=PLUGIN_STATE_ROOT)
 # Compatibility alias: historically this was both code and state. It now
 # deliberately names the execution root only.
 USER_PLUGIN_CONFIG_ROOT = USER_PLUGIN_EXEC_ROOT
-USER_PACKAGE_PROFILES_ROOT = get_user_package_profiles_root()
-USER_PLUGIN_PACKAGES_ROOT = get_user_plugin_packages_root()
-PLUGIN_CONFIG_ROOTS = get_plugin_config_roots()
+USER_PACKAGE_PROFILES_ROOT = get_user_package_profiles_root(state_root=PLUGIN_STATE_ROOT)
+USER_PLUGIN_PACKAGES_ROOT = get_user_plugin_packages_root(state_root=PLUGIN_STATE_ROOT)
+PLUGIN_CONFIG_ROOTS = get_plugin_config_roots(state_root=PLUGIN_STATE_ROOT)
 
 
 # ========== 队列容量配置 ==========
@@ -272,6 +274,15 @@ PLUGIN_TRIGGER_TIMEOUT = _get_float_env("NEKO_PLUGIN_TRIGGER_TIMEOUT", 10.0)
 # Host -> plugin process startup ready wait timeout.
 # Env: NEKO_PLUGIN_STARTUP_TIMEOUT, default=10.0
 PLUGIN_STARTUP_TIMEOUT = _get_float_env("NEKO_PLUGIN_STARTUP_TIMEOUT", 10.0)
+
+# Concurrent autostart limit for plugins without declared dependencies.
+# Dependents retain their topological startup order; 1 restores serial starts.
+# Bound resource contention and per-plugin startup timeouts on smaller machines.
+# Env: NEKO_PLUGIN_AUTOSTART_CONCURRENCY; default=min(8, max(2, cpu // 2)).
+PLUGIN_AUTOSTART_CONCURRENCY = _get_int_env(
+    "NEKO_PLUGIN_AUTOSTART_CONCURRENCY",
+    min(8, max(2, (os.cpu_count() or 4) // 2)),
+)
 
 # Legacy opt-in: also rewrite the next-launch auto-start preference on explicit
 # user start/stop actions from the plugin manager. Off by default -- a one-off
@@ -751,6 +762,11 @@ def validate_config() -> None:
         raise ValueError("PLUGIN_STARTUP_TIMEOUT must be positive")
     if PLUGIN_STARTUP_TIMEOUT > 300:
         raise ValueError("PLUGIN_STARTUP_TIMEOUT is unreasonably large (max: 300s)")
+
+    if PLUGIN_AUTOSTART_CONCURRENCY < 1:
+        raise ValueError("PLUGIN_AUTOSTART_CONCURRENCY must be >= 1 (1 = serial)")
+    if PLUGIN_AUTOSTART_CONCURRENCY > 64:
+        raise ValueError("PLUGIN_AUTOSTART_CONCURRENCY is unreasonably large (max: 64)")
 
     if PLUGIN_SHUTDOWN_TIMEOUT <= 0:
         raise ValueError("PLUGIN_SHUTDOWN_TIMEOUT must be positive")

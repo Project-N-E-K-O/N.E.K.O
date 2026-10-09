@@ -22,7 +22,7 @@ CHARACTER_CARD_MANAGER_PART_NAMES = (
 
 
 class _DummyTemplates:
-    def TemplateResponse(self, template_name, context):
+    def TemplateResponse(self, request, template_name, context):
         return {
             "template_name": template_name,
             "context": context,

@@ -87,8 +87,17 @@ Replaces the selected character's recent history and cancels any in-flight revie
 | `chat` | array | yes | Replacement history, up to 10,000 entries |
 | `chat[].role` | string | yes | Stored message type, normally `human`, `ai`, or `system` |
 | `chat[].text` | string | no | Message text; defaults to an empty string |
+| `chat[].source_index` | integer | no | Index of this entry in the array returned by the GET; used only to place entries |
+| `chat[].theater` | boolean | no | Marks an entry that stands for a theater memory message; it is never written as ordinary text |
 
 Each message is limited to 32,768 text characters and the request to 2,097,152 text characters in total. Unknown fields on a chat entry are not persisted.
+
+Theater memory messages (theater episode capsules) are read-only here. Every
+theater message of the current snapshot is kept verbatim, metadata included, at
+its original position, whatever the posted `chat` contains for it; only ordinary
+messages are replaced. If a client without `source_index` posts an entry that
+matches no stored message while a theater message is also unmatched, the save is
+rejected with `409` and `code: "RECENT_FILE_THEATER_READONLY"`.
 
 Success:
 

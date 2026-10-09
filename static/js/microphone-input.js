@@ -1,6 +1,6 @@
 (function (root) {
     'use strict';
-    const BASE_CONSTRAINTS = Object.freeze({ noiseSuppression: false, echoCancellation: true, autoGainControl: true, channelCount: 1 });
+    const BASE_CONSTRAINTS = Object.freeze({ noiseSuppression: false, echoCancellation: true, autoGainControl: false, channelCount: 1 });
     let idSequence = 0;
     function operationId() {
         if (root.crypto && typeof root.crypto.randomUUID === 'function') return root.crypto.randomUUID();

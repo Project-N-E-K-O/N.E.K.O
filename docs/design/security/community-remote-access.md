@@ -9,7 +9,7 @@
 | 场景 | 只靠外置鉴权 | 本项目定论：自带保护，兼容网关 |
 | --- | --- | --- |
 | Docker 网页 | 部署者配置登录，覆盖全部 API/WS，禁止后端直连绕过 | 项目生成持久化 key，首次输入，刷新/重启复用会话 |
-| Linux 直连 | 另装 VPN/认证网关 | 同一实例授权，传输使用 HTTPS/WSS |
+| Linux 直连 | 另装 VPN/认证网关 | 同一实例授权；默认允许 HTTP/WS，推荐 HTTPS/WSS |
 | Windows Electron | 各窗口、主进程和 SSE 都接入网关 | 复用目的后端 Chromium session，后台请求经 Linux 固定 relay |
 | 本机桌面/调试代理 | 不应增加步骤 | loopback PKCE、路径发现、真实回环客户端 XFF 兼容 |
 | 未配置 nginx | 账户与其他接口可能直接暴露 | 匿名远程 API/WS 在读取账户、刷新或解析请求体前拒绝 |
@@ -33,7 +33,11 @@ Compose执行 docker compose exec --user neko -w /app neko-main uv run python -m
 （服务名按实际Compose）。多服务共享目录，或设置同一至少32字符的NEKO_INSTANCE_ACCESS_KEY。
 
 首次同源表单验证10分钟challenge并限速，设置30天、绑定hostname的
-HttpOnly/Secure/SameSite=Lax签名cookie。原生Bearer也仅通过HTTPS/WSS。
+HttpOnly/SameSite=Lax签名cookie：HTTPS下带Secure；明文HTTP下改用单独名称
+（neko_instance_access_http / neko_instance_challenge_http）且不带Secure，避免同Host的Secure cookie
+挡住明文配对。明文签发的会话使用独立签名用途（session-http），cookie名由客户端控制不能作为凭据来源证明。原生Bearer在HTTP/WS下同样可用。NEKO_REQUIRE_HTTPS=1 恢复严格模式：
+明文配对、明文cookie与Bearer、社区跨域交接和明文Market公开origin一律拒绝；
+此前明文签发的会话无论改名为HTTPS cookie还是作为Bearer提交都失效。Compose 通过 NEKO_REQUIRE_HTTPS 传入容器。
 新请求即时重新验证key；现存SSE/WS按至多每秒一次检查文件key，配置key变更即时检查。
 账户流同样至多每秒一次复核，避免语音帧/通知chunk触发逐帧文件读取。撤销延迟上限一秒。
 临时IO错误做短时有限重试后仍失败则关闭，不永久使用旧key。
@@ -43,6 +47,18 @@ OAuth保存前重新检查连接授权；退出/新尝试取消旧pending，迟�
 DNS域名使用既有NEKO_TRUSTED_HOSTS白名单；外置TLS网关必要时用NEKO_TRUSTED_ORIGINS声明该HTTPS origin。
 HTTPS网关到私有HTTP上游应保留Host/协议；必要时设置NEKO_INSTANCE_PUBLIC_ORIGIN
 为外部完整HTTPS origin并启用NEKO_BEHIND_PROXY。不从自报转发头推导认证。
+同源检查接受部署的每个入口：请求自身（Host推导）的origin、NEKO_INSTANCE_PUBLIC_ORIGIN，以及
+NEKO_BEHIND_PROXY下同Host的https://（外层TLS未转发可信协议头；WebSocket的Host/Origin守卫同样接受，
+同Host时不必另设NEKO_TRUSTED_ORIGINS）。设置公开origin不再把Origin收窄为单值，
+LAN IP/第二端口直连照常配对；DNS rebinding到实例的域名只能拿到绑定hostname的空cookie，仍需配对。
+社区OAuth state与Market公开origin取浏览器实际所在入口（通过同源检查的Origin，否则按Host匹配公开origin，
+再否则用请求自身origin），回跳落在持有该hostname会话cookie的入口；pending复用也比较该origin，
+换入口重试会生成新state。
+该同Host https://回退只解决同源，不证明加密：配对页导航不带Origin，服务端无从得知浏览器侧是否HTTPS，
+故按明文保守处理（显示警告、签发*_http会话、NEKO_REQUIRE_HTTPS=1下拒绝），并在日志中提示配置方法（每小时最多一次）。
+要被识别为HTTPS（含开启严格模式），部署方须设置NEKO_INSTANCE_PUBLIC_ORIGIN或转发可信X-Forwarded-Proto；
+不以浏览器Origin判定加密，否则明文客户端可自报Origin换取HTTPS用途的会话。Host与公开origin按主机名加
+有效端口比较（:443与省略等价）；网关须保留原Host，改写为上游地址的部署不受支持。
 同hostname不同端口共用cookie，须共享key；独立实例用不同hostname/key。
 
 ## OAuth回跳与发布依赖
@@ -101,7 +117,17 @@ facts 和角色读取仍需匹配当前账户的 scoped delegate/bearer。账户
 
 NEKO_INSTANCE_PUBLIC_ORIGIN=https://… 是部署者对外层 TLS 网关的明确声明，Host 本身不能证明加密。
 外层80端口必须关闭或只重定向到HTTPS，绝不能把同Host明文请求转发到私有HTTP upstream；
-私有 upstream 也必须隔离，不能直接公开给未受信任客户端。尚未选择的 HTTP/SSH 兼容策略不因此自动放开。
+私有 upstream 也必须隔离，不能直接公开给未受信任客户端。
+
+维护者定论：远程默认允许明文 HTTP。许多自建环境无法取得证书（家宽封80/443、按IP或DDNS访问、
+公网证书需要域名且国内需备案、自签证书被浏览器或客户端拒绝）。PR 之前远程实例完全无认证，
+明文配对仍远强于无锁；残余风险是同一网络路径可嗅探key与cookie，配对页会明确警告。
+需要严格传输的部署设置 NEKO_REQUIRE_HTTPS=1。浏览器仅在HTTPS或localhost下开放麦克风，
+明文IP访问时语音输入不可用。
+宽松模式下原始实例key仍可作为Bearer走明文：配对表单本身就要明文提交一次key，拒绝Bearer并不能让key免于
+暴露，却会打断经HTTP直连的原生客户端；泄露后的补救是轮换key，严格模式统一拒绝明文Bearer。
+Market OAuth回调地址取浏览器所在入口，宽松模式下可能是http://；Market认证平台是否接受非loopback的http回调
+由平台侧决定（当前main即#3289只允许HTTPS配对，HTTP远程原本无法使用，因此不是回退），平台拒绝时配对与其他功能不受影响。
 
 配对页复用仍有效的签名 challenge，其他标签页/预取不会覆盖首个表单；登录后保留原 return_path 的 query。
 已存在密钥无锁读取，跨进程 FileLock 仅用于缺失/空文件的原子创建修复；轮换仍在读取时生效。

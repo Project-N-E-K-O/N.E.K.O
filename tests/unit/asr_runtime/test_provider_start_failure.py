@@ -37,6 +37,8 @@ async def test_soniox_connect_failure_retries_same_selection_before_audio(
         None,
     ):
         session = type("Soniox", (), {})()
+        session.last_failure_code = None
+        session.failure_started_at = None
         session.connect = AsyncMock(side_effect=side_effect)
         session.close = AsyncMock()
         sessions.append(session)
@@ -111,9 +113,13 @@ async def test_failed_soniox_candidate_cannot_invalidate_successful_successor(
     callbacks: list[dict[str, object]] = []
 
     failed_session = type("Soniox", (), {})()
+    failed_session.last_failure_code = None
+    failed_session.failure_started_at = None
     failed_session.connect = AsyncMock(side_effect=RuntimeError("provider detail"))
     failed_session.close = AsyncMock()
     successful_session = type("Soniox", (), {})()
+    successful_session.last_failure_code = None
+    successful_session.failure_started_at = None
     successful_session.connect = AsyncMock()
     successful_session.close = AsyncMock()
     soniox_selection = _selection("soniox", "provider")

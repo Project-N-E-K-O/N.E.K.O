@@ -661,3 +661,128 @@ async def test_deeply_nested_response_bodies_are_treated_as_malformed():
         assert await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES) is False
         result = await client.post_history_batch("Lanlan", segments=[segment])
     assert result.segments_ok == (False,)
+
+
+@pytest.mark.asyncio
+async def test_forget_epoch_is_sent_only_when_given():
+    recorder = _Recorder()
+    client, http = _client(recorder)
+    async with http:
+        assert await client.post_forget("Lanlan", subject=_SUBJECT)
+        assert await client.post_forget("Lanlan", subject=_SUBJECT, forget_epoch=3)
+    plain, with_epoch = (json.loads(r.content) for r in recorder.requests)
+    assert plain == {"subject": _SUBJECT}
+    assert with_epoch == {"subject": _SUBJECT, "forget_epoch": 3}
+
+
+@pytest.mark.asyncio
+async def test_subject_epochs_ride_with_the_idempotency_key_only_when_given():
+    recorder = _Recorder()
+    client, http = _client(recorder)
+    segment = {"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": "A"}
+    epochs = {"participant:qq:1": 2}
+    async with http:
+        await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES)
+        await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES,
+                                  idempotency_key="k", subject_epochs=epochs)
+        await client.post_history_batch("Lanlan", segments=[segment], idempotency_key="k2",
+                                        subject_epochs=epochs)
+    plain, single, batch = (json.loads(r.content) for r in recorder.requests)
+    assert "subject_epochs" not in plain and "idempotency_key" not in plain
+    assert single["subject_epochs"] == epochs and single["idempotency_key"] == "k"
+    assert batch["subject_epochs"] == epochs and batch["idempotency_key"] == "k2"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_answer_of_a_completed_key_counts_as_done():
+    def responder(request):
+        body = json.loads(request.content)
+        if "segments" in body:
+            return httpx.Response(200, json={"status": "processed", "duplicate": True, "segments": [
+                {"status": "ok", "created": 0, "trust": {"persisted": None}} for _ in body["segments"]]})
+        return httpx.Response(200, json={"status": "processed", "duplicate": True, "created": 0,
+                                         "trust": {"persisted": None}})
+
+    client, http = _client(_Recorder(responder))
+    segment = {"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": "A"}
+    async with http:
+        assert await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES, idempotency_key="k")
+        assert (await client.post_history_batch("Lanlan", segments=[segment], idempotency_key="k")).ok
+
+
+@pytest.mark.asyncio
+async def test_history_language_is_sent_only_when_supported():
+    recorder = _Recorder()
+    client, http = _client(recorder)
+    segment = {"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": "A"}
+    async with http:
+        await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES)
+        await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES, language="ja")
+        await client.post_history("Lanlan", subject=_SUBJECT, messages=_MESSAGES, language="xx-bogus")
+        await client.post_history_batch("Lanlan", segments=[segment], language="ja")
+    plain, single, bogus, batch = (json.loads(r.content) for r in recorder.requests)
+    assert "language" not in plain and "language" not in bogus
+    assert single["language"] == "ja" and batch["language"] == "ja"
+
+
+@pytest.mark.asyncio
+async def test_keyed_batch_with_an_unsettled_trust_write_fails_as_a_whole():
+    def responder(request):
+        return httpx.Response(200, json={"status": "processed", "segments": [
+            {"status": "ok", "created": 1, "trust": {"persisted": None}},
+            {"status": "ok", "created": 1, "trust": {"persisted": False}},
+        ]})
+
+    client, http = _client(_Recorder(responder))
+    segments = [{"messages": _MESSAGES, "subject": _SUBJECT, "speaker_label": label} for label in ("A", "B")]
+    async with http:
+        keyed = await client.post_history_batch("Lanlan", segments=segments, idempotency_key="k")
+        plain = await client.post_history_batch("Lanlan", segments=segments)
+    # 带键批次服务端整键保留 pending：只能同键整批重试，所以每一位都算失败
+    assert keyed.failed_positions == (0, 1)
+    # 不带键时仍按位置报：只有信赖池没落盘的那一位失败
+    assert plain.failed_positions == (1,)
+
+
+@pytest.mark.asyncio
+async def test_forget_epochs_are_read_per_subject_and_fail_loudly():
+    def responder(request):
+        assert request.url.params.get_list("subject") == ["participant:qq:1", "group_chat:qq:2"]
+        return httpx.Response(200, json={"epochs": {"participant:qq:1": 7}})
+
+    client, http = _client(_Recorder(responder))
+    async with http:
+        assert await client.get_forget_epochs("Lanlan", ["participant:qq:1", "group_chat:qq:2"]) == {
+            "participant:qq:1": 7,
+        }
+        assert await client.get_forget_epochs("Lanlan", []) == {}
+
+    def broken(_request):
+        return httpx.Response(200, json={"epochs": {"participant:qq:1": "7"}})
+
+    client, http = _client(_Recorder(broken))
+    async with http:
+        # 认不出的代数不能当成「没有墓碑」
+        with pytest.raises(ScopedMemoryError):
+            await client.get_forget_epochs("Lanlan", ["participant:qq:1"])
+
+
+@pytest.mark.asyncio
+async def test_forget_epoch_lookups_are_chunked_at_the_server_limit():
+    from memory import scoped_client
+
+    # 服务端一次最多认 64 个 key（app/memory_server/routes.py 的 _FORGET_EPOCHS_MAX_SUBJECTS）
+    assert scoped_client._FORGET_EPOCHS_BATCH <= 64
+    seen = []
+
+    def responder(request):
+        keys = request.url.params.get_list("subject")
+        seen.append(len(keys))
+        return httpx.Response(200, json={"epochs": {key: 1 for key in keys}})
+
+    client, http = _client(_Recorder(responder))
+    keys = [f"participant:qq:{i}" for i in range(130)]
+    async with http:
+        result = await client.get_forget_epochs("Lanlan", keys)
+    # 超过服务端一次的上限时分批查、合并结果
+    assert seen == [64, 64, 2] and result == {key: 1 for key in keys}

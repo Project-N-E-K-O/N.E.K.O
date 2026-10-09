@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class _FakeTemplates:
-    def TemplateResponse(self, template_name, context):
+    def TemplateResponse(self, request, template_name, context):
         return {"template_name": template_name, "context": context}
 
 

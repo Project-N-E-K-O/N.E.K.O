@@ -45,7 +45,17 @@ DOUBAO_TTS_DEFAULT_CONTEXT_TEXTS = (
 
 
 class DoubaoTtsError(Exception):
-    pass
+    """Keep native clone/TTS callers compatible while retaining clone evidence.
+
+    Diagnostic status/code alone does not establish whether an update was
+    accepted. The v3 clone endpoint currently has no verified rejection map.
+    """
+
+    def __init__(self, message, *, attempt_outcome="unknown", http_status=None, business_code=None):
+        super().__init__(message)
+        self.attempt_outcome = attempt_outcome
+        self.http_status = http_status
+        self.business_code = business_code
 
 
 def doubao_normalize_base_url(base_url: str | None) -> str:
@@ -227,20 +237,26 @@ class DoubaoVoiceCloneClient:
             raise DoubaoTtsError("豆包声音复刻请求超时，请稍后重试") from exc
         except Exception as exc:
             raise DoubaoTtsError(f"豆包声音复刻请求失败: {exc}") from exc
-        if resp.status_code not in (200, 201):
-            raise DoubaoTtsError(
-                f"豆包声音复刻失败: HTTP {resp.status_code}, {resp.text[:300]}"
-            )
         try:
             data = resp.json()
         except ValueError as exc:
-            raise DoubaoTtsError("豆包声音复刻返回了无法解析的响应") from exc
-        if not isinstance(data, dict):
-            raise DoubaoTtsError("豆包声音复刻返回了未知响应")
+            if resp.status_code not in (200, 201):
+                raise DoubaoTtsError(
+                    f"豆包声音复刻失败: HTTP {resp.status_code}, {resp.text[:300]}",
+                    http_status=resp.status_code,
+                ) from exc
+            raise DoubaoTtsError("豆包声音复刻返回了无法解析的响应", http_status=resp.status_code) from exc
         code = data.get("code") if isinstance(data, dict) else None
+        evidence = {"http_status": resp.status_code, "business_code": code}
+        if resp.status_code not in (200, 201):
+            raise DoubaoTtsError(
+                f"豆包声音复刻失败: HTTP {resp.status_code}, {resp.text[:300]}", **evidence,
+            )
+        if not isinstance(data, dict):
+            raise DoubaoTtsError("豆包声音复刻返回了未知响应", **evidence)
         if code not in (None, 0, "0"):
             message = data.get("message") or data.get("msg") or data
-            raise DoubaoTtsError(f"豆包声音复刻失败: {message}")
+            raise DoubaoTtsError(f"豆包声音复刻失败: {message}", **evidence)
         result = data.get("data")
         voice_id = ""
         if isinstance(result, dict):
@@ -248,5 +264,5 @@ class DoubaoVoiceCloneClient:
         if not voice_id:
             voice_id = str(data.get("speaker_id") or data.get("voice_id") or "").strip()
         if not voice_id:
-            raise DoubaoTtsError("豆包声音复刻成功但未返回音色 ID")
+            raise DoubaoTtsError("豆包声音复刻成功但未返回音色 ID", **evidence)
         return voice_id

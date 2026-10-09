@@ -322,7 +322,7 @@ def _check_char_entry(entry: Any, where: str, *, pair: str | None = None,
         raise RosterCorruptError(f"{where}: chars ids do not derive from this peer and char_tag")
     # 改名合并按 last_seen / ended_at 取较新的一边：字符串时间戳会按字典序比较，
     # 把较新的记录覆盖掉
-    if any("last_seen" in info and not _is_finite_number(info["last_seen"])
+    if any("last_seen" in info and not is_finite_number(info["last_seen"])
            for info in chars.values()):
         raise RosterCorruptError(f"{where}: chars last_seen is not a number")
     # upsert 总是同时写 pair 与对方猫娘：只剩其一说明条目坏了一半，按它展开的清除计划
@@ -333,14 +333,21 @@ def _check_char_entry(entry: Any, where: str, *, pair: str | None = None,
     if summary is not None and not isinstance(summary, dict):
         raise RosterCorruptError(f"{where}: last_summary is not an object")
     # 缺 ended_at 也算坏：写者总会写上它，没有它就无从判断新旧，迟到的回调会无序覆盖
-    if summary is not None and not _is_finite_number(summary.get("ended_at")):
+    if summary is not None and not is_finite_number(summary.get("ended_at")):
         raise RosterCorruptError(f"{where}: last_summary ended_at is missing or not a number")
     return entry
 
 
-def _is_finite_number(value: Any) -> bool:
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value))
+def is_finite_number(value: Any) -> bool:
+    """Whether ``value`` is a real (non-bool) int or float that is finite; never raises."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        # 超出浮点范围的超大整数：isfinite 会抛错，按「不是数」处理（名册判为损坏），
+        # 不能让清除 / 重放带着未捕获的异常中断
+        return False
 
 
 def _pair_of(own_uid: Any, peer_uid: Any) -> str:
@@ -349,6 +356,20 @@ def _pair_of(own_uid: Any, peer_uid: Any) -> str:
         return derive_pair_id(own_uid, peer_uid)
     except ValueError as exc:
         raise RosterCorruptError("roster account / peer key is not a valid uid") from exc
+
+
+def _latest_seen(entry: Mapping[str, Any]) -> float:
+    chars = entry.get("chars")
+    stamps = [
+        info.get("last_seen") for info in (chars.values() if isinstance(chars, dict) else [])
+        if isinstance(info, dict) and is_finite_number(info.get("last_seen"))
+    ]
+    return max(stamps, default=0.0)
+
+
+def _visit_count(entry: Mapping[str, Any]) -> int:
+    visits = entry.get("visits")
+    return visits if isinstance(visits, int) and not isinstance(visits, bool) and visits > 0 else 0
 
 
 def _merge_char_entries(target: dict, source: dict) -> dict:
@@ -368,6 +389,20 @@ def _merge_char_entries(target: dict, source: dict) -> dict:
         ):
             chars[char_id] = copy.deepcopy(info)
     merged["chars"] = chars
+    # 场次计数随条目合并：同一场（last_visit_id 相同）在两边各计过一次，只算一次
+    src_visits, dst_visits = _visit_count(source), _visit_count(merged)
+    if src_visits or dst_visits:
+        same_last = (
+            isinstance(source.get("last_visit_id"), str)
+            and source.get("last_visit_id") == merged.get("last_visit_id")
+        )
+        merged["visits"] = src_visits + dst_visits - (1 if same_last else 0)
+        # last_visit_id 取较新的一边：保留旧的那个会让较新那场再次 upsert 时被当成新场次
+        if isinstance(source.get("last_visit_id"), str) and (
+            not isinstance(merged.get("last_visit_id"), str)
+            or _latest_seen(source) > _latest_seen(target)
+        ):
+            merged["last_visit_id"] = source["last_visit_id"]
     src_summary = source.get("last_summary")
     dst_summary = merged.get("last_summary")
     if isinstance(src_summary, dict) and (
@@ -376,6 +411,57 @@ def _merge_char_entries(target: dict, source: dict) -> dict:
     ):
         merged["last_summary"] = copy.deepcopy(src_summary)
     return merged
+
+
+def _read_top_level_sync(path: Path) -> dict:
+    with path_lock(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError, RecursionError) as exc:
+            raise RosterCorruptError(f"cannot read {path.name}: {exc!r}") from exc
+    if not isinstance(data, dict):
+        raise RosterCorruptError(f"{path.name} is not a JSON object")
+    return data
+
+
+async def read_roster_marker(config_dir: str | Path, key: str) -> Any:
+    """Return a deep copy of the top-level ``key`` of ``visit_peers.json`` (``None`` when absent).
+
+    For the rename / delete transaction markers (``pending_rename``,
+    ``pending_retire``) that live outside every account partition. Reads
+    strictly: an unreadable roster raises :class:`RosterCorruptError`.
+    """
+    path = Path(config_dir) / VISIT_PEERS_FILENAME
+    data = await asyncio.to_thread(_read_top_level_sync, path)
+    return copy.deepcopy(data.get(key))
+
+
+def _clear_marker_sync(path: Path, key: str, expected: Any) -> bool:
+    with path_lock(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError, RecursionError) as exc:
+            raise RosterCorruptError(f"cannot read {path.name}: {exc!r}") from exc
+        if not isinstance(data, dict) or key not in data or data[key] != expected:
+            return False
+        del data[key]
+        atomic_write_json(path, data)
+        return True
+
+
+async def clear_roster_marker(config_dir: str | Path, key: str, expected: Any) -> bool:
+    """Delete the top-level ``key`` only while it still equals ``expected``; return whether it did.
+
+    The compare-and-delete keeps a marker rewritten by a newer transaction.
+    """
+    path = Path(config_dir) / VISIT_PEERS_FILENAME
+    return await asyncio.to_thread(_clear_marker_sync, path, key, expected)
 
 
 class PeerRoster:
@@ -489,6 +575,7 @@ class PeerRoster:
         char_display_name: str = "",
         display_name: str | None = None,
         now: float,
+        visit_id: str | None = None,
     ) -> None:
         """Record that ``peer_uid`` visited local character ``own_char``.
 
@@ -499,9 +586,13 @@ class PeerRoster:
         Creates the peer and its ``by_char[own_char]`` entry if needed, adds
         ``pair_id`` to ``pairs`` and ``peer_char_id`` to ``chars``, and bumps
         ``last_seen``. ``display_name`` (the person) is only replaced when
-        given; ``short_code`` is derived from ``peer_uid``.
+        given; ``short_code`` is derived from ``peer_uid``. With ``visit_id``
+        the entry's ``visits`` counter is bumped unless ``visit_id`` equals
+        ``last_visit_id`` (the latest one): repeated upserts of the visit in
+        progress do not inflate it. Callers upsert visits in order and never
+        replay an older one, so only the latest id needs remembering.
         """
-        if not _is_finite_number(now):
+        if not is_finite_number(now):
             # 写进 last_seen 的 bool / NaN 会让之后的严格读把整个条目判坏，名册自己把自己写坏
             raise ValueError("now must be a finite number")
         _require_str(peer_uid, "peer_uid")
@@ -551,6 +642,11 @@ class PeerRoster:
                 "display_name": char_display_name,
                 "last_seen": now,
             }
+            if visit_id is not None and entry.get("last_visit_id") != visit_id:
+                visits = entry.get("visits")
+                entry["visits"] = (visits if isinstance(visits, int) and not isinstance(visits, bool)
+                                   and visits >= 0 else 0) + 1
+                entry["last_visit_id"] = visit_id
             return None, True
 
         await asyncio.to_thread(self._mutate, fn)
@@ -619,8 +715,45 @@ class PeerRoster:
 
         return await asyncio.to_thread(self._read, fn)
 
-    async def list_peers(self) -> dict[str, dict]:
-        """Return a deep copy of every peer entry of this account."""
+    async def peers_of_char(self, own_char: str) -> list[str]:
+        """Return the ``peer_uid`` of every person with a ``by_char[own_char]`` entry (strict).
+
+        For forget-all expansion: an unreadable roster, or a peer / ``by_char``
+        / entry of the wrong type, raises :class:`RosterCorruptError` instead
+        of being skipped, so a damaged record can never be left out of a clear.
+        """
+        _require_str(own_char, "own_char")
+
+        def fn(data: dict):
+            node: Any = data
+            for key in ("accounts", self.own_uid, "peers"):
+                if key not in node:
+                    if key == "peers":
+                        # upsert 建账户时总会带上 peers：账户在而 peers 缺，只能是损坏
+                        raise RosterCorruptError(f"{self.path.name}: account entry has no peers")
+                    return []
+                node = node[key]
+                if not isinstance(node, dict):
+                    raise RosterCorruptError(f"{self.path.name}: {key!r} is not an object")
+            out = []
+            for peer_uid, peer in node.items():
+                if not isinstance(peer, dict) or not isinstance(peer.get("by_char"), dict):
+                    raise RosterCorruptError(f"{self.path.name}: peer entry is malformed")
+                if own_char not in peer["by_char"]:
+                    continue
+                if not isinstance(peer["by_char"][own_char], dict):
+                    raise RosterCorruptError(f"{self.path.name}: by_char entry is not an object")
+                out.append(peer_uid)
+            return out
+
+        return await asyncio.to_thread(self._read, fn, True)
+
+    async def list_peers(self, *, strict: bool = False) -> dict[str, dict]:
+        """Return a deep copy of every peer entry of this account.
+
+        ``strict=True`` raises :class:`RosterCorruptError` on an unreadable
+        roster instead of reading it as empty (forget expansion uses it).
+        """
 
         def fn(data: dict):
             return {
@@ -629,7 +762,7 @@ class PeerRoster:
                 if isinstance(peer, dict)
             }
 
-        return await asyncio.to_thread(self._read, fn)
+        return await asyncio.to_thread(self._read, fn, strict)
 
     async def expand_subjects(
         self,
@@ -776,7 +909,7 @@ class PeerRoster:
         instead of being overwritten. ``ended_at`` must be a finite number
         (``ValueError`` otherwise), the same rule strict reads apply.
         """
-        if not _is_finite_number(ended_at):
+        if not is_finite_number(ended_at):
             # 写进去的 bool / NaN 会让之后的严格读把整个条目判坏，连清除都删不掉它
             raise ValueError("ended_at must be a finite number")
 

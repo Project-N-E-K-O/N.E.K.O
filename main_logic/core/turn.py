@@ -20,6 +20,7 @@ Method-only mixin: every instance attribute is assigned in
 """
 
 import asyncio
+from main_logic.voice_turn.transcript_admission import assess_transcript, TranscriptDisposition
 import json
 import re
 import time
@@ -32,8 +33,11 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from utils.game_route_state import get_active_game_route_generation_identity
 from utils.external_route_registry import is_route_slot_taken
-from main_logic.session_state import SessionEvent
-from main_logic.agent_event_bus import dispatch_user_utterance
+from main_logic.session_state import SessionEvent, TurnOwner
+from main_logic.agent_event_bus import (
+    dispatch_user_utterance,
+    publish_conversation_turn_observed_best_effort,
+)
 from config import SESSION_ARCHIVE_TRIGGER_TOKENS, SESSION_TURN_THRESHOLD
 from uuid import uuid4
 import numpy as np
@@ -80,7 +84,7 @@ class TurnMixin:
         self._tts_done_pending_until_ready = False
         # 新一轮开始：清空上一轮 AI 文本累加器（即使上轮 turn end 已清过，
         # proactive abort 等异常路径可能漏清，新轮次起点重置最稳）
-        self._current_ai_turn_text = ''
+        self._reset_ai_turn_buffer()
         self._discarded_turn_open = False
 
         await self.send_user_activity()
@@ -320,7 +324,15 @@ class TurnMixin:
         else:
             self._activity_tracker.on_ai_message(text=text, now=now)
 
-    def _flush_ai_turn_text_to_tracker(self) -> None:
+    def _reset_ai_turn_buffer(self) -> None:
+        """Clear buffered AI text and its identity without changing discard state."""
+        self._current_ai_turn_text = ''
+        self._current_ai_turn_id = ''
+        self._current_ai_turn_started_at = 0.0
+        self._current_ai_turn_type = None
+        self._current_ai_turn_client_owned = False
+
+    def _flush_ai_turn_text_to_tracker(self, *, turn_type: str | None = None) -> None:
         """Flush the per-turn AI text buffer into conversation turn sinks.
 
         Called from each AI-turn-end exit point — there are three:
@@ -332,10 +344,74 @@ class TurnMixin:
         (when text is non-empty) bumps ``_conv_seq`` for open_threads cache
         invalidation. Other sinks, such as background topic collection, see
         the same turn without living inside ``UserActivityTracker``.
+
+        ``turn_type`` is also the conversation-bus label
+        (``assistant_message`` / ``proactive_reply``).
         """
-        self._note_ai_turn(text=self._current_ai_turn_text or None)
-        self._current_ai_turn_text = ''
+        # 文本与轮次身份一起取快照再清空：flush 之后旧 id 不能留给下一轮，
+        # 也不能被恢复路径的补记文本沿用。
+        if turn_type is None:
+            turn_type = getattr(self, "_current_ai_turn_type", None) or (
+                "proactive_reply"
+                if getattr(getattr(self, "state", None), "owner", None) is TurnOwner.PROACTIVE
+                else "assistant_message"
+            )
+        ai_text = self._current_ai_turn_text
+        turn_id = getattr(self, "_current_ai_turn_id", "")
+        started_at = float(getattr(self, "_current_ai_turn_started_at", 0.0) or 0.0)
+        client_owned = getattr(self, "_current_ai_turn_client_owned", False)
+        self._note_ai_turn(text=ai_text or None)
+        self._reset_ai_turn_buffer()
         self._discarded_turn_open = False
+        self._publish_ai_message_to_plugin_bus(
+            ai_text, turn_type, turn_id=turn_id, started_at=started_at,
+            client_owned=client_owned,
+        )
+
+    def _publish_ai_message_to_plugin_bus(
+        self,
+        text: Optional[str],
+        turn_type: str,
+        *,
+        turn_id: str = "",
+        started_at: float = 0.0,
+        client_owned: bool = False,
+    ) -> None:
+        """Publish one finished AI turn to the plugin conversation bus.
+
+        Plugins need the whole sentence plus when it was spoken. This store
+        previously only received proactive turns from the offline client, so
+        realtime replies were invisible; publishing here (paired with the user
+        side in ``_publish_user_utterance_to_plugin_bus``) lets plugins read
+        both sides of every turn — ordered by ``metadata.ts`` — without
+        touching host files or competing for the frontend websocket.
+
+        ``ts`` is the first-chunk time, not the flush time: an interrupted turn
+        would otherwise be stamped after the user's next message.
+        """
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return
+        # Snapshot at the first chunk: interruption/session close can flush from
+        # a different task, whose context no longer carries the proactive sid.
+        if client_owned:
+            return
+        try:
+            finished_at = time.time()
+            spoken_at = float(started_at or 0.0) or finished_at
+            resolved_turn_id = str(turn_id or "")
+            self._fire_task(publish_conversation_turn_observed_best_effort(
+                self.lanlan_name,
+                content=cleaned,
+                turn_type=str(turn_type or "assistant_message"),
+                conversation_id=resolved_turn_id,
+                source="main_logic.core",
+                message_count=1,
+                metadata={"role": "cat", "ts": spoken_at, "ts_end": finished_at},
+                ts=spoken_at,
+            ))
+        except Exception:
+            logger.debug("[plugin-bus] ai message not published", exc_info=True)
 
     async def _interrupt_offline_reply(self, session) -> bool:
         """Stop ``session``'s reply and close it as its own AI turn.
@@ -677,7 +753,7 @@ class TurnMixin:
         # 对称，让 seconds_since_ai_msg 不分主动/被动。proactive 文本同样走过
         # send_lanlan_response（finish_proactive_delivery 内部会调），所以
         # _current_ai_turn_text 已经累加好。
-        self._flush_ai_turn_text_to_tracker()
+        self._flush_ai_turn_text_to_tracker(turn_type="proactive_reply")
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             try:
                 await self._request_tts_done_for_turn("handle_proactive_complete")
@@ -961,7 +1037,7 @@ class TurnMixin:
             logger.info("[%s] session takeover active: dropping ordinary realtime response completion", self.lanlan_name)
             await self._clear_tts_pipeline()
             self._pending_turn_meta = None
-            self._current_ai_turn_text = ""
+            self._reset_ai_turn_buffer()
             self._discarded_turn_open = False
             self._active_text_request_id = None
             return
@@ -1212,7 +1288,7 @@ class TurnMixin:
                 # stays open until a turn end: should this reply's close be
                 # taken over now, the close must still send one.
                 self._discarded_turn_open = True
-            self._current_ai_turn_text = ''
+            self._reset_ai_turn_buffer()
             if self.sync_message_queue:
                 self.sync_message_queue.put({
                     'type': 'system',
@@ -1313,6 +1389,13 @@ class TurnMixin:
                     # recovery 这一路让 send 不 track，改由本步补记——它是同步
                     # 的、紧挨 _emit_turn_end，中间没有能丢产权的 await 窗口。
                     # 文本处理跟 send_lanlan_response 内部保持一致（剥表情标签）。
+                    if not self._current_ai_turn_text:
+                        self._current_ai_turn_started_at = time.time()
+                        self._current_ai_turn_client_owned = (
+                            _proactive_expected_sid.get() is not None
+                            and isinstance(getattr(self, "session", None), OmniOfflineClient)
+                        )
+                    self._current_ai_turn_id = str(recovery_turn_id or '')
                     self._current_ai_turn_text += self.emotion_pattern.sub('', body_text)
 
                 def _append_recovery_history() -> None:
@@ -1463,7 +1546,7 @@ class TurnMixin:
             await self.send_audio_done(self.current_speech_id)
 
     def _publish_user_utterance_to_plugin_bus(
-        self, text: Optional[str], *, is_voice_source: bool
+        self, text: Optional[str], *, is_voice_source: bool, ts: float | None = None
     ) -> None:
         """Publish one verbatim user utterance to the plugin bus's user-context bucket.
 
@@ -1485,6 +1568,28 @@ class TurnMixin:
         cleaned = text.strip()
         if not cleaned:
             return
+        # 插件总线（conversations store）：主人侧原话，与 _publish_ai_message_to_plugin_bus
+        # 成对；语音时间为转写到达时刻，不保证跨角色的实际说话顺序。
+        try:
+            published_at = time.time() if ts is None else ts
+            # Speech ids remain diagnostic context; each record is one message.
+            user_turn_id = str(getattr(self, "current_speech_id", "") or "")
+            self._fire_task(publish_conversation_turn_observed_best_effort(
+                self.lanlan_name,
+                content=cleaned,
+                turn_type="user_message",
+                conversation_id=user_turn_id,
+                source="main_logic.core",
+                message_count=1,
+                metadata={
+                    "role": "master",
+                    "is_voice": bool(is_voice_source),
+                    "ts": published_at,
+                },
+                ts=published_at,
+            ))
+        except Exception:
+            logger.debug("[plugin-bus] user message not published", exc_info=True)
         event = {
             "type": "user_message",
             "content": cleaned,
@@ -1987,6 +2092,13 @@ class TurnMixin:
             buffer twice)
         """
         transcript_text = transcript.strip()
+        admission = assess_transcript(
+            transcript_text, (metadata or {}).get("speech_evidence"),
+            is_voice_source=is_voice_source, final=True,
+        )
+        if admission.disposition is TranscriptDisposition.REJECT:
+            logger.info("[voice-admission] decision=reject reason=%s", admission.reason)
+            return False
         record_transcript_text = transcript_text
         voice_rms_recorded = False
         source_identity_was_explicit = (
@@ -2123,7 +2235,9 @@ class TurnMixin:
                 # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
                 # bucket。文本路径在 _process_stream_data_internal 已自行调用，
                 # 这里只覆盖语音路径，避免非语音复用路径重复发布。
-                self._publish_user_utterance_to_plugin_bus(transcript, is_voice_source=True)
+                self._publish_user_utterance_to_plugin_bus(
+                    transcript, is_voice_source=True, ts=_transcript_arrival_ts,
+                )
 
                 # 与文本路径（_process_stream_data_internal）对偶：dispatch 已
                 # 同步跑完 ban-topic 抽取 + 落盘，本轮真抽到新指令就把禁令块写进
@@ -2378,7 +2492,23 @@ class TurnMixin:
         # 必须放在最终校验之后。emotion_pattern 已剥掉表情标签，但保留 <expr>
         # 等可能的 markup——tracker 自己会做二次 strip。
         if track_ai_turn:
+            if not self._current_ai_turn_text:
+                # 轮次开始：记下她"开口"的时刻，flush 时用它做插件总线的时间戳。
+                self._current_ai_turn_started_at = time.time()
+                self._current_ai_turn_client_owned = (
+                    _proactive_expected_sid.get() is not None
+                    and isinstance(getattr(self, "session", None), OmniOfflineClient)
+                )
+                if isinstance(getattr(self, "session", None), OmniRealtimeClient):
+                    self._current_ai_turn_type = self.session.get_conversation_turn_type()
+                else:
+                    self._current_ai_turn_type = (
+                        "proactive_reply"
+                        if getattr(getattr(self, "state", None), "owner", None) is TurnOwner.PROACTIVE
+                        else "assistant_message"
+                    )
             self._current_ai_turn_text += text_clean
+            self._current_ai_turn_id = str(effective_turn_id or '')
             if remember_voice_echo:
                 self._remember_recent_ai_voice_echo(text_clean)
         published_at = time.time()

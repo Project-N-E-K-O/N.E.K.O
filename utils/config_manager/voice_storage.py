@@ -33,9 +33,14 @@ from utils.voice_config import read_legacy_voice_id
 from ._shared import _as_bool, logger
 from .persona_payload import _DEPRECATED_FREE_YUI_VOICE_IDS
 from .reserved_schema import get_reserved, set_reserved
+from .imported_voices import (
+    ImportedVoiceStorageMixin,
+    is_imported_voice_ref,
+    voice_storage_transaction,
+)
 
 
-class VoiceStorageMixin:
+class VoiceStorageMixin(ImportedVoiceStorageMixin):
     """Voice storage buckets, validation and cleanup."""
 
     # --- Voice storage helpers ---
@@ -581,6 +586,10 @@ class VoiceStorageMixin:
                         vdata['provider'] = 'vllm_omni'
                     result[vid] = vdata
 
+        result.update(self._imported_voices_from_storage(
+            voice_storage, include_inactive=for_listing,
+        ))
+
         if for_listing:
             # UI 试听列表不需要 MiMo 克隆的参考样本 base64（可达 MB）——剥掉，避免把大 blob
             # 推给前端。dispatch / preview 走 for_listing=False，仍拿到完整 voice_meta。
@@ -592,6 +601,7 @@ class VoiceStorageMixin:
 
         return result
 
+    @voice_storage_transaction
     def save_voice_for_current_api(self, voice_id, voice_data):
         """Save a voice for the current AUDIO_API_KEY"""
         core_config = self.get_core_config()
@@ -600,19 +610,20 @@ class VoiceStorageMixin:
         if not audio_api_key:
             raise ValueError("未配置 AUDIO_API_KEY")
 
-        voice_storage = self.load_voice_storage()
+        voice_storage = self._load_voice_storage_for_write()
         if audio_api_key not in voice_storage:
             voice_storage[audio_api_key] = {}
 
         voice_storage[audio_api_key][voice_id] = voice_data
         self.save_voice_storage(voice_storage)
 
+    @voice_storage_transaction
     def save_voice_for_api_key(self, api_key: str, voice_id: str, voice_data: dict):
         """Save a voice for the given API key (used when cloning with the actual API key instead of AUDIO_API_KEY)"""
         if not api_key:
             raise ValueError("API Key 不能为空")
 
-        voice_storage = self.load_voice_storage()
+        voice_storage = self._load_voice_storage_for_write()
         if api_key not in voice_storage:
             voice_storage[api_key] = {}
 
@@ -700,9 +711,12 @@ class VoiceStorageMixin:
                 return existing
         return None
 
+    @voice_storage_transaction
     def delete_voice_for_current_api(self, voice_id):
         """Delete the given voice under the current TTS config (including standalone-provider voices)"""
-        voice_storage = self.load_voice_storage()
+        if is_imported_voice_ref(voice_id) and self.delete_imported_voice(voice_id):
+            return True
+        voice_storage = self._load_voice_storage_for_write()
 
         # 先检查带前缀的独立服务商存储（含 vLLM-Omni 固定桶 __VLLM_OMNI__）
         for storage_key in list(voice_storage.keys()):
@@ -799,6 +813,10 @@ class VoiceStorageMixin:
         voice_id = str(voice_id or '').strip()
         if not voice_id:
             return True
+
+        if is_imported_voice_ref(voice_id):
+            if self.get_imported_voice(voice_id, include_inactive=True):
+                return self.get_imported_voice(voice_id) is not None
 
         if voice_id.startswith('eleven:'):
             return len(voice_id) > len('eleven:')
@@ -957,6 +975,10 @@ class VoiceStorageMixin:
         s = str(voice_id or '').strip()
         if not s:
             return ''
+        if is_imported_voice_ref(s):
+            metadata = self.get_imported_voice(s, include_inactive=True)
+            if metadata:
+                return {'source': 'clone', 'provider': metadata['provider'], 'ref': s}
         from utils.voice_config import to_legacy_voice_id
         vc = self.normalize_voice_id_to_config(s)
         # Round-trip guard: only migrate to the structured object when it reads back to
@@ -1060,6 +1082,10 @@ class VoiceStorageMixin:
             # cleanup 不在此把有效条目压成对象（守住「不 bulk sweep」，迁移只在用户设音色时发生）。
             voice_id = read_legacy_voice_id(get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',)))
             if not voice_id:
+                continue
+            # An unavailable account is not a missing library entry. Preserve
+            # the binding until the user explicitly deletes or replaces it.
+            if is_imported_voice_ref(voice_id):
                 continue
             # 已废弃的免费 YUI 预设音色：先平移到现役 yui_cn，再 continue 跳过后续
             # invalid 判定（新值在 free_voices 白名单内本就合法），保住默认 YUI 音色

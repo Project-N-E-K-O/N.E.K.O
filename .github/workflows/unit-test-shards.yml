@@ -73,6 +73,16 @@ jobs:
       - name: Run ${{ matrix.name }}
         run: uv run pytest tests/unit -m "${{ matrix.marker }}" -q ${{ matrix.pytest_args }} --basetemp ".codex-tmp\${{ matrix.marker }}"
 
+      - name: Prepare pinned models for strict enrollment duration acceptance
+        if: matrix.marker == 'integration_serial'
+        run: |
+          uv run scripts/prepare_voice_turn_assets.py
+          uv run scripts/prepare_speaker_model.py
+
+      - name: Run strict enrollment acceptance with real RNNoise, Silero and CAM++
+        if: matrix.marker == 'integration_serial'
+        run: uv run pytest tests/integration/test_voice_enrollment_duration_real.py -q --basetemp ".codex-tmp\voice-enrollment-duration-real"
+
   historical-review-audit:
     name: historical review audit
     runs-on: windows-latest
@@ -142,6 +152,9 @@ jobs:
           node --test tests/frontend/asr_input_delivery_status.test.cjs
           node --test tests/frontend/mic_recovery_route.test.cjs
           node --test tests/frontend/voice_preparing_toast.test.cjs
+          node --test tests/frontend/remote_voice_manager.test.cjs tests/frontend/voice_manager_review.test.cjs tests/frontend/api_key_secret_masking.test.cjs tests/frontend/remote_voice_page_diagnostics.test.cjs
+          node --test tests/frontend/voice_preview.test.cjs
+          node --test tests/frontend/voice_recovery.test.cjs
           node --test tests/frontend/computer_use_capture_lifecycle.test.cjs
           node --test tests/frontend/test_game_voice_control_runtime.js
           node tests/frontend/test_storage_error_messages_runtime.js
@@ -152,6 +165,76 @@ jobs:
           # tests/unit/*.test.js 是 pytest 永不收集的 node:test 文件；用 glob
           # 而非手列清单，新增文件无法再静默绕过 CI。
           node --test tests/unit/*.test.js
+
+  remote-voice-chromium:
+    name: remote voice manager (Chromium actual page)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install locked Playwright and its Chromium
+        working-directory: frontend/plugin-manager
+        run: |
+          npm ci --no-audit --no-fund
+          node -e "require('node:assert/strict').equal(require('playwright/package.json').version, '1.63.0')"
+          npx --no-install playwright install --with-deps chromium
+
+      - name: Run actual remote voice manager page
+        env:
+          NEKO_TEST_PLAYWRIGHT_MODULE: ${{ github.workspace }}/frontend/plugin-manager/node_modules/playwright
+          NEKO_TEST_ARTIFACT_DIR: ${{ runner.temp }}/remote-voice-chromium
+        run: node tests/frontend/remote_voice_manager_browser.cjs
+
+      - name: Run actual voice preview cancellation page
+        env:
+          NEKO_TEST_PLAYWRIGHT_MODULE: ${{ github.workspace }}/frontend/plugin-manager/node_modules/playwright
+          NEKO_TEST_ARTIFACT_DIR: ${{ runner.temp }}/voice-preview-chromium
+        run: node tests/frontend/voice_preview_browser.cjs
+
+      - name: Run actual prepared overwrite recovery page
+        env:
+          NEKO_TEST_PLAYWRIGHT_MODULE: ${{ github.workspace }}/frontend/plugin-manager/node_modules/playwright
+          NEKO_TEST_ARTIFACT_DIR: ${{ runner.temp }}/voice-recovery-chromium
+        run: node tests/frontend/voice_recovery_browser.cjs
+
+      - name: Retain remote voice Chromium diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-voice-chromium-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/remote-voice-chromium
+            ${{ runner.temp }}/voice-preview-chromium
+            ${{ runner.temp }}/voice-recovery-chromium
+          if-no-files-found: warn
+
+  voice-enrollment-browser:
+    name: voice enrollment duration (Chromium actual page)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install fixed Playwright test runtime and Chromium
+        run: |
+          npm install --prefix "$RUNNER_TEMP/voice-enrollment-browser" --no-audit --no-fund --save-exact playwright@1.62.1
+          "$RUNNER_TEMP/voice-enrollment-browser/node_modules/.bin/playwright" install --with-deps chromium
+
+      - name: Run actual enrollment page and AudioWorklet with fixed quiet speech
+        env:
+          NODE_PATH: ${{ runner.temp }}/voice-enrollment-browser/node_modules
+        run: |
+          VOICE_ENROLLMENT_BROWSER_LOCALE=en-US node tests/frontend/voice_enrollment_duration_browser.cjs
+          VOICE_ENROLLMENT_BROWSER_LOCALE=zh-CN node tests/frontend/voice_enrollment_duration_browser.cjs
 
   voice-readiness-electron:
     name: voice readiness (Electron actual page)
@@ -174,3 +257,46 @@ jobs:
           Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
           node "$env:RUNNER_TEMP/voice-readiness-electron/node_modules/electron/cli.js" tests/frontend/voice_identity_electron.cjs
           if ($LASTEXITCODE -ne 0) { throw "Voice readiness Electron test failed ($LASTEXITCODE)." }
+          node "$env:RUNNER_TEMP/voice-readiness-electron/node_modules/electron/cli.js" tests/frontend/mic_capture_electron.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Microphone capture Electron test failed ($LASTEXITCODE)." }
+
+      - name: Run actual remote voice manager page
+        shell: pwsh
+        env:
+          NEKO_TEST_ARTIFACT_DIR: ${{ runner.temp }}/remote-voice-electron
+          NEKO_TEST_ELECTRON_MODULE: ${{ runner.temp }}/voice-readiness-electron/node_modules/electron
+        run: |
+          Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+          node tests/frontend/remote_voice_electron_runner.cjs tests/frontend/remote_voice_manager_electron.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Remote voice manager Electron test failed ($LASTEXITCODE)." }
+
+      - name: Run actual voice preview cancellation page
+        shell: pwsh
+        env:
+          NEKO_TEST_ARTIFACT_DIR: ${{ runner.temp }}/voice-preview-electron
+          NEKO_TEST_ELECTRON_MODULE: ${{ runner.temp }}/voice-readiness-electron/node_modules/electron
+        run: |
+          Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+          node tests/frontend/remote_voice_electron_runner.cjs tests/frontend/voice_preview_electron.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Voice preview Electron test failed ($LASTEXITCODE)." }
+
+      - name: Run actual prepared overwrite recovery page
+        shell: pwsh
+        env:
+          NEKO_TEST_ARTIFACT_DIR: ${{ runner.temp }}/voice-recovery-electron
+          NEKO_TEST_ELECTRON_MODULE: ${{ runner.temp }}/voice-readiness-electron/node_modules/electron
+        run: |
+          Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+          node tests/frontend/remote_voice_electron_runner.cjs tests/frontend/voice_recovery_electron.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Voice recovery Electron test failed ($LASTEXITCODE)." }
+
+      - name: Retain remote voice Electron diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-voice-electron-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/remote-voice-electron
+            ${{ runner.temp }}/voice-preview-electron
+            ${{ runner.temp }}/voice-recovery-electron
+          if-no-files-found: warn

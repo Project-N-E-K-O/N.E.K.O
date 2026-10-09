@@ -212,6 +212,9 @@
             clearManagerReturnState(window.live2dManager);
             clearManagerReturnState(window.vrmManager);
             clearManagerReturnState(window.mmdManager);
+            // pngtuber 的 _isInReturnState/_goodbyeClicked 同样要清，否则切角色后
+            // 工具栏被 return 态早退分支藏掉、Electron 输入桥卡在猫咪态命中测试。
+            clearManagerReturnState(window.pngtuberManager);
             hideAllReturnButtonContainers();
 
             window.__nekoGoodbyeSilentState = {
@@ -984,6 +987,10 @@
                 }
                 await window.loadPNGTuberAvatar(pngtuberConfig);
                 throwIfStale();
+                // 清除 goodbyeClicked 标志，确保新模型可以正常显示（与 VRM/MMD 分支对称）
+                if (window.pngtuberManager) {
+                    window.pngtuberManager._goodbyeClicked = false;
+                }
                 resetAvatarLockForCharacterSwitch('pngtuber');
             } else if (effectiveModelType === 'vrm') {
                 // 加载 VRM 模型（currentSwitchId 在 try 顶部已无条件刷过，VRM 分支直接复用）
@@ -2062,6 +2069,9 @@
             }
             if (window.mmdManager) {
                 window.mmdManager._goodbyeClicked = false;
+            }
+            if (window.pngtuberManager) {
+                window.pngtuberManager._goodbyeClicked = false;
             }
         }
     }

@@ -878,6 +878,60 @@ def test_read_includes_pending_after_failed_persist(tmp_path, monkeypatch, seed_
     assert [message.content for message in mgr._pending_batches(name)] == ["pending"]
 
 
+def test_theater_episode_write_failure_is_not_reported_as_persisted(
+    tmp_path,
+    monkeypatch,
+):
+    """Failed archive writes leave retries to the receipt, never ordinary pending."""
+
+    mgr, name, path = _make_manager(tmp_path)
+    incoming = SystemMessage(
+        content="这一周目仍在继续。",
+        metadata={
+            "source": "theater_numeric_v2",
+            "memory_tier": "episode_summary",
+            "message_kind": "episode_summary",
+            "story_id": "story-persist-failure",
+            "session_id": "session-persist-failure",
+        },
+    )
+    monkeypatch.setattr(
+        recent_file,
+        "write_recent_payload_unlocked",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(RuntimeError, match="theater_episode_persist_failed"):
+        asyncio.run(mgr.upsert_theater_episode(incoming, name))
+
+    assert not Path(path).exists()
+    assert mgr._pending_batches(name) == []
+
+
+def test_theater_cache_rollback_restores_snapshot_only_without_later_writes(tmp_path):
+    mgr, name, path = _make_manager(tmp_path)
+    metadata = {
+        "source": "theater_numeric_v2",
+        "memory_tier": "episode_summary",
+        "message_kind": "episode_summary",
+        "story_id": "story-rollback",
+        "session_id": "session-rollback",
+    }
+    _write_disk(path, [SystemMessage(content="暂停摘要", metadata=metadata)])
+    previous = asyncio.run(mgr.aget_recent_history(name))
+    asyncio.run(mgr.upsert_theater_episode(
+        SystemMessage(content="完成摘要", metadata=metadata), name,
+    ))
+    updated = asyncio.run(mgr.aget_recent_history(name))
+
+    asyncio.run(mgr.restore_theater_cache_snapshot(name, previous, updated))
+    assert messages_to_dict(asyncio.run(mgr.aget_recent_history(name))) == messages_to_dict(previous)
+
+    _write_disk(path, [SystemMessage(content="后续写入", metadata=metadata)])
+    with pytest.raises(RuntimeError, match="theater_recent_history_changed"):
+        asyncio.run(mgr.restore_theater_cache_snapshot(name, previous, updated))
+
+
 def test_authoritative_replace_discards_previous_pending(tmp_path, monkeypatch):
     """A user replacement must not resurrect an older failed append."""
     mgr, name, path = _make_manager(tmp_path)
@@ -1362,6 +1416,41 @@ def _review_corrected() -> list[dict]:
     ]
 
 
+@pytest.mark.parametrize('explicit_snapshot', [False, True])
+@pytest.mark.parametrize('placement', ['head', 'middle', 'only'])
+def test_review_entry_preserves_theater_messages(tmp_path, monkeypatch, explicit_snapshot, placement):
+    mgr, name, path = _make_manager(tmp_path)
+    capsule = SystemMessage(content='theater-only-private-fiction', metadata={
+        'source': 'theater_numeric_v2', 'memory_tier': 'episode_summary',
+        'story_id': 'story', 'session_id': 'session', 'episode_status': 'completed',
+    })
+    history = [] if placement == 'only' else _review_snapshot()
+    history.insert(2 if placement == 'middle' else 0, capsule)
+    _write_disk(path, history)
+    prompts = []
+    llm = _ReviewLLM(_review_corrected())
+    invoke = llm.ainvoke
+
+    async def record_prompt(prompt):
+        prompts.append(prompt)
+        return await invoke(prompt)
+
+    monkeypatch.setattr(llm, 'ainvoke', record_prompt)
+    monkeypatch.setattr(mgr, '_get_review_llm', lambda: llm)
+    result = asyncio.run(mgr.review_history(name, snapshot=list(history) if explicit_snapshot else None))
+    persisted = _read_disk(path)
+    if placement == 'only':
+        assert result == ('failed', None)
+        assert prompts == []
+    else:
+        assert result[0] == 'patched'
+        assert len(prompts) == 1
+        assert capsule.content not in prompts[0]
+        assert any(message.content == 'hi 1 fixed' for message in persisted)
+    remaining = [message for message in persisted if message.metadata.get('source') == 'theater_numeric_v2']
+    assert messages_to_dict(remaining) == messages_to_dict([capsule])
+
+
 def test_review_persist_failure_returns_failed_exactly(tmp_path, monkeypatch):
     """A failed review persist must report ('failed', None) — never 'white'.
 
@@ -1474,11 +1563,11 @@ class _CapRejected(Exception):
 def test_review_retries_at_shared_guard_when_endpoint_rejects_review_cap(tmp_path):
     """A model whose output limit is below the review cap must still be reviewed.
 
-    The first request asks for MEMORY_REVIEW_OUTPUT_MAX_TOKENS; an endpoint
+    The first request asks for MEMORY_THINKING_OUTPUT_MAX_TOKENS; an endpoint
     with a 4096 limit rejects it with a 400 before generating. The review then
     retries once at LLM_OUTPUT_GUARD_MAX_TOKENS instead of failing every pass.
     """
-    from config import LLM_OUTPUT_GUARD_MAX_TOKENS, MEMORY_REVIEW_OUTPUT_MAX_TOKENS
+    from config import LLM_OUTPUT_GUARD_MAX_TOKENS, MEMORY_THINKING_OUTPUT_MAX_TOKENS
 
     snapshot = _review_snapshot()
     mgr, name, path = _make_manager(tmp_path)
@@ -1498,7 +1587,7 @@ def test_review_retries_at_shared_guard_when_endpoint_rejects_review_cap(tmp_pat
                 )
             return await super().ainvoke(prompt, **kwargs)
 
-    def _factory(max_completion_tokens: int = MEMORY_REVIEW_OUTPUT_MAX_TOKENS):
+    def _factory(max_completion_tokens: int = MEMORY_THINKING_OUTPUT_MAX_TOKENS):
         caps.append(max_completion_tokens)
         return _CapLimitedLLM(max_completion_tokens)
 
@@ -1507,13 +1596,13 @@ def test_review_retries_at_shared_guard_when_endpoint_rejects_review_cap(tmp_pat
     status, _fingerprint = asyncio.run(mgr.review_history(name, snapshot=list(snapshot)))
 
     assert status == "patched"
-    assert caps == [MEMORY_REVIEW_OUTPUT_MAX_TOKENS, LLM_OUTPUT_GUARD_MAX_TOKENS]
+    assert caps == [MEMORY_THINKING_OUTPUT_MAX_TOKENS, LLM_OUTPUT_GUARD_MAX_TOKENS]
     assert "hi 1 fixed" in [m.content for m in _read_disk(path)]
 
 
 def test_review_fallback_cap_exhaustion_is_reported_as_output_exhausted(tmp_path):
     """After the lower-cap retry, an empty reply at that cap is output exhaustion."""
-    from config import LLM_OUTPUT_GUARD_MAX_TOKENS, MEMORY_REVIEW_OUTPUT_MAX_TOKENS
+    from config import LLM_OUTPUT_GUARD_MAX_TOKENS, MEMORY_THINKING_OUTPUT_MAX_TOKENS
 
     snapshot = _review_snapshot()
     mgr, name, path = _make_manager(tmp_path)
@@ -1542,7 +1631,7 @@ def test_review_fallback_cap_exhaustion_is_reported_as_output_exhausted(tmp_path
     setattr(
         mgr,
         "_get_review_llm",
-        lambda max_completion_tokens=MEMORY_REVIEW_OUTPUT_MAX_TOKENS: _ExhaustedLLM(max_completion_tokens),
+        lambda max_completion_tokens=MEMORY_THINKING_OUTPUT_MAX_TOKENS: _ExhaustedLLM(max_completion_tokens),
     )
 
     result = asyncio.run(mgr.review_history(name, snapshot=list(snapshot)))
@@ -2630,3 +2719,21 @@ async def test_recent_file_route_rejects_save_without_loaded_snapshot_tokens():
 
     assert response.status_code == 409
     assert "重新加载" in json.loads(response.body)["error"]
+
+
+def test_review_close_failure_does_not_mask_a_valid_review(tmp_path):
+    """Closing the review client is cleanup; a close error must not turn a
+    valid corrected dialogue into a failed review."""
+    snapshot = _review_snapshot()
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, snapshot)
+
+    class _CloseBoomLLM(_ReviewLLM):
+        async def aclose(self) -> None:
+            raise RuntimeError("close boom")
+
+    setattr(mgr, "_get_review_llm", lambda: _CloseBoomLLM(_review_corrected()))
+
+    result = asyncio.run(mgr.review_history(name, snapshot=list(snapshot)))
+
+    assert result[0] == 'patched'

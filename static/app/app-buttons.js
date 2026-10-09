@@ -95,6 +95,29 @@
         }
     }
 
+    // 小剧场演绎期间普通文字、拖放和头像互动都不能开启普通回合（否则普通 TTS 与剧场对白混播，
+    // 并写进被隐藏的普通历史）。与普通语音守卫同一判定：本窗口演绎中，或其他窗口的剧场正在抑制
+    // （Electron 下剧场在聊天窗口、拖放与头像工具在 Pet 窗口；抑制随心跳传播并按 TTL 失效）。
+    function isOrdinaryChatBlockedByTheater() {
+        var theaterRuntime = window.nekoTheaterRuntime;
+        try {
+            return !!(theaterRuntime
+                && typeof theaterRuntime.blocksOrdinaryChat === 'function'
+                && theaterRuntime.blocksOrdinaryChat() === true);
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function showTheaterChatUnavailableToast() {
+        if (typeof window.showStatusToast === 'function') {
+            window.showStatusToast(
+                window.t ? window.t('theater.chatUnavailable') : '小剧场演绎期间暂不支持普通对话',
+                3500
+            );
+        }
+    }
+
     function shouldSuppressCompactHistoryDropSendForVoiceMode() {
         try {
             if (typeof window.shouldKeepVoiceComposerHidden === 'function'
@@ -1838,6 +1861,10 @@
         if (!normalized) {
             return false;
         }
+        if (isOrdinaryChatBlockedByTheater()) {
+            showTheaterChatUnavailableToast();
+            return false;
+        }
 
         var throttleReason = getAvatarInteractionDispatchThrottleReason(Date.now());
         if (throttleReason) {
@@ -2136,6 +2163,17 @@
         // ----------------------------------------------------------------
         micButton.addEventListener('click', async function () {
             if (micButton.disabled || S.isRecording) return;
+            // 浮动麦克风仍可能位于胶囊之外（Electron 下在 Pet 窗口，剧场在聊天窗口）；
+            // 在任何语音 Session 状态写入前阻止任一窗口剧场期间启动。
+            if (window.nekoTheaterRuntime
+                    && typeof window.nekoTheaterRuntime.blocksOrdinaryVoice === 'function'
+                    && window.nekoTheaterRuntime.blocksOrdinaryVoice()) {
+                window.showStatusToast(
+                    window.t ? window.t('theater.voiceUnavailable') : '小剧场演绎期间暂不支持语音对话',
+                    3500
+                );
+                return;
+            }
             if (mod._textSessionStartPromise) {
                 window.showStatusToast(
                     window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...',
@@ -2793,6 +2831,13 @@
                 if (window.mmdManager) {
                     window.mmdManager._goodbyeClicked = false;
                 }
+                if (window.pngtuberManager) {
+                    window.pngtuberManager._goodbyeClicked = false;
+                    // 侧栏返回不派发 return-click 事件，pngtuber 的 returnHandler
+                    // 没机会清 _isInReturnState；残留会让工具栏早退分支与锁图标
+                    // 守卫继续按"她还在离开态"处理，回来后半边 UI 不再出现。
+                    window.pngtuberManager._isInReturnState = false;
+                }
 
                 if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({
@@ -3413,6 +3458,24 @@
             var hasExtraImages = extraImageDataUrls.length > 0;
             var hasScreenshots = options.ignoreComposerAttachments === true ? false : screenshotsList.children.length > 0;
 
+            var theaterRuntime = window.nekoTheaterRuntime;
+            if (theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive()) {
+                if (options.source !== 'react-chat-window' && options.source !== 'legacy-text-button') return false;
+                if (!text) return false;
+                // 剧场启动前遗留的普通附件在界面中已隐藏，不属于本次演绎输入；仅拒绝显式附带的新图片。
+                if (hasExtraImages) {
+                    window.showStatusToast(
+                        window.t ? window.t('theater.imagesUnavailable') : '小剧场演绎暂不支持图片输入',
+                        3500
+                    );
+                    return false;
+                }
+                return theaterRuntime.handleComposerSubmit(text);
+            }
+            if (isOrdinaryChatBlockedByTheater()) {
+                showTheaterChatUnavailableToast();
+                return false;
+            }
             if (!text && !hasScreenshots && !hasExtraImages) return;
             if (isHomeTutorialInteractionLocked()) {
                 showHomeTutorialLockedToast();
@@ -3448,6 +3511,11 @@
             var items = getAvatarDropItems(payload);
             var rejected = getAvatarDropRejected(payload);
             if (!items.length && !rejected.length) return false;
+            // 必须在切换文字模式之前拦截：拖放入口不经剧场输入框，不能先停掉语音再被拒绝。
+            if (isOrdinaryChatBlockedByTheater()) {
+                showTheaterChatUnavailableToast();
+                return false;
+            }
             var gameRouteBlocksImages = !!(S && S.gameRouteActive);
             if (gameRouteBlocksImages) {
                 var blockedImages = items.filter(function (item) { return item.type === 'image'; });

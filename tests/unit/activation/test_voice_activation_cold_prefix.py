@@ -73,7 +73,10 @@ async def _cold_harness(endpointing="provider", gate=None):
     deliveries, sessions = [], []
 
     def create_session(selection):
-        session = SimpleNamespace(is_ready=False, transport_write_attempted=False)
+        session = SimpleNamespace(
+            is_ready=False, transport_write_attempted=False,
+            last_failure_code=None, failure_started_at=None,
+        )
         sessions.append(session)
 
         async def connect():

@@ -1,6 +1,9 @@
 import asyncio
+import concurrent.futures
 import builtins
 import json
+import os
+import shutil
 import threading
 from pathlib import Path
 from unittest.mock import patch
@@ -3053,6 +3056,637 @@ def test_storage_location_cleanup_retained_source_removes_old_runtime_root(tmp_p
 
 
 @pytest.mark.unit
+def test_storage_location_cleanup_rejects_changed_copy_evidence(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (source_root / "config" / "characters.json").write_text("changed!", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    # The changed entry is kept and reported, not deleted.
+    assert cleanup_response.status_code == 409
+    assert cleanup_response.json()["error_code"] == "retained_source_cleanup_incomplete"
+    assert cleanup_response.json()["remaining_entries"] == ["config"]
+    assert (source_root / "config" / "characters.json").read_text(encoding="utf-8") == "changed!"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "original"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_allows_a_target_used_since_migration(tmp_path):
+    """Running the app on the new root must not make the old copy uncleanable."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (target_root / "config" / "characters.json").write_text("edited in the app", encoding="utf-8")
+    (target_root / "config" / "core_config.json").write_text("{}", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert cleanup_response.json()["retained_root_kept"] is False
+    assert not source_root.exists()
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "edited in the app"
+
+
+def _migrate_config_then_replace_target(tmp_path, replace_target):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    shutil.rmtree(target_root / "config")
+    replace_target(target_root / "config", tmp_path)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+    return cleanup_response, source_root
+
+
+def _migrate_config_and_memory(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "memory").mkdir(parents=True)
+    (source_root / "memory" / "recent.json").write_text("[]", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    return source_root, target_root
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_an_entry_that_fails_to_delete(tmp_path, monkeypatch):
+    """A file locked mid-delete keeps that entry; the others are still cleaned."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    original_remove = storage_location_router_module.remove_runtime_entry
+
+    def _locked_memory(path):
+        # Cleanup deletes a private rename of the entry; recognise memory by its file.
+        if (Path(path) / "recent.json").exists():
+            raise PermissionError(32, "the file is being used by another process")
+        return original_remove(path)
+
+    monkeypatch.setattr(storage_location_router_module, "remove_runtime_entry", _locked_memory)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 409, cleanup_response.json()
+    assert cleanup_response.json()["remaining_entries"] == ["memory"]
+    assert not (source_root / "config").exists()
+    assert (source_root / "memory" / "recent.json").is_file()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_an_entry_that_cannot_be_read(tmp_path, monkeypatch):
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    original_snapshot = storage_location_router_module.snapshot_runtime_entry
+
+    def _unreadable_memory(path):
+        # Cleanup compares a private rename of the entry; recognise memory by its file.
+        if Path(path).parent == source_root and (Path(path) / "recent.json").exists():
+            raise PermissionError(32, "the file is being used by another process")
+        return original_snapshot(path)
+
+    monkeypatch.setattr(storage_location_router_module, "snapshot_runtime_entry", _unreadable_memory)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 409, cleanup_response.json()
+    assert cleanup_response.json()["remaining_entries"] == ["memory"]
+    assert not (source_root / "config").exists()
+    assert (source_root / "memory" / "recent.json").is_file()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_removes_read_only_entries(tmp_path):
+    """A read-only file (Windows) or directory (POSIX) must not stop cleanup halfway."""
+    import stat
+
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    frozen_dir = source_root / "config" / "frozen"
+    frozen_dir.mkdir(parents=True)
+    (source_root / "config" / "a_first.json").write_text("first", encoding="utf-8")
+    (frozen_dir / "locked.json").write_text("locked", encoding="utf-8")
+    (source_root / "config" / "z_last.json").write_text("last", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (frozen_dir / "locked.json").chmod(stat.S_IREAD)
+    if os.name == "posix":
+        frozen_dir.chmod(0o555)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    try:
+        with _build_client(reloaded_manager) as client:
+            cleanup_response = client.post(
+                "/api/storage/location/retained-source/cleanup",
+                json={"retained_root": str(source_root)},
+            )
+    finally:
+        if frozen_dir.exists():
+            frozen_dir.chmod(0o755)
+            (frozen_dir / "locked.json").chmod(stat.S_IREAD | stat.S_IWRITE)
+
+    assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert not source_root.exists()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_removes_regenerable_dirs_from_a_non_anchor_root(tmp_path):
+    """Old logs and plugin install records must not keep the old root alive."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (source_root / "logs").mkdir()
+    (source_root / "logs" / "old.log").write_text("old", encoding="utf-8")
+    (source_root / "plugin-runtime" / "plugin-installs").mkdir(parents=True)
+    (source_root / "plugin-runtime" / "plugin-installs" / "task.json").write_text("{}", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert cleanup_response.json()["retained_root_kept"] is False
+    assert not source_root.exists()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_reports_when_other_files_keep_the_retained_root(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (source_root / "my-notes.txt").write_text("not runtime data", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert cleanup_response.json()["retained_root_kept"] is True
+    assert not (source_root / "config").exists()
+    assert (source_root / "my-notes.txt").read_text(encoding="utf-8") == "not runtime data"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_refuses_a_linked_retained_root(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    # The retained root is swapped for a link to a directory holding the
+    # same content, so every per-entry check would pass through the link.
+    elsewhere = tmp_path / "elsewhere"
+    shutil.move(str(source_root), str(elsewhere))
+    try:
+        os.symlink(elsewhere, source_root, target_is_directory=True)
+    except OSError as exc:
+        shutil.move(str(elsewhere), str(source_root))
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code != 200
+    assert (elsewhere / "config" / "characters.json").read_text(encoding="utf-8") == "original"
+
+
+@pytest.mark.unit
+def test_storage_location_v1_cleanup_accepts_rebased_workshop_config(tmp_path):
+    """v1 rewrote workshop paths into the target; that alone must not block cleanup."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "config" / "workshop_config.json").write_text(
+        json.dumps({"user_mod_folder": str(source_root / "mods")}),
+        encoding="utf-8",
+    )
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    rebased = json.loads(
+        (target_root / "config" / "workshop_config.json").read_text(encoding="utf-8")
+    )
+    assert rebased["user_mod_folder"] == str((target_root / "mods").resolve())
+    _downgrade_to_v1_checkpoint(config_manager)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert not (source_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_storage_location_v1_cleanup_rebases_a_read_only_workshop_config(tmp_path):
+    """The v1 comparison rewrites a scratch copy; a read-only original must not break it."""
+    import stat
+
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    workshop_config = source_root / "config" / "workshop_config.json"
+    workshop_config.write_text(
+        json.dumps({"user_mod_folder": str(source_root / "mods")}),
+        encoding="utf-8",
+    )
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+    workshop_config.chmod(stat.S_IREAD)
+    if os.name == "posix":
+        (source_root / "config").chmod(0o555)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    try:
+        with _build_client(reloaded_manager) as client:
+            cleanup_response = client.post(
+                "/api/storage/location/retained-source/cleanup",
+                json={"retained_root": str(source_root)},
+            )
+    finally:
+        if (source_root / "config").exists():
+            (source_root / "config").chmod(0o755)
+            workshop_config.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+    assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert not (source_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_source_when_target_changed_kind(tmp_path):
+    def _replace_with_file(target_entry, _tmp_path):
+        target_entry.write_text("not a directory any more", encoding="utf-8")
+
+    cleanup_response, source_root = _migrate_config_then_replace_target(
+        tmp_path, _replace_with_file
+    )
+
+    assert cleanup_response.status_code == 409
+    assert cleanup_response.json()["remaining_entries"] == ["config"]
+    assert (source_root / "config" / "characters.json").read_text(encoding="utf-8") == "original"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_source_when_target_is_a_dangling_link(tmp_path):
+    def _replace_with_dangling_link(target_entry, tmp_path):
+        try:
+            os.symlink(tmp_path / "gone", target_entry, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    cleanup_response, source_root = _migrate_config_then_replace_target(
+        tmp_path, _replace_with_dangling_link
+    )
+
+    assert cleanup_response.status_code == 409
+    assert cleanup_response.json()["remaining_entries"] == ["config"]
+    assert (source_root / "config" / "characters.json").read_text(encoding="utf-8") == "original"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_reports_unproved_runtime_entries(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "unproved.json").write_text("{}", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 409
+    assert cleanup_response.json() == {
+        "ok": False,
+        "error_code": "retained_source_cleanup_incomplete",
+        "error": "旧数据目录仍含缺少复制证据的运行时条目，已保留供人工确认。",
+        "retained_root": str(source_root.resolve()),
+        "remaining_entries": ["memory"],
+        "retained_root_unlistable": False,
+    }
+    assert (source_root / "memory" / "unproved.json").is_file()
+    migration_payload = load_storage_migration(reloaded_manager)
+    assert migration_payload["retained_source_mode"] == "manual_retention"
+    assert migration_payload["retained_source_root"] == str(source_root.resolve())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("v1_checkpoint", (False, True))
+def test_storage_location_cleanup_finishes_after_the_user_removes_the_rest(
+    tmp_path, v1_checkpoint
+):
+    """A reported leftover removed by hand must not turn the retry into a 500."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    if v1_checkpoint:
+        _downgrade_to_v1_checkpoint(config_manager)
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "unproved.json").write_text("{}", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        first = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+        assert first.status_code == 409
+        assert first.json()["remaining_entries"] == ["memory"]
+        assert not (source_root / "config").exists()
+
+        shutil.rmtree(source_root / "memory")
+        second = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert second.status_code == 200, second.json()
+    assert not source_root.exists()
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "cleaned"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "original"
+
+
+def _downgrade_to_v1_checkpoint(config_manager) -> None:
+    """Rewrite a completed checkpoint as one a pre-evidence (v1) build wrote."""
+    migration_payload = dict(load_storage_migration(config_manager))
+    migration_payload["version"] = 1
+    migration_payload.pop("copied_entries", None)
+    save_storage_migration(config_manager, migration_payload)
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_accepts_a_v1_checkpoint_without_copy_evidence(tmp_path):
+    """Migrations completed before copy evidence existed must still be cleanable."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        status_payload = client.get("/api/storage/location/status").json()
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert status_payload["completion_notice"]["cleanup_available"] is True
+    assert cleanup_response.status_code == 200, cleanup_response.json()
+    assert not source_root.exists()
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "original"
+
+
+@pytest.mark.unit
+def test_storage_location_v1_cleanup_keeps_entries_the_target_does_not_have(tmp_path):
+    """Without evidence, only entries that also exist in the target may go."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "only-here.json").write_text("{}", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 409
+    assert cleanup_response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "only-here.json").is_file()
+    assert not (source_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_storage_location_v1_cleanup_keeps_entries_whose_target_changes_while_compared(tmp_path, monkeypatch):
+    """The target matched when it was read, then a sync client rewrote it
+    before the retained copy was deleted: that copy may be the last one."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "recent.json").write_text("[1, 2, 3]", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+    original_snapshot = storage_location_router_module.snapshot_runtime_entry
+
+    def _snapshot_then_target_rewritten(path):
+        manifest = original_snapshot(path)
+        if Path(path) == target_root / "memory":
+            (target_root / "memory" / "recent.json").write_text("rewritten by a sync client", encoding="utf-8")
+        return manifest
+
+    monkeypatch.setattr(storage_location_router_module, "snapshot_runtime_entry", _snapshot_then_target_rewritten)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 409, cleanup_response.json()
+    assert cleanup_response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "recent.json").read_text(encoding="utf-8") == "[1, 2, 3]"
+
+
+@pytest.mark.unit
+def test_storage_location_v1_cleanup_keeps_entries_whose_target_content_differs(tmp_path):
+    """A same-named target entry is not evidence; its content must match."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "recent.json").write_text("[1, 2, 3]", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+    # The target's copy is only a leftover: the same name, none of the data.
+    (target_root / "memory" / "recent.json").unlink()
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 409
+    assert cleanup_response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "recent.json").read_text(encoding="utf-8") == "[1, 2, 3]"
+    assert not (source_root / "config").exists()
+
+
+@pytest.mark.unit
 def test_storage_location_cleanup_retained_anchor_root_removes_runtime_entries_only(tmp_path):
     config_manager = _make_anchor_root_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir
@@ -3066,6 +3700,9 @@ def test_storage_location_cleanup_retained_anchor_root_removes_runtime_entries_o
     (source_root / "state" / "storage_policy.json").write_text("{}", encoding="utf-8")
     (source_root / "cloudsave").mkdir(parents=True, exist_ok=True)
     (source_root / "cloudsave" / "manifest.json").write_text("{}", encoding="utf-8")
+    # A run started without the launcher may still write logs here.
+    (source_root / "logs").mkdir(parents=True, exist_ok=True)
+    (source_root / "logs" / "current.log").write_text("live", encoding="utf-8")
 
     create_pending_storage_migration(
         config_manager,
@@ -3093,12 +3730,15 @@ def test_storage_location_cleanup_retained_anchor_root_removes_runtime_entries_o
     cleanup_payload = cleanup_response.json()
     assert cleanup_payload["ok"] is True
     assert cleanup_payload["cleaned_root"] == str(source_root.resolve())
+    # The anchor root keeps state and cloud saves; the UI must not claim it is gone.
+    assert cleanup_payload["retained_root_kept"] is True
 
     assert source_root.exists()
     assert not (source_root / "config").exists()
     assert not (source_root / "memory").exists()
     assert (source_root / "state" / "storage_migration.json").exists()
     assert (source_root / "cloudsave" / "manifest.json").read_text(encoding="utf-8") == "{}"
+    assert (source_root / "logs" / "current.log").read_text(encoding="utf-8") == "live"
 
     migration_payload = load_storage_migration(reloaded_manager)
     assert migration_payload["retained_source_root"] == ""
@@ -3163,3 +3803,1264 @@ def test_storage_location_cleanup_rejects_retained_root_that_contains_target_roo
     assert (target_root / "config").exists()
     migration_payload = load_storage_migration(reloaded_manager)
     assert migration_payload["status"] == "completed"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("entry_name", ["pngtuber", "watch_together", "runtimes", "embedding_models"])
+def test_target_with_only_entries_added_later_counts_as_existing_content(tmp_path, entry_name):
+    config_manager = _make_real_config_manager(tmp_path)
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (target_root / entry_name).mkdir(parents=True)
+    (target_root / entry_name / "existing.bin").write_bytes(b"existing")
+
+    assert storage_location_router_module._target_root_has_user_content(target_root, config_manager) is True
+
+
+@pytest.mark.unit
+def test_storage_location_v1_cleanup_keeps_entries_v1_never_migrated(tmp_path):
+    """v1 copied only its own list; pngtuber in the old root was never copied."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+    (source_root / "pngtuber" / "Alice").mkdir(parents=True)
+    (source_root / "pngtuber" / "Alice" / "idle.png").write_bytes(b"png")
+    (source_root / "logs").mkdir()
+    (source_root / "logs" / "old.log").write_text("old", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    # Reported, not deleted: until the catch-up has run, pngtuber is data
+    # still to be copied over, and the root must not count as cleaned.
+    assert cleanup_response.status_code == 409, cleanup_response.json()
+    assert cleanup_response.json()["remaining_entries"] == ["pngtuber"]
+    assert (source_root / "pngtuber" / "Alice" / "idle.png").read_bytes() == b"png"
+    assert not (source_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_regenerable_dirs_while_entries_remain(tmp_path):
+    """Old logs stay while the user still has entries to sort out in that root."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "only-here.json").write_text("{}", encoding="utf-8")
+    (source_root / "logs").mkdir()
+    (source_root / "logs" / "old.log").write_text("old", encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        cleanup_response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert cleanup_response.status_code == 409
+    assert cleanup_response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "logs" / "old.log").is_file()
+    assert not (source_root / "config").exists()
+
+
+def _cleanup_with_snapshot_hook(tmp_path, monkeypatch, hook):
+    source_root, target_root = _migrate_config_and_memory(tmp_path)
+    original_snapshot = storage_location_router_module.snapshot_runtime_entry
+
+    def _snapshot(path):
+        manifest = original_snapshot(path)
+        if Path(path).parent == source_root and (Path(path) / "recent.json").exists():
+            return hook(source_root, Path(path), manifest)
+        return manifest
+
+    monkeypatch.setattr(storage_location_router_module, "snapshot_runtime_entry", _snapshot)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+    return source_root, response
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_spares_data_written_right_after_the_check(tmp_path, monkeypatch):
+    """A writer still using the old path between the check and the delete
+    must not lose what it wrote."""
+
+    def _writer_after_check(source_root, _checked_path, manifest):
+        (source_root / "memory").mkdir(exist_ok=True)
+        (source_root / "memory" / "written-later.json").write_text("keep", encoding="utf-8")
+        return manifest
+
+    source_root, response = _cleanup_with_snapshot_hook(tmp_path, monkeypatch, _writer_after_check)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "written-later.json").read_text(encoding="utf-8") == "keep"
+    assert not (source_root / "memory" / "recent.json").exists()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_reports_a_copy_it_could_not_put_back(tmp_path, monkeypatch):
+    """The copy no longer matches and its name was taken meanwhile: both
+    stay, the copy under its private name, and both are reported."""
+
+    def _changed_and_name_taken(source_root, _checked_path, _manifest):
+        (source_root / "memory").mkdir(exist_ok=True)
+        (source_root / "memory" / "written-later.json").write_text("keep", encoding="utf-8")
+        return {"kind": "changed"}
+
+    source_root, response = _cleanup_with_snapshot_hook(tmp_path, monkeypatch, _changed_and_name_taken)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    private_copies = list(source_root.glob(".neko-cleanup-memory-*"))
+    assert len(private_copies) == 1
+    assert (private_copies[0] / "recent.json").is_file()
+    assert (source_root / "memory" / "written-later.json").read_text(encoding="utf-8") == "keep"
+
+
+def _cleanup_request(tmp_path, source_root):
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        return client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_puts_back_an_entry_a_stopped_cleanup_left_renamed(tmp_path):
+    """A v1 cleanup stopped between renaming memory and putting it back: the
+    old copy is the only one of the old content and must come back as memory."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "m.json").write_text("old", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+    (target_root / "memory" / "m.json").write_text("changed since", encoding="utf-8")
+    (source_root / "memory").rename(source_root / ".neko-cleanup-memory-0123456789ab")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "m.json").read_text(encoding="utf-8") == "old"
+    assert not list(source_root.glob(".neko-cleanup-*"))
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_finishes_an_entry_a_stopped_cleanup_left_renamed(tmp_path):
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "memory").rename(source_root / ".neko-cleanup-memory-0123456789ab")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 200, response.json()
+    assert not source_root.exists()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_reports_a_renamed_entry_whose_name_is_taken(tmp_path):
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    leftover = source_root / ".neko-cleanup-memory-0123456789ab"
+    (source_root / "memory").rename(leftover)
+    (source_root / "memory").mkdir()
+    (source_root / "memory" / "newer.json").write_text("newer", encoding="utf-8")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (leftover / "recent.json").is_file()
+    assert (source_root / "memory" / "newer.json").read_text(encoding="utf-8") == "newer"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_leaves_links_where_they_are(tmp_path, monkeypatch):
+    """A link is never renamed: putting it back could turn it into a hard
+    link to whatever it points at."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    original_classify = storage_location_router_module.classify_entry_no_follow
+
+    def _memory_is_a_link(path):
+        if Path(path) == source_root / "memory":
+            return None
+        return original_classify(path)
+
+    monkeypatch.setattr(storage_location_router_module, "classify_entry_no_follow", _memory_is_a_link)
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "recent.json").is_file()
+    assert not list(source_root.glob(".neko-cleanup-*"))
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_reporting_entries_it_cannot_look_up(tmp_path, monkeypatch):
+    """An entry whose lookup fails (ACL, missing execute bit) is not gone;
+    reporting it as cleaned would end the cleanup with the data still there."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    blocked = source_root / "memory"
+    original_lstat = os.lstat
+
+    def _lstat(path, *args, **kwargs):
+        if Path(path) == blocked:
+            raise PermissionError(13, "access denied", str(path))
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", _lstat)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        response = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+    monkeypatch.undo()
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (blocked / "recent.json").is_file()
+
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_reports_a_renamed_entry_it_cannot_put_back(tmp_path, monkeypatch):
+    """Putting the entry back failed (a file in use): it is still reported,
+    under its own name, so the cleanup does not end as if it were gone."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    leftover = source_root / ".neko-cleanup-memory-0123456789ab"
+    (source_root / "memory").rename(leftover)
+
+    def _in_use(_source, _target):
+        raise PermissionError(32, "the file is being used by another process")
+
+    monkeypatch.setattr(storage_location_router_module, "move_entry_without_overwrite", _in_use)
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (leftover / "recent.json").is_file()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_records_its_result_when_the_request_is_cancelled(tmp_path, monkeypatch):
+    """The client disconnects while the cleanup worker runs: the worker still
+    finishes, and what it did must be recorded, or the checkpoint keeps
+    pointing at a retained root that is already gone."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+
+    async def _worker_finishes_then_request_is_cancelled(job):
+        await asyncio.to_thread(job)
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(
+        storage_location_router_module, "_run_locked_storage_job", _worker_finishes_then_request_is_cancelled
+    )
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    try:
+        with _build_client(reloaded_manager) as client:
+            client.post(
+                "/api/storage/location/retained-source/cleanup",
+                json={"retained_root": str(source_root)},
+            )
+    except (asyncio.CancelledError, concurrent.futures.CancelledError):
+        pass  # the cancellation surfaces through the test client's portal
+
+    assert not source_root.exists()
+    checkpoint = load_storage_migration(_make_real_config_manager(tmp_path))
+    assert checkpoint["retained_source_mode"] == "cleaned"
+
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_the_copy_when_the_target_vanishes_meanwhile(tmp_path, monkeypatch):
+    """The target went away while the retained copy was being compared: the
+    retained copy is then the only one left and must stay."""
+    import shutil
+
+    def _target_removed_during_comparison(source_root, _checked_path, manifest):
+        target_memory = source_root.parents[1] / "target-selected" / "N.E.K.O" / "memory"
+        if target_memory.exists():
+            shutil.rmtree(target_memory)
+        return manifest
+
+    source_root, response = _cleanup_with_snapshot_hook(tmp_path, monkeypatch, _target_removed_during_comparison)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "recent.json").is_file()
+
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_the_copy_when_the_target_changes_kind_meanwhile(tmp_path, monkeypatch):
+    """The target directory was replaced by a file while the retained copy
+    was compared: that file is not the copy the evidence describes."""
+    import shutil
+
+    def _target_replaced_by_a_file(source_root, _checked_path, manifest):
+        target_memory = source_root.parents[1] / "target-selected" / "N.E.K.O" / "memory"
+        if target_memory.is_dir():
+            shutil.rmtree(target_memory)
+            target_memory.write_text("not the copy", encoding="utf-8")
+        return manifest
+
+    source_root, response = _cleanup_with_snapshot_hook(tmp_path, monkeypatch, _target_replaced_by_a_file)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "recent.json").is_file()
+
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_restores_past_an_empty_reservation(tmp_path):
+    """A restore stopped between reserving the name with an empty directory
+    and moving the entry in: the entry must still come back."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    leftover = source_root / ".neko-cleanup-memory-0123456789ab"
+    (source_root / "memory").rename(leftover)
+    (leftover / "recent.json").write_text("changed since", encoding="utf-8")
+    (source_root / "memory").mkdir()
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert (source_root / "memory" / "recent.json").read_text(encoding="utf-8") == "changed since"
+    assert not list(source_root.glob(".neko-cleanup-*"))
+
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_stays_pending_when_the_retained_root_cannot_be_listed(tmp_path, monkeypatch):
+    """Entered but not listed (execute without read): an entry may still hide
+    under a private name, so the cleanup must not be recorded as done."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "memory").rename(source_root / ".neko-cleanup-memory-0123456789ab")
+    original_iterdir = Path.iterdir
+
+    def _iterdir(self):
+        if self == source_root:
+            raise PermissionError(13, "listing denied", str(self))
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _iterdir)
+    response = _cleanup_request(tmp_path, source_root)
+    monkeypatch.undo()
+
+    assert response.status_code == 409, response.json()
+    # Reported as a flag the UI can word, not as an entry named by a pattern.
+    assert response.json()["retained_root_unlistable"] is True
+    assert ".neko-cleanup-*" not in response.json()["remaining_entries"]
+    assert (source_root / ".neko-cleanup-memory-0123456789ab" / "recent.json").is_file()
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_whose_result_was_not_recorded_is_recorded_on_the_next_request(tmp_path, monkeypatch):
+    """Everything was deleted, then the final checkpoint write failed (a full
+    disk): the next request must finish the record instead of answering that
+    there is nothing to clean, forever."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+
+    def _disk_full(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(storage_location_router_module, "record_retained_cleanup_completed", _disk_full)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        first = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+    monkeypatch.undo()
+    assert first.status_code == 500
+    assert not source_root.exists()
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] != "cleaned"
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    with _build_client(reloaded_manager) as client:
+        second = client.post(
+            "/api/storage/location/retained-source/cleanup",
+            json={"retained_root": str(source_root)},
+        )
+
+    assert second.status_code == 200, second.json()
+    assert second.json()["retained_root_kept"] is False
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "cleaned"
+    assert reloaded_manager.load_root_state().get("legacy_cleanup_pending") is False
+
+
+@pytest.mark.unit
+def test_storage_cleanup_whose_result_was_not_recorded_is_recorded_at_the_next_launch(tmp_path, monkeypatch):
+    """The UI offers no cleanup for a retained root that is gone; the next
+    launch records it instead."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+
+    def _disk_full(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(storage_location_router_module, "record_retained_cleanup_completed", _disk_full)
+    assert _cleanup_request(tmp_path, source_root).status_code == 500
+    monkeypatch.undo()
+    assert not source_root.exists()
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "cleaned"
+
+
+@pytest.mark.unit
+def test_storage_cleanup_is_not_recorded_for_a_retained_root_gone_without_a_cleanup(tmp_path):
+    """No cleanup ever started: a root that vanished while its parent stayed
+    is what an unmounted disk below a mount point looks like."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    shutil.rmtree(source_root)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "manual_retention"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_an_entry_the_live_config_points_into(tmp_path):
+    """Pointed at the retained workshop after the migration, the live config
+    still uses that copy; it stays."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "workshop" / "mods").mkdir(parents=True)
+    (source_root / "workshop" / "mods" / "item.txt").write_text("mod", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    (target_root / "config" / "workshop_config.json").write_text(
+        json.dumps({"user_mod_folder": str(source_root / "workshop" / "mods")}), encoding="utf-8"
+    )
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["workshop"]
+    assert (source_root / "workshop" / "mods" / "item.txt").is_file()
+    assert not (source_root / "config").exists()
+
+
+@pytest.mark.unit
+def test_anchor_cleanup_stays_available_while_the_anchor_cannot_be_listed(tmp_path, monkeypatch):
+    """The last entry may be waiting under its private name; not being able
+    to list the anchor right now is no proof that it is gone."""
+    from utils import storage_migration as storage_migration_module
+
+    anchor_root = tmp_path / "anchor" / "N.E.K.O"
+    (anchor_root / ".neko-cleanup-memory-0123456789ab").mkdir(parents=True)
+    current_root = tmp_path / "current" / "N.E.K.O"
+    current_root.mkdir(parents=True)
+    original_iterdir = Path.iterdir
+
+    def _iterdir(self):
+        if self == anchor_root:
+            raise PermissionError(13, "listing denied", str(self))
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _iterdir)
+
+    assert storage_migration_module.is_retained_root_cleanup_available(
+        anchor_root,
+        current_root=current_root,
+        anchor_root=anchor_root,
+        target_root=current_root,
+        allow_anchor_root=True,
+    ) is True
+
+
+@pytest.mark.unit
+def test_storage_cleanup_is_not_recorded_for_a_retained_root_out_of_reach(tmp_path):
+    """Its parent is gone too, as with an unplugged drive: the data may still
+    be there."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    shutil.rmtree(source_root.parent)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "manual_retention"
+
+
+@pytest.mark.unit
+def test_storage_cleanup_is_not_recorded_while_an_entry_waits_under_a_private_name(tmp_path):
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    shutil.rmtree(source_root / "config")
+    (source_root / "memory").rename(source_root / ".neko-cleanup-memory-0123456789ab")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "manual_retention"
+
+
+def _migrate_config_and_game_scores(tmp_path):
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "state" / "game_scores").mkdir(parents=True)
+    (source_root / "state" / "game_scores" / "badminton_scores.db").write_bytes(b"scores")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    return source_root, target_root
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_removes_retained_game_scores_and_their_empty_parent(tmp_path):
+    source_root, target_root = _migrate_config_and_game_scores(tmp_path)
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 200, response.json()
+    # state held nothing else, so the old root goes entirely.
+    assert not source_root.exists()
+    assert (target_root / "state" / "game_scores" / "badminton_scores.db").read_bytes() == b"scores"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_puts_back_game_scores_left_under_a_private_name(tmp_path):
+    """A stopped cleanup left the scores under their private name, in the
+    retained root itself, and removed the emptied state; they go back below a
+    recreated state, and changed since, they are kept and reported."""
+    source_root, _target_root = _migrate_config_and_game_scores(tmp_path)
+    private = source_root / ".neko-cleanup-state+game_scores-0123456789ab"
+    (source_root / "state" / "game_scores").rename(private)
+    (source_root / "state").rmdir()
+    (private / "badminton_scores.db").write_bytes(b"scores written since")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["state/game_scores"]
+    assert (source_root / "state" / "game_scores" / "badminton_scores.db").read_bytes() == b"scores written since"
+    assert not private.exists()
+
+
+@pytest.mark.unit
+def test_storage_cleanup_is_not_recorded_while_retained_game_scores_remain(tmp_path):
+    source_root, _target_root = _migrate_config_and_game_scores(tmp_path)
+    shutil.rmtree(source_root / "config")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "manual_retention"
+
+
+def _v1_migration_that_left_pngtuber_behind(tmp_path):
+    """A completed v1 migration: config went over, pngtuber (unknown to v1)
+    stayed in the old root."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    _downgrade_to_v1_checkpoint(config_manager)
+    (source_root / "pngtuber" / "set").mkdir(parents=True)
+    (source_root / "pngtuber" / "set" / "idle.png").write_bytes(b"png")
+    return source_root, target_root
+
+
+@pytest.mark.unit
+def test_v1_migration_left_entries_are_copied_over_at_the_next_launch(tmp_path):
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert (target_root / "pngtuber" / "set" / "idle.png").read_bytes() == b"png"
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert "pngtuber" in checkpoint["copied_entries"]
+    assert checkpoint["v1_catch_up_completed_at"]
+    assert not list(target_root.glob(".smtx/*"))
+
+    # With that evidence, cleanup can take the old root away entirely.
+    response = _cleanup_request(tmp_path, source_root)
+    assert response.status_code == 200, response.json()
+    assert not source_root.exists()
+
+
+@pytest.mark.unit
+def test_v1_catch_up_leaves_an_entry_the_new_root_already_has(tmp_path):
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (target_root / "pngtuber").mkdir()
+    (target_root / "pngtuber" / "own.png").write_bytes(b"made at the new root")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert sorted(child.name for child in (target_root / "pngtuber").iterdir()) == ["own.png"]
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert "pngtuber" not in (checkpoint.get("copied_entries") or {})
+    assert (source_root / "pngtuber" / "set" / "idle.png").is_file()
+    # Not silently dropped: the storage page names it, and cleanup keeps it.
+    assert checkpoint["v1_catch_up_skipped"] == ["pngtuber"]
+    with _build_client(_make_real_config_manager(tmp_path)) as client:
+        notice = client.get("/api/storage/location/status").json()["completion_notice"]
+    assert notice["v1_catch_up_skipped"] == ["pngtuber"]
+    response = _cleanup_request(tmp_path, source_root)
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["pngtuber"]
+    assert (source_root / "pngtuber" / "set" / "idle.png").is_file()
+
+
+@pytest.mark.unit
+def test_v1_catch_up_runs_only_once(tmp_path):
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+    (source_root / "watch_together").mkdir()
+    (source_root / "watch_together" / "later.json").write_text("{}", encoding="utf-8")
+
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+
+    assert not (target_root / "watch_together").exists()
+
+
+@pytest.mark.unit
+def test_v1_catch_up_leaves_a_v2_checkpoint_alone(tmp_path):
+    """A v2 migration copied everything it knew; nothing to catch up."""
+    source_root, target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "pngtuber").mkdir()
+    (source_root / "pngtuber" / "idle.png").write_bytes(b"png")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert not (target_root / "pngtuber").exists()
+
+
+@pytest.mark.unit
+def test_v1_cleanup_reports_a_caught_up_entry_changed_since(tmp_path):
+    """Copied over with evidence, then the old copy changed: it stays, and is
+    reported although v1 never knew the entry."""
+    source_root, _target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    (source_root / "pngtuber" / "set" / "idle.png").write_bytes(b"changed in the old root")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["pngtuber"]
+
+
+@pytest.mark.unit
+def test_v1_catch_up_replaces_the_empty_directory_the_app_created(tmp_path):
+    """Main creates pngtuber/ empty at every start; that scaffolding must not
+    keep the user's data in the old root."""
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (target_root / "pngtuber" / "empty-subdir").mkdir(parents=True)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert (target_root / "pngtuber" / "set" / "idle.png").read_bytes() == b"png"
+    assert not (target_root / "pngtuber" / "empty-subdir").exists()
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert "pngtuber" in checkpoint["copied_entries"]
+    assert checkpoint["v1_catch_up_skipped"] == []
+    assert not list(target_root.glob(".smtx/*"))
+
+
+@pytest.mark.unit
+def test_v1_catch_up_puts_the_empty_directory_back_when_publishing_fails(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (target_root / "pngtuber").mkdir()
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _fail_publishing_the_copy(staged, target, **kwargs):
+        if ".smtx" in Path(staged).parts and "stage" in Path(staged).parts:
+            raise OSError(5, "simulated I/O error")
+        return original_publish(staged, target, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _fail_publishing_the_copy)
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+
+    assert (target_root / "pngtuber").is_dir()
+    assert (source_root / "pngtuber" / "set" / "idle.png").is_file()
+
+
+@pytest.mark.unit
+def test_v1_catch_up_keeps_a_scaffold_written_to_while_the_old_data_was_copied(tmp_path, monkeypatch):
+    """Empty when first looked at, then a file arrived during the copy: it is
+    the new root's own data now, not scaffolding to throw away."""
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (target_root / "pngtuber").mkdir()
+    original_copy = storage_migration_module._copy_and_verify_entry
+
+    def _copy_while_the_scaffold_fills(source_path, staged_path, **kwargs):
+        result = original_copy(source_path, staged_path, **kwargs)
+        (target_root / "pngtuber" / "arrived.png").write_bytes(b"new root data")
+        return result
+
+    monkeypatch.setattr(storage_migration_module, "_copy_and_verify_entry", _copy_while_the_scaffold_fills)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert sorted(child.name for child in (target_root / "pngtuber").iterdir()) == ["arrived.png"]
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert "pngtuber" not in (checkpoint.get("copied_entries") or {})
+    assert checkpoint["v1_catch_up_skipped"] == ["pngtuber"]
+    assert (source_root / "pngtuber" / "set" / "idle.png").is_file()
+
+
+@pytest.mark.unit
+def test_v1_catch_up_records_no_evidence_for_a_copy_written_as_it_went_live(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    _v1_migration_that_left_pngtuber_behind(tmp_path)
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_written(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
+        if Path(target).name == "pngtuber":
+            (Path(target) / "set" / "idle.png").write_bytes(b"rewritten")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_written)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert "pngtuber" not in (checkpoint.get("copied_entries") or {})
+    # Named, so the old copy is not left behind unannounced.
+    assert checkpoint["v1_catch_up_skipped"] == ["pngtuber"]
+
+
+@pytest.mark.unit
+def test_v1_catch_up_is_not_marked_done_while_an_entry_turned_up_meanwhile(tmp_path, monkeypatch):
+    """watch_together appeared in the old root while pngtuber was copied: it
+    is neither copied nor named yet, so the next launch must take it."""
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    original_copy = storage_migration_module._copy_and_verify_entry
+
+    def _copy_while_another_turns_up(source_path, staged_path, **kwargs):
+        result = original_copy(source_path, staged_path, **kwargs)
+        (source_root / "watch_together").mkdir(exist_ok=True)
+        (source_root / "watch_together" / "library.json").write_text("{}", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(storage_migration_module, "_copy_and_verify_entry", _copy_while_another_turns_up)
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    monkeypatch.undo()
+
+    checkpoint = load_storage_migration(_make_real_config_manager(tmp_path))
+    assert not checkpoint.get("v1_catch_up_completed_at")
+    assert (target_root / "pngtuber" / "set" / "idle.png").is_file()
+
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+
+    assert (target_root / "watch_together" / "library.json").is_file()
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["v1_catch_up_completed_at"]
+
+
+def _scaffold_filled_during_copy_then_name_retaken(tmp_path, monkeypatch, *, fail_beside_too):
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (target_root / "pngtuber").mkdir()
+    original_copy = storage_migration_module._copy_and_verify_entry
+    original_move = storage_migration_module._move_entry_keeping_mode
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _copy_while_the_scaffold_fills(source_path, staged_path, **kwargs):
+        result = original_copy(source_path, staged_path, **kwargs)
+        (target_root / "pngtuber" / "arrived.png").write_bytes(b"new root data")
+        return result
+
+    def _move_then_name_retaken(source, destination):
+        original_move(source, destination)
+        if Path(source) == target_root / "pngtuber":
+            (target_root / "pngtuber").mkdir()
+
+    def _publish_refusing_beside(staged, target, **kwargs):
+        if fail_beside_too and ".neko-kept-" in Path(target).name:
+            raise OSError(13, "simulated permission error")
+        return original_publish(staged, target, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_copy_and_verify_entry", _copy_while_the_scaffold_fills)
+    monkeypatch.setattr(storage_migration_module, "_move_entry_keeping_mode", _move_then_name_retaken)
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_refusing_beside)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+    monkeypatch.undo()
+    return reloaded_manager, target_root
+
+
+@pytest.mark.unit
+def test_v1_catch_up_keeps_arrived_data_beside_a_retaken_name(tmp_path, monkeypatch):
+    """The filled scaffold cannot go back -- its name was taken again in the
+    meantime -- so it is kept beside it rather than deleted with the trash."""
+    reloaded_manager, target_root = _scaffold_filled_during_copy_then_name_retaken(
+        tmp_path, monkeypatch, fail_beside_too=False
+    )
+
+    kept = list(target_root.glob("pngtuber.neko-kept-*"))
+    assert len(kept) == 1 and (kept[0] / "arrived.png").read_bytes() == b"new root data"
+    assert load_storage_migration(reloaded_manager)["v1_catch_up_skipped"] == ["pngtuber"]
+
+
+@pytest.mark.unit
+def test_v1_catch_up_keeps_its_transaction_when_arrived_data_has_nowhere_else_to_go(tmp_path, monkeypatch):
+    reloaded_manager, target_root = _scaffold_filled_during_copy_then_name_retaken(
+        tmp_path, monkeypatch, fail_beside_too=True
+    )
+
+    kept = list(target_root.glob(".smtx/*/trash/pngtuber/arrived.png"))
+    assert len(kept) == 1 and kept[0].read_bytes() == b"new root data"
+    # Still recorded, so a later launch retries the rescue instead of losing
+    # track of it; this time it can go beside the retaken name.
+    assert load_storage_migration(reloaded_manager).get("txid")
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    rescued = list(target_root.glob("pngtuber.neko-kept-*"))
+    assert len(rescued) == 1 and (rescued[0] / "arrived.png").read_bytes() == b"new root data"
+    assert not list(target_root.glob(".smtx/*/trash"))
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_does_not_trust_a_target_reached_through_a_linked_parent(tmp_path):
+    """target/state replaced by a link to somewhere that also has game_scores:
+    the kind check would pass there, but that is not the migrated copy."""
+    source_root, target_root = _migrate_config_and_game_scores(tmp_path)
+    elsewhere = tmp_path / "elsewhere-state"
+    shutil.copytree(target_root / "state", elsewhere)
+    shutil.rmtree(target_root / "state")
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(elsewhere), str(target_root / "state"))
+    else:
+        os.symlink(elsewhere, target_root / "state")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert "state/game_scores" in response.json()["remaining_entries"]
+    assert (source_root / "state" / "game_scores" / "badminton_scores.db").read_bytes() == b"scores"
+
+
+@pytest.mark.unit
+def test_v1_catch_up_is_not_marked_done_while_an_old_entry_cannot_be_looked_up(tmp_path, monkeypatch):
+    """The old root's entry cannot be looked up right now (no access): it may
+    well be there, so the catch-up must try again on a later launch instead
+    of being recorded as done without it."""
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    original_lstat = os.lstat
+
+    def _lstat(path, *args, **kwargs):
+        if Path(path) == source_root / "pngtuber":
+            raise PermissionError(13, "access denied", str(path))
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module.os, "lstat", _lstat)
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    monkeypatch.undo()
+
+    assert not load_storage_migration(_make_real_config_manager(tmp_path)).get("v1_catch_up_completed_at")
+
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+
+    assert (target_root / "pngtuber" / "set" / "idle.png").read_bytes() == b"png"
+
+
+@pytest.mark.unit
+def test_storage_cleanup_left_incomplete_is_not_recorded_once_its_root_vanishes(tmp_path):
+    """A cleanup that kept an entry never got to removing the root; the root
+    vanishing later (an unmounted disk) is not that cleanup finishing."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "watch_together").mkdir()
+    (source_root / "watch_together" / "unproved.json").write_text("{}", encoding="utf-8")
+    assert _cleanup_request(tmp_path, source_root).status_code == 409
+    shutil.rmtree(source_root)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] == "manual_retention"
+
+
+@pytest.mark.unit
+def test_v1_catch_up_names_an_entry_whose_old_copy_changed_after_it_was_copied(tmp_path, monkeypatch):
+    """pngtuber was copied, then changed in the old root while watch_together
+    was copied: the new root holds the older copy, so it is not proof."""
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (source_root / "watch_together").mkdir()
+    (source_root / "watch_together" / "library.json").write_text("{}", encoding="utf-8")
+    original_copy = storage_migration_module._copy_and_verify_entry
+
+    def _copy_while_the_earlier_source_changes(source_path, staged_path, **kwargs):
+        result = original_copy(source_path, staged_path, **kwargs)
+        if Path(source_path).name == "watch_together":
+            (source_root / "pngtuber" / "set" / "idle.png").write_bytes(b"newer in the old root")
+        return result
+
+    monkeypatch.setattr(storage_migration_module, "_copy_and_verify_entry", _copy_while_the_earlier_source_changes)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert "pngtuber" not in checkpoint["copied_entries"]
+    assert "watch_together" in checkpoint["copied_entries"]
+    assert checkpoint["v1_catch_up_skipped"] == ["pngtuber"]
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_rechecks_the_live_config_before_each_deletion(tmp_path, monkeypatch):
+    """The live config was pointed at the retained workshop while an earlier
+    entry was being compared; the workshop must not go with a stale scan."""
+    config_manager = _make_real_config_manager(tmp_path)
+    source_root = tmp_path / "legacy-runtime" / "N.E.K.O"
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("original", encoding="utf-8")
+    (source_root / "workshop" / "mods").mkdir(parents=True)
+    (source_root / "workshop" / "mods" / "item.txt").write_text("mod", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="recommended",
+    )
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    original_snapshot = storage_location_router_module.snapshot_runtime_entry
+    edited = []
+
+    def _snapshot_while_the_config_is_edited(path):
+        if not edited:
+            edited.append(True)
+            (target_root / "config" / "workshop_config.json").write_text(
+                json.dumps({"user_mod_folder": str(source_root / "workshop" / "mods")}), encoding="utf-8"
+            )
+        return original_snapshot(path)
+
+    monkeypatch.setattr(storage_location_router_module, "snapshot_runtime_entry", _snapshot_while_the_config_is_edited)
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert "workshop" in response.json()["remaining_entries"]
+    assert (source_root / "workshop" / "mods" / "item.txt").is_file()
+
+
+@pytest.mark.unit
+def test_v1_cleanup_keeps_reporting_entries_the_catch_up_has_not_handled_yet(tmp_path):
+    """The catch-up has not completed (it failed, or has not run yet): what v1
+    did not know is still in the old root. Cleaning the v1 entries must not
+    record the root as cleaned, which would end the catch-up for good."""
+    source_root, _target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["pngtuber"]
+    assert (source_root / "pngtuber" / "set" / "idle.png").is_file()
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] != "cleaned"
+
+
+@pytest.mark.unit
+def test_v1_cleanup_after_a_failed_catch_up_leaves_it_to_finish_on_the_next_launch(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+
+    def _copy_fails(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_and_verify_entry", _copy_fails)
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    monkeypatch.undo()
+
+    response = _cleanup_request(tmp_path, source_root)
+    assert response.status_code == 409, response.json()
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] != "cleaned"
+
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+
+    assert (target_root / "pngtuber" / "set" / "idle.png").read_bytes() == b"png"
+
+
+@pytest.mark.unit
+def test_v1_catch_up_names_an_entry_whose_new_copy_changed_while_others_were_copied(tmp_path, monkeypatch):
+    """pngtuber went live and was checked; a sync client then edited it while
+    watch_together was copied. Its recorded target manifest is stale."""
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (source_root / "watch_together").mkdir()
+    (source_root / "watch_together" / "library.json").write_text("{}", encoding="utf-8")
+    original_copy = storage_migration_module._copy_and_verify_entry
+
+    def _copy_while_the_earlier_target_changes(source_path, staged_path, **kwargs):
+        result = original_copy(source_path, staged_path, **kwargs)
+        if Path(source_path).name == "watch_together":
+            (target_root / "pngtuber" / "set" / "idle.png").write_bytes(b"edited in the new root")
+        return result
+
+    monkeypatch.setattr(storage_migration_module, "_copy_and_verify_entry", _copy_while_the_earlier_target_changes)
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    checkpoint = load_storage_migration(reloaded_manager)
+    assert "pngtuber" not in checkpoint["copied_entries"]
+    assert checkpoint["v1_catch_up_skipped"] == ["pngtuber"]
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_pending_when_an_entry_comes_back_while_finishing(tmp_path, monkeypatch):
+    """Nothing migrated was left, then a sync client put memory back while the
+    old logs were being removed: the root stays, and so must the cleanup."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "logs").mkdir()
+    (source_root / "logs" / "old.log").write_text("old", encoding="utf-8")
+    original_remove = storage_location_router_module.remove_runtime_entry
+
+    def _remove_while_memory_comes_back(path):
+        original_remove(path)
+        if Path(path).name == "logs":
+            (source_root / "memory").mkdir(exist_ok=True)
+            (source_root / "memory" / "restored.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(storage_location_router_module, "remove_runtime_entry", _remove_while_memory_comes_back)
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert response.json()["remaining_entries"] == ["memory"]
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] != "cleaned"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_finishes_when_state_is_a_plain_file(tmp_path):
+    """A file named state in the old root: state/game_scores cannot exist
+    below it, so it is not left pending forever."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "state").write_text("not a directory", encoding="utf-8")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 200, response.json()
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] == "cleaned"
+
+
+@pytest.mark.unit
+def test_an_entry_below_a_plain_file_counts_as_gone(tmp_path, monkeypatch):
+    """POSIX reports ENOTDIR for a path through a plain file (Windows reports
+    it as not found): either way the entry cannot exist."""
+    original_lstat = os.lstat
+
+    def _lstat(path, *args, **kwargs):
+        if Path(path).name == "game_scores":
+            raise NotADirectoryError(20, "Not a directory", str(path))
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(storage_location_router_module.os, "lstat", _lstat)
+
+    assert storage_location_router_module._entry_may_exist(tmp_path / "state" / "game_scores") is False
+
+
+@pytest.mark.unit
+def test_storage_cleanup_withdraws_the_removal_record_when_the_root_stays(tmp_path, monkeypatch):
+    """memory came back while the old logs were removed; the root stays, and
+    a later unmount must not make it pass for removed."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "logs").mkdir()
+    (source_root / "logs" / "old.log").write_text("old", encoding="utf-8")
+    original_remove = storage_location_router_module.remove_runtime_entry
+
+    def _remove_while_memory_comes_back(path):
+        original_remove(path)
+        if Path(path).name == "logs":
+            (source_root / "memory").mkdir(exist_ok=True)
+            (source_root / "memory" / "restored.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(storage_location_router_module, "remove_runtime_entry", _remove_while_memory_comes_back)
+    assert _cleanup_request(tmp_path, source_root).status_code == 409
+    monkeypatch.undo()
+    shutil.rmtree(source_root)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert load_storage_migration(reloaded_manager)["retained_source_mode"] != "cleaned"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_keeps_everything_while_the_live_config_is_a_link(tmp_path):
+    """Edits behind a linked config would not change its fingerprint, so what
+    it might reference cannot be followed: nothing goes."""
+    source_root, target_root = _migrate_config_and_memory(tmp_path)
+    elsewhere = tmp_path / "config-elsewhere"
+    shutil.copytree(target_root / "config", elsewhere)
+    shutil.rmtree(target_root / "config")
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(elsewhere), str(target_root / "config"))
+    else:
+        os.symlink(elsewhere, target_root / "config")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert (source_root / "memory" / "recent.json").is_file()
+
+
+@pytest.mark.unit
+def test_v1_catch_up_remembers_an_earlier_transaction_before_replacing_its_id(tmp_path, monkeypatch):
+    """An earlier catch-up left user data in its transaction that could not be
+    put back, and the catch-up runs again: that transaction must stay tracked."""
+    from utils import storage_migration as storage_migration_module
+
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    old_txid = "0123456789abcdef0123456789abcdef"
+    payload = dict(load_storage_migration(_make_real_config_manager(tmp_path)))
+    payload["txid"] = old_txid
+    save_storage_migration(_make_real_config_manager(tmp_path), payload)
+    trashed = storage_migration_module._transaction_path(target_root, old_txid) / "trash" / "watch_together"
+    trashed.mkdir(parents=True)
+    (trashed / "arrived.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(storage_migration_module, "_rescue_from_trash", lambda trashed, target: False)
+
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    monkeypatch.undo()
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+
+    assert (target_root / "watch_together" / "arrived.json").is_file()
+    assert not storage_migration_module._transaction_path(target_root, old_txid).exists()
+
+
+@pytest.mark.unit
+def test_v1_cleanup_reports_an_entry_restored_after_the_catch_up(tmp_path):
+    """The catch-up is done; then a sync client put watch_together back into
+    the old root. It has no evidence, so it stays -- and must be reported."""
+    source_root, _target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["v1_catch_up_completed_at"]
+    (source_root / "watch_together").mkdir()
+    (source_root / "watch_together" / "library.json").write_text("{}", encoding="utf-8")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 409, response.json()
+    assert "watch_together" in response.json()["remaining_entries"]
+    assert (source_root / "watch_together" / "library.json").is_file()
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] != "cleaned"
+
+
+
+@pytest.mark.unit
+def test_v1_cleanup_removes_the_parent_a_caught_up_nested_entry_leaves(tmp_path):
+    """The catch-up copied state/game_scores; once it is cleaned, the empty
+    state directory must not keep the old root alive."""
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (source_root / "state" / "game_scores").mkdir(parents=True)
+    (source_root / "state" / "game_scores" / "badminton_scores.db").write_bytes(b"scores")
+    run_pending_storage_migration(_make_real_config_manager(tmp_path))
+    assert (target_root / "state" / "game_scores" / "badminton_scores.db").read_bytes() == b"scores"
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 200, response.json()
+    assert not source_root.exists()
+
+
+
+@pytest.mark.unit
+def test_storage_cleanup_leaves_the_root_while_entries_remain(tmp_path, monkeypatch):
+    """pngtuber has no evidence and stays; a sync client removed it right after
+    the scan. The root must not be removed under a result that says it stays
+    -- the next cleanup finds it empty and records it cleaned."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "pngtuber").mkdir()
+    (source_root / "pngtuber" / "idle.png").write_bytes(b"png")
+    original_may_exist = storage_location_router_module._entry_may_exist
+
+    def _may_exist_then_vanish(path):
+        result = original_may_exist(path)
+        if result and Path(path).name == "pngtuber":
+            shutil.rmtree(path)
+        return result
+
+    monkeypatch.setattr(storage_location_router_module, "_entry_may_exist", _may_exist_then_vanish)
+    first = _cleanup_request(tmp_path, source_root)
+    monkeypatch.undo()
+
+    assert first.status_code == 409, first.json()
+    assert source_root.is_dir()
+    second = _cleanup_request(tmp_path, source_root)
+    assert second.status_code == 200, second.json()
+    assert not source_root.exists()
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] == "cleaned"

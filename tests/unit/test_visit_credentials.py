@@ -865,19 +865,27 @@ async def test_ticket_with_an_unpaired_surrogate_is_a_bad_response(servers):
 
 
 @pytest.mark.asyncio
-async def test_pubkey_ttl_overflow_is_a_failed_refresh(servers, monkeypatch):
+@pytest.mark.parametrize("ttl_literal", ["9" * 400, "9" * 5000, "-" + "9" * 5000],
+                         ids=["400-digits", "5000-digits", "neg-5000-digits"])
+async def test_pubkey_ttl_overflow_falls_back_to_default_ttl(servers, monkeypatch, ttl_literal):
     original = servers.handler
+    # 5000 位超过 int 位数上限（默认 4300）：解析 JSON 时就会出错，不能让整次刷新作废
+    huge = "9" * 5000
+    body = ('{"keys":[{"kid":"k-huge","not_before":0,"not_after":' + huge + '}],'
+            '"revoked":["k-revoked"],"ttl_s":' + ttl_literal + "}")
 
     def _handler(request):
         if request.url.path == "/api/visit/pubkeys":
-            return httpx.Response(200, content=('{"keys":[],"revoked":[],"ttl_s":' + "9" * 400 + "}").encode(),
-                                  headers={"content-type": "application/json"})
+            return httpx.Response(200, content=body.encode(), headers={"content-type": "application/json"})
         return original(request)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
     monkeypatch.setattr(cr, "get_external_http_client", lambda: client)
     keys = await cr.fetch_pubkeys(force_refresh=True)
-    assert keys.stale
+    # 只有 ttl_s / 单个 key 坏：整次刷新照常生效（吊销名单生效，坏 key 的 kid 被吊销），TTL 取上限
+    assert not keys.stale
+    assert {"k-revoked", "k-huge"} <= keys.revoked
+    assert cr._pubkeys_fetched.ttl_s == float(vs.VISIT_PUBKEYS_CACHE_S)
 
 
 @pytest.mark.asyncio

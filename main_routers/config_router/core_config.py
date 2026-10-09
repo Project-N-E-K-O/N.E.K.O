@@ -53,6 +53,13 @@ CORE_CONFIG_MODEL_API_KEY_FIELDS = tuple(
     f'{model_type}ModelApiKey' for model_type in CORE_CONFIG_MODEL_TYPES
 )
 
+CORE_CONFIG_VOICE_MANAGEMENT_SECRET_FIELDS = (
+    'doubaoVoiceManagementAccessKey', 'doubaoVoiceManagementSecretKey',
+)
+CORE_CONFIG_VOICE_MANAGEMENT_CONTEXT_FIELDS = (
+    'doubaoVoiceManagementAppId', 'doubaoVoiceManagementProjectName',
+)
+
 CORE_CONFIG_PROVIDER_API_KEY_FIELDS = frozenset(
     CORE_CONFIG_ASSIST_API_KEY_FIELDS
 )
@@ -64,6 +71,7 @@ CORE_CONFIG_SECRET_FIELDS = (
     *CORE_CONFIG_ASSIST_API_KEY_FIELDS,
     'mcpToken',
     *CORE_CONFIG_MODEL_API_KEY_FIELDS,
+    *CORE_CONFIG_VOICE_MANAGEMENT_SECRET_FIELDS,
 )
 
 
@@ -283,6 +291,12 @@ async def get_core_config_api():
             "disableTts": core_cfg.get('disableTts', False) is True or str(core_cfg.get('disableTts', False)).lower() in ('true', '1', 'yes', 'on'),
             "success": True
         }
+        for field in CORE_CONFIG_VOICE_MANAGEMENT_CONTEXT_FIELDS:
+            response[field] = core_cfg.get(field, '')
+        for field in CORE_CONFIG_VOICE_MANAGEMENT_SECRET_FIELDS:
+            value = core_cfg.get(field, '')
+            response[field] = redact_core_config_secret(value)
+            response[f'{field}_display'] = mask_core_config_secret_for_display(value)
         response['api_key'] = redact_core_config_secret(
             response['api_key'],
             preserve_free_access=True,
@@ -526,8 +540,19 @@ async def update_core_config(request: Request):
                 if normalized_key and normalized_value:
                     sanitized_resolved_urls[normalized_key] = normalized_value
             core_cfg['resolvedProviderUrls'] = sanitized_resolved_urls
-        for field in (*CORE_CONFIG_ASSIST_API_KEY_FIELDS, 'mcpToken'):
+        for field in (
+            *CORE_CONFIG_ASSIST_API_KEY_FIELDS, 'mcpToken',
+            *CORE_CONFIG_VOICE_MANAGEMENT_SECRET_FIELDS,
+        ):
+            if field in CORE_CONFIG_VOICE_MANAGEMENT_SECRET_FIELDS and field in data:
+                if not isinstance(data[field], str) or len(data[field]) > 2048:
+                    return {"success": False, "error": "INVALID_MANAGEMENT_CONFIG"}
             apply_core_config_secret_update(core_cfg, data, field)
+        for field in CORE_CONFIG_VOICE_MANAGEMENT_CONTEXT_FIELDS:
+            if field in data:
+                if not isinstance(data[field], str) or len(data[field]) > 200:
+                    return {"success": False, "error": "INVALID_MANAGEMENT_CONFIG"}
+                core_cfg[field] = data[field].strip()
         if 'openclawUrl' in data:
             # 前端表单回填的是文件里的原始值。若启动期迁移曾写盘失败（Windows 上
             # os.replace 可能被杀软占用），这里收到的就还是旧的 8089，原样落盘等于把

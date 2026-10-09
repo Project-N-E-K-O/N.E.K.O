@@ -28,7 +28,8 @@ def _connecting_runtime():
         await release.wait()
 
     candidate = SimpleNamespace(
-        is_ready=True, connect=AsyncMock(side_effect=connect), close=AsyncMock(),
+        is_ready=True, last_failure_code=None,
+        connect=AsyncMock(side_effect=connect), close=AsyncMock(),
     )
     component._asr_session_factory = MagicMock(return_value=candidate)
     component._asr_transport_selection = _selection("qwen")

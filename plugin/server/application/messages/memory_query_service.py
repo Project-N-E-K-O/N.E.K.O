@@ -3,10 +3,9 @@ from __future__ import annotations
 import math
 from urllib.parse import quote
 
-import httpx
-
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
+from plugin.utils.http_imports import ensure_httpx
 
 logger = get_logger("server.application.messages.memory_query")
 
@@ -56,6 +55,7 @@ class MemoryQueryService:
         normalized_query = _normalize_non_empty_str(query, field="query")
         normalized_timeout = _coerce_timeout(timeout)
         query_len = len(normalized_query)
+        httpx = await ensure_httpx()
 
         try:
             url = _build_memory_search_url(

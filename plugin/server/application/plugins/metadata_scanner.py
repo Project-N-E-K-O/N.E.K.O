@@ -18,7 +18,7 @@ import signal
 import subprocess
 import sys
 import threading
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Mapping
 
@@ -26,6 +26,10 @@ import psutil
 
 from plugin._types.entry_metadata import entry_contract_fields
 from plugin._types.events import EventHandler, EventMeta
+from plugin._types.isolated_metadata import (
+    IsolatedPluginMetadata,
+    handler_key_belongs_to_plugin as _handler_key_belongs_to_plugin,
+)
 from plugin.core import registry as registry_module
 from plugin.core.state import state
 
@@ -55,9 +59,9 @@ _WORKER_BOOTSTRAP = (
 # 注意单项上限本身不足以封顶：17 个插件按 5 并发是 4 波，4×10s 仍然超前端预算。
 # 真正封顶的是 registry_service 那边的总预算，这里只负责让单个坏插件早点放手。
 # Env: NEKO_PLUGIN_METADATA_SCAN_TIMEOUT
-from plugin.server.application.plugins._env_budgets import env_seconds
-
-_DEFAULT_SCAN_TIMEOUT_SECONDS = env_seconds("NEKO_PLUGIN_METADATA_SCAN_TIMEOUT", 10.0)
+from plugin.server.application.plugins._metadata_scan_settings import (
+    METADATA_SCAN_TIMEOUT_SECONDS as _DEFAULT_SCAN_TIMEOUT_SECONDS,
+)
 
 # 这里曾经有一个全局信号量，限制同时活着的元数据解释器数量，因为 discovery 会
 # 并行强扫十几个插件、每个常驻约 66 MB。discovery 不再扫描之后扇出没有了：唯一
@@ -71,10 +75,6 @@ def _metadata_worker_command() -> list[str]:
     if getattr(sys, "frozen", False) or "__compiled__" in globals():
         return [sys.executable, "--neko-plugin-metadata-worker"]
     return [sys.executable, "-c", _WORKER_BOOTSTRAP]
-
-
-def _handler_key_belongs_to_plugin(key: str, plugin_id: str) -> bool:
-    return key.startswith(f"{plugin_id}.") or key.startswith(f"{plugin_id}:")
 
 
 def _terminate_processes(processes: list[psutil.Process]) -> None:
@@ -296,13 +296,6 @@ class PluginMetadataScanError(RuntimeError):
     def __init__(self, error_type: str, message: str) -> None:
         super().__init__(message)
         self.error_type = error_type
-
-
-@dataclass(slots=True)
-class IsolatedPluginMetadata:
-    entries_preview: list[dict[str, object]]
-    handlers: dict[str, dict[str, object]]
-    entry_methods: dict[str, str]
 
 
 def _json_safe(value: Any) -> Any:
@@ -746,10 +739,9 @@ def scan_plugin_metadata_isolated(
     and imports nothing — see
     :mod:`plugin.server.infrastructure.packaged_metadata`.
 
-    There is no result cache and no concurrency gate here any more. Both existed
-    to make a fan-out of seventeen simultaneous scans survivable; discovery no
-    longer scans, and ``start_plugin`` runs under the plugin operation lock, so
-    scans are serialised by construction.
+    There is no result cache or concurrency gate here. Discovery does not scan.
+    Manual starts are serialized by the plugin operation lock; independent
+    autostart plugins can scan concurrently within the configured batch limit.
     """
     return _scan_plugin_metadata_uncached(
         plugin_id=plugin_id,

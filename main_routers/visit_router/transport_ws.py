@@ -103,6 +103,9 @@ AUTH_TIMEOUT_S = 5.0
 CLOSE_LOCK_WAIT_S = 2.0
 """A close waits at most this long for an in-flight send before closing anyway."""
 
+SEND_TIMEOUT_S = 5.0
+"""One downlink write may take at most this long; a socket that does not drain is retired (1011)."""
+
 CLOSE_BAD_REQUEST = 4400
 CLOSE_UNAUTHORIZED = 4403
 CLOSE_UNKNOWN_VISIT = 4404
@@ -253,6 +256,9 @@ class VisitTransportSession(ABC):
     async def on_stats(self, msg: dict[str, Any]) -> None:
         """5 s ``stats`` report (default: ignored)."""
 
+    def on_frame_sent(self, frame: Any) -> None:
+        """An outbox frame the page re-entry flushed went out (default: nothing to book)."""
+
     async def on_backpressure(self, msg: dict[str, Any]) -> None:
         """``tx_backpressure``: pause ``typing`` / new deltas while on."""
         self.outbox.set_backpressure(bool(msg.get("on")))
@@ -345,8 +351,10 @@ class _Connection:
     preflight_seen: bool = False
     preflight_ok: bool = False
     sdk_seen: bool = False
+    sdk_ok: bool = False
     in_room: bool = False
     rejoined: bool = False
+    lost_as_current: bool = False
     media_seq: int = 0
     media_last_ok: int = 0
     media_pending: set[int] = field(default_factory=set)
@@ -371,8 +379,10 @@ class _Connection:
             if self.closed or self.retired:
                 return False
             try:
-                await self.websocket.send_text(text)
-            except Exception as exc:  # noqa: BLE001 - 断开中的 socket：当作未送达
+                # 有界：iframe 不读了（背压）就当这条 socket 写不出去，退役它让 iframe 重连，
+                # 别让接待 / 激活 / 泵卡在一次写上
+                await asyncio.wait_for(self.websocket.send_text(text), SEND_TIMEOUT_S)
+            except Exception as exc:  # noqa: BLE001 - 断开中 / 写超时的 socket：当作未送达
                 logger.warning("visit transport: %s downlink not written, dropping the socket: %s",
                                msg.get("type"), type(exc).__name__)
                 # 写不出去的 socket 不能留着：stop 失败用终态 4404（iframe 不再重连、不再领凭证入房），
@@ -473,6 +483,7 @@ def _abandon(conn: _Connection, code: int, reason: str) -> None:
     if link is None or _links.get((link.session.visit_id, link.session.side)) is not link or link.conn is not conn:
         return
     link.conn = None
+    conn.lost_as_current = True  # 重入回放写失败时据此判断：是它这次掉线、而不是被更新的连接顶掉
     try:
         link.session.on_page_lost(link.session.now())
     except Exception as exc:  # noqa: BLE001
@@ -548,6 +559,11 @@ async def _send_on(conn: _Connection, msg: Mapping[str, Any], *, text: Optional[
 def _newer_media(conn: _Connection, mark: int) -> bool:
     """True when a ``media`` queued after ``mark`` was sent or is still waiting to be sent."""
     return conn.media_last_ok > mark or any(seq > mark for seq in conn.media_pending)
+
+
+def pending_close_tasks() -> list[asyncio.Task]:
+    """Connection closes started by ``unregister_transport_session`` that are still running."""
+    return [task for task in _close_tasks if not task.done()]
 
 
 def _reset_for_tests() -> None:
@@ -753,7 +769,11 @@ async def _handle_frame(
             if conn.sdk_seen or not conn.credentials_sent:
                 return
             conn.sdk_seen = True
-            await _call(session, "on_sdk_caps", _sdk_caps(msg))
+            caps = _sdk_caps(msg)
+            if await _call(session, "on_sdk_caps", caps) is not _HOOK_FAILED:
+                conn.sdk_ok = caps.get("transport_ok") is True
+            # 入房报告可能先到：能力门一过就再试一次重入
+            await _try_rejoin(link, conn, session)
         return
     if kind == "state":
         # 非字符串（list / dict）不能拿去查 frozenset，否则抛 TypeError 被当成断线；
@@ -812,7 +832,8 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
     deadline running, and the next trigger redoes the whole thing.
     """
     # 只有已被顶掉的旧连接不能替新连接恢复；没入房、已重入的连接不做
-    if not (conn.reattach and conn.in_room and not conn.rejoined and _is_current(link, conn)):
+    # 重入同样要本连接过了能力门 ③（每条新连接各自加载 SDK）
+    if not (conn.reattach and conn.in_room and conn.sdk_ok and not conn.rejoined and _is_current(link, conn)):
         return
     # 期限已过（tick 还没来得及判）就不再重入：由 runtime 的 tick 判 local_page_lost。
     # 帧入口已查过一次；这里复查 on_state 等 await 期间刚过期的情形：新 iframe 已经用同一个 vid
@@ -853,8 +874,26 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
         return
     conn.rejoined = True
     media_mark = conn.media_seq
-    for frame in frames:
-        await _send_on(conn, frame.to_ws())
+    for index, frame in enumerate(frames):
+        if await _send_on(conn, frame.to_ws()):
+            # 与泵发出的帧同一套记账（写出去的时刻、存活计时、收尾步骤计时器），不然重入时写出去的帧（首发或补发）就漏掉了
+            try:
+                session.on_frame_sent(frame)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit transport: on_frame_sent failed: %s", type(exc).__name__)
+            continue
+        # 没写出去：与泵一样回滚记账（due 放出时已记成「已发」）。连接这就被弃的话，后面没送的也一并回滚
+        unsent = frames[index:] if conn.lost_as_current else [frame]
+        for failed in unsent:
+            try:
+                session.outbox.write_failed(failed)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("visit transport: write_failed failed: %s", type(exc).__name__)
+        if conn.lost_as_current:
+            # 回放写不出去、这条连接作为当前连接被弃（_abandon 已按新一次掉线起了重载期限）：把这次重载
+            # 原来的期限写回，绝对期限不能被反复重连续上。被更新的连接顶掉的不算：新连接可能已经重入完了
+            _restore_reload_deadline(link, session, saved)
+            return
     if _is_current(link, conn):
         # 发帧期间 runtime 可能已经发了更新的 media（例如刚关掉摄像头）：
         # 前面那份只用于提前发现失败，真正下发的取发送前一刻的最新状态，
@@ -866,7 +905,27 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
             # 取不到最新的：期间 runtime 发过 media 就不再用旧快照兜底（会盖掉更新的状态）
             if _newer_media(conn, media_mark):
                 return
-        await _send_on(conn, media, text=media_text)
+        if not await _send_on(conn, media, text=media_text) and conn.lost_as_current:
+            _restore_reload_deadline(link, session, saved)
+
+
+def _restore_reload_deadline(link: _Link, session: VisitTransportSession, saved: Any) -> None:
+    """A rejoin whose writes failed: the page reload goes on under its original (absolute) deadline.
+
+    The saved state is from before the rejoin (socket back); the socket was
+    just lost again, so the socket stage is recomputed from now within that
+    absolute deadline (``min(now + socket stage, absolute)``).
+    """
+    if saved is None:
+        return
+    if _links.get((session.visit_id, session.side)) is not link or link.conn is not None:
+        # 被弃之后已经有新连接接上（或这场已注销）：期限归新连接管，不再拿旧的写回
+        return
+    try:
+        session.liveness.restore_page_reload_state(saved)
+        session.liveness.on_page_lost(session.now())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("visit transport: reload deadline not restored: %s", type(exc).__name__)
 
 
 async def _receive_text(websocket: WebSocket) -> Optional[str]:

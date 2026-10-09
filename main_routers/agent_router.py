@@ -497,7 +497,7 @@ async def redirect_plugin_dashboard(request: Request):
 @router.get('/openclaw/guide', response_class=HTMLResponse)
 async def openclaw_guide_page(request: Request):
     templates = get_templates()
-    return templates.TemplateResponse("templates/openclaw_guide.html", {
+    return templates.TemplateResponse(request, "templates/openclaw_guide.html", {
         "request": request,
         **_static_assets_ctx(),
     })

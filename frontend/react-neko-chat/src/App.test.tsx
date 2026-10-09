@@ -338,6 +338,178 @@ describe('App', () => {
     expect(onCompactMinimizeRequest).toHaveBeenCalledTimes(1);
   });
 
+  it('routes theater drafts through the dedicated callback before cat-local chat', () => {
+    const onComposerSubmit = vi.fn();
+    const onTheaterSubmit = vi.fn();
+    renderInputApp({
+      catLocalTextOnly: true,
+      theaterPresentation: {
+        active: true,
+        phase: 'awaiting_player',
+        history: [],
+        suggestedInputs: [],
+      },
+      onComposerSubmit,
+      onTheaterSubmit,
+    });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: '  推开教室门  ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(onTheaterSubmit).toHaveBeenCalledWith('推开教室门');
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+  });
+
+  it('keeps the theater draft when the dedicated callback is unavailable', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({
+      theaterPresentation: {
+        active: true,
+        phase: 'awaiting_player',
+        history: [],
+        suggestedInputs: [],
+      },
+      onComposerSubmit,
+    });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: '等待剧场宿主就绪' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue('等待剧场宿主就绪');
+  });
+
+  it('only shows theater Galgame options while the selection callback is available', () => {
+    const props = {
+      theaterPresentation: { active: true, phase: 'awaiting_player' as const, suggestedInputs: ['推开教室门'] },
+    };
+    const { container, rerender } = render(<App {...props} />);
+    expect(document.querySelector('.composer-galgame-option')).toBeNull();
+    const onTheaterSuggestedInputSelect = vi.fn();
+    rerender(<App {...props} onTheaterSuggestedInputSelect={onTheaterSuggestedInputSelect} />);
+    fireEvent.click(document.querySelector('.composer-galgame-option')!);
+    expect(onTheaterSuggestedInputSelect).toHaveBeenCalledExactlyOnceWith('推开教室门');
+    expect(container.querySelectorAll('.composer-input').length).toBeLessThanOrEqual(1);
+    rerender(<App {...props} />);
+    expect(document.querySelector('.composer-galgame-option')).toBeNull();
+  });
+
+  it.each(['evaluating', 'performing', 'ended'] as const)(
+    'locks the open theater composer during %s and preserves its draft', (phase) => {
+      const onTheaterSubmit = vi.fn();
+      const onComposerSubmit = vi.fn();
+      const props = { compactChatState: 'input' as const, onTheaterSubmit, onComposerSubmit };
+      const { rerender } = render(<App {...props} theaterPresentation={{ active: true, phase: 'awaiting_player' }} />);
+      const input = screen.getByPlaceholderText('Type a message...');
+      fireEvent.change(input, { target: { value: '留在这里等她' } });
+      rerender(<App {...props} theaterPresentation={{ active: true, phase }} />);
+
+      expect(input).toHaveAttribute('readonly');
+      expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+      fireEvent.change(input, { target: { value: '不能写入的草稿' } });
+      pressEnter(input);
+      fireEvent.submit(input.closest('form')!);
+      expect(onTheaterSubmit).not.toHaveBeenCalled();
+      expect(onComposerSubmit).not.toHaveBeenCalled();
+      expect(input).toHaveValue('留在这里等她');
+
+      rerender(<App {...props} theaterPresentation={{ active: true, phase: 'awaiting_player' }} />);
+      expect(input).not.toHaveAttribute('readonly');
+      pressEnter(input);
+      expect(onTheaterSubmit).toHaveBeenCalledExactlyOnceWith('留在这里等她');
+    },
+  );
+
+  it('keeps theater history accessible when the composer becomes disabled', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    const props = { chatSurfaceMode: 'compact' as const, compactChatState: 'input' as const };
+    const { container, rerender } = render(
+      <App {...props} theaterPresentation={{ active: true, phase: 'awaiting_player' }} />,
+    );
+    const handle = container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle');
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+    expect(handle).toBeDisabled();
+    fireEvent.click(handle!);
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+
+    rerender(<App {...props} composerDisabled theaterPresentation={{ active: true, phase: 'performing' }} />);
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+  });
+
+  it('restores a theater IME draft on blur without overwriting the ordinary draft', () => {
+    const onTheaterSubmit = vi.fn();
+    const onComposerSubmit = vi.fn();
+    const props = { compactChatState: 'input' as const, onTheaterSubmit, onComposerSubmit };
+    const { rerender } = render(<App {...props} />);
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'ordinary draft' } });
+    rerender(<App {...props} theaterPresentation={{ active: true, phase: 'awaiting_player' }} />);
+    fireEvent.change(input, { target: { value: '等待她回应' } });
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', isComposing: true });
+    fireEvent.input(input, { target: { value: '等待她回应\n' }, inputType: 'insertLineBreak' });
+    fireEvent.blur(input);
+    expect(input).toHaveValue('等待她回应');
+    expect(onTheaterSubmit).not.toHaveBeenCalled();
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    rerender(<App {...props} />);
+    expect(input).toHaveValue('ordinary draft');
+  });
+
+  it('restores the pre-theater ordinary draft only once across full and compact remounts', () => {
+    // 剧场结束后宿主的 viewProps 会一直保留这份恢复协议；full/compact 切换重挂组件时不能再次填回。
+    const ended = {
+      active: false,
+      phase: 'inactive' as const,
+      history: [],
+      suggestedInputs: [],
+      ordinaryDraftRestore: { id: 'ordinary_restore_compact_exit', text: '晚饭吃什么' },
+    };
+    const { rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" theaterPresentation={ended} />,
+    );
+    const compactInput = screen.getByPlaceholderText('Type a message...');
+    expect(compactInput).toHaveValue('晚饭吃什么');
+    fireEvent.change(compactInput, { target: { value: '' } });
+
+    rerender(<App chatSurfaceMode="full" theaterPresentation={ended} />);
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+    rerender(<App chatSurfaceMode="compact" compactChatState="input" theaterPresentation={ended} />);
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+  });
+
+  it('delivers the ordinary draft to the full surface when the theater exit restores full mode', () => {
+    const restore = { id: 'ordinary_restore_full_exit', text: '明天去哪玩' };
+    const { rerender } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        theaterPresentation={{ active: true, phase: 'awaiting_player', ordinaryDraftRestore: restore }}
+      />,
+    );
+    // 演绎期间胶囊输入框属于剧场，不能提前消费普通草稿。
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+
+    rerender(
+      <App
+        chatSurfaceMode="full"
+        theaterPresentation={{ active: false, phase: 'inactive', ordinaryDraftRestore: restore }}
+      />,
+    );
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('明天去哪玩');
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        theaterPresentation={{ active: false, phase: 'inactive', ordinaryDraftRestore: restore }}
+      />,
+    );
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+  });
+
   it('keeps the ordinary draft separate from the temporary compact cat draft', () => {
     const onComposerSubmit = vi.fn();
     const { rerender } = render(
@@ -1324,7 +1496,7 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-message')).not.toHaveAttribute('aria-pressed');
     expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('role');
     expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('aria-pressed');
-    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-disabled', 'true');
+    expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('aria-disabled');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('tabindex', '-1');
     expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
 
@@ -1357,7 +1529,7 @@ describe('App', () => {
       expect(exportButton).toHaveAttribute('aria-pressed', 'false');
       expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('role');
       expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('aria-pressed');
-      expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-disabled', 'true');
+      expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('aria-disabled');
       expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('tabindex', '-1');
       expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('data-compact-hit-region');
       expect(container.querySelector('.compact-export-history-scroll')).not.toHaveAttribute('data-compact-hit-region');
@@ -3597,6 +3769,45 @@ describe('App', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('drops the ordinary assistant preview when theater takes over the capsule', async () => {
+    const previousAssistantText = '这是进入小剧场之前残留的猫娘回复。';
+    const previousAssistantMessage = parseChatMessage({
+      id: 'assistant-before-theater',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: previousAssistantText }],
+      status: 'streaming',
+    });
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" messages={[previousAssistantMessage]} />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent?.length ?? 0).toBeGreaterThan(0);
+    });
+    const visibleOrdinaryPreview = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+    expect(previousAssistantText.startsWith(visibleOrdinaryPreview)).toBe(true);
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        messages={[previousAssistantMessage]}
+        theaterPresentation={{
+          active: true,
+          phase: 'loading',
+          history: [],
+          suggestedInputs: [],
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent(visibleOrdinaryPreview);
+    });
   });
 
   it('keeps the compact caption moving forward when a new bubble joins the same turn instead of replaying it', async () => {
@@ -8037,7 +8248,7 @@ describe('App', () => {
   it('keeps compact tool wheel detent audio silent for an empty URL and plays every detent when configured', () => {
     const playSfx = vi.fn();
     const preloadSfx = vi.fn();
-    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
+    const GameAudioSystem = vi.fn().mockImplementation(function () { return { playSfx, preloadSfx }; });
     (window as Window & {
       NekoGameSystem?: {
         GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof preloadSfx };
@@ -8070,7 +8281,7 @@ describe('App', () => {
     const malformedAudioSystems: unknown[] = [
       {},
       { GameAudioSystem: 'not-a-constructor' },
-      { GameAudioSystem: vi.fn().mockImplementation(() => ({})) },
+      { GameAudioSystem: vi.fn().mockImplementation(function () { return {}; }) },
     ];
 
     malformedAudioSystems.forEach(audioSystemShape => {
@@ -8091,7 +8302,7 @@ describe('App', () => {
   it('preloads compact tool wheel sounds when the chat UI mounts before the wheel opens', async () => {
     const playSfx = vi.fn();
     const preloadSfx = vi.fn();
-    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
+    const GameAudioSystem = vi.fn().mockImplementation(function () { return { playSfx, preloadSfx }; });
     (window as Window & {
       NekoGameSystem?: {
         GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof preloadSfx };
@@ -8119,7 +8330,7 @@ describe('App', () => {
     vi.useFakeTimers();
     const playSfx = vi.fn();
     const preloadSfx = vi.fn();
-    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
+    const GameAudioSystem = vi.fn().mockImplementation(function () { return { playSfx, preloadSfx }; });
 
     try {
       render(
@@ -8156,8 +8367,8 @@ describe('App', () => {
     const secondPreloadSfx = vi.fn();
     const playSfx = vi.fn();
     const GameAudioSystem = vi.fn()
-      .mockImplementationOnce(() => ({ playSfx, preloadSfx: firstPreloadSfx }))
-      .mockImplementationOnce(() => ({ playSfx, preloadSfx: secondPreloadSfx }));
+      .mockImplementationOnce(function () { return { playSfx, preloadSfx: firstPreloadSfx }; })
+      .mockImplementationOnce(function () { return { playSfx, preloadSfx: secondPreloadSfx }; });
     (window as Window & {
       NekoGameSystem?: {
         GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof secondPreloadSfx };
@@ -8189,7 +8400,7 @@ describe('App', () => {
 
   it('uses the configured compact tool wheel prompt sound', () => {
     const playSfx = vi.fn();
-    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx }));
+    const GameAudioSystem = vi.fn().mockImplementation(function () { return { playSfx }; });
     (window as Window & {
       NekoGameSystem?: {
         GameAudioSystem: new () => { playSfx: typeof playSfx };
@@ -8222,7 +8433,7 @@ describe('App', () => {
   it('keeps compact tool wheel rebound audio disabled', () => {
     const playSfx = vi.fn();
     const preloadSfx = vi.fn();
-    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
+    const GameAudioSystem = vi.fn().mockImplementation(function () { return { playSfx, preloadSfx }; });
     (window as Window & {
       NekoGameSystem?: {
         GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof preloadSfx };
@@ -8472,7 +8683,7 @@ describe('App', () => {
     vi.useFakeTimers();
     const playSfx = vi.fn();
     const preloadSfx = vi.fn();
-    const GameAudioSystem = vi.fn().mockImplementation(() => ({ playSfx, preloadSfx }));
+    const GameAudioSystem = vi.fn().mockImplementation(function () { return { playSfx, preloadSfx }; });
     (window as Window & {
       NekoGameSystem?: {
         GameAudioSystem: new () => { playSfx: typeof playSfx; preloadSfx: typeof preloadSfx };

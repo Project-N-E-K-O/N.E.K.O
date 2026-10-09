@@ -229,6 +229,10 @@ def _reset_external_route_registry_to_import_state() -> None:
     register_game = getattr(game_router, "_register_external_route_kind", None)
     if callable(register_game):
         register_game()
+    visit_runtime = sys.modules.get("main_routers.visit_router.runtime")
+    register_visit = getattr(visit_runtime, "register_visit_route_kind", None)
+    if callable(register_visit):
+        register_visit()
 
 
 @pytest.fixture(autouse=True)
@@ -240,7 +244,7 @@ def _restore_external_route_registry():
     left behind would keep hijacking input in later tests. Rather than
     restoring a snapshot, the registry is rebuilt from scratch before and
     after each test: cleared, then the production kinds whose modules are
-    already imported register again (today only the game router). Resetting
+    already imported register again (the game router and the visit runtime). Resetting
     on setup as well means a kind registered outside any test's own
     setup/teardown window (e.g. by a coroutine the shared nested event loop
     resumes late) cannot reach the next test either.
@@ -271,6 +275,18 @@ def _reset_icebreaker_routes(request):
         icebreaker_route_state._icebreaker_route_states.update(states_snapshot)
         icebreaker_route_state._icebreaker_route_locks.clear()
         icebreaker_route_state._icebreaker_route_locks.update(locks_snapshot)
+
+
+@pytest.fixture(autouse=True)
+def _reset_theater_activity():
+    """Keep the in-memory theater activity signal from leaking between tests."""
+    module = sys.modules.get("utils.theater_activity")
+    if module is not None:
+        module.clear_all_theater_activity()
+    yield
+    module = sys.modules.get("utils.theater_activity")
+    if module is not None:
+        module.clear_all_theater_activity()
 
 
 @pytest.fixture(autouse=True)
@@ -309,6 +325,47 @@ def _reset_pending_retirements():
     fenced = getattr(character_memory, "_WRITE_FENCED", None)
     if isinstance(fenced, set):
         fenced.clear()
+
+
+def _is_theater_test_module(request) -> bool:
+    """Return whether the requesting test lives in a ``test_theater_*`` file."""
+
+    path = getattr(request.node, "path", None)
+    return path is not None and path.name.startswith("test_theater_")
+
+
+@pytest.fixture(autouse=True)
+def _enable_theater_review_modules(request, monkeypatch):
+    """Keep every optional theater module on for regression tests.
+
+    The product ships the theater module switches off by default (only the actor
+    reply runs), but the review-chain regressions were written against the
+    modules-on behaviour: they assert the second opinion, the fast review, the
+    shared rewrite budget and the output-retry contract. Enabling them here keeps
+    those tests testing what they document; tests that exercise the switches
+    themselves rebind ``aload_theater_module_options`` and still win.
+
+    Theater test files (``test_theater_*``) get the workflow imported here, so a
+    test that imports it inside the test body sees the same options whether or
+    not another module imported it first. Any other module is patched only when
+    the workflow is already loaded: importing it for every test pulls the whole
+    theater stack into modules that stub parts of ``utils``/``memory`` at import
+    time (e.g. test_timeindex_batched_read.py), which then fail with
+    ModuleNotFoundError when they happen to run first.
+    """
+
+    workflow = sys.modules.get("services.theater.numeric_v2_workflow")
+    if workflow is None:
+        if not _is_theater_test_module(request):
+            return
+        from services.theater import numeric_v2_workflow as workflow
+    from services.theater.numeric_v2_options import default_options
+
+    async def _all_on() -> dict[str, bool]:
+        # 交付校验是本轮新增的纯程序检查，既有回归不覆盖它，避免悄悄改变既有断言。
+        return {key: True for key in default_options() if key != 'review_delivery'}
+
+    monkeypatch.setattr(workflow, "aload_theater_module_options", _all_on, raising=False)
 
 
 @pytest.fixture

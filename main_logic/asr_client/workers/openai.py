@@ -27,6 +27,7 @@ import numpy as np
 import soxr
 import websockets
 
+from ..connection_cleanup import connection_registry
 from ..delivery import begin_transport_write, complete_transport_write, delivery_evidence
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ._shared import is_auth_rejection, normalize_zh_en_language
@@ -109,6 +110,9 @@ async def openai_asr_worker(
     clear_applied = asyncio.Event()
     clear_applied.set()
     receiver_task: asyncio.Task[None] | None = None
+    registry = connection_registry(request_queue)
+    retirement = None
+    ready_wait_task = None
     sender_task: asyncio.Task[None] | None = None
     stalled_watch_task: asyncio.Task[None] | None = None
     websocket = None
@@ -522,7 +526,7 @@ async def openai_asr_worker(
 
                 if request.kind == "shutdown":
                     shutdown_requested.set()
-                    await websocket.close()
+                    await retirement.retire()
                     return
 
                 await _emit_error(
@@ -575,11 +579,13 @@ async def openai_asr_worker(
             additional_headers={"Authorization": f"Bearer {api_key}"},
             close_timeout=_CLOSE_TIMEOUT_SECONDS,
         )
+        retirement = registry.register(websocket, worker_identity="openai")
         _diagnose("websocket.connected")
         ready_event = asyncio.Event()
         receiver_task = asyncio.create_task(
             _receive_events(ready_event), name="openai-asr-receiver"
         )
+        registry.register_tasks(receiver_task)
         _diagnose(
             "session.update",
             requested_model=_OPENAI_MODEL,
@@ -590,6 +596,7 @@ async def openai_asr_worker(
         await websocket.send(json.dumps(session_update))
 
         ready_wait_task = asyncio.create_task(ready_event.wait())
+        registry.register_tasks(ready_wait_task)
         done, _ = await asyncio.wait(
             {ready_wait_task, receiver_task},
             return_when=asyncio.FIRST_COMPLETED,
@@ -605,22 +612,13 @@ async def openai_asr_worker(
         stalled_watch_task = asyncio.create_task(
             _watch_stalled_items(), name="openai-asr-stalled-watch"
         )
+        registry.register_tasks(sender_task, receiver_task, stalled_watch_task)
         done, pending = await asyncio.wait(
             {sender_task, receiver_task, stalled_watch_task},
             return_when=asyncio.FIRST_COMPLETED,
         )
         for task in done:
             await task
-        if pending:
-            if shutdown_requested.is_set():
-                # The stalled-item watchdog never finishes on its own; a
-                # graceful shutdown must cancel it while the receiver drains.
-                stalled_watch_task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
-            else:
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
     except asyncio.CancelledError:
         raise
     except ValueError as exc:
@@ -643,20 +641,19 @@ async def openai_asr_worker(
         )
     finally:
         shutdown_requested.set()
-        tasks = []
-        for task in (sender_task, receiver_task, stalled_watch_task):
+        if retirement is not None:
+            retirement.start()
+        registry.register_tasks(sender_task, receiver_task, stalled_watch_task, ready_wait_task)
+        for task in (sender_task, receiver_task, stalled_watch_task, ready_wait_task):
             if task is None:
                 continue
             if not task.done():
                 task.cancel()
-            tasks.append(task)
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        if websocket is not None:
-            try:
-                await websocket.close()
-            except Exception:
-                pass
+        try:
+            if retirement is not None:
+                await retirement.retire()
+        finally:
+            await registry.join_tasks()
         if not closed_sent:
             await response_queue.put(
                 _AsrWorkerEvent(kind="closed", generation=last_generation)

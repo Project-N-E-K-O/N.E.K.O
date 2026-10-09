@@ -102,11 +102,88 @@ def test_cookie_reuse_and_key_rotation(remote_app, monkeypatch):
     assert remote_app.post("/private").status_code == 401
 
 
-def test_pairing_requires_challenge_origin_and_https(remote_app):
+def test_pairing_requires_challenge_and_origin(remote_app):
     assert remote_app.post("/instance-access/login", data={"key": KEY}).status_code == 401
     assert remote_app.post("/instance-access/login", data={"key": KEY}, headers={"Origin": "https://evil.example"}).status_code == 403
-    response = remote_app.post("http://neko.example/instance-access/login", data={"key": KEY})
+    # Plaintext is allowed by default, but the cross-origin guard still applies.
+    response = remote_app.post("http://neko.example/instance-access/login", data={"key": KEY},
+                               headers={"Origin": "https://neko.example:8443"})
     assert response.status_code == 403
+
+
+def _http_pair(client, origin="http://neko.example"):
+    page = client.get(origin + "/", headers={"Accept": "text/html"})
+    assert page.status_code == 401
+    challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+    return page, client.post(origin + "/instance-access/login", data={"key": KEY, "challenge": challenge},
+                             headers={"Origin": origin}, follow_redirects=False)
+
+
+def test_plain_http_pairing_is_allowed_by_default_with_warning(remote_app):
+    page, response = _http_pair(remote_app)
+    assert 'role="alert"' in page.text and "disabled" not in page.text
+    assert "neko_instance_challenge_http=" in page.headers["set-cookie"]
+    assert "Secure" not in page.headers["set-cookie"]
+    assert response.status_code == 303
+    session_cookie = response.headers["set-cookie"]
+    assert session_cookie.startswith("neko_instance_access_http=")
+    assert "HttpOnly" in session_cookie and "Secure" not in session_cookie
+    assert remote_app.post("http://neko.example/private", headers={"Origin": "http://neko.example"}).status_code == 200
+    with remote_app.websocket_connect("ws://neko.example/socket", headers={"Origin": "http://neko.example"}) as socket:
+        assert socket.receive_json() == {"ok": True}
+
+
+def test_https_pairing_never_shown_insecure_warning(remote_app):
+    page = remote_app.get("/", headers={"Accept": "text/html"})
+    assert 'role="alert"' not in page.text
+    pair(remote_app)
+
+
+def test_http_pairing_is_independent_of_existing_secure_session(remote_app):
+    """A Secure cookie for the same host must not shadow plaintext pairing."""
+    pair(remote_app)
+    secure_session = remote_app.cookies.get(COOKIE)
+    _page, response = _http_pair(remote_app)
+    assert response.status_code == 303
+    assert remote_app.cookies.get(COOKIE) == secure_session
+    assert remote_app.cookies.get(COOKIE + "_http")
+
+
+def test_require_https_restores_strict_pairing(remote_app, monkeypatch):
+    monkeypatch.setenv("NEKO_REQUIRE_HTTPS", "1")
+    page = remote_app.get("http://neko.example/", headers={"Accept": "text/html"})
+    assert "disabled" in page.text and 'role="alert"' not in page.text
+    challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+    response = remote_app.post("http://neko.example/instance-access/login", data={"key": KEY, "challenge": challenge},
+                               headers={"Origin": "http://neko.example"})
+    assert response.status_code == 403
+    # Existing plaintext credentials and bearer keys stop working too.
+    assert remote_app.post("http://neko.example/private", headers={"Authorization": f"Bearer {KEY}"}).status_code == 401
+    with pytest.raises(WebSocketDisconnect):
+        with remote_app.websocket_connect("ws://neko.example/socket", headers={"Authorization": f"Bearer {KEY}"}):
+            pass
+    pair(remote_app)
+
+
+def test_require_https_revokes_plaintext_session_even_over_https(remote_app, monkeypatch):
+    _page, response = _http_pair(remote_app)
+    assert response.status_code == 303
+    plaintext_session = remote_app.cookies.get(COOKIE + "_http")
+    assert remote_app.post("/private").status_code == 200  # Plaintext cookie also reaches HTTPS.
+    monkeypatch.setenv("NEKO_REQUIRE_HTTPS", "1")
+    remote_app.cookies.clear()
+    remote_app.cookies.set(COOKIE + "_http", plaintext_session)
+    assert remote_app.post("/private").status_code == 401
+    # Cookie names are client-controlled: renaming the captured token or
+    # replaying it as a Bearer credential must not launder it into HTTPS.
+    remote_app.cookies.clear()
+    remote_app.cookies.set(COOKIE, plaintext_session)
+    assert remote_app.post("/private").status_code == 401
+    remote_app.cookies.clear()
+    assert remote_app.post("/private", headers={"Authorization": f"Bearer {plaintext_session}"}).status_code == 401
+    # Sessions minted over HTTPS keep working in strict mode.
+    pair(remote_app)
+    assert remote_app.post("/private").status_code == 200
 
 
 def test_websocket_needs_instance_credential(remote_app):
@@ -649,6 +726,32 @@ def test_internal_market_proof_is_bound_to_loopback_route_and_method(monkeypatch
     assert local.get("/market/test", headers={**headers, "X-Neko-Market-Public-Origin": "https://attacker.example"}).status_code == 401
 
 
+def test_internal_market_proof_accepts_plain_http_public_origin_unless_https_required(monkeypatch):
+    from utils.instance_access import market_internal_proof
+
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    app = FastAPI()
+
+    @app.get("/market/test")
+    async def market():
+        return {"ok": True}
+
+    app.add_middleware(InstanceAccessMiddleware)
+    origin = "http://192.168.1.10:48911"
+    # A browser Origin keeps this out of the headerless native-loopback exemption.
+    headers = {"Origin": origin, "X-Neko-Market-Public-Origin": origin,
+               "X-Neko-Market-Internal": market_internal_proof(KEY, "GET", "/market/test", origin)}
+    local = TestClient(app, base_url="http://127.0.0.1:48916", client=("127.0.0.1", 1234))
+    assert local.get("/market/test", headers=headers).status_code == 200
+    for bad in ("ftp://192.168.1.10", "http://user@192.168.1.10", "http://192.168.1.10/path"):
+        forged = {"Origin": origin, "X-Neko-Market-Public-Origin": bad,
+                  "X-Neko-Market-Internal": market_internal_proof(KEY, "GET", "/market/test", bad)}
+        assert local.get("/market/test", headers=forged).status_code == 401
+    monkeypatch.setenv("NEKO_REQUIRE_HTTPS", "true")
+    assert local.get("/market/test", headers=headers).status_code == 401
+
+
 @pytest.mark.parametrize("header", ["X-Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto", "X-REAL-IP", "Forwarded"])
 def test_forwarding_metadata_covers_proxy_header_family(header):
     from utils.deployment import has_forwarding_metadata
@@ -773,3 +876,196 @@ def test_market_callback_cross_site_requires_instance_auth_and_valid_state(monke
     assert not market._OAUTH_CALLBACK_FILE.exists()
     assert client.get(path, headers=headers).status_code == 200
     assert market._read_json_file(market._OAUTH_CALLBACK_FILE)["code"] == "once"
+
+
+@pytest.mark.parametrize("origin", ["http://192.168.1.10:48911", "http://neko.example:48911"])
+def test_http_pairing_works_alongside_pinned_https_public_origin(remote_app, monkeypatch, origin):
+    """A pinned TLS gateway origin must not reject the deployment's own HTTP entry."""
+    monkeypatch.setenv("NEKO_INSTANCE_PUBLIC_ORIGIN", "https://neko.example:48912")
+    _page, response = _http_pair(remote_app, origin)
+    assert response.status_code == 303
+    assert remote_app.post(origin + "/private", headers={"Origin": origin}).status_code == 200
+    # Cross-site writes stay rejected on the HTTP entry.
+    assert remote_app.post(origin + "/private", headers={"Origin": "http://evil.example"}).status_code == 403
+
+
+def test_outer_tls_gateway_without_forwarded_proto_can_pair(remote_app, monkeypatch):
+    """TLS ended outside, no pinned origin, no trusted X-Forwarded-Proto."""
+    page = remote_app.get("http://neko.example/", headers={"Accept": "text/html"})
+    challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+    login = {"data": {"key": KEY, "challenge": challenge}, "headers": {"Origin": "https://neko.example"},
+             "follow_redirects": False}
+    monkeypatch.delenv("NEKO_BEHIND_PROXY")
+    # Without a proxy in front, nothing can serve https:// on this Host.
+    assert remote_app.post("http://neko.example/instance-access/login", **login).status_code == 403
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    assert remote_app.post("http://neko.example/instance-access/login", **login).status_code == 303
+
+
+def test_outer_tls_fallback_treats_explicit_443_as_default_port(remote_app):
+    """A proxy may forward Host ":443" while the browser omits the default port."""
+    page = remote_app.get("http://neko.example:443/", headers={"Accept": "text/html"})
+    challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+    response = remote_app.post("http://neko.example:443/instance-access/login",
+                               data={"key": KEY, "challenge": challenge},
+                               headers={"Origin": "https://neko.example"}, follow_redirects=False)
+    assert response.status_code == 303
+    assert remote_app.post("http://neko.example:443/private", headers={"Origin": "https://neko.example"}).status_code == 200
+    assert remote_app.post("http://neko.example:443/private", headers={"Origin": "https://neko.example:8443"}).status_code == 403
+
+
+@pytest.mark.parametrize("send_origin", [True, False])
+def test_oauth_state_returns_to_the_entry_the_browser_paired_on(remote_app, monkeypatch, send_origin):
+    import base64
+    import json
+
+    monkeypatch.setenv("NEKO_INSTANCE_PUBLIC_ORIGIN", "https://neko.example:48912")
+    monkeypatch.delenv("NEKO_COMMUNITY_WEB_REDIRECT_URI")
+    monkeypatch.delenv("NEKO_COMMUNITY_WEB_CLIENT_ID")
+    lan = "http://192.168.1.10:48911"
+    _page, response = _http_pair(remote_app, lan)
+    assert response.status_code == 303
+    result = remote_app.post(lan + "/api/card-drop/oauth/start", headers={"Origin": lan} if send_origin else {})
+    state = result.json()["state"]
+    assert json.loads(base64.urlsafe_b64decode(state + "=" * (-len(state) % 4)))["origin"] == lan
+
+
+def test_public_origin_prefers_verified_browser_origin_then_pinned_gateway(monkeypatch):
+    from starlette.requests import Request
+    from utils.instance_access import request_public_origin
+
+    def request(host, origin=None, scheme="http"):
+        headers = [(b"host", host.encode())] + ([(b"origin", origin.encode())] if origin else [])
+        return Request({"type": "http", "scheme": scheme, "method": "GET", "path": "/", "query_string": b"",
+                        "server": (host.split(":")[0], 80), "headers": headers})
+
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.setenv("NEKO_INSTANCE_PUBLIC_ORIGIN", "https://neko.example:48912")
+    assert request_public_origin(request("neko.example:48912")) == "https://neko.example:48912"
+    assert request_public_origin(request("192.168.1.10:48911")) == "http://192.168.1.10:48911"
+    # A gateway that rewrites Host still reports the browser's real origin.
+    assert request_public_origin(request("127.0.0.1:48911", "https://neko.example:48912")) == "https://neko.example:48912"
+    # A foreign Origin never becomes the callback target.
+    assert request_public_origin(request("192.168.1.10:48911", "https://evil.example")) == "http://192.168.1.10:48911"
+
+
+def test_oauth_retry_from_another_entry_does_not_reuse_first_entry_state(remote_app, monkeypatch):
+    import base64
+    import json
+
+    monkeypatch.delenv("NEKO_COMMUNITY_WEB_REDIRECT_URI")
+    monkeypatch.delenv("NEKO_COMMUNITY_WEB_CLIENT_ID")
+
+    def state_origin(result):
+        state = result.json()["state"]
+        return json.loads(base64.urlsafe_b64decode(state + "=" * (-len(state) % 4)))["origin"]
+
+    http_entry = "http://neko.example:48911"
+    _page, response = _http_pair(remote_app, http_entry)
+    assert response.status_code == 303
+    first = remote_app.post(http_entry + "/api/card-drop/oauth/start", headers={"Origin": http_entry})
+    assert state_origin(first) == http_entry
+    # Same browser and identity (host-bound cookie spans ports), other entry.
+    second = remote_app.post("/api/card-drop/oauth/start", headers={"Origin": "https://neko.example"})
+    assert state_origin(second) == "https://neko.example"
+    # Retrying from the same entry still reuses the pending attempt.
+    again = remote_app.post("/api/card-drop/oauth/start", headers={"Origin": "https://neko.example"})
+    assert again.json()["state"] == second.json()["state"]
+
+
+def test_pinned_gateway_host_with_explicit_default_port_is_secure_and_public(monkeypatch):
+    from starlette.requests import Request
+    from utils.instance_access import _pinned_origin, _secure_transport, request_public_origin
+
+    def request(host):
+        return Request({"type": "http", "scheme": "http", "method": "GET", "path": "/", "query_string": b"",
+                        "server": (host.split(":")[0], 80), "headers": [(b"host", host.encode())]})
+
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.setenv("NEKO_INSTANCE_PUBLIC_ORIGIN", "https://neko.example/")
+    assert _pinned_origin() == "https://neko.example"
+    for host in ("neko.example", "neko.example:443"):
+        assert _secure_transport(request(host)) is True
+        assert request_public_origin(request(host)) == "https://neko.example"
+    assert _secure_transport(request("neko.example:80")) is False
+    assert request_public_origin(request("neko.example:80")) == "http://neko.example:80"
+    for invalid in ("neko.example", "https://user@neko.example", "https://neko.example/path", "https://neko.example:x"):
+        monkeypatch.setenv("NEKO_INSTANCE_PUBLIC_ORIGIN", invalid)
+        assert _pinned_origin() == ""
+
+
+def test_websocket_handler_sees_transport_decisions_on_its_own_scope(monkeypatch):
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    app = FastAPI()
+
+    @app.websocket("/socket")
+    async def websocket(socket: WebSocket):
+        await socket.accept()
+        await socket.send_json({key: socket.scope.get(key) for key in ("neko.require_https", "neko.secure_transport")})
+        await socket.close()
+
+    app.add_middleware(InstanceAccessMiddleware)
+    client = TestClient(app, base_url="https://neko.example", client=("203.0.113.1", 1234))
+    with client.websocket_connect("wss://neko.example/socket", headers={"Authorization": f"Bearer {KEY}"}) as socket:
+        assert socket.receive_json() == {"neko.require_https": False, "neko.secure_transport": True}
+
+
+def test_outer_tls_pairing_logs_configuration_hint_once(remote_app, caplog):
+    for _ in range(2):
+        remote_app.cookies.clear()
+        page = remote_app.get("http://neko.example/", headers={"Accept": "text/html"})
+        challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+        with caplog.at_level("WARNING", logger="utils.instance_access"):
+            response = remote_app.post("http://neko.example/instance-access/login",
+                                       data={"key": KEY, "challenge": challenge},
+                                       headers={"Origin": "https://neko.example"}, follow_redirects=False)
+        assert response.status_code == 303
+    hints = [r for r in caplog.records if "NEKO_INSTANCE_PUBLIC_ORIGIN" in r.getMessage()]
+    assert len(hints) == 1
+
+
+def test_outer_tls_hint_is_logged_when_strict_mode_refuses_pairing(remote_app, monkeypatch, caplog):
+    monkeypatch.setenv("NEKO_REQUIRE_HTTPS", "1")
+    page = remote_app.get("http://neko.example/", headers={"Accept": "text/html"})
+    challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+    with caplog.at_level("WARNING", logger="utils.instance_access"):
+        # A cross-site https Origin is refused without spending the hint.
+        assert remote_app.post("http://neko.example/instance-access/login", data={"key": KEY, "challenge": challenge},
+                               headers={"Origin": "https://evil.example"}).status_code == 403
+        assert not [r for r in caplog.records if "NEKO_INSTANCE_PUBLIC_ORIGIN" in r.getMessage()]
+        response = remote_app.post("http://neko.example/instance-access/login", data={"key": KEY, "challenge": challenge},
+                                   headers={"Origin": "https://neko.example"})
+    assert response.status_code == 403
+    assert [r for r in caplog.records if "NEKO_INSTANCE_PUBLIC_ORIGIN" in r.getMessage()]
+
+
+def test_outer_tls_hint_repeats_after_an_hour(monkeypatch, caplog):
+    import utils.instance_access as access
+    from tests.fake_clock import patch_module_clock
+
+    middleware = InstanceAccessMiddleware(app=None)
+    clock = iter([1000.0, 1000.0 + 1800, 1000.0 + 3600])
+    patch_module_clock(monkeypatch, access, monotonic=lambda: next(clock))
+    with caplog.at_level("WARNING", logger="utils.instance_access"):
+        for _ in range(3):
+            middleware._warn_unlabelled_tls()
+    # An early (even unauthenticated) trigger cannot silence it for good.
+    assert len([r for r in caplog.records if "NEKO_INSTANCE_PUBLIC_ORIGIN" in r.getMessage()]) == 2
+
+
+@pytest.mark.parametrize("base,host,origin", [
+    ("http://neko.example", "neko.example:80", "http://neko.example"),
+    ("https://neko.example", "neko.example:443", "https://neko.example"),
+    ("http://neko.example", "neko.example", "http://neko.example:80"),
+])
+def test_same_origin_treats_explicit_default_port_as_omitted(remote_app, base, host, origin):
+    """A proxy may forward Host ":80"/":443" while browsers omit default ports."""
+    page = remote_app.get(base + "/", headers={"Accept": "text/html", "Host": host})
+    challenge = re.search(r'name="challenge" value="([^"]+)"', page.text).group(1)
+    response = remote_app.post(base + "/instance-access/login", data={"key": KEY, "challenge": challenge},
+                               headers={"Origin": origin, "Host": host}, follow_redirects=False)
+    assert response.status_code == 303
+    assert remote_app.post(base + "/private", headers={"Origin": origin, "Host": host}).status_code == 200
+    other_port = origin.split("://")[0] + "://neko.example:8080"
+    assert remote_app.post(base + "/private", headers={"Origin": other_port, "Host": host}).status_code == 403

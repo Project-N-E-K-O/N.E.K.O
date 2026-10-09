@@ -181,10 +181,10 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 | minimax | MiniMax-M3 | https://api.minimaxi.com/v1 |
 | minimax_intl | MiniMax-M3 | https://api.minimax.io/v1 |
 | mimo | mimo-v2.5 | https://api.xiaomimimo.com/v1 |
-| claude | claude-sonnet-5 | https://api.anthropic.com/v1 |
+| claude | claude-sonnet-5-5 | https://api.anthropic.com/v1 |
 | grok | grok-4.3 | https://api.x.ai/v1 |
 | openrouter | google/gemini-3-flash-preview | https://openrouter.ai/api/v1 |
-| orcarouter | anthropic/claude-sonnet-5 | https://api.orcarouter.ai/v1 |
+| orcarouter | anthropic/claude-sonnet-5.5 | https://api.orcarouter.ai/v1 |
 | requesty | google/gemini-3-flash-preview | https://router.requesty.ai/v1 |
 
 #### 自定义 Agent 模型
@@ -322,7 +322,7 @@ Agent API Key 的取法：
 | `NEKO_MCP_TOKEN` | `mcpToken` | `""` |
 
 - `NEKO_FORCE_ENV_UPDATE` 取任何非空值（包括 `0`、`false`）都会**整份重写** `core_config.json`。重写后文件里只剩上表这些字段，在 Web UI 里保存过的其他设置（自定义模型、TTS 等）都会丢失。这个变量只要还在，每次启动都会重写，用完要删掉；使用前请先备份。
-- 仓库自带的 `docker-compose.yml` 中，`environment:` 只设置了 `TZ`、`XDG_DATA_HOME`、`NEKO_STORAGE_SELECTED_ROOT`、`NEKO_STORAGE_ANCHOR_ROOT`，也没有 `env_file:`。只在 `docker/.env` 里写 `NEKO_*` 不会进入容器（照 `docker/env.template` 复制出的 `.env` 也一样，它只用于 compose 文件里的 `${...}` 替换，如 `TZ`、`NEKO_IMAGE_VERSION`）。需要在 `neko-main` 服务已有的 `environment:` 列表里追加，例如：
+- 仓库自带的 `docker-compose.yml` 没有 `env_file:`，`environment:` 只透传以下变量：`TZ`、实例访问相关的 `NEKO_INSTANCE_ACCESS_KEY` / `NEKO_INSTANCE_PUBLIC_ORIGIN` / `NEKO_REQUIRE_HTTPS` / `NEKO_COMMUNITY_WEB_CLIENT_ID` / `NEKO_COMMUNITY_WEB_REDIRECT_URI`、自有域名相关的 `SSL_DOMAIN` / `NEKO_TRUSTED_HOSTS` / `NEKO_TRUSTED_ORIGINS`（留空时：`SSL_DOMAIN` 使用入口脚本默认值，`NEKO_TRUSTED_HOSTS` 回退到 `SSL_DOMAIN`，`NEKO_TRUSTED_ORIGINS` 保持为空），以及固定的 `XDG_DATA_HOME`、`NEKO_STORAGE_SELECTED_ROOT`、`NEKO_STORAGE_ANCHOR_ROOT`。上表中的 API 变量不在其中：只在 `docker/.env` 里写它们不会进入容器（`.env` 只用于 compose 文件里的 `${...}` 替换）。需要在 `neko-main` 服务已有的 `environment:` 列表里追加，例如：
 
   ```yaml
   - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
