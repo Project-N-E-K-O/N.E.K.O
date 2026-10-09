@@ -14,7 +14,9 @@ from types import SimpleNamespace as NS
 import pytest
 
 import utils.llm_client.anthropic_client as anthropic_client_module
-from utils.llm_client.anthropic_client import ChatAnthropic, _remember_tool_turn
+
+ChatAnthropic = anthropic_client_module.ChatAnthropic
+_remember_tool_turn = anthropic_client_module._remember_tool_turn
 
 _TOOLS = [{
     "type": "function",
