@@ -135,6 +135,7 @@ _SESSION_CLOSE_S = 5.0
 _RESERVED_SEND_MAX_S = 10.0
 _SEAL_MAX_S = 10.0
 _DISPLAY_FLUSH_S = 2.0
+_ENDED_AFTER_DISPLAY_S = 2.0  # 「已结束」在后台排在没退下的显示写后面时，最多等它这么久再尽力发
 _ACCOUNT_RECORD_S = 3.0
 _ACCOUNT_RETRY_DELAYS_S = (1.0, 5.0, 30.0, 120.0, 600.0)
 _SHUTDOWN_ROOM_CANCEL_S = 1.0
@@ -335,7 +336,8 @@ _uid_by_name: dict[str, str] = {}
 _resolving_names: set[object] = set()
 """Background tasks whose character name is still being resolved (the lifecycle guard is conservative)."""
 
-_pending_visits: set[tuple[str, str]] = set()
+_pending_visits: dict[tuple[str, str], Path] = {}
+"""``(visit_id, side)`` of admissions still in progress, with the config dir their files will live in."""
 """``(visit_id, side)`` between the slot reservation and the runtime registration (``start_visit``)."""
 
 _stop_gen = 0
@@ -694,7 +696,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.slot["phase"] = phase
 
     async def _send_after_display(self, display: asyncio.Future, payload: dict) -> None:
-        await asyncio.wait([display], timeout=_DISPLAY_FLUSH_S)
+        await asyncio.wait([display], timeout=_ENDED_AFTER_DISPLAY_S)
         if not display.done():
             # 到点那次写还没退下：仍尽力发一次（页面停在「收尾中」比偶尔并发一次写更糟）
             logger.warning("visit %s: display write never retired; sending ended anyway", self.visit_id[:6])
@@ -2268,8 +2270,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             closing.add_done_callback(lambda t: t.cancelled() or t.exception())
             await asyncio.wait([closing], timeout=left(_SHUTDOWN_TASK_WAIT_S))
             if not closing.done():
-                # 不登记到后台：stop_all 紧接着会取消 _detached；线程里的写盘照样落地，没落地的由启动补录
+                # 交给模块级登记：stop_all 末尾一并取消并限时等，不留到事件循环销毁时还挂着、或在关机返回后
+                # 才写 state.json。线程里已开始的写照样落地，没落地的由下次启动补录
                 logger.warning("visit %s: spool still finalizing at shutdown", self.visit_id[:6])
+                self._keep_background(closing)
         if self.takeover_token is not None:
             try:
                 self.host.release_takeover(self.takeover_token)
@@ -2460,8 +2464,16 @@ async def start_visit(
     if key in _pending_visits or any(r.visit_id == vid and r.side == side for r in _runtimes.values()):
         # 锁按角色：另一个角色正以同一侧进同一场（同一张邀请），不能互相顶掉登记
         raise VisitRefused(409, {"code": "VISIT_E_BUSY", "reason": "visit_in_progress"})
+    config_dir = Path((deps or runtime_deps()).config_dir())
+    if (any(pending[0] == vid and pdir == config_dir for pending, pdir in _pending_visits.items())
+            or any(r.visit_id == vid and r.config_dir == config_dir for r in _runtimes.values())):
+        # 本机已在跑这一场的另一侧、文件落在同一个配置目录：两侧的 spool / state / 上传流水 / outbox 都只按
+        # visit_id 命名，会互相覆盖。同账号兑换本机发出的邀请本来就被 Servers 以 self_invite 拒掉；桌面端中途
+        # 换了社区账号时 Servers 拦不住，这里在本地按同一个原因拒掉（提示与 Servers 拒的一样）
+        status, body = cr.VisitInviteInvalid("self_invite").to_local_error()
+        raise VisitRefused(status, body)
     slot = activate_visit_route(name, phase=PHASE_PENDING, visit_id=vid)
-    _pending_visits.add(key)
+    _pending_visits[key] = config_dir
     try:
         failure = host.precondition_failure()
         if failure is not None:
@@ -2486,13 +2498,13 @@ async def start_visit(
             clock=clock, wall=wall,
         )
     except BaseException:
-        _pending_visits.discard(key)
+        _pending_visits.pop(key, None)
         if get_visit_route_state(name) is slot:
             finalize_visit_route_state(name)
         raise
     rt.slot = slot
     rt.start()
-    _pending_visits.discard(key)
+    _pending_visits.pop(key, None)
     return rt
 
 

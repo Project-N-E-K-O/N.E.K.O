@@ -2048,6 +2048,7 @@ async def test_runtime_tasks_surviving_shutdown_cancellation_are_handed_to_stop_
 
 async def test_ended_waits_behind_a_display_write_that_never_retired(tmp_path, monkeypatch):
     monkeypatch.setattr(rtm, "_DISPLAY_FLUSH_S", 0.2)
+    monkeypatch.setattr(rtm, "_ENDED_AFTER_DISPLAY_S", 10.0)  # 后台排队等得够久：写在到点前退下
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
     release = asyncio.Event()
@@ -2084,6 +2085,7 @@ async def test_ended_waits_behind_a_display_write_that_never_retired(tmp_path, m
 
 async def test_ended_is_still_sent_when_the_display_write_never_retires(tmp_path, monkeypatch):
     monkeypatch.setattr(rtm, "_DISPLAY_FLUSH_S", 0.2)
+    monkeypatch.setattr(rtm, "_ENDED_AFTER_DISPLAY_S", 0.2)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
     release = asyncio.Event()
@@ -2769,6 +2771,23 @@ async def test_two_characters_cannot_take_the_same_visit_at_once(tmp_path, monke
         assert rtm.get_runtime_by_visit(rt.visit_id) is rt
     finally:
         await teardown(one, clock=clock)
+
+
+async def test_the_other_side_of_a_running_visit_is_refused_on_the_same_machine(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    host = make_side(tmp_path, "host", clock=clock, wall=wall, name="Mimi")
+    guest = make_side(tmp_path, "guest", clock=clock, wall=wall, name="Nana")
+    guest.deps.config_dir = host.deps.config_dir              # 同一个配置目录（生产里同一进程就是这样）
+    rt = await start_side(host, clock=clock, wall=wall)
+    try:
+        with pytest.raises(rtm.VisitRefused) as refused:      # 桌面端换了社区账号后兑换本机发出的邀请
+            await start_side(guest, invite_code=INVITE, clock=clock, wall=wall)
+        assert refused.value.body["details"]["reason"] == "self_invite"  # 与 Servers 拒的提示一样，不覆盖这一场的文件
+        assert visit_route_state.get_visit_route_state("Nana") is None
+        assert rtm.get_runtime_by_visit(rt.visit_id) is rt
+    finally:
+        await teardown(host, clock=clock)
 
 
 async def test_an_admission_still_awaiting_when_stop_all_runs_does_not_register(tmp_path, monkeypatch, clocks):
