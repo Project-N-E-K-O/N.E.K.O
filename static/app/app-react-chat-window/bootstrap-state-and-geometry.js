@@ -1080,7 +1080,12 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         var image = element.querySelector('.neko-idle-cat1-compact-mirror-art');
         if (image) {
             var src = detail && detail.assetUrl ? String(detail.assetUrl) : getIdleCat1CompactMirrorDefaultSrc();
-            if (src && image.getAttribute('src') !== src) image.setAttribute('src', src);
+            if (!src) {
+                // 没有可用的猫图时不显示镜像，避免沿用上一次的图片。
+                I.hideIdleCat1CompactMirror('missing_asset');
+                return;
+            }
+            if (image.getAttribute('src') !== src) image.setAttribute('src', src);
             if (isIdleCat1CompactMirrorWideArt(src)) {
                 element.setAttribute('data-neko-cat1-wide-art', 'true');
             } else {

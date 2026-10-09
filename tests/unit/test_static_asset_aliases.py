@@ -38,11 +38,14 @@ def test_aliases_only_cover_removed_files_and_point_at_existing_ones():
         assert (STATIC_DIR / current).is_file(), current
 
 
-def test_every_registry_url_with_a_retired_twin_is_aliased():
+def test_aliases_point_at_the_same_named_registry_resource():
+    # New registry media without a retired twin need no alias; only check that
+    # every alias lands on a live registry URL with the same file name.
     registry = (STATIC_DIR / "avatar/avatar-ui-buttons/cat-resource-registry.js").read_text(encoding="utf-8")
     registry_paths = set(re.findall(r"/static/(assets/cat-resources/[^'\"]+)", registry))
-    aliased_targets = set(LEGACY_STATIC_ASSET_ALIASES.values())
-    assert registry_paths <= aliased_targets
+    for legacy, current in LEGACY_STATIC_ASSET_ALIASES.items():
+        assert current in registry_paths, current
+        assert Path(legacy).name == Path(current).name, legacy
 
 
 def test_resolver_accepts_windows_separators_and_leaves_other_paths_alone():

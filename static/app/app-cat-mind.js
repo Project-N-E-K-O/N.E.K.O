@@ -572,6 +572,7 @@
                 lastTickAt: runtimeState.clock.lastTickAt,
                 lastUserInteractionAt: runtimeState.clock.lastUserInteractionAt,
                 lastActionStartedAt: runtimeState.clock.lastActionStartedAt,
+                lastConfirmedActionStartedAt: runtimeState.clock.lastConfirmedActionStartedAt,
                 dragInterruptionRecoveryActive: runtimeState.clock.dragInterruptionRecoveryActive,
             },
             actionIntentEvidence: getActionIntentSnapshot(snapshotAt),
@@ -715,6 +716,7 @@
                 lastTickAt: Number(clock.lastTickAt) || 0,
                 lastUserInteractionAt: Number(clock.lastUserInteractionAt) || 0,
                 lastActionStartedAt: Number(clock.lastActionStartedAt) || 0,
+                lastConfirmedActionStartedAt: Number(clock.lastConfirmedActionStartedAt) || 0,
                 dragInterruptionRecoveryActive: clock.dragInterruptionRecoveryActive === true,
             },
             scheduler: normalizeDebugTimelineScheduler(snapshot),
@@ -2813,6 +2815,9 @@
         var compactSignature = [
             visible ? 'visible' : 'hidden',
             rect ? [rect.left, rect.top, rect.width, rect.height].join(',') : '',
+            // 拖拽 / 缩放在最后一个矩形上松手时只有这两个标志变化，松手要能重新唤起评估。
+            detail.dragging === true ? 'dragging' : '',
+            detail.resizeActive === true ? 'resizing' : '',
         ].join('|');
         if (compactSignature && compactSignature === runtimeState.lastCompactSurfaceSignature) {
             return;
@@ -3048,6 +3053,7 @@
                 lastTickAt: runtimeState.clock.lastTickAt,
                 lastUserInteractionAt: runtimeState.clock.lastUserInteractionAt,
                 lastActionStartedAt: runtimeState.clock.lastActionStartedAt,
+                lastConfirmedActionStartedAt: runtimeState.clock.lastConfirmedActionStartedAt,
                 dragInterruptionRecoveryActive: runtimeState.clock.dragInterruptionRecoveryActive,
             },
             lastResetReason: runtimeState.lastResetReason,

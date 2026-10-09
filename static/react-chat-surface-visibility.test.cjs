@@ -238,3 +238,61 @@ test('compact mirror keeps the narrow fallback when registry metadata is unavail
     const matcher = createCompactMirrorWideArtMatcher(null);
     assert.equal(matcher('/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.gif'), false);
 });
+
+function createCompactMirrorShow(registry) {
+    const start = bootstrapSource.indexOf('    function getIdleCat1CompactMirrorPlayYarnResource()');
+    const end = bootstrapSource.indexOf('    I.refreshIdleCat1CompactMirrorPosition = function', start);
+    assert.notEqual(start, -1, 'missing compact mirror helpers');
+    assert.notEqual(end, -1, 'missing compact mirror show boundary');
+    const attributes = { src: '/static/old-cat.gif' };
+    const image = {
+        style: {},
+        getAttribute: (name) => (name in attributes ? attributes[name] : null),
+        setAttribute: (name, value) => { attributes[name] = String(value); },
+    };
+    const element = {
+        hidden: true,
+        style: {},
+        querySelector: () => image,
+        setAttribute() {},
+        removeAttribute() {},
+    };
+    const hidden = [];
+    const I = {
+        hideIdleCat1CompactMirror: (reason) => { hidden.push(reason); },
+        scheduleCompactMinimizeBallTracking() {},
+        syncCompactInteractionGeometry() {},
+    };
+    const show = vm.runInNewContext(`(function () {
+        var idleCat1CompactMirrorLastDetail = null;
+        var idleCat1CompactMirrorTimer = 0;
+        var IDLE_CAT1_COMPACT_MIRROR_TIMEOUT_MS = 1000;
+        function getIdleCat1CompactMirrorElement() { return element; }
+        function getIdleCat1CompactMirrorPageRect() { return { left: 1, top: 2, width: 3, height: 4 }; }
+        function clearIdleCat1CompactMirrorTimer() {}
+        ${bootstrapSource.slice(start, end)}
+        return showIdleCat1CompactMirror;
+    })()`, { window: { NekoCatResourceRegistry: registry, setTimeout: () => 1 }, I, element });
+    return { show, element, attributes, hidden };
+}
+
+test('compact mirror hides instead of reusing a stale image when no cat art is available', () => {
+    const mirror = createCompactMirrorShow(null);
+    mirror.show({});
+    assert.deepEqual(mirror.hidden, ['missing_asset']);
+    assert.equal(mirror.element.hidden, true);
+    assert.equal(mirror.attributes.src, '/static/old-cat.gif', 'the stale image is never shown');
+});
+
+test('compact mirror falls back to the registry idle art when the event has no asset', () => {
+    const idleUrl = '/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif';
+    const mirror = createCompactMirrorShow({
+        getAppearance: (slot) => (slot === 'idle.cat1'
+            ? { available: true, url: idleUrl, urls: [idleUrl], metadata: {} }
+            : { available: false, urls: [], metadata: {} }),
+    });
+    mirror.show({});
+    assert.deepEqual(mirror.hidden, []);
+    assert.equal(mirror.element.hidden, false);
+    assert.equal(mirror.attributes.src, idleUrl);
+});

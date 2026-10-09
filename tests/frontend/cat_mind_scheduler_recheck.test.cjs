@@ -499,6 +499,8 @@ test('short action burst guard prevents an immediate autonomous repeat', () => {
   const request = runtime.requests[0];
   startRequest(runtime, request, 'burst-guard-run');
   reportResult(runtime, request, 'burst-guard-run', 'done', 'runner_done');
+  const startedAt = runtime.win.nekoCatMind.getDebugSnapshot().clock.lastConfirmedActionStartedAt;
+  assert.ok(startedAt > 0, 'debug snapshot exposes the time the guard compares against');
 
   runtime.advanceTime(30000);
   runtime.observe('cat_elapsed', { elapsedMs: 30000 }, 'cat1', 'cat-mind-clock');
@@ -683,4 +685,26 @@ test('clearing the web compact surface lets a same-place reopen be observed agai
   send(null);
   send(rect);
   assert.equal(count(), 2, 'reopening at the same rect after a null clear must be observed');
+});
+
+test('releasing a compact drag or resize on the last rect is still observed', () => {
+  for (const flag of ['dragging', 'resizeActive']) {
+    const runtime = createRuntime('cat1_social_ping');
+    runtime.enter();
+    const screenRect = { left: 10, top: 20, width: 80, height: 80 };
+    const send = (active) => {
+      runtime.advanceTime(1);
+      runtime.win.dispatchEvent(new CustomEventLike('neko:compact-surface-layout-change', {
+        detail: { screenRect, [flag]: active },
+      }));
+      runtime.flush();
+    };
+    const count = () => runtime.win.nekoCatMind.getRecentEvents()
+      .filter((event) => event.type === 'chat_compact_surface_visible').length;
+    send(true);
+    send(true);
+    assert.equal(count(), 1, `${flag}: repeated frames at the same rect are duplicates`);
+    send(false);
+    assert.equal(count(), 2, `${flag}: the release must wake a new observation`);
+  }
 });
