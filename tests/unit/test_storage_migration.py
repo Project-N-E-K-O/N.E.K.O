@@ -4083,3 +4083,23 @@ def test_a_leftover_record_outlives_a_target_that_is_out_of_reach(tmp_path):
     storage_migration_module.remove_remembered_transaction_leftovers(config_manager, anchor_root=None)
 
     assert not storage_migration_module._transaction_path(target_root, txid).exists()
+
+
+@pytest.mark.unit
+def test_a_checkpoint_dropped_while_its_target_is_out_of_reach_is_still_remembered(tmp_path):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, target_root = _start_migration_into_empty_target(tmp_path)
+    txid = "fedcba9876543210fedcba9876543210"
+    payload = dict(load_storage_migration(config_manager))
+    payload.update({"status": "failed", "txid": txid, "target_root": str(target_root)})
+    save_storage_migration(config_manager, payload)
+    (storage_migration_module._transaction_path(target_root, txid) / "stage").mkdir(parents=True)
+    unplugged = tmp_path / "unplugged"
+    target_root.rename(unplugged)
+
+    storage_migration_module.delete_storage_migration(config_manager)
+    unplugged.rename(target_root)
+    storage_migration_module.remove_remembered_transaction_leftovers(config_manager, anchor_root=None)
+
+    assert not storage_migration_module._transaction_path(target_root, txid).exists()

@@ -1754,10 +1754,14 @@ def _remember_transaction_leftover(config_manager, *, anchor_root: Path | str | 
         return
     if not raw_target_root or not txid:
         return
+    target_root = normalize_runtime_root(raw_target_root)
     try:
-        if not os.path.lexists(_transaction_path(normalize_runtime_root(raw_target_root), txid)):
-            return
+        transaction_root = _transaction_path(target_root, txid)
     except StorageMigrationError:
+        return
+    # Skipped only when the target can be reached and the transaction is
+    # known to be gone; an unplugged target may well still hold it.
+    if classify_entry_no_follow(target_root) == "dir" and _path_is_absent(transaction_root):
         return
     leftovers_path = _transaction_leftovers_path(config_manager, anchor_root=anchor_root)
     try:
