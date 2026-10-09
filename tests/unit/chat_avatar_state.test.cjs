@@ -37,7 +37,7 @@ function harness() {
     const sourcePath = path.join(__dirname, '../../static/app/app-chat-avatar-state.js');
     vm.runInContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
     const api = window.appChatAvatarState;
-    async function settle() { for (let i = 0; i < 8; ++i) await Promise.resolve(); }
+    async function settle() { for (let i = 0; i < 32; ++i) await Promise.resolve(); }
     async function identify(uid = A) {
         const task = api.setIdentity({ uid, name: 'Alice' });
         pending.at(-1).resolve(response(row(uid)));
@@ -241,6 +241,59 @@ test('a cancel during an earlier uncertain send does not block an explicit retry
     assert.equal(resent.options.body.get('operation_id'), binding.operationId);
     resent.resolve(response(row(A, 'saved', 'new', binding.operationId))); await retry;
     assert.equal(h.api.getDataUrl(), 'new');
+});
+
+function stuckCredentials(h, fetched) {
+    let token = '';
+    h.window.nekoLocalMutationSecurity = {
+        // Like the shared helper: an uncached first read waits on page config without a deadline.
+        getMutationHeaders: () => token ? Promise.resolve({ 'X-CSRF-Token': token }) : new Promise(() => {}),
+        refreshToken: async () => { token = fetched; return token; }
+    };
+}
+
+test('credential wait has a deadline and falls back to fetching the token directly', async () => {
+    const h = harness(); await h.identify(); stuckCredentials(h, 'direct'); const binding = h.api.captureEdit();
+    const saving = h.api.save(new Blob(['png']), binding); await h.settle();
+    assert.equal(h.pending.filter(p => p.options.method).length, 0);
+    assert.equal(h.timers.size, 1, 'waiting for credentials must have a deadline');
+    for (const timeout of [...h.timers.values()]) timeout();
+    await h.settle();
+    const put = h.pending.at(-1);
+    assert.equal(put.options.method, 'PUT');
+    assert.equal(put.options.headers['X-CSRF-Token'], 'direct');
+    put.resolve(response(row(A, 'saved', 'new', binding.operationId))); await saving;
+    assert.equal(h.api.getDataUrl(), 'new');
+    assert.equal(h.timers.size, 0);
+});
+
+test('credentials that cannot be fetched fail the edit without sending it', async () => {
+    const h = harness(); await h.identify(); stuckCredentials(h, ''); const binding = h.api.captureEdit();
+    const saving = h.api.save(new Blob(['png']), binding); await h.settle();
+    for (const timeout of [...h.timers.values()]) timeout();
+    await assert.rejects(saving, { code: 'chat_avatar_credentials_unavailable' });
+    assert.equal(h.pending.filter(p => p.options.method).length, 0);
+    assert.equal(h.timers.size, 0);
+
+    const cancelled = h.api.captureEdit();
+    const retired = h.api.save(new Blob(['png']), cancelled); await h.settle();
+    h.api.cancelEdit(cancelled);
+    for (const timeout of [...h.timers.values()]) timeout();
+    await assert.rejects(retired, { code: 'chat_avatar_stale_edit' });
+    assert.equal(h.pending.filter(p => p.options.method).length, 0);
+});
+
+test('every custom image accepted on this page is recognised, model captures are not', async () => {
+    const h = harness(); await h.identify();
+    assert.equal(h.api.isCustomDataUrl(''), false);
+    const binding = h.api.captureEdit();
+    const save = h.api.save(new Blob(['png']), binding); await h.settle();
+    h.pending.at(-1).resolve(response(row(A, 'saved', 'data:image/png;base64,FIRST', binding.operationId))); await save;
+    const restoring = h.api.captureEdit(); const restore = h.api.restore(restoring); await h.settle();
+    h.pending.at(-1).resolve(response(row(A, 'restored', null, restoring.operationId))); await restore;
+    assert.equal(h.api.getDataUrl(), '');
+    assert.equal(h.api.isCustomDataUrl('data:image/png;base64,FIRST'), true);
+    assert.equal(h.api.isCustomDataUrl('data:image/png;base64,MODEL'), false);
 });
 
 test('CSRF rejection retries only once and other 403s are not retried', async () => {

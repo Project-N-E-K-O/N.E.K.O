@@ -169,6 +169,40 @@ test('display update refreshes existing assistant avatars without changing user 
     assert.equal(updates[1][1].avatarUrl, undefined);
 });
 
+test('restore leaves no custom image behind as an assistant message fallback', () => {
+    const custom = 'data:image/png;base64,CUSTOM';
+    let display = custom; let model = '';
+    const I = { _sortKeySeq: 0, state: { messages: [] }, renderWindow() {} };
+    const window = {
+        __appReactChatWindowParts: I,
+        appState: {},
+        appChatAvatarState: { isCustomDataUrl: url => url === custom },
+        appChatAvatar: { getCurrentAvatarDataUrl: () => display, getModelAvatarDataUrl: () => model }
+    };
+    vm.runInContext(fs.readFileSync(path.join(root, 'static/app/app-react-chat-window/geometry-and-messages.js'), 'utf8'),
+        vm.createContext({ window, console, Date, setTimeout() {}, clearTimeout() {} }));
+    // Created while the custom avatar shows and no model capture exists yet.
+    const created = I.normalizeMessage({ id: 'assistant', role: 'assistant', avatarUrl: custom }, 1);
+    I.state.messages = [created, I.normalizeMessage({ id: 'user', role: 'user', avatarUrl: custom }, 2)];
+    assert.equal(I.state.messages[0].avatarUrl, custom);
+
+    display = '';
+    I.refreshAssistantAvatarUrls();
+    assert.equal(I.state.messages[0].avatarUrl, undefined);
+    assert.equal(I.state.messages[1].avatarUrl, custom, 'user messages are left alone');
+    // The adapter's own refresh patches avatarUrl through updateMessage's normalizer.
+    assert.equal(I.normalizeMessage(Object.assign({}, created, { avatarUrl: undefined }), 1).avatarUrl, undefined);
+
+    // A model capture that existed at creation is what the message falls back to instead.
+    model = 'data:image/png;base64,MODEL'; display = custom;
+    const withModel = I.normalizeMessage({ id: 'later', role: 'assistant', avatarUrl: custom }, 3);
+    assert.equal(withModel.baseAvatarUrl, model);
+    display = '';
+    I.state.messages = [withModel];
+    I.refreshAssistantAvatarUrls();
+    assert.equal(I.state.messages[0].avatarUrl, model);
+});
+
 test('direct model capture fallback broadcasts only model preview cache', () => {
     const h = harness(); const events = [];
     h.window.__NEKO_MULTI_WINDOW__ = true;

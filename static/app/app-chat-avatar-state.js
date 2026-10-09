@@ -5,6 +5,9 @@
     const api = {};
     const UID = /^[0-9a-f]{32}$/;
     const REQUEST_TIMEOUT_MS = 15000;
+    const CREDENTIAL_WAIT_MS = 3000;
+    const TIMED_OUT = {};
+    const DISPLAYED_LIMIT = 16;
     let identity = null;
     let epoch = 0;
     let record = null;
@@ -19,6 +22,8 @@
     const submittedEdits = new WeakSet();
     // Cancelled while a send was pending; cleared by every new send of the edit.
     const cancelledInFlight = new WeakSet();
+    // Custom images shown on this page, so message fallbacks can tell them from model captures.
+    const displayedDataUrls = new Set();
 
     function failure(code, status) {
         const result = new Error(code);
@@ -89,6 +94,11 @@
 
     function accept(body, reason) {
         record = body;
+        if (body.data_url) {
+            displayedDataUrls.delete(body.data_url);
+            displayedDataUrls.add(body.data_url);
+            if (displayedDataUrls.size > DISPLAYED_LIMIT) displayedDataUrls.delete(displayedDataUrls.values().next().value);
+        }
         limits = body.limits || limits;
         error = null;
         emit(reason);
@@ -101,6 +111,7 @@
     api.getLimits = function () { return limits && Object.assign({}, limits); };
     api.getError = function () { return error; };
     api.getDataUrl = function () { return record && record.data_url || ''; };
+    api.isCustomDataUrl = function (url) { return !!url && displayedDataUrls.has(url); };
     api.captureEdit = function () {
         if (!identity || !record || error) throw failure('chat_avatar_unavailable');
         return {
@@ -196,14 +207,35 @@
     };
     api.onChanged = api.onBackendChanged;
 
+    function withDeadline(promise, ms) {
+        let timer;
+        const deadline = new Promise(function (resolve) {
+            timer = window.setTimeout(function () { resolve(TIMED_OUT); }, ms);
+        });
+        return Promise.race([promise, deadline]).finally(function () { window.clearTimeout(timer); });
+    }
+
     async function mutationHeaders(binding, method, refresh) {
         const security = window.nekoLocalMutationSecurity;
+        function fence() {
+            if (!matches(binding) || cancelledEdits.has(binding)) throw failure('chat_avatar_stale_edit');
+        }
         if (refresh) {
-            try { await security.refreshToken(); }
+            try { await withDeadline(security.refreshToken(), REQUEST_TIMEOUT_MS); }
             catch (_) { /* The resend reports the guard's verdict. */ }
         }
-        const headers = await security.getMutationHeaders();
-        if (!matches(binding) || cancelledEdits.has(binding)) throw failure('chat_avatar_stale_edit');
+        let headers = await withDeadline(security.getMutationHeaders(), CREDENTIAL_WAIT_MS);
+        if (headers === TIMED_OUT) {
+            // The first token read waits on page config without a deadline, and the page may have
+            // gone on without it. Fetch the token directly; a fetched token is cached for the headers.
+            let token = '';
+            try { token = await withDeadline(security.refreshToken(), REQUEST_TIMEOUT_MS); }
+            catch (_) { /* Reported below. */ }
+            fence();
+            if (token && token !== TIMED_OUT) headers = await withDeadline(security.getMutationHeaders(), CREDENTIAL_WAIT_MS);
+            if (headers === TIMED_OUT) throw failure('chat_avatar_credentials_unavailable');
+        }
+        fence();
         if (method !== 'PUT') headers['Content-Type'] = 'application/json';
         return headers;
     }

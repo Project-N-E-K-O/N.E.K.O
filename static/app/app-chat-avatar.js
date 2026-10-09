@@ -1775,6 +1775,11 @@
         if (tutorialAvatarOverrideDataUrl) return tutorialAvatarOverrideDataUrl;
         const custom = window.appChatAvatarState?.getDataUrl();
         if (custom) return custom;
+        return mod.getModelAvatarDataUrl();
+    };
+
+    // The model avatar alone: never the tutorial override or the persisted custom image.
+    mod.getModelAvatarDataUrl = function getModelAvatarDataUrl() {
         if (hasUsableCachedPreview()) return cachedPreview.dataUrl || '';
         // 内存缓存被 invalidate（模型加载中）或 cacheKey 暂不匹配时，仍返回旧头像
         if (cachedPreview && cachedPreview.dataUrl) return cachedPreview.dataUrl;
