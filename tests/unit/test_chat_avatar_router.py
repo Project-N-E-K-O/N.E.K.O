@@ -226,6 +226,29 @@ async def test_cancelled_request_still_announces_a_commit_that_landed(backend, m
 
 
 @pytest.mark.asyncio
+async def test_cancellation_during_the_broadcast_lets_it_finish(backend, monkeypatch):
+    _, manager, _, _ = backend
+    started, release, delivered = asyncio.Event(), asyncio.Event(), []
+
+    async def slow_notify(uid, revision):
+        started.set()
+        await release.wait()
+        delivered.append((uid, revision))
+
+    monkeypatch.setattr(route, "notify_chat_avatar_changed", slow_notify)
+    task = asyncio.create_task(route._save(manager, UID, Path(manager.app_docs_dir), None, "0", "broadcast"))
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    record = store.read_record(manager.app_docs_dir / "chat_avatars", UID)
+    assert delivered == [(UID, record["revision"])]
+
+
+@pytest.mark.asyncio
 async def test_overlap_same_revision_exactly_one_wins(backend):
     _, _, headers, app = backend
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:

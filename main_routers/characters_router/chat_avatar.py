@@ -127,12 +127,12 @@ async def _save(config_manager, uid, expected_root, data_url, base_revision, ope
         except asyncio.CancelledError as exc:
             if not commit.done() or commit.cancelled() or commit.exception() is not None:
                 raise
-            # The write landed before the cancellation; other windows still need its revision.
             record, cancelled = commit.result(), exc
+    # A durable revision is always broadcast in full, even when the request is cancelled
+    # during the write or during the broadcast itself.
+    await await_retirement(_notify(uid, record["revision"]))
     if cancelled is not None:
-        await asyncio.shield(_notify(uid, record["revision"]))
         raise cancelled
-    await _notify(uid, record["revision"])
     return _response(record)
 
 
