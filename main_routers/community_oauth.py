@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import secrets
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -832,6 +833,26 @@ async def oauth_status_endpoint(request: Request):
     }
 
 
+async def _end_visits_before_account_change(new_local_user_id: str | None = None) -> None:
+    """Logout (``None``) or a login as another account: end live visits and wait for their upload seal.
+
+    A re-login as the same account changes nothing. The visit package is
+    only touched when it is loaded and has a live visit.
+    """
+    runtime = sys.modules.get("main_routers.visit_router.runtime")
+    if runtime is None or not runtime.live_visit_count():
+        return
+    if new_local_user_id is not None:
+        from main_routers.visit_router.accounts import local_account
+
+        if await local_account() == new_local_user_id:
+            return
+    try:
+        await runtime.end_visits_for_account_change()
+    except Exception as exc:  # noqa: BLE001 - 收尾失败不挡登出 / 登录；没封存的留给下次启动补录
+        logger.warning("community oauth: ending live visits failed: %r", exc)
+
+
 @router.post("/oauth/logout", summary="清除社区 OAuth 本地会话（best-effort revoke）")
 async def oauth_logout_endpoint(request: Request):
     if await _account_request_identity(request) is None:
@@ -839,6 +860,8 @@ async def oauth_logout_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
 
+    # 在飞的串门先收尾、等它把上传文件封存（记着这场跑在哪个账号下），再清本机登录态
+    await _end_visits_before_account_change()
     snapshot, auth, social = await asyncio.to_thread(_load_oauth_logout_records)
     client_id = (
         str(auth.get("client_id") or "").strip()
@@ -1072,6 +1095,8 @@ async def _handle_oauth_callback(
         "oauth_attempt_state": hashlib.sha256(expected_state.encode()).hexdigest(),
         "oauth_attempt_identity": pending.get("instance_identity") or "local",
     }
+    # 换成另一个社区账号：在飞的串门先收尾、等上传文件封存，再写入新账号的登录态
+    await _end_visits_before_account_change(local_user_id)
     async with _oauth_start_lock:
         credentials_saved = await asyncio.to_thread(
             _persist_oauth_credentials, auth_payload, social_base=social_base,

@@ -142,6 +142,7 @@ _SHUTDOWN_ROOM_CANCEL_S = 1.0
 _RENEW_RETRY_BASE_S = 5.0
 _RENEW_RETRY_MAX_S = 60.0
 _VOICE_STATUS_THROTTLE_S = 5.0
+_ACCOUNT_CHANGE_SEAL_WAIT_S = 30.0  # 登出 / 切换社区账号前等在飞串门封存上传文件的上限
 
 # ═════════════════════════════════════════════════════════════════════
 # 依赖注入
@@ -2059,6 +2060,21 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             _awaited_writes.add(write)
             write.add_done_callback(_awaited_writes.discard)
 
+    async def wait_upload_sealed(self, timeout: float) -> bool:
+        """Wait (bounded) until this visit's upload file is sealed, or its exit flow ended; False on timeout."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout)
+        while True:
+            sealing = self._sealing
+            if sealing is not None and sealing.done() and not self._header_pending():
+                return True
+            task = self._exit_task
+            if (task is not None and task.done()) or self._terminated:
+                return True
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(_HANDOFF_POLL_S)
+
     def _seal_settled(self) -> bool:
         return not self._header_pending() and (self._sealing is None or self._sealing.done())
 
@@ -2671,6 +2687,33 @@ async def end_visit(lanlan_name: str, visit_id: str, reason: str) -> tuple[int, 
     return 200, {"ok": True, "mode": "finalize", "exit_task_started": started}
 
 
+def live_visit_count() -> int:
+    """How many visit runtimes are registered (cheap check before an account change)."""
+    return len(_runtimes)
+
+
+async def end_visits_for_account_change(timeout: float = _ACCOUNT_CHANGE_SEAL_WAIT_S) -> int:
+    """Community logout / account switch: ``route_end`` every live visit, wait until each sealed its upload.
+
+    The upload file names the account the visit ran under; the local login
+    state is cleared or replaced only after that (bounded by ``timeout``,
+    shared by all visits). Returns how many visits were ended.
+    """
+    runtimes = list(_runtimes.values())
+    ended = 0
+    for rt in runtimes:
+        if rt.request_finalize("route_end"):
+            ended += 1
+    if runtimes:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout)
+        results = await asyncio.gather(*(rt.wait_upload_sealed(max(0.0, deadline - loop.time()))
+                                         for rt in runtimes), return_exceptions=True)
+        if not all(result is True for result in results):
+            logger.warning("visit: account change went ahead before every upload was sealed")
+    return ended
+
+
 async def stop_all(reason: str = "shutdown") -> None:
     """Shutdown hook (PR-09b, within ``VISIT_SHUTDOWN_BUDGET_S``): files first, never a ``leave``."""
     global _stop_gen, _stopping
@@ -2793,4 +2836,5 @@ __all__ = [
     "visit_sweep_loop", "is_visit_live", "is_visit_route_active", "is_visit_route_locked",
     "has_visit_background_tasks", "spawn_visit_background", "register_visit_route_kind",
     "get_runtime", "get_runtime_by_visit", "recent_runtime", "on_page_signal",
+    "end_visits_for_account_change", "live_visit_count",
 ]
