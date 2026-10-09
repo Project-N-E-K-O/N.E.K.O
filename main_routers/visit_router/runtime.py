@@ -593,6 +593,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
         # 凭证与能力门
         self.grant: Optional[cr.VisitGrant] = None
+        # 准入检查（清除进行中、被封缓存）按的社区账号：领到的凭证必须属于它
+        self.admitted_account: Optional[str] = None
         self._livekit_codec: Optional[str] = None
         self._creds_task: Optional[asyncio.Task] = None
         self.preflight_ok: Optional[bool] = None
@@ -880,6 +882,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: account mapping not recorded: %r", self.visit_id[:6], exc)
             # 转录 / 举报上传按这张映射认账号：没写成就一直补写，写成之前上传只是排队等着
             _detach(_retry_record_account(self.deps, creds.account, creds.visit_uid, self.visit_id))
+        if self.admitted_account is not None and creds.account != self.admitted_account:
+            # 准入检查（清除进行中、被封缓存）按的是另一个社区账号：期间换了账号，这份凭证不能用，host 的房间撤掉
+            logger.warning("visit %s: community account changed before credentials", self.visit_id[:6])
+            self.request_finalize("busy")
+            self._cancel_room_once()
+            return False
         if self.side == "host" and not creds.invite_code:
             logger.warning("visit %s: host credentials without an invite code", self.visit_id[:6])
             self.request_finalize("servers_unreachable")
@@ -2646,6 +2654,7 @@ async def start_visit(
             finalize_visit_route_state(name)
         raise
     rt.slot = slot
+    rt.admitted_account = account
     rt.start()
     _pending_visits.pop(key, None)
     return rt

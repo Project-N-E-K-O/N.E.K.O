@@ -26,6 +26,7 @@ from main_routers.visit_router import credentials as cr
 from main_routers.visit_router import runtime as rtm
 from main_routers.visit_router import transport_ws
 from tests.unit.visit_runtime_harness import (
+    credentials,
     GUEST_CHAR_UID,
     GUEST_UID,
     GUEST_VID,
@@ -4072,3 +4073,25 @@ async def test_a_joined_visit_is_not_ended_by_the_join_deadline(tmp_path, monkey
         assert rt.finalize_reason != "relay_lost"
     finally:
         await teardown(side, wire=wire, clock=clocks[0])
+
+
+async def test_credentials_of_another_account_end_the_visit_and_cancel_the_room(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)      # 准入时本机账号是 acct
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+
+    async def other_account(**kwargs):
+        side.creds_calls.append(kwargs)
+        return credentials("host", account="someone-else")   # 领凭证前换了社区账号
+
+    side.deps.fetch_credentials = other_account
+    rt = await start_side(side, clock=clock, wall=wall)
+    try:
+        assert rt.admitted_account == "acct"
+        await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+        assert await rt.issue_credentials() is None
+        assert rt.finalize_reason == "busy" and rt.takeover_token is None
+        await settle()
+        assert side.cancelled and side.cancelled[0][0] == rt.visit_id
+    finally:
+        await teardown(side, clock=clock)

@@ -171,6 +171,27 @@ def _read_stream(path: Path) -> list[dict]:
     return out
 
 
+_NEWLINE = bytes((10,))
+
+
+def _read_stream_counted(path: Path) -> tuple[list[dict], int]:
+    """``(JSON objects of the stream, records dropped)``: a partial trailing line and unparseable lines count."""
+    parts = path.read_bytes().split(_NEWLINE)
+    dropped = 1 if parts.pop() else 0
+    out = []
+    for raw in parts:
+        try:
+            obj = json.loads(raw)
+        except (ValueError, RecursionError):
+            dropped += bool(raw.strip())
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+        else:
+            dropped += 1
+    return out, dropped
+
+
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -434,14 +455,16 @@ def _stream_doc_sync(
                             fallback_own_visit_uid=owner, fallback_own_char_uid=char_uid)
 
 
-def read_pending_upload_doc_sync(config_dir: Path, visit_id: str) -> dict | None:
-    """The upload document of a visit whose transcript has not reached Servers yet (read only).
+def read_pending_upload_doc_sync(config_dir: Path, visit_id: str) -> tuple[dict, int] | None:
+    """``(upload document, records dropped)`` of a visit whose transcript has not reached Servers yet (read only).
 
-    The sealed ``.upload.json`` when :func:`sealed_upload_doc_usable`, else
-    the document its ``.upload.jsonl`` stream would seal into (a crashed
-    visit; ``finalized_reason`` ``'crash'``); None when neither exists or is
-    usable. Nothing is written or deleted. Raises ``OSError`` when a file
-    exists but cannot be read right now.
+    The sealed ``.upload.json`` when :func:`sealed_upload_doc_usable` (nothing
+    dropped), else the document its ``.upload.jsonl`` stream would seal into
+    (a crashed visit; ``finalized_reason`` ``'crash'``) with the number of
+    records the rebuild had to drop (a partial trailing line, unparseable
+    lines, malformed line records); None when neither exists or is usable.
+    Nothing is written or deleted. Raises ``OSError`` when a file exists but
+    cannot be read right now.
     """
     spool_dir = Path(config_dir) / VISIT_SPOOL_DIRNAME
     try:
@@ -449,11 +472,21 @@ def read_pending_upload_doc_sync(config_dir: Path, visit_id: str) -> dict | None
     except ValueError:
         doc = None
     if sealed_upload_doc_usable(doc, visit_id):
-        return doc
+        return doc, 0
     try:
-        return _stream_doc_sync(spool_dir, visit_id, None, None)
+        records, dropped = _read_stream_counted(visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX))
+    except FileNotFoundError:
+        return None
+    owner, char_uid = _with_header_fallback(spool_dir, visit_id, None, None)
+    try:
+        doc = build_upload_doc(records, visit_id=visit_id, finalized_reason=None,
+                               fallback_own_visit_uid=owner, fallback_own_char_uid=char_uid)
     except ValueError:
         return None
+    if doc is None:
+        return None
+    line_records = sum(1 for record in records[1:] if record.get("kind") == "line")
+    return doc, dropped + line_records - len(doc["request"]["lines"])
 
 
 def _write_private_json(path: Path, doc: dict) -> None:

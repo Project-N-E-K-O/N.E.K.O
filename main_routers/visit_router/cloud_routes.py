@@ -167,6 +167,17 @@ def _finite_number(value: Any) -> bool:
         return False
 
 
+def _utf8_str(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        # JSON 里转义的孤立代理字符：解析得出字符串，却编不成 UTF-8，回给前端时会 500
+        return False
+    return True
+
+
 def _cloud_line(row: Any, role: str) -> dict | None:
     """This side's half of one aligned details row in the cloud transcript shape.
 
@@ -185,9 +196,9 @@ def _cloud_line(row: Any, role: str) -> dict | None:
     if (
         not isinstance(lp, int) or isinstance(lp, bool) or lp < 0
         or row.get("side") not in ("host", "guest")
-        or not isinstance(mine.get("from"), str)
+        or not _utf8_str(mine.get("from"))
         or not _finite_number(ts)
-        or not isinstance(mine.get("text"), str)
+        or not _utf8_str(mine.get("text"))
         or not isinstance(mine.get("truncated"), bool)
     ):
         return _MALFORMED

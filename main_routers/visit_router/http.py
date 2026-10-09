@@ -367,7 +367,14 @@ async def visit_state(request: Request, catgirl: str = ""):
     if not _valid_name(catgirl):
         return _error(400, "catgirl_required")
     rt = runtime.get_runtime(catgirl)
-    return JSONResponse(rt.snapshot() if rt is not None else dict(IDLE_STATE))
+    if rt is None:
+        return JSONResponse(dict(IDLE_STATE))
+    snapshot = rt.snapshot()
+    owner = rt.creds.account if rt.creds is not None else rt.admitted_account
+    if owner is None or owner != await accounts.local_account():
+        # 共用电脑上已换成别的社区账号：只说这个角色正在串门，不给这一场的对端、房间与台词
+        return JSONResponse({**IDLE_STATE, "active": snapshot["active"], "phase": snapshot["phase"]})
+    return JSONResponse(snapshot)
 
 
 def _local_line(line_id: Any, record: Mapping[str, Any], frame: Optional[Mapping[str, Any]] = None) -> dict:
@@ -444,7 +451,7 @@ async def _spool_transcript(config_dir: Path, visit_id: str, owner: str) -> Opti
     transport = rt.creds.transport if rt is not None and rt.creds else None
     if transport is None:
         pending = await _pending_upload(config_dir, visit_id)
-        transport = pending.get("transport") if pending else None
+        transport = pending[0].get("transport") if pending else None
     doc = {
         "visit_id": visit_id,
         "peer_short_id": derive_short_code(peer_uid) if peer_uid else None,
@@ -458,7 +465,7 @@ async def _spool_transcript(config_dir: Path, visit_id: str, owner: str) -> Opti
     return doc, contents.dropped_lines
 
 
-async def _pending_upload(config_dir: Path, visit_id: str) -> Optional[dict]:
+async def _pending_upload(config_dir: Path, visit_id: str) -> Optional[tuple[dict, int]]:
     try:
         return await asyncio.to_thread(read_pending_upload_doc_sync, config_dir, visit_id)
     except OSError as exc:
@@ -476,8 +483,9 @@ async def visit_transcript(request: Request, visit_id: str = ""):
     two answer the full local shape (``source: spool | memory``), the last two
     the compact shape of the uploaded lines (``source: upload | cloud``).
     Local copies are served only to the community account that took part
-    (visit data is partitioned by account); a spool that lost lines in a crash
-    gives way to a complete source and is the last resort (``dropped_lines``).
+    (visit data is partitioned by account); a spool or upload stream that lost
+    records in a crash gives way to a complete source and is the last resort
+    (``dropped_lines``).
     """
     denied = http_denied(request)
     if denied is not None:
@@ -499,10 +507,16 @@ async def visit_transcript(request: Request, visit_id: str = ""):
         if rt is not None and _runtime_owner(rt) == owner:
             return JSONResponse(await _memory_transcript(config_dir, rt))
         pending = await _pending_upload(config_dir, visit_id)
-        if pending is not None and pending.get("own_visit_uid") == owner:
-            request_body = pending["request"]
-            return JSONResponse({"source": "upload", "visit_id": visit_id, "role": request_body["role"],
-                                 "lines": request_body["lines"]})
+        if pending is not None and pending[0].get("own_visit_uid") == owner:
+            upload_doc, dropped = pending
+            request_body = upload_doc["request"]
+            body = {"source": "upload", "visit_id": visit_id, "role": request_body["role"],
+                    "lines": request_body["lines"]}
+            if not dropped:
+                return JSONResponse(body)
+            # 崩溃流水里也有丢掉的记录：同样先去云端找完整的那份
+            if partial is None:
+                partial = {**body, "dropped_lines": dropped}
     try:
         return JSONResponse(await cloud_routes.fetch_cloud_transcript(visit_id))
     except cloud_routes.CloudTranscriptIncomplete:

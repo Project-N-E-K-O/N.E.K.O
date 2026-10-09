@@ -90,7 +90,7 @@ class Env:
         self.preview_visit_id = VISIT_ID
         self.preview_expires = NOW + 600
         self.preview_calls: list[str] = []
-        self.account: str | None = "u1"
+        self.account: str | None = "acct"     # 与夹具签发的凭证同一个社区账号
         self.own_uid: str | None = OWN
         self.gate = PersonaGate(ok=True, state="ok", text="一只活泼的猫娘。")
         self.gate_wait: asyncio.Event | None = None
@@ -415,7 +415,7 @@ async def test_runtime_refusals_pass_through_and_release_the_slot(env):
     env.account = None
     resp = await _rooms(env)
     assert resp.status_code == 409 and resp.json()["code"] == "VISIT_LOGIN_REQUIRED" and _no_slot()
-    env.account = "u1"
+    env.account = "acct"
     env.host.host.precondition = "voice_session_active"
     resp = await _rooms(env)
     assert resp.status_code == 409 and resp.json()["reason"] == "voice_session_active" and _no_slot()
@@ -1005,3 +1005,44 @@ async def test_memory_copy_of_another_account_is_not_served(env, monkeypatch):
     env.servers.details_mode = "403"     # 云端按参与者判定：这一场不是当前账号的
     resp = await _transcript(env)
     assert resp.status_code == 404 and resp.json()["code"] == "transcript_gone_local"
+
+
+async def test_state_of_another_accounts_visit_only_says_busy(env):
+    await _rooms(env)
+    async with env.client() as c:
+        mine = (await c.get("/api/visit/state?catgirl=Host", headers=GOOD)).json()
+        env.account = "someone-else"     # 共用电脑上换了社区账号
+        other = (await c.get("/api/visit/state?catgirl=Host", headers=GOOD)).json()
+    assert mine["visit_id"] is not None
+    assert other == {**http.IDLE_STATE, "active": True, "phase": "pending"}
+
+
+async def test_an_upload_stream_that_lost_records_gives_way_to_the_cloud(env):
+    path = _write_stream(env.host.config_dir)
+    with open(path, "ab") as handle:
+        handle.write(b'{"kind": "line", "lp": 9')       # 崩溃留下的半行
+    env.servers.details_lines = _details_rows(5)
+    assert (await _transcript(env)).json()["source"] == "cloud"
+    env.servers.details_mode = "503"
+    body = (await _transcript(env)).json()
+    assert body["source"] == "upload" and body["dropped_lines"] == 1 and len(body["lines"]) == 3
+
+
+async def test_cloud_text_that_cannot_be_utf8_is_a_dropped_row_not_500(env, monkeypatch):
+    good = {"from": "own_cat", "ts": 1.0, "text": "好", "truncated": False}
+    env.servers.details_lines = [
+        {"lp": 1, "side": "host", "host": good, "guest": None, "status": "only_host"},
+        {"lp": 2, "side": "host", "host": {**good, "text": "a@@SURROGATE@@"}, "guest": None, "status": "only_host"},
+    ]
+    real = env.servers._details
+
+    def with_lone_surrogate(request):
+        # Servers 在 JSON 里转义出一个孤立代理字符（解析得出字符串，却编不成 UTF-8）
+        resp = real(request)
+        escaped = bytes((92,)) + b"ud800"
+        return httpx.Response(resp.status_code, content=resp.content.replace(b"@@SURROGATE@@", escaped),
+                              headers={"content-type": "application/json"})
+
+    monkeypatch.setattr(env.servers, "_details", with_lone_surrogate)
+    resp = await _transcript(env)
+    assert resp.status_code == 200 and [line["lp"] for line in resp.json()["lines"]] == [1]
