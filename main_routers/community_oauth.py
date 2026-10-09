@@ -840,20 +840,24 @@ async def visit_account_change(new_local_user_id: str | None = None):
 
     While the block runs no visit is admitted, and live visits are ended
     and their upload files sealed before it starts (they record the account
-    they ran under). A re-login as the same account changes nothing; without
-    the visit package loaded there is nothing to fence.
+    they ran under), unless it is a re-login as the account already signed
+    in (checked once the fence is up). Without the visit package loaded
+    there is nothing to fence.
     """
     runtime = sys.modules.get("main_routers.visit_router.runtime")
     if runtime is None:
         yield
         return
-    if new_local_user_id is not None:
+
+    async def ends_visits() -> bool:
+        if new_local_user_id is None:
+            return True
         from main_routers.visit_router.accounts import local_account
 
-        if await local_account() == new_local_user_id:
-            yield
-            return
-    async with runtime.account_change():
+        # 闸已立起才比对：比对期间不会有新串门被准入，另一次登录在这期间换走账号也会被看到
+        return await local_account() != new_local_user_id
+
+    async with runtime.account_change(ends_visits=ends_visits):
         yield
 
 

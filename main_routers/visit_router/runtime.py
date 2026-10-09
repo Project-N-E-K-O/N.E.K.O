@@ -2070,15 +2070,25 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             write.add_done_callback(_awaited_writes.discard)
 
     async def wait_upload_sealed(self, timeout: float) -> bool:
-        """Wait (bounded) until this visit's upload file is sealed, or its exit flow ended; False on timeout."""
+        """Wait (bounded) until this visit's upload file is sealed; False on timeout.
+
+        Also True once the exit flow ended with nothing left to seal (no
+        upload journal was ever opened, or the seal step failed). A seal the
+        exit flow handed to a background task (header still writing, a slow
+        disk) is waited for even after the exit flow itself finished.
+        """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(0.0, timeout)
         while True:
             sealing = self._sealing
-            if sealing is not None and sealing.done() and not self._header_pending():
+            header_pending = self._header_pending()
+            if sealing is not None and sealing.done() and not header_pending:
                 return True
             task = self._exit_task
-            if (task is not None and task.done()) or self._terminated:
+            exited = (task is not None and task.done()) or self._terminated
+            background_seal = (self._files_deferred and not self._deferred_files_done) or (
+                sealing is not None and not sealing.done()) or header_pending
+            if exited and not background_seal:
                 return True
             if loop.time() >= deadline:
                 return False
@@ -2708,19 +2718,26 @@ def live_visit_count() -> int:
 
 
 @asynccontextmanager
-async def account_change(timeout: float = _ACCOUNT_CHANGE_SEAL_WAIT_S):
+async def account_change(
+    timeout: float = _ACCOUNT_CHANGE_SEAL_WAIT_S,
+    *,
+    ends_visits: Optional[Callable[[], Awaitable[bool]]] = None,
+):
     """Hold across a community logout / account switch: no visit is admitted, live ones end first.
 
     On entry the admission fence goes up (a start already past its account
     lookup is refused as well), then every live visit is ended and its
     upload seal awaited (:func:`end_visits_for_account_change`); the caller
-    changes the credentials inside the block. Ending visits never raises.
+    changes the credentials inside the block. ``ends_visits()`` (asked once
+    the fence is up, so no visit is admitted while it decides) can keep live
+    visits running, e.g. for a re-login as the same account. Ending visits
+    never raises.
     """
     global _account_changes, _account_gen
     _account_changes += 1
     _account_gen += 1
     try:
-        if _runtimes:
+        if _runtimes and (ends_visits is None or await ends_visits()):
             try:
                 await end_visits_for_account_change(timeout)
             except Exception as exc:  # noqa: BLE001 - 收尾失败不挡登出 / 登录；没封存的留给下次启动补录

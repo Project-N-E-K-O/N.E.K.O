@@ -305,29 +305,72 @@ async def test_start_awaiting_its_account_lookup_is_refused_after_an_account_cha
     runtime._reset_for_tests()
 
 
-async def test_oauth_fence_skips_a_relogin_as_the_same_account(monkeypatch):
+async def test_oauth_fence_decides_relogin_with_the_fence_up(monkeypatch):
     from main_routers import community_oauth
     from main_routers.visit_router import accounts
 
-    entered = []
+    ended = []
+    fence_up_when_checked = []
 
-    @asynccontextmanager
-    async def fence(timeout=None):
-        entered.append(True)
-        yield
+    async def spy(timeout=None):
+        ended.append(True)
+        return 1
 
     async def current():
+        fence_up_when_checked.append(runtime._account_changes > 0)
         return "acct-1"
 
-    monkeypatch.setattr(runtime, "account_change", fence)
+    monkeypatch.setattr(runtime, "_runtimes", {"A": object()})
+    monkeypatch.setattr(runtime, "end_visits_for_account_change", spy)
     monkeypatch.setattr(accounts, "local_account", current)
-    async with community_oauth.visit_account_change():               # 登出
+    async with community_oauth.visit_account_change():               # 登出：收尾
+        assert runtime._account_changes == 1
+    async with community_oauth.visit_account_change("acct-2"):       # 换账号：收尾
         pass
-    async with community_oauth.visit_account_change("acct-2"):       # 换账号
-        pass
-    async with community_oauth.visit_account_change("acct-1"):       # 同一账号重登：不设闸
-        pass
-    assert entered == [True, True]
+    async with community_oauth.visit_account_change("acct-1"):       # 同一账号重登：不收尾，但闸照样立着
+        assert runtime._account_changes == 1
+    assert ended == [True, True]
+    # 账号比对在闸立起之后才做：比对期间不会有新串门被准入
+    assert fence_up_when_checked == [True, True]
+
+
+class _SealStub:
+    """Just the fields ``wait_upload_sealed`` reads."""
+
+    def __init__(self, *, sealing=None, exited=True, deferred=False):
+        self._sealing = sealing
+        self._journal_opening = None
+        self._files_deferred = deferred
+        self._deferred_files_done = False
+        self._terminated = False
+        done = asyncio.get_running_loop().create_future()
+        if exited:
+            done.set_result(None)
+        self._exit_task = done
+
+    def _header_pending(self):
+        return runtime.VisitRuntime._header_pending(self)
+
+
+async def test_seal_wait_keeps_waiting_for_a_seal_finished_in_the_background():
+    sealing = asyncio.get_running_loop().create_future()
+    stub = _SealStub(sealing=sealing, exited=True)
+    asyncio.get_running_loop().call_later(0.3, sealing.set_result, {"ok": True})
+    started = time.monotonic()
+    assert await runtime.VisitRuntime.wait_upload_sealed(stub, 2.0) is True
+    assert time.monotonic() - started >= 0.25          # 退出流程先结束不算：等封存真的落盘
+
+
+async def test_seal_wait_on_a_deferred_chain_times_out_instead_of_lying():
+    stub = _SealStub(sealing=None, exited=True, deferred=True)
+    assert await runtime.VisitRuntime.wait_upload_sealed(stub, 0.3) is False
+
+
+async def test_seal_wait_returns_at_once_when_nothing_is_left_to_seal():
+    stub = _SealStub(sealing=None, exited=True)
+    started = time.monotonic()
+    assert await runtime.VisitRuntime.wait_upload_sealed(stub, 5.0) is True
+    assert time.monotonic() - started < 0.1
 
 
 def _body_of(source: str, signature: str) -> str:
