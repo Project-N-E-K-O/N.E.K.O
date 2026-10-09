@@ -737,7 +737,7 @@ async def test_callback_external_description_prefix_has_item_id():
     assert delivered is True
     assert len(sess.injected_events) == 1
     visual_event = sess.injected_events[0][0]
-    assert visual_event["item"]["id"].startswith("item_neko_callback_visual_")
+    assert visual_event["item"]["id"].startswith("neko_cbvis_")
 
 
 async def test_external_callback_rechecks_independent_asr_turn_after_visual_analysis():

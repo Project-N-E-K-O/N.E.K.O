@@ -1240,6 +1240,8 @@ def test_launcher_main_schedules_restart_for_storage_restart_requested_during_st
         raising=False,
     )
     monkeypatch.setattr(launcher, "wait_for_servers", lambda timeout=60: launcher.STARTUP_WAIT_RESULT_STORAGE_RESTART)
+    # That result is only returned once Main has recorded the request.
+    monkeypatch.setattr(launcher, "_is_pending_storage_restart_request", lambda **_kwargs: True)
     def _cleanup_once():
         if cleanup_state["done"]:
             return
@@ -1247,6 +1249,9 @@ def test_launcher_main_schedules_restart_for_storage_restart_requested_during_st
         cleanup_calls.append("cleanup")
 
     monkeypatch.setattr(launcher, "cleanup_servers", _cleanup_once)
+    # The real cleanup_servers snapshots the servers' descendants first; this
+    # stand-in found none left, so they do not hold the restart back.
+    monkeypatch.setattr(launcher, "_teardown_descendants", [])
     monkeypatch.setattr(
         launcher,
         "_maybe_schedule_storage_restart",

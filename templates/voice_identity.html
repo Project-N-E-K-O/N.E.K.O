@@ -137,7 +137,7 @@
                         <h2 id="voice-identity-step-title" tabindex="-1"
                             data-i18n="voiceIdentity.privacyTitle">录入 3 段声纹和 1 段验证语音</h2>
                         <p id="voice-identity-step-body" class="enrollment-help" data-i18n="voiceIdentity.privacyBody">
-                            使用同一麦克风和正常音量完成三段参考录音，再完成一段验证录音。语音会发送到此页面使用的 N.E.K.O. 服务进行处理，验证成功后才会加密保存声纹。
+                            使用同一麦克风，以自然音量朗读完整句子，完成三段参考录音和一段验证录音。语音会发送到此页面使用的 N.E.K.O. 服务处理，仅在后端人声与声纹校验通过后加密保存声纹。
                         </p>
                         <div id="voice-identity-result" class="verification-result" hidden
                             role="status" aria-live="polite" aria-atomic="true"
@@ -169,7 +169,7 @@
                             <span class="recording-timer" id="voice-identity-timer" aria-hidden="true"></span>
                     </div>
                     <p class="enrollment-rule-note" id="voice-identity-rule-note" data-i18n="voiceIdentity.recordingRule">
-                        每段自然说满约 1.5 秒即可保存；系统会自动补齐分析所需时长（前 3 段补齐到 3 秒，第 4 段补齐到 5 秒）。
+                        自然朗读完整句子，实际采集满 1.5 秒后可提交校验，并不保证通过。系统会补齐分析所需时长（前 3 段到 3 秒，第 4 段到 5 秒）。
                     </p>
                     <div class="enrollment-actions" id="voice-identity-actions">
                         <button type="button" class="primary-button" id="voice-identity-start"

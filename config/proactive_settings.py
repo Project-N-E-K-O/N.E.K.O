@@ -124,10 +124,10 @@ PROACTIVE_SOURCE_FORGET_P = 0.05
 """p_skip 跌破此阈值即从衰减历史中遗忘（让文件体积自然有界）。
 - 当前参数下：music ≈ 4.5d 后遗忘，web/image ≈ 13d 后遗忘。"""
 
-EMOTION_ANALYSIS_MAX_TOKENS = 40
+EMOTION_ANALYSIS_MAX_TOKENS = 64
 """情感分析 LLM 的 max_completion_tokens。
-- 用途：返回情感标签 + score 等短输出。
-- 上游：LLM 输出（注意：Gemini 可能返回 markdown 包裹，留 40 token 余量）。"""
+- 用途：返回情感标签、置信度与可选 emoji。
+- 上游：LLM 输出（包括 Gemini 可能返回的 markdown 包裹）。"""
 
 
 # Reuse the existing outward emotion decision; no additional inference.

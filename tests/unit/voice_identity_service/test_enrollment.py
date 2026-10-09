@@ -14,6 +14,7 @@ from main_logic.voice_identity_service.enrollment import (
     EnrollmentSpeechValidatorUnavailableError,
     SileroEnrollmentSpeechValidator,
     create_enrollment_reference_centroid,
+    enrollment_audio_diagnostics,
     validate_enrollment_pcm16,
     verify_enrollment_holdout,
     wipe_enrollment_embedding,
@@ -39,11 +40,7 @@ def test_accepts_four_seconds_of_usable_pcm() -> None:
     [
         pytest.param(b"\x00", "invalid_pcm", id="odd-byte-count"),
         pytest.param(_pcm(1_499), "speech_too_short", id="too-short"),
-        pytest.param(
-            b"\x00\x00" * 32_000,
-            "volume_too_low",
-            id="silence",
-        ),
+        pytest.param(bytearray(_pcm(3_000)), "invalid_pcm", id="mutable-pcm"),
         pytest.param(_pcm(4_001), "audio_too_long", id="too-long"),
         pytest.param(
             _pcm(4_000, amplitude=32_767),
@@ -62,6 +59,15 @@ def test_rejects_unusable_pcm(pcm16: bytes, code: str) -> None:
 def test_payload_ceiling_matches_four_second_pcm16() -> None:
     assert ENROLLMENT_MAXIMUM_PCM_BYTES == 128_000
     assert ENROLLMENT_VERIFICATION_MAXIMUM_PCM_BYTES == 160_000
+
+
+@pytest.mark.parametrize("amplitude", [0, 16, 128, 2_000])
+def test_minimum_capture_length_is_independent_of_volume(amplitude: int) -> None:
+    pcm16 = _pcm(1_500, amplitude=amplitude)
+    validate_enrollment_pcm16(pcm16)
+    diagnostics = enrollment_audio_diagnostics(pcm16)
+    assert diagnostics["duration_seconds"] == 1.5
+    assert diagnostics["active_seconds"] == (1.5 if amplitude == 2_000 else 0.0)
 
 
 class _FakeSileroVad:
@@ -126,6 +132,56 @@ async def test_silero_validator_rejects_insufficient_real_speech() -> None:
 
     assert caught.value.code == "no_speech_detected"
     await validator.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("amplitude", [16, 128, 2_000])
+async def test_silero_47_windows_pass_even_below_rms_threshold(amplitude: int) -> None:
+    # A controlled model isolates the probability gate from amplitude diagnostics.
+    vad = _FakeSileroVad([0.5] * 47 + [0.49] * 46)
+    validator = SileroEnrollmentSpeechValidator(vad=vad)
+    pcm16 = _pcm(3_000, amplitude=amplitude)
+    assert await validator.load()
+    try:
+        result = await validator.validate_pcm16(pcm16)
+        assert result.active_window_count == 47
+        assert vad.process_count == 1
+        assert enrollment_audio_diagnostics(pcm16)["active_seconds"] == (
+            3.0 if amplitude == 2_000 else 0.0
+        )
+    finally:
+        await validator.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active_windows", [0, 31, 46])
+async def test_padding_cannot_supply_missing_speech_windows(active_windows: int) -> None:
+    samples = np.zeros(48_000, dtype="<i2")
+    samples[:16_000] = 4_000
+    vad = _FakeSileroVad([0.9] * active_windows + [0.1] * (93 - active_windows))
+    validator = SileroEnrollmentSpeechValidator(vad=vad)
+    assert await validator.load()
+    try:
+        with pytest.raises(EnrollmentAudioError) as caught:
+            await validator.validate_pcm16(samples.tobytes())
+        assert caught.value.code == "no_speech_detected"
+        assert vad.process_count == 1
+        assert enrollment_audio_diagnostics(samples.tobytes())["active_seconds"] == 1.0
+    finally:
+        await validator.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_quiet_pcm_still_fails_closed_when_model_is_not_loaded() -> None:
+    validator = SileroEnrollmentSpeechValidator(vad=_FakeSileroVad([0.9] * 93))
+    try:
+        with pytest.raises(EnrollmentSpeechValidatorUnavailableError):
+            await validator.validate_pcm16(_pcm(3_000, amplitude=16))
+    finally:
+        await validator.close()
 
 
 @pytest.mark.unit

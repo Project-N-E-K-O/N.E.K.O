@@ -11,17 +11,37 @@ const root = path.resolve(__dirname, '../..');
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'neko-voice-readiness-electron-'));
 app.setPath('userData', path.join(scratch, 'user-data'));
 const sampleRate = 48000, samples = sampleRate * 12;
+const sentence = fs.readFileSync(path.join(root, 'tests/fixtures/voice_identity/issue_3347/rate4.wav'));
+assert.equal(sentence.toString('ascii', 0, 4), 'RIFF');
+assert.equal(sentence.readUInt32LE(24), sampleRate);
+assert.equal(sentence.toString('ascii', 36, 40), 'data');
 const wav = Buffer.alloc(44 + samples * 2);
 wav.write('RIFF'); wav.writeUInt32LE(wav.length - 8, 4); wav.write('WAVEfmt ', 8); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(sampleRate, 24); wav.writeUInt32LE(sampleRate * 2, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeUInt32LE(samples * 2, 40);
-for (let i = 0; i < samples; i++) wav.writeInt16LE(Math.round(4096 * Math.sin(2 * Math.PI * 220 * i / sampleRate)), 44 + i * 2);
-const wavPath = path.join(scratch, 'controlled-tone.wav'); fs.writeFileSync(wavPath, wav);
+for (let i = 0; i < samples; i++) {
+    const offset = i % (sampleRate * 3);
+    wav.writeInt16LE(offset * 2 < sentence.length - 44 ? Math.round(sentence.readInt16LE(44 + offset * 2) * 0.25) : 0, 44 + i * 2);
+}
+const wavPath = path.join(scratch, 'controlled-quiet-sentence.wav'); fs.writeFileSync(wavPath, wav);
 app.commandLine.appendSwitch('use-fake-device-for-media-stream');
 app.commandLine.appendSwitch('use-fake-ui-for-media-stream');
 app.commandLine.appendSwitch('use-file-for-fake-audio-capture', wavPath);
 let server, win;
+let allowEnrollment = false, enrollment = null;
 const requests = [];
 const watchdog = setTimeout(() => { console.error('VOICE_READINESS_ELECTRON_TIMEOUT'); app.exit(2); }, 40000);
 function json(response, value) { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(value)); }
+function status() {
+    return { has_profile: false, runtime_mode: 'enforce', enrollment_active: Boolean(enrollment), enrollment, effective_reason: 'no_profile' };
+}
+function measurePcm(pcm) {
+    let activeSamples = 0;
+    for (let offset = 0; offset + 960 <= pcm.length; offset += 960) {
+        let sum = 0;
+        for (let index = offset; index < offset + 960; index += 2) sum += (pcm.readInt16LE(index) / 32768) ** 2;
+        if (Math.sqrt(sum / 480) >= 0.008) activeSamples += 480;
+    }
+    return activeSamples / sampleRate;
+}
 async function waitFor(expression) {
     return win.webContents.executeJavaScript(`new Promise((resolve,reject)=>{const condition=()=>(${expression});if(condition())return resolve(true);const observer=new MutationObserver(()=>{if(condition()){clearTimeout(timer);observer.disconnect();resolve(true);}});observer.observe(document.body,{subtree:true,attributes:true,childList:true,characterData:true});const timer=setTimeout(()=>{observer.disconnect();reject(new Error('UI condition timed out'));},12000);})`);
 }
@@ -31,19 +51,37 @@ app.whenReady().then(async () => {
         const entry = { path: url.pathname, method: request.method }; requests.push(entry);
         if (url.pathname === '/api/config/page_config') return json(response, { autostart_csrf_token: 'controlled-electron-test' });
         if (url.pathname === '/api/config/steam_language') return json(response, { ui_language: 'zh-CN' });
-        if (url.pathname === '/api/voice-identity/status') return json(response, { has_profile: false, runtime_mode: 'enforce', enrollment_active: false, enrollment: null, effective_reason: 'no_profile' });
+        if (url.pathname === '/api/voice-identity/status') return json(response, status());
         if (url.pathname === '/api/voice-identity/resources') return json(response, { can_enroll: true, wake_enabled: false, resources: { campp: { state: 'ready' }, silero: { state: 'ready' }, noise_reduction: { state: 'ready' }, wake_model: { state: 'missing', reason: 'WAKE_WORD_MODEL_MISSING' }, wake_runtime: { state: 'missing', reason: 'WAKE_WORD_RUNTIME_MISSING' } } });
         if (url.pathname === '/api/voice-identity/audio/check/isolation') return json(response, { token: 'controlled-ticket', ttl_seconds: 60 });
         if (url.pathname === '/api/voice-identity/audio/check/isolation/release') return json(response, { released: true });
         if (url.pathname === '/api/voice-identity/audio/check') {
-            entry.token = request.headers['x-voice-input-check']; let bytes = 0;
-            request.on('data', chunk => { bytes += chunk.length; });
-            return request.on('end', () => { entry.bytes = bytes; json(response, { accepted: true, audio_contract: { revision: 1, noise_reduction_enabled: false } }); });
+            entry.token = request.headers['x-voice-input-check']; const chunks = [];
+            request.on('data', chunk => { chunks.push(chunk); });
+            return request.on('end', () => { const pcm = Buffer.concat(chunks); entry.bytes = pcm.length; entry.rmsActiveSeconds = measurePcm(pcm); pcm.fill(0); json(response, { accepted: true, audio_contract: { revision: 1, noise_reduction_enabled: false } }); });
         }
         if (url.pathname === '/api/voice-identity/enrollment/start') {
             let body=''; request.on('data',chunk=>{body+=chunk;});
-            return request.on('end',()=>{entry.body=JSON.parse(body);response.writeHead(409,{'Content-Type':'application/json'});response.end(JSON.stringify({error_code:'audio_contract_changed'}));});
+            return request.on('end',()=>{
+                entry.body=JSON.parse(body);
+                if (!allowEnrollment) { response.writeHead(409,{'Content-Type':'application/json'}); return response.end(JSON.stringify({error_code:'audio_contract_changed'})); }
+                enrollment = { enrollment_id: 'controlled-duration-session', profile_id: 'controlled-owner', next_segment_index: 1, accepted_segments: 0, required_segments: 4, phase: 'collecting_reference', remaining_seconds: 45 };
+                json(response, status());
+            });
         }
+        if (url.pathname === '/api/voice-identity/enrollment/segment') {
+            assert.equal(request.method, 'PUT');
+            entry.segment = Number(request.headers['x-voice-identity-segment']);
+            const chunks = [];
+            request.on('data', chunk => chunks.push(chunk));
+            return request.on('end', () => {
+                const pcm = Buffer.concat(chunks);
+                entry.bytes = pcm.length; entry.rmsActiveSeconds = measurePcm(pcm); pcm.fill(0);
+                enrollment.next_segment_index = entry.segment + 1; enrollment.accepted_segments = entry.segment;
+                json(response, status());
+            });
+        }
+        if (url.pathname === '/api/voice-identity/enrollment/cancel') { enrollment = null; return json(response, status()); }
         if (url.pathname === '/voice_identity') { response.writeHead(200, { 'Content-Type': 'text/html;charset=utf-8' }); return response.end(fs.readFileSync(path.join(root, 'templates/voice_identity.html'), 'utf8').replaceAll('{{ static_asset_version }}', 'controlled')); }
         if (url.pathname.startsWith('/static/')) {
             const filename = path.resolve(root, '.' + decodeURIComponent(url.pathname));
@@ -66,9 +104,12 @@ app.whenReady().then(async () => {
     await waitFor("!document.getElementById('voice-identity-start').disabled");
     const check = requests.find(r => r.path === '/api/voice-identity/audio/check');
     assert.equal(check.token, 'controlled-ticket'); assert.equal(check.bytes, 288000);
+    assert.ok(check.rmsActiveSeconds < 1.5, 'Quiet real-worklet trial must bypass the old RMS duration gate');
     assert.equal(requests.some(r => /enrollment\/start|\/profile$/.test(r.path)), false);
     const ui = await win.webContents.executeJavaScript("({ actualDevice: document.getElementById('voice-identity-actual-device').textContent, meter: document.getElementById('voice-identity-meter').value, fallbackNotice: document.getElementById('voice-identity-input-notice').textContent, startEnabled: !document.getElementById('voice-identity-start').disabled })");
-    assert.ok(ui.actualDevice); assert.notEqual(ui.actualDevice, '尚未启用麦克风'); assert.ok(ui.meter > 0);
+    assert.ok(ui.actualDevice); assert.notEqual(ui.actualDevice, '尚未启用麦克风');
+    assert.ok(Number.isFinite(ui.meter) && ui.meter >= 0);
+    assert.ok(check.rmsActiveSeconds > 0, 'The quiet sentence must contain signal, even though its trailing silence leaves the meter at zero');
     assert.equal(await win.webContents.executeJavaScript("window.__controlledStreams.every(stream=>stream.getAudioTracks().every(track=>track.readyState==='ended'))"), true);
     await win.webContents.executeJavaScript("document.getElementById('voice-identity-test').click();true;", true);
     await waitFor("!document.getElementById('voice-identity-start').disabled");
@@ -92,9 +133,27 @@ app.whenReady().then(async () => {
     assert.ok(start);assert.deepEqual(start.body.preview_audio_contract,{revision:1,noise_reduction_enabled:false});
     await win.webContents.executeJavaScript("document.getElementById('voice-identity-test').click();true;",true);
     await waitFor("!document.getElementById('voice-identity-start').disabled");
+    // The same quiet input also reaches formal upload after a manual finish.
+    allowEnrollment = true;
+    await win.webContents.executeJavaScript("document.getElementById('voice-identity-start').click();true;", true);
+    await waitFor("!document.getElementById('voice-identity-finish').hidden");
+    await win.webContents.executeJavaScript("document.getElementById('voice-identity-finish').click();true;", true);
+    await waitFor("document.getElementById('voice-identity-message').textContent.includes('1.5')");
+    assert.equal(requests.some(r => r.path === '/api/voice-identity/enrollment/segment'), false);
+    await waitFor("parseFloat(document.getElementById('voice-identity-timer').textContent) >= 1.6");
+    await win.webContents.executeJavaScript("document.getElementById('voice-identity-finish').click();true;", true);
+    await waitFor("!document.getElementById('voice-identity-next').hidden");
+    const segment = requests.find(r => r.path === '/api/voice-identity/enrollment/segment');
+    assert.equal(segment.segment, 1); assert.equal(segment.bytes, 288000);
+    assert.ok(segment.rmsActiveSeconds > 0 && segment.rmsActiveSeconds < 1.5,
+        'Formal upload must contain the quiet sentence, rather than only padding');
+    await win.webContents.executeJavaScript("document.getElementById('voice-identity-cancel').click();true;", true);
+    await waitFor("!document.getElementById('voice-identity-test').disabled && document.getElementById('voice-identity-cancel').hidden");
+    assert.equal(enrollment, null);
+    assert.equal(await win.webContents.executeJavaScript("window.__controlledStreams.every(stream=>stream.getAudioTracks().every(track=>track.readyState==='ended'))"), true);
     await win.webContents.executeJavaScript("const gain=document.getElementById('voice-identity-gain');gain.value='12';gain.dispatchEvent(new Event('change'));true;", true);
     assert.equal(await win.webContents.executeJavaScript("document.getElementById('voice-identity-start').disabled"), true);
-    const report = { electron: process.versions.electron, actualPageAndWorklet: true, controlledApi: true, realMicrophoneCaptured: false, fallbackRequiresSecondTest: true, inputResourcesReleasedAfterTrial: true, repeatedTrialReacquiresStream: true, cancelledLatePermissionStopped: true, formalReopensAndChecksContract: true, changedServerContractRequiresRetest: true, pcmBytes: check.bytes, gainChangeInvalidatesTest: true, ui };
+    const report = { electron: process.versions.electron, actualPageAndWorklet: true, controlledApi: true, realMicrophoneCaptured: false, realBackend: false, quietFixedSentenceUploaded: true, prematureManualFinishBlocked: true, quietManualFinishUploaded: true, cancelledFormalInputReleased: true, manualRmsActiveSeconds: segment.rmsActiveSeconds, trialRmsActiveSeconds: check.rmsActiveSeconds, fallbackRequiresSecondTest: true, inputResourcesReleasedAfterTrial: true, repeatedTrialReacquiresStream: true, cancelledLatePermissionStopped: true, formalReopensAndChecksContract: true, changedServerContractRequiresRetest: true, pcmBytes: check.bytes, gainChangeInvalidatesTest: true, ui };
     fs.writeFileSync(path.join(scratch, 'result.json'), JSON.stringify(report, null, 2));
     console.log('VOICE_READINESS_ELECTRON ' + JSON.stringify(report));
     console.log('VOICE_READINESS_ARTIFACTS ' + scratch);

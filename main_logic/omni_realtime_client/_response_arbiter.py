@@ -50,6 +50,11 @@ _SERVER_RESPONSE_ID_LIMIT = 32
 # because its entries outlive the responses they name — it exists precisely to
 # still recognise an id after the live set has given up on it.
 _SEEN_RESPONSE_ID_LIMIT = 128
+# Bound on the item ids already counted by ``notify_item_created``. A provider
+# that announces one item under both ``conversation.item.created`` and
+# ``conversation.item.added`` sends the two back to back, so only the recent
+# tail needs remembering.
+_ACKNOWLEDGED_ITEM_ID_LIMIT = 128
 
 # Default running-time allowance for a single response, shared by owned
 # responses (the ``enqueue`` ``response_done_timeout`` default) and
@@ -367,6 +372,10 @@ class RealtimeResponseArbiter:
         # arrival order. A request arms against it and compares later; it is
         # never reset, for the reason in ``_AdoptionEvidence``.
         self._item_created_serial = 0
+        # Item ids already counted into the serial above, so an item announced
+        # under both acknowledgement names advances it once. Insertion-ordered
+        # and bounded by _ACKNOWLEDGED_ITEM_ID_LIMIT.
+        self._acknowledged_item_ids: dict[str, None] = {}
         self._queue: asyncio.PriorityQueue[_QueuedResponse] = asyncio.PriorityQueue()
         self._queued_by_ticket: dict[int, _QueuedResponse] = {}
         self._sequence = itertools.count()
@@ -1157,7 +1166,20 @@ class RealtimeResponseArbiter:
         # Counted rather than flagged, and deliberately never reset — see
         # ``_AdoptionEvidence``. Monotonic means a stale reading can only ever
         # refuse an adoption, never wrongly grant one.
-        self._item_created_serial += 1
+        #
+        # Counted once per item only on a route that acknowledges under both
+        # ``conversation.item.created`` and ``conversation.item.added``
+        # (#3350), where a second count would read as two acknowledgements.
+        # A single-name route counts every acknowledgement as before: the
+        # free routes assign their own item ids and rely on this serial for
+        # adoption, and nothing guarantees those ids never repeat within a
+        # connection. The duplicate still runs the ack matching below, which
+        # is idempotent.
+        if (
+            len(self._protocol_capabilities.item_ack_event_types) < 2
+            or self._remember_acknowledged_item(event)
+        ):
+            self._item_created_serial += 1
         current = self._current
         if current is None:
             if self._trace:
@@ -1187,6 +1209,24 @@ class RealtimeResponseArbiter:
         current.item_ack.set_result(None)
         if self._trace:
             self._trace_item_created(event, current, "matched")
+
+    def _remember_acknowledged_item(self, event: dict[str, Any]) -> bool:
+        """Record an acknowledged item; False if its id was already counted.
+
+        An acknowledgement without a usable id cannot be matched against an
+        earlier one, so it always counts, exactly as before.
+        """
+
+        item = event.get("item") if isinstance(event, dict) else None
+        item_id = item.get("id") if isinstance(item, dict) else None
+        if not isinstance(item_id, str) or not item_id:
+            return True
+        if item_id in self._acknowledged_item_ids:
+            return False
+        self._acknowledged_item_ids[item_id] = None
+        while len(self._acknowledged_item_ids) > _ACKNOWLEDGED_ITEM_ID_LIMIT:
+            del self._acknowledged_item_ids[next(iter(self._acknowledged_item_ids))]
+        return True
 
     @staticmethod
     def _event_response_id(event: dict[str, Any] | None) -> str | None:
@@ -2247,6 +2287,8 @@ class RealtimeResponseArbiter:
         # recognised as one this arbiter has "already seen" and withheld from
         # its owner.
         self._seen_response_ids.clear()
+        # Item ids are scoped to a connection's conversation as well.
+        self._acknowledged_item_ids.clear()
         self._adoptable_announcement = None
         self._adoptable_terminal_status = None
         self._server_vad_response_pending = False

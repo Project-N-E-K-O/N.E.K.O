@@ -33,7 +33,10 @@ import os
 import shutil
 import sys
 import inspect
+import stat
 import subprocess
+import tempfile
+import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -65,14 +68,38 @@ from utils.storage_location_bootstrap import (
 )
 from utils.storage_migration import (
     MIGRATED_RUNTIME_ENTRY_NAMES,
+    REGENERABLE_RUNTIME_ENTRY_NAMES,
     STORAGE_MIGRATION_STATUS_COMPLETED,
     STORAGE_MIGRATION_STATUS_FAILED,
+    V1_MIGRATED_RUNTIME_ENTRY_NAMES,
+    StorageMigrationError,
+    classify_entry_no_follow,
+    copy_evidence_entries,
     create_pending_storage_migration,
+    ensure_entry_parents,
+    entry_parents_are_real_directories,
     delete_storage_migration,
     get_storage_migration_path,
+    is_legacy_unproven_checkpoint,
     is_retained_root_cleanup_available,
+    is_storage_migration_pending,
     load_storage_migration,
+    metadata_fingerprint,
+    move_entry_without_overwrite,
+    private_cleanup_entry_name,
+    private_cleanup_name,
+    reconcile_finished_retained_cleanup,
+    record_retained_cleanup_completed,
+    record_retained_root_removal_started,
+    clear_retained_root_removal_started,
+    source_entries_referenced_by_config,
+    v1_catch_up_skipped_entries,
+    v1_catch_up_unfinished_entries,
+    rewrite_migrated_config_paths,
+    root_has_user_content,
     save_storage_migration,
+    remove_runtime_entry,
+    snapshot_runtime_entry,
 )
 from utils.storage_policy import (
     StorageSelectionValidationError,
@@ -817,17 +844,7 @@ def _estimate_runtime_payload_bytes(source_root: Path) -> int:
 
 
 def _target_root_has_user_content(target_root: Path, config_manager) -> bool:
-    try:
-        from utils.cloudsave_runtime import runtime_root_has_user_content
-
-        return bool(runtime_root_has_user_content(target_root, config_manager=config_manager))
-    except Exception:
-        if not target_root.exists() or not target_root.is_dir():
-            return False
-        try:
-            return any(target_root.iterdir())
-        except OSError:
-            return False
+    return root_has_user_content(target_root, config_manager=config_manager)
 
 
 def _find_existing_ancestor(path: Path) -> Path:
@@ -1538,7 +1555,19 @@ def _build_completed_migration_notice(
             persist_reconcile=persist_reconcile,
         )
     )
-    migration_payload = bootstrap.get("migration") if isinstance(bootstrap.get("migration"), dict) else {}
+    current_root = normalize_runtime_root(config_manager.app_docs_dir)
+    anchor_root = compute_anchor_root(config_manager, current_root=current_root)
+    persisted_migration = load_storage_migration(
+        config_manager,
+        anchor_root=anchor_root,
+    )
+    migration_payload = (
+        persisted_migration
+        if isinstance(persisted_migration, dict)
+        else bootstrap.get("migration")
+        if isinstance(bootstrap.get("migration"), dict)
+        else {}
+    )
     if str(migration_payload.get("status") or "").strip() != STORAGE_MIGRATION_STATUS_COMPLETED:
         return {
             "completed": False,
@@ -1548,8 +1577,6 @@ def _build_completed_migration_notice(
             "completed": False,
         }
 
-    current_root = normalize_runtime_root(config_manager.app_docs_dir)
-    anchor_root = compute_anchor_root(config_manager, current_root=current_root)
     target_root = str(migration_payload.get("target_root") or "").strip()
     source_root = str(migration_payload.get("source_root") or "").strip()
     retained_root = str(
@@ -1559,13 +1586,18 @@ def _build_completed_migration_notice(
         or ""
     ).strip()
     retained_exists = bool(retained_root and Path(retained_root).exists())
-    cleanup_available = is_retained_root_cleanup_available(
+    has_cleanup_proof = bool(copy_evidence_entries(migration_payload.get("copied_entries")))
+    cleanup_available = (
+        (has_cleanup_proof or is_legacy_unproven_checkpoint(migration_payload))
+        and not is_storage_migration_pending(migration_payload)
+        and is_retained_root_cleanup_available(
         retained_root,
         current_root=current_root,
         anchor_root=anchor_root,
         target_root=target_root,
         require_exists=True,
         allow_anchor_root=True,
+        )
     )
     if require_existing_retained_root and not cleanup_available:
         return {
@@ -1574,6 +1606,13 @@ def _build_completed_migration_notice(
 
     return {
         "completed": True,
+        # Still in the old root because the new root had its own: the user
+        # decides what to keep.
+        "v1_catch_up_skipped": [
+            entry_name
+            for entry_name in v1_catch_up_skipped_entries(migration_payload)
+            if retained_root and _entry_may_exist(Path(retained_root) / entry_name)
+        ],
         "selection_source": str(migration_payload.get("selection_source") or "").strip(),
         "source_root": source_root,
         "target_root": target_root,
@@ -1585,13 +1624,98 @@ def _build_completed_migration_notice(
     }
 
 
+def _entry_may_exist(path: Path) -> bool:
+    """``False`` only when ``path`` is known to be gone.
+
+    ``os.path.lexists`` also answers ``False`` when the lookup itself fails
+    (a directory ACL or execute bit removed); reporting such an entry as
+    cleaned would end the cleanup with the data still there.
+    """
+    try:
+        os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        # A parent that is a plain file (a file named "state") proves a
+        # nested entry below it cannot exist either.
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _private_cleanup_name(entry_name: str) -> str:
+    # The entry's own name stays readable in it, so an entry left behind by a
+    # cleanup that stopped midway can always be told apart and put back.
+    return private_cleanup_name(entry_name, uuid.uuid4().hex[:12])
+
+
+_UNLISTABLE_RETAINED_ROOT = ".neko-cleanup-*"
+
+
+def _nested_entry_parents(root: Path, entry_name: str) -> list[Path]:
+    parts = entry_name.split("/")[:-1]
+    return [root.joinpath(*parts[: index + 1]) for index in range(len(parts))]
+
+
+def _private_cleanup_leftovers(retained_path: Path) -> list[tuple[str, Path]] | None:
+    """Entries left under a private cleanup name; ``None`` if they cannot be listed.
+
+    Their random suffix is only discoverable by listing the directory, so a
+    directory that can be entered but not listed may still hide one.
+    """
+    try:
+        children = sorted(retained_path.iterdir(), key=lambda child: child.name)
+    except OSError:
+        return None
+    leftovers = []
+    for child in children:
+        entry_name = private_cleanup_entry_name(child.name)
+        if entry_name is not None:
+            leftovers.append((entry_name, child))
+    return leftovers
+
+
+def _restore_private_cleanup_leftovers(retained_path: Path) -> None:
+    """Put entries a stopped cleanup left under a private name back under their own.
+
+    Only while their own name is free; otherwise both stay, and the entry is
+    reported under its own name until the user has sorted it out.
+    """
+    for entry_name, private in _private_cleanup_leftovers(retained_path) or []:
+        if classify_entry_no_follow(private) is None:
+            continue
+        entry = retained_path / entry_name
+        try:
+            # A nested entry goes back below its own parent, recreated if
+            # the cleanup removed it; never through a link.
+            ensure_entry_parents(retained_path, entry_name)
+        except (StorageMigrationError, OSError) as exc:
+            logger.warning("Retained root cleanup could not put %s back from %s: %s", entry_name, private.name, exc)
+            continue
+        # Putting a directory back without a no-replace rename first reserves
+        # the name with an empty directory; a restore stopped right there
+        # leaves that empty reservation in the way. An empty directory holds
+        # nothing to keep, so it gives way to the real entry.
+        if classify_entry_no_follow(entry) == "dir":
+            with suppress(OSError):
+                if not any(entry.iterdir()):
+                    entry.rmdir()
+        try:
+            move_entry_without_overwrite(private, entry)
+        except OSError as exc:
+            logger.warning("Retained root cleanup could not put %s back from %s: %s", entry_name, private.name, exc)
+
+
 def _cleanup_retained_runtime_root(
     retained_path: Path,
     *,
     current_root: Path,
     anchor_root: Path,
     target_root: Path | str | None = None,
-) -> None:
+    copied_entries: dict | None = None,
+    legacy_checkpoint: bool = False,
+    catch_up_skipped: list[str] | tuple[str, ...] = (),
+    before_root_removal: Callable[[], None] | None = None,
+) -> tuple[tuple[str, ...], bool]:
     if not is_retained_root_cleanup_available(
         retained_path,
         current_root=current_root,
@@ -1602,19 +1726,273 @@ def _cleanup_retained_runtime_root(
     ):
         raise ValueError("保留目录当前不满足安全清理条件。")
 
-    if paths_equal(retained_path, anchor_root):
-        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES:
-            entry_path = retained_path / entry_name
-            if entry_path.is_dir() and not entry_path.is_symlink():
-                shutil.rmtree(entry_path)
-            elif entry_path.exists():
-                entry_path.unlink()
-        return
+    # Everything below deletes children of ``retained_path``. Through a link or
+    # junction that would reach into whatever directory it points at.
+    if classify_entry_no_follow(retained_path) != "dir":
+        raise ValueError("保留目录不是普通目录（可能是链接或 junction），拒绝清理。")
+    # A cleanup stopped midway may have left entries under their private
+    # names; they go back first and are then handled like any other entry.
+    _restore_private_cleanup_leftovers(retained_path)
 
-    if retained_path.is_dir() and not retained_path.is_symlink():
-        shutil.rmtree(retained_path)
-    elif retained_path.exists():
-        retained_path.unlink()
+    proofs = copy_evidence_entries(copied_entries)
+    normalized_target = normalize_runtime_root(target_root) if str(target_root or "").strip() else None
+    proved_entries = list(proofs.items())
+    # A checkpoint from before copy evidence existed (v1) has no record of
+    # what was copied, so an entry is removed only when the target holds the
+    # same entry with the same content right now. Anything else -- never
+    # copied, copied partially, or changed in the target since -- stays for
+    # the user to look at.
+    # A v1 migration copied only the v1 list; entries added since were never
+    # copied and stay where they are.
+    migrated_names = V1_MIGRATED_RUNTIME_ENTRY_NAMES if legacy_checkpoint else MIGRATED_RUNTIME_ENTRY_NAMES
+    legacy_entries = [
+        entry_name
+        for entry_name in migrated_names
+        if legacy_checkpoint
+        and normalized_target is not None
+        and entry_name not in proofs
+        and os.path.lexists(retained_path / entry_name)
+        and os.path.lexists(normalized_target / entry_name)
+    ]
+    if normalized_target is None or (not proved_entries and not legacy_checkpoint):
+        raise ValueError("迁移检查点没有可验证的复制证据，拒绝清理。")
+    # The live config may have been pointed into the retained root since the
+    # migration (a workshop folder, say); what it uses there stays.
+    def _live_config_fingerprint() -> str | None:
+        try:
+            return metadata_fingerprint(normalized_target / "config")
+        except (StorageMigrationError, OSError):
+            return None
+
+    live_config = {
+        "fingerprint": _live_config_fingerprint(),
+        "references": source_entries_referenced_by_config(
+            config_root=normalized_target / "config",
+            source_root=retained_path,
+        ),
+    }
+
+    def _referenced_by_live_config(entry_name: str) -> bool:
+        config_root = normalized_target / "config"
+        if os.path.lexists(config_root) and classify_entry_no_follow(config_root) != "dir":
+            # A link (or anything but a real directory): its fingerprint would
+            # not change when what it points at is edited, so every entry
+            # counts as possibly referenced and stays.
+            return True
+        # Scanned again when the config changed meanwhile: cleaning a large
+        # entry takes a while, and an edit could point at one not done yet.
+        fingerprint = _live_config_fingerprint()
+        if fingerprint is None or fingerprint != live_config["fingerprint"]:
+            live_config["fingerprint"] = fingerprint
+            live_config["references"] = source_entries_referenced_by_config(
+                config_root=normalized_target / "config",
+                source_root=retained_path,
+            )
+        return entry_name in live_config["references"]
+
+    # The evidence proves each entry was copied completely. What is deleted is
+    # the retained copy, so it must still be exactly what was copied. The
+    # target only has to still hold a real entry of the copied kind: running
+    # the app on it since is the normal case and does not make the old copy
+    # worth keeping, but a link (even a dangling one) or a different kind of
+    # entry is no longer that copy. An entry that fails any check -- or
+    # cannot be read right now -- is simply kept and reported among the
+    # remaining entries; one bad entry must not block cleaning the others.
+    # An entry already gone from the retained root -- removed by an earlier
+    # partial cleanup, or by the user after one was reported -- needs nothing
+    # more and is not reported, so a repeated request finishes the checkpoint.
+    #
+    # Each entry is renamed to a private name next to it before its content
+    # is compared, and only that private copy is deleted: a writer still
+    # using the old path (a sync client, say) can then only create a new
+    # entry there, which stays, instead of losing what it wrote together
+    # with the copy that was checked.
+    def _target_still_holds_copy(entry_name: str, proof: dict) -> bool:
+        target_manifest = proof.get("target_manifest")
+        expected_kind = target_manifest.get("kind") if isinstance(target_manifest, dict) else None
+        if not entry_parents_are_real_directories(normalized_target, entry_name):
+            # Through a linked parent the target's entry is somewhere else.
+            return False
+        try:
+            return classify_entry_no_follow(normalized_target / entry_name) == expected_kind
+        except (StorageMigrationError, OSError):
+            return False
+
+    # The target as it was when a legacy entry was compared against it; it has
+    # to be the same still when the retained copy goes.
+    compared_target_fingerprints: dict[str, str] = {}
+
+    def _matches_target(entry_name: str, retained_entry: Path) -> bool:
+        compared_target_fingerprints[entry_name] = metadata_fingerprint(normalized_target / entry_name)
+        retained_manifest = snapshot_runtime_entry(retained_entry)
+        target_manifest = snapshot_runtime_entry(normalized_target / entry_name)
+        if entry_name != "config" or retained_manifest["kind"] != "dir":
+            return retained_manifest == target_manifest
+        # A v1 migration rebased workshop paths under the source root onto the
+        # target while copying config, so compare the retained copy after the
+        # same rewrite instead of byte for byte.
+        with tempfile.TemporaryDirectory(prefix="neko-cleanup-") as scratch:
+            scratch_root = Path(scratch)
+            shutil.copytree(retained_entry, scratch_root / "config", symlinks=True)
+            # copytree keeps read-only modes; the rewrite below must be able
+            # to replace workshop_config.json in this throwaway copy.
+            # copytree kept links as links; chmod would follow one to a file
+            # outside the retained root, so links are left alone (the
+            # manifest comparison rejects them anyway).
+            for scratch_dir, _dir_names, file_names in os.walk(scratch_root / "config"):
+                os.chmod(scratch_dir, stat.S_IMODE(os.stat(scratch_dir).st_mode) | stat.S_IRWXU)
+                for file_name in file_names:
+                    scratch_file = os.path.join(scratch_dir, file_name)
+                    file_stat = os.lstat(scratch_file)
+                    if not stat.S_ISREG(file_stat.st_mode):
+                        continue
+                    os.chmod(scratch_file, stat.S_IMODE(file_stat.st_mode) | stat.S_IRUSR | stat.S_IWUSR)
+            rewrite_migrated_config_paths(
+                source_root=retained_path,
+                target_root=normalized_target,
+                config_root=scratch_root,
+            )
+            return snapshot_runtime_entry(scratch_root / "config") == target_manifest
+
+    def _target_unchanged_since_compared(entry_name: str) -> bool:
+        # Comparing a large entry (config is even copied and rewritten first)
+        # takes a while; a target changed meanwhile no longer proves the copy.
+        expected = compared_target_fingerprints.get(entry_name)
+        return expected is not None and metadata_fingerprint(normalized_target / entry_name) == expected
+
+    def _delete_if_still_matching(
+        entry_name: str,
+        matches: Callable[[Path], bool],
+        target_ok: Callable[[], bool],
+    ) -> None:
+        entry = retained_path / entry_name
+        if not entry_parents_are_real_directories(retained_path, entry_name):
+            # Through a linked parent the entry is somewhere else entirely.
+            logger.warning("Retained root cleanup kept %s: a parent is not a real directory", entry_name)
+            return
+        if classify_entry_no_follow(entry) is None:
+            # A link or special file: putting it back later could turn it
+            # into a hard link to what it points at. Leave it in place.
+            logger.warning("Retained root cleanup kept %s: not a regular file or directory", entry_name)
+            return
+        private = retained_path / _private_cleanup_name(entry_name)
+        try:
+            os.rename(entry, private)
+        except OSError as exc:
+            # In use (Windows refuses to rename a directory with open files):
+            # it stays and shows up in remaining_entries.
+            logger.warning("Retained root cleanup kept %s: %s", entry_name, exc)
+            return
+        try:
+            # The target is checked again last: comparing a large entry takes
+            # a while, and the target must still be there when its retained
+            # copy goes.
+            still_matches = matches(private) and target_ok()
+        except (StorageMigrationError, OSError):
+            # Unreadable now (an app writing to the target, a locked file).
+            still_matches = False
+        if still_matches:
+            try:
+                remove_runtime_entry(private)
+                return
+            except (StorageMigrationError, OSError) as exc:
+                # A file locked by an antivirus scan or Explorer preview: what
+                # is left goes back under its name and is reported, so the
+                # user knows what to finish by hand.
+                logger.warning("Retained root cleanup kept %s: %s", entry_name, exc)
+        try:
+            move_entry_without_overwrite(private, entry)
+        except OSError as exc:
+            # Something new took the name meanwhile: keep both; the entry is
+            # reported under its own name and put back once that is free.
+            logger.warning("Retained root cleanup left %s under %s: %s", entry_name, private.name, exc)
+
+    for entry_name, proof in proved_entries:
+        if _referenced_by_live_config(entry_name):
+            continue
+        if os.path.lexists(retained_path / entry_name) and _target_still_holds_copy(entry_name, proof):
+            source_manifest = proof.get("source_manifest")
+            _delete_if_still_matching(
+                entry_name,
+                lambda path, expected=source_manifest: snapshot_runtime_entry(path) == expected,
+                # Still the recorded kind, not merely present: a directory
+                # replaced by a file meanwhile is no longer the copy.
+                lambda name=entry_name, recorded=proof: (
+                    _target_still_holds_copy(name, recorded) and not _referenced_by_live_config(name)
+                ),
+            )
+    for entry_name in legacy_entries:
+        if _referenced_by_live_config(entry_name):
+            continue
+        _delete_if_still_matching(
+            entry_name,
+            lambda path, name=entry_name: _matches_target(name, path),
+            lambda name=entry_name: _target_unchanged_since_compared(name) and not _referenced_by_live_config(name),
+        )
+
+    # The anchor root holds more than runtime data (state, cloud saves) and
+    # always stays. Any other retained root goes once emptied; files the user
+    # kept in it stay put.
+    def _collect_remaining() -> tuple[str, ...]:
+        leftovers = _private_cleanup_leftovers(retained_path)
+        return tuple(
+            dict.fromkeys(
+                # A v1 checkpoint also carries evidence for what was copied
+                # over later; those entries are reported like any other.
+                [
+                    entry_name
+                    # So is what it had to leave behind because the new root
+                    # had its own: never deleted here, only reported.
+                    # Every migrated name counts here, a v1 checkpoint's too:
+                    # one restored in the old root after its catch-up (a sync
+                    # client) is data the cleanup must not pass over.
+                    for entry_name in dict.fromkeys([*MIGRATED_RUNTIME_ENTRY_NAMES, *proofs, *catch_up_skipped])
+                    if _entry_may_exist(retained_path / entry_name)
+                ]
+                + [entry_name for entry_name, _private in leftovers or []]
+                # Not listable: an entry may still hide under a private name,
+                # so the cleanup must stay pending rather than be recorded as
+                # done.
+                + ([_UNLISTABLE_RETAINED_ROOT] if leftovers is None else [])
+            )
+        )
+
+    remaining_entries = _collect_remaining()
+    retained_root_kept = paths_equal(retained_path, anchor_root)
+    if not retained_root_kept:
+        # Directories the app recreates (old logs, plugin install records)
+        # would otherwise keep the old root alive. They go only when nothing
+        # migrated is left: while the user still has entries to sort out
+        # here, the old logs may help. The anchor root holds the storage
+        # policy and cloud saves and is never removed, so there is nothing
+        # to gain from emptying its regenerable directories.
+        if not remaining_entries:
+            if before_root_removal is not None:
+                before_root_removal()
+            # Parents of nested entries, now empty, would keep it too -- a v1
+            # catch-up's (state/game_scores) as well; only empty ones go.
+            for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES:
+                for parent in reversed(_nested_entry_parents(retained_path, entry_name)):
+                    with suppress(OSError):
+                        parent.rmdir()
+            for entry_name in REGENERABLE_RUNTIME_ENTRY_NAMES:
+                try:
+                    remove_runtime_entry(retained_path / entry_name)
+                except (StorageMigrationError, OSError) as exc:
+                    logger.warning("Retained root cleanup kept %s: %s", entry_name, exc)
+        try:
+            retained_path.rmdir()
+        except FileNotFoundError:
+            # Already gone, e.g. removed by the user meanwhile: nothing is kept.
+            pass
+        except OSError:
+            retained_root_kept = True
+            if not remaining_entries:
+                # Removing large regenerable directories takes a while; an
+                # entry put back meanwhile (a sync client) must keep the
+                # cleanup pending rather than be left there unannounced.
+                remaining_entries = _collect_remaining()
+    return remaining_entries, retained_root_kept
 
 
 async def _release_storage_startup_barrier_if_needed(*, reason: str) -> None:
@@ -1873,6 +2251,26 @@ async def _post_storage_location_retained_source_cleanup_locked(
         persist_reconcile=True,
     )
     if notice.get("completed") is not True:
+        # A cleanup that finished but could not record it (a full or
+        # read-only disk) left the checkpoint pointing at a root with nothing
+        # left to clean; a retained root that is still there is handled by
+        # the cleanup below instead.
+        reconciled_root = await _run_locked_storage_job(
+            partial(
+                reconcile_finished_retained_cleanup,
+                config_manager,
+                anchor_root=compute_anchor_root(
+                    config_manager,
+                    current_root=normalize_runtime_root(config_manager.app_docs_dir),
+                ),
+            )
+        )
+        if reconciled_root:
+            return {
+                "ok": True,
+                "cleaned_root": reconciled_root,
+                "retained_root_kept": _entry_may_exist(Path(reconciled_root)),
+            }
         response.status_code = 404
         return {
             "ok": False,
@@ -1893,16 +2291,48 @@ async def _post_storage_location_retained_source_cleanup_locked(
     retained_path = Path(expected_retained_root)
     current_root = normalize_runtime_root(config_manager.app_docs_dir)
     anchor_root = compute_anchor_root(config_manager, current_root=current_root)
+    cleanup_checkpoint = load_storage_migration(config_manager, anchor_root=anchor_root) or {}
+
+    def _persist_cleanup_result() -> None:
+        record_retained_cleanup_completed(
+            config_manager,
+            anchor_root=anchor_root,
+            retained_root=expected_retained_root,
+        )
+
+    def _cleanup_and_record() -> tuple[tuple[str, ...], bool]:
+        # Deleting and recording the result are one job: _run_locked_storage_job
+        # lets the worker finish when the request is cancelled but then raises,
+        # so a separate second job would never run and leave the checkpoint
+        # pointing at a retained root that is already gone.
+        remaining, kept = _cleanup_retained_runtime_root(
+            retained_path,
+            current_root=current_root,
+            anchor_root=anchor_root,
+            target_root=notice.get("target_root") or "",
+            copied_entries=cleanup_checkpoint.get("copied_entries"),
+            legacy_checkpoint=is_legacy_unproven_checkpoint(cleanup_checkpoint),
+            # Left behind by the catch-up, or not handled by it yet: reported,
+            # never deleted, and the root is not recorded as cleaned.
+            catch_up_skipped=[
+                *v1_catch_up_skipped_entries(cleanup_checkpoint),
+                *v1_catch_up_unfinished_entries(cleanup_checkpoint),
+            ],
+            # A retained root found gone later counts as cleaned only once a
+            # cleanup really got to removing it.
+            before_root_removal=partial(record_retained_root_removal_started, config_manager, anchor_root=anchor_root),
+        )
+        if not remaining:
+            _persist_cleanup_result()
+        else:
+            # Something came back while the root was being removed: it stays,
+            # and must not later pass for removed (an unmounted disk).
+            clear_retained_root_removal_started(config_manager, anchor_root=anchor_root)
+        return remaining, kept
+
     try:
         # 这一步 rmtree 保留目录，同样不能在取消时把 _storage_mutation_lock 让出去
-        await _run_locked_storage_job(
-            lambda: _cleanup_retained_runtime_root(
-                retained_path,
-                current_root=current_root,
-                anchor_root=anchor_root,
-                target_root=notice.get("target_root") or "",
-            )
-        )
+        remaining_entries, retained_root_kept = await _run_locked_storage_job(_cleanup_and_record)
     except Exception as exc:
         response.status_code = 500
         return {
@@ -1911,40 +2341,29 @@ async def _post_storage_location_retained_source_cleanup_locked(
             "error": f"清理旧数据保留目录失败: {exc}",
         }
 
-    def _persist_cleanup_result() -> None:
-        # 迁移检查点和 root_state 两次落盘放同一个 job：中间插一个 await 就能造出
-        # "检查点已标记 cleaned、root_state 还挂着 legacy_cleanup_pending" 的窗口，
-        # 而这个窗口正好会被存储页那条 1200ms 的轮询看到。
-        migration_payload = load_storage_migration(config_manager, anchor_root=anchor_root) or {}
-        if isinstance(migration_payload, dict):
-            updated_payload = dict(migration_payload)
-            updated_payload["backup_root"] = ""
-            updated_payload["retained_source_root"] = ""
-            updated_payload["retained_source_mode"] = "cleaned"
-            updated_payload["updated_at"] = _utc_now_iso()
-            updated_payload["cleanup_completed_at"] = _utc_now_iso()
-            save_storage_migration(config_manager, updated_payload, anchor_root=anchor_root)
+    if remaining_entries:
+        # The placeholder is not an entry the user can look for: the old
+        # directory could not be listed, so one may still hide under a private
+        # cleanup name. It is reported as a flag of its own.
+        response.status_code = 409
+        return {
+            "ok": False,
+            "error_code": "retained_source_cleanup_incomplete",
+            "error": "旧数据目录仍含缺少复制证据的运行时条目，已保留供人工确认。",
+            "retained_root": expected_retained_root,
+            "remaining_entries": [
+                entry_name for entry_name in remaining_entries if entry_name != _UNLISTABLE_RETAINED_ROOT
+            ],
+            "retained_root_unlistable": _UNLISTABLE_RETAINED_ROOT in remaining_entries,
+        }
 
-        # root_state 这一半保持 best-effort（与改动前一致）：清理已经真的做完了，
-        # 标记没落上不该把整个请求判失败。
-        try:
-            with root_state_transaction():
-                root_state = config_manager.load_root_state()
-                if isinstance(root_state, dict):
-                    updated_root_state = dict(root_state)
-                    updated_root_state["legacy_cleanup_pending"] = False
-                    if paths_equal(updated_root_state.get("last_migration_backup") or "", expected_retained_root):
-                        updated_root_state["last_migration_backup"] = ""
-                    config_manager.save_root_state(updated_root_state)
-        except Exception:
-            # best-effort：清理本身已经做完了，标记没落上不该把整个请求判失败
-            pass
-
-    await _run_locked_storage_job(_persist_cleanup_result)
 
     return {
         "ok": True,
         "cleaned_root": expected_retained_root,
+        # A non-anchor retained root is removed once emptied; other files the
+        # user kept in it stay, and the UI should not claim it is gone.
+        "retained_root_kept": retained_root_kept,
     }
 
 

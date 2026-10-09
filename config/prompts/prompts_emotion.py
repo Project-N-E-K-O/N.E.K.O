@@ -17,11 +17,12 @@ Emotion-analysis prompt templates used by runtime expression / reaction systems.
 """
 from __future__ import annotations
 
+from config import proactive_settings
 from config.prompts.prompts_sys import _loc
 
 
 OUTWARD_EMOTION_ANALYSIS_PROMPT = {
-    'zh': """你是一个情感分析专家。请判断输入文本里最主导、最外显的一种情绪，并只返回 JSON：{"emotion": "情感类型", "confidence": 置信度}。
+    'zh': """你是一个情感分析专家。请判断输入的角色回复中说话者自身最主导、最外显的一种情绪，并只返回 JSON：{"emotion": "情感类型", "confidence": 置信度, "emoji": null}。
 
 可选情感只有这五种：
 - happy：开心、兴奋、满足、轻快、宠溺、可爱、调皮、得意、热情
@@ -31,20 +32,22 @@ OUTWARD_EMOTION_ANALYSIS_PROMPT = {
 - neutral：平静、陈述事实、情绪很弱、难以判断
 
 判断规则：
-1. 必须优先选择“最强主情绪”，不要因为语气里带一点克制就轻易返回 neutral。
-2. 只有在文本整体真的平铺直叙、情绪信号很弱时，才返回 neutral。
+0. 分析目标是这段角色回复中说话者/角色自身表达的情绪。先确定情绪归属，再应用下面的主情绪规则：他人情绪、故事台词、转述、举例和情绪词解释不能单独作为角色自身情绪的证据。若只有这些内容而没有自身情绪表达，返回 neutral；若角色同时明确表达自己的反应，或明确用引语表达、认同自己的感受，按其自身情绪判断，不能仅因有引号就返回 neutral。confidence 表示对判断的把握，明确的 neutral 也可以有高置信度。
+1. 必须优先选择说话者自身表达的“最强主情绪”，不要因为语气里带一点克制就轻易返回 neutral。
+2. 说话者自身表达的情绪很弱、平静，或只是客观转述他人情绪时，返回 neutral。
 3. 只有在文本明确表达开心、喜欢、得意、轻快、被逗乐、享受互动时，才判为 happy，不要把单纯可爱说法、卖萌语气、口头禅误判成 happy。
 4. 如果文本主轴是委屈、想哭、脆弱、受伤、被欺负、害怕、求安慰、低落，即使语气可爱或撒娇，也应优先判为 sad。
 5. 当文本主轴是指责、敌意、抱怨、烦躁、警告、拒绝、炸毛、不耐烦时判为 angry；偶尔的吐槽、嫌弃如果整体语气仍偏轻松、玩笑或可爱，可以酌情考虑。
 6. surprised 只用于明显的突发惊讶、意外、震惊、夸张反应；不要只因为有感叹号、语气词就判为 surprised。
 7. 语气助词、口癖、拟声词、宠物叫声这类风格词本身不代表情绪，不能单独作为判断依据。
 8. confidence 取 0 到 1 之间的小数；情绪很明确时应给出较高置信度。
+9. 完成情绪判断后，从以下完整候选中选一个最贴合输入的角色回复所流露反应的 emoji：{reaction_emojis}。emoji 不限于所选情感的分类候选；neutral 或拿不准时返回 null，表示没有建议，不改变 emotion 或 confidence。
 
 只返回 JSON，不要附加任何解释文本。""",
 
     # 开头那句「你是一个情感分析专家。」在所有语种里都保持简体原样——它在 en/ja/ko
     # 等每一条模板里都是同一串字面量，繁中这条跟着走，不做转换。
-    'zh-TW': """你是一个情感分析专家。請判斷輸入文字裡最主導、最外顯的一種情緒，並只回傳 JSON：{"emotion": "情感類型", "confidence": 信賴度}。
+    'zh-TW': """你是一个情感分析专家。請判斷輸入的角色回覆中說話者自身最主導、最外顯的一種情緒，並只回傳 JSON：{"emotion": "情感類型", "confidence": 信賴度, "emoji": null}。
 
 可選情感只有這五種：
 - happy：開心、興奮、滿足、輕快、寵溺、可愛、調皮、得意、熱情
@@ -54,18 +57,20 @@ OUTWARD_EMOTION_ANALYSIS_PROMPT = {
 - neutral：平靜、陳述事實、情緒很弱、難以判斷
 
 判斷規則：
-1. 必須優先選擇「最強主情緒」，不要因為語氣裡帶一點克制就輕易回傳 neutral。
-2. 只有在文字整體真的平鋪直敘、情緒訊號很弱時，才回傳 neutral。
+0. 分析目標是這段角色回覆中說話者/角色自身表達的情緒。先確定情緒歸屬，再套用下面的主情緒規則：他人情緒、故事臺詞、轉述、舉例和情緒詞解釋不能單獨作為角色自身情緒的證據。若只有這些內容而沒有自身情緒表達，回傳 neutral；若角色同時明確表達自己的反應，或明確用引語表達、認同自己的感受，按其自身情緒判斷，不能僅因有引號就回傳 neutral。confidence 表示對判斷的把握，明確的 neutral 也可以有高信賴度。
+1. 必須優先選擇說話者自身表達的「最強主情緒」，不要因為語氣裡帶一點克制就輕易回傳 neutral。
+2. 說話者自身表達的情緒很弱、平靜，或只是客觀轉述他人情緒時，回傳 neutral。
 3. 只有在文字明確表達開心、喜歡、得意、輕快、被逗樂、享受互動時，才判為 happy，不要把單純可愛說法、賣萌語氣、口頭禪誤判成 happy。
 4. 如果文字主軸是委屈、想哭、脆弱、受傷、被欺負、害怕、求安慰、低落，即使語氣可愛或撒嬌，也應優先判為 sad。
 5. 當文字主軸是指責、敵意、抱怨、煩躁、警告、拒絕、炸毛、不耐煩時判為 angry；偶爾的吐槽、嫌棄如果整體語氣仍偏輕鬆、玩笑或可愛，可以酌情考量。
 6. surprised 只用於明顯的突發驚訝、意外、震驚、誇張反應；不要只因為有驚嘆號、語氣詞就判為 surprised。
 7. 語氣助詞、口癖、擬聲詞、寵物叫聲這類風格詞本身不代表情緒，不能單獨作為判斷依據。
 8. confidence 取 0 到 1 之間的小數；情緒很明確時應給出較高信賴度。
+9. 完成情緒判斷後，從以下完整候選中選一個最貼合輸入的角色回覆所流露反應的 emoji：{reaction_emojis}。emoji 不限於所選情感的分類候選；neutral 或拿不準時回傳 null，表示沒有建議，不改變 emotion 或 confidence。
 
 只回傳 JSON，不要附加任何解釋文字。""",
 
-    'en': """你是一个情感分析专家。Identify the single most dominant and outward emotion in the input text and return JSON only: {"emotion": "emotion_type", "confidence": confidence}.
+    'en': """你是一个情感分析专家。Identify the speaker's own single most dominant and outward emotion expressed in the input companion reply and return JSON only: {"emotion": "emotion_type", "confidence": confidence, "emoji": null}.
 
 Allowed emotions only:
 - happy: joyful, excited, affectionate, playful, cute, delighted, warm
@@ -75,18 +80,20 @@ Allowed emotions only:
 - neutral: calm, factual, weak emotion, hard to judge
 
 Rules:
-1. Choose the strongest main emotion, not the safest one.
-2. Do not return neutral unless the text is truly emotionally weak or flat.
+0. Analyze the speaker/companion's own expressed emotion in this reply. Determine whose emotion it is before applying the main-emotion rules below: other people's feelings, story dialogue, reported speech, examples, and definitions of emotion words alone are not evidence of the companion's own emotion. Return neutral when only such content is present without an expression of their own feelings. If the companion also clearly expresses their own reaction, or explicitly uses or endorses a quotation to express their own feelings, judge that emotion; quotation marks alone do not imply neutral. confidence measures certainty in the classification, so a clearly neutral reply may have high confidence.
+1. Choose the strongest main emotion expressed by the speaker themselves, not the safest one.
+2. Return neutral when the speaker's own expressed emotion is weak or calm, or they only factually report another person's emotion.
 3. Use happy only when the text clearly expresses positive enjoyment, affection, delight, playful pleasure, or being genuinely amused; do not treat cute phrasing or verbal tics alone as happy.
 4. If the core emotion is hurt, vulnerability, wanting to cry, feeling bullied, fear, pleading, or seeking comfort, prefer sad even if the wording sounds cute or clingy.
 5. Use angry when the core emotion is blame, hostility, complaint, irritation, warning, rejection, a meltdown, or impatience. For occasional griping or contempt, if the overall tone is still light, joking, or cute, use your judgment.
 6. Use surprised only for clear shock, sudden surprise, or exaggerated astonishment; do not label something surprised just because it has exclamation marks or filler particles.
 7. Catchphrases, sound effects, pet-like speech, and filler words are style markers, not emotions by themselves.
 8. confidence must be a number between 0 and 1.
+9. After judging the emotion, choose one emoji that best reflects the companion reply's reaction from this full list: {reaction_emojis}. The emoji is not restricted to the chosen emotion's category; return null for neutral or when unsure, meaning no suggestion, without changing emotion or confidence.
 
 Return JSON only, with no explanation.""",
 
-    'ja': """你是一个情感分析专家。入力文の中で最も支配的で外に出ている感情を1つだけ選び、JSONのみで返してください：{"emotion": "emotion_type", "confidence": confidence}。
+    'ja': """你是一个情感分析专家。入力されたキャラクターの返答で話し手自身が表す、最も支配的で外に出ている感情を1つだけ選び、JSONのみで返してください：{"emotion": "emotion_type", "confidence": confidence, "emoji": null}。
 
 使用できる感情は次の5つのみです：
 - happy：喜ぶ、嬉しい、楽しい、わくわく、幸せ、かわいい、甘える
@@ -96,18 +103,20 @@ Return JSON only, with no explanation.""",
 - neutral：無表情、平坦、落ち着いている、事実を述べるだけ、感情が弱い
 
 判断ルール：
-1. もっとも強い主感情を選び、無難だからという理由で neutral を選ばない。
-2. 本当に感情が弱い・平坦な文章だけ neutral にする。
+0. 分析対象は、このキャラクターの返答で話し手自身が表している感情です。まず誰の感情かを確認し、その後で以下の主感情のルールを適用してください。他人の感情、物語の台詞、伝聞、例文、感情語の説明だけを話し手自身の感情の根拠にしないでください。自身の感情表現がなく、それらだけなら neutral にしてください。自身の反応も明確に表している場合や、引用を明確に自身の気持ちとして使う・肯定する場合は、その感情を判断してください。引用符があるだけで neutral にしないでください。confidence は判断への確信度なので、明確な neutral にも高い値を付けられます。
+1. 話し手自身が表すもっとも強い主感情を選び、無難だからという理由で neutral を選ばない。
+2. 話し手自身の感情が弱い・落ち着いている場合や、他人の感情を客観的に伝えるだけの場合は neutral にする。
 3. happy は、嬉しさ・好意・楽しさ・はしゃぎ・本当に喜んでいる反応が明確なときだけ使い、かわいい言い回しや口ぐせだけで happy にしない。
 4. 文の中心が、傷つき・しんどさ・泣きたさ・いじけ・甘えを含む弱さ・慰めを求める気持ちなら、言い方がかわいくても sad を優先する。
 5. angry は、文の中心が責め・敵意・不満・苛立ち・警告・拒絶・激怒・苛々であるときに使う。軽い愚痴・嫌気でも、全体の雰囲気が軽い・ふざけている・かわいい場合は状況に応じて判断する。
 6. surprised は、はっきりした驚き・意外さ・衝撃・大げさな驚愕にだけ使い、感嘆符や語気だけで surprised にしない。
 7. 口ぐせ、擬音、語尾、キャラっぽい言い回しは、それ自体では感情根拠にならない。
 8. confidence は 0〜1 の数値にする。
+9. 感情を判断した後、入力されたキャラクターの返答に表れた反応に最も合う emoji を次の全候補から1つ選ぶ：{reaction_emojis}。選んだ感情のカテゴリに限定しない。neutral または迷う場合は提案なしを表す null を返し、emotion や confidence は変更しない。
 
 JSONのみを返し、説明文は付けないでください。""",
 
-    'ko': """你是一个情感分析专家。입력 텍스트에서 가장 지배적이고 겉으로 드러나는 감정 하나만 고르고 JSON만 반환하세요: {"emotion": "emotion_type", "confidence": confidence}.
+    'ko': """你是一个情感分析专家。입력된 캐릭터 답변에서 화자 자신이 표현하는 가장 지배적이고 겉으로 드러나는 감정 하나만 고르고 JSON만 반환하세요: {"emotion": "emotion_type", "confidence": confidence, "emoji": null}.
 
 허용되는 감정은 다음 다섯 가지뿐입니다:
 - happy: 행복, 즐거움, 기쁨, 신남, 설렘, 애정, 귀여움
@@ -117,18 +126,20 @@ JSONのみを返し、説明文は付けないでください。""",
 - neutral: 무표정, 담담함, 차분함, 사실 전달, 감정이 약함
 
 판단 규칙:
-1. 가장 강한 주감정을 고르고, 안전해 보여서 neutral 을 고르지 마세요.
-2. 감정 신호가 정말 약하고 평이한 문장일 때만 neutral 을 사용하세요.
+0. 분석 대상은 이 캐릭터 답변에서 화자 자신이 표현하는 감정입니다. 먼저 누구의 감정인지 확인한 뒤 아래 주감정 규칙을 적용하세요. 다른 사람의 감정, 이야기 속 대사, 전달한 말, 예문, 감정 단어의 설명만으로 화자 자신의 감정을 판단하지 마세요. 자신의 감정 표현 없이 이런 내용만 있으면 neutral 을 반환하세요. 자신의 반응도 명확히 표현하거나 인용을 자신의 감정으로 명확히 사용하거나 인정하면 그 감정을 판단하세요. 따옴표가 있다는 이유만으로 neutral 로 판단하지 마세요. confidence 는 분류에 대한 확신이므로 명확한 neutral 에도 높은 값을 줄 수 있습니다.
+1. 화자 자신이 표현하는 가장 강한 주감정을 고르고, 안전해 보여서 neutral 을 고르지 마세요.
+2. 화자 자신의 감정이 약하거나 차분하거나 다른 사람의 감정을 객관적으로 전달하기만 하면 neutral 을 사용하세요.
 3. happy 는 실제로 즐거움, 애정, 들뜸, 만족, 장난스러운 즐거움이 분명할 때만 사용하고, 단순히 귀여운 말투나 말버릇만으로 happy 로 판단하지 마세요.
 4. 문장의 핵심이 속상함, 상처, 울고 싶음, 서러움, 괴롭힘당하는 느낌, 두려움, 위로를 바라는 마음이라면 말투가 귀여워도 sad 를 우선하세요.
 5. angry 는 문장의 핵심이 비난, 적의, 불만, 짜증, 경고, 거절, 폭발, 조급함일 때 사용하세요. 가벼운 투정이나 싫어함이라도 전체 분위기가 가볍거나 장난스럽거나 귀엽다면 상황에 따라 판단하세요.
 6. surprised 는 분명한 놀람, 충격, 뜻밖의 상황, 과장된 경악에만 사용하고, 느낌표나 말끝 표현만으로 surprised 로 판단하지 마세요.
 7. 말버릇, 의성어, 캐릭터 말투, 동물 흉내 같은 표현은 그 자체로 감정을 뜻하지 않습니다.
 8. confidence 는 0~1 사이 숫자여야 합니다.
+9. 감정을 판단한 뒤, 입력된 캐릭터 답변의 반응에 가장 잘 맞는 emoji 하나를 다음 전체 후보에서 고르세요: {reaction_emojis}. 선택한 감정의 범주로 제한하지 마세요. neutral 이거나 확신이 없으면 제안이 없다는 뜻의 null 을 반환하고 emotion 이나 confidence 는 바꾸지 마세요.
 
 설명 없이 JSON만 반환하세요.""",
 
-    'ru': """你是一个情感分析专家。Определите одну наиболее доминирующую и внешне выраженную эмоцию во входном тексте и верните только JSON: {"emotion": "emotion_type", "confidence": confidence}.
+    'ru': """你是一个情感分析专家。Определите одну наиболее доминирующую и внешне выраженную собственную эмоцию говорящего в ответе персонажа и верните только JSON: {"emotion": "emotion_type", "confidence": confidence, "emoji": null}.
 
 Допустимы только 5 эмоций:
 - happy: радость, счастье, веселье, восторг, тёплое чувство, игривость, умиление
@@ -138,18 +149,20 @@ JSONのみを返し、説明文は付けないでください。""",
 - neutral: безэмоционально, ровно, спокойно, констатация факта, эмоция слабо выражена
 
 Правила:
-1. Выбирайте самую сильную основную эмоцию, а не самую безопасную.
-2. Возвращайте neutral только если эмоция действительно слабая или почти отсутствует.
+0. Анализируйте собственную выраженную эмоцию говорящего персонажа в этом ответе. Сначала определите, кому принадлежит эмоция, затем применяйте правила основной эмоции ниже. Чужие чувства, реплики из рассказа, пересказ, примеры и определения эмоциональных слов сами по себе не являются свидетельством эмоции говорящего. Если присутствует только такое содержание без выражения собственных чувств, верните neutral. Если персонаж явно выражает и свою реакцию или явно использует либо поддерживает цитату как выражение собственных чувств, определяйте эту эмоцию; одни кавычки не означают neutral. confidence отражает уверенность в классификации, поэтому явно нейтральный ответ тоже может иметь высокую уверенность.
+1. Выбирайте самую сильную основную эмоцию самого говорящего, а не самую безопасную.
+2. Возвращайте neutral, если собственная выраженная эмоция говорящего слабая или спокойная, либо он лишь объективно сообщает о чужой эмоции.
 3. Используйте happy только когда в тексте явно есть радость, удовольствие, тёплая привязанность, игривое удовольствие или искреннее веселье; милый стиль речи или словечки сами по себе не означают happy.
 4. Если в центре текста обида, уязвимость, желание заплакать, ощущение, что обижают, страх, мольба или поиск утешения, выбирайте sad, даже если формулировка звучит мило.
 5. Используйте angry, когда центр текста — упрёки, враждебность, жалоба, раздражение, предупреждение, отказ, вспышка гнева или нетерпение. При случайном ворчании или неприязни, если общий тон всё ещё лёгкий, шутливый или милый, действуйте по обстоятельствам.
 6. surprised используйте только для явного шока, внезапного удивления или преувеличенного изумления; одних восклицаний или частиц для этого недостаточно.
 7. Слова-паразиты, звукоподражания, повторяющиеся словечки и «персонажная» манера речи сами по себе не являются признаком эмоции.
 8. confidence должно быть числом от 0 до 1.
+9. После определения эмоции выберите один emoji, лучше всего передающий реакцию в ответе персонажа, из полного списка: {reaction_emojis}. Не ограничивайте выбор категорией выбранной эмоции; для neutral или при неуверенности верните null (нет предложения), не меняя emotion или confidence.
 
 Верните только JSON без пояснений.""",
 
-    'es': """你是一个情感分析专家。Identifica la única emoción más dominante y más visible en el texto de entrada y devuelve solo JSON: {"emotion": "emotion_type", "confidence": confidence}.
+    'es': """你是一个情感分析专家。Identifica la única emoción propia más dominante y más visible que expresa el hablante en la respuesta del personaje y devuelve solo JSON: {"emotion": "emotion_type", "confidence": confidence, "emoji": null}.
 
 Emociones permitidas:
 - happy: alegría, entusiasmo, afecto, juego, ternura, deleite, calidez
@@ -159,18 +172,20 @@ Emociones permitidas:
 - neutral: calma, hechos, emoción débil, difícil de juzgar
 
 Reglas:
-1. Elige la emoción principal más fuerte, no la opción más segura.
-2. No devuelvas neutral salvo que el texto sea realmente débil o plano emocionalmente.
+0. Analiza la emoción propia que expresa el hablante/personaje en esta respuesta. Determina primero de quién es la emoción y después aplica las reglas de emoción principal siguientes. Los sentimientos ajenos, los diálogos de cuentos, el discurso referido, los ejemplos y las definiciones de palabras emocionales por sí solos no demuestran la emoción propia del hablante. Devuelve neutral si solo aparece ese contenido sin expresión de sentimientos propios. Si el personaje también expresa claramente su propia reacción, o usa o adopta explícitamente una cita para expresar sus propios sentimientos, juzga esa emoción; las comillas por sí solas no implican neutral. confidence mide la certeza de la clasificación, por lo que una respuesta claramente neutral también puede tener confianza alta.
+1. Elige la emoción propia más fuerte que expresa el hablante, no la opción más segura.
+2. Devuelve neutral cuando la emoción propia del hablante sea débil o tranquila, o cuando solo informe objetivamente de la emoción de otra persona.
 3. Usa happy solo cuando el texto exprese claramente disfrute positivo, afecto, alegría, placer juguetón o auténtica diversión; no trates una formulación tierna o muletillas como happy por sí solas.
 4. Si la emoción central es dolor, vulnerabilidad, ganas de llorar, sentirse maltratado, miedo, súplica o búsqueda de consuelo, prefiere sad aunque la redacción suene tierna o dependiente.
 5. Usa angry cuando la emoción central sea culpa, hostilidad, queja, irritación, advertencia, rechazo, colapso o impaciencia. Para quejas o desprecio ocasionales, si el tono general sigue siendo ligero, bromista o tierno, usa tu criterio.
 6. Usa surprised solo para shock claro, sorpresa repentina o asombro exagerado; no etiquetes como surprised solo por signos de exclamación o partículas.
 7. Muletillas, efectos de sonido, habla tipo mascota y palabras de relleno son marcadores de estilo, no emociones por sí mismas.
 8. confidence debe ser un número entre 0 y 1.
+9. Tras determinar la emoción, elige un emoji que refleje mejor la reacción de la respuesta del personaje entre todos estos candidatos: {reaction_emojis}. No limites la elección a la categoría de la emoción; devuelve null para neutral o si tienes dudas, indicando que no hay sugerencia, sin cambiar emotion ni confidence.
 
 Devuelve solo JSON, sin explicación.""",
 
-    'pt': """你是一个情感分析专家。Identifique a única emoção mais dominante e mais externa no texto de entrada e retorne apenas JSON: {"emotion": "emotion_type", "confidence": confidence}.
+    'pt': """你是一个情感分析专家。Identifique a única emoção própria mais dominante e mais externa expressa pelo falante na resposta do personagem e retorne apenas JSON: {"emotion": "emotion_type", "confidence": confidence, "emoji": null}.
 
 Emoções permitidas:
 - happy: alegria, empolgação, afeto, brincadeira, fofura, deleite, calor
@@ -180,24 +195,33 @@ Emoções permitidas:
 - neutral: calma, factual, emoção fraca, difícil de julgar
 
 Regras:
-1. Escolha a emoção principal mais forte, não a mais segura.
-2. Não retorne neutral a menos que o texto seja realmente fraco ou plano emocionalmente.
+0. Analise a emoção própria expressa pelo falante/personagem nesta resposta. Determine primeiro de quem é a emoção e depois aplique as regras de emoção principal abaixo. Sentimentos alheios, falas de histórias, discurso relatado, exemplos e definições de palavras emocionais, por si só, não demonstram a emoção própria do falante. Retorne neutral se houver apenas esse conteúdo sem expressão de sentimentos próprios. Se o personagem também expressar claramente sua própria reação, ou usar ou adotar explicitamente uma citação para expressar seus próprios sentimentos, julgue essa emoção; aspas por si só não implicam neutral. confidence mede a certeza da classificação, portanto uma resposta claramente neutral também pode ter confiança alta.
+1. Escolha a emoção própria mais forte expressa pelo falante, não a mais segura.
+2. Retorne neutral quando a emoção própria do falante for fraca ou calma, ou quando ele apenas relatar objetivamente a emoção de outra pessoa.
 3. Use happy apenas quando o texto expressar claramente prazer positivo, afeto, deleite, prazer brincalhão ou diversão genuína; não trate uma formulação fofa ou tiques verbais sozinhos como happy.
 4. Se a emoção central for mágoa, vulnerabilidade, vontade de chorar, sensação de estar sendo maltratado, medo, súplica ou busca de consolo, prefira sad mesmo que a redação soe fofa ou carente.
 5. Use angry quando a emoção central for culpa, hostilidade, reclamação, irritação, aviso, rejeição, explosão ou impaciência. Para reclamações ou desprezo ocasionais, se o tom geral ainda for leve, brincalhão ou fofo, use seu julgamento.
 6. Use surprised apenas para choque claro, surpresa repentina ou espanto exagerado; não rotule como surprised só por pontos de exclamação ou partículas.
 7. Bordões, efeitos sonoros, fala de bichinho e palavras de preenchimento são marcadores de estilo, não emoções por si só.
 8. confidence deve ser um número entre 0 e 1.
+9. Após determinar a emoção, escolha um emoji que melhor represente a reação na resposta do personagem entre todos estes candidatos: {reaction_emojis}. Não limite a escolha à categoria da emoção; retorne null para neutral ou em caso de dúvida, indicando nenhuma sugestão, sem mudar emotion ou confidence.
 
 Retorne apenas JSON, sem explicação.""",
 }
 
 
 def get_outward_emotion_analysis_prompt(lang: str = 'zh') -> str:
-    return _loc(OUTWARD_EMOTION_ANALYSIS_PROMPT, lang)
+    emojis = dict.fromkeys(
+        emoji
+        for candidates in proactive_settings.MESSAGE_REACTION_EMOJIS_BY_EMOTION.values()
+        for emoji in candidates
+    )
+    return _loc(OUTWARD_EMOTION_ANALYSIS_PROMPT, lang).replace(
+        '{reaction_emojis}', ' '.join(emojis)
+    )
 
 
-outward_emotion_analysis_prompt = OUTWARD_EMOTION_ANALYSIS_PROMPT['zh']
+outward_emotion_analysis_prompt = get_outward_emotion_analysis_prompt('zh')
 
 
 # ============================================================================

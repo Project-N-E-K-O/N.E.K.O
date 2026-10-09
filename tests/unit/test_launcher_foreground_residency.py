@@ -138,6 +138,473 @@ def test_cleanup_does_not_close_the_job_handle_it_is_a_member_of():
     assert "CloseHandle(JOB_HANDLE)" not in cleanup
 
 
+@pytest.mark.unit
+def test_storage_restart_requires_every_old_server_to_be_dead():
+    """A file lock cannot substitute for proof that old Main exited."""
+
+    source = (LAUNCHER_CORE / "runtime.py").read_text(encoding="utf-8")
+    assert "if storage_restart_requested and not has_alive and not descendants_alive:" in source
+
+
+@pytest.mark.unit
+def test_descendants_are_only_settled_for_a_storage_restart(monkeypatch):
+    """An ordinary exit must leave programs a server opened for the user alone."""
+    from launcher_core import runtime
+
+    calls = []
+    monkeypatch.setattr(runtime, "_settle_surviving_descendants", lambda descendants: calls.append(descendants) or False)
+    monkeypatch.setattr(runtime, "_teardown_descendants", [])
+
+    assert runtime._descendants_block_storage_restart(False) is False
+    assert calls == []
+    assert runtime._descendants_block_storage_restart(True) is False
+    assert calls == [[]]
+    source = (LAUNCHER_CORE / "runtime.py").read_text(encoding="utf-8")
+    assert "descendants_alive = _descendants_block_storage_restart(storage_restart_requested)" in source
+    # Settled only when Main asked for the restart, not on every exit once it
+    # has started.
+    assert "storage_restart_requested = allow_storage_restart and _is_pending_storage_restart_request(" in source
+
+
+@pytest.mark.unit
+def test_an_unreadable_restart_request_counts_as_made_for_the_teardown(monkeypatch):
+    from launcher_core import runtime
+
+    def _unreadable(*_args, **_kwargs):
+        raise OSError("root_state locked")
+
+    monkeypatch.setattr(runtime, "get_config_manager", _unreadable)
+
+    assert runtime._is_pending_storage_restart_request() is False
+    assert runtime._is_pending_storage_restart_request(unreadable_counts=True) is True
+
+
+@pytest.mark.unit
+def test_storage_restart_is_blocked_when_descendants_are_unknown(monkeypatch):
+    """No psutil, or a server that could not be inspected: its orphans are
+    out of reach, so the restart must not go ahead on that basis."""
+    from launcher_core import runtime
+
+    monkeypatch.setattr(runtime, "_teardown_descendants", None)
+
+    assert runtime._descendants_block_storage_restart(True) is True
+    assert runtime._descendants_block_storage_restart(False) is False
+
+
+@pytest.mark.unit
+def test_an_exited_server_is_skipped_not_unknown():
+    """In multiprocessing mode Main exits on its own before every migration
+    restart; that must not make the descendants count as unknown."""
+    from launcher_core import runtime
+
+    class _Exited:
+        pid = 4242
+
+        def is_alive(self):
+            return False
+
+    assert runtime._snapshot_server_descendants([{"process": _Exited()}]) == []
+
+
+@pytest.mark.unit
+def test_descendants_of_a_running_server_that_cannot_be_inspected_are_unknown(monkeypatch):
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    class _Running:
+        pid = os.getpid()
+
+        def is_alive(self):
+            return True
+
+    real_process = psutil.Process
+
+    def _server_denied(pid=None):
+        if pid == _Running.pid:
+            raise psutil.AccessDenied(pid)
+        return real_process(pid)
+
+    monkeypatch.setattr(psutil, "Process", _server_denied)
+
+    assert runtime._snapshot_server_descendants([{"process": _Running()}]) is None
+
+
+class _PopenServer:
+    """A real process behind the multiprocessing.Process surface cleanup_servers uses."""
+
+    def __init__(self, popen):
+        self._popen = popen
+        self.pid = popen.pid
+
+    def is_alive(self):
+        return self._popen.poll() is None
+
+    def join(self, timeout=None):
+        try:
+            self._popen.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return  # still running; cleanup_servers escalates
+
+    def terminate(self):
+        self._popen.terminate()
+
+    def kill(self):
+        self._popen.kill()
+
+    @property
+    def exitcode(self):
+        return self._popen.poll()
+
+
+@pytest.mark.unit
+def test_migration_restart_goes_ahead_after_main_exits_on_its_own(monkeypatch):
+    """The real cleanup_servers, no stand-in: Main has already shut itself
+    down for the migration while Memory still runs. The restart must still
+    be scheduled."""
+    pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    interpreter = getattr(sys, "_base_executable", "") or sys.executable
+    main = subprocess.Popen([interpreter, "-c", "pass"])
+    main.wait(timeout=20)
+    memory = subprocess.Popen([interpreter, "-c", "import time; time.sleep(120)"])
+    try:
+        servers = [
+            {"name": "Main", "module": "main_server", "process": _PopenServer(main), "graceful_shutdown_timeout": 0.2},
+            {"name": "Memory", "module": "memory_server", "process": _PopenServer(memory), "graceful_shutdown_timeout": 0.2},
+        ]
+        monkeypatch.setattr(runtime, "SERVERS", servers)
+        monkeypatch.setattr(runtime, "_cleanup_done", False)
+        monkeypatch.setattr(runtime, "_teardown_descendants", None)
+        monkeypatch.setattr(runtime, "_teardown_snapshot_taken", False)
+
+        runtime.cleanup_servers()
+
+        assert memory.poll() is not None
+        assert runtime._teardown_descendants == []
+        assert runtime._descendants_block_storage_restart(True) is False
+    finally:
+        memory.kill()
+
+
+@pytest.mark.unit
+def test_descendants_are_taken_before_the_first_teardown_step():
+    """The startup restart path tears down inside the try block; a snapshot
+    taken in the finally block would find nothing left to check."""
+    import inspect
+
+    from launcher_core import runtime
+
+    source = inspect.getsource(runtime.cleanup_servers)
+    teardown_try = source.index("    try:\n")
+    snapshot = source.index("_take_teardown_snapshot_once()")
+    first_teardown = source.index("for server in _iter_servers_for_shutdown():")
+    assert teardown_try < snapshot < first_teardown
+
+
+@pytest.mark.unit
+def test_merged_mode_takes_the_snapshot_before_its_ordered_shutdown():
+    """Merged mode stops the plugin hosts in its ordered shutdown, before
+    cleanup_servers; the snapshot must come first or their subprocesses are
+    no longer found."""
+    import inspect
+
+    from launcher_core import runtime
+
+    source = inspect.getsource(runtime.run_merged_servers)
+    assert source.index("_take_teardown_snapshot_once()") < source.index(
+        "await _shutdown_merged_servers_in_order(servers_by_name, tasks)"
+    )
+
+
+@pytest.mark.unit
+def test_the_teardown_snapshot_is_taken_only_once(monkeypatch):
+    from launcher_core import runtime
+
+    snapshots = iter([[("first", True)], [("second", True)]])
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: next(snapshots))
+    monkeypatch.setattr(runtime, "_teardown_snapshot_taken", False)
+    monkeypatch.setattr(runtime, "_teardown_descendants", None)
+    monkeypatch.setattr(runtime, "_running_descendants", [])
+
+    runtime._take_teardown_snapshot_once()
+    runtime._take_teardown_snapshot_once()
+
+    assert runtime._teardown_descendants == [("first", True)]
+
+
+@pytest.mark.unit
+def test_teardown_keeps_descendants_only_the_running_snapshot_saw(monkeypatch):
+    """Multiprocess mode: Main shuts itself down for the migration before any
+    teardown snapshot; what the monitoring loop saw while it ran still
+    counts."""
+    from launcher_core import runtime
+
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: [("still-found", True)])
+    monkeypatch.setattr(runtime, "_teardown_snapshot_taken", False)
+    monkeypatch.setattr(runtime, "_teardown_descendants", None)
+    monkeypatch.setattr(runtime, "_running_descendants", [("orphan-of-main", True), ("still-found", True)])
+
+    runtime._take_teardown_snapshot_once()
+
+    assert runtime._teardown_descendants == [("still-found", True), ("orphan-of-main", True)]
+
+
+@pytest.mark.unit
+def test_unknown_teardown_descendants_stay_unknown_despite_a_running_snapshot(monkeypatch):
+    from launcher_core import runtime
+
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: None)
+    monkeypatch.setattr(runtime, "_teardown_snapshot_taken", False)
+    monkeypatch.setattr(runtime, "_teardown_descendants", [])
+    monkeypatch.setattr(runtime, "_running_descendants", [("seen-earlier", True)])
+
+    runtime._take_teardown_snapshot_once()
+
+    assert runtime._teardown_descendants is None
+
+
+@pytest.mark.unit
+def test_the_running_snapshot_is_refreshed_from_startup_on():
+    """Before the monitoring loop's first sleep, and while waiting for the
+    servers to get ready: Main can end itself for a storage restart in
+    either window."""
+    import inspect
+
+    from launcher_core import runtime
+
+    import ast
+
+    source = (LAUNCHER_CORE / "runtime.py").read_text(encoding="utf-8")
+
+    def _calls(body):
+        return [
+            ast.unparse(statement.value.func)
+            if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
+            else ""
+            for statement in body
+        ]
+
+    monitor_loops = [
+        _calls(node.body)
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.While) and "time.sleep" in _calls(node.body)
+        and "_refresh_running_descendants" in _calls(node.body)
+    ]
+    assert monitor_loops
+    assert all(
+        calls.index("_refresh_running_descendants") < calls.index("time.sleep") for calls in monitor_loops
+    )
+    # The one-by-one import waits, too: Main runs while Agent imports.
+    import_waits = [
+        node.body
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.While) and "evt.wait" in ast.unparse(node)
+    ]
+    assert import_waits
+    assert all(_calls(body)[0] == "_refresh_running_descendants" for body in import_waits)
+    wait_source = inspect.getsource(runtime.wait_for_servers)
+    # Before the early-exit check of each poll, so a Main that ends itself
+    # during startup was seen at least once while it ran.
+    assert wait_source.index("_refresh_running_descendants()") < wait_source.index(
+        "if proc is not None and not proc.is_alive()"
+    )
+
+
+@pytest.mark.unit
+def test_a_failed_refresh_makes_the_teardown_snapshot_unknown(monkeypatch):
+    """Stale evidence may miss a newer descendant; the restart is blocked
+    until a refresh succeeds again."""
+    from launcher_core import runtime
+
+    snapshots = iter([None, [("found", True)]])
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: next(snapshots))
+    monkeypatch.setattr(runtime, "_running_descendants", [("seen-earlier", True)])
+    monkeypatch.setattr(runtime, "_running_descendants_known", True)
+    monkeypatch.setattr(runtime, "_teardown_snapshot_taken", False)
+    monkeypatch.setattr(runtime, "_teardown_descendants", [])
+
+    runtime._refresh_running_descendants()  # cannot inspect a running server
+    runtime._take_teardown_snapshot_once()  # the teardown itself succeeds
+
+    assert runtime._teardown_descendants is None
+
+
+@pytest.mark.unit
+def test_a_successful_refresh_clears_the_unknown_state(monkeypatch):
+    from launcher_core import runtime
+
+    class _Running:
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr(runtime, "SERVERS", [{"name": "Main", "process": _Running()}])
+    snapshots = iter([None, []])
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: next(snapshots))
+    monkeypatch.setattr(runtime, "_running_descendants", [])
+    monkeypatch.setattr(runtime, "_running_descendants_known", True)
+    monkeypatch.setattr(runtime, "_uninspected_servers", set())
+
+    runtime._refresh_running_descendants()
+    runtime._refresh_running_descendants()
+
+    assert runtime._running_descendants_known is True
+
+
+# Spawning the base interpreter keeps a Windows venv's python.exe stub out of
+# the process tree, so the tree looks the way multiprocessing builds it.
+_INTERPRETER = getattr(sys, "_base_executable", "") or sys.executable
+
+
+class _TrackedServer:
+    def __init__(self, popen):
+        self.pid = popen.pid
+        self._popen = popen
+
+    def is_alive(self):
+        return self._popen.poll() is None
+
+
+def _wait_for_pid(pid_file, server):
+    deadline = time.monotonic() + 20
+    while not (pid_file.exists() and pid_file.read_text().strip()):
+        if time.monotonic() > deadline:
+            server.kill()
+            pytest.fail(f"the stand-in process tree never wrote {pid_file.name}")
+        time.sleep(0.05)
+    return int(pid_file.read_text())
+
+
+def _spawn_server_with_a_child(tmp_path):
+    """A stand-in server that starts a long-lived child (a plugin host)."""
+    pid_file = tmp_path / "child.pid"
+    server_code = textwrap.dedent(
+        f"""
+        import subprocess, time
+        child = subprocess.Popen([{_INTERPRETER!r}, "-c", "import time; time.sleep(120)"])
+        open({str(pid_file)!r}, "w").write(str(child.pid))
+        time.sleep(120)
+        """
+    )
+    server = subprocess.Popen([_INTERPRETER, "-c", server_code])
+    return server, _wait_for_pid(pid_file, server)
+
+
+def _orphan_a_child(tmp_path):
+    from launcher_core import runtime
+
+    server, child_pid = _spawn_server_with_a_child(tmp_path)
+    descendants = runtime._snapshot_server_descendants([{"process": _TrackedServer(server)}])
+    server.kill()
+    server.wait(timeout=10)
+    return server, child_pid, descendants
+
+
+def _kill_quietly(psutil, server, *pids):
+    server.kill()
+    for pid in pids:
+        try:
+            psutil.Process(pid).kill()
+        except psutil.NoSuchProcess:
+            continue  # already stopped by the code under test
+
+
+@pytest.mark.unit
+def test_storage_restart_stops_our_own_child_that_outlived_its_server(tmp_path):
+    """A plugin host (daemon=False, same executable) survives its server
+    being killed; it is stopped before the restart can go ahead."""
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    server, child_pid, descendants = _orphan_a_child(tmp_path)
+    try:
+        assert [(process.pid, own) for process, own in descendants] == [(child_pid, True)]
+        assert psutil.pid_exists(child_pid)
+
+        assert runtime._settle_surviving_descendants(descendants) is False
+        assert not psutil.pid_exists(child_pid) or psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE
+    finally:
+        _kill_quietly(psutil, server, child_pid)
+
+
+@pytest.mark.unit
+def test_a_program_a_plugin_started_with_our_interpreter_is_not_ours(tmp_path):
+    """A plugin may run a user program through sys.executable; it runs the
+    same executable but is no plugin host, so it is never stopped."""
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    host_pid_file = tmp_path / "host.pid"
+    program_pid_file = tmp_path / "program.pid"
+    host_code = textwrap.dedent(
+        f"""
+        import subprocess, time
+        program = subprocess.Popen([{_INTERPRETER!r}, "-c", "import time; time.sleep(120)"])
+        open({str(program_pid_file)!r}, "w").write(str(program.pid))
+        time.sleep(120)
+        """
+    )
+    server_code = textwrap.dedent(
+        f"""
+        import subprocess, time
+        host = subprocess.Popen([{_INTERPRETER!r}, "-c", {host_code!r}])
+        open({str(host_pid_file)!r}, "w").write(str(host.pid))
+        time.sleep(120)
+        """
+    )
+    server = subprocess.Popen([_INTERPRETER, "-c", server_code])
+    host_pid = _wait_for_pid(host_pid_file, server)
+    program_pid = _wait_for_pid(program_pid_file, server)
+    try:
+        descendants = runtime._snapshot_server_descendants([{"process": _TrackedServer(server)}])
+        ownership = {process.pid: own for process, own in descendants}
+        assert ownership == {host_pid: True, program_pid: False}
+        server.kill()
+        server.wait(timeout=10)
+
+        assert runtime._settle_surviving_descendants(descendants) is True
+        assert psutil.Process(program_pid).is_running()
+    finally:
+        _kill_quietly(psutil, server, host_pid, program_pid)
+
+
+@pytest.mark.unit
+def test_storage_restart_never_touches_a_program_opened_for_the_user(tmp_path):
+    """Another executable (an app the user had a server open) is left
+    running; it only keeps the restart from going ahead."""
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    server, child_pid, descendants = _orphan_a_child(tmp_path)
+    try:
+        foreign = [(process, False) for process, _own in descendants]
+
+        assert runtime._settle_surviving_descendants(foreign) is True
+        assert psutil.Process(child_pid).is_running()
+    finally:
+        _kill_quietly(psutil, server, child_pid)
+
+
+@pytest.mark.unit
+def test_storage_restart_waits_for_a_child_that_cannot_be_stopped(tmp_path, monkeypatch):
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    server, child_pid, descendants = _orphan_a_child(tmp_path)
+    try:
+        def _refuse(self):
+            raise psutil.AccessDenied(self.pid)
+
+        monkeypatch.setattr(psutil.Process, "terminate", _refuse)
+        monkeypatch.setattr(psutil.Process, "kill", _refuse)
+        monkeypatch.setattr(psutil, "wait_procs", lambda procs, timeout=None: ([], list(procs)))
+
+        assert runtime._settle_surviving_descendants(descendants) is True
+    finally:
+        monkeypatch.undo()
+        _kill_quietly(psutil, server, child_pid)
+
+
 # ---------------------------------------------------------------------------
 #  Relaunch stays attached
 # ---------------------------------------------------------------------------
@@ -1104,3 +1571,245 @@ def test_unreadable_lock_does_not_block_startup(monkeypatch):
 
     assert launcher._acquire_single_instance_ownership() is True
     assert [p["role"] for e, p in events if e == "single_instance"] == ["unverified"]
+
+
+
+@pytest.mark.unit
+def test_merged_mode_snapshots_the_launchers_plugin_hosts_only(tmp_path):
+    """Packaged builds run the servers inside the launcher; its plugin hosts
+    (same executable) and what they started are checked, while another
+    child of the launcher -- on Windows its conhost.exe -- is left out, or
+    it would block every migration restart."""
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    grandchild_pid_file = tmp_path / "grandchild.pid"
+    host_code = textwrap.dedent(
+        f"""
+        import subprocess, time
+        program = subprocess.Popen([{_INTERPRETER!r}, "-c", "import time; time.sleep(120)"])
+        open({str(grandchild_pid_file)!r}, "w").write(str(program.pid))
+        time.sleep(120)
+        """
+    )
+    host = subprocess.Popen([_INTERPRETER, "-c", host_code])
+    other_command = ["ping", "-n", "120", "127.0.0.1"] if os.name == "nt" else ["sleep", "120"]
+    other = subprocess.Popen(other_command, stdout=subprocess.DEVNULL)
+    grandchild_pid = _wait_for_pid(grandchild_pid_file, host)
+    try:
+        descendants = runtime._snapshot_server_descendants(
+            [{"name": "Main", "process": None}, {"name": "Memory", "process": None}]
+        )
+        ownership = {process.pid: own for process, own in descendants}
+        assert ownership.get(host.pid) is True
+        assert ownership.get(grandchild_pid) is False
+        assert other.pid not in ownership
+    finally:
+        _kill_quietly(psutil, host, grandchild_pid)
+        other.kill()
+        other.wait(timeout=10)
+
+
+
+@pytest.mark.unit
+def test_merged_mode_snapshot_is_unknown_when_a_host_exits_during_the_scan(monkeypatch):
+    """What a host started is reparented the moment it exits and cannot be
+    found again; the snapshot cannot be complete, so it is unknown."""
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    hosts = [subprocess.Popen([_INTERPRETER, "-c", "import time; time.sleep(120)"]) for _ in range(2)]
+    exited_pid = hosts[0].pid
+    real_children = psutil.Process.children
+
+    def _children(self, recursive=False):
+        if recursive and self.pid == exited_pid:
+            raise psutil.NoSuchProcess(self.pid)
+        return real_children(self, recursive=recursive)
+
+    monkeypatch.setattr(psutil.Process, "children", _children)
+    try:
+        assert runtime._snapshot_server_descendants([{"name": "Main", "process": None}]) is None
+    finally:
+        monkeypatch.undo()
+        for host in hosts:
+            host.kill()
+            host.wait(timeout=10)
+
+
+
+@pytest.mark.unit
+def test_running_snapshot_survives_the_tick_after_main_exits(tmp_path, monkeypatch):
+    """The loop's real order, real processes: refresh while Main runs, Main
+    exits on its own (leaving a child), the next tick refreshes again before
+    noticing, then teardown. The orphan must still be in the snapshot."""
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    pid_file = tmp_path / "child.pid"
+    exit_flag = tmp_path / "exit-now"
+    main_code = textwrap.dedent(
+        f"""
+        import os, subprocess, time
+        child = subprocess.Popen([{_INTERPRETER!r}, "-c", "import time; time.sleep(120)"])
+        open({str(pid_file)!r}, "w").write(str(child.pid))
+        while not os.path.exists({str(exit_flag)!r}):
+            time.sleep(0.05)
+        """
+    )
+    main = subprocess.Popen([_INTERPRETER, "-c", main_code])
+    child_pid = _wait_for_pid(pid_file, main)
+    try:
+        monkeypatch.setattr(runtime, "SERVERS", [{"name": "Main", "module": "main_server", "process": _PopenServer(main)}])
+        monkeypatch.setattr(runtime, "_running_descendants", [])
+        monkeypatch.setattr(runtime, "_teardown_snapshot_taken", False)
+        monkeypatch.setattr(runtime, "_teardown_descendants", None)
+
+        runtime._refresh_running_descendants()  # tick N: Main running
+        exit_flag.write_text("", encoding="utf-8")
+        main.wait(timeout=20)  # Main shuts itself down during the sleep
+        runtime._refresh_running_descendants()  # tick N+1 refreshes first
+        runtime._take_teardown_snapshot_once()  # then the loop breaks into teardown
+
+        ownership = {process.pid: own for process, own in runtime._teardown_descendants}
+        assert ownership.get(child_pid) is True
+        assert runtime._settle_surviving_descendants(runtime._teardown_descendants) is False
+        assert not psutil.pid_exists(child_pid) or psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE
+    finally:
+        _kill_quietly(psutil, main, child_pid)
+
+
+@pytest.mark.unit
+def test_running_snapshot_drops_processes_that_exited(monkeypatch):
+    from launcher_core import runtime
+
+    class _Gone:
+        def is_running(self):
+            return False
+
+    gone = _Gone()
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: [])
+    monkeypatch.setattr(runtime, "_running_descendants", [(gone, True)])
+
+    runtime._refresh_running_descendants()
+
+    assert runtime._running_descendants == []
+
+
+
+class _FakeServerProcess:
+    def __init__(self, alive=True):
+        self.alive = alive
+
+    def is_alive(self):
+        return self.alive
+
+
+@pytest.mark.unit
+def test_uncertainty_outlasts_a_server_that_exits_before_it_is_inspected_again(monkeypatch):
+    """A refresh failed while Main ran; Main then exited. A later refresh that
+    no longer sees Main must not clear the uncertainty: an orphan it started
+    in between is out of reach."""
+    from launcher_core import runtime
+
+    main = _FakeServerProcess()
+    monkeypatch.setattr(runtime, "SERVERS", [{"name": "Main", "process": main}])
+    snapshots = iter([None, []])
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: next(snapshots))
+    monkeypatch.setattr(runtime, "_running_descendants", [])
+    monkeypatch.setattr(runtime, "_running_descendants_known", True)
+    monkeypatch.setattr(runtime, "_uninspected_servers", set())
+
+    runtime._refresh_running_descendants()  # cannot inspect Main
+    main.alive = False
+    runtime._refresh_running_descendants()  # "succeeds" without Main
+
+    assert runtime._running_descendants_known is False
+
+
+@pytest.mark.unit
+def test_uncertainty_ends_once_every_missed_server_is_inspected_alive(monkeypatch):
+    from launcher_core import runtime
+
+    monkeypatch.setattr(runtime, "SERVERS", [{"name": "Main", "process": _FakeServerProcess()}])
+    snapshots = iter([None, []])
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: next(snapshots))
+    monkeypatch.setattr(runtime, "_running_descendants", [])
+    monkeypatch.setattr(runtime, "_running_descendants_known", True)
+    monkeypatch.setattr(runtime, "_uninspected_servers", set())
+
+    runtime._refresh_running_descendants()
+    runtime._refresh_running_descendants()
+
+    assert runtime._running_descendants_known is True
+
+
+
+@pytest.mark.unit
+def test_uncertainty_from_a_scan_without_tracked_servers_does_not_clear(monkeypatch):
+    """Merged mode tracks no server process; a failed scan there cannot be
+    "re-inspected alive", so later successful scans must not clear it."""
+    from launcher_core import runtime
+
+    monkeypatch.setattr(runtime, "SERVERS", [{"name": "Main", "process": None}])
+    snapshots = iter([None, [], []])
+    monkeypatch.setattr(runtime, "_snapshot_server_descendants", lambda servers: next(snapshots))
+    monkeypatch.setattr(runtime, "_running_descendants", [])
+    monkeypatch.setattr(runtime, "_running_descendants_known", True)
+    monkeypatch.setattr(runtime, "_uninspected_servers", set())
+
+    runtime._refresh_running_descendants()
+    runtime._refresh_running_descendants()
+    runtime._refresh_running_descendants()
+
+    assert runtime._running_descendants_known is False
+
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("failure", ["exited", "denied"])
+def test_merged_mode_snapshot_is_unknown_when_a_childs_executable_cannot_be_read(monkeypatch, failure):
+    """A child whose executable cannot be read may be a plugin host: skipped
+    as a non-host, what it started would never be checked."""
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    hosts = [subprocess.Popen([_INTERPRETER, "-c", "import time; time.sleep(120)"]) for _ in range(2)]
+    unreadable_pid = hosts[0].pid
+    real_exe = psutil.Process.exe
+
+    def _exe(self):
+        if self.pid == unreadable_pid:
+            if failure == "exited":
+                raise psutil.NoSuchProcess(self.pid)
+            raise psutil.AccessDenied(self.pid)
+        return real_exe(self)
+
+    monkeypatch.setattr(psutil.Process, "exe", _exe)
+    try:
+        assert runtime._snapshot_server_descendants([{"name": "Main", "process": None}]) is None
+    finally:
+        monkeypatch.undo()
+        for host in hosts:
+            host.kill()
+            host.wait(timeout=10)
+
+
+
+@pytest.mark.unit
+def test_a_descendant_that_cannot_be_inspected_stays_in_the_running_snapshot(monkeypatch):
+    """Access denied is no proof a captured descendant stopped: it must not
+    drop out of what the teardown checks."""
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    class _Uninspectable:
+        def is_running(self):
+            raise psutil.AccessDenied(4242)
+
+    class _Gone:
+        def is_running(self):
+            raise psutil.NoSuchProcess(4243)
+
+    assert runtime._still_running(_Uninspectable()) is True
+    assert runtime._still_running(_Gone()) is False

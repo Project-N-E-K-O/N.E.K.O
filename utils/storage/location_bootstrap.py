@@ -21,13 +21,13 @@ from utils.cloudsave_runtime import (
     ROOT_MODE_DEFERRED_INIT,
     cloudsave_disabled_reason,
     is_cloudsave_disabled_due_to_local_state_unavailable,
-    runtime_root_has_user_content,
 )
 from .policy import compute_anchor_root, should_require_storage_selection
 from .migration import (
     is_retained_root_cleanup_available,
     is_storage_migration_pending,
     load_storage_migration,
+    root_has_user_content,
 )
 from utils.logger_config import get_module_logger
 from utils.root_state_lock import root_state_transaction
@@ -76,7 +76,9 @@ def _collect_legacy_sources(
             normalized = _normalize_path(path)
             if normalized in seen:
                 continue
-            if not runtime_root_has_user_content(path, config_manager=config_manager):
+            # Counts the entries only the migration knows (pngtuber, jukebox,
+            # ...) too, so an old root holding just those is still offered.
+            if not root_has_user_content(path, config_manager=config_manager):
                 continue
         except Exception as exc:
             logger.warning("Skipping legacy storage root candidate %r: %s", candidate, exc)
@@ -133,6 +135,9 @@ def _build_migration_payload(migration_checkpoint: dict[str, Any] | None, last_m
         "retained_source_root": _opt_normalize(checkpoint.get("retained_source_root")),
         "retained_source_mode": str(checkpoint.get("retained_source_mode") or "").strip(),
         "error_code": str(checkpoint.get("error_code") or "").strip(),
+        # The maintenance view names the transaction directory (.smtx/<txid
+        # prefix>) that holds the original data after a publish conflict.
+        "txid": str(checkpoint.get("txid") or "").strip(),
         "error_message": error_message,
         "last_error": error_message or _extract_last_error(last_migration_result),
     }

@@ -135,6 +135,7 @@ function createHarness({
     startResponseErrorAfterCreate = false,
     startResponseErrorAfterAbort = false,
     profileError,
+    profileDiagnostics,
     verificationFailures = 0,
     profileTransportErrorAfterCommit = false,
     statusFailures = 0,
@@ -160,6 +161,7 @@ function createHarness({
     startGates = {},
     runtimeMode = 'enforce',
     readinessController = null,
+    workletFlushGate,
 } = {}) {
     const elementIds = [
         'voice-identity-status-dot',
@@ -198,6 +200,9 @@ function createHarness({
     const documentListeners = new Map();
     const windowListeners = new Map();
     const fetchCalls = [];
+    const uploadedPcm = [];
+    const captureWatchdogs = new Map();
+    const flushWatchdogs = new Map();
     const mediaStreams = [];
     const workletModules = [];
     let processor = null;
@@ -311,7 +316,7 @@ function createHarness({
                     segmentGate.promise.then(resolve, reject);
                 });
             }
-            if (profileError) return jsonResponse({ error_code: profileError }, { ok: false, status: profileStatus });
+            if (profileError) return jsonResponse({ error_code: profileError, diagnostics: profileDiagnostics }, { ok: false, status: profileStatus });
             if (pendingSegmentInProgress && call.url.endsWith('/segment')) {
                 if (pendingSegmentInProgress === 'accepted') serverNextSegment = Number(segment) + 1;
                 pendingSegmentInProgress = null;
@@ -446,7 +451,7 @@ function createHarness({
                     if (message && message.type === 'flush') {
                         const pcmData = Int16Array.from(node.pendingOutput);
                         node.pendingOutput = [];
-                        Promise.resolve().then(() => this.onmessage?.({
+                        (workletFlushGate ? workletFlushGate.promise : Promise.resolve()).then(() => this.onmessage?.({
                             data: { type: 'flush_complete', pcmData },
                         }));
                     }
@@ -501,12 +506,14 @@ function createHarness({
                 'voiceIdentity.requestFailed': 'Request failed.',
                 'voiceIdentity.errorInvalidPcm': 'Invalid recording format.',
                 'voiceIdentity.errorAudioTooLong': 'Recording is too long.',
-                'voiceIdentity.errorSpeechTooShort': 'Not enough speech detected.',
+                'voiceIdentity.errorSpeechTooShort': 'Recording is too short.',
+                'voiceIdentity.errorVolumeTooLow': 'Recording volume is too low.',
+                'voiceIdentity.errorNoSpeechDetected': 'Not enough usable speech detected.',
                 'voiceIdentity.errorSilence': 'No speech detected.',
                 'voiceIdentity.errorSevereClipping': 'Recording is distorted.',
                 'voiceIdentity.errorIncompleteCapture': 'Recording did not finish.',
                 'voiceIdentity.errorInsufficientTime': 'Not enough time remains for the next recording.',
-                'voiceIdentity.finishTooSoon': 'Keep speaking for about 1.5 seconds before saving.',
+                'voiceIdentity.finishTooSoon': 'Recording has not reached 1.5 seconds. Keep recording.',
                 'voiceIdentity.errorModelUnavailable': 'Voice model unavailable.',
                 'voiceIdentity.errorAudioProcessingUnavailable': 'Audio processing unavailable.',
                 'voiceIdentity.errorSecureStorageUnavailable': 'Secure storage unavailable.',
@@ -533,6 +540,7 @@ function createHarness({
         setTimeout(callback, delay) {
             timerId += 1;
             if (delay === REFERENCE_TIMEOUT_MS || delay === VERIFICATION_TIMEOUT_MS) {
+                captureWatchdogs.set(timerId, callback);
                 if (!manualAudio) {
                     Promise.resolve().then(() => {
                         const recordingMs = delay === REFERENCE_TIMEOUT_MS
@@ -559,6 +567,7 @@ function createHarness({
                 }
             } else if (delay === 400) {
                 // Successful flush acknowledgement clears this watchdog.
+                flushWatchdogs.set(timerId, callback);
             } else if (delay === 600) {
                 if (manualRouteRecovery) routeRecoveryTimers.set(timerId, callback);
                 else Promise.resolve().then(callback);
@@ -576,7 +585,7 @@ function createHarness({
             }
             return timerId;
         },
-        clearTimeout(id) { statusTimeouts.delete(id); routeRecoveryTimers.delete(id); },
+        clearTimeout(id) { statusTimeouts.delete(id); routeRecoveryTimers.delete(id); captureWatchdogs.delete(id); flushWatchdogs.delete(id); },
         requestAnimationFrame(callback) {
             promptPaintFrames += 1;
             if (promptPaintGate && promptPaintFrames === 2) {
@@ -624,6 +633,7 @@ function createHarness({
         fetch: async (url, options = {}) => {
             const call = { url, options: { ...options, headers: new MockHeaders(options.headers) } };
             fetchCalls.push(call);
+            if (url === `${API_ROOT}/enrollment/segment`) uploadedPcm.push(new Int16Array(options.body).slice());
             return defaultRoute(call);
         },
         Headers: MockHeaders,
@@ -655,6 +665,7 @@ function createHarness({
         elements,
         progressSteps,
         fetchCalls,
+        uploadedPcm,
         mediaStreams,
         workletModules,
         autoFinishDurations,
@@ -671,6 +682,12 @@ function createHarness({
             const callbacks = [...statusTimeouts.values()];
             statusTimeouts.clear();
             callbacks.forEach(callback => callback());
+        },
+        fireCaptureTimeouts() {
+            [...captureWatchdogs.values()].forEach(callback => callback());
+        },
+        fireFlushTimeouts() {
+            [...flushWatchdogs.values()].forEach(callback => callback());
         },
         mediaConstraintCalls,
         setRuntimeMode(mode) { runtimeMode = mode; },
@@ -1375,7 +1392,7 @@ test('sample count finishes a capture without waiting for the duration timer', a
     await enrolling;
 });
 
-test('initial silence does not satisfy the minimum speech duration', async () => {
+test('initial silence does not trigger automatic submission before the segment duration', async () => {
     const harness = createHarness({ manualAudio: true, autoAdvance: false });
     await harness.initialize();
 
@@ -1394,7 +1411,7 @@ test('initial silence does not satisfy the minimum speech duration', async () =>
     await enrolling;
 });
 
-test('automatic capture waits for the fixed segment duration after the minimum speech threshold', async () => {
+test('automatic capture waits for the fixed segment duration after the minimum capture threshold', async () => {
     const harness = createHarness({ manualAudio: true, autoAdvance: false });
     await harness.initialize();
 
@@ -2109,7 +2126,7 @@ test('manual finish stays available and explains the minimum duration', async ()
         call.url === `${API_ROOT}/enrollment/segment`
     ));
     assert.equal(upload, undefined);
-    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Keep speaking for about 1.5 seconds before saving.');
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Recording has not reached 1.5 seconds. Keep recording.');
     assert.equal(
         harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length,
         0,
@@ -2134,6 +2151,184 @@ test('a short natural utterance can be manually saved into the fixed upload shap
     assert.ok(upload);
     assert.equal(upload.options.body.byteLength, REFERENCE_SAMPLES * Int16Array.BYTES_PER_ELEMENT);
     assert.equal(harness.elements.get('voice-identity-next').hidden, false);
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+});
+
+for (const amplitude of [0, 64, 164, 1024]) {
+    test(`manual submission uses collected duration regardless of RMS (amplitude=${amplitude})`, async () => {
+        const harness = createHarness({ manualAudio: true, autoAdvance: false, profileError: 'no_speech_detected' });
+        await harness.initialize();
+        const enrolling = harness.emit('voice-identity-start');
+        await flush();
+        harness.emitAudio(new Int16Array(MINIMUM_SAMPLES).fill(amplitude));
+        await harness.emit('voice-identity-finish');
+        await flush();
+        const upload = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/segment`);
+        assert.ok(upload, 'collected samples must reach the backend even when quiet or silent');
+        assert.equal(upload.options.body.byteLength, REFERENCE_SAMPLES * Int16Array.BYTES_PER_ELEMENT);
+        assert.equal(harness.elements.get('voice-identity-message').textContent, 'Not enough usable speech detected.');
+        assert.equal(harness.elements.get('voice-identity-profile-controls').hidden, true);
+        await harness.emit('voice-identity-cancel');
+        await enrolling;
+    });
+}
+
+for (const recording of ['rate4', 'rate6']) {
+    for (const amplitude of [0.25, 0.5, 1, 2]) {
+        test(`issue 3347 fixed short sentence reaches upload (${recording}, amplitude=${amplitude})`, async () => {
+            const wav = fs.readFileSync(path.join(__dirname, `../tests/fixtures/voice_identity/issue_3347/${recording}.wav`));
+            assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
+            assert.equal(wav.readUInt32LE(24), TARGET_SAMPLE_RATE);
+            const pcm = new Int16Array((wav.length - 44) / 2);
+            for (let index = 0; index < pcm.length; index += 1) {
+                pcm[index] = Math.max(-32768, Math.min(32767, Math.round(wav.readInt16LE(44 + index * 2) * amplitude)));
+            }
+            const harness = createHarness({ manualAudio: true, autoAdvance: false });
+            await harness.initialize();
+            const enrolling = harness.emit('voice-identity-start');
+            await flush();
+            harness.emitAudio(pcm);
+            await harness.emit('voice-identity-finish');
+            await flush();
+            const upload = harness.fetchCalls.find(call => call.url === `${API_ROOT}/enrollment/segment`);
+            assert.ok(upload, 'the original short sentence must not be rejected by RMS duration');
+            assert.equal(upload.options.body.byteLength, REFERENCE_SAMPLES * Int16Array.BYTES_PER_ELEMENT);
+            assert.deepEqual(harness.uploadedPcm[0].subarray(0, pcm.length), pcm, 'flush retains the original short sentence and its partial final block');
+            assert.equal(harness.uploadedPcm[0].subarray(pcm.length).some(sample => sample !== 0), false);
+            assert.equal(harness.elements.get('voice-identity-next').hidden, false);
+            await harness.emit('voice-identity-cancel');
+            await enrolling;
+        });
+    }
+}
+
+test('a capture one sample below 1.5 seconds cannot be submitted or bypassed by padding', async () => {
+    const harness = createHarness({ manualAudio: true, autoAdvance: false });
+    await harness.initialize();
+    const enrolling = harness.emit('voice-identity-start');
+    await flush();
+    harness.emitAudio(new Int16Array(MINIMUM_SAMPLES - 1).fill(1024));
+    harness.advanceTime(REFERENCE_RECORDING_MS);
+    harness.tickCaptureClock();
+    await harness.emit('voice-identity-finish');
+    await flush();
+    assert.equal(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/segment`), false);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Recording has not reached 1.5 seconds. Keep recording.');
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+});
+
+test('silent automatic capture still uploads at the fixed duration for backend validation', async () => {
+    const harness = createHarness({ manualAudio: true, autoAdvance: false, profileError: 'no_speech_detected' });
+    await harness.initialize();
+    const enrolling = harness.emit('voice-identity-start');
+    await flush();
+    harness.emitAudio(new Int16Array(REFERENCE_SAMPLES));
+    await flush();
+    assert.equal(harness.fetchCalls.filter(call => call.url === `${API_ROOT}/enrollment/segment`).length, 1);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Not enough usable speech detected.');
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+});
+
+test('quiet manual submissions retain the three-second references and five-second verification shapes', async () => {
+    const harness = createHarness({ manualAudio: true, autoAdvance: false });
+    await harness.initialize();
+    const enrolling = harness.emit('voice-identity-start');
+    await flush();
+    for (let segment = 0; segment < 4; segment += 1) {
+        harness.emitAudio(new Int16Array(MINIMUM_SAMPLES).fill(64));
+        await harness.emit('voice-identity-finish');
+        await flush();
+        assert.equal(harness.uploadedPcm.length, segment + 1);
+        assert.equal(harness.uploadedPcm[segment].length, segment === 3 ? VERIFICATION_SAMPLES : REFERENCE_SAMPLES);
+        if (segment < 3) {
+            await harness.emit('voice-identity-next');
+            await flush();
+        }
+    }
+    await enrolling;
+    assert.equal(harness.mediaStreams[0].track.stopped, true);
+    assert.equal(harness.getAudioContext().state, 'closed');
+});
+
+test('quiet flush tails are retained before padding the upload', async () => {
+    const harness = createHarness({ manualAudio: true, autoAdvance: false });
+    await harness.initialize();
+    const enrolling = harness.emit('voice-identity-start');
+    await flush();
+    const samples = new Int16Array(MINIMUM_SAMPLES + 137).fill(64);
+    harness.emitAudio(samples);
+    await harness.emit('voice-identity-finish');
+    await flush();
+    assert.deepEqual(harness.uploadedPcm[0].subarray(0, samples.length), samples);
+    assert.equal(harness.uploadedPcm[0].subarray(samples.length).some(sample => sample !== 0), false);
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+});
+
+test('stalled quiet capture times out without padding a short recording into success', async () => {
+    const harness = createHarness({ manualAudio: true, autoAdvance: false });
+    await harness.initialize();
+    const enrolling = harness.emit('voice-identity-start');
+    await flush();
+    harness.emitAudio(new Int16Array(MINIMUM_SAMPLES - CHUNK_SAMPLES).fill(64));
+    harness.fireCaptureTimeouts();
+    await flush();
+    assert.equal(harness.uploadedPcm.length, 0);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Recording did not finish.');
+    assert.equal(harness.elements.get('voice-identity-next').hidden, false);
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+});
+
+test('missing flush acknowledgement times out and its late tail cannot upload', async () => {
+    const workletFlushGate = deferred();
+    const harness = createHarness({ manualAudio: true, autoAdvance: false, workletFlushGate });
+    await harness.initialize();
+    const enrolling = harness.emit('voice-identity-start');
+    await flush();
+    harness.emitAudio(new Int16Array(MINIMUM_SAMPLES + 137).fill(64));
+    await harness.emit('voice-identity-finish');
+    harness.fireFlushTimeouts();
+    await flush();
+    assert.equal(harness.uploadedPcm.length, 0);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Recording did not finish.');
+    workletFlushGate.resolve();
+    await flush();
+    assert.equal(harness.uploadedPcm.length, 0);
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+});
+
+test('cancelling quiet capture during flush prevents late completion from submitting', async () => {
+    const workletFlushGate = deferred();
+    const harness = createHarness({ manualAudio: true, autoAdvance: false, workletFlushGate });
+    await harness.initialize();
+    const enrolling = harness.emit('voice-identity-start');
+    await flush();
+    harness.emitAudio(new Int16Array(MINIMUM_SAMPLES + 137).fill(64));
+    await harness.emit('voice-identity-finish');
+    await harness.emit('voice-identity-cancel');
+    await enrolling;
+    workletFlushGate.resolve();
+    await flush();
+    assert.equal(harness.uploadedPcm.length, 0);
+    assert.equal(harness.mediaStreams[0].track.stopped, true);
+    assert.equal(harness.getAudioContext().state, 'closed');
+});
+
+test('legacy server volume rejection retains its own meaning despite RMS diagnostics', async () => {
+    const harness = createHarness({
+        profileError: 'volume_too_low',
+        profileDiagnostics: { rms: 0.02, active_seconds: 1.2 },
+        autoAdvance: false,
+    });
+    await harness.initialize();
+    const enrolling = harness.emit('voice-identity-start');
+    await flush();
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Recording volume is too low.');
     await harness.emit('voice-identity-cancel');
     await enrolling;
 });

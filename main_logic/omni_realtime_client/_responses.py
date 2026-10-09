@@ -26,6 +26,7 @@ from ._shared import (
     base64,
     json,
     logger,
+    new_client_item_id,
     response_arbiter_fail_open_enabled,
     time,
     uuid,
@@ -246,7 +247,7 @@ class _ResponseMixin:
 
         item_event_id = f"event_user_item_{uuid.uuid4().hex}"
         response_event_id = f"event_user_response_{uuid.uuid4().hex}"
-        item_id = f"item_neko_{uuid.uuid4().hex}"
+        item_id = new_client_item_id()
         expected_item_id = item_id
         # 通过 conversation.item.create 添加用户消息，再触发响应。两步都
         # 进入全局仲裁器，直到 response.done 才释放下一次 create 的资格。
@@ -312,7 +313,7 @@ class _ResponseMixin:
         self.note_user_turn_started()
 
         event_suffix = uuid.uuid4().hex
-        item_id = f"item_neko_{uuid.uuid4().hex}"
+        item_id = new_client_item_id()
         expected_item_id = item_id
         item_event = {
             "type": "conversation.item.create",
@@ -551,7 +552,7 @@ class _ResponseMixin:
         import hashlib
 
         event_suffix = uuid.uuid4().hex
-        item_id = f"item_neko_{uuid.uuid4().hex}"
+        item_id = new_client_item_id()
         item_event = {
             "type": "conversation.item.create",
             "event_id": f"event_asr_multimodal_item_{event_suffix}",
@@ -1668,7 +1669,7 @@ class _ResponseMixin:
         item_event_id = f"event_inject_item_{uuid.uuid4().hex}"
         create_event_id = f"event_inject_resp_{uuid.uuid4().hex}"
         outcome_token = create_event_id
-        item_id = f"item_neko_{uuid.uuid4().hex}"
+        item_id = new_client_item_id()
         expected_item_id = item_id
 
         def _close_outcome_window() -> None:
@@ -2614,7 +2615,7 @@ class _ResponseMixin:
                 events_before_text = ({
                     "type": "conversation.item.create",
                     "item": {
-                        "id": f"item_neko_visual_{uuid.uuid4().hex}",
+                        "id": new_client_item_id("vis"),
                         "type": "message",
                         "role": "user",
                         "content": [{
@@ -2641,7 +2642,7 @@ class _ResponseMixin:
                 visual_event = {
                     "type": "conversation.item.create",
                     "item": {
-                        "id": f"item_neko_visual_{uuid.uuid4().hex}",
+                        "id": new_client_item_id("vis"),
                         "type": "message",
                         "role": "user",
                         "content": [{
@@ -2676,7 +2677,7 @@ class _ResponseMixin:
                 "type": "conversation.item.create",
                 "event_id": visual_event_id,
                 "item": {
-                    "id": f"item_neko_visual_{uuid.uuid4().hex}",
+                    "id": new_client_item_id("vis"),
                     "type": "message",
                     "role": "user",
                     "content": [{"type": "input_text", "text": self._image_description}],
