@@ -11,10 +11,6 @@ from pydantic import BaseModel
 
 import brain.browser_use_anthropic as bu_anthropic
 from brain.browser_use_adapter import BrowserUseAdapter
-from brain.browser_use_anthropic import (
-    NekoChatAnthropic,
-    anthropic_rejects_forced_tool_choice,
-)
 
 
 class _ConfigManager:
@@ -143,7 +139,7 @@ def test_build_llm_claude_preset_sends_no_temperature():
         "provider_type": "anthropic",
     })._build_llm()
 
-    assert isinstance(llm, NekoChatAnthropic)
+    assert isinstance(llm, bu_anthropic.NekoChatAnthropic)
     assert llm.base_url == "https://api.anthropic.com"
     assert llm.temperature is None
     assert llm.top_p is None
@@ -173,7 +169,7 @@ def test_build_llm_anthropic_structured_output_by_model_and_mode(model, mode, ex
         "provider_type": "anthropic",
     })._build_llm(mode=mode)
 
-    assert isinstance(llm, NekoChatAnthropic)
+    assert isinstance(llm, bu_anthropic.NekoChatAnthropic)
     assert llm.structured_output == expected_mode
     assert llm.temperature is None
 
@@ -200,7 +196,7 @@ def test_build_llm_anthropic_structured_output_by_model_and_mode(model, mode, ex
     ],
 )
 def test_anthropic_rejects_forced_tool_choice(model, expected):
-    assert anthropic_rejects_forced_tool_choice(model) is expected
+    assert bu_anthropic.anthropic_rejects_forced_tool_choice(model) is expected
 
 
 class _Answer(BaseModel):
@@ -223,14 +219,16 @@ def _message(content: list[dict], stop_reason: str = "end_turn") -> Message:
 _THINKING = {"type": "thinking", "thinking": "", "signature": "sig"}
 
 
-def _llm_with_fake_client(monkeypatch, response: Message, *, mode: str) -> tuple[NekoChatAnthropic, list[dict]]:
+def _llm_with_fake_client(
+    monkeypatch, response: Message, *, mode: str
+) -> tuple[bu_anthropic.NekoChatAnthropic, list[dict]]:
     calls: list[dict] = []
 
     async def create(**kwargs):
         calls.append(kwargs)
         return response
 
-    llm = NekoChatAnthropic(model="claude-sonnet-5-5", api_key="sk-test", structured_output=mode)
+    llm = bu_anthropic.NekoChatAnthropic(model="claude-sonnet-5-5", api_key="sk-test", structured_output=mode)
     client = SimpleNamespace(messages=SimpleNamespace(create=create))
     monkeypatch.setattr(llm, "get_client", lambda: client)
     return llm, calls
@@ -376,7 +374,7 @@ def test_refusal_raises_provider_error_with_category(monkeypatch):
     ],
 )
 def test_agent_use_thinking_only_off_for_classifier_claude_models(model, expected):
-    llm = NekoChatAnthropic(model=model, api_key="sk-test")
+    llm = bu_anthropic.NekoChatAnthropic(model=model, api_key="sk-test")
 
     assert BrowserUseAdapter._agent_use_thinking(llm) is expected
 
