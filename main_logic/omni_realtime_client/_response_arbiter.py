@@ -1167,11 +1167,18 @@ class RealtimeResponseArbiter:
         # ``_AdoptionEvidence``. Monotonic means a stale reading can only ever
         # refuse an adoption, never wrongly grant one.
         #
-        # Counted once per item: a route may acknowledge the same item under
-        # both ``conversation.item.created`` and ``conversation.item.added``
-        # (#3350), and a second count would read as two acknowledgements. The
-        # duplicate still runs the ack matching below, which is idempotent.
-        if self._remember_acknowledged_item(event):
+        # Counted once per item only on a route that acknowledges under both
+        # ``conversation.item.created`` and ``conversation.item.added``
+        # (#3350), where a second count would read as two acknowledgements.
+        # A single-name route counts every acknowledgement as before: the
+        # free routes assign their own item ids and rely on this serial for
+        # adoption, and nothing guarantees those ids never repeat within a
+        # connection. The duplicate still runs the ack matching below, which
+        # is idempotent.
+        if (
+            len(self._protocol_capabilities.item_ack_event_types) < 2
+            or self._remember_acknowledged_item(event)
+        ):
             self._item_created_serial += 1
         current = self._current
         if current is None:

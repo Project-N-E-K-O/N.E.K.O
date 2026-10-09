@@ -20,6 +20,10 @@ from main_logic.omni_realtime_client import (
 from main_logic.omni_realtime_client._protocol_capabilities import (
     ITEM_ADDED_EVENT_TYPE,
     ITEM_CREATED_EVENT_TYPE,
+    LANLAN_APP_REALTIME_PROTOCOL_CAPABILITIES,
+    LANLAN_TECH_REALTIME_PROTOCOL_CAPABILITIES,
+    OPENAI_REALTIME_PROTOCOL_CAPABILITIES,
+    STRICT_REALTIME_PROTOCOL_CAPABILITIES,
     resolve_realtime_protocol_capabilities,
 )
 from main_logic.omni_realtime_client._response_arbiter import (
@@ -28,6 +32,7 @@ from main_logic.omni_realtime_client._response_arbiter import (
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_ITEM_ACK_TIMEOUT = 10.0
 
 
 # -- item ids -----------------------------------------------------------------
@@ -50,12 +55,16 @@ def test_a_kind_that_would_starve_the_random_part_is_refused():
 
 
 def test_no_call_site_hand_builds_an_item_id_from_a_full_uuid():
-    # The old shape: ``f"item_neko_..._{uuid4().hex}"`` -- 42 to 58 chars.
-    hand_built = re.compile(r"""["']id["']\s*:\s*\(?\s*f["'][^"']*\{uuid""")
+    # The old shape: ``f"item_neko_..._{uuid4().hex}"`` -- 42 to 58 chars --
+    # written straight into ``"id"`` or into a variable assigned to it later.
+    hand_built = (
+        re.compile(r"""["']id["']\s*:\s*\(?\s*f["'][^"']*\{uuid"""),
+        re.compile(r"""\bf["'](?:item|neko)_[^"']*\{uuid"""),
+    )
     offenders = []
     for path in (_REPO_ROOT / "main_logic").rglob("*.py"):
         text = path.read_text(encoding="utf-8")
-        if "item_neko_" in text or hand_built.search(text):
+        if "item_neko_" in text or any(p.search(text) for p in hand_built):
             offenders.append(str(path.relative_to(_REPO_ROOT)))
     assert offenders == []
 
@@ -84,11 +93,15 @@ def test_item_ack_event_names_follow_the_route(api_type, realtime_url, accepts_a
     )
 
 
-def test_one_item_acknowledged_under_both_names_counts_once():
-    async def send(_event):
-        return None
+async def _discard(_event):
+    return None
 
-    arbiter = RealtimeResponseArbiter(send)
+
+def test_one_item_acknowledged_under_both_names_counts_once():
+    arbiter = RealtimeResponseArbiter(
+        _discard,
+        protocol_capabilities=OPENAI_REALTIME_PROTOCOL_CAPABILITIES,
+    )
     item = {"id": "neko_abc", "type": "message", "role": "user"}
 
     arbiter.notify_item_created({"type": ITEM_CREATED_EVENT_TYPE, "item": item})
@@ -102,6 +115,29 @@ def test_one_item_acknowledged_under_both_names_counts_once():
     arbiter.notify_item_created({"type": ITEM_ADDED_EVENT_TYPE, "item": {}})
     arbiter.notify_item_created({"type": ITEM_ADDED_EVENT_TYPE, "item": {}})
     assert arbiter._item_created_serial == 4
+
+
+@pytest.mark.parametrize(
+    "capabilities",
+    [
+        STRICT_REALTIME_PROTOCOL_CAPABILITIES,
+        LANLAN_APP_REALTIME_PROTOCOL_CAPABILITIES,
+        LANLAN_TECH_REALTIME_PROTOCOL_CAPABILITIES,
+    ],
+)
+def test_a_single_name_route_counts_every_acknowledgement(capabilities):
+    # The free routes assign their own item ids and lean on this serial for
+    # adoption; a repeated id there must still read as a new acknowledgement.
+    arbiter = RealtimeResponseArbiter(
+        _discard,
+        protocol_capabilities=capabilities,
+    )
+    item = {"id": "item_1", "type": "message", "role": "user"}
+
+    arbiter.notify_item_created({"type": ITEM_CREATED_EVENT_TYPE, "item": item})
+    arbiter.notify_item_created({"type": ITEM_CREATED_EVENT_TYPE, "item": item})
+
+    assert arbiter._item_created_serial == 2
 
 
 class _ScriptedSocket:
@@ -149,10 +185,20 @@ async def _item_to_response_create_gap(api_type, model, item_ack_frames):
     socket = _ScriptedSocket(item_ack_frames)
     client.ws = socket
     client._fatal_error_occurred = False
+    # A long item-ack timeout separates "released by the acknowledgement" from
+    # "waited the timeout out" by a margin no CI load can blur.
+    arbiter = client._response_arbiter
+    enqueue = arbiter.enqueue
+
+    async def enqueue_with_long_item_ack(*args, **kwargs):
+        kwargs["item_ack_timeout"] = _ITEM_ACK_TIMEOUT
+        return await enqueue(*args, **kwargs)
+
+    arbiter.enqueue = enqueue_with_long_item_ack
     receiver = asyncio.create_task(client.handle_messages())
     try:
         ticket = await client.submit_external_text_turn("你好", turn_id="turn-1")
-        result = await asyncio.wait_for(ticket.done, 5)
+        result = await asyncio.wait_for(ticket.done, _ITEM_ACK_TIMEOUT * 2)
     finally:
         receiver.cancel()
         await asyncio.gather(receiver, return_exceptions=True)
@@ -173,8 +219,8 @@ async def test_openai_ga_item_added_releases_the_item_ack_without_waiting():
     )
 
     assert result.item_acknowledged is True
-    # Before #3350 this was the full 1.5 s item-ack timeout on every turn.
-    assert gap < 0.5
+    # Before #3350 every turn waited the whole item-ack timeout out.
+    assert gap < _ITEM_ACK_TIMEOUT / 2
 
 
 @pytest.mark.asyncio
@@ -186,7 +232,7 @@ async def test_openai_route_still_accepts_the_legacy_created_name():
     )
 
     assert result.item_acknowledged is True
-    assert gap < 0.5
+    assert gap < _ITEM_ACK_TIMEOUT / 2
 
 
 @pytest.mark.asyncio
@@ -198,4 +244,4 @@ async def test_qwen_route_acknowledges_with_created_as_before():
     )
 
     assert result.item_acknowledged is True
-    assert gap < 0.5
+    assert gap < _ITEM_ACK_TIMEOUT / 2
