@@ -343,6 +343,9 @@ async def join_room(request: Request, visit_id: str):
         return _servers_error(cr.VisitInviteInvalid("invite_expired"))
     if await _locally_blocked(preview):
         return _servers_error(cr.VisitInviteInvalid("peer_blocked"))
+    if time.time() >= preview.expires_at:
+        # 读黑名单要等一会儿：期间到了期限同样在占位之前拒
+        return _servers_error(cr.VisitInviteInvalid("invite_expired"))
     if not account:
         return _servers_error(cr.VisitLoginRequired())
     if preview_epoch is None:

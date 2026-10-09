@@ -1464,3 +1464,28 @@ async def test_preview_that_expired_on_the_way_is_410(env):
     resp = await _preview(env)
     assert resp.status_code == 410 and resp.json()["code"] == "invite_expired"
     assert "host_display_name" not in resp.text
+
+
+async def test_join_refuses_an_invite_that_expires_while_reading_the_blocklist(env, monkeypatch):
+    clock = {"now": NOW - 100.0}
+    real_monotonic = time.monotonic
+
+    class FakeTime:
+        @staticmethod
+        def time():
+            return clock["now"]
+
+        monotonic = staticmethod(real_monotonic)
+
+    monkeypatch.setattr(http, "time", FakeTime)
+    env.preview_expires = NOW - 50.0
+    real = Blocklist.aload
+
+    async def slow(config_dir):
+        clock["now"] = NOW              # 读黑名单期间邀请到期
+        return await real(config_dir)
+
+    monkeypatch.setattr(Blocklist, "aload", slow)
+    resp = await _join(env)
+    assert resp.status_code == 409 and resp.json()["details"] == {"reason": "invite_expired"}
+    assert _no_slot("Guest") and env.guest.creds_calls == []
