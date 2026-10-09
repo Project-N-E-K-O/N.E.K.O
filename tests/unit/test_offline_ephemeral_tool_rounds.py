@@ -440,3 +440,47 @@ async def test_a_saved_round_holds_the_text_without_its_speaker_prefix():
     assert _emitted(client) == ["我来", "丢好了。"]
     assert [s[1] for s in _history_shape(client) if s[0] == "assistant"] == ["我来"]
     assert "L | " not in json.dumps(client.requests[1], ensure_ascii=False, default=repr)
+
+
+async def test_a_task_cut_with_nothing_shown_leaves_its_round_without_unshown_text():
+    """The pre-tool text still sat in the name-prefix buffer when the task was
+    cancelled during the second call: nothing was shown, so nothing is
+    committed, and the kept round must not carry that unshown text either."""
+    async def handler(call):
+        if call.call_id == "c2":
+            asyncio.current_task().cancel()
+            await asyncio.sleep(0)
+        return ToolResult(call_id=call.call_id, name=call.name, output={})
+
+    client = _seeded(_client(handler=handler))
+    client._prefix_buffer_size = 100
+    client.script = [[_text("我来丢"), _tool_calls("c1", "c2")]]
+    turn = asyncio.create_task(client.prompt_ephemeral(_INSTRUCTION))
+    await asyncio.gather(turn, return_exceptions=True)
+    assert turn.cancelled()
+    assert _emitted(client) == []
+    assert _history_shape(client)[2:] == [("assistant", "", ["c1"]), ("tool", "{}", None)]
+
+
+async def test_the_first_round_of_each_callback_gets_its_own_stand_in():
+    """A callback that ends on a tool round, then another that calls a tool:
+    the second round follows the first one's tool reply, yet answers its own
+    (unsaved) notice, so it is seated too; rounds within one turn are not."""
+    client = _seeded(_client(handler=_recording_handler([])))
+    client.script = [
+        [_tool_calls("a1")], [_tool_calls("a2")], [_text("", "stop")],
+        [_tool_calls("b1")], [_text("", "stop")],
+        [_text("嗯"), _text("", "stop")],
+    ]
+    client.max_tool_iterations = 3
+    await client.prompt_ephemeral(_INSTRUCTION)
+    await client.prompt_ephemeral(_INSTRUCTION)
+    await client.stream_text("下一句")
+    request = client.requests[-1]
+    stand_in = TOOL_ROUND_PROMPT_PLACEHOLDER["zh"]
+    seated = [
+        request[index + 1]["tool_calls"][0]["id"]
+        for index, message in enumerate(request)
+        if message == {"role": "user", "content": stand_in}
+    ]
+    assert seated == ["a1", "b1"]

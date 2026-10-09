@@ -1221,19 +1221,23 @@ class _LifecycleMixin:
                         on_committed()
                     except Exception:
                         logger.exception("prompt_ephemeral on_committed callback failed")
-            if content_committed and persist_response:
+            cut = response_cancelled or task_cancelled
+            if persist_response and (content_committed or cut):
                 # Greetings, agent/topic callbacks and voice nudges answer an
                 # instruction, not the user. Mark them like finish_proactive_
                 # delivery does so the screen-history guard never joins them
                 # with the reply to the user's turn (utils/screen_comment_guard).
+                # A cut turn with nothing to commit still runs the cut path
+                # below: a round its lost sentinel left holding unshown text is
+                # trimmed, and an empty reply itself is never written.
                 reply = AIMessage(
-                    content=assistant_message,
+                    content=assistant_message if content_committed else "",
                     additional_kwargs={"dialog_source": "proactive"},
                 )
                 # Tells a cancelled reply committed later whether this one
                 # began after it (_cancelled_turn_end).
                 setattr(reply, _REPLY_GENERATION_ATTR, response_generation)
-                if response_cancelled or task_cancelled:
+                if cut:
                     # Whoever cancelled it may already have appended its own
                     # user message; the half that was shown goes before it.
                     # A round whose sentinel the cancellation lost already

@@ -697,18 +697,23 @@ def test_many_calls_that_never_close_are_recovered_without_recursion():
     assert events and events[-1].finalized is True
 
 
-def test_an_unclosed_call_is_given_up_where_the_next_call_starts():
-    """The reply after the outer closer comes back as soon as another call
-    opens in it (streamed, not held to the end), and that call is read."""
+def test_an_unclosed_call_is_given_up_once_calls_pile_up_inside_it():
+    """One or two calls after the outer closer may be values of a call that
+    still closes; by the third the open call is given up at once (streamed,
+    not held to the end) and the text after its closer is read again."""
     from utils.llm_tool_leak_filter import ToolLeakFilter
 
     tail = "后面的正文很长。" * 100
-    leaked = f'前 default_api:pvz_start{{goal:"do it}}{tail}asynccall:pvz_start{{goal:a}}完'
-    leak_filter = ToolLeakFilter(tool_names=_PVZ_TOOLS)
-    streamed, _event = leak_filter.feed(leaked)
-    assert streamed.startswith("前 " + tail), "given back while streaming, not held to the end"
-    visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [leaked])
+    one = f'前 default_api:pvz_start{{goal:"do it}}{tail}asynccall:pvz_start{{goal:a}}完'
+    visible, _events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [one])
     assert visible == "前 " + tail + "完"
+
+    three = one + "asynccall:pvz_start{goal:b}又asynccall:pvz_start{goal:c}再"
+    leak_filter = ToolLeakFilter(tool_names=_PVZ_TOOLS)
+    streamed, _event = leak_filter.feed(three)
+    assert streamed.startswith("前 " + tail), "given back while streaming, not held to the end"
+    visible, _events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [three])
+    assert visible == "前 " + tail + "完又再"
 
 
 def test_a_well_formed_long_call_is_never_given_up_halfway():
@@ -723,6 +728,8 @@ def test_a_well_formed_long_call_is_never_given_up_halfway():
         # A call named inside a quoted value after a nested closer is data.
         ('好 default_api:pvz_instruction{payload: {nested: 1}, note: "recall_memory{query: a}"} 了',
          "好  了"),
+        # A call as an unquoted value after a nested object, outer call closing.
+        ("好 default_api:pvz_start{config:{x:1}, fallback:default_api:pvz_goal{y:2}} 了", "好  了"),
     ):
         assert strip_tool_call_leaks(leaked, tool_names=_PVZ_TOOLS) == expected
         visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [leaked])

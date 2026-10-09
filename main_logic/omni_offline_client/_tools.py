@@ -124,6 +124,14 @@ class _ToolingMixin:
             )
         return tool_rounds, instruction, request_view
 
+    def _proactive_round_generation(self, message):
+        """The generation of the ``prompt_ephemeral`` reply that saved the
+        tool round ``message``; None when no recent one did."""
+        for generation, rounds in getattr(self, "_proactive_turn_rounds", ()):
+            if any(round_ is message for round_ in rounds):
+                return generation
+        return None
+
     @staticmethod
     def _with_instruction(messages, instruction, own_rounds):
         """``messages`` with ``instruction`` before the first of ``own_rounds``
@@ -141,7 +149,10 @@ class _ToolingMixin:
         neither a user turn nor a tool reply.
 
         A ``prompt_ephemeral`` turn saves its tool rounds but never its
-        instruction, so in history the round follows an assistant message.
+        instruction, so in history the round follows an assistant message, or
+        the tool reply of an earlier turn that ended on a round: the first
+        round of every such turn gets one (``_proactive_round_generation``),
+        later rounds of the same turn answer its own tool replies.
         Gemini, natively and behind OpenAI-compatible gateways, rejects a
         function call turn that does not come right after a user turn or a
         function response; other providers read the stand-in as one more
@@ -149,18 +160,27 @@ class _ToolingMixin:
         """
         seated: list = []
         stand_in = None
+        previous_turn = None
         for index, message in enumerate(messages):
             before = messages[index - 1] if index else None
             if (
                 isinstance(message, dict)
                 and message.get("role") == "assistant"
                 and message.get("tool_calls")
-                and not isinstance(before, HumanMessage)
-                and not (isinstance(before, dict) and before.get("role") in ("user", "tool"))
             ):
-                if stand_in is None:
-                    stand_in = _loc(TOOL_ROUND_PROMPT_PLACEHOLDER, self._tool_image_locale())
-                seated.append({"role": "user", "content": stand_in})
+                turn = self._proactive_round_generation(message)
+                follows_prompt = isinstance(before, HumanMessage) or (
+                    isinstance(before, dict) and before.get("role") == "user"
+                )
+                follows_own_round = (
+                    isinstance(before, dict) and before.get("role") == "tool"
+                    and (turn is None or turn == previous_turn)
+                )
+                previous_turn = turn
+                if not (follows_prompt or follows_own_round):
+                    if stand_in is None:
+                        stand_in = _loc(TOOL_ROUND_PROMPT_PLACEHOLDER, self._tool_image_locale())
+                    seated.append({"role": "user", "content": stand_in})
             seated.append(message)
         return messages if stand_in is None else seated
 

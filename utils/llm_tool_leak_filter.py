@@ -46,6 +46,10 @@ _PREFIXED_CALL_OPENERS = (
 _OPENER_MARKERS = ("seed", *dict.fromkeys(steps[0][1] for steps in _PREFIXED_CALL_OPENERS))
 # The last character of every inline opener: only there can one complete.
 _OPENER_END_CHARS = frozenset("({=:")
+# Calls opening inside an open call's recovered text before it is given up:
+# one or two are values of a well-formed outer call still to close; more in a
+# row are unclosed calls, and waiting longer would rescan the reply for each.
+_RECOVERY_OPENER_LIMIT = 3
 # ``_consume_inline_call``: the call was given up, resume at ``_call_resume``.
 _CALL_GIVEN_UP = -2
 _OPENER_FAIL = ("fail", 0)
@@ -216,6 +220,8 @@ class ToolLeakFilter:
         self._call_recovery: list[str] | None = None
         # Whether that closer was inside a quote never closed (else nested).
         self._call_recovery_in_quote = False
+        # Calls that opened in the recovered text so far.
+        self._call_recovery_openers = 0
         self._call_resume = ""
         self._call_closers: list[str] = []
         self._call_opened = False
@@ -249,12 +255,12 @@ class ToolLeakFilter:
         closer that does not end the call (inside a quote never closed, or
         after a same-kind opener left open in a value) marks where the reply
         may resume: ``finalize`` gives back what followed the first one, and
-        reads it again for further calls. A call that starts in that text
-        settles it at once: the open call is given up there
+        reads it again for further calls. ``_RECOVERY_OPENER_LIMIT`` calls
+        starting in that text settle it: the open call is given up there
         (``_CALL_GIVEN_UP``, the text to read on in ``_call_resume``), so
         unclosed calls in a row stay linear while a well-formed long call,
-        whose nested closers also set a recovery point, still runs to its
-        own closer.
+        whose nested closers also set a recovery point and whose values may
+        name a call or two, still runs to its own closer.
         """
         for index, char in enumerate(text):
             if self._call_recovery is not None:
@@ -266,6 +272,8 @@ class ToolLeakFilter:
                     and (self._call_recovery_in_quote or not self._call_quote)
                     and self._opens_call_at_end(self._call_recovery)
                 ):
+                    self._call_recovery_openers += 1
+                if self._call_recovery_openers >= _RECOVERY_OPENER_LIMIT:
                     self._call_resume = "".join(self._call_recovery) + text[index + 1:]
                     return _CALL_GIVEN_UP
             outer_closer = (

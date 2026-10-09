@@ -349,13 +349,6 @@ class _StreamingMixin:
             )
         history.insert(position, reply)
 
-    def _proactive_round_generation(self, message):
-        """The generation of the ``prompt_ephemeral`` reply that saved the
-        tool round ``message``; None when no recent one did."""
-        for generation, rounds in getattr(self, "_proactive_turn_rounds", ()):
-            if any(round_ is message for round_ in rounds):
-                return generation
-        return None
 
     def _commit_reply(
         self, anchor, text: str, generation: int, *, turn_history=None,
