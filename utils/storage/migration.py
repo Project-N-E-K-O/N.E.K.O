@@ -2118,11 +2118,9 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
                 copied_target_fingerprints[entry_name] = _metadata_fingerprint(target_entry, across_move=True)
         finally:
             if keep_transaction:
-                # Forget the id, too: the finished-checkpoint leftover
-                # cleanup would otherwise remove it on the next launch.
-                payload = _persist_migration_payload(
-                    config_manager, payload, anchor_root=normalized_anchor_root, txid=""
-                )
+                # The id stays recorded: the finished-checkpoint leftover
+                # cleanup puts user data from the trash back before removing
+                # anything, so the next launch retries the rescue.
                 logger.warning("v1 catch-up kept user data in %s; nothing there is deleted", transaction_root / "trash")
             else:
                 try:

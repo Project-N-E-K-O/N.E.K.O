@@ -4677,10 +4677,13 @@ def test_v1_catch_up_keeps_its_transaction_when_arrived_data_has_nowhere_else_to
 
     kept = list(target_root.glob(".smtx/*/trash/pngtuber/arrived.png"))
     assert len(kept) == 1 and kept[0].read_bytes() == b"new root data"
-    # A later launch must not clear it as a finished transaction's leftover.
-    assert not load_storage_migration(reloaded_manager).get("txid")
+    # Still recorded, so a later launch retries the rescue instead of losing
+    # track of it; this time it can go beside the retaken name.
+    assert load_storage_migration(reloaded_manager).get("txid")
     run_pending_storage_migration(_make_real_config_manager(tmp_path))
-    assert kept[0].read_bytes() == b"new root data"
+    rescued = list(target_root.glob("pngtuber.neko-kept-*"))
+    assert len(rescued) == 1 and (rescued[0] / "arrived.png").read_bytes() == b"new root data"
+    assert not list(target_root.glob(".smtx/*/trash"))
 
 
 @pytest.mark.unit
@@ -4897,3 +4900,16 @@ def test_storage_location_cleanup_keeps_pending_when_an_entry_comes_back_while_f
     assert response.status_code == 409, response.json()
     assert response.json()["remaining_entries"] == ["memory"]
     assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] != "cleaned"
+
+
+@pytest.mark.unit
+def test_storage_location_cleanup_finishes_when_state_is_a_plain_file(tmp_path):
+    """A file named state in the old root: state/game_scores cannot exist
+    below it, so it is not left pending forever."""
+    source_root, _target_root = _migrate_config_and_memory(tmp_path)
+    (source_root / "state").write_text("not a directory", encoding="utf-8")
+
+    response = _cleanup_request(tmp_path, source_root)
+
+    assert response.status_code == 200, response.json()
+    assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] == "cleaned"

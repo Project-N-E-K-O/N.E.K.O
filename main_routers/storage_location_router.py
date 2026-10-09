@@ -1632,7 +1632,9 @@ def _entry_may_exist(path: Path) -> bool:
     """
     try:
         os.lstat(path)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
+        # A parent that is a plain file (a file named "state") proves a
+        # nested entry below it cannot exist either.
         return False
     except OSError:
         return True
