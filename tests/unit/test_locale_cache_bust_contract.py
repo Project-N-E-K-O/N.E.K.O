@@ -71,6 +71,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-09-pr3349-rebase-storage-hardening",
         "2026-10-09-pr3345-rebase-storage-hardening",
         "2026-10-09-pr3345-main-rebase",
+        "2026-10-09-pr3345-duration-layout-rebase",
         "2026-10-08-voice-identity-resource-help",
         "2026-10-08-voice-identity-input-guidance",
         "2026-10-08-voice-identity-input-layout",
