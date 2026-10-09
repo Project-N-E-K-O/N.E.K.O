@@ -46,10 +46,8 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
-from anthropic import APIConnectionError, APIStatusError, RateLimitError, omit
-from anthropic.types import CacheControlEphemeralParam, Message, ToolParam
 from browser_use.llm import ChatAnthropic
 from browser_use.llm.anthropic.serializer import AnthropicMessageSerializer
 from browser_use.llm.exceptions import ModelProviderError, ModelRateLimitError
@@ -57,6 +55,9 @@ from browser_use.llm.messages import BaseMessage
 from browser_use.llm.schema import SchemaOptimizer
 from browser_use.llm.views import ChatInvokeCompletion
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from anthropic.types import Message
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -125,6 +126,8 @@ class NekoChatAnthropic(ChatAnthropic):
     structured_output: StructuredOutputMode = "forced_tool"
 
     def _check_response(self, response: Any) -> Message:
+        from anthropic.types import Message
+
         if not isinstance(response, Message):
             raise ModelProviderError(
                 message=(
@@ -157,6 +160,8 @@ class NekoChatAnthropic(ChatAnthropic):
     async def ainvoke(
         self, messages: list[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
+        from anthropic import APIConnectionError, APIStatusError, RateLimitError, omit
+
         anthropic_messages, system_prompt = AnthropicMessageSerializer.serialize_messages(messages)
         try:
             if output_format is None:
@@ -170,12 +175,12 @@ class NekoChatAnthropic(ChatAnthropic):
                 )
 
             tool_name = output_format.__name__
-            tool = ToolParam(
-                name=tool_name,
-                description=f"Extract information in the format of {tool_name}",
-                input_schema=_output_schema(output_format),
-                cache_control=CacheControlEphemeralParam(type="ephemeral"),
-            )
+            tool = {
+                "name": tool_name,
+                "description": f"Extract information in the format of {tool_name}",
+                "input_schema": _output_schema(output_format),
+                "cache_control": {"type": "ephemeral"},
+            }
             if self.structured_output == "forced_tool":
                 system: Any = system_prompt or omit
                 tool_choice: dict[str, Any] = {"type": "tool", "name": tool_name}
