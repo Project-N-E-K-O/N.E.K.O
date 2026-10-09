@@ -1484,7 +1484,7 @@ iframe 是**无状态转发器**：后端经 4.3 的 `send{cmd, payload}` 给它
 - 方向: 任一侧前端 → 本机后端
 - 面: 本机 HTTP
 - 字段: req `{lanlan_name:str, visit_id:str, reason:'recall'|'route_end', _csrf_token?}` → 200 `{ok:true, mode:'wrap_up'|'finalize', exit_task_started:bool}` | 409 `VISIT_RECALL_ALREADY`（已在收尾）| 404
-- 上限: **`recall`（「叫她回来」）不立即结束**：guest 侧 `VisitRoom.on_local_recall` → `wrap_up{ph:'propose', reason:'recall'}`，host 收到不判条件即 `begin`，走自然收尾（OD-08 v2）；host 侧 `recall` 语义 = 「送客」，直接 `begin`；`route_end` = 硬结束（设置里关掉 `visitEnabled`、切换角色、用户在收尾卡死时的第二次点击）→ 锁内翻状态 → 锁外起后台关闭任务（`leave{reason}` 及其 ≤5 s 补传，§3.2.6 第 22 条，不阻塞）→ 立即 `release_takeover` → 固定句 `VISIT_FIXED_LINE`（跳过 LLM）→ 关闭任务结束后 `ended`；返回时只保证状态已翻转，长尾在独立 `_exit_task`
+- 上限: 按社区账号分区：共用电脑换了账号后，`recall` 与 `POST /rooms/{visit_id}/accept` 只认这一场的账号（凭证的 `account`，领凭证前用准入账号），别的账号一律 404；`route_end` 谁都能做（换了账号的人也要能把角色腾出来）；**`recall`（「叫她回来」）不立即结束**：guest 侧 `VisitRoom.on_local_recall` → `wrap_up{ph:'propose', reason:'recall'}`，host 收到不判条件即 `begin`，走自然收尾（OD-08 v2）；host 侧 `recall` 语义 = 「送客」，直接 `begin`；`route_end` = 硬结束（设置里关掉 `visitEnabled`、切换角色、用户在收尾卡死时的第二次点击）→ 锁内翻状态 → 锁外起后台关闭任务（`leave{reason}` 及其 ≤5 s 补传，§3.2.6 第 22 条，不阻塞）→ 立即 `release_takeover` → 固定句 `VISIT_FIXED_LINE`（跳过 LLM）→ 关闭任务结束后 `ended`；返回时只保证状态已翻转，长尾在独立 `_exit_task`
 
 #### GET /api/visit/state
 - 方向: 前端 → 后端

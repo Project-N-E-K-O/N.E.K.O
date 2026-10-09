@@ -580,7 +580,7 @@ async def test_accept_forwards_to_the_matching_host_runtime(env):
     calls = []
 
     class Stub:
-        visit_id = VISIT_ID
+        visit_id, creds, admitted_account = VISIT_ID, None, "acct"
 
         async def accept(self, accept):
             calls.append(accept)
@@ -1112,3 +1112,51 @@ async def test_backlog_entry_that_cannot_be_statted_refuses(env, monkeypatch):
     monkeypatch.setattr(spool_mod, "_list_names", lambda _d: [(VISIT_ID, ".upload.json", Locked())])
     resp = await _rooms(env)
     assert resp.status_code == 409 and resp.json()["code"] == "VISIT_UPLOAD_BACKLOG" and _no_slot()
+
+
+async def test_another_account_cannot_accept_or_recall_but_can_end(env):
+    visit_id = (await _rooms(env)).json()["visit_id"]
+    rt = env.host.rt
+    env.account = "someone-else"         # 共用电脑上换了社区账号
+    async with env.client() as c:
+        accept = await c.post(f"/api/visit/rooms/{visit_id}/accept", headers=GOOD,
+                              json={"catgirl": "Host", "accept": False})
+        recall = await c.post("/api/visit/route/end", headers=GOOD,
+                              json={"lanlan_name": "Host", "visit_id": visit_id, "reason": "recall"})
+        assert accept.status_code == 404 and recall.status_code == 404
+        assert rt.finalize_reason is None and rt.accepted is None
+        # 硬结束照样可以：换了账号的人也要能把角色腾出来
+        end = await c.post("/api/visit/route/end", headers=GOOD,
+                           json={"lanlan_name": "Host", "visit_id": visit_id, "reason": "route_end"})
+    assert end.status_code == 200 and rt.finalize_reason == "route_end"
+
+
+async def test_cloud_rows_with_an_unknown_speaker_are_dropped(env):
+    good = {"from": "own_cat", "ts": 1.0, "text": "好", "truncated": False}
+    env.servers.details_lines = [
+        {"lp": 1, "side": "host", "host": good, "guest": None, "status": "only_host"},
+        {"lp": 2, "side": "host", "host": {**good, "from": "narrator"}, "guest": None, "status": "only_host"},
+    ]
+    body = (await _transcript(env)).json()
+    assert [line["lp"] for line in body["lines"]] == [1]
+
+
+async def test_another_account_cannot_answer_a_waiting_guest(env):
+    calls = []
+
+    class Awaiting:
+        visit_id, creds, admitted_account = VISIT_ID, None, "acct"
+
+        async def accept(self, accept):
+            calls.append(accept)
+            return 200, {"ok": True}
+
+    rtm._runtimes["Host"] = Awaiting()
+    env.account = "someone-else"
+    try:
+        async with env.client() as c:
+            resp = await c.post(f"/api/visit/rooms/{VISIT_ID}/accept", headers=GOOD,
+                                json={"catgirl": "Host", "accept": True})
+    finally:
+        del rtm._runtimes["Host"]
+    assert resp.status_code == 404 and calls == []

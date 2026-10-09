@@ -196,7 +196,7 @@ def _cloud_line(row: Any, role: str) -> dict | None:
     if (
         not isinstance(lp, int) or isinstance(lp, bool) or lp < 0
         or row.get("side") not in ("host", "guest")
-        or not _utf8_str(mine.get("from"))
+        or mine.get("from") not in tu.SPEAKERS
         or not _finite_number(ts)
         or not _utf8_str(mine.get("text"))
         or not isinstance(mine.get("truncated"), bool)

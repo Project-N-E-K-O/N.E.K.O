@@ -320,7 +320,8 @@ async def accept_guest(request: Request, visit_id: str):
     if not isinstance(accept, bool):
         return _error(400, "accept_required")
     rt = runtime.get_runtime(name)
-    if rt is None or rt.visit_id != visit_id:
+    # 共用电脑上已换成别的社区账号：这份邀请不是它的，不能替原账号接待 / 婉拒
+    if rt is None or rt.visit_id != visit_id or not await _owned_by_current_account(rt):
         return JSONResponse({"ok": False, "error": "no_pending_invite"}, status_code=404)
     status, body = await rt.accept(accept)
     return JSONResponse(body, status_code=status)
@@ -345,8 +346,20 @@ async def end_route(request: Request):
     reason = payload.get("reason")
     if reason not in _END_REASONS:
         return _error(400, "invalid_reason")
+    if reason == "recall":
+        # 「叫她回来 / 送客」会推进这一场的对话：只有这一场的社区账号能点。硬结束（route_end）谁都能做，
+        # 换了账号的人也要能把角色腾出来
+        rt = runtime.get_runtime(name)
+        if rt is not None and rt.visit_id == visit_id and not await _owned_by_current_account(rt):
+            return JSONResponse({"error": "unknown_visit"}, status_code=404)
     status, body = await runtime.end_visit(name, visit_id, reason)
     return JSONResponse(body, status_code=status)
+
+
+async def _owned_by_current_account(rt: runtime.VisitRuntime) -> bool:
+    """Whether the signed-in community account is the one this visit runs under (credentials, else admission)."""
+    owner = rt.creds.account if rt.creds is not None else rt.admitted_account
+    return owner is not None and owner == await accounts.local_account()
 
 
 IDLE_STATE: Mapping[str, Any] = {
@@ -371,8 +384,7 @@ async def visit_state(request: Request, catgirl: str = ""):
     if rt is None:
         return JSONResponse(dict(IDLE_STATE))
     snapshot = rt.snapshot()
-    owner = rt.creds.account if rt.creds is not None else rt.admitted_account
-    if owner is None or owner != await accounts.local_account():
+    if not await _owned_by_current_account(rt):
         # 共用电脑上已换成别的社区账号：只说这个角色正在串门，不给这一场的对端、房间与台词
         return JSONResponse({**IDLE_STATE, "active": snapshot["active"], "phase": snapshot["phase"]})
     return JSONResponse(snapshot)
