@@ -2428,10 +2428,17 @@ def _descendants_block_storage_restart(allow_storage_restart: bool) -> bool:
 
 
 def _still_running(process) -> bool:
+    """False only once the process is known to be gone."""
+    import psutil
+
     try:
         return bool(process.is_running())
-    except Exception:
+    except psutil.NoSuchProcess:
         return False
+    except Exception:
+        # Not inspectable right now (access denied): no proof it stopped,
+        # so it stays among what the teardown checks.
+        return True
 
 
 def _live_server_names() -> set:

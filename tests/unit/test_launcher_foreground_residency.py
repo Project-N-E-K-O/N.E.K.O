@@ -1793,3 +1793,23 @@ def test_merged_mode_snapshot_is_unknown_when_a_childs_executable_cannot_be_read
         for host in hosts:
             host.kill()
             host.wait(timeout=10)
+
+
+
+@pytest.mark.unit
+def test_a_descendant_that_cannot_be_inspected_stays_in_the_running_snapshot(monkeypatch):
+    """Access denied is no proof a captured descendant stopped: it must not
+    drop out of what the teardown checks."""
+    psutil = pytest.importorskip("psutil")
+    from launcher_core import runtime
+
+    class _Uninspectable:
+        def is_running(self):
+            raise psutil.AccessDenied(4242)
+
+    class _Gone:
+        def is_running(self):
+            raise psutil.NoSuchProcess(4243)
+
+    assert runtime._still_running(_Uninspectable()) is True
+    assert runtime._still_running(_Gone()) is False

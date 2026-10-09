@@ -4566,3 +4566,47 @@ def test_a_backup_written_to_before_committing_is_put_back(tmp_path, monkeypatch
     assert result["completed"] is False
     assert result["error_code"] == "target_changed_during_migration"
     assert (target_root / "memory" / "facts.json").read_text(encoding="utf-8") == "written through an open handle"
+
+
+
+@pytest.mark.unit
+def test_a_backup_written_to_while_committing_keeps_its_transaction(tmp_path, monkeypatch):
+    """After the last check, while the completion was being recorded, a handle
+    still open on the target's original memory wrote to it in the backup: the
+    transaction must stay, now and on later launches."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "memory").mkdir(parents=True)
+    (source_root / "memory" / "facts.json").write_text("source facts", encoding="utf-8")
+    (target_root / "memory").mkdir(parents=True)
+    (target_root / "memory" / "facts.json").write_text("target facts", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+        confirmed_existing_target_content=True,
+    )
+    original_persist = storage_migration_module._persist_migration_payload
+
+    def _persist(*args, **kwargs):
+        if kwargs.get("status") == "completed":
+            backup = list(target_root.glob(".smtx/*/backup/memory/facts.json"))[0]
+            backup.write_text("written through an open handle", encoding="utf-8")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", _persist)
+    result = run_pending_storage_migration(config_manager)
+    monkeypatch.undo()
+
+    assert result["completed"] is True
+    kept = list(target_root.glob(".smtx/*/backup/memory/facts.json"))
+    assert len(kept) == 1 and kept[0].read_text(encoding="utf-8") == "written through an open handle"
+    run_pending_storage_migration(config_manager)
+    assert kept[0].read_text(encoding="utf-8") == "written through an open handle"
+    storage_migration_module.delete_storage_migration(config_manager)
+    storage_migration_module.remove_remembered_transaction_leftovers(config_manager, anchor_root=None)
+    assert kept[0].read_text(encoding="utf-8") == "written through an open handle"

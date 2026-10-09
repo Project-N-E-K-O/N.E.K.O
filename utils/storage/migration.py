@@ -1404,6 +1404,29 @@ def _rollback_publish_or_require_recovery(
         ) from exc
 
 
+def _backups_written_since_moved(payload: dict[str, Any], transaction_root: Path) -> list[str]:
+    """Backups no longer what the target held when they were moved in.
+
+    A handle still open on an original target entry can write to it inside
+    the backup; deleting the transaction would then drop that write.
+    Unreadable counts as written -- it is no proof of the opposite.
+    """
+    recorded = payload.get("backup_fingerprints")
+    if not isinstance(recorded, dict):
+        return []
+    written: list[str] = []
+    for entry_name, expected in recorded.items():
+        try:
+            unchanged = (
+                _metadata_fingerprint(transaction_root / "backup" / str(entry_name), across_move=True) == expected
+            )
+        except StorageMigrationError:
+            unchanged = False
+        if not unchanged:
+            written.append(str(entry_name))
+    return written
+
+
 def _remove_completed_transaction_leftover(payload: dict[str, Any] | None) -> None:
     """Retry removing a finished migration's transaction directory.
 
@@ -1437,6 +1460,9 @@ def _remove_completed_transaction_leftover(payload: dict[str, Any] | None) -> No
             backup_root = transaction_root / "backup"
             if os.path.lexists(backup_root) and any(backup_root.iterdir()):
                 return
+        if status == STORAGE_MIGRATION_STATUS_COMPLETED and _backups_written_since_moved(payload, transaction_root):
+            logger.warning("Kept a transaction whose backup was written to after the move: %s", transaction_root)
+            return
         if status == STORAGE_MIGRATION_STATUS_COMPLETED:
             # Only a v1 catch-up moves anything into a completed checkpoint's
             # trash: the new root's empty scaffolding, which may have received
@@ -1853,6 +1879,8 @@ def _remember_transaction_leftover(config_manager, *, anchor_root: Path | str | 
         return
     leftovers_path = _transaction_leftovers_path(config_manager, anchor_root=anchor_root)
     entry = {"status": status, "target_root": raw_target_root, "txid": txid}
+    if isinstance(payload.get("backup_fingerprints"), dict) and payload["backup_fingerprints"]:
+        entry["backup_fingerprints"] = dict(payload["backup_fingerprints"])
     try:
         entries = read_json(leftovers_path)
     except FileNotFoundError:
@@ -2636,10 +2664,20 @@ def run_pending_storage_migration(
                 "error_message": "存储策略已提交，等待补齐迁移完成检查点。",
             }
         if transaction_root is not None:
-            try:
-                _remove_transaction(transaction_root)
-            except Exception as exc:
-                logger.warning("Failed to remove completed storage migration transaction: %s", exc)
+            # The checks before committing cannot cover the writes since
+            # (policy, root_state, this checkpoint): a backup written to
+            # meanwhile stays, with its transaction.
+            written = _backups_written_since_moved(payload, transaction_root)
+            if written:
+                logger.warning(
+                    "Kept the migration transaction: its backup was written to after the move: %s",
+                    ", ".join(written),
+                )
+            else:
+                try:
+                    _remove_transaction(transaction_root)
+                except Exception as exc:
+                    logger.warning("Failed to remove completed storage migration transaction: %s", exc)
         return {
             "attempted": True,
             "completed": True,
@@ -3320,6 +3358,7 @@ def run_pending_storage_migration(
                     anchor_root=normalized_anchor_root,
                     copied_entries=dict(copied_entries),
                     published_entries=list(published_entries),
+                    backup_fingerprints=dict(moved_backup_fingerprints),
                     publishing_entry="",
                     publishing_target_existed=False,
                 )
