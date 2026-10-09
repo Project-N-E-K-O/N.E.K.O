@@ -226,7 +226,9 @@ async def _replay_chips(websocket: Any, lanlan_name: str) -> None:
         if request_id in delivered:
             continue
         if state["finalized"] == "crash":
-            await _send_status(websocket, "VISIT_INTERRUPTED_LAST_TIME", {"visit_id": visit_id})
+            if not await _send_status(websocket, "VISIT_INTERRUPTED_LAST_TIME", {"visit_id": visit_id}):
+                # 提示没送出（连接卡住 / 断开）：芯片不单独发，后面的也不再试；下次 visit_bind 连同提示一起重放
+                return
             if await own_visit_uid() != state["own_uid"]:
                 return  # 写提示的这段 await 里登出 / 换了账号：芯片不再发
         await _send(websocket, chat_blocks_frame(chip_blocks(visit_id, lang), request_id=request_id,

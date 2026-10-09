@@ -705,3 +705,47 @@ async def test_runtime_statuses_only_reach_a_bound_connection():
     mgr.websocket = bound
     assert await host.send_status("VISIT_VOICE_UNAVAILABLE", {"visit_id": "v"}) is True
     assert bound.statuses() == ["VISIT_VOICE_UNAVAILABLE"]
+
+
+# ── 评审第 10 轮 ──────────────────────────────────────────────────────
+
+
+class _StatusStuckSocket(VisitSocket):
+    """Status frames fail (stuck / closed socket); everything else is written."""
+
+    async def send_text(self, payload):
+        if json.loads(payload).get("type") == "status":
+            raise ConnectionError("closed")
+        await super().send_text(payload)
+
+
+async def test_crash_notice_not_written_sends_no_chip(monkeypatch, tmp_path):
+    from main_routers.visit_router import accounts
+
+    await _pending(tmp_path, 16, finalized="crash")
+    await _pending(tmp_path, 17, debrief_choice="ask_later")
+
+    async def own():
+        return OWN_A
+
+    monkeypatch.setattr(accounts, "own_visit_uid", own)
+    socket = _StatusStuckSocket([])
+    setattr(socket, VISIT_SOCKET_BOUND_ATTR, True)
+    await display_socket.replay_chips(socket, NAME)
+    assert _chip_ids(socket) == []          # 提示与芯片都留给下次 visit_bind
+
+
+async def test_crash_notice_written_still_sends_its_chip(monkeypatch, tmp_path):
+    from main_routers.visit_router import accounts
+
+    await _pending(tmp_path, 18, finalized="crash")
+
+    async def own():
+        return OWN_A
+
+    monkeypatch.setattr(accounts, "own_visit_uid", own)
+    socket = VisitSocket([])
+    setattr(socket, VISIT_SOCKET_BOUND_ATTR, True)
+    await display_socket.replay_chips(socket, NAME)
+    assert socket.statuses() == ["VISIT_INTERRUPTED_LAST_TIME"]
+    assert _chip_ids(socket) == ["visit-debrief:" + vid(18)]
