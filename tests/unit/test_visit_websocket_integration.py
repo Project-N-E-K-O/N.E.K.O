@@ -96,9 +96,19 @@ async def test_goodbye_while_visiting_finalizes_with_goodbye(monkeypatch):
     manager = _ProtocolManager()
     rt = FakeRuntime([])
     install(monkeypatch, manager, visit_active=True, rt=rt)
-    socket = VisitSocket([{"action": "goodbye_state", "active": True, "reason": "goodbye"}])
+    socket = VisitSocket([bind(), {"action": "goodbye_state", "active": True, "reason": "goodbye"}])
     await run(socket, manager)
     assert rt.finalized == ["goodbye"]
+    assert ("goodbye", (True, "goodbye")) in manager.calls
+
+
+async def test_goodbye_from_an_unbound_connection_keeps_the_visit(monkeypatch):
+    # 未绑定连接不能结束串门；普通告别处理（静默）照旧
+    manager = _ProtocolManager()
+    rt = FakeRuntime([])
+    install(monkeypatch, manager, visit_active=True, rt=rt)
+    await run(VisitSocket([{"action": "goodbye_state", "active": True, "reason": "goodbye"}]), manager)
+    assert rt.finalized == []
     assert ("goodbye", (True, "goodbye")) in manager.calls
 
 
@@ -137,7 +147,7 @@ def test_router_binary_branch_carries_no_visit_frames():
 
 def test_goodbye_block_finalizes_only_on_active_goodbye():
     block = ROUTER_SOURCE.split('if action == "goodbye_state":', 1)[1].split('if action == "start_session":', 1)[0]
-    assert "if active and _visit_owns_input(lanlan_name):" in block
+    assert "if active and _visit_owns_input(lanlan_name) and _visit_socket_bound(websocket):" in block
     assert "finalize_on_goodbye(lanlan_name)" in block
 
 

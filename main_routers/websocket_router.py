@@ -1058,8 +1058,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 reason = str(message.get("reason") or ("goodbye" if active else "return")).strip().lower()[:64]
                 goodbye_mgr = session_manager[lanlan_name]
                 goodbye_mgr.set_goodbye_silent(active, reason)
-                if active and _visit_owns_input(lanlan_name):
-                    # 串门中收到全局告别：串门按 goodbye 收尾（OD-25）；不在串门时这里什么都不做
+                if active and _visit_owns_input(lanlan_name) and _visit_socket_bound(websocket):
+                    # 串门中收到全局告别：串门按 goodbye 收尾（OD-25）；不在串门时这里什么都不做。
+                    # 与串门的其它输入同口径：只认已 visit_bind 的连接（普通告别处理照旧）
                     from main_routers.visit_router import display_socket as _visit_display
 
                     _visit_display.finalize_on_goodbye(lanlan_name)
