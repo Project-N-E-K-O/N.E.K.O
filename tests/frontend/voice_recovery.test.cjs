@@ -111,7 +111,11 @@ test('all locales translate recovery controls and invalidate the language cache'
         const translations = JSON.parse(fs.readFileSync(path.join(__dirname, '../../static/locales', locale + '.json'), 'utf8')).voice.remote;
         for (const key of ['recoverPrepared', 'recoverPreparedHint', 'recoveringPrepared', 'preparedRecovered', 'overwriteAgain', 'recoveryUncertain', 'abandonUnknown', 'abandonUnknownConfirm', 'abandoningUnknown', 'unknownAbandoned']) assert.ok(translations[key], locale + ':' + key);
     }
-    assert.match(fs.readFileSync(path.join(__dirname, '../../static/i18n-i18next.js'), 'utf8'), /LOCALE_VERSION = '[^']*prepared-recovery'/);
+    const bootstrap = fs.readFileSync(path.join(__dirname, '../../static/i18n-i18next.js'), 'utf8');
+    const version = bootstrap.match(/const\s+LOCALE_VERSION\s*=\s*'(\d{4}-\d{2}-\d{2})-[^']+'/);
+    assert.ok(version, 'locale cache version must include its release date');
+    // Later features also bump this shared version; its slug need not name voice recovery.
+    assert.ok(version[1] >= '2026-10-08', 'locale cache must include the recovery controls');
 });
 
 
