@@ -1224,6 +1224,26 @@ async def test_stop_all_waits_for_a_seal_write_started_during_shutdown(tmp_path,
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_stop_all_lets_an_outbox_cleanup_started_during_shutdown_finish(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    real_flush = rt.outbox.flush
+
+    async def slow_flush():
+        await asyncio.sleep(0.7)                          # 拖过这一场自己的关机等待，但在总预算内
+        await real_flush()
+
+    rt.outbox.flush = slow_flush
+    try:
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
+        cleanup = rt.outbox.close_task
+        assert cleanup is not None and cleanup.done()
+        assert not cleanup.cancelled()                    # 先限时等它删完文件，没有一上来就取消
+        assert not rt.outbox.path.exists()
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_late_seal_is_the_one_seal_of_the_visit(tmp_path, monkeypatch):
     import threading
 
@@ -1460,17 +1480,28 @@ async def test_shutdown_stays_within_its_total_budget(tmp_path, monkeypatch):
     async def slow_session_close(session):
         await stuck.wait()
 
+    async def stubborn():
+        while not stuck.is_set():                             # 不理取消的后台任务
+            try:
+                await stuck.wait()
+            except asyncio.CancelledError:
+                continue
+
     rt.journal._seal_sync = slow_seal
     rt.close_current_line = slow_close_line
     rt.outbox.close = slow_outbox_close
     monkeypatch.setattr(session_pool, "close_visit_session", slow_session_close)
+    lingering = asyncio.ensure_future(stubborn())
+    rtm._keep_detached(lingering)
     try:
         started = asyncio.get_running_loop().time()
         await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # 每一步都卡住
-        assert asyncio.get_running_loop().time() - started < 1.1   # 总时长受总预算约束，不是各步上限相加（1.5 s）
+        # 总时长受总预算约束，不是各步上限相加；最后收后台任务那遍也截到剩余预算
+        assert asyncio.get_running_loop().time() - started < 0.95
     finally:
         release.set()
         stuck.set()
+        await asyncio.gather(lingering, return_exceptions=True)
         await teardown(host, guest, wire=wire, clock=clock)
 
 

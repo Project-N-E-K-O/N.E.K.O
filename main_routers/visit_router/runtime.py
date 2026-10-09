@@ -2699,8 +2699,11 @@ async def stop_all(reason: str = "shutdown") -> None:
         detached = [t for t in _detached if not t.done()]
         detached += [t for bucket in list(_visit_bg_tasks.values()) for t in list(bucket) if not t.done()]
         detached += [t for t in _room_cancels if not t.done()]
-        # 关机途中才登记的 outbox 清理（各场 shutdown() 自己的）也在这里收
-        detached += [t for t in _outbox_cleanups if not t.done()]
+        # 开头那次快照里的 outbox 清理已经等过、取消过：还没停下的同样限时等
+        detached += [t for t in orphans if not t.done() and t in _outbox_cleanups]
+        # 关机途中才登记的 outbox 清理（各场 shutdown() 自己的）：与开头那批一样先限时等、到点才取消——
+        # 先取消会在 flush 处打断，带正文的 .outbox.jsonl 要留到下次启动才删
+        late_cleanups = [t for t in _outbox_cleanups if not t.done() and t not in orphans]
         # 打断主会话到点没停、被撇下的任务（ManagerHost 登记）
         from main_routers.visit_router import host_port as _host_port
 
@@ -2714,15 +2717,17 @@ async def stop_all(reason: str = "shutdown") -> None:
         # 关机途中才登记的线程池写盘（各场 shutdown() 里才起的上传封存）：开头那次快照里没有，这里同样只等不取消，
         # 只用关机总预算剩下的部分（各场自己已经等过一轮）
         late_writes = [t for t in _awaited_writes if not t.done() and t not in writes]
+        # 两段等待都截到关机总预算的剩余：各场 shutdown() 已经把预算用完时不再多等
+        left = max(0.0, min(_SHUTDOWN_TASK_WAIT_S, budget_end - loop.time()))
         waits = []
         if detached:
-            waits.append(asyncio.wait(detached, timeout=_SHUTDOWN_TASK_WAIT_S))
-        if late_writes:
-            left = min(_SHUTDOWN_TASK_WAIT_S, budget_end - loop.time())
-            if left > 0:
-                waits.append(asyncio.wait(late_writes, timeout=left))
+            waits.append(asyncio.wait(detached, timeout=left))
+        if late_writes or late_cleanups:
+            waits.append(asyncio.wait(late_writes + late_cleanups, timeout=left))
         if waits:
             await asyncio.gather(*waits)
+        for task in late_cleanups:
+            task.cancel()
     finally:
         _stop_gen += 1  # stop_all 进行中才开始、它结束后才醒的入场：代数已变，同样不登记
         _stopping = False
