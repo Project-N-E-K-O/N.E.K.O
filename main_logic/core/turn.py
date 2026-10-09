@@ -63,6 +63,139 @@ from .game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE
 from main_logic import core as _core_facade
 
 
+class MirrorSpeechStream:
+    """One streaming mirror speech of :meth:`TurnMixin.open_mirror_speech_stream` (OD-15 v3).
+
+    ``push`` / ``finish`` / ``abort`` are synchronous: they only record the
+    request. One task per stream applies them in order -- it first makes
+    the stream's speech id the current one and starts the TTS pipeline,
+    then feeds each text through ``_enqueue_tts_text_chunk`` (or
+    ``tts_pending_chunks`` while the worker is not ready) and the end
+    through ``_request_tts_done_locked``, all under ``tts_cache_lock``. Text
+    is never mirrored to the page (``mirror_text=False``) and never enters
+    the private chat history.
+
+    ``push`` / ``finish`` return False once the stream is closed (finished,
+    aborted, or the TTS worker is gone); ``finish`` returns ``"no_worker"``
+    when it already knows no worker can take the end marker. ``abort`` is
+    terminal and idempotent: it stops the task, drops the stream's
+    ``on_enqueued`` registration and, when this speech is the current one,
+    runs :meth:`TurnMixin.interrupt_mirror_speech`.
+    """
+
+    NO_WORKER = "no_worker"
+
+    def __init__(self, mgr: Any, speech_id: str, *, metadata: dict, request_id: str) -> None:
+        self._mgr = mgr
+        self._speech_id = speech_id
+        self.metadata = dict(metadata or {})
+        self.request_id = request_id
+        self._ops: deque = deque()
+        self._wake = asyncio.Event()
+        self._closed = False
+        self._aborted = False
+        self._started = False
+        self._task: Optional[asyncio.Future] = None
+
+    @property
+    def speech_id(self) -> str:
+        return self._speech_id
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def _start(self) -> None:
+        self._task = self._mgr._fire_task(self._run())
+
+    def push(self, delta: str) -> bool:
+        if self._closed:
+            return False
+        if delta:
+            self._ops.append(delta)
+            self._wake.set()
+        return True
+
+    def finish(self) -> Any:
+        if self._closed:
+            return False
+        if self._started and not self._worker_alive():
+            # 已经知道没有 worker 接得住结束标记：当场告诉调用方（它据此改按估时放字幕）
+            self._close()
+            return self.NO_WORKER
+        self._closed = True
+        self._ops.append(None)
+        self._wake.set()
+        return True
+
+    def abort(self) -> bool:
+        if self._aborted:
+            return False
+        self._aborted = True
+        self._closed = True
+        self._ops.clear()
+        self._mgr._mirror_stream_callbacks.pop(self._speech_id, None)
+        task = self._task
+        if task is not None and not task.done():
+            task.cancel()
+        self._mgr._fire_task(self._mgr._interrupt_mirror_stream(self._speech_id))
+        return True
+
+    def _close(self) -> None:
+        self._closed = True
+        self._ops.clear()
+        self._mgr._mirror_stream_callbacks.pop(self._speech_id, None)
+
+    def _worker_alive(self) -> bool:
+        mgr = self._mgr
+        return bool(
+            getattr(mgr, "_tts_audio_output_supported", True)
+            and mgr.tts_thread and mgr.tts_thread.is_alive()
+        )
+
+    async def _run(self) -> None:
+        try:
+            await self._drain()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 起不了 TTS / 入队出错：关掉本流，之后的 push 返回 False，调用方改按估时放字幕
+            logger.warning("[%s] mirror speech stream failed: %s", self._mgr.lanlan_name, exc)
+            self._close()
+
+    async def _drain(self) -> None:
+        mgr = self._mgr
+        async with mgr.lock:
+            mgr.current_speech_id = self._speech_id
+            mgr._tts_done_queued_for_turn = False
+            mgr._tts_done_pending_until_ready = False
+        mgr.remember_speech_playback_gain(self._speech_id, 1.0)
+        await mgr.ensure_tts_pipeline_alive()
+        self._started = True
+        while True:
+            while not self._ops:
+                self._wake.clear()
+                await self._wake.wait()
+            async with mgr.tts_cache_lock:
+                if self._aborted:
+                    return
+                if not self._worker_alive():
+                    # worker 不在 / 不出音频：之后的 push 立刻返回 False，调用方改按估时放字幕
+                    self._close()
+                    return
+                while self._ops:
+                    item = self._ops.popleft()
+                    if item is None:
+                        status = mgr._request_tts_done_locked()
+                        if status == self.NO_WORKER:
+                            self._close()
+                        return
+                    if mgr.tts_ready:
+                        mgr._enqueue_tts_text_chunk(self._speech_id, item)
+                    else:
+                        mgr.tts_pending_chunks.append((self._speech_id, item))
+
+
 class TurnMixin:
     """Conversation turn pipeline methods (see module docstring)."""
 
@@ -2886,6 +3019,75 @@ class TurnMixin:
                 pass
         await self.send_user_activity(interrupted_speech_id)
 
+    async def interrupt_mirror_speech(self) -> None:
+        """Cut whatever the character is saying before a mirrored line takes over.
+
+        The ``interrupt_audio`` prelude of :meth:`mirror_assistant_speech`,
+        shared with :meth:`open_mirror_speech_stream` (``abort``): clear the
+        resampler and the TTS pipeline, release the playback gain of the
+        interrupted speech, cancel a realtime provider's response and tell
+        the page which speech id was interrupted.
+        """
+        async with self.lock:
+            interrupted_speech_id = self.current_speech_id
+        self.audio_resampler.clear()
+        # Mirror channel feeds the project TTS pipeline regardless of
+        # ``self.use_tts``, so always clear it on interrupt — the inner
+        # liveness gate inside ``_clear_tts_pipeline`` makes this safe
+        # when no worker is actually running.
+        await self._clear_tts_pipeline()
+        self.release_speech_playback_gain(interrupted_speech_id)
+        # Realtime native voice: also tell the provider to stop generating
+        # so further audio.delta / output_audio.delta won't keep streaming
+        # past the interruption point.  Local takeover guards drop these
+        # at handler level too, but cancelling on the wire avoids wasted
+        # tokens and stale audio still in the wire buffer.
+        if isinstance(self.session, OmniRealtimeClient):
+            try:
+                await self.session.cancel_response()
+            except Exception as cancel_exc:
+                logger.debug(
+                    "[%s] mirror_assistant_speech: realtime cancel_response skipped/failed: %s",
+                    self.lanlan_name, cancel_exc,
+                )
+        await self.send_user_activity(interrupted_speech_id)
+
+    async def _interrupt_mirror_stream(self, speech_id: str) -> None:
+        """``MirrorSpeechStream.abort``: interrupt only while ``speech_id`` is still the current speech."""
+        async with self.lock:
+            current = self.current_speech_id
+        if current != speech_id:
+            return
+        await self.interrupt_mirror_speech()
+
+    def open_mirror_speech_stream(
+        self,
+        *,
+        metadata: dict,
+        request_id: str,
+        on_enqueued: Optional[Callable[[int], None]] = None,
+    ) -> MirrorSpeechStream:
+        """Open one streaming mirror speech with its own speech id (OD-15 v3).
+
+        The visit runtime speaks each line through one stream: ``push``
+        LLM deltas, ``finish`` at the end of the line (one end marker for the
+        whole line), ``abort`` to stop it. ``on_enqueued(n)`` is told how
+        many characters of this speech reached the TTS request queue (text
+        cleaned to nothing is not reported); it stays registered until the
+        speech's end marker is queued or the stream is aborted. Ordinary
+        chat never opens one and is unaffected.
+        """
+        speech_id = str(uuid4())
+        if on_enqueued is not None:
+            callbacks = self._mirror_stream_callbacks
+            callbacks[speech_id] = on_enqueued
+            while len(callbacks) > 64:
+                # 兜底上限：异常路径（别处清了管线、结束标记再没入队）留下的登记不无限增长
+                callbacks.pop(next(iter(callbacks)))
+        stream = MirrorSpeechStream(self, speech_id, metadata=metadata, request_id=request_id)
+        stream._start()
+        return stream
+
     async def mirror_assistant_speech(
         self,
         line: str,
@@ -2920,31 +3122,8 @@ class TurnMixin:
             cache_key, runtime_signature = self.game_speech_audio_cache_identity(clean)
             cached_chunks = GAME_SPEECH_AUDIO_CACHE.get(cache_key)
 
-        interrupted_speech_id = None
         if interrupt_audio:
-            async with self.lock:
-                interrupted_speech_id = self.current_speech_id
-            self.audio_resampler.clear()
-            # Mirror channel feeds the project TTS pipeline regardless of
-            # ``self.use_tts``, so always clear it on interrupt — the inner
-            # liveness gate inside ``_clear_tts_pipeline`` makes this safe
-            # when no worker is actually running.
-            await self._clear_tts_pipeline()
-            self.release_speech_playback_gain(interrupted_speech_id)
-            # Realtime native voice: also tell the provider to stop generating
-            # so further audio.delta / output_audio.delta won't keep streaming
-            # past the interruption point.  Local takeover guards drop these
-            # at handler level too, but cancelling on the wire avoids wasted
-            # tokens and stale audio still in the wire buffer.
-            if isinstance(self.session, OmniRealtimeClient):
-                try:
-                    await self.session.cancel_response()
-                except Exception as cancel_exc:
-                    logger.debug(
-                        "[%s] mirror_assistant_speech: realtime cancel_response skipped/failed: %s",
-                        self.lanlan_name, cancel_exc,
-                    )
-            await self.send_user_activity(interrupted_speech_id)
+            await self.interrupt_mirror_speech()
 
         async with self.lock:
             self.current_speech_id = str(uuid4())
