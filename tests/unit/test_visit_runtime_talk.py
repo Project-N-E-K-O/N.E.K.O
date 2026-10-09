@@ -973,7 +973,7 @@ async def test_frames_sent_elsewhere_get_the_same_bookkeeping(tmp_path, monkeypa
         rt.on_frame_sent(SimpleNamespace(seq=9, t="wrap_up", retransmit=False, payload={"ph": "begin"}))
         assert calls == ["begin"] and len(sent) == 1        # 收尾步骤计时器照常起，存活计时也记上
         rt.on_frame_sent(SimpleNamespace(seq=9, t="wrap_up", retransmit=True, payload={"ph": "begin"}))
-        assert calls == ["begin"]
+        assert calls == ["begin", "begin"]                  # 重传也报：首发可能没写出去，room 只认第一次
     finally:
         hgate.set()
         ggate.set()

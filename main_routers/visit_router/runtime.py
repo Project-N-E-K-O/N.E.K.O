@@ -1239,7 +1239,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         now = self.clock()
         if frame.seq or frame.t == "hb":
             self.liveness.on_message_sent(now)
-        if frame.t == "wrap_up" and not frame.retransmit and self.room is not None:
+        if frame.t == "wrap_up" and self.room is not None:
+            # 重传也报：首发那次可能没写出去（被顶掉的旧连接上），真正写出去的是这次补发。
+            # 步骤计时器只在第一次写出去时起，之后的重传不会把它往后推（room 自己判）
             self.room.on_wrap_up_sent(frame.payload.get("ph"), now)
 
     async def tick(self) -> None:
