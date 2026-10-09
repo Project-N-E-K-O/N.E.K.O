@@ -2180,6 +2180,43 @@ async def test_a_reconnect_during_the_first_join_still_has_a_join_deadline(tmp_p
         await _finished(rt)
 
 
+async def test_a_left_report_while_waiting_for_the_guest_ends_after_the_reconnect_window(tmp_path, monkeypatch,
+                                                                                         clocks):
+    from config.visit_settings import VISIT_SELF_RECONNECT_S
+
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    try:
+        await rt.on_transport_state({"state": "joined", "peer_present": False})
+        assert rt.phase == rtm.PHASE_INVITE_READY
+        await rt.on_transport_state({"state": "left", "peer_present": False})   # iframe 离开房间、连接却没关
+        clock.advance(VISIT_SELF_RECONNECT_S + 1)
+        await rt.tick()
+        assert rt.finalize_reason == "relay_lost"             # 不在 invite_ready 挂满整个邀请期限
+    finally:
+        rt.request_finalize("route_end")
+        await _finished(rt)
+
+
+async def test_a_left_report_during_the_visit_ends_after_the_reconnect_window(tmp_path, monkeypatch):
+    from config.visit_settings import VISIT_SELF_RECONNECT_S
+
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        await rt.on_transport_state({"state": "left", "peer_present": True})
+        assert rt.outbox.paused                               # 和断线重连一样：先暂停出站
+        clock.advance(VISIT_SELF_RECONNECT_S + 1)
+        await rt.tick()
+        assert rt.finalize_reason == "relay_lost"             # 不等到对端心跳判死
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_failed_memory_off_correction_is_written_with_finalized(tmp_path, monkeypatch):
     from main_logic.visit import spool as spool_mod
 

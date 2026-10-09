@@ -975,7 +975,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 # SDK 自己重连成功：重发 hello 与当前媒体快照（手动重新入房后 iframe 的发布 / 订阅都没了）
                 self.outbox.resend_hello(now)
                 self.spawn(self.send_media())
-        elif state == "reconnecting":
+        elif state in ("reconnecting", "left"):
+            # left：iframe 离开了 vendor 房间。照约定只在执行 stop 时报（那时已在收尾、上面已返回），
+            # 报完随即关闭传输连接；若连接没关，按本侧断线走有上限的自重连：期限内回来照常，
+            # 传输随后断开转页面重载宽限，都没有就按 relay_lost 结束，不一直挂着占路由
             if self.liveness.self_disconnected_at is None:
                 self.reconnects += 1
             self.liveness.on_self_disconnected(now)
