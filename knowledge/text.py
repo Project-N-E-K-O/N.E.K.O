@@ -72,7 +72,7 @@ _CJK_RANGES = (
 )
 _TOKEN_RE = re.compile(rf"[{_CJK_RANGES}]+|[^\W_{_CJK_RANGES}]+")
 _CJK_RUN_RE = re.compile(rf"^[{_CJK_RANGES}]+$")
-MAX_QUERY_TOKENS = 64
+MAX_QUERY_TOKENS = 128
 
 
 _MAX_MARKUP_PASSES = 16
@@ -184,13 +184,16 @@ def search_view(value: object) -> str:
     return _strip_marks(unicodedata.normalize("NFKC", str(value or "")).casefold())
 
 
-def search_tokens(value: object) -> list[str]:
+def search_tokens(value: object, *, unigrams: bool = False) -> list[str]:
     """Split text into the units stored in and queried against the FTS index.
 
     CJK runs become overlapping character bigrams (a single character stays a
     unigram); other word runs stay whole. Latin text is case-folded and loses
     its diacritics, because ``unicode61`` matches it that way too and both
     sides must agree on what a token is.
+
+    ``unigrams`` (query side only) also yields every CJK character of longer
+    runs, so a one-character name such as "猫" is found inside "介绍一下猫".
     """
     text = unicodedata.normalize("NFKC", str(value or "")).casefold()
     tokens: list[str] = []
@@ -200,6 +203,8 @@ def search_tokens(value: object) -> list[str]:
                 tokens.append(run)
             else:
                 tokens.extend(run[i:i + 2] for i in range(len(run) - 1))
+                if unigrams:
+                    tokens.extend(run)
         else:
             folded = _strip_marks(run)
             if folded:
@@ -213,5 +218,10 @@ def fts_match_expression(value: object) -> str:
     Every token is double-quoted, so FTS operators typed by the user (``AND``,
     ``NEAR``, ``*``, column filters) stay literal.
     """
-    unique = list(dict.fromkeys(search_tokens(value)))[:MAX_QUERY_TOKENS]
-    return " OR ".join(f'"{token}"' for token in unique if '"' not in token)
+    unique = [t for t in dict.fromkeys(search_tokens(value, unigrams=True)) if '"' not in t]
+    if len(unique) > MAX_QUERY_TOKENS:
+        # Sample across the whole query rather than keeping only its start:
+        # the term that matters may come last.
+        last = len(unique) - 1
+        unique = [unique[round(i * last / (MAX_QUERY_TOKENS - 1))] for i in range(MAX_QUERY_TOKENS)]
+    return " OR ".join(f'"{token}"' for token in unique)

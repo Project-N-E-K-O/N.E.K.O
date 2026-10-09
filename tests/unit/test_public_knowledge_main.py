@@ -294,3 +294,22 @@ def test_a_plugin_tool_with_the_same_name_is_left_alone():
     assert manager.tool_registry.get(public_knowledge.TOOL_NAME) is plugin_tool
     public_knowledge.note_availability({"tool_available": False})
     assert manager.tool_registry.get(public_knowledge.TOOL_NAME) is plugin_tool
+
+
+async def test_availability_expires_after_prolonged_refresh_failures(memory_server, monkeypatch):
+    import asyncio
+
+    manager = _manager()
+    manager._register_builtin_tools()
+    public_knowledge.note_availability({"tool_available": True})
+    assert manager.tool_registry.get(public_knowledge.TOOL_NAME) is not None
+    monkeypatch.setattr(public_knowledge, "AVAILABILITY_EXPIRY_SECONDS", -1.0)
+    monkeypatch.setattr(public_knowledge, "AVAILABILITY_RETRY_SECONDS", 60.0)
+    memory_server(lambda request: httpx.Response(503, json={"ok": False}))
+    public_knowledge.schedule_availability_refresh(48912, force=True)
+    for _ in range(100):
+        if not public_knowledge.tool_available():
+            break
+        await asyncio.sleep(0.01)
+    assert public_knowledge.tool_available() is False
+    assert manager.tool_registry.get(public_knowledge.TOOL_NAME) is None

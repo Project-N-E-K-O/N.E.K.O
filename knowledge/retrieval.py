@@ -90,7 +90,7 @@ def names_in_query(query: str, entry: StoredEntry) -> bool:
     "Tell me about Python" names the entry "Python" even though most of its
     words are not in the entry; such a BM25 hit qualifies on its own.
     """
-    wanted = set(search_tokens(query))
+    wanted = set(search_tokens(query, unigrams=True))
     for name in (entry.title, *entry.terms.get("alias", ())):
         tokens = set(search_tokens(name))
         if tokens and tokens <= wanted:

@@ -59,8 +59,10 @@ MAX_TOOL_LIMIT = 3
 AVAILABILITY_TIMEOUT_SECONDS = 1.0
 AVAILABILITY_TTL_SECONDS = 60.0
 AVAILABILITY_RETRY_SECONDS = 15.0
+AVAILABILITY_EXPIRY_SECONDS = 180.0
 
 _tool_available = False
+_confirmed_at = 0.0
 _next_check_at = 0.0
 _refresh_task: asyncio.Task[None] | None = None
 _refresh_timer: asyncio.TimerHandle | None = None
@@ -79,10 +81,15 @@ def add_availability_listener(owner: Any) -> None:
 
 def note_availability(payload: object) -> None:
     """Take the ``tool_available`` flag from any Memory Server knowledge reply."""
-    global _tool_available, _next_check_at
+    global _confirmed_at
     if not isinstance(payload, dict) or not isinstance(payload.get("tool_available"), bool):
         return
-    value = payload["tool_available"]
+    _confirmed_at = time.monotonic()
+    _set_tool_available(payload["tool_available"])
+
+
+def _set_tool_available(value: bool) -> None:
+    global _tool_available, _next_check_at
     _next_check_at = time.monotonic() + AVAILABILITY_TTL_SECONDS
     if value == _tool_available:
         return
@@ -116,6 +123,7 @@ def schedule_availability_refresh(memory_server_port: int, *, force: bool = Fals
 async def _refresh_availability(memory_server_port: int) -> None:
     global _next_check_at
     delay = AVAILABILITY_RETRY_SECONDS
+    confirmed = False
     try:
         from utils.internal_http_client import get_internal_http_client
 
@@ -128,8 +136,13 @@ async def _refresh_availability(memory_server_port: int) -> None:
             note_availability(payload)
             if isinstance(payload, dict) and payload.get("ready") is True:
                 delay = AVAILABILITY_TTL_SECONDS
+                confirmed = True
     except Exception as exc:
         logger.debug("[public-knowledge] availability check failed: %s", type(exc).__name__)
+    if not confirmed and time.monotonic() - _confirmed_at > AVAILABILITY_EXPIRY_SECONDS:
+        # No confirmation for a long while: stop offering a tool whose every
+        # call would only wait for the Memory Server to fail.
+        _set_tool_available(False)
     # Keep the flag fresh on our own: an import finishes in the background and
     # may be started by a page that closes before seeing it complete, and a
     # session that is already up does not re-register its tools. Retry soon
@@ -148,8 +161,9 @@ def _arm_refresh_timer(memory_server_port: int, delay: float) -> None:
 
 
 def reset_for_tests() -> None:
-    global _tool_available, _next_check_at, _refresh_task, _refresh_timer
+    global _tool_available, _next_check_at, _refresh_task, _refresh_timer, _confirmed_at
     _tool_available = False
+    _confirmed_at = 0.0
     _next_check_at = 0.0
     _refresh_task = None
     if _refresh_timer is not None:

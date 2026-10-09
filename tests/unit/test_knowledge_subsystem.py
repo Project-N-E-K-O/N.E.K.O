@@ -1553,3 +1553,45 @@ async def test_a_building_import_yields_to_a_pending_removal_of_its_pack(tmp_pat
         assert service.list_jobs()[0]["state"] == "cancelled"
     finally:
         await service.stop()
+
+
+def test_raw_pack_reads_are_bounded(tmp_path, monkeypatch):
+    big = tmp_path / "big.json"
+    big.write_bytes(b"x" * 64)
+    monkeypatch.setattr(service_module, "MAX_PACK_BYTES", 16)
+    assert len(service_module._read_bounded(big)) == 17
+
+
+def test_cancel_after_the_last_entry_still_rolls_back(tmp_path):
+    from knowledge.store import KnowledgeStore
+
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    pack = parse_pack(_pack())
+    calls = {"n": 0}
+
+    def cancel_at_the_end() -> bool:
+        calls["n"] += 1
+        # preparation (entries + 1) and the per-entry checks pass; only the
+        # final check before commit says "cancel".
+        return calls["n"] > 2 * len(pack.entries) + 1
+
+    with pytest.raises(InterruptedError):
+        store.replace_pack(pack, pack_sha256="0" * 64, should_cancel=cancel_at_the_end)
+    assert store.pack_versions() == {}
+
+
+async def test_single_character_cjk_name_inside_a_question(tmp_path):
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack(entries=[{"title": "猫", "content": "一种小型哺乳动物。"}]))
+        assert (await service.query(query="介绍一下猫"))["result"] == "matched"
+    finally:
+        await service.stop()
+
+
+def test_long_queries_keep_terms_from_their_tail():
+    words = " ".join(f"w{i}" for i in range(400)) + " zanzibar"
+    expression = fts_match_expression(words)
+    assert '"zanzibar"' in expression
+    assert expression.count(" OR ") + 1 <= 128

@@ -174,6 +174,16 @@ class ImportJob:
         }
 
 
+def _read_bounded(path: Path) -> bytes:
+    """Read a raw pack, never more than the pack limit (+1 to detect overflow).
+
+    A damaged or replaced file of any size must not be loaded whole into the
+    shared Memory Server; an oversized one simply fails the hash check.
+    """
+    with path.open("rb") as handle:
+        return handle.read(MAX_PACK_BYTES + 1)
+
+
 def _consume(task: asyncio.Task[Any]) -> None:
     if not task.cancelled():
         task.exception()
@@ -277,7 +287,7 @@ class KnowledgeService:
             # current: a pack whose file is gone or altered cannot be rebuilt
             # and is not served.
             try:
-                raw = (self.root / PACKS_DIR / record.file_name).read_bytes()
+                raw = _read_bounded(self.root / PACKS_DIR / record.file_name)
                 if pack_sha256(raw) != record.pack_sha256:
                     raise KnowledgePackError("pack_file_mismatch")
                 if indexed.get(pack_id) == record.pack_sha256:
@@ -609,7 +619,8 @@ class KnowledgeService:
 
     def _raw_file_intact(self, record: PackRecord) -> bool:
         try:
-            return pack_sha256((self.root / PACKS_DIR / record.file_name).read_bytes()) == record.pack_sha256
+            raw = _read_bounded(self.root / PACKS_DIR / record.file_name)
+            return pack_sha256(raw) == record.pack_sha256
         except OSError:
             return False
 
@@ -776,7 +787,7 @@ class KnowledgeService:
             if previous is None:
                 self._store.delete_pack(pack_id)
                 return
-            raw = (self.root / PACKS_DIR / previous.file_name).read_bytes()
+            raw = _read_bounded(self.root / PACKS_DIR / previous.file_name)
             self._store.replace_pack(
                 decode_pack_bytes(raw),
                 pack_sha256=previous.pack_sha256,

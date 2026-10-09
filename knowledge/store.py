@@ -323,6 +323,10 @@ class KnowledgeStore:
                 " ON CONFLICT(pack_id) DO UPDATE SET pack_sha256=excluded.pack_sha256",
                 (pack.pack_id, pack_sha256),
             )
+            # Last chance: a cancel that arrived during the final writes still
+            # rolls the whole replacement back.
+            if should_cancel is not None and should_cancel():
+                raise InterruptedError("cancelled")
         return chunk_total
 
     @staticmethod
