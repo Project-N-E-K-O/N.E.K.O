@@ -1,0 +1,482 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Visit HTTP endpoints of the runtime (design §4.6, §3.2.1 / §3.2.2).
+
+Two routers, decorated with paths relative to the package router
+(``prefix='/api/visit'``):
+
+* :data:`router` -- start / join a visit, behind the ``NEKO_VISIT_ENABLED``
+  release switch: ``POST /rooms``, ``GET /invites/{invite_code}/preview``,
+  ``POST /rooms/{visit_id}/join``, ``POST /rooms/{visit_id}/accept``.
+* :data:`data_router` -- always available (ending or inspecting a visit,
+  exporting its transcript): ``POST /route/end``, ``GET /state``,
+  ``GET /transcript``.
+
+Rooms and joins are asynchronous: only the checks that can be answered
+synchronously run here, then 202; the rest is pushed as
+``visit_state_change``. Before the runtime reserves the slot
+(:func:`runtime.start_visit`): the cached preflight verdict of this page
+environment, the unreclaimable-file cap, for a join the blocklist against the
+inviting host, and -- under the per-character :func:`char_admission_lock`,
+which the local forget operations take while they persist their sentinel --
+no unfinished forget of the character. Every endpoint passes the local-origin
+gate (``local_guard.http_denied``). Invite codes never reach a log line (the
+access log goes through ``credentials.InviteCodeLogRedactor``).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import time
+from collections.abc import AsyncIterator, Mapping
+from pathlib import Path
+from typing import Any, Optional
+
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
+
+from config.visit_settings import VISIT_INVITE_PREVIEW_REUSE_S
+from main_logic.visit import local_chars, memory_bridge
+from main_logic.visit.limits import Blocklist
+from main_logic.visit.recovery import read_pending_upload_doc_sync
+from main_logic.visit.spool import VisitSpool
+from main_logic.visit.subjects import derive_short_code
+from main_routers.system_router._shared import _read_json_object
+from main_routers.visit_router import accounts, cloud_routes, runtime, transport_ws
+from main_routers.visit_router import credentials as cr
+from main_routers.visit_router import transcript_upload as tu
+from main_routers.visit_router.local_context import (
+    load_character_context,
+    prompt_lang,
+    protected_display_names,
+    speaker_label,
+)
+from main_routers.visit_router.local_guard import http_denied
+from utils.logger_config import get_module_logger
+from utils.visit_wire import VISIT_ID_RE
+
+logger = get_module_logger(__name__, "Main")
+
+router = APIRouter()
+"""Start / join endpoints (the package router puts them behind the release switch)."""
+
+data_router = APIRouter()
+"""Ending, state and transcript endpoints (not affected by the release switch)."""
+
+_NAME_MAX_CHARS = 128
+_CROPS = ("upper", "full")
+_END_REASONS = ("recall", "route_end")
+_SPEAKER_KIND = {"own_cat": "cat", "peer_cat": "cat", "own_human": "human", "peer_human": "human"}
+
+
+def _error(status: int, code: str, **extra: Any) -> JSONResponse:
+    return JSONResponse({"ok": False, "code": code, **extra}, status_code=status)
+
+
+def _refused(status: int, body: Mapping[str, Any]) -> JSONResponse:
+    return JSONResponse({"ok": False, **body}, status_code=status)
+
+
+def _servers_error(exc: cr.VisitServersError) -> JSONResponse:
+    return _refused(*exc.to_local_error())
+
+
+def _valid_name(name: Any) -> bool:
+    return isinstance(name, str) and 0 < len(name) <= _NAME_MAX_CHARS and name.isprintable()
+
+
+def _config_dir() -> Path:
+    return Path(runtime.runtime_deps().config_dir())
+
+
+# ── 每角色准入锁 ───────────────────────────────────────────────────────
+
+_admission_locks: dict[str, list] = {}
+"""character_uid → ``[asyncio.Lock, holders + waiters]`` (dropped once nobody uses it)."""
+
+
+@contextlib.asynccontextmanager
+async def char_admission_lock(character_uid: str) -> AsyncIterator[None]:
+    """The visit admission lock of one local character (design §3.2.1 step 0).
+
+    Held by rooms / join from the forget check until the runtime is
+    registered, and by the local forget operations while they persist their
+    clearing sentinel (``memory_routes`` ``admission_lock`` hook): a clearing
+    either sees the new visit as active or the visit sees its sentinel.
+    """
+    entry = _admission_locks.get(character_uid)
+    if entry is None:
+        entry = _admission_locks[character_uid] = [asyncio.Lock(), 0]
+    entry[1] += 1
+    try:
+        async with entry[0]:
+            yield
+    finally:
+        entry[1] -= 1
+        if entry[1] == 0 and _admission_locks.get(character_uid) is entry:
+            del _admission_locks[character_uid]
+
+
+# ── 邀请预览（入房复用其中的 host 身份比对黑名单）─────────────────────
+
+_previews: dict[str, tuple[float, cr.InvitePreview]] = {}
+"""invite_code → (monotonic time, preview) of recent successful previews (``join`` reuses them)."""
+
+_PREVIEWS_MAX = 32
+
+
+def _remember_preview(invite_code: str, preview: cr.InvitePreview) -> None:
+    now = time.monotonic()
+    for code in [c for c, (at, _p) in _previews.items() if now - at > VISIT_INVITE_PREVIEW_REUSE_S]:
+        del _previews[code]
+    _previews.pop(invite_code, None)
+    _previews[invite_code] = (now, preview)
+    while len(_previews) > _PREVIEWS_MAX:
+        _previews.pop(next(iter(_previews)))
+
+
+def _recent_preview(invite_code: str) -> Optional[cr.InvitePreview]:
+    hit = _previews.get(invite_code)
+    if hit is None or time.monotonic() - hit[0] > VISIT_INVITE_PREVIEW_REUSE_S:
+        _previews.pop(invite_code, None)
+        return None
+    return hit[1]
+
+
+async def _fetch_preview(invite_code: str) -> cr.InvitePreview:
+    lang = prompt_lang()
+    ctx = await load_character_context()
+    preview = await cr.fetch_invite_preview(
+        invite_code,
+        generic_label=speaker_label("peer_cat", lang),
+        protected_names=protected_display_names(lang, ctx.family_names, ctx.char_names),
+    )
+    _remember_preview(invite_code, preview)
+    return preview
+
+
+async def _locally_blocked(preview: cr.InvitePreview) -> bool:
+    try:
+        blocklist = await Blocklist.aload(_config_dir())
+    except Exception as exc:  # noqa: BLE001 - 黑名单读不出来按命中处理（fail closed）
+        logger.warning("visit: blocklist unavailable: %s", type(exc).__name__)
+        return True
+    return cr.is_locally_blocked(preview, blocklist)
+
+
+@router.get("/invites/{invite_code}/preview")
+async def preview_invite(request: Request, invite_code: str):
+    """Data of the guest's "let her visit X?" dialog; read only, the code is not consumed."""
+    denied = http_denied(request)
+    if denied is not None:
+        return denied
+    if not isinstance(invite_code, str) or cr.INVITE_CODE_RE.fullmatch(invite_code) is None:
+        return _servers_error(cr.VisitInviteFormat())
+    try:
+        preview = await _fetch_preview(invite_code)
+    except cr.VisitServersError as exc:
+        return _servers_error(exc)
+    return JSONResponse(preview.to_public(locally_blocked=await _locally_blocked(preview)))
+
+
+# ── 建房 / 入房 ────────────────────────────────────────────────────────
+
+
+async def _refuse_before_admission(request: Request) -> Optional[JSONResponse]:
+    """Synchronous refusals that do not depend on the character (cached preflight, backlog)."""
+    cached = transport_ws.cached_preflight_failure(request.headers.get("user-agent"))
+    if cached is not None:
+        return _error(409, "VISIT_UNSUPPORTED_ON_THIS_MACHINE", reason=cached["reason"])
+    try:
+        full = await tu.upload_backlog_full(_config_dir(), is_live=runtime.is_visit_live)
+    except OSError as exc:
+        # 目录一时读不了：判不出余量就不接新串门（下一次再试）
+        logger.warning("visit: backlog check failed: %s", type(exc).__name__)
+        full = True
+    if full:
+        return _error(409, "VISIT_UPLOAD_BACKLOG")
+    return None
+
+
+async def _resolve_uid(name: str) -> Optional[str]:
+    try:
+        return await local_chars.resolve_char_uid(name)
+    except Exception as exc:  # noqa: BLE001 - 认不出角色交给人设闸拒绝
+        logger.warning("visit: character lookup failed: %s", type(exc).__name__)
+        return None
+
+
+async def _admit(name: str, side: str, **kwargs: Any) -> runtime.VisitRuntime | JSONResponse:
+    """Forget check and :func:`runtime.start_visit` under the character's admission lock."""
+    uid = await _resolve_uid(name)
+    async with (char_admission_lock(uid) if uid else contextlib.nullcontext()):
+        if uid:
+            own_uid = await accounts.own_visit_uid()
+            if await memory_bridge.char_forget_in_progress(_config_dir(), uid, own_uid=own_uid):
+                return _error(409, "VISIT_FORGET_IN_PROGRESS")
+        try:
+            rt = await runtime.start_visit(name, side, **kwargs)
+        except runtime.VisitRefused as exc:
+            return _refused(exc.status, exc.body)
+        if rt.character_uid != uid:
+            # 查清除时认的角色与人设闸认的不是同一个（期间改了名 / 名字被占）：这次的清除检查不作数
+            logger.warning("visit %s: character changed during admission, refusing", rt.visit_id[:6])
+            rt.request_finalize("busy")
+            return _refused(409, {"reason": "busy"})
+        return rt
+
+
+@router.post("/rooms")
+async def create_room(request: Request):
+    """Host side: reserve the character and start the visit; 202, the rest is pushed."""
+    payload = await _read_json_object(request)
+    denied = http_denied(request, payload)
+    if denied is not None:
+        return denied
+    name = payload.get("catgirl")
+    if not _valid_name(name):
+        return _error(400, "catgirl_required")
+    crop = payload.get("crop", "upper")
+    if crop not in _CROPS:
+        return _error(400, "crop_format")
+    refused = await _refuse_before_admission(request)
+    if refused is not None:
+        return refused
+    admitted = await _admit(name, "host", crop=crop)
+    if isinstance(admitted, JSONResponse):
+        return admitted
+    return JSONResponse({"visit_id": admitted.visit_id, "phase": "pending"}, status_code=202)
+
+
+@router.post("/rooms/{visit_id}/join")
+async def join_room(request: Request, visit_id: str):
+    """Guest side: after the confirmation dialog, reserve the character and join; 202."""
+    payload = await _read_json_object(request)
+    denied = http_denied(request, payload)
+    if denied is not None:
+        return denied
+    if not isinstance(visit_id, str) or not VISIT_ID_RE.fullmatch(visit_id):
+        return _error(400, "visit_id_format")
+    name = payload.get("catgirl")
+    if not _valid_name(name):
+        return _error(400, "catgirl_required")
+    invite_code = payload.get("invite_code")
+    if not isinstance(invite_code, str) or cr.INVITE_CODE_RE.fullmatch(invite_code) is None:
+        return _servers_error(cr.VisitInviteFormat())
+    if payload.get("confirm") is not True:
+        return _error(400, "confirm_required")
+    refused = await _refuse_before_admission(request)
+    if refused is not None:
+        return refused
+    # 黑名单在占位与领凭证之前比对：命中不扣双方配额、不进 vendor 房
+    preview = _recent_preview(invite_code)
+    if preview is None:
+        try:
+            preview = await _fetch_preview(invite_code)
+        except cr.VisitServersError as exc:
+            if isinstance(exc, (cr.VisitInviteNotFound, cr.VisitInviteExpired)):
+                return _servers_error(cr.VisitInviteInvalid(exc.code))
+            return _servers_error(exc)
+    if preview.visit_id != visit_id:
+        return _servers_error(cr.VisitInviteInvalid("invite_invalid"))
+    if await _locally_blocked(preview):
+        return _servers_error(cr.VisitInviteInvalid("peer_blocked"))
+    admitted = await _admit(name, "guest", invite_code=invite_code, visit_id=visit_id)
+    if isinstance(admitted, JSONResponse):
+        return admitted
+    return JSONResponse({"ok": True, "visit_id": admitted.visit_id, "phase": "pending"}, status_code=202)
+
+
+@router.post("/rooms/{visit_id}/accept")
+async def accept_guest(request: Request, visit_id: str):
+    """Host's family answers the visitor (``accept:true`` activates first, sends ``ready`` last)."""
+    payload = await _read_json_object(request)
+    denied = http_denied(request, payload)
+    if denied is not None:
+        return denied
+    if not isinstance(visit_id, str) or not VISIT_ID_RE.fullmatch(visit_id):
+        return _error(400, "visit_id_format")
+    name = payload.get("catgirl")
+    if not _valid_name(name):
+        return _error(400, "catgirl_required")
+    accept = payload.get("accept")
+    if not isinstance(accept, bool):
+        return _error(400, "accept_required")
+    rt = runtime.get_runtime(name)
+    if rt is None or rt.visit_id != visit_id:
+        return JSONResponse({"ok": False, "error": "no_pending_invite"}, status_code=404)
+    status, body = await rt.accept(accept)
+    return JSONResponse(body, status_code=status)
+
+
+# ── 结束 / 状态 / 转录 ─────────────────────────────────────────────────
+
+
+@data_router.post("/route/end")
+async def end_route(request: Request):
+    """``recall`` = natural wrap-up ("call her back" / see the guest off), ``route_end`` = end now."""
+    payload = await _read_json_object(request)
+    denied = http_denied(request, payload)
+    if denied is not None:
+        return denied
+    name = payload.get("lanlan_name")
+    if not _valid_name(name):
+        return _error(400, "lanlan_name_required")
+    visit_id = payload.get("visit_id")
+    if not isinstance(visit_id, str) or not VISIT_ID_RE.fullmatch(visit_id):
+        return _error(400, "visit_id_format")
+    reason = payload.get("reason")
+    if reason not in _END_REASONS:
+        return _error(400, "invalid_reason")
+    status, body = await runtime.end_visit(name, visit_id, reason)
+    return JSONResponse(body, status_code=status)
+
+
+IDLE_STATE: Mapping[str, Any] = {
+    "active": False, "role": None, "side": None, "visit_id": None, "phase": None, "transport": None,
+    "tier": None, "crop": None, "peer": None, "connected": False, "reconnecting": False, "rtt_ms": None,
+    "rx_fps": None, "tx_fps": None, "reconnects": 0, "anomalies": 0, "invite_expires_at": None,
+    "credentials_expires_at": None, "cross_region": False, "memory_pending": False,
+    "debrief": {"pending": False}, "room": None, "transcript": [],
+}
+"""``GET /state`` of a character that is not visiting (same keys as ``VisitRuntime.snapshot``)."""
+
+
+@data_router.get("/state")
+async def visit_state(request: Request, catgirl: str = ""):
+    """The character's visit as the page needs it after a reload (never the invite code)."""
+    denied = http_denied(request)
+    if denied is not None:
+        return denied
+    if not _valid_name(catgirl):
+        return _error(400, "catgirl_required")
+    rt = runtime.get_runtime(catgirl)
+    return JSONResponse(rt.snapshot() if rt is not None else dict(IDLE_STATE))
+
+
+def _local_line(line_id: Any, record: Mapping[str, Any], frame: Optional[Mapping[str, Any]] = None) -> dict:
+    side = record.get("side")
+    return {
+        "line_id": line_id if isinstance(line_id, str) and line_id else f"{side}:{record.get('lp')}",
+        "lp": record.get("lp"), "side": side,
+        "speaker_kind": _SPEAKER_KIND.get(str(record.get("from") or "")),
+        # 落盘的转录不记收件人与已放出片数：只有内存里还留着那一行的推送时才有
+        "addressee": (frame or {}).get("addressee"), "i_done": (frame or {}).get("i_done"),
+        "ts": record.get("ts"), "text": record.get("text"), "truncated": bool(record.get("truncated")),
+    }
+
+
+def _memory_runtime(visit_id: str) -> Optional[runtime.VisitRuntime]:
+    return runtime.get_runtime_by_visit(visit_id) or runtime.recent_runtime(visit_id)
+
+
+def _memory_transcript(rt: runtime.VisitRuntime) -> dict:
+    lines = []
+    for record in rt.transcript_records():
+        frame = rt.visit_line_payload_from_record(record)
+        lines.append(_local_line(frame.get("line_id"), record, frame))
+    out = {
+        "visit_id": rt.visit_id,
+        "peer_short_id": rt.peer.short_id if rt.peer else None,
+        "peer_uid": rt.peer.uid if rt.peer else None,
+        "started_at": rt.started_at_wall,
+        "transport": rt.creds.transport if rt.creds else None,
+        "lines": lines, "anomalies": rt.anomaly_count(), "source": "memory",
+    }
+    if rt.ended_at_mono is not None:
+        out["ended_at"] = rt.wall() - max(0.0, rt.clock() - rt.ended_at_mono)
+    return out
+
+
+async def _spool_transcript(config_dir: Path, visit_id: str) -> Optional[dict]:
+    try:
+        contents = await VisitSpool(config_dir, visit_id).read_back()
+    except OSError as exc:
+        logger.warning("visit transcript %s: spool unreadable: %s", visit_id[:6], type(exc).__name__)
+        return None
+    header = contents.header
+    if header is None:
+        return None
+    peer_uid = header.get("peer_uid")
+    peer_uid = peer_uid if isinstance(peer_uid, str) and peer_uid else None  # 「清除这个人」后已抹掉
+    rt = _memory_runtime(visit_id)
+    transport = rt.creds.transport if rt is not None and rt.creds else None
+    if transport is None:
+        pending = await _pending_upload(config_dir, visit_id)
+        transport = pending.get("transport") if pending else None
+    return {
+        "visit_id": visit_id,
+        "peer_short_id": derive_short_code(peer_uid) if peer_uid else None,
+        "peer_uid": peer_uid,
+        "started_at": header.get("started_at"),
+        "transport": transport,
+        "lines": [_local_line(line.get("ln"), line) for line in contents.lines],
+        "anomalies": rt.anomaly_count() if rt is not None else await tu.visit_anomalies(config_dir, visit_id),
+        "source": "spool",
+    }
+
+
+async def _pending_upload(config_dir: Path, visit_id: str) -> Optional[dict]:
+    try:
+        return await asyncio.to_thread(read_pending_upload_doc_sync, config_dir, visit_id)
+    except OSError as exc:
+        logger.warning("visit transcript %s: pending upload unreadable: %s", visit_id[:6], type(exc).__name__)
+        return None
+
+
+@data_router.get("/transcript")
+async def visit_transcript(request: Request, visit_id: str = ""):
+    """One visit's transcript for export / report attachments.
+
+    Local spool → in-memory transcript (``VISIT_TRANSCRIPT_MEMORY_TTL_S``
+    after the end) → the local pending upload (``.upload.json`` /
+    ``.upload.jsonl``) → Servers details (this side, every page). The first
+    two answer the full local shape (``source: spool | memory``), the last two
+    the compact shape of the uploaded lines (``source: upload | cloud``).
+    """
+    denied = http_denied(request)
+    if denied is not None:
+        return denied
+    if not isinstance(visit_id, str) or not VISIT_ID_RE.fullmatch(visit_id):
+        return _error(400, "visit_id_format")
+    config_dir = _config_dir()
+    spooled = await _spool_transcript(config_dir, visit_id)
+    if spooled is not None:
+        return JSONResponse(spooled)
+    rt = _memory_runtime(visit_id)
+    if rt is not None:
+        return JSONResponse(_memory_transcript(rt))
+    pending = await _pending_upload(config_dir, visit_id)
+    if pending is not None:
+        request_body = pending["request"]
+        return JSONResponse({"source": "upload", "visit_id": visit_id, "role": request_body["role"],
+                             "lines": request_body["lines"]})
+    try:
+        return JSONResponse(await cloud_routes.fetch_cloud_transcript(visit_id))
+    except cloud_routes.CloudTranscriptIncomplete:
+        return _error(502, "cloud_transcript_incomplete")
+    except cloud_routes.CloudError:
+        # 未登录 / 离线 / Servers 不可达 / 云端没有：如实说本机副本已清理
+        return _error(404, "transcript_gone_local")
+
+
+def _reset_for_tests() -> None:
+    """Forget the preview cache and idle admission locks (unit tests only)."""
+    _previews.clear()
+    _admission_locks.clear()
+
+
+__all__ = ["router", "data_router", "char_admission_lock", "IDLE_STATE"]

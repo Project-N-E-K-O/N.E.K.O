@@ -434,6 +434,28 @@ def _stream_doc_sync(
                             fallback_own_visit_uid=owner, fallback_own_char_uid=char_uid)
 
 
+def read_pending_upload_doc_sync(config_dir: Path, visit_id: str) -> dict | None:
+    """The upload document of a visit whose transcript has not reached Servers yet (read only).
+
+    The sealed ``.upload.json`` when :func:`sealed_upload_doc_usable`, else
+    the document its ``.upload.jsonl`` stream would seal into (a crashed
+    visit; ``finalized_reason`` ``'crash'``); None when neither exists or is
+    usable. Nothing is written or deleted. Raises ``OSError`` when a file
+    exists but cannot be read right now.
+    """
+    spool_dir = Path(config_dir) / VISIT_SPOOL_DIRNAME
+    try:
+        doc = _load_json(visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX))
+    except ValueError:
+        doc = None
+    if sealed_upload_doc_usable(doc, visit_id):
+        return doc
+    try:
+        return _stream_doc_sync(spool_dir, visit_id, None, None)
+    except ValueError:
+        return None
+
+
 def _write_private_json(path: Path, doc: dict) -> None:
     atomic_write_json(path, doc)
     try:

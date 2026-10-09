@@ -2448,6 +2448,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         rows.sort(key=lambda r: (r["lp"], SIDE_RANK.get(r["side"], 2)))
         return rows
 
+    def transcript_records(self) -> list[dict]:
+        """The in-memory transcript (both sides, ``(lp, side_rank)`` order) for ``GET /transcript``."""
+        return self._replay_lines()
+
     def snapshot(self) -> dict:
         """``GET /api/visit/state`` body for this character (never the invite code)."""
         creds = self.creds

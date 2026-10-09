@@ -165,6 +165,13 @@ VISIT_CAPS_PREFLIGHT_TIMEOUT_S = 15
 VISIT_CAPS_SDK_TIMEOUT_S = 20
 """Wait limit for capability gate 3 (vendor SDK load) → ``unsupported``."""
 
+VISIT_CAPS_CACHE_TTL_S = 600
+"""How long a failed preflight (gates 1-2) of one page environment (User-Agent) is remembered.
+
+While remembered, ``POST /rooms`` and ``join`` from the same environment
+answer 409 ``VISIT_UNSUPPORTED_ON_THIS_MACHINE`` at once; afterwards the
+next attempt runs the gate again (the result may have changed)."""
+
 VISIT_INBOX_HANDOFF_MAX_S = 20
 """Fallback cap for handing ``VisitInbox`` back after finalize.
 
@@ -362,6 +369,9 @@ VISIT_VENDOR_REFRESH_MARGIN_S = 120
 
 VISIT_BANNED_CACHE_S = 60
 """A Servers ``403 banned`` is remembered this long; new rooms / joins answer 403 locally."""
+
+VISIT_INVITE_PREVIEW_REUSE_S = 60
+"""``join`` reuses the host id of an invite preview this recent for its blocklist check."""
 
 VISIT_SHORT_ID_LEN = 6
 """UI shows only ``visit_uid[:6].upper()``."""

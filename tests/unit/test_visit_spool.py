@@ -2043,3 +2043,34 @@ async def test_sweep_modes_split_pending_uploads_from_the_rest(tmp_path):
     # only：只回收过期的待传文件，别的文件不动
     deleted = await VisitSpool.sweep(tmp_path, NOW, uploads="only")
     assert [path.name for path in deleted] == [upload.name] and sp.jsonl_path.exists()
+
+
+async def test_unreclaimable_bytes_counts_what_the_size_sweep_never_deletes(tmp_path):
+    spool_dir = tmp_path / "visit_spool"
+    # 未结清（崩溃后未补录）：转录与 state 都算
+    crashed = VisitSpool(tmp_path, vid(1))
+    await crashed.write_state(state_for())
+    spool_dir.joinpath(f"{vid(1)}.jsonl").write_bytes(b"x" * 1000)
+    # 没有 state 的转录：判不出已结清，同样算
+    spool_dir.joinpath(f"{vid(2)}.jsonl").write_bytes(b"y" * 300)
+    # 待传转录：连同它那一场已结清的转录一起算（容量回收不动有待传文件的场次）
+    pending = VisitSpool(tmp_path, vid(3))
+    await pending.write_state(dict(settled(state_for()), debrief_choice="forget"))
+    spool_dir.joinpath(f"{vid(3)}.jsonl").write_bytes(b"p" * 200)
+    spool_dir.joinpath(f"{vid(3)}.upload.json").write_bytes(b"u" * 50)
+    # 已结清、无待传：容量回收会删，不算
+    done = VisitSpool(tmp_path, vid(4))
+    await done.write_state(dict(settled(state_for()), debrief_choice="forget"))
+    spool_dir.joinpath(f"{vid(4)}.jsonl").write_bytes(b"d" * 5000)
+    # outbox 流水启动即删、在飞的一场另有上限：都不算
+    spool_dir.joinpath(f"{vid(5)}.outbox.jsonl").write_bytes(b"o" * 7000)
+    spool_dir.joinpath(f"{vid(6)}.jsonl").write_bytes(b"l" * 9000)
+
+    def size(n, suffix):
+        return spool_dir.joinpath(f"{vid(n)}{suffix}").stat().st_size
+
+    expected = (size(1, ".jsonl") + size(1, ".state.json") + 300
+                + size(3, ".jsonl") + size(3, ".state.json") + 50)
+    assert await VisitSpool.unreclaimable_bytes(tmp_path, is_live=lambda v: v == vid(6)) == expected
+    assert await VisitSpool.unreclaimable_bytes(tmp_path) == expected + 9000
+    assert await VisitSpool.unreclaimable_bytes(tmp_path / "missing") == 0
