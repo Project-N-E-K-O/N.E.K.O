@@ -175,7 +175,7 @@ def loose_surface(value: object) -> str:
     """Fallback exact-match form: only letters and digits, or "" if unsafe.
 
     Surrounding brackets/quotes and trailing sentence punctuation are ignored
-    ("「猫」", "Python?"), and separators inside a name may differ ("Re:Zero",
+    (corner brackets around a CJK name, "Python?"), and separators inside a name may differ ("Re:Zero",
     "re zero"). A name that still begins or ends with a symbol ("C++", "C#",
     ".NET") gets no loose form: dropping the symbol would make it another name.
     """
@@ -214,7 +214,7 @@ def search_tokens(value: object, *, unigrams: bool = False) -> list[str]:
     sides must agree on what a token is.
 
     ``unigrams`` (query side only) also yields every CJK character of longer
-    runs, so a one-character name such as "猫" is found inside "介绍一下猫".
+    runs, so a one-character CJK name is found inside a longer question.
     """
     text = unicodedata.normalize("NFKC", str(value or "")).casefold()
     tokens: list[str] = []
