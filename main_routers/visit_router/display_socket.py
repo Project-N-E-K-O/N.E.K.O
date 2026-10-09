@@ -178,6 +178,10 @@ async def _pending_debriefs(lanlan_name: str) -> list[dict]:
     from main_logic.visit.spool import STATE_SUFFIX, VisitSpool
     from main_routers.visit_router import runtime
 
+    from main_routers.visit_router.accounts import own_visit_uid
+
+    # 按社区账号分区：只重放当前登录账号的场次（共用电脑上换了账号 / 已登出时不出别人的芯片）
+    own_uid = await own_visit_uid()
     config_dir = runtime.runtime_deps().config_dir()
     pending: list[dict] = []
     names: dict[str, Optional[str]] = {}
@@ -189,7 +193,7 @@ async def _pending_debriefs(lanlan_name: str) -> list[dict]:
         except Exception as exc:  # noqa: BLE001 - 一场坏了不挡其余场次
             logger.debug("visit display: state of %s unreadable: %s", visit_id[:6], type(exc).__name__)
             continue
-        if state is None or not state.get("debrief_chip_pending"):
+        if state is None or not state.get("debrief_chip_pending") or state.get("own_uid") != own_uid:
             continue
         uid = state["own_char_uid"]
         if uid not in names:

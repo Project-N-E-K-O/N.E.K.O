@@ -307,6 +307,19 @@ class ReceiveMixin:
         if self.finalizing or self.peer is not None:
             # 读本机名字期间这场已被结束（或另一条 hello 先装好了对端）：不再装对端、不发邀请
             return
+        try:
+            # 核验之后的这几次 await 里对端可能刚被拉黑（拉黑钩子这时还找不到对端）：装入之前再查一次，
+            # 之后它就挂在 self.peer 上、钩子找得到
+            blocked = (await self.deps.load_blocklist(self.config_dir)).is_blocked(claims.sub)
+        except Exception as exc:  # noqa: BLE001 - 读不到：fail closed，与核验时同一处理
+            logger.warning("visit %s: blocklist recheck failed: %s", self.visit_id[:6], type(exc).__name__)
+            self.request_finalize("peer_identity_rejected")
+            return
+        if blocked:
+            self.request_finalize("peer_blocked")
+            return
+        if self.finalizing or self.peer is not None:
+            return
         self.peer = PeerInfo(
             uid=claims.sub, vid=claims.vid, char_tag=claims.char_tag, raw_display=claims.display_name,
             display=display,

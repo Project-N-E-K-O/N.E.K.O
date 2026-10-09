@@ -28,7 +28,7 @@ from main_routers import websocket_router
 from main_routers.visit_router import display_socket, host_port, runtime
 from main_routers.visit_router.debrief import chips_request_id
 from tests.unit.test_websocket_binary_audio import _ProtocolManager
-from tests.unit.visit_memory_test_helpers import ln, make_visit, vid
+from tests.unit.visit_memory_test_helpers import OWN_A, OWN_B, ln, make_visit, vid
 from utils import external_route_registry as registry
 from utils.visit_route_state import VISIT_SOCKET_BOUND_ATTR
 
@@ -116,6 +116,12 @@ def _env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(local_chars, "resolve_char_name", resolve)
     monkeypatch.setattr("main_routers.visit_router.local_context.prompt_lang", lambda: "zh")
+    from main_routers.visit_router import accounts
+
+    async def own_uid():
+        return OWN_A
+
+    monkeypatch.setattr(accounts, "own_visit_uid", own_uid)
     yield names
     runtime._reset_for_tests()
     display_socket._reset_for_tests()
@@ -561,3 +567,26 @@ async def test_visit_refuses_input_dispatched_from_an_unbound_connection():
         assert [m["data"] for m in rt.accepted] == ["y", "z"]
     finally:
         runtime._runtimes.pop(NAME, None)
+
+
+# ── 评审第 4 轮：按社区账号分区 ─────────────────────────────────────────
+
+
+async def test_chips_of_another_account_or_without_login_are_not_replayed(monkeypatch, tmp_path):
+    from main_routers.visit_router import accounts
+
+    await _pending(tmp_path, 11, debrief_choice="ask_later")                     # OWN_A 的场次
+    await _pending(tmp_path, 12, debrief_choice="ask_later", own_uid=OWN_B)      # 另一账号的场次
+    manager = _ProtocolManager()
+    install(monkeypatch, manager)
+    socket = VisitSocket([bind()])
+    await run(socket, manager)
+    assert _chip_ids(socket) == [chips_request_id(vid(11))]
+
+    async def nobody():
+        return None
+
+    monkeypatch.setattr(accounts, "own_visit_uid", nobody)                       # 已登出
+    logged_out = VisitSocket([bind()])
+    await run(logged_out, manager)
+    assert _chip_ids(logged_out) == []

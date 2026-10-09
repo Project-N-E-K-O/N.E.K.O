@@ -548,6 +548,24 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 "character_name": current_catgirl,
                 "details": {"character_name": current_catgirl},
             }, status_code=400)
+        # 候选角色正在串门 / 小游戏、或串门还在按它的名字写后台数据（收尾、摘要、清除记忆）：
+        # 退订会删掉它，与改名 / 删除同一个守卫（OD-13）。此时已持有角色配置变更锁，
+        # 清除记忆的守卫也在这把锁下登记，两边不会交错
+        from utils.external_route_registry import is_character_lifecycle_locked
+
+        busy_names = sorted(
+            name for name in candidate_names
+            if _is_confirmed_workshop_character(current_characters, name) and is_character_lifecycle_locked(name)
+        )
+        if busy_names:
+            logger.warning(f"取消订阅被阻止: item_id={item_id_int} 对应角色 {busy_names} 正在串门或小游戏中")
+            return JSONResponse({
+                "success": False,
+                "code": "EXTERNAL_ROUTE_ACTIVE",
+                "error": f"角色「{busy_names[0]}」正在串门或小游戏中，请结束后再取消订阅。",
+                "character_name": busy_names[0],
+                "details": {"character_name": busy_names[0]},
+            }, status_code=400)
 
         # 前置尝试释放 memory_server 对候选角色的 SQLite 句柄（best-effort + 并行）。
         # 与 delete_catgirl 不同：取消订阅场景下，memory_server 对非活跃角色
