@@ -111,14 +111,14 @@ Win7 上最后一代可用浏览器：**Chrome 109**（最终版）、**Firefox 
 
 ## 已知限制与风险（真机重点验证项）
 
-`requirements.txt` 中锁定的原生二进制轮子**没有一个以 Win7 为测试目标**。若启动或某功能报 `DLL load failed`、`找不到指定的模块/过程`，大概率是下列包之一：
+`requirements.txt` 中锁定的原生二进制轮子**没有一个以 Win7 为测试目标**。若启动或某功能报 `DLL load failed`、`找不到指定的模块/过程`，大概率是下列包之一（具体版本以 `requirements.txt` 为准）：
 
 | 包 | 用途 | 建议 |
 | --- | --- | --- |
-| `pywin32==311` | Windows 系统集成 | 报错时尝试回退较旧的 build 并回报 issue |
-| `cryptography==45.0.7` | TLS / 加密 | 同上 |
-| `onnxruntime==1.25.0` | OCR 屏读、本地 embedding | 官方文档称「可能兼容 Win7+」，需实测；失败时对应功能不可用，启动器其余部分仍可运行（均为懒加载导入） |
-| `playwright==1.63.0` | 浏览器自动化 | Win7 上确定不可用，属预期 |
+| `pywin32` | Windows 系统集成 | 报错时尝试回退较旧的 build 并回报 issue |
+| `cryptography` | TLS / 加密 | 同上 |
+| `onnxruntime` | OCR 屏读、本地 embedding | 官方文档称「可能兼容 Win7+」，需实测；失败时对应功能不可用，启动器其余部分仍可运行（均为懒加载导入） |
+| `playwright` | 浏览器自动化 | Win7 上确定不可用，属预期 |
 
 回退版本示例：`.venv\Scripts\python.exe -m pip install pywin32==306`，验证通过后请把可用组合回报到 issue，我们会评估是否写进本页。
 
