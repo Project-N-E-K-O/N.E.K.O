@@ -102,7 +102,8 @@ async def render_chips(visit_id: str, *, own_char: str, status: Optional[str] = 
     from main_routers.visit_router.local_context import prompt_lang
 
     host = ManagerHost.for_character(own_char)
-    if host is None:
+    if host is None or not host.display_bound():
+        # 页面还没 bind（启动补录通常早于页面连上）：芯片与「意外中断」都等 visit_bind 重放，不先发半套
         return False
     if status == "interrupted":
         await host.send_status("VISIT_INTERRUPTED_LAST_TIME", {"visit_id": visit_id})

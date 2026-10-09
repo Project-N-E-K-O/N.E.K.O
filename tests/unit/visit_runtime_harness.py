@@ -171,6 +171,10 @@ class FakeHost:
         self.events: list[str] = []
         self.mirror_error: Optional[Exception] = None
         self.dead_worker_prefix: Optional[tuple[str, ...]] = None
+        self.bound = True
+
+    def display_bound(self) -> bool:
+        return self.bound
 
     def is_current(self) -> bool:
         return self.current

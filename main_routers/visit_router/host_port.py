@@ -21,8 +21,12 @@ not have yet (``open_mirror_speech_stream`` and the ``visit_bind`` filter of
 the display socket). :class:`ManagerHost` is the production adapter.
 
 Display-socket frames (``visit_*`` / ``status``) go out through
-:meth:`VisitHost.send_frame` / :meth:`VisitHost.send_status`; PR-09b routes
-them to bound connections only (design §4.5 ``visit_bind``).
+:meth:`VisitHost.send_frame` / :meth:`VisitHost.send_status`. Every visit
+downlink that carries visit content -- ``visit_*`` frames, the debrief chips
+and the after-visit summary bubble -- is written only when the character's
+current display socket passed ``visit_bind`` (design §4.5,
+``display_socket.is_bound``); status codes carry no content and are not
+filtered.
 """
 
 from __future__ import annotations
@@ -35,10 +39,11 @@ from typing import Any, Optional, Protocol
 
 from main_routers.visit_router.line_speaker import SpeechStream
 from utils.logger_config import get_module_logger
+from utils.visit_route_state import VISIT_ROUTE_KIND
 
 logger = get_module_logger(__name__, "Main")
 
-TAKEOVER_OWNER = "neko_visit"
+TAKEOVER_OWNER = VISIT_ROUTE_KIND
 """Takeover owner of every visit (OD-24)."""
 
 _FRAME_TIMEOUT_S = 2.0
@@ -81,8 +86,11 @@ class VisitHost(Protocol):
         settle it mid-shutdown (a renewal, a swap) right before the exit.
         """
 
+    def display_bound(self) -> bool:
+        """Whether the character's current display socket passed ``visit_bind`` (§4.5)."""
+
     async def send_frame(self, payload: dict) -> bool:
-        """One display-socket frame (``visit_*``); False when it could not be written."""
+        """One display-socket frame (``visit_*``); False when it could not be written or the socket is unbound."""
 
     async def send_status(self, code: str, details: Optional[dict] = None) -> bool:
         """``{type:'status', message:{code, details}}`` (§4.5); never carries text or tickets."""
@@ -248,9 +256,19 @@ class ManagerHost:
         except Exception as exc:  # noqa: BLE001 - 结不清就留给下一次普通输入 / 会话空闲
             logger.warning("visit: owed turn wrap-up not settled: %s", type(exc).__name__)
 
+    def display_bound(self) -> bool:
+        """Whether the character's current display socket passed ``visit_bind``."""
+        # 串门下行只发给已 visit_bind 的连接（§4.5）：新窗口接走 display socket 但还没 bind 时，
+        # 邀请码、转录、芯片都不发给它，bind 之后由重放补上
+        from main_routers.visit_router.display_socket import is_bound
+
+        return is_bound(getattr(self._mgr, "websocket", None))
+
     async def send_frame(self, payload: dict) -> bool:
         ws = getattr(self._mgr, "websocket", None)
         if ws is None or not hasattr(ws, "send_json"):
+            return False
+        if not self.display_bound():
             return False
         state = getattr(ws, "client_state", None)
         if state is not None and state != state.CONNECTED:
@@ -313,6 +331,8 @@ class ManagerHost:
         await self._mgr.mirror_user_input(text, metadata=metadata, request_id=request_id, send_to_frontend=False)
 
     async def mirror_assistant_output(self, text: str, *, metadata: dict, request_id: str) -> None:
+        if not self.display_bound():
+            return
         # 有界：收尾流程在它之后才封存文件、注销，页面卡住不能把这些一起卡住
         try:
             await asyncio.wait_for(
@@ -322,6 +342,8 @@ class ManagerHost:
             logger.warning("visit: assistant mirror timed out")
 
     async def render_chat_blocks(self, blocks: list[dict], *, request_id: str, source_name: str) -> bool:
+        if not self.display_bound():
+            return False
         try:
             return bool(await asyncio.wait_for(self._mgr.render_chat_blocks(
                 blocks, request_id=request_id, source="system", source_name=source_name,

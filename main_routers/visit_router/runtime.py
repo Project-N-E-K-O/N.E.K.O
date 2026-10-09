@@ -116,6 +116,7 @@ from main_routers.visit_router.transport_ws import (
 from main_routers.visit_router.transcript_upload import UploadJournal
 from utils.logger_config import get_module_logger
 from utils.visit_route_state import (
+    VISIT_ROUTE_KIND,
     activate_visit_route,
     finalize_visit_route_state,
     get_visit_route_state,
@@ -269,6 +270,11 @@ _visit_bg_tasks: dict[str, set[asyncio.Task]] = {}
 def get_runtime(lanlan_name: str) -> Optional["VisitRuntime"]:
     """The runtime of ``lanlan_name`` (active or still running its exit flow), or None."""
     return _runtimes.get(str(lanlan_name or ""))
+
+
+def live_runtimes() -> list["VisitRuntime"]:
+    """Every registered runtime (one per visiting character), in registration order."""
+    return list(_runtimes.values())
 
 
 def get_runtime_by_visit(visit_id: str) -> Optional["VisitRuntime"]:
@@ -2775,7 +2781,7 @@ def register_visit_route_kind() -> None:
     from utils.external_route_registry import ExternalRouteKind, register_external_route_kind
 
     register_external_route_kind(ExternalRouteKind(
-        kind="neko_visit",
+        kind=VISIT_ROUTE_KIND,
         is_active=is_visit_route_active,
         route_stream_message=route_stream_message,
         on_start_session=on_start_session,
@@ -2792,5 +2798,5 @@ __all__ = [
     "VisitRuntime", "VisitRefused", "RuntimeDeps", "start_visit", "end_visit", "stop_all",
     "visit_sweep_loop", "is_visit_live", "is_visit_route_active", "is_visit_route_locked",
     "has_visit_background_tasks", "spawn_visit_background", "register_visit_route_kind",
-    "get_runtime", "get_runtime_by_visit", "recent_runtime", "on_page_signal",
+    "get_runtime", "get_runtime_by_visit", "recent_runtime", "live_runtimes", "on_page_signal",
 ]

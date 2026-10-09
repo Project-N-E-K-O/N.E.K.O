@@ -31,6 +31,15 @@ import asyncio
 from typing import Dict, Optional
 from weakref import WeakValueDictionary
 
+VISIT_ROUTE_KIND = "neko_visit"
+"""External route kind (and takeover owner) of the visit runtime."""
+
+VISIT_SOCKET_BOUND_ATTR = "neko_visit_authorized"
+"""Attribute set on a display-socket connection object once it passed ``visit_bind`` (design §4.5)."""
+
+VISIT_SOCKET_DELIVERED_ATTR = "neko_visit_delivered_debrief"
+"""Attribute holding the debrief block request ids this display-socket connection acknowledged."""
+
 _visit_route_states: Dict[str, dict] = {}
 
 # Per-character lock registry. Entries outlive the state slot on purpose: a

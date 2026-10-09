@@ -1,0 +1,387 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""``visit_bind`` on the display socket and the visit downlink filter (design §4.5, PR-09b)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from types import SimpleNamespace
+
+import pytest
+
+import config
+import config.visit_settings as visit_settings
+from main_routers import websocket_router
+from main_routers.visit_router import display_socket, host_port, runtime
+from main_routers.visit_router.debrief import chips_request_id
+from tests.unit.test_websocket_binary_audio import _ProtocolManager
+from tests.unit.visit_memory_test_helpers import ln, make_visit, vid
+from utils import external_route_registry as registry
+from utils.visit_route_state import VISIT_SOCKET_BOUND_ATTR
+
+TOKEN = "t" * 32
+ORIGIN = "http://127.0.0.1:48911"
+NAME = "A"
+
+
+class VisitSocket:
+    """A display-socket double with a peer address, handshake headers and a URL."""
+
+    def __init__(self, messages, *, host="127.0.0.1", headers=None, url_host="127.0.0.1"):
+        self.events = [{"type": "websocket.receive", "text": json.dumps(m)} for m in messages]
+        self.events.append({"type": "websocket.disconnect", "code": 1000})
+        self.client = SimpleNamespace(host=host)
+        self.headers = {"origin": ORIGIN, **(headers or {})}
+        self.url = SimpleNamespace(hostname=url_host)
+        self.sent: list[dict] = []
+        self.closed = False
+
+    async def accept(self):
+        return None
+
+    async def receive(self):
+        await asyncio.sleep(0)
+        return self.events.pop(0)
+
+    async def send_text(self, payload):
+        self.sent.append(json.loads(payload))
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+
+    async def close(self, *_a, **_k):
+        self.closed = True
+
+    def statuses(self):
+        return [json.loads(f["message"])["code"] for f in self.sent if f.get("type") == "status"]
+
+    def visit_frames(self):
+        return [f for f in self.sent if str(f.get("type", "")).startswith("visit_") or f.get("type") == "chat_blocks"]
+
+
+def bind(token=TOKEN):
+    return {"action": "visit_bind", "csrf_token": token}
+
+
+class FakeRuntime:
+    def __init__(self, frames):
+        self.frames = frames
+        self.finalized: list[str] = []
+        self.peer = None
+
+    def bind_replay_frames(self):
+        return [dict(f) for f in self.frames]
+
+    def request_finalize(self, reason):
+        self.finalized.append(reason)
+        return True
+
+
+INVITE = {"type": "visit_state_change", "action": "invite_ready", "side": "host", "visit_id": vid(1),
+          "invite_code": "ABCDEFGHJK", "ts": 1.0}
+
+
+@pytest.fixture(autouse=True)
+def _env(monkeypatch, tmp_path):
+    runtime._reset_for_tests()
+    display_socket._reset_for_tests()
+    monkeypatch.setattr(config, "AUTOSTART_CSRF_TOKEN", TOKEN)
+    monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
+    monkeypatch.setattr(visit_settings, "NEKO_VISIT_ALLOW_NONLOCAL", False)
+    monkeypatch.setattr(runtime, "runtime_deps", lambda: SimpleNamespace(config_dir=lambda: tmp_path))
+    from main_logic.visit import local_chars
+
+    names = {"uid-a": "A", "uid-b": "B"}
+
+    async def resolve(uid):
+        return names.get(uid)
+
+    monkeypatch.setattr(local_chars, "resolve_char_name", resolve)
+    monkeypatch.setattr("main_routers.visit_router.local_context.prompt_lang", lambda: "zh")
+    yield names
+    runtime._reset_for_tests()
+    display_socket._reset_for_tests()
+
+
+def install(monkeypatch, manager, *, visit_active=False, rt=None):
+    calls = {"stream": [], "signal": []}
+
+    async def route_stream(_name, message):
+        calls["stream"].append(message)
+        return True
+
+    async def on_signal(_name, message):
+        calls["signal"].append(message)
+        return True
+
+    async def finalize_none(_name):
+        return 0
+
+    async def start_session(_name, _message):
+        return False
+
+    monkeypatch.setattr(websocket_router, "get_config_manager", lambda: object())
+    monkeypatch.setattr(websocket_router, "get_session_manager", lambda: {NAME: manager})
+    monkeypatch.setattr(websocket_router, "get_session_id", lambda: {})
+    registry.register_external_route_kind(registry.ExternalRouteKind(
+        kind="neko_visit", is_active=lambda _n: visit_active, route_stream_message=route_stream,
+        on_start_session=start_session, finalize_for_character=finalize_none,
+        on_page_signal=on_signal,
+        current_instance=lambda _n: "visit:x",
+    ))
+    monkeypatch.setattr(runtime, "get_runtime", lambda name: rt if name == NAME else None)
+    monkeypatch.setattr(runtime, "is_visit_route_active", lambda name: visit_active and name == NAME)
+    return calls
+
+
+async def run(socket, manager):
+    manager.websocket = socket
+    await websocket_router.websocket_endpoint(socket, NAME)
+    for _ in range(50):
+        if not display_socket._replays:
+            break
+        await asyncio.gather(*list(display_socket._replays), return_exceptions=True)
+
+
+# ── 鉴权 ──────────────────────────────────────────────────────────────
+
+
+async def test_valid_bind_marks_the_connection_and_replays_the_invite(monkeypatch):
+    manager = _ProtocolManager()
+    install(monkeypatch, manager, visit_active=True, rt=FakeRuntime([INVITE]))
+    socket = VisitSocket([bind()])
+    await run(socket, manager)
+    assert getattr(socket, VISIT_SOCKET_BOUND_ATTR) is True
+    assert socket.visit_frames() == [INVITE]
+    assert socket.statuses() == [] and manager.statuses == []
+
+
+@pytest.mark.parametrize("header", ["X-Forwarded-For", "Forwarded", "X-Real-IP"])
+async def test_proxy_header_refuses_bind_even_from_loopback(monkeypatch, header):
+    manager = _ProtocolManager()
+    install(monkeypatch, manager, visit_active=True, rt=FakeRuntime([INVITE]))
+    socket = VisitSocket([bind()], headers={header: "127.0.0.1"})
+    await run(socket, manager)
+    assert not display_socket.is_bound(socket)
+    assert socket.statuses() == ["VISIT_E_UNAUTHORIZED"] and socket.visit_frames() == []
+
+
+async def test_behind_proxy_refuses_a_rewritten_loopback_peer(monkeypatch):
+    # uvicorn proxy_headers 已把 client.host 改写成 127.0.0.1：只看 client.host 会放行
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    manager = _ProtocolManager()
+    install(monkeypatch, manager, visit_active=True, rt=FakeRuntime([INVITE]))
+    socket = VisitSocket([bind()])
+    await run(socket, manager)
+    assert not display_socket.is_bound(socket) and socket.visit_frames() == []
+    assert socket.statuses() == ["VISIT_E_UNAUTHORIZED"]
+
+
+async def test_allow_nonlocal_lets_both_through(monkeypatch):
+    monkeypatch.setattr(visit_settings, "NEKO_VISIT_ALLOW_NONLOCAL", True)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    manager = _ProtocolManager()
+    install(monkeypatch, manager, visit_active=True, rt=FakeRuntime([INVITE]))
+    a = VisitSocket([bind()], headers={"X-Forwarded-For": "10.0.0.2"})
+    await run(a, manager)
+    b = VisitSocket([bind()], host="192.168.1.20")
+    await run(b, manager)
+    assert display_socket.is_bound(a) and display_socket.is_bound(b)
+
+
+async def test_non_loopback_peer_is_refused_with_valid_token_and_origin(monkeypatch):
+    manager = _ProtocolManager()
+    install(monkeypatch, manager, visit_active=True, rt=FakeRuntime([INVITE]))
+    socket = VisitSocket([bind()], host="192.168.1.20")
+    await run(socket, manager)
+    assert not display_socket.is_bound(socket)
+    assert socket.statuses() == ["VISIT_E_UNAUTHORIZED"] and socket.visit_frames() == []
+
+
+@pytest.mark.parametrize("token,origin", [("wrong" * 6, ORIGIN), (TOKEN, "http://evil.example"), ("", ORIGIN)])
+async def test_bad_token_or_origin_is_refused(monkeypatch, token, origin):
+    manager = _ProtocolManager()
+    install(monkeypatch, manager, visit_active=True, rt=FakeRuntime([INVITE]))
+    socket = VisitSocket([bind(token)], headers={"origin": origin})
+    await run(socket, manager)
+    assert not display_socket.is_bound(socket)
+    assert socket.statuses() == ["VISIT_E_UNAUTHORIZED"] and socket.visit_frames() == []
+
+
+async def test_rebinding_after_reconnect_replays_the_invite_again(monkeypatch):
+    manager = _ProtocolManager()
+    install(monkeypatch, manager, visit_active=True, rt=FakeRuntime([INVITE]))
+    first = VisitSocket([bind()])
+    await run(first, manager)
+    second = VisitSocket([bind()])
+    await run(second, manager)
+    assert first.visit_frames() == [INVITE] and second.visit_frames() == [INVITE]
+
+
+# ── 未绑定连接的输入 ───────────────────────────────────────────────────
+
+
+async def test_unbound_text_while_visiting_is_refused_and_reaches_nobody(monkeypatch):
+    manager = _ProtocolManager()
+    calls = install(monkeypatch, manager, visit_active=True)
+    socket = VisitSocket([{"action": "stream_data", "input_type": "text", "data": "hi", "request_id": "r1"}])
+    await run(socket, manager)
+    assert calls["stream"] == []
+    assert not any(kind == "stream_data" for kind, _ in manager.calls)
+    status = [json.loads(f["message"]) for f in socket.sent if f.get("type") == "status"]
+    assert status == [{"code": "VISIT_E_UNAUTHORIZED", "details": {"request_id": "r1"}}]
+
+
+async def test_bound_text_while_visiting_goes_to_the_visit_only(monkeypatch):
+    manager = _ProtocolManager()
+    calls = install(monkeypatch, manager, visit_active=True)
+    socket = VisitSocket([bind(), {"action": "stream_data", "input_type": "text", "data": "hi"}])
+    await run(socket, manager)
+    assert [m["data"] for m in calls["stream"]] == ["hi"]
+    assert not any(kind == "stream_data" for kind, _ in manager.calls)
+    assert socket.statuses() == []
+
+
+async def test_unbound_text_without_a_visit_is_ordinary_chat(monkeypatch):
+    # 串门不在飞：未 bind 的连接照常走普通聊天，不回任何串门状态
+    manager = _ProtocolManager()
+    calls = install(monkeypatch, manager, visit_active=False)
+    socket = VisitSocket([{"action": "stream_data", "input_type": "text", "data": "hi"}])
+    await run(socket, manager)
+    await asyncio.sleep(0)
+    assert calls["stream"] == []
+    assert [m["data"] for kind, m in manager.calls if kind == "stream_data"] == ["hi"]
+    assert socket.statuses() == [] and manager.statuses == []
+
+
+# ── 下行只发给已绑定的连接 ─────────────────────────────────────────────
+
+
+class DownlinkManager:
+    def __init__(self, websocket):
+        self.websocket = websocket
+        self.blocks: list = []
+        self.outputs: list = []
+
+    async def render_chat_blocks(self, blocks, *, request_id, source, source_name):
+        self.blocks.append(request_id)
+        return True
+
+    async def mirror_assistant_output(self, text, *, metadata, request_id):
+        self.outputs.append(text)
+
+
+async def test_unbound_socket_gets_no_visit_downlink_until_it_binds(monkeypatch):
+    a = VisitSocket([])
+    b = VisitSocket([])
+    setattr(a, VISIT_SOCKET_BOUND_ATTR, True)
+    mgr = DownlinkManager(a)
+    host = host_port.ManagerHost(NAME, mgr)
+    assert await host.send_frame(INVITE) is True
+    assert await host.render_chat_blocks([{"type": "text", "text": "x"}], request_id="q", source_name=NAME)
+    await host.mirror_assistant_output("简述", metadata={}, request_id="s")
+    # 新窗口接走 display socket、还没 bind：邀请码、芯片、简述一律不发
+    mgr.websocket = b
+    assert await host.send_frame(INVITE) is False
+    assert await host.render_chat_blocks([{"type": "text", "text": "x"}], request_id="q2", source_name=NAME) is False
+    await host.mirror_assistant_output("简述2", metadata={}, request_id="s2")
+    assert a.sent == [INVITE] and b.sent == []
+    assert mgr.blocks == ["q"] and mgr.outputs == ["简述"]
+
+
+# ── debrief 芯片重放 ──────────────────────────────────────────────────
+
+
+async def _pending(tmp_path, n, *, own_char_uid="uid-a", **changes):
+    spool = await make_visit(tmp_path, vid(n), [ln(0, "你好")], own_char_uid=own_char_uid,
+                             debrief_chip_pending=True, **changes)
+    return spool
+
+
+def _chip_ids(socket):
+    return [f["request_id"] for f in socket.sent if f.get("type") == "chat_blocks"]
+
+
+async def test_bind_replays_owed_chips_of_this_character_only(monkeypatch, tmp_path):
+    await _pending(tmp_path, 1, debrief_choice="ask_later")
+    await _pending(tmp_path, 2, finalized="crash")
+    await _pending(tmp_path, 3, own_char_uid="uid-b", debrief_choice="ask_later")
+    await make_visit(tmp_path, vid(4), [ln(0, "x")], own_char_uid="uid-a", debrief_choice="ask_later")
+    manager = _ProtocolManager()
+    install(monkeypatch, manager)
+    socket = VisitSocket([bind()])
+    await run(socket, manager)
+    assert _chip_ids(socket) == [chips_request_id(vid(1)), chips_request_id(vid(2))]
+    # 崩溃场次先带「意外中断」
+    assert socket.statuses() == ["VISIT_INTERRUPTED_LAST_TIME"]
+    chips = [f for f in socket.sent if f.get("type") == "chat_blocks"][0]
+    assert chips["metadata"] == {"source": "system", "source_name": NAME, "passthrough": True}
+    assert [b["type"] for b in chips["blocks"]] == ["text", "buttons"]
+
+
+async def test_renamed_character_gets_its_chips_under_the_new_name(monkeypatch, tmp_path, _env):
+    await _pending(tmp_path, 5, debrief_choice="ask_later", own_char="Old")
+    manager = _ProtocolManager()
+    install(monkeypatch, manager)
+    socket = VisitSocket([bind()])
+    await run(socket, manager)
+    assert _chip_ids(socket) == [chips_request_id(vid(5))]
+
+
+async def test_preview_and_failed_blocks_are_left_to_pr14(monkeypatch, tmp_path):
+    await _pending(tmp_path, 6, debrief_choice="preview:diary",
+                   debrief_pending={"diary": "d", "facts": []})
+    manager = _ProtocolManager()
+    install(monkeypatch, manager)
+    socket = VisitSocket([bind()])
+    await run(socket, manager)
+    assert _chip_ids(socket) == []
+
+
+async def test_ack_is_per_connection_and_never_clears_the_flag(monkeypatch, tmp_path):
+    spool = await _pending(tmp_path, 7, debrief_choice="ask_later")
+    rid = chips_request_id(vid(7))
+    manager = _ProtocolManager()
+    install(monkeypatch, manager)
+    first = VisitSocket([bind()])
+    await run(first, manager)
+    assert _chip_ids(first) == [rid]
+    # 页面渲染后回 ack；不对应当前该投递那一块的 ack（例如预览块的）不记
+    await display_socket.handle_chip_ack(first, NAME, {"action": "visit_debrief_chip_ack", "visit_id": vid(7),
+                                                       "request_id": "visit-debrief-preview:" + vid(7)})
+    assert getattr(first, "neko_visit_delivered_debrief") == set()
+    await display_socket.handle_chip_ack(first, NAME, {"action": "visit_debrief_chip_ack", "visit_id": vid(7),
+                                                       "request_id": rid})
+    assert getattr(first, "neko_visit_delivered_debrief") == {rid}
+    assert (await spool.read_state())["debrief_chip_pending"] is True
+    # 同一条连接再 bind：已送达的不重推
+    await display_socket.replay(first, NAME)
+    assert _chip_ids(first) == [rid]
+    # 新连接（刷新 / 新窗口）首次 bind 照常重放
+    second = VisitSocket([bind()])
+    await run(second, manager)
+    assert _chip_ids(second) == [rid]
+
+
+async def test_ack_from_an_unbound_connection_is_ignored(monkeypatch, tmp_path):
+    await _pending(tmp_path, 8, debrief_choice="ask_later")
+    manager = _ProtocolManager()
+    install(monkeypatch, manager)
+    socket = VisitSocket([{"action": "visit_debrief_chip_ack", "visit_id": vid(8),
+                           "request_id": chips_request_id(vid(8))}])
+    await run(socket, manager)
+    assert getattr(socket, "neko_visit_delivered_debrief", set()) == set()
+    assert manager.statuses == []      # 不再当未知 action

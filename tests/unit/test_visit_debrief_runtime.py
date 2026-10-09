@@ -168,6 +168,17 @@ async def test_render_chips_recovery_callback(monkeypatch):
     assert await debrief.render_chips("v" * 22, own_char="Gone", status=None) is False
 
 
+async def test_render_chips_waits_for_a_bound_display(monkeypatch):
+    from main_routers.visit_router import host_port
+
+    # 启动补录通常早于页面连上并 visit_bind：芯片与「意外中断」都留给 bind 重放，不先发半套
+    fake = FakeHost("Host")
+    fake.bound = False
+    monkeypatch.setattr(host_port.ManagerHost, "for_character", classmethod(lambda cls, name: fake))
+    assert await debrief.render_chips("v" * 22, own_char="Host", status="interrupted") is False
+    assert fake.status_codes() == [] and fake.blocks == []
+
+
 def test_visit_kind_is_registered_with_every_hook():
     kinds = {k.kind: k for k in registry._registered_kinds()}
     spec = kinds["neko_visit"]
