@@ -665,7 +665,7 @@ async def test_concurrent_give_ups_interrupt_once_and_survive_a_cancelled_caller
     first.cancel()                          # 等收尾的一方被取消：收尾本身照常做完
     await _settle()
     gate.set()
-    await second
+    await asyncio.wait_for(second, 5)
     await _settle()
     assert interrupts == [owner.speech_id] and owner._released.done()
 
@@ -687,5 +687,99 @@ async def test_an_aborted_stream_never_reports_failure_even_if_given_up_mid_clea
     giving_up = asyncio.ensure_future(owner._give_up())   # 后继恰在打断清理途中等满了上限
     await _settle()
     gate.set()
-    await giving_up
+    await asyncio.wait_for(giving_up, 5)
     assert failed == []
+
+
+# ── 评审第 2 轮（云端）／Codex ─────────────────────────────────────────
+
+
+async def test_claim_preempts_a_proactive_turn_like_mirror_assistant_speech():
+    from main_logic.session_state import SessionStateMachine
+
+    mgr = _mgr()
+    mgr.state = SessionStateMachine(lanlan_name="T")
+    assert await mgr.state.try_start_proactive()        # 主动搭话正在准备
+    stream = _open(mgr)
+    stream.push("我回来啦。")
+    await _settle()
+    # 主动搭话之后在 claim 锁里看到被抢占就放弃，不会把轮次从本流手里换走
+    assert mgr.state.is_proactive_preempted() is True
+    assert mgr.current_speech_id == stream.speech_id
+
+
+async def test_claim_without_a_proactive_turn_marks_nothing_sticky():
+    from main_logic.session_state import SessionStateMachine
+
+    mgr = _mgr()
+    mgr.state = SessionStateMachine(lanlan_name="T")
+    stream = _open(mgr)
+    stream.push("我回来啦。")
+    stream.finish()
+    await _settle(40)
+    assert mgr.state.is_proactive_preempted() is False
+    assert _queued(mgr) == [(stream.speech_id, "我回来啦。"), (None, None)]
+
+
+async def test_claim_fires_user_input_with_the_stream_id():
+    mgr = _mgr()
+    stream = _open(mgr)
+    stream.push("你好。")
+    await _settle()
+    assert mgr.state.preempt_marked is True
+    assert [kw.get("sid") for ev, kw in mgr.state.events if ev.name == "USER_INPUT"] == [stream.speech_id]
+
+
+async def test_worker_dying_mid_line_interrupts_the_queued_half(monkeypatch):
+    mgr = _mgr()
+    failed: list[bool] = []
+    stream = _open(mgr, failed=failed)
+    stream.push("前半句，")
+    await _settle()
+    mgr.tts_thread = _DeadThread()
+    stream.push("后半句。")
+    await _settle()
+    assert failed == [True] and mgr.interrupts == [stream.speech_id]
+    assert stream._released.done()
+
+
+async def test_end_marker_refused_for_no_worker_interrupts_first(monkeypatch):
+    mgr = _mgr()
+    failed: list[bool] = []
+    stream = _open(mgr, failed=failed)
+    stream.push("一句话。")
+    await _settle()
+    mgr._request_tts_done_locked = lambda: MirrorSpeechStream.NO_WORKER
+    stream.finish()
+    await _settle()
+    assert failed == [True] and mgr.interrupts == [stream.speech_id]
+    assert stream._released.done()
+
+
+async def test_finish_reporting_no_worker_interrupts_the_queued_text():
+    mgr = _mgr()
+    stream = _open(mgr)
+    stream.push("你好。")
+    await _settle()
+    mgr.tts_thread = _DeadThread()
+    assert stream.finish() == MirrorSpeechStream.NO_WORKER
+    await _settle()
+    assert mgr.interrupts == [stream.speech_id] and stream._released.done()
+
+
+async def test_worker_dying_while_the_end_marker_waits_fails_and_hands_over(monkeypatch):
+    monkeypatch.setattr(MirrorSpeechStream, "_DEFERRED_POLL_S", 0.01)
+    mgr = _mgr(ready=False)
+    failed: list[bool] = []
+    first = _open(mgr, failed=failed)
+    first.push("第一句。")
+    first.finish()
+    second = _open(mgr)
+    second.push("第二句。")
+    await _settle()
+    assert mgr._tts_done_pending_until_ready is True and failed == []
+    mgr.tts_thread = _DeadThread()                 # 等就绪的 worker 死了：推迟标记还在，没人补发
+    await asyncio.sleep(0.05)
+    await _settle()
+    assert failed == [True] and mgr.interrupts[0] == first.speech_id
+    assert first._released.done()

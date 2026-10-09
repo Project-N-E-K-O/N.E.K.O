@@ -204,3 +204,26 @@ async def test_home_segment_whose_stream_fails_later_is_not_waited_for():
     assert seg.queued_at is not None and not seg.done and not rt.voice.fallen_back
     stream.on_failed()
     assert seg.done and rt.voice.fallen_back
+
+
+def test_a_segment_failing_after_it_was_queued_adds_no_wait():
+    # 仪式句入队（登记了估时）后流才报失败：跳过时估时一并清掉，交还不为没出声的那段多等
+    clock = Clock()
+    h = ih.InboxHandoff("v" * 22, finalize_at=clock(), clock=clock)
+    h.attach_speech("ritual", "sp-r")
+    h.mark_queued("ritual", 8000)
+    h.skip("ritual")
+    h.mark_queued("debrief", 2000)                 # 之后回落为只上屏
+    clock.now += 2.5
+    assert h.due()
+
+
+def test_a_text_only_segment_still_waits_for_its_estimate():
+    clock = Clock()
+    h = ih.InboxHandoff("v" * 22, finalize_at=clock(), clock=clock)
+    h.skip("ritual")
+    h.mark_queued("debrief", 2000)
+    clock.now += 1.0
+    assert not h.due()
+    clock.now += 1.5
+    assert h.due()

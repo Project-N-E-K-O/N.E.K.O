@@ -164,7 +164,8 @@ class MirrorSpeechStream:
             task = self._task
             if task is not None and not task.done():
                 task.cancel()                  # 后台任务可能正等着下一段文字：一并结束，不留着它
-            self._release()
+            # 已入队的半句先打断（前端可能已排着它的音频），再交出轮次
+            self._mgr._fire_task(self._abort_then_release())
             return self.NO_WORKER
         self._closed = True
         self._ops.append(None)
@@ -288,6 +289,14 @@ class MirrorSpeechStream:
             await asyncio.wait([self._released], timeout=self._DEFERRED_POLL_S)
             if self._released.done():
                 return
+            if self._owns_turn() and not self._worker_alive():
+                # 等就绪的 worker 死了：推迟的结束标记没人补发，打断这半句再交出
+                self._fail()
+                try:
+                    await mgr._interrupt_mirror_stream(self._speech_id)
+                finally:
+                    self._release()
+                return
             if not (getattr(mgr, "_tts_done_pending_until_ready", False) and self._owns_turn()):
                 # 推迟的结束标记被别处清掉了（打断 / 会话重建）：它不会再入队
                 self._fail()
@@ -307,7 +316,8 @@ class MirrorSpeechStream:
             if not predecessor._released.done():
                 # 前一条一直不收尾：先让它失败、打断它已入队的半句，两行不会被合成一句
                 await predecessor._give_up()
-        self._predecessor = predecessor = None
+        self._predecessor = None
+        del predecessor
         async with mgr.lock:
             # 打开时的当前语音，或这一串里最后一条认领过的流（中间没认领就结束的流不改当前语音）
             expected = {self._base_speech_id, mgr._mirror_last_claimed_sid}
@@ -320,11 +330,15 @@ class MirrorSpeechStream:
             mgr._tts_done_queued_for_turn = False
             mgr._tts_done_pending_until_ready = False
             mgr._mirror_stream_ends[self._speech_id] = self._end_queued
+            # 与 mirror_assistant_speech 相同：主动搭话让路（在说的那轮收尾不再发结束标记，后来的不再认领）
+            mgr.state.mark_user_input_preempt()
         self._claimed = True
         mgr.remember_speech_playback_gain(self._speech_id, 1.0)
+        await mgr.state.fire(SessionEvent.USER_INPUT, sid=self._speech_id)
         await mgr.ensure_tts_pipeline_alive()
         self._started = True
-        while True:
+        lost_worker = False
+        while not lost_worker:
             while not self._ops:
                 self._wake.clear()
                 await self._wake.wait()
@@ -338,14 +352,17 @@ class MirrorSpeechStream:
                 if not self._worker_alive():
                     # worker 不在 / 不出音频：之后的 push 立刻返回 False，调用方改按估时放字幕
                     self._fail()
-                    return
+                    lost_worker = True
+                    continue
                 while self._ops:
                     item = self._ops.popleft()
                     if item is None:
                         status = mgr._request_tts_done_locked()
                         if status == self.NO_WORKER:
                             self._fail()
-                        elif status == "deferred":
+                            lost_worker = True
+                            break
+                        if status == "deferred":
                             # worker 还没就绪：结束标记补发时才交出轮次（下一条流认领会清掉推迟标记）
                             self._end_deferred = True
                         return
@@ -353,6 +370,8 @@ class MirrorSpeechStream:
                         mgr._enqueue_tts_text_chunk(self._speech_id, item)
                     else:
                         mgr.tts_pending_chunks.append((self._speech_id, item))
+        # worker 没了：已入队的半句先打断（出了缓存锁再做，打断要清管线），再由 _run 交出轮次
+        await mgr._interrupt_mirror_stream(self._speech_id)
 
 
 class TurnMixin:
