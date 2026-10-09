@@ -391,14 +391,20 @@ def _runtime_owner(rt: runtime.VisitRuntime) -> Optional[str]:
 
 
 async def _peer_forgotten(config_dir: Path, visit_id: str) -> bool:
-    """Whether "forget this person" erased this visit's peer identity (its ``state.json`` peer fields are null)."""
+    """Whether this visit's peer identity may no longer be shown.
+
+    True when "forget this person" nulled the ``state.json`` peer fields, and
+    also when the ``state.json`` is gone (activation always writes one, so a
+    missing file was swept or never written: no proof the identity is still
+    wanted) or unreadable.
+    """
     try:
         state = await VisitSpool(config_dir, visit_id).read_state()
     except (OSError, ValueError) as exc:
         # 判不出有没有被清除：不露对端身份（正文照给）
         logger.warning("visit transcript %s: state unreadable: %s", visit_id[:6], type(exc).__name__)
         return True
-    return state is not None and not state.get("peer_uid")
+    return state is None or not state.get("peer_uid")
 
 
 async def _memory_transcript(config_dir: Path, rt: runtime.VisitRuntime) -> dict:

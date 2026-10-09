@@ -956,16 +956,21 @@ async def test_memory_transcript_after_forget_has_no_peer_identity(env, monkeypa
             return 0
 
     monkeypatch.setattr(rtm, "recent_runtime", lambda visit_id: Recent())
-    assert (await _transcript(env)).json()["peer_uid"] == HOST_UID
     state = new_state(own_uid=OWN, own_char="Host", own_char_uid=HOST_CHAR_UID,
                       pair_id=derive_pair_id(OWN, HOST_UID), peer_uid=HOST_UID,
                       peer_char_id=derive_peer_char_id(HOST_UID, "f" * 32), memory_enabled=False)
+    spool = VisitSpool(env.host.config_dir, VISIT_ID)
+    await spool.write_state(state)
+    assert (await _transcript(env)).json()["peer_uid"] == HOST_UID
     # 「清除这个人」抹掉了 state.json 的对端字段
-    await VisitSpool(env.host.config_dir, VISIT_ID).write_state(
-        {**state, "peer_uid": None, "pair_id": None, "peer_char_id": None})
+    await spool.write_state({**state, "peer_uid": None, "pair_id": None, "peer_char_id": None})
     body = (await _transcript(env)).json()
     assert body["source"] == "memory" and body["peer_uid"] is None and body["peer_short_id"] is None
     assert HOST_UID not in json.dumps(body)
+    # state.json 已被回收（激活时一定写过）：同样不给身份
+    spool.state_path.unlink()
+    body = (await _transcript(env)).json()
+    assert body["source"] == "memory" and body["peer_uid"] is None and len(body["lines"]) == 0
 
 
 async def test_a_spool_that_lost_lines_gives_way_to_a_complete_source(env):
