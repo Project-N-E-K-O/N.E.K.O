@@ -3566,7 +3566,7 @@
         "activationReason_output_handoff_failed": "音声出力に失敗しました。起動を再試行してください。",
         "activationReason_output_delivery_failed": "音声出力に失敗しました。起動を再試行してください。",
         "resourceRepairButton": "リソースを修復",
-        "resourceLocation": "「リソースを確認して読み込む」を押して声紋認識を準備してください。録音には今お使いの端末のマイクを使用します。",
+        "resourceLocation": "「リソースを確認して読み込む」を押して声紋認識を準備してください。モデルは N.E.K.O を実行しているパソコンに保存され、録音には今お使いの端末のマイクを使用します。",
         "activationRestart": "音声セッションを再開",
         "activationRestartRequired": "マイクを閉じてから、メインのマイクボタンで新しい音声セッションを開始してください。以前の音声は再送信されません。",
         "activationReason_voice_session_restart_required": "マイクを閉じて開き直し、新しい音声セッションを開始してください。以前の音声は再送しません。",

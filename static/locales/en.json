@@ -3566,7 +3566,7 @@
         "activationReason_output_handoff_failed": "Voice output failed. Retry activation.",
         "activationReason_output_delivery_failed": "Voice output failed. Retry activation.",
         "resourceRepairButton": "Repair resources",
-        "resourceLocation": "Click “Check and load resources” to prepare voice recognition. Recording uses the microphone on your current device.",
+        "resourceLocation": "Click “Check and load resources” to prepare voice recognition. Models are stored on the computer running N.E.K.O; recording uses the microphone on your current device.",
         "activationRestart": "Restart voice session",
         "activationRestartRequired": "Close the microphone, then use the main microphone button to start a new voice session. Previous audio will not be resent.",
         "activationReason_voice_session_restart_required": "Close and reopen the microphone to start a new voice session. Previous audio will not be resent.",

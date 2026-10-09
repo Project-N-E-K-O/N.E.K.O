@@ -3566,7 +3566,7 @@
         "activationReason_output_handoff_failed": "음성 출력 실패. 활성화를 다시 시도해 주세요.",
         "activationReason_output_delivery_failed": "음성 출력 실패. 활성화를 다시 시도해 주세요.",
         "resourceRepairButton": "리소스 복구",
-        "resourceLocation": "‘리소스 확인 및 로드’를 눌러 음성 지문 인식을 준비하세요. 녹음에는 현재 사용 중인 기기의 마이크를 사용합니다.",
+        "resourceLocation": "‘리소스 확인 및 로드’를 눌러 음성 지문 인식을 준비하세요. 모델은 N.E.K.O를 실행 중인 컴퓨터에 저장되며, 녹음에는 현재 사용 중인 기기의 마이크를 사용합니다.",
         "activationRestart": "음성 세션 다시 시작",
         "activationRestartRequired": "마이크를 끈 다음 기본 마이크 버튼으로 새 음성 세션을 시작하세요. 이전 오디오는 다시 전송되지 않습니다.",
         "activationReason_voice_session_restart_required": "마이크를 닫고 다시 열어 새 음성 세션을 시작해 주세요. 이전 음성은 다시 전송하지 않습니다.",

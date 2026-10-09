@@ -3566,7 +3566,7 @@
         "activationReason_output_handoff_failed": "语音输出失败，请重试激活。",
         "activationReason_output_delivery_failed": "语音输出失败，请重试激活。",
         "resourceRepairButton": "修复资源",
-        "resourceLocation": "点击「检查并加载资源」准备声纹识别，录音使用你当前设备的麦克风。",
+        "resourceLocation": "点击「检查并加载资源」准备声纹识别。模型保存在运行 N.E.K.O. 的电脑上，录音使用你当前设备的麦克风。",
         "activationRestart": "重新开启语音会话",
         "activationRestartRequired": "请关闭麦克风，再用主麦克风按钮重新开启语音会话。旧音频不会重发。",
         "activationReason_voice_session_restart_required": "请关闭并重新开启麦克风，开始新的语音会话；不会重发之前的音频。",

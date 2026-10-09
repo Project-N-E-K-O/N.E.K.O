@@ -3566,7 +3566,7 @@
         "activationReason_output_handoff_failed": "語音輸出失敗，請重試啟用。",
         "activationReason_output_delivery_failed": "語音輸出失敗，請重試啟用。",
         "resourceRepairButton": "修復資源",
-        "resourceLocation": "點選「檢查並載入資源」準備聲紋辨識，錄音使用你目前裝置的麥克風。",
+        "resourceLocation": "點選「檢查並載入資源」準備聲紋辨識。模型存放在執行 N.E.K.O. 的電腦上，錄音使用你目前裝置的麥克風。",
         "activationRestart": "重新開啟語音對話",
         "activationRestartRequired": "請關閉麥克風，再用主麥克風按鈕重新開啟語音工作階段。舊音訊不會重送。",
         "activationReason_voice_session_restart_required": "請關閉並重新開啟麥克風，開始新的語音對話；不會重送先前的音訊。",

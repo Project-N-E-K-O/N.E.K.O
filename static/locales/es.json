@@ -3566,7 +3566,7 @@
         "activationReason_output_handoff_failed": "Error de salida de voz. Reintenta la activación.",
         "activationReason_output_delivery_failed": "Error de salida de voz. Reintenta la activación.",
         "resourceRepairButton": "Reparar recursos",
-        "resourceLocation": "Haz clic en «Comprobar y cargar recursos» para preparar el reconocimiento de voz. La grabación usa el micrófono del dispositivo que estás usando.",
+        "resourceLocation": "Haz clic en «Comprobar y cargar recursos» para preparar el reconocimiento de voz. Los modelos se guardan en el equipo que ejecuta N.E.K.O; la grabación usa el micrófono del dispositivo que estás usando.",
         "activationRestart": "Reiniciar sesión de voz",
         "activationRestartRequired": "Cierra el micrófono y usa el botón principal del micrófono para iniciar una nueva sesión de voz. El audio anterior no se reenviará.",
         "activationReason_voice_session_restart_required": "Cierra y vuelve a abrir el micrófono para iniciar una nueva sesión. El audio anterior no se reenviará.",
