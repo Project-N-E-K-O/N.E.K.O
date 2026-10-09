@@ -381,6 +381,24 @@ async def _remember_name(character_uid: str) -> None:
     _uid_by_name[name] = character_uid
 
 
+async def _remember_name_strict(character_uid: str) -> None:
+    """Like :func:`_remember_name`, but a config read failure raises (the clearing guard fails closed).
+
+    A guard registered only under the uid would not block a rename of the
+    character's current name, so it must not be entered without one; a
+    deleted character (no current name) has nothing left to protect.
+    """
+    from main_logic.visit import local_chars
+
+    name = await local_chars.resolve_char_name(character_uid)
+    if not name:
+        return
+    for old, uid in list(_uid_by_name.items()):
+        if uid == character_uid and old != name:
+            del _uid_by_name[old]
+    _uid_by_name[name] = character_uid
+
+
 def spawn_visit_background(character_uid: str, factory: Callable[[], Awaitable[Any]]) -> asyncio.Task:
     """Run a visit background write registered under ``character_uid`` until it finishes.
 
@@ -426,7 +444,7 @@ async def hold_character_lifecycle(character_uids: Iterable[str]):
     try:
         async with character_config_mutation_lock:
             for uid in sorted({str(u) for u in character_uids if u}):
-                await _remember_name(uid)
+                await _remember_name_strict(uid)
                 bucket = _visit_bg_tasks.setdefault(uid, set())
                 bucket.add(held)
                 buckets.append((uid, bucket))

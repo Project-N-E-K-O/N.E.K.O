@@ -241,3 +241,16 @@ async def test_refused_rename_holds_nothing(tmp_path):
         status, _body = await _rename(cm, "Old", "New")
     assert status == 400
     assert registry._mutating_characters == set()
+
+
+async def test_guard_fails_closed_when_the_name_cannot_be_read(monkeypatch):
+    # 读不出角色当前名字（配置一时读不了）：不能给出一个只按 uid 登记、挡不住改名的守卫
+    async def broken(_uid):
+        raise OSError("characters.json busy")
+
+    monkeypatch.setattr(local_chars, "resolve_char_name", broken)
+    entered = []
+    with pytest.raises(OSError):
+        async with runtime.hold_character_lifecycle(["uid-a"]):
+            entered.append(True)
+    assert entered == [] and runtime._visit_bg_tasks == {}

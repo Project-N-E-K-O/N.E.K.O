@@ -590,3 +590,22 @@ async def test_chips_of_another_account_or_without_login_are_not_replayed(monkey
     logged_out = VisitSocket([bind()])
     await run(logged_out, manager)
     assert _chip_ids(logged_out) == []
+
+
+async def test_replay_stops_when_the_account_changes_midway(monkeypatch, tmp_path):
+    # 扫描 / 发送途中登出或换账号：不再把上一个账号的芯片发给这一页
+    from main_routers.visit_router import accounts
+
+    await _pending(tmp_path, 13, debrief_choice="ask_later")
+    await _pending(tmp_path, 14, debrief_choice="ask_later")
+    calls = {"n": 0}
+
+    async def switching():
+        calls["n"] += 1
+        return OWN_A if calls["n"] <= 2 else OWN_B      # 扫描时 + 第一块发前仍是 A，之后换成 B
+
+    monkeypatch.setattr(accounts, "own_visit_uid", switching)
+    socket = VisitSocket([])
+    setattr(socket, VISIT_SOCKET_BOUND_ATTR, True)
+    await display_socket.replay_chips(socket, NAME)
+    assert _chip_ids(socket) == [chips_request_id(vid(13))]

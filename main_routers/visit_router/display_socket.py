@@ -205,6 +205,7 @@ async def _pending_debriefs(lanlan_name: str) -> list[dict]:
 
 
 async def _replay_chips(websocket: Any, lanlan_name: str) -> None:
+    from main_routers.visit_router.accounts import own_visit_uid
     from main_routers.visit_router.debrief import chip_blocks, chips_request_id
     from main_routers.visit_router.local_context import prompt_lang
 
@@ -212,6 +213,9 @@ async def _replay_chips(websocket: Any, lanlan_name: str) -> None:
     lang = prompt_lang()
     for state in await _pending_debriefs(lanlan_name):
         visit_id = state["visit_id"]
+        if await own_visit_uid() != state["own_uid"]:
+            # 扫描期间登出 / 换了账号：不再把上一个账号的芯片发给这一页
+            return
         if state["debrief_choice"] not in _CHIP_CHOICES:
             # 预览块 / 写入中 / 写入失败块的重放属于 PR-14（/debrief/choice 与两步写入）
             continue
