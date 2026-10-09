@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 合并 main（消息表情、音色导入、八语文案）与存储迁移加固的提示文案，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-10-09-storage-hardening-main-merge';
+    const LOCALE_VERSION = '2026-10-09-storage-hardening-prepared-recovery';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
