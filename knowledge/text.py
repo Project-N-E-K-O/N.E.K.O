@@ -128,6 +128,11 @@ def _strip_marks(value: str) -> str:
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
 
 
+def search_view(value: object) -> str:
+    """Text normalized the way ``search_tokens`` normalizes each token."""
+    return _strip_marks(unicodedata.normalize("NFKC", str(value or "")).casefold())
+
+
 def search_tokens(value: object) -> list[str]:
     """Split text into the units stored in and queried against the FTS index.
 

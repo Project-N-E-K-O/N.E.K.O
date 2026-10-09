@@ -34,7 +34,7 @@ from .models import KnowledgeEntry
 TARGET_CHARS = 900
 MAX_CHARS = 1_200
 OVERLAP_CHARS = 120
-MAX_CHUNKS_PER_ENTRY = 32
+MAX_CHUNKS_PER_ENTRY = 96
 MAX_EMBED_CHARS = 2_000
 
 _PARAGRAPH_RE = re.compile(r"\n\s*\n")
@@ -84,8 +84,18 @@ def _pieces(paragraph: str) -> list[str]:
 
 
 def chunk_bodies(content: str) -> list[str]:
-    """The content part of each chunk, in order (what an excerpt can show)."""
-    return _bodies(content)
+    """The content part of each chunk, in order, covering all of ``content``.
+
+    Paragraph-aware chunking is used while it fits in ``MAX_CHUNKS_PER_ENTRY``;
+    an entry fragmented beyond that is cut into that many even windows
+    instead, so no part of an entry is ever dropped.
+    """
+    bodies = _bodies(content)
+    if len(bodies) <= MAX_CHUNKS_PER_ENTRY:
+        return bodies
+    text = content.strip()
+    size = math.ceil(len(text) / MAX_CHUNKS_PER_ENTRY)
+    return [text[i:i + size] for i in range(0, len(text), size)]
 
 
 def _bodies(content: str) -> list[str]:
@@ -99,9 +109,7 @@ def _bodies(content: str) -> list[str]:
                 current = piece
             else:
                 current = candidate
-            if len(bodies) >= MAX_CHUNKS_PER_ENTRY:
-                return bodies
-    if current and len(bodies) < MAX_CHUNKS_PER_ENTRY:
+    if current:
         bodies.append(current)
     return bodies
 
@@ -109,7 +117,7 @@ def _bodies(content: str) -> list[str]:
 def derive_chunks(entry: KnowledgeEntry) -> tuple[KnowledgeChunk, ...]:
     """Split an entry into at most ``MAX_CHUNKS_PER_ENTRY`` embedding inputs."""
     chunks: list[KnowledgeChunk] = []
-    for index, body in enumerate(_bodies(entry.content)):
+    for index, body in enumerate(chunk_bodies(entry.content)):
         header = entry.title
         if index == 0 and entry.summary:
             header = f"{entry.title}\n{entry.summary}"

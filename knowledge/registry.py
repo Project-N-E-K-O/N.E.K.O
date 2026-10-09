@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_text
 
 from .models import MATERIAL_TYPES, KnowledgeSource, pack_id_is_valid
 
@@ -40,7 +40,10 @@ from .models import MATERIAL_TYPES, KnowledgeSource, pack_id_is_valid
 REGISTRY_SCHEMA_VERSION = 1
 REGISTRY_FILE = "registry.json"
 PACKS_DIR = "packs"
-MAX_REGISTRY_BYTES = 16 * 1024 * 1024
+# Covers the largest registry the capacity limits allow (20,000 one-entry
+# packs, or 20,000 disabled maximum-length titles); a write that would exceed
+# it is refused instead of leaving a file the next start cannot read.
+MAX_REGISTRY_BYTES = 128 * 1024 * 1024
 _SHA_HEX = frozenset("0123456789abcdef")
 
 
@@ -199,4 +202,7 @@ def load_registry(root: Path) -> Registry:
 
 
 def save_registry(root: Path, registry: Registry) -> None:
-    atomic_write_json(Path(root) / REGISTRY_FILE, registry.to_json())
+    content = json.dumps(registry.to_json(), ensure_ascii=False, indent=2)
+    if len(content.encode("utf-8")) > MAX_REGISTRY_BYTES:
+        raise KnowledgeRegistryError("registry_too_large")
+    atomic_write_text(Path(root) / REGISTRY_FILE, content)

@@ -32,8 +32,8 @@ from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 
-from .store import FTS_CONTENT_CHARS, StoredEntry, VectorSnapshot
-from .text import search_tokens
+from .store import StoredEntry, VectorSnapshot
+from .text import search_tokens, search_view
 
 
 RRF_K = 60
@@ -63,15 +63,19 @@ class SemanticMatch:
 
 
 def token_coverage(query: str, entry: StoredEntry) -> float:
-    """Share of the query's distinct tokens that also occur in the entry."""
+    """Share of the query's distinct tokens that also occur in the entry.
+
+    Content can be long (all of it is indexed), so instead of tokenizing it
+    each token is looked up as a substring of the normalized text.
+    """
     wanted = set(search_tokens(query))
     if not wanted:
         return 0.0
-    parts = [entry.title, entry.summary, entry.content[:FTS_CONTENT_CHARS], *entry.tags]
+    parts = [entry.title, entry.summary, entry.content, *entry.tags]
     for values in entry.terms.values():
         parts.extend(values)
-    present = set(search_tokens("\n".join(parts)))
-    return len(wanted & present) / len(wanted)
+    haystack = search_view("\n".join(parts))
+    return sum(1 for token in wanted if token in haystack) / len(wanted)
 
 
 def semantic_candidates(

@@ -37,7 +37,6 @@ from .text import fold_surface, fts_match_expression, search_tokens, title_key
 
 
 SCHEMA_VERSION = 1
-FTS_CONTENT_CHARS = 8_000
 MAX_CHUNKS_PER_PACK = 10_000
 MAX_TOTAL_CHUNKS = 20_000
 MAX_EMBED_ATTEMPTS = 3
@@ -123,7 +122,7 @@ def _row_to_entry(row: sqlite3.Row) -> StoredEntry:
 
 
 def _entry_tokens(entry: KnowledgeEntry) -> str:
-    parts = [entry.title, entry.summary, entry.content[:FTS_CONTENT_CHARS]]
+    parts = [entry.title, entry.summary, entry.content]
     for values in entry.terms.values():
         parts.extend(values)
     parts.extend(entry.tags)

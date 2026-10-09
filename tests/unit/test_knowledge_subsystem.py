@@ -1013,3 +1013,61 @@ def test_semantic_match_reports_the_best_chunk_and_scales_with_many_packs():
     )
     assert time.perf_counter() - started < 1.0
     assert [(m.entry_id, m.chunk_index) for m in matches] == [(count - 1, 3)]
+
+
+async def test_leftover_file_that_cannot_be_deleted_does_not_disable_knowledge(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    await _import(service, _pack())
+    await service.stop()
+    leftover = tmp_path / "packs" / "orphan.0000000000000000.json"
+    leftover.write_bytes(b"{}")
+    real_unlink = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self == leftover:
+            raise PermissionError("held open")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    restarted = await _started(tmp_path)
+    try:
+        assert (await restarted.status())["state"] == "ready"
+        assert (await restarted.query(query="绝绝子"))["result"] == "matched"
+    finally:
+        await restarted.stop()
+
+
+async def test_the_tail_of_a_long_entry_is_searchable_and_rendered(tmp_path):
+    from knowledge.chunking import MAX_CHUNKS_PER_ENTRY, chunk_bodies
+
+    # Short and long paragraphs alternate, so paragraph-aware chunking needs
+    # more than MAX_CHUNKS_PER_ENTRY chunks and the even-window path is used.
+    paragraphs = []
+    for i in range(60):
+        paragraphs.append(f"Note {i}. " + "short " * 15)
+        paragraphs.append(f"Paragraph {i}: " + "lorem ipsum dolor " * 63)
+    content = "\n\n".join(paragraphs + ["Finally the zanzibar detail lives at the very end."])
+    assert 60_000 < len(content) < 80_000
+    from knowledge.chunking import _bodies
+
+    assert len(_bodies(content)) > MAX_CHUNKS_PER_ENTRY
+    bodies = chunk_bodies(content)
+    assert len(bodies) <= MAX_CHUNKS_PER_ENTRY
+    assert "zanzibar" in bodies[-1]
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack(entries=[{"title": "Very long", "content": content}]))
+        result = await service.query(query="zanzibar detail", language="en")
+        assert result["result"] == "matched"
+        assert "zanzibar" in result["context"]
+    finally:
+        await service.stop()
+
+
+def test_registry_too_large_to_read_back_is_never_written(tmp_path, monkeypatch):
+    from knowledge import registry as registry_module
+
+    monkeypatch.setattr(registry_module, "MAX_REGISTRY_BYTES", 10)
+    with pytest.raises(registry_module.KnowledgeRegistryError):
+        registry_module.save_registry(tmp_path, registry_module.Registry())
+    assert not (tmp_path / registry_module.REGISTRY_FILE).exists()

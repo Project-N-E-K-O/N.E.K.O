@@ -288,15 +288,20 @@ class KnowledgeService:
         return broken
 
     def _clean_files_blocking(self, registry: Registry) -> None:
+        """Drop leftovers; a file that cannot be deleted now is retried next start."""
         staging = self.root / STAGING_DIR
-        if staging.is_dir():
-            for path in staging.iterdir():
-                if path.is_file():
-                    path.unlink(missing_ok=True)
         referenced = {record.file_name for record in registry.packs.values()}
-        for path in (self.root / PACKS_DIR).iterdir():
-            if path.is_file() and path.suffix == ".json" and path.name not in referenced:
+        leftovers = [path for path in staging.iterdir() if path.is_file()] if staging.is_dir() else []
+        leftovers += [
+            path
+            for path in (self.root / PACKS_DIR).iterdir()
+            if path.is_file() and path.suffix == ".json" and path.name not in referenced
+        ]
+        for path in leftovers:
+            try:
                 path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("[Knowledge] could not delete leftover %s", path.name)
 
     # ── availability ────────────────────────────────────────────────
 
