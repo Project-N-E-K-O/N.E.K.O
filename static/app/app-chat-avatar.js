@@ -1324,8 +1324,9 @@
 
         // The popup and upload controls remain available while a model is still loading.
         if (showCard) setPreviewVisible(true, trigger);
-        // A failed read may hide whether an uncertain save landed; opening the popup reads it again.
-        if (showCard && window.appChatAvatarState?.getError()) {
+        // The popup always shows the backend record: an uncertain save may have landed after its
+        // confirmation read, and its best-effort notification may never have arrived.
+        if (showCard && window.appChatAvatarState) {
             window.appChatAvatarState.refresh('popup-open').catch(function () {});
         }
         if (showCard && !forceRefresh && (window.appChatAvatarState?.getDataUrl() || window.appChatAvatarEditor?.getState().editing)) {

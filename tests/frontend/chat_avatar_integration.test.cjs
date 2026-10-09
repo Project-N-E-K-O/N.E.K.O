@@ -338,6 +338,7 @@ function popupHarness() {
         getIdentity: () => identity,
         getRecord: () => ({ revision: '0', data_url: custom || null }),
         getError: () => null,
+        refresh: async () => null,
         getLimits: () => ({ normalized_size: 320, normalized_max_bytes: 1048576 }),
         isCurrent: () => true,
         cancelEdit() {},
@@ -485,19 +486,22 @@ test('a model capture retired for a custom upload is captured again silently', a
     assert.equal(autoCaptures(), before + 1, 'nothing to recapture when no capture was running');
 });
 
-test('opening the popup re-reads a failed avatar record, a healthy one is left alone', async () => {
+test('opening the popup re-reads the avatar record, whether or not the last read failed', async () => {
     const h = popupHarness(); const reads = [];
     let error = { code: 'chat_avatar_network_error' };
     Object.assign(h.window.appChatAvatarState, {
         getError: () => error,
-        refresh: reason => { reads.push(reason); return Promise.resolve(null); }
+        refresh: reason => { reads.push(reason); return Promise.reject(new Error('offline')); }
     });
     h.setCustom('data:image/png;base64,CUSTOM');
     await h.window.appChatAvatar.showPopup();
     assert.deepEqual(reads, ['popup-open']);
+    // An uncertain save whose confirmation read succeeded with the old revision leaves no error.
     error = null;
     await h.window.appChatAvatar.showPopup();
-    assert.deepEqual(reads, ['popup-open']);
+    assert.deepEqual(reads, ['popup-open', 'popup-open']);
+    await h.window.appChatAvatar.showPopup(null, { showCard: false, silent: true });
+    assert.deepEqual(reads, ['popup-open', 'popup-open'], 'background captures do not read');
 });
 
 test('Escape closes the popup but only keeps a key aimed at it from other handlers', () => {
