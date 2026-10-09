@@ -4,7 +4,7 @@
 Sonnet 5.5 (``between_tools``) / Opus 5.5 return ``thinking`` blocks next to
 ``tool_use`` blocks. Callers keep an OpenAI-shaped history that cannot hold
 them, so ChatAnthropic remembers the original turn by tool_use id and restores
-it when the current tool round is sent back.
+it when the current tool round is sent back with the same system and tools.
 """
 from __future__ import annotations
 
@@ -14,11 +14,16 @@ from types import SimpleNamespace as NS
 import pytest
 
 import utils.llm_client.anthropic_client as anthropic_client_module
-from utils.llm_client.anthropic_client import (
-    ChatAnthropic,
-    _normalize_messages_to_anthropic,
-    _remember_tool_turn,
-)
+from utils.llm_client.anthropic_client import ChatAnthropic, _remember_tool_turn
+
+_TOOLS = [{
+    "type": "function",
+    "function": {
+        "name": "weather",
+        "description": "Look up the weather.",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+    },
+}]
 
 _TURN = [
     {"type": "thinking", "thinking": "", "signature": "sig-1"},
@@ -27,9 +32,54 @@ _TURN = [
 ]
 
 
-@pytest.fixture(autouse=True)
-def _fresh_replay_cache(monkeypatch):
+class _Stream:
+    def __init__(self, events):
+        self._events = events
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    def __aiter__(self):
+        self._it = iter(self._events)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._it)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+@pytest.fixture
+def client(monkeypatch):
     monkeypatch.setattr(anthropic_client_module, "_tool_turn_replay", OrderedDict())
+    events_box: dict = {"events": []}
+
+    class _Fake:
+        def __init__(self, **_kwargs):
+            self.messages = NS(stream=lambda **_kw: _Stream(events_box["events"]))
+
+        def close(self):
+            pass
+
+    class _FakeAsync(_Fake):
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(anthropic_client_module, "Anthropic", _Fake)
+    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsync)
+    monkeypatch.setattr(anthropic_client_module, "_record_anthropic_token_usage", lambda *_a: None)
+    llm = ChatAnthropic(
+        model="claude-sonnet-5-5",
+        base_url="https://api.anthropic.com/v1",
+        api_key="k",
+        tools=_TOOLS,
+    )
+    llm._events_box = events_box
+    return llm
 
 
 def _history(tool_call_id="toolu_1"):
@@ -49,38 +99,69 @@ def _history(tool_call_id="toolu_1"):
     ]
 
 
-def test_current_tool_round_replays_original_blocks():
-    _remember_tool_turn(_TURN)
-    _system, messages = _normalize_messages_to_anthropic(_history())
-    assert messages[1] == {"role": "assistant", "content": _TURN}
-    assert messages[2]["content"][0]["tool_use_id"] == "toolu_1"
+def _remember_for(client, history=None):
+    payload = client._build_payload_for_call(history or _history(), {})
+    _remember_tool_turn(_TURN, anthropic_client_module._replay_context_key(payload))
 
 
-def test_turns_before_the_last_user_message_are_not_replayed():
-    _remember_tool_turn(_TURN)
+def _assistant_content(client, history, **overrides):
+    payload = client._build_payload_for_call(history, overrides)
+    return [m for m in payload["messages"] if m["role"] == "assistant"][0]["content"]
+
+
+def test_current_tool_round_replays_original_blocks(client):
+    _remember_for(client)
+    assert _assistant_content(client, _history()) == _TURN
+
+
+def test_request_without_the_original_tools_does_not_replay(client):
+    # Forced-finalize drops tools; replaying would fail the preserved-thinking prefix check.
+    _remember_for(client)
+    content = _assistant_content(client, _history(), tools=None)
+    assert all(b["type"] != "thinking" for b in content)
+
+
+def test_changed_system_prompt_does_not_replay(client):
+    _remember_for(client)
+    history = _history()
+    history[0] = {"role": "system", "content": "other"}
+    assert all(b["type"] != "thinking" for b in _assistant_content(client, history))
+
+
+def test_turns_before_the_last_user_message_are_not_replayed(client):
+    _remember_for(client)
     history = _history() + [
         {"role": "assistant", "content": "It is sunny."},
         {"role": "user", "content": "thanks"},
     ]
-    _system, messages = _normalize_messages_to_anthropic(history)
-    assert all(b["type"] != "thinking" for b in messages[1]["content"])
+    assert all(b["type"] != "thinking" for b in _assistant_content(client, history))
 
 
-def test_unknown_or_mismatched_tool_ids_keep_the_built_blocks():
-    _remember_tool_turn(_TURN)
-    _system, messages = _normalize_messages_to_anthropic(_history("toolu_other"))
-    assert all(b["type"] != "thinking" for b in messages[1]["content"])
+def test_unknown_tool_ids_keep_the_built_blocks(client):
+    _remember_for(client)
+    content = _assistant_content(client, _history("toolu_other"))
+    assert all(b["type"] != "thinking" for b in content)
 
 
-def test_turn_without_thinking_is_not_remembered():
-    _remember_tool_turn(_TURN[1:])
-    _system, messages = _normalize_messages_to_anthropic(_history())
-    assert all(b["type"] != "thinking" for b in messages[1]["content"])
+def test_lookup_refreshes_the_entry(client, monkeypatch):
+    monkeypatch.setattr(anthropic_client_module, "_TOOL_TURN_REPLAY_MAX", 2)
+    key = anthropic_client_module._replay_context_key(client._build_payload_for_call(_history(), {}))
+    _remember_tool_turn(_TURN, key)
+    _remember_tool_turn([_TURN[0], {**_TURN[2], "id": "toolu_2"}], key)
+    _assistant_content(client, _history())  # hit on toolu_1 makes toolu_2 the oldest
+    _remember_tool_turn([_TURN[0], {**_TURN[2], "id": "toolu_3"}], key)
+    assert list(anthropic_client_module._tool_turn_replay) == ["toolu_1", "toolu_3"]
+
+
+def test_turn_without_thinking_is_not_remembered(client):
+    payload = client._build_payload_for_call(_history(), {})
+    _remember_tool_turn(_TURN[1:], anthropic_client_module._replay_context_key(payload))
+    assert all(b["type"] != "thinking" for b in _assistant_content(client, _history()))
 
 
 @pytest.mark.asyncio
-async def test_astream_remembers_thinking_tool_turn(monkeypatch):
-    events = [
+async def test_astream_remembers_thinking_tool_turn(client):
+    client._events_box["events"] = [
         NS(type="message_start", message=NS(usage=None)),
         NS(type="content_block_start", index=0, content_block=NS(type="thinking", thinking="", signature="")),
         NS(type="content_block_delta", index=0, delta=NS(type="thinking_delta", thinking="")),
@@ -96,46 +177,11 @@ async def test_astream_remembers_thinking_tool_turn(monkeypatch):
         NS(type="message_delta", delta=NS(stop_reason="tool_use", usage=None), usage=None),
         NS(type="message_stop", message=None),
     ]
-
-    class _Stream:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return False
-
-        def __aiter__(self):
-            self._it = iter(events)
-            return self
-
-        async def __anext__(self):
-            try:
-                return next(self._it)
-            except StopIteration:
-                raise StopAsyncIteration
-
-    class _Fake:
-        def __init__(self, **_kwargs):
-            self.messages = NS(stream=lambda **_kw: _Stream())
-
-        def close(self):
-            pass
-
-    class _FakeAsync(_Fake):
-        async def close(self):
-            pass
-
-    monkeypatch.setattr(anthropic_client_module, "Anthropic", _Fake)
-    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsync)
-    monkeypatch.setattr(anthropic_client_module, "_record_anthropic_token_usage", lambda *_a: None)
-
-    client = ChatAnthropic(model="claude-sonnet-5-5", base_url="https://api.anthropic.com/v1", api_key="k")
+    first_request = [{"role": "system", "content": "sys"}, {"role": "user", "content": "weather?"}]
     try:
-        async for chunk in client.astream([{"role": "user", "content": "weather?"}]):
+        async for chunk in client.astream(first_request):
             if chunk.finish_reason:
                 break  # consumers may stop at the finish signal
+        assert _assistant_content(client, _history()) == _TURN
     finally:
         await client.aclose()
-
-    _system, messages = _normalize_messages_to_anthropic(_history())
-    assert messages[1]["content"] == _TURN
