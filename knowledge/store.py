@@ -82,6 +82,9 @@ _SCHEMA = (
 )
 
 
+_REQUIRED_TABLES = frozenset({"meta", "packs", "entries", "surfaces", "entries_fts", "chunks"})
+
+
 class KnowledgeStoreError(Exception):
     """The index could not be used as it is; the caller rebuilds it."""
 
@@ -210,6 +213,10 @@ class KnowledgeStore:
                     ).fetchone()
                     if row is None or row[0] != str(SCHEMA_VERSION):
                         raise KnowledgeStoreError("schema_version_mismatch")
+                    # quick_check passes after a table is dropped; a derived
+                    # database missing any part is rebuilt rather than trusted.
+                    if not _REQUIRED_TABLES <= tables:
+                        raise KnowledgeStoreError("schema_incomplete")
                     return
                 if tables:
                     raise KnowledgeStoreError("unknown_database")

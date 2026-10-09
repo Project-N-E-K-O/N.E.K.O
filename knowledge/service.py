@@ -853,6 +853,21 @@ class KnowledgeService:
 
     # ── queries ─────────────────────────────────────────────────────
 
+    def _current_packs(self, pack_ids: Sequence[str], registry: Registry) -> set[str]:
+        """Packs whose indexed rows are the version ``registry`` describes.
+
+        An import writes the rows before the registry, and queries do not take
+        the write lock, so a query may see a newer (or rolled-back) version of
+        a pack than its registry snapshot; such rows are not served.
+        """
+        indexed = self._store.pack_versions()
+        return {
+            pack_id
+            for pack_id in pack_ids
+            if (record := registry.packs.get(pack_id)) is not None
+            and indexed.get(pack_id) == record.pack_sha256
+        }
+
     def _allowed_pack_ids(self, registry: Registry, material_type: str) -> list[str]:
         wanted = MATERIAL_TYPES if material_type in ("", "auto", "all") else (material_type,)
         return [
@@ -1002,7 +1017,9 @@ class KnowledgeService:
         )
         candidate_ids = list(dict.fromkeys([*exact_ids, *lexical_ids, *(m.entry_id for m in semantic)]))
         entries = await asyncio.to_thread(self._store.fetch_entries, candidate_ids)
-        allowed_set = set(allowed)
+        # Read the versions after the rows: rows of a pack replaced in between
+        # then show a newer version and are left out, never mislabelled.
+        allowed_set = await asyncio.to_thread(self._current_packs, allowed, registry)
         usable = {
             entry_id
             for entry_id, entry in entries.items()
@@ -1023,12 +1040,13 @@ class KnowledgeService:
         self, ranked: list[RankedHit], query: str, language: str | None, registry: Registry
     ) -> tuple[list[dict[str, Any]], str]:
         entries = self._store.fetch_entries([hit.entry_id for hit in ranked])
+        current = self._current_packs([entry.pack_id for entry in entries.values()], registry)
         cards: list[RenderCard] = []
         hits: list[dict[str, Any]] = []
         for ranked_hit in ranked:
             entry = entries.get(ranked_hit.entry_id)
             record = registry.packs.get(entry.pack_id) if entry is not None else None
-            if entry is None or record is None or entry.disabled:
+            if entry is None or record is None or entry.disabled or entry.pack_id not in current:
                 continue
             # Show the passage that matched, not just the start of the entry.
             bodies = chunk_bodies(entry.content) or [entry.content]

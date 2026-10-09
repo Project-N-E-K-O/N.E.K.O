@@ -261,4 +261,23 @@ describe('KnowledgeManager job polling', () => {
     await flush()
     expect(api.entries.mock.calls.length).toBeGreaterThan(entriesWhileStarting)
   })
+
+  it('reloads the catalog after toggling an entry', async () => {
+    const entry = {
+      pack_id: 'fixture-pack', title: 'Kotatsu', terms: {}, tags: [], summary: '',
+      content_preview: 'heated table', material_type: 'knowledge',
+      source: { name: 'Fixture', homepage: '', license: '' }, disabled: false,
+    }
+    api.entries.mockResolvedValue({ ok: true, total: 1, offset: 0, limit: 50, has_more: false, items: [entry] })
+    api.setEntryDisabled.mockResolvedValue({ ok: true, pack_id: 'fixture-pack', disabled: true, disabled_entries: 1 })
+    const container = await mount()
+    await openTab('catalog')
+    const before = api.entries.mock.calls.length
+    const toggle = container.querySelector<HTMLElement>('.el-table .el-switch')
+    expect(toggle).toBeTruthy()
+    toggle!.click()
+    await flush()
+    expect(api.setEntryDisabled).toHaveBeenCalledWith({ pack_id: 'fixture-pack', title: 'Kotatsu', disabled: true })
+    expect(api.entries.mock.calls.length).toBeGreaterThan(before)
+  })
 })

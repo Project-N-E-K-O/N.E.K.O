@@ -1036,10 +1036,11 @@ async function toggleEntry(row: KnowledgeEntry, disabled: boolean) {
   pendingEntries.add(key)
   try {
     const response = await knowledgeApi.setEntryDisabled({ pack_id: row.pack_id, title: row.title, disabled })
-    // A catalog read started before this write would put the old flag back.
+    // A catalog read started before this write would put the old flag back;
+    // drop it and read the current query/page again.
     entriesGate.invalidate()
-    entriesLoading.value = false
     row.disabled = response.disabled ?? disabled
+    void loadEntries()
     if (selectedEntry.value && entryRowKey(selectedEntry.value) === key) {
       selectedEntry.value = { ...selectedEntry.value, disabled: row.disabled }
     }

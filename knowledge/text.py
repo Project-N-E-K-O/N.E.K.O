@@ -41,8 +41,13 @@ _CHAT_TOKEN_RE = re.compile(
     r"start_header_id|end_header_id|eot_id|begin_of_text)\s*\|>",
     re.IGNORECASE,
 )
+# Invisible format characters (zero-width spaces/joiners, bidi controls, BOM,
+# soft hyphen). They are removed from pack text, and the role-marker pattern
+# also tolerates them, so an invisible prefix cannot hide a line-leading role.
+_INVISIBLE = "\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff"
+_INVISIBLE_RE = re.compile(f"[{_INVISIBLE}]")
 _ROLE_MARKER_RE = re.compile(
-    r"(?im)^[ \t]*(?:system|developer|assistant|user|human)[ \t]*[:：]"
+    rf"(?im)^[ \t{_INVISIBLE}]*(?:system|developer|assistant|user|human)[ \t{_INVISIBLE}]*[:：]"
 )
 _FENCE_RUN_RE = re.compile(r"={3,}")
 _HORIZONTAL_SPACE_RE = re.compile(r"[ \t]+")
@@ -72,7 +77,7 @@ def strip_chat_markup(value: str) -> str:
     Unicode line breaks (NEL, LS, PS) become ``\n`` first: a role marker after
     one of them starts a line for a reader, but not for ``^`` in a regex.
     """
-    text = str(value or "").translate(_UNICODE_LINE_BREAKS)
+    text = _INVISIBLE_RE.sub("", str(value or "").translate(_UNICODE_LINE_BREAKS))
     while True:
         cleaned = _CHAT_TOKEN_RE.sub("", text)
         cleaned = _ROLE_MARKER_RE.sub("", cleaned)
