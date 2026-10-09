@@ -42,6 +42,7 @@ from utils.conversation_settings_constants import (
     normalize_independent_asr_provider_preference_handshake,
 )
 from utils.logger_config import get_module_logger
+from utils.chat_avatar_connections import register_chat_avatar_connection, unregister_chat_avatar_connection
 from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.new_character_greeting_state import has_pending as has_new_character_greeting_pending
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -923,6 +924,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     # try-else 链的情形（SystemExit / KeyboardInterrupt 都不走 else）。
     _ws_disconnect_reason = "unknown"
     try:
+        register_chat_avatar_connection(websocket)
         # 计入活跃连接（finally 必减）。greeting_check 判定真·新会话时据此排除
         # 「并发开第二个窗口」的情形。
         _ws_active_count[lanlan_name] = _ws_active_count.get(lanlan_name, 0) + 1
@@ -1694,6 +1696,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         # 内只有 break 才到这；break 路径上面都设过 reason；这里兜底防 NameError。
         _ws_disconnect_reason = "normal_break"
     finally:
+        unregister_chat_avatar_connection(websocket)
         control_cancellation = None
         for task in tuple(voice_control_tasks):
             task.cancel()

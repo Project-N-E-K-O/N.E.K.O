@@ -87,10 +87,18 @@ class MetricsCollector:
         # snapshot that was taken later.
         self._history_version = 0
         self._cache_version = -1
+        # Live-set changes bump this, and only this. A full query retries when
+        # it moves, so an ordinary append does not discard an in-flight snapshot.
+        self._liveness_version = 0
 
         # 按 plugin_id 复用 psutil.Process（值为 (pid, Process)），
         # 以便 cpu_percent(interval=None) 基于上次采样计算差值而不阻塞。
         self._ps_processes: dict[str, tuple[int, object]] = {}
+        # Plugins that produced a sample in the latest collection tick, or whose
+        # process is still the one behind their last sample and only missed this
+        # tick's read. History is kept for stopped plugins, but "current" metrics
+        # must only report processes that are still alive.
+        self._live_plugin_ids: set[str] = set()
     
     async def start(self, plugin_hosts_getter: Callable[[], dict[str, object]]) -> None:
         """启动指标收集任务"""
@@ -130,11 +138,13 @@ class MetricsCollector:
                 if not plugin_hosts:
                     if PLUGIN_LOG_SERVER_DEBUG:
                         logger.debug("No plugin hosts available for metrics collection")
+                    self._publish_live_plugin_ids(set())
                     await asyncio.sleep(self.interval)
                     continue
                 
                 if PLUGIN_LOG_SERVER_DEBUG:
                     logger.debug(f"Collecting metrics for {len(plugin_hosts)} plugins: {list(plugin_hosts.keys())}")
+                live_plugin_ids: set[str] = set()
                 for plugin_id, host in plugin_hosts.items():
                     try:
                         metrics = await asyncio.to_thread(
@@ -154,6 +164,7 @@ class MetricsCollector:
                                     self._metrics_history[plugin_id].pop(0)
                                 if PLUGIN_LOG_SERVER_DEBUG:
                                     logger.debug(f"Successfully collected and stored metrics for plugin {plugin_id}")
+                            live_plugin_ids.add(plugin_id)
                         else:
                             # 记录为什么没有收集到指标
                             process = getattr(host, "process", None)
@@ -166,8 +177,18 @@ class MetricsCollector:
                             else:
                                 if PLUGIN_LOG_SERVER_DEBUG:
                                     logger.debug(f"Failed to collect metrics for plugin {plugin_id} (process alive but collection returned None)")
+                                # The process is still there. Keep its previous sample in
+                                # the current totals instead of treating one failed read
+                                # as a stop, but only if that sample came from this same
+                                # process: after a restart the old PID's numbers are stale.
+                                with self._lock:
+                                    history = self._metrics_history.get(plugin_id)
+                                    same_process = bool(history) and history[-1].pid == process.pid
+                                if same_process:
+                                    live_plugin_ids.add(plugin_id)
                     except _RUNTIME_ERRORS as e:
                         logger.warning(f"Exception while collecting metrics for plugin {plugin_id}: {e}", exc_info=True)
+                self._publish_live_plugin_ids(live_plugin_ids)
                 
             except asyncio.CancelledError:
                 break
@@ -176,6 +197,22 @@ class MetricsCollector:
             
             await asyncio.sleep(self.interval)
     
+    def _publish_live_plugin_ids(self, live_plugin_ids: set[str]) -> None:
+        """Record which plugins were alive in the latest tick.
+
+        Stopped or crashed plugins keep their history, but their last sample must
+        not keep counting towards current / global totals.
+        """
+        with self._lock:
+            if live_plugin_ids == self._live_plugin_ids:
+                return
+            self._live_plugin_ids = set(live_plugin_ids)
+            # Newer than any cached snapshot, so a stale publish cannot win.
+            # Appends keep their own counter; only a live-set change retries a query.
+            self._liveness_version += 1
+            self._cache = []
+            self._cache_timestamp = 0.0
+
     def _prune_ps_processes(
         self,
         plugin_hosts: dict[str, object],
@@ -293,7 +330,7 @@ class MetricsCollector:
             # and dict allocation cannot delay a collector tick.
             with self._lock:
                 history = self._metrics_history.get(plugin_id, [])
-                latest = history[-1] if history else None
+                latest = history[-1] if history and plugin_id in self._live_plugin_ids else None
                 available_ids = list(self._metrics_history.keys())
             if latest is not None:
                 return [self._metrics_to_dict(latest)]
@@ -304,29 +341,45 @@ class MetricsCollector:
                 )
             return []
         else:
-            # 全量查询，使用缓存减少锁竞争
-            if self._cache and (now - self._cache_timestamp) < self._cache_ttl:
-                return self._cache
-            
+            # 全量查询，使用缓存减少锁竞争。缓存列表和它的时间戳要在锁内一起读：
+            # 分开读的话，可能拿到失效前的旧列表配上新发布的时间戳，把已停止的
+            # 插件当成新鲜数据返回。
             with self._lock:
-                version = self._history_version
-                latest_records = [
-                    history[-1]
-                    for history in self._metrics_history.values()
-                    if history
-                ]
+                cached = self._cache
+                cached_at = self._cache_timestamp
+            if cached and (now - cached_at) < self._cache_ttl:
+                return cached
+
+            def _live_snapshot() -> tuple[int, int, list[PluginMetrics]]:
+                with self._lock:
+                    return self._history_version, self._liveness_version, [
+                        history[-1]
+                        for history_plugin_id, history in self._metrics_history.items()
+                        if history and history_plugin_id in self._live_plugin_ids
+                    ]
+
             # Existing records are not mutated after append, so conversion can
-            # safely happen after releasing the collector lock. Publish only if
-            # no newer snapshot has already filled the cache.
-            result = [self._metrics_to_dict(record) for record in latest_records]
-            with self._lock:
-                if version < self._cache_version and self._cache:
-                    return self._cache
-                self._cache = result
-                self._cache_timestamp = time.time()
-                self._cache_version = version
-            logger.debug(f"get_current_metrics (all): found {len(result)} plugins with metrics")
-            return result
+            # happen outside the lock. A liveness publish may clear _cache
+            # while that conversion is still running; publishing the old
+            # snapshot would put stopped plugins back into the TTL cache.
+            # Retry only when the live set moved. An append keeps the
+            # newer-cache guard so a later snapshot is not overwritten.
+            for _ in range(3):
+                version, liveness_version, latest_records = _live_snapshot()
+                result = [self._metrics_to_dict(record) for record in latest_records]
+                with self._lock:
+                    if liveness_version != self._liveness_version:
+                        continue
+                    if version < self._cache_version and self._cache:
+                        return self._cache
+                    self._cache = result
+                    self._cache_timestamp = time.time()
+                    self._cache_version = version
+                logger.debug(f"get_current_metrics (all): found {len(result)} plugins with metrics")
+                return result
+
+            _, _, latest_records = _live_snapshot()
+            return [self._metrics_to_dict(record) for record in latest_records]
     
     def get_metrics_history(
         self,

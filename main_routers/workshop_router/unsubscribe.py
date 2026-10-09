@@ -32,7 +32,10 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from ..shared_state import ensure_steamworks as get_steamworks, get_config_manager
 from utils.character_memory import character_config_mutation_lock
-from utils.config_manager import get_reserved
+from utils.config_manager import get_character_uid, get_reserved
+from utils.asyncio_retirement import await_retirement
+from utils.chat_avatar_store import ChatAvatarError, remove_record as remove_chat_avatar_record
+from utils.config_manager.storage_roots import chat_avatar_directory
 
 
 _RESUME_RETRY_INITIAL_DELAY_SECONDS = 1.0
@@ -764,6 +767,8 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     await fn(name)
 
             pending_del_names: list[str] = []
+            pending_avatar_uids: dict[str, str] = {}
+            deleted_avatar_directory = chat_avatar_directory(config_mgr)
             # Theater data owned by each deleted character, collected with the
             # same strict preflight as DELETE /catgirl/{name}.
             numeric_purges: dict[str, object] = {}
@@ -830,6 +835,9 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                         })
                         continue
                     try:
+                        uid = get_character_uid(catgirl_map[name])
+                        if uid:
+                            pending_avatar_uids[name] = uid
                         del catgirl_map[name]
                         pending_del_names.append(name)
                     except Exception as exc:
@@ -941,6 +949,18 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             # 若配置写失败，用户的记忆文件仍原样保留，不会出现回滚 registry
             # 成功但文件已经被 shutil.rmtree 永久删除的假回滚。
             for name in pending_del_names:
+                uid = pending_avatar_uids.get(name)
+                if uid:
+                    try:
+                        await await_retirement(asyncio.to_thread(
+                            remove_chat_avatar_record, deleted_avatar_directory, uid,
+                        ))
+                    except ChatAvatarError as exc:
+                        cleanup_summary["errors"].append({
+                            "character": name,
+                            "stage": "delete_chat_avatar",
+                            "error": exc.code,
+                        })
                 results = await asyncio.gather(
                     _delete_memory_with_retry(name),
                     _write_tombstone(name),

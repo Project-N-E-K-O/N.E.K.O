@@ -31,6 +31,8 @@
     // 新手教程期间的临时头像覆盖：只驻留内存，不写入用户角色头像缓存。
     let tutorialAvatarOverrideDataUrl = '';
     let tutorialAvatarOverrideModelType = '';
+    // Retain model feedback while the popup displays a custom avatar or draft.
+    let modelPreviewStatus = '';
 
     const STORAGE_PREFIX = 'neko_avatar:';
     const CHARACTER_REFERENCE_CAPTURE_OPTIONS = {
@@ -245,8 +247,13 @@
                 // 守卫：如果这一帧之前已被切换到隐藏状态，就不要再加回 is-visible
                 if (card.hidden) return;
                 card.classList.add('is-visible');
+                const upload = document.getElementById('chat-avatar-upload');
+                if (upload && !cropperState && !window.appChatAvatarEditor?.getState().editing) upload.focus();
             });
         } else {
+            window.appChatAvatarEditor?.cancel();
+            // A running capture still finishes and caches in the background; it just stops driving the popup.
+            activeCaptureCardVisible = false;
             // 已经隐藏或正在隐藏 → 幂等退出
             if (card.hidden) return;
             if (pendingHideHandler) return;
@@ -255,7 +262,9 @@
             closeCropperIfOpen();
 
             card.classList.remove('is-visible');
+            const previousTrigger = activeTrigger;
             clearTriggerActive();
+            if (previousTrigger && typeof previousTrigger.focus === 'function') previousTrigger.focus();
 
             const finalizeHide = function () {
                 if (pendingHideTimer) {
@@ -294,9 +303,17 @@
         }
     }
 
-    function setPreviewStatus(text) {
+    function setPreviewStatus(text, options = {}) {
+        if (options.rememberModel !== false) modelPreviewStatus = text;
+        // Background model progress is remembered but never replaces an open cropper's title.
+        if (options.background && cropperState) return;
         if (S.dom.chatAvatarPreviewStatus) {
-            S.dom.chatAvatarPreviewStatus.textContent = text;
+            const candidate = window.appChatAvatarEditor?.getCandidateDataUrl();
+            const custom = window.appChatAvatarState?.getDataUrl();
+            S.dom.chatAvatarPreviewStatus.textContent = !cropperState && candidate
+                ? translateLabel('chatAvatar.custom.ready', '图片待保存')
+                : !cropperState && custom && !window.appChatAvatarEditor?.getState().editing
+                    ? translateLabel('chatAvatar.custom.custom', '自定义头像') : text;
         }
     }
 
@@ -307,6 +324,16 @@
     }
 
     function setPreviewImage(dataUrl) {
+        // Candidate previews belong only to this popup; persisted display avatars never enter model caches.
+        const candidate = window.appChatAvatarEditor?.getCandidateDataUrl();
+        const custom = window.appChatAvatarState?.getDataUrl();
+        dataUrl = tutorialAvatarOverrideDataUrl
+            || candidate
+            || custom
+            || dataUrl;
+        // Keep the model note intact for restore/cancel; backend editing errors
+        // are rendered independently in chat-avatar-custom-status.
+        if (S.dom.chatAvatarPreviewNote) S.dom.chatAvatarPreviewNote.hidden = !!(candidate || custom);
         const image = S.dom.chatAvatarPreviewImage;
         const placeholder = S.dom.chatAvatarPreviewPlaceholder;
         const shell = S.dom.chatAvatarPreviewImageShell;
@@ -766,7 +793,8 @@
 
         setPreviewImage(cachedPreview.dataUrl);
         setPreviewStatus(
-            translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
+            translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType),
+            { background: true }
         );
         setPreviewNote(translateLabel('chat.avatarPreviewReadyHint', '这是从当前模型画布实时提取的头像预览。'));
         window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
@@ -924,6 +952,7 @@
     }
 
     function openAvatarCropper(sourceDataUrl, defaultCropRect, sourceWidth, sourceHeight, options) {
+        closeCropperIfOpen();
         return new Promise(function (resolve) {
             options = options || {};
             var popup = S.dom.chatAvatarPreviewCard;
@@ -954,6 +983,7 @@
             var settled = false;
             var drag = null;
             var recapturing = false;
+            var session = null;
 
             function initLayout() {
                 // 计算可用宽度：需扣除控制面板宽度、弹窗 padding/border
@@ -965,7 +995,7 @@
                 var popupContentW = window.innerWidth - 24 - 28 - 2;
                 var maxW = Math.min(360, popupContentW - controlsWidth - areaGap);
                 if (maxW < MIN_SIZE) maxW = MIN_SIZE;
-                var maxH = Math.min(360, window.innerHeight - 180);
+                var maxH = Math.max(1, Math.min(360, window.innerHeight - 180));
                 var aspect = currentSourceWidth / currentSourceHeight;
                 if (aspect >= 1) {
                     displayW = Math.min(maxW, currentSourceWidth);
@@ -976,6 +1006,9 @@
                     displayW = Math.round(displayH * aspect);
                     if (displayW > maxW) { displayW = maxW; displayH = Math.round(displayW / aspect); }
                 }
+                displayW = Math.max(1, displayW);
+                displayH = Math.max(1, displayH);
+                MIN_SIZE = Math.min(40, displayW, displayH);
                 scaleRatio = currentSourceWidth / displayW;
                 img.style.width = displayW + 'px';
                 img.style.height = displayH + 'px';
@@ -1100,11 +1133,11 @@
                 if (retakeBtn) retakeBtn.removeEventListener('click', onRetake);
                 if (cancelBtn) cancelBtn.removeEventListener('click', onCancel);
                 if (saveBtn) saveBtn.removeEventListener('click', onSave);
-                if (cropperState && cropperState.controlsEl) {
-                    cropperState.controlsEl.removeEventListener('click', cropperState.onCtrlAction);
+                if (controlsEl) controlsEl.removeEventListener('click', onCtrlAction);
+                if (cropperState === session) {
+                    popup.classList.remove('is-cropping');
+                    cropperState = null;
                 }
-                popup.classList.remove('is-cropping');
-                cropperState = null;
             }
 
             function finish(accepted) {
@@ -1112,11 +1145,12 @@
                 settled = true;
                 cleanup();
                 if (accepted) {
+                    const sourceSize = Math.max(1, Math.min(Math.round(crop.size * scaleRatio), currentSourceWidth, currentSourceHeight));
                     resolve({
                         cropRect: {
-                            x: Math.round(crop.x * scaleRatio),
-                            y: Math.round(crop.y * scaleRatio),
-                            size: Math.round(crop.size * scaleRatio)
+                            x: Math.max(0, Math.min(Math.round(crop.x * scaleRatio), currentSourceWidth - sourceSize)),
+                            y: Math.max(0, Math.min(Math.round(crop.y * scaleRatio), currentSourceHeight - sourceSize)),
+                            size: sourceSize
                         },
                         sourceDataUrl: currentSourceDataUrl,
                         modelType: currentModelType,
@@ -1210,21 +1244,28 @@
             document.addEventListener('pointermove', onPointerMove);
             document.addEventListener('pointerup', onPointerUp);
             if (retakeBtn) {
+                retakeBtn.disabled = false;
                 retakeBtn.hidden = !recaptureFn;
                 retakeBtn.addEventListener('click', onRetake);
             }
             cancelBtn.addEventListener('click', onCancel);
+            saveBtn.disabled = false;
             saveBtn.addEventListener('click', onSave);
             if (controlsEl) controlsEl.addEventListener('click', onCtrlAction);
 
             popup.classList.add('is-cropping');
-            setPreviewStatus(translateLabel('chat.avatarCropperTitle', '调整头像裁剪区域'));
+            setPreviewStatus(translateLabel('chat.avatarCropperTitle', '调整头像裁剪区域'), {
+                rememberModel: !window.appChatAvatarEditor?.getState().editing
+            });
 
-            cropperState = { finish: finish, controlsEl: controlsEl, onCtrlAction: onCtrlAction };
+            session = { finish: finish };
+            cropperState = session;
 
             requestAnimationFrame(function () {
+                if (settled || cropperState !== session) return;
                 initLayout();
                 positionPopupNearTrigger(popup, activeTrigger);
+                if (typeof saveBtn.focus === 'function') saveBtn.focus();
             });
         });
     }
@@ -1235,18 +1276,20 @@
         }
     }
 
-    function cropSourceToAvatar(sourceDataUrl, cropRect) {
+    function cropSourceToAvatar(sourceDataUrl, cropRect, options) {
+        options = options || {};
         return new Promise(function (resolve, reject) {
             var img = new Image();
             img.onload = function () {
                 try {
                     var canvas = document.createElement('canvas');
-                    canvas.width = 320;
-                    canvas.height = 320;
+                    const size = options.size || 320;
+                    canvas.width = size;
+                    canvas.height = size;
                     var ctx = canvas.getContext('2d');
                     ctx.beginPath();
-                    var r = 40;
-                    var w = 320, h = 320;
+                    var r = size / 8;
+                    var w = size, h = size;
                     ctx.moveTo(r, 0);
                     ctx.arcTo(w, 0, w, h, r);
                     ctx.arcTo(w, h, 0, h, r);
@@ -1254,11 +1297,13 @@
                     ctx.arcTo(0, 0, w, 0, r);
                     ctx.closePath();
                     ctx.clip();
-                    ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
-                    ctx.fillRect(0, 0, 320, 320);
+                    if (!options.preserveTransparency) {
+                        ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
+                        ctx.fillRect(0, 0, size, size);
+                    }
                     ctx.drawImage(img,
                         cropRect.x, cropRect.y, cropRect.size, cropRect.size,
-                        0, 0, 320, 320
+                        0, 0, size, size
                     );
                     resolve(canvas.toDataURL('image/png'));
                 } catch (err) {
@@ -1276,6 +1321,19 @@
         const silent = options.silent === true;
         const trigger = options.trigger || null;
         const manualCrop = options.manualCrop === true;
+
+        // The popup and upload controls remain available while a model is still loading.
+        if (showCard) setPreviewVisible(true, trigger);
+        // The popup always shows the backend record: an uncertain save may have landed after its
+        // confirmation read, and its best-effort notification may never have arrived.
+        if (showCard && window.appChatAvatarState) {
+            window.appChatAvatarState.refresh('popup-open').catch(function () {});
+        }
+        if (showCard && !forceRefresh && (window.appChatAvatarState?.getDataUrl() || window.appChatAvatarEditor?.getState().editing)) {
+            setPreviewImage(mod.getCurrentAvatarDataUrl());
+            window.appChatAvatarEditor?.update();
+            return;
+        }
 
         if (pngtuberModelLoading && getCurrentModelType() === 'pngtuber') {
             pendingAutoCapture = true;
@@ -1317,7 +1375,7 @@
         setLoadingState(true);
         setPreviewStatus(forceRefresh
             ? translateLabel('chat.avatarPreviewRefreshing', '正在刷新当前头像...')
-            : translateLabel('chat.avatarPreviewGenerating', '正在生成当前头像...'));
+            : translateLabel('chat.avatarPreviewGenerating', '正在生成当前头像...'), { background: !showCard });
         setPreviewNote(translateLabel('chat.avatarPreviewCardNote', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
 
         try {
@@ -1333,6 +1391,7 @@
                 setPreviewStatus(translateLabel('chat.avatarPreviewCropping', '请调整裁剪区域'));
 
                 var srcDims = await measureImageDataUrl(result.sourceDataUrl);
+                if (token !== activeCaptureToken || captureRevision !== cardDropModelRevision) return;
                 var defRect = result.cropRectPixels || null;
 
                 async function recaptureCropperSource() {
@@ -1346,6 +1405,9 @@
                         throw new Error(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
                     }
                     var dims = await measureImageDataUrl(fresh.sourceDataUrl);
+                    if (token !== activeCaptureToken || freshRevision !== cardDropModelRevision) {
+                        throw new Error(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
+                    }
                     return {
                         sourceDataUrl: fresh.sourceDataUrl,
                         cropRectPixels: fresh.cropRectPixels || null,
@@ -1367,6 +1429,7 @@
 
                 if (userCrop) {
                     var croppedDataUrl = await cropSourceToAvatar(userCrop.sourceDataUrl, userCrop.cropRect);
+                    if (token !== activeCaptureToken) return;
                     applyPreviewResult(
                         { dataUrl: croppedDataUrl, modelType: userCrop.modelType || result.modelType },
                         userCrop.cacheKey || cacheKey,
@@ -1397,7 +1460,7 @@
 
             if (showCard || activeCaptureCardVisible) {
                 setPreviewImage('');
-                setPreviewStatus(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
+                setPreviewStatus(translateLabel('chat.avatarPreviewFailed', '生成头像失败'), { background: !showCard });
                 setPreviewNote(getErrorMessage(error));
             }
             if (!silent && typeof window.showStatusToast === 'function') {
@@ -1551,6 +1614,11 @@
         const card = S.dom.chatAvatarPreviewCard;
         if (!card || card.hidden) return;
         event.preventDefault();
+        // Keep the chat window's own Escape handling away from a key aimed at this popup only.
+        const active = document.activeElement;
+        if ((event.target && card.contains(event.target)) || (active && card.contains(active))) {
+            event.stopImmediatePropagation();
+        }
         setPreviewVisible(false);
     }
 
@@ -1597,6 +1665,8 @@
         S.dom.chatAvatarPreviewPlaceholder = document.getElementById('chat-avatar-preview-placeholder');
         S.dom.chatAvatarPreviewRefreshButton = document.getElementById('chatAvatarPreviewRefreshButton');
         S.dom.chatAvatarPreviewCloseButton = document.getElementById('chatAvatarPreviewCloseButton');
+        window.appChatAvatarState?.initialize();
+        window.appChatAvatarEditor?.initialize();
 
         // —— 数据层：不管有无预览 UI 都执行（chat.html 没有预览卡片但仍需头像数据） ——
 
@@ -1676,7 +1746,7 @@
         });
 
         document.addEventListener('pointerdown', handleOutsidePointer, true);
-        document.addEventListener('keydown', handleEscapeKey);
+        document.addEventListener('keydown', handleEscapeKey, true);
         window.addEventListener('resize', handleViewportChange);
         window.addEventListener('scroll', handleViewportChange, true);
     };
@@ -1713,6 +1783,13 @@
 
     mod.getCurrentAvatarDataUrl = function getCurrentAvatarDataUrl() {
         if (tutorialAvatarOverrideDataUrl) return tutorialAvatarOverrideDataUrl;
+        const custom = window.appChatAvatarState?.getDataUrl();
+        if (custom) return custom;
+        return mod.getModelAvatarDataUrl();
+    };
+
+    // The model avatar alone: never the tutorial override or the persisted custom image.
+    mod.getModelAvatarDataUrl = function getModelAvatarDataUrl() {
         if (hasUsableCachedPreview()) return cachedPreview.dataUrl || '';
         // 内存缓存被 invalidate（模型加载中）或 cacheKey 暂不匹配时，仍返回旧头像
         if (cachedPreview && cachedPreview.dataUrl) return cachedPreview.dataUrl;
@@ -1737,7 +1814,7 @@
     mod.setTutorialAvatarOverride = function setTutorialAvatarOverride(dataUrl, modelType) {
         tutorialAvatarOverrideDataUrl = dataUrl || '';
         tutorialAvatarOverrideModelType = modelType || '';
-        window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
+        window.dispatchEvent(new CustomEvent('chat-avatar-display-updated', {
             detail: {
                 dataUrl: tutorialAvatarOverrideDataUrl,
                 modelType: tutorialAvatarOverrideModelType,
@@ -1750,7 +1827,7 @@
         if (!tutorialAvatarOverrideDataUrl && !tutorialAvatarOverrideModelType) return;
         tutorialAvatarOverrideDataUrl = '';
         tutorialAvatarOverrideModelType = '';
-        window.dispatchEvent(new CustomEvent('chat-avatar-preview-updated', {
+        window.dispatchEvent(new CustomEvent('chat-avatar-display-updated', {
             detail: {
                 dataUrl: mod.getCurrentAvatarDataUrl(),
                 modelType: mod.getCurrentAvatarModelType(),
@@ -1787,7 +1864,8 @@
         if (externalAvatarDataUrl && card && !card.hidden && !hasLocalPortrait) {
             setPreviewImage(externalAvatarDataUrl);
             setPreviewStatus(
-                translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(externalAvatarModelType)
+                translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(externalAvatarModelType),
+                { background: true }
             );
             setPreviewNote(translateLabel('chat.avatarPreviewReadyHint', '这是从当前模型画布实时提取的头像预览。'));
         }
@@ -1799,6 +1877,42 @@
     mod.getExternalAvatar = function getExternalAvatar() {
         return externalAvatarDataUrl ? { dataUrl: externalAvatarDataUrl, modelType: externalAvatarModelType } : null;
     };
+
+    mod.refreshDisplayedAvatar = function () {
+        setPreviewImage(mod.getCurrentAvatarDataUrl());
+        const status = S.dom.chatAvatarPreviewStatus;
+        if (status && !cropperState) {
+            if (window.appChatAvatarEditor?.getCandidateDataUrl()) {
+                status.textContent = translateLabel('chatAvatar.custom.ready', '图片待保存');
+            } else if (!window.appChatAvatarEditor?.getState().editing) {
+                status.textContent = window.appChatAvatarState?.getDataUrl()
+                    ? translateLabel('chatAvatar.custom.custom', '自定义头像')
+                    : modelPreviewStatus || status.textContent;
+            }
+        }
+    };
+    mod.cancelModelPreviewCapture = function () {
+        const wasCapturing = isCapturing;
+        ++activeCaptureToken;
+        isCapturing = false;
+        activeCaptureCardVisible = false;
+        setLoadingState(false);
+        closeCropperIfOpen();
+        // The retired capture never caches its result, so capture the model again silently.
+        if (wasCapturing) scheduleAutoCapture('retired-capture');
+    };
+    mod.openUploadCropper = function (source) {
+        return openAvatarCropper(source.url, null, source.width, source.height, {});
+    };
+    mod.closeUploadCropper = closeCropperIfOpen;
+    mod.normalizeUploadCrop = function (url, crop, size) {
+        return cropSourceToAvatar(url, crop, { preserveTransparency: true, size: size });
+    };
+    mod.chooseAvatarFile = function (file) { return window.appChatAvatarEditor.chooseFile(file); };
+    mod.saveCustomAvatar = function () { return window.appChatAvatarEditor.save(); };
+    mod.cancelCustomEdit = function () { return window.appChatAvatarEditor.cancel(); };
+    mod.restoreModelAvatar = function () { return window.appChatAvatarEditor.restore(); };
+    mod.getCustomEditState = function () { return window.appChatAvatarEditor.getState(); };
 
     window.appChatAvatar = mod;
 

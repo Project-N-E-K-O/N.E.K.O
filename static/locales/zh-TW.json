@@ -1,4 +1,29 @@
 {
+    "chatAvatar": {
+        "custom": {
+            "upload": "上傳圖片",
+            "save": "確認儲存",
+            "cancel": "取消編輯",
+            "restore": "恢復模型頭像",
+            "custom": "自訂頭像",
+            "ready": "圖片已準備好，可以儲存",
+            "saving": "正在儲存頭像…",
+            "unavailable": "目前伺服器不支援自訂頭像。",
+            "invalidImage": "無法解碼圖片，請選擇 PNG、JPEG 或 WebP 圖片。",
+            "tooLarge": "圖片超過大小限制。",
+            "tooManyPixels": "圖片超過 2000 萬像素。",
+            "saveFailed": "頭像儲存失敗，目前頭像未變更。",
+            "conflict": "其他視窗已修改頭像，請查看最新頭像後重新儲存。",
+            "readFailed": "讀取已儲存的頭像失敗，請稍後重試。",
+            "unknownOutcome": "暫時無法確認儲存結果，請重新開啟或重新連線確認後，再嘗試儲存。",
+            "roleMissing": "此角色已不存在。",
+            "loading": "正在讀取頭像…",
+            "chooseHint": "選擇圖片並裁剪後儲存。",
+            "help": "PNG、JPEG 或 WebP，最大 10 MiB",
+            "maintenance": "後端正在維護，請在維護完成後重試。",
+            "storageChanged": "後端資料目錄已切換，請重新開啟頭像編輯器後再儲存。"
+        }
+    },
     "instanceAccess": {"title":"連接 NEKO 實例","description":"輸入伺服器擁有者提供的實例存取憑證，此裝置將記住連接 30 天。","key":"實例存取憑證","connect":"連接","failed":"連接未獲授權，請檢查憑證後重試。","httpsRequired":"請使用 HTTPS 或可信的 HTTPS 通道安全連接。","insecureWarning":"目前連線未加密（HTTP），同一網路路徑上的人可能看到存取憑證和工作階段。條件允許時請使用 HTTPS。"},
     "common": {
         "load": "加載",

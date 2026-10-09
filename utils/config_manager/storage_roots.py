@@ -35,6 +35,11 @@ from utils.root_state_lock import root_state_transaction
 from ._shared import LocalStateDirectoryError, logger
 
 
+def chat_avatar_directory(config_manager) -> Path:
+    """Resolve local display resources against the currently connected backend root."""
+    return Path(config_manager.app_docs_dir) / "chat_avatars"
+
+
 class StorageRootsMixin:
     """Storage roots, directory skeleton and local-state files."""
 

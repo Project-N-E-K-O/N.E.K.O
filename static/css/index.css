@@ -2672,6 +2672,40 @@ body.react-chat-window-dragging {
     cursor: progress;
 }
 
+/* Custom images are independent of model capture controls. */
+.chat-avatar-custom-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.chat-avatar-custom-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.chat-avatar-custom-actions [hidden],
+#chat-avatar-preview-popup.is-cropping .chat-avatar-custom-controls {
+    display: none !important;
+}
+.chat-avatar-custom-help,
+.chat-avatar-custom-status {
+    font-size: 0.76rem;
+    line-height: 1.45;
+    color: rgba(38, 75, 102, 0.78);
+    overflow-wrap: anywhere;
+}
+.chat-avatar-custom-status:empty {
+    display: none;
+}
+.chat-avatar-custom-actions button:focus-visible {
+    outline: 2px solid #2497d9;
+    outline-offset: 3px;
+}
+[data-theme="dark"] .chat-avatar-custom-help,
+[data-theme="dark"] .chat-avatar-custom-status {
+    color: rgba(210, 231, 246, 0.85);
+}
+
 /* ──── Avatar Cropper (inline in popup) ──── */
 .chat-avatar-preview-crop-body {
     display: none;

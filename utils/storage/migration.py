@@ -81,6 +81,7 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     "card_faces",
     "jukebox",
     "avatar_tools",
+    "chat_avatars",
     "pngtuber",
     "watch_together",
     # Downloaded models (RapidOCR runtimes, memory embedding models): moved

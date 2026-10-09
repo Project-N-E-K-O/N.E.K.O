@@ -1,4 +1,29 @@
 {
+    "chatAvatar": {
+        "custom": {
+            "upload": "Subir imagen",
+            "save": "Guardar avatar",
+            "cancel": "Cancelar edición",
+            "restore": "Restaurar avatar del modelo",
+            "custom": "Avatar personalizado",
+            "ready": "Imagen lista para guardar",
+            "saving": "Guardando avatar…",
+            "unavailable": "Este servidor no admite avatares personalizados.",
+            "invalidImage": "No se pudo leer la imagen. Elige una imagen PNG, JPEG o WebP.",
+            "tooLarge": "La imagen supera el límite de tamaño.",
+            "tooManyPixels": "La imagen supera los 20 millones de píxeles.",
+            "saveFailed": "No se pudo guardar el avatar. El avatar actual no ha cambiado.",
+            "conflict": "El avatar cambió en otra ventana. Revisa la última versión antes de volver a guardar.",
+            "readFailed": "No se pudo leer el avatar guardado. Inténtalo más tarde.",
+            "unknownOutcome": "No se pudo confirmar el resultado. Vuelve a abrir o conectar para comprobarlo antes de guardar de nuevo.",
+            "roleMissing": "Este personaje ya no existe.",
+            "loading": "Cargando avatar…",
+            "chooseHint": "Elige una imagen y recórtala antes de guardar.",
+            "help": "PNG, JPEG o WebP · hasta 10 MiB",
+            "maintenance": "El servidor está en mantenimiento. Inténtalo de nuevo cuando termine.",
+            "storageChanged": "El directorio de datos del servidor cambió. Vuelve a abrir el editor de avatar antes de guardar."
+        }
+    },
     "instanceAccess": {"title":"Conectar a NEKO","description":"Introduce la clave de acceso proporcionada por el propietario del servidor. Este dispositivo recordará la conexión durante 30 días.","key":"Clave de acceso a la instancia","connect":"Conectar","failed":"Acceso denegado. Revisa la clave e inténtalo de nuevo.","httpsRequired":"Usa HTTPS o un túnel HTTPS de confianza para conectar de forma segura.","insecureWarning":"Esta conexión no está cifrada (HTTP). Cualquiera en la misma ruta de red podría ver la clave y la sesión. Usa HTTPS cuando puedas."},
     "common": {
         "load": "Cargar",

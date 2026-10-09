@@ -209,6 +209,7 @@ from .voice_cloning import (  # noqa: F401
 )
 from . import voice_design as _voice_design  # noqa: F401 - register Voice Design routes
 from . import voice_management as _voice_management  # noqa: F401 - register voice management routes
+from . import chat_avatar as _chat_avatar  # noqa: F401 - register UID-scoped display resources
 from .cards import (  # noqa: F401
     _embed_zip_in_png_chunk,
     get_character_cards,

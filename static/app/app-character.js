@@ -423,10 +423,12 @@
             live3d_sub_type: (window.lanlan_config && window.lanlan_config.live3d_sub_type) || '',
         };
         const restorePreviousLanlanConfig = () => {
-            if (!window.lanlan_config) return;
-            window.lanlan_config.lanlan_name = previousLanlanConfig.lanlan_name;
-            window.lanlan_config.model_type = previousLanlanConfig.model_type;
-            window.lanlan_config.live3d_sub_type = previousLanlanConfig.live3d_sub_type;
+            if (window.lanlan_config) {
+                window.lanlan_config.lanlan_name = previousLanlanConfig.lanlan_name;
+                window.lanlan_config.model_type = previousLanlanConfig.model_type;
+                window.lanlan_config.live3d_sub_type = previousLanlanConfig.live3d_sub_type;
+            }
+            window.appChatAvatarState?.rollbackCharacterSwitch(myAttemptId);
         };
         // 给延迟 UI 回调用的角色归属守护：handleCatgirlSwitch 完成后挂着的 setTimeout
         // (line 964/1187/1357 那些 300ms ensure-visible 回调）触发时如果用户已切到别的角色，
@@ -554,6 +556,7 @@
         }, 45000);
 
         try {
+            window.appChatAvatarState?.beginCharacterSwitch(myAttemptId);
             emitAssistantSpeechCancel('character_switch');
             // VRM applyLighting retry ownership token：无论新角色是 VRM/Live2D/MMD 都先刷新。
             // 之前只在 VRM 分支刷的话，VRM→Live2D/MMD 时旧 VRM retry 仍持有相同 token →
@@ -1882,6 +1885,10 @@
             // newCatgirl，剩下的只是 unlockAchievement 等无关副作用 await。从这里开始 watchdog
             // 触发应识别为"已完成"跳过回滚（避免破坏成功状态）。
             switchHasCommitted = true;
+            window.appChatAvatarState?.commitCharacterSwitch(myAttemptId, {
+                uid: catgirlConfig._reserved?.character_uid || '',
+                name: newCatgirl
+            });
             // commit 之后再 dispose 延后保留的旧 MMD 实例（MMD→非 MMD 路径）。
             // commit 前 dispose 会让中途失败的 rollback 没法恢复旧 MMD（容器没渲染 + 实例已销毁）。
             _disposeDeferredMmd();
@@ -1950,7 +1957,7 @@
                 // attempt id 守护：只在自己仍是 currentAttempt 时回滚（与 isStaleAttempt 计算
                 // 等价，但显式列出避免与上面 stale 分支耦合），避免 stale attempt 苏醒走 else
                 // 分支后用自己看到的 snapshot 覆盖新 attempt 的成功状态。
-                if (S._currentSwitchAttemptId === myAttemptId) {
+                if (S._currentSwitchAttemptId === myAttemptId && !switchHasCommitted) {
                     restorePreviousLanlanConfig();
                     console.log('[猫娘切换] 切换失败，已恢复切换前的 lanlan_config（', previousLanlanConfig.lanlan_name, '/', previousLanlanConfig.model_type, '/', previousLanlanConfig.live3d_sub_type, '），允许用户重试同一目标');
                     // 恢复 S.socket 引用：line 530 早期 retire 把 S.socket 设成 null（让 stale
