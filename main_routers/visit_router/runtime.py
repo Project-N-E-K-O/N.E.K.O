@@ -607,6 +607,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._kick_event = asyncio.Event()
         self._pump_task: Optional[asyncio.Task] = None
         self._pump_stop = False
+        self._ended_sending: Optional[asyncio.Future] = None
         self._memory_off_unsaved = False
         self._renew_task: Optional[asyncio.Task] = None
         self._renew_failures = 0
@@ -695,12 +696,19 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     async def _send_after_display(self, display: asyncio.Future, payload: dict) -> None:
         await asyncio.wait([display], timeout=_DISPLAY_FLUSH_S)
         if not display.done():
-            logger.warning("visit %s: display write never retired; ended not sent", self.visit_id[:6])
-            return
+            # 到点那次写还没退下：仍尽力发一次（页面停在「收尾中」比偶尔并发一次写更糟）
+            logger.warning("visit %s: display write never retired; sending ended anyway", self.visit_id[:6])
         try:
             await self.host.send_frame(payload)
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit %s: ended not sent: %s", self.visit_id[:6], type(exc).__name__)
+
+    async def _status_after(self, previous: asyncio.Future, code: str, details: dict) -> None:
+        await asyncio.wait([previous])  # previous 自带期限
+        try:
+            await self.host.send_status(code, details)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("visit %s: status not sent: %s", self.visit_id[:6], type(exc).__name__)
 
     async def push(self, action: str, **fields: Any) -> None:
         """``visit_state_change{action}`` to the display socket (§4.5).
@@ -717,7 +725,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             display = self._display_task
             if display is not None and not display.done():
                 # 显示队列那次写到点还没退下：「已结束」排在它后面（后台、限时），不与它并发写同一个页面、不先到
-                self._keep_background(asyncio.ensure_future(self._send_after_display(display, payload)))
+                ended = self._ended_sending = asyncio.ensure_future(self._send_after_display(display, payload))
+                self._keep_background(ended)
                 return
             await self.host.send_frame(payload)
             return
@@ -725,6 +734,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
     async def status(self, code: str, **details: Any) -> None:
         details = {"visit_id": self.visit_id, **{k: v for k, v in details.items() if v is not None}}
+        ended = self._ended_sending
+        if ended is not None and not ended.done():
+            # 「已结束」还排在卡住的显示写后面：这条 status 跟在它后面发，不先到、不与那次写并发
+            self._keep_background(asyncio.ensure_future(self._status_after(ended, code, details)))
+            return
         await self.host.send_status(code, details)
 
     # ── 启动 ─────────────────────────────────────────────────────────
@@ -1042,22 +1056,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         return opening
 
     async def _settle_delivering(self, timeout: float) -> None:
-        # 在期限内循环等，直到没有在处理的批次：这一批做完时，排在 on_recv 里的下一条会先醒、同步交出新的一批，
-        # 只等一次快照的话，新这批的台词会落在封存之后
+        # 两条收尾路径都先置 _rx_closed 再调这里：排在 on_recv 里的收包醒来就退出、不再交出新的一批（封存的
+        # 边界），所以这里等的是边界之前已收下的那批。循环只为接收还开着时的调用：那时排着的下一条可能先醒、
+        # 同步交出新一批，只等一次快照的话新这批会落在后面
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        while True:
+        while self._delivering is not None and not self._delivering.done():
             remaining = deadline - loop.time()
             if remaining <= 0:
                 return
-            delivering = self._delivering
-            if delivering is not None and not delivering.done():
-                await asyncio.wait([delivering], timeout=remaining)
-            elif self._rx_waiting:
-                # 上一批刚做完、排着的收包还没醒（这边先醒了）：让一拍，等它交出新一批再看
-                await asyncio.sleep(0)
-            else:
-                return
+            await asyncio.wait([self._delivering], timeout=remaining)
 
     def _start_journal_for_backlog(self) -> None:
         # 对端 hello 先到、这场已开口，却一直没等来本侧的入房报告就收尾：上传头还没开始写，

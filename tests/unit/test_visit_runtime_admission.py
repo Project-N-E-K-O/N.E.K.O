@@ -2082,6 +2082,43 @@ async def test_ended_waits_behind_a_display_write_that_never_retired(tmp_path, m
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_ended_is_still_sent_when_the_display_write_never_retires(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "_DISPLAY_FLUSH_S", 0.2)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    release = asyncio.Event()
+    order: list[str] = []
+    real_send, real_status = host.host.send_frame, host.host.send_status
+
+    async def send_frame(frame):
+        if frame.get("type") == "visit_state_change" and frame.get("action") == "ended":
+            order.append("ended")
+        elif frame.get("type") == "visit_line" and frame.get("text") == "卡住的一行":
+            while not release.is_set():                       # 一直卡着、不理取消
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+        return await real_send(frame)
+
+    async def send_status(code, details):
+        order.append(f"status:{code}")
+        return await real_status(code, details)
+
+    host.host.send_frame = send_frame
+    host.host.send_status = send_status
+    try:
+        rt._post_display({"type": "visit_line", "text": "卡住的一行"})
+        await settle()
+        rt.request_finalize("kicked")                         # 带 status（VISIT_KICKED）的结束原因
+        await asyncio.wait_for(_finished(rt), 15)
+        await wait_for(lambda: "ended" in order and "status:VISIT_KICKED" in order, timeout=5)  # 到点仍尽力发
+        assert order.index("ended") < order.index("status:VISIT_KICKED")  # status 排在「已结束」后面
+    finally:
+        release.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_an_unpaired_room_is_cancelled_even_if_the_channel_close_is_cut_off(tmp_path, monkeypatch, clocks):
     monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)
     side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
