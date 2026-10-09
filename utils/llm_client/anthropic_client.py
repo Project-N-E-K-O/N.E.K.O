@@ -43,8 +43,9 @@ AsyncAnthropic: Any = None
 # 内容，回传当前工具轮时原样换回去。两条限制都是为了不撞 preserved-thinking 的前缀
 # 校验（block 只在 system / tools / 之前的消息不变时有效，新账号默认 400）：
 #   - 只回放最后一条真实 user 消息之后的工具轮（更早的轮次文档允许省略）；
-#   - 只在本次请求的 system + tools 与产生该 block 时完全一致时回放（例如工具轮
-#     封顶后去掉 tools 强制收尾的那次请求就不回放）。
+#   - 只在本次请求的 system + tools + 该轮之前的全部消息与产生该 block 时完全一致
+#     时回放（例如工具轮封顶后去掉 tools 强制收尾、或调用方改写了更早的历史，就不
+#     回放）。
 # 不满足时退回旧行为：不带 thinking block。
 _TOOL_TURN_REPLAY_MAX = 1024
 _tool_turn_replay: "OrderedDict[str, tuple[str, list[dict]]]" = OrderedDict()
@@ -57,9 +58,10 @@ _REPLAY_BLOCK_FIELDS = {
 }
 
 
-def _replay_context_key(payload: dict[str, Any]) -> str:
+def _replay_context_key(payload: dict[str, Any], prior_messages: Any) -> str:
+    """Key of everything a thinking block is bound to: system, tools and earlier messages."""
     return _json.dumps(
-        {"system": payload.get("system"), "tools": payload.get("tools")},
+        {"system": payload.get("system"), "tools": payload.get("tools"), "messages": prior_messages},
         sort_keys=True,
         ensure_ascii=False,
         default=str,
@@ -169,22 +171,22 @@ def _apply_tool_turn_replay(payload: dict[str, Any]) -> None:
     messages = payload.get("messages")
     if not isinstance(messages, list):
         return
+    # 带 tool_result 的 user 消息是工具轮的延续（工具结果里的图片会作为相邻 user
+    # 消息并进来，所以不能要求整条都是 tool_result）。
     last_user_index = -1
     for index, msg in enumerate(messages):
         if msg.get("role") != "user":
             continue
         content = msg.get("content")
-        if not isinstance(content, list) or any(
-            not isinstance(b, dict) or b.get("type") != "tool_result" for b in content
+        if not isinstance(content, list) or not any(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content
         ):
             last_user_index = index
-    context_key = None
     for index in range(last_user_index + 1, len(messages)):
         msg = messages[index]
         if msg.get("role") != "assistant":
             continue
-        if context_key is None:
-            context_key = _replay_context_key(payload)
+        context_key = _replay_context_key(payload, messages[:index])
         replayed = _replay_tool_turn(msg.get("content"), context_key)
         if replayed is not None:
             messages[index] = {**msg, "content": replayed}
@@ -962,7 +964,7 @@ class ChatAnthropic:
 
     async def astream(self, messages: Any, **overrides: Any) -> AsyncIterator[LLMStreamChunk]:
         payload = self._build_payload_for_call(messages, overrides)
-        replay_context_key = _replay_context_key(payload)
+        replay_context_key = _replay_context_key(payload, payload.get("messages"))
         stream = self._aclient.messages.stream(**payload)
         usage_dict: dict[str, Any] = {}
         # 按 index 累积本轮的完整 content；含 thinking + tool_use 时在 message_delta
@@ -1064,7 +1066,7 @@ class ChatAnthropic:
         payload = self._build_payload_for_call(messages, overrides)
         resp = await self._aclient.messages.create(**payload)
         _record_anthropic_token_usage(self.model, _anthropic_usage_to_dict(getattr(resp, "usage", None)))
-        _remember_tool_turn_from_response(resp, _replay_context_key(payload))
+        _remember_tool_turn_from_response(resp, _replay_context_key(payload, payload.get("messages")))
         return resp
 
     def invoke_raw(self, messages: Any, **overrides: Any):
@@ -1072,7 +1074,7 @@ class ChatAnthropic:
         payload = self._build_payload_for_call(messages, overrides)
         resp = self._client.messages.create(**payload)
         _record_anthropic_token_usage(self.model, _anthropic_usage_to_dict(getattr(resp, "usage", None)))
-        _remember_tool_turn_from_response(resp, _replay_context_key(payload))
+        _remember_tool_turn_from_response(resp, _replay_context_key(payload, payload.get("messages")))
         return resp
 
     async def alist_models(self, *, limit: int) -> list[dict[str, str]]:

@@ -99,9 +99,15 @@ def _history(tool_call_id="toolu_1"):
     ]
 
 
+def _first_request_key(client, history=None):
+    """Context key of the request that produced the tool turn (everything before it)."""
+    request = (history or _history())[:2]
+    payload = client._build_payload_for_call(request, {})
+    return anthropic_client_module._replay_context_key(payload, payload["messages"])
+
+
 def _remember_for(client, history=None):
-    payload = client._build_payload_for_call(history or _history(), {})
-    _remember_tool_turn(_TURN, anthropic_client_module._replay_context_key(payload))
+    _remember_tool_turn(_TURN, _first_request_key(client, history))
 
 
 def _assistant_content(client, history, **overrides):
@@ -172,9 +178,29 @@ async def test_astream_skips_turns_that_did_not_stop_for_tool_use(client):
     assert not anthropic_client_module._tool_turn_replay
 
 
+def test_tool_result_with_image_still_replays(client):
+    # Tool-result images arrive as an adjacent user message and merge with the tool_result.
+    _remember_for(client)
+    history = _history() + [{
+        "role": "user",
+        "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+            {"type": "text", "text": "[tool image]"},
+        ],
+    }]
+    assert _assistant_content(client, history) == _TURN
+
+
+def test_rewritten_earlier_history_does_not_replay(client):
+    _remember_for(client)
+    history = _history()
+    history[1] = {"role": "user", "content": "weather? (trimmed)"}
+    assert all(b["type"] != "thinking" for b in _assistant_content(client, history))
+
+
 def test_lookup_refreshes_the_entry(client, monkeypatch):
     monkeypatch.setattr(anthropic_client_module, "_TOOL_TURN_REPLAY_MAX", 2)
-    key = anthropic_client_module._replay_context_key(client._build_payload_for_call(_history(), {}))
+    key = _first_request_key(client)
     _remember_tool_turn(_TURN, key)
     _remember_tool_turn([_TURN[0], {**_TURN[2], "id": "toolu_2"}], key)
     _assistant_content(client, _history())  # hit on toolu_1 makes toolu_2 the oldest
@@ -183,8 +209,7 @@ def test_lookup_refreshes_the_entry(client, monkeypatch):
 
 
 def test_turn_without_thinking_is_not_remembered(client):
-    payload = client._build_payload_for_call(_history(), {})
-    _remember_tool_turn(_TURN[1:], anthropic_client_module._replay_context_key(payload))
+    _remember_tool_turn(_TURN[1:], _first_request_key(client))
     assert all(b["type"] != "thinking" for b in _assistant_content(client, _history()))
 
 
