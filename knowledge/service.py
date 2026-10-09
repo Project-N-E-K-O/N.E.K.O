@@ -639,7 +639,8 @@ class KnowledgeService:
     def _restore_index_blocking(self, pack_id: str, previous: PackRecord | None) -> None:
         try:
             if previous is None:
-                return self._store.delete_pack(pack_id)
+                self._store.delete_pack(pack_id)
+                return
             raw = (self.root / PACKS_DIR / previous.file_name).read_bytes()
             self._store.replace_pack(
                 decode_pack_bytes(raw),
