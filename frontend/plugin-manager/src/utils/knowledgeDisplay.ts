@@ -45,7 +45,7 @@ export function vectorStateTagType(state: KnowledgeVectorState | string): Knowle
     case 'partial':
       return 'warning'
     default:
-      // none, waiting, off
+      // none, waiting, paused, off
       return 'info'
   }
 }

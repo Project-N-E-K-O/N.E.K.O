@@ -822,7 +822,7 @@ class KnowledgeService:
                 return True
 
         def blocking() -> tuple[Registry, PackRecord]:
-            raw = self._staging_path(job.job_id).read_bytes()
+            raw = _read_bounded(self._staging_path(job.job_id))
             pack = decode_pack_bytes(raw)
             sha = pack_sha256(raw)
             # Admission checked capacity without the lock; two imports racing
@@ -895,6 +895,13 @@ class KnowledgeService:
                 self._store.delete_pack(pack_id)
                 return
             raw = _read_bounded(self.root / PACKS_DIR / previous.file_name)
+            if pack_sha256(raw) != previous.pack_sha256:
+                # The old file was altered: rows built from it must not carry
+                # the registered version. Leave the pack without rows (not
+                # served) until the startup reconcile marks it broken.
+                logger.warning("[Knowledge] old file of %s changed; not restoring its index", pack_id)
+                self._store.delete_pack(pack_id)
+                return
             self._store.replace_pack(
                 decode_pack_bytes(raw),
                 pack_sha256=previous.pack_sha256,
@@ -1419,7 +1426,9 @@ class KnowledgeService:
                     "chunks_total": chunk["total"],
                     "chunks_ready": chunk["ready"],
                     "chunks_failed": chunk["failed"],
-                    "vector_state": self._vector_state(record, chunk, embedding_state),
+                    "vector_state": self._vector_state(
+                        record, chunk, embedding_state, indexing=self._registry.enabled
+                    ),
                     "broken": record.pack_id in self._broken_packs,
                     "installed_at": record.installed_at,
                     "updated_at": record.updated_at,
@@ -1428,7 +1437,9 @@ class KnowledgeService:
         return packs
 
     @staticmethod
-    def _vector_state(record: PackRecord, chunk: dict[str, int], embedding_state: str) -> str:
+    def _vector_state(
+        record: PackRecord, chunk: dict[str, int], embedding_state: str, *, indexing: bool = True
+    ) -> str:
         total, ready = chunk["total"], chunk["ready"]
         if total <= 0:
             return "none"
@@ -1437,6 +1448,9 @@ class KnowledgeService:
             return "off"
         if ready >= total:
             return "complete"
+        if not indexing:
+            # Knowledge is switched off, so nothing is being computed.
+            return "paused"
         if embedding_state != "ready":
             return "waiting"
         if ready + chunk["failed"] >= total:

@@ -195,6 +195,7 @@ export default {
     vectorWaiting: 'モデル待ち',
     vectorOff: 'オフ',
     vectorPartial: '一部失敗',
+    vectorPaused: '一時停止中',
     localVectors: 'ローカルベクトル',
     localVectorsHint: 'このパックのベクトルをこのコンピューターで計算します。CPU とメモリをある程度使用します。オフにすると、このパックはキーワードのみで検索されます。',
     autoContext: '自動参照',

@@ -742,6 +742,7 @@ function vectorStateLabel(state: KnowledgeVectorState | string): string {
     complete: 'knowledge.vectorComplete',
     building: 'knowledge.vectorBuilding',
     waiting: 'knowledge.vectorWaiting',
+    paused: 'knowledge.vectorPaused',
     off: 'knowledge.vectorOff',
     partial: 'knowledge.vectorPartial',
   }

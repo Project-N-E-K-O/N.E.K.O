@@ -195,6 +195,7 @@ export default {
     vectorWaiting: '모델 대기 중',
     vectorOff: '꺼짐',
     vectorPartial: '일부 실패',
+    vectorPaused: '일시 중지됨',
     localVectors: '로컬 벡터',
     localVectorsHint: '이 컴퓨터에서 이 팩의 벡터를 계산합니다. CPU와 메모리를 어느 정도 사용하며, 끄면 이 팩은 키워드로만 검색됩니다.',
     autoContext: '자동 참고',

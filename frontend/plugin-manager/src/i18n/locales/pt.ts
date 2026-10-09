@@ -195,6 +195,7 @@ export default {
     vectorWaiting: 'Aguardando o modelo',
     vectorOff: 'Desativado',
     vectorPartial: 'Falhas parciais',
+    vectorPaused: 'Pausado',
     localVectors: 'Vetores locais',
     localVectorsHint: 'Calcula os vetores deste pacote neste computador. Usa um pouco de CPU e memória; quando desativado, este pacote é pesquisado apenas por palavras-chave.',
     autoContext: 'Contexto automático',

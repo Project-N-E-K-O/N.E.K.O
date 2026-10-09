@@ -87,7 +87,14 @@ export function isKnownKnowledgeReason(reason: unknown): reason is KnowledgeFail
 export type KnowledgeMaterialType = 'knowledge' | 'corpus'
 export type KnowledgeServiceState = 'ready' | 'starting' | 'unavailable'
 export type KnowledgeEmbeddingState = 'ready' | 'loading' | 'disabled' | 'unavailable'
-export type KnowledgeVectorState = 'none' | 'complete' | 'building' | 'waiting' | 'off' | 'partial'
+export type KnowledgeVectorState =
+  | 'none'
+  | 'complete'
+  | 'building'
+  | 'waiting'
+  | 'paused'
+  | 'off'
+  | 'partial'
 export type KnowledgeJobState = 'queued' | 'building' | 'active' | 'failed' | 'cancelled'
 export type KnowledgeQueryResult =
   | 'matched'

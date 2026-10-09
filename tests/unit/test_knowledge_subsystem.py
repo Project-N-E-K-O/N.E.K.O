@@ -1666,6 +1666,9 @@ def test_loose_surface_rules():
     # A lone straight quote belongs to the name.
     assert loose_surface("Lil'") == loose_surface("'Tis") == ""
     assert loose_surface('"Python"?') == "python"
+    # Curly quotes too: a pair goes, a lone apostrophe stays.
+    assert loose_surface("\u201cPython\u201d") == loose_surface("\u00abPython\u00bb") == "python"
+    assert loose_surface("Lil\u2019") == loose_surface("\u2018Tis") == ""
 
 
 async def test_cancel_after_the_commit_point_is_refused(tmp_path, monkeypatch):
@@ -2018,3 +2021,51 @@ def test_missing_or_null_terms_default_to_empty():
     for entry in ({"title": "t", "content": "c"}, {"title": "t", "content": "c", "terms": None}):
         (parsed,) = parse_pack(_pack(entries=[entry])).entries
         assert all(values == () for values in parsed.terms.values())
+
+
+async def test_the_staged_file_is_read_with_a_bound(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        read = []
+        real = service_module._read_bounded
+
+        def recording(path):
+            read.append(Path(path).parent.name)
+            return real(path)
+
+        monkeypatch.setattr(service_module, "_read_bounded", recording)
+        await _import(service, _pack())
+        assert service_module.STAGING_DIR in read
+    finally:
+        await service.stop()
+
+
+async def test_a_failed_update_does_not_restore_an_altered_old_file(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        (raw_file,) = (tmp_path / "packs").iterdir()
+        # Valid pack JSON, but not the version the registry describes.
+        altered = _pack(entries=[{"title": "Altered", "content": "zanzibar smuggled text"}])
+        raw_file.write_bytes(canonical_pack_bytes(parse_pack(altered)))
+
+        def fail(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(service_module, "save_registry", fail)
+        await service.import_pack(_raw(_updated_pack()))
+        assert (await _wait_for_last_job(service))[0] == "failed"
+        assert (await service.query(query="zanzibar"))["result"] == "miss"
+    finally:
+        await service.stop()
+
+
+async def test_vectors_report_paused_while_knowledge_is_off(tmp_path):
+    service = await _started(tmp_path, FakeEmbedder())
+    try:
+        await service.set_enabled(False)  # nothing gets embedded
+        await _import(service, _pack())
+        (pack,) = await service.list_packs()
+        assert pack["vector_state"] == "paused"
+    finally:
+        await service.stop()

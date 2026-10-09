@@ -195,6 +195,7 @@ export default {
     vectorWaiting: '等待模型',
     vectorOff: '已关闭',
     vectorPartial: '部分失败',
+    vectorPaused: '已暂停',
     localVectors: '本机向量',
     localVectorsHint: '在本机为此数据包计算向量，会占用一定 CPU 和内存；关闭后此数据包只按关键词检索。',
     autoContext: '自动参考',

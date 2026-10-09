@@ -174,6 +174,12 @@ _TRAILING_PUNCT = frozenset("?!.。？！,，、;；:：…")
 _EDGE_QUOTES = frozenset("\"'`")
 
 
+def _quote_pair(first: str, last: str) -> bool:
+    if first in _EDGE_QUOTES:
+        return last == first
+    return unicodedata.category(first) == "Pi" and unicodedata.category(last) == "Pf"
+
+
 def loose_surface(value: object) -> str:
     """Fallback exact-match form: only letters and digits, or "" if unsafe.
 
@@ -186,17 +192,17 @@ def loose_surface(value: object) -> str:
     start, end = 0, len(text)
     while True:
         before = (start, end)
-        while start < end and (text[start] == " " or unicodedata.category(text[start]) in ("Ps", "Pi")):
+        while start < end and (text[start] == " " or unicodedata.category(text[start]) == "Ps"):
             start += 1
         while end > start and (
             text[end - 1] == " "
             or text[end - 1] in _TRAILING_PUNCT
-            or unicodedata.category(text[end - 1]) in ("Pe", "Pf")
+            or unicodedata.category(text[end - 1]) == "Pe"
         ):
             end -= 1
-        # A straight quote only goes as one of a pair around the name: in
-        # "Lil'" or "'Tis" it is part of the name.
-        if end - start >= 2 and text[start] in _EDGE_QUOTES and text[end - 1] == text[start]:
+        # Quotes only go as a pair around the name: in "Lil'", "Lil\u2019" or
+        # "\u2018Tis" the apostrophe is part of the name.
+        if end - start >= 2 and _quote_pair(text[start], text[end - 1]):
             start, end = start + 1, end - 1
         if (start, end) == before:
             break

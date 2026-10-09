@@ -195,6 +195,7 @@ export default {
     vectorWaiting: 'Waiting for model',
     vectorOff: 'Off',
     vectorPartial: 'Partly failed',
+    vectorPaused: 'Paused',
     localVectors: 'Local vectors',
     localVectorsHint: 'Compute vectors for this pack on this computer. Uses some CPU and memory; when off, this pack is searched by keywords only.',
     autoContext: 'Auto context',

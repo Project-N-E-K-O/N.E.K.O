@@ -148,3 +148,12 @@ async def test_multipart_import_uses_the_uploaded_file(client):
     await _wait_active(http)
     bad = await http.post("/internal/knowledge/packs/import", files={"a": ("a", b"1"), "b": ("b", b"2")})
     assert bad.status_code == 400
+
+
+async def test_long_catalog_searches_are_cut_not_refused(client):
+    http, _service = client
+    await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK))
+    await _wait_active(http)
+    response = await http.get("/internal/knowledge/entries", params={"query": "kotatsu " * 100})
+    assert response.status_code == 200
+    assert response.json()["ok"] is True

@@ -265,7 +265,9 @@ async def knowledge_status():
 
 @router.get("/entries")
 async def knowledge_entries(
-    query: str = Query(default="", max_length=200),
+    # Not limited here: the service cuts the search to its maximum, so a long
+    # pasted text still gets a normal answer instead of a validation error.
+    query: str = Query(default=""),
     pack_id: str = Query(default="", max_length=64),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0, le=20_000),
