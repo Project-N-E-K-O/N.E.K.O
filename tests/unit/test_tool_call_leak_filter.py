@@ -730,6 +730,12 @@ def test_a_well_formed_long_call_is_never_given_up_halfway():
          "好  了"),
         # A call as an unquoted value after a nested object, outer call closing.
         ("好 default_api:pvz_start{config:{x:1}, fallback:default_api:pvz_goal{y:2}} 了", "好  了"),
+        # Several call-shaped values, outer call still closing.
+        ("好 default_api:pvz_start{config:{x:1}, a:recall_memory(query=1), b:recall_memory(query=2), "
+         "c:recall_memory(query=3), token:secret} 了", "好  了"),
+        ("好 default_api:pvz_start{config:{x:1}, "
+         + ", ".join(f"v{i}:recall_memory(query={i})" for i in range(12))
+         + ", token:secret} 了", "好  了"),
     ):
         assert strip_tool_call_leaks(leaked, tool_names=_PVZ_TOOLS) == expected
         visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [leaked])
@@ -759,6 +765,17 @@ def test_finished_text_in_pieces_matches_one_feed_at_every_offset():
             text = "x" * pad + body
             assert strip_tool_call_leaks(text, tool_names=_PVZ_TOOLS) == one_feed(text), (pad, body)
             assert "pvz_" not in strip_tool_call_leaks(text, tool_names=_PVZ_TOOLS), (pad, body)
+
+
+def test_a_call_right_after_removed_markup_is_still_found():
+    """Removed markup separates the text around it: a call that follows it
+    does not continue the word before it."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    leaked = "OK<seed:tool_call>x</seed:tool_call>recall_memory(query=secret) 好"
+    for chunks in _split_everywhere(leaked):
+        visible, _events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), chunks)
+        assert visible == "OK 好", chunks
 
 
 def test_finished_text_helpers_read_tool_names_once():

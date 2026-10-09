@@ -46,9 +46,11 @@ _PREFIXED_CALL_OPENERS = (
 _OPENER_MARKERS = ("seed", *dict.fromkeys(steps[0][1] for steps in _PREFIXED_CALL_OPENERS))
 # The last character of every inline opener: only there can one complete.
 _OPENER_END_CHARS = frozenset("({=:")
-# Calls opening inside an open call's recovered text before it is given up:
-# one or two are values of a well-formed outer call still to close; more in a
-# row are unclosed calls, and waiting longer would rescan the reply for each.
+# Calls opened in an open call's recovered text and still open themselves that
+# give it up. A call-shaped value of a well-formed outer call closes again and
+# stops counting; unclosed calls in a row only pile up. Giving up there keeps a
+# reply from being held back to its end or rescanned for every call. Inside a
+# quote never closed brackets are not tracked, so there every call counts.
 _RECOVERY_OPENER_LIMIT = 3
 # ``_consume_inline_call``: the call was given up, resume at ``_call_resume``.
 _CALL_GIVEN_UP = -2
@@ -220,8 +222,9 @@ class ToolLeakFilter:
         self._call_recovery: list[str] | None = None
         # Whether that closer was inside a quote never closed (else nested).
         self._call_recovery_in_quote = False
-        # Calls that opened in the recovered text so far.
-        self._call_recovery_openers = 0
+        # For each call opened in the recovered text and still open, the
+        # bracket depth it opened above (every call, inside an unclosed quote).
+        self._call_recovery_open_depths: list[int] = []
         self._call_resume = ""
         self._call_closers: list[str] = []
         self._call_opened = False
@@ -243,6 +246,9 @@ class ToolLeakFilter:
         self._structured_tail = ""
         self._structured_tail_depth = 0
         self._reset_call_state()
+        # The removed markup separates what follows from the text before it:
+        # a call right after it does not continue that text's last word.
+        self._last_visible_char = ""
         return event
 
     def _consume_inline_call(self, text: str) -> int:
@@ -256,11 +262,12 @@ class ToolLeakFilter:
         after a same-kind opener left open in a value) marks where the reply
         may resume: ``finalize`` gives back what followed the first one, and
         reads it again for further calls. ``_RECOVERY_OPENER_LIMIT`` calls
-        starting in that text settle it: the open call is given up there
+        opened in that text and still open settle it: the open call is given
+        up there
         (``_CALL_GIVEN_UP``, the text to read on in ``_call_resume``), so
         unclosed calls in a row stay linear while a well-formed long call,
         whose nested closers also set a recovery point and whose values may
-        name a call or two, still runs to its own closer.
+        be calls that close again, still runs to its own closer.
         """
         for index, char in enumerate(text):
             if self._call_recovery is not None:
@@ -272,8 +279,12 @@ class ToolLeakFilter:
                     and (self._call_recovery_in_quote or not self._call_quote)
                     and self._opens_call_at_end(self._call_recovery)
                 ):
-                    self._call_recovery_openers += 1
-                if self._call_recovery_openers >= _RECOVERY_OPENER_LIMIT:
+                    # The depth the nested call's own bracket rises above: not
+                    # yet pushed when the opener ends on it, already pushed
+                    # when the opener ends on "=" / ":".
+                    depth = len(self._call_closers) - (0 if char in "({" else 1)
+                    self._call_recovery_open_depths.append(depth)
+                if len(self._call_recovery_open_depths) >= _RECOVERY_OPENER_LIMIT:
                     self._call_resume = "".join(self._call_recovery) + text[index + 1:]
                     return _CALL_GIVEN_UP
             outer_closer = (
@@ -303,6 +314,12 @@ class ToolLeakFilter:
                     pass
                 if not self._call_closers:
                     return index + 1
+                # Nested calls this closer closed no longer count.
+                while (
+                    self._call_recovery_open_depths
+                    and len(self._call_closers) <= self._call_recovery_open_depths[-1]
+                ):
+                    self._call_recovery_open_depths.pop()
                 if outer_closer:
                     self._call_recovery = []
                     self._call_recovery_in_quote = False
