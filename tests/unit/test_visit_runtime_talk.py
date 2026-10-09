@@ -2175,6 +2175,33 @@ async def test_closing_the_session_hands_a_stray_generation_to_stop_all(tmp_path
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_stalled_own_line_booking_is_registered_for_stop_all(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch,
+                                                    guest_replies=Replies(gate=asyncio.Event()))
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_append = rt.spool.append
+
+    async def stalled_append(record):
+        if record.get("from") == "own_cat":
+            await stuck.wait()                                # 自家这句写 spool 卡住
+        return await real_append(record)
+
+    rt.spool.append = stalled_append
+
+    def bookings():
+        return [t for t in rtm._detached if not t.done()
+                and getattr(t.get_coro(), "__qualname__", "").endswith("record_line")]
+
+    try:
+        await wait_for(lambda: rt._line is None, timeout=10)  # 开场那句已收完
+        rt.schedule_reply(None)                               # 再说一句：这次写 spool 卡住
+        await wait_for(lambda: bookings(), timeout=10)        # 受保护的记账任务登记在模块级，关机收得到
+    finally:
+        stuck.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_a_family_line_is_admitted_synchronously_before_its_commit_runs(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt

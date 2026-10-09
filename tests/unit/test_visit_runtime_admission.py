@@ -1132,7 +1132,11 @@ async def test_a_seal_outliving_the_exit_flow_is_handed_to_stop_all(tmp_path, mo
         await asyncio.wait_for(_finished(rt), 15)
         write = rt.journal.seal_write                         # 真正写盘的那个任务（外层只是 shield 着等它）
         assert write is not None and not write.done()
-        assert write in rtm._detached                         # 它本身登记了：关机时取消外层后台链也收得到它
+        assert write in rtm._awaited_writes and write not in rtm._detached  # 登记为只等不取消
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
+        assert not write.cancelled()                          # 关机不取消它：排着的封存放开后照样写成
+        release.set()
+        await wait_for(lambda: write.done() and rt.journal.sealed, timeout=5)
     finally:
         release.set()
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1874,6 +1878,23 @@ async def test_only_buffered_lines_start_a_journal_at_the_end(tmp_path, monkeypa
     rt.request_finalize("relay_lost")
     await _finished(rt)
     assert rt._journal_opening is None and not rt.journal.sealed  # 不为它生成一份零台词的转录
+
+
+async def test_state_replay_includes_lines_still_buffered_before_the_header(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    rt = await start_side(side, clock=clock, wall=wall)
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    try:
+        await rt.record_line("own_cat", side="host", lp=1, ln="h:1", text="开场", truncated=False)
+        assert not rt.journal.lines() and rt._journal_backlog  # 上传头还没写：这句只在积压里
+        replay = rt.snapshot()["transcript"]
+        assert [r.get("text") for r in replay] == ["开场"]       # 页面此时重载，/state 照样看得到
+    finally:
+        rt.request_finalize("route_end")
+        await _finished(rt)
 
 
 async def test_buffered_usage_is_not_stamped_before_the_journal_start(tmp_path, monkeypatch, clocks):

@@ -436,6 +436,7 @@ def _reset_for_tests() -> None:
         task.cancel()
     _room_cancels.clear()
     _outbox_cleanups.clear()
+    _awaited_writes.clear()
     _runtimes.clear()
     _pending_visits.clear()
     _resolving_names.clear()
@@ -2015,7 +2016,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     def _keep_seal_write(self) -> None:
         write = self.journal.seal_write
         if write is not None and not write.done():
-            self._keep_background(write)
+            # 只等不取消：它可能还排在单线程写盘队列里，取消会把这次封存一并撤掉（.upload.json 永远不写）
+            _awaited_writes.add(write)
+            write.add_done_callback(_awaited_writes.discard)
 
     def _seal_settled(self) -> bool:
         return not self._header_pending() and (self._sealing is None or self._sealing.done())
@@ -2328,11 +2331,28 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
     # ── 状态 ─────────────────────────────────────────────────────────
 
+    def _replay_lines(self) -> list[dict]:
+        """Every line of this visit so far, ``(lp, side_rank)`` order: the journal plus what is still buffered.
+
+        While the upload header is being written (or has not started: a
+        verified ``hello`` before the local ``joined``) accepted lines live
+        only in the backlog; a page reload then must still see them.
+        """
+        from main_logic.visit.memory_commit import SIDE_RANK
+
+        rows = list(self.journal.lines())
+        for record in self._journal_backlog:
+            if record.get("kind") == "line":
+                rows.append({"lp": record["lp"], "side": record["side"], "from": record["speaker"],
+                             "ts": record["ts"], "text": record["text"], "truncated": record["truncated"]})
+        rows.sort(key=lambda r: (r["lp"], SIDE_RANK.get(r["side"], 2)))
+        return rows
+
     def snapshot(self) -> dict:
         """``GET /api/visit/state`` body for this character (never the invite code)."""
         creds = self.creds
         peer = self.peer
-        transcript = [self.visit_line_payload_from_record(r) for r in self.journal.lines()[-50:]]
+        transcript = [self.visit_line_payload_from_record(r) for r in self._replay_lines()[-50:]]
         reconnecting = self.phase != PHASE_ENDED and (
             self.liveness.self_disconnected_at is not None or self.liveness.page_departed_at is not None)
         return {
@@ -2370,6 +2390,10 @@ _detached: set[asyncio.Task] = set()
 
 _room_cancels: set[asyncio.Task] = set()
 """Room cancellation requests still in flight (they may outlive their runtime)."""
+
+_awaited_writes: set[asyncio.Future] = set()
+"""Thread-pool writes ``stop_all`` waits for (bounded) but never cancels: cancelling the asyncio wrapper
+would also cancel a job still queued on the single writer thread (the upload seal would never be written)."""
 
 _outbox_cleanups: set[asyncio.Future] = set()
 """Outbox cleanups (finish writes, delete the ``.outbox.jsonl`` with text bodies) still running after teardown."""
@@ -2614,10 +2638,12 @@ async def stop_all(reason: str = "shutdown") -> None:
         # 已拆掉的场次还没做完的 outbox 清理（删掉带正文的 .outbox.jsonl）同样先限时等、到点才取消：
         # 先取消会在 flush 处打断，文件要留到下次启动才删
         orphans += [t for t in _outbox_cleanups if not t.done()]
+        # 线程池写盘（上传封存）：只限时等、不取消（取消会撤掉还在排队的那次写）
+        writes = [t for t in _awaited_writes if not t.done()]
 
         async def settle_orphan_cancels() -> None:
-            if orphans:
-                await asyncio.wait(orphans, timeout=_SHUTDOWN_ROOM_CANCEL_S)
+            if orphans or writes:
+                await asyncio.wait(orphans + writes, timeout=_SHUTDOWN_ROOM_CANCEL_S)
                 for task in orphans:
                     task.cancel()
 

@@ -543,6 +543,8 @@ class TalkMixin:
             line.booking = asyncio.ensure_future(self.record_line(
                 "own_cat", side=self.side, lp=h.lp, ln=h.ln, text=payload["txt"], truncated=payload["truncated"]))
             line.booking.add_done_callback(lambda t: t.cancelled() or t.exception())
+            # 受保护：取消收这一行的任务传不到它（spool 写盘卡住时还在跑）。交给模块级登记，场次注销之后关机也收得到
+            self._keep_background(line.booking)
         await asyncio.shield(line.booking)
 
     async def _finish_line(self, line: _LineRun) -> None:
