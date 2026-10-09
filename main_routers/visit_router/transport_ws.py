@@ -561,6 +561,11 @@ def _newer_media(conn: _Connection, mark: int) -> bool:
     return conn.media_last_ok > mark or any(seq > mark for seq in conn.media_pending)
 
 
+def pending_close_tasks() -> list[asyncio.Task]:
+    """Connection closes started by ``unregister_transport_session`` that are still running."""
+    return [task for task in _close_tasks if not task.done()]
+
+
 def _reset_for_tests() -> None:
     """Forget every registration (unit tests only)."""
     _links.clear()

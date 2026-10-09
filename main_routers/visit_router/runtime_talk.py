@@ -849,7 +849,8 @@ class TalkMixin:
             try:
                 await asyncio.wait_for(self._spool_idle.wait(), timeout)
             except asyncio.TimeoutError:
-                pass
+                # 到点还没写完：不再等，按此刻已写进去的句数判断（没写完的那句不进这次的判断）
+                logger.info("visit %s: spool appends still pending; deciding without them", self.visit_id[:6])
 
     async def settle_family_records(self, timeout: float) -> None:
         """Wait (at most ``timeout``) until every admitted family line has been recorded."""

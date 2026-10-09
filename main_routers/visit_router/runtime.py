@@ -2680,6 +2680,10 @@ async def stop_all(reason: str = "shutdown") -> None:
         from main_routers.visit_router import host_port as _host_port
 
         detached += _host_port.abandoned_interrupts()
+        # 注销传输时起的关闭连接任务（关机途中各场注销时起的也在内）：背压下可能还在等发送锁与 close 帧
+        from main_routers.visit_router import transport_ws as _transport_ws
+
+        detached += _transport_ws.pending_close_tasks()
         for task in detached:
             task.cancel()
         if detached:

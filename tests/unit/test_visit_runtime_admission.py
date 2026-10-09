@@ -2201,6 +2201,30 @@ async def test_an_unpaired_room_is_cancelled_even_if_the_channel_close_is_cut_of
     assert [c[0] for c in side.cancelled] == [rt.visit_id]    # 邀请码与配额占用照样撤销
 
 
+async def test_stop_all_retires_transport_close_tasks(tmp_path, monkeypatch):
+    from main_routers.visit_router import transport_ws as tw
+
+    release = asyncio.Event()
+
+    async def stuck_close():
+        while not release.is_set():                       # 背压下等发送锁与 close 帧
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                release.set()
+                raise
+
+    task = asyncio.ensure_future(stuck_close())
+    tw._close_tasks.add(task)
+    task.add_done_callback(tw._close_tasks.discard)
+    try:
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
+        assert task.cancelled()                           # 关机收尾一并取消、限时等，不留给事件循环销毁
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_the_pump_keeps_sending_after_shutdown_marks_the_visit_terminated(tmp_path, monkeypatch):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
