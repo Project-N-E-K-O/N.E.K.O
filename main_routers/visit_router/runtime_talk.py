@@ -951,6 +951,9 @@ class TalkMixin:
                                                       on_enqueued=lambda _n: None)
             except Exception as exc:  # noqa: BLE001 - TTS 不可用：只上屏
                 logger.info("visit %s: home-coming speech unavailable: %s", self.visit_id[:6], type(exc).__name__)
+            if stream is None:
+                # 语音流开不起来：这一段只上屏，本场之后也不再试（与 worker 收不下同样处理）
+                self.voice.fallen_back = True
         if stream is not None and handoff is not None:
             handoff.attach_speech(name, stream.speech_id)
         if stream is not None:
@@ -969,9 +972,10 @@ class TalkMixin:
                 if handoff is not None:
                     handoff.skip(name)
         elif handoff is not None:
-            if self.voice.tts_on or silent:
+            if silent:
                 handoff.skip(name)
             else:
+                # 只上屏（语音关、已回落、或这次开不起流）：交还按显示文字的估时等，不当成已播完
                 handoff.mark_queued(name, est)
         try:
             await self.host.mirror_assistant_output(text, metadata=meta, request_id=request_id)

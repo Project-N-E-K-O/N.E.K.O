@@ -674,6 +674,31 @@ async def test_a_home_stream_the_tts_worker_refuses_falls_back_to_text(tmp_path,
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_home_stream_that_cannot_open_falls_back_to_the_text_estimate(tmp_path, monkeypatch):
+    host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
+    rt = host.rt
+    hh = host.host
+    hh.voice_streams = False                                 # TTS 起不来：开流直接返回 None
+    calls: list[tuple[str, str]] = []
+    try:
+        hh.sink({"source_kind": "plugin", "text": "回调"})
+        rt.request_finalize("recall")
+        await wait_for(lambda: rt.handoff is not None, timeout=10)
+        handoff = rt.handoff
+        real_skip, real_queued = handoff.skip, handoff.mark_queued
+        monkeypatch.setattr(handoff, "skip", lambda name: (calls.append(("skip", name)), real_skip(name))[1])
+        monkeypatch.setattr(handoff, "mark_queued",
+                            lambda name, est: (calls.append(("queued", name)), real_queued(name, est))[1])
+        await finish(rt, clock)
+        assert rt.voice.fallen_back is True                  # 之后不再去开那个起不来的流
+        spoken = [name for kind, name in calls if kind == "queued"]
+        assert spoken and not [name for kind, name in calls if kind == "skip"]   # 只上屏的段按文字估时，不当成已播完
+    finally:
+        for g in gates:
+            g.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_shutdown_during_the_exit_flow_keeps_files_first(tmp_path, monkeypatch):
     host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
     rt = host.rt
