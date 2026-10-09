@@ -1934,6 +1934,10 @@ def test_names_in_questions_respect_symbols():
     assert names_in_query("Tell me about C++", entry("C++")) is True
     assert names_in_query("is C# hard?", entry("C#")) is True
     assert names_in_query("C++ tutorial", entry("C")) is False
+    assert names_in_query("C++tutorial", entry("C")) is False
+    assert names_in_query("C#developer", entry("C")) is False
+    assert names_in_query("re:zero season 2", entry("Re:Zero")) is True
+    assert names_in_query("x-ray machines", entry("X-ray")) is True
     assert names_in_query("Tell me about Python", entry("Python")) is True
     assert names_in_query('What is "Python"?', entry("Python")) is True
     assert names_in_query("Lil", entry("Lil'")) is False

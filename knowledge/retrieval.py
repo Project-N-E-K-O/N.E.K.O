@@ -40,6 +40,7 @@ from .text import (
     search_tokens,
     search_view,
     strict_surface,
+    unglued_tokens,
     word_runs,
 )
 
@@ -135,13 +136,17 @@ def _contains_word(text: str, word: str) -> bool:
 
 
 def _plain_query_tokens(query: str) -> set[str]:
-    """Query tokens, leaving out words glued to a symbol ("c++", ".net")."""
+    """Query tokens, leaving out words glued to a symbol.
+
+    A word starting or ending with one (".net", "c++") is left out whole;
+    inside a word, runs touching a symbol are ("c" in "c++tutorial").
+    """
     words = strict_surface(query).split(" ")
     return {
         token
         for word in words
         if loose_surface(word) or not any(ch.isalnum() for ch in word)
-        for token in search_tokens(word, unigrams=True)
+        for token in unglued_tokens(word)
     }
 
 

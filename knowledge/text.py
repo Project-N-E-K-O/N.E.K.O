@@ -217,6 +217,33 @@ def _strip_marks(value: str) -> str:
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
 
 
+# Characters that make a word a different name when attached to it ("c++",
+# "c#", "$x"), unlike separators such as "-", ":", "/" or ".".
+_NAME_SYMBOLS = frozenset("#@&%*")
+
+
+def _is_name_symbol(ch: str) -> bool:
+    return ch in _NAME_SYMBOLS or unicodedata.category(ch).startswith("S")
+
+
+def unglued_tokens(value: object) -> list[str]:
+    """Query tokens (with CJK unigrams) of word runs not touching a symbol.
+
+    In "c++tutorial" or "c#developer" the "c" belongs to another name, so it
+    is left out; separators ("re:zero", "x-ray") do not count as symbols.
+    """
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    tokens: list[str] = []
+    for match in _TOKEN_RE.finditer(text):
+        start, end = match.span()
+        if (start > 0 and _is_name_symbol(text[start - 1])) or (
+            end < len(text) and _is_name_symbol(text[end])
+        ):
+            continue
+        tokens.extend(search_tokens(match.group(), unigrams=True))
+    return tokens
+
+
 def search_view(value: object) -> str:
     """Text normalized the way ``search_tokens`` normalizes each token."""
     return _strip_marks(unicodedata.normalize("NFKC", str(value or "")).casefold())
