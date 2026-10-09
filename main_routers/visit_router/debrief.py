@@ -102,9 +102,15 @@ async def render_chips(visit_id: str, *, own_char: str, status: Optional[str] = 
     from main_routers.visit_router.host_port import ManagerHost
     from main_routers.visit_router.local_context import prompt_lang
 
+    from main_routers.visit_router.accounts import own_visit_uid
+
     host = ManagerHost.for_character(own_char)
     if host is None or not host.display_bound():
         # 页面还没 bind（启动补录通常早于页面连上）：芯片与「意外中断」都等 visit_bind 重放，不先发半套
+        return False
+    owner = await _visit_owner(visit_id)
+    if owner is None or owner != await own_visit_uid():
+        # 启动补录逐场回调、不分账号：不是当前登录账号的场次不发（换回那个账号后由 visit_bind 重放）
         return False
     if status == "interrupted":
         # 与芯片同一出口：校验 bind 与写入用同一个连接对象（send_status 会重读 mgr.websocket）
@@ -112,7 +118,23 @@ async def render_chips(visit_id: str, *, own_char: str, status: Optional[str] = 
                 {"code": "VISIT_INTERRUPTED_LAST_TIME", "details": {"visit_id": visit_id}}, ensure_ascii=False)}):
             # 提示没送出（连接刚被换掉等）：芯片也不单独发，下次 visit_bind 连同提示一起重放
             return False
+        if await own_visit_uid() != owner:
+            return False  # 写提示的这段 await 里登出 / 换了账号：芯片不再发
     return await show_chips(host, visit_id, own_char=own_char, lang=prompt_lang())
+
+
+async def _visit_owner(visit_id: str) -> Optional[str]:
+    """``state.json`` ``own_uid`` of ``visit_id`` (None when unreadable: fail closed)."""
+    from main_logic.visit.spool import VisitSpool
+    from main_routers.visit_router import runtime
+
+    try:
+        state = await VisitSpool(runtime.runtime_deps().config_dir(), visit_id).read_state()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("visit %s: state unreadable: %s", visit_id[:6], type(exc).__name__)
+        return None
+    owner = (state or {}).get("own_uid")
+    return owner if isinstance(owner, str) and owner else None
 
 
 async def build_debrief_record(lines: list[dict], lang: Optional[str]) -> str:

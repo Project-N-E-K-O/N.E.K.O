@@ -161,6 +161,17 @@ async def test_record_block_is_bounded_and_keeps_the_newest_lines():
 async def test_render_chips_recovery_callback(monkeypatch):
     from main_routers.visit_router import host_port
 
+    from main_routers.visit_router import accounts
+
+    async def owner(_visit_id):
+        return "uid-own"
+
+    async def own_uid():
+        return "uid-own"
+
+    # 场次归属的真实读盘见 test_visit_socket_bind 的补录用例
+    monkeypatch.setattr(debrief, "_visit_owner", owner)
+    monkeypatch.setattr(accounts, "own_visit_uid", own_uid)
     fake = FakeHost("Host")
     monkeypatch.setattr(host_port.ManagerHost, "for_character", classmethod(lambda cls, name: fake))
     assert await debrief.render_chips("v" * 22, own_char="Host", status="interrupted") is True

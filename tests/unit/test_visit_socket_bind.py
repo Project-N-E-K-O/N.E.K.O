@@ -620,9 +620,10 @@ async def test_replay_stops_when_the_account_changes_midway(monkeypatch, tmp_pat
     assert _chip_ids(socket) == [chips_request_id(vid(13))]
 
 
-async def test_recovery_interrupted_status_is_pinned_to_the_bound_connection(monkeypatch):
+async def test_recovery_interrupted_status_is_pinned_to_the_bound_connection(monkeypatch, tmp_path):
     from main_routers.visit_router import debrief
 
+    await _pending(tmp_path, 19, finalized="crash")
     unbound = VisitSocket([])
     bound = VisitSocket([])
     setattr(bound, VISIT_SOCKET_BOUND_ATTR, True)
@@ -646,14 +647,16 @@ async def test_recovery_interrupted_status_is_pinned_to_the_bound_connection(mon
     mgr = Swapping(bound)
     monkeypatch.setattr(host_port.ManagerHost, "for_character",
                         classmethod(lambda cls, name: host_port.ManagerHost(name, mgr)))
-    await debrief.render_chips("v" * 22, own_char=NAME, status="interrupted")
+    assert await debrief.render_chips(vid(19), own_char=NAME, status="interrupted") is False
+    assert Swapping.reads >= 2                     # 过了 bind 与账号核对、确实走到了写入
     assert all(f.get("type") != "status" for f in unbound.sent)
 
 
-async def test_recovery_sends_no_chips_when_the_interrupted_notice_failed(monkeypatch):
+async def test_recovery_sends_no_chips_when_the_interrupted_notice_failed(monkeypatch, tmp_path):
     from main_routers.visit_router import debrief
     from tests.unit.visit_runtime_harness import FakeHost
 
+    await _pending(tmp_path, 20, finalized="crash")
     fake = FakeHost("Host")
 
     async def refuse(payload):
@@ -661,7 +664,7 @@ async def test_recovery_sends_no_chips_when_the_interrupted_notice_failed(monkey
 
     fake.send_frame = refuse
     monkeypatch.setattr(host_port.ManagerHost, "for_character", classmethod(lambda cls, name: fake))
-    assert await debrief.render_chips("v" * 22, own_char="Host", status="interrupted") is False
+    assert await debrief.render_chips(vid(20), own_char="Host", status="interrupted") is False
     assert fake.blocks == []
 
 
@@ -749,3 +752,55 @@ async def test_crash_notice_written_still_sends_its_chip(monkeypatch, tmp_path):
     await display_socket.replay_chips(socket, NAME)
     assert socket.statuses() == ["VISIT_INTERRUPTED_LAST_TIME"]
     assert _chip_ids(socket) == ["visit-debrief:" + vid(18)]
+
+
+async def _recovery_host(monkeypatch):
+    from tests.unit.visit_runtime_harness import FakeHost
+
+    fake = FakeHost("Host")
+    monkeypatch.setattr(host_port.ManagerHost, "for_character", classmethod(lambda cls, name: fake))
+    return fake
+
+
+async def test_recovery_skips_a_visit_of_another_account(monkeypatch, tmp_path):
+    # 启动补录逐场回调、不分账号：B 账号的页面已 bind 时，A 的中断提示与芯片都不发给它
+    from main_routers.visit_router import debrief
+
+    await _pending(tmp_path, 21, finalized="crash", own_uid=OWN_B)
+    fake = await _recovery_host(monkeypatch)
+    assert await debrief.render_chips(vid(21), own_char="Host", status="interrupted") is False
+    assert fake.frames == [] and fake.blocks == []
+
+
+async def test_recovery_of_the_current_account_still_renders(monkeypatch, tmp_path):
+    from main_routers.visit_router import debrief
+
+    await _pending(tmp_path, 22, finalized="crash")
+    fake = await _recovery_host(monkeypatch)
+    assert await debrief.render_chips(vid(22), own_char="Host", status="interrupted") is True
+    assert [b[1] for b in fake.blocks] == [chips_request_id(vid(22))]
+
+
+async def test_recovery_with_unreadable_state_sends_nothing(monkeypatch, tmp_path):
+    from main_routers.visit_router import debrief
+
+    fake = await _recovery_host(monkeypatch)
+    assert await debrief.render_chips(vid(23), own_char="Host", status=None) is False
+    assert fake.frames == [] and fake.blocks == []
+
+
+async def test_recovery_account_change_during_the_notice_sends_no_chip(monkeypatch, tmp_path):
+    from main_routers.visit_router import accounts, debrief
+
+    await _pending(tmp_path, 24, finalized="crash")
+    calls = {"n": 0}
+
+    async def switching():
+        calls["n"] += 1
+        return OWN_A if calls["n"] == 1 else OWN_B      # 核对时是 A，写完提示后换成 B
+
+    monkeypatch.setattr(accounts, "own_visit_uid", switching)
+    fake = await _recovery_host(monkeypatch)
+    assert await debrief.render_chips(vid(24), own_char="Host", status="interrupted") is False
+    assert fake.blocks == []
+
