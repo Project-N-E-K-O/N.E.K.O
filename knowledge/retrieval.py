@@ -40,6 +40,8 @@ from .text import (
     search_tokens,
     search_view,
     strict_surface,
+    is_name_symbol,
+    unglued_cjk_text,
     unglued_tokens,
     unglued_word_runs,
 )
@@ -90,10 +92,12 @@ def token_coverage(query: str, entry: StoredEntry) -> float:
         parts.extend(values)
     haystack = search_view("\n".join(parts))
     words = unglued_word_runs(haystack)
+    cjk = unglued_cjk_text(haystack)
     # CJK bigrams may sit anywhere inside a run; other tokens are whole words,
-    # matching how FTS indexed them ("he" is not in "the").
+    # matching how FTS indexed them ("he" is not in "the"). Either way, runs
+    # glued to a symbol do not count.
     present = sum(
-        1 for token in wanted if (token in haystack if is_cjk_token(token) else token in words)
+        1 for token in wanted if (token in cjk if is_cjk_token(token) else token in words)
     )
     return present / len(wanted)
 
@@ -128,11 +132,19 @@ def names_in_query(query: str, entry: StoredEntry) -> bool:
 
 
 def _contains_word(text: str, word: str) -> bool:
-    """``word`` occurs in ``text`` with no letter or digit glued to either side."""
+    """``word`` occurs in ``text`` with nothing glued to either side.
+
+    Glued means a letter, a digit or a meaningful symbol: "c+++" does not
+    contain the name "c++", nor "$$x" the name "$x".
+    """
+
+    def free(ch: str) -> bool:
+        return not ch.isalnum() and not is_name_symbol(ch)
+
     start = text.find(word)
     while start != -1:
         end = start + len(word)
-        if (start == 0 or not text[start - 1].isalnum()) and (end == len(text) or not text[end].isalnum()):
+        if (start == 0 or free(text[start - 1])) and (end == len(text) or free(text[end])):
             return True
         start = text.find(word, start + 1)
     return False

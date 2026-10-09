@@ -1948,6 +1948,10 @@ def test_names_in_questions_respect_symbols():
     assert names_in_query("Lil", entry("Lil'")) is False
     assert names_in_query("who is Lil'?", entry("Lil'")) is True
     assert names_in_query("is `C++` hard?", entry("C++")) is True
+    assert names_in_query("is `Python` slow?", entry("Python")) is True
+    assert names_in_query("C+++", entry("C++")) is False
+    assert names_in_query("$$X", entry("$X")) is False
+    assert names_in_query("about $X today", entry("$X")) is True
     assert names_in_query("介绍一下猫", entry("猫")) is True
 
 
@@ -2374,5 +2378,35 @@ async def test_a_bare_letter_does_not_match_a_symbol_name_without_vectors(tmp_pa
         await _import(service, _pack(entries=[{"title": "C++", "content": "The C++ language."}]))
         assert (await service.query(query="C"))["result"] == "miss"
         assert (await service.query(query="C++"))["result"] == "matched"
+    finally:
+        await service.stop()
+
+
+def test_cjk_coverage_ignores_runs_glued_to_symbols():
+    from knowledge.retrieval import token_coverage
+    from knowledge.store import StoredEntry
+
+    def entry(title, content):
+        return StoredEntry(
+            entry_id=1, pack_id="p", title=title, terms={}, tags=[], summary="", content=content, disabled=False
+        )
+
+    cat = chr(0x732B)
+    food = chr(0x7CAE)
+    assert token_coverage(cat, entry(cat + "++", cat + "++ " + "x")) == 0.0
+    assert token_coverage(cat, entry(cat + food, cat + food)) == 1.0  # substring inside a run
+
+
+async def test_cancelled_queued_jobs_leave_the_runner_backlog(tmp_path):
+    service = await _started(tmp_path)
+    try:
+        async with service._write_lock:  # the runner is stuck on the first job
+            await service.import_pack(_raw(_pack("first")))
+            await asyncio.sleep(0.05)
+            for i in range(10):
+                job = await service.import_pack(_raw(_pack(f"other-{i}")))
+                assert job["state"] == "queued"
+                assert await service.cancel_job(job["job_id"]) is True
+            assert len(service._job_queue) == 0  # only the building job, already taken
     finally:
         await service.stop()

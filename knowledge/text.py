@@ -226,7 +226,15 @@ def _strip_marks(value: str) -> str:
 _NAME_SYMBOLS = frozenset("#@&%*")
 
 
+def is_name_symbol(ch: str) -> bool:
+    """Whether ``ch`` changes a name it is attached to (see ``_NAME_SYMBOLS``)."""
+    return _is_name_symbol(ch)
+
+
 def _is_name_symbol(ch: str) -> bool:
+    if ch in _EDGE_QUOTES:
+        # The backtick is a symbol to Unicode, but people quote names with it.
+        return False
     return ch in _NAME_SYMBOLS or unicodedata.category(ch).startswith("S")
 
 
@@ -258,6 +266,15 @@ def unglued_tokens(value: object, *, unigrams: bool = True) -> list[str]:
 def unglued_word_runs(value: str) -> set[str]:
     """Like ``word_runs``, without runs touching a symbol (the "c" of "c++")."""
     return set(_unglued_runs(value))
+
+
+def unglued_cjk_text(value: str) -> str:
+    """The CJK runs of already-normalized text that touch no symbol, one per line.
+
+    CJK tokens are matched as substrings of this, so a one-character name
+    is found inside a longer CJK word but not in the same character + "++".
+    """
+    return "\n".join(run for run in _unglued_runs(value) if _CJK_RUN_RE.match(run))
 
 
 def search_view(value: object) -> str:

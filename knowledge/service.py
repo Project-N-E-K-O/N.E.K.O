@@ -44,7 +44,7 @@ import random
 import threading
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, Sequence, TypeVar
@@ -230,7 +230,10 @@ class KnowledgeService:
         self._write_lock = asyncio.Lock()
         self._query_slots = asyncio.Semaphore(QUERY_CONCURRENCY)
         self._jobs: OrderedDict[str, ImportJob] = OrderedDict()
-        self._job_queue: asyncio.Queue[str] = asyncio.Queue()
+        # Queued job ids in order; a cancelled job leaves it at once, so the
+        # backlog never holds more than the active jobs.
+        self._job_queue: deque[str] = deque()
+        self._job_queued = asyncio.Event()
         self._index_wakeup = asyncio.Event()
         self._stopping = False
         self._tasks: list[asyncio.Task[Any]] = []
@@ -555,10 +558,12 @@ class KnowledgeService:
 
             await asyncio.to_thread(save_registry, self.root, registry)
             self._removed_at[pack_id] = max(self._removed_at.get(pack_id, 0), my_seq)
-            for job in self._jobs.values():
+            for job in list(self._jobs.values()):
                 if job.pack_id == pack_id and job.state == "queued" and job.arrived_at < my_seq:
                     job.cancel_requested = True
                     self._finish_job(job, "cancelled")
+                    self._unqueue(job.job_id)
+                    await self._discard_staging(job.job_id)
             self._broken_packs = tuple(p for p in self._broken_packs if p != pack_id)
             self._publish_registry(registry)
             self._vector_generation += 1
@@ -732,7 +737,8 @@ class KnowledgeService:
             self._finish_job(job, "cancelled")
             await self._discard_staging(job.job_id)
             return {"ok": True, **job.to_json()}
-        self._job_queue.put_nowait(job.job_id)
+        self._job_queue.append(job.job_id)
+        self._job_queued.set()
         return {"ok": True, **job.to_json()}
 
     @staticmethod
@@ -809,10 +815,17 @@ class KnowledgeService:
             job.cancel_requested = True
         if job.state == "queued":
             self._finish_job(job, "cancelled")
+            self._unqueue(job_id)
             # A cancelled job no longer counts toward the staging limits, so
             # its file must go now, not when the runner reaches the job.
             await self._discard_staging(job_id)
         return True
+
+    def _unqueue(self, job_id: str) -> None:
+        try:
+            self._job_queue.remove(job_id)
+        except ValueError:
+            pass
 
     def discard_job(self, job_id: str) -> bool:
         job = self._jobs.get(job_id)
@@ -835,7 +848,10 @@ class KnowledgeService:
 
     async def _job_loop(self) -> None:
         while not self._stopping:
-            job_id = await self._job_queue.get()
+            while not self._job_queue:
+                self._job_queued.clear()
+                await self._job_queued.wait()
+            job_id = self._job_queue.popleft()
             job = self._jobs.get(job_id)
             if job is None or job.state != "queued":
                 await self._discard_staging(job_id)
