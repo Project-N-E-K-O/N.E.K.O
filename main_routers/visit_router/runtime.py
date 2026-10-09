@@ -2105,6 +2105,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 return False
             await asyncio.sleep(_HANDOFF_POLL_S)
 
+    def seal_pending(self) -> bool:
+        """The upload seal is still being written (a background chain may outlive the exit flow)."""
+        sealing = self._sealing
+        return ((sealing is not None and not sealing.done()) or self._header_pending()
+                or (self._files_deferred and not self._deferred_files_done))
+
     def _seal_settled(self) -> bool:
         return not self._header_pending() and (self._sealing is None or self._sealing.done())
 
@@ -2752,7 +2758,7 @@ async def account_change(
         # 准入闸先立起再排队：前一次变更还在等某场封存时，那场可能已从 _runtimes 注销，
         # 后一次看到空表就会抢先改凭证——账号变更一次一个
         async with _account_change_mutex():
-            if _runtimes and (ends_visits is None or await ends_visits()):
+            if (_runtimes or _seals_in_background()) and (ends_visits is None or await ends_visits()):
                 try:
                     await end_visits_for_account_change(timeout)
                 except Exception as exc:  # noqa: BLE001 - 收尾失败不挡登出 / 登录；没封存的留给下次启动补录
@@ -2760,6 +2766,11 @@ async def account_change(
             yield
     finally:
         _account_changes -= 1
+
+
+def _seals_in_background() -> list["VisitRuntime"]:
+    """Recently ended runtimes whose upload seal is still being written."""
+    return [rt for rt in list(_recent.values()) if rt.seal_pending()]
 
 
 async def end_visits_for_account_change(timeout: float = _ACCOUNT_CHANGE_SEAL_WAIT_S) -> int:
@@ -2774,6 +2785,8 @@ async def end_visits_for_account_change(timeout: float = _ACCOUNT_CHANGE_SEAL_WA
     for rt in runtimes:
         if rt.request_finalize("route_end"):
             ended += 1
+    # 刚注销、封存还在后台写的场次（退出流程超过封存期限）同样要等：它们已不在 _runtimes 里
+    runtimes += [rt for rt in _seals_in_background() if rt not in runtimes]
     if runtimes:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(0.0, timeout)

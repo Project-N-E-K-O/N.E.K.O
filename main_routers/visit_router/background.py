@@ -123,6 +123,12 @@ async def stop_visit_background_tasks() -> None:
         await asyncio.wait_for(runtime.stop_all("shutdown"), VISIT_SHUTDOWN_BUDGET_S)
     except Exception as exc:  # noqa: BLE001 - 超时 / 出错只记日志：没收口的留给下次启动补录
         logger.warning("visit shutdown: stop_all did not finish: %r", exc)
+    # 转录补传 / 举报重试是独立任务，stop_all 不管它们：关机时取消，没传完的文件留给下次启动
+    from main_routers.visit_router import transcript_upload
+
+    workers = transcript_upload.cancel_retry_workers()
+    if workers:
+        await asyncio.wait(workers, timeout=_RECOVERY_STOP_WAIT_S)
 
 
 def cancel_visit_background_tasks() -> None:

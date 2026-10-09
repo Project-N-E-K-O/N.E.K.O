@@ -482,3 +482,37 @@ async def test_stale_oauth_attempt_is_recognized(monkeypatch):
     assert await community_oauth._oauth_attempt_still_current("old-attempt") is False
     monkeypatch.setattr(community_oauth, "_load_oauth_pending", lambda: (None, None))
     assert await community_oauth._oauth_attempt_still_current("new-attempt") is False
+
+
+# ── 评审第 5 轮 ───────────────────────────────────────────────────────
+
+
+async def test_account_change_waits_for_a_seal_of_a_recently_unregistered_visit(monkeypatch):
+    # 退出流程超过封存期限、封存还在后台写：这场已从 _runtimes 注销，但账号变更仍要等它
+    sealing = asyncio.get_running_loop().create_future()
+    stub = _SealStub(sealing=sealing, exited=True)
+    stub.seal_pending = lambda: runtime.VisitRuntime.seal_pending(stub)
+    stub.wait_upload_sealed = lambda timeout: runtime.VisitRuntime.wait_upload_sealed(stub, timeout)
+    monkeypatch.setattr(runtime, "_runtimes", {})
+    monkeypatch.setattr(runtime, "_recent", {"v" * 22: stub})
+    asyncio.get_running_loop().call_later(0.2, sealing.set_result, {"ok": True})
+    started = time.monotonic()
+    async with runtime.account_change(timeout=2.0):
+        assert sealing.done()                      # 改凭证之前已封存
+    assert time.monotonic() - started >= 0.15
+
+
+async def test_shutdown_cancels_upload_retry_workers(monkeypatch):
+    from main_routers.visit_router import transcript_upload
+
+    async def nothing(reason="shutdown"):
+        return None
+
+    monkeypatch.setattr(runtime, "stop_all", nothing)
+    worker = asyncio.ensure_future(asyncio.sleep(60))
+    transcript_upload._workers["w" * 22] = worker
+    try:
+        await background.stop_visit_background_tasks()
+        assert worker.cancelled()
+    finally:
+        transcript_upload._workers.pop("w" * 22, None)
