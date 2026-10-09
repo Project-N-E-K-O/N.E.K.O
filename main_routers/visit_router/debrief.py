@@ -170,7 +170,8 @@ async def run_debrief(rt: Any, *, input_stamp: float) -> None:
         await rt.speak_home_segment("debrief", text, kind="visit_debrief", silent=rt.finalize_reason == "goodbye")
     await _push_state(rt, "summary")
     # 日记读的是 spool：有没有可记的句子按 spool 实际写进去的算（与上传流水各自独立）。
-    # 还有句子正在写 spool（落盘慢、收尾没等它）：先限时等它落定再判断，不把这一场当成「没有可记的」
+    # spool_lines 要等写盘线程写完才加一：还有句子在写（落盘慢、收尾没等它）就先限时等它落定再判断，
+    # 不把这一场当成「没有可记的」。追加在提交时就排进了单线程写盘队列、关 spool 排在它后面，不会被关掉
     await rt.settle_spool_appends(_STATE_WRITE_MAX_S)
     await _offer_chips(rt, has_lines=rt.spool_lines > 0)
 

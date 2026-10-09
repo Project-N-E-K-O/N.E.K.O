@@ -167,8 +167,9 @@ class InboxHandoff:
         segments = self._segments.values()
         if all(seg.done for seg in segments):
             return True
-        if not any(seg.voiced for seg in segments):
-            # 语音关：没有 TTS，与插件回调抢不了声音；按两段文本的估时交还
+        if not any(seg.voiced and not seg.done for seg in segments):
+            # 还没结束的段都不出声（语音关，或出声那段已结束 / 被跳过、剩下的改走文字）：与插件回调抢不了声音，
+            # 按文本的估时交还，不为一段已经结束的语音等满上限
             est = sum(seg.est_ms for seg in segments) / 1000.0
             return now >= queued + est
         if now >= queued + VISIT_INBOX_HANDOFF_MAX_S:

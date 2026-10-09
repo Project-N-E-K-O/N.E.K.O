@@ -241,6 +241,7 @@ class _Item:
     first_active: Optional[float] = None
     next_due: float = 0.0
     acked: bool = False
+    unsent_first: bool = False  # 首发没写出去（write_failed）：下一次发出仍算首发
 
 
 @dataclass
@@ -813,14 +814,38 @@ class VisitOutbox:
         self._bytes.charge(item.nbytes)
         self._msgs.charge(item.pieces)
 
+    def write_failed(self, frame: OutboundFrame, now: Optional[float] = None) -> None:
+        """The transport did not write ``frame``: retry a reliable one at once; a failed first send does not count.
+
+        ``due`` books a frame as transmitted when it releases it. If the
+        write then fails, the reliable item is due again right away, and when
+        it was the first transmission it is not counted as sent: the
+        ``leave`` grace and the delivery timeout do not start from it, and the
+        next transmission is flagged as the first one (``retransmit`` False).
+        """
+        if not frame.seq:
+            return
+        item = self._unacked.get(frame.seq)
+        if item is None or item.acked:
+            return
+        now = self._now(now)
+        if not frame.retransmit:
+            item.unsent_first = True
+            item.first_active = None
+            if item.seq == self._leave_seq:
+                self._leave_sent_at = None
+        item.next_due = now
+
     def _frame(self, item: _Item, *, retransmit: bool) -> OutboundFrame:
         return OutboundFrame(cmd=item.cmd, payload=copy.deepcopy(item.payload),
                              nbytes=item.nbytes, pieces=item.pieces, seq=item.seq,
                              retransmit=retransmit)
 
-    def _transmitted(self, item: _Item, now: float) -> None:
-        """Book-keeping after a reliable item went on the wire."""
-        if item.emitted == 0:
+    def _transmitted(self, item: _Item, now: float) -> bool:
+        """Book-keeping after a reliable item went on the wire; True when this is its first transmission."""
+        first = item.emitted == 0 or item.unsent_first
+        item.unsent_first = False
+        if first:
             item.first_active = self.active_time(now)
             if item.seq == self._leave_seq:
                 self._leave_sent_at = now
@@ -829,6 +854,7 @@ class VisitOutbox:
             item.next_due = now + _LEAVE_RESEND_INTERVAL_S
         else:
             item.next_due = now + self._retry[min(item.emitted - 1, len(self._retry) - 1)]
+        return first
 
     def check_delivery(self, now: Optional[float] = None) -> Optional[int]:
         """Evaluate the delivery timeout; return the failed ``seq`` (sticky) or None.
@@ -894,8 +920,8 @@ class VisitOutbox:
                 return out
             self._charge(item)
             self._urgent.popleft()
-            self._transmitted(item, now)
-            out.append(self._frame(item, retransmit=True))
+            first = self._transmitted(item, now)
+            out.append(self._frame(item, retransmit=not first))
 
         # ②③ 平时：到期重传在前（outbox 到期项排在队首）、首发在后。leave 入队后
         # 反过来：此前已入队的首发与 leave 本身先发出去——leave 模式下已发项每 1 s
@@ -919,8 +945,8 @@ class VisitOutbox:
             if not self._fits(item):  # retransmit-only-with-room
                 return False
             self._charge(item)
-            self._transmitted(item, now)
-            out.append(self._frame(item, retransmit=True))
+            first = self._transmitted(item, now)
+            out.append(self._frame(item, retransmit=not first))
         return True
 
     def _release_first_sends(self, now: float, out: list[OutboundFrame]) -> bool:

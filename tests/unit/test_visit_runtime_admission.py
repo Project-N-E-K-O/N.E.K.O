@@ -701,6 +701,29 @@ async def test_a_cancelled_accept_request_still_finishes_the_acceptance(tmp_path
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_an_activation_cancelled_while_opening_the_spool_leaves_a_memory_off_state(tmp_path, monkeypatch):
+    from main_logic.visit import spool as spool_mod
+
+    monkeypatch.setattr(rtm, "VISIT_ACTIVATION_ALLOWANCE_S", 0.3)
+    real_open = spool_mod.VisitSpool.open
+
+    async def slow_open(self, *args, **kwargs):
+        await asyncio.sleep(5)                            # 打开 spool 超出激活时限：激活被取消
+        return await real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(spool_mod.VisitSpool, "open", slow_open)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    hrt = host.rt
+    try:
+        status, _ = await hrt.accept(True)
+        assert status == 200
+        await asyncio.wait_for(_finished(hrt), 15)
+        state = await spool_mod.VisitSpool(hrt.config_dir, hrt.visit_id).read_state()
+        assert state["memory_enabled"] is False            # 已按记忆开写下的状态由收尾改回记忆关
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_activation_that_finishes_after_the_end_publishes_nothing(tmp_path, monkeypatch):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
     hrt = host.rt

@@ -1228,6 +1228,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         for frame in frames:
             if await self.transport.send(frame.to_ws()):
                 self.on_frame_sent(frame)
+            else:
+                # 没写出去：必达项马上重试；首发没写出去不算发过（leave 的宽限、wrap_up 的步骤计时都不从这里起算）
+                self.outbox.write_failed(frame, now=self.clock())
         if self.outbox.delivery_failed and not self.finalizing:
             self.request_finalize("delivery_failed")
 
@@ -1534,11 +1537,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return
         spool = VisitSpool(self.config_dir, self.visit_id)
         memory_on = bool(self.memory_enabled and subjects)
+        state_written = False
         try:
             await spool.write_state(new_state(
                 own_uid=creds.visit_uid, own_char=self.lanlan_name, own_char_uid=self.character_uid,
                 pair_id=pair_id, peer_uid=peer.uid, peer_char_id=peer_char_id, memory_enabled=memory_on,
             ))
+            state_written = True
             if memory_on:
                 await spool.open({
                     "v": 1, "visit_id": self.visit_id, "role": self.side, "own_uid": creds.visit_uid,
@@ -1546,6 +1551,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                     "peer_uid": peer.uid, "peer_char_id": peer_char_id, "peer_char_tag": peer.char_tag,
                     "started_at": self.wall(), "lang": self.lang or "und",
                 }, now=self.clock())
+        except asyncio.CancelledError:
+            if state_written:
+                # 激活在打开 spool 途中被取消（超出激活时限 / 收尾）：state 已按记忆开写下却不会有转录。
+                # 交给收尾：写 finalized 时一并改回记忆关（否则启动补录每次都去提交一份不存在的转录、永远结不清）
+                self.memory_enabled = False
+                self.spool = spool
+                if memory_on:
+                    self._memory_off_unsaved = True
+            raise
         except Exception as exc:  # noqa: BLE001 - spool 打不开：本场不记串门记忆，对话照常
             logger.warning("visit %s: spool not opened: %s", self.visit_id[:6], type(exc).__name__)
             if memory_on:
@@ -2057,9 +2071,6 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.spool is not None and not self._spool_finalized:
             self._spool_finalized = True
             try:
-                # 还有句子正在写 spool（落盘慢、封存只等了上传流水）：先等它落定再关，否则关了之后它就写不进来，
-                # 这场在简述看来「没有可记的句子」、不出芯片。本身在 _SEAL_MAX_S 的限时里
-                await self.settle_spool_appends(_SEAL_MAX_S)
                 await self.spool.close()
                 changes: dict[str, Any] = {"finalized": reason}
                 if self._memory_off_unsaved:

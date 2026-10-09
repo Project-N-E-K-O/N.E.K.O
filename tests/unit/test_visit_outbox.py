@@ -799,6 +799,29 @@ async def test_a_send_after_close_does_not_recreate_the_outbox_file(tmp_path):
     assert not await asyncio.to_thread(tx.path.exists)     # 带正文的文件不重新出现
 
 
+async def test_a_first_send_that_failed_to_write_is_retried_as_a_first_send(tmp_path):
+    tx = make_outbox(tmp_path)
+    tx.send(text(1), now=0.0)
+    first = [f for f in tx.due(0.0) if f.t == "text"][0]
+    assert first.retransmit is False
+    tx.write_failed(first, now=0.0)                  # 传输没写出去
+    again = [f for f in tx.due(0.0) if f.t == "text"]
+    assert again and again[0].retransmit is False    # 马上重试，且仍算首发
+    await tx.close()
+
+
+async def test_a_leave_that_failed_to_write_does_not_start_its_grace(tmp_path):
+    tx = make_outbox(tmp_path)
+    tx.send({"t": "leave", "reason": "home"}, now=0.0)
+    leave = [f for f in tx.due(0.0) if f.t == "leave"][0]
+    tx.write_failed(leave, now=0.0)                  # leave 没写出去
+    assert not tx.leave_done(6.0)                    # 宽限不从这次失败起算（没写出去的 leave 不算发过）
+    again = [f for f in tx.due(6.0) if f.t == "leave"]
+    assert again and again[0].retransmit is False
+    assert not tx.leave_done(6.1)                    # 宽限从真正写出去那一刻起算
+    await tx.close()
+
+
 async def test_cancelled_close_still_deletes_the_outbox_file(tmp_path):
     import threading
 

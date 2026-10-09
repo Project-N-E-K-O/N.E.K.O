@@ -73,6 +73,18 @@ def test_an_end_signal_before_the_other_segment_is_registered_is_kept():
     assert h.due()
 
 
+def test_a_skipped_voiced_segment_does_not_hold_the_text_fallback():
+    clock = Clock()
+    h = ih.InboxHandoff("v" * 22, finalize_at=clock(), clock=clock)
+    h.attach_speech("ritual", "sp-r")                # 仪式句开了 TTS 流
+    h.mark_queued("ritual", 2000)
+    h.skip("ritual")                                 # 推流被拒：这段跳过，简述改走文字
+    h.mark_queued("debrief", 3000)                   # 简述只上屏
+    clock.now += 5.1                                 # 过了文字的估时（远不到 VISIT_INBOX_HANDOFF_MAX_S）
+    assert clock.now - 100.0 < VISIT_INBOX_HANDOFF_MAX_S
+    assert h.due()                                   # 按文字估时交还，不为那段已结束的语音等满上限
+
+
 def test_twenty_second_cap_counts_from_the_second_segment_and_respects_playback():
     clock = Clock()
     h = ih.InboxHandoff("v" * 22, finalize_at=clock(), clock=clock)

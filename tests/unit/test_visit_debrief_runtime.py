@@ -290,27 +290,35 @@ async def test_the_debrief_state_write_is_registered_as_soon_as_it_starts(tmp_pa
 
 
 async def test_chips_are_offered_when_a_slow_spool_append_lands(tmp_path, monkeypatch):
+    import threading
+
     from main_logic.visit.spool import VisitSpool
 
-    release = asyncio.Event()
+    release = threading.Event()
+    real_append_sync = VisitSpool._append_sync
     real_append = VisitSpool.append
 
     async def append(self, line):
         if line.get("from") != "own_human":
             raise OSError("disk full")                        # 猫的句子没写进 spool：spool 里原本一句没有
-        await release.wait()                                  # 亲人那句已进上传流水，spool 写盘还在排队
         return await real_append(self, line)
 
+    def append_sync(self, data):
+        release.wait(10)                                      # 亲人那句已提交到写盘线程，磁盘卡着
+        return real_append_sync(self, data)
+
     monkeypatch.setattr(VisitSpool, "append", append)
+    monkeypatch.setattr(VisitSpool, "_append_sync", append_sync)
     monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)           # 这句持有预留：关闭通道别等满上限
     monkeypatch.setattr(rtm, "_RESERVED_SEND_MAX_S", 0.2)
+    monkeypatch.setattr(rtm, "_SEAL_MAX_S", 0.3)             # spool 收尾排在这句后面：到点转后台
     host, guest, wire, clock, gates = await _visit_with_lines(tmp_path, monkeypatch)
     host.replies.queue = [["我回来啦。"], ["聊得很开心。"]]
     rt = host.rt
     real_settle = rt.settle_spool_appends
 
     async def settle_then_release(timeout):
-        asyncio.get_running_loop().call_later(0.1, release.set)  # 收口 spool 前开始等时它才落定
+        asyncio.get_running_loop().call_later(0.1, release.set)  # 简述开始等的时候它才写完
         return await real_settle(timeout)
 
     rt.settle_spool_appends = settle_then_release
@@ -321,8 +329,8 @@ async def test_chips_are_offered_when_a_slow_spool_append_lands(tmp_path, monkey
         assert rt.spool_lines == 0
         rt.request_finalize("route_end")
         await finish(rt, clock)
-        assert rt.spool_lines == 1                            # 关 spool 之前等它落定：这句进了串门记忆
-        assert [b for b in host.host.blocks if b[1] == f"visit-debrief:{rt.visit_id}"]  # 芯片照出
+        assert rt.spool_lines == 1
+        assert [b for b in host.host.blocks if b[1] == f"visit-debrief:{rt.visit_id}"]  # 等它落定再判断：芯片照出
         await asyncio.gather(sending, return_exceptions=True)
     finally:
         release.set()
