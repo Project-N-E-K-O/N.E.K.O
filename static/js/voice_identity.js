@@ -69,6 +69,7 @@
         'voiceIdentity.setupBusy': '正在准备或检查，请稍候。',
         'voiceIdentity.resourcesChecking': '录入资源尚未确认，请检查并加载。',
         'voiceIdentity.resourcesNeeded': '录入资源未就绪，请检查并加载资源。',
+        'voiceIdentity.resourcesNeedRepair': '录入所需资源缺失或不可用，请点击「修复资源」。',
         'voiceIdentity.inputTestRequired': '请先完成试录，再开始录入。',
         'voiceIdentity.enrollmentReady': '试录与资源检查已通过，可以开始录入。'
     });

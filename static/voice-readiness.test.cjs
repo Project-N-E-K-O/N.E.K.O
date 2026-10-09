@@ -122,7 +122,8 @@ test('passing input cannot produce ready guidance while required resources are m
     const h = harness({ resourceReady: false });
     await h.controller.refreshResources();
     await h.elements.get('voice-identity-test').emit('click');
-    assert.equal(h.controller.startHintKey(), 'voiceIdentity.resourcesNeeded');
+    // The harness reports CAM++ as missing, which only repair can fix.
+    assert.equal(h.controller.startHintKey(), 'voiceIdentity.resourcesNeedRepair');
     assert.equal(h.controller.canStart(), false);
 });
 
@@ -178,9 +179,19 @@ test('repair is offered only for required resources; optional wake parts point t
     assert.deepEqual(await show(false, 'missing', 'missing'), { repair: false, help: 'voiceIdentity.downloadNeedsWakeOn', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeOptional' });
     assert.deepEqual(await show(true, 'missing', 'unchecked'), { repair: false, help: '', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeNeedsModel' });
     assert.deepEqual(await show(true, 'missing', 'missing'), { repair: true, help: 'voiceIdentity.downloadNeedsRuntime', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeNeedsResources' });
+    // A managed preference cannot be switched on here, so do not ask for it.
+    payload = { can_enroll: true, wake_enabled: false, wake_managed: true, resources: { campp: ready, silero: ready, wake_runtime: { state: 'unavailable', required: false } } };
+    await h.controller.refreshResources();
+    assert.equal(h.elements.get('voice-identity-download-help').textContent, 'voiceIdentity.downloadNeedsRuntime');
+    // Loading cannot fix a missing enrollment model; the hints point to repair.
     payload = { can_enroll: false, wake_enabled: false, resources: { campp: { state: 'missing', required: true }, silero: ready } };
     await h.controller.refreshResources();
     assert.equal(h.elements.get('voice-identity-repair').hidden, false);
+    assert.equal(h.elements.get('voice-identity-resource-summary').textContent, 'voiceIdentity.resourcesNeedRepair');
+    assert.equal(h.controller.startHintKey(), 'voiceIdentity.resourcesNeedRepair');
+    payload = { can_enroll: false, wake_enabled: false, resources: { campp: { state: 'unchecked', required: true }, silero: ready } };
+    await h.controller.refreshResources();
+    assert.equal(h.controller.startHintKey(), 'voiceIdentity.resourcesNeeded');
 });
 
 test('loading resources after a passed test asks for a retest instead of still showing it passed', async () => {
@@ -201,7 +212,7 @@ test('loading resources after a passed test asks for a retest instead of still s
     await h.elements.get('voice-identity-prepare').emit('click');
     assert.equal(h.controller.startHintKey(), 'voiceIdentity.inputTestRequired');
     assert.equal(h.controller.canStart(), false);
-    assert.equal(h.elements.get('voice-identity-test-result').textContent, 'Resources changed. Repeat the input test.');
+    assert.equal(h.elements.get('voice-identity-test-result').textContent, 'Resource changes invalidate the passed input test. Repeat the test.');
     await h.elements.get('voice-identity-test').emit('click');
     assert.equal(h.controller.startHintKey(), 'voiceIdentity.enrollmentReady');
     assert.equal(h.controller.canStart(), true);

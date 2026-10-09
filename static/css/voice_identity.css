@@ -1054,7 +1054,7 @@ input:focus-visible,
 
 [data-theme="dark"] .profile-card-toggle {
     color: #8edcff;
-    background: #193442;
+    background: var(--voice-panel-soft);
 }
 
 #voice-identity-profile-details {
@@ -1114,7 +1114,7 @@ input:focus-visible,
 
 [data-theme="dark"] .secondary-button {
     color: #8edcff;
-    background: #193442;
+    background: var(--voice-panel-soft);
 }
 
 [data-theme="dark"] .danger-button {

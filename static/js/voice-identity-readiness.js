@@ -45,6 +45,20 @@
         let currentMessage = null;
         try { selectedId = localStorage.getItem('neko_selected_microphone') || ''; gainDb = root.nekoMicrophoneInput.gain(localStorage.getItem('neko_mic_gain_db')); } catch (_) {}
         el.gain.value = String(gainDb);
+        const RESOURCE_HINT_FALLBACKS = {
+            'voiceIdentity.resourcesChecking': 'Enrollment resources are not confirmed. Check and load them.',
+            'voiceIdentity.resourcesReady': 'Voice enrollment resources are ready',
+            'voiceIdentity.resourcesNeeded': 'Enrollment resources are not ready. Check and load resources.',
+            'voiceIdentity.resourcesNeedRepair': 'Required enrollment resources are missing or unavailable. Select “Repair resources”.'
+        };
+        // Loading cannot fix a missing or unavailable enrollment resource; repair can.
+        function resourcesHintKey() {
+            if (!resources) return 'voiceIdentity.resourcesChecking';
+            if (resources.can_enroll === true) return 'voiceIdentity.resourcesReady';
+            const items = resources.resources || {};
+            return ['campp', 'silero', 'noise_reduction'].some(name => items[name] && ['missing', 'unavailable'].includes(items[name].state))
+                ? 'voiceIdentity.resourcesNeedRepair' : 'voiceIdentity.resourcesNeeded';
+        }
         function message(key, fallback, error) { currentMessage = { key, fallback, error }; el['test-result'].textContent = t(key, fallback); el['test-result'].classList.toggle('is-error', !!error); }
         function render(updateParent = true) {
             el.test.disabled = pending || hooks.enrolling();
@@ -60,14 +74,10 @@
             el.repair.disabled = pending || hooks.enrolling();
             el['resource-cancel'].hidden = !operation;
             el['gain-value'].textContent = gainDb + ' dB';
+            const resourcesKey = resourcesHintKey();
             const summary = document.getElementById('voice-identity-resource-summary');
             if (summary) {
-                const [key, fallback] = !resources
-                    ? ['voiceIdentity.resourcesChecking', 'Enrollment resources are not confirmed. Check and load them.']
-                    : resources.can_enroll === true
-                        ? ['voiceIdentity.resourcesReady', 'Voice enrollment resources are ready']
-                        : ['voiceIdentity.resourcesNeeded', 'Enrollment resources are not ready. Check and load resources.'];
-                const text = t(key, fallback);
+                const text = t(resourcesKey, RESOURCE_HINT_FALLBACKS[resourcesKey]);
                 if (summary.textContent !== text) summary.textContent = text;
                 summary.classList.toggle('is-ready', !!resources && resources.can_enroll === true);
             }
@@ -91,9 +101,10 @@
                 downloadHelp.hidden = !runtime || !['missing', 'unavailable'].includes(runtime.state);
                 // The repair button only appears once the runtime is required,
                 // that is, once wake word is on; until then, point there first.
-                const text = downloadHelp.hidden ? '' : runtime.required
+                // A managed preference cannot be switched on from this page.
+                const text = downloadHelp.hidden ? '' : runtime.required || resources.wake_managed === true
                     ? t('voiceIdentity.downloadNeedsRuntime', 'Install or repair the wake word runtime before downloading the model.')
-                    : t('voiceIdentity.downloadNeedsWakeOn', 'The wake-word runtime is missing. Turn on wake word, then repair the runtime and download the model.');
+                    : t('voiceIdentity.downloadNeedsWakeOn', 'The wake-word runtime is unavailable. Turn on wake word, then repair the runtime and download the model.');
                 if (downloadHelp.textContent !== text) downloadHelp.textContent = text;
             }
             if (updateParent) hooks.render();
@@ -303,7 +314,7 @@
         // Resource changes may alter audio processing, so a passed test no
         // longer counts. Replace its "passed" result, which would now mislead.
         function discardTestForResources() {
-            if (accepted) message('voiceIdentity.inputRetestAfterResources', 'Resources changed. Repeat the input test.', false);
+            if (accepted) message('voiceIdentity.inputRetestAfterResources', 'Resource changes invalidate the passed input test. Repeat the test.', false);
             accepted = null;
         }
         async function runResource(kind) {
@@ -461,8 +472,7 @@
         // The single enrollment gate; canStart and the button hint both read it.
         function startHintKey() {
             if (pending) return 'voiceIdentity.setupBusy';
-            if (!resources) return 'voiceIdentity.resourcesChecking';
-            if (resources.can_enroll !== true) return 'voiceIdentity.resourcesNeeded';
+            if (!resources || resources.can_enroll !== true) return resourcesHintKey();
             if (!accepted || accepted.inputSnapshot !== snapshot()) return 'voiceIdentity.inputTestRequired';
             return 'voiceIdentity.enrollmentReady';
         }
