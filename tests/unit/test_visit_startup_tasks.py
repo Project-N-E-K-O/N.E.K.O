@@ -299,7 +299,7 @@ async def test_start_awaiting_its_account_lookup_is_refused_after_an_account_cha
     async with runtime.account_change():
         gate.set()
         with pytest.raises(runtime.VisitRefused) as exc:
-            await starting
+            pytest.fail(f"admitted during an account change: {await starting!r}")
     assert exc.value.body["reason"] == "account_change"
     assert visit_route_state.get_visit_route_state("A") is None      # 占位已放掉
     runtime._reset_for_tests()
@@ -348,3 +348,46 @@ def test_every_credential_change_runs_inside_the_visit_fence():
         "await _store_session(")
     logout2 = _body_of(card, "async def logout_endpoint(")
     assert logout2.index("async with community_oauth.visit_account_change():") < logout2.index("_clear_auth)")
+
+
+# ── 评审第 2 轮 ───────────────────────────────────────────────────────
+
+
+async def test_startup_rollback_also_cancels_upload_retry_workers():
+    from main_routers.visit_router import transcript_upload
+
+    worker = asyncio.ensure_future(asyncio.sleep(60))
+    transcript_upload._workers["v" * 22] = worker
+    try:
+        background.cancel_visit_background_tasks()
+        await asyncio.sleep(0)
+        assert worker.cancelled()
+    finally:
+        transcript_upload._workers.pop("v" * 22, None)
+
+
+async def test_shutdown_stops_the_recovery_before_stop_all(monkeypatch):
+    seen = []
+
+    async def slow_recovery():
+        await asyncio.sleep(60)
+
+    async def stop_all(reason="shutdown"):
+        seen.append(rec.done())
+
+    monkeypatch.setattr(background, "run_startup_recovery", slow_recovery)
+    monkeypatch.setattr(runtime, "stop_all", stop_all)
+    background.start_visit_background_tasks()
+    rec = background._recovery_task
+    await asyncio.sleep(0)
+    await background.stop_visit_background_tasks()
+    # 补录先停：它不会在 stop_all 取后台任务快照之后再派生写入
+    assert seen == [True]
+
+
+def test_sync_session_clear_rechecks_the_account_inside_the_fence():
+    card = (REPO / "main_routers" / "card_drop_router.py").read_text(encoding="utf-8")
+    sync = _body_of(card, "async def sync_session_endpoint(")
+    fenced = sync.split("async with community_oauth.visit_account_change():", 1)[1].split("cleared = await", 1)[0]
+    # 等收尾期间别的登录可能已换账号：闸内、清除之前再核对一次令牌
+    assert "_access_token" in fenced and "local_session_mismatch" in fenced

@@ -2011,6 +2011,12 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
 
         # 在飞的串门先收尾、封存上传文件，清登录态期间不准入新串门
         async with community_oauth.visit_account_change():
+            # 等收尾期间别的登录可能已换成另一个账号：清除之前按同一口径再核对一次
+            current_access = await asyncio.to_thread(_access_token) or ""
+            if current_access and not secrets.compare_digest(current_access, requested_access):
+                return JSONResponse(
+                    {"detail": "local_session_mismatch"}, status_code=409, headers=cors
+                )
             cleared = await asyncio.to_thread(_clear_auth)
         if not cleared:
             return JSONResponse(

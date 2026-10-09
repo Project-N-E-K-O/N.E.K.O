@@ -20,8 +20,8 @@
   startup recovery of visit files (``recovery.visit_spool_recovery``) with
   the runtime's callbacks injected.
 * :func:`stop_visit_background_tasks` is the front of ``on_shutdown``:
-  stop the sweep, ``runtime.stop_all('shutdown')`` within
-  ``VISIT_SHUTDOWN_BUDGET_S``, then cancel what is left of the recovery.
+  stop the sweep and the recovery, then ``runtime.stop_all('shutdown')``
+  within ``VISIT_SHUTDOWN_BUDGET_S``.
 
 Both run whatever the ``NEKO_VISIT_ENABLED`` release switch says: the
 switch only closes the entry points, recovery and uploads keep working.
@@ -39,6 +39,7 @@ logger = get_module_logger(__name__, "Main")
 
 _sweep_task: Optional[asyncio.Task] = None
 _recovery_task: Optional[asyncio.Task] = None
+_RECOVERY_STOP_WAIT_S = 0.2
 
 
 async def _family_names() -> tuple[str, ...]:
@@ -113,17 +114,24 @@ async def stop_visit_background_tasks() -> None:
     sweep, recovery = _sweep_task, _recovery_task
     _sweep_task = _recovery_task = None
     _cancel(sweep)  # 计时不再与关机收口并发
+    # 补录先停（没做完的下次启动再来）：它还在跑的话，可能在 stop_all 取后台任务快照之后才派生
+    # digest / 摘要写入，那些就漏过了关机的取消
+    _cancel(recovery)
+    if recovery is not None and not recovery.done():
+        await asyncio.wait([recovery], timeout=_RECOVERY_STOP_WAIT_S)
     try:
         await asyncio.wait_for(runtime.stop_all("shutdown"), VISIT_SHUTDOWN_BUDGET_S)
     except Exception as exc:  # noqa: BLE001 - 超时 / 出错只记日志：没收口的留给下次启动补录
         logger.warning("visit shutdown: stop_all did not finish: %r", exc)
-    # 补录本身（其派生的后台写入已由 stop_all 取消）：没做完的下次启动再来
-    _cancel(recovery)
 
 
 def cancel_visit_background_tasks() -> None:
-    """Startup rollback: cancel both tasks without the shutdown flow (no visit can be live yet)."""
+    """Startup rollback: cancel both tasks and the upload retries recovery scheduled (no visit is live yet)."""
     global _sweep_task, _recovery_task
+    from main_routers.visit_router import transcript_upload
+
     _cancel(_sweep_task)
     _cancel(_recovery_task)
     _sweep_task = _recovery_task = None
+    # 补录排下的转录补传 / 举报重试是独立任务：回滚后不能留着上传、改 spool，与下次初始化重叠
+    transcript_upload.cancel_retry_workers()
