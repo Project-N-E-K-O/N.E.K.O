@@ -36,6 +36,7 @@ MAX_CHARS = 1_200
 OVERLAP_CHARS = 120
 MAX_CHUNKS_PER_ENTRY = 96
 MAX_EMBED_CHARS = 2_000
+MAX_HEADER_CHARS = 600
 
 _PARAGRAPH_RE = re.compile(r"\n\s*\n")
 _SENTENCE_RE = re.compile(r"(?<=[。！？!?；;])|(?<=[.])\s+")
@@ -121,7 +122,9 @@ def derive_chunks(entry: KnowledgeEntry) -> tuple[KnowledgeChunk, ...]:
         header = entry.title
         if index == 0 and entry.summary:
             header = f"{entry.title}\n{entry.summary}"
-        embed_text = f"{header}\n{body}"[:MAX_EMBED_CHARS]
+        # The header (title, and the summary on the first chunk) is capped so
+        # a long summary cannot push the chunk's own text out of the input.
+        embed_text = f"{header[:MAX_HEADER_CHARS]}\n{body}"[:MAX_EMBED_CHARS]
         chunks.append(
             KnowledgeChunk(
                 chunk_index=index,

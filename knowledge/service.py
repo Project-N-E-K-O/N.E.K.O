@@ -201,6 +201,7 @@ class KnowledgeService:
         self._index_model_id: str | None = None
         self._query_embeddings: set[asyncio.Task[Any]] = set()
         self._admitting: dict[str, int] = {}
+        self._removal_epochs: dict[str, int] = {}
         self._vectors_built_for: tuple[int, str] | None = None
         self._vector_task: asyncio.Task[Any] | None = None
         self._availability_listeners: list[Callable[[], None]] = []
@@ -448,6 +449,9 @@ class KnowledgeService:
         return await self._locked(run)
 
     async def remove_pack(self, pack_id: str) -> dict[str, Any]:
+        # An import still in admission is not a job yet; the epoch tells it
+        # that a removal started after it, so it must not reinstall the pack.
+        self._removal_epochs[pack_id] = self._removal_epochs.get(pack_id, 0) + 1
         for job in self._jobs.values():
             if job.pack_id == pack_id and job.state in ACTIVE_JOB_STATES:
                 job.cancel_requested = True
@@ -508,10 +512,11 @@ class KnowledgeService:
             return {"ok": False, "reason": "knowledge_busy"}
         staged_bytes = sum(job.staged_bytes for job in pending) + sum(self._admitting.values())
         self._admitting[pack.pack_id] = len(canonical)
+        epoch = self._removal_epochs.get(pack.pack_id, 0)
 
         async def admit() -> dict[str, Any]:
             try:
-                return await self._admit_import(pack, canonical, chunks, staged_bytes)
+                return await self._admit_import(pack, canonical, chunks, staged_bytes, epoch)
             finally:
                 self._admitting.pop(pack.pack_id, None)
 
@@ -521,7 +526,12 @@ class KnowledgeService:
         return await asyncio.shield(asyncio.ensure_future(admit()))
 
     async def _admit_import(
-        self, pack: KnowledgePack, canonical: bytes, chunks: int, staged_bytes: int
+        self,
+        pack: KnowledgePack,
+        canonical: bytes,
+        chunks: int,
+        staged_bytes: int,
+        removal_epoch: int,
     ) -> dict[str, Any]:
         registry = self._registry
         others = [record for record in registry.packs.values() if record.pack_id != pack.pack_id]
@@ -549,6 +559,12 @@ class KnowledgeService:
         )
         await asyncio.to_thread(atomic_write_bytes, self._staging_path(job.job_id), canonical)
         self._remember_job(job)
+        if self._removal_epochs.get(pack.pack_id, 0) != removal_epoch:
+            # The pack was removed while this import was being admitted.
+            job.cancel_requested = True
+            self._finish_job(job, "cancelled")
+            await self._discard_staging(job.job_id)
+            return {"ok": True, **job.to_json()}
         self._job_queue.put_nowait(job.job_id)
         return {"ok": True, **job.to_json()}
 
@@ -1131,6 +1147,12 @@ class KnowledgeService:
                 self._store.list_entries, pack_ids=pack_ids, limit=limit, offset=offset
             )
             has_more = offset + len(entries) < total
+        # Recheck after the read: a pack replaced in between is left out
+        # rather than shown with the snapshot's (older) metadata.
+        still_current = await asyncio.to_thread(
+            self._current_packs, sorted({entry.pack_id for entry in entries}), registry
+        )
+        entries = [entry for entry in entries if entry.pack_id in still_current]
         return {
             "total": total,
             "offset": offset,
@@ -1147,7 +1169,7 @@ class KnowledgeService:
         if not await asyncio.to_thread(self._current_packs, [pack_id], registry):
             raise KnowledgeUnavailable("not_found")
         entry = await asyncio.to_thread(self._store.get_entry, pack_id, title)
-        if entry is None:
+        if entry is None or not await asyncio.to_thread(self._current_packs, [pack_id], registry):
             raise KnowledgeUnavailable("not_found")
         return {"entry": self._entry_payload(entry, detail=True)}
 

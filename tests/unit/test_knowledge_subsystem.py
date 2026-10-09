@@ -1317,3 +1317,61 @@ def test_deeply_nested_markup_is_defused_in_bounded_passes(monkeypatch):
     assert "system:" not in cleaned
     # Linear work per pass, a fixed number of passes - not one per level.
     assert passes["n"] <= text_module._MAX_MARKUP_PASSES
+
+
+async def test_removal_supersedes_an_import_still_in_admission(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        real_write = service_module.atomic_write_bytes
+
+        def slow_write(path, data):
+            import time
+
+            time.sleep(0.2)
+            real_write(path, data)
+
+        monkeypatch.setattr(service_module, "atomic_write_bytes", slow_write)
+        updated = _pack()
+        updated["entries"][0]["summary"] = "REINSTALLED"
+        importing = asyncio.create_task(service.import_pack(_raw(updated)))
+        await asyncio.sleep(0.05)  # admission is writing its staged file
+        await service.remove_pack("demo-memes")
+        result = await importing
+        assert result["state"] == "cancelled"
+        await asyncio.sleep(0.2)
+        assert "demo-memes" not in load_registry(tmp_path).packs
+        assert (await service.query(query="绝绝子"))["result"] == "miss"
+    finally:
+        await service.stop()
+
+
+async def test_catalog_rows_replaced_during_the_read_are_left_out(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        real_list = service._store.list_entries
+        newer = parse_pack(_pack(material_type="corpus"))
+
+        def list_then_replace(**kwargs):
+            rows = real_list(**kwargs)
+            service._store.replace_pack(newer, pack_sha256="e" * 64)
+            return rows
+
+        monkeypatch.setattr(service._store, "list_entries", list_then_replace)
+        page = await service.list_entries()
+        assert page["items"] == []
+    finally:
+        await service.stop()
+
+
+def test_first_chunk_keeps_its_body_despite_a_long_summary():
+    from knowledge.chunking import derive_chunks
+
+    entry = parse_pack(_pack(entries=[{
+        "title": "Long summary",
+        "summary": "summary text " * 400,
+        "content": "the distinctive opening passage",
+    }])).entries[0]
+    (first,) = derive_chunks(entry)
+    assert "the distinctive opening passage" in first.embed_text
