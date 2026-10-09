@@ -51,6 +51,7 @@ from fastapi.responses import JSONResponse
 from config.visit_settings import VISIT_INVITE_PREVIEW_REUSE_S
 from main_logic.visit import local_chars, memory_bridge
 from main_logic.visit.limits import Blocklist
+from main_logic.visit.memory_commit import SIDE_RANK
 from main_logic.visit.recovery import pending_upload_owner, read_pending_upload_doc_sync
 from main_logic.visit.spool import VisitSpool
 from main_logic.visit.subjects import derive_short_code
@@ -528,42 +529,54 @@ async def _pending_upload(config_dir: Path, visit_id: str) -> Optional[tuple[dic
 async def _local_transcript(
     config_dir: Path, visit_id: str, account: Optional[str], owner: Optional[str],
 ) -> tuple[Optional[dict], Optional[dict]]:
-    """``(complete local copy, partial local copy)`` of this account's transcript (either may be None)."""
-    partial: Optional[dict] = None
+    """``(complete local copy, partial local copy)`` of this account's transcript (either may be None).
+
+    The live / recent runtime wins (its journal is the most complete). Otherwise
+    the spool and the pending upload are merged by ``(lp, side)``: they are
+    written independently, so each may lack a line the other kept.
+    """
     # 进程里还有这一场：内存里的流水最完整（spool 某一行写失败时只记了日志、行仍在流水里）。
     # 按社区账号认属主：账号映射一时没写成（后台还在补写）也不该把它挡掉
     rt = _memory_runtime(visit_id)
     if rt is not None and account and rt.creds is not None and rt.creds.account == account:
         return await _memory_transcript(config_dir, rt), None
-    if owner:
-        spooled = await _spool_transcript(config_dir, visit_id, owner)
-        pending = await _pending_upload(config_dir, visit_id)
-        # 较早的上传文件不记属主：与补传同一规则，从 state.json / 流水头行认回来
-        if pending is not None and (pending[0].get("own_visit_uid")
-                                    or await pending_upload_owner(config_dir, visit_id)) != owner:
-            pending = None
-        if spooled is not None:
-            doc, dropped = spooled
-            # spool 某一行写失败时只记日志、结构照样完整：待传文件（同一场的上传流水）比它多行就让给它
-            upload_complete = (pending is not None and not pending[1]
-                               and len(pending[0]["request"]["lines"]) > len(doc["lines"]))
-            if not dropped and not upload_complete:
-                return doc, None
-            # 崩溃留下的半行 / 坏行被丢掉了：先找完整的来源，都没有再退回这份
-            if dropped:
-                partial = {**doc, "dropped_lines": dropped}
+    if not owner:
+        return None, None
+    spooled = await _spool_transcript(config_dir, visit_id, owner)
+    pending = await _pending_upload(config_dir, visit_id)
+    # 较早的上传文件不记属主：与补传同一规则，从 state.json / 流水头行认回来
+    if pending is not None and (pending[0].get("own_visit_uid")
+                                or await pending_upload_owner(config_dir, visit_id)) != owner:
+        pending = None
+    if spooled is not None:
+        doc, dropped = spooled
         if pending is not None:
-            upload_doc, dropped = pending
-            request_body = upload_doc["request"]
-            body = {"source": "upload", "visit_id": visit_id, "role": request_body["role"],
-                    "lines": request_body["lines"]}
-            # 待传流水也可能静默少行：比残缺的 spool 短就不顶掉它（spool 丢的多半是写到一半、也没进流水的那半行）
-            if not dropped and (partial is None or len(body["lines"]) >= len(partial["lines"])):
-                return body, None
-            # 崩溃流水里也有丢掉的记录：同样先去云端找完整的那份
-            if partial is None:
-                partial = {**body, "dropped_lines": dropped}
-    return None, partial
+            # spool 与上传流水各自独立写盘，各自可能漏掉不同的行（写失败只记日志）：按 (lp, side) 取并集。
+            # 一边丢掉的记录（解析不了、认不出是哪一行）按另一边补进来的行数抵扣，剩下的按两边较大者如实报
+            upload_doc, upload_dropped = pending
+            have = {(line["lp"], line["side"]) for line in doc["lines"]}
+            uploaded = {(record["lp"], record["side"]) for record in upload_doc["request"]["lines"]}
+            extra = [_local_line(None, record) for record in upload_doc["request"]["lines"]
+                     if (record["lp"], record["side"]) not in have]
+            only_in_spool = len(have - uploaded)
+            if extra:
+                lines = sorted(doc["lines"] + extra, key=lambda line: (line["lp"], SIDE_RANK.get(line["side"], 2)))
+                doc = {**doc, "lines": lines}
+            dropped = max(dropped - len(extra), upload_dropped - only_in_spool, 0)
+        if not dropped:
+            return doc, None
+        # 崩溃留下的半行 / 坏行被丢掉了：先找完整的来源，都没有再退回这份
+        return None, {**doc, "dropped_lines": dropped}
+    if pending is not None:
+        upload_doc, dropped = pending
+        request_body = upload_doc["request"]
+        body = {"source": "upload", "visit_id": visit_id, "role": request_body["role"],
+                "lines": request_body["lines"]}
+        if not dropped:
+            return body, None
+        # 崩溃流水里也有丢掉的记录：同样先去云端找完整的那份
+        return None, {**body, "dropped_lines": dropped}
+    return None, None
 
 
 @data_router.get("/transcript")

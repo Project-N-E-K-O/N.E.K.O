@@ -978,7 +978,9 @@ async def test_a_spool_that_lost_lines_gives_way_to_a_complete_source(env):
     with open(spool.jsonl_path, "ab") as handle:
         handle.write(b'{"lp": 9, "side": "host", "ts"')      # 崩溃留下的半行
     _write_sealed(env.host.config_dir)
-    assert (await _transcript(env)).json()["source"] == "upload"
+    env.servers.details_lines = _details_rows(5)
+    # 待传文件补不回这半行：合并后仍不完整，先找云端（这里云端更全）
+    assert (await _transcript(env)).json()["source"] == "cloud"
     (env.host.config_dir / "visit_spool" / f"{VISIT_ID}.upload.json").unlink()
     env.servers.details_mode = "503"   # 云端也取不到：退回这份不完整的，并如实标出丢了几行
     body = (await _transcript(env)).json()
@@ -1175,7 +1177,28 @@ async def test_a_spool_that_silently_missed_a_line_gives_way_to_the_pending_uplo
     await spool.close()
     _write_sealed(env.host.config_dir)
     body = (await _transcript(env)).json()
-    assert body["source"] == "upload" and len(body["lines"]) == 3
+    # 两份本机副本取并集：spool 漏的那句从上传流水补回来
+    assert body["source"] == "spool" and len(body["lines"]) == 3 and "dropped_lines" not in body
+    assert body["lines"][2]["text"] == "hi"
+
+
+async def test_spool_and_upload_each_missing_a_different_line_are_merged(env):
+    spool = VisitSpool(env.host.config_dir, VISIT_ID)
+    await spool.open({
+        "v": 1, "visit_id": VISIT_ID, "role": "host", "own_uid": OWN, "own_char": "Host",
+        "own_char_uid": HOST_CHAR_UID, "pair_id": derive_pair_id(OWN, HOST_UID), "peer_uid": HOST_UID,
+        "peer_char_id": derive_peer_char_id(HOST_UID, "f" * 32), "peer_char_tag": "f" * 32,
+        "started_at": NOW, "lang": "zh-CN",
+    }, now=0.0)
+    for line in (LINES[0], LINES[2]):           # spool 漏了第 2 句
+        await spool.append(line)
+    await spool.close()
+    doc = _upload_doc()
+    doc["request"]["lines"] = doc["request"]["lines"][:2]      # 上传流水漏了第 3 句
+    path = env.host.config_dir / "visit_spool" / f"{VISIT_ID}.upload.json"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    body = (await _transcript(env)).json()
+    assert [line["text"] for line in body["lines"]] == ["你好", "喵", "hi"] and "dropped_lines" not in body
 
 
 async def test_a_recovery_sealed_upload_keeps_its_drop_count(env):
