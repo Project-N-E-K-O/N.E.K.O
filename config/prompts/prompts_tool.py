@@ -151,14 +151,17 @@ TOOL_IMAGE_HISTORY_PLACEHOLDER = {
 # proactive reply's instruction is never saved, so its tool round follows an
 # assistant message in history; Gemini (native and OpenAI-compat) rejects a
 # function call turn that does not follow a user or function response turn.
+# Worded like the system notices that instruction usually is
+# (``prompts_sys.SYSTEM_NOTIFICATION_EVENT_*``), and never describing the call
+# itself, which would show the model a call written out as text.
 # Seated by ``_ToolingMixin._seat_tool_rounds`` only; never written to history.
 TOOL_ROUND_PROMPT_PLACEHOLDER = {
-    "zh": "[触发下面这次工具调用的消息未保留在上下文中]",
-    "zh-TW": "[觸發下面這次工具呼叫的訊息未保留在上下文中]",
-    "en": "[The message that prompted the tool call below was not kept in context]",
-    "ja": "[以下のツール呼び出しのきっかけとなったメッセージはコンテキストに残されていません]",
-    "ko": "[아래 도구 호출을 유발한 메시지는 컨텍스트에 남아 있지 않습니다]",
-    "ru": "[Сообщение, вызвавшее обращение к инструменту ниже, не сохранено в контексте]",
-    "es": "[El mensaje que motivó la llamada a herramienta de abajo no se conservó en el contexto]",
-    "pt": "[A mensagem que motivou a chamada de ferramenta abaixo não foi mantida no contexto]",
+    "zh": "======[系统通知] 一条临时通知（内容已省略）======",
+    "zh-TW": "======[系統通知] 一則臨時通知（內容已省略）======",
+    "en": "======[System Notice] A temporary notice (content omitted)======",
+    "ja": "======[システム通知] 一時的な通知（内容は省略）======",
+    "ko": "======[시스템 알림] 임시 알림 (내용 생략)======",
+    "ru": "======[Системное уведомление] Временное уведомление (содержание опущено)======",
+    "es": "======[Aviso del sistema] Un aviso temporal (contenido omitido)======",
+    "pt": "======[Aviso do sistema] Um aviso temporário (conteúdo omitido)======",
 }
