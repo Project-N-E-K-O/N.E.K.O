@@ -1550,12 +1550,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                     "started_at": self.wall(), "lang": self.lang or "und",
                 }, now=self.clock())
         except asyncio.CancelledError:
+            # 激活在写 state / 打开 spool 途中被取消（超出激活时限 / 收尾）。state 可能已经写下了（取消落在写 state
+            # 期间也一样：线程照样会写完）：挂上 spool 交给收尾写 finalized，不然启动补录把这场当崩溃中断。
+            # 原来是记忆开的还要一并改回记忆关：不会有转录，否则启动补录每次都去提交一份不存在的转录、永远结不清。
+            # state 真没写成时收尾那次写会报错、只记日志
             self.memory_enabled = False
+            self.spool = spool
             if memory_on:
-                # 激活在写 state / 打开 spool 途中被取消（超出激活时限 / 收尾）：state 按记忆开写下了（取消落在
-                # 写 state 期间也一样：线程照样会写完）却不会有转录。交给收尾：写 finalized 时一并改回记忆关，
-                # 否则启动补录每次都去提交一份不存在的转录、永远结不清。state 真没写成时收尾那次写会报错、只记日志
-                self.spool = spool
                 self._memory_off_unsaved = True
             raise
         except Exception as exc:  # noqa: BLE001 - spool 打不开：本场不记串门记忆，对话照常
