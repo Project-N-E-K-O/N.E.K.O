@@ -50,6 +50,7 @@ from utils.preferences import GLOBAL_CONVERSATION_KEY, aload_user_preferences
 
 # Setup logger
 from utils.logger_config import setup_logging
+from utils.static_asset_aliases import LegacyStaticAssetAliasMixin
 logger, log_config = setup_logging(service_name="Monitor", log_level=logging.INFO)
 
 # 获取资源路径（支持打包后的环境）
@@ -137,8 +138,12 @@ LEGACY_DEFAULT_LIVE2D_MODELS = {
     model_name for model_name in ("yui_default", "yui-default") if model_name != DEFAULT_LIVE2D_MODEL
 }
 
-# 挂载静态文件
-app.mount("/static", StaticFiles(directory=get_resource_path("static")), name="static")
+class _StaticRootFiles(LegacyStaticAssetAliasMixin, StaticFiles):
+    pass
+
+
+# 挂载静态文件（旧素材路径映射到迁移后的文件，见 utils/static_asset_aliases.py）
+app.mount("/static", _StaticRootFiles(directory=get_resource_path("static")), name="static")
 _config_manager = get_config_manager()
 
 # 挂载用户Live2D目录（与 main_server 包保持一致，CFA感知）

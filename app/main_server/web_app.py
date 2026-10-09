@@ -32,6 +32,8 @@ from starlette.datastructures import Headers
 from starlette.responses import RangeNotSatisfiable
 from starlette.staticfiles import NotModifiedResponse
 
+from utils.static_asset_aliases import LegacyStaticAssetAliasMixin
+
 from ._shared import runtime
 
 _IS_MAIN_PROCESS = runtime.is_main_process
@@ -163,6 +165,10 @@ class CustomStaticFiles(StaticFiles):
         return response
 
 
+class StaticRootFiles(LegacyStaticAssetAliasMixin, CustomStaticFiles):
+    """The repository ``static/`` mount; also answers retired asset URLs."""
+
+
 class AvatarToolStaticFiles(CustomStaticFiles):
     """Expose generated media only; private records never enter HTTP space."""
 
@@ -232,7 +238,7 @@ class AvatarToolStaticFiles(CustomStaticFiles):
 # 确定 static 目录位置（使用 _get_app_root）
 static_dir = os.path.join(_get_app_root(), "static")
 
-app.mount("/static", CustomStaticFiles(directory=static_dir), name="static")
+app.mount("/static", StaticRootFiles(directory=static_dir), name="static")
 
 # 挂载用户文档下的live2d目录（只在主进程中执行，子进程不提供HTTP服务）
 if _IS_MAIN_PROCESS:
