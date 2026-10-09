@@ -94,7 +94,8 @@ def test_visit_shutdown_runs_first_in_on_shutdown():
     assert first_args[:2] == ["stop_visit_background_tasks", "close_voice_identity_runtime"]
     visit_step = next(c for c in steps if ast.unparse(c.args[0]) == "stop_visit_background_tasks")
     deadline = next(k for k in visit_step.keywords if k.arg == "deadline_monotonic")
-    assert "VISIT_SHUTDOWN_BUDGET_S" in ast.unparse(deadline.value)
+    assert "SHUTDOWN_STEP_BUDGET_S" in ast.unparse(deadline.value)
+    assert background.SHUTDOWN_STEP_BUDGET_S > background.VISIT_SHUTDOWN_BUDGET_S + background._STOP_ALL_SLACK_S
 
 
 # ── 行为 ──────────────────────────────────────────────────────────────
@@ -350,6 +351,9 @@ class _SealStub:
     def _header_pending(self):
         return runtime.VisitRuntime._header_pending(self)
 
+    def seal_pending(self):
+        return runtime.VisitRuntime.seal_pending(self)
+
 
 async def test_seal_wait_keeps_waiting_for_a_seal_finished_in_the_background():
     sealing = asyncio.get_running_loop().create_future()
@@ -491,7 +495,6 @@ async def test_account_change_waits_for_a_seal_of_a_recently_unregistered_visit(
     # 退出流程超过封存期限、封存还在后台写：这场已从 _runtimes 注销，但账号变更仍要等它
     sealing = asyncio.get_running_loop().create_future()
     stub = _SealStub(sealing=sealing, exited=True)
-    stub.seal_pending = lambda: runtime.VisitRuntime.seal_pending(stub)
     stub.wait_upload_sealed = lambda timeout: runtime.VisitRuntime.wait_upload_sealed(stub, timeout)
     monkeypatch.setattr(runtime, "_runtimes", {})
     monkeypatch.setattr(runtime, "_recent", {"v" * 22: stub})
@@ -516,3 +519,44 @@ async def test_shutdown_cancels_upload_retry_workers(monkeypatch):
         assert worker.cancelled()
     finally:
         transcript_upload._workers.pop("w" * 22, None)
+
+
+# ── 自动 Review 第 1 轮 ───────────────────────────────────────────────
+
+
+async def test_a_slow_runtime_shutdown_does_not_cut_off_stop_alls_cleanup(monkeypatch):
+    # 某场 shutdown() 用满预算：外层不能先超时把 stop_all 后半段（取消后台写入）截掉
+    budget = 0.3
+    monkeypatch.setattr(runtime, "VISIT_SHUTDOWN_BUDGET_S", budget)
+    monkeypatch.setattr(background, "VISIT_SHUTDOWN_BUDGET_S", budget)
+    runtime._reset_for_tests()
+
+    class SlowRuntime:
+        visit_id = "s" * 22
+        _room_cancel_task = None
+
+        async def shutdown(self):
+            await asyncio.sleep(budget)
+
+    background_write = asyncio.ensure_future(asyncio.sleep(60))
+    monkeypatch.setattr(runtime, "_runtimes", {"A": SlowRuntime()})
+    runtime._visit_bg_tasks["uid-a"] = {background_write}
+    try:
+        await background.stop_visit_background_tasks()
+        await asyncio.sleep(0)
+        assert background_write.cancelled()
+    finally:
+        runtime._visit_bg_tasks.clear()
+        runtime._reset_for_tests()
+
+
+async def test_startup_rollback_cancels_background_writes_recovery_spawned():
+    runtime._reset_for_tests()
+    write = asyncio.ensure_future(asyncio.sleep(60))
+    runtime._visit_bg_tasks["uid-a"] = {write}
+    try:
+        background.cancel_visit_background_tasks()
+        await asyncio.sleep(0)
+        assert write.cancelled()
+    finally:
+        runtime._visit_bg_tasks.clear()

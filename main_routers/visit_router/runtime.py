@@ -456,8 +456,10 @@ def _reset_for_tests() -> None:
     _room_cancels.clear()
     _outbox_cleanups.clear()
     _awaited_writes.clear()
-    global _account_changes
+    global _account_changes, _account_gen, _account_change_lock
     _account_changes = 0
+    _account_gen = 0
+    _account_change_lock = None
     _runtimes.clear()
     _pending_visits.clear()
     _resolving_names.clear()
@@ -2097,9 +2099,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 return True
             task = self._exit_task
             exited = (task is not None and task.done()) or self._terminated
-            background_seal = (self._files_deferred and not self._deferred_files_done) or (
-                sealing is not None and not sealing.done()) or header_pending
-            if exited and not background_seal:
+            if exited and not self.seal_pending():
                 return True
             if loop.time() >= deadline:
                 return False
@@ -2729,9 +2729,12 @@ async def end_visit(lanlan_name: str, visit_id: str, reason: str) -> tuple[int, 
     return 200, {"ok": True, "mode": "finalize", "exit_task_started": started}
 
 
-def live_visit_count() -> int:
-    """How many visit runtimes are registered (cheap check before an account change)."""
-    return len(_runtimes)
+def cancel_background_writes() -> int:
+    """Startup rollback: cancel every registered visit background write (digest / summary); returns how many."""
+    tasks = [t for bucket in list(_visit_bg_tasks.values()) for t in list(bucket) if not t.done()]
+    for task in tasks:
+        task.cancel()
+    return len(tasks)
 
 
 @asynccontextmanager
@@ -2919,5 +2922,5 @@ __all__ = [
     "visit_sweep_loop", "is_visit_live", "is_visit_route_active", "is_visit_route_locked",
     "has_visit_background_tasks", "spawn_visit_background", "register_visit_route_kind",
     "get_runtime", "get_runtime_by_visit", "recent_runtime", "on_page_signal",
-    "end_visits_for_account_change", "live_visit_count", "account_change",
+    "end_visits_for_account_change", "account_change", "cancel_background_writes",
 ]

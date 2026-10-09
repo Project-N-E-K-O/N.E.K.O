@@ -1617,8 +1617,7 @@ def cancel_retry_workers() -> list[asyncio.Task]:
 
 
 def _reset_for_tests() -> None:
-    for task in _workers.values():
-        task.cancel()
+    cancel_retry_workers()
     _workers.clear()
     _recent_anomalies.clear()
     _terminal_reasons.clear()

@@ -40,6 +40,10 @@ logger = get_module_logger(__name__, "Main")
 _sweep_task: Optional[asyncio.Task] = None
 _recovery_task: Optional[asyncio.Task] = None
 _RECOVERY_STOP_WAIT_S = 0.2
+_STOP_ALL_SLACK_S = 0.5  # stop_all 自己按 VISIT_SHUTDOWN_BUDGET_S 截断各步；外层只兜它卡死，留出收尾余量
+
+SHUTDOWN_STEP_BUDGET_S = VISIT_SHUTDOWN_BUDGET_S + 2 * _RECOVERY_STOP_WAIT_S + _STOP_ALL_SLACK_S + 0.3
+"""Deadline of the whole visit shutdown step in ``on_shutdown`` (``stop_all`` plus the two bounded waits)."""
 
 
 async def _family_names() -> tuple[str, ...]:
@@ -120,7 +124,9 @@ async def stop_visit_background_tasks() -> None:
     if recovery is not None and not recovery.done():
         await asyncio.wait([recovery], timeout=_RECOVERY_STOP_WAIT_S)
     try:
-        await asyncio.wait_for(runtime.stop_all("shutdown"), VISIT_SHUTDOWN_BUDGET_S)
+        # 外层与 stop_all 同一个预算的话，一场 shutdown() 用满预算就会先超时、截掉 stop_all 后半段
+        # （取消 digest / 摘要等后台写入）：只兜它卡死，留出余量
+        await asyncio.wait_for(runtime.stop_all("shutdown"), VISIT_SHUTDOWN_BUDGET_S + _STOP_ALL_SLACK_S)
     except Exception as exc:  # noqa: BLE001 - 超时 / 出错只记日志：没收口的留给下次启动补录
         logger.warning("visit shutdown: stop_all did not finish: %r", exc)
     # 转录补传 / 举报重试是独立任务，stop_all 不管它们：关机时取消，没传完的文件留给下次启动
@@ -136,8 +142,12 @@ def cancel_visit_background_tasks() -> None:
     global _sweep_task, _recovery_task
     from main_routers.visit_router import transcript_upload
 
+    from main_routers.visit_router import runtime
+
     _cancel(_sweep_task)
     _cancel(_recovery_task)
     _sweep_task = _recovery_task = None
-    # 补录排下的转录补传 / 举报重试是独立任务：回滚后不能留着上传、改 spool，与下次初始化重叠
+    # 补录排下的转录补传 / 举报重试与它派生的 digest / 摘要写入都是独立任务：回滚后不能留着上传、
+    # 改 spool，与下次初始化重叠
     transcript_upload.cancel_retry_workers()
+    runtime.cancel_background_writes()

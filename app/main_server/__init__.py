@@ -1457,13 +1457,12 @@ async def on_shutdown():
         # 猫娘串门最先收：先封存上传文件、再写 finalized，不发 leave（VISIT_SHUTDOWN_BUDGET_S 内，
         # 到点不挡后面的钩子；没收口的留给下次启动补录）
         try:
-            from config.visit_settings import VISIT_SHUTDOWN_BUDGET_S
-            from main_routers.visit_router.background import stop_visit_background_tasks
+            from main_routers.visit_router.background import SHUTDOWN_STEP_BUDGET_S, stop_visit_background_tasks
 
             shutdown_cancellation = await _run_shutdown_step(
                 stop_visit_background_tasks,
                 what="visit shutdown",
-                deadline_monotonic=time.monotonic() + VISIT_SHUTDOWN_BUDGET_S + 0.5,
+                deadline_monotonic=time.monotonic() + SHUTDOWN_STEP_BUDGET_S,
                 pending_cancellation=shutdown_cancellation,
                 cancellation_budget=cancellation_budget,
             )
