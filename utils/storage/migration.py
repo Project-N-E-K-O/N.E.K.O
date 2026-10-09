@@ -897,6 +897,10 @@ def _source_entries_referenced_by_config(*, config_root: Path, source_root: Path
     except OSError:
         # Not knowing what it says is not knowing it points nowhere.
         return set(MIGRATED_RUNTIME_ENTRY_NAMES)
+    if classify_entry_no_follow(workshop_config_path) != "file":
+        # A link: what it points at can change while the config directory
+        # does not, so what it references cannot be followed.
+        return set(MIGRATED_RUNTIME_ENTRY_NAMES)
     try:
         payload = read_json(workshop_config_path)
     except Exception:
@@ -1424,7 +1428,10 @@ def _remove_completed_transaction_leftover(payload: dict[str, Any] | None) -> No
         if not os.path.lexists(transaction_root):
             return
         # Nothing is looked at or moved through a link or junction: rescuing
-        # from a linked trash would pull another directory's files in.
+        # from a linked trash would pull another directory's files in. The
+        # shared .smtx parent first, or all of these would look like real
+        # directories inside wherever it points.
+        _ensure_transaction_parent(transaction_root)
         _ensure_transaction_dirs_not_linked(transaction_root)
         if status == STORAGE_MIGRATION_STATUS_FAILED:
             backup_root = transaction_root / "backup"
@@ -1566,7 +1573,12 @@ def _published_copy_has_files_source_lost(published: Path, source: Path) -> bool
     the source, newer than the copy, but a removed one would then exist only
     in the copy. Unreadable counts as lost -- it is no proof of the opposite.
     """
-    if classify_entry_no_follow(published) != "dir":
+    published_kind = classify_entry_no_follow(published)
+    if published_kind == "file":
+        # Replaced by a directory (or anything else): those bytes are gone
+        # from the source.
+        return classify_entry_no_follow(source) != "file"
+    if published_kind != "dir":
         return False
     try:
         for current, dirnames, filenames in os.walk(published, followlinks=False):
@@ -2853,12 +2865,18 @@ def run_pending_storage_migration(
         target_entries_before_staging = set(_iter_existing_runtime_entries(target_root))
         # And what each of them was: the confirmation covered that version,
         # not one a sync client writes while the source is being staged.
+        # Taken so it still compares once the entry sits in the backup.
         target_fingerprints_before_staging: dict[str, str | None] = {}
         for entry_name in target_entries_before_staging:
             try:
-                target_fingerprints_before_staging[entry_name] = _metadata_fingerprint(target_root / entry_name)
+                target_fingerprints_before_staging[entry_name] = _metadata_fingerprint(
+                    target_root / entry_name, across_move=True
+                )
             except StorageMigrationError:
                 target_fingerprints_before_staging[entry_name] = None
+        # Backups checked once moved; checked again before committing, as a
+        # handle still open on them could write there meanwhile.
+        moved_backup_fingerprints: dict[str, str] = {}
 
         payload = _persist_migration_payload(
             config_manager,
@@ -2989,7 +3007,22 @@ def run_pending_storage_migration(
         # recorded target manifest describing something it no longer is.
         published_fingerprints: dict[str, str] = {}
 
+        def _require_backup_unchanged(entry_name: str, expected: str | None) -> None:
+            try:
+                unchanged = _metadata_fingerprint(backup_root / entry_name, across_move=True) == expected
+            except StorageMigrationError:
+                unchanged = False
+            if not unchanged:
+                # Raised before anything is published for it: the rollback
+                # puts the backup -- with that edit -- back in place.
+                raise StorageMigrationError(
+                    "target_changed_during_migration",
+                    f"迁移目标的条目在挪进事务备份前后被改动，已停止迁移并放回原处: {entry_name}",
+                )
+
         def _require_sources_unchanged(published: Collection[str] = ()) -> None:
+            for entry_name, expected in moved_backup_fingerprints.items():
+                _require_backup_unchanged(entry_name, expected)
             appeared = set(_iter_existing_runtime_entries(source_root)) - set(existing_entries)
             if appeared:
                 # Absent when the source was first listed, so never staged: the
@@ -3164,9 +3197,9 @@ def run_pending_storage_migration(
                     )
                 if target_existed:
                     try:
-                        target_unchanged = (
-                            _metadata_fingerprint(target_entry) == target_fingerprints_before_staging.get(entry_name)
-                        )
+                        target_unchanged = _metadata_fingerprint(
+                            target_entry, across_move=True
+                        ) == target_fingerprints_before_staging.get(entry_name)
                     except StorageMigrationError:
                         target_unchanged = False
                     if not target_unchanged:
@@ -3200,6 +3233,10 @@ def run_pending_storage_migration(
                     _classify_no_follow(target_entry)
                     ensure_entry_parents(backup_root, entry_name)
                     _move_entry_keeping_mode(target_entry, backup_entry)
+                    # Still at its place while the checkpoint was written: an
+                    # edit then would be in the backup, gone with it on success.
+                    _require_backup_unchanged(entry_name, target_fingerprints_before_staging.get(entry_name))
+                    moved_backup_fingerprints[entry_name] = target_fingerprints_before_staging[entry_name]
 
                 def _record_reservation(reservation_stat: os.stat_result, entry_name: str = entry_name) -> None:
                     nonlocal payload
