@@ -143,7 +143,7 @@ def test_storage_restart_requires_every_old_server_to_be_dead():
     """A file lock cannot substitute for proof that old Main exited."""
 
     source = (LAUNCHER_CORE / "runtime.py").read_text(encoding="utf-8")
-    assert "if allow_storage_restart and not has_alive and not descendants_alive:" in source
+    assert "if storage_restart_requested and not has_alive and not descendants_alive:" in source
 
 
 @pytest.mark.unit
@@ -160,7 +160,23 @@ def test_descendants_are_only_settled_for_a_storage_restart(monkeypatch):
     assert runtime._descendants_block_storage_restart(True) is False
     assert calls == [[]]
     source = (LAUNCHER_CORE / "runtime.py").read_text(encoding="utf-8")
-    assert "descendants_alive = _descendants_block_storage_restart(allow_storage_restart)" in source
+    assert "descendants_alive = _descendants_block_storage_restart(storage_restart_requested)" in source
+    # Settled only when Main asked for the restart, not on every exit once it
+    # has started.
+    assert "storage_restart_requested = allow_storage_restart and _is_pending_storage_restart_request(" in source
+
+
+@pytest.mark.unit
+def test_an_unreadable_restart_request_counts_as_made_for_the_teardown(monkeypatch):
+    from launcher_core import runtime
+
+    def _unreadable(*_args, **_kwargs):
+        raise OSError("root_state locked")
+
+    monkeypatch.setattr(runtime, "get_config_manager", _unreadable)
+
+    assert runtime._is_pending_storage_restart_request() is False
+    assert runtime._is_pending_storage_restart_request(unreadable_counts=True) is True
 
 
 @pytest.mark.unit

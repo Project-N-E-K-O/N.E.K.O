@@ -574,7 +574,11 @@ def _is_expected_launcher_shutdown() -> bool:
 STARTUP_WAIT_RESULT_STORAGE_RESTART = "storage_restart_requested"
 
 
-def _is_pending_storage_restart_request() -> bool:
+def _is_pending_storage_restart_request(*, unreadable_counts: bool = False) -> bool:
+    """Whether Main recorded a storage restart before shutting itself down.
+
+    ``unreadable_counts`` is what to answer when root_state cannot be read.
+    """
     try:
         config_manager = get_config_manager(APP_NAME, migrate=False)
         load_root_state = getattr(config_manager, "load_root_state", None)
@@ -593,7 +597,7 @@ def _is_pending_storage_restart_request() -> bool:
         return last_migration_result.startswith(("restart_pending:", "restart_rebind:"))
     except Exception as exc:
         print(f"[Launcher] Warning: failed to inspect storage restart intent: {exc}", flush=True)
-        return False
+        return unreadable_counts
 
 
 def _maybe_schedule_storage_restart() -> bool:
@@ -3524,9 +3528,15 @@ def main():
             )
 
         # The teardown above only reaches a server's process tree while the
-        # server itself is alive. Only a migration restart needs proof that
-        # nothing outlived it; an ordinary exit leaves descendants alone.
-        descendants_alive = _descendants_block_storage_restart(allow_storage_restart)
+        # server itself is alive. Only a storage restart Main asked for (it
+        # records the request before ending itself) needs proof that nothing
+        # outlived it; an ordinary exit or Ctrl+C leaves descendants alone and
+        # does not wait on them. An unreadable request counts as made: the
+        # descendants are then settled, the safe side.
+        storage_restart_requested = allow_storage_restart and _is_pending_storage_restart_request(
+            unreadable_counts=True
+        )
+        descendants_alive = _descendants_block_storage_restart(storage_restart_requested)
 
         print("\n清理完成", flush=True)
         # A migration restart is only safe after every old server process --
@@ -3534,7 +3544,7 @@ def main():
         # an orphaned plugin host could otherwise keep writing to the source
         # root while the next launch copies it. File locks are defence in
         # depth, not evidence that the old process has stopped.
-        if allow_storage_restart and not has_alive and not descendants_alive:
+        if storage_restart_requested and not has_alive and not descendants_alive:
             try:
                 restart_scheduled = _maybe_schedule_storage_restart()
             except Exception as e:

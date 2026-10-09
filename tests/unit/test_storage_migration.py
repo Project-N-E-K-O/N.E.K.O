@@ -4346,3 +4346,52 @@ def test_a_leftover_catch_up_trash_with_a_linked_parent_is_left_alone(tmp_path):
 
     assert (elsewhere / "game_scores" / "someone_elses.db").read_bytes() == b"not ours"
     assert not os.path.lexists(target_root / "state" / "game_scores")
+
+
+
+@pytest.mark.unit
+def test_a_file_restore_stopped_between_link_and_unlink_is_finished(tmp_path, monkeypatch):
+    """Restoring a file links the backup into place, then unlinks the backup.
+    Stopped in between, both names are the original: the next launch must
+    finish the restore, not report a conflict forever."""
+    from utils import storage_migration as storage_migration_module
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    source_root.mkdir(parents=True)
+    target_root.mkdir(parents=True)
+    (source_root / "memory").write_bytes(b"source memory")
+    (target_root / "memory").write_bytes(b"target's original")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+        confirmed_existing_target_content=True,
+    )
+    original_persist = storage_migration_module._persist_migration_payload
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _persist(*args, **kwargs):
+        if kwargs.get("status") == "committing":
+            raise RuntimeError("simulated failure before committing")
+        return original_persist(*args, **kwargs)
+
+    def _publish(staged, target, **kwargs):
+        if Path(staged).parent.name == "backup":
+            os.link(staged, target)
+            raise RuntimeError("stopped between link and unlink")
+        return original_publish(staged, target, **kwargs)
+
+    monkeypatch.setattr(storage_migration_module, "_persist_migration_payload", _persist)
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish)
+    first = run_pending_storage_migration(config_manager)
+    assert first["completed"] is False
+    monkeypatch.undo()
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result.get("error_code") != "migration_publish_conflict", result
+    assert result["completed"] is True, result
+    assert (target_root / "memory").read_bytes() == b"source memory"

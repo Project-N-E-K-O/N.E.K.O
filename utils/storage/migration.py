@@ -1286,6 +1286,12 @@ def _rollback_interrupted_publish(
                     "migration_publish_conflict",
                     f"迁移目标在发布期间被重新创建，原目标已在事务备份中，等待人工处理: {entry_name}",
                 )
+            if entry_name in restoring_entries and _same_file_no_follow(backup_entry, target_entry):
+                # A file restore stopped between linking the backup into place
+                # and unlinking it (POSIX): both names are the original. Finish.
+                os.unlink(backup_entry)
+                _restore_original_mode(entry_name, target_entry)
+                continue
             if entry_name in restoring_entries and os.path.lexists(target_entry):
                 # Ours went to the trash before the mark and the backup is
                 # still here: this was put at the target since.
@@ -1340,6 +1346,21 @@ def _rollback_interrupted_publish(
         _move_into_trash(entry_name, target_entry)
 
     _remove_transaction(transaction_root)
+
+
+def _same_file_no_follow(first: Path, second: Path) -> bool:
+    """Whether two names are hard links to one regular file."""
+    try:
+        first_stat = os.lstat(first)
+        second_stat = os.lstat(second)
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(first_stat.st_mode)
+        and stat.S_ISREG(second_stat.st_mode)
+        and first_stat.st_ino != 0
+        and (first_stat.st_dev, first_stat.st_ino) == (second_stat.st_dev, second_stat.st_ino)
+    )
 
 
 def _rollback_publish_or_require_recovery(
