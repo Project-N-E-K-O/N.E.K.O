@@ -157,6 +157,16 @@ _MALFORMED: dict = {}
 """Marker of a details row whose half for this side does not have the contracted shape."""
 
 
+def _finite_number(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        # 超出 float 范围的整数：isfinite 会抛，不能让一行坏数据把导出变成 500
+        return False
+
+
 def _cloud_line(row: Any, role: str) -> dict | None:
     """This side's half of one aligned details row in the cloud transcript shape.
 
@@ -166,14 +176,17 @@ def _cloud_line(row: Any, role: str) -> dict | None:
         return _MALFORMED
     mine = row.get(role)
     lp = row.get("lp")
-    if mine is None or not isinstance(mine, dict):
+    if mine is None:
         return None
+    if not isinstance(mine, dict):
+        # 本侧字段在、却不是对象：坏行，不能当成「这一侧没有」静默漏掉
+        return _MALFORMED
     ts = mine.get("ts")
     if (
         not isinstance(lp, int) or isinstance(lp, bool) or lp < 0
         or row.get("side") not in ("host", "guest")
         or not isinstance(mine.get("from"), str)
-        or isinstance(ts, bool) or not isinstance(ts, (int, float)) or not math.isfinite(ts)
+        or not _finite_number(ts)
         or not isinstance(mine.get("text"), str)
         or not isinstance(mine.get("truncated"), bool)
     ):
@@ -218,7 +231,8 @@ async def fetch_cloud_transcript(visit_id: str) -> dict:
                 memory_bridge.diag("cloud_transcript_rows_rejected", count=rejected)
             lines.sort(key=lambda line: (line["lp"], SIDE_RANK.get(line["side"], 2)))
             return {"source": "cloud", "visit_id": visit_id, "role": role, "lines": lines}
-        if not isinstance(next_cursor, str) or not _CURSOR_RE.fullmatch(next_cursor):
+        if not isinstance(next_cursor, str) or not _CURSOR_RE.fullmatch(next_cursor) or next_cursor == cursor:
+            # 原地不动的游标会把同一页重复拼进来：按坏响应处理
             logger.warning("visit servers details: malformed next_cursor")
             raise CloudError(_error(503, "servers_unreachable"))
         cursor = next_cursor

@@ -867,3 +867,31 @@ async def test_transcript_gone_everywhere_is_404(env, setup):
 async def test_transcript_rejects_a_malformed_visit_id(env):
     resp = await _transcript(env, visit_id="..%2F..%2Fvisit_blocklist")
     assert resp.status_code == 400 and env.servers.requests == []
+
+
+async def test_cloud_rows_with_a_broken_half_or_huge_timestamp_are_dropped_not_500(env, monkeypatch):
+    from main_logic.visit import memory_bridge
+
+    diags = []
+    monkeypatch.setattr(memory_bridge, "diag", lambda event, **f: diags.append((event, f)))
+    good = {"from": "own_cat", "ts": 1.0, "text": "好", "truncated": False}
+    env.servers.details_lines = [
+        {"lp": 1, "side": "host", "host": good, "guest": None, "status": "only_host"},
+        {"lp": 2, "side": "host", "host": [], "guest": None, "status": "only_host"},
+        {"lp": 3, "side": "host", "host": {**good, "ts": 10 ** 400}, "guest": None, "status": "only_host"},
+        {"lp": 4, "side": "guest", "host": None, "guest": good, "status": "only_guest"},
+    ]
+    resp = await _transcript(env)
+    assert resp.status_code == 200 and [line["lp"] for line in resp.json()["lines"]] == [1]
+    assert ("cloud_transcript_rows_rejected", {"count": 2}) in diags
+
+
+async def test_cloud_cursor_that_does_not_advance_is_a_failure(env, monkeypatch):
+    def stuck(request):
+        return httpx.Response(200, json={"visit_id": VISIT_ID, "lines": [], "requester_role": "host",
+                                         "next_cursor": "same"})
+
+    monkeypatch.setattr(env.servers, "_details", stuck)
+    resp = await _transcript(env)
+    assert resp.status_code == 404 and resp.json()["code"] == "transcript_gone_local"
+    assert env.servers.count(f"/api/visit/details/{VISIT_ID}") == 2

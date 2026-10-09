@@ -2074,3 +2074,13 @@ async def test_unreclaimable_bytes_counts_what_the_size_sweep_never_deletes(tmp_
     assert await VisitSpool.unreclaimable_bytes(tmp_path, is_live=lambda v: v == vid(6)) == expected
     assert await VisitSpool.unreclaimable_bytes(tmp_path) == expected + 9000
     assert await VisitSpool.unreclaimable_bytes(tmp_path / "missing") == 0
+
+
+async def test_unreclaimable_bytes_keeps_the_pinned_state_of_a_committing_diary(tmp_path):
+    spool_dir = tmp_path / "visit_spool"
+    pinned = VisitSpool(tmp_path, vid(1))
+    await pinned.write_state(dict(settled(state_for()), debrief_choice="committing:diary",
+                                  debrief_pending={"diary": "d", "facts": []}))
+    spool_dir.joinpath(f"{vid(1)}.jsonl").write_bytes(b"x" * 1000)
+    # 转录容量回收会删，state.json 被钉住不删：只有后者算
+    assert await VisitSpool.unreclaimable_bytes(tmp_path) == pinned.state_path.stat().st_size

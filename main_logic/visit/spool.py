@@ -1911,7 +1911,9 @@ class VisitSpool:
             if not any(suffix in _UPLOAD_SUFFIXES for suffix, _st in files):
                 state = _try_read_state(visit_path(_spool_dir(config_dir), visit_id, STATE_SUFFIX))
                 if state is not None and transcript_releasable(state):
-                    # 已结清：容量回收会删它，不占准入额度
+                    # 已结清：容量回收会删它，不占准入额度；日记提交中 / 失败待处理的场次只留 state.json
+                    if debrief_pins_state(state):
+                        total += sum(st.st_size for suffix, st in files if suffix == STATE_SUFFIX)
                     continue
             total += sum(st.st_size for _suffix, st in files)
         return total
