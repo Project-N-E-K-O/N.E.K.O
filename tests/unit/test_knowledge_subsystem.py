@@ -1828,3 +1828,86 @@ async def test_an_import_that_yielded_to_a_failed_removal_goes_ahead(tmp_path, m
         ).hexdigest()
     finally:
         await service.stop()
+
+
+def test_coverage_scoring_is_bounded_for_long_queries(monkeypatch):
+    from knowledge import retrieval
+    from knowledge.store import StoredEntry
+    from knowledge.text import MAX_QUERY_TOKENS
+
+    checked = []
+    real = retrieval.is_cjk_token
+
+    def counting(token):
+        checked.append(token)
+        return real(token)
+
+    monkeypatch.setattr(retrieval, "is_cjk_token", counting)
+    query = "".join(chr(0x4E00 + i) for i in range(2000))
+    entry = StoredEntry(
+        entry_id=1, pack_id="p", title="t", summary="", content="x", terms={}, tags=(), disabled=False
+    )
+    retrieval.token_coverage(query, entry)
+    assert 0 < len(checked) <= MAX_QUERY_TOKENS
+
+
+async def test_fusion_runs_off_the_event_loop(tmp_path, monkeypatch):
+    import threading
+
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        threads = []
+        real_fuse = service_module.fuse
+
+        def recording(*args, **kwargs):
+            threads.append(threading.current_thread() is threading.main_thread())
+            return real_fuse(*args, **kwargs)
+
+        monkeypatch.setattr(service_module, "fuse", recording)
+        assert (await service.query(query="绝绝子"))["result"] == "matched"
+        assert threads == [False]
+    finally:
+        await service.stop()
+
+
+async def test_no_unchanged_answer_when_a_removal_starts_during_the_file_check(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(service_module, "WRITE_LOCK_TIMEOUT_SECONDS", 5.0)
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack())
+        loop = asyncio.get_running_loop()
+        tasks = []
+        real_intact = service._raw_file_intact
+
+        def intact_while_a_removal_starts(record):
+            loop.call_soon_threadsafe(
+                lambda: tasks.append(asyncio.ensure_future(service.remove_pack("demo-memes")))
+            )
+            time.sleep(0.2)  # the removal registers and waits for the lock
+            return real_intact(record)
+
+        monkeypatch.setattr(service, "_raw_file_intact", intact_while_a_removal_starts)
+        async with service._write_lock:
+            result = await service.import_pack(_raw(_pack()))
+            assert result.get("unchanged") is not True
+        await tasks[0]
+        assert (await _wait_for_last_job(service))[0] == "cancelled"  # it came before the removal
+        assert "demo-memes" not in load_registry(tmp_path).packs
+    finally:
+        await service.stop()
+
+
+async def test_undeleted_old_pack_files_count_toward_byte_capacity(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        one = _raw(_pack("pack-one"))
+        monkeypatch.setattr(service_module, "MAX_TOTAL_PACK_BYTES", int(len(one) * 1.5))
+        # An old version whose deletion failed is still on disk.
+        (tmp_path / "packs" / "pack-old.0000000000000000.json").write_bytes(b"x" * len(one))
+        result = await service.import_pack(one)
+        assert result == {"ok": False, "reason": "capacity_bytes"}
+    finally:
+        await service.stop()

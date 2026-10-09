@@ -33,7 +33,7 @@ from typing import Iterable, Mapping, Sequence
 import numpy as np
 
 from .store import StoredEntry, VectorSnapshot
-from .text import is_cjk_token, search_tokens, search_view, word_runs
+from .text import is_cjk_token, query_tokens, search_tokens, search_view, word_runs
 
 
 RRF_K = 60
@@ -66,9 +66,11 @@ def token_coverage(query: str, entry: StoredEntry) -> float:
     """Share of the query's distinct tokens that also occur in the entry.
 
     Content can be long (all of it is indexed), so instead of tokenizing it
-    each token is looked up as a substring of the normalized text.
+    each token is looked up as a substring of the normalized text. The query
+    side is bounded like the FTS query, so a long query cannot multiply that
+    work.
     """
-    wanted = set(search_tokens(query))
+    wanted = set(query_tokens(query))
     if not wanted:
         return 0.0
     parts = [entry.title, entry.summary, entry.content, *entry.tags]

@@ -234,16 +234,24 @@ def search_tokens(value: object, *, unigrams: bool = False) -> list[str]:
     return tokens
 
 
+def query_tokens(value: object, *, unigrams: bool = False) -> list[str]:
+    """Distinct query tokens, at most ``MAX_QUERY_TOKENS`` of them.
+
+    A long query is sampled across its whole length rather than cut, since
+    the term that matters may come last.
+    """
+    unique = list(dict.fromkeys(search_tokens(value, unigrams=unigrams)))
+    if len(unique) <= MAX_QUERY_TOKENS:
+        return unique
+    last = len(unique) - 1
+    return [unique[round(i * last / (MAX_QUERY_TOKENS - 1))] for i in range(MAX_QUERY_TOKENS)]
+
+
 def fts_match_expression(value: object) -> str:
     """Build an FTS5 OR-query from user text; empty when nothing is indexable.
 
     Every token is double-quoted, so FTS operators typed by the user (``AND``,
     ``NEAR``, ``*``, column filters) stay literal.
     """
-    unique = [t for t in dict.fromkeys(search_tokens(value, unigrams=True)) if '"' not in t]
-    if len(unique) > MAX_QUERY_TOKENS:
-        # Sample across the whole query rather than keeping only its start:
-        # the term that matters may come last.
-        last = len(unique) - 1
-        unique = [unique[round(i * last / (MAX_QUERY_TOKENS - 1))] for i in range(MAX_QUERY_TOKENS)]
-    return " OR ".join(f'"{token}"' for token in unique)
+    tokens = [t for t in query_tokens(value, unigrams=True) if '"' not in t]
+    return " OR ".join(f'"{token}"' for token in tokens)

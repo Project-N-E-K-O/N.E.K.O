@@ -571,12 +571,15 @@ class KnowledgeService:
             existing is not None
             and existing.pack_sha256 == sha
             and pack.pack_id not in self._broken_packs
-            # An older removal still waiting will delete what is installed;
-            # this newer import must then land after it, so it needs a job.
-            and not any(seq < arrived_at for seq in self._pending_removals.get(pack.pack_id, ()))
             # The raw file is the source of truth; if it went missing or was
             # altered since startup, import again so it gets rewritten.
             and await asyncio.to_thread(self._raw_file_intact, existing)
+            # Checked after that await: the record must still be the installed
+            # one and no removal may be waiting, or "unchanged, active" could
+            # be answered for a pack that is (about to be) gone. Such an
+            # import gets a job and the request order settles it.
+            and self._registry.packs.get(pack.pack_id) == existing
+            and not self._pending_removals.get(pack.pack_id)
         ):
             return {"ok": True, "pack_id": pack.pack_id, "unchanged": True, "state": "active"}
         # Admission is checked and reserved without an await in between, so
@@ -619,7 +622,7 @@ class KnowledgeService:
             return {"ok": False, "reason": "capacity_chunks"}
         if chunks > MAX_CHUNKS_PER_PACK:
             return {"ok": False, "reason": "too_many_chunks"}
-        installed_bytes = await asyncio.to_thread(self._installed_pack_bytes, others)
+        installed_bytes = await asyncio.to_thread(self._installed_pack_bytes, pack.pack_id)
         if installed_bytes + staged_bytes + len(canonical) > MAX_TOTAL_PACK_BYTES:
             return {"ok": False, "reason": "capacity_bytes"}
         now = utc_now()
@@ -657,11 +660,24 @@ class KnowledgeService:
         except OSError:
             return False
 
-    def _installed_pack_bytes(self, records: Sequence[PackRecord]) -> int:
+    def _installed_pack_bytes(self, replacing: str) -> int:
+        """Bytes of raw pack files on disk, except the one ``replacing`` swaps out.
+
+        Every file counts, not just registered ones: an old version whose
+        deletion failed still takes disk space until a later cleanup.
+        """
+        record = self._registry.packs.get(replacing)
+        skip = record.file_name if record is not None else None
         total = 0
-        for record in records:
+        try:
+            paths = list((self.root / PACKS_DIR).iterdir())
+        except OSError:
+            return 0
+        for path in paths:
+            if path.name == skip or path.suffix != ".json":
+                continue
             try:
-                total += (self.root / PACKS_DIR / record.file_name).stat().st_size
+                total += path.stat().st_size
             except OSError:
                 continue
         return total
@@ -793,7 +809,7 @@ class KnowledgeService:
                 raise KnowledgePackError("capacity_entries")
             if sum(r.chunks for r in others) + job.chunks_total > MAX_TOTAL_CHUNKS:
                 raise KnowledgePackError("capacity_chunks")
-            if self._installed_pack_bytes(others) + len(raw) > MAX_TOTAL_PACK_BYTES:
+            if self._installed_pack_bytes(pack.pack_id) + len(raw) > MAX_TOTAL_PACK_BYTES:
                 raise KnowledgePackError("capacity_bytes")
             now = utc_now()
             keys = {entry.key for entry in pack.entries}
@@ -1167,7 +1183,9 @@ class KnowledgeService:
             for entry_id, entry in entries.items()
             if not _disabled_in(entry, registry) and entry.pack_id in allowed_set
         }
-        ranked = fuse(
+        # Coverage scoring scans entry text: keep it off the event loop.
+        ranked = await asyncio.to_thread(
+            fuse,
             query,
             exact_ids=exact_ids,
             lexical_ids=lexical_ids,
