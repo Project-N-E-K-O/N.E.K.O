@@ -138,6 +138,14 @@ class Receiver:
         return res
 
 
+def due_and_write(tx: VisitOutbox, now: float) -> list[OutboundFrame]:
+    """Release what is due and report every frame as written by the transport (the runtime's on_frame_sent)."""
+    frames = tx.due(now)
+    for f in frames:
+        tx.written(f, now)
+    return frames
+
+
 def pump(sender: VisitOutbox, rx: Receiver, now: float,
          drop: Optional[Callable[[OutboundFrame, float], bool]] = None) -> list[OutboundFrame]:
     """One step of the link: release frames, deliver the surviving ones, return the ack."""
@@ -325,7 +333,7 @@ def test_cumulative_ack_clears_every_item_up_to_seq(tmp_path):
     tx = make_outbox(tmp_path)
     for n in range(1, 6):
         tx.send(text(n), now=0.0)
-    tx.due(0.0)
+    due_and_write(tx, 0.0)
     assert tx.on_ack(3, 0.1) == [(1, "text"), (2, "text"), (3, "text")]
     assert tx.unacked_seqs == [4, 5]
     assert tx.on_ack(2, 0.2) == []
@@ -348,7 +356,7 @@ def test_ack_cannot_release_items_that_were_never_sent(tmp_path):
 def test_ack_past_the_sent_prefix_releases_only_the_sent_part(tmp_path):
     tx = make_outbox(tmp_path)
     tx.send(text(1), now=0.0)
-    assert [f.seq for f in tx.due(0.0)] == [1]
+    assert [f.seq for f in due_and_write(tx, 0.0)] == [1]
     tx.send(text(2), now=0.5)           # 入队但还没 due() 发出
     assert tx.on_ack(2, 0.6) == [(1, "text")]
     assert tx.unacked_seqs == [2]
@@ -400,15 +408,15 @@ def test_host_waits_for_guest_hello_first_sent_on_join(tmp_path):
     rx = Receiver(peer_prefix="h:")
     tx.send(hello(), now=0.0)
     for t in ticks(0.0, 119.95):
-        assert tx.due(t) == []
+        assert due_and_write(tx, t) == []
     assert not tx.delivery_failed
     tx.resume(120.0, PAUSE_PEER_ABSENT)
-    first = tx.due(120.0)
+    first = due_and_write(tx, 120.0)
     assert [(f.t, f.retransmit) for f in first] == [("hello", False)]
     rx.feed(first[0].payload, 120.2, cmd=first[0].cmd)
     tx.on_ack(rx.inbox.poll_ack(120.2), 120.2)
     for t in ticks(120.2, 200.0):
-        tx.due(t)
+        due_and_write(tx, t)
     assert not tx.delivery_failed and tx.unacked_seqs == []
 
 
@@ -455,14 +463,14 @@ def test_replay_after_reload_resends_only_unacked(tmp_path):
     tx = make_outbox(tmp_path)
     for n in range(1, 4):
         tx.send(text(n), now=0.0)
-    tx.due(0.0)
+    due_and_write(tx, 0.0)
     tx.on_ack(1, 0.1)
     assert tx.replay_after_reload(0.5) == 2
-    assert [(f.seq, f.retransmit) for f in tx.due(0.5)] == [(2, True), (3, True)]
+    assert [(f.seq, f.retransmit) for f in due_and_write(tx, 0.5)] == [(2, True), (3, True)]
     tx.pause(0.6, PAUSE_PAGE_RELOAD)
     tx.on_ack(2, 0.7)
     tx.resume(5.0, PAUSE_PAGE_RELOAD)
-    assert [f.seq for f in tx.due(5.0)] == [3]
+    assert [f.seq for f in due_and_write(tx, 5.0)] == [3]
 
 
 # ── 接收侧按序 ────────────────────────────────────────────────────────
@@ -697,7 +705,7 @@ def test_pending_bytes_and_try_reserve(tmp_path):
     assert used > 2000 and size >= used and pieces >= 2
     assert tx.try_reserve(VISIT_OUTBOX_PENDING_MAX_BYTES - used)
     assert not tx.try_reserve(VISIT_OUTBOX_PENDING_MAX_BYTES - used + 1)
-    tx.due(0.0)
+    due_and_write(tx, 0.0)
     tx.on_ack(1, 0.1)
     assert tx.pending_bytes == 0
 
@@ -768,6 +776,18 @@ async def test_an_ack_cannot_cover_an_item_that_was_never_written(tmp_path):
     tx.write_failed(first, now=0.0)                   # 一次都没写出去
     assert tx.on_ack(first.seq, now=0.1) == []        # 越界的累计 ack 不能把它确认掉
     assert tx.ack_beyond_sent == 1 and first.seq in tx.unacked_seqs
+    await tx.close()
+
+
+async def test_an_ack_cannot_cover_a_retry_whose_write_is_still_pending(tmp_path):
+    tx = make_outbox(tmp_path)
+    tx.send(text(1), now=0.0)
+    first = [f for f in tx.due(0.0) if f.t == "text"][0]
+    tx.write_failed(first, now=0.0)                   # 首发没写出去
+    retry = [f for f in tx.due(0.1) if f.t == "text"][0]    # 马上重试：放出了，写的结果还没出来
+    assert tx.on_ack(retry.seq, now=0.2) == []        # 越界的累计 ack 不能先把它确认掉
+    tx.write_failed(retry, now=0.3)                   # 这次也没写出去：还在、照常重试
+    assert retry.seq in tx.unacked_seqs and [f for f in tx.due(0.3) if f.t == "text"]
     await tx.close()
 
 

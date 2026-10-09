@@ -731,7 +731,7 @@ class VisitOutbox:
             if s > seq:
                 break
             pending = self._unacked[s]
-            if not pending.emitted or pending.unsent_first:
+            if not pending.emitted or not pending.written:
                 # 还没发出去（或放出过、但一次都没写出去）的项不可能被对端收到：越界 ack 不能把它当已确认
                 self.ack_beyond_sent += 1
                 break
