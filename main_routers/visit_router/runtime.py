@@ -337,8 +337,8 @@ _resolving_names: set[object] = set()
 """Background tasks whose character name is still being resolved (the lifecycle guard is conservative)."""
 
 _pending_visits: dict[tuple[str, str], Path] = {}
-"""``(visit_id, side)`` of admissions still in progress, with the config dir their files will live in."""
-"""``(visit_id, side)`` between the slot reservation and the runtime registration (``start_visit``)."""
+"""``(visit_id, side)`` between the slot reservation and the runtime registration (``start_visit``),
+with the config dir their files will live in."""
 
 _stop_gen = 0
 """Bumped by ``stop_all``: a ``start_visit`` that was still awaiting when it ran does not register."""
