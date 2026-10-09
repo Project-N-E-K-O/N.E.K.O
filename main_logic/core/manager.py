@@ -342,6 +342,8 @@ class LLMSessionManager(
         self._mirror_stream_callbacks: dict = {}
         # 最近打开的那条流交出 TTS 轮次的时刻：下一条流按打开顺序等它再认领
         self._mirror_stream_tail = None
+        # 最后一条真正认领过 TTS 轮次的流的 speech id：中间的流没认领就结束时，下一条认得出它还是同一串
+        self._mirror_last_claimed_sid = None
         # 流式 mirror 的结束标记真正入队时交出 TTS 轮次: {speech_id: 回调}
         self._mirror_stream_ends: dict = {}
         self.tts_cache_lock = asyncio.Lock()  # 保护缓存的锁

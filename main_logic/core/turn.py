@@ -73,10 +73,13 @@ class MirrorSpeechStream:
     turn's done flags are reset, the TTS pipeline is started) only once the
     stream opened before it got its end marker into the TTS queue (not just
     deferred until the worker is ready), was aborted -- and its interruption
-    finished -- or failed. ``_PREDECESSOR_WAIT_S`` bounds that wait; a
+    finished -- or failed. A stream that ends before it ever claimed hands
+    over only once its own predecessor did, so a later stream never skips a
+    line still being spoken. ``_PREDECESSOR_WAIT_S`` bounds that wait; a
     predecessor still holding the turn then is failed and interrupted
-    before the claim. A stream does not claim at all when an ordinary turn
-    started after it was opened (the family spoke first): it fails instead.
+    before the claim (through the unclaimed ones in between). A stream does
+    not claim at all when an ordinary turn started after it was opened (the
+    family spoke first): it fails instead.
     Each text then goes
     through ``_enqueue_tts_text_chunk`` (``tts_pending_chunks`` while the
     worker is not ready) and the end through ``_request_tts_done_locked``,
@@ -122,7 +125,10 @@ class MirrorSpeechStream:
         self._started = False
         self._claimed = False
         self._task: Optional[asyncio.Future] = None
+        # 前一条流：它交出轮次后就清掉，已结束的流不会一条拖一条地留在管理器上
         self._predecessor: Optional["MirrorSpeechStream"] = None
+        self._handing_over = False
+        self._giving_up: Optional[asyncio.Future] = None
         # 打开时的当前语音：认领时它若被普通对话换掉（亲人先开口），本流不抢那一轮
         self._base_speech_id = getattr(mgr, "current_speech_id", None)
         self._end_deferred = False
@@ -155,6 +161,9 @@ class MirrorSpeechStream:
         if self._started and not self._worker_alive():
             # 已经知道没有 worker 接得住结束标记：当场告诉调用方（它据此改按估时放字幕）
             self._close()
+            task = self._task
+            if task is not None and not task.done():
+                task.cancel()                  # 后台任务可能正等着下一段文字：一并结束，不留着它
             self._release()
             return self.NO_WORKER
         self._closed = True
@@ -167,6 +176,7 @@ class MirrorSpeechStream:
             return False
         self._aborted = True
         self._closed = True
+        self._on_failed = None
         self._ops.clear()
         self._mgr._mirror_stream_callbacks.pop(self._speech_id, None)
         self._mgr._mirror_stream_ends.pop(self._speech_id, None)
@@ -185,6 +195,7 @@ class MirrorSpeechStream:
 
     def _close(self) -> None:
         self._closed = True
+        self._on_failed = None
         self._ops.clear()
         self._mgr._mirror_stream_callbacks.pop(self._speech_id, None)
         self._mgr._mirror_stream_ends.pop(self._speech_id, None)
@@ -193,6 +204,12 @@ class MirrorSpeechStream:
         """A successor waited too long: fail this stream and interrupt what it queued, then hand over."""
         if self._released.done():
             return
+        if self._giving_up is None:
+            # 收尾单独跑一次：几条后继同时超时只收尾一次；等它的一方被取消也不会打断到一半
+            self._giving_up = self._mgr._fire_task(self._give_up_now())
+        await asyncio.wait([self._giving_up])
+
+    async def _give_up_now(self) -> None:
         self._fail()
         task = self._task
         if task is not None and not task.done():
@@ -200,16 +217,30 @@ class MirrorSpeechStream:
         try:
             if self._claimed:
                 await self._mgr._interrupt_mirror_stream(self._speech_id)
+            elif self._predecessor is not None:
+                # 本流还没认领过：轮次实际还在它前面那条手里，一并让那条收尾
+                await self._predecessor._give_up()
         finally:
             self._release()
 
     def _release(self) -> None:
-        if not self._released.done():
-            self._released.set_result(None)
+        if self._released.done():
+            return
+        self._on_failed = None
+        predecessor = self._predecessor
+        if not self._claimed and predecessor is not None and not predecessor._released.done():
+            # 没认领过就结束（中止 / 失败）：轮次还在前一条手里，等它交出再交出，
+            # 后面的流不会越过一条还在说的
+            if not self._handing_over:
+                self._handing_over = True
+                predecessor._released.add_done_callback(lambda _f: self._release())
+            return
+        self._predecessor = None
+        self._released.set_result(None)
 
     def _fail(self) -> None:
+        callback = self._on_failed
         self._close()
-        callback, self._on_failed = self._on_failed, None
         if callback is not None:
             try:
                 callback()
@@ -276,15 +307,16 @@ class MirrorSpeechStream:
             if not predecessor._released.done():
                 # 前一条一直不收尾：先让它失败、打断它已入队的半句，两行不会被合成一句
                 await predecessor._give_up()
+        self._predecessor = predecessor = None
         async with mgr.lock:
-            expected = {self._base_speech_id}
-            if predecessor is not None:
-                expected.add(predecessor.speech_id)
+            # 打开时的当前语音，或这一串里最后一条认领过的流（中间没认领就结束的流不改当前语音）
+            expected = {self._base_speech_id, mgr._mirror_last_claimed_sid}
             if mgr.current_speech_id not in expected:
                 # 打开之后普通对话开了新一轮（亲人先开口）：不抢那一轮，本流放弃
                 self._fail()
                 return
             mgr.current_speech_id = self._speech_id
+            mgr._mirror_last_claimed_sid = self._speech_id
             mgr._tts_done_queued_for_turn = False
             mgr._tts_done_pending_until_ready = False
             mgr._mirror_stream_ends[self._speech_id] = self._end_queued
