@@ -540,7 +540,7 @@ curl -k https://localhost:48912
 
 **环境要求**：Python 3.11（不支持其他版本）、[uv](https://docs.astral.sh/uv/) 包管理器、Node.js（>=20.19）
 
-> **Windows 7 用户**：官方 Python 3.11 / uv / Node 均不支持 Win7。本仓库的 `win7` 分支提供实验性适配——用非官方 Win7 版 Python 3.11 + `setup_win7.bat`（纯 pip，不需要 uv/Node）安装，详见 [Windows 7 支持说明](docs/zh-CN/guide/windows-7.md)。
+> **Windows 7 用户**：官方 Python 3.11 / uv / Node 均不支持 Win7。目前有实验性适配：用非官方 Win7 版 Python 3.11 + `setup_win7.bat`（纯 pip，不需要 uv/Node）安装依赖，聊天窗口等前端构建产物需在其他系统构建后拷贝，详见 [Windows 7 支持说明](docs/zh-CN/guide/windows-7.md)。
 
 > [!IMPORTANT]
 > ### ⚡⚡ 强烈建议:用「部分克隆」拉取本仓库! ⚡⚡

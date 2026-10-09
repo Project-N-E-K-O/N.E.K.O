@@ -29,7 +29,6 @@ from launcher_core.bootstrap import (
 
 if __name__ == "__main__":
     _ensure_utf8_filesystem_encoding()
-    _warn_if_windows7()
     if os.environ.get("NEKO_WAKE_WORD_RELEASE_SMOKE") == "1":
         from multiprocessing import freeze_support as _wake_freeze_support
         _wake_freeze_support()
@@ -69,6 +68,9 @@ if __name__ == "__main__":
 _pin_project_root_first()
 
 if __name__ == "__main__":
+    # Print before importing the runtime chain, so Windows 7 users still see
+    # the setup hints if a native dependency fails to load there.
+    _warn_if_windows7()
     # Only the real entry path needs the runtime chain; spawn children import
     # what their target needs when unpickling it.
     from launcher_core.runtime import start_launcher

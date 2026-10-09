@@ -118,15 +118,20 @@ def _is_windows7() -> bool:
 
 
 def _warn_if_windows7() -> None:
-    """Print a one-time Windows 7 guidance banner from the launcher entry.
+    """Print the Windows 7 guidance banner from the source launcher entry.
 
-    Upstream only supports Windows 8.1+; on this branch Windows 7 is
-    best-effort, so point the user at the runtime requirements doc instead of
-    blocking startup. The banner prints at most once per process tree: the
-    marker env var set here is inherited by server child processes spawned
-    later. Set ``NEKO_WIN7_SILENT=1`` to suppress it entirely.
+    Windows 7 is only supported on a best-effort basis when running from
+    source, so point the user at the setup guide instead of blocking startup.
+    ``launcher.py`` calls this from its real entry path, after the child
+    process dispatch. The launcher can still re-run that entry in a new
+    process (re-exec into the project ``.venv``, storage restart), so the
+    marker env var set here, which those processes inherit, keeps the banner
+    to once per process tree. Frozen builds skip it: they embed the official
+    Python 3.11 runtime, which does not load on Windows 7, and they ship
+    neither ``setup_win7.bat`` nor the docs. Set ``NEKO_WIN7_SILENT=1`` to
+    suppress it.
     """
-    if not _is_windows7():
+    if IS_FROZEN or not _is_windows7():
         return
     if os.environ.get('NEKO_WIN7_SILENT') == '1':
         return
@@ -134,7 +139,7 @@ def _warn_if_windows7() -> None:
         return
     os.environ['_NEKO_WIN7_BANNER'] = '1'
     print(
-        "[Launcher] 检测到 Windows 7 —— 本分支为实验性适配，运行说明见 "
+        "[Launcher] 检测到 Windows 7 —— 当前为实验性适配，运行说明见 "
         "docs/zh-CN/guide/windows-7.md\n"
         "[Launcher]   · 需要非官方的 Python 3.11 Win7 构建（官方 3.11 仅支持 8.1+）\n"
         "[Launcher]   · 不要用 uv / Node（均不支持 Win7），依赖安装请跑 setup_win7.bat\n"
