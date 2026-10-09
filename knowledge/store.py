@@ -33,7 +33,7 @@ import numpy as np
 
 from .chunking import derive_chunks
 from .models import KnowledgeEntry, KnowledgePack
-from .text import fold_surface, fts_match_expression, search_tokens, strict_surface, title_key
+from .text import fts_match_expression, loose_surface, search_tokens, strict_surface, title_key
 
 
 SCHEMA_VERSION = 1
@@ -136,7 +136,7 @@ def _entry_surfaces(entry: KnowledgeEntry) -> set[str]:
     """Strict (``s:``) and loose (``l:``) exact-match keys of an entry."""
     values = [entry.title, *entry.terms.get("alias", ()), *entry.terms.get("recognition", ())]
     surfaces = {f"s:{strict}" for strict in map(strict_surface, values) if strict}
-    surfaces |= {f"l:{loose}" for loose in map(fold_surface, values) if loose}
+    surfaces |= {f"l:{loose}" for loose in map(loose_surface, values) if loose}
     return surfaces
 
 
@@ -252,8 +252,12 @@ class KnowledgeStore:
         pack_sha256: str,
         disabled_keys: Iterable[str] = (),
         should_cancel: Callable[[], bool] | None = None,
+        commit_gate: Callable[[], bool] | None = None,
     ) -> int:
         """Replace one pack's rows atomically; returns the number of chunks.
+
+        ``commit_gate`` is asked once, right before COMMIT; ``False`` rolls the
+        replacement back, ``True`` means it is committed from the caller's view.
 
         Vectors of chunks whose embedding text did not change are carried over,
         so updating a pack only re-embeds what actually changed.
@@ -326,6 +330,8 @@ class KnowledgeStore:
             # Last chance: a cancel that arrived during the final writes still
             # rolls the whole replacement back.
             if should_cancel is not None and should_cancel():
+                raise InterruptedError("cancelled")
+            if commit_gate is not None and not commit_gate():
                 raise InterruptedError("cancelled")
         return chunk_total
 
@@ -470,10 +476,11 @@ class KnowledgeStore:
         if pack_ids is not None and not pack_ids:
             return []
         clause, args = self._pack_clause(pack_ids, include_disabled)
-        # Strict first, so "C" does not pull in "C++"; the loose form (symbols
-        # and spaces dropped) only answers when nothing matches strictly, e.g.
-        # a recognition phrase typed with different punctuation.
-        for key in (f"s:{strict_surface(query)}", f"l:{fold_surface(query)}"):
+        # Strict first, so "C" does not pull in "C++"; the loose form (inner
+        # separators dropped) only answers when nothing matches strictly, e.g.
+        # a recognition phrase typed with different punctuation. Names that
+        # begin or end with a symbol have no loose form at all.
+        for key in (f"s:{strict_surface(query)}", f"l:{loose_surface(query)}"):
             if len(key) <= 2:
                 continue
             ids = [

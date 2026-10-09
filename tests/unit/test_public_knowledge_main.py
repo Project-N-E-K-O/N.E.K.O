@@ -296,6 +296,45 @@ def test_a_plugin_tool_with_the_same_name_is_left_alone():
     assert manager.tool_registry.get(public_knowledge.TOOL_NAME) is plugin_tool
 
 
+def test_the_builtin_returns_when_a_colliding_plugin_tool_is_removed():
+    from main_logic.tool_calling import ToolDefinition
+
+    manager = _manager()
+    manager._register_builtin_tools()
+    public_knowledge.note_availability({"tool_available": True})
+    plugin_tool = ToolDefinition(
+        name=public_knowledge.TOOL_NAME, description="plugin", handler=None,
+        metadata={"source": "plugin:other"},
+    )
+    manager.register_tool(plugin_tool)
+    assert manager.tool_registry.get(public_knowledge.TOOL_NAME) is plugin_tool
+    assert manager.unregister_tool(public_knowledge.TOOL_NAME) is True
+    restored = manager.tool_registry.get(public_knowledge.TOOL_NAME)
+    assert restored is not None and public_knowledge.is_builtin_definition(restored)
+
+    manager.register_tool(plugin_tool)
+    assert manager.clear_tools(source="plugin:other") == 1
+    restored = manager.tool_registry.get(public_knowledge.TOOL_NAME)
+    assert restored is not None and public_knowledge.is_builtin_definition(restored)
+
+
+def test_evicting_a_dead_plugin_gives_the_name_back_to_the_builtin(monkeypatch):
+    from main_logic.tool_calling import ToolDefinition
+    from main_routers import tool_router
+
+    manager = _manager()
+    manager._register_builtin_tools()
+    public_knowledge.note_availability({"tool_available": True})
+    manager.tool_registry.register(ToolDefinition(
+        name=public_knowledge.TOOL_NAME, description="plugin", handler=None,
+        metadata={"source": "plugin:dead", "callback_url": "http://127.0.0.1:9/cb"},
+    ))
+    monkeypatch.setattr(tool_router, "get_session_manager", lambda: {"Alpha": manager})
+    tool_router._evict_dead_callback_origin("plugin:dead", "http://127.0.0.1:9")
+    restored = manager.tool_registry.get(public_knowledge.TOOL_NAME)
+    assert restored is not None and public_knowledge.is_builtin_definition(restored)
+
+
 async def test_availability_expires_after_prolonged_refresh_failures(memory_server, monkeypatch):
     import asyncio
 

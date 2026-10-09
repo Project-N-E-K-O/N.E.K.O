@@ -38,10 +38,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import threading
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol, Sequence, TypeVar
 
@@ -160,6 +161,10 @@ class ImportJob:
     cancel_requested: bool = False
     arrived_at: int = 0
     staged_bytes: int = 0
+    # Set once the index write commits; from then on the import is no longer
+    # cancellable. The lock makes "cancel" and "commit" exclusive.
+    committed: bool = False
+    gate: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -172,6 +177,16 @@ class ImportJob:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+
+
+def _disabled_in(entry: StoredEntry, registry: Registry) -> bool:
+    """Disabled per the index or per the query's registry snapshot.
+
+    A toggle writes the index before the registry; whichever says "disabled"
+    wins, so re-enabling never shows an entry before the registry agrees.
+    """
+    record = registry.packs.get(entry.pack_id)
+    return entry.disabled or (record is not None and title_key(entry.title) in record.disabled_titles)
 
 
 def _read_bounded(path: Path) -> bytes:
@@ -469,6 +484,11 @@ class KnowledgeService:
         # While this removal is pending, imports of the pack yield (one may be
         # holding the lock this removal waits for); once it succeeds, the
         # removal clock makes every import that arrived earlier stand down.
+        if pack_id not in self._registry.packs:
+            # Not installed (a first import may still be building): there is
+            # nothing this removal could commit, so it must not make that
+            # import yield either.
+            raise KnowledgeUnavailable("not_found")
         self._pending_removals[pack_id] = self._pending_removals.get(pack_id, 0) + 1
 
         async def run() -> dict[str, Any]:
@@ -654,7 +674,12 @@ class KnowledgeService:
         job = self._jobs.get(job_id)
         if job is None or job.state not in ACTIVE_JOB_STATES:
             return False
-        job.cancel_requested = True
+        with job.gate:
+            if job.committed:
+                # Past the commit point: the import is landing and will be
+                # reported active; removing the pack is the way back.
+                return False
+            job.cancel_requested = True
         if job.state == "queued":
             self._finish_job(job, "cancelled")
             # A cancelled job no longer counts toward the staging limits, so
@@ -715,6 +740,13 @@ class KnowledgeService:
             raise InterruptedError("cancelled")
         previous = self._registry.packs.get(job.pack_id)
 
+        def commit_gate() -> bool:
+            with job.gate:
+                if self._superseded(job) or self._stopping:
+                    return False
+                job.committed = True
+                return True
+
         def blocking() -> tuple[Registry, PackRecord]:
             raw = self._staging_path(job.job_id).read_bytes()
             pack = decode_pack_bytes(raw)
@@ -757,6 +789,7 @@ class KnowledgeService:
                     pack_sha256=sha,
                     disabled_keys=record.disabled_titles,
                     should_cancel=lambda: self._superseded(job) or self._stopping,
+                    commit_gate=commit_gate,
                 )
                 indexed = True
                 registry = self._registry.with_pack(record)
@@ -1099,7 +1132,7 @@ class KnowledgeService:
         usable = {
             entry_id
             for entry_id, entry in entries.items()
-            if not entry.disabled and entry.pack_id in allowed_set
+            if not _disabled_in(entry, registry) and entry.pack_id in allowed_set
         }
         ranked = fuse(
             query,
@@ -1122,7 +1155,7 @@ class KnowledgeService:
         for ranked_hit in ranked:
             entry = entries.get(ranked_hit.entry_id)
             record = registry.packs.get(entry.pack_id) if entry is not None else None
-            if entry is None or record is None or entry.disabled or entry.pack_id not in current:
+            if entry is None or record is None or _disabled_in(entry, registry) or entry.pack_id not in current:
                 continue
             # Show the passage that matched, not just the start of the entry.
             bodies = chunk_bodies(entry.content) or [entry.content]

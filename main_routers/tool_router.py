@@ -328,6 +328,11 @@ def _evict_dead_callback_origin(source: str, origin: str) -> None:
                 continue
             for name in to_drop:
                 mgr.tool_registry.unregister(name)
+            # 被驱逐的工具可能占着内置工具的名字（query_public_knowledge），
+            # 让出后把内置版本补回来。
+            refill = getattr(mgr, "_refill_vacated_builtins", None)
+            if callable(refill):
+                refill()
             # 复用 mgr 已有的 fire-and-forget sync 通道（与 register_tool /
             # clear_tools 同一条路径），把 fresh session.update 推到 wire。
             # 直接访问 ``_fire_task`` / ``_sync_tools_to_active_session`` 是

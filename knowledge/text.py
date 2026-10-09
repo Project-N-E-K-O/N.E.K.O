@@ -82,7 +82,7 @@ _UNICODE_LINE_BREAKS = str.maketrans({"\u0085": "\n", "\u2028": "\n", "\u2029": 
 def _drop_orphan_marks(text: str) -> str:
     """Remove combining marks that start a line: they attach to nothing and
     would otherwise sit, invisible, in front of a role marker."""
-    if not any(unicodedata.combining(ch) for ch in text):
+    if not any(unicodedata.category(ch).startswith("M") for ch in text):
         return text
     lines = text.split("\n")
     for index, line in enumerate(lines):
@@ -168,10 +168,31 @@ def word_runs(value: str) -> set[str]:
     return set(_TOKEN_RE.findall(value))
 
 
-def fold_surface(value: object) -> str:
-    """Comparison form for exact title / alias / recognition matching."""
-    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
-    return "".join(ch for ch in _strip_marks(normalized) if ch.isalnum())
+_TRAILING_PUNCT = frozenset("?!.。？！,，、;；:：…")
+
+
+def loose_surface(value: object) -> str:
+    """Fallback exact-match form: only letters and digits, or "" if unsafe.
+
+    Surrounding brackets/quotes and trailing sentence punctuation are ignored
+    ("「猫」", "Python?"), and separators inside a name may differ ("Re:Zero",
+    "re zero"). A name that still begins or ends with a symbol ("C++", "C#",
+    ".NET") gets no loose form: dropping the symbol would make it another name.
+    """
+    text = strict_surface(value)
+    start, end = 0, len(text)
+    while start < end and (text[start] == " " or unicodedata.category(text[start]) in ("Ps", "Pi")):
+        start += 1
+    while end > start and (
+        text[end - 1] == " "
+        or text[end - 1] in _TRAILING_PUNCT
+        or unicodedata.category(text[end - 1]) in ("Pe", "Pf")
+    ):
+        end -= 1
+    core = text[start:end]
+    if not core or not core[0].isalnum() or not core[-1].isalnum():
+        return ""
+    return "".join(ch for ch in core if ch.isalnum())
 
 
 def _strip_marks(value: str) -> str:
