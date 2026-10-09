@@ -252,10 +252,8 @@
             });
         } else {
             window.appChatAvatarEditor?.cancel();
-            ++activeCaptureToken;
-            isCapturing = false;
+            // A running capture still finishes and caches in the background; it just stops driving the popup.
             activeCaptureCardVisible = false;
-            setLoadingState(false);
             // 已经隐藏或正在隐藏 → 幂等退出
             if (card.hidden) return;
             if (pendingHideHandler) return;
@@ -1323,6 +1321,10 @@
 
         // The popup and upload controls remain available while a model is still loading.
         if (showCard) setPreviewVisible(true, trigger);
+        // A failed read may hide whether an uncertain save landed; opening the popup reads it again.
+        if (showCard && window.appChatAvatarState?.getError()) {
+            window.appChatAvatarState.refresh('popup-open').catch(function () {});
+        }
         if (showCard && !forceRefresh && (window.appChatAvatarState?.getDataUrl() || window.appChatAvatarEditor?.getState().editing)) {
             setPreviewImage(mod.getCurrentAvatarDataUrl());
             window.appChatAvatarEditor?.update();
@@ -1608,7 +1610,11 @@
         const card = S.dom.chatAvatarPreviewCard;
         if (!card || card.hidden) return;
         event.preventDefault();
-        event.stopImmediatePropagation();
+        // Keep the chat window's own Escape handling away from a key aimed at this popup only.
+        const active = document.activeElement;
+        if ((event.target && card.contains(event.target)) || (active && card.contains(active))) {
+            event.stopImmediatePropagation();
+        }
         setPreviewVisible(false);
     }
 
@@ -1881,11 +1887,14 @@
         }
     };
     mod.cancelModelPreviewCapture = function () {
+        const wasCapturing = isCapturing;
         ++activeCaptureToken;
         isCapturing = false;
         activeCaptureCardVisible = false;
         setLoadingState(false);
         closeCropperIfOpen();
+        // The retired capture never caches its result, so capture the model again silently.
+        if (wasCapturing) scheduleAutoCapture('retired-capture');
     };
     mod.openUploadCropper = function (source) {
         return openAvatarCropper(source.url, null, source.width, source.height, {});

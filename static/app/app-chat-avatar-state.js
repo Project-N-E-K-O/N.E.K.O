@@ -7,7 +7,7 @@
     const REQUEST_TIMEOUT_MS = 15000;
     const CREDENTIAL_WAIT_MS = 3000;
     const TIMED_OUT = {};
-    const DISPLAYED_LIMIT = 16;
+    const DISPLAYED_LIMIT = 64;
     let identity = null;
     let epoch = 0;
     let record = null;

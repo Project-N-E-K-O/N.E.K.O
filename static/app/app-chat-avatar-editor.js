@@ -231,8 +231,9 @@
         if (cancel) cancel.addEventListener('click', api.cancel);
         if (restore) restore.addEventListener('click', api.restore);
         window.addEventListener('chat-avatar-display-updated', function (event) {
+            // Model captures are keyed to their model, so an identity change only closes a cropper.
             if (['identity', 'switch-start', 'switch-rollback'].includes(event && event.detail && event.detail.reason)) {
-                core().cancelModelPreviewCapture();
+                core().closeUploadCropper();
             }
             if ((pendingBinding && !state().isCurrent(pendingBinding))
                 || (candidate && !state().isCurrent(candidate.binding))) api.cancel();

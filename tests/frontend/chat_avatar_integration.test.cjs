@@ -207,9 +207,11 @@ test('direct model capture fallback broadcasts only model preview cache', () => 
     const h = harness(); const events = [];
     h.window.__NEKO_MULTI_WINDOW__ = true;
     h.window.__nekoRequestAvatarPreview = () => { throw new Error('cache should avoid IPC'); };
+    // The Electron chat window renders no model: its only model avatar is the one injected over IPC.
     h.window.appChatAvatar = {
         getCurrentAvatarDataUrl: () => 'data:image/png;base64,CUSTOM',
-        getCachedPreview: () => ({ dataUrl: 'data:image/png;base64,MODEL', modelType: 'live2d' })
+        getCachedPreview: () => null,
+        getModelAvatarDataUrl: () => 'data:image/png;base64,MODEL'
     };
     const parts = h.window.__appReactChatWindowParts = {
         showToast() {}, getI18nText: (_, fallback) => fallback, dispatchHostEvent() {}
@@ -433,4 +435,97 @@ test('upload crop title remains temporary and cancel restores the model failure 
     assert.equal(h.dom.chatAvatarPreviewNote.hidden, false);
     assert.equal(h.dom.chatAvatarPreviewNote.textContent, 'model render unavailable');
     assert.equal(h.dom.chatAvatarPreviewStatus.textContent, 'chat.avatarPreviewFailed');
+});
+
+const MODEL_AVATAR = 'data:image/png;base64,MODEL';
+
+function captureHarness() {
+    const h = popupHarness(); const capture = deferred();
+    h.window.cubism4Model = 'model-a';
+    h.window.avatarPortrait = { capture: () => capture.promise };
+    // A silent background capture, as scheduled after a model loads.
+    const running = h.window.appChatAvatar.showPopup(null, { showCard: false, silent: true, forceRefresh: true });
+    async function finish() {
+        capture.resolve({ dataUrl: MODEL_AVATAR, modelType: 'live2d' });
+        await running;
+    }
+    return { ...h, core: h.window.appChatAvatar, finish };
+}
+
+test('closing the popup lets a running model capture finish and cache', async () => {
+    const h = captureHarness();
+    h.dom.chatAvatarPreviewCard = { hidden: true };
+    h.core.hidePopup();
+    await h.finish();
+    assert.equal(h.core.getModelAvatarDataUrl(), MODEL_AVATAR);
+});
+
+test('identity changes close a cropper but keep the running model capture', async () => {
+    const h = captureHarness();
+    h.load('static/app/app-chat-avatar-editor.js'); h.window.appChatAvatarEditor.initialize();
+    let closed = 0; const close = h.core.closeUploadCropper;
+    h.core.closeUploadCropper = () => { ++closed; close(); };
+    for (const reason of ['switch-start', 'identity', 'switch-rollback']) {
+        h.window.dispatchEvent({ type: 'chat-avatar-display-updated', detail: { reason } });
+    }
+    assert.equal(closed, 3);
+    await h.finish();
+    assert.equal(h.core.getModelAvatarDataUrl(), MODEL_AVATAR);
+});
+
+test('a model capture retired for a custom upload is captured again silently', async () => {
+    const h = captureHarness();
+    const autoCaptures = () => [...h.timers.values()].filter(timer => timer.delay === 180).length;
+    const before = autoCaptures();
+    h.core.cancelModelPreviewCapture();
+    assert.equal(autoCaptures(), before + 1);
+    await h.finish();
+    assert.equal(h.core.getModelAvatarDataUrl(), '', 'the retired result itself is never cached');
+    h.core.cancelModelPreviewCapture();
+    assert.equal(autoCaptures(), before + 1, 'nothing to recapture when no capture was running');
+});
+
+test('opening the popup re-reads a failed avatar record, a healthy one is left alone', async () => {
+    const h = popupHarness(); const reads = [];
+    let error = { code: 'chat_avatar_network_error' };
+    Object.assign(h.window.appChatAvatarState, {
+        getError: () => error,
+        refresh: reason => { reads.push(reason); return Promise.resolve(null); }
+    });
+    h.setCustom('data:image/png;base64,CUSTOM');
+    await h.window.appChatAvatar.showPopup();
+    assert.deepEqual(reads, ['popup-open']);
+    error = null;
+    await h.window.appChatAvatar.showPopup();
+    assert.deepEqual(reads, ['popup-open']);
+});
+
+test('Escape closes the popup but only keeps a key aimed at it from other handlers', () => {
+    const h = popupHarness(); const keydown = [];
+    const inside = { id: 'inside' }; const outside = { id: 'outside' };
+    const popup = { hidden: false, contains: node => node === inside, classList: { add() {}, remove() {}, contains() { return false; } },
+        addEventListener() {}, removeEventListener() {} };
+    const stub = () => ({ hidden: false, disabled: false, addEventListener() {}, classList: { add() {}, remove() {} } });
+    const dom = new Map([['chat-avatar-preview-popup', popup], ['chatAvatarPreviewRefreshButton', stub()],
+        ['chatAvatarPreviewCloseButton', stub()]]);
+    h.context.document.getElementById = id => dom.get(id) || h.elements.get(id);
+    h.context.document.addEventListener = (type, listener) => { if (type === 'keydown') keydown.push(listener); };
+    h.context.document.activeElement = outside;
+    h.window.appChatAvatarState.initialize = () => {};
+    h.window.setTimeout = h.context.setTimeout; h.window.clearTimeout = h.context.clearTimeout;
+    h.window.appChatAvatar.init();
+    assert.equal(keydown.length, 1);
+    const press = target => {
+        const event = { key: 'Escape', target, prevented: false, stopped: false,
+            preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; } };
+        popup.hidden = false;
+        keydown[0](event);
+        return event;
+    };
+    const aimed = press(inside);
+    assert.equal(aimed.prevented, true); assert.equal(aimed.stopped, true);
+    const elsewhere = press(outside);
+    assert.equal(elsewhere.prevented, true); assert.equal(elsewhere.stopped, false);
+    h.context.document.activeElement = inside;
+    assert.equal(press(outside).stopped, true, 'focus inside the popup also counts');
 });
