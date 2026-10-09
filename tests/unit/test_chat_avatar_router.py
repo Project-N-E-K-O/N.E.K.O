@@ -356,6 +356,35 @@ async def test_cancel_after_character_delete_commit_still_cleans_avatar(tmp_path
     assert not (directory / f"{uid}.json").exists()
 
 
+@pytest.mark.asyncio
+async def test_failed_delete_cleanup_is_finished_by_next_save_without_quota_debt(tmp_path, monkeypatch):
+    from tests.unit.test_character_uid import _backfilled_manager, _init_router_state
+    manager, _ = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, "Gone": {"昵称": "Gone"}})
+    characters = manager.load_characters()["猫娘"]
+    uid, gone = get_character_uid(characters["Current"]), get_character_uid(characters["Gone"])
+    directory = manager.app_docs_dir / "chat_avatars"
+    data = store.normalize_png(png())
+    store.write_record(directory, gone, data, "0", "original")
+    orphan = directory / f"{gone}.json"
+    with patch("utils.config_manager._config_manager", manager):
+        crud = _init_router_state(manager)
+        with patch.object(crud, "release_memory_server_character", AsyncMock(return_value=True)), patch.object(
+            crud, "notify_memory_server_reload", AsyncMock(return_value=True),
+        ), patch.object(crud, "remove_chat_avatar_record",
+                        side_effect=store.ChatAvatarError("chat_avatar_write_failed", 503)):
+            response = await crud.delete_catgirl("Gone")
+        body = response if isinstance(response, dict) else json.loads(response.body)
+        assert body["success"] is True and body["chat_avatar_cleanup_failed"] is True
+        assert orphan.is_file()
+
+        # Counted, the orphan alone would leave no room for the live character's avatar.
+        monkeypatch.setattr(store, "STORAGE_QUOTA_BYTES", orphan.stat().st_size + 10)
+        saved = await route._save(manager, uid, Path(manager.app_docs_dir), data, "0", "after-delete")
+    assert saved.status_code == 200, saved.body
+    assert not orphan.exists()
+    assert store.read_record(directory, uid)["last_operation_id"] == "after-delete"
+
+
 def test_migration_copies_chat_records_and_retains_original_backup(backend, tmp_path):
     from utils.storage_migration import create_pending_storage_migration, run_pending_storage_migration
     from utils.cloudsave_runtime import runtime_root_has_user_content

@@ -69,7 +69,7 @@
             }
             if (!response.ok) {
                 // An absent route is not an unset avatar or a deleted character.
-                throw failure(body && (body.code || body.error) || 'chat_avatar_unavailable', response.status);
+                throw failure(body && (body.code || body.error_code || body.error) || 'chat_avatar_unavailable', response.status);
             }
             if (!body || body.character_uid !== uid || typeof body.revision !== 'string'
                 || !(body.data_url === null || typeof body.data_url === 'string')) {
@@ -191,9 +191,19 @@
     };
     api.onChanged = api.onBackendChanged;
 
-    async function write(method, blob, binding) {
+    async function mutationHeaders(binding, method, refresh) {
+        const security = window.nekoLocalMutationSecurity;
+        if (refresh) {
+            try { await security.refreshToken(); }
+            catch (_) { /* The resend reports the guard's verdict. */ }
+        }
+        const headers = await security.getMutationHeaders();
         if (!matches(binding) || cancelledEdits.has(binding)) throw failure('chat_avatar_stale_edit');
-        const headers = await window.nekoLocalMutationSecurity.getMutationHeaders();
+        if (method !== 'PUT') headers['Content-Type'] = 'application/json';
+        return headers;
+    }
+
+    async function write(method, blob, binding) {
         if (!matches(binding) || cancelledEdits.has(binding)) throw failure('chat_avatar_stale_edit');
         let body;
         if (method === 'PUT') {
@@ -202,14 +212,25 @@
             body.append('base_revision', binding.baseRevision);
             body.append('operation_id', binding.operationId);
         } else {
-            headers['Content-Type'] = 'application/json';
             body = JSON.stringify({ base_revision: binding.baseRevision, operation_id: binding.operationId });
         }
-        const generation = readGeneration;
+        let generation;
+        function submit(headers) {
+            generation = readGeneration;
+            submittedEdits.add(binding);
+            return request(binding.uid, { method: method, body: body, headers: headers });
+        }
         let saved;
         try {
-            submittedEdits.add(binding);
-            saved = await request(binding.uid, { method: method, body: body, headers: headers });
+            try {
+                saved = await submit(await mutationHeaders(binding, method, false));
+            } catch (cause) {
+                if (cause.status !== 403 || cause.code !== 'csrf_validation_failed') throw cause;
+                // The guard rejects before the handler runs, so nothing was written. A restarted
+                // backend rotates the token: refresh it once and resend the same operation.
+                submittedEdits.delete(binding);
+                saved = await submit(await mutationHeaders(binding, method, true));
+            }
         } catch (cause) {
             if (!matches(binding)) throw failure('chat_avatar_stale_edit');
             if (['chat_avatar_timeout', 'chat_avatar_network_error', 'chat_avatar_invalid_response'].includes(cause.code)) {

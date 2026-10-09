@@ -155,6 +155,82 @@ test('cancel after transport submission still confirms the authoritative outcome
     assert.equal(h.api.getDataUrl(), 'confirmed');
 });
 
+const csrfRejected = () => response({ ok: false, error_code: 'csrf_validation_failed', error: 'Request could not be verified' }, 403);
+
+function rotatingToken(h) {
+    let token = 'stale';
+    const refreshes = [];
+    h.window.nekoLocalMutationSecurity = {
+        getMutationHeaders: async () => ({ 'X-CSRF-Token': token }),
+        refreshToken() { const task = deferred(); refreshes.push(task); return task.promise.then(() => { token = 'fresh'; return token; }); }
+    };
+    return refreshes;
+}
+
+test('rotated CSRF token is refreshed once and the same operation is resent', async () => {
+    const h = harness(); await h.identify(); const refreshes = rotatingToken(h); const binding = h.api.captureEdit();
+    const save = h.api.save(new Blob(['png']), binding); await h.settle();
+    const first = h.pending.at(-1);
+    first.resolve(csrfRejected()); await h.settle();
+    assert.equal(refreshes.length, 1);
+    refreshes[0].resolve(); await h.settle();
+    const retry = h.pending.at(-1);
+    assert.notEqual(retry, first);
+    assert.equal(retry.options.method, 'PUT');
+    assert.equal(first.options.headers['X-CSRF-Token'], 'stale');
+    assert.equal(retry.options.headers['X-CSRF-Token'], 'fresh');
+    assert.equal(retry.options.body.get('operation_id'), binding.operationId);
+    assert.equal(retry.options.body.get('base_revision'), '0');
+    retry.resolve(response(row(A, 'saved', 'new', binding.operationId))); await save;
+    assert.equal(h.api.getDataUrl(), 'new');
+
+    const restoring = h.api.captureEdit(); const restore = h.api.restore(restoring); await h.settle();
+    h.pending.at(-1).resolve(csrfRejected()); await h.settle();
+    refreshes[1].resolve(); await h.settle();
+    const resent = h.pending.at(-1);
+    assert.equal(resent.options.method, 'DELETE');
+    assert.equal(resent.options.headers['Content-Type'], 'application/json');
+    assert.equal(JSON.parse(resent.options.body).operation_id, restoring.operationId);
+    resent.resolve(response(row(A, 'restored', null, restoring.operationId))); await restore;
+    assert.equal(h.api.getDataUrl(), '');
+});
+
+test('cancel or role change during CSRF refresh prevents the resend', async () => {
+    const h = harness(); await h.identify(); const refreshes = rotatingToken(h); const binding = h.api.captureEdit();
+    const saving = h.api.save(new Blob(['png']), binding); await h.settle();
+    h.pending.at(-1).resolve(csrfRejected()); await h.settle();
+    h.api.cancelEdit(binding);
+    const count = h.pending.length;
+    refreshes[0].resolve();
+    await assert.rejects(saving, { code: 'chat_avatar_stale_edit' });
+    assert.equal(h.pending.length, count);
+
+    const other = h.api.captureEdit();
+    const switching = h.api.save(new Blob(['png']), other); await h.settle();
+    h.pending.at(-1).resolve(csrfRejected()); await h.settle();
+    await h.identify(B); const afterSwitch = h.pending.length;
+    refreshes[1].resolve();
+    await assert.rejects(switching, { code: 'chat_avatar_stale_edit' });
+    assert.equal(h.pending.length, afterSwitch);
+});
+
+test('CSRF rejection retries only once and other 403s are not retried', async () => {
+    const h = harness(); await h.identify(); const refreshes = rotatingToken(h); const binding = h.api.captureEdit();
+    const saving = h.api.save(new Blob(['png']), binding); await h.settle();
+    h.pending.at(-1).resolve(csrfRejected()); await h.settle();
+    refreshes[0].resolve(); await h.settle();
+    h.pending.at(-1).resolve(csrfRejected());
+    await assert.rejects(saving, { code: 'csrf_validation_failed', status: 403 });
+    assert.equal(refreshes.length, 1);
+    assert.equal(h.pending.filter(p => p.options.method === 'PUT').length, 2);
+
+    const forbidden = h.api.save(new Blob(['png']), h.api.captureEdit()); await h.settle();
+    h.pending.at(-1).resolve(response({ ok: false, error_code: 'remote_access_denied' }, 403));
+    await assert.rejects(forbidden, { code: 'remote_access_denied', status: 403 });
+    assert.equal(refreshes.length, 1);
+    assert.equal(h.api.getDataUrl(), '');
+});
+
 test('restore uses JSON CAS and keeps tombstone revision', async () => {
     const h = harness(); await h.identify(); const binding = h.api.captureEdit();
     const restore = h.api.restore(binding); await h.settle(); const request = h.pending.at(-1);

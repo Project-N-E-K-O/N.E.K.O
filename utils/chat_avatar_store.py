@@ -130,8 +130,21 @@ def read_record(directory: Path, uid: str) -> dict:
         raise ChatAvatarError("chat_avatar_record_corrupt", 500) from exc
 
 
+def _discard_orphan(path: Path) -> None:
+    # Retried by every later write; a failure here must not block this one.
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def write_record(directory: Path, uid: str, data_url: str | None,
-                 base_revision: str, operation_id: str) -> dict:
+                 base_revision: str, operation_id: str, *, live_uids=None) -> dict:
+    """``live_uids`` holds every character UID read under the caller's fences.
+
+    A record of any other UID was left behind by a committed character delete
+    whose cleanup failed; it is removed here and never counts toward the quota.
+    """
     validate_operation(base_revision, operation_id)
     current = read_record(directory, uid)
     if current["last_operation_id"] == operation_id:
@@ -151,6 +164,9 @@ def write_record(directory: Path, uid: str, data_url: str | None,
         for entry in directory.iterdir():
             if entry.name == target.name or entry.suffix != ".json":
                 continue
+            if live_uids is not None and is_valid_character_uid(entry.stem) and entry.stem not in live_uids:
+                _discard_orphan(entry)
+                continue
             try:
                 entry_stat = entry.stat()
             except FileNotFoundError:
@@ -166,7 +182,10 @@ def write_record(directory: Path, uid: str, data_url: str | None,
 
 
 def remove_record(directory: Path, uid: str) -> None:
-    """Only used after the character deletion transaction has committed."""
+    """Only used after the character deletion transaction has committed.
+
+    A failure leaves an orphan that the next ``write_record`` removes.
+    """
     try:
         record_path(directory, uid).unlink(missing_ok=True)
     except OSError as exc:

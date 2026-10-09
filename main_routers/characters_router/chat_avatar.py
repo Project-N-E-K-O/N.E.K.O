@@ -39,14 +39,17 @@ def _response(record):
 
 
 def _assert_character(config_manager, uid):
+    """Return every live character UID once ``uid`` is confirmed among them."""
     try:
         characters = config_manager.load_characters(require_authoritative=True)
     except MaintenanceModeError:
         raise
     except (OSError, ValueError) as exc:
         raise ChatAvatarError("chat_avatar_character_read_failed", 503) from exc
-    if not any(get_character_uid(value) == uid for value in characters.get("猫娘", {}).values()):
+    live_uids = {get_character_uid(value) for value in characters.get("猫娘", {}).values()}
+    if uid not in live_uids:
         raise ChatAvatarError("chat_avatar_character_not_found", 404)
+    return live_uids
 
 
 def _check_root(config_manager, expected_root):
@@ -66,8 +69,9 @@ def _commit(config_manager, uid, expected_root, data_url, base_revision, operati
     try:
         with cloudsave_writable_transaction(config_manager, operation="chat_avatar", target=uid):
             _check_root(config_manager, expected_root)
-            _assert_character(config_manager, uid)
-            return write_record(chat_avatar_directory(config_manager), uid, data_url, base_revision, operation_id)
+            live_uids = _assert_character(config_manager, uid)
+            return write_record(chat_avatar_directory(config_manager), uid, data_url, base_revision,
+                                operation_id, live_uids=live_uids)
     except OSError as exc:
         raise ChatAvatarError("chat_avatar_write_failed", 503) from exc
 

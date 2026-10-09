@@ -134,6 +134,53 @@ def test_quota_accounts_other_uid_and_replacement(tmp_path, monkeypatch):
     assert cleared["data_url"] is None
 
 
+def test_record_left_by_deleted_character_is_removed_and_not_counted(tmp_path, monkeypatch):
+    data = store.normalize_png(png())
+    store.write_record(tmp_path, "b" * 32, data, "0", "deleted-role")
+    orphan = tmp_path / f"{'b' * 32}.json"
+    monkeypatch.setattr(store, "STORAGE_QUOTA_BYTES", orphan.stat().st_size + 10)
+    saved = store.write_record(tmp_path, UID, data, "0", "save", live_uids={UID})
+    assert not orphan.exists()
+    assert store.read_record(tmp_path, UID) == saved
+
+
+def test_live_records_and_unrecognized_files_still_count(tmp_path, monkeypatch):
+    data = store.normalize_png(png())
+    store.write_record(tmp_path, "b" * 32, data, "0", "live-role")
+    live = tmp_path / f"{'b' * 32}.json"
+    monkeypatch.setattr(store, "STORAGE_QUOTA_BYTES", live.stat().st_size + 10)
+    with pytest.raises(store.ChatAvatarError) as error:
+        store.write_record(tmp_path, UID, data, "0", "save", live_uids={UID, "b" * 32})
+    assert error.value.code == "chat_avatar_quota_exceeded"
+    assert live.is_file()
+
+    live.rename(tmp_path / "notes.json")
+    with pytest.raises(store.ChatAvatarError) as error:
+        store.write_record(tmp_path, UID, data, "0", "save", live_uids={UID})
+    assert error.value.code == "chat_avatar_quota_exceeded"
+    assert (tmp_path / "notes.json").is_file()
+
+
+def test_orphan_that_cannot_be_removed_does_not_block_save_and_is_retried(tmp_path, monkeypatch):
+    data = store.normalize_png(png())
+    store.write_record(tmp_path, "b" * 32, data, "0", "deleted-role")
+    orphan = tmp_path / f"{'b' * 32}.json"
+    monkeypatch.setattr(store, "STORAGE_QUOTA_BYTES", orphan.stat().st_size + 10)
+    original_unlink = store.Path.unlink
+
+    def occupied(path, *args, **kwargs):
+        if path == orphan:
+            raise PermissionError(13, "file occupied")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(store.Path, "unlink", occupied)
+    first = store.write_record(tmp_path, UID, data, "0", "first", live_uids={UID})
+    assert orphan.is_file()
+    monkeypatch.setattr(store.Path, "unlink", original_unlink)
+    store.write_record(tmp_path, UID, None, first["revision"], "second", live_uids={UID})
+    assert not orphan.exists()
+
+
 @pytest.mark.parametrize("exception", [PermissionError("denied"), OSError(28, "disk full"), PermissionError(13, "file occupied")])
 def test_atomic_write_failure_preserves_committed_record(tmp_path, monkeypatch, exception):
     first = store.write_record(tmp_path, UID, store.normalize_png(png()), "0", "first")
