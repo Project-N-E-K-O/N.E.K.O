@@ -31,7 +31,7 @@ let server, win;
 let allowEnrollment = false, enrollment = null;
 const requests = [];
 let hasProfile = false;
-const watchdog = setTimeout(() => { console.error('VOICE_READINESS_ELECTRON_TIMEOUT'); app.exit(2); }, 40000);
+const watchdog = setTimeout(() => { console.error('VOICE_READINESS_ELECTRON_TIMEOUT'); app.exit(2); }, 90000);
 function json(response, value) { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(value)); }
 function status() {
     return { has_profile: hasProfile, profile_generation: hasProfile ? 'controlled-profile' : null, runtime_mode: 'enforce', enrollment_active: Boolean(enrollment), enrollment, effective_reason: hasProfile ? 'disabled' : 'no_profile' };
@@ -47,6 +47,47 @@ function measurePcm(pcm) {
 }
 async function waitFor(expression) {
     return win.webContents.executeJavaScript(`new Promise((resolve,reject)=>{const condition=()=>(${expression});if(condition())return resolve(true);const observer=new MutationObserver(()=>{if(condition()){clearTimeout(timer);observer.disconnect();resolve(true);}});observer.observe(document.body,{subtree:true,attributes:true,childList:true,characterData:true});const timer=setTimeout(()=>{observer.disconnect();reject(new Error('UI condition timed out'));},12000);})`);
+}
+async function verifyInputLayout(noticeVisible) {
+    const layouts = [];
+    const cases = ['light', 'dark'].flatMap(theme =>
+        [560, 561, 680, 860, 861, 960].map(width => ({ theme, width, language: 'zh-CN' })));
+    for (const language of ['zh-TW', 'en', 'ja', 'ko', 'ru', 'pt', 'es']) {
+        cases.push({ theme: 'light', width: 680, language });
+    }
+    for (const { theme, width, language } of cases) {
+        win.setContentSize(width, 900);
+        const layout = await win.webContents.executeJavaScript(`(async () => {
+            await window.changeLanguage(${JSON.stringify(language)});
+            document.documentElement.setAttribute('data-theme', ${JSON.stringify(theme)});
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON();
+            return { device: rect('.input-device-field'), level: rect('.input-level-panel'),
+                notice: rect('#voice-identity-input-notice'), help: rect('.input-test-help'),
+                width: document.documentElement.scrollWidth, viewport: innerWidth };
+        })()`);
+        const label = `${width}px ${theme} ${language}, notice=${noticeVisible}`;
+        assert.equal(layout.viewport, width, label);
+        assert.equal(layout.width, layout.viewport, `${label}: no horizontal overflow`);
+        assert.equal(layout.notice.height > 0, noticeVisible, `${label}: notice visibility`);
+        if (width > 560 && width <= 860) {
+            assert.equal(layout.device.top, layout.level.top, `${label}: input fields share a row`);
+            assert.ok(layout.level.left >= layout.device.right, `${label}: gain panel is in the right column`);
+            assert.ok(Math.abs(layout.device.width - layout.level.width) < 1, `${label}: equal column widths`);
+            if (noticeVisible) {
+                assert.ok(layout.notice.top >= Math.max(layout.device.bottom, layout.level.bottom), `${label}: notice follows both fields`);
+                assert.equal(layout.notice.left, layout.device.left, `${label}: notice spans from the left column`);
+                assert.equal(layout.notice.right, layout.level.right, `${label}: notice spans through the right column`);
+            }
+        } else {
+            assert.ok(layout.level.top >= layout.device.bottom, `${label}: input fields remain stacked`);
+        }
+        assert.ok(layout.help.top >= Math.max(layout.level.bottom, layout.notice.bottom), `${label}: help follows input controls and notice`);
+        layouts.push({ width, theme, language, noticeVisible });
+    }
+    win.setContentSize(960, 900);
+    await win.webContents.executeJavaScript("window.changeLanguage('zh-CN').then(() => { document.documentElement.setAttribute('data-theme', 'light'); })");
+    return layouts;
 }
 app.whenReady().then(async () => {
     server = http.createServer((request, response) => {
@@ -139,8 +180,10 @@ app.whenReady().then(async () => {
         win.webContents.debugger.detach();
     }
     await win.webContents.executeJavaScript("window.changeLanguage('zh-CN').then(() => true)");
+    const inputLayouts = await verifyInputLayout(false);
     await win.webContents.executeJavaScript("localStorage.setItem('neko_selected_microphone','nonexistent-controlled-device');window.__controlledStreams=[];const gum=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);navigator.mediaDevices.__controlledOriginal=gum;navigator.mediaDevices.getUserMedia=async options=>{const stream=await gum(options);window.__controlledStreams.push(stream);return stream;};document.getElementById('voice-identity-test').click();true;", true);
     await waitFor("!document.getElementById('voice-identity-test').disabled && document.getElementById('voice-identity-input-notice').textContent.length > 0");
+    inputLayouts.push(...await verifyInputLayout(true));
     assert.equal(requests.some(r => r.path === '/api/voice-identity/audio/check'), false);
     await win.webContents.executeJavaScript("document.getElementById('voice-identity-test').click();true;", true);
     await waitFor("!document.getElementById('voice-identity-start').disabled");
@@ -230,7 +273,7 @@ app.whenReady().then(async () => {
     assert.equal(deletedLayout.enrollment.top, deletedLayout.input.top);
     assert.ok(deletedLayout.enrollment.left >= deletedLayout.input.right);
     assert.ok(deletedLayout.resources.top >= Math.max(deletedLayout.enrollment.bottom, deletedLayout.input.bottom));
-    const report = { electron: process.versions.electron, actualPageAndWorklet: true, controlledApi: true, realMicrophoneCaptured: false, realBackend: false, quietFixedSentenceUploaded: true, prematureManualFinishBlocked: true, quietManualFinishUploaded: true, cancelledFormalInputReleased: true, manualRmsActiveSeconds: segment.rmsActiveSeconds, trialRmsActiveSeconds: check.rmsActiveSeconds, titleAccessibility, fallbackRequiresSecondTest: true, inputResourcesReleasedAfterTrial: true, repeatedTrialReacquiresStream: true, cancelledLatePermissionStopped: true, formalReopensAndChecksContract: true, changedServerContractRequiresRetest: true, pcmBytes: check.bytes, gainChangeInvalidatesTest: true, cancelledDeletionPreservesProfile: true, profileDeletionRestoresLayoutWithoutReload: true, ui };
+    const report = { electron: process.versions.electron, actualPageAndWorklet: true, controlledApi: true, realMicrophoneCaptured: false, realBackend: false, quietFixedSentenceUploaded: true, prematureManualFinishBlocked: true, quietManualFinishUploaded: true, cancelledFormalInputReleased: true, manualRmsActiveSeconds: segment.rmsActiveSeconds, trialRmsActiveSeconds: check.rmsActiveSeconds, titleAccessibility, inputLayouts, fallbackRequiresSecondTest: true, inputResourcesReleasedAfterTrial: true, repeatedTrialReacquiresStream: true, cancelledLatePermissionStopped: true, formalReopensAndChecksContract: true, changedServerContractRequiresRetest: true, pcmBytes: check.bytes, gainChangeInvalidatesTest: true, cancelledDeletionPreservesProfile: true, profileDeletionRestoresLayoutWithoutReload: true, ui };
     fs.writeFileSync(path.join(scratch, 'result.json'), JSON.stringify(report, null, 2));
     console.log('VOICE_READINESS_ELECTRON ' + JSON.stringify(report));
     console.log('VOICE_READINESS_ARTIFACTS ' + scratch);

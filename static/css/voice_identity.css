@@ -1241,6 +1241,13 @@ button:disabled {
 
     .input-level-panel {
         margin: 0;
+        grid-column: 2;
+        grid-row: 2;
+    }
+
+    .input-device-field {
+        grid-column: 1;
+        grid-row: 2;
     }
 
     .input-test-actions button {
