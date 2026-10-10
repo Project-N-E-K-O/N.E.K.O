@@ -7,6 +7,7 @@ check one thing on the real one: that the router is mounted there.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -169,11 +170,15 @@ async def test_imports_are_refused_before_their_body_is_read_when_full(client, m
         return await real_read(request, max_bytes=max_bytes)
 
     monkeypatch.setattr(knowledge_routes, "_read_body", recording)
-    monkeypatch.setattr(knowledge_routes, "_import_requests", knowledge_routes.MAX_PENDING_IMPORTS)
-    result = (await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK))).json()
+    monkeypatch.setattr(knowledge_routes, "_import_slots", asyncio.Semaphore(0))  # all taken
+    # Bounded: a route that waited for a slot instead of refusing would hang.
+    result = (
+        await asyncio.wait_for(http.post("/internal/knowledge/packs/import", content=json.dumps(PACK)), 5)
+    ).json()
     assert result["ok"] is False and result["reason"] == "knowledge_busy"
     assert read == []
-    monkeypatch.setattr(knowledge_routes, "_import_requests", 0)
+    slots = asyncio.Semaphore(1)
+    monkeypatch.setattr(knowledge_routes, "_import_slots", slots)
     result = (await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK))).json()
     assert result["ok"] is True
-    assert knowledge_routes._import_requests == 0  # released after the request
+    assert not slots.locked()  # released after the request
