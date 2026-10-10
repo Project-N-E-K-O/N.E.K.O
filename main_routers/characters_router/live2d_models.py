@@ -662,6 +662,8 @@ async def update_catgirl_l2d(name: str, request: Request):
         idle_animation = data.get('idle_animation')  # 获取可选的VRM待机动作
         mmd_animation = data.get('mmd_animation')  # 获取可选的MMD动作
         mmd_idle_animation = data.get('mmd_idle_animation')  # 获取可选的MMD待机动作
+        fbx_model = data.get('fbx')
+        fbx_animation = data.get('fbx_animation')
 
         # 根据model_type检查相应的模型字段
         model_type_str = str(model_type).lower() if model_type else 'live2d'
@@ -794,10 +796,20 @@ async def update_catgirl_l2d(name: str, request: Request):
             pngtuber_payload['mirror'] = _config_value_is_enabled(pngtuber_payload.get('mirror'))
 
         if model_type_str == 'live3d':
-            # Live3D 模式：接受 VRM 或 MMD 模型
-            if vrm_model and mmd_model:
-                return JSONResponse(content={'success': False, 'error': '不能同时提供VRM和MMD模型，请选择其中一个'}, status_code=400)
-            if vrm_model:
+            provided_models = [bool(vrm_model), bool(mmd_model), bool(fbx_model)]
+            if sum(provided_models) > 1:
+                return JSONResponse(content={'success': False, 'error': '只能提供VRM、MMD或FBX模型中的一个'}, status_code=400)
+            if fbx_model:
+                fbx_model_str = str(fbx_model).strip()
+                if '://' in fbx_model_str or fbx_model_str.startswith('data:'):
+                    return JSONResponse(content={'success': False, 'error': 'FBX模型路径不能包含URL方案'}, status_code=400)
+                if '..' in fbx_model_str:
+                    return JSONResponse(content={'success': False, 'error': 'FBX模型路径不能包含路径遍历（..）'}, status_code=400)
+                allowed_fbx_prefixes = ['/user_fbx/', '/static/fbx/', '/workshop/']
+                if not any(fbx_model_str.startswith(prefix) for prefix in allowed_fbx_prefixes):
+                    return JSONResponse(content={'success': False, 'error': 'FBX模型路径必须以 /user_fbx/、/static/fbx/ 或 /workshop/ 开头'}, status_code=400)
+                fbx_model = fbx_model_str
+            elif vrm_model:
                 # 验证 VRM 路径
                 vrm_model_str = str(vrm_model).strip()
                 if '://' in vrm_model_str or vrm_model_str.startswith('data:'):
@@ -820,7 +832,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                     return JSONResponse(content={'success': False, 'error': 'MMD模型路径必须以 /user_mmd/、/static/mmd/ 或 /workshop/ 开头'}, status_code=400)
                 mmd_model = mmd_model_str
             else:
-                return JSONResponse(content={'success': False, 'error': '未提供VRM或MMD模型路径'}, status_code=400)
+                return JSONResponse(content={'success': False, 'error': '未提供VRM、MMD或FBX模型路径'}, status_code=400)
         elif model_type_str != 'pngtuber':
             if not live2d_model:
                 return JSONResponse(
@@ -937,7 +949,24 @@ async def update_catgirl_l2d(name: str, request: Request):
                         set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [str(x).strip() for x in mmd_idle_list])
 
                 logger.debug(f"已保存角色 {name} 的Live3D(MMD)模型 {mmd_model}")
-
+            elif fbx_model:
+                set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'fbx')
+                set_reserved(characters['猫娘'][name], 'avatar', 'fbx', 'model_path', fbx_model)
+                active_model_binding_path = fbx_model
+                if 'fbx_animation' in data:
+                    if fbx_animation is None or fbx_animation == '':
+                        set_reserved(characters['猫娘'][name], 'avatar', 'fbx', 'animation', None)
+                    else:
+                        fbx_animation_str = str(fbx_animation).strip()
+                        if '://' in fbx_animation_str or fbx_animation_str.startswith('data:'):
+                            return JSONResponse(content={'success': False, 'error': 'FBX动画路径不能包含URL方案'}, status_code=400)
+                        if '..' in fbx_animation_str:
+                            return JSONResponse(content={'success': False, 'error': 'FBX动画路径不能包含路径遍历（..）'}, status_code=400)
+                        allowed_fbx_anim_prefixes = ['/user_fbx/animation/', '/static/fbx/animation/']
+                        if not any(fbx_animation_str.startswith(prefix) for prefix in allowed_fbx_anim_prefixes):
+                            return JSONResponse(content={'success': False, 'error': 'FBX动画路径必须以 /user_fbx/animation/ 或 /static/fbx/animation/ 开头'}, status_code=400)
+                        set_reserved(characters['猫娘'][name], 'avatar', 'fbx', 'animation', fbx_animation_str)
+                logger.debug(f"已保存角色 {name} 的Live3D(FBX)模型 {fbx_model}")
             current_asset_source, current_asset_source_id = _derive_model_asset_binding(
                 active_model_binding_path,
                 item_id=str(item_id or ""),

@@ -240,6 +240,7 @@ if _IS_MAIN_PROCESS:
     _config_manager.ensure_live2d_directory()
     _config_manager.ensure_vrm_directory()
     _config_manager.ensure_mmd_directory()
+    _config_manager.ensure_fbx_directory()
     _config_manager.ensure_pngtuber_directory()
     try:
         get_avatar_tool_store(_config_manager).initialize()
@@ -324,7 +325,20 @@ if _IS_MAIN_PROCESS:
             "/user_mmd", CustomStaticFiles(directory=user_mmd_path), name="user_mmd"
         )
         logger.info(f"已挂载MMD目录: {user_mmd_path}")
-
+    fbx_animation_path = str(_config_manager.fbx_animation_dir)
+    if os.path.exists(fbx_animation_path):
+        app.mount(
+            "/user_fbx/animation",
+            CustomStaticFiles(directory=fbx_animation_path),
+            name="user_fbx_animation",
+        )
+        logger.info(f"已挂载FBX动画目录: {fbx_animation_path}")
+    user_fbx_path = str(_config_manager.fbx_dir)
+    if os.path.exists(user_fbx_path):
+        app.mount(
+            "/user_fbx", CustomStaticFiles(directory=user_fbx_path), name="user_fbx"
+        )
+        logger.info(f"已挂载FBX目录: {user_fbx_path}")
     user_pngtuber_path = str(_config_manager.pngtuber_dir)
     if os.path.exists(user_pngtuber_path):
         app.mount(

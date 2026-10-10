@@ -47,6 +47,8 @@ MMD_STATIC_PATH = "/static/mmd"  # 项目目录下的 MMD 模型路径
 
 
 MMD_USER_PATH = "/user_mmd"  # 用户文档目录下的 MMD 模型路径
+FBX_STATIC_PATH = "/static/fbx"
+FBX_USER_PATH = "/user_fbx"
 
 
 PNGTUBER_USER_PATH = "/user_pngtuber"
@@ -189,6 +191,38 @@ def _resolve_mmd_path(mmd_path: str, _config_manager, target_name: str) -> str:
         return ""
 
 
+def _resolve_fbx_path(fbx_path: str, _config_manager, target_name: str) -> str:
+    if fbx_path.startswith('http://') or fbx_path.startswith('https://'):
+        return fbx_path
+    if fbx_path.startswith('/'):
+        verified = False
+        if fbx_path.startswith(FBX_USER_PATH + '/'):
+            fname = fbx_path[len(FBX_USER_PATH) + 1:]
+            verified = (_config_manager.fbx_dir / fname).exists()
+        elif fbx_path.startswith(FBX_STATIC_PATH + '/'):
+            fname = fbx_path[len(FBX_STATIC_PATH) + 1:]
+            verified = (_config_manager.project_root / 'static' / 'fbx' / fname).exists()
+        else:
+            verified = True
+        if verified:
+            return fbx_path
+        logger.warning(f"获取页面配置 - 角色: {target_name}, FBX模型文件未找到: {fbx_path}")
+        return ""
+    from pathlib import PurePosixPath
+    safe_rel = PurePosixPath(fbx_path)
+    if safe_rel.is_absolute() or '..' in safe_rel.parts:
+        logger.warning(f"获取页面配置 - 角色: {target_name}, FBX路径不合法: {fbx_path}")
+        return ""
+    project_fbx_path = _config_manager.project_root / 'static' / 'fbx' / str(safe_rel)
+    if project_fbx_path.exists():
+        return f'{FBX_STATIC_PATH}/{safe_rel}'
+    user_fbx_path = _config_manager.fbx_dir / str(safe_rel)
+    if user_fbx_path.exists():
+        return f'{FBX_USER_PATH}/{safe_rel}'
+    logger.warning(f"获取页面配置 - 角色: {target_name}, FBX模型文件未找到: {fbx_path}")
+    return ""
+
+
 def _resolve_pngtuber_image_path(image_path: str, _config_manager, target_name: str) -> str:
     """Resolve a PNGTuber image reference to a browser-loadable URL."""
     image_path = str(image_path or '').strip().replace('\\', '/')
@@ -297,6 +331,13 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
                 model_path = _resolve_mmd_path(mmd_path, _config_manager, target_name)
             else:
                 logger.warning(f"角色 {target_name} 的MMD模型路径为空")
+        elif model_type == 'live3d' and _get_live3d_sub_type(catgirl_config) == 'fbx':
+            live3d_sub_type = 'fbx'
+            fbx_path = get_reserved(catgirl_config, 'avatar', 'fbx', 'model_path', default='')
+            if fbx_path:
+                model_path = _resolve_fbx_path(fbx_path, _config_manager, target_name)
+            else:
+                logger.warning(f"角色 {target_name} 的FBX模型路径为空")
         elif model_type == 'live3d':
             # live3d 但无法判断子类型（两个路径都为空），返回空路径
             live3d_sub_type = ''
