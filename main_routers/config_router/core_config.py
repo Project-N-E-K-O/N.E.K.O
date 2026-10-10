@@ -23,6 +23,7 @@ from .connectivity import _auto_resolve_provider_urls_for_save
 
 import asyncio
 import json
+from copy import deepcopy
 from fastapi import Request
 from ..shared_state import get_session_manager, get_initialize_character_data
 from utils.file_utils import read_json_async
@@ -357,13 +358,24 @@ async def update_core_config(request: Request):
         
         # 构建配置对象：先加载旧配置，再按本次提交覆盖。
         # 这与前端 API 管理簿的行为保持一致，避免某个字段本次未提交时被意外清空。
+        # 只有「文件不存在」才从空配置开始；文件存在却读不出/解析失败时直接拒绝保存——
+        # 以前这里吞成 {}，结果是用本次提交的寥寥几个字段把整份损坏文件覆盖掉。
+        # 这份快照只用来做决策和算差异，真正落盘见下方 aupdate_json_config。
+        from utils.config_manager.json_update import (
+            json_values_equal,
+            load_json_config_for_update,
+        )
         try:
             existing_core_cfg = await asyncio.to_thread(
-                config_manager.load_json_config, 'core_config.json', {}
+                load_json_config_for_update, config_manager, 'core_config.json'
             )
-        except Exception:
-            existing_core_cfg = {}
-        core_cfg = dict(existing_core_cfg) if isinstance(existing_core_cfg, dict) else {}
+        except Exception as exc:
+            logger.warning(f"读取 core_config.json 失败，拒绝保存以免覆盖原文件: {exc}")
+            return {
+                "success": False,
+                "error": "core_config.json 读取失败（文件可能已损坏），为避免覆盖现有配置，本次未保存",
+            }
+        core_cfg = deepcopy(existing_core_cfg)
 
         def _incoming_provider(field, error_message):
             if field not in data:
@@ -685,11 +697,32 @@ async def update_core_config(request: Request):
         if not isinstance(checked_resolved_urls, dict):
             checked_resolved_urls = {}
         save_connectivity = await _auto_resolve_provider_urls_for_save(core_cfg, checked_resolved_urls)
-        
-        # save_json_config 内部已调用 assert_cloudsave_writable + ensure_config_directory
-        # + atomic_write_json，不需要再显式栅栏 / 手工拼 core_config_path
-        await asyncio.to_thread(
-            config_manager.save_json_config, 'core_config.json', core_cfg
+
+        # 上面所有决策（含可能联网的 URL 解析）都基于开头那份快照，耗时可能很长；
+        # 这期间别的写入方（记忆开关等）可能已经落盘。所以不能把整份快照写回，
+        # 只把「本次相对快照改了 / 删了哪些顶层字段」在锁内应用到重新读到的文件上，
+        # 本次没碰的字段一律保留磁盘上的最新值。
+        changed_fields = {
+            key: value for key, value in core_cfg.items()
+            if key not in existing_core_cfg
+            or not json_values_equal(existing_core_cfg[key], value)
+        }
+        removed_fields = [key for key in existing_core_cfg if key not in core_cfg]
+
+        def _apply_core_config_changes(fresh_cfg):
+            # 没有字段变化时 update_json_config 不写盘、也就碰不到写栅栏；
+            # 维护模式下仍要像以前一样拒绝，免得后面照常重置所有 session。
+            # 与 save_json_config 一样函数内导入，测试对门面的 patch 才能命中。
+            from utils.cloudsave_runtime import assert_cloudsave_writable
+
+            assert_cloudsave_writable(config_manager, operation="save", target='core_config.json')
+            for key in removed_fields:
+                fresh_cfg.pop(key, None)
+            fresh_cfg.update(deepcopy(changed_fields))
+            return deepcopy(fresh_cfg)
+
+        core_cfg = await config_manager.aupdate_json_config(
+            'core_config.json', _apply_core_config_changes
         )
 
         await ensure_default_yui_voice_for_free_api(config_manager, core_cfg)

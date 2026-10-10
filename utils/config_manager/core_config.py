@@ -72,6 +72,7 @@ from utils.gptsovits_config import normalize_gsv_api_url
 from utils.steam_state import get_steamworks
 
 from ._shared import _as_bool, logger
+from .json_update import update_json_config
 
 
 # 启动期迁移的写盘重试：Windows 上 os.replace 会被杀软扫描短暂占用而抛
@@ -182,40 +183,28 @@ class CoreConfigMixin:
         so the write could interleave with a /core_api save on the loop and replace the
         user's just-saved keys with the worker's older snapshot.
 
-        Scope of the guarantee, stated honestly:
-        - In-process it is serialized by _openclaw_migration_lock, and the servers
-          create the manager at module import, before uvicorn accepts connections.
-        - Cross-process it is NOT airtight: a second entry point (app/monitor.py has its
-          own __main__) can import while another process already serves /core_api, so a
-          save can still land between the load and the save below. The window is that
-          gap only, and only for a config still carrying the legacy 8089.
-        - No config write in this codebase takes a file lock -- /core_api itself is an
-          unlocked load-modify-save, so two concurrent saves already lose updates. Making
-          this airtight means introducing config-wide write locking, which belongs to
-          that shared write path, not to this one-shot migration.
+        The read-modify-write goes through ``update_json_config``, the same per-file
+        lock every other core_config.json writer takes, so neither a concurrent
+        migration nor a /core_api save or memory toggle can be lost in between.
+        That guarantee is in-process only: a second entry point (app/monitor.py has
+        its own __main__) running as a separate process is not covered.
+
+        A config that exists but cannot be parsed is left untouched (no retry: the
+        retry budget is for transient Windows write failures, not for bad content).
 
         get_core_config still normalizes in memory (see _migrated_openclaw_url) so a
         config that somehow arrives with 8089 later is routed correctly regardless.
         """
-        from utils.config_manager import ConfigManager
-        with ConfigManager._openclaw_migration_lock:
-            return self._migrate_openclaw_url_port_locked()
+        def _mutate(core_cfg: dict):
+            migrated = self._migrated_openclaw_url(core_cfg.get('openclawUrl'))
+            if migrated:
+                core_cfg['openclawUrl'] = migrated
+            return migrated
 
-    def _migrate_openclaw_url_port_locked(self) -> bool:
-        """Body of migrate_openclaw_url_port; the caller holds the migration lock."""
         for attempt in range(_OPENCLAW_MIGRATION_ATTEMPTS):
             try:
-                core_cfg = self.load_json_config('core_config.json', {})
-                if not isinstance(core_cfg, dict):
-                    return False
-                migrated = self._migrated_openclaw_url(core_cfg.get('openclawUrl'))
-                if not migrated:
-                    return False
-                core_cfg['openclawUrl'] = migrated
-                self.save_json_config('core_config.json', core_cfg)
-                logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated)
-                return True
-            except Exception as exc:
+                migrated = update_json_config(self, 'core_config.json', _mutate)
+            except OSError as exc:
                 last = attempt == _OPENCLAW_MIGRATION_ATTEMPTS - 1
                 logger.warning(
                     "自动迁移 openclawUrl 到 8088 失败（第 %d/%d 次）: %s",
@@ -227,6 +216,15 @@ class CoreConfigMixin:
                 # 扫描通常几十毫秒内结束，短暂退避后重试即可越过。POSIX 的 rename(2) 不受此限，
                 # 这里的重试对它是无害空转。
                 time.sleep(_OPENCLAW_MIGRATION_RETRY_DELAY_S * (attempt + 1))
+                continue
+            except Exception as exc:
+                # 文件损坏 / 顶层不是对象 / 写栅栏拒写：重试也不会变，原样保留文件。
+                logger.warning("跳过 openclawUrl 8088 迁移（core_config.json 不可改写）: %s", exc)
+                return False
+            if not migrated:
+                return False
+            logger.info("已自动将 openclawUrl 从 8089 迁移到 8088: %s", migrated)
+            return True
         return False
 
     @staticmethod
