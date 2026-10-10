@@ -110,6 +110,8 @@ MAX_QUERY_BUDGET_MS = 5_000
 QUERY_RENDER_RESERVE_SECONDS = 0.15
 # How often one import may give way to removals that then fail.
 MAX_IMPORT_YIELDS = 8
+# How long shutdown waits for writes whose caller was cancelled.
+DETACHED_WRITE_WAIT_SECONDS = 10.0
 MAX_QUERY_EMBEDDINGS = 2
 MAX_QUERY_CHARS = 2_000
 MAX_QUERY_LIMIT = 10
@@ -255,6 +257,7 @@ class KnowledgeService:
         self._pending_removals: dict[str, frozenset[int]] = {}
         self._query_pool: concurrent.futures.ThreadPoolExecutor | None = None
         self._parsing = 0
+        self._detached: set[asyncio.Task[Any]] = set()
         self._parse_pool: concurrent.futures.ThreadPoolExecutor | None = None
         # Set (and replaced) whenever a removal finishes, committed or not.
         self._removal_settled = asyncio.Event()
@@ -295,6 +298,10 @@ class KnowledgeService:
             task.cancel()
         if tasks:
             await asyncio.wait(tasks, timeout=2.0)
+        # Cancelling a caller leaves its mutation running (see _locked); its
+        # file, index and registry writes must end before we report stopped.
+        if self._detached:
+            await asyncio.wait(set(self._detached), timeout=DETACHED_WRITE_WAIT_SECONDS)
         for pool in (self._query_pool, self._parse_pool):
             if pool is not None:
                 pool.shutdown(wait=False, cancel_futures=True)
@@ -444,6 +451,9 @@ class KnowledgeService:
             else:
                 task.add_done_callback(_consume)
                 task.add_done_callback(lambda _task: self._write_lock.release())
+                # Still writing: shutdown must wait for it (see stop()).
+                self._detached.add(task)
+                task.add_done_callback(self._detached.discard)
             raise
         except BaseException:
             self._write_lock.release()
@@ -1380,19 +1390,8 @@ class KnowledgeService:
             embed_task.add_done_callback(_consume)
             self._query_embeddings.add(embed_task)
             embed_task.add_done_callback(self._query_embeddings.discard)
-        # Entries the query's registry snapshot disables are dropped only after
-        # the rows are read; fetch that many more so they cannot crowd out
-        # usable matches from the window.
-        snapshot_disabled = sum(
-            len(record.disabled_titles)
-            for pack_id in allowed
-            if (record := registry.packs.get(pack_id)) is not None
-        )
         exact_ids, lexical_ids = await self._query_thread(
-            self._store.lexical_candidates,
-            query,
-            pack_ids=allowed,
-            limit=LEXICAL_CANDIDATES + snapshot_disabled,
+            self._lexical_search, query, allowed, registry
         )
         query_vector: np.ndarray | None = None
         if embed_task is not None:
@@ -1436,6 +1435,32 @@ class KnowledgeService:
         )
         return ranked, ("hybrid" if query_vector is not None else "bm25")
 
+    def _snapshot_only_disabled(self, pack_ids: Sequence[str], registry: Registry) -> set[int]:
+        """Entries the registry snapshot disables but the index has enabled.
+
+        A re-enable writes the index first, so for a moment the snapshot a
+        query holds can still disable entries the index already serves.
+        Disabled index rows are filtered in SQL anyway; these few are not.
+        """
+        return self._store.entry_ids_by_title(
+            {
+                pack_id: record.disabled_titles
+                for pack_id in pack_ids
+                if (record := registry.packs.get(pack_id)) is not None and record.disabled_titles
+            },
+            enabled_only=True,
+        )
+
+    def _lexical_search(
+        self, query: str, pack_ids: list[str], registry: Registry
+    ) -> tuple[list[int], list[int]]:
+        return self._store.lexical_candidates(
+            query,
+            pack_ids=pack_ids,
+            limit=LEXICAL_CANDIDATES,
+            exclude_ids=self._snapshot_only_disabled(pack_ids, registry),
+        )
+
     def _semantic_search(
         self,
         snapshot: VectorSnapshot | None,
@@ -1445,12 +1470,8 @@ class KnowledgeService:
     ) -> list[SemanticMatch]:
         # Disabled now in the index, or in the query's registry snapshot (a
         # re-enable writes the index first): neither may take a slot.
-        excluded = self._store.disabled_entry_ids(pack_ids) | self._store.entry_ids_by_title(
-            {
-                pack_id: record.disabled_titles
-                for pack_id in pack_ids
-                if (record := registry.packs.get(pack_id)) is not None and record.disabled_titles
-            }
+        excluded = self._store.disabled_entry_ids(pack_ids) | self._snapshot_only_disabled(
+            pack_ids, registry
         )
         return semantic_candidates(
             snapshot, query_vector, allowed_pack_ids=pack_ids, exclude_entry_ids=excluded

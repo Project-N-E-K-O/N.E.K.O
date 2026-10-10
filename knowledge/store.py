@@ -27,7 +27,7 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Mapping, Sequence
+from typing import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 
@@ -262,20 +262,27 @@ class KnowledgeStore:
             for pack_id, count in expected.items()
         }
 
-    def entry_ids_by_title(self, titles: Mapping[str, Iterable[str]]) -> set[int]:
-        """Ids of the entries named by ``{pack_id: title keys}``."""
+    def entry_ids_by_title(
+        self, titles: Mapping[str, Iterable[str]], *, enabled_only: bool = False
+    ) -> set[int]:
+        """Ids of the entries named by ``{pack_id: title keys}``.
+
+        ``enabled_only`` keeps only entries not disabled in the index, which
+        are the few a stale registry snapshot still disables.
+        """
+        flag = " AND disabled=0" if enabled_only else ""
         ids: set[int] = set()
         with self._read() as conn:
             for pack_id, keys in titles.items():
                 keys = list(keys)
                 if not keys:
                     continue
-                placeholders = ",".join("?" for _ in keys)
                 ids.update(
                     int(row[0])
                     for row in conn.execute(
-                        f"SELECT id FROM entries WHERE pack_id=? AND title_key IN ({placeholders})",
-                        (pack_id, *keys),
+                        "SELECT id FROM entries WHERE pack_id=?"
+                        f" AND title_key IN (SELECT value FROM json_each(?)){flag}",
+                        (pack_id, json.dumps(keys, ensure_ascii=False)),
                     )
                 )
         return ids
@@ -513,7 +520,11 @@ class KnowledgeStore:
             return self._fetch(conn, entry_ids)
 
     @staticmethod
-    def _pack_clause(pack_ids: Sequence[str] | None, include_disabled: bool) -> tuple[str, tuple]:
+    def _pack_clause(
+        pack_ids: Sequence[str] | None,
+        include_disabled: bool,
+        exclude_ids: Collection[int] = (),
+    ) -> tuple[str, tuple]:
         clauses: list[str] = []
         args: tuple = ()
         if not include_disabled:
@@ -521,6 +532,10 @@ class KnowledgeStore:
         if pack_ids is not None:
             clauses.append(f"e.pack_id IN ({','.join('?' for _ in pack_ids)})")
             args = tuple(pack_ids)
+        if exclude_ids:
+            # One JSON parameter, however many ids: no SQL variable limit.
+            clauses.append("e.id NOT IN (SELECT value FROM json_each(?))")
+            args = (*args, json.dumps(sorted(exclude_ids)))
         return "".join(f" AND {clause}" for clause in clauses), args
 
     def _exact_ids(
@@ -531,10 +546,11 @@ class KnowledgeStore:
         pack_ids: Sequence[str] | None,
         include_disabled: bool,
         limit: int = -1,
+        exclude_ids: Collection[int] = (),
     ) -> list[int]:
         if pack_ids is not None and not pack_ids:
             return []
-        clause, args = self._pack_clause(pack_ids, include_disabled)
+        clause, args = self._pack_clause(pack_ids, include_disabled, exclude_ids)
         # Strict first, so "C" does not pull in "C++"; the loose form (inner
         # separators dropped) only answers when nothing matches strictly, e.g.
         # a recognition phrase typed with different punctuation. Names that
@@ -562,11 +578,12 @@ class KnowledgeStore:
         pack_ids: Sequence[str] | None,
         include_disabled: bool,
         limit: int,
+        exclude_ids: Collection[int] = (),
     ) -> list[int]:
         expression = fts_match_expression(query)
         if not expression or (pack_ids is not None and not pack_ids):
             return []
-        clause, args = self._pack_clause(pack_ids, include_disabled)
+        clause, args = self._pack_clause(pack_ids, include_disabled, exclude_ids)
         # Filter before LIMIT: otherwise matches from other packs (or disabled
         # entries) fill the window and push the wanted ones out.
         return [
@@ -579,15 +596,25 @@ class KnowledgeStore:
         ]
 
     def lexical_candidates(
-        self, query: str, *, pack_ids: Sequence[str], limit: int
+        self,
+        query: str,
+        *,
+        pack_ids: Sequence[str],
+        limit: int,
+        exclude_ids: Collection[int] = (),
     ) -> tuple[list[int], list[int]]:
-        """Return (exact surface hits, BM25-ranked hits) among enabled entries of ``pack_ids``."""
+        """Return (exact surface hits, BM25-ranked hits) among enabled entries of ``pack_ids``.
+
+        ``exclude_ids`` are left out before ``limit`` applies.
+        """
         with self._read() as conn:
             exact = self._exact_ids(
-                conn, query, pack_ids=pack_ids, include_disabled=False, limit=limit
+                conn, query, pack_ids=pack_ids, include_disabled=False, limit=limit,
+                exclude_ids=exclude_ids,
             )
             ranked = self._ranked_ids(
-                conn, query, pack_ids=pack_ids, include_disabled=False, limit=limit
+                conn, query, pack_ids=pack_ids, include_disabled=False, limit=limit,
+                exclude_ids=exclude_ids,
             )
         return exact, ranked
 

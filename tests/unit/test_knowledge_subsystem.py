@@ -2521,3 +2521,52 @@ async def test_an_index_missing_search_rows_is_rebuilt_at_startup(tmp_path):
         assert surfaces == expected > 0
     finally:
         await restarted.stop()
+
+
+async def test_normally_disabled_entries_do_not_widen_the_lexical_window(tmp_path, monkeypatch):
+    entries = [{"title": f"Note {i}", "content": "zanzibar"} for i in range(8)]
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack(entries=entries))
+        for i in range(5):
+            await service.set_entry_disabled("demo-memes", f"Note {i}", True)
+        limits = []
+        real = service._store.lexical_candidates
+
+        def recording(query, *, pack_ids, limit, exclude_ids=()):
+            limits.append((limit, set(exclude_ids)))
+            return real(query, pack_ids=pack_ids, limit=limit, exclude_ids=exclude_ids)
+
+        monkeypatch.setattr(service._store, "lexical_candidates", recording)
+        assert (await service.query(query="zanzibar"))["result"] == "matched"
+        # Disabled in the index too: SQL already filters them, nothing extra.
+        assert limits == [(service_module.LEXICAL_CANDIDATES, set())]
+    finally:
+        await service.stop()
+
+
+async def test_shutdown_waits_for_a_write_whose_caller_was_cancelled(tmp_path, monkeypatch):
+    import threading
+
+    service = await _started(tmp_path)
+    await _import(service, _pack())
+    loop = asyncio.get_running_loop()
+    saving = asyncio.Event()
+    release = threading.Event()
+    written = threading.Event()
+    real_save = service_module.save_registry
+
+    def slow_save(root, registry):
+        loop.call_soon_threadsafe(saving.set)
+        release.wait(5)
+        real_save(root, registry)
+        written.set()
+
+    monkeypatch.setattr(service_module, "save_registry", slow_save)
+    task = asyncio.create_task(service.set_pack_auto_context("demo-memes", True))
+    await asyncio.wait_for(saving.wait(), 5)
+    task.cancel()
+    await asyncio.wait({task})
+    threading.Timer(0.3, release.set).start()
+    await service.stop()
+    assert written.is_set()  # stop() returned only after the write ended
