@@ -27,6 +27,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 
 import asyncio
 import logging
+from pathlib import PurePath
 from contextlib import suppress
 
 from fastapi import APIRouter, Request
@@ -99,6 +100,7 @@ CLOUDSAVE_ERROR_I18N_KEYS = {
     "CLOUD_CHARACTER_NOT_FOUND": "cloudsave.error.cloudCharacterNotFound",
     "CLOUDSAVE_CHARACTER_NOT_FOUND": "cloudsave.error.cloudCharacterNotFound",
     "LOCAL_CHARACTER_EXISTS": "cloudsave.error.localCharacterExists",
+    "VISIT_DATA_BUSY": "cloudsave.error.visitDataBusy",
     "CLOUD_CHARACTER_EXISTS": "cloudsave.error.cloudCharacterExists",
     "CLOUDSAVE_WRITE_FENCE_ACTIVE": "cloudsave.error.writeFenceActive",
     "NAME_AUDIT_FAILED": "cloudsave.error.nameAuditFailed",
@@ -636,6 +638,21 @@ async def post_cloudsave_character_download(name: str, request: Request):
             status_code=409,
             character_name=name,
         )
+
+    if not local_exists:
+        # 同名的已删除角色还在退役串门数据（pending_retire）：名册按名字存，这时导入同名角色
+        # 会看到旧角色的对端与摘要、之后的退役又会删掉新角色的条目（与新建角色同一条规则）
+        from main_logic.visit.char_lifecycle import is_name_retiring
+
+        config_dir = getattr(config_manager, "config_dir", None)
+        if isinstance(config_dir, (str, PurePath)) and str(config_dir) and await is_name_retiring(config_dir, name):
+            return _cloudsave_error_response(
+                "VISIT_DATA_BUSY",
+                "A deleted character with the same name is still having its visit data cleaned up. "
+                "Please try again later.",
+                status_code=409,
+                character_name=name,
+            )
 
     block_reason = _active_session_block_reason(name)
     if block_reason:

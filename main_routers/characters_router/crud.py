@@ -1130,19 +1130,23 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
         return JSONResponse({'success': False, 'error_code': VISIT_DATA_BUSY,
                              'error': '串门数据正在整理或无法读取，请稍后再修改名称'}, status_code=409)
     visit_settled = True
+    settle_cancelled = False
     try:
         result = await _rename_catgirl_transaction(
             _config_manager, session_manager, characters, old_name, new_name, is_current_catgirl,
         )
     finally:
         if visit_marker is not None:
-            visit_settled, _ = await _await_coroutine_to_completion(
+            visit_settled, settle_cancelled = await _await_coroutine_to_completion(
                 visit_hooks.settle_rename(_config_manager, visit_marker),
             )
     if not visit_settled and isinstance(result, dict) and result.get("success"):
         # 改名已生效，串门数据没迁完：标记保留，下次启动对账补完
         result["partial_success"] = True
         result["visit_data_migration_pending"] = True
+    if settle_cancelled:
+        # 收尾期间来了取消：标记已处理完，照常把取消传出去（与其它收尾调用一致）
+        raise asyncio.CancelledError
     return result
 
 
@@ -2078,17 +2082,21 @@ async def _delete_catgirl_by_name_serialized(name: str):
         return JSONResponse({'success': False, 'error_code': VISIT_DATA_BUSY,
                              'error': '串门数据无法读取，请稍后再删除'}, status_code=409)
     visit_settled = True
+    settle_cancelled = False
     try:
         result = await _delete_catgirl_transaction(_config_manager, characters, name)
     finally:
         if visit_item is not None:
-            visit_settled, _ = await _await_coroutine_to_completion(
+            visit_settled, settle_cancelled = await _await_coroutine_to_completion(
                 visit_hooks.settle_retire(_config_manager, visit_item),
             )
     if not visit_settled and isinstance(result, dict) and result.get("success"):
         # 角色已删除，串门残留没退役完：不回滚角色，标记保留，下次启动补完
         result["partial_success"] = True
         result["visit_data_retire_pending"] = True
+    if settle_cancelled:
+        # 收尾期间来了取消：标记已处理完，照常把取消传出去（与其它收尾调用一致）
+        raise asyncio.CancelledError
     return result
 
 

@@ -82,20 +82,32 @@ class RenamePendingElsewhere(RuntimeError):
     """An earlier rename's marker is still unreconciled, so a new rename cannot write its own."""
 
 
+def _may_exist(path: Path) -> bool:
+    # 只有「确实不存在」才算没有；stat 不了（权限、被占用）不能当成没有，否则改名 / 删除
+    # 不写标记，这份数据权限恢复后也没人迁移 / 退役它
+    try:
+        os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def _has_visit_files_sync(config_dir: Path, character_uid: str | None) -> bool:
-    if (config_dir / VISIT_PEERS_FILENAME).exists():
+    if _may_exist(config_dir / VISIT_PEERS_FILENAME):
         return True
     spool_dir = config_dir / VISIT_SPOOL_DIRNAME
     try:
         with os.scandir(spool_dir) as entries:
             if any(True for _ in entries):
                 return True
-    except FileNotFoundError:
-        pass
+    except (FileNotFoundError, NotADirectoryError):
+        pass  # 没有 spool 目录：没有场次，接着看人设
     except OSError:
         # 列不出来不能当「没有串门数据」：照常写标记，由迁移 / 退役步骤自己报错保留它
         return True
-    return bool(character_uid) and (config_dir / VISIT_PERSONA_DIRNAME / f"{character_uid}.json").exists()
+    return bool(character_uid) and _may_exist(config_dir / VISIT_PERSONA_DIRNAME / f"{character_uid}.json")
 
 
 async def has_visit_data(config_dir: str | Path, character_uid: str | None = None) -> bool:
@@ -201,8 +213,8 @@ async def begin_rename(
     if character_uid:
         marker["uid"] = character_uid
     for attempt in range(2):
-        existing = await set_roster_marker(config_dir, PENDING_RENAME, marker)
-        if existing is None:
+        written, _existing = await set_roster_marker(config_dir, PENDING_RENAME, marker)
+        if written:
             return marker
         if attempt:
             break

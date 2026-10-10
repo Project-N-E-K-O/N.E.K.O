@@ -96,11 +96,19 @@ class Personas:
 async def test_set_marker_only_when_absent_and_keeps_partitions(tmp_path):
     await seed_roster(tmp_path)
     before = _peers(tmp_path)["accounts"]
-    assert await set_roster_marker(tmp_path, "pending_rename", {"old": "A", "new": "B"}) is None
+    assert await set_roster_marker(tmp_path, "pending_rename", {"old": "A", "new": "B"}) == (True, None)
     # 已有标记：不覆盖，返回现有值（上一笔改名没对完账不能被下一笔冲掉）
-    assert await set_roster_marker(tmp_path, "pending_rename", {"old": "C", "new": "D"}) == {"old": "A", "new": "B"}
+    assert await set_roster_marker(tmp_path, "pending_rename", {"old": "C", "new": "D"}) == (
+        False, {"old": "A", "new": "B"})
     data = _peers(tmp_path)
     assert data["pending_rename"] == {"old": "A", "new": "B"} and data["accounts"] == before
+
+
+async def test_a_null_marker_is_a_free_slot_not_a_successful_write(tmp_path):
+    (tmp_path / "visit_peers.json").write_text(json.dumps({"pending_rename": None}), encoding="utf-8")
+    # 变异：把 null 当「已有标记」→ 返回值与写成功撞车 / 永远占位，必红
+    assert await set_roster_marker(tmp_path, "pending_rename", {"old": "A", "new": "B"}) == (True, None)
+    assert _peers(tmp_path)["pending_rename"] == {"old": "A", "new": "B"}
 
 
 async def test_retire_marker_items_are_added_and_removed_one_by_one(tmp_path):
@@ -225,6 +233,23 @@ async def test_an_unresolvable_earlier_marker_refuses_the_rename(tmp_path):
 
 
 # ── 删除退役 ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("target", ["visit_peers.json", "persona"])
+async def test_unstattable_visit_files_count_as_visit_data(tmp_path, monkeypatch, target):
+    import os
+
+    blocked = tmp_path / ("visit_peers.json" if target != "persona" else f"visit_persona/{CHAR_UID_A}.json")
+    real_stat = os.stat
+
+    def stat(path, *a, **k):
+        if Path(path) == blocked:
+            raise PermissionError("access denied")
+        return real_stat(path, *a, **k)
+
+    monkeypatch.setattr(lc.os, "stat", stat)
+    # stat 不了不能当「没有串门数据」：照常走标记（这里名册本身读不出，写标记报损坏、事务拒绝）
+    assert await lc.has_visit_data(tmp_path, CHAR_UID_A) is True
 
 
 async def test_delete_without_any_visit_data_writes_nothing(tmp_path):

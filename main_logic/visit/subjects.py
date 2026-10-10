@@ -468,23 +468,25 @@ async def clear_roster_marker(config_dir: str | Path, key: str, expected: Any) -
     return await asyncio.to_thread(_clear_marker_sync, path, key, expected)
 
 
-def _set_marker_sync(path: Path, key: str, value: Any) -> Any:
+def _set_marker_sync(path: Path, key: str, value: Any) -> tuple[bool, Any]:
     with path_lock(path):
         data = _read_top_level_sync_unlocked(path)
-        if key in data:
-            return copy.deepcopy(data[key])
+        # 值为 null 的标记没有任何可对账的信息，按空位处理（否则会永远占着位置）
+        if data.get(key) is not None:
+            return False, copy.deepcopy(data[key])
         data[key] = copy.deepcopy(value)
         atomic_write_json(path, data)
-        return None
+        return True, None
 
 
-async def set_roster_marker(config_dir: str | Path, key: str, value: Any) -> Any:
-    """Atomically store the top-level ``key`` unless it is already present.
+async def set_roster_marker(config_dir: str | Path, key: str, value: Any) -> tuple[bool, Any]:
+    """Atomically store the top-level ``key`` unless it already holds a non-null value.
 
-    Returns ``None`` once ``value`` is written, else a copy of the value
-    already there (left untouched: a pending transaction must be reconciled
-    before another one can take its marker). Account partitions and other
-    keys are preserved; an unreadable roster raises :class:`RosterCorruptError`.
+    Returns ``(True, None)`` once ``value`` is written, else ``(False,
+    existing)`` with a copy of the value already there (left untouched: a
+    pending transaction must be reconciled before another one can take its
+    marker). Account partitions and other keys are preserved; an unreadable
+    roster raises :class:`RosterCorruptError`.
     """
     path = Path(config_dir) / VISIT_PEERS_FILENAME
     return await asyncio.to_thread(_set_marker_sync, path, key, value)

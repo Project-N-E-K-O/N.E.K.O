@@ -151,6 +151,37 @@ async def test_failed_migration_keeps_the_marker_and_reports_partial(env, monkey
     assert _peers(config_dir)["pending_rename"] == {"old": "Old", "new": "New", "uid": uid}
 
 
+@pytest.mark.parametrize("op", ["rename", "delete"])
+async def test_cancellation_during_settlement_is_propagated(env, monkeypatch, op):
+    cm, _path, config_dir = env
+    await _seed(cm, config_dir)
+    entered, release = asyncio.Event(), asyncio.Event()
+    name = "settle_rename" if op == "rename" else "settle_retire"
+    real = getattr(character_hooks, name)
+
+    async def slow(*a, **k):
+        entered.set()
+        await release.wait()
+        return await real(*a, **k)
+
+    monkeypatch.setattr(character_hooks, name, slow)
+    crud, (a, b) = _crud(cm)
+    with a, b:
+        call = (crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"})) if op == "rename"
+                else crud.delete_catgirl("Old"))
+        task = asyncio.ensure_future(call)
+        await asyncio.wait_for(entered.wait(), 3)
+        task.cancel()
+        await asyncio.sleep(0.02)
+        assert not task.done()                     # 收尾照常做完
+        release.set()
+        # 变异：丢掉取消标志、正常返回必红
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    data = _peers(config_dir)
+    assert "pending_rename" not in data and "pending_retire" not in data
+
+
 async def test_rename_refused_while_an_earlier_rename_cannot_be_reconciled(env):
     cm, path, config_dir = env
     await _seed(cm, config_dir)
@@ -337,8 +368,9 @@ async def test_unsubscribe_retires_the_visit_data_of_its_characters(tmp_path, mo
 
 async def test_unsubscribe_without_visit_data_writes_no_visit_file(tmp_path, monkeypatch):
     config = _unsubscribe_config(tmp_path)
-    (status, body), _steam = await _unsubscribe(monkeypatch, config)
+    (status, body), steam_calls = await _unsubscribe(monkeypatch, config)
     assert status == 200 and body["success"] is True, body
+    assert steam_calls
     assert not (config.config_dir / "visit_peers.json").exists()
 
 
