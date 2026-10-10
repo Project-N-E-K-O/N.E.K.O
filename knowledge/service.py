@@ -1525,13 +1525,20 @@ class KnowledgeService:
         self, tag: str, allowed: list[str], limit: int, registry: Registry
     ) -> list[RankedHit]:
         rows = await self._query_thread(self._store.entries_with_tag, tag, allowed)
+        # Read the versions after the rows: a pack replaced since the query's
+        # version check has its new rows here, which would take picks and then
+        # be dropped at rendering. Choose among unchanged packs only.
+        current = await self._query_thread(self._current_packs, allowed, registry)
         # Drop entries the query's registry snapshot disables before choosing,
         # or one of them could take a slot and then be rejected at rendering.
         ids = [
             entry_id
             for entry_id, pack_id, title in rows
-            if (record := registry.packs.get(pack_id)) is None
-            or title_key(title) not in record.disabled_titles
+            if pack_id in current
+            and (
+                (record := registry.packs.get(pack_id)) is None
+                or title_key(title) not in record.disabled_titles
+            )
         ]
         return [
             RankedHit(entry_id=i, score=0.0, exact=False, lexical_rank=None, semantic_score=None)

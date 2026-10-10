@@ -3158,3 +3158,35 @@ async def test_long_indexing_rounds_end_when_a_vector_refresh_is_due(tmp_path, m
         assert "refresh" in events[batches[0] : batches[-1]]
     finally:
         await service.stop()
+
+
+async def test_sampling_skips_a_pack_replaced_after_the_version_check(tmp_path, monkeypatch):
+    def tagged(prefix, count):
+        return [{"title": f"{prefix} {i}", "content": "x", "tags": ["domain:meme"]} for i in range(count)]
+
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack("stale-pack", entries=tagged("s", 5)))
+        await _import(service, _pack("fact-pack", entries=tagged("f", 1)))
+        # Deterministic picks: the lowest ids, which are the stale pack's.
+        monkeypatch.setattr(service_module.random, "sample", lambda population, k: sorted(population)[:k])
+        real = service._store.entries_with_tag
+
+        def rows(tag, pack_ids):
+            found = real(tag, pack_ids)
+            # The replacement commits after the version check and after these
+            # rows were read (they are the old ones here, but the version moves).
+            conn = sqlite3.connect(tmp_path / "knowledge.db")
+            try:
+                conn.execute("UPDATE packs SET pack_sha256=? WHERE pack_id='stale-pack'", ("f" * 64,))
+                conn.commit()
+            finally:
+                conn.close()
+            return found
+
+        monkeypatch.setattr(service._store, "entries_with_tag", rows)
+        result = await service.query(query="domain:meme", mode="sample", limit=1)
+        assert result["result"] == "matched"
+        assert [hit["pack_id"] for hit in result["hits"]] == ["fact-pack"]
+    finally:
+        await service.stop()
