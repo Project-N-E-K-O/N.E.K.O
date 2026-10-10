@@ -121,6 +121,9 @@ class VectorSnapshot:
     chunk_pack_index: np.ndarray
     matrix: np.ndarray
     chunk_indexes: np.ndarray | None = None
+    # (chunk id, blob) of stored vectors that were unusable; the service
+    # clears them under its write lock so they get computed again.
+    damaged: tuple[tuple[int, bytes], ...] = ()
 
 
 def _row_to_entry(row: sqlite3.Row) -> StoredEntry:
@@ -729,15 +732,19 @@ class KnowledgeStore:
                 for row in rows
             }
 
-    def _clear_vectors(self, chunk_ids: Sequence[int]) -> None:
-        """Forget unusable vectors so the indexer computes them again."""
-        logger.warning("[Knowledge] clearing %d damaged vector(s)", len(chunk_ids))
+    def clear_vectors(self, damaged: Sequence[tuple[int, bytes]]) -> int:
+        """Forget unusable vectors so the indexer computes them again.
+
+        Only a row still holding the blob that was read is cleared: one
+        rewritten (or reused by a replaced pack) in the meantime is left alone.
+        """
+        logger.warning("[Knowledge] clearing %d damaged vector(s)", len(damaged))
         with self._write() as conn:
-            conn.execute(
-                "UPDATE chunks SET vector=NULL, model_id=NULL, attempts=0"
-                " WHERE id IN (SELECT value FROM json_each(?))",
-                (json.dumps(list(chunk_ids)),),
+            cursor = conn.executemany(
+                "UPDATE chunks SET vector=NULL, model_id=NULL, attempts=0 WHERE id=? AND vector=?",
+                [(chunk_id, blob) for chunk_id, blob in damaged],
             )
+            return cursor.rowcount
 
     def load_vectors(self, model_id: str) -> VectorSnapshot | None:
         """Load every ready vector of ``model_id`` into one normalized matrix."""
@@ -760,14 +767,14 @@ class KnowledgeStore:
         chunk_pack: list[int] = []
         chunk_indexes: list[int] = []
         blobs: list[bytes] = []
-        damaged: list[int] = []
+        damaged: list[tuple[int, bytes]] = []
         for chunk_id, entry_id, pack_id, blob, chunk_index in rows:
             if (
                 size % 4
                 or len(blob) != size
                 or not np.isfinite(np.frombuffer(blob, dtype="<f4")).all()
             ):
-                damaged.append(int(chunk_id))
+                damaged.append((int(chunk_id), bytes(blob)))
                 continue
             if pack_id not in pack_index:
                 pack_index[pack_id] = len(pack_ids)
@@ -776,11 +783,13 @@ class KnowledgeStore:
             chunk_pack.append(pack_index[pack_id])
             chunk_indexes.append(int(chunk_index))
             blobs.append(blob)
-        if damaged:
-            self._clear_vectors(damaged)
-        if not blobs:
+        if not blobs and not damaged:
             return None
-        matrix = np.frombuffer(b"".join(blobs), dtype="<f4").reshape(len(blobs), dim)
+        matrix = (
+            np.frombuffer(b"".join(blobs), dtype="<f4").reshape(len(blobs), dim)
+            if blobs
+            else np.zeros((0, dim), dtype=np.float32)
+        )
         return VectorSnapshot(
             model_id=model_id,
             entry_ids=np.asarray(entry_ids, dtype=np.int64),
@@ -788,4 +797,5 @@ class KnowledgeStore:
             chunk_pack_index=np.asarray(chunk_pack, dtype=np.int32),
             matrix=np.ascontiguousarray(matrix, dtype=np.float32),
             chunk_indexes=np.asarray(chunk_indexes, dtype=np.int32),
+            damaged=tuple(damaged),
         )

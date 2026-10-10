@@ -2653,8 +2653,19 @@ async def test_damaged_vectors_do_not_disqualify_the_healthy_ones(tmp_path, fast
             conn.commit()
         finally:
             conn.close()
+        # Loading only reports the damage; it writes nothing outside the lock.
         snapshot = await asyncio.to_thread(service._store.load_vectors, "fake-16")
         assert snapshot.matrix.shape == (total - 2, 16)
+        assert sorted(chunk_id for chunk_id, _blob in snapshot.damaged) == sorted(ids[:2])
+        conn = sqlite3.connect(tmp_path / "knowledge.db")
+        try:
+            still = conn.execute("SELECT COUNT(*) FROM chunks WHERE vector IS NULL").fetchone()[0]
+        finally:
+            conn.close()
+        assert still == 0
+        # The service clears it, under its write lock.
+        await service._refresh_vectors_now()
+        assert service._vectors.matrix.shape == (total - 2, 16)
         conn = sqlite3.connect(tmp_path / "knowledge.db")
         try:
             cleared = conn.execute(
@@ -2665,3 +2676,23 @@ async def test_damaged_vectors_do_not_disqualify_the_healthy_ones(tmp_path, fast
         assert cleared == 2  # handed back to the indexer
     finally:
         await service.stop()
+
+
+def test_a_damaged_vector_rewritten_meanwhile_is_not_cleared(tmp_path):
+    from knowledge.store import KnowledgeStore
+
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    store.replace_pack(parse_pack(_pack()), pack_sha256="0" * 64)
+    conn = sqlite3.connect(tmp_path / "knowledge.db")
+    try:
+        (chunk_id,) = conn.execute("SELECT id FROM chunks ORDER BY id LIMIT 1").fetchone()
+        conn.execute("UPDATE chunks SET model_id='m', vector=? WHERE id=?", (bytes([1, 2, 3]), chunk_id))
+        conn.commit()
+        damaged = [(chunk_id, bytes([1, 2, 3]))]
+        good = np.ones(16, dtype="<f4").tobytes()
+        conn.execute("UPDATE chunks SET vector=? WHERE id=?", (good, chunk_id))  # rewritten since the read
+        conn.commit()
+    finally:
+        conn.close()
+    assert store.clear_vectors(damaged) == 0

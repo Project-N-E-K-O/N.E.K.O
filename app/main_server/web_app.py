@@ -647,46 +647,23 @@ async def runtime_shutdown(request: Request):
     )
 
 
-async def _read_knowledge_body(
-    request: Request, knowledge_path: str
-) -> tuple[Response | None, bytes, asyncio.Semaphore | None]:
-    """Read a knowledge call's body under its size cap; (refusal, body, held slot).
+def _knowledge_body(request: Request, knowledge_path: str) -> tuple[Response | None, object]:
+    """(refusal, streamed body) for a knowledge call, under its size cap.
 
-    This hop buffers whole bodies, so pack uploads also need a free slot
-    (never waited for): concurrent 10 MiB uploads must not all sit in Main.
-    The caller releases the returned slot once the body has been forwarded.
+    Like the other two hops, the body is passed through as it arrives and
+    never held whole in Main; going over the cap stops the transfer.
     """
-    from utils.http.knowledge_proxy import (
-        JSON_BODY_MAX_BYTES,
-        BodyTooLarge,
-        body_limit,
-        capped_body,
-        declared_size_problem,
-        upload_slots,
-    )
+    from utils.http.knowledge_proxy import body_limit, capped_body, declared_size_problem
 
     limit = body_limit(knowledge_path, request.method)
     problem = declared_size_problem(request.headers.get("content-length"), limit)
     if problem is not None:
-        return JSONResponse(status_code=problem[1], content={"ok": False, "reason": problem[0]}), b"", None
-    slot = None
-    if limit > JSON_BODY_MAX_BYTES:
-        slots = upload_slots()
-        if slots.locked():
-            return JSONResponse(status_code=503, content={"ok": False, "reason": "knowledge_busy"}), b"", None
-        await slots.acquire()
-        slot = slots
-    try:
-        body = b"".join([chunk async for chunk in capped_body(request, limit)])
-    except BodyTooLarge:
-        if slot is not None:
-            slot.release()
-        return JSONResponse(status_code=413, content={"ok": False, "reason": "payload_too_large"}), b"", None
-    except BaseException:
-        if slot is not None:
-            slot.release()
-        raise
-    return None, body, slot
+        return JSONResponse(status_code=problem[1], content={"ok": False, "reason": problem[0]}), b""
+    return None, capped_body(request, limit)
+
+
+def _payload_too_large() -> JSONResponse:
+    return JSONResponse(status_code=413, content={"ok": False, "reason": "payload_too_large"})
 
 
 @app.api_route(
@@ -747,7 +724,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     headers.pop("x-neko-market-internal", None)
     headers.pop("x-neko-market-public-origin", None)
     # Knowledge calls (manager page -> plugin server's /market/knowledge) are
-    # read later, with their size cap applied while reading; see below.
+    # streamed through under their size cap instead; see below.
     knowledge_path = path.startswith("knowledge/")
     body = b"" if knowledge_path else await request.body()
     if request.scope.get("neko.instance_identity"):
@@ -767,11 +744,12 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
         headers["x-neko-market-internal"] = market_internal_proof(
             signing_key, request.method, "/market" + ("/" + path if path else ""), public_origin)
 
-    upload_slot = None
     if knowledge_path:
-        refused, body, upload_slot = await _read_knowledge_body(request, path[len("knowledge/"):])
+        refused, body = _knowledge_body(request, path[len("knowledge/"):])
         if refused is not None:
             return refused
+    from utils.http.knowledge_proxy import BodyTooLarge, is_body_too_large
+
     try:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, connect=3.0), proxy=None, trust_env=False
@@ -782,15 +760,16 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
                 content=body,
                 headers=headers,
             )
+    except BodyTooLarge:
+        return _payload_too_large()
     except httpx.HTTPError as exc:
+        if is_body_too_large(exc):
+            return _payload_too_large()
         logger.warning("Market bridge proxy failed: target=%s error=%s", target, exc)
         return JSONResponse(
             status_code=502,
             content={"detail": "Market bridge unavailable", "error": str(exc)},
         )
-    finally:
-        if upload_slot is not None:
-            upload_slot.release()
 
     # Response-side filter additionally drops Content-Encoding so the body
     # bytes (already decompressed by httpx when we read ``upstream.content``)

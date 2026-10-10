@@ -1075,6 +1075,25 @@ class KnowledgeService:
             logger.warning("[Knowledge] vector snapshot reload failed", exc_info=True)
             return
         self._install_vectors(snapshot, key)
+        await self._clear_damaged_vectors(snapshot)
+
+    async def _clear_damaged_vectors(self, snapshot: VectorSnapshot | None) -> None:
+        """Hand unusable stored vectors back to the indexer, under the write lock.
+
+        Best effort: the snapshot is already in use without them, so a failed
+        clear only means they are skipped again on the next load.
+        """
+        if snapshot is None or not snapshot.damaged:
+            return
+        damaged = snapshot.damaged
+        try:
+            await self._locked(
+                lambda: asyncio.to_thread(self._store.clear_vectors, damaged), wait=True
+            )
+        except Exception:
+            logger.warning("[Knowledge] could not clear damaged vectors", exc_info=True)
+            return
+        self._index_wakeup.set()
 
     def _schedule_vector_refresh(self) -> None:
         model_id = self._current_model_id()
@@ -1093,6 +1112,7 @@ class KnowledgeService:
                 logger.warning("[Knowledge] vector snapshot rebuild failed", exc_info=True)
                 return False
             self._install_vectors(snapshot, key)
+            await self._clear_damaged_vectors(snapshot)
             return True
 
         def rebuilt(task: asyncio.Task[bool]) -> None:
