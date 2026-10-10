@@ -236,12 +236,22 @@ async def _refuse_before_admission(request: Request) -> Optional[JSONResponse]:
     return None
 
 
+class _CharacterLookupFailed(Exception):
+    """The character file could not be read right now (distinct from "no such character")."""
+
+
 async def _resolve_uid(name: str) -> Optional[str]:
+    """The character's ``character_uid``; None when there is no such character.
+
+    Raises :class:`_CharacterLookupFailed` when the lookup itself failed: the
+    admission lock and the forget check need the uid, so that is refused rather
+    than admitted without them.
+    """
     try:
         return await local_chars.resolve_char_uid(name)
-    except Exception as exc:  # noqa: BLE001 - 认不出角色交给人设闸拒绝
+    except Exception as exc:  # noqa: BLE001 - 读不出角色文件：不能绕过准入锁与清除检查
         logger.warning("visit: character lookup failed: %s", type(exc).__name__)
-        return None
+        raise _CharacterLookupFailed from exc
 
 
 async def _admit(
@@ -255,7 +265,11 @@ async def _admit(
     change is refused. The epoch read here must also be the one the runtime
     recorded, so a logout / switch anywhere in between refuses the visit.
     """
-    uid = await _resolve_uid(name)
+    try:
+        uid = await _resolve_uid(name)
+    except _CharacterLookupFailed:
+        return _refused(409, {"reason": "busy"})
+    # 没有这个角色（uid 为 None）：不取锁，交给人设闸回 VISIT_PERSONA_UNREVIEWED{state:'missing'}
     async with (char_admission_lock(uid) if uid else contextlib.nullcontext()):
         epoch = runtime.account_epoch()
         if epoch is None or (expect_epoch is not None and epoch != expect_epoch):

@@ -1489,3 +1489,23 @@ async def test_join_refuses_an_invite_that_expires_while_reading_the_blocklist(e
     resp = await _join(env)
     assert resp.status_code == 409 and resp.json()["details"] == {"reason": "invite_expired"}
     assert _no_slot("Guest") and env.guest.creds_calls == []
+
+
+async def test_a_failed_character_lookup_refuses_before_the_slot(env, monkeypatch):
+    async def broken(name):
+        raise OSError("characters.json locked")
+
+    monkeypatch.setattr(local_chars, "resolve_char_uid", broken)
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "busy"
+    assert _no_slot() and env.host.rt is None
+
+
+async def test_an_unknown_character_is_left_to_the_persona_gate(env, monkeypatch):
+    async def none(name):
+        return None
+
+    monkeypatch.setattr(local_chars, "resolve_char_uid", none)
+    env.gate = PersonaGate(ok=False, state="missing")
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json() == {"ok": False, "code": "VISIT_PERSONA_UNREVIEWED", "state": "missing"}
