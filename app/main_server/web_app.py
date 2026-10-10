@@ -659,6 +659,9 @@ def _knowledge_body(request: Request, knowledge_path: str) -> tuple[Response | N
     problem = declared_size_problem(request.headers.get("content-length"), limit)
     if problem is not None:
         return JSONResponse(status_code=problem[1], content={"ok": False, "reason": problem[0]}), b""
+    if limit == 0:
+        # Reads carry no body: send none, rather than an empty chunked one.
+        return None, b""
     return None, capped_body(request, limit)
 
 

@@ -183,9 +183,10 @@ def _knowledge_proxy_app(monkeypatch, seen):
             return None
 
         async def request(self, method, url, *, content, headers):
-            if hasattr(content, "__aiter__"):  # a streamed body, as httpx would send it
+            streamed = hasattr(content, "__aiter__")
+            if streamed:  # a streamed body, as httpx would send it
                 content = b"".join([chunk async for chunk in content])
-            seen.append((method, url, content))
+            seen.append((method, url, content, streamed))
             return httpx.Response(200, content=b'{"ok": true}', headers={"content-type": "application/json"})
 
     monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: "http://127.0.0.1:48916")
@@ -227,8 +228,9 @@ async def test_knowledge_bodies_are_streamed_not_buffered(monkeypatch):
         response = await client.post("/market/knowledge/packs/import?token=t", content=b'{"pack": 1}')
         read = await client.get("/market/knowledge/status?token=t")
     assert response.status_code == 200 and read.status_code == 200
-    assert seen[0] == ("POST", "http://127.0.0.1:48916/market/knowledge/packs/import?token=t", b'{"pack": 1}')
-    assert seen[1][0] == "GET"
+    assert seen[0] == ("POST", "http://127.0.0.1:48916/market/knowledge/packs/import?token=t", b'{"pack": 1}', True)
+    # A read is sent without a body, not with an empty chunked one.
+    assert seen[1][0] == "GET" and seen[1][2:] == (b"", False)
 
 
 @pytest.mark.asyncio
