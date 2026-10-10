@@ -418,6 +418,32 @@ async def test_core_api_save_lock_is_released_once_the_file_is_written(
 
 
 @pytest.mark.asyncio
+async def test_slow_request_body_does_not_hold_off_other_core_api_saves(
+    config_manager, core_config_router
+):
+    path = config_manager.config_dir / FILENAME
+    body_started = asyncio.Event()
+    release_body = asyncio.Event()
+
+    class _SlowBodyRequest:
+        async def json(self):
+            body_started.set()
+            await release_body.wait()
+            return {**CORE_API_PAYLOAD, "coreApiKey": "slow-key"}
+
+    slow = asyncio.create_task(core_config_router.update_core_config(_SlowBodyRequest()))
+    try:
+        await asyncio.wait_for(body_started.wait(), 5)
+        fast = await asyncio.wait_for(core_config_router.update_core_config(_FakeRequest(CORE_API_PAYLOAD)), 5)
+        assert fast["success"] is True
+        assert _read(path)["coreApiKey"] == "new-key"
+    finally:
+        release_body.set()
+    assert (await asyncio.wait_for(slow, 5))["success"] is True
+    assert _read(path)["coreApiKey"] == "slow-key"
+
+
+@pytest.mark.asyncio
 async def test_powerful_toggle_migration_does_not_block_or_clobber_a_core_api_save(
     config_manager, core_config_router, memory_router, monkeypatch
 ):

@@ -356,8 +356,7 @@ _core_api_save_lock = asyncio.Lock()
 @router.post("/core_api")
 async def update_core_config(request: Request):
     """Update the core config (API keys); the snapshot-to-write section runs one save at a time."""
-    await _core_api_save_lock.acquire()
-    save_lock_held = True
+    save_lock_held = False
     try:
         data = await request.json()
         if not data:
@@ -369,6 +368,11 @@ async def update_core_config(request: Request):
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
         
+        # 请求体在锁外读完：慢速上传的请求体不能拖住别的保存。从这里起到写盘为止
+        # 都依赖配置快照，必须在锁内。
+        await _core_api_save_lock.acquire()
+        save_lock_held = True
+
         # 构建配置对象：先加载旧配置，再按本次提交覆盖。
         # 这与前端 API 管理簿的行为保持一致，避免某个字段本次未提交时被意外清空。
         # 只有「文件不存在」才从空配置开始；文件存在却读不出/解析失败时直接拒绝保存——
