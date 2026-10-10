@@ -263,7 +263,6 @@ class KnowledgeService:
         self._removal_settled = asyncio.Event()
         self._vectors_built_for: tuple[int, str] | None = None
         self._vector_task: asyncio.Task[Any] | None = None
-        self._availability_listeners: list[Callable[[], None]] = []
 
     # ── lifecycle ───────────────────────────────────────────────────
 
@@ -397,9 +396,6 @@ class KnowledgeService:
 
     # ── availability ────────────────────────────────────────────────
 
-    def add_availability_listener(self, listener: Callable[[], None]) -> None:
-        self._availability_listeners.append(listener)
-
     def availability(self) -> dict[str, bool]:
         registry = self._registry
         has_usable = any(
@@ -416,11 +412,6 @@ class KnowledgeService:
 
     def _publish_registry(self, registry: Registry) -> None:
         self._registry = registry
-        for listener in list(self._availability_listeners):
-            try:
-                listener()
-            except Exception:
-                logger.debug("[Knowledge] availability listener failed", exc_info=True)
 
     # ── guarded writes ──────────────────────────────────────────────
 
@@ -1668,8 +1659,11 @@ class KnowledgeService:
             return base
         packs = await self.list_packs()
         by_type = {kind: [p for p in packs if p["effective_material_type"] == kind] for kind in MATERIAL_TYPES}
-        chunks_total = sum(p["chunks_total"] for p in packs)
-        chunks_ready = sum(p["chunks_ready"] for p in packs)
+        # Packs with local vectors off are keyword-only and never get more
+        # vectors; counting them would keep the overview below 100% forever.
+        vector_packs = [p for p in packs if p["local_embedding"]]
+        chunks_total = sum(p["chunks_total"] for p in vector_packs)
+        chunks_ready = sum(p["chunks_ready"] for p in vector_packs)
         base.update(
             {
                 "packs": len(packs),
@@ -1681,7 +1675,7 @@ class KnowledgeService:
                 "corpus_entries": sum(p["entries"] for p in by_type["corpus"]),
                 "chunks_total": chunks_total,
                 "chunks_ready": chunks_ready,
-                "chunks_failed": sum(p["chunks_failed"] for p in packs),
+                "chunks_failed": sum(p["chunks_failed"] for p in vector_packs),
                 "indexed_percent": round(chunks_ready * 100 / chunks_total, 1) if chunks_total else 0.0,
                 "broken_packs": list(self._broken_packs),
                 # The largest packs only: this is an overview, not a pack list.

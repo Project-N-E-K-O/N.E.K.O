@@ -180,3 +180,36 @@ async def test_imports_are_refused_before_their_body_is_read_when_full(client, m
     result = (await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK))).json()
     assert result["ok"] is True
     assert not slots.locked()  # released after the request
+
+
+async def test_knowledge_embeddings_never_disable_vectors_for_memory(monkeypatch):
+    from memory import embeddings
+
+    monkeypatch.setattr(embeddings, "detect_total_ram_gb", lambda: 12.0)
+    monkeypatch.setattr(embeddings, "detect_avx_vnni_details", lambda: (False, True))
+    monkeypatch.setattr(embeddings, "detect_avx2_details", lambda: (True, True))
+    monkeypatch.setattr(embeddings, "_cpu_is_blocklisted", lambda: False)
+    service = embeddings.EmbeddingService(model_dir="/nonexistent")
+    service._state = embeddings.EmbeddingState.READY
+
+    def broken(_texts):
+        raise RuntimeError("tokenizer choked on third-party text")
+
+    monkeypatch.setattr(service, "_infer_blocking", broken)
+    shared = knowledge_routes._SharedEmbedder(service)
+    assert await shared.embed_batch(["x", "y"]) == [None, None]
+    assert await shared.embed("x") is None
+    assert service.is_available()  # memory keeps its vectors
+    # A failure of memory's own call is still sticky, as before.
+    assert await service.embed_batch(["x"]) == [None]
+    assert service.is_disabled()
+
+
+def test_proxy_body_limit_matches_the_pack_limit():
+    from knowledge.models import MAX_PACK_BYTES
+    from utils.http import knowledge_proxy
+
+    # utils cannot import knowledge, so the proxies keep their own copy.
+    assert knowledge_proxy.PACK_BODY_MAX_BYTES == MAX_PACK_BYTES + 64 * 1024
+    assert knowledge_routes._PACK_BODY_MAX_BYTES == knowledge_proxy.PACK_BODY_MAX_BYTES
+    assert knowledge_proxy.WRITE_PATHS["packs/import"] == knowledge_proxy.PACK_BODY_MAX_BYTES

@@ -1,7 +1,5 @@
 """``/market/knowledge/*``: same-origin bridge from the manager page to Main."""
 
-import types
-
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -23,17 +21,15 @@ def bridge(monkeypatch):
         seen.append(request)
         return httpx.Response(200, json={"ok": True, "path": request.url.path})
 
-    fake_httpx = types.SimpleNamespace(
-        AsyncClient=lambda **kwargs: httpx.AsyncClient(transport=httpx.MockTransport(handler), **kwargs),
-        Timeout=httpx.Timeout,
-        TimeoutException=httpx.TimeoutException,
-        HTTPError=httpx.HTTPError,
-    )
+    clients: list[httpx.AsyncClient] = []
 
-    async def ensure_httpx():
-        return fake_httpx
+    def shared_client():
+        # One client for the whole test, like the shared loopback client.
+        if not clients:
+            clients.append(httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+        return clients[0]
 
-    monkeypatch.setattr(knowledge_bridge, "ensure_httpx", ensure_httpx)
+    monkeypatch.setattr(knowledge_bridge, "_client", shared_client)
     app = FastAPI()
     app.include_router(knowledge_bridge.router)
     with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000)) as client:
@@ -83,7 +79,7 @@ def test_writes_carry_main_csrf_and_stream_the_body(bridge, monkeypatch):
 
 def test_oversized_bodies_are_refused(bridge, monkeypatch):
     client, seen = bridge
-    monkeypatch.setitem(knowledge_bridge._WRITE_PATHS, "packs/remove", 8)
+    monkeypatch.setitem(knowledge_bridge.WRITE_PATHS, "packs/remove", 8)
     response = client.post(
         "/market/knowledge/packs/remove", params={"token": get_bridge_token()}, content=b"x" * 64
     )

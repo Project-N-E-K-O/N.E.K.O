@@ -35,8 +35,11 @@ from .chunking import derive_chunks
 from .models import KnowledgeEntry, KnowledgePack
 from .text import fts_match_expression, loose_surface, search_tokens, strict_surface, title_key
 
+# Tags compare like titles: width- and case-insensitive.
+tag_key = title_key
 
-SCHEMA_VERSION = 2
+
+SCHEMA_VERSION = 3
 MAX_CHUNKS_PER_PACK = 10_000
 MAX_TOTAL_CHUNKS = 20_000
 MAX_EMBED_ATTEMPTS = 3
@@ -58,6 +61,8 @@ _SCHEMA = (
     " title_key TEXT NOT NULL,"
     " terms_json TEXT NOT NULL,"
     " tags_json TEXT NOT NULL,"
+    # Tags as compared (see tag_key), for exact tag lookups in SQL.
+    " tag_keys_json TEXT NOT NULL,"
     " summary TEXT NOT NULL,"
     " content TEXT NOT NULL,"
     " disabled INTEGER NOT NULL DEFAULT 0,"
@@ -336,13 +341,14 @@ class KnowledgeStore:
                     raise InterruptedError("cancelled")
                 cursor = conn.execute(
                     "INSERT INTO entries (pack_id, title, title_key, terms_json, tags_json,"
-                    " summary, content, disabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    " tag_keys_json, summary, content, disabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         pack.pack_id,
                         entry.title,
                         entry.key,
                         json.dumps({k: list(v) for k, v in entry.terms.items()}, ensure_ascii=False),
                         json.dumps(list(entry.tags), ensure_ascii=False),
+                        json.dumps(sorted({tag_key(tag) for tag in entry.tags}), ensure_ascii=False),
                         entry.summary,
                         entry.content,
                         1 if entry.key in disabled else 0,
@@ -623,14 +629,16 @@ class KnowledgeStore:
         if not pack_ids:
             return []
         placeholders = ",".join("?" for _ in pack_ids)
-        needle = json.dumps(tag, ensure_ascii=False)
+        # A whole tag, compared like titles (width- and case-insensitive): a
+        # substring of the JSON text would also hit longer tags, or other
+        # tags through a quote.
         with self._read() as conn:
             return [
                 (int(row[0]), str(row[1]), str(row[2]))
                 for row in conn.execute(
                     f"SELECT id, pack_id, title FROM entries WHERE disabled=0 AND pack_id IN ({placeholders})"
-                    " AND instr(tags_json, ?) > 0",
-                    (*pack_ids, needle),
+                    " AND EXISTS (SELECT 1 FROM json_each(tag_keys_json) WHERE value = ?)",
+                    (*pack_ids, tag_key(tag)),
                 )
             ]
 

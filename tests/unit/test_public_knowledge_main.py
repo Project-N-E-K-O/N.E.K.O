@@ -213,7 +213,7 @@ async def test_write_bodies_are_streamed_through_unparsed(proxy, memory_server):
 
 async def test_oversized_bodies_are_refused(proxy, memory_server, monkeypatch):
     client = memory_server(lambda request: httpx.Response(200, json={"ok": True}))
-    monkeypatch.setitem(public_knowledge_router._WRITE_PATHS, "packs/remove", 16)
+    monkeypatch.setitem(public_knowledge_router.WRITE_PATHS, "packs/remove", 16)
     declared = await proxy.post("/api/public-knowledge/packs/remove", headers=_AUTH, content=b"x" * 32)
     assert declared.status_code == 413
 

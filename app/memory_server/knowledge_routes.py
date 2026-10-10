@@ -83,13 +83,18 @@ class _SharedEmbedder:
     def model_id(self) -> str | None:
         return self._service.model_id() if self._service is not None else None
 
+    # Knowledge only borrows the loaded model: an inference error on its
+    # (third-party) text fails that call alone and never disables vectors
+    # for memory; the indexer's own attempt count handles retries.
     async def embed(self, text: str) -> list[float] | None:
-        return await self._service.embed(text) if self._service is not None else None
+        if self._service is None:
+            return None
+        return await self._service.embed(text, sticky_failure=False)
 
     async def embed_batch(self, texts: list[str]) -> list[list[float] | None]:
         if self._service is None:
             return [None] * len(texts)
-        return await self._service.embed_batch(texts)
+        return await self._service.embed_batch(texts, sticky_failure=False)
 
 
 def _resolve_embedding_service() -> Any:

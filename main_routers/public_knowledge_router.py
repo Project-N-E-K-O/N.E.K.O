@@ -28,44 +28,28 @@ decides whether the ``query_public_knowledge`` tool is offered.
 
 from __future__ import annotations
 
-from typing import AsyncIterator
-
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from main_logic import public_knowledge
 from main_routers.system_router._shared import _validate_local_mutation_request
+from utils.http.knowledge_proxy import (
+    READ_PATHS,
+    WRITE_PATHS,
+    BodyTooLarge,
+    capped_body,
+    declared_size_problem,
+    is_body_too_large,
+)
 from utils.logger_config import get_module_logger
 
 
 logger = get_module_logger(__name__, "Main")
 router = APIRouter(prefix="/api/public-knowledge", tags=["public-knowledge"])
 
-_JSON_BODY_MAX_BYTES = 64 * 1024
-# Schema-v1 packs are capped at 10 MiB; leave room for multipart framing.
-_PACK_BODY_MAX_BYTES = 10 * 1024 * 1024 + 64 * 1024
 _READ_TIMEOUT_SECONDS = 10.0
 _WRITE_TIMEOUT_SECONDS = 30.0
-
-_READ_PATHS = frozenset(
-    {"status", "entries", "entry", "packs", "packs/jobs", "diagnostics/recent"}
-)
-_WRITE_PATHS: dict[str, int] = {
-    "settings": _JSON_BODY_MAX_BYTES,
-    "entry/disabled": _JSON_BODY_MAX_BYTES,
-    "packs/import": _PACK_BODY_MAX_BYTES,
-    "packs/jobs/cancel": _JSON_BODY_MAX_BYTES,
-    "packs/jobs/discard": _JSON_BODY_MAX_BYTES,
-    "packs/auto-context": _JSON_BODY_MAX_BYTES,
-    "packs/index-policy": _JSON_BODY_MAX_BYTES,
-    "packs/material-type": _JSON_BODY_MAX_BYTES,
-    "packs/remove": _JSON_BODY_MAX_BYTES,
-}
-
-
-class _BodyTooLarge(Exception):
-    pass
 
 
 def _target(path: str) -> str:
@@ -100,7 +84,7 @@ def _transport_failure(exc: Exception, path: str) -> JSONResponse:
 @router.get("/{path:path}")
 async def read_public_knowledge(path: str, request: Request):
     path = path.strip("/")
-    if path not in _READ_PATHS:
+    if path not in READ_PATHS:
         return _failure("not_found", 404)
     from utils.internal_http_client import get_internal_http_client
 
@@ -118,7 +102,7 @@ async def read_public_knowledge(path: str, request: Request):
 @router.post("/{path:path}")
 async def write_public_knowledge(path: str, request: Request):
     path = path.strip("/")
-    max_bytes = _WRITE_PATHS.get(path)
+    max_bytes = WRITE_PATHS.get(path)
     if max_bytes is None:
         return _failure("not_found", 404)
     rejected = _validate_local_mutation_request(
@@ -127,20 +111,9 @@ async def write_public_knowledge(path: str, request: Request):
     if rejected is not None:
         return rejected
     declared = request.headers.get("content-length")
-    try:
-        if declared is not None and int(declared) > max_bytes:
-            return _failure("payload_too_large", 413)
-    except ValueError:
-        return _failure("invalid_request", 400)
-
-    async def body() -> AsyncIterator[bytes]:
-        received = 0
-        async for chunk in request.stream():
-            received += len(chunk)
-            if received > max_bytes:
-                raise _BodyTooLarge()
-            yield chunk
-
+    problem = declared_size_problem(declared, max_bytes)
+    if problem is not None:
+        return _failure(problem, 413 if problem == "payload_too_large" else 400)
     headers = {"content-type": request.headers.get("content-type", "application/json")}
     if declared is not None:
         headers["content-length"] = declared
@@ -148,12 +121,15 @@ async def write_public_knowledge(path: str, request: Request):
 
     try:
         response = await get_internal_http_client().post(
-            _target(path), content=body(), headers=headers, timeout=_WRITE_TIMEOUT_SECONDS
+            _target(path),
+            content=capped_body(request, max_bytes),
+            headers=headers,
+            timeout=_WRITE_TIMEOUT_SECONDS,
         )
-    except _BodyTooLarge:
+    except BodyTooLarge:
         return _failure("payload_too_large", 413)
     except httpx.HTTPError as exc:
-        if isinstance(exc.__cause__, _BodyTooLarge) or isinstance(exc.__context__, _BodyTooLarge):
+        if is_body_too_large(exc):
             return _failure("payload_too_large", 413)
         return _transport_failure(exc, path)
     return _relay(response)

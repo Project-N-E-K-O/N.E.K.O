@@ -2570,3 +2570,40 @@ async def test_shutdown_waits_for_a_write_whose_caller_was_cancelled(tmp_path, m
     threading.Timer(0.3, release.set).start()
     await service.stop()
     assert written.is_set()  # stop() returned only after the write ended
+
+
+async def test_the_overview_counts_only_packs_with_vectors_on(tmp_path, fast_indexer):
+    service = await _started(tmp_path, FakeEmbedder())
+    try:
+        await _import(service, _pack("pack-a", entries=_entries("a", 3)))
+        await service.set_pack_local_embedding("pack-a", False)  # before any vector exists
+        await _import(service, _pack("pack-b", entries=_entries("b", 3)))
+        for _ in range(300):
+            packs = {p["pack_id"]: p for p in await service.list_packs()}
+            if packs["pack-b"]["chunks_ready"] == packs["pack-b"]["chunks_total"]:
+                break
+            await asyncio.sleep(0.02)
+        overview = await service.status()
+        assert overview["chunks_total"] == packs["pack-b"]["chunks_total"]
+        assert overview["indexed_percent"] == 100.0
+    finally:
+        await service.stop()
+
+
+async def test_sampling_matches_whole_tags_ignoring_case(tmp_path):
+    entries = [
+        {"title": "Longer tag", "tags": ["snacks"], "content": "one"},
+        {"title": "Quoted tag", "tags": ['x", "snack'], "content": "two"},
+        {"title": "Exact tag", "tags": ["Snack"], "content": "three"},
+    ]
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack(entries=entries))
+        rows = await asyncio.to_thread(service._store.entries_with_tag, "SNACK", ["demo-memes"])
+        assert [title for _id, _pack_id, title in rows] == ["Exact tag"]
+    finally:
+        await service.stop()
+
+
+def test_the_knowledge_service_has_no_unused_listener_hook():
+    assert not hasattr(service_module.KnowledgeService, "add_availability_listener")
