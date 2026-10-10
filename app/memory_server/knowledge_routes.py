@@ -55,7 +55,7 @@ from utils.http.knowledge_proxy import JSON_BODY_MAX_BYTES, PACK_BODY_MAX_BYTES
 from ._shared import logger
 
 
-def _refuse_cross_site_browsers(request: Request) -> None:
+async def _refuse_cross_site_browsers(request: Request) -> None:
     """Refuse a request a browser sent from another site, before any body is read."""
     if not is_http_browser_origin_allowed(request.scope):
         raise HTTPException(status_code=403, detail={"ok": False, "reason": "untrusted_origin"})
@@ -218,11 +218,14 @@ async def _read_body(request: Request, *, max_bytes: int) -> bytes | None:
     return bytes(body)
 
 
+def _media_type(request: Request) -> str:
+    return request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+
+
 async def _json_object(request: Request) -> dict[str, Any] | None:
     # Only JSON: a browser cannot send this type cross-site without a CORS
     # preflight, which this server never grants.
-    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    if media_type != "application/json":
+    if _media_type(request) != "application/json":
         return None
     raw = await _read_body(request, max_bytes=_JSON_BODY_MAX_BYTES)
     if raw is None:
@@ -387,6 +390,11 @@ async def knowledge_import_pack(request: Request):
     service = _service
     if service is None:
         return _failure("knowledge_starting", 503)
+    # The most destructive write takes only the two types its callers send,
+    # never a CORS-simple text/plain body.
+    media_type = _media_type(request)
+    if media_type not in ("application/json", "multipart/form-data"):
+        return _failure("invalid_request", 400)
     # A body up to the pack limit is read into memory: refuse before reading
     # when imports are already full, and never buffer more bodies than the
     # service would take.
@@ -397,8 +405,7 @@ async def knowledge_import_pack(request: Request):
         raw = await _read_body(request, max_bytes=_PACK_BODY_MAX_BYTES)
         if raw is None:
             return _failure("pack_too_large", 413)
-        content_type = request.headers.get("content-type", "").lower()
-        if content_type.startswith("multipart/form-data"):
+        if media_type == "multipart/form-data":
             raw = await _pack_from_multipart(request, raw)
             if raw is None:
                 return _failure("invalid_request", 400)

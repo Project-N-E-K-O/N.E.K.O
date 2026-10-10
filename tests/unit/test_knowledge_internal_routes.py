@@ -74,7 +74,7 @@ async def test_storage_startup_gate_covers_knowledge_routes(monkeypatch):
 
 async def test_import_then_query_reports_tool_availability(client):
     http, _service = client
-    response = await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK))
+    response = await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK), headers={"Content-Type": "application/json"})
     body = response.json()
     assert body["ok"] is True and body["state"] == "queued"
     await _wait_active(http)
@@ -89,7 +89,7 @@ async def test_import_then_query_reports_tool_availability(client):
 
 async def test_management_reads_and_writes(client):
     http, _service = client
-    await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK))
+    await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK), headers={"Content-Type": "application/json"})
     await _wait_active(http)
     status = (await http.get("/internal/knowledge/status")).json()
     assert status["ok"] is True and status["status"]["entries"] == 1
@@ -112,7 +112,9 @@ async def test_invalid_requests_are_rejected(client):
     assert (await http.post("/internal/knowledge/query", content=b"[1]")).status_code == 400
     assert (await http.post("/internal/knowledge/settings", json={"enabled": "yes"})).status_code == 400
     too_large = await http.post(
-        "/internal/knowledge/packs/import", content=b"x" * (knowledge_routes._PACK_BODY_MAX_BYTES + 1)
+        "/internal/knowledge/packs/import",
+        content=b"x" * (knowledge_routes._PACK_BODY_MAX_BYTES + 1),
+        headers={"Content-Type": "application/json"},
     )
     assert too_large.status_code == 413
 
@@ -151,7 +153,7 @@ async def test_multipart_import_uses_the_uploaded_file(client):
 
 async def test_long_catalog_searches_are_cut_not_refused(client):
     http, _service = client
-    await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK))
+    await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK), headers={"Content-Type": "application/json"})
     await _wait_active(http)
     response = await http.get("/internal/knowledge/entries", params={"query": "kotatsu " * 100})
     assert response.status_code == 200
@@ -171,13 +173,13 @@ async def test_imports_are_refused_before_their_body_is_read_when_full(client, m
     monkeypatch.setattr(knowledge_routes, "_import_slots", asyncio.Semaphore(0))  # all taken
     # Bounded: a route that waited for a slot instead of refusing would hang.
     result = (
-        await asyncio.wait_for(http.post("/internal/knowledge/packs/import", content=json.dumps(PACK)), 5)
+        await asyncio.wait_for(http.post("/internal/knowledge/packs/import", content=json.dumps(PACK), headers={"Content-Type": "application/json"}), 5)
     ).json()
     assert result["ok"] is False and result["reason"] == "knowledge_busy"
     assert read == []
     slots = asyncio.Semaphore(1)
     monkeypatch.setattr(knowledge_routes, "_import_slots", slots)
-    result = (await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK))).json()
+    result = (await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK), headers={"Content-Type": "application/json"})).json()
     assert result["ok"] is True
     assert not slots.locked()  # released after the request
 
@@ -314,3 +316,11 @@ async def test_json_routes_take_only_json_bodies(client):
             "/internal/knowledge/settings", json={"enabled": True}, headers={"Origin": "http://127.0.0.1:48911"}
         )
     assert local.status_code == 200 and local.json()["enabled"] is True
+
+
+async def test_imports_take_only_json_or_multipart_bodies(client):
+    http, service = client
+    for headers in ({"Content-Type": "text/plain"}, {}):
+        response = await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK), headers=headers)
+        assert response.status_code == 400
+    assert service.list_jobs() == []

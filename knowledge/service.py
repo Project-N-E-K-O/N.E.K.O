@@ -342,7 +342,9 @@ class KnowledgeService:
         # A query or parse thread whose request timed out or went away may
         # still have knowledge.db open or a pack in memory; within the same
         # bound, let it end before reporting stopped.
-        running = [future for future in self._thread_work if not future.done()]
+        # list() copies in one step; worker threads discard finished work
+        # from the set meanwhile, which would break iterating it directly.
+        running = [future for future in list(self._thread_work) if not future.done()]
         if running:
             await asyncio.wait(
                 [asyncio.wrap_future(future) for future in running],
