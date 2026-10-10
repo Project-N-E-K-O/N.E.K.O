@@ -2745,3 +2745,44 @@ def test_stored_vectors_that_are_not_unit_length_are_damaged(tmp_path):
     snapshot = store.load_vectors("m")
     assert snapshot.matrix.shape == (2, 16)
     assert [chunk_id for chunk_id, _blob in snapshot.damaged] == [ids[2]]
+
+
+def test_the_pause_after_a_batch_scales_with_its_inference_time():
+    duty = service_module.INDEX_TARGET_DUTY
+    assert service_module._batch_pause(2.0) == pytest.approx(2.0 * (1 - duty) / duty)
+    assert service_module._batch_pause(0.0) == service_module.INDEX_BATCH_PAUSE_SECONDS
+
+
+async def test_background_indexing_stays_under_the_target_duty(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(service_module, "INDEX_BATCH_PAUSE_SECONDS", 0.0)
+    monkeypatch.setattr(service_module, "INDEX_IDLE_SECONDS", 0.05)
+    batches: list[tuple[float, float]] = []
+    sizes: list[int] = []
+
+    class SlowEmbedder(FakeEmbedder):
+        async def embed_batch(self, texts):
+            sizes.append(len(texts))
+            start = time.monotonic()
+            await asyncio.sleep(0.05)
+            batches.append((start, time.monotonic()))
+            return [self.vector(text) for text in texts]
+
+    service = await _started(tmp_path, SlowEmbedder())
+    try:
+        await _import(service, _pack(entries=_entries("d", 12)))
+        for _ in range(300):
+            if len(batches) >= 3:
+                break
+            await asyncio.sleep(0.02)
+        assert len(batches) >= 3
+        assert max(sizes) <= service_module.INDEX_BATCH_SIZE == 4
+        duty = service_module.INDEX_TARGET_DUTY
+        for (start, end), (next_start, _next_end) in zip(batches, batches[1:]):
+            busy = end - start
+            # The idle gap before the next batch is proportional to the work.
+            assert next_start - end >= busy * (1 - duty) / duty * 0.9
+            assert busy / (next_start - start) <= duty + 0.02
+    finally:
+        await service.stop()

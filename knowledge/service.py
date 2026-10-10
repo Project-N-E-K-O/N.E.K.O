@@ -126,9 +126,15 @@ TERMINAL_JOB_STATES = frozenset({"active", "failed", "cancelled"})
 # Background embedding budget: small batches, a pause between them and a
 # longer one after each round, so inference never monopolizes the shared
 # EmbeddingService or the CPU that memory recall also needs.
-INDEX_BATCH_SIZE = 8
+# Small batches keep each burst of inference short, so memory and chat
+# requests get the shared model sooner.
+INDEX_BATCH_SIZE = 4
 INDEX_ROUND_CHUNKS = 64
+# Minimum pause after a batch; the actual pause also scales with how long the
+# batch took, so that background indexing is busy at most INDEX_TARGET_DUTY of
+# the time (inference may use several threads while it runs).
 INDEX_BATCH_PAUSE_SECONDS = 0.5
+INDEX_TARGET_DUTY = 0.25
 INDEX_ROUND_PAUSE_SECONDS = 5.0
 INDEX_IDLE_SECONDS = 30.0
 VECTOR_REFRESH_SECONDS = 60.0
@@ -192,6 +198,13 @@ class ImportJob:
 _QUERY_WORK: contextvars.ContextVar[list[concurrent.futures.Future[Any]] | None] = (
     contextvars.ContextVar("knowledge_query_work", default=None)
 )
+
+
+def _batch_pause(inference_seconds: float) -> float:
+    """Pause after an index batch: idle at least (1 - duty) / duty times as long
+    as the batch computed, so indexing stays at or below INDEX_TARGET_DUTY."""
+    idle_ratio = (1.0 - INDEX_TARGET_DUTY) / INDEX_TARGET_DUTY
+    return max(INDEX_BATCH_PAUSE_SECONDS, inference_seconds * idle_ratio)
 
 
 def _disabled_in(entry: StoredEntry, registry: Registry) -> bool:
@@ -1186,6 +1199,7 @@ class KnowledgeService:
                 break
             started = time.monotonic()
             vectors = await self.embedder.embed_batch([text for _id, _hash, text in rows])
+            inference_seconds = time.monotonic() - started
             if self._current_model_id() != model_id:
                 break
             pack_ids = self._vector_pack_ids()
@@ -1213,7 +1227,7 @@ class KnowledgeService:
             processed += len(rows)
             if stored == 0:
                 break
-            await asyncio.sleep(INDEX_BATCH_PAUSE_SECONDS)
+            await asyncio.sleep(_batch_pause(inference_seconds))
         return processed
 
     # ── queries ─────────────────────────────────────────────────────

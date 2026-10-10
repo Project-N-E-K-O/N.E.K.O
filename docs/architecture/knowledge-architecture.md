@@ -52,7 +52,7 @@ Defaults for a newly imported pack: automatic context **off**, local vectors **o
 ## Import, indexing and retrieval
 
 - **Import** validates the pack, checks capacity and stages it; a single job runner then writes the raw file, replaces the pack's rows in one transaction and updates the registry, in an order that a crash at any point converges on startup. Vectors of unchanged chunks are carried over when a pack is updated.
-- **Indexing** embeds pending chunks of packs with local vectors enabled, in small batches with pauses, and only while the `EmbeddingService` is ready. It never asks the service to load; until it is ready (or if it is disabled on this hardware) knowledge stays BM25-only.
+- **Indexing** embeds pending chunks of packs with local vectors enabled, in small batches (4 chunks), and only while the `EmbeddingService` is ready. After each batch it pauses at least three times as long as the batch took (`INDEX_TARGET_DUTY` = 25%), so background indexing is busy at most a quarter of the time; inference itself may use several threads while it runs. It never asks the service to load; until it is ready (or if it is disabled on this hardware) knowledge stays BM25-only.
 - **Retrieval** fuses an exact title / alias / recognition match, BM25 over CJK bigrams and Latin words, and cosine similarity, with reciprocal-rank fusion. Each signal must clear its own bar (token coverage for BM25, a similarity floor for vectors), so an unrelated question returns nothing. Every query has a time budget; when query embedding is too slow, the lookup proceeds on BM25.
 
 ## Model-facing output
