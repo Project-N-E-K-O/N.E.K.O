@@ -187,6 +187,37 @@ async function main() {
       results.push({ scenario: mode + '-quick-next-with-dedup', passed: true });
       await page.close();
     }
+    {
+      const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      await page.goto(`http://127.0.0.1:${server.address().port}/`);
+      await page.waitForFunction(() => window.__nekoReplyTailPresentationVersion === 1);
+      await page.evaluate(dataUrl => {
+        fixture.seq = 1791676800000;
+        fixture.gif = dataUrl;
+        fixture.start();
+        window.createGeminiBubble('Original final sentence.', { turnId: 'turn-A' });
+        fixture.end();
+        reactChatWindowHost.appendMessage({
+          id: 'next-user', role: 'user', author: 'You', time: '12:00',
+          blocks: [{ type: 'text', text: 'Next question' }], status: 'sent',
+        });
+        fixture.start('turn-B', 'request-B');
+        window.createGeminiBubble('Next answer.', { turnId: 'turn-B' });
+        for (let index = 0; index < 20; index++) {
+          fixture.image(true, 'many-' + index);
+          fixture.image(true, 'many-' + index);
+        }
+      }, dataUrl);
+      await page.waitForFunction(() => fixture.messages.filter(m => m.id.startsWith('reply-tail:')).length === 20);
+      assert.deepEqual(await page.evaluate(() => fixture.messages.map(m => m.role)),
+        ['assistant', ...Array(20).fill('system'), 'user', 'assistant']);
+      await page.waitForFunction(() => document.querySelectorAll('[data-message-id]').length === 23);
+      assert.deepEqual(await page.evaluate(() =>
+        Array.from(document.querySelectorAll('[data-message-id]')).map(node => node.getAttribute('data-message-id'))),
+      await page.evaluate(() => fixture.messages.map(message => message.id)));
+      results.push({ scenario: 'timestamp-many-attachments-before-next-turn', passed: true });
+      await page.close();
+    }
     // Old immediate path is a before-behaviour reference, on the same real renderer.
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await page.goto(`http://127.0.0.1:${server.address().port}/`);

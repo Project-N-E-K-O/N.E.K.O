@@ -14,6 +14,7 @@ MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
 MAX_RETAINED_BYTES = 16 * 1024 * 1024
 MAX_VALIDATIONS = 4
 RETENTION_SECONDS = 120.0
+SUBMISSION_TIMEOUT_SECONDS = 5.0
 
 
 def receipt(status: str, reason: str = "", **extra: Any) -> dict:
@@ -259,6 +260,7 @@ class ReplyTailRegistry:
         if not reply.completed or not reply.owner.turn_ended:
             self.cancel_reply(reply, "reply_incomplete")
             return
+        deadline = time.monotonic() + SUBMISSION_TIMEOUT_SECONDS
         for item in list(self._registrations.values()):
             if item.scope.reply is not reply or item.status != "registered":
                 continue
@@ -267,16 +269,22 @@ class ReplyTailRegistry:
                 continue
             item.status = "submitting"
             try:
-                sent = await reply.manager.render_chat_blocks(
-                    item.blocks, request_id=reply.owner.request_id,
-                    source="plugin", source_name=item.scope.context["source"][7:],
-                    reply_tail={
-                        "version": 1, "reply_id": reply.reply_id,
-                        "request_id": str(reply.owner.request_id),
-                        "call_id": item.scope.context["call_id"],
-                        "registration_id": item.registration_id,
-                    },
-                )
+                async with asyncio.timeout_at(min(deadline, item.scope.expires)):
+                    sent = await reply.manager.render_chat_blocks(
+                        item.blocks, request_id=reply.owner.request_id,
+                        source="plugin", source_name=item.scope.context["source"][7:],
+                        reply_tail={
+                            "version": 1, "reply_id": reply.reply_id,
+                            "request_id": str(reply.owner.request_id),
+                            "call_id": item.scope.context["call_id"],
+                            "registration_id": item.registration_id,
+                        },
+                    )
+            except TimeoutError:
+                # A write may have reached the peer before cancellation.
+                self._settle(item, "uncertain", "submission_timeout")
+                self.cancel_reply(reply, "submission_timeout")
+                return
             except BaseException:
                 self._settle(item, "failed", "submission_uncertain")
                 self.cancel_reply(reply, "transport_interrupted")

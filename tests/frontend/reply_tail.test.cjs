@@ -4,6 +4,13 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../../static/app/app-reply-tail.js'), 'utf8');
+const geometry = fs.readFileSync(path.join(__dirname,
+    '../../static/app/app-react-chat-window/geometry-and-messages.js'), 'utf8');
+const sortStart = geometry.indexOf('    I.sortMessages = function sortMessages(messages)');
+const sortEnd = geometry.indexOf('    I.buildRenderProps =', sortStart);
+assert.ok(sortStart >= 0 && sortEnd > sortStart);
+const hostInternals = {};
+vm.runInNewContext(geometry.slice(sortStart, sortEnd), { I: hostInternals });
 
 function harness() {
     const listeners = new Map();
@@ -20,7 +27,7 @@ function harness() {
         appendReactChatBlocks(payload, placement) {
             attachments.push({ payload, placement });
             messages.push({ role: 'system', ...placement });
-            messages.sort((a, b) => a.sortKey - b.sortKey);
+            messages.splice(0, messages.length, ...hostInternals.sortMessages(messages));
             return true;
         },
     };
@@ -192,4 +199,72 @@ test('separate calls may use the same local registration id', () => {
     h.flush();
     assert.equal(h.attachments.length, 2);
     assert.notEqual(h.attachments[0].placement.id, h.attachments[1].placement.id);
+});
+
+for (const count of [20, 64]) {
+    for (const batchSize of [1, 7, count]) {
+        test(`${count} timestamp-sized attachments in batches of ${batchSize} stay before the next turn`, () => {
+            const h = harness();
+            const base = 1791676800000;
+            h.start();
+            h.assistant('original', 'turn-A', base);
+            h.end();
+            h.messages.push({ id: 'user-next', role: 'user', sortKey: base + 1 });
+            h.assistant('assistant-next', 'turn-B', base + 2);
+            for (let index = 0; index < count; index++) {
+                const id = `image-${String(index).padStart(2, '0')}`;
+                h.enqueue(id);
+                h.enqueue(id);
+                if ((index + 1) % batchSize === 0) h.flush();
+            }
+            h.flush();
+            assert.equal(h.attachments.length, count);
+            assert.deepEqual(h.messages.map(message => message.id), [
+                'original',
+                ...h.attachments.map(attachment => attachment.placement.id),
+                'user-next',
+                'assistant-next',
+            ]);
+            let previous = base;
+            for (const attachment of h.attachments) {
+                assert.ok(attachment.placement.sortKey > previous);
+                assert.ok(attachment.placement.sortKey < base + 1);
+                previous = attachment.placement.sortKey;
+            }
+        });
+    }
+}
+
+test('attachments keep ordinary image and card positions unchanged', () => {
+    const h = harness();
+    const base = 1791676800000;
+    h.start();
+    h.assistant('original', 'turn-A', base);
+    h.end();
+    h.messages.push(
+        { id: 'ordinary-image', role: 'system', sortKey: base + 1 },
+        { id: 'html-card', role: 'system', sortKey: base + 2 },
+        { id: 'user-next', role: 'user', sortKey: base + 3 },
+    );
+    for (let index = 0; index < 64; index++) {
+        h.enqueue(`image-${index}`);
+        h.flush();
+    }
+    assert.equal(h.attachments.length, 64);
+    assert.deepEqual(h.messages.slice(-3).map(message => [message.id, message.sortKey]), [
+        ['ordinary-image', base + 1], ['html-card', base + 2], ['user-next', base + 3],
+    ]);
+});
+
+test('an unrepresentable insertion never crosses the next message', () => {
+    const h = harness();
+    const base = 1791676800000;
+    h.start();
+    h.assistant('original', 'turn-A', base);
+    h.end();
+    h.messages.push({ id: 'user-next', role: 'user', sortKey: base + 0.000244140625 });
+    h.enqueue();
+    h.flush();
+    assert.equal(h.attachments.length, 0);
+    assert.equal(h.messages.length, 2);
 });

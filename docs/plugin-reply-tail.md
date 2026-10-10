@@ -46,11 +46,14 @@ The SDK deliberately does not retry or fall back to `push_message`.
 | `submitted` | Submitted to the original WebSocket, with `submitted_at` |
 | `cancelled` | Removed before submission |
 | `failed` | Rejected or transport failed; inspect `reason` |
-| `uncertain` | Submission is in progress; query the same identity |
+| `uncertain` | Submission is in progress, or timed out with delivery unknown; inspect `reason` |
 
 `submitted` is not a display acknowledgement and does not provide exactly-once
 delivery after disconnect or restart. Cancelling a submitted image reports
 `submitted`, rather than claiming the already transmitted image was cancelled.
+`uncertain` with `submission_timeout` is a settled unknown-delivery outcome:
+image memory is released, remaining unsent attachments are cancelled, and the
+host does not retry. Reusing the same registration ID does not resubmit it.
 
 ## Scope And Limits
 
@@ -69,6 +72,11 @@ registration, 2 MiB serialized payload per registration, 16 MiB retained or
 validating payload, four concurrent validations, and 120-second retention.
 Capacity exhaustion rejects new work. Expiry reclaims state and never triggers
 submission.
+
+The whole reply's attachment submission phase has a five-second deadline,
+also capped by each original context's expiry. A stalled write is cancelled
+at the deadline so it cannot indefinitely retain image memory or hold reply
+cleanup. Status records remain bounded by the normal retention policy.
 
 Retry or discard cancels the old attempt. Interruption cancels incomplete
 replies; a new input cannot reassign a completed reply's image to a newer turn.

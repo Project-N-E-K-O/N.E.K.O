@@ -465,3 +465,95 @@ async def test_validation_capacity_survives_caller_cancellation(chain, monkeypat
         await asyncio.sleep(0.01)
     assert chain.registry._validations == 0
     assert chain.registry._retained_bytes == 0
+
+
+@pytest.mark.parametrize("change", ["none", "reconnect", "expiry"])
+async def test_stalled_submission_has_deadline_and_reclaims_image_memory(chain, monkeypatch, change):
+    import main_logic.reply_tail as module
+
+    monkeypatch.setattr(module, "SUBMISSION_TIMEOUT_SECONDS", 0.02)
+    await register(chain, registration_id="first")
+    await register(chain, registration_id="second")
+    first, second = chain.registry._registrations.values()
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def send(_payload):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    original_socket = chain.manager.websocket
+    original_socket.send_json.side_effect = send
+    task = asyncio.create_task(finish(chain))
+    await asyncio.wait_for(started.wait(), 1)
+    if change == "reconnect":
+        chain.manager.websocket = SimpleNamespace(send_json=AsyncMock())
+    elif change == "expiry":
+        first.scope.expires = 0
+        chain.registry._prune()
+    await asyncio.wait_for(task, 1)
+    assert cancelled.is_set()
+    assert first.status == "uncertain" and first.reason == "submission_timeout"
+    assert second.status == "cancelled"
+    assert chain.registry._retained_bytes == 0
+    assert first.blocks == second.blocks == []
+    original_socket.send_json.assert_awaited_once()
+    if change == "reconnect":
+        chain.manager.websocket.send_json.assert_not_awaited()
+    if change != "expiry":
+        result = chain.registry.status(chain.context, "first", plugin_id="stickers")
+        assert result == {
+            "accepted": False, "status": "uncertain", "reason": "submission_timeout",
+        }
+        assert chain.registry.cancel(chain.context, "first", plugin_id="stickers") == result
+        assert (await register(chain, registration_id="first")) == {**result, "duplicate": True}
+        await finish(chain)
+        original_socket.send_json.assert_awaited_once()
+        first.scope.expires = 0
+    chain.registry._prune()
+    assert not chain.registry._registrations
+    assert not chain.registry._scopes
+
+
+async def test_submission_budget_is_shared_by_all_attachments(chain, monkeypatch):
+    import main_logic.reply_tail as module
+
+    monkeypatch.setattr(module, "SUBMISSION_TIMEOUT_SECONDS", 0.1)
+    await register(chain, registration_id="first")
+    await register(chain, registration_id="second")
+    calls = 0
+
+    async def send(_payload):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.065)
+
+    chain.manager.websocket.send_json.side_effect = send
+    await asyncio.wait_for(finish(chain), 1)
+    assert calls == 2
+    assert chain.registry.status(chain.context, "first", plugin_id="stickers")["status"] == "submitted"
+    assert chain.registry.status(chain.context, "second", plugin_id="stickers")["reason"] == "submission_timeout"
+    assert chain.registry._retained_bytes == 0
+
+
+async def test_context_expiry_caps_submission_deadline(chain, monkeypatch):
+    import main_logic.reply_tail as module
+
+    monkeypatch.setattr(module, "SUBMISSION_TIMEOUT_SECONDS", 60.0)
+    await register(chain)
+    item = next(iter(chain.registry._registrations.values()))
+    item.scope.expires = module.time.monotonic() + 0.02
+
+    async def send(_payload):
+        await asyncio.Event().wait()
+
+    chain.manager.websocket.send_json.side_effect = send
+    await asyncio.wait_for(finish(chain), 1)
+    assert item.status == "uncertain" and item.reason == "submission_timeout"
+    assert chain.registry._retained_bytes == 0
+    # Event-loop timers may fire within one clock-resolution tick of expiry.
+    item.scope.expires = 0
+    chain.registry._prune()
+    assert not chain.registry._registrations

@@ -91,12 +91,17 @@
             // A superseded caption needs the original history anchor instead.
             if (!captionReady && !anchors.every(function (message) { return rendered(message.id, false); })) return;
             var anchor = anchors[anchors.length - 1];
-            if (typeof anchor.sortKey !== 'number') return;
+            if (!Number.isFinite(anchor.sortKey)) return;
             var floor = Math.max(anchor.sortKey, state.lastTailSortKey || anchor.sortKey);
             var next = messages.find(function (message) { return message.sortKey > floor; });
-            var sortKey = next
-                ? floor + (next.sortKey - floor) / 2
-                : floor + 0.5;
+            // Reserve the bounded queue's space once. Repeated bisection
+            // exhausts floating-point precision at timestamp-sized keys.
+            if (!state.tailStep) {
+                state.tailStep = (next ? next.sortKey - floor : 1) / (MAX_ENTRIES + 1);
+            }
+            var sortKey = floor + state.tailStep;
+            if (!Number.isFinite(sortKey) || sortKey <= floor
+                    || (next && sortKey >= next.sortKey)) return;
             var accepted = window.appendReactChatBlocks(entry.payload, {
                 id: 'reply-tail:' + key,
                 sortKey: sortKey,
