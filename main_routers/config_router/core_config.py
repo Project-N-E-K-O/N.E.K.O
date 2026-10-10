@@ -47,6 +47,7 @@ CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
     'assistApiKeyOrcarouter',
     'assistApiKeyRequesty',
+    'assistApiKeyAtlascloud',
 )
 
 CORE_CONFIG_MODEL_API_KEY_FIELDS = tuple(
@@ -273,6 +274,7 @@ async def get_core_config_api():
             "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter'),
             "assistApiKeyOrcarouter": core_cfg.get('assistApiKeyOrcarouter', '') or _fb('orcarouter'),
             "assistApiKeyRequesty": core_cfg.get('assistApiKeyRequesty', ''),
+            "assistApiKeyAtlascloud": core_cfg.get('assistApiKeyAtlascloud', ''),
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
