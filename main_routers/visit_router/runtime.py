@@ -880,10 +880,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self.request_finalize("busy")
             return False
         # 与上面的代数判断之间没有让出：此后开始的账号变更会先等这次请求结束，再改本机会话
+        # 钉在准入账号上：请求取会话快照时若已换成别的账号，凭证客户端不发请求（不会按新账号兑邀请码）
         request = asyncio.ensure_future(self.deps.fetch_credentials(
             role=self.side, visit_id=self.visit_id, char_tag=self.character_uid,
             tier=VISIT_VIDEO_TIER_DEFAULT, display_name=self.lanlan_name,
             invite_code=self.invite_code if self.side == "guest" else None,
+            expect_account=self.admitted_account,
         ))
         _credential_requests.add(request)
         request.add_done_callback(_credential_requests.discard)
@@ -940,6 +942,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             details["retry_after_s"] = exc.retry_after_s
         if isinstance(exc, cr.VisitRoomEnded):
             self.request_finalize("kicked")
+            return
+        if isinstance(exc, cr.VisitAccountChanged):
+            self.request_finalize("busy")
             return
         if isinstance(exc, cr.VisitLoginRequired):
             reason = "login_required"

@@ -4143,3 +4143,18 @@ async def test_account_change_waits_for_an_in_flight_credential_request(tmp_path
         assert swapped == ["session replaced"]
     finally:
         await teardown(side, clock=clock)
+
+
+async def test_credentials_request_is_pinned_to_the_admitted_account(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "guest", clock=clock, wall=wall)
+    side.creds_error = cr.VisitAccountChanged("account_change")    # 凭证客户端发现会话已换了账号
+    rt = await start_side(side, invite_code=INVITE, clock=clock, wall=wall)
+    try:
+        await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+        assert await rt.issue_credentials() is None
+        assert side.creds_calls[0]["expect_account"] == "acct"
+        assert rt.finalize_reason == "busy" and rt.takeover_token is None
+    finally:
+        await teardown(side, clock=clock)

@@ -249,6 +249,13 @@ class VisitInviteInvalid(VisitServersError):
     http_status = 409
 
 
+class VisitAccountChanged(VisitServersError):
+    """The signed-in community account is not the one the request was admitted for (no request was sent)."""
+
+    code = "VISIT_E_BUSY"
+    http_status = 409
+
+
 class VisitInviteFormat(VisitServersError):
     """The invite code does not match ``^[A-Z2-7]{10}$`` (rejected before any network)."""
 
@@ -844,8 +851,14 @@ async def fetch_visit_credentials(
     tier: str = VISIT_VIDEO_TIER_DEFAULT,
     display_name: str | None = None,
     invite_code: str | None = None,
+    expect_account: str | None = None,
 ) -> VisitCredentials:
     """``POST {social_base}/api/visit/credentials`` and validate the reply (§4.7).
+
+    ``expect_account`` pins the request to one community account: the session
+    snapshot this request is sent with (its bearer) must belong to it, else
+    :class:`VisitAccountChanged` is raised before anything is sent (a logout /
+    switch landed meanwhile; a guest must not redeem the invite as another account).
 
     ``char_tag`` is the character's stable ``character_uid`` (see
     :func:`resolve_char_tag`), never derived from the name. A guest must pass
@@ -866,6 +879,9 @@ async def fetch_visit_credentials(
         raise ValueError("a host does not redeem an invite code")
 
     session = await _servers_session()
+    if expect_account is not None and session.account != expect_account:
+        # 请求用的就是这份会话快照：快照已经是别的账号的，就一个字节都不发
+        raise VisitAccountChanged("account_change")
     body: dict[str, Any] = {
         "role": role,
         "visit_id": visit_id,
