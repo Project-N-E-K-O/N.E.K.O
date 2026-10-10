@@ -124,6 +124,9 @@ class VectorSnapshot:
     # (chunk id, blob) of stored vectors that were unusable; the service
     # clears them under its write lock so they get computed again.
     damaged: tuple[tuple[int, bytes], ...] = ()
+    # The indexed version of every pack when the vectors were read; ``None``
+    # when unknown.
+    pack_versions: dict[str, str] | None = None
 
 
 def _row_to_entry(row: sqlite3.Row) -> StoredEntry:
@@ -761,11 +764,20 @@ class KnowledgeStore:
     def load_vectors(self, model_id: str) -> VectorSnapshot | None:
         """Load every ready vector of ``model_id`` into one normalized matrix."""
         with self._read() as conn:
-            rows = conn.execute(
-                "SELECT id, entry_id, pack_id, vector, chunk_index FROM chunks"
-                " WHERE model_id=? AND vector IS NOT NULL ORDER BY id",
-                (model_id,),
-            ).fetchall()
+            # One read transaction: the versions describe exactly these rows.
+            conn.execute("BEGIN")
+            try:
+                rows = conn.execute(
+                    "SELECT id, entry_id, pack_id, vector, chunk_index FROM chunks"
+                    " WHERE model_id=? AND vector IS NOT NULL ORDER BY id",
+                    (model_id,),
+                ).fetchall()
+                versions = {
+                    str(row["pack_id"]): str(row["pack_sha256"])
+                    for row in conn.execute("SELECT pack_id, pack_sha256 FROM packs")
+                }
+            finally:
+                conn.rollback()
         if not rows:
             return None
         # The model's dimension is what most vectors have, never just the
@@ -808,4 +820,5 @@ class KnowledgeStore:
             matrix=np.ascontiguousarray(matrix, dtype=np.float32),
             chunk_indexes=np.asarray(chunk_indexes, dtype=np.int32),
             damaged=tuple(damaged),
+            pack_versions=versions,
         )

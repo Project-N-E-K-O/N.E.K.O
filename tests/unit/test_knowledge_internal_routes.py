@@ -300,8 +300,7 @@ async def test_json_routes_take_only_json_bodies(client):
     )
     assert plain.status_code == 400
     assert service.availability()["enabled"] is True
-    # Main and the plugin server send JSON with no browser origin; a page of
-    # the app itself (loopback origin) is allowed as well.
+    # Main and the plugin server send JSON with no browser origin.
     typed = await http.post(
         "/internal/knowledge/settings",
         content=b'{"enabled": false}',
@@ -312,10 +311,19 @@ async def test_json_routes_take_only_json_bodies(client):
     app.include_router(knowledge_routes.router)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:48912") as local_http:
+        # A page another local app serves on a loopback port is a browser too.
         local = await local_http.post(
-            "/internal/knowledge/settings", json={"enabled": True}, headers={"Origin": "http://127.0.0.1:48911"}
+            "/internal/knowledge/settings", json={"enabled": True}, headers={"Origin": "http://127.0.0.1:5173"}
         )
-    assert local.status_code == 200 and local.json()["enabled"] is True
+        form = await local_http.post(
+            "/internal/knowledge/packs/import",
+            files={"pack": ("pack.json", json.dumps(PACK).encode(), "application/json")},
+            headers={"Origin": "http://localhost:8080"},
+        )
+        native = await local_http.post("/internal/knowledge/settings", json={"enabled": True})
+    assert local.status_code == 403 and form.status_code == 403
+    assert service.list_jobs() == []
+    assert native.status_code == 200 and native.json()["enabled"] is True
 
 
 async def test_imports_take_only_json_or_multipart_bodies(client):

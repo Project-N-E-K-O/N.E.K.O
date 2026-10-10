@@ -55,6 +55,12 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def pack_file_name(pack_id: str, pack_sha256: str) -> str:
+    """Name of the raw file a pack version is installed as."""
+    # Prefixed so an id like ``con`` or ``nul`` never names a Windows device.
+    return f"pack-{pack_id}.{pack_sha256[:16]}.json"
+
+
 @dataclass(frozen=True, slots=True)
 class PackRecord:
     pack_id: str
@@ -76,8 +82,7 @@ class PackRecord:
 
     @property
     def file_name(self) -> str:
-        # Prefixed so an id like ``con`` or ``nul`` never names a Windows device.
-        return f"pack-{self.pack_id}.{self.pack_sha256[:16]}.json"
+        return pack_file_name(self.pack_id, self.pack_sha256)
 
     def to_json(self) -> dict[str, Any]:
         return {

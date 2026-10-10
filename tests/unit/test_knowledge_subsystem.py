@@ -2965,3 +2965,69 @@ async def test_a_pack_mid_replacement_does_not_take_candidate_slots(tmp_path, mo
         assert [hit["pack_id"] for hit in result["hits"]] == ["fact-pack"]
     finally:
         await service.stop()
+
+
+async def test_an_installing_jobs_pack_file_is_counted_once(tmp_path, monkeypatch):
+    import threading
+
+    service = await _started(tmp_path)
+    indexing = threading.Event()
+    release = threading.Event()
+    try:
+        one = _raw(_pack("pack-one"))
+        two = _raw(_pack("pack-two"))
+        sizes = [len(canonical_pack_bytes(parse_pack(json.loads(raw)))) for raw in (one, two)]
+        monkeypatch.setattr(service_module, "MAX_TOTAL_PACK_BYTES", sum(sizes) + 16)  # both fit
+        real_replace = service._store.replace_pack
+
+        def slow_replace(*args, **kwargs):
+            indexing.set()  # the pack file is written, the job still building
+            release.wait(5)
+            return real_replace(*args, **kwargs)
+
+        monkeypatch.setattr(service._store, "replace_pack", slow_replace)
+        first = await service.import_pack(one)
+        assert first["ok"] is True
+        assert await asyncio.to_thread(indexing.wait, 5)
+        assert list((tmp_path / "packs").glob("pack-pack-one.*.json"))
+        second = await service.import_pack(two)
+        assert second["ok"] is True, second
+    finally:
+        release.set()
+        await service.stop()
+
+
+async def test_vectors_of_a_replaced_version_do_not_take_semantic_slots(tmp_path, monkeypatch, fast_indexer):
+    import dataclasses
+
+    service = await _started(tmp_path, FakeEmbedder())
+    try:
+        await _import(service, _pack())
+        for _ in range(300):
+            if service._vectors is not None and "demo-memes" in service._vectors.pack_ids:
+                break
+            await asyncio.sleep(0.01)
+        assert service._vectors is not None and "demo-memes" in service._vectors.pack_ids
+        assert service._vectors.pack_versions["demo-memes"] == service._registry.packs["demo-memes"].pack_sha256
+        # Freeze background work so the snapshot stays as set below.
+        monkeypatch.setattr(service, "_schedule_vector_refresh", lambda: None)
+        for task in service._tasks:
+            task.cancel()
+        while service._vector_task is not None and not service._vector_task.done():
+            await asyncio.gather(service._vector_task, return_exceptions=True)
+        # As between a replacement's registry update and the snapshot reload:
+        # the vectors were read for the previous version.
+        service._vectors = dataclasses.replace(service._vectors, pack_versions={"demo-memes": "0" * 64})
+        searched: list[list[str]] = []
+        real = service_module.semantic_candidates
+
+        def record(snapshot, vector, *, allowed_pack_ids, **kwargs):
+            searched.append(list(allowed_pack_ids))
+            return real(snapshot, vector, allowed_pack_ids=allowed_pack_ids, **kwargs)
+
+        monkeypatch.setattr(service_module, "semantic_candidates", record)
+        result = await service.query(query="绝绝子")
+        assert result["result"] == "matched"  # keyword search still finds it
+        assert all("demo-memes" not in packs for packs in searched)
+    finally:
+        await service.stop()

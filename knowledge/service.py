@@ -72,6 +72,7 @@ from .registry import (
     PackRecord,
     Registry,
     load_registry,
+    pack_file_name,
     save_registry,
     utc_now,
 )
@@ -203,6 +204,19 @@ _QUERY_WORK: contextvars.ContextVar[list[concurrent.futures.Future[Any]] | None]
 )
 
 
+def _job_files(jobs: Sequence[ImportJob], *, installing: bool) -> frozenset[str]:
+    """File names whose bytes are counted from ``jobs`` (their ``staged_bytes``).
+
+    Each job's staged upload, and with ``installing`` also the pack file it
+    installs: the runner writes that before indexing, which can take long,
+    and the job stays active until it is done.
+    """
+    names = {f"{job.job_id}.json" for job in jobs}
+    if installing:
+        names |= {pack_file_name(job.pack_id, job.staged_sha256) for job in jobs}
+    return frozenset(names)
+
+
 def _batch_pause(inference_seconds: float) -> float:
     """Pause after an index batch: idle at least (1 - duty) / duty times as long
     as the batch computed, so indexing stays at or below INDEX_TARGET_DUTY."""
@@ -276,7 +290,9 @@ class KnowledgeService:
         self._parsing = 0
         self._detached: set[asyncio.Future[Any]] = set()
         # Query and parse threads, which outlive a request that stops waiting.
+        # Their completion callbacks run on worker threads, hence the lock.
         self._thread_work: set[concurrent.futures.Future[Any]] = set()
+        self._thread_work_lock = threading.Lock()
         self._admission_lock = asyncio.Lock()
         self._startup_work: asyncio.Future[Any] | None = None
         self._parse_pool: concurrent.futures.ThreadPoolExecutor | None = None
@@ -342,9 +358,8 @@ class KnowledgeService:
         # A query or parse thread whose request timed out or went away may
         # still have knowledge.db open or a pack in memory; within the same
         # bound, let it end before reporting stopped.
-        # list() copies in one step; worker threads discard finished work
-        # from the set meanwhile, which would break iterating it directly.
-        running = [future for future in list(self._thread_work) if not future.done()]
+        with self._thread_work_lock:
+            running = [future for future in self._thread_work if not future.done()]
         if running:
             await asyncio.wait(
                 [asyncio.wrap_future(future) for future in running],
@@ -790,7 +805,7 @@ class KnowledgeService:
             size for pack_id, size in self._admitting.items() if pack_id != pack.pack_id
         )
         installed_bytes = await asyncio.to_thread(
-            self._installed_pack_bytes, pack.pack_id, frozenset(job.job_id for job in active)
+            self._installed_pack_bytes, pack.pack_id, _job_files(active, installing=True)
         )
         if installed_bytes + staged_bytes + len(canonical) > MAX_TOTAL_PACK_BYTES:
             return {"ok": False, "reason": "capacity_bytes"}
@@ -841,8 +856,13 @@ class KnowledgeService:
         return await asyncio.wrap_future(future)
 
     def _track_thread_work(self, future: concurrent.futures.Future[Any]) -> None:
-        self._thread_work.add(future)
-        future.add_done_callback(self._thread_work.discard)
+        with self._thread_work_lock:
+            self._thread_work.add(future)
+        future.add_done_callback(self._untrack_thread_work)
+
+    def _untrack_thread_work(self, future: concurrent.futures.Future[Any]) -> None:
+        with self._thread_work_lock:
+            self._thread_work.discard(future)
 
     @staticmethod
     def _prepare_import(raw: bytes) -> tuple[KnowledgePack, bytes, int]:
@@ -856,16 +876,18 @@ class KnowledgeService:
         except OSError:
             return False
 
-    def _active_job_ids(self) -> frozenset[str]:
-        return frozenset(job.job_id for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES)
+    def _active_job_files(self) -> frozenset[str]:
+        return _job_files(
+            [job for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES], installing=False
+        )
 
-    def _installed_pack_bytes(self, replacing: str, active_jobs: frozenset[str] = frozenset()) -> int:
+    def _installed_pack_bytes(self, replacing: str, job_files: frozenset[str] = frozenset()) -> int:
         """Bytes of pack files on disk, except the one ``replacing`` swaps out.
 
         Every file counts, not just registered ones: an old version or a
         staged upload whose deletion failed still takes disk space until a
-        later cleanup. Staged files of active jobs are left out here; the
-        callers count those from the jobs themselves.
+        later cleanup. ``job_files`` (see ``_job_files``) are left out here;
+        the callers count those from the jobs themselves.
         """
         record = self._registry.packs.get(replacing)
         skip = record.file_name if record is not None else None
@@ -881,7 +903,7 @@ class KnowledgeService:
                     continue
                 if directory == PACKS_DIR and path.name == skip:
                     continue
-                if directory == STAGING_DIR and path.stem in active_jobs:
+                if path.name in job_files:
                     continue
                 try:
                     total += path.stat().st_size
@@ -1008,7 +1030,7 @@ class KnowledgeService:
         if self._superseded(job):
             raise InterruptedError("cancelled")
         previous = self._registry.packs.get(job.pack_id)
-        active_jobs = self._active_job_ids()
+        active_jobs = self._active_job_files()
 
         def commit_gate() -> bool:
             with job.gate:
@@ -1486,7 +1508,17 @@ class KnowledgeService:
         vector_packs = [
             pack_id
             for pack_id in allowed
-            if (record := registry.packs.get(pack_id)) is not None and record.local_embedding
+            if (record := registry.packs.get(pack_id)) is not None
+            and record.local_embedding
+            # Vectors read for another version of the pack (it was replaced
+            # and the snapshot is still being reloaded) point at entry ids
+            # that no longer exist: they would fill the semantic cutoff and
+            # then be dropped. Until the reload the pack is keyword-only.
+            and (
+                snapshot is None
+                or snapshot.pack_versions is None
+                or snapshot.pack_versions.get(pack_id, record.pack_sha256) == record.pack_sha256
+            )
         ]
         if (
             model_id is not None

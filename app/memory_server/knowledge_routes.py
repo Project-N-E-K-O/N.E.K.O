@@ -26,11 +26,13 @@ rest of the Memory Server: ``HostOriginGuardMiddleware``,
 ``InboundBodySizeLimitMiddleware`` and the storage startup gate (requests are
 refused with 409 while storage is limited). Browser-facing authentication and
 CSRF checks happen in Main's ``/api/public-knowledge`` proxy; the callers here
-(Main and the plugin server) send no browser ``Origin``. Loopback traffic needs
-no token on this server and the guard checks only the Host of HTTP requests,
-so every route also refuses requests a browser sent from another site, and the
-JSON routes accept only ``application/json`` bodies: otherwise any web page
-could import, remove or switch off knowledge with a CORS-simple POST.
+(Main and the plugin server) send neither ``Origin`` nor ``Referer``. Loopback
+traffic needs no token on this server and the guard checks only the Host of
+HTTP requests, so every route refuses any request that carries a browser
+origin (this server serves no pages, so not even a loopback origin is a
+legitimate caller), and the JSON routes accept only ``application/json``
+bodies: otherwise a web page, or a page another local app serves, could
+import, remove or switch off knowledge with a CORS-simple POST.
 
 Every handler converts failures into ``{"ok": false, "reason": ...}``; nothing
 raised by knowledge code reaches the memory request pipeline.
@@ -49,22 +51,21 @@ from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartParser
 
 from knowledge.service import MAX_PENDING_IMPORTS, KnowledgeService, KnowledgeUnavailable
-from utils.host_origin_guard import is_http_browser_origin_allowed
 from utils.http.knowledge_proxy import JSON_BODY_MAX_BYTES, PACK_BODY_MAX_BYTES
 
 from ._shared import logger
 
 
-async def _refuse_cross_site_browsers(request: Request) -> None:
-    """Refuse a request a browser sent from another site, before any body is read."""
-    if not is_http_browser_origin_allowed(request.scope):
+async def _refuse_browsers(request: Request) -> None:
+    """Refuse any request a browser sent, before its body is read."""
+    if "origin" in request.headers or "referer" in request.headers:
         raise HTTPException(status_code=403, detail={"ok": False, "reason": "untrusted_origin"})
 
 
 router = APIRouter(
     prefix="/internal/knowledge",
     tags=["knowledge"],
-    dependencies=[Depends(_refuse_cross_site_browsers)],
+    dependencies=[Depends(_refuse_browsers)],
 )
 
 # The same limits the browser-facing proxies apply.
