@@ -251,3 +251,17 @@ async def test_non_sticky_failures_are_logged_at_most_once_a_minute(monkeypatch)
         service._on_inference_error(RuntimeError("boom"), sticky=False)
     assert len(warnings) == 1
     assert service.is_available()
+
+
+async def test_a_general_inference_fault_stops_the_one_by_one_retry(monkeypatch):
+    service = _ready_embedding_service(monkeypatch)
+    calls = []
+
+    def broken(texts):
+        calls.append(list(texts))
+        raise RuntimeError("out of memory")
+
+    monkeypatch.setattr(service, "_infer_blocking", broken)
+    shared = knowledge_routes._SharedEmbedder(service)
+    assert await shared.embed_batch([f"t{i}" for i in range(8)]) == [None] * 8
+    assert len(calls) == 1 + 2  # the batch, then two single retries

@@ -258,6 +258,7 @@ class KnowledgeService:
         self._query_pool: concurrent.futures.ThreadPoolExecutor | None = None
         self._parsing = 0
         self._detached: set[asyncio.Task[Any]] = set()
+        self._startup_work: asyncio.Future[Any] | None = None
         self._parse_pool: concurrent.futures.ThreadPoolExecutor | None = None
         # Set (and replaced) whenever a removal finishes, committed or not.
         self._removal_settled = asyncio.Event()
@@ -270,7 +271,10 @@ class KnowledgeService:
         """Open, reconcile and start background work; never raises."""
         try:
             async with self._write_lock:
-                await asyncio.to_thread(self._open_blocking)
+                # Tracked so stop() can wait for it: cancelling start() stops
+                # the waiting, not the thread rebuilding the index.
+                self._startup_work = asyncio.ensure_future(asyncio.to_thread(self._open_blocking))
+                await asyncio.shield(self._startup_work)
             self._state = "ready"
             logger.info(
                 "[Knowledge] ready: packs=%d enabled=%s", len(self._registry.packs), self._registry.enabled
@@ -291,6 +295,9 @@ class KnowledgeService:
 
     async def stop(self) -> None:
         self._stopping = True
+        startup = self._startup_work
+        if startup is not None and not startup.done():
+            await asyncio.wait({startup}, timeout=DETACHED_WRITE_WAIT_SECONDS)
         self._index_wakeup.set()
         tasks = [task for task in (*self._tasks, self._vector_task) if task is not None]
         for task in tasks:

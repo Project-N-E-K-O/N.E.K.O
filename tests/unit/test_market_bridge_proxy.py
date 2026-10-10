@@ -166,3 +166,100 @@ async def test_market_key_failure_is_503_after_body_read(monkeypatch, failure):
         response = await client.post("/market/test", content=upload())
     assert response.status_code == 503
     assert response.json() == {"detail": "instance_access_unavailable"}
+
+
+
+_RealAsyncClient = httpx.AsyncClient
+
+
+def _knowledge_proxy_app(monkeypatch, seen):
+    monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def request(self, method, url, *, content, headers):
+            seen.append((method, url, content))
+            return httpx.Response(200, content=b'{"ok": true}', headers={"content-type": "application/json"})
+
+    monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: "http://127.0.0.1:48916")
+    monkeypatch.setattr(web_app.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    app = FastAPI()
+    app.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=["GET", "POST"])
+    return app
+
+
+@pytest.mark.asyncio
+async def test_knowledge_uploads_are_capped_while_read(monkeypatch):
+    from utils.http import knowledge_proxy
+
+    seen: list = []
+    app = _knowledge_proxy_app(monkeypatch, seen)
+    monkeypatch.setitem(knowledge_proxy.WRITE_PATHS, "packs/import", 32)
+
+    async def chunks():
+        for _ in range(8):  # no Content-Length: only the read itself can stop it
+            yield b"x" * 16
+
+    async with _RealAsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:48911") as client:
+        response = await client.post("/market/knowledge/packs/import?token=t", content=chunks())
+    assert response.status_code == 413
+    assert response.json()["reason"] == "payload_too_large"
+    assert seen == []  # never forwarded
+    assert not knowledge_proxy.upload_slots().locked()
+
+
+@pytest.mark.asyncio
+async def test_knowledge_uploads_are_refused_when_slots_are_full(monkeypatch):
+    import asyncio
+
+    from utils.http import knowledge_proxy
+
+    seen: list = []
+    app = _knowledge_proxy_app(monkeypatch, seen)
+    monkeypatch.setattr(knowledge_proxy, "_upload_slots", asyncio.Semaphore(0))
+    async with _RealAsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:48911") as client:
+        # Bounded: a proxy that waited for a slot instead of refusing would hang.
+        response = await asyncio.wait_for(
+            client.post("/market/knowledge/packs/import?token=t", content=b"{}"), 5
+        )
+    assert response.status_code == 503
+    assert response.json()["reason"] == "knowledge_busy"
+    assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_knowledge_uploads_are_forwarded_and_free_their_slot(monkeypatch):
+    import asyncio
+
+    from utils.http import knowledge_proxy
+
+    seen: list = []
+    app = _knowledge_proxy_app(monkeypatch, seen)
+    slots = asyncio.Semaphore(1)
+    monkeypatch.setattr(knowledge_proxy, "_upload_slots", slots)
+    async with _RealAsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:48911") as client:
+        response = await client.post("/market/knowledge/packs/import?token=t", content=b'{"pack": 1}')
+        read = await client.get("/market/knowledge/status?token=t")
+    assert response.status_code == 200 and read.status_code == 200
+    assert seen[0] == ("POST", "http://127.0.0.1:48916/market/knowledge/packs/import?token=t", b'{"pack": 1}')
+    assert seen[1][0] == "GET"
+    assert not slots.locked()  # released once forwarded
+
+
+@pytest.mark.asyncio
+async def test_other_market_paths_are_read_as_before(monkeypatch):
+    from utils.http import knowledge_proxy
+
+    seen: list = []
+    app = _knowledge_proxy_app(monkeypatch, seen)
+    monkeypatch.setattr(knowledge_proxy, "_upload_slots", None)  # must not be touched
+    big = b"y" * (knowledge_proxy.PACK_BODY_MAX_BYTES + 10)
+    async with _RealAsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:48911") as client:
+        response = await client.post("/market/ordinary?token=t", content=big)
+    assert response.status_code == 200
+    assert seen[0][2] == big

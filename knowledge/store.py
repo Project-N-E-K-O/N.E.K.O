@@ -23,7 +23,9 @@ connection, so readers never share a connection with the single writer.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +39,8 @@ from .text import fts_match_expression, loose_surface, search_tokens, strict_sur
 
 # Tags compare like titles: width- and case-insensitive.
 tag_key = title_key
+
+logger = logging.getLogger("N.E.K.O.Knowledge")
 
 
 SCHEMA_VERSION = 3
@@ -725,25 +729,45 @@ class KnowledgeStore:
                 for row in rows
             }
 
+    def _clear_vectors(self, chunk_ids: Sequence[int]) -> None:
+        """Forget unusable vectors so the indexer computes them again."""
+        logger.warning("[Knowledge] clearing %d damaged vector(s)", len(chunk_ids))
+        with self._write() as conn:
+            conn.execute(
+                "UPDATE chunks SET vector=NULL, model_id=NULL, attempts=0"
+                " WHERE id IN (SELECT value FROM json_each(?))",
+                (json.dumps(list(chunk_ids)),),
+            )
+
     def load_vectors(self, model_id: str) -> VectorSnapshot | None:
         """Load every ready vector of ``model_id`` into one normalized matrix."""
         with self._read() as conn:
             rows = conn.execute(
-                "SELECT entry_id, pack_id, vector, chunk_index FROM chunks"
+                "SELECT id, entry_id, pack_id, vector, chunk_index FROM chunks"
                 " WHERE model_id=? AND vector IS NOT NULL ORDER BY id",
                 (model_id,),
             ).fetchall()
         if not rows:
             return None
-        dim = len(rows[0][2]) // 4
+        # The model's dimension is what most vectors have, never just the
+        # first row's: one damaged blob must not disqualify all the others.
+        lengths = Counter(len(row[3]) for row in rows)
+        size = max(lengths, key=lambda length: (lengths[length], length))
+        dim = size // 4
         pack_ids: list[str] = []
         pack_index: dict[str, int] = {}
         entry_ids: list[int] = []
         chunk_pack: list[int] = []
         chunk_indexes: list[int] = []
         blobs: list[bytes] = []
-        for entry_id, pack_id, blob, chunk_index in rows:
-            if len(blob) != dim * 4:
+        damaged: list[int] = []
+        for chunk_id, entry_id, pack_id, blob, chunk_index in rows:
+            if (
+                size % 4
+                or len(blob) != size
+                or not np.isfinite(np.frombuffer(blob, dtype="<f4")).all()
+            ):
+                damaged.append(int(chunk_id))
                 continue
             if pack_id not in pack_index:
                 pack_index[pack_id] = len(pack_ids)
@@ -752,6 +776,8 @@ class KnowledgeStore:
             chunk_pack.append(pack_index[pack_id])
             chunk_indexes.append(int(chunk_index))
             blobs.append(blob)
+        if damaged:
+            self._clear_vectors(damaged)
         if not blobs:
             return None
         matrix = np.frombuffer(b"".join(blobs), dtype="<f4").reshape(len(blobs), dim)

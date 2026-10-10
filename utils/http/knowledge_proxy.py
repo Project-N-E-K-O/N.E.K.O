@@ -23,6 +23,7 @@ with a size cap.
 
 from __future__ import annotations
 
+import asyncio
 from typing import AsyncIterator, Protocol
 
 JSON_BODY_MAX_BYTES = 64 * 1024
@@ -44,6 +45,27 @@ WRITE_PATHS: dict[str, int] = {
     "packs/material-type": JSON_BODY_MAX_BYTES,
     "packs/remove": JSON_BODY_MAX_BYTES,
 }
+
+
+# Imports allowed to hold a buffered body at once on a hop that buffers it.
+# Kept equal to knowledge.service.MAX_PENDING_IMPORTS (not importable here).
+MAX_BUFFERED_UPLOADS = 3
+_upload_slots = asyncio.Semaphore(MAX_BUFFERED_UPLOADS)
+
+
+def body_limit(path: str, method: str) -> int:
+    """Largest body a knowledge request may carry; unknown writes get the JSON cap."""
+    if method.upper() in ("GET", "HEAD", "OPTIONS"):
+        return 0
+    return WRITE_PATHS.get(path.strip("/"), JSON_BODY_MAX_BYTES)
+
+
+def upload_slots() -> asyncio.Semaphore:
+    """Slots for pack uploads on a hop that reads the whole body into memory.
+
+    Check ``locked()`` first and refuse when full: holding a slot never waits.
+    """
+    return _upload_slots
 
 
 class BodyTooLarge(Exception):

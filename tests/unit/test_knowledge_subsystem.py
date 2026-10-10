@@ -2607,3 +2607,61 @@ async def test_sampling_matches_whole_tags_ignoring_case(tmp_path):
 
 def test_the_knowledge_service_has_no_unused_listener_hook():
     assert not hasattr(service_module.KnowledgeService, "add_availability_listener")
+
+
+async def test_stop_waits_for_the_startup_reconcile_thread(tmp_path, monkeypatch):
+    import threading
+
+    service = service_module.KnowledgeService(tmp_path)
+    opening = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    real_open = service._open_blocking
+
+    def slow_open():
+        opening.set()
+        release.wait(5)
+        real_open()
+        finished.set()
+
+    monkeypatch.setattr(service, "_open_blocking", slow_open)
+    starting = asyncio.create_task(service.start())
+    await asyncio.to_thread(opening.wait, 5)
+    starting.cancel()
+    await asyncio.wait({starting})
+    threading.Timer(0.3, release.set).start()
+    await service.stop()
+    assert finished.is_set()  # stop() returned only after the rebuild thread ended
+
+
+async def test_damaged_vectors_do_not_disqualify_the_healthy_ones(tmp_path, fast_indexer):
+    service = await _started(tmp_path, FakeEmbedder())
+    try:
+        await _import(service, _pack(entries=_entries("v", 6)))
+        for _ in range(300):
+            stats = await asyncio.to_thread(service._store.chunk_stats, "fake-16")
+            if stats["demo-memes"]["ready"] == stats["demo-memes"]["total"]:
+                break
+            await asyncio.sleep(0.02)
+        total = stats["demo-memes"]["total"]
+        conn = sqlite3.connect(tmp_path / "knowledge.db")
+        try:
+            ids = [row[0] for row in conn.execute("SELECT id FROM chunks ORDER BY id")]
+            conn.execute("UPDATE chunks SET vector=? WHERE id=?", (bytes([0, 1, 2]), ids[0]))  # truncated
+            nan = np.full(16, np.nan, dtype="<f4").tobytes()
+            conn.execute("UPDATE chunks SET vector=? WHERE id=?", (nan, ids[1]))  # not finite
+            conn.commit()
+        finally:
+            conn.close()
+        snapshot = await asyncio.to_thread(service._store.load_vectors, "fake-16")
+        assert snapshot.matrix.shape == (total - 2, 16)
+        conn = sqlite3.connect(tmp_path / "knowledge.db")
+        try:
+            cleared = conn.execute(
+                "SELECT COUNT(*) FROM chunks WHERE vector IS NULL AND id IN (?, ?)", (ids[0], ids[1])
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert cleared == 2  # handed back to the indexer
+    finally:
+        await service.stop()
