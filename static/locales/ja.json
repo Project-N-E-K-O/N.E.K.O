@@ -1367,6 +1367,7 @@
             "openrouter": "OpenRouter（モデルアグリゲーター）",
             "orcarouter": "OrcaRouter（Claude ゲートウェイ）",
             "requesty": "Requesty（モデルルーター）",
+            "atlascloud": "Atlas Cloud（モデルアグリゲーター）",
             "vllm_omni": "vLLM-Omni（TTS）",
             "gptsovits": "GPT-SoVITS（セルフホスト）"
         },
@@ -1443,6 +1444,7 @@
             "openrouter": "OpenRouter",
             "orcarouter": "OrcaRouter",
             "requesty": "Requesty",
+            "atlascloud": "Atlas Cloud",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
         "freeVersionNoApiKey": "無料版はAPIキー不要です",

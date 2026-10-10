@@ -315,6 +315,18 @@
       "vision_model": "google/gemini-2.5-flash",
       "agent_model": "google/gemini-3-flash-preview"
     },
+    "atlascloud": {
+      "key": "atlascloud",
+      "name": "Atlas Cloud",
+      "description": "模型聚合平台，OpenAI 兼容接口，支持 DeepSeek、Gemini、Qwen、GLM、Kimi 等模型，国内版不支持",
+      "openrouter_url": "https://api.atlascloud.ai/v1",
+      "conversation_model": "google/gemini-3.1-flash-lite",
+      "summary_model": "deepseek-ai/deepseek-v4-flash",
+      "correction_model": "deepseek-ai/deepseek-v4-flash",
+      "emotion_model": "google/gemini-2.5-flash-lite",
+      "vision_model": "google/gemini-3.1-flash-lite",
+      "agent_model": "google/gemini-3-flash-preview"
+    },
     "vllm_omni": {
       "key": "vllm_omni",
       "name": "vLLM-Omni (TTS)",
@@ -381,7 +393,8 @@
     "grok": "ASSIST_API_KEY_GROK",
     "openrouter": "ASSIST_API_KEY_OPENROUTER",
     "orcarouter": "ASSIST_API_KEY_ORCAROUTER",
-    "requesty": "ASSIST_API_KEY_REQUESTY"
+    "requesty": "ASSIST_API_KEY_REQUESTY",
+    "atlascloud": "ASSIST_API_KEY_ATLASCLOUD"
   },
   "api_key_registry": {
     "qwen": {
@@ -462,6 +475,10 @@
     },
     "requesty": {
       "config_field": "assistApiKeyRequesty",
+      "restricted": true
+    },
+    "atlascloud": {
+      "config_field": "assistApiKeyAtlascloud",
       "restricted": true
     },
     "vllm_omni": {

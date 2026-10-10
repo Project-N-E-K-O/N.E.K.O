@@ -1367,6 +1367,7 @@
             "openrouter": "OpenRouter (agregador de modelo)",
             "orcarouter": "OrcaRouter (gateway do Claude)",
             "requesty": "Requesty (roteador de modelos)",
+            "atlascloud": "Atlas Cloud (agregador de modelo)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (auto-hospedado)"
         },
@@ -1443,6 +1444,7 @@
             "openrouter": "OpenRouter",
             "orcarouter": "OrcaRouter",
             "requesty": "Requesty",
+            "atlascloud": "Atlas Cloud",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "A versão gratuita não requer chave API",

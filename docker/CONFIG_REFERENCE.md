@@ -66,11 +66,12 @@
 | 硅基流动 API Key | `assistApiKeySilicon` | `NEKO_ASSIST_API_KEY_SILICON` | `""` |
 | Grok（xAI）API Key | `assistApiKeyGrok` | `NEKO_ASSIST_API_KEY_GROK` | `""` |
 | 豆包（火山方舟）API Key | `assistApiKeyDoubao` | `NEKO_ASSIST_API_KEY_DOUBAO` | `""` |
-| 其余提供商的 Key | `assistApiKeyQwenIntl`、`assistApiKeyDeepseek`、`assistApiKeyGemini`、`assistApiKeyKimi`、`assistApiKeyKimiCode`、`assistApiKeyMinimax`、`assistApiKeyMinimaxIntl`、`assistApiKeyMimo`、`assistApiKeyMimoTokenPlan`、`assistApiKeyElevenlabs`、`assistApiKeyClaude`、`assistApiKeyOpenrouter`、`assistApiKeyOrcarouter`、`assistApiKeyRequesty`、`assistApiKeyDoubaoTts` | -（在 Web UI 里设置或直接编辑文件） | `""` |
+| 其余提供商的 Key | `assistApiKeyQwenIntl`、`assistApiKeyDeepseek`、`assistApiKeyGemini`、`assistApiKeyKimi`、`assistApiKeyKimiCode`、`assistApiKeyMinimax`、`assistApiKeyMinimaxIntl`、`assistApiKeyMimo`、`assistApiKeyMimoTokenPlan`、`assistApiKeyElevenlabs`、`assistApiKeyClaude`、`assistApiKeyOpenrouter`、`assistApiKeyOrcarouter`、`assistApiKeyRequesty`、`assistApiKeyAtlascloud`、`assistApiKeyDoubaoTts` | -（在 Web UI 里设置或直接编辑文件） | `""` |
 
 - 提供商和字段的对应关系见 `config/api_providers.json` 的 `api_key_registry`；`assistApiKeyMimoTokenPlan` 是 `useMimoTokenPlan` 为 true 时 MiMo 改用的 Key。
-- 除 Requesty 外，当前 `coreApi` / `assistApi` 对应的 Key 字段留空时，运行时改用 `coreApiKey`（值为 `free-access` 时不回退）；其他提供商的 Key 字段不回退。MiniMax（含国际版）、MiMo（含 Token Plan）、ElevenLabs、豆包 TTS 这几个字段本身始终不回退，用这些提供商的语音时要单独填写；不过 MiniMax、MiMo 被选为 `assistApi` 而 Key 留空时，辅助模型的请求仍会用 `coreApiKey` 兜底（`free-access` 除外）。
+- 除 Requesty、Atlas Cloud 外，当前 `coreApi` / `assistApi` 对应的 Key 字段留空时，运行时改用 `coreApiKey`（值为 `free-access` 时不回退）；其他提供商的 Key 字段不回退。MiniMax（含国际版）、MiMo（含 Token Plan）、ElevenLabs、豆包 TTS 这几个字段本身始终不回退，用这些提供商的语音时要单独填写；不过 MiniMax、MiMo 被选为 `assistApi` 而 Key 留空时，辅助模型的请求仍会用 `coreApiKey` 兜底（`free-access` 除外）。
 - Requesty 的文本和 Agent 请求只使用专用字段 `assistApiKeyRequesty`，不会借用主服务商的 `coreApiKey`。Docker 仅设置 `NEKO_CORE_API_KEY` 和 `NEKO_ASSIST_API=requesty` 不足以使用 Requesty；请在 Web UI 的密钥簿中填写 Requesty Key，或在持久化的 `core_config.json` 中设置该字段。当前 entrypoint 不支持 `NEKO_ASSIST_API_KEY_REQUESTY`。Requesty 的文本 Key 不会写入 TTS 使用的 `AUDIO_API_KEY`，音频凭据保留原有默认值和核心 Key 回退逻辑。
+- Atlas Cloud 同上：文本和 Agent 请求只使用专用字段 `assistApiKeyAtlascloud`，不会借用 `coreApiKey`，也不会写入 `AUDIO_API_KEY`；当前 entrypoint 同样不支持 `NEKO_ASSIST_API_KEY_ATLASCLOUD`，请在 Web UI 的密钥簿或持久化的 `core_config.json` 中填写。
 - `mcpToken`（`NEKO_MCP_TOKEN`）：entrypoint 仍会写入这个字段，配置接口也仍会保存它，但当前代码只是把它转存成 `get_core_config()` 返回值里的 `MCP_ROUTER_API_KEY`，没有任何地方读取，填不填都不影响运行。
 
 ### 3. 服务器端口配置
@@ -136,7 +137,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 
 #### 辅助 API 提供商
 
-`assistApi` 的取值为 `assist_api_providers` 的键：free、qwen、qwen_intl、openai、glm、step、silicon、gemini、kimi、kimi_code、deepseek、doubao、minimax、minimax_intl、mimo、claude、grok、openrouter、orcarouter、requesty。另有 `vllm_omni` 只供 TTS 使用，不出现在辅助 API 下拉框里，它的模型槽位全部为空。
+`assistApi` 的取值为 `assist_api_providers` 的键：free、qwen、qwen_intl、openai、glm、step、silicon、gemini、kimi、kimi_code、deepseek、doubao、minimax、minimax_intl、mimo、claude、grok、openrouter、orcarouter、requesty、atlascloud。另有 `vllm_omni` 只供 TTS 使用，不出现在辅助 API 下拉框里，它的模型槽位全部为空。
 
 每个提供商有一个接口地址 `OPENROUTER_URL` 和 6 个模型槽位：
 - `CONVERSATION_MODEL` - 文本对话模型
@@ -186,6 +187,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 | openrouter | google/gemini-3-flash-preview | https://openrouter.ai/api/v1 |
 | orcarouter | anthropic/claude-sonnet-5.5 | https://api.orcarouter.ai/v1 |
 | requesty | google/gemini-3-flash-preview | https://router.requesty.ai/v1 |
+| atlascloud | google/gemini-3-flash-preview | https://api.atlascloud.ai/v1 |
 
 #### 自定义 Agent 模型
 
