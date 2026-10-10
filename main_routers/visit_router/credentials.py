@@ -91,8 +91,6 @@ logger = get_module_logger(__name__, "Main")
 
 _INVITE_PATH_MARK = "/invites/"
 _INVITE_PATH_RE = re.compile(r"(/invites/)[^/?#\s\"']+")
-REDACTED_INVITE_PATH = "/invites/***/preview"
-"""What an invite preview path looks like in every log line."""
 
 
 def redact_invite_paths(text: str) -> str:
