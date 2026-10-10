@@ -571,6 +571,11 @@ async def test_invite_code_is_redacted_on_both_log_hops(env, caplog):
     access = [r for r in caplog.records if r.name == "uvicorn.access"][-1]
     # uvicorn 的访问日志格式化器按位置拆参数：改写后参数个数不变、照常能格式化
     assert "/invites/***/preview" in AccessFormatter('%(request_line)s %(status_code)s').format(access)
+    # 不带 /preview 的探测 / 打错的路径一样带着可兑换的邀请码：照样改写
+    logging.getLogger("uvicorn.access").info('%s - "%s %s HTTP/%s" %d', "127.0.0.1:5000", "GET",
+                                             f"/api/visit/invites/{INVITE}", "1.1", 404)
+    assert any(r.getMessage().endswith('/invites/*** HTTP/1.1" 404') for r in caplog.records)
+    assert INVITE not in caplog.text
 
 
 # ── 接待 / 结束 ────────────────────────────────────────────────────────
@@ -787,6 +792,28 @@ async def test_transcript_reads_the_pending_upload_before_the_cloud(env):
     assert body == {"source": "upload", "visit_id": VISIT_ID, "role": "host",
                     "lines": _upload_doc()["request"]["lines"]}
     assert env.servers.count(f"/api/visit/details/{VISIT_ID}") == 0
+
+
+async def test_spool_and_pending_upload_are_read_once(env, monkeypatch):
+    await _write_spool(env.host.config_dir)
+    _write_sealed(env.host.config_dir)
+    reads = []
+    real = http.read_pending_upload_doc_sync
+    monkeypatch.setattr(http, "read_pending_upload_doc_sync",
+                        lambda *a: reads.append(a) or real(*a))
+    body = (await _transcript(env)).json()
+    # 崩溃场次的待传文件要从流水重建：一次请求只读一遍，spool 的 transport 也取自这一份
+    assert body["source"] == "spool" and body["transport"] == "trtc" and len(reads) == 1
+
+
+async def test_spool_anomalies_ignore_another_accounts_pending_upload(env):
+    await _write_spool(env.host.config_dir)
+    doc = _upload_doc()
+    doc["own_visit_uid"] = OTHER_OWN      # 共用电脑上另一个账号那一侧的待传文件
+    path = env.host.config_dir / "visit_spool" / f"{VISIT_ID}.upload.json"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    body = (await _transcript(env)).json()
+    assert body["source"] == "spool" and body["anomalies"] == 0 and body["transport"] is None
 
 
 async def test_transcript_rebuilds_a_crashed_upload_stream_without_writing(env):
@@ -1439,7 +1466,11 @@ async def test_a_settled_spool_that_silently_missed_a_line_is_completed_from_the
     await spool.close()
     env.servers.details_lines = _cloud_rows_covering(extra=0)
     body = (await _transcript(env)).json()
-    assert body["source"] == "cloud" and [line["text"] for line in body["lines"]] == ["你好", "喵", "hi"]
+    assert [line["text"] for line in body["lines"]] == ["你好", "喵", "hi"]
+    # 缺的那一行从云端并进来，整份仍是本机形态：对端身份、line_id 与同一场之前的导出一致
+    assert body["source"] == "spool" and set(body) == LOCAL_KEYS and body["peer_uid"] == HOST_UID
+    assert all(set(line) == LOCAL_LINE_KEYS for line in body["lines"])
+    assert [line["line_id"] for line in body["lines"]][:2] == ["h:1", "g:1"]
     env.servers.details_mode = "503"       # 云端取不到：只给 spool
     body = (await _transcript(env)).json()
     assert body["source"] == "spool" and len(body["lines"]) == 2

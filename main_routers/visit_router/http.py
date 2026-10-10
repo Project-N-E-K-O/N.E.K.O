@@ -519,8 +519,14 @@ async def _memory_transcript(config_dir: Path, rt: runtime.VisitRuntime) -> dict
     return out
 
 
-async def _spool_transcript(config_dir: Path, visit_id: str, owner: str) -> Optional[tuple[dict, int]]:
-    """``(local transcript, dropped line count)`` of this account's spool, or None."""
+async def _spool_transcript(
+    config_dir: Path, visit_id: str, owner: str, pending: Optional[tuple[dict, int]],
+) -> Optional[tuple[dict, int]]:
+    """``(local transcript, dropped line count)`` of this account's spool, or None.
+
+    ``pending`` is this account's pending upload already read by the caller
+    (its ``transport`` fills in when no runtime remembers it).
+    """
     try:
         contents = await VisitSpool(config_dir, visit_id).read_back()
     except OSError as exc:
@@ -534,9 +540,8 @@ async def _spool_transcript(config_dir: Path, visit_id: str, owner: str) -> Opti
     peer_uid = peer_uid if isinstance(peer_uid, str) and peer_uid else None  # 「清除这个人」后已抹掉
     rt = _memory_runtime(visit_id)
     transport = rt.creds.transport if rt is not None and rt.creds else None
-    if transport is None:
-        pending = await _pending_upload(config_dir, visit_id)
-        transport = pending[0].get("transport") if pending else None
+    if transport is None and pending is not None:
+        transport = pending[0].get("transport")
     doc = {
         "visit_id": visit_id,
         "peer_short_id": derive_short_code(peer_uid) if peer_uid else None,
@@ -544,7 +549,8 @@ async def _spool_transcript(config_dir: Path, visit_id: str, owner: str) -> Opti
         "started_at": header.get("started_at"),
         "transport": transport,
         "lines": [_local_line(line.get("ln"), line) for line in contents.lines],
-        "anomalies": rt.anomaly_count() if rt is not None else await tu.visit_anomalies(config_dir, visit_id),
+        "anomalies": (rt.anomaly_count() if rt is not None
+                      else await tu.visit_anomalies(config_dir, visit_id, owner)),
         "source": "spool",
     }
     return doc, contents.dropped_lines
@@ -591,12 +597,13 @@ async def _local_transcript(
         return await _memory_transcript(config_dir, rt), None
     if not owner:
         return None, None
-    spooled = await _spool_transcript(config_dir, visit_id, owner)
+    # 待传文件只读一次（崩溃场次要从流水重建，可能不小）：spool 的 transport 也从这一份取
     pending = await _pending_upload(config_dir, visit_id)
     # 较早的上传文件不记属主：与补传同一规则，从 state.json / 流水头行认回来
     if pending is not None and (pending[0].get("own_visit_uid")
                                 or await pending_upload_owner(config_dir, visit_id)) != owner:
         pending = None
+    spooled = await _spool_transcript(config_dir, visit_id, owner, pending)
     if spooled is not None:
         doc, dropped = spooled
         if pending is not None:
@@ -635,9 +642,9 @@ async def visit_transcript(request: Request, visit_id: str = ""):
     two answer the full local shape (``source: memory | spool``), the last two
     the compact shape of the uploaded lines (``source: upload | cloud``).
     Local copies are served only to the community account that took part
-    (visit data is partitioned by account); a spool or upload stream that lost
-    records in a crash gives way to a complete source and is the last resort
-    (``dropped_lines``).
+    (visit data is partitioned by account). A local copy that may be short (a
+    settled spool, or one that lost records in a crash: ``dropped_lines``) is
+    completed with the rows the cloud copy adds and keeps its own shape.
     """
     denied = http_denied(request)
     if denied is not None:
@@ -675,16 +682,9 @@ async def visit_transcript(request: Request, visit_id: str = ""):
         return JSONResponse(partial) if partial is not None else failure
     if partial is None:
         return JSONResponse(cloud)
-    local_keys = {_line_key(line) for line in partial["lines"]}
-    cloud_keys = {_line_key(line) for line in cloud["lines"]}
-    if local_keys < cloud_keys and not partial.get("dropped_lines"):
-        # 本机这份没报丢行（只是可能静默少行）、云端包含它的每一行还多出行：用云端
-        return JSONResponse(cloud)
-    if local_keys == cloud_keys:
-        # 两边一模一样：丢掉的那条两边都没有，留着本机这份与它的丢行提示
-        return JSONResponse(partial)
-    # 两边各有对方没有的行（独立写入、各自可能漏行），或本机报过丢行（认不出是哪一行，云端多出的行证明不了
-    # 它回来了）：把云端的行并到本机这份里，丢行数照报
+    # 云端的行并到本机这份里，丢行数照报：两边独立写入、各自可能漏行；本机报过的丢行认不出是哪一行，
+    # 云端多出的行证明不了它回来了。云端包含本机每一行时结果行数与云端一样，形态（对端、开始时间、
+    # transport、异常数、line_id）仍是本机这份，与同一场之前的导出一致
     merged = _merge_lines(partial["lines"], cloud["lines"], local_shape=partial.get("source") == "spool")
     return JSONResponse({**partial, "lines": merged})
 

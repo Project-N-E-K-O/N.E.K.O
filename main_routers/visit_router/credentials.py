@@ -90,16 +90,20 @@ from utils.visit_wire import require_visit_id
 logger = get_module_logger(__name__, "Main")
 
 _INVITE_PATH_MARK = "/invites/"
-_INVITE_PATH_RE = re.compile(r"(/invites/)[^/?#\s\"']+(/preview)")
+_INVITE_PATH_RE = re.compile(r"(/invites/)[^/?#\s\"']+")
 REDACTED_INVITE_PATH = "/invites/***/preview"
 """What an invite preview path looks like in every log line."""
 
 
 def redact_invite_paths(text: str) -> str:
-    """``.../invites/<code>/preview`` → ``.../invites/***/preview`` (anything else unchanged)."""
+    """``.../invites/<code>[/...]`` → ``.../invites/***[/...]`` (anything else unchanged).
+
+    Any path segment after ``/invites/`` is rewritten, not only the preview
+    route: a probe or a mistyped path still carries a redeemable code.
+    """
     if _INVITE_PATH_MARK not in text:
         return text
-    return _INVITE_PATH_RE.sub(r"\1***\2", text)
+    return _INVITE_PATH_RE.sub(r"\1***", text)
 
 
 class InviteCodeLogRedactor(logging.Filter):

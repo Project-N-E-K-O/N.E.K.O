@@ -155,20 +155,10 @@ class RecoveryReport:
 
 
 def _read_stream(path: Path) -> list[dict]:
-    data = path.read_bytes()
-    parts = data.split(b"\n")
-    tail = parts.pop()
-    if tail:
-        logger.warning("visit upload stream %s: dropped a partial trailing line", path.name)
-    out = []
-    for raw in parts:
-        try:
-            obj = json.loads(raw)
-        except (ValueError, RecursionError):
-            continue
-        if isinstance(obj, dict):
-            out.append(obj)
-    return out
+    records, dropped = _read_stream_counted(path)
+    if dropped:
+        logger.warning("visit upload stream %s: dropped %d unreadable record(s)", path.name, dropped)
+    return records
 
 
 _NEWLINE = bytes((10,))
