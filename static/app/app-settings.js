@@ -302,7 +302,11 @@
     ) {
         if (!Number.isInteger(revision) || !serverSettings
             || typeof serverSettings !== 'object') return;
-        const currentSettings = getConversationSettings();
+        // 与发送时快照同口径（hold 感知）：抑制期间 live S 是临时关闭态，
+        // 直接比原始内存会让 held 发送值永远确认不上 confirmedRevision，
+        // 之后 server-authoritative 的跨窗口快照全被 localToken &&
+        // !confirmedRevision 判旧拒收，陈旧值反而能写回服务器。
+        const currentSettings = _comparisonConversationSettings();
         for (const key of Object.keys(payload || {})) {
             if (key === 'independentAsrEnabled') continue;
             if (payload[key] !== serverSettings[key]) continue;
@@ -566,6 +570,158 @@
         'forgeDropEffectsEnabled'
     ];
 
+    // 教程抑制期间被临时关掉的十个主动搭话键。首页教程（NekoHomeTutorialFeatureController）
+    // 和教程头像重载控制器都只在内存里把它们置 false（不写盘），而 saveSettings /
+    // syncSettingsToServer 读的恰好是这些内存镜像。没有护栏时，抑制期间的任何一次
+    // 自动保存（首启回写、boot GET 合并回写、独立 ASR 决策、字幕开关等）都会把
+    // 「教程临时关闭」当作用户设置持久化：教程结束后开关全关、60s 周期同步还会把
+    // 关闭态推上服务器，且 _markUserDirtySettings 会把它们标成用户显式修改，让下次
+    // 启动的 server merge 丢弃服务器真值。抑制激活期间这十个键一律以持久化的
+    // 用户真值为准（教程期间设置面板被锁，localStorage 值就是教程前的用户设置）。
+    const _TUTORIAL_HELD_PROACTIVE_KEYS = [
+        'proactiveChatEnabled',
+        'proactiveVisionEnabled',
+        'proactiveVisionChatEnabled',
+        'proactiveNewsChatEnabled',
+        'proactiveCommunityChatEnabled',
+        'proactiveVideoChatEnabled',
+        'proactivePersonalChatEnabled',
+        'proactiveMusicEnabled',
+        'proactiveMemeEnabled',
+        'proactiveMiniGameInviteEnabled'
+    ];
+
+    function _isTutorialProactiveSuppressionActive() {
+        try {
+            const controller = window.NekoHomeTutorialFeatureController;
+            if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
+                return true;
+            }
+            // 头像重载控制器在 feature controller begin 之前就自行关闭这些键
+            // （round prelude 先 beginAvatarOverride 后 beginTakingOver），
+            // 那段时间 feature controller 的护栏看不到抑制，需要单独识别。
+            // 注意用的是 isProactiveSuppressed（内存确已关闭）而非
+            // hasActiveOverride：override 的异步 setup 窗口期内存值仍是真值，
+            // 误 hold 会把 boot merge 刚合入的服务器新值替换回旧本地值并上行。
+            const manager = window.universalTutorialManager;
+            const reloadController = manager ? manager._tutorialAvatarReloadController : null;
+            return !!(reloadController
+                && typeof reloadController.isProactiveSuppressed === 'function'
+                && reloadController.isProactiveSuppressed());
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function _tutorialProactiveLayerUserValues() {
+        // 合并两层抑制的 begin 快照，逐键取值、头像重载层优先：prelude 里
+        // 重载层先于 feature controller 快照并关闭内存，controller 的快照对
+        // 「持久层缺失的键」可能已被污染成临时 false（回退读的是被关死的
+        // 内存），重载层更早的快照才是教程前的用户真值。两层 getter 都只在
+        // 各自确已抑制时返回快照，天然只包含进行中的抑制。
+        const merged = {};
+        let any = false;
+        try {
+            const manager = window.universalTutorialManager;
+            const reloadController = manager ? manager._tutorialAvatarReloadController : null;
+            const controller = window.NekoHomeTutorialFeatureController;
+            const sources = [];
+            if (reloadController && typeof reloadController.getProactiveUserValues === 'function') {
+                sources.push(reloadController.getProactiveUserValues());
+            }
+            if (controller && typeof controller.getSuppressedUserValues === 'function') {
+                sources.push(controller.getSuppressedUserValues());
+            }
+            sources.forEach((values) => {
+                if (!values || typeof values !== 'object') return;
+                _TUTORIAL_HELD_PROACTIVE_KEYS.forEach((key) => {
+                    if (typeof values[key] === 'boolean'
+                        && typeof merged[key] !== 'boolean') {
+                        merged[key] = values[key];
+                        any = true;
+                    }
+                });
+            });
+        } catch (_) { }
+        return any ? merged : null;
+    }
+
+    // 本窗口最近一次「接受」的十个主动搭话键用户真值：跨窗口写入要过
+    // knownKeyWrites 出处校验才会进 applySharedRuntimeSettings，server merge
+    // 接受的服务器值也经它落地，竞态中被拒绝的原始值则永远不会进来。
+    // 教程抑制期间 hold 以它优先于原始 localStorage，避免把持久层里
+    // 恰好躺着的、本窗口已按出处拒绝的陈旧值当成用户真值反向广播。
+    const _tutorialProactiveAcceptedValues = {};
+
+    function _recordTutorialProactiveAcceptedValues(values) {
+        if (!values || typeof values !== 'object') return;
+        _TUTORIAL_HELD_PROACTIVE_KEYS.forEach((key) => {
+            if (typeof values[key] === 'boolean') {
+                _tutorialProactiveAcceptedValues[key] = values[key];
+            }
+        });
+    }
+
+    function _readPersistedProactiveValues() {
+        try {
+            const raw = localStorage.getItem('project_neko_settings');
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== 'object') return null;
+            return parsed;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function _tutorialProactiveUserTruth() {
+        // 每键的用户真值，三级优先：本窗口最近接受值（原始持久值可能已被
+        // 出处校验拒绝）> 持久值 > 抑制层 begin 快照合并值（持久层缺键时
+        // 的唯一真值来源，重载层优先）。供持久化护栏与两层教程抑制的
+        // begin 快照共用（window.appSettings.getProactiveUserTruth）。
+        const persisted = _readPersistedProactiveValues();
+        const layerValues = _tutorialProactiveLayerUserValues();
+        const truth = {};
+        let any = false;
+        _TUTORIAL_HELD_PROACTIVE_KEYS.forEach((key) => {
+            if (typeof _tutorialProactiveAcceptedValues[key] === 'boolean') {
+                truth[key] = _tutorialProactiveAcceptedValues[key];
+                any = true;
+            } else if (persisted && typeof persisted[key] === 'boolean') {
+                truth[key] = persisted[key];
+                any = true;
+            } else if (layerValues && typeof layerValues[key] === 'boolean') {
+                truth[key] = layerValues[key];
+                any = true;
+            }
+        });
+        return any ? truth : null;
+    }
+
+    function _tutorialProactiveHoldValues() {
+        if (!_isTutorialProactiveSuppressionActive()) {
+            return null;
+        }
+        return _tutorialProactiveUserTruth();
+    }
+
+    function _comparisonConversationSettings() {
+        // 412 冲突比较与 pending 确认用的「当前值」必须与发送时快照同口径：
+        // 教程抑制期间内存镜像是临时关闭态，直接拿它和 held 发送值比较会把
+        // 十个键全误报成「发送后被改过」，冲突合并因此拒收服务器新值、重试
+        // 再把旧值写回——CAS 失效并覆盖其他客户端的修改。
+        const current = getConversationSettings();
+        const hold = _tutorialProactiveHoldValues();
+        if (hold) {
+            _TUTORIAL_HELD_PROACTIVE_KEYS.forEach((key) => {
+                if (Object.prototype.hasOwnProperty.call(hold, key)) {
+                    current[key] = hold[key];
+                }
+            });
+        }
+        return current;
+    }
+
     function _normalizeIndependentAsrProviderPreference(value) {
         // Accepted values mirror INDEPENDENT_ASR_PROVIDER_PREFERENCES in
         // utils/conversation_settings_constants.py; anything else follows the
@@ -680,6 +836,11 @@
      */
     function _markUserDirtySettings() {
         const current = getConversationSettings();
+        // 教程抑制期间这十个键的内存值是临时状态、不是用户意图：diff 前还原成
+        // 持久化真值，否则抑制会把它们全标成用户显式修改（_dirtySettingsKeys
+        // 单调不清除），boot merge 会因 dirty 丢弃服务器真值、保留关闭态。
+        const tutorialProactiveHold = _tutorialProactiveHoldValues();
+        if (tutorialProactiveHold) Object.assign(current, tutorialProactiveHold);
         if (_settingsBaseline) {
             const keys = new Set(
                 Object.keys(current).concat(Object.keys(_settingsBaseline))
@@ -1048,7 +1209,7 @@
     }
 
     function _clearAcknowledgedPendingSettings(payload) {
-        const current = getConversationSettings();
+        const current = _comparisonConversationSettings();
         for (const key of Object.keys(payload)) {
             // A later local edit may have happened while this POST was in
             // flight. Clear only keys whose current value is still exactly the
@@ -1062,7 +1223,7 @@
 
     function _settingsChangedSince(snapshot, mutationVersion) {
         const changedKeys = new Set();
-        const current = getConversationSettings();
+        const current = _comparisonConversationSettings();
         const keys = new Set(Object.keys(snapshot).concat(Object.keys(current)));
         keys.forEach((key) => {
             const before = Object.prototype.hasOwnProperty.call(snapshot, key)
@@ -1133,6 +1294,9 @@
 
     function applySharedRuntimeSettings(settings) {
         if (!settings || typeof settings !== 'object') return false;
+        // 到达这里的键都已通过出处/时效校验（storage 监听、boot merge、
+        // 412 和解三条接受路径都经由本函数）：记录为教程护栏的用户真值。
+        _recordTutorialProactiveAcceptedValues(settings);
         let changed = false;
         _SHARED_SETTINGS_KEYS.forEach((key) => {
             if (!Object.prototype.hasOwnProperty.call(settings, key)) return;
@@ -1359,6 +1523,11 @@
             }
             for (let attempt = 0; attempt < _CONVERSATION_SETTINGS_MAX_ATTEMPTS; attempt += 1) {
                 const settings = getConversationSettings();
+                // 教程抑制的十个主动搭话键按持久化真值上行：feature controller 的
+                // 跳过护栏在上面，但头像重载层单独抑制时（controller 未激活）
+                // POST 仍会发出，不能把临时关闭态推给服务器。
+                const sendHold = _tutorialProactiveHoldValues();
+                if (sendHold) Object.assign(settings, sendHold);
                 const mutationVersionAtSend = _crossWindowMutationVersion;
                 const etagKeyMutationVersionsAtSend =
                     _etagKeyMutationVersionsSnapshot();
@@ -1455,7 +1624,10 @@
                             === optimizationDecisionAtSend.value
                     ) {
                         _optimizationDecisionPendingSync = false;
-                        _writeSharedSettings(getConversationSettings(), []);
+                        const ackSettings = getConversationSettings();
+                        const ackHold = _tutorialProactiveHoldValues();
+                        if (ackHold) Object.assign(ackSettings, ackHold);
+                        _writeSharedSettings(ackSettings, []);
                     }
                     _confirmSharedKeyWrites(
                         payload,
@@ -1729,6 +1901,24 @@
             subtitleEnabled: currentSubtitleEnabled,
             userLanguage: currentUserLanguage
         };
+        // 教程抑制的十个主动搭话键此时是临时内存态、不是用户设置：落盘前还原成
+        // 用户真值，防止把临时关闭写进 project_neko_settings，并经 storage
+        // 事件扩散给兄弟窗口、被下次启动读回。
+        // 例外：server merge 刚接受的权威键（serverAuthoritativeKeys）内存镜像里
+        // 正是更新的服务器真值，用旧持久值覆盖会把服务器偏好回滚、且把旧值
+        // 标成 server-authoritative 扩散出去，必须放行。
+        const tutorialProactiveHold = _tutorialProactiveHoldValues();
+        if (tutorialProactiveHold) {
+            _TUTORIAL_HELD_PROACTIVE_KEYS.forEach((key) => {
+                if (serverAuthoritativeKeys.indexOf(key) === -1
+                    && Object.prototype.hasOwnProperty.call(tutorialProactiveHold, key)) {
+                    settings[key] = tutorialProactiveHold[key];
+                }
+            });
+        }
+        // 本次落盘的十个键即本窗口最新接受的真值（用户实时值或护栏还原值），
+        // 后续抑制期/竞态窗口的 hold 与 begin 快照以此为最高优先。
+        _recordTutorialProactiveAcceptedValues(settings);
         // Stamp the keys the user explicitly changed (plus a monotonic write id)
         // into the shared snapshot: every save copies independentAsrEnabled
         // along, so the receiving window needs this metadata to tell a real
@@ -2100,6 +2290,12 @@
         // user changes while the GET is in flight diverge from this snapshot,
         // get recorded in _dirtySettingsKeys, and are preserved by the
         // field-level merge below.
+        // 先用 boot 的本地视图播种教程护栏的「接受真值」登记表：loadSettings
+        // 直接给 S 赋值、不经 applySharedRuntimeSettings，若不播种，首次
+        // save/merge 之前登记表为空，hold 与两层快照会回退读原始
+        // localStorage——恰好可能读到兄弟窗口刚写入、本窗口已按出处校验
+        // 拒绝的陈旧值，并把它当成用户真值保存/上行。
+        _recordTutorialProactiveAcceptedValues(getConversationSettings());
         _settingsBaseline = getConversationSettings();
         // No re-arming of _settingsMergedFromServer here: it already starts
         // false, and once a merge HAS happened the local snapshot holds server
@@ -2928,6 +3124,9 @@
     // ======================== 导出 ========================
 
     mod.saveSettings = saveSettings;
+    // 教程两层抑制的 begin 快照经此读取「接受真值优先于原始持久值」的
+    // 每键用户设置（出处校验拒绝过的陈旧值不会被当成真值）。
+    mod.getProactiveUserTruth = _tutorialProactiveUserTruth;
     mod.loadSettings = loadSettings;
     mod.syncSettingsToServer = syncSettingsToServer;
     mod.getConversationSettings = getConversationSettings;

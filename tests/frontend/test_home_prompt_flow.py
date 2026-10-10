@@ -361,6 +361,53 @@ def test_context_prompt_is_skipped_while_internal_game_route_is_active(
 
 
 @pytest.mark.frontend
+def test_context_prompt_defers_while_home_tutorial_suppresses_and_replays_after(
+    mock_page: Page,
+):
+    # 教程抑制期间「接受」会被持久化护栏回滚：情境弹窗必须暂存信号不弹出，
+    # 收口（active:false 事件）后重放同一条信号。
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = {
+                gameRouteActive: false,
+                proactiveChatEnabled: false,
+                proactiveVisionChatEnabled: false,
+            };
+            window.nekoTelemetryBranch = 'main';
+            window.__tutorialActive = true;
+            window.NekoHomeTutorialFeatureController = {
+                isActive: () => window.__tutorialActive === true,
+            };
+            window.__contextPromptCalls = 0;
+            window.showDecisionPrompt = async function() {
+                window.__contextPromptCalls += 1;
+                return 'decline';
+            };
+        """,
+        script_names=("app/app-context-prompt.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            await window.appContextPrompt.handle('play');
+            const during = window.__contextPromptCalls;
+            window.__tutorialActive = false;
+            window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
+                detail: { active: false },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            return { during, after: window.__contextPromptCalls };
+        }
+        """
+    )
+
+    assert result["during"] == 0
+    assert result["after"] == 1
+
+
+@pytest.mark.frontend
 def test_open_context_prompt_is_dismissed_when_internal_game_opens(mock_page: Page):
     _bootstrap_page(
         mock_page,
