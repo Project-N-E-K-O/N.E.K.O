@@ -186,12 +186,15 @@ async def test_bridge_retries_failed_close_and_recovers_after_physical_exit():
     old = RetiringTse()
     workers = iter([old, _Tse()])
     factory = make_factory(lambda stream: next(workers))
-    bridge = ActiveSessionInterceptionBridge(factory)
+    bridge = ActiveSessionInterceptionBridge(factory, terminal_on_unavailable=True)
     await process(bridge, generation="g1")
     try:
         assert (await process(bridge, generation="g2")).decision is InterceptionDecision.UNAVAILABLE
         old.can_stop = True
-        assert (await process(bridge, generation="g2")).decision is InterceptionDecision.PENDING
+        # A failed capture remains terminal even after physical exit. A new
+        # capture may retry retirement and obtain its own source axis.
+        assert (await process(bridge, generation="g2")).decision is InterceptionDecision.UNAVAILABLE
+        assert (await process(bridge, generation="g3")).decision is InterceptionDecision.PENDING
         assert old.close_calls == 2
     finally:
         old.can_stop = True
@@ -354,18 +357,27 @@ async def test_pending_audio_metadata_capacity_fails_closed():
 
 
 async def test_pending_authorized_pcm_capacity_fails_closed_and_releases_budget():
-    # The legal confirmation cache holds 2,000 samples. Delayed extraction
-    # releases several already-confirmed intervals together, exceeding the
-    # runtime's 3,200-sample retained output budget before any public return.
+    # Valid preparation; real delayed extraction fills an existing authorized
+    # backlog and a newly scored interval in the same process invocation.
     config = replace(_config(), max_held_pcm_bytes=6400)
-    runtime = make_factory(lambda stream: BatchedTse(14), config=config).create("g", ingress_token=None)
-    results = [await process(runtime) for _ in range(14)]
-    assert all(not result.pcm16 for result in results)
-    assert results[-1].decision is InterceptionDecision.UNAVAILABLE
-    assert results[-1].reason == "authorized_audio_capacity"
-    assert runtime._pending_audio_bytes == 0
-    assert not runtime._pending_audio
-    await runtime.close()
+    runtime = make_factory(lambda stream: BatchedTse(12), config=config).create("g", ingress_token=None)
+    try:
+        results = [await process(runtime) for _ in range(12)]
+        assert all(not result.pcm16 for result in results)
+        assert results[-1].decision is InterceptionDecision.UNAVAILABLE
+        assert results[-1].reason == "authorized_audio_capacity"
+        assert runtime._pending_audio_bytes == 0
+        assert not runtime._pending_audio
+    finally:
+        await runtime.close()
+
+
+async def test_insufficient_owner_streak_capacity_is_rejected_before_start():
+    config = replace(_config(), max_held_pcm_bytes=6400, owner_streak_required=20)
+    allocations = []
+    with pytest.raises(ValueError, match="owner confirmation"):
+        make_factory(lambda stream: allocations.append(stream), config=config).create("g", ingress_token=None)
+    assert not allocations
 
 
 async def test_concurrent_setters_publish_only_latest_factory():
@@ -405,7 +417,10 @@ async def test_disabled_interception_route_invalidation_preserves_raw_outlet():
             ingress_token=core._capture_ingress_token(), captured_at=time.time(),
         ),
     )
-    assert await core._intercept_active_session_frame(frame, generation, frame.context) == original
+    result = await core._intercept_active_session_frame(frame, generation, frame.context)
+    assert result.decision is InterceptionDecision.KEEP
+    assert result.pcm16 == original
+    assert result.events == ()
 
 
 async def test_factory_pruning_preserves_delivery_ledger_owned_by_caller():

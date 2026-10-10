@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict, dataclass
 from enum import Enum
+from typing import Callable
 
 from main_logic.voice_turn.contracts import (
     VoiceIngressToken,
@@ -346,6 +347,7 @@ class VoiceInputLifecycleController:
         )
         self._active_start_audio = b""
         self._active_start_spans: tuple[AudioSampleSpan, ...] = ()
+        self._audio_discard_observer: Callable[[AudioSampleSpan], None] | None = None
         self.last_drained_spans: tuple[AudioSampleSpan, ...] = ()
         self.admission_failure_reason: str | None = None
         self.admission_range_diagnostics: dict[str, int | None] = {}
@@ -399,6 +401,18 @@ class VoiceInputLifecycleController:
         if route_mode is VoiceRouteMode.BLOCKED:
             self._state = VoiceLifecycleState.BLOCKED
 
+    def set_audio_discard_observer(self, observer: Callable[[AudioSampleSpan], None]) -> None:
+        self._audio_discard_observer = observer
+        for buffer in (self._pre_roll, self._pending_turn, self._pending_connect):
+            buffer.on_discard = observer
+
+    def _discard_active_start(self) -> None:
+        if self._audio_discard_observer is not None:
+            for span in self._active_start_spans:
+                self._audio_discard_observer(span)
+        self._active_start_audio = b""
+        self._active_start_spans = ()
+
     def transition(self, event: VoiceLifecycleEvent) -> VoiceLifecycleState:
         self._state = next_lifecycle_state(self._state, event)
         if event is VoiceLifecycleEvent.SOFT_WAKE:
@@ -424,8 +438,7 @@ class VoiceInputLifecycleController:
             self._pre_roll_sent_for_turn = False
             self._pre_roll.clear()
             self._pending_connect.clear()
-            self._active_start_audio = b""
-            self._active_start_spans = ()
+            self._discard_active_start()
         elif event is VoiceLifecycleEvent.GAME_TAKEOVER:
             self._prefix_protected = False
             self._turn_id = self._allocate_turn_id()
@@ -436,8 +449,7 @@ class VoiceInputLifecycleController:
             self._pending_turn_speech = False
             self._pending_turn_id = None
             self._pending_connect.clear()
-            self._active_start_audio = b""
-            self._active_start_spans = ()
+            self._discard_active_start()
         self.notify_prefix_capacity()
         return self._state
 
@@ -580,6 +592,7 @@ class VoiceInputLifecycleController:
                 VoiceLifecycleState.PREWARMING, VoiceLifecycleState.BACKOFF,
             } else self._pre_roll
             combined = RangedAudioBuffer(capacity_ms=self.config.pending_audio_ms)
+            combined.on_discard = self._audio_discard_observer
             self._pending_connect.move_to(combined)
             self._pre_roll.move_to(combined)
             combined.trim_to_bytes(capacity)
@@ -613,17 +626,20 @@ class VoiceInputLifecycleController:
                 offset += size
         if not self._validate_candidate_range(combined, start_sample, end_sample):
             return False
-        combined.trim_to_bytes(count)
         target = self._pending_connect if self._state in {
             VoiceLifecycleState.PREWARMING, VoiceLifecycleState.BACKOFF,
         } else self._pre_roll
         capacity = (self.config.pending_audio_ms if target is self._pending_connect
                     else self.config.pre_roll_ms) * 32
-        if combined.byte_count > capacity:
+        if min(combined.byte_count, max(0, count)) > capacity:
             self.admission_failure_reason = "candidate_audio_capacity_exceeded"
             return False
-        self._pending_connect.clear()
-        self._pre_roll.clear()
+        # Ownership moves to the validated copy. Only its rejected prefix is
+        # discarded; clearing the sources would falsely reject retained PCM.
+        self._pending_connect.drain()
+        self._pre_roll.drain()
+        combined.on_discard = self._audio_discard_observer
+        combined.trim_to_bytes(count)
         combined.move_to(target)
         return True
 
@@ -759,8 +775,7 @@ class VoiceInputLifecycleController:
         self._pending_turn_speech = False
         self._pending_turn_id = None
         self._pending_connect.clear()
-        self._active_start_audio = b""
-        self._active_start_spans = ()
+        self._discard_active_start()
         self.last_drained_spans = ()
         self.notify_prefix_capacity()
 
@@ -787,8 +802,7 @@ class VoiceInputLifecycleController:
         self._pending_turn.clear()
         self._pending_turn_speech = False
         self._pending_turn_id = None
-        self._active_start_audio = b""
-        self._active_start_spans = ()
+        self._discard_active_start()
         self.last_drained_spans = ()
         if self._state not in {
             VoiceLifecycleState.OFF,

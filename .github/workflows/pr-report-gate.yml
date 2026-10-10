@@ -13,7 +13,7 @@ name: PR report gate
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'codex/stack-pr-*']
     types: [opened, reopened, synchronize, edited, labeled, unlabeled]
 
 # Read-only: the check reads the diff and the PR body, posts nothing.

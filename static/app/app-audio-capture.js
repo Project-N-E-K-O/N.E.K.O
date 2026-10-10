@@ -2517,7 +2517,7 @@
     }
 
     // 闭麦，按钮on click
-    async function stopMicCapture() {
+    async function stopMicCapture(options = {}) {
         S.isSwitchingMode = true;
 
         // 隐藏语音准备提示（防止残留）
@@ -2565,7 +2565,7 @@
         // 立即更新音量显示状态（显示"未录音"）
         updateMicVolumeStatusNow(false);
 
-        stopRecording();
+        stopRecording({ normalEnd: options.normalEnd !== false });
 
         if (_mic)    _mic.disabled = false;
         if (_mute)   _mute.disabled = true;
@@ -2648,6 +2648,17 @@
         // cancel the start they are about to make.
         invalidatePendingMicStart();
         if (!S.isRecording) return;
+
+        // A deliberate capture end precedes lease revocation on the same
+        // ordered socket. Failure/mute/disconnect teardown does not flush.
+        if (options.normalEnd === true && notifyServer
+            && S.socket && S.socket.readyState === WebSocket.OPEN) {
+            voiceLeaseGeneration += 1;
+            S.socket.send(JSON.stringify({
+                action: 'voice_input_control', event: 'capture_end',
+                lease_generation: voiceLeaseGeneration, engaged: true
+            }));
+        }
 
         S.isRecording = false;
         window.isRecording = false;

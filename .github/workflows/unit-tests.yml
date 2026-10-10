@@ -17,7 +17,7 @@ name: Unit Tests
 # — the PR gate runs the unmarked remainder while dedicated shards cover classified tests.
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'codex/stack-pr-*']
   push:
     branches: [main]
   workflow_dispatch:

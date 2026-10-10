@@ -9,6 +9,8 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias
+from main_logic.voice_turn.audio_delivery import AudioDeliverySpan, slice_delivery_spans
+from main_logic.voice_turn.interception_events import InterceptionDeliveryStage
 
 if TYPE_CHECKING:
     from main_logic.voice_turn.contracts import VoiceTurnToken
@@ -86,6 +88,7 @@ class AsrActivateCommand:
     session_ref: Any
     buffered_pcm16: bytes
     sample_rate_hz: int
+    delivery_spans: tuple[AudioDeliverySpan, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +99,7 @@ class AsrAudioCommand:
     sequence_no: int
     pcm16: bytes
     sample_rate_hz: int
+    delivery_spans: tuple[AudioDeliverySpan, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +221,10 @@ class AsrAudioDispatcher:
     def active_turn(self) -> VoiceTurnToken | None:
         return self._turn_token if self._state in {"active", "sealed"} else None
 
+    @property
+    def sealed_turn(self) -> VoiceTurnToken | None:
+        return self._turn_token if self._state == "sealed" else None
+
     def activate(
         self,
         turn_token: VoiceTurnToken,
@@ -224,6 +232,7 @@ class AsrAudioDispatcher:
         buffered_pcm16: bytes,
         *,
         sample_rate_hz: int = 16_000,
+        delivery_spans: tuple[AudioDeliverySpan, ...] = (),
     ) -> bool:
         if sample_rate_hz <= 0 or len(buffered_pcm16) % 2:
             raise ValueError("ASR_ACTIVATE_INVALID_PCM")
@@ -239,6 +248,7 @@ class AsrAudioDispatcher:
                 session_ref,
                 buffered_pcm16,
                 sample_rate_hz,
+                delivery_spans,
             )
         )
 
@@ -250,6 +260,7 @@ class AsrAudioDispatcher:
         *,
         sample_rate_hz: int,
         sequence_no: int,
+        delivery_spans: tuple[AudioDeliverySpan, ...] = (),
     ) -> bool:
         if not pcm16:
             return True
@@ -271,6 +282,7 @@ class AsrAudioDispatcher:
                 sequence_no,
                 pcm16,
                 sample_rate_hz,
+                delivery_spans,
             )
         )
 
@@ -309,6 +321,9 @@ class AsrAudioDispatcher:
             except asyncio.QueueEmpty:
                 break
             self._enqueued_at.pop(id(command), None)
+            if isinstance(command, (AsrActivateCommand, AsrAudioCommand)):
+                for span in command.delivery_spans:
+                    span.observe(InterceptionDeliveryStage.NOT_SENT)
             if isinstance(command, AsrPauseHintCommand) and not command.completed.done():
                 command.completed.set_result(False)
             self._queue.task_done()
@@ -434,6 +449,9 @@ class AsrAudioDispatcher:
                         (time.monotonic() - queued_at) * 1_000
                     )
                 if not self._command_is_current(command):
+                    if isinstance(command, (AsrActivateCommand, AsrAudioCommand)):
+                        for span in command.delivery_spans:
+                            span.observe(InterceptionDeliveryStage.NOT_SENT)
                     continue
                 if isinstance(command, AsrPauseHintCommand):
                     if not command.completed.cancelled() and command.revision == self._pause_hint_revision:
@@ -482,13 +500,35 @@ class AsrAudioDispatcher:
                 max_bytes = command.sample_rate_hz * 2
                 for offset in range(0, len(payload), max_bytes):
                     if not self._command_is_current(command):
+                        for span in slice_delivery_spans(
+                            command.delivery_spans, offset // 2, (len(payload) - offset) // 2,
+                        ):
+                            span.observe(InterceptionDeliveryStage.NOT_SENT)
                         break
                     chunk = payload[offset : offset + max_bytes]
-                    await command.session_ref.stream_audio(
-                        chunk,
-                        sample_rate_hz=command.sample_rate_hz,
-                    )
+                    spans = slice_delivery_spans(command.delivery_spans, offset // 2, len(chunk) // 2)
+                    try:
+                        await command.session_ref.stream_audio(
+                            chunk, sample_rate_hz=command.sample_rate_hz,
+                            **({"delivery_spans": spans} if spans else {}),
+                        )
+                    except BaseException:
+                        for span in spans:
+                            span.observe(InterceptionDeliveryStage.UNKNOWN)
+                        for span in slice_delivery_spans(
+                            command.delivery_spans, (offset + len(chunk)) // 2,
+                            (len(payload) - offset - len(chunk)) // 2,
+                        ):
+                            span.observe(InterceptionDeliveryStage.NOT_SENT)
+                        raise
+                    for span in spans:
+                        span.observe(InterceptionDeliveryStage.QUEUED)
                     if not self._command_is_current(command):
+                        for span in slice_delivery_spans(
+                            command.delivery_spans, (offset + len(chunk)) // 2,
+                            (len(payload) - offset - len(chunk)) // 2,
+                        ):
+                            span.observe(InterceptionDeliveryStage.NOT_SENT)
                         break
                     self.provider_wire_sequence += 1
                     await self._on_wire_audio(

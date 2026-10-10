@@ -29,7 +29,8 @@ from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
 import numpy as np
 import soxr
 
-from .delivery import delivery_evidence, log_delivery_phase
+from .delivery import delivery_evidence, log_delivery_phase, register_interval_delivery, retire_interval_deliveries
+from main_logic.voice_turn.audio_delivery import AudioDeliverySpan, slice_delivery_spans
 from .warmup import (
     provider_warmup_kind,
     provider_warmup_reason,
@@ -164,6 +165,7 @@ class RealtimeAsrSession(Protocol):
         audio_chunk: bytes,
         *,
         sample_rate_hz: int | None = None,
+        delivery_spans: tuple[AudioDeliverySpan, ...] = (),
     ) -> None: ...
 
     async def signal_user_activity_end(self) -> None: ...
@@ -191,6 +193,7 @@ class _AsrWorkerRequest:
     utterance_id: int | None = None
     audio: bytes = b""
     speech_active: bool = False
+    delivery_spans: tuple[AudioDeliverySpan, ...] = ()
 
 
 @dataclass(slots=True)
@@ -219,6 +222,15 @@ class _AsrRequestQueue(asyncio.Queue[_AsrWorkerRequest]):
         # audio. Recovery gets a time.monotonic() deadline, never a larger
         # audio budget. This transport contract is provider-neutral.
         self.transport_recovery_deadline = 0.0
+
+    def _put(self, request: _AsrWorkerRequest) -> None:
+        if request.kind == "audio":
+            if request.delivery_spans and sum(span.samples for span in request.delivery_spans) * 2 != len(request.audio):
+                raise ValueError("ASR_DELIVERY_MAPPING_INVALID")
+            register_interval_delivery(self, (request.generation, request.buffer_epoch, request.utterance_id), request.delivery_spans)
+        elif request.kind == "clear":
+            retire_interval_deliveries(self, keep_scope=(request.generation, request.buffer_epoch))
+        super()._put(request)
 
     def hold_dequeued_audio(
         self,
@@ -668,6 +680,7 @@ class _RealtimeAsrSessionImpl:
         audio_chunk: bytes,
         *,
         sample_rate_hz: int | None = None,
+        delivery_spans: tuple[AudioDeliverySpan, ...] = (),
     ) -> None:
         if not isinstance(audio_chunk, bytes):
             raise TypeError("ASR_INVALID_PCM: audio_chunk must be bytes")
@@ -689,6 +702,9 @@ class _RealtimeAsrSessionImpl:
                 raise ValueError(
                     "ASR_INVALID_CONFIG: sample rate must be 16000 or 48000"
                 )
+            if delivery_spans:
+                if effective_rate != 16000 or sum(span.samples for span in delivery_spans) * 2 != len(audio_chunk):
+                    raise ValueError("ASR_DELIVERY_MAPPING_UNSUPPORTED: tagged audio requires exact 16kHz input")
             if len(audio_chunk) > effective_rate * 2:
                 raise ValueError(
                     "ASR_AUDIO_CHUNK_TOO_LARGE: one chunk may contain at most one second"
@@ -703,7 +719,7 @@ class _RealtimeAsrSessionImpl:
 
             normalized_audio = self._convert_audio(audio_chunk)
             if normalized_audio and self._uses_segment_aggregation:
-                await self._append_segmented_audio_locked(normalized_audio)
+                await self._append_segmented_audio_locked(normalized_audio, delivery_spans=delivery_spans)
             elif normalized_audio:
                 await self._enqueue_request(
                     _AsrWorkerRequest(
@@ -712,6 +728,7 @@ class _RealtimeAsrSessionImpl:
                         buffer_epoch=self._buffer_epoch,
                         utterance_id=self._utterance_id,
                         audio=normalized_audio,
+                        delivery_spans=delivery_spans,
                     )
                 )
                 self._provider_wire_audio_bytes += len(normalized_audio)
@@ -1260,7 +1277,9 @@ class _RealtimeAsrSessionImpl:
             return 0
         return (policy.max_segment_ms * 16_000 * 2 // 1_000) & ~1
 
-    async def _append_segmented_audio_locked(self, audio: bytes) -> None:
+    async def _append_segmented_audio_locked(
+        self, audio: bytes, *, delivery_spans: tuple[AudioDeliverySpan, ...] = (),
+    ) -> None:
         """Append PCM16 without allowing a physical request to exceed policy."""
 
         max_bytes = self._segmented_max_audio_bytes
@@ -1283,6 +1302,7 @@ class _RealtimeAsrSessionImpl:
                     buffer_epoch=self._buffer_epoch,
                     utterance_id=self._utterance_id,
                     audio=part,
+                    delivery_spans=slice_delivery_spans(delivery_spans, offset // 2, part_size // 2),
                 )
             )
             await self._push_voice_turn_audio(
@@ -2029,6 +2049,8 @@ class _RealtimeAsrSessionImpl:
             logger.exception("ASR connection error callback failed")
 
     async def _shutdown(self) -> None:
+        if self._request_queue is not None:
+            retire_interval_deliveries(self._request_queue)
         registry = (
             connection_registry(self._request_queue)
             if self._request_queue is not None

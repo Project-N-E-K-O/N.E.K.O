@@ -64,26 +64,37 @@ def _scored_ledger(*, capacity: int = 8):
 
 
 @pytest.mark.parametrize("decision", list(PrewireDecisionState))
-def test_only_uncertain_record_can_be_finalized(decision) -> None:
+def test_only_identity_gap_records_can_be_finalized(decision) -> None:
     kwargs = dict(
         spec=_spec(1), decision=decision, score=0.4,
         scoring_parameters_digest="a" * 64, gap_finalized=True,
     )
-    if decision is PrewireDecisionState.UNCERTAIN:
+    if decision in {PrewireDecisionState.UNCERTAIN, PrewireDecisionState.DROP}:
         assert PrewireIntervalRecord(**kwargs).gap_finalized
     else:
-        with pytest.raises(PrewireContractError, match="only an uncertain"):
+        with pytest.raises(PrewireContractError, match="only a non-owner or uncertain"):
             PrewireIntervalRecord(**kwargs)
 
 
-def test_finalized_gap_requires_score_and_has_no_delivery_stage() -> None:
+def test_raw_uncertainty_requires_score_and_gap_has_no_delivery_stage() -> None:
     with pytest.raises(PrewireContractError, match="require score"):
         PrewireIntervalRecord(
-            _spec(1), decision=PrewireDecisionState.UNCERTAIN, gap_finalized=True,
+            _spec(1), decision=PrewireDecisionState.UNCERTAIN,
         )
+    raw_ledger = PrewireIntervalLedger()
+    raw_spec = _spec(1)
+    raw_ledger.open_stream(raw_spec.identity.stream, original_cursor=0)
+    raw_ledger.add(raw_spec)
+    with pytest.raises(PrewireTransitionError, match="requires score"):
+        raw_ledger.decide(
+            raw_spec.identity, PrewireDecisionState.UNCERTAIN, reason="unscored",
+        )
+    assert raw_ledger.get(raw_spec.identity).decision is PrewireDecisionState.PENDING
+    with pytest.raises(PrewireTransitionError, match="only an unconsumed"):
+        raw_ledger.finalize_uncertain(raw_spec.identity)
     ledger, spec = _scored_ledger()
     record = ledger.finalize_uncertain(spec.identity)
-    with pytest.raises(PrewireContractError, match="only an uncertain"):
+    with pytest.raises(PrewireContractError, match="only a non-owner or uncertain"):
         replace(record, commit_stage=PrewireCommitStage.ENQUEUED)
     with pytest.raises(PrewireContractError, match="must be bool"):
         replace(record, gap_finalized=1)
@@ -310,3 +321,62 @@ async def test_classifier_failure_is_unavailable_and_cannot_be_finalized_as_unce
         assert gate.held_pcm_bytes == 16
     finally:
         await gate.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "values,expected", [((-100,), PrewireDecisionState.DROP), ((100, 100), PrewireDecisionState.UNCERTAIN)],
+)
+async def test_verified_output_gap_needs_no_scalar_score_and_keeps_raw_guards(values, expected):
+    from main_logic.voice_identity_service.candidate_identity import CandidateBatch
+    from tests.unit.voice_identity_service.test_candidate_identity import (
+        audio, binding, selector, spec,
+    )
+
+    target, backend = selector()
+    bound, interval = binding(), spec()
+    gate_backend = _Backend()
+    scheduler = ControlledScoringScheduler(
+        gate_backend, window_plan=ScoringWindowPlan((8,)),
+        max_outstanding_jobs=8, max_buffered_pcm_bytes=32,
+        deadline_seconds=1, close_timeout_seconds=.1,
+    )
+    gate = PrewireGate(
+        scheduler, window_samples=8, step_samples=4, guard_samples=2,
+        max_held_pcm_bytes=32, scoring_parameters_digest="a" * 64,
+        required_consistent_observations=1,
+    )
+    gate.open_stream(
+        bound.stream, profile_generation=bound.profile_generation,
+        model_generation=bound.model_generation, config_generation=bound.config_generation,
+    )
+    try:
+        outputs = tuple(audio(str(index), value) for index, value in enumerate(values))
+        selection = await target.select(CandidateBatch(bound, interval, outputs))
+        assert selection.decision is expected and selection.score is None
+        assert len(backend.calls) == len(values)
+        gate.append_pcm(bound.stream, start_sample=0, pcm16=bytes(16))
+        plan = gate.submit_candidate_interval(interval, selection, expected_binding=bound)
+        assert plan is not None
+        record = gate.get_interval_record(interval.identity)
+        assert record.decision is expected and record.gap_finalized
+        assert record.score is None and record.scoring_parameters_digest is None
+        assert record.commit_stage is PrewireCommitStage.PENDING
+        assert record.original_to_asr is None and not record.spec.event_ended
+        assert [event.kind for event in plan.events] == ["gap"]
+        assert not gate_backend.started.is_set()  # no rescoring the raw mixture
+        with pytest.raises(PrewireTransitionError, match="finalized gap is immutable"):
+            gate._ledger.record_score(
+                interval.identity, score=.9, scoring_parameters_digest="a" * 64,
+            )
+        with pytest.raises(PrewireTransitionError, match="finalized gap is immutable"):
+            gate._ledger.decide(interval.identity, PrewireDecisionState.KEEP, reason="late")
+        gate.claim(plan)
+        assert gate.pending_interval_count == 0
+        assert gate.held_pcm_bytes == 8
+        with pytest.raises(PrewireGateIdentityError):
+            gate.claim(plan)
+        assert gate.get_interval_record(interval.identity) is record
+    finally:
+        await gate.close()
+        await target.close()

@@ -28,7 +28,7 @@ import soxr
 import websockets
 
 from ..connection_cleanup import connection_registry
-from ..delivery import begin_transport_write, complete_transport_write, delivery_evidence
+from ..delivery import begin_transport_write, complete_transport_write, delivery_evidence, retire_interval_deliveries
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ._shared import is_auth_rejection, normalize_zh_en_language
 
@@ -457,6 +457,8 @@ async def openai_asr_worker(
                     current_buffer_epoch = request.buffer_epoch
 
                 if request.kind == "audio":
+                    if request.delivery_spans:
+                        raise RuntimeError("ASR_DELIVERY_MAPPING_UNSUPPORTED: OpenAI resampling requires source contribution mapping")
                     wire_audio = _resample_pcm_16k_to_24k(resampler, request.audio)
                     if wire_audio:
                         delivery = begin_transport_write(request_queue)
@@ -535,6 +537,8 @@ async def openai_asr_worker(
                 )
                 return
             finally:
+                if request.kind == "audio":
+                    retire_interval_deliveries(request_queue, only_spans=request.delivery_spans)
                 request_queue.task_done()
 
     try:

@@ -36,6 +36,7 @@ from main_logic.voice_turn.audio_input import ProcessedVoiceFrame
 from ._infra import logger, _READY_TIMEOUT_SECONDS
 from .audio import AsrAudioDispatcher
 from .audio_ranges import AudioSampleSpan
+from .input_delivery import InputAudioDeliveryLedger
 from .candidate_control import CandidateRejectionOutcome, CandidateRejectionRequest
 from ._registry_meta import AsrProviderAvailability
 from .endpointing.detector import (
@@ -761,6 +762,7 @@ class IndependentAsrRuntime:
         # Input positions belong to ingress, not a detector instance or turn.
         self._asr_sample_ingress: VoiceIngressToken | None = None
         self._asr_input_sample_end = 0
+        self._asr_input_delivery = InputAudioDeliveryLedger()
         self._asr_committed_sample_end = 0
         self._asr_pending_activation_turn: VoiceTurnToken | None = None
         self._asr_current_ingress_token: VoiceIngressToken | None = None
@@ -883,6 +885,8 @@ class IndependentAsrRuntime:
         return self._asr_session_epoch
 
     def _ensure_asr_runtime_state(self) -> None:
+        if not hasattr(self, "_asr_input_delivery"):
+            self._asr_input_delivery = InputAudioDeliveryLedger()
         if not hasattr(self, "_asr_admission_evidence"):
             self._asr_admission_evidence = {}
             self._asr_candidate_evidence = None
@@ -1595,6 +1599,7 @@ class IndependentAsrRuntime:
             session_ref,
             payload,
             sample_rate_hz=16_000,
+            delivery_spans=self._asr_input_delivery.spans(spans, len(payload) // 2),
         )
         if activated:
             if spans and spans[-1].end is not None:
@@ -3055,6 +3060,89 @@ class IndependentAsrRuntime:
                 and self._ingress_token_matches(ingress_token)
                 and lifecycle.snapshot.route_mode is not VoiceRouteMode.BLOCKED)
 
+    async def discontinue_input(
+        self, *, ingress_token: VoiceIngressToken, deadline: float,
+    ) -> None:
+        """Apply an explicit input hole/end without fabricating VAD silence.
+
+        Manual endpointing can seal the accepted prefix and keep its final.
+        Provider-VAD routes must supply a real boundary capability before they
+        can support this operation; their no-op activity hint is insufficient.
+        The Core writer serializes this operation with subsequent input.
+        """
+        self._ensure_asr_runtime_state()
+        lifecycle, detector = self._asr_lifecycle, self._asr_detector
+        if lifecycle is None or detector is None or not self._ingress_token_matches(ingress_token):
+            raise RuntimeError("ASR_INPUT_BOUNDARY_STALE")
+        if lifecycle.provider_policy.endpoint_authority != "smart_turn":
+            raise RuntimeError("ASR_INPUT_BOUNDARY_UNSUPPORTED")
+        identity = self._capture_runtime_identity(ingress_token=ingress_token)
+
+        def check_current() -> None:
+            if not self._runtime_identity_matches(identity):
+                raise RuntimeError("ASR_INPUT_BOUNDARY_STALE")
+
+        async with asyncio.timeout_at(deadline):
+            await self._asr_detector_dispatcher.wait_idle()
+            check_current()
+            if (lifecycle.has_pending_turn
+                    or self._asr_pending_activation_turn is not None):
+                # The preceding hole sealed an accepted prefix. Its final owns
+                # the FIFO position ahead of this already-confirmed successor.
+                # Wait for that real final to activate the successor before
+                # sealing it; neither drop its PCM nor append across the hole.
+                # Final handling may yield while preparing the next turn, so
+                # ACTIVE alone is not proof that its writer owns the audio yet.
+                while (
+                    lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE
+                    or not self._asr_turn_prepared
+                    or self._asr_audio_dispatcher.active_turn
+                    != self._capture_turn_token(lifecycle)
+                    or self._asr_pending_activation_turn is not None
+                ):
+                    await asyncio.sleep(0.005)
+                    check_current()
+                    if lifecycle.snapshot.state is VoiceLifecycleState.BLOCKED:
+                        raise RuntimeError("ASR_INPUT_BOUNDARY_STALE")
+            state = lifecycle.snapshot.state
+            if state is VoiceLifecycleState.ACTIVE:
+                token = self._capture_turn_token(lifecycle)
+                await self._handle_independent_asr_endpoint(identity.session_epoch)
+                check_current()
+                if lifecycle.snapshot.state is not VoiceLifecycleState.DRAINING:
+                    raise RuntimeError("ASR_INPUT_BOUNDARY_NOT_SEALED")
+                dispatcher = self._asr_audio_dispatcher
+                if dispatcher.sealed_turn != token and not dispatcher.seal(
+                    token, self._asr_session, after_sequence=self._asr_audio_sequence,
+                ):
+                    raise RuntimeError("ASR_INPUT_BOUNDARY_ORDERING_FAILED")
+                await dispatcher.wait_idle()
+                check_current()
+            elif state is VoiceLifecycleState.DRAINING:
+                await self._asr_audio_dispatcher.wait_idle()
+                check_current()
+                lifecycle.discard_unconfirmed_pending_audio()
+            else:
+                # No prepared/accepted turn exists. These buffers are explicitly
+                # local; discard observers settle their exact unsent ranges.
+                lifecycle.invalidate_audio()
+            await detector.reset()
+            check_current()
+            # Old semantic completions were invalidated by detector.reset().
+            # A prepared prefix stays DRAINING until its real final callback.
+            self._asr_pending_detector_candidate = None
+
+    async def wait_input_settled(self, *, ingress_token: VoiceIngressToken, deadline: float) -> None:
+        """Join an explicitly ended input's final before its lease is revoked."""
+        async with asyncio.timeout_at(deadline):
+            while self._asr_sealed_turn_token is not None or self._asr_turn_prepared:
+                if not self._ingress_token_matches(ingress_token):
+                    raise RuntimeError("ASR_INPUT_BOUNDARY_STALE")
+                await asyncio.sleep(0.005)
+            await self.wait_transcript_idle()
+            if not self._ingress_token_matches(ingress_token):
+                raise RuntimeError("ASR_INPUT_BOUNDARY_STALE")
+
     async def submit(
         self,
         frame: ProcessedVoiceFrame,
@@ -3131,14 +3219,18 @@ class IndependentAsrRuntime:
             admission_enabled = bool(getattr(detector, "admission_enabled", False))
             source_start = source_end = None
             committed_before_detection = None
-            if admission_enabled:
+            if admission_enabled or frame.delivery is not None or self._asr_input_delivery.enabled:
                 if self._asr_sample_ingress != ingress_token:
                     self._asr_sample_ingress = ingress_token
                     self._asr_input_sample_end = 0
                     self._asr_committed_sample_end = 0
+                    self._asr_input_delivery = InputAudioDeliveryLedger()
                 source_start = self._asr_input_sample_end
                 source_end = source_start + len(pcm16) // 2
                 self._asr_input_sample_end = source_end
+                if frame.delivery is not None:
+                    self._asr_input_delivery.register(source_start, source_end, frame.delivery)
+                    lifecycle.set_audio_discard_observer(self._asr_input_delivery.discard)
             buffered_before_detection = False
             buffered_for_activation = bool(
                 admission_enabled
@@ -3196,6 +3288,11 @@ class IndependentAsrRuntime:
                 if not self._asr_audio_dispatcher.enqueue_audio(
                     turn, self._asr_session, payload, sample_rate_hz=sample_rate_hz,
                     sequence_no=self._asr_audio_sequence,
+                    delivery_spans=self._asr_input_delivery.spans(
+                        decision.audio_spans if decision.disposition is AudioDisposition.FORWARD_WITH_PRE_ROLL
+                        else (AudioSampleSpan(source_start, len(payload) // 2),),
+                        len(payload) // 2,
+                    ),
                 ):
                     await self._handle_independent_asr_error(
                         identity.session_epoch, identity.provider or "unknown",
@@ -3585,6 +3682,11 @@ class IndependentAsrRuntime:
                 payload,
                 sample_rate_hz=sample_rate_hz,
                 sequence_no=self._asr_audio_sequence,
+                delivery_spans=self._asr_input_delivery.spans(
+                    decision.audio_spans if decision.disposition is AudioDisposition.FORWARD_WITH_PRE_ROLL
+                    else (AudioSampleSpan(source_start, len(payload) // 2),),
+                    len(payload) // 2,
+                ),
             ):
                 await self._handle_independent_asr_error(
                     identity.session_epoch,

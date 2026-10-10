@@ -30,6 +30,9 @@ class PrewireCommitStage(str, Enum):
     ENQUEUED = "enqueued"
     LOCAL_CANCELLED = "local-cancelled"
     WRITTEN = "written"
+    # A real writer has accepted the post-write lifecycle and irrevocably
+    # forbidden replay. This transfers local debt; it is not a provider ACK.
+    TRANSPORT_OWNED = "transport-owned"
     REMOTE_CONFIRMED = "remote-confirmed"
     UNKNOWN = "unknown"
 
@@ -188,8 +191,9 @@ class PrewireIntervalRecord:
     used_ended_micro_event_rule: bool = False
     commit_stage: PrewireCommitStage = PrewireCommitStage.PENDING
     original_to_asr: OriginalAsrMapping | None = None
-    # Identity uncertainty and its bounded audio disposition are independent.
-    # A finalized gap retains its scoring evidence and original endpoint facts.
+    # Identity judgment and bounded audio disposition are independent.
+    # Raw scoring retains its score; verified output selection may instead
+    # describe a scoreless DROP/UNCERTAIN gap. Neither invents endpoint facts.
     gap_finalized: bool = False
 
     def __post_init__(self) -> None:
@@ -200,11 +204,11 @@ class PrewireIntervalRecord:
         if type(self.gap_finalized) is not bool:
             raise PrewireContractError("gap_finalized must be bool")
         if self.gap_finalized and (
-            self.decision is not PrewireDecisionState.UNCERTAIN
+            self.decision not in {PrewireDecisionState.UNCERTAIN, PrewireDecisionState.DROP}
             or self.commit_stage is not PrewireCommitStage.PENDING
         ):
             raise PrewireContractError(
-                "only an uncertain interval can be finalized as a local gap"
+                "only a non-owner or uncertain interval can be finalized as a local gap"
             )
         if self.score is not None:
             if type(self.score) not in {int, float} or not math.isfinite(self.score):
@@ -260,6 +264,7 @@ class PrewireIntervalRecord:
                 PrewireDecisionState.UNCERTAIN,
             }
             and not scoreless_micro_drop
+            and not self.gap_finalized
             and self.score is None
         ):
             raise PrewireContractError(

@@ -62,9 +62,11 @@ _COMMIT_TRANSITIONS = {
         PrewireCommitStage.LOCAL_CANCELLED,
     },
     PrewireCommitStage.WRITTEN: {
+        PrewireCommitStage.TRANSPORT_OWNED,
         PrewireCommitStage.REMOTE_CONFIRMED,
         PrewireCommitStage.UNKNOWN,
     },
+    PrewireCommitStage.TRANSPORT_OWNED: {PrewireCommitStage.REMOTE_CONFIRMED},
     PrewireCommitStage.UNKNOWN: {PrewireCommitStage.REMOTE_CONFIRMED},
 }
 
@@ -272,6 +274,31 @@ class PrewireIntervalLedger:
         self._revision += 1
         return updated
 
+    def record_candidate_decision(
+        self, identity: PrewireIntervalIdentity, *, decision: PrewireDecisionState,
+        reason: str, score: float | None, scoring_parameters_digest: str,
+    ) -> PrewireIntervalRecord:
+        """Record already verified candidate evidence without rescoring mixed PCM.
+
+        The gate must validate the immutable candidate selection first. A gap
+        may have no score (zero candidates); an authorized candidate may not.
+        """
+        record = self._require_exact(identity)
+        if record.decision is not PrewireDecisionState.PENDING or record.commit_stage is not PrewireCommitStage.PENDING:
+            raise PrewireTransitionError("candidate decision is already recorded")
+        if decision not in {PrewireDecisionState.KEEP, PrewireDecisionState.DROP, PrewireDecisionState.UNCERTAIN}:
+            raise PrewireTransitionError("candidate decision must be an audio or identity gap outcome")
+        if decision is PrewireDecisionState.KEEP and score is None:
+            raise PrewireTransitionError("candidate owner requires score")
+        updated = replace(
+            record, decision=decision, decision_reason=reason, score=score,
+            scoring_parameters_digest=scoring_parameters_digest if score is not None else None,
+            gap_finalized=decision is not PrewireDecisionState.KEEP,
+        )
+        self._store(updated)
+        self._revision += 1
+        return updated
+
     def plan_contiguous(self, stream: PrewireStreamKey) -> PrewireContiguousPlan:
         """Describe the currently releasable prefix without changing ledger state."""
 
@@ -441,6 +468,10 @@ class PrewireIntervalLedger:
             safely_consumed = record.spec.commit_range.end <= cursor
             safe_stage = record.commit_stage in {
                 PrewireCommitStage.PENDING,
+                # The writer separately owns failure/retirement and no replay.
+                # Eviction forgets interval detail, never the consumed cursor;
+                # late acknowledgements then fail exact identity lookup.
+                PrewireCommitStage.TRANSPORT_OWNED,
                 PrewireCommitStage.REMOTE_CONFIRMED,
                 PrewireCommitStage.LOCAL_CANCELLED,
             }

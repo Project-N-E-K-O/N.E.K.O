@@ -6,6 +6,8 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import TypeAlias
 
+from .candidate_contracts import CandidateBinding, CandidateSelection
+
 from .contracts import (
     SAMPLE_RATE_HZ,
     PrewireCommitStage,
@@ -32,6 +34,7 @@ from .scheduler import (
     ScoreRequest,
     ScoreResultStatus,
     ScoringIdentity,
+    ScoringWindowPlan,
 )
 
 
@@ -75,6 +78,7 @@ class PrewireWindowPlanner:
         step_samples: int,
         guard_samples: int,
         start_sample: int = 0,
+        scoring_sample_counts: tuple[int, ...] | None = None,
     ) -> None:
         for name, value in (
             ("window_samples", window_samples),
@@ -91,6 +95,13 @@ class PrewireWindowPlanner:
         self.window_samples = window_samples
         self.step_samples = step_samples
         self.guard_samples = guard_samples
+        # Scheduling support is not calibration or permission.  Every selected
+        # tail still needs fresh evidence for its own real sample range.
+        self._scoring_sample_counts = ScoringWindowPlan(
+            (window_samples,) if scoring_sample_counts is None else scoring_sample_counts
+        ).sample_counts
+        if window_samples not in self._scoring_sample_counts:
+            raise ValueError("scoring plan must contain window_samples")
         self._captured_end = start_sample
         self._next_commit_start = start_sample
 
@@ -113,13 +124,32 @@ class PrewireWindowPlanner:
         return tuple(planned)
 
     def finish_event(self) -> tuple[PrewirePlannedRanges, ...]:
-        """Return the remaining tail without assigning endpoint semantics."""
+        """Plan fresh tail evidence without padding or reusing a committed prefix.
+
+        Use the largest supported real window starting at the next uncommitted
+        sample.  If none fits, retain the original step-sized unresolved range
+        so the gate emits an explicit unsupported gap.  Capture finish does not
+        establish a trusted boundary or an independent utterance.
+        """
         planned: list[PrewirePlannedRanges] = []
         while self._next_commit_start < self._captured_end:
-            end = min(self._next_commit_start + self.step_samples, self._captured_end)
-            tail = SampleRange(self._next_commit_start, end)
-            planned.append(PrewirePlannedRanges(tail, tail, tail))
-            self._next_commit_start = end
+            start = self._next_commit_start
+            remaining = self._captured_end - start
+            supported = tuple(
+                count for count in self._scoring_sample_counts
+                if count <= min(remaining, self.window_samples)
+            )
+            if supported:
+                scoring = SampleRange(start, start + supported[-1])
+                commit = SampleRange(start, min(start + self.step_samples, scoring.end))
+                decision = SampleRange(
+                    start, min(commit.end + self.guard_samples, scoring.end)
+                )
+            else:
+                commit = SampleRange(start, min(start + self.step_samples, self._captured_end))
+                scoring = decision = commit
+            planned.append(PrewirePlannedRanges(scoring, decision, commit))
+            self._next_commit_start = commit.end
         return tuple(planned)
 
 
@@ -264,6 +294,7 @@ class PrewireGate:
             step_samples=step,
             guard_samples=guard,
             start_sample=start_sample,
+            scoring_sample_counts=self._scheduler.window_plan.sample_counts,
         )
 
     def open_stream(
@@ -435,6 +466,41 @@ class PrewireGate:
             pending.receipts = tuple(receipts)
         return PrewireSubmission(identity)
 
+    def submit_candidate_interval(
+        self, spec: PrewireIntervalSpec, selection: CandidateSelection, *, expected_binding: CandidateBinding,
+    ) -> PrewireGatePlan | None:
+        """Consume one exact pre-scored candidate selection; never score raw PCM."""
+        if type(selection) is not CandidateSelection or type(expected_binding) is not CandidateBinding:
+            raise TypeError("exact candidate selection and binding required")
+        selection.validate_for(spec, expected_binding)
+        if expected_binding.scoring_parameters_digest != self._parameters_digest:
+            raise PrewireGateIdentityError("candidate_parameters_mismatch")
+        identity = spec.identity
+        if self._closed or not self._identity_is_current(identity):
+            raise PrewireGateIdentityError("candidate_interval_is_stale")
+        if identity in self._pending or self._ledger.get(identity) is not None:
+            raise PrewireGateIdentityError("interval_already_submitted")
+        state = self._streams[identity.stream]
+        if not SampleRange(state.buffer_start, state.buffer_end).contains(identity.original_range):
+            raise PrewireGateRangeError("candidate_original_range_not_retained")
+        if spec.scoring_range.sample_count not in self._scheduler.window_plan.sample_counts:
+            raise PrewireGateRangeError("candidate_scoring_window_unsupported")
+        self._validate_ranges(spec, (spec.scoring_range,))
+        if selection.decision is PrewireDecisionState.UNAVAILABLE:
+            raise PrewireGateError(selection.reason)
+        if selection.decision is PrewireDecisionState.STALE:
+            # Selector retirement is a rejection, not a registered identity
+            # outcome. Validate before adding an otherwise orphaned PENDING
+            # record which has no resolver or delivery owner to settle it.
+            raise PrewireGateIdentityError(selection.reason)
+        self._ledger.add(spec)
+        self._ledger.record_candidate_decision(
+            identity, decision=selection.decision, reason=selection.reason,
+            score=selection.score, scoring_parameters_digest=self._parameters_digest,
+        )
+        self._pending[identity] = _PendingInterval(spec, (), (spec.scoring_range,), ())
+        return self._plan_stream(identity.stream)
+
     async def resolve(self, submission: PrewireSubmission) -> PrewireGatePlan | None:
         pending = self._pending.get(submission.identity)
         if pending is None or pending.emitted:
@@ -462,12 +528,6 @@ class PrewireGate:
         task.result()
         self._ledger.finalize_uncertain(submission.identity)
         return self._plan_stream(submission.identity.stream)
-
-    def get_interval_record(
-        self, identity: PrewireIntervalIdentity
-    ) -> PrewireIntervalRecord | None:
-        """Read exact, immutable evidence, including after stream retirement."""
-        return self._ledger.get(identity)
 
     def claim(self, plan: PrewireGatePlan) -> None:
         """Commit a plan only after its audio events were actually enqueued."""
@@ -523,6 +583,17 @@ class PrewireGate:
         return self._ledger.advance_commit(
             identity, expected=expected, next_stage=next_stage
         )
+
+    def get_interval_record(
+        self, identity: PrewireIntervalIdentity
+    ) -> PrewireIntervalRecord | None:
+        """Read immutable delivery evidence without exposing the mutable ledger.
+
+        Exact identity lookup remains available after stream retirement, when
+        transport acknowledgements can still arrive for a retained record.
+        """
+
+        return self._ledger.get(identity)
 
     def invalidate_stream(
         self, stream: PrewireStreamKey, *, reason: str = "stream_invalidated"

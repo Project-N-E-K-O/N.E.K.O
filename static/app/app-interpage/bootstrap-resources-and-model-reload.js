@@ -718,7 +718,7 @@ I.mod = window.appInterpage;
 
         // Stop current mic capture
         if (I.S.isRecording && typeof window.stopMicCapture === 'function') {
-            window.stopMicCapture();
+            window.stopMicCapture({ normalEnd: false });
         }
 
         // Tell backend to drop old context

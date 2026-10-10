@@ -2926,3 +2926,74 @@ def test_lock_gate_holds_on_the_real_core_package(contract_checker) -> None:
     )
 
     assert violations == [], "\n".join(v.render(PROJECT_ROOT) for v in violations)
+
+
+@pytest.mark.unit
+def test_interception_layers_hold_on_the_real_tree(contract_checker) -> None:
+    violations = [
+        violation for violation in contract_checker.run(PROJECT_ROOT)
+        if violation.code == "ASR_LAYERING"
+    ]
+    assert violations == [], "\n".join(v.render(PROJECT_ROOT) for v in violations)
+
+
+@pytest.mark.unit
+def test_interception_boundary_methods_keep_an_explicit_allowlist(
+    contract_checker,
+    tmp_path,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    component = tmp_path / "main_logic" / "asr_client" / "runtime.py"
+    component.parent.mkdir()
+    component.write_text(
+        "class IndependentAsrRuntime:\n"
+        "    async def discontinue_input(self):\n        pass\n"
+        "    async def wait_input_settled(self):\n        pass\n"
+        "    async def restart_from_raw(self):\n        pass\n",
+        encoding="utf-8",
+    )
+    messages = [
+        violation.message for violation in contract_checker.run(tmp_path)
+        if violation.path == component
+        and violation.message.startswith("unexpected IndependentAsrRuntime public method")
+    ]
+    assert messages == [
+        "unexpected IndependentAsrRuntime public method restart_from_raw()",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("module", "forbidden"),
+    [
+        ("main_logic.voice_turn.interception_events", False),
+        ("main_logic.voice_input.interception_events", True),
+    ],
+)
+def test_transport_interception_contract_must_remain_neutral(
+    contract_checker,
+    tmp_path,
+    module: str,
+    forbidden: bool,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    probe = tmp_path / "main_logic" / "asr_client" / "delivery.py"
+    probe.parent.mkdir()
+    probe.write_text(
+        f"from {module} import InterceptionDeliveryStage\n",
+        encoding="utf-8",
+    )
+    violations = [
+        violation for violation in contract_checker.run(tmp_path)
+        if violation.path == probe and violation.code == "ASR_LAYERING"
+    ]
+    assert bool(violations) is forbidden
+
+
+@pytest.mark.unit
+def test_ingress_interception_layers_hold_on_the_real_tree(contract_checker) -> None:
+    violations = [
+        violation for violation in contract_checker.run(PROJECT_ROOT)
+        if violation.code == "VOICE_INPUT_LAYERING"
+    ]
+    assert violations == [], "\n".join(v.render(PROJECT_ROOT) for v in violations)

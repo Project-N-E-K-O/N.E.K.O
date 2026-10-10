@@ -8,6 +8,7 @@ import threading
 import pytest
 
 from main_logic.voice_identity_service.interception_runtime import PrewireInterceptionFactory
+from main_logic.voice_identity_service.prewire_gate.contracts import PrewireCommitStage
 from main_logic.voice_identity_service.prewire_gate.decision import (
     CalibratedIdentityEvidence, CalibratedIdentityOutcome, PrewireQualitySummary,
 )
@@ -304,9 +305,13 @@ async def test_finish_rechecks_revocation_at_public_return(monkeypatch):
         task = asyncio.create_task(runtime.finish())
         await entered.wait()
         assert not runtime.retired
+        assert not runtime._delivery_events
+        unreturned = tuple(runtime._outgoing_audio)
+        assert unreturned
         with pytest.raises(RuntimeError, match="retirement_pending"):
             factory.create(None, ingress_token=None)
         await runtime.close("profile_revoked")
+        assert all(runtime._gate.get_interval_record(identity).commit_stage is PrewireCommitStage.LOCAL_CANCELLED for identity in unreturned)
         release.set()
         result = await task
         assert result.decision is InterceptionDecision.UNAVAILABLE

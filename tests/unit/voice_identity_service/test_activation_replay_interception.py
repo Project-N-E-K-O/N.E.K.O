@@ -15,6 +15,7 @@ from main_logic.voice_input.activation import (
     VoiceActivationController, WakeWordDetection, WakeWordBatchResult,
 )
 from main_logic.voice_input.activation.wiring import VoiceSessionActivationRouteContext
+from main_logic.voice_input.interception import InterceptionDecision, InterceptionResult
 from tests.unit.asr_runtime.test_active_session_interception import _Runtime as CoreHarness
 from tests.unit.voice_identity_service.test_activation_runtime import _Scorer as ActivationScorer
 from tests.unit.voice_identity_service.test_interception_runtime import _config, _Scorer, _Classifier, _Tse
@@ -46,6 +47,20 @@ async def _close(core):
     await core.set_active_session_interception_factory(None, interception_required=False)
 
 
+async def _intercept_pcm(core, frame):
+    # #3371 preserves the explicit decision and events at this boundary.
+    # A truthy result object is not proof that any PCM was released.
+    result = await core._intercept_active_session_frame(frame, GENERATION, frame.context)
+    if result is None:
+        return None
+    assert type(result) is InterceptionResult
+    if result.decision is not InterceptionDecision.KEEP:
+        assert not result.pcm16
+        return None
+    assert result.pcm16
+    return result.pcm16
+
+
 @pytest.mark.parametrize("origin,age,kept", [
     (OutputOrigin.LIVE, 0.0, True),
     (OutputOrigin.REPLAY, 2.5, True),
@@ -58,7 +73,7 @@ async def test_old_replay_passes_real_gate_while_old_live_fails_closed(origin, a
     frame = _frame(core, origin=origin, age=age)
     original = (frame.captured_at, frame.sample_start, frame.sample_end, frame.context)
     try:
-        result = await core._intercept_active_session_frame(frame, GENERATION, frame.context)
+        result = await _intercept_pcm(core, frame)
         assert bool(result) is kept
         runtime = factory._runtimes[0]
         if kept:
@@ -85,11 +100,11 @@ async def test_new_replay_frame_does_not_renew_old_unfinished_prefix():
     core, factory = await _core(_BufferedTse())
     try:
         first = _frame(core, age=3.3, origin=OutputOrigin.REPLAY)
-        assert await core._intercept_active_session_frame(first, GENERATION, first.context) is None
+        assert await _intercept_pcm(core, first) is None
         runtime = factory._runtimes[0]
         first_deadline = runtime._capture_deadline
         second = _frame(core, age=2.5, origin=OutputOrigin.REPLAY, samples=400, sequence=5)
-        assert await core._intercept_active_session_frame(second, GENERATION, second.context) is None
+        assert await _intercept_pcm(core, second) is None
         assert runtime._capture_deadline == first_deadline
         runtime._arm_deadline(asyncio.get_running_loop().time())
         await asyncio.wait_for(runtime._deadline_task, 0.5)
@@ -120,7 +135,7 @@ async def test_replay_stalled_model_never_returns_pcm_after_deadline_or_revoke(t
     core, factory = await _core(worker, scoring_deadline_seconds=.02 if trigger == "deadline" else 1,
                                 scoring_close_timeout_seconds=.05)
     frame = _frame(core, origin=OutputOrigin.REPLAY, age=3.3)
-    task = asyncio.create_task(core._intercept_active_session_frame(frame, GENERATION, frame.context))
+    task = asyncio.create_task(_intercept_pcm(core, frame))
     try:
         await asyncio.wait_for(worker.entered.wait(), .5)
         if trigger == "cancel":
@@ -160,7 +175,7 @@ async def test_authorized_activation_replays_old_prefix_through_real_core_gate()
 
     async def output(frame):
         emitted.append(frame)
-        pcm = await core._intercept_active_session_frame(frame, GENERATION, frame.context)
+        pcm = await _intercept_pcm(core, frame)
         if pcm is not None:
             delivered.append(pcm)
         return OutputCommit.LOCAL_ACCEPTED
@@ -208,7 +223,7 @@ async def test_replay_provenance_still_requires_owner_identity():
     assert await core.set_active_session_interception_factory(factory)
     frame = replace(_frame(core, origin=OutputOrigin.REPLAY, age=3.3), pcm=b"\x00\x00" * 2000)
     try:
-        assert await core._intercept_active_session_frame(frame, GENERATION, frame.context) is None
+        assert await _intercept_pcm(core, frame) is None
         assert factory._runtimes[0]._settled_sample == 800
         assert not factory._runtimes[0]._output_revoked
     finally:

@@ -1645,7 +1645,7 @@
         && S.gameVoiceSttGateActive !== true) {
         console.log('[App] independent ASR blocked; stopping the microphone');
         if (typeof window.stopMicCapture === 'function') {
-            Promise.resolve(window.stopMicCapture()).catch(function (micTeardownErr) {
+            Promise.resolve(window.stopMicCapture({ normalEnd: false })).catch(function (micTeardownErr) {
                 console.warn('[App] blocked-ASR microphone teardown failed:', micTeardownErr);
             });
         } else if (typeof window.stopRecording === 'function') {

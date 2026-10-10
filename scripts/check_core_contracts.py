@@ -2660,6 +2660,7 @@ def run(root: Path) -> list[Violation]:
         allowed_dependency_prefixes = (
             "main_logic.voice_input",
             "main_logic.voice_turn.contracts",
+            "main_logic.voice_turn.interception_events",
             "utils.game_route_state",
             "utils.external_route_registry",
         )
@@ -2707,7 +2708,7 @@ def run(root: Path) -> list[Violation]:
                         node.col_offset,
                         "VOICE_INPUT_LAYERING",
                         "voice_input may depend only on its own package, "
-                        "voice_turn.contracts, utils.game_route_state and "
+                        "voice_turn.contracts/interception_events, utils.game_route_state and "
                         "utils.external_route_registry "
                         f"(found {module})",
                     ))
@@ -3324,6 +3325,10 @@ def run(root: Path) -> list[Violation]:
                 "resume",
                 "abort",
                 "wait_transcript_idle",
+                # Neutral audio boundaries and delivery draining stay inside
+                # the provider runtime; Core retains capture/route authority.
+                "discontinue_input",
+                "wait_input_settled",
                 "has_pending_transcript_delivery",
                 "pending_transcript_turn_tokens",
                 "set_speaker_verifier_factory",
