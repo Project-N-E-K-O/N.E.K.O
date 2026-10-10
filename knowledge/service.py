@@ -204,16 +204,23 @@ _QUERY_WORK: contextvars.ContextVar[list[concurrent.futures.Future[Any]] | None]
 )
 
 
-def _job_files(jobs: Sequence[ImportJob], *, installing: bool) -> frozenset[str]:
+def _job_files(jobs: Sequence[ImportJob], *, installing: Registry | None) -> frozenset[str]:
     """File names whose bytes are counted from ``jobs`` (their ``staged_bytes``).
 
-    Each job's staged upload, and with ``installing`` also the pack file it
-    installs: the runner writes that before indexing, which can take long,
-    and the job stays active until it is done.
+    Each job's staged upload. With ``installing`` (the current registry), the
+    outcome the jobs lead to is counted instead of their transient files: the
+    pack file each job installs (the runner writes it before indexing, which
+    can take long, and the job stays active until done) and the registered
+    file it replaces.
     """
     names = {f"{job.job_id}.json" for job in jobs}
-    if installing:
+    if installing is not None:
         names |= {pack_file_name(job.pack_id, job.staged_sha256) for job in jobs}
+        names |= {
+            record.file_name
+            for job in jobs
+            if (record := installing.packs.get(job.pack_id)) is not None
+        }
     return frozenset(names)
 
 
@@ -309,7 +316,7 @@ class KnowledgeService:
             async with self._write_lock:
                 # Tracked so stop() can wait for it: cancelling start() stops
                 # the waiting, not the thread rebuilding the index.
-                self._startup_work = asyncio.ensure_future(asyncio.to_thread(self._open_blocking))
+                self._startup_work = asyncio.ensure_future(self._thread(self._open_blocking))
                 await asyncio.shield(self._startup_work)
             self._state = "ready"
             logger.info(
@@ -523,7 +530,7 @@ class KnowledgeService:
             raise KnowledgeUnavailable("not_found")
         updated = replace(record, updated_at=utc_now(), **changes)
         registry = self._registry.with_pack(updated)
-        await asyncio.to_thread(save_registry, self.root, registry)
+        await self._thread(save_registry, self.root, registry)
         self._publish_registry(registry)
         return updated
 
@@ -533,7 +540,7 @@ class KnowledgeService:
     async def set_enabled(self, enabled: bool) -> dict[str, Any]:
         async def run() -> None:
             registry = replace(self._registry, enabled=bool(enabled))
-            await asyncio.to_thread(save_registry, self.root, registry)
+            await self._thread(save_registry, self.root, registry)
             self._publish_registry(registry)
 
         await self._locked(run)
@@ -552,7 +559,7 @@ class KnowledgeService:
                 # failed to embed. The policy is already saved, so a failed
                 # reset must not report the change itself as failed.
                 try:
-                    await asyncio.to_thread(self._store.reset_attempts, pack_id)
+                    await self._thread(self._store.reset_attempts, pack_id)
                 except Exception:
                     logger.warning("[Knowledge] could not reset embed attempts of %s", pack_id)
             return record
@@ -580,7 +587,7 @@ class KnowledgeService:
                 raise KnowledgeUnavailable("not_found")
             key = title_key(title)
             was_disabled = key in record.disabled_titles
-            found = await asyncio.to_thread(self._store.set_disabled, pack_id, title, bool(disabled))
+            found = await self._thread(self._store.set_disabled, pack_id, title, bool(disabled))
             if not found:
                 raise KnowledgeUnavailable("not_found")
             keys = set(record.disabled_titles)
@@ -591,10 +598,10 @@ class KnowledgeService:
             updated = replace(record, disabled_titles=tuple(sorted(keys)), updated_at=utc_now())
             registry = self._registry.with_pack(updated)
             try:
-                await asyncio.to_thread(save_registry, self.root, registry)
+                await self._thread(save_registry, self.root, registry)
             except BaseException:
                 # The registry still says the old thing; so must the index.
-                await asyncio.to_thread(self._store.set_disabled, pack_id, title, was_disabled)
+                await self._thread(self._store.set_disabled, pack_id, title, was_disabled)
                 raise
             self._publish_registry(registry)
             return {"pack_id": pack_id, "disabled": bool(disabled), "disabled_entries": len(keys)}
@@ -634,7 +641,7 @@ class KnowledgeService:
                 except OSError:
                     logger.warning("[Knowledge] could not delete the file of %s", pack_id)
 
-            await asyncio.to_thread(save_registry, self.root, registry)
+            await self._thread(save_registry, self.root, registry)
             self._removed_at[pack_id] = max(self._removed_at.get(pack_id, 0), my_seq)
             for job in list(self._jobs.values()):
                 if job.pack_id == pack_id and job.state == "queued" and job.arrived_at < my_seq:
@@ -645,7 +652,7 @@ class KnowledgeService:
             self._broken_packs = tuple(p for p in self._broken_packs if p != pack_id)
             self._publish_registry(registry)
             self._vector_generation += 1
-            await asyncio.to_thread(cleanup)
+            await self._thread(cleanup)
             return {"pack_id": pack_id, "removed_entries": record.entries}
 
         try:
@@ -804,8 +811,8 @@ class KnowledgeService:
         staged_bytes = sum(job.staged_bytes for job in active) + sum(
             size for pack_id, size in self._admitting.items() if pack_id != pack.pack_id
         )
-        installed_bytes = await asyncio.to_thread(
-            self._installed_pack_bytes, pack.pack_id, _job_files(active, installing=True)
+        installed_bytes = await self._thread(
+            self._installed_pack_bytes, pack.pack_id, _job_files(active, installing=self._registry)
         )
         if installed_bytes + staged_bytes + len(canonical) > MAX_TOTAL_PACK_BYTES:
             return {"ok": False, "reason": "capacity_bytes"}
@@ -821,7 +828,7 @@ class KnowledgeService:
             staged_bytes=len(canonical),
             staged_sha256=pack_sha256(canonical),
         )
-        await asyncio.to_thread(atomic_write_bytes, self._staging_path(job.job_id), canonical)
+        await self._thread(atomic_write_bytes, self._staging_path(job.job_id), canonical)
         if self._stopping:
             # The runner is gone; a queued job would never run.
             await self._discard_staging(job.job_id)
@@ -855,6 +862,33 @@ class KnowledgeService:
         self._track_thread_work(future)
         return await asyncio.wrap_future(future)
 
+    async def _thread(self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+        """``asyncio.to_thread``, tracked so that ``stop()`` waits for the thread.
+
+        Cancelling the caller only stops the waiting: the thread runs on, and
+        may hold knowledge.db open, until ``fn`` returns.
+        """
+        future: concurrent.futures.Future[_T] = concurrent.futures.Future()
+        context = contextvars.copy_context()
+
+        def run() -> None:
+            if not future.set_running_or_notify_cancel():
+                return  # cancelled before it started
+            try:
+                result = context.run(fn, *args, **kwargs)
+            except BaseException as exc:
+                future.set_exception(exc)
+            else:
+                future.set_result(result)
+
+        self._track_thread_work(future)
+        try:
+            asyncio.get_running_loop().run_in_executor(None, run)
+        except BaseException:
+            future.cancel()
+            raise
+        return await asyncio.wrap_future(future)
+
     def _track_thread_work(self, future: concurrent.futures.Future[Any]) -> None:
         with self._thread_work_lock:
             self._thread_work.add(future)
@@ -878,7 +912,7 @@ class KnowledgeService:
 
     def _active_job_files(self) -> frozenset[str]:
         return _job_files(
-            [job for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES], installing=False
+            [job for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES], installing=None
         )
 
     def _installed_pack_bytes(self, replacing: str, job_files: frozenset[str] = frozenset()) -> int:
@@ -966,7 +1000,7 @@ class KnowledgeService:
     async def _discard_staging(self, job_id: str) -> None:
         """Best effort: a staged file that cannot go now is removed at the next start."""
         try:
-            await asyncio.to_thread(self._staging_path(job_id).unlink, missing_ok=True)
+            await self._thread(self._staging_path(job_id).unlink, missing_ok=True)
         except OSError:
             logger.warning("[Knowledge] could not delete staged file of job %s", job_id)
 
@@ -1107,7 +1141,7 @@ class KnowledgeService:
                     logger.warning("[Knowledge] could not delete the old file of %s", pack.pack_id)
             return registry, record
 
-        registry, _record = await asyncio.to_thread(blocking)
+        registry, _record = await self._thread(blocking)
         self._broken_packs = tuple(p for p in self._broken_packs if p != job.pack_id)
         self._publish_registry(registry)
 
@@ -1165,7 +1199,7 @@ class KnowledgeService:
             return
         key = (self._vector_generation, model_id)
         try:
-            snapshot = await asyncio.to_thread(self._store.load_vectors, model_id)
+            snapshot = await self._thread(self._store.load_vectors, model_id)
         except Exception:
             # The scheduled refresh retries; lookups meanwhile skip ids that
             # no longer exist.
@@ -1185,7 +1219,7 @@ class KnowledgeService:
         damaged = snapshot.damaged
         try:
             await self._locked(
-                lambda: asyncio.to_thread(self._store.clear_vectors, damaged), wait=True
+                lambda: self._thread(self._store.clear_vectors, damaged), wait=True
             )
         except Exception:
             logger.warning("[Knowledge] could not clear damaged vectors", exc_info=True)
@@ -1204,7 +1238,7 @@ class KnowledgeService:
 
         async def rebuild() -> bool:
             try:
-                snapshot = await asyncio.to_thread(self._store.load_vectors, model_id)
+                snapshot = await self._thread(self._store.load_vectors, model_id)
             except Exception:
                 logger.warning("[Knowledge] vector snapshot rebuild failed", exc_info=True)
                 return False
@@ -1229,7 +1263,7 @@ class KnowledgeService:
         last_refresh = time.monotonic()
         while not self._stopping:
             try:
-                processed = await self._index_round()
+                processed = await self._index_round(until=last_refresh + VECTOR_REFRESH_SECONDS)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1258,7 +1292,13 @@ class KnowledgeService:
             return None
         return [record.pack_id for record in self._registry.packs.values() if record.local_embedding]
 
-    async def _index_round(self) -> int:
+    async def _index_round(self, until: float | None = None) -> int:
+        """Embed pending chunks; return how many were tried.
+
+        The round ends early once ``until`` (when the vector snapshot is due
+        for a reload) has passed, so a long backfill with slow inference still
+        makes its new vectors searchable every VECTOR_REFRESH_SECONDS.
+        """
         if self._state != "ready" or not self._registry.enabled or self.embedder is None:
             return 0
         model_id = self._current_model_id()
@@ -1267,7 +1307,7 @@ class KnowledgeService:
         if self._index_model_id != model_id:
             # Failure counts belong to the model (and process) that produced
             # them: a new model, or a restart, retries every chunk once more.
-            await self._locked(lambda: asyncio.to_thread(self._store.reset_attempts), wait=True)
+            await self._locked(lambda: self._thread(self._store.reset_attempts), wait=True)
             self._index_model_id = model_id
         processed = 0
         while processed < INDEX_ROUND_CHUNKS and not self._stopping:
@@ -1276,7 +1316,7 @@ class KnowledgeService:
             pack_ids = self._vector_pack_ids()
             if pack_ids is None:
                 break
-            rows = await asyncio.to_thread(
+            rows = await self._thread(
                 self._store.pending_chunks, model_id=model_id, pack_ids=pack_ids, limit=INDEX_BATCH_SIZE
             )
             if not rows:
@@ -1294,7 +1334,7 @@ class KnowledgeService:
                 for (chunk_id, text_hash, _text), vector in zip(rows, vectors)
             ]
             stored, failed = await self._locked(
-                lambda blobs=blobs, pack_ids=pack_ids: asyncio.to_thread(
+                lambda blobs=blobs, pack_ids=pack_ids: self._thread(
                     self._store.store_vectors, model_id=model_id, rows=blobs, pack_ids=pack_ids
                 ),
                 wait=True,
@@ -1313,6 +1353,8 @@ class KnowledgeService:
             # nothing: failing chunks must not push indexing past its duty.
             await asyncio.sleep(_batch_pause(inference_seconds))
             if stored == 0:
+                break
+            if until is not None and time.monotonic() >= until:
                 break
         return processed
 
@@ -1469,7 +1511,7 @@ class KnowledgeService:
         """Run query work in a thread that the query's slot stays tied to."""
         work = _QUERY_WORK.get()
         if work is None:
-            return await asyncio.to_thread(fn, *args, **kwargs)
+            return await self._thread(fn, *args, **kwargs)
         if self._query_pool is None:
             self._query_pool = concurrent.futures.ThreadPoolExecutor(
                 max_workers=QUERY_CONCURRENCY, thread_name_prefix="knowledge-query"
@@ -1548,18 +1590,33 @@ class KnowledgeService:
                 blob = normalize_vector(embed_task.result())
                 if blob is not None:
                     query_vector = np.frombuffer(blob, dtype="<f4")
-        semantic = (
-            await self._query_thread(
-                self._semantic_search, snapshot, query_vector, vector_packs, registry
+        for attempt in range(2):
+            if attempt:
+                exact_ids, lexical_ids = await self._query_thread(
+                    self._lexical_search, query, allowed, registry
+                )
+            semantic = (
+                await self._query_thread(
+                    self._semantic_search, snapshot, query_vector, vector_packs, registry
+                )
+                if query_vector is not None and vector_packs
+                else []
             )
-            if query_vector is not None
-            else []
-        )
-        candidate_ids = list(dict.fromkeys([*exact_ids, *lexical_ids, *(m.entry_id for m in semantic)]))
-        entries = await self._query_thread(self._store.fetch_entries, candidate_ids)
-        # Read the versions after the rows: rows of a pack replaced in between
-        # then show a newer version and are left out, never mislabelled.
-        allowed_set = await self._query_thread(self._current_packs, allowed, registry)
+            candidate_ids = list(
+                dict.fromkeys([*exact_ids, *lexical_ids, *(m.entry_id for m in semantic)])
+            )
+            entries = await self._query_thread(self._store.fetch_entries, candidate_ids)
+            # Read the versions after the rows: rows of a pack replaced in
+            # between then show a newer version and are left out, never
+            # mislabelled.
+            allowed_set = await self._query_thread(self._current_packs, allowed, registry)
+            if attempt or not allowed_set or set(allowed) <= allowed_set:
+                break
+            # A pack was replaced while candidates were chosen: its rows (or
+            # its stale vectors) may have pushed valid matches of other packs
+            # below the cutoffs. Choose once more without it.
+            allowed = [pack_id for pack_id in allowed if pack_id in allowed_set]
+            vector_packs = [pack_id for pack_id in vector_packs if pack_id in allowed_set]
         usable = {
             entry_id
             for entry_id, entry in entries.items()
@@ -1689,26 +1746,26 @@ class KnowledgeService:
         # Only registered packs whose rows are current: leftovers of a removal
         # whose cleanup failed (or of an import in flight) stay hidden.
         registry = self._registry
-        visible = await asyncio.to_thread(
+        visible = await self._thread(
             self._current_packs, [pack_id] if pack_id else list(registry.packs), registry
         )
         pack_ids = sorted(visible)
         if query:
-            entries = await asyncio.to_thread(
+            entries = await self._thread(
                 self._store.search_entries, query, pack_ids=pack_ids, limit=limit + 1, offset=offset
             )
             has_more = len(entries) > limit
             entries = entries[:limit]
             total = None
         else:
-            total = await asyncio.to_thread(self._store.count_entries, pack_ids=pack_ids)
-            entries = await asyncio.to_thread(
+            total = await self._thread(self._store.count_entries, pack_ids=pack_ids)
+            entries = await self._thread(
                 self._store.list_entries, pack_ids=pack_ids, limit=limit, offset=offset
             )
             has_more = offset + len(entries) < total
         # Recheck after the read: a pack replaced in between is left out
         # rather than shown with the snapshot's (older) metadata.
-        still_current = await asyncio.to_thread(
+        still_current = await self._thread(
             self._current_packs, sorted({entry.pack_id for entry in entries}), registry
         )
         entries = [entry for entry in entries if entry.pack_id in still_current]
@@ -1725,10 +1782,10 @@ class KnowledgeService:
         if not pack_id_is_valid(pack_id):
             raise KnowledgeUnavailable("invalid_request")
         registry = self._registry
-        if not await asyncio.to_thread(self._current_packs, [pack_id], registry):
+        if not await self._thread(self._current_packs, [pack_id], registry):
             raise KnowledgeUnavailable("not_found")
-        entry = await asyncio.to_thread(self._store.get_entry, pack_id, title)
-        if entry is None or not await asyncio.to_thread(self._current_packs, [pack_id], registry):
+        entry = await self._thread(self._store.get_entry, pack_id, title)
+        if entry is None or not await self._thread(self._current_packs, [pack_id], registry):
             raise KnowledgeUnavailable("not_found")
         return {"entry": self._entry_payload(entry, detail=True)}
 
@@ -1736,8 +1793,8 @@ class KnowledgeService:
         self._require_ready()
         model_id = self._current_model_id()
         counts, stats = await asyncio.gather(
-            asyncio.to_thread(self._store.entry_counts),
-            asyncio.to_thread(self._store.chunk_stats, model_id),
+            self._thread(self._store.entry_counts),
+            self._thread(self._store.chunk_stats, model_id),
         )
         embedding_state = self._embedding_state()
         packs: list[dict[str, Any]] = []

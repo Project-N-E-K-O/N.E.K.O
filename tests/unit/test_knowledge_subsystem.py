@@ -3031,3 +3031,130 @@ async def test_vectors_of_a_replaced_version_do_not_take_semantic_slots(tmp_path
         assert all("demo-memes" not in packs for packs in searched)
     finally:
         await service.stop()
+
+
+async def test_an_active_replacement_does_not_count_the_file_it_replaces(tmp_path, monkeypatch):
+    import threading
+
+    service = await _started(tmp_path)
+    indexing = threading.Event()
+    release = threading.Event()
+    try:
+        old = _pack("pack-one")
+        await _import(service, old)
+        new = _pack("pack-one", entries=_entries("n", 2))
+        other = _pack("pack-two")
+        sizes = [len(canonical_pack_bytes(parse_pack(payload))) for payload in (new, other)]
+        # The new version and the other pack fit; adding the old version would not.
+        monkeypatch.setattr(service_module, "MAX_TOTAL_PACK_BYTES", sum(sizes) + 16)
+        real_replace = service._store.replace_pack
+
+        def slow_replace(*args, **kwargs):
+            indexing.set()
+            release.wait(5)
+            return real_replace(*args, **kwargs)
+
+        monkeypatch.setattr(service._store, "replace_pack", slow_replace)
+        replacing = await service.import_pack(_raw(new))
+        assert replacing["ok"] is True
+        assert await asyncio.to_thread(indexing.wait, 5)
+        second = await service.import_pack(_raw(other))
+        assert second["ok"] is True, second
+    finally:
+        release.set()
+        await service.stop()
+
+
+async def test_a_replacement_during_candidate_selection_is_chosen_around(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "LEXICAL_CANDIDATES", 2)
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack("stale-pack", entries=_entries("s", 5)))
+        await _import(service, _pack("fact-pack", entries=[{"title": "Fact", "content": "a kotatsu fact"}]))
+        real = service._lexical_search
+        calls: list[list[str]] = []
+
+        def search(query, allowed, registry):
+            if not calls:
+                # The replacement commits after the version check and before
+                # this search reads the rows.
+                conn = sqlite3.connect(tmp_path / "knowledge.db")
+                try:
+                    conn.execute("UPDATE packs SET pack_sha256=? WHERE pack_id='stale-pack'", ("f" * 64,))
+                    conn.commit()
+                finally:
+                    conn.close()
+            calls.append(list(allowed))
+            return real(query, allowed, registry)
+
+        monkeypatch.setattr(service, "_lexical_search", search)
+        result = await service.query(query="kotatsu")
+        assert result["result"] == "matched"
+        assert [hit["pack_id"] for hit in result["hits"]] == ["fact-pack"]
+        assert calls == [["stale-pack", "fact-pack"], ["fact-pack"]]
+    finally:
+        await service.stop()
+
+
+async def test_stop_waits_for_a_vector_load_whose_task_was_cancelled(tmp_path, monkeypatch, fast_indexer):
+    import threading
+
+    service = await _started(tmp_path, FakeEmbedder())
+    loading = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    try:
+        await _import(service, _pack())
+        while service._vector_task is not None and not service._vector_task.done():
+            await asyncio.gather(service._vector_task, return_exceptions=True)
+        real = service._store.load_vectors
+
+        def slow(model_id):
+            loading.set()
+            release.wait(5)
+            try:
+                return real(model_id)
+            finally:
+                finished.set()
+
+        monkeypatch.setattr(service._store, "load_vectors", slow)
+        service._vector_generation += 1
+        service._schedule_vector_refresh()
+        assert await asyncio.to_thread(loading.wait, 5)
+        threading.Timer(0.3, release.set).start()
+        await service.stop()  # cancels the snapshot task mid-load
+        assert finished.is_set()  # and waited for its thread
+    finally:
+        release.set()
+
+
+async def test_long_indexing_rounds_end_when_a_vector_refresh_is_due(tmp_path, monkeypatch, fast_indexer):
+    monkeypatch.setattr(service_module, "VECTOR_REFRESH_SECONDS", 0.05)
+    monkeypatch.setattr(service_module, "_batch_pause", lambda _seconds: 0.08)
+    events: list[str] = []
+
+    class Recording(FakeEmbedder):
+        async def embed_batch(self, texts):
+            events.append("batch")
+            return await super().embed_batch(texts)
+
+    service = await _started(tmp_path, Recording())
+    real_schedule = service._schedule_vector_refresh
+
+    def schedule():
+        events.append("refresh")
+        real_schedule()
+
+    monkeypatch.setattr(service, "_schedule_vector_refresh", schedule)
+    try:
+        await _import(service, _pack(entries=_entries("r", 16)))
+        for _ in range(300):
+            if events.count("batch") >= 3:
+                break
+            await asyncio.sleep(0.01)
+        batches = [i for i, event in enumerate(events) if event == "batch"]
+        assert len(batches) >= 3
+        # A reload is scheduled between batches, not only after the round.
+        assert "refresh" in events[batches[0] : batches[-1]]
+    finally:
+        await service.stop()
