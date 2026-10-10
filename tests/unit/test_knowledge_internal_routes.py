@@ -253,15 +253,15 @@ async def test_non_sticky_failures_are_logged_at_most_once_a_minute(monkeypatch)
     assert service.is_available()
 
 
-async def test_a_general_inference_fault_stops_the_one_by_one_retry(monkeypatch):
+async def test_items_after_failing_ones_are_still_tried(monkeypatch):
     service = _ready_embedding_service(monkeypatch)
-    calls = []
 
-    def broken(texts):
-        calls.append(list(texts))
-        raise RuntimeError("out of memory")
+    def infer(texts):
+        if any(text.startswith("bad") for text in texts):
+            raise RuntimeError("tokenizer choked")
+        return [[float(len(text))] for text in texts]
 
-    monkeypatch.setattr(service, "_infer_blocking", broken)
+    monkeypatch.setattr(service, "_infer_blocking", infer)
     shared = knowledge_routes._SharedEmbedder(service)
-    assert await shared.embed_batch([f"t{i}" for i in range(8)]) == [None] * 8
-    assert len(calls) == 1 + 2  # the batch, then two single retries
+    # Two separate bad texts first: the healthy rest is not failed untried.
+    assert await shared.embed_batch(["bad1", "bad2", "ok", "fine"]) == [None, None, [2.0], [4.0]]

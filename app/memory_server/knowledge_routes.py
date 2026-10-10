@@ -99,15 +99,10 @@ class _SharedEmbedder:
         if len(texts) > 1 and all(v is None for v in vectors) and self._service.is_available():
             # The whole batch failed while the model is fine: one bad text
             # (a non-sticky failure) would otherwise cost its neighbours an
-            # attempt each. Retry them one by one so only the bad one counts;
-            # two failures in a row look like a general fault, so stop there
-            # rather than run inference that is bound to fail.
-            vectors = []
-            failures_in_a_row = 0
-            for text in texts:
-                vector = await self.embed(text) if failures_in_a_row < 2 else None
-                failures_in_a_row = failures_in_a_row + 1 if vector is None else 0
-                vectors.append(vector)
+            # attempt each. Retry every one of them alone, so only texts that
+            # really fail are counted as failed. A general fault costs one
+            # such pass per round: the indexer ends a round that stored none.
+            vectors = [await self.embed(text) for text in texts]
         return vectors
 
 

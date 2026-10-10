@@ -2707,7 +2707,7 @@ def test_empty_vector_blobs_do_not_outvote_real_ones(tmp_path):
     conn = sqlite3.connect(tmp_path / "knowledge.db")
     try:
         ids = [row[0] for row in conn.execute("SELECT id FROM chunks ORDER BY id")]
-        good = np.ones(16, dtype="<f4").tobytes()
+        good = (np.ones(16, dtype="<f4") / 4.0).tobytes()  # unit length
         conn.execute("UPDATE chunks SET model_id='m', vector=? WHERE id=?", (b"", ids[0]))
         conn.execute("UPDATE chunks SET model_id='m', vector=? WHERE id=?", (b"", ids[1]))
         conn.execute("UPDATE chunks SET model_id='m', vector=? WHERE id=?", (good, ids[2]))
@@ -2717,3 +2717,25 @@ def test_empty_vector_blobs_do_not_outvote_real_ones(tmp_path):
     snapshot = store.load_vectors("m")
     assert snapshot.matrix.shape == (1, 16)  # the real vector is kept
     assert sorted(chunk_id for chunk_id, _blob in snapshot.damaged) == ids[:2]
+
+
+def test_stored_vectors_that_are_not_unit_length_are_damaged(tmp_path):
+    from knowledge.store import KnowledgeStore
+
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    store.replace_pack(parse_pack(_pack(entries=_entries("u", 3))), pack_sha256="0" * 64)
+    unit = np.zeros(16, dtype="<f4")
+    unit[0] = 1.0
+    huge = np.full(16, 50.0, dtype="<f4")  # right length, finite, far from unit
+    conn = sqlite3.connect(tmp_path / "knowledge.db")
+    try:
+        ids = [row[0] for row in conn.execute("SELECT id FROM chunks ORDER BY id")]
+        for chunk_id, vector in zip(ids, (unit, unit, huge)):
+            conn.execute("UPDATE chunks SET model_id='m', vector=? WHERE id=?", (vector.tobytes(), chunk_id))
+        conn.commit()
+    finally:
+        conn.close()
+    snapshot = store.load_vectors("m")
+    assert snapshot.matrix.shape == (2, 16)
+    assert [chunk_id for chunk_id, _blob in snapshot.damaged] == [ids[2]]

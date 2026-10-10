@@ -165,6 +165,18 @@ def normalize_vector(values: Sequence[float]) -> bytes | None:
     return (vector / norm).astype("<f4").tobytes()
 
 
+# Stored vectors are normalized on write; anything further off is damage.
+_UNIT_NORM_TOLERANCE = 1e-3
+
+
+def _is_unit_vector(blob: bytes) -> bool:
+    """Finite and of length one: lookups take the dot product as cosine."""
+    vector = np.frombuffer(blob, dtype="<f4")
+    if not np.isfinite(vector).all():
+        return False
+    return abs(float(np.linalg.norm(vector)) - 1.0) <= _UNIT_NORM_TOLERANCE
+
+
 def count_pack_chunks(pack: KnowledgePack) -> int:
     return sum(len(derive_chunks(entry)) for entry in pack.entries)
 
@@ -771,11 +783,7 @@ class KnowledgeStore:
         blobs: list[bytes] = []
         damaged: list[tuple[int, bytes]] = []
         for chunk_id, entry_id, pack_id, blob, chunk_index in rows:
-            if (
-                not size
-                or len(blob) != size
-                or not np.isfinite(np.frombuffer(blob, dtype="<f4")).all()
-            ):
+            if not size or len(blob) != size or not _is_unit_vector(blob):
                 damaged.append((int(chunk_id), bytes(blob)))
                 continue
             if pack_id not in pack_index:
