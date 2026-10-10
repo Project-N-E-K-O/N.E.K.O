@@ -233,13 +233,18 @@ async def fetch_cloud_transcript(visit_id: str) -> dict:
             logger.warning("visit servers details: malformed transcript page")
             raise CloudError(_error(503, "servers_unreachable"))
         role = page_role
+        next_cursor = body.get("next_cursor")
+        if len(rows) > DETAILS_PAGE_LIMIT or (next_cursor not in (None, "") and len(rows) != DETAILS_PAGE_LIMIT):
+            # 契约（§4.7 details）：除最后一页外每页恰好 limit 行、任何一页都不超过 limit；
+            # 不合的页会让页数上限算出的总量不成立（少了白翻满页数，多了撑破内存上界）
+            logger.warning("visit servers details: transcript page size off contract")
+            raise CloudError(_error(503, "servers_unreachable"))
         for row in rows:
             line = _cloud_line(row, role)
             if line is _MALFORMED:
                 rejected += 1
             elif line is not None:
                 lines.append(line)
-        next_cursor = body.get("next_cursor")
         if next_cursor is None or next_cursor == "":
             if rejected:
                 # 不合契约的行丢掉、记一条诊断（每份转录一条，不逐行刷）

@@ -854,8 +854,8 @@ async def test_cloud_transcript_takes_this_sides_half(env, monkeypatch):
 
 
 async def test_cloud_transcript_past_the_page_cap_is_502_without_lines(env):
-    env.servers.details_lines = _details_rows(500 * (visit_settings.VISIT_DETAILS_MAX_PAGES - 1))
-    env.servers.details_pages_extra = 5
+    # 满页一直翻到上限之后还有 next_cursor
+    env.servers.details_lines = _details_rows(500 * (visit_settings.VISIT_DETAILS_MAX_PAGES + 1))
     resp = await _transcript(env)
     assert resp.status_code == 502 and resp.json()["code"] == "cloud_transcript_incomplete"
     assert "lines" not in resp.json()
@@ -904,8 +904,10 @@ async def test_cloud_rows_with_a_broken_half_or_huge_timestamp_are_dropped_not_5
 
 
 async def test_cloud_cursor_that_does_not_advance_is_a_failure(env, monkeypatch):
+    full_page = _details_rows(500)
+
     def stuck(request):
-        return httpx.Response(200, json={"visit_id": VISIT_ID, "lines": [], "requester_role": "host",
+        return httpx.Response(200, json={"visit_id": VISIT_ID, "lines": full_page, "requester_role": "host",
                                          "next_cursor": "same"})
 
     monkeypatch.setattr(env.servers, "_details", stuck)
@@ -1299,12 +1301,13 @@ async def test_join_refuses_a_freshly_fetched_preview_that_already_expired(env):
 
 async def test_cloud_cursor_cycles_are_rejected_at_once(env, monkeypatch):
     calls = []
+    full_page = _details_rows(500)
 
     def cycling(request):
         cursor = parse_qs(request.url.query.decode()).get("cursor", [""])[0]
         calls.append(cursor)
         nxt = {"": "p1", "p1": "p2", "p2": "p1"}[cursor]
-        return httpx.Response(200, json={"visit_id": VISIT_ID, "lines": [], "requester_role": "host",
+        return httpx.Response(200, json={"visit_id": VISIT_ID, "lines": full_page, "requester_role": "host",
                                          "next_cursor": nxt})
 
     monkeypatch.setattr(env.servers, "_details", cycling)
@@ -1509,3 +1512,20 @@ async def test_an_unknown_character_is_left_to_the_persona_gate(env, monkeypatch
     env.gate = PersonaGate(ok=False, state="missing")
     resp = await _rooms(env)
     assert resp.status_code == 409 and resp.json() == {"ok": False, "code": "VISIT_PERSONA_UNREVIEWED", "state": "missing"}
+
+
+@pytest.mark.parametrize("rows,next_cursor", [(499, "p1"), (501, None), (501, "p1")])
+async def test_cloud_pages_off_the_size_contract_are_rejected_at_once(env, monkeypatch, rows, next_cursor):
+    calls = []
+    page = _details_rows(rows)
+
+    def off_contract(request):
+        calls.append(request)
+        body = {"visit_id": VISIT_ID, "lines": page, "requester_role": "host"}
+        if next_cursor:
+            body["next_cursor"] = next_cursor
+        return httpx.Response(200, json=body)
+
+    monkeypatch.setattr(env.servers, "_details", off_contract)
+    resp = await _transcript(env)
+    assert resp.status_code == 404 and resp.json()["code"] == "transcript_gone_local" and len(calls) == 1
