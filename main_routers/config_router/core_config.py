@@ -727,12 +727,7 @@ async def update_core_config(request: Request):
         removed_fields = [key for key in existing_core_cfg if key not in core_cfg]
 
         def _apply_core_config_changes(fresh_cfg):
-            # 没有字段变化时 update_json_config 不写盘、也就碰不到写栅栏；
-            # 维护模式下仍要像以前一样拒绝，免得后面照常重置所有 session。
-            # 与 save_json_config 一样函数内导入，测试对门面的 patch 才能命中。
-            from utils.cloudsave_runtime import assert_cloudsave_writable
-
-            assert_cloudsave_writable(config_manager, operation="save", target='core_config.json')
+            # 没有字段变化时 update_json_config 也会过写栅栏，维护模式下照旧拒绝。
             for key in removed_fields:
                 fresh_cfg.pop(key, None)
             fresh_cfg.update(deepcopy(changed_fields))

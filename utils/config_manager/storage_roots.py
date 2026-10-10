@@ -1249,6 +1249,12 @@ class StorageRootsMixin:
             print(f"Error saving {filename}: {e}", file=sys.stderr)
             raise
     
+    def assert_json_config_writable(self, filename):
+        """Run the same write fence as ``save_json_config`` without writing."""
+        from utils.cloudsave_runtime import assert_cloudsave_writable
+
+        assert_cloudsave_writable(self, operation="save", target=filename)
+
     def update_json_config(self, filename, mutator):
         """Locked read-modify-write of a JSON config; see ``utils.config_manager.json_update``."""
         return update_json_config(self, filename, mutator)

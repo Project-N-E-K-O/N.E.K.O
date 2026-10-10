@@ -87,8 +87,10 @@ def update_json_config(manager: Any, filename: str, mutator: Callable[[dict], T]
 
     ``mutator`` receives the current document and must be synchronous and
     quick; it must not touch the same file again.  Its return value is
-    returned.  The file is written only when the document actually changed,
-    so a no-op update performs no write (and therefore hits no write fence).
+    returned.  The file is written only when the document actually changed.
+    A no-op update still goes through the manager's write fence (when it has
+    one), so a maintenance-mode request is refused exactly like a real write
+    instead of reporting a success that a pending restore would undo.
     If ``mutator`` raises, nothing is written.
     """
     held: set[str] = _held.__dict__.setdefault("filenames", set())
@@ -102,11 +104,34 @@ def update_json_config(manager: Any, filename: str, mutator: Callable[[dict], T]
             result = mutator(data)
             if not json_values_equal(data, before):
                 manager.save_json_config(filename, data)
+            else:
+                assert_writable = getattr(manager, "assert_json_config_writable", None)
+                if assert_writable is not None:
+                    assert_writable(filename)
             return result
         finally:
             held.discard(filename)
 
 
 async def aupdate_json_config(manager: Any, filename: str, mutator: Callable[[dict], T]) -> T:
-    """Async twin of :func:`update_json_config`; the locked section runs in a worker thread."""
-    return await asyncio.to_thread(update_json_config, manager, filename, mutator)
+    """Async twin of :func:`update_json_config`; the locked section runs in a worker thread.
+
+    Cancelling the caller cannot stop a worker that is already reading or
+    writing, so cancellation is held back until that worker finishes.  This
+    keeps any request-level lock the caller holds (``async with ...``) until
+    the write has really landed or failed.
+    """
+    worker = asyncio.ensure_future(asyncio.to_thread(update_json_config, manager, filename, mutator))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        # 取消只停得掉这层 await，线程里的读改写照样会落盘；等它真正结束再把取消往上抛，
+        # 否则调用方的请求级锁会在写盘前放掉，下一个请求就会读到还没落盘前的快照。
+        while not worker.done():
+            try:
+                await asyncio.wait({worker})
+            except asyncio.CancelledError:
+                continue
+        if not worker.cancelled():
+            worker.exception()  # 取走结果，免得事件循环报 "exception was never retrieved"
+        raise

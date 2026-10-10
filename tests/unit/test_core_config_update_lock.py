@@ -123,6 +123,48 @@ def test_update_skips_the_write_when_nothing_changed(light_manager, monkeypatch)
     assert light_manager.update_json_config(FILENAME, lambda cfg: cfg.get("a")) == 1
 
 
+def test_noop_update_still_honours_the_maintenance_fence(light_manager):
+    """A write request that happens to change nothing must not report success during
+    a cloud restore: the restore may replace the file right after."""
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    path = light_manager.config_dir / FILENAME
+    before = json.dumps({"a": 1}).encode()
+    path.write_bytes(before)
+    light_manager.load_root_state = lambda: {"mode": "maintenance_readonly"}
+
+    with pytest.raises(MaintenanceModeError):
+        light_manager.update_json_config(FILENAME, lambda cfg: cfg.update(a=1))
+    assert path.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_cancelled_async_update_waits_for_its_worker_before_unwinding(light_manager):
+    """Cancellation cannot stop the worker thread; the caller must not unwind (and drop
+    its request-level locks) until the write has actually landed."""
+    path = light_manager.config_dir / FILENAME
+    path.write_text(json.dumps({"unrelated": "keep"}), encoding="utf-8")
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow(cfg):
+        entered.set()
+        assert release.wait(5)
+        cfg["written"] = True
+
+    task = asyncio.create_task(light_manager.aupdate_json_config(FILENAME, slow))
+    try:
+        await _wait_thread_event(entered)
+        task.cancel()
+        await asyncio.sleep(0.1)
+        assert not task.done(), "cancellation unwound while the worker was still writing"
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+    assert _read(path) == {"unrelated": "keep", "written": True}
+
+
 def test_update_distinguishes_true_from_legacy_one(light_manager):
     """``True == 1`` in Python; repairing a legacy 1 must still be written."""
     path = light_manager.config_dir / FILENAME
@@ -441,6 +483,78 @@ async def test_slow_request_body_does_not_hold_off_other_core_api_saves(
         release_body.set()
     assert (await asyncio.wait_for(slow, 5))["success"] is True
     assert _read(path)["coreApiKey"] == "slow-key"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_core_api_save_keeps_the_save_lock_until_its_write_lands(
+    config_manager, core_config_router, monkeypatch
+):
+    path = config_manager.config_dir / FILENAME
+    entered, release = _block_first_save(config_manager, monkeypatch)
+    snapshots = []
+
+    async def record(core_cfg, checked=None):
+        snapshots.append(dict(core_cfg))
+        return {}
+
+    monkeypatch.setattr(core_config_router, "_auto_resolve_provider_urls_for_save", record)
+
+    first = asyncio.create_task(core_config_router.update_core_config(_FakeRequest(CORE_API_PAYLOAD)))
+    second = None
+    try:
+        await _wait_thread_event(entered)
+        assert len(snapshots) == 1
+        first.cancel()
+        second = asyncio.create_task(
+            core_config_router.update_core_config(_FakeRequest({**CORE_API_PAYLOAD, "openclawTimeout": 30}))
+        )
+        await asyncio.sleep(0.2)
+        assert len(snapshots) == 1, "second save took its snapshot before the cancelled save's write landed"
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(first, 5)
+    assert (await asyncio.wait_for(second, 5))["success"] is True
+    assert snapshots[1]["coreApiKey"] == "new-key"
+    saved = _read(path)
+    assert saved["coreApiKey"] == "new-key"
+    assert saved["openclawTimeout"] == 30
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint,key", [
+    ("review_config", "recent_memory_auto_review"),
+    ("powerful_memory_config", "powerful_memory_enabled"),
+])
+async def test_noop_memory_toggle_is_refused_in_maintenance_mode(
+    config_manager, memory_router, monkeypatch, endpoint, key
+):
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    path = config_manager.config_dir / FILENAME
+    before = path.read_bytes()
+    assert _read(path)[key] is True
+    monkeypatch.setattr(config_manager, "load_root_state", lambda: {"mode": "maintenance_readonly"})
+    handler = getattr(memory_router, f"update_{endpoint}")
+
+    with pytest.raises(MaintenanceModeError):
+        await handler(_FakeRequest({"enabled": True}))
+    assert path.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_noop_core_api_save_is_refused_in_maintenance_mode(
+    config_manager, core_config_router, monkeypatch
+):
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    path = config_manager.config_dir / FILENAME
+    before = path.read_bytes()
+    monkeypatch.setattr(config_manager, "load_root_state", lambda: {"mode": "maintenance_readonly"})
+
+    with pytest.raises(MaintenanceModeError):
+        await core_config_router.update_core_config(_FakeRequest({**CORE_API_PAYLOAD, "coreApiKey": "old-key"}))
+    assert path.read_bytes() == before
 
 
 @pytest.mark.asyncio

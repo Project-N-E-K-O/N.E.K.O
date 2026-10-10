@@ -219,6 +219,12 @@ class CoreConfigMixin:
                 continue
             except Exception as exc:
                 # 文件损坏 / 顶层不是对象 / 写栅栏拒写：重试也不会变，原样保留文件。
+                from utils.cloudsave_runtime import MaintenanceModeError
+
+                if isinstance(exc, MaintenanceModeError):
+                    # 维护模式下启动（云存档恢复进行中）是预期情形，读路径仍会在内存里归一化。
+                    logger.debug("维护模式下跳过 openclawUrl 8088 迁移: %s", exc)
+                    return False
                 logger.warning("跳过 openclawUrl 8088 迁移（core_config.json 不可改写）: %s", exc)
                 return False
             if not migrated:
