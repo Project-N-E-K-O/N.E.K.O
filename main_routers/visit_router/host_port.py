@@ -21,8 +21,13 @@ not have yet (``open_mirror_speech_stream`` and the ``visit_bind`` filter of
 the display socket). :class:`ManagerHost` is the production adapter.
 
 Display-socket frames (``visit_*`` / ``status``) go out through
-:meth:`VisitHost.send_frame` / :meth:`VisitHost.send_status`; PR-09b routes
-them to bound connections only (design §4.5 ``visit_bind``).
+:meth:`VisitHost.send_frame` / :meth:`VisitHost.send_status`. The visit
+downlink of design §4.5 -- ``visit_*`` frames (invite code, transcript,
+debrief state) and the debrief chips -- and the visit status codes (they carry the visit
+id) are written only on a display socket that passed ``visit_bind``
+(``display_socket.is_bound``), checked and written on the same connection
+object. The after-visit summary bubble is ordinary assistant output (it is
+also spoken aloud) and is not filtered.
 """
 
 from __future__ import annotations
@@ -35,10 +40,11 @@ from typing import Any, Optional, Protocol
 
 from main_routers.visit_router.line_speaker import SpeechStream
 from utils.logger_config import get_module_logger
+from utils.visit_route_state import VISIT_ROUTE_KIND
 
 logger = get_module_logger(__name__, "Main")
 
-TAKEOVER_OWNER = "neko_visit"
+TAKEOVER_OWNER = VISIT_ROUTE_KIND
 """Takeover owner of every visit (OD-24)."""
 
 _FRAME_TIMEOUT_S = 2.0
@@ -81,8 +87,11 @@ class VisitHost(Protocol):
         settle it mid-shutdown (a renewal, a swap) right before the exit.
         """
 
+    def display_bound(self) -> bool:
+        """Whether the character's current display socket passed ``visit_bind`` (§4.5)."""
+
     async def send_frame(self, payload: dict) -> bool:
-        """One display-socket frame (``visit_*``); False when it could not be written."""
+        """One display-socket frame (``visit_*``); False when it could not be written or the socket is unbound."""
 
     async def send_status(self, code: str, details: Optional[dict] = None) -> bool:
         """``{type:'status', message:{code, details}}`` (§4.5); never carries text or tickets."""
@@ -253,28 +262,41 @@ class ManagerHost:
         except Exception as exc:  # noqa: BLE001 - 结不清就留给下一次普通输入 / 会话空闲
             logger.warning("visit: owed turn wrap-up not settled: %s", type(exc).__name__)
 
+    def display_bound(self) -> bool:
+        """Whether the character's current display socket passed ``visit_bind``."""
+        # 串门下行只发给已 visit_bind 的连接（§4.5）：新窗口接走 display socket 但还没 bind 时，
+        # 邀请码、转录、芯片都不发给它，bind 之后由重放补上
+        from main_routers.visit_router.display_socket import is_bound
+
+        return is_bound(getattr(self._mgr, "websocket", None))
+
     async def send_frame(self, payload: dict) -> bool:
         ws = getattr(self._mgr, "websocket", None)
         if ws is None or not hasattr(ws, "send_json"):
+            return False
+        from main_routers.visit_router.display_socket import is_bound
+
+        # 校验与写入用同一个连接对象：校验之后 mgr.websocket 被新连接替换也写不到它身上
+        if not is_bound(ws):
             return False
         state = getattr(ws, "client_state", None)
         if state is not None and state != state.CONNECTED:
             return False
         try:
             await asyncio.wait_for(ws.send_json(payload), _FRAME_TIMEOUT_S)
+            from main_routers.visit_router.display_socket import record_sent
+
+            record_sent(ws, payload)
             return True
         except Exception as exc:  # noqa: BLE001 - 页面不在 / 卡住：串门照常进行
             logger.debug("visit: display frame %s not written: %s", payload.get("type"), type(exc).__name__)
             return False
 
     async def send_status(self, code: str, details: Optional[dict] = None) -> bool:
+        # 串门的状态码带 visit_id（有的还带 request_id / 失败细节）：与 visit_* 帧同一出口——锁定连接、
+        # 只发给已 visit_bind 的。未绑定连接的未授权回复由 display_socket 直接发回发起连接
         message = json.dumps({"code": code, "details": dict(details or {})}, ensure_ascii=False)
-        try:
-            # 与 send_frame 一样有界：页面卡住不能把收尾流程（封存、注销）一起卡住
-            return bool(await asyncio.wait_for(self._mgr.send_status(message), _FRAME_TIMEOUT_S))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("visit: status %s not written: %s", code, type(exc).__name__)
-            return False
+        return await self.send_frame({"type": "status", "message": message})
 
     def acquire_takeover(self, dispatcher: Callable[..., Awaitable[bool]], sink: Callable[[dict], bool]) -> Any:
         return self._mgr.acquire_takeover(TAKEOVER_OWNER, dispatcher, callback_sink=sink)
@@ -319,6 +341,7 @@ class ManagerHost:
         await self._mgr.mirror_user_input(text, metadata=metadata, request_id=request_id, send_to_frontend=False)
 
     async def mirror_assistant_output(self, text: str, *, metadata: dict, request_id: str) -> None:
+        # 不按 visit_bind 过滤（§4.5 只限 visit_* 帧与芯片）：回家简述是猫娘的普通发言，同一句也照常念出声、进 sync 流
         # 有界：收尾流程在它之后才封存文件、注销，页面卡住不能把这些一起卡住
         try:
             await asyncio.wait_for(
@@ -328,13 +351,14 @@ class ManagerHost:
             logger.warning("visit: assistant mirror timed out")
 
     async def render_chat_blocks(self, blocks: list[dict], *, request_id: str, source_name: str) -> bool:
-        try:
-            return bool(await asyncio.wait_for(self._mgr.render_chat_blocks(
-                blocks, request_id=request_id, source="system", source_name=source_name,
-            ), _FRAME_TIMEOUT_S))
-        except asyncio.TimeoutError:
-            logger.warning("visit: chat blocks timed out")
+        # 与 SessionManager.render_chat_blocks 同一帧形状，但写给校验过的那个连接对象本身：
+        # 管理器的方法发送时会重读 mgr.websocket，校验之后被替换就会写给未 bind 的新连接
+        from main_routers.visit_router.display_socket import chat_blocks_frame
+
+        frame = chat_blocks_frame(blocks, request_id=request_id, source_name=source_name)
+        if not frame["blocks"]:
             return False
+        return await self.send_frame(frame)
 
     def park_proactive(self) -> None:
         park = getattr(self._mgr, "_park_proactive_for_goodbye", None)

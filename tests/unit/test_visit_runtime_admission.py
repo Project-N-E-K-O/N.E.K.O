@@ -4158,3 +4158,31 @@ async def test_credentials_request_is_pinned_to_the_admitted_account(tmp_path, m
         assert rt.finalize_reason == "busy" and rt.takeover_token is None
     finally:
         await teardown(side, clock=clock)
+
+
+async def test_peer_blocked_while_its_name_is_read_is_not_installed(tmp_path, monkeypatch, clocks):
+    # 核验之后、装入对端之前（读本机名字的 await 里）被拉黑：拉黑钩子此时找不到对端，装入前要再查一次
+    from main_logic.visit.limits import BlockEntry, Blocklist
+    from main_routers.visit_router import display_socket
+
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    entries: list = []
+
+    async def blocklist(path):
+        return Blocklist(path, list(entries))
+
+    side.deps.load_blocklist = blocklist
+    real_clean = type(rt)._clean_peer_name
+
+    async def clean_then_block(self, raw, uid):
+        name = await real_clean(self, raw, uid)
+        entries.append(BlockEntry(visit_uid=GUEST_UID, display_name_at_block="x", blocked_at=NOW))
+        assert await display_socket.end_visits_with_peer(GUEST_UID) == 0      # 钩子还找不到它
+        return name
+
+    monkeypatch.setattr(type(rt), "_clean_peer_name", clean_then_block)
+    await rt.on_transport_state({"state": "connected", "peer_present": True})
+    await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(), nbytes=900)
+    await _finished(rt)
+    assert rt.finalize_reason == "peer_blocked" and rt.peer is None
+    assert side.host.frames_of("visit_invite") == []

@@ -290,7 +290,10 @@ async def commit_visit_region(
     display names; a resumed run sends exactly those. A resumed run whose
     batches no longer match the transcript (lines changed or lost after it
     opened) is marked ``abandoned`` and closed (the watermark advances, the
-    visit can settle) instead of resending other lines under its keys.
+    visit can settle) instead of resending other lines under its keys. A
+    visit with no transcript line at all (no file, or only its header) gets
+    the terminal "abandoned" outcome (:meth:`VisitSpool.mark_no_transcript`),
+    at finalize and in the startup recovery alike.
 
     ``family_names`` and ``local_char_names`` (the current names of the other
     local characters) are protected from peer display names: a peer named
@@ -359,6 +362,11 @@ async def _commit_locked(
     contents = await spool.read_back()
     header = contents.header
     if header is None:
+        if not contents.dropped_lines:
+            # 记忆开着、收口后转录文件不存在或是空的：一句都没有，以后也不会有。写「已放弃」终态，
+            # 否则每次启动都把它当没做完重来一遍、按容量也回收不掉（收口与补录都走到这里）。
+            # 头行坏了 / 属于别的场次（dropped_lines > 0）不算：那是损坏，不是没说话
+            await spool.mark_no_transcript(now=time.time() if now is None else float(now))
         return CommitResult(ok=True, skipped="no_transcript")
     if not _header_matches_state(header, state):
         memory_bridge.diag("digest_header_mismatch", visit_id=spool.visit_id)
@@ -374,6 +382,9 @@ async def _commit_locked(
     else:
         fresh = [line for line in contents.lines if line["lp"] > previous]
         if not fresh:
+            if not runs and not contents.lines and not contents.dropped_lines:
+                # 只有头行、一句都没有（追加全失败，或开了头就收口）：与上面没有转录文件同一个终态
+                await spool.mark_no_transcript(now=time.time() if now is None else float(now))
             return CommitResult(ok=True, skipped="nothing_new")
         run = len(runs)
         through = max(line["lp"] for line in fresh)

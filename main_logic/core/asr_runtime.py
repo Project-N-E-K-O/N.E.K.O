@@ -50,6 +50,7 @@ from main_logic.voice_input.activation import (
     ActivationState,
     AudioFrame,
     OutputCommit,
+    OutputOrigin,
 )
 from main_logic.voice_input.preview import preview_isolation_registry
 from .voice_readiness import VoiceReadinessControl
@@ -95,6 +96,13 @@ from main_logic.voice_input.activation.wiring import (
     VoiceSessionActivationFactory,
     VoiceSessionActivationRouteContext,
     VoiceSessionActivationRuntime,
+)
+from main_logic.voice_input.interception import (
+    ActiveSessionInterceptionBridge,
+    ActiveSessionInterceptionFactory,
+    InterceptionDecision,
+    InterceptionInstallation,
+    InterceptionInstallationState,
 )
 
 
@@ -366,6 +374,13 @@ class AsrRuntimeMixin:
         self._independent_asr_route_key: str | None = None
         self._independent_asr_handshake_override: bool | None = None
         self._speaker_shadow_factory: SpeakerShadowFactory | None = None
+        self._active_session_interception_bridge: ActiveSessionInterceptionBridge | None = None
+        self._active_session_interception_required = False
+        self._active_session_interception_revision = 0
+        self._active_session_interception_policy_revision = 0
+        self._active_session_interception_installation: InterceptionInstallation | None = None
+        self._active_session_interception_retiring_bridge: ActiveSessionInterceptionBridge | None = None
+        self._active_session_interception_retirement: asyncio.Task | None = None
         self._voice_session_activation_factory: VoiceSessionActivationFactory | None = None
         # ``factory is None`` is intentionally not the policy bit.  It can mean
         # either that the user disabled Owner activation or that protection was
@@ -549,6 +564,20 @@ class AsrRuntimeMixin:
             self._independent_asr_handshake_override = None
         if not hasattr(self, "_speaker_shadow_factory"):
             self._speaker_shadow_factory = None
+        if not hasattr(self, "_active_session_interception_bridge"):
+            self._active_session_interception_bridge = None
+        if not hasattr(self, "_active_session_interception_required"):
+            self._active_session_interception_required = False
+        if not hasattr(self, "_active_session_interception_revision"):
+            self._active_session_interception_revision = 0
+        if not hasattr(self, "_active_session_interception_policy_revision"):
+            self._active_session_interception_policy_revision = 0
+        if not hasattr(self, "_active_session_interception_installation"):
+            self._active_session_interception_installation = None
+        if not hasattr(self, "_active_session_interception_retirement"):
+            self._active_session_interception_retirement = None
+        if not hasattr(self, "_active_session_interception_retiring_bridge"):
+            self._active_session_interception_retiring_bridge = None
         if not hasattr(self, "_voice_session_activation_required"):
             self._voice_session_activation_required = False
         if not hasattr(self, "_voice_session_activation_policy_revision"):
@@ -1243,6 +1272,8 @@ class AsrRuntimeMixin:
     ) -> None:
         if mode not in {"native", "independent", "blocked"}:
             raise ValueError("MICROPHONE_ROUTE_INVALID")
+        if mode != getattr(self, "_asr_route_mode", "blocked"):
+            self._invalidate_active_session_interception_now("route_changed", recoverable=True)
         leaving_blocked = self._asr_route_mode == "blocked" and mode != "blocked"
         if mode != self._asr_route_mode:
             self._microphone_route_generation += 1
@@ -1272,6 +1303,55 @@ class AsrRuntimeMixin:
             # provider vision. Native mode clears the session fence, so re-arm
             # it after restoring the remembered policy on a replacement session.
             self._block_realtime_raw_visual_delivery()
+
+    def _invalidate_active_session_interception_now(self, reason: str, *, recoverable: bool = False) -> None:
+        """Fence ACTIVE PCM synchronously before async runtime retirement."""
+        self._begin_active_session_interception_retirement(reason, recoverable=recoverable)
+
+    def _begin_active_session_interception_retirement(
+        self, reason: str, *, required: bool = False, recoverable: bool = False,
+    ) -> int:
+        self._ensure_asr_runtime_state()
+        bridge = self._active_session_interception_bridge
+        installation = self._active_session_interception_installation
+        # Retain the receipt after temporary invalidation: a later authority
+        # revoke must still cancel a queued recovery while no bridge exists.
+        self._active_session_interception_bridge = None
+        self._active_session_interception_revision += 1
+        if required or bridge is not None:
+            self._active_session_interception_required = True
+        if bridge is not None:
+            # Keep the object, not just its close task: a completed failed task
+            # does not prove physical retirement and must be retryable.
+            self._active_session_interception_retiring_bridge = bridge
+            self._active_session_interception_retirement = AsrRuntimeMixin._schedule_core_asr_cleanup(
+                self, bridge.close(reason), name="active-session-interception-retire",
+            )
+        if installation is not None:
+            # Notify only after synchronously fencing PCM and owning cleanup.
+            installation.invalidate(recoverable=recoverable)
+        return self._active_session_interception_revision
+
+    async def _wait_active_session_interception_retirement(self) -> bool:
+        bridge = self._active_session_interception_retiring_bridge
+        if bridge is None:
+            return True
+        task = self._active_session_interception_retirement
+        if task is None or (task.done() and (
+            task.cancelled() or task.exception() is not None
+        )):
+            task = AsrRuntimeMixin._schedule_core_asr_cleanup(
+                self, bridge.close("retirement_retry"), name="active-session-interception-retire",
+            )
+            self._active_session_interception_retirement = task
+        done, _ = await asyncio.wait({task}, timeout=1.0)
+        if not done or task.cancelled() or task.exception() is not None:
+            return False
+        if (self._active_session_interception_retiring_bridge is bridge
+                and self._active_session_interception_retirement is task):
+            self._active_session_interception_retiring_bridge = None
+            self._active_session_interception_retirement = None
+        return True
 
     def _block_realtime_raw_visual_delivery(self) -> None:
         session = getattr(self, "session", None)
@@ -1571,6 +1651,107 @@ class AsrRuntimeMixin:
                 pass
         return False
 
+    async def set_active_session_interception_factory(
+        self,
+        factory: ActiveSessionInterceptionFactory | None,
+        *,
+        interception_required: bool = True,
+        installation: InterceptionInstallation | None = None,
+    ) -> bool:
+        """Install the fail-closed ACTIVE-session PCM interception bridge.
+
+        The factory is deliberately separate from Owner activation and from
+        endpointing's advisory speaker shadow.  A configured bridge is the
+        only path that may release ACTIVE PCM to either ASR route.  Replacing
+        it retires the previous session runtime before the new factory can
+        observe audio.
+        """
+
+        if type(interception_required) is not bool:
+            raise TypeError("interception_required must be bool")
+        revision = self._begin_active_session_interception_retirement("factory_replaced", required=True)
+        self._active_session_interception_installation = installation
+        if not await self._wait_active_session_interception_retirement():
+            return False
+        if revision != self._active_session_interception_revision:
+            return False
+        self._active_session_interception_required = interception_required
+        if factory is None:
+            if installation is not None:
+                installation.state = InterceptionInstallationState.INSTALLED
+            return True
+        try:
+            self._active_session_interception_bridge = ActiveSessionInterceptionBridge(
+                factory,
+                required=interception_required,
+            )
+        except Exception:
+            self._active_session_interception_required = True
+            return False
+        if installation is not None:
+            installation.state = InterceptionInstallationState.INSTALLED
+        return True
+
+    def require_active_session_interception(self) -> int:
+        """Synchronously revoke the current interception authority.
+
+        App lifecycle code calls this before replacing profile/model
+        authority.  Clearing the bridge and setting the policy bit happen
+        before the next audio frame can be accepted; retirement of the old
+        session runtime is scheduled separately and therefore cannot reopen
+        the raw outlet while an async close is pending.
+        """
+
+        self._ensure_asr_runtime_state()
+        self._active_session_interception_policy_revision += 1
+        return self._begin_active_session_interception_retirement("authority_revoked", required=True)
+
+    def active_session_interception_policy_token(self) -> int:
+        """Read the explicit revocation fence, separate from runtime retirement.
+
+        Bridge replacement and temporary route invalidation do not grant or
+        revoke application authority. Both synchronous authority-require
+        interfaces advance this token before they revoke output.
+        """
+        self._ensure_asr_runtime_state()
+        return self._active_session_interception_policy_revision
+
+    async def _intercept_active_session_frame(
+        self,
+        frame: AudioFrame,
+        generation: ActivationGeneration,
+        context: VoiceSessionActivationRouteContext,
+    ) -> bytes | None:
+        """Return only model-approved PCM for the common ASR outlet.
+
+        ``None`` means pending/drop/unavailable/stale.  In particular, this
+        helper never returns ``frame.pcm`` as a fallback when the bridge or
+        TSE-backed runtime is unavailable.
+        """
+
+        bridge = self._active_session_interception_bridge
+        if bridge is None:
+            if self._active_session_interception_required:
+                return None
+            return frame.pcm
+        result = await bridge.process(
+            frame.pcm,
+            sample_rate_hz=frame.sample_rate,
+            generation=generation,
+            ingress_token=context.ingress_token,
+            # A current activation lease can replay bounded, already captured
+            # audio. Its processing budget starts at interception admission;
+            # capture age still applies to live input. Keep original capture
+            # metadata on frame/context for ordering and the downstream turn.
+            captured_at=(
+                None if frame.output_origin is OutputOrigin.REPLAY
+                else context.captured_at
+            ),
+        )
+        if result.decision is not InterceptionDecision.KEEP:
+            return None
+        return result.pcm16
+
     def require_voice_session_activation(
         self,
         *,
@@ -1599,6 +1780,10 @@ class AsrRuntimeMixin:
         self._voice_session_activation_sequence = 0
         self._voice_session_activation_sample_cursor = 0
         self._voice_session_activation_status = None
+        self._active_session_interception_policy_revision += 1
+        self._invalidate_active_session_interception_now(
+            "voice_session_activation_authority_revoke"
+        )
         self._invalidate_voice_pcm_sync("voice_session_activation_authority_revoke")
         if previous_factory is not None:
             try:
@@ -4333,7 +4518,31 @@ class AsrRuntimeMixin:
         ticket = self._voice_activation_handoff
         if ticket is not None and ticket.settled:
             return OutputCommit.NOT_SENT
+        interception_bridge = self._active_session_interception_bridge
+        output_identity = self._capture_core_asr_operation_identity()
         delivery_revision = self._voice_activation_delivery_revision
+        filtered_pcm = await self._intercept_active_session_frame(
+            frame,
+            generation,
+            context,
+        )
+        if (
+            self._capture_voice_session_activation_generation() != generation
+            or self._active_session_interception_bridge is not interception_bridge
+            or not self._core_asr_operation_identity_matches(output_identity)
+            or self._voice_activation_delivery_revision != delivery_revision
+        ):
+            return OutputCommit.NOT_SENT
+        if filtered_pcm is None:
+            # The local interception owner consumed this original input.  A
+            # pending interval is retained there; a terminal gap is discarded
+            # there. NOT_SENT would make activation retry the same frame and
+            # break the sample axis, so acknowledge only local consumption.
+            return (
+                OutputCommit.NOT_SENT
+                if interception_bridge is None
+                else OutputCommit.LOCAL_ACCEPTED
+            )
         prefix = None
         if self._asr_route_mode == "independent":
             ingress = context.ingress_token or self._capture_ingress_token()
@@ -4377,7 +4586,7 @@ class AsrRuntimeMixin:
                 else None
             )
         committed = await self._route_microphone_audio_unfiltered(
-            frame.pcm,
+            filtered_pcm,
             sample_rate_hz=frame.sample_rate,
             speech_probability=context.speech_probability,
             rnnoise_available=context.rnnoise_available,
@@ -4386,6 +4595,7 @@ class AsrRuntimeMixin:
             captured_at=context.captured_at,
             preserve_prefix=prefix,
             require_output_commit=True,
+            interception_bridge=interception_bridge,
         )
         if (
             self._capture_voice_session_activation_generation() != generation
@@ -4594,7 +4804,18 @@ class AsrRuntimeMixin:
         captured_at: float | None = None,
         preserve_prefix: PreserveUnsentPrefix | None = None,
         require_output_commit: bool = False,
+        interception_bridge: ActiveSessionInterceptionBridge | None = None,
     ) -> OutputCommit:
+        if self._active_session_interception_required or self._active_session_interception_bridge is not None:
+            # Only the authorized ACTIVE output callback carries the current
+            # bridge identity.  Factory preparation failure, a disabled
+            # activation writer or an old callback cannot reach the ordinary
+            # raw outlet while interception is requested.
+            if (
+                interception_bridge is None
+                or interception_bridge is not self._active_session_interception_bridge
+            ):
+                return OutputCommit.NOT_SENT
         route_mode = self._asr_route_mode
         if not self._voice_input_accepts_pcm():
             return OutputCommit.NOT_SENT
@@ -5033,8 +5254,14 @@ class AsrRuntimeMixin:
             reasons.add("focus")
         self._voice_input_suppression_reasons = reasons
         self._voice_input_suppressed = bool(reasons)
-        self._invalidate_voice_pcm_sync(reason)
         current = (owner, hard_muted, focus_suppressed)
+        if previous != current and (
+            owner != "core" or hard_muted or focus_suppressed
+        ):
+            self._invalidate_active_session_interception_now(
+                f"voice_lease_{reason}", recoverable=True,
+            )
+        self._invalidate_voice_pcm_sync(reason)
         if (
             owner == "core"
             and not hard_muted

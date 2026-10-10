@@ -23,6 +23,7 @@ exists to remove. These tests fake the SDK so the out-of-order completion can be
 fired deliberately.
 """
 
+import json
 import queue
 import sys
 import time
@@ -30,8 +31,13 @@ import threading
 import types
 
 import pytest
+from dashscope.audio.tts_v2.speech_synthesizer import Request as _SdkRequest
 
-from main_logic.tts_client._infra import TTS_AUDIO_DONE_SENTINEL, TTS_SHUTDOWN_SENTINEL
+from main_logic.tts_client._infra import (
+    TTS_AUDIO_DONE_SENTINEL,
+    TTS_SHUTDOWN_SENTINEL,
+    TTS_SOFT_FLUSH_SENTINEL,
+)
 
 
 # synthesizer 只在缓冲攒够 TTS_LANG_DETECT_MIN_CHARS 才建，测试文本要够长。
@@ -44,11 +50,6 @@ class _FakeAudioFormat:
 
 class _FakeResultCallback:
     """Stand-in for dashscope's ResultCallback base (it only defines hooks)."""
-
-
-class _FakeRequest:
-    def getFinishRequest(self):
-        return {"action": "finish"}
 
 
 class _FakeWebSocket:
@@ -77,7 +78,9 @@ class _FakeSynthesizer:
         self.finish_payloads = []
         self.spoken = []
         self.ws = _FakeWebSocket(self)
-        self.request = _FakeRequest()
+        # Keep the installed SDK's request builder: a fake method name hid a
+        # production incompatibility with the pinned DashScope version.
+        self.request = _SdkRequest("test-key", "cosyvoice-v3-plus", "voice-x")
         _FakeSynthesizer.instances.append(self)
         self.callback.on_open()
 
@@ -171,6 +174,91 @@ def _audio_done_ids(items):
     return [sid for kind, sid in
             ((i[0], i[1]) for i in items if isinstance(i, tuple) and len(i) == 2)
             if kind == TTS_AUDIO_DONE_SENTINEL]
+
+
+@pytest.mark.parametrize("round_end", [True, False])
+def test_finish_sends_the_installed_sdk_protocol_without_ending_soft_flush(worker, round_end):
+    request_queue, response_queue, _thread = worker
+    request_queue.put(("speech-a", _LONG_ENOUGH))
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 1, "synthesizer")
+    synth = _FakeSynthesizer.instances[0]
+
+    marker = (None, None) if round_end else (TTS_SOFT_FLUSH_SENTINEL, "speech-a")
+    request_queue.put(marker)
+    _wait_for(lambda: synth.finish_payloads, "real SDK FINISH payload")
+    assert len(synth.finish_payloads) == 1
+    payload = json.loads(synth.finish_payloads[0])
+    assert payload["header"] == {
+        "action": "finish-task",
+        "task_id": synth.request.task_id,
+        "streaming": "duplex",
+    }
+    assert payload["payload"] == {"input": {}}
+    assert _audio_done_ids(_drain(response_queue)) == []
+
+    # Tail audio remains accepted after FINISH; only a real round completion
+    # can report audio_done. A soft flush must leave the speech open.
+    tail_data = b"\x01" * 2048
+    synth.callback.on_data(tail_data)
+    assert _audio_done_ids(_drain(response_queue)) == []
+    synth.callback.on_complete()
+    completed = _drain(response_queue)
+    assert ("__audio__", "speech-a", tail_data) in completed
+    assert _audio_done_ids(completed) == (["speech-a"] if round_end else [])
+
+
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_interrupt_then_new_finish_keeps_old_callbacks_out(worker, close_fails):
+    request_queue, response_queue, _thread = worker
+    request_queue.put(("speech-a", _LONG_ENOUGH))
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 1, "first synthesizer")
+    first = _FakeSynthesizer.instances[0]
+    if close_fails:
+        def broken_close():
+            first.closed = True
+            raise ConnectionError("already closed")
+        first.close = broken_close
+
+    request_queue.put(("__interrupt__", None))
+    request_queue.put(("speech-b", _LONG_ENOUGH))
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "new turn after interrupt")
+    second = _FakeSynthesizer.instances[1]
+    assert first.closed
+    _drain(response_queue)
+    first.callback.on_data(b"old tail" * 512)
+    first.callback.on_complete()
+    assert _drain(response_queue) == []
+
+    request_queue.put((None, None))
+    _wait_for(lambda: second.finish_payloads, "new turn FINISH")
+    second.callback.on_complete()
+    assert _audio_done_ids(_drain(response_queue)) == ["speech-b"]
+
+
+@pytest.mark.parametrize("disconnect", ["close", "idle_timeout", "request_timeout"])
+def test_finish_releases_disconnected_stream_before_the_next_turn(worker, disconnect):
+    request_queue, response_queue, _thread = worker
+    request_queue.put(("speech-a", _LONG_ENOUGH))
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 1, "first synthesizer")
+    first = _FakeSynthesizer.instances[0]
+    if disconnect == "close":
+        first.callback.on_close()
+    elif disconnect == "idle_timeout":
+        first.callback.on_error("request timeout after 23 seconds")
+    else:
+        first.callback.on_error("request timeout")
+    request_queue.put((None, None))
+    _wait_for(lambda: first.closed, "disconnected stream retirement")
+    assert first.finish_payloads == []
+    assert _audio_done_ids(_drain(response_queue)) == []
+
+    request_queue.put(("speech-b", _LONG_ENOUGH))
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "replacement synthesizer")
+    second = _FakeSynthesizer.instances[1]
+    request_queue.put((None, None))
+    _wait_for(lambda: second.finish_payloads, "replacement FINISH")
+    second.callback.on_complete()
+    assert _audio_done_ids(_drain(response_queue)) == ["speech-b"]
 
 
 def test_superseded_synthesizer_completion_does_not_close_the_current_turn(worker):

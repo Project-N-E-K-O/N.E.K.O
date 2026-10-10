@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -24,6 +25,7 @@ from main_logic.voice_identity_service.activation_scoring import (
 from main_logic.voice_input.activation import (
     ActivationState,
     OutputCommit,
+    OutputOrigin,
     VoiceActivationConfig,
     VoiceActivationController,
 )
@@ -91,7 +93,9 @@ async def test_short_pauses_preserve_full_scoring_and_replay(monkeypatch, owner)
         assert runtime.state is (ActivationState.ACTIVE if owner else ActivationState.WAITING)
         assert scorer._host.alive
         # No silence removal, tail cropping, duplicate replay, or fail-open.
-        assert delivered == (frames if owner else [])
+        assert [replace(frame, output_origin=OutputOrigin.LIVE) for frame in delivered] == (frames if owner else [])
+        if owner:
+            assert delivered[0].output_origin is OutputOrigin.REPLAY
     finally:
         await runtime.close()
         assert scorer._host is None

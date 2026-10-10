@@ -71,8 +71,13 @@ class AudioFrame:
     pcm: bytes
     generation: ActivationGeneration
     context: object | None = None
+    # Assigned by the sole activation writer from its claimed output lease.
+    # Capture timestamps and sample positions remain the original observations.
+    output_origin: OutputOrigin = OutputOrigin.LIVE
 
     def __post_init__(self) -> None:
+        if type(self.output_origin) is not OutputOrigin:
+            raise ValueError("VOICE_ACTIVATION_FRAME_OUTPUT_ORIGIN_INVALID")
         if self.sequence < 0:
             raise ValueError("VOICE_ACTIVATION_FRAME_SEQUENCE_INVALID")
         if self.sample_start < 0 or self.sample_end <= self.sample_start:

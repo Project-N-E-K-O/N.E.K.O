@@ -35,6 +35,7 @@ from . import music_router
 from . import pages_router
 from . import storage_location_router
 from . import system_router
+from . import visit_router
 from . import vrm_router
 from . import websocket_router
 from . import workshop_router
@@ -55,6 +56,7 @@ __all__ = [
     'pages_router',
     'storage_location_router',
     'system_router',
+    'visit_router',
     'vrm_router',
     'websocket_router',
     'workshop_router',

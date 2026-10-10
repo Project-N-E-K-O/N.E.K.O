@@ -57,12 +57,15 @@ from .shared_state import (
 from . import game_router as _game_router  # noqa: F401
 from utils.external_route_registry import (
     RouteClaim,
+    get_active_external_route,
     route_external_microphone_audio,
+    route_external_page_signal,
     route_external_start_session,
     route_external_stream_message,
 )
 from utils.theater_activity import is_theater_active
 from utils.external_route_registry import is_external_route_active
+from utils.visit_route_state import DISPLAY_SOCKET_CONNECTION, VISIT_ROUTE_KIND, VISIT_SOCKET_BOUND_ATTR
 from utils.icebreaker_route_state import (
     finalize_icebreaker_route,
     get_active_icebreaker_route_session_id,
@@ -163,6 +166,17 @@ def _fire_task(coro):
     _ws_bg_tasks.add(task)
     task.add_done_callback(_ws_bg_tasks.discard)
     return task
+
+
+def _visit_owns_input(lanlan_name: str) -> bool:
+    """The visit route currently owns the character's input (registry lookup; no visit import)."""
+    spec = get_active_external_route(lanlan_name)
+    return spec is not None and spec.kind == VISIT_ROUTE_KIND
+
+
+def _visit_socket_bound(websocket) -> bool:
+    """This connection passed ``visit_bind`` (the mark lives on the connection object, design §4.5)."""
+    return getattr(websocket, VISIT_SOCKET_BOUND_ATTR, False) is True
 
 
 def _is_voice_path_message(message: dict) -> bool:
@@ -1046,6 +1060,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 reason = str(message.get("reason") or ("goodbye" if active else "return")).strip().lower()[:64]
                 goodbye_mgr = session_manager[lanlan_name]
                 goodbye_mgr.set_goodbye_silent(active, reason)
+                if active and _visit_owns_input(lanlan_name) and _visit_socket_bound(websocket):
+                    # 串门中收到全局告别：串门按 goodbye 收尾（OD-25）；不在串门时这里什么都不做。
+                    # 与串门的其它输入同口径：只认已 visit_bind 的连接（普通告别处理照旧）
+                    from main_routers.visit_router import display_socket as _visit_display
+
+                    _visit_display.finalize_on_goodbye(lanlan_name)
                 if not active and goodbye_mgr.pending_agent_callbacks:
                     logger.info(
                         "[%s] goodbye_state cleared: retrying %d pending callback(s)",
@@ -1301,11 +1321,28 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     message,
                     lanlan_name=lanlan_name,
                 )
+                if (
+                    input_type != "audio"
+                    and _visit_owns_input(lanlan_name)
+                    and not _visit_socket_bound(websocket)
+                ):
+                    # 串门中、这条连接没 visit_bind：不交给串门，也不漏进普通聊天（§4.5）。
+                    # 麦克风 PCM 照旧交给路由（串门丢弃 PCM、节流提示语音不可用，不涉及内容）
+                    from main_routers.visit_router import display_socket as _visit_display
+
+                    await _visit_display.refuse(websocket, message.get("request_id"))
+                    continue
                 if input_type == "audio":
                     if await route_external_microphone_audio(lanlan_name):
                         continue
                 else:
-                    claim = await route_external_stream_message(lanlan_name, message)
+                    # 分派途中路由可能换主（别的路由放手、串门刚好起来）：把发起这条输入的连接带进分派，
+                    # 串门据此拒绝未绑定连接的输入、把未授权提示发回这条连接
+                    connection_token = DISPLAY_SOCKET_CONNECTION.set(websocket)
+                    try:
+                        claim = await route_external_stream_message(lanlan_name, message)
+                    finally:
+                        DISPLAY_SOCKET_CONNECTION.reset(connection_token)
                     if claim is RouteClaim.UNSETTLED:
                         # The owner kept changing: the input reached no route
                         # and must not leak into ordinary chat, but its request
@@ -1615,6 +1652,28 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     turn_id=message.get("turnId") or message.get("turn_id") or "",
                     source=message.get("source") or "audio_playback",
                 )
+
+            elif action == "visit_bind":
+                from main_routers.visit_router import display_socket as _visit_display
+
+                await _visit_display.handle_bind(websocket, lanlan_name, message)
+
+            elif action == "visit_debrief_chip_ack":
+                from main_routers.visit_router import display_socket as _visit_display
+
+                await _visit_display.handle_chip_ack(websocket, lanlan_name, message)
+
+            elif action == "visit_speech_progress":
+                if not _visit_socket_bound(websocket):
+                    # 只认已 visit_bind 的连接：串门结束后回家仪式句 / 简述的进度（决定插件回调何时交还）
+                    # 同样不收未绑定连接的。串门占着输入时回未授权，否则静默丢弃
+                    if _visit_owns_input(lanlan_name):
+                        from main_routers.visit_router import display_socket as _visit_display
+
+                        await _visit_display.refuse(websocket)
+                    continue
+                # 交给注册表：没有 on_page_signal 的路由（game）不认领，忽略即可
+                await route_external_page_signal(lanlan_name, message)
 
             else:
                 logger.warning(f"Unknown action received: {action}")
