@@ -416,6 +416,17 @@ async def sync_workshop_character_cards(
                                         )
                                 skipped_count += 1
                                 continue
+                            from main_routers.visit_router import character_hooks as visit_hooks
+
+                            if await visit_hooks.name_blocked(config_mgr, chara_name):
+                                # 同名的已删除角色还在退役串门数据：这轮先不建，下次同步再来
+                                logger.info(
+                                    "sync_workshop_character_cards: 同名旧角色的串门数据仍在清理，暂不添加 '%s' (物品 %s)",
+                                    chara_name,
+                                    item_id,
+                                )
+                                skipped_count += 1
+                                continue
                             
                             # 构建角色数据，过滤保留字段
                             catgirl_data = {}
