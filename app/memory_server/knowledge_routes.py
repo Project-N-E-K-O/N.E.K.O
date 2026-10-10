@@ -44,16 +44,17 @@ from fastapi.responses import JSONResponse
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartParser
 
-from knowledge.models import MAX_PACK_BYTES
 from knowledge.service import MAX_PENDING_IMPORTS, KnowledgeService, KnowledgeUnavailable
+from utils.http.knowledge_proxy import JSON_BODY_MAX_BYTES, PACK_BODY_MAX_BYTES
 
 from ._shared import logger
 
 
 router = APIRouter(prefix="/internal/knowledge", tags=["knowledge"])
 
-_JSON_BODY_MAX_BYTES = 64 * 1024
-_PACK_BODY_MAX_BYTES = MAX_PACK_BYTES + 64 * 1024
+# The same limits the browser-facing proxies apply.
+_JSON_BODY_MAX_BYTES = JSON_BODY_MAX_BYTES
+_PACK_BODY_MAX_BYTES = PACK_BODY_MAX_BYTES
 _service: KnowledgeService | None = None
 # Import requests allowed to read their body at once (see knowledge_import_pack).
 _import_slots = asyncio.Semaphore(MAX_PENDING_IMPORTS)
@@ -94,7 +95,13 @@ class _SharedEmbedder:
     async def embed_batch(self, texts: list[str]) -> list[list[float] | None]:
         if self._service is None:
             return [None] * len(texts)
-        return await self._service.embed_batch(texts, sticky_failure=False)
+        vectors = await self._service.embed_batch(texts, sticky_failure=False)
+        if len(texts) > 1 and all(v is None for v in vectors) and self._service.is_available():
+            # The whole batch failed while the model is fine: one bad text
+            # (a non-sticky failure) would otherwise cost its neighbours an
+            # attempt each. Retry them one by one so only the bad one counts.
+            vectors = [await self.embed(text) for text in texts]
+        return vectors
 
 
 def _resolve_embedding_service() -> Any:

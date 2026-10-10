@@ -213,3 +213,41 @@ def test_proxy_body_limit_matches_the_pack_limit():
     assert knowledge_proxy.PACK_BODY_MAX_BYTES == MAX_PACK_BYTES + 64 * 1024
     assert knowledge_routes._PACK_BODY_MAX_BYTES == knowledge_proxy.PACK_BODY_MAX_BYTES
     assert knowledge_proxy.WRITE_PATHS["packs/import"] == knowledge_proxy.PACK_BODY_MAX_BYTES
+
+
+def _ready_embedding_service(monkeypatch):
+    from memory import embeddings
+
+    monkeypatch.setattr(embeddings, "detect_total_ram_gb", lambda: 12.0)
+    monkeypatch.setattr(embeddings, "detect_avx_vnni_details", lambda: (False, True))
+    monkeypatch.setattr(embeddings, "detect_avx2_details", lambda: (True, True))
+    monkeypatch.setattr(embeddings, "_cpu_is_blocklisted", lambda: False)
+    service = embeddings.EmbeddingService(model_dir="/nonexistent")
+    service._state = embeddings.EmbeddingState.READY
+    return service
+
+
+async def test_one_bad_text_does_not_fail_its_whole_batch(monkeypatch):
+    service = _ready_embedding_service(monkeypatch)
+
+    def infer(texts):
+        if "poison" in texts:
+            raise RuntimeError("tokenizer choked")
+        return [[float(len(text))] for text in texts]
+
+    monkeypatch.setattr(service, "_infer_blocking", infer)
+    shared = knowledge_routes._SharedEmbedder(service)
+    assert await shared.embed_batch(["ok", "poison", "fine"]) == [[2.0], None, [4.0]]
+    assert service.is_available()
+
+
+async def test_non_sticky_failures_are_logged_at_most_once_a_minute(monkeypatch):
+    from memory import embeddings
+
+    service = _ready_embedding_service(monkeypatch)
+    warnings = []
+    monkeypatch.setattr(embeddings.logger, "warning", lambda *args, **kwargs: warnings.append(args))
+    for _ in range(5):
+        service._on_inference_error(RuntimeError("boom"), sticky=False)
+    assert len(warnings) == 1
+    assert service.is_available()

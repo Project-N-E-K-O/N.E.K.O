@@ -66,6 +66,7 @@ import os
 import platform
 import re
 import sys
+import time
 from typing import Any
 
 from ._embeddings import lifecycle as _service_lifecycle
@@ -147,6 +148,9 @@ DEFAULT_VECTORS_MAX_LENGTH = 1024
 # 测试 / 自定义 profile 把 max_length 顶到旧 8192 时也只允许 2 条
 # 一桶,峰值仍可控。"""
 _INFER_BATCH_MAX_TOKENS = 16384
+
+# Non-sticky (borrowed-model) inference failures log at most this often.
+_SOFT_FAILURE_LOG_INTERVAL_SECONDS = 60.0
 
 # Matryoshka discrete steps supported by the default local profile.
 _DIM_STEPS = (32, 64, 128, 256, 512, 768)
@@ -1036,6 +1040,7 @@ class EmbeddingService:
         self._lifecycle_condition = asyncio.Condition()
         self._active_operations = 0
         self._closing = False
+        self._soft_failure_logged_at = float("-inf")
 
         # Decide initial disable conditions (all but model file presence,
         # which we check at load time so a deferred download path can
@@ -1234,10 +1239,15 @@ class EmbeddingService:
 
     def _on_inference_error(self, error: Exception, *, sticky: bool) -> None:
         if not sticky:
-            logger.warning(
-                "EmbeddingService: inference failed for a non-sticky caller (%s: %s)",
-                type(error).__name__, error,
-            )
+            # A background caller may hit the same problem batch after batch;
+            # one line a minute is enough to see it.
+            now = time.monotonic()
+            if now - self._soft_failure_logged_at >= _SOFT_FAILURE_LOG_INTERVAL_SECONDS:
+                self._soft_failure_logged_at = now
+                logger.warning(
+                    "EmbeddingService: inference failed for a non-sticky caller (%s: %s)",
+                    type(error).__name__, error,
+                )
             return
         logger.warning(
             "EmbeddingService: inference failed (%s: %s); vectors disabled",

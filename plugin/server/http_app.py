@@ -246,6 +246,19 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
         if manage_lifecycle:
             await lifecycle_shutdown()
+            # The knowledge bridge uses the shared loopback client; a
+            # standalone plugin server owns its process, so it closes it.
+            # Embedded in another server, that server does.
+            try:
+                from utils.http.internal_client import aclose_internal_http_client
+
+                await aclose_internal_http_client()
+            except Exception as exc:
+                logger.warning(
+                    "internal http client close failed: err_type={}, err={}",
+                    type(exc).__name__,
+                    str(exc),
+                )
 
 
 def build_plugin_server_app(

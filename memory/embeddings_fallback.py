@@ -83,10 +83,12 @@ class _DisabledEmbeddingService:
     async def request_load(self) -> bool:
         return False
 
-    async def embed(self, text: str) -> list[float] | None:
+    async def embed(self, text: str, *, sticky_failure: bool = True) -> list[float] | None:
         return None
 
-    async def embed_batch(self, texts: list[str]) -> list[list[float] | None]:
+    async def embed_batch(
+        self, texts: list[str], *, sticky_failure: bool = True
+    ) -> list[list[float] | None]:
         return [None] * len(texts) if texts else []
 
 

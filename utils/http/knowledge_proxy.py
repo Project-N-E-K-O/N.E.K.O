@@ -55,15 +55,15 @@ class _StreamingRequest(Protocol):
         """The request body, chunk by chunk."""
 
 
-def declared_size_problem(content_length: str | None, max_bytes: int) -> str | None:
-    """Reason to refuse a request from its Content-Length alone, if any."""
+def declared_size_problem(content_length: str | None, max_bytes: int) -> tuple[str, int] | None:
+    """(reason, HTTP status) to refuse a request by its Content-Length alone, if any."""
     if content_length is None:
         return None
     try:
         size = int(content_length)
     except ValueError:
-        return "invalid_request"
-    return "payload_too_large" if size > max_bytes else None
+        return "invalid_request", 400
+    return ("payload_too_large", 413) if size > max_bytes else None
 
 
 async def capped_body(request: _StreamingRequest, max_bytes: int) -> AsyncIterator[bytes]:

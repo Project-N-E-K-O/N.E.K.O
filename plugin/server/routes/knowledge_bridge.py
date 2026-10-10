@@ -92,7 +92,7 @@ async def public_knowledge_bridge(
         declared = request.headers.get("content-length")
         problem = declared_size_problem(declared, max_bytes)
         if problem is not None:
-            return _failure(problem, 413 if problem == "payload_too_large" else 400)
+            return _failure(*problem)
         headers.update(
             {
                 "Content-Type": request.headers.get("content-type", "application/json"),

@@ -113,7 +113,7 @@ async def write_public_knowledge(path: str, request: Request):
     declared = request.headers.get("content-length")
     problem = declared_size_problem(declared, max_bytes)
     if problem is not None:
-        return _failure(problem, 413 if problem == "payload_too_large" else 400)
+        return _failure(*problem)
     headers = {"content-type": request.headers.get("content-type", "application/json")}
     if declared is not None:
         headers["content-length"] = declared
