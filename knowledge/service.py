@@ -135,6 +135,9 @@ INDEX_ROUND_CHUNKS = 64
 # the time (inference may use several threads while it runs).
 INDEX_BATCH_PAUSE_SECONDS = 0.5
 INDEX_TARGET_DUTY = 0.25
+# The measured time is wall-clock: it includes waiting for the shared model and
+# a laptop sleeping mid-batch. Cap the pause so neither stalls indexing.
+INDEX_MAX_BATCH_PAUSE_SECONDS = 30.0
 INDEX_ROUND_PAUSE_SECONDS = 5.0
 INDEX_IDLE_SECONDS = 30.0
 VECTOR_REFRESH_SECONDS = 60.0
@@ -204,7 +207,8 @@ def _batch_pause(inference_seconds: float) -> float:
     """Pause after an index batch: idle at least (1 - duty) / duty times as long
     as the batch computed, so indexing stays at or below INDEX_TARGET_DUTY."""
     idle_ratio = (1.0 - INDEX_TARGET_DUTY) / INDEX_TARGET_DUTY
-    return max(INDEX_BATCH_PAUSE_SECONDS, inference_seconds * idle_ratio)
+    pause = max(INDEX_BATCH_PAUSE_SECONDS, inference_seconds * idle_ratio)
+    return min(pause, INDEX_MAX_BATCH_PAUSE_SECONDS)
 
 
 def _disabled_in(entry: StoredEntry, registry: Registry) -> bool:
@@ -271,6 +275,8 @@ class KnowledgeService:
         self._query_pool: concurrent.futures.ThreadPoolExecutor | None = None
         self._parsing = 0
         self._detached: set[asyncio.Future[Any]] = set()
+        # Query and parse threads, which outlive a request that stops waiting.
+        self._thread_work: set[concurrent.futures.Future[Any]] = set()
         self._admission_lock = asyncio.Lock()
         self._startup_work: asyncio.Future[Any] | None = None
         self._parse_pool: concurrent.futures.ThreadPoolExecutor | None = None
@@ -323,6 +329,7 @@ class KnowledgeService:
         # The wait is bounded: a write stuck on the disk must not hang the
         # Memory Server's shutdown. Each write is atomic on its own, and the
         # next start reconciles the index with the registry.
+        deadline = time.monotonic() + DETACHED_WRITE_WAIT_SECONDS
         if self._detached:
             await asyncio.wait(set(self._detached), timeout=DETACHED_WRITE_WAIT_SECONDS)
             if self._detached:
@@ -332,6 +339,18 @@ class KnowledgeService:
         for pool in (self._query_pool, self._parse_pool):
             if pool is not None:
                 pool.shutdown(wait=False, cancel_futures=True)
+        # A query or parse thread whose request timed out or went away may
+        # still have knowledge.db open or a pack in memory; within the same
+        # bound, let it end before reporting stopped.
+        running = [future for future in self._thread_work if not future.done()]
+        if running:
+            await asyncio.wait(
+                [asyncio.wrap_future(future) for future in running],
+                timeout=max(deadline - time.monotonic(), 0.1),
+            )
+            still = sum(1 for future in running if not future.done())
+            if still:
+                logger.warning("[Knowledge] %d thread(s) still running at shutdown", still)
 
     def _open_blocking(self) -> None:
         (self.root / PACKS_DIR).mkdir(parents=True, exist_ok=True)
@@ -681,14 +700,8 @@ class KnowledgeService:
     async def _import_parsed(
         self, raw: bytes, arrived_at: int, parse_work: list[concurrent.futures.Future[Any]]
     ) -> dict[str, Any]:
-        if self._parse_pool is None:
-            self._parse_pool = concurrent.futures.ThreadPoolExecutor(
-                max_workers=MAX_PENDING_IMPORTS, thread_name_prefix="knowledge-parse"
-            )
-        future = self._parse_pool.submit(self._prepare_import, raw)
-        parse_work.append(future)
         try:
-            pack, canonical, chunks = await asyncio.wrap_future(future)
+            pack, canonical, chunks = await self._parse_thread(parse_work, self._prepare_import, raw)
         except KnowledgePackError as exc:
             return {"ok": False, "reason": exc.reason}
         if len(canonical) > MAX_PACK_BYTES:
@@ -704,7 +717,7 @@ class KnowledgeService:
             and pack.pack_id not in self._broken_packs
             # The raw file is the source of truth; if it went missing or was
             # altered since startup, import again so it gets rewritten.
-            and await asyncio.to_thread(self._raw_file_intact, existing)
+            and await self._parse_thread(parse_work, self._raw_file_intact, existing)
             # Checked after that await: the record must still be the installed
             # one and no removal may be waiting, or "unchanged, active" could
             # be answered for a pack that is (about to be) gone. Such an
@@ -807,6 +820,27 @@ class KnowledgeService:
         self._job_queue.append(job.job_id)
         self._job_queued.set()
         return {"ok": True, **job.to_json()}
+
+    async def _parse_thread(
+        self,
+        parse_work: list[concurrent.futures.Future[Any]],
+        fn: Callable[..., _T],
+        /,
+        *args: Any,
+    ) -> _T:
+        """Run an import request's thread work; its slot stays held until it ends."""
+        if self._parse_pool is None:
+            self._parse_pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=MAX_PENDING_IMPORTS, thread_name_prefix="knowledge-parse"
+            )
+        future = self._parse_pool.submit(fn, *args)
+        parse_work.append(future)
+        self._track_thread_work(future)
+        return await asyncio.wrap_future(future)
+
+    def _track_thread_work(self, future: concurrent.futures.Future[Any]) -> None:
+        self._thread_work.add(future)
+        future.add_done_callback(self._thread_work.discard)
 
     @staticmethod
     def _prepare_import(raw: bytes) -> tuple[KnowledgePack, bytes, int]:
@@ -1251,9 +1285,11 @@ class KnowledgeService:
                 elapsed_ms=int((time.monotonic() - started) * 1000),
             )
             processed += len(rows)
+            # Every batch that ran inference pauses, also one that stored
+            # nothing: failing chunks must not push indexing past its duty.
+            await asyncio.sleep(_batch_pause(inference_seconds))
             if stored == 0:
                 break
-            await asyncio.sleep(_batch_pause(inference_seconds))
         return processed
 
     # ── queries ─────────────────────────────────────────────────────
@@ -1344,6 +1380,13 @@ class KnowledgeService:
             deadline = started + budget
             try:
                 async with asyncio.timeout(max(deadline - time.monotonic(), 0.01)):
+                    # A pack being replaced (rows newer than this snapshot)
+                    # would take sample picks or candidate slots and then be
+                    # dropped at rendering, hiding matches of other packs.
+                    current = await self._query_thread(self._current_packs, allowed, registry)
+                    allowed = [pack_id for pack_id in allowed if pack_id in current]
+                    if not allowed:
+                        return finish("miss")
                     if mode == "sample":
                         ranked = await self._sample(query, allowed, limit, registry)
                         retrieval_mode = "sample"
@@ -1409,6 +1452,7 @@ class KnowledgeService:
             )
         future = self._query_pool.submit(contextvars.copy_context().run, fn, *args, **kwargs)
         work.append(future)
+        self._track_thread_work(future)
         return await asyncio.wrap_future(future)
 
     async def _sample(

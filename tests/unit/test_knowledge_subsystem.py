@@ -2846,3 +2846,122 @@ async def test_stop_waits_for_an_admission_whose_request_was_cancelled(tmp_path,
     assert written.is_set()  # stop() waited for the staging write
     assert service.list_jobs() == []  # and nothing was queued after the runner stopped
     assert list((tmp_path / ".staging").glob("*.json")) == []
+
+
+def test_the_pause_after_a_batch_is_capped():
+    # e.g. a laptop slept for an hour in the middle of a batch
+    assert service_module._batch_pause(3600.0) == service_module.INDEX_MAX_BATCH_PAUSE_SECONDS
+
+
+async def test_a_batch_that_stores_nothing_still_pauses(tmp_path, monkeypatch):
+    pauses: list[float] = []
+
+    def record(seconds):
+        pauses.append(seconds)
+        return 0.0
+
+    monkeypatch.setattr(service_module, "_batch_pause", record)
+
+    class FailingEmbedder(FakeEmbedder):
+        async def embed_batch(self, texts):
+            return [None for _ in texts]
+
+    service = await _started(tmp_path, FailingEmbedder())
+    try:
+        await _import(service, _pack())
+        for _ in range(200):
+            if service.diagnostics.snapshot()["index_batches"] and pauses:
+                break
+            await asyncio.sleep(0.01)
+        batches = service.diagnostics.snapshot()["index_batches"]
+        assert batches and all(batch["stored"] == 0 for batch in batches)
+        assert pauses  # the failed batch paused like any other
+    finally:
+        await service.stop()
+
+
+async def test_a_cancelled_unchanged_check_keeps_its_import_slot_until_the_read_ends(tmp_path, monkeypatch):
+    import threading
+
+    service = await _started(tmp_path)
+    reading = threading.Event()
+    release = threading.Event()
+    try:
+        payload = _pack()
+        await _import(service, payload)
+        real = service._raw_file_intact
+
+        def slow(record):
+            reading.set()
+            release.wait(5)
+            return real(record)
+
+        monkeypatch.setattr(service, "_raw_file_intact", slow)
+        request = asyncio.create_task(service.import_pack(_raw(payload)))
+        assert await asyncio.to_thread(reading.wait, 5)
+        request.cancel()
+        await asyncio.wait({request})
+        assert service._parsing == 1  # the read still holds the request's slot
+        release.set()
+        for _ in range(200):
+            if service._parsing == 0:
+                break
+            await asyncio.sleep(0.01)
+        assert service._parsing == 0
+    finally:
+        release.set()
+        await service.stop()
+
+
+async def test_stop_waits_for_query_work_a_cancelled_lookup_left_running(tmp_path, monkeypatch):
+    import threading
+
+    service = await _started(tmp_path)
+    scanning = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    try:
+        await _import(service, _pack())
+        real = service._lexical_search
+
+        def slow(*args):
+            scanning.set()
+            release.wait(5)
+            try:
+                return real(*args)
+            finally:
+                finished.set()
+
+        monkeypatch.setattr(service, "_lexical_search", slow)
+        request = asyncio.create_task(service.query(query="绝绝子"))
+        assert await asyncio.to_thread(scanning.wait, 5)
+        request.cancel()
+        await asyncio.wait({request})
+        threading.Timer(0.3, release.set).start()
+        await service.stop()
+        assert finished.is_set()  # stop() waited for the scan to end
+    finally:
+        release.set()
+
+
+async def test_a_pack_mid_replacement_does_not_take_candidate_slots(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "LEXICAL_CANDIDATES", 2)
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack("stale-pack", entries=_entries("s", 5)))
+        await _import(service, _pack("fact-pack", entries=[{"title": "Fact", "content": "a kotatsu fact"}]))
+        before = await service.query(query="kotatsu")
+        assert {hit["pack_id"] for hit in before["hits"]} == {"stale-pack"}  # it fills the window
+        # Its rows are now a version the registry does not describe yet, as
+        # between an import's index commit and its registry update.
+        conn = sqlite3.connect(tmp_path / "knowledge.db")
+        try:
+            conn.execute("UPDATE packs SET pack_sha256=? WHERE pack_id='stale-pack'", ("f" * 64,))
+            conn.commit()
+        finally:
+            conn.close()
+        result = await service.query(query="kotatsu")
+        assert result["result"] == "matched"
+        assert [hit["pack_id"] for hit in result["hits"]] == ["fact-pack"]
+    finally:
+        await service.stop()

@@ -24,9 +24,13 @@ it uses only once memory's warmup worker has made it ready.
 The routes sit on ``runtime.app`` and so inherit everything that guards the
 rest of the Memory Server: ``HostOriginGuardMiddleware``,
 ``InboundBodySizeLimitMiddleware`` and the storage startup gate (requests are
-refused with 409 while storage is limited). Browser-facing authentication,
-CSRF and Origin checks happen in Main's ``/api/public-knowledge`` proxy, the
-only caller besides Main's own tool.
+refused with 409 while storage is limited). Browser-facing authentication and
+CSRF checks happen in Main's ``/api/public-knowledge`` proxy; the callers here
+(Main and the plugin server) send no browser ``Origin``. Loopback traffic needs
+no token on this server and the guard checks only the Host of HTTP requests,
+so every route also refuses requests a browser sent from another site, and the
+JSON routes accept only ``application/json`` bodies: otherwise any web page
+could import, remove or switch off knowledge with a CORS-simple POST.
 
 Every handler converts failures into ``{"ok": false, "reason": ...}``; nothing
 raised by knowledge code reaches the memory request pipeline.
@@ -39,18 +43,29 @@ import json
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartParser
 
 from knowledge.service import MAX_PENDING_IMPORTS, KnowledgeService, KnowledgeUnavailable
+from utils.host_origin_guard import is_http_browser_origin_allowed
 from utils.http.knowledge_proxy import JSON_BODY_MAX_BYTES, PACK_BODY_MAX_BYTES
 
 from ._shared import logger
 
 
-router = APIRouter(prefix="/internal/knowledge", tags=["knowledge"])
+def _refuse_cross_site_browsers(request: Request) -> None:
+    """Refuse a request a browser sent from another site, before any body is read."""
+    if not is_http_browser_origin_allowed(request.scope):
+        raise HTTPException(status_code=403, detail={"ok": False, "reason": "untrusted_origin"})
+
+
+router = APIRouter(
+    prefix="/internal/knowledge",
+    tags=["knowledge"],
+    dependencies=[Depends(_refuse_cross_site_browsers)],
+)
 
 # The same limits the browser-facing proxies apply.
 _JSON_BODY_MAX_BYTES = JSON_BODY_MAX_BYTES
@@ -204,6 +219,11 @@ async def _read_body(request: Request, *, max_bytes: int) -> bytes | None:
 
 
 async def _json_object(request: Request) -> dict[str, Any] | None:
+    # Only JSON: a browser cannot send this type cross-site without a CORS
+    # preflight, which this server never grants.
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type != "application/json":
+        return None
     raw = await _read_body(request, max_bytes=_JSON_BODY_MAX_BYTES)
     if raw is None:
         return None

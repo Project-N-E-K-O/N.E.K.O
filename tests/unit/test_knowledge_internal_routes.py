@@ -265,3 +265,52 @@ async def test_items_after_failing_ones_are_still_tried(monkeypatch):
     shared = knowledge_routes._SharedEmbedder(service)
     # Two separate bad texts first: the healthy rest is not failed untried.
     assert await shared.embed_batch(["bad1", "bad2", "ok", "fine"]) == [None, None, [2.0], [4.0]]
+
+
+async def test_cross_site_browser_requests_are_refused(client):
+    http, service = client
+    evil = {"Origin": "https://evil.example"}
+    # A CORS-simple text/plain POST, as any web page can send to a fixed port.
+    settings = await http.post(
+        "/internal/knowledge/settings",
+        content=b'{"enabled": false}',
+        headers={**evil, "Content-Type": "text/plain"},
+    )
+    assert settings.status_code == 403
+    # An auto-submitted HTML form.
+    files = {"pack": ("pack.json", json.dumps(PACK).encode(), "application/json")}
+    form = await http.post("/internal/knowledge/packs/import", files=files, headers=evil)
+    assert form.status_code == 403
+    referer_only = await http.post(
+        "/internal/knowledge/packs/remove",
+        json={"pack_id": "route-pack"},
+        headers={"Referer": "https://evil.example/page"},
+    )
+    assert referer_only.status_code == 403
+    assert service.availability()["enabled"] is True
+    assert service.list_jobs() == []
+
+
+async def test_json_routes_take_only_json_bodies(client):
+    http, service = client
+    plain = await http.post(
+        "/internal/knowledge/settings", content=b'{"enabled": false}', headers={"Content-Type": "text/plain"}
+    )
+    assert plain.status_code == 400
+    assert service.availability()["enabled"] is True
+    # Main and the plugin server send JSON with no browser origin; a page of
+    # the app itself (loopback origin) is allowed as well.
+    typed = await http.post(
+        "/internal/knowledge/settings",
+        content=b'{"enabled": false}',
+        headers={"Content-Type": "application/json; charset=utf-8"},
+    )
+    assert typed.status_code == 200 and typed.json()["enabled"] is False
+    app = FastAPI()
+    app.include_router(knowledge_routes.router)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:48912") as local_http:
+        local = await local_http.post(
+            "/internal/knowledge/settings", json={"enabled": True}, headers={"Origin": "http://127.0.0.1:48911"}
+        )
+    assert local.status_code == 200 and local.json()["enabled"] is True
