@@ -309,7 +309,7 @@ A: 运行 `docker exec neko python -c "from utils.config_manager import get_conf
 
 ## 🪶 低配云服务器
 
-2 核 2G 等低配服务器同样使用本目录的 `docker-compose.yml`。宿主机内存（ZRAM/Swap）、磁盘、安全配置，以及可选的宿主机自愈看门狗（`docker/watchdog/`）见[低配云服务器部署](../docs/zh-CN/deployment/low-spec-server.md)。
+2 核 2G 等低配服务器同样使用本目录的 `docker-compose.yml`。宿主机内存（ZRAM/Swap）、磁盘、安全配置，以及可选的宿主机自愈看门狗（`docker/watchdog/`）见[低配云服务器部署](https://project-neko.online/zh-CN/deployment/low-spec-server)。
 
 ## 📚 更多资源
 

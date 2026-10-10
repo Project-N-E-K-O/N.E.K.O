@@ -42,7 +42,7 @@ def normalize_badminton_prompt_locale(language: Any) -> str:
     tables are keyed by full locale and the other module's are not — respelling
     either one would just break its own tables.
 
-    See docs/contributing/developer-notes.md #7 and PR #2000.
+    See https://project-neko.online/contributing/developer-notes #7 and PR #2000.
     """
     return normalize_prompt_locale(
         language, default="zh-CN", simplified="zh-CN", keep_traditional=True
@@ -58,7 +58,7 @@ def _normalize_mode(mode: Any) -> str:
 
 # FULL-locale table: keyed by zh-CN / zh-TW separately (full-locale scheme).
 # Contrast with BADMINTON_SYSTEM_PROMPTS below, which is keyed by the short
-# locale (zh). See docs/contributing/developer-notes.md #7 and PR #2000.
+# locale (zh). See https://project-neko.online/contributing/developer-notes #7 and PR #2000.
 BADMINTON_QUICK_LINES_PROMPTS = {
     "zh-CN": """\
 你是{name}，{personality}
@@ -843,7 +843,7 @@ Regras:
 # SHORT-locale table: Simplified Chinese keyed as zh (short-locale scheme via
 # _localized_template / _normalize_prompt_lang). Contrast with
 # BADMINTON_QUICK_LINES_PROMPTS above, which keys it zh-CN. Both schemes keep
-# zh-TW. See docs/contributing/developer-notes.md #7 and PR #2000 before
+# zh-TW. See https://project-neko.online/contributing/developer-notes #7 and PR #2000 before
 # unifying the two schemes.
 BADMINTON_SYSTEM_PROMPTS = {
     "zh": BADMINTON_SYSTEM_PROMPT,

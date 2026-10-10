@@ -662,7 +662,7 @@ async def test_focus_override_threads_through_visible_stream():
 # enter bar survives a disabled window); (b) Focus scores the user's MESSAGE,
 # not the screen — it is privacy-independent and fetches no activity snapshot on
 # the inline path (privacy mode governs SCREEN visibility only; see
-# docs/contributing/developer-notes.md rule 6).
+# https://project-neko.online/contributing/developer-notes rule 6).
 def _bare_mgr():
     from main_logic.core import LLMSessionManager
     mgr = LLMSessionManager.__new__(LLMSessionManager)

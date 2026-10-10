@@ -1732,7 +1732,7 @@ async def _handle_agent_event(event: dict):
         # 不能用 logger.debug(exc_info=True)：源码运行且 log_level<=DEBUG 时
         # setup_logging 会挂一个只收 DEBUG 的 RotatingFileHandler 落到 logs/
         # （utils/logger_config.py），那等于把隐私文本持久化了。仓库规则见
-        # .agent/rules/neko-guide.md 与 docs/contributing/code-style.md：
+        # .agent/rules/neko-guide.md 与 https://project-neko.online/contributing/code-style ：
         # 涉及用户隐私（原始对话）的 log 只能用 print，不得使用 logger。
         logger.warning(
             "[EventBus] handle_agent_event failed (error_type=%s)",

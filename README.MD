@@ -16,7 +16,7 @@
 ![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-1092413003-00BFFF?style=flat&logo=tencent-qq)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
-[![Docs](https://img.shields.io/badge/📖_开发者文档-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
+[![Wiki](https://img.shields.io/badge/📖_Wiki_玩家手册与开发者文档-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 
 **:older_woman: 零配置开箱即用，我奶奶也能轻松唤醒的赛博猫娘！**
 
@@ -689,7 +689,7 @@ N.E.K.O/
 
 > 完整的开发者文档请访问 [project-neko.online](https://project-neko.online)
 
-> 主页新手引导提示的当前接口与状态合同见 [`docs/zh-CN/api/rest/system.md`](docs/zh-CN/api/rest/system.md#教程与自启动提示)
+> 主页新手引导提示的当前接口与状态合同见 [系统 API：教程与自启动提示](https://project-neko.online/zh-CN/api/rest/system#教程与自启动提示)
 
 ### 开发计划
 

@@ -2,7 +2,7 @@
 
 > SDK v2 完整开发教程。平台支持 Plugin / Adapter 两种插件包；Router 用于普通 Plugin 内部组合。
 >
-> 本轮接口收敛的完整替代关系见 [`docs/zh-CN/plugins/migration-v0.9.md`](../docs/zh-CN/plugins/migration-v0.9.md)。
+> 本轮接口收敛的完整替代关系见 [v0.9 迁移指南](https://project-neko.online/zh-CN/plugins/migration-v0.9)。
 
 ## 目录
 
@@ -576,7 +576,7 @@ ctx.push_message(
 
 旧字段的有效使用仍可兼容，但会触发 `DeprecationWarning` 提示在 v0.9 移除；
 `unsafe=False`、`fast_mode=False` 与值为 `None` 的旧字段不会触发 warning。
-完整 changelog：[`docs/changelog/`](../docs/changelog/)。
+完整 changelog：[插件 SDK 变更](https://project-neko.online/changelog/)。
 
 > **`register_music_domains()` SDK helper 已删除**。请直接 push 一条带
 > `ui_action: media_allowlist_add` 的消息（见上面例 6）。
@@ -807,7 +807,7 @@ self.register_dynamic_entry(
 > `visibility` / `ai_behavior` 描述消息——对照表见上面 push_message
 > 节的「已废弃字段」。如果你需要扩展 push_message 的能力，请直接在
 > `parts` 加新的 `type`，**不要**新增 `message_type` 值。完整迁移清单见
-> [`docs/zh-CN/plugins/migration-v0.9.md`](../docs/zh-CN/plugins/migration-v0.9.md)。
+> [v0.9 迁移指南](https://project-neko.online/zh-CN/plugins/migration-v0.9)。
 
 ### 3.4 Result 类型：Ok / Err
 

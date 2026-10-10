@@ -61,7 +61,7 @@ Start the supported service suite:
 uv run python launcher.py
 ```
 
-Open `http://127.0.0.1:48911`. See [development setup](guide/dev-setup.md) and [quick start](guide/quick-start.md) before splitting services manually.
+Open `http://127.0.0.1:48911`. See [development setup](https://project-neko.online/guide/dev-setup) and [quick start](https://project-neko.online/guide/quick-start) before splitting services manually.
 
 ## Ports and deployment
 
@@ -72,7 +72,7 @@ Open `http://127.0.0.1:48911`. See [development setup](guide/dev-setup.md) and [
 | Docker Compose | `48911` | Nginx HTTP entry |
 | Docker Compose | `48912` | Nginx HTTPS entry |
 
-These are two different port models. Other internal/default service ports and overrides are documented in [environment variables](config/environment-vars.md).
+These are two different port models. Other internal/default service ports and overrides are documented in [environment variables](https://project-neko.online/config/environment-vars).
 
 The tracked Compose file pulls an image; it has no `build:` section. Use:
 
@@ -80,20 +80,21 @@ The tracked Compose file pulls an image; it has no `build:` section. Use:
 docker compose up -d
 ```
 
-For local image builds, storage, TLS, and image selection, follow the [Docker guide](deployment/docker.md). For source and desktop artifacts, start from the [deployment overview](deployment/index.md).
+For local image builds, storage, TLS, and image selection, follow the [Docker guide](https://project-neko.online/deployment/docker). For source and desktop artifacts, start from the [deployment overview](https://project-neko.online/deployment/).
 
 ## Documentation map
 
-- [Getting started](guide/index.md)
-- [Architecture](architecture/index.md)
-- [API reference](api/index.md)
-- [Configuration](config/index.md)
-- [Frontend](frontend/index.md)
-- [Plugin development](plugins/index.md)
-- [Deployment](deployment/index.md)
-- [Contributing](contributing/index.md)
+- [Player handbook](https://project-neko.online/manual/)
+- [Getting started](https://project-neko.online/guide/)
+- [Architecture](https://project-neko.online/architecture/)
+- [API reference](https://project-neko.online/api/)
+- [Configuration](https://project-neko.online/config/)
+- [Frontend](https://project-neko.online/frontend/)
+- [Plugin development](https://project-neko.online/plugins/)
+- [Deployment](https://project-neko.online/deployment/)
+- [Contributing](https://project-neko.online/contributing/)
 
-The API/provider configuration is schema-driven. Use the current settings UI, `config/api_providers.json`, and [field reference](api_providers_fields.md) instead of a copied provider or model list.
+The API/provider configuration is schema-driven. Use the current settings UI, `config/api_providers.json`, and [field reference](https://project-neko.online/api_providers_fields) instead of a copied provider or model list.
 
 ## Privacy and telemetry
 

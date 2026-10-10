@@ -48,7 +48,7 @@ GETTERS = {
 
 # The conversation watermark stays Simplified in every locale — it is a fixed
 # literal the runtime matches on, not user-facing copy. See
-# docs/contributing/developer-notes.md "Prompt watermark".
+# https://project-neko.online/contributing/developer-notes "Prompt watermark".
 WATERMARK_OPEN = "======以下为对话======"
 WATERMARK_CLOSE = "======以上为对话======"
 

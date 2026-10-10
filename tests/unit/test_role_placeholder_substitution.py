@@ -366,7 +366,7 @@ async def test_main_server_event_failure_logs_only_exception_type(monkeypatch):
     # 异常消息可能带用户对话文本，所以一个 logger 级别都不能碰——DEBUG 也不行：
     # 源码运行且 log_level<=DEBUG 时 setup_logging 会挂一个只收 DEBUG 的
     # RotatingFileHandler 落到 logs/，logger.debug 同样会被持久化。仓库规则见
-    # .agent/rules/neko-guide.md 与 docs/contributing/code-style.md。
+    # .agent/rules/neko-guide.md 与 https://project-neko.online/contributing/code-style 。
     for forbidden in ("debug", "info", "error", "critical", "exception"):
         assert not getattr(test_logger, forbidden).called, (
             f"异常详情不得进 logger.{forbidden}（logger 输出会落盘）"

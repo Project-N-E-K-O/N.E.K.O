@@ -125,7 +125,7 @@ Primary source files:
 
 - `plugin/config/schema.py`
 - `plugin/config/plugin_toml_semantics.py`
-- `docs/plugins/plugin-toml.md`
+- https://project-neko.online/plugins/plugin-toml
 - existing `plugin/plugins/*/plugin.toml`
 
 ## I18n Contract

@@ -61,7 +61,7 @@ uv sync
 uv run python launcher.py
 ```
 
-Откройте `http://127.0.0.1:48911`. До ручного разделения сервисов прочитайте [настройку окружения](guide/dev-setup.md) и [quick start](guide/quick-start.md). Полной русской локализации сайта пока нет; эти ссылки ведут на английскую версию.
+Откройте `http://127.0.0.1:48911`. До ручного разделения сервисов прочитайте [настройку окружения](https://project-neko.online/guide/dev-setup) и [quick start](https://project-neko.online/guide/quick-start). Полной русской локализации сайта пока нет; эти ссылки ведут на английскую версию.
 
 ## Порты и развёртывание
 
@@ -72,7 +72,7 @@ uv run python launcher.py
 | Docker Compose | `48911` | Nginx HTTP entry |
 | Docker Compose | `48912` | Nginx HTTPS entry |
 
-Это две разные модели портов. Остальные внутренние/стандартные service ports и overrides описаны в [переменных окружения](config/environment-vars.md).
+Это две разные модели портов. Остальные внутренние/стандартные service ports и overrides описаны в [переменных окружения](https://project-neko.online/config/environment-vars).
 
 Отслеживаемый Compose-файл загружает image и не содержит секции `build:`.
 
@@ -80,20 +80,21 @@ uv run python launcher.py
 docker compose up -d
 ```
 
-Local image build, storage, TLS и выбор image описаны в [руководстве Docker](deployment/docker.md). Для source/desktop artifacts начните с [обзора развёртывания](deployment/index.md).
+Local image build, storage, TLS и выбор image описаны в [руководстве Docker](https://project-neko.online/deployment/docker). Для source/desktop artifacts начните с [обзора развёртывания](https://project-neko.online/deployment/).
 
 ## Разделы документации
 
-- [Начало работы](guide/index.md)
-- [Архитектура](architecture/index.md)
-- [API](api/index.md)
-- [Конфигурация](config/index.md)
-- [Frontend](frontend/index.md)
-- [Разработка плагинов](plugins/index.md)
-- [Развёртывание](deployment/index.md)
-- [Участие в разработке](contributing/index.md)
+- [Руководство игрока](https://project-neko.online/manual/)
+- [Начало работы](https://project-neko.online/guide/)
+- [Архитектура](https://project-neko.online/architecture/)
+- [API](https://project-neko.online/api/)
+- [Конфигурация](https://project-neko.online/config/)
+- [Frontend](https://project-neko.online/frontend/)
+- [Разработка плагинов](https://project-neko.online/plugins/)
+- [Развёртывание](https://project-neko.online/deployment/)
+- [Участие в разработке](https://project-neko.online/contributing/)
 
-Настройка API/provider основана на schema. Используйте текущий settings UI, `config/api_providers.json` и [справочник полей](api_providers_fields.md), а не скопированный список providers/models.
+Настройка API/provider основана на schema. Используйте текущий settings UI, `config/api_providers.json` и [справочник полей](https://project-neko.online/api_providers_fields), а не скопированный список providers/models.
 
 ## Privacy и telemetry
 

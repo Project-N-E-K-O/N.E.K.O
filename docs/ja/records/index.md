@@ -4,9 +4,9 @@
 
 ## 記録コレクション
 
-- [設計・実装記録](/design/) — 判断、制約、実装済み RFC、互換性メモ、範囲を限定した提案。
-- [ランタイムベンチマーク](/benchmarks/) — 条件を明記したメモリ／ライフサイクル測定のスナップショット。
-- [Plugin SDK 変更記録](/changelog/) — 重要な plugin API 追加・変更の移行メモ。
+- [設計・実装記録](../../design/index.md) — 判断、制約、実装済み RFC、互換性メモ、範囲を限定した提案。
+- [ランタイムベンチマーク](../../benchmarks/index.md) — 条件を明記したメモリ／ライフサイクル測定のスナップショット。
+- [Plugin SDK 変更記録](https://project-neko.online/changelog/) — 重要な plugin API 追加・変更の移行メモ。
 
 ## 読み方
 
@@ -14,4 +14,4 @@
 
 実装の根拠として使う前に、状態と日付を確認し、参照先のコードとテストを現在の branch と比較し、将来作業は承認済み issue または保守中の project board で確認してください。
 
-所有、翻訳、状態の規則は[ドキュメント保守ガイド](/ja/contributing/documentation)を参照してください。
+所有、翻訳、状態の規則は[ドキュメント保守ガイド](https://project-neko.online/ja/contributing/documentation)を参照してください。

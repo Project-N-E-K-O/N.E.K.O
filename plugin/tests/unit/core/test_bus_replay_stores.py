@@ -144,7 +144,7 @@ def _frame_client():
 async def test_documented_frame_chain_works_inside_an_async_handler() -> None:
     """``await bus.frames.get(...)`` then ``.sort(...).limit(1)``.
 
-    That is the example in docs/plugins/sdk-reference.md, and a plugin handler
+    That is the example in https://project-neko.online/plugins/sdk-reference, and a plugin handler
     is async, so this is the only way it ever runs. Without ``FrameList``
     declaring itself a snapshot the chain puts the list in lazy mode, and
     materialization synchronously calls ``FrameClient.get()`` while the loop is

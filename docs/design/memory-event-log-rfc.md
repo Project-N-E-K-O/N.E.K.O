@@ -3,7 +3,7 @@
 This page records the event-journal design that is implemented in the current
 memory subsystem. It is intentionally an architectural record, not a line-by-line
 construction plan. For the user-facing lifecycle, start with
-[Memory System](/architecture/memory-system).
+[Memory System](https://project-neko.online/architecture/memory-system).
 
 ## Status and scope
 

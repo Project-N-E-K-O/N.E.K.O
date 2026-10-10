@@ -4,9 +4,9 @@ This section collects implementation rationale and dated evidence that are usefu
 
 ## Record collections
 
-- [Design and implementation records](/design/) — decisions, constraints, implemented RFCs, compatibility notes, and scoped proposals.
-- [Runtime benchmarks](/benchmarks/) — dated memory and lifecycle measurements with their test conditions.
-- [Plugin SDK change notes](/changelog/) — migration-oriented notes for significant plugin API additions or changes.
+- [Design and implementation records](../design/index.md) — decisions, constraints, implemented RFCs, compatibility notes, and scoped proposals.
+- [Runtime benchmarks](../benchmarks/index.md) — dated memory and lifecycle measurements with their test conditions.
+- [Plugin SDK change notes](https://project-neko.online/changelog/) — migration-oriented notes for significant plugin API additions or changes.
 
 ## How to read records
 
@@ -19,4 +19,4 @@ Before using a record as implementation authority:
 3. compare them with the current branch;
 4. confirm future work through an accepted issue or maintained project board.
 
-See [Documentation Maintenance](/contributing/documentation) for ownership, translation, and status rules.
+See [Documentation Maintenance](https://project-neko.online/contributing/documentation) for ownership, translation, and status rules.

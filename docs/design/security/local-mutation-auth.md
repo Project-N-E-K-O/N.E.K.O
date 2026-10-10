@@ -2,7 +2,7 @@
 
 > **文档性质：current implementation record。** 本页记录 browser-facing 本地变更端点的共享防跨站请求合同。它降低恶意网页调用 localhost 的风险，但不是用户身份认证，也不能保护已取得本机执行权限的进程。
 
-社区账户与远程实例采用[已批准的自带授权](/design/security/community-remote-access)，
+社区账户与远程实例采用[已批准的自带授权](community-remote-access.md)，
 先检查实例身份，再执行CSRF/来源校验。外置网关可叠加，本机原生兼容保持。
 配套发布与真实环境验收按#3289合并门槛执行。
 
@@ -20,7 +20,7 @@
 
 对完全匹配或已配置的来源而言，它们本来就能从 `/security/csrf-token` 读到 token，强制 token 不增加实际边界，只会让存量插件失效。NAS 的 hostname 兜底是例外：同一 NAS 上其他端口的页面能通过来源校验，却因 CORS 读不到 token。因此不带 token、且只靠 hostname 兜底通过的请求，若浏览器标明 `Sec-Fetch-Site` 为 `same-site` 或 `cross-site`（HTTPS 下的跨端口页面），以可重试的 token 失败拒绝。浏览器对纯 HTTP 的局域网来源不发送 Fetch Metadata；此时“外层代理改写了端口的市场插件页面”与“同一 NAS 上其他端口的应用”在请求上无法区分。按市场插件优先的拍板，缺少该头时默认放行，这是 hostname 兜底既有信任取舍（见下文“NAS/Docker 与代理边界”）的延续；需要关闭这一缺口的部署设置 `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1`。token 只作为**公网部署者的可选项**：设置 `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1` 后，插件页面路由也要求 token，尚未适配的插件页面会收到 403。
 
-从本版 SDK（`SDK_VERSION` 0.1.0 所在的本次发布）起，[插件最佳实践](/plugins/best-practices)通知插件作者在页面写请求中携带 token，逐步完成安全适配。在市场中仍有插件未携带 token 时，不得把 token 改为默认必需；收紧前需先确认市场插件已完成迁移。
+从本版 SDK（`SDK_VERSION` 0.1.0 所在的本次发布）起，[插件最佳实践](https://project-neko.online/plugins/best-practices)通知插件作者在页面写请求中携带 token，逐步完成安全适配。在市场中仍有插件未携带 token 时，不得把 token 改为默认必需；收紧前需先确认市场插件已完成迁移。
 
 为兼容现有本地原生脚本，暂时保留无 `Origin` 的 loopback 路径：客户端和 Host 必须是 loopback，且不能携带 Referer 或 Fetch Metadata；没有 token 时仍可调用，但显式提供空值或错误 token 必须拒绝。该例外只用于本地原生调用，不适用于远程脚本，也不是对恶意本地进程的身份认证。强制所有原生调用带 token 需要另行评估调用方迁移。
 

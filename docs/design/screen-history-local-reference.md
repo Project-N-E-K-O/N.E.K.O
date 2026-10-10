@@ -95,7 +95,7 @@
 | `static/app/app-chat.js::nextReactMessageId()` | 本地 UI ID | UI ID 不是持久化身份，需增加服务端 ID 映射 |
 | 历史面板、`recall_memory` | 选择导出、query/time 检索 | 不等价于精确原文引用；不能未经验证复用为权限依据 |
 
-现有记忆事件日志不是全量消息事件溯源，不能假定写入一个新事件名就有可恢复引用存储。参见[记忆事件记录](/design/memory-event-log-rfc)。
+现有记忆事件日志不是全量消息事件溯源，不能假定写入一个新事件名就有可恢复引用存储。参见[记忆事件记录](memory-event-log-rfc.md)。
 
 ### 3.1 阶段 1A：在压平前保留屏幕来源事实
 

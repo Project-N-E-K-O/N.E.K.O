@@ -439,7 +439,7 @@ def get_model_config(model_name: str):
         #
         # 补的全是空默认值，仓库里每个消费者都已按可缺省读取（本文件 get_emotion_mapping、
         # app/monitor.py 的 `.get('FileReferences', {}) or {}`、三个 POST 的 setdefault），
-        # 没有任何一处依赖它们在盘上存在；docs/api/rest/live2d.md 也把本端点写成只读。
+        # 没有任何一处依赖它们在盘上存在；https://project-neko.online/api/rest/live2d 也把本端点写成只读。
         file_refs = config_data.setdefault('FileReferences', {})
         file_refs.setdefault('Motions', {})
         file_refs.setdefault('Expressions', [])

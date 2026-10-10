@@ -64,7 +64,7 @@ does.
 from typing import Any
 
 # The runtime locale set, matching static/locales/ and the eight-locale i18n
-# rule in docs/contributing/developer-notes.md.
+# rule in https://project-neko.online/contributing/developer-notes.
 NEKO_CORE_LOCALES = ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
 
 # Non-Chinese locales, matched exactly or as a `<locale>-<region>` prefix.

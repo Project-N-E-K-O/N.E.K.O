@@ -155,4 +155,4 @@ Chromium fixture包含认证页COOP隔离和尝试主窗口导航，断言opener
 
 - [nginx Basic Authentication](https://nginx.org/en/docs/http/ngx_http_auth_basic_module.html)：location覆盖与后端隔离由部署者配置。
 - [RFC8252 loopback回调](https://www.rfc-editor.org/rfc/rfc8252#section-7.3)：loopback位于客户端，不能当远程Linux后端。
-- [本地变更检查](/design/security/local-mutation-auth)：实例身份和CSRF分别校验。
+- [本地变更检查](local-mutation-auth.md)：实例身份和CSRF分别校验。

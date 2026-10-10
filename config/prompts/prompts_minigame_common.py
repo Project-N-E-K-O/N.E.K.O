@@ -27,7 +27,7 @@ only in the keyword arguments they pass. The schemes themselves stay separate
 because the two families of tables are keyed differently, not because either
 loses the script.
 
-See docs/contributing/developer-notes.md #7, PR #2000, and issue #2500.
+See https://project-neko.online/contributing/developer-notes #7, PR #2000, and issue #2500.
 """
 
 from config.prompts._locale import normalize_prompt_locale

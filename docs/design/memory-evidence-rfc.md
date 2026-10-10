@@ -3,7 +3,7 @@
 This page describes the evidence mechanism implemented for reflections and
 persona entries. Active values live in `config/memory_settings.py`; this document
 explains their relationships and runtime boundaries. For the broader storage and
-recall model, see [Memory System](/architecture/memory-system).
+recall model, see [Memory System](https://project-neko.online/architecture/memory-system).
 
 ## Status and purpose
 

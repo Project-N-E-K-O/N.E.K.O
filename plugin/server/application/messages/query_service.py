@@ -98,7 +98,7 @@ def _serialize_message(record: Mapping[str, object]) -> SerializedMessage:
     # with the legacy push_message kwarg.  v2 push_message has no
     # ``description`` field; the synthesised value is empty for native v2
     # callers and only useful as a label for old plugins that still pass
-    # ``description=``.  See docs/changelog/plugin-push-message-v2.md.
+    # ``description=``.  See https://project-neko.online/changelog/plugin-push-message-v2.
     description_value = record.get("description")
 
     message_type_value = record.get("message_type")

@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://project-neko.online/sitemap.xml

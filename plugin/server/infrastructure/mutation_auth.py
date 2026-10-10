@@ -227,7 +227,7 @@ def require_plugin_page_mutation_access(request: Request) -> None:
     Public deployments may opt in to requiring the token with
     ``NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1``; this breaks plugin pages
     that do not send it yet. Plugin authors are asked to send the token
-    starting with this SDK release (docs/plugins/best-practices.md). Do not
+    starting with this SDK release (https://project-neko.online/plugins/best-practices). Do not
     make it the default while published plugins still omit it.
     """
     _authorize_mutation(request, browser_token_required=_page_token_required())

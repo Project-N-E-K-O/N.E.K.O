@@ -149,6 +149,8 @@ def test_init_creates_minimal_callable_plugin_entry(
 
     entry = tmp_path / "plugin" / "plugins" / "hello_world" / "__init__.py"
     assert exit_code == 0
+    # The plugin quick-start guides in N.E.K.O.WIKI (docs/scripts/doc-contracts.test.mjs)
+    # assert this exact entry; update them together.
     assert entry.read_text(encoding="utf-8") == '''from plugin.sdk.plugin import NekoPluginBase, Ok, neko_plugin, plugin_entry
 
 
@@ -176,33 +178,6 @@ def test_generated_quick_start_entry_accepts_runtime_context(
     result = asyncio.run(handler(name="Neko", _ctx={"run_id": "run-1"}))
 
     assert result.value == {"message": "Hello, Neko!"}
-
-
-@pytest.mark.parametrize(
-    "guide_path",
-    [
-        "docs/plugins/quick-start.md",
-        "docs/zh-CN/plugins/quick-start.md",
-        "docs/ja/plugins/quick-start.md",
-    ],
-)
-def test_quick_start_guides_show_generated_minimal_entry(guide_path: str) -> None:
-    root = Path(__file__).resolve().parents[3]
-    guide = (root / guide_path).read_text(encoding="utf-8")
-    feature_section = guide.split("## 7.", maxsplit=1)[1].split("## 8.", maxsplit=1)[0]
-
-    assert '''from plugin.sdk.plugin import NekoPluginBase, Ok, neko_plugin, plugin_entry
-
-
-@neko_plugin
-class HelloWorldPlugin(NekoPluginBase):
-    @plugin_entry(id="hello", name="Hello", description="Say hello")
-    async def hello(self, name: str = "World", **_):
-        return Ok({"message": f"Hello, {name}!"})
-''' in feature_section
-    assert "from typing import Any" not in feature_section
-    assert "@lifecycle" not in feature_section
-    assert "input_schema" not in feature_section
 
 
 def test_init_repo_command_is_removed(capsys: pytest.CaptureFixture[str]) -> None:

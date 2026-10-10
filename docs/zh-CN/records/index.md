@@ -4,9 +4,9 @@
 
 ## 记录集合
 
-- [设计与实现记录](/design/)：决策、约束、已实现 RFC、兼容性说明和范围明确的提案。
-- [运行时基准](/benchmarks/)：注明测试条件的内存与生命周期测量快照。
-- [插件 SDK 变更记录](/changelog/)：重要插件 API 新增或变化的迁移说明。
+- [设计与实现记录](../../design/index.md)：决策、约束、已实现 RFC、兼容性说明和范围明确的提案。
+- [运行时基准](../../benchmarks/index.md)：注明测试条件的内存与生命周期测量快照。
+- [插件 SDK 变更记录](https://project-neko.online/changelog/)：重要插件 API 新增或变化的迁移说明。
 
 ## 如何阅读
 
@@ -14,4 +14,4 @@
 
 把记录用作实现依据前，请先检查状态与日期，沿代码和测试引用核对当前分支，并通过已接受的 issue 或维护中的项目看板确认未来任务。
 
-文档归属、翻译和状态规则见[文档维护规范](/zh-CN/contributing/documentation)。
+文档归属、翻译和状态规则见[文档维护规范](https://project-neko.online/zh-CN/contributing/documentation)。

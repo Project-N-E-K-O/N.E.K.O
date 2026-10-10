@@ -32,7 +32,7 @@ Hard boundaries:
     *user's* own utterance and never touches the avatar channel.
   * Privacy-independent BY CONSTRUCTION: the input is what the user said, not
     screen / app state. So it is NOT gated on privacy mode (see
-    ``docs/contributing/developer-notes.md`` rule 6), mirroring Focus.
+    https://project-neko.online/contributing/developer-notes rule 6), mirroring Focus.
 
 Only the latest reading is kept — long-term aggregation (dominant emotion /
 volatility / triggers) is a deferred extension; ``to_profile_sample`` is the

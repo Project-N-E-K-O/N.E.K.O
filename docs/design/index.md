@@ -2,7 +2,7 @@
 
 These documents preserve design intent and implementation context. They are grouped by maintenance purpose, not by delivery date. Most records are written in the language used by the original implementation work.
 
-> The current code and tests are authoritative. Read [Documentation Maintenance](/contributing/documentation) before treating a proposal or dated record as a current contract.
+> The current code and tests are authoritative. Read [Documentation Maintenance](https://project-neko.online/contributing/documentation) before treating a proposal or dated record as a current contract.
 
 ## Architecture and long-lived contracts
 
@@ -13,7 +13,7 @@ These documents preserve design intent and implementation context. They are grou
 - [Cat idle states](./cat-idle-states-feature)
 - [Deep topic hooks](./deep-topic-hooks)
 - [LLM prompt budget](./llm-prompt-budget)
-- [Proactive reason-code guide](./proactive-reason-code-guide.zh-CN)
+- [Proactive reason-code guide](./proactive-reason-code-guide.zh-CN.md)
 - [User activity tracker](./user-activity-tracker)
 - [Voice design architecture](./voice-design-architecture)
 
@@ -26,8 +26,8 @@ These documents preserve design intent and implementation context. They are grou
 - [PNGTuber lightweight avatar](./pngtuber-lightweight-avatar-plan)
 - [Translation subtitle panel](./translation-subtitle-panel-design)
 - [TTS provider and voice-source unification](./tts-voice-source-unification)
-- [Live2D idle motion selection and recovery](/live2d_motion_plan)
-- [PNGTubeRemix layered physics compatibility](/pngtuber-remix-physics-plan)
+- [Live2D idle motion selection and recovery](../live2d_motion_plan.md)
+- [PNGTubeRemix layered physics compatibility](../pngtuber-remix-physics-plan.md)
 
 ## N.E.K.O 小剧场与剧本工坊
 

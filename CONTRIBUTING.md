@@ -27,7 +27,7 @@ For bugs or feature requests, [opening an Issue](https://github.com/Project-N-E-
 
 ## Development Setup
 
-> Full developer documentation: [project-neko.online](https://project-neko.online)
+> Full developer documentation: [project-neko.online](https://project-neko.online). Its source lives in [N.E.K.O.WIKI](https://github.com/Project-N-E-K-O/N.E.K.O.WIKI); when a code change alters a documented contract, open a matching WIKI pull request.
 
 **Requirements**: Python 3.11 (other versions not supported), [uv](https://docs.astral.sh/uv/)
 
@@ -111,7 +111,7 @@ Bug 或功能建议建议先[提交 Issue](https://github.com/Project-N-E-K-O/N.
 
 ## 开发环境
 
-> 完整开发者文档：[project-neko.online](https://project-neko.online)
+> 完整开发者文档：[project-neko.online](https://project-neko.online)。文档源码在 [N.E.K.O.WIKI](https://github.com/Project-N-E-K-O/N.E.K.O.WIKI) 仓库；代码改动影响已有文档的契约时，请同步提交一个 WIKI PR。
 
 **要求**：Python 3.11（不支持其他版本）、[uv](https://docs.astral.sh/uv/)
 

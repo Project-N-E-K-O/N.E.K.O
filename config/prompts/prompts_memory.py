@@ -1625,8 +1625,8 @@ event_when（可选 — 事件发生时间，一律用相对时间，绝不写�
 ]""",
     # The ======以下为对话====== / ======以上为对话====== pair stays Simplified in
     # every locale, this one included: it is the safety watermark, a fixed literal
-    # the runtime matches on, not user-facing copy. See docs/contributing/
-    # developer-notes.md "Prompt watermark".
+    # the runtime matches on, not user-facing copy. See
+    # https://project-neko.online/contributing/developer-notes "Prompt watermark".
     "zh-TW": """從以下對話中擷取關於 {LANLAN_NAME} 和 {MASTER_NAME} 的重要事實資訊。
 
 要求：

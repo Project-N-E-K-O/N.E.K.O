@@ -94,8 +94,9 @@ class FocusMixin:
             # privacy-independent BY CONSTRUCTION and must NOT be gated on
             # privacy mode: understanding the user's emotional state from what
             # they typed is core to an AI companion. Privacy mode governs only
-            # SCREEN / app-state visibility (see docs/contributing/
-            # developer-notes.md rule 6). Hence no snapshot fetch here.
+            # SCREEN / app-state visibility (see
+            # https://project-neko.online/contributing/developer-notes rule 6).
+            # Hence no snapshot fetch here.
             # emotion 信号读 master 情绪画像的最近读数（异步算、滞后一拍，与
             # cadence 用历史一脉相承）。画像关 / 还没算过时 latest 为 None，
             # FocusScorer 让 emotion 信号自动退出加权、退回 keyword+cadence。

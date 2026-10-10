@@ -61,7 +61,7 @@ uv sync
 uv run python launcher.py
 ```
 
-`http://127.0.0.1:48911` を開きます。Service を個別起動する前に[開発環境](ja/guide/dev-setup.md)と[クイックスタート](ja/guide/quick-start.md)を確認してください。
+`http://127.0.0.1:48911` を開きます。Service を個別起動する前に[開発環境](https://project-neko.online/ja/guide/dev-setup)と[クイックスタート](https://project-neko.online/ja/guide/quick-start)を確認してください。
 
 ## Port とデプロイ
 
@@ -72,7 +72,7 @@ uv run python launcher.py
 | Docker Compose | `48911` | Nginx HTTP entry |
 | Docker Compose | `48912` | Nginx HTTPS entry |
 
-これは異なる二つの port model です。他の内部／既定 service port と override は[環境変数](ja/config/environment-vars.md)にあります。
+これは異なる二つの port model です。他の内部／既定 service port と override は[環境変数](https://project-neko.online/ja/config/environment-vars)にあります。
 
 追跡中の Compose file は image を pull し、`build:` section を持ちません。
 
@@ -80,18 +80,19 @@ uv run python launcher.py
 docker compose up -d
 ```
 
-Local image build、storage、TLS、image 選択は [Docker ガイド](ja/deployment/docker.md)に従ってください。Source／desktop artifact は[デプロイ概要](ja/deployment/index.md)から確認します。
+Local image build、storage、TLS、image 選択は [Docker ガイド](https://project-neko.online/ja/deployment/docker)に従ってください。Source／desktop artifact は[デプロイ概要](https://project-neko.online/ja/deployment/)から確認します。
 
 ## ドキュメント案内
 
-- [はじめに](ja/guide/index.md)
-- [アーキテクチャ](ja/architecture/index.md)
-- [API リファレンス](ja/api/index.md)
-- [設定](ja/config/index.md)
-- [フロントエンド](ja/frontend/index.md)
-- [Plugin 開発](ja/plugins/index.md)
-- [デプロイ](ja/deployment/index.md)
-- [コントリビューション](ja/contributing/index.md)
+- [プレイヤーガイド（英語）](https://project-neko.online/manual/)
+- [はじめに](https://project-neko.online/ja/guide/)
+- [アーキテクチャ](https://project-neko.online/ja/architecture/)
+- [API リファレンス](https://project-neko.online/ja/api/)
+- [設定](https://project-neko.online/ja/config/)
+- [フロントエンド](https://project-neko.online/ja/frontend/)
+- [Plugin 開発](https://project-neko.online/ja/plugins/)
+- [デプロイ](https://project-neko.online/ja/deployment/)
+- [コントリビューション](https://project-neko.online/ja/contributing/)
 
 API/provider 設定は schema-driven です。コピーされた provider／model 一覧ではなく、現在の settings UI と `config/api_providers.json` を確認してください。
 

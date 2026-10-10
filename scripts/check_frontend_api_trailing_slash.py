@@ -248,7 +248,7 @@ def check_file(path: Path) -> list[tuple[int, int, str]]:
                 f"Drop it (e.g. {suggestion!r}). Project convention: every "
                 "frontend API call must match the backend's no-trailing-slash "
                 "route — see .agent/rules/neko-guide.md (§'API URL 末尾不带斜杠') "
-                "and docs/contributing/code-style.md. If this is a prefix "
+                "and https://project-neko.online/contributing/code-style. If this is a prefix "
                 "builder that gets a segment appended, write it as a template "
                 "literal (e.g. `/api/foo/${id}`) or string-concat (e.g. "
                 "'/api/foo/' + id) so the lint can recognise it.",
@@ -292,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
             "slash-redirect breaks under reverse proxies that don't preserve "
             "Host (root cause of the PR #938 chara_manager regression). "
             "See .agent/rules/neko-guide.md (§'API URL 末尾不带斜杠') and "
-            "docs/contributing/code-style.md.",
+            "https://project-neko.online/contributing/code-style.",
             file=sys.stderr,
         )
     if read_failures:
