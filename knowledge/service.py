@@ -270,7 +270,8 @@ class KnowledgeService:
         self._pending_removals: dict[str, frozenset[int]] = {}
         self._query_pool: concurrent.futures.ThreadPoolExecutor | None = None
         self._parsing = 0
-        self._detached: set[asyncio.Task[Any]] = set()
+        self._detached: set[asyncio.Future[Any]] = set()
+        self._admission_lock = asyncio.Lock()
         self._startup_work: asyncio.Future[Any] | None = None
         self._parse_pool: concurrent.futures.ThreadPoolExecutor | None = None
         # Set (and replaced) whenever a removal finishes, committed or not.
@@ -720,26 +721,27 @@ class KnowledgeService:
             return {"ok": False, "reason": "job_in_progress"}
         if len(pending) + len(self._admitting) >= MAX_PENDING_IMPORTS:
             return {"ok": False, "reason": "knowledge_busy"}
-        staged_bytes = sum(job.staged_bytes for job in pending) + sum(self._admitting.values())
         self._admitting[pack.pack_id] = len(canonical)
 
         async def admit() -> dict[str, Any]:
             try:
-                return await self._admit_import(pack, canonical, chunks, staged_bytes, arrived_at)
+                return await self._admit_import(pack, canonical, chunks, arrived_at)
             finally:
                 self._admitting.pop(pack.pack_id, None)
 
         # Shielded: if the request goes away mid-way, admission still runs to
         # the end, so a staging file is never written without a job (and
-        # reservation) accounting for it.
-        return await asyncio.shield(asyncio.ensure_future(admit()))
+        # reservation) accounting for it. Tracked, so stop() waits for it.
+        admission = asyncio.ensure_future(admit())
+        self._detached.add(admission)
+        admission.add_done_callback(self._detached.discard)
+        return await asyncio.shield(admission)
 
     async def _admit_import(
         self,
         pack: KnowledgePack,
         canonical: bytes,
         chunks: int,
-        staged_bytes: int,
         arrived_at: int,
     ) -> dict[str, Any]:
         registry = self._registry
@@ -752,8 +754,28 @@ class KnowledgeService:
             return {"ok": False, "reason": "capacity_chunks"}
         if chunks > MAX_CHUNKS_PER_PACK:
             return {"ok": False, "reason": "too_many_chunks"}
+        # One admission at a time from the disk scan to its job being known:
+        # another admission's just-written staging file would otherwise be
+        # counted on disk and again as that admission's reservation.
+        async with self._admission_lock:
+            return await self._stage_import(pack, canonical, chunks, arrived_at)
+
+    async def _stage_import(
+        self,
+        pack: KnowledgePack,
+        canonical: bytes,
+        chunks: int,
+        arrived_at: int,
+    ) -> dict[str, Any]:
+        # Staged files are counted from their jobs, or from the reservation of
+        # an admission that has not written one yet; taken together with the
+        # set of active jobs the disk scan leaves out.
+        active = [job for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES]
+        staged_bytes = sum(job.staged_bytes for job in active) + sum(
+            size for pack_id, size in self._admitting.items() if pack_id != pack.pack_id
+        )
         installed_bytes = await asyncio.to_thread(
-            self._installed_pack_bytes, pack.pack_id, self._active_job_ids()
+            self._installed_pack_bytes, pack.pack_id, frozenset(job.job_id for job in active)
         )
         if installed_bytes + staged_bytes + len(canonical) > MAX_TOTAL_PACK_BYTES:
             return {"ok": False, "reason": "capacity_bytes"}
@@ -770,6 +792,10 @@ class KnowledgeService:
             staged_sha256=pack_sha256(canonical),
         )
         await asyncio.to_thread(atomic_write_bytes, self._staging_path(job.job_id), canonical)
+        if self._stopping:
+            # The runner is gone; a queued job would never run.
+            await self._discard_staging(job.job_id)
+            return {"ok": False, "reason": "knowledge_stopping"}
         self._remember_job(job)
         job.arrived_at = arrived_at
         if self._removed_at.get(pack.pack_id, -1) > arrived_at:

@@ -2786,3 +2786,63 @@ async def test_background_indexing_stays_under_the_target_duty(tmp_path, monkeyp
             assert busy / (next_start - start) <= duty + 0.02
     finally:
         await service.stop()
+
+
+async def test_concurrent_admissions_count_each_staged_file_once(tmp_path, monkeypatch):
+    import threading
+
+    service = await _started(tmp_path)
+    try:
+        one = _raw(_pack("pack-one"))
+        two = _raw(_pack("pack-two"))
+        sizes = [len(canonical_pack_bytes(parse_pack(json.loads(raw)))) for raw in (one, two)]
+        monkeypatch.setattr(service_module, "MAX_TOTAL_PACK_BYTES", sum(sizes) + 16)  # both fit
+        real_write = service_module.atomic_write_bytes
+        on_disk = threading.Event()
+        release = threading.Event()
+
+        def slow_write(path, data):
+            real_write(path, data)
+            if not on_disk.is_set():
+                on_disk.set()
+                release.wait(5)  # the file is on disk, its job not yet known
+
+        monkeypatch.setattr(service_module, "atomic_write_bytes", slow_write)
+        async with service._write_lock:  # nothing gets installed meanwhile
+            first = asyncio.create_task(service.import_pack(one))
+            assert await asyncio.to_thread(on_disk.wait, 5)
+            second = asyncio.create_task(service.import_pack(two))
+            await asyncio.sleep(0.2)  # the second admission gets as far as it can
+            release.set()
+            results = await asyncio.wait_for(asyncio.gather(first, second), 10)
+        assert [result["ok"] for result in results] == [True, True], results
+    finally:
+        release.set()
+        await service.stop()
+
+
+async def test_stop_waits_for_an_admission_whose_request_was_cancelled(tmp_path, monkeypatch):
+    import threading
+
+    service = await _started(tmp_path)
+    writing = threading.Event()
+    release = threading.Event()
+    written = threading.Event()
+    real_write = service_module.atomic_write_bytes
+
+    def slow_write(path, data):
+        writing.set()
+        release.wait(5)
+        real_write(path, data)
+        written.set()
+
+    monkeypatch.setattr(service_module, "atomic_write_bytes", slow_write)
+    request = asyncio.create_task(service.import_pack(_raw(_pack())))
+    await asyncio.to_thread(writing.wait, 5)
+    request.cancel()
+    await asyncio.wait({request})
+    threading.Timer(0.3, release.set).start()
+    await service.stop()
+    assert written.is_set()  # stop() waited for the staging write
+    assert service.list_jobs() == []  # and nothing was queued after the runner stopped
+    assert list((tmp_path / ".staging").glob("*.json")) == []

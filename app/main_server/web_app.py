@@ -728,7 +728,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     headers.pop("x-neko-market-public-origin", None)
     # Knowledge calls (manager page -> plugin server's /market/knowledge) are
     # streamed through under their size cap instead; see below.
-    knowledge_path = path.startswith("knowledge/")
+    knowledge_path = path == "knowledge" or path.startswith("knowledge/")
     body = b"" if knowledge_path else await request.body()
     if request.scope.get("neko.instance_identity"):
         # This is a new authenticated service-to-service hop. The plugin's
@@ -748,7 +748,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
             signing_key, request.method, "/market" + ("/" + path if path else ""), public_origin)
 
     if knowledge_path:
-        refused, body = _knowledge_body(request, path[len("knowledge/"):])
+        refused, body = _knowledge_body(request, path[len("knowledge"):].lstrip("/"))
         if refused is not None:
             return refused
     from utils.http.knowledge_proxy import BodyTooLarge, is_body_too_large

@@ -244,3 +244,19 @@ async def test_other_market_paths_are_read_as_before(monkeypatch):
         response = await client.post("/market/ordinary?token=t", content=big)
     assert response.status_code == 200
     assert seen[0][2] == big
+
+
+
+@pytest.mark.asyncio
+async def test_the_bare_knowledge_path_is_capped_too(monkeypatch):
+    seen: list = []
+    app = _knowledge_proxy_app(monkeypatch, seen)
+
+    async def chunks():
+        for _ in range(8):
+            yield b"x" * (16 * 1024)  # 128 KiB > the 64 KiB JSON cap
+
+    async with _RealAsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:48911") as client:
+        response = await client.post("/market/knowledge?token=t", content=chunks())
+    assert response.status_code == 413
+    assert seen == []
