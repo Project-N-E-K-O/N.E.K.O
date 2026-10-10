@@ -51,7 +51,8 @@ class BodyTooLarge(Exception):
 
 
 class _StreamingRequest(Protocol):
-    def stream(self) -> AsyncIterator[bytes]: ...
+    def stream(self) -> AsyncIterator[bytes]:
+        """The request body, chunk by chunk."""
 
 
 def declared_size_problem(content_length: str | None, max_bytes: int) -> str | None:
