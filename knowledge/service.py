@@ -326,6 +326,7 @@ class KnowledgeService:
             self._store.delete_pack(pack_id)
         entry_counts = self._store.entry_counts()
         chunk_counts = self._store.chunk_stats(None)
+        search_rows = self._store.search_row_counts()
         broken: list[str] = []
         for pack_id, record in registry.packs.items():
             # The raw file is the source of truth even when the index is
@@ -341,6 +342,10 @@ class KnowledgeService:
                     # there: a damaged database can keep it and lose others.
                     and entry_counts.get(pack_id, (0, 0))[0] == record.entries
                     and chunk_counts.get(pack_id, {}).get("total", 0) == record.chunks
+                    # The rows lookups actually read: one full-text row per
+                    # entry and every exact-match surface written at import.
+                    and search_rows.get(pack_id, (0, 0, -1))[0] == record.entries
+                    and search_rows.get(pack_id, (0, 0, -1))[1] == search_rows.get(pack_id, (0, 0, -1))[2]
                 ):
                     # Disabled flags are written to the index and then the
                     # registry; the registry wins if the process died in between.
@@ -1402,7 +1407,9 @@ class KnowledgeService:
                 if blob is not None:
                     query_vector = np.frombuffer(blob, dtype="<f4")
         semantic = (
-            await self._query_thread(self._semantic_search, snapshot, query_vector, vector_packs)
+            await self._query_thread(
+                self._semantic_search, snapshot, query_vector, vector_packs, registry
+            )
             if query_vector is not None
             else []
         )
@@ -1430,13 +1437,23 @@ class KnowledgeService:
         return ranked, ("hybrid" if query_vector is not None else "bm25")
 
     def _semantic_search(
-        self, snapshot: VectorSnapshot | None, query_vector: np.ndarray, pack_ids: list[str]
+        self,
+        snapshot: VectorSnapshot | None,
+        query_vector: np.ndarray,
+        pack_ids: list[str],
+        registry: Registry,
     ) -> list[SemanticMatch]:
+        # Disabled now in the index, or in the query's registry snapshot (a
+        # re-enable writes the index first): neither may take a slot.
+        excluded = self._store.disabled_entry_ids(pack_ids) | self._store.entry_ids_by_title(
+            {
+                pack_id: record.disabled_titles
+                for pack_id in pack_ids
+                if (record := registry.packs.get(pack_id)) is not None and record.disabled_titles
+            }
+        )
         return semantic_candidates(
-            snapshot,
-            query_vector,
-            allowed_pack_ids=pack_ids,
-            exclude_entry_ids=self._store.disabled_entry_ids(pack_ids),
+            snapshot, query_vector, allowed_pack_ids=pack_ids, exclude_entry_ids=excluded
         )
 
     def _render(

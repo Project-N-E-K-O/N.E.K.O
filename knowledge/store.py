@@ -27,7 +27,7 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Sequence
+from typing import Callable, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 
@@ -36,7 +36,7 @@ from .models import KnowledgeEntry, KnowledgePack
 from .text import fts_match_expression, loose_surface, search_tokens, strict_surface, title_key
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_CHUNKS_PER_PACK = 10_000
 MAX_TOTAL_CHUNKS = 20_000
 MAX_EMBED_ATTEMPTS = 3
@@ -45,7 +45,10 @@ _BUSY_TIMEOUT_SECONDS = 5.0
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS packs ("
-    " pack_id TEXT PRIMARY KEY, pack_sha256 TEXT NOT NULL)",
+    " pack_id TEXT PRIMARY KEY, pack_sha256 TEXT NOT NULL,"
+    # How many search rows the import wrote, to tell a complete index from
+    # one that lost rows (see ``search_row_counts``).
+    " surfaces INTEGER NOT NULL DEFAULT 0)",
     "CREATE TABLE IF NOT EXISTS entries ("
     # AUTOINCREMENT: ids are never reused, so a vector snapshot loaded before
     # a pack update can only miss rows, never point at an unrelated entry.
@@ -238,6 +241,45 @@ class KnowledgeStore:
 
     # ── pack writes ─────────────────────────────────────────────────
 
+    def search_row_counts(self) -> dict[str, tuple[int, int, int]]:
+        """Per pack: (full-text rows, surface rows, surface rows written at import)."""
+        with self._read() as conn:
+            fts = dict(
+                conn.execute(
+                    "SELECT e.pack_id, COUNT(*) FROM entries_fts f JOIN entries e ON e.id=f.rowid"
+                    " GROUP BY e.pack_id"
+                ).fetchall()
+            )
+            surfaces = dict(
+                conn.execute(
+                    "SELECT e.pack_id, COUNT(*) FROM surfaces s JOIN entries e ON e.id=s.entry_id"
+                    " GROUP BY e.pack_id"
+                ).fetchall()
+            )
+            expected = dict(conn.execute("SELECT pack_id, surfaces FROM packs").fetchall())
+        return {
+            str(pack_id): (int(fts.get(pack_id, 0)), int(surfaces.get(pack_id, 0)), int(count))
+            for pack_id, count in expected.items()
+        }
+
+    def entry_ids_by_title(self, titles: Mapping[str, Iterable[str]]) -> set[int]:
+        """Ids of the entries named by ``{pack_id: title keys}``."""
+        ids: set[int] = set()
+        with self._read() as conn:
+            for pack_id, keys in titles.items():
+                keys = list(keys)
+                if not keys:
+                    continue
+                placeholders = ",".join("?" for _ in keys)
+                ids.update(
+                    int(row[0])
+                    for row in conn.execute(
+                        f"SELECT id FROM entries WHERE pack_id=? AND title_key IN ({placeholders})",
+                        (pack_id, *keys),
+                    )
+                )
+        return ids
+
     def pack_versions(self) -> dict[str, str]:
         with self._read() as conn:
             return {
@@ -280,6 +322,7 @@ class KnowledgeStore:
                 reusable.setdefault(str(row[0]), (str(row[1]), bytes(row[2])))
             self._delete_pack_rows(conn, pack.pack_id)
             chunk_total = 0
+            surface_total = 0
             for entry, tokens, surfaces, chunks in prepared:
                 # Raising here rolls the whole transaction back.
                 if should_cancel is not None and should_cancel():
@@ -306,6 +349,7 @@ class KnowledgeStore:
                     "INSERT INTO surfaces (surface, entry_id) VALUES (?, ?)",
                     [(surface, entry_id) for surface in surfaces],
                 )
+                surface_total += len(surfaces)
                 for chunk in chunks:
                     carried = reusable.get(chunk.text_hash, (None, None))
                     conn.execute(
@@ -323,9 +367,10 @@ class KnowledgeStore:
                     )
                 chunk_total += len(chunks)
             conn.execute(
-                "INSERT INTO packs (pack_id, pack_sha256) VALUES (?, ?)"
-                " ON CONFLICT(pack_id) DO UPDATE SET pack_sha256=excluded.pack_sha256",
-                (pack.pack_id, pack_sha256),
+                "INSERT INTO packs (pack_id, pack_sha256, surfaces) VALUES (?, ?, ?)"
+                " ON CONFLICT(pack_id) DO UPDATE SET"
+                " pack_sha256=excluded.pack_sha256, surfaces=excluded.surfaces",
+                (pack.pack_id, pack_sha256, surface_total),
             )
             # Last chance: a cancel that arrived during the final writes still
             # rolls the whole replacement back.

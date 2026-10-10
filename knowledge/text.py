@@ -155,8 +155,12 @@ def title_key(value: object) -> str:
 
 
 def strict_surface(value: object) -> str:
-    """Exact-match form that keeps symbols: ``C``, ``C++`` and ``C#`` differ."""
-    normalized = _strip_marks(unicodedata.normalize("NFKC", str(value or "")).casefold())
+    """Exact-match form that keeps symbols and accents.
+
+    ``C``, ``C++`` and ``C#`` differ, and so do "resume" and its accented
+    spelling; the loose form (``loose_surface``) is the one that folds those.
+    """
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
     return _TITLE_SPACE_RE.sub(" ", normalized).strip()
 
 
@@ -189,7 +193,7 @@ def loose_surface(value: object) -> str:
     ".NET") gets no loose form, and neither does one with a symbol inside
     ("AT&T"): dropping the symbol would make it another name.
     """
-    text = strict_surface(value)
+    text = unicodedata.normalize("NFC", _strip_marks(strict_surface(value)))
     start, end = 0, len(text)
     while True:
         before = (start, end)

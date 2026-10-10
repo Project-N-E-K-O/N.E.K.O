@@ -2157,8 +2157,15 @@ async def test_lookup_passes_disabled_entries_to_semantic_search(tmp_path, monke
             return []
 
         monkeypatch.setattr(service_module, "semantic_candidates", record)
-        await asyncio.to_thread(service._semantic_search, None, np.zeros(4, dtype=np.float32), ["demo-memes"])
         (row,) = [r for r in await asyncio.to_thread(service._store.list_entries, limit=10, offset=0) if r.disabled]
+        vector = np.zeros(4, dtype=np.float32)
+        await asyncio.to_thread(service._semantic_search, None, vector, ["demo-memes"], service._registry)
+        assert seen["excluded"] == {row.entry_id}
+        # Re-enabled in the index while the query's registry snapshot still
+        # disables it: excluded all the same.
+        snapshot = service._registry
+        await asyncio.to_thread(service._store.set_disabled, "demo-memes", "绝绝子", False)
+        await asyncio.to_thread(service._semantic_search, None, vector, ["demo-memes"], snapshot)
         assert seen["excluded"] == {row.entry_id}
     finally:
         await service.stop()
@@ -2467,5 +2474,50 @@ async def test_a_healthy_index_is_not_rebuilt_at_startup(tmp_path, monkeypatch):
     restarted = await _started(tmp_path)
     try:
         assert rebuilt == []
+    finally:
+        await restarted.stop()
+
+
+def test_accents_tell_strict_surfaces_apart():
+    from knowledge.text import loose_surface, strict_surface
+
+    plain, accented = "resume", "résumé"
+    assert strict_surface(plain) != strict_surface(accented)
+    assert loose_surface(plain) == loose_surface(accented) == "resume"
+
+
+async def test_an_unaccented_query_prefers_the_literal_title(tmp_path):
+    entries = [
+        {"title": "resume", "content": "a summary of a career"},
+        {"title": "résumé", "content": "accented spelling"},
+    ]
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack(entries=entries))
+        store = service._store
+        rows = await asyncio.to_thread(store.list_entries, limit=10, offset=0)
+        by_title = {row.title: row.entry_id for row in rows}
+        exact = store.lexical_candidates("resume", pack_ids=["demo-memes"], limit=10)[0]
+        assert exact == [by_title["resume"]]
+    finally:
+        await service.stop()
+
+
+async def test_an_index_missing_search_rows_is_rebuilt_at_startup(tmp_path):
+    service = await _started(tmp_path)
+    await _import(service, _pack())
+    await service.stop()
+    conn = sqlite3.connect(tmp_path / "knowledge.db")
+    try:
+        conn.execute("DELETE FROM surfaces")  # entries, chunks and the version stay
+        conn.commit()
+    finally:
+        conn.close()
+    restarted = await _started(tmp_path)
+    try:
+        assert (await restarted.query(query="绝绝子"))["result"] == "matched"
+        counts = await asyncio.to_thread(restarted._store.search_row_counts)
+        fts, surfaces, expected = counts["demo-memes"]
+        assert surfaces == expected > 0
     finally:
         await restarted.stop()
