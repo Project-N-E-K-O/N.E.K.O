@@ -4112,3 +4112,34 @@ async def test_guest_does_not_redeem_the_invite_after_an_account_switch(tmp_path
         assert side.creds_calls == [] and rt.finalize_reason == "busy"
     finally:
         await teardown(side, clock=clock)
+
+
+async def test_account_change_waits_for_an_in_flight_credential_request(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "guest", clock=clock, wall=wall)
+    side.creds_gate = asyncio.Event()          # 领凭证请求发出、Servers 还没回
+    rt = await start_side(side, invite_code=INVITE, clock=clock, wall=wall)
+    try:
+        await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+        issuing = asyncio.ensure_future(rt.issue_credentials())
+        await wait_for(lambda: side.creds_calls)
+        swapped = []
+
+        async def keep_visits():
+            return False      # 这次变更不结束在飞场次（也覆盖场次已注销、请求仍在后台的情形）
+
+        async def logout():
+            async with rtm.account_change(timeout=5.0, ends_visits=keep_visits):
+                swapped.append("session replaced")   # 调用方在这里改本机会话
+
+        change = asyncio.ensure_future(logout())
+        await settle(60)
+        # 请求还在途：会话不能先被换掉（否则 _servers_session 可能按新账号兑掉邀请码）
+        assert swapped == []
+        side.creds_gate.set()
+        await asyncio.wait_for(change, 5)
+        await asyncio.wait_for(issuing, 5)
+        assert swapped == ["session replaced"]
+    finally:
+        await teardown(side, clock=clock)

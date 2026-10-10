@@ -470,6 +470,7 @@ def _reset_for_tests() -> None:
     _account_changes = 0
     _account_gen = 0
     _account_change_lock = None
+    _credential_requests.clear()
     _runtimes.clear()
     _pending_visits.clear()
     _resolving_names.clear()
@@ -878,12 +879,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             # 这次请求用的仍是准入时的会话
             self.request_finalize("busy")
             return False
+        # 与上面的代数判断之间没有让出：此后开始的账号变更会先等这次请求结束，再改本机会话
+        request = asyncio.ensure_future(self.deps.fetch_credentials(
+            role=self.side, visit_id=self.visit_id, char_tag=self.character_uid,
+            tier=VISIT_VIDEO_TIER_DEFAULT, display_name=self.lanlan_name,
+            invite_code=self.invite_code if self.side == "guest" else None,
+        ))
+        _credential_requests.add(request)
+        request.add_done_callback(_credential_requests.discard)
         try:
-            creds = await self.deps.fetch_credentials(
-                role=self.side, visit_id=self.visit_id, char_tag=self.character_uid,
-                tier=VISIT_VIDEO_TIER_DEFAULT, display_name=self.lanlan_name,
-                invite_code=self.invite_code if self.side == "guest" else None,
-            )
+            creds = await request
         except cr.VisitServersError as exc:
             self._finalize_for_servers_error(exc)
             return False
@@ -2798,9 +2803,22 @@ async def account_change(
                     await end_visits_for_account_change(timeout)
                 except Exception as exc:  # noqa: BLE001 - 收尾失败不挡登出 / 登录；没封存的留给下次启动补录
                     logger.warning("visit: ending live visits before the account change failed: %r", exc)
+            # 还在途的领凭证请求（场次可能已注销、请求仍在后台）读会话时必须仍是旧账号：先等它们结束再改会话
+            await _settle_credential_requests(timeout)
             yield
     finally:
         _account_changes -= 1
+
+
+_credential_requests: set[asyncio.Future] = set()
+"""Servers credential requests in flight: an account change waits for them before the session changes."""
+
+
+async def _settle_credential_requests(timeout: float) -> None:
+    pending = [t for t in _credential_requests if not t.done()]
+    if pending:
+        # 只等不取消：请求已发出时取消也撤不回 Servers 那边的签发（与兑掉的邀请码）
+        await asyncio.wait(pending, timeout=max(0.0, timeout))
 
 
 def _seals_in_background() -> list["VisitRuntime"]:
