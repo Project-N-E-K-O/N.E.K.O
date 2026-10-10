@@ -396,7 +396,7 @@ class _GenaiMixin:
         tool_image_slots = overrides.pop("_tool_image_slots", None)
         tool_bus_frames = overrides.pop("_tool_bus_frames", None)
         tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
-        tool_rounds = overrides.pop("_tool_rounds", None)
+        tool_rounds, _instruction, request_view = self._turn_request_view(overrides)
         response_generation = overrides.pop("_response_generation", None)
 
         generation_is_active = _generation_check(self, response_generation)
@@ -432,7 +432,7 @@ class _GenaiMixin:
                 return
             self._ensure_genai_client()
             system_instruction, contents = _genai_messages_to_contents(
-                _slop_reduced_for_genai(self._dialog_messages_for_provider(messages))
+                _slop_reduced_for_genai(request_view(messages))
             )
             cfg_kw = dict(gen_config_kw)
             if system_instruction:
@@ -828,7 +828,7 @@ class _GenaiMixin:
         # 取消已由循环出口那一处检查挡住：从那里到这里只有同步的日志。
         final_cfg_kw = {k: v for k, v in gen_config_kw.items() if k != "tools"}
         final_system_instruction, final_contents = _genai_messages_to_contents(
-            _slop_reduced_for_genai(self._dialog_messages_for_provider(messages))
+            _slop_reduced_for_genai(request_view(messages))
         )
         if final_system_instruction:
             final_cfg_kw["system_instruction"] = final_system_instruction

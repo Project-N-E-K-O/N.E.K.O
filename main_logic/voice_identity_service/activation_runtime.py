@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter, deque
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 import math
 import os
@@ -972,7 +972,9 @@ class VoiceSessionActivationRuntime:
                     self._output_task = None
                     return
             try:
-                commit = await self._output(lease.frame)
+                # Carry the exact lease provenance without rewriting capture
+                # time, samples or the buffered frame owned by the controller.
+                commit = await self._output(replace(lease.frame, output_origin=lease.origin))
             except asyncio.CancelledError:
                 async with self._lock:
                     if not self._closed:

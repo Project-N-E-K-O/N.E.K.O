@@ -944,11 +944,19 @@ class TalkMixin:
         request_id = f"visit-{name}:{self.visit_id}"
         meta = self._mirror_meta(kind)
         stream = None
+
+        def on_failed() -> None:
+            # 流在送出结束标记之前就停了（TTS 起不来 / 入队出错 / 轮次被接走）：这一段不会有播放进度，
+            # 交还不再等它；本场之后也不再开语音流（与 finish 当场收不下同样处理）
+            self.voice.fallen_back = True
+            if handoff is not None:
+                handoff.skip(name)
+
         # 本场已回落到估时（TTS 起不来）就不再开新的语音流
         if self.voice.tts_on and not silent:
             try:
                 stream = self.host.open_speech_stream(metadata=meta, request_id=request_id,
-                                                      on_enqueued=lambda _n: None)
+                                                      on_enqueued=lambda _n: None, on_failed=on_failed)
             except Exception as exc:  # noqa: BLE001 - TTS 不可用：只上屏
                 logger.info("visit %s: home-coming speech unavailable: %s", self.visit_id[:6], type(exc).__name__)
             if stream is None:

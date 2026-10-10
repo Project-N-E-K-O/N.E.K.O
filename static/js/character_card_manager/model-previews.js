@@ -316,7 +316,10 @@ async function loadVrmPreview(modelPath, rawData) {
         const idleAnimation = rawData?.['idleAnimation'] || '/static/vrm/animation/wait03.vrma.gz';
 
         // 加载模型
-        const result = await localVrmManager.loadModel(modelPath, {
+        const modelUrl = /^\/(?:user_vrm|static\/vrm|workshop)\//.test(modelPath)
+            || !/^(https?:\/\/|\/)/.test(modelPath)
+            ? modelPath.split('/').map(encodeURIComponent).join('/') : modelPath;
+        const result = await localVrmManager.loadModel(modelUrl, {
             canvasId: 'vrm-preview-canvas',
             containerId: 'vrm-preview-container',
             addShadow: true,

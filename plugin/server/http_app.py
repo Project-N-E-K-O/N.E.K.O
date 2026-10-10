@@ -30,6 +30,7 @@ from plugin.server.routes import (
     llm_tools_router,
     logs_router,
     market_bridge_router,
+    knowledge_bridge_router,
     media_router,
     messages_router,
     metrics_router,
@@ -244,7 +245,22 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
                 str(exc),
             )
         if manage_lifecycle:
-            await lifecycle_shutdown()
+            try:
+                await lifecycle_shutdown()
+            finally:
+                # The knowledge bridge uses the shared loopback client; a
+                # standalone plugin server owns its process, so it closes it.
+                # Embedded in another server, that server does.
+                try:
+                    from utils.http.internal_client import aclose_internal_http_client
+
+                    await aclose_internal_http_client()
+                except Exception as exc:
+                    logger.warning(
+                        "internal http client close failed: err_type={}, err={}",
+                        type(exc).__name__,
+                        str(exc),
+                    )
 
 
 def build_plugin_server_app(
@@ -344,6 +360,7 @@ def build_plugin_server_app(
     )
     app.include_router(plugin_cli_router)
     app.include_router(llm_tools_router)
+    app.include_router(knowledge_bridge_router)
     app.include_router(market_bridge_router)
     # Keep the Host/Origin guard outside CORS and the cache-header middleware;
     # untrusted requests must not be short-circuited before the guard runs.

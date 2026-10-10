@@ -24,6 +24,7 @@ import os
 
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
+from main_logic import public_knowledge
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_memory import (
@@ -82,14 +83,18 @@ class ToolCallingMixin:
         await self._sync_tools_to_active_session(raise_on_failure=True)
 
     def unregister_tool(self, name: str) -> bool:
+        holder = self._public_knowledge_holder()
         existed = self.tool_registry.unregister(name)
         if existed:
+            self._refill_vacated_builtins(holder)
             self._fire_task(self._sync_tools_to_active_session())
         return existed
 
     async def unregister_tool_and_sync(self, name: str) -> bool:
+        holder = self._public_knowledge_holder()
         existed = self.tool_registry.unregister(name)
         if existed:
+            self._refill_vacated_builtins(holder)
             await self._sync_tools_to_active_session(raise_on_failure=True)
         return existed
 
@@ -97,14 +102,18 @@ class ToolCallingMixin:
         return self.tool_registry.names()
 
     def clear_tools(self, *, source: str | None = None) -> int:
+        holder = self._public_knowledge_holder()
         n = self.tool_registry.clear(source=source)
         if n > 0:
+            self._refill_vacated_builtins(holder)
             self._fire_task(self._sync_tools_to_active_session())
         return n
 
     async def clear_tools_and_sync(self, *, source: str | None = None) -> int:
+        holder = self._public_knowledge_holder()
         n = self.tool_registry.clear(source=source)
         if n > 0:
+            self._refill_vacated_builtins(holder)
             await self._sync_tools_to_active_session(raise_on_failure=True)
         return n
 
@@ -231,6 +240,76 @@ class ToolCallingMixin:
             metadata={"source": "builtin"},
         )
         self.tool_registry.register(recall_tool, replace=True)
+        self._register_public_knowledge_tool()
+
+    # ------------------------------------------------------------------
+    # 内置工具：query_public_knowledge
+    # ------------------------------------------------------------------
+    # 公共知识库在 Memory Server（/internal/knowledge/*），Main 只做 HTTP
+    # 客户端。只有存在可用知识包时才注册：没有导入知识包的用户不必每轮都
+    # 带上这份工具 schema。可用标志在 main_logic.public_knowledge 里缓存，
+    # 变化时回调 _on_public_knowledge_availability 重新注册并同步到会话。
+
+    def _register_public_knowledge_tool(self) -> None:
+        # 可选工具：这里出任何问题都不能连带 recall_memory 的注册。
+        try:
+            public_knowledge.add_availability_listener(self)
+            port = getattr(self, "memory_server_port", None)
+            if port is not None:
+                public_knowledge.schedule_availability_refresh(port)
+            # 同名工具若是插件等其他来源注册的，不覆盖也不删除。
+            current = self.tool_registry.get(public_knowledge.TOOL_NAME)
+            ours = current is None or public_knowledge.is_builtin_definition(current)
+            if not ours:
+                return
+            if public_knowledge.tool_available():
+                self.tool_registry.register(
+                    public_knowledge.build_tool_definition(
+                        self.user_language, self._handle_public_knowledge_call,
+                    ),
+                    replace=True,
+                )
+            elif current is not None:
+                self.tool_registry.unregister(public_knowledge.TOOL_NAME)
+        except Exception as e:
+            logger.warning(
+                "[public-knowledge] builtin tool registration failed: %s",
+                type(e).__name__,
+            )
+
+    def _public_knowledge_holder(self) -> ToolDefinition | None:
+        """The tool holding the ``query_public_knowledge`` name, before a removal."""
+        return self.tool_registry.get(public_knowledge.TOOL_NAME)
+
+    def _refill_vacated_builtins(self, previous_holder: ToolDefinition | None) -> None:
+        """Take the builtin's name back from another source's tool just removed.
+
+        Only for optional builtins that yield to same-name tools of other
+        sources (``query_public_knowledge``): when such a tool goes away the
+        availability flag does not change, so no availability callback would
+        restore the builtin. Removing the builtin itself (e.g. clearing the
+        "builtin" source) is respected: nothing is put back.
+        """
+        if os.environ.get("NEKO_DISABLE_BUILTIN_TOOLS", "").strip().lower() in ("1", "true", "yes"):
+            return
+        if previous_holder is None or public_knowledge.is_builtin_definition(previous_holder):
+            return
+        if self.tool_registry.get(public_knowledge.TOOL_NAME) is None and public_knowledge.tool_available():
+            self._register_public_knowledge_tool()
+
+    def _on_public_knowledge_availability(self) -> None:
+        """Availability flipped: re-register and push to live sessions."""
+        if os.environ.get("NEKO_DISABLE_BUILTIN_TOOLS", "").strip().lower() in ("1", "true", "yes"):
+            return
+        self._register_public_knowledge_tool()
+        self._fire_task(self._sync_tools_to_active_session())
+
+    async def _handle_public_knowledge_call(self, arguments: dict) -> str:
+        return await public_knowledge.query_public_knowledge(
+            arguments,
+            memory_server_port=self.memory_server_port,
+            language=self.user_language,
+        )
 
     async def _handle_recall_memory_call(self, arguments: dict) -> str:
         """Handler for ``recall_memory`` — calls memory_server's

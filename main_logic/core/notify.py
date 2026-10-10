@@ -73,6 +73,7 @@ from config.prompts.prompts_sys import (
     AGENT_TASKS_NOTICE,
 )
 from utils.language_utils import normalize_language_code, is_supported_language_code
+from utils.llm_tool_leak_filter import strip_tool_call_leaks
 from utils.screen_comment_guard import screen_guard_enabled, screen_history_rewrites
 from ._shared import logger
 
@@ -154,9 +155,17 @@ class NotifyMixin:
         ``/new_dialog`` just before these lines) is judged on its own, so a
         chain split between memory's last replies and the cache's first ones
         is not joined.
+
+        Tool-call markup a character line spoke instead of calling the tool
+        is cut first (``_without_tool_call_leaks``): primed into the next
+        session, it reads as an example to copy.
         """
-        preceding = list(preceding)
-        entries = preceding + list(cache)
+        # Resolved on the class, so an owner that is not a full manager works.
+        tool_names = NotifyMixin._registered_tool_names(self)
+        preceding = NotifyMixin._without_tool_call_leaks(preceding, self.lanlan_name, tool_names)
+        entries = preceding + NotifyMixin._without_tool_call_leaks(
+            cache, self.lanlan_name, tool_names,
+        )
         rewrites = {}
         if screen_guard_enabled():
             roles = {
@@ -185,6 +194,35 @@ class NotifyMixin:
                 continue
             res += f"{i['role']} | {text}\n"
         return res
+
+    @staticmethod
+    def _registered_tool_names(owner) -> list:
+        """Names of the tools ``owner`` has registered now; empty without a registry."""
+        try:
+            return list(owner.list_tools())
+        except Exception:
+            return []
+
+    @staticmethod
+    def _without_tool_call_leaks(entries, speaker, tool_names) -> list:
+        """Cache entries with tool-call markup cut from ``speaker``'s lines.
+
+        With the registered ``tool_names`` a bare ``name(param=...)`` counts
+        too. Entries keep their shape (``role`` / ``text`` / ``source``); a
+        line that was nothing but markup is left out.
+        """
+        cleaned = []
+        for entry in entries:
+            text = entry.get('text') if isinstance(entry, dict) else None
+            if not isinstance(text, str) or entry.get('role') != speaker:
+                cleaned.append(entry)
+                continue
+            stripped = strip_tool_call_leaks(text, tool_names=tool_names)
+            if stripped == text:
+                cleaned.append(entry)
+            elif stripped.strip():
+                cleaned.append({**entry, 'text': stripped})
+        return cleaned
 
     async def _build_initial_prompt(self) -> str:
         """Build the system prompt and inject active task summary when agent is enabled."""

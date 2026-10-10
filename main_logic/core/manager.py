@@ -338,6 +338,14 @@ class LLMSessionManager(
         # TTS缓存机制：确保不丢包
         self.tts_ready = False  # TTS是否完全就绪
         self.tts_pending_chunks = []  # 待处理的TTS文本chunk: [(speech_id, text), ...]
+        # 流式 mirror 语音（open_mirror_speech_stream）的入队回调: {speech_id: on_enqueued(n)}
+        self._mirror_stream_callbacks: dict = {}
+        # 最近打开的那条流交出 TTS 轮次的时刻：下一条流按打开顺序等它再认领
+        self._mirror_stream_tail = None
+        # 最后一条真正认领过 TTS 轮次的流的 speech id：中间的流没认领就结束时，下一条认得出它还是同一串
+        self._mirror_last_claimed_sid = None
+        # 流式 mirror 的结束标记真正入队时交出 TTS 轮次: {speech_id: 回调}
+        self._mirror_stream_ends: dict = {}
         self.tts_cache_lock = asyncio.Lock()  # 保护缓存的锁
         self._last_tts_respawn_time: float = 0.0  # 上次 respawn 时间戳，用于 12 秒冷却
         self._tts_respawn_task: Optional[asyncio.Task] = None  # 延迟重试 Task，end_session 时取消

@@ -582,4 +582,10 @@ html.dark .app-header {
     0 1px 4px rgba(0, 0, 0, 0.12);
 }
 
+@media (max-width: 640px) {
+  .app-sidebar { width: 68px; }
+  .app-header { padding: 0 12px; }
+  .app-main { padding: 0; }
+  .connection-banner { padding-inline: 8px; }
+}
 </style>

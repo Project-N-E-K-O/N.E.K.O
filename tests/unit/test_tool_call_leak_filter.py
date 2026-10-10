@@ -551,3 +551,355 @@ def test_event_metadata_does_not_include_raw_text_or_query():
     event_text = repr(events[0])
     assert query not in event_text
     assert "parameter" not in event_text
+
+
+# ── Calls written into the reply as text (inline tool-call syntax) ──────────
+
+_PVZ_TOOLS = {"pvz_instruction", "pvz_start", "recall_memory"}
+
+# (leaked text, what the user should see). Taken from replies that reached TTS:
+# the native tool calls had stopped and the model wrote them into the reply.
+_INLINE_CALL_CASES = [
+    (
+        "好的！declaration:default_api:pvz_instruction{instruction:立刻在第四和第五行交界处使用樱桃炸弹，…}",
+        "好的！",
+    ),
+    (
+        "冲呀asynccall:pvz_instruction{instruction:种豌豆}asynccall:pvz_instruction{instruction:种向日葵}"
+        "asynccall:pvz_instruction{instruction:补坚果}看我的",
+        "冲呀看我的",
+    ),
+    ("我来pvz_instruction(instruction='第三行种坚果')。", "我来。"),
+    ("先开局 default_api:pvz_start{goal:通关}，然后", "先开局 ，然后"),
+    ('好 default_api.pvz_start(goal="win") 走起', "好  走起"),
+    ('收到pvz_instruction{"instruction": "铲掉第一行"}喵', "收到喵"),
+]
+
+
+def _split_everywhere(text: str):
+    for cut in range(len(text) + 1):
+        yield [text[:cut], text[cut:]]
+    for first in range(0, len(text) + 1, 3):
+        for second in range(first, len(text) + 1, 5):
+            yield [text[:first], text[first:second], text[second:]]
+
+
+def test_inline_tool_calls_are_stripped_whole():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    for leaked, expected in _INLINE_CALL_CASES:
+        visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [leaked])
+        assert visible == expected, leaked
+        assert events and {e.pattern for e in events} == {"inline_tool_call"}
+        assert not any(e.finalized for e in events), "every call closed on its bracket"
+
+
+def test_inline_tool_calls_are_stripped_at_any_chunk_split():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    for leaked, expected in _INLINE_CALL_CASES:
+        for chunks in _split_everywhere(leaked):
+            visible, _events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), chunks)
+            assert visible == expected, chunks
+
+
+def test_inline_call_split_marks_the_event_cross_chunk():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, events = _drain(
+        ToolLeakFilter(tool_names=_PVZ_TOOLS),
+        ["好的 async", "call:pvz_instruction{instruction:种豌豆} 完毕"],
+    )
+    assert visible == "好的  完毕"
+    assert len(events) == 1 and events[0].cross_chunk is True
+
+
+def test_inline_call_brackets_nest_and_quoted_closers_do_not_end_it():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    leaked = (
+        'A pvz_instruction{"instruction": "a } b ) c", "plan": {"rows": [1, [2, 3]], '
+        '"note": "say \\"hi\\" }"}} B'
+    )
+    for chunks in _split_everywhere(leaked):
+        visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), chunks)
+        assert visible == "A  B", chunks
+        assert len(events) == 1 and events[0].finalized is False
+
+
+def test_an_apostrophe_inside_an_unquoted_value_does_not_swallow_the_reply():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, _events = _drain(
+        ToolLeakFilter(tool_names=_PVZ_TOOLS),
+        ["pvz_instruction{instruction: don't plant here} and that's all"],
+    )
+    assert visible == " and that's all"
+
+
+def test_an_opener_left_unclosed_inside_a_value_ends_at_the_outer_closer():
+    """Values are natural language: a half-written ``(`` or ``[`` in one must
+    not keep the call open and take the rest of the reply with it."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter, strip_tool_call_leaks
+
+    for leaked in (
+        "好呀 asynccall:pvz_instruction{instruction: 在第3行(靠左放坚果} 接下来我们继续玩吧！",
+        "好呀 pvz_instruction(instruction=[第3行放坚果) 接下来我们继续玩吧！",
+        "好呀 asynccall:pvz_instruction{instruction: 好难 :( 先种坚果} 接下来我们继续玩吧！",
+    ):
+        assert strip_tool_call_leaks(leaked, tool_names=_PVZ_TOOLS) == "好呀  接下来我们继续玩吧！"
+        for chunks in _split_everywhere(leaked):
+            visible, _events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), chunks)
+            assert visible == "好呀  接下来我们继续玩吧！", chunks
+
+
+def test_finished_text_without_any_opener_marker_skips_the_scan(monkeypatch):
+    """The finished-text helpers run on the event loop: a reply with no marker
+    and no tool name never reaches the per-position scan."""
+    from utils import llm_tool_leak_filter as module
+
+    def no_scan(*_args, **_kwargs):
+        raise AssertionError("scanned a reply that holds no opener")
+
+    monkeypatch.setattr(module.ToolLeakFilter, "feed", no_scan)
+    plain = "今天天气不错，我们去公园散步吧。" * 50
+    assert module.strip_tool_call_leaks(plain, tool_names=_PVZ_TOOLS) == plain
+    assert module.strip_tool_call_leaks_from_parts([plain, plain], tool_names=_PVZ_TOOLS) == [plain, plain]
+
+
+def test_a_call_that_never_closes_gives_back_the_reply_after_its_outer_closer():
+    """An unclosed quote or a same-kind opener left open in a value keeps the
+    call open to the end; the reply after its last outer closer still shows
+    (and is still stored)."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter, strip_tool_call_leaks
+
+    for leaked, expected in (
+        ('default_api:pvz_start{goal:"do it} Done.', " Done."),
+        ("好呀 pvz_instruction(instruction=在第3行(靠左放坚果) 接下来我们继续玩吧！", "好呀  接下来我们继续玩吧！"),
+        ("好 asynccall:pvz_instruction{instruction:'种坚果} 好了 asynccall:pvz_start{goal:a} 完", "好  好了  完"),
+    ):
+        assert strip_tool_call_leaks(leaked, tool_names=_PVZ_TOOLS) == expected
+        for chunks in _split_everywhere(leaked):
+            visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), chunks)
+            assert visible == expected, chunks
+            assert events, chunks
+
+
+def test_many_calls_that_never_close_are_recovered_without_recursion():
+    """Each recovered stretch can hold another unclosed call; finalize walks
+    them in a loop."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter, strip_tool_call_leaks
+
+    leaked = "开始 " + "pvz_start(goal=(b) " * 1500 + "结束"
+    assert strip_tool_call_leaks(leaked, tool_names=_PVZ_TOOLS).split() == ["开始", "结束"]
+    visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [leaked])
+    assert visible.split() == ["开始", "结束"]
+    assert events and events[-1].finalized is True
+
+
+def test_an_unclosed_call_is_given_up_once_calls_pile_up_inside_it():
+    """One or two calls after the outer closer may be values of a call that
+    still closes; by the third the open call is given up at once (streamed,
+    not held to the end) and the text after its closer is read again."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    tail = "后面的正文很长。" * 100
+    one = f'前 default_api:pvz_start{{goal:"do it}}{tail}asynccall:pvz_start{{goal:a}}完'
+    visible, _events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [one])
+    assert visible == "前 " + tail + "完"
+
+    three = one + "asynccall:pvz_start{goal:b}又asynccall:pvz_start{goal:c}再"
+    leak_filter = ToolLeakFilter(tool_names=_PVZ_TOOLS)
+    streamed, _event = leak_filter.feed(three)
+    assert streamed.startswith("前 " + tail), "given back while streaming, not held to the end"
+    visible, _events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [three])
+    assert visible == "前 " + tail + "完又再"
+
+
+def test_a_well_formed_long_call_is_never_given_up_halfway():
+    """Nested closers and closers inside quotes set a recovery point too; a
+    long, well-formed call must still run to its own closer."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter, strip_tool_call_leaks
+
+    long = "种一排向日葵然后补坚果" * 60
+    for leaked, expected in (
+        ('好的 default_api:pvz_start{"opts": {"lane": 1}, "goal": "' + long + '"} 好了', "好的  好了"),
+        ('前 pvz_start(goal="build (a) then ' + long + '") 后', "前  后"),
+        # A call named inside a quoted value after a nested closer is data.
+        ('好 default_api:pvz_instruction{payload: {nested: 1}, note: "recall_memory{query: a}"} 了',
+         "好  了"),
+        # A call as an unquoted value after a nested object, outer call closing.
+        ("好 default_api:pvz_start{config:{x:1}, fallback:default_api:pvz_goal{y:2}} 了", "好  了"),
+        # Several call-shaped values, outer call still closing.
+        ("好 default_api:pvz_start{config:{x:1}, a:recall_memory(query=1), b:recall_memory(query=2), "
+         "c:recall_memory(query=3), token:secret} 了", "好  了"),
+        ("好 default_api:pvz_start{config:{x:1}, "
+         + ", ".join(f"v{i}:recall_memory(query={i})" for i in range(12))
+         + ", token:secret} 了", "好  了"),
+    ):
+        assert strip_tool_call_leaks(leaked, tool_names=_PVZ_TOOLS) == expected
+        visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [leaked])
+        assert visible == expected and events[0].finalized is False
+
+
+def test_finished_text_in_pieces_matches_one_feed_at_every_offset():
+    """The finished-text helpers feed a piece at a time; wherever a piece
+    boundary falls, the result is the one a single feed gives."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter, strip_tool_call_leaks
+
+    def one_feed(text):
+        leak_filter = ToolLeakFilter(tool_names=_PVZ_TOOLS)
+        visible, _event = leak_filter.feed(text)
+        tail, _event = leak_filter.finalize()
+        return visible + tail
+
+    bodies = [
+        ' <function><name>pvz_start</name> <parameter name="goal">hi</parameter></function> ok',
+        " <function><name>pvz_start</name>\n</function> ok",
+        " <seed:tool_call><function=pvz_start><parameter=goal>x</parameter></function></seed:tool_call> ok",
+        " asynccall:pvz_instruction{instruction:丢樱桃} ok",
+        " pvz_instruction(instruction='种坚果') ok",
+    ]
+    for body in bodies:
+        for pad in range(0, 300):
+            text = "x" * pad + body
+            assert strip_tool_call_leaks(text, tool_names=_PVZ_TOOLS) == one_feed(text), (pad, body)
+            assert "pvz_" not in strip_tool_call_leaks(text, tool_names=_PVZ_TOOLS), (pad, body)
+
+
+def test_a_call_right_after_removed_markup_is_still_found():
+    """Removed markup separates the text around it: a call that follows it
+    does not continue the word before it."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    leaked = "OK<seed:tool_call>x</seed:tool_call>recall_memory(query=secret) 好"
+    for chunks in _split_everywhere(leaked):
+        visible, _events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), chunks)
+        assert visible == "OK 好", chunks
+
+
+def test_finished_text_helpers_read_tool_names_once():
+    """``tool_names`` may be a one-shot iterable: the pre-check must not use
+    it up before the filter reads it."""
+    from utils.llm_tool_leak_filter import strip_tool_call_leaks, strip_tool_call_leaks_from_parts
+
+    bare = "我来pvz_instruction(instruction='第三行种坚果')。"
+    assert strip_tool_call_leaks(bare, tool_names=iter(["pvz_instruction"])) == "我来。"
+    assert strip_tool_call_leaks_from_parts([bare], tool_names=iter(["pvz_instruction"])) == ["我来。"]
+
+
+def test_every_prefixed_opener_has_a_pre_check_marker():
+    from utils.llm_tool_leak_filter import _OPENER_MARKERS, _PREFIXED_CALL_OPENERS
+
+    for steps in _PREFIXED_CALL_OPENERS:
+        assert steps[0][1] in _OPENER_MARKERS
+
+
+def test_an_unclosed_inline_call_is_dropped_on_finalize():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    visible, events = _drain(
+        ToolLeakFilter(tool_names=_PVZ_TOOLS),
+        ["我来 asynccall:pvz_instruction{instruction:在第四行", "种樱桃"],
+    )
+    assert visible == "我来 "
+    assert len(events) == 1 and events[0].finalized is True
+
+
+def test_mentions_and_narration_of_tools_are_not_inline_calls():
+    """Only call syntax is stripped: talking about a tool, a bare ``name()``,
+    an unregistered ``name(x=1)``, a prefix glued to a longer word and the
+    full-width narration some models write are all kept as is."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    for text in [
+        "我刚用 pvz_instruction 下了指令，pvz_start 之后再说。",
+        "pvz_start() 不带参数也能开局",
+        "plant(row=3) 是我瞎编的函数名，unknown_tool{x: 1} 也是",
+        "（调用工具pvz_start，目标：先通关第一关）",
+        "（调用工具 pvz_instruction，指令：种坚果）",
+        "my_pvz_instruction(instruction=1) 和 xasynccall:foo{a:1} 都不是",
+        "the default value is fine, a default_api is just a word here",
+        "pvz_instruction（instruction=全角括号不算）",
+    ]:
+        for chunks in _split_everywhere(text):
+            visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), chunks)
+            assert visible == text, chunks
+            assert events == []
+
+
+def test_bare_tool_name_calls_need_a_registered_name():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    text = "我来pvz_instruction(instruction='第三行种坚果')。"
+    visible, events = _drain(ToolLeakFilter(tool_names={"recall_memory"}), [text])
+    assert visible == text and events == []
+
+
+def test_inline_call_inside_code_fence_is_replaced_not_revealed():
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    text = "```\nasynccall:pvz_instruction{instruction:secret plan}\n```"
+    visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), [text])
+    assert visible == "```\n[tool-call markup omitted]\n```"
+    assert "secret plan" not in visible
+    assert len(events) == 1 and events[0].pattern == "inline_tool_call"
+
+
+def test_strip_tool_call_leaks_without_tool_names_keeps_to_prefixed_syntax():
+    """Memory has no tool registry: only the forms that are call syntax
+    whatever the tool are removed there."""
+    from utils.llm_tool_leak_filter import strip_tool_call_leaks
+
+    assert strip_tool_call_leaks(
+        "好的！declaration:default_api:pvz_instruction{instruction:丢樱桃炸弹}"
+    ) == "好的！"
+    assert strip_tool_call_leaks(
+        "冲asynccall:pvz_instruction{instruction:a}asynccall:pvz_instruction{instruction:b}"
+    ) == "冲"
+    bare = "我来pvz_instruction(instruction='第三行种坚果')。"
+    assert strip_tool_call_leaks(bare) == bare
+    assert strip_tool_call_leaks(bare, tool_names={"pvz_instruction"}) == "我来。"
+    assert strip_tool_call_leaks("") == ""
+    assert strip_tool_call_leaks("（调用工具pvz_start，目标：…）") == "（调用工具pvz_start，目标：…）"
+
+
+def test_text_parts_with_nothing_cut_keep_their_boundaries():
+    """Holding back a possible opener at a part's end must not move text
+    between parts when no call follows."""
+    from utils.llm_tool_leak_filter import strip_tool_call_leaks_from_parts
+
+    for parts in (["I have a", " plan"], ["the default", "_value"], ["好的 async", "hronous 也行"]):
+        assert strip_tool_call_leaks_from_parts(parts) == parts
+    assert strip_tool_call_leaks_from_parts(
+        ["好的 async", "call:pvz_instruction{instruction:a} 完毕"],
+    ) == ["好的 ", " 完毕"]
+    # Held back but no call: it stays in its own part even when a later
+    # part does hold one.
+    assert strip_tool_call_leaks_from_parts(
+        ["alpha default_", "nothing asynccall:x{a:1} omega"],
+    ) == ["alpha default_", "nothing  omega"]
+    assert strip_tool_call_leaks_from_parts(
+        ["前面 async", "后面 asynccall:x{a:1} 完"],
+    ) == ["前面 async", "后面  完"]
+
+
+def test_prefixed_calls_take_every_plugin_tool_name():
+    """The plugin SDK allows dots and a leading digit in tool names."""
+    from utils.llm_tool_leak_filter import strip_tool_call_leaks
+
+    for name in ("calendar.lookup", "3d-render", ".hidden_tool"):
+        leaked = f"好 asynccall:{name}{{query:x}} 完"
+        assert strip_tool_call_leaks(leaked) == "好  完", name
+        assert strip_tool_call_leaks(leaked, tool_names={name}) == "好  完", name
+
+
+def test_a_seed_word_continuing_a_previous_piece_is_not_a_marker():
+    """``xseed:tool_call`` is one word whichever piece the ``x`` came in."""
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+
+    text = "it is xseed:tool_call is a literal identifier here"
+    for chunks in _split_everywhere(text):
+        visible, events = _drain(ToolLeakFilter(tool_names=_PVZ_TOOLS), chunks)
+        assert visible == text, chunks
+        assert events == []

@@ -182,3 +182,48 @@ def test_abandon_skips_only_the_segments_not_queued_yet():
     assert not h.due()                               # 仪式句还没播完
     ih.route_progress("sp-r", ended=True, final=True)
     assert h.due()
+
+
+async def test_home_segment_whose_stream_fails_later_is_not_waited_for():
+    # finish() 当场返回 True（流还没认领 TTS 轮次），之后才发现 TTS 起不来：交还不再等这一段
+    from types import SimpleNamespace
+
+    from main_routers.visit_router.line_speaker import VoiceState
+    from main_routers.visit_router.runtime_talk import TalkMixin
+    from tests.unit.visit_runtime_harness import FakeHost
+
+    clock = Clock()
+    handoff = ih.InboxHandoff("v" * 22, finalize_at=clock(), clock=clock)
+    host = FakeHost("Host")
+    host.auto_play = False
+    rt = SimpleNamespace(handoff=handoff, host=host, voice=VoiceState(enabled=True), visit_id="v" * 22,
+                         _handoff_stamps={}, _mirror_meta=lambda kind: {"kind": kind})
+    await TalkMixin.speak_home_segment(rt, "ritual", "我回来啦。", kind="ritual")
+    stream = host.streams[-1]
+    seg = handoff._segments["ritual"]
+    assert seg.queued_at is not None and not seg.done and not rt.voice.fallen_back
+    stream.on_failed()
+    assert seg.done and rt.voice.fallen_back
+
+
+def test_a_segment_failing_after_it_was_queued_adds_no_wait():
+    # 仪式句入队（登记了估时）后流才报失败：跳过时估时一并清掉，交还不为没出声的那段多等
+    clock = Clock()
+    h = ih.InboxHandoff("v" * 22, finalize_at=clock(), clock=clock)
+    h.attach_speech("ritual", "sp-r")
+    h.mark_queued("ritual", 8000)
+    h.skip("ritual")
+    h.mark_queued("debrief", 2000)                 # 之后回落为只上屏
+    clock.now += 2.5
+    assert h.due()
+
+
+def test_a_text_only_segment_still_waits_for_its_estimate():
+    clock = Clock()
+    h = ih.InboxHandoff("v" * 22, finalize_at=clock(), clock=clock)
+    h.skip("ritual")
+    h.mark_queued("debrief", 2000)
+    clock.now += 1.0
+    assert not h.due()
+    clock.now += 1.5
+    assert h.due()

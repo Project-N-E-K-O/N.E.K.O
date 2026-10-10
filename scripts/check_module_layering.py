@@ -24,7 +24,7 @@ stays acyclic). The hierarchy:
 
     L0  config, steamworks                   ← foundation (data + vendored SDK)
     L1  utils
-    L2  memory, main_logic
+    L2  knowledge, memory, main_logic
     L3  main_routers
     L4  plugin                                ← high-level extension surface
     L5  brain                                 ← top-of-stack agent orchestration
@@ -38,6 +38,12 @@ Violations are split into two categories, both forbidden:
                       or transitively, including via dynamic imports inside
                       function bodies) imports from package A. Same-layer pairs
                       are allowed only if no cycle exists between them.
+
+A third category pins boundaries that layers alone cannot express:
+
+    FORBIDDEN_EDGE  — a file under a listed path imports a package that path
+                      must never depend on (see ``FORBIDDEN_EDGES``), even when
+                      the layers would allow it.
 
 What it flags
 -------------
@@ -91,7 +97,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LAYERS: List[Tuple[int, Set[str]]] = [
     (0, {"config", "steamworks"}),
     (1, {"utils"}),
-    (2, {"memory", "main_logic"}),
+    (2, {"knowledge", "memory", "main_logic"}),
     (3, {"main_routers"}),
     (4, {"plugin"}),
     (5, {"brain"}),
@@ -106,6 +112,37 @@ KNOWN_PACKAGES: Set[str] = set(PACKAGE_TO_LAYER.keys())
 
 CODE_INVERSION = "LAYER_INVERSION"
 CODE_CYCLE = "LAYER_CYCLE"
+CODE_FORBIDDEN = "FORBIDDEN_EDGE"
+
+# (path prefix relative to the repo root, forbidden package, why).
+#
+# Public knowledge runs inside the Memory Server and is reached over HTTP
+# (``/internal/knowledge/*``). Main's session code, its routers and its
+# server entrypoint talk to it only through that API, and the plugin server
+# only through Main's proxy. The knowledge package itself never depends on
+# memory: it shares the Memory Server process, not memory's data.
+FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
+    ("main_logic/", "knowledge", "Main reaches public knowledge over HTTP only"),
+    ("main_routers/", "knowledge", "Main reaches public knowledge over HTTP only"),
+    ("app/main_server/", "knowledge", "Main reaches public knowledge over HTTP only"),
+    ("plugin/", "knowledge", "the plugin server goes through Main's proxy"),
+    ("knowledge/", "memory", "knowledge never reads or writes memory data"),
+]
+
+
+def find_forbidden_edges(edges: List["EdgeRecord"]) -> List[Tuple["EdgeRecord", str]]:
+    """Return the edges that cross a ``FORBIDDEN_EDGES`` boundary."""
+    found: list[tuple[EdgeRecord, str]] = []
+    for edge in edges:
+        path, _, _, _, dst, _ = edge
+        try:
+            rel = path.relative_to(REPO_ROOT).as_posix()
+        except ValueError:
+            continue
+        for prefix, forbidden, reason in FORBIDDEN_EDGES:
+            if dst == forbidden and rel.startswith(prefix):
+                found.append((edge, reason))
+    return found
 
 DEFAULT_PATHS: list[str] = ["."]
 
@@ -560,6 +597,12 @@ def main(argv: list[str] | None = None) -> int:
     inversions, cycles = find_violations(edges)
 
     total = 0
+    for (path, lineno, col, src, dst, repr_), reason in find_forbidden_edges(edges):
+        print(
+            f"{_format_path(path)}:{lineno}:{col}  {CODE_FORBIDDEN}  "
+            f"{src} → {dst} ({reason}): {repr_}"
+        )
+        total += 1
     for path, lineno, col, src, dst, repr_ in inversions:
         print(
             f"{_format_path(path)}:{lineno}:{col}  {CODE_INVERSION}  "

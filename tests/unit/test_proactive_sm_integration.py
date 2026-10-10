@@ -67,11 +67,13 @@ class _FakeOmniOffline(OmniOfflineClient):
         self._raise = raise_exc
         self.called_with: list[str] = []
 
-    async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
+    async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None, on_committed_text=None) -> bool:
         self.called_with.append(instruction)
         if self._raise is not None:
             raise self._raise
         if self._delivered and on_committed:
+            if on_committed_text:
+                on_committed_text("shown")
             on_committed()
         return self._delivered
 
@@ -90,10 +92,13 @@ class _CapturingImageOmniOffline(_FakeOmniOffline):
         *,
         images=None,
         on_committed=None,
+        on_committed_text=None,
     ) -> bool:
         self.called_with.append(instruction)
         self.image_batches.append(list(images or []))
         if on_committed:
+            if on_committed_text:
+                on_committed_text("shown")
             on_committed()
         return True
 
@@ -1162,10 +1167,12 @@ async def test_trigger_releases_inflight_when_callback_expires_during_claim():
 
 async def test_text_mode_resolves_delivery_ack_after_committed_output_before_completion_flush():
     class _FlushCancellingSess(_FakeOmniOffline):
-        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
+        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None, on_committed_text=None) -> bool:
             self.called_with.append(instruction)
             assert not future.done()
             assert on_committed is not None
+            if on_committed_text:
+                on_committed_text("shown")
             on_committed()
             assert future.done()
             assert future.result() is True
@@ -1244,9 +1251,11 @@ async def test_text_mode_retraction_after_claim_purges_paired_extra():
 
 async def test_text_mode_committed_then_flush_exception_does_not_requeue_callback():
     class _CommittedThenFailSess(_FakeOmniOffline):
-        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
+        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None, on_committed_text=None) -> bool:
             self.called_with.append(instruction)
             assert on_committed is not None
+            if on_committed_text:
+                on_committed_text("shown")
             on_committed()
             raise RuntimeError("completion flush failed after committed output")
 
@@ -1272,9 +1281,11 @@ async def test_text_mode_committed_then_flush_exception_does_not_requeue_callbac
 
 async def test_text_mode_success_keeps_late_extra_replies():
     class _QueueingSess(_FakeOmniOffline):
-        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
+        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None, on_committed_text=None) -> bool:
             self.called_with.append(instruction)
             if on_committed:
+                if on_committed_text:
+                    on_committed_text("shown")
                 on_committed()
             mgr.pending_agent_callbacks.append(late_cb)
             mgr.pending_extra_replies.append(late_extra)
@@ -3412,7 +3423,7 @@ async def test_user_input_between_claim_and_lock_is_detected():
         def __init__(self):
             pass
 
-        async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None):
+        async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None, on_committed_text=None):
             await sess_wait.wait()
             return True
 
@@ -3462,7 +3473,7 @@ async def test_user_input_during_agent_delivery_sets_preempted():
         def __init__(self):
             pass  # 跳过父类初始化
 
-        async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None):
+        async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None, on_committed_text=None):
             # 模拟 LLM 耗时，期间 user input 抢占
             await sess_wait.wait()
             return True
@@ -4096,3 +4107,32 @@ async def test_staging_stops_where_the_drain_stops():
     assert "proactive cue" not in rendered
     # 它仍在队列里等 proactive 那条路。
     assert proactive_media in mgr.pending_agent_callbacks
+
+
+class _ToolOnlyOmniOffline(_FakeOmniOffline):
+    """Delivered by a tool call alone: committed, but no text said."""
+
+    async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None, on_committed_text=None):
+        self.called_with.append(instruction)
+        if on_committed:
+            on_committed()
+        return True
+
+
+@pytest.mark.parametrize("said_something", [False, True])
+async def test_a_topic_teaser_is_retracted_when_only_a_tool_answered_it(said_something):
+    """The callback counts as delivered either way (its tool already ran, so
+    it is never requeued), but with nothing said nothing fills the teaser."""
+    sess = _FakeOmniOffline(delivered=True) if said_something else _ToolOnlyOmniOffline()
+    mgr = _make_mgr(session=sess)
+    mgr.topic_hook_delivery_allowed = lambda: True
+    mgr.send_topic_hint = AsyncMock(return_value=True)
+    mgr.send_cancel_topic_hint = AsyncMock()
+    topic = {"_callback_delivery_id": "id-topic", "status": "completed", "summary": "cue topic",
+             "channel": "topic_hook", "source_kind": "topic"}
+    mgr.pending_agent_callbacks = [topic]
+
+    assert await core_module.LLMSessionManager.trigger_agent_callbacks(mgr) is True
+    mgr.send_topic_hint.assert_awaited_once()
+    assert mgr.send_cancel_topic_hint.await_count == (0 if said_something else 1)
+    assert mgr.pending_agent_callbacks == []

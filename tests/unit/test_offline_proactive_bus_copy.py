@@ -152,8 +152,9 @@ def _make_client(chunks=None, error=None):
 
     captured: List[list] = []
 
-    async def _fake_astream(messages, **_overrides):
-        captured.append(list(messages))
+    async def _fake_astream(messages, **overrides):
+        # The instruction rides the request view, not history.
+        captured.append([*messages, overrides["_instruction"]])
         for chunk in ([_text("欢迎回来喵~")] if chunks is None else list(chunks)):
             yield chunk
         if error is not None:

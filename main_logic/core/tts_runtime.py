@@ -313,6 +313,25 @@ class TtsRuntimeMixin:
             [(speech_id, remaining)] if remaining else []
         )
 
+    def _put_tts_text(self, speech_id, text: str) -> None:
+        """Put one cleaned text chunk on the TTS request queue (the only place text is queued).
+
+        Also records it for replay / echo suppression, and reports its length
+        to the ``on_enqueued`` callback of a streaming mirror speech with
+        this ``speech_id`` (``open_mirror_speech_stream``); ordinary chat
+        registers none. The caller holds ``tts_cache_lock``.
+        """
+        self.tts_request_queue.put((speech_id, text))
+        self._remember_tts_sent_chunk(speech_id, text)
+        self._remember_pending_ai_voice_echo(speech_id, text)
+        callbacks = getattr(self, "_mirror_stream_callbacks", None)
+        callback = callbacks.get(speech_id) if callbacks and speech_id is not None else None
+        if callback is not None:
+            try:
+                callback(len(text))
+            except Exception as exc:
+                logger.warning("mirror speech enqueue callback failed: %s", exc)
+
     def _enqueue_tts_text_chunk(self, speech_id, text: str) -> None:
         """Enqueue a text chunk into the TTS queue; http_sentence-class providers go through the normalizer.
 
@@ -357,20 +376,16 @@ class TtsRuntimeMixin:
             # 就丢了。等下一块或收尾把 # 定下来再说。
             self._cancel_tts_soft_flush()
             if text:
-                self.tts_request_queue.put((speech_id, text))
-                self._remember_tts_sent_chunk(speech_id, text)
-                self._remember_pending_ai_voice_echo(speech_id, text)
+                self._put_tts_text(speech_id, text)
             return
         if not text:
             return
-        self.tts_request_queue.put((speech_id, text))
+        self._put_tts_text(speech_id, text)
         logger.debug(
             "[voice-chain] stage=tts_enqueue speech_id=%s text_len=%d",
             speech_id,
             len(text),
         )
-        self._remember_tts_sent_chunk(speech_id, text)
-        self._remember_pending_ai_voice_echo(speech_id, text)
         # 每个入队的 chunk 都把空闲定时器重新拨到 idle 秒之后：文本停了、done
         # 又迟迟不来，就让 worker 先把攒着的尾句合成出来。
         self._arm_tts_soft_flush(speech_id)
@@ -598,11 +613,18 @@ class TtsRuntimeMixin:
         if pending_name_hash:
             flushed = (flushed or "") + pending_name_hash
         if flushed and self._tts_norm_speech_id is not None:
-            self.tts_request_queue.put((self._tts_norm_speech_id, flushed))
-            self._remember_tts_sent_chunk(self._tts_norm_speech_id, flushed)
-            self._remember_pending_ai_voice_echo(self._tts_norm_speech_id, flushed)
+            self._put_tts_text(self._tts_norm_speech_id, flushed)
 
         self.tts_request_queue.put((None, None))
+        # 流式 mirror 的入队回调登记到它的结束标记真正入队为止（立即入队或就绪后补发都走这里），
+        # 同一刻把 TTS 轮次交给下一条流
+        callbacks = getattr(self, "_mirror_stream_callbacks", None)
+        if callbacks:
+            callbacks.pop(self.current_speech_id, None)
+        ends = getattr(self, "_mirror_stream_ends", None)
+        end_queued = ends.pop(self.current_speech_id, None) if ends else None
+        if end_queued is not None:
+            end_queued()
         self._tts_replay_done = True
         self._tts_done_queued_for_turn = True
         self._tts_done_pending_until_ready = False

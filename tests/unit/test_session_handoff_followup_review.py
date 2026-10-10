@@ -419,8 +419,10 @@ async def test_text_callback_cancel_requeues_only_uncommitted_batch(committed):
     entered = asyncio.Event()
 
     class Session(_FakeOmniOffline):
-        async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None):
+        async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None, on_committed_text=None):
             if committed:
+                if on_committed_text:
+                    on_committed_text("shown")
                 on_committed()
             entered.set()
             await asyncio.Event().wait()

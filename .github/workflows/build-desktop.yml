@@ -519,6 +519,7 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=services"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=memory"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=knowledge"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=utils"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=steamworks"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=browser_use"
@@ -676,6 +677,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_routers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=services
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=memory
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=knowledge
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=utils
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=steamworks
           rem PR #1264 moved native libs into steamworks/; runtime still loads them

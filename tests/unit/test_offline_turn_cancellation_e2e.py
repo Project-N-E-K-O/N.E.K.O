@@ -682,8 +682,9 @@ async def _until(condition):
 async def test_trimming_a_cancelled_round_never_touches_the_interrupters_round(later):
     """A is cancelled inside a slow tool; B runs its own tool round and
     finishes before A's handler returns. Trimming A's kept round touches A's
-    round only. A callback reply (``prompt_ephemeral``) runs its tool loop
-    on a copy of the history: only its reply is saved, and it stays as is."""
+    round only. A callback reply (``prompt_ephemeral``) saves its round like
+    a typed turn does: its pre-tool text lives in that round, not again in
+    its reply."""
     release = asyncio.Event()
 
     async def handler(call):
@@ -707,11 +708,10 @@ async def test_trimming_a_cancelled_round_never_touches_the_interrupters_round(l
         assert await client.prompt_ephemeral("callback") is True
     release.set()
     await turn_a
-    if later == "typed":
-        assert _round_texts(client) == {"a1": "", "b1": "B也在查"}
-    else:
-        assert _round_texts(client) == {"a1": ""}
-        assert _history_shape(client)[-1] == ("ai", "B也在查B查完了。", None)
+    assert _round_texts(client) == {"a1": "", "b1": "B也在查"}
+    if later == "callback":
+        assert _history_shape(client)[-1] == ("ai", "B查完了。", None)
+        assert _emitted(client) == ["B也在查", "B查完了。"]
 
 
 async def test_a_cut_stream_never_takes_a_round_saved_in_its_setup_window():

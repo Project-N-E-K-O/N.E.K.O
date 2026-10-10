@@ -138,7 +138,8 @@ _FORGET_SOURCES = {
     "abandoned": ("commit_failed:diary", "abandoned"),
 }
 # digest 一轮的终态放弃原因（digest_writes[run].abandoned）：region_settled 按已结清
-DIGEST_ABANDON_REASONS = ("batches_mismatch",)
+# batches_mismatch：开轮后转录被改动；no_transcript：记忆开着、收口后转录一句都没有
+DIGEST_ABANDON_REASONS = ("batches_mismatch", "no_transcript")
 # digest_writes[run].plan 可带的字段：切批参数 + 开轮时定格的请求渲染
 _PLAN_FIELDS = frozenset({"max_lines", "batch_size", "language", "headers", "displays"})
 STATE_FIELDS = frozenset({
@@ -1354,6 +1355,44 @@ class VisitSpool:
                 state["debrief_chip_pending"] = True
 
         return await asyncio.to_thread(self._update_state_sync, mutate)
+
+    async def mark_no_transcript(self, *, now: float) -> bool:
+        """Record the terminal "abandoned" outcome of a memory-on visit with no transcript line.
+
+        For a finalized visit whose spool holds no line at all (nothing was
+        ever appended, or every append failed): one digest run closed as
+        ``abandoned='no_transcript'`` (watermark 0) and, while nobody chose
+        yet, ``debrief_choice='abandoned'``. The visit then counts as settled
+        by the unchanged :func:`region_settled` / :func:`debrief_final` rules
+        instead of being retried on every start. No-op (False) with memory
+        off or once any digest run is registered; a recorded choice is kept.
+        """
+        def applies(state: Mapping[str, Any]) -> bool:
+            return is_digestable(state) and not state["digest_writes"] and not state["digest_runs"]
+
+        current = await self.read_state()
+        if current is None or not applies(current):
+            # 不需要写就不重写：每次启动都重写会刷新 mtime，state.json 永远到不了按龄回收
+            return False
+        changed = False
+
+        def mutate(state: dict) -> None:
+            nonlocal changed
+            if not applies(state):
+                return
+            state["digest_writes"] = {"0": {
+                "requested_at": float(now), "through_lp": 0, "group": {}, "segments": {},
+                "abandoned": "no_transcript",
+            }}
+            state["digest_runs"] = 1
+            state["digested_through_lp"] = 0
+            if state["debrief_choice"] is None:
+                state["debrief_choice"] = "abandoned"
+                state["debrief_chip_pending"] = False
+            changed = True
+
+        await asyncio.to_thread(self._update_state_sync, mutate)
+        return changed
 
     async def update_state(self, **changes: Any) -> dict:
         """Read-modify-write ``state.json`` with ``changes``; the result is validated."""
