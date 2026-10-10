@@ -348,18 +348,16 @@ async def get_core_config_api():
 # + B 基于旧 provider 算的 resolvedProviderUrls」这种谁都没提交过的组合。串行后，
 # 后一次保存的快照一定已经包含前一次的结果。记忆开关等其它写入方只碰互不相干的键，
 # 不受这把锁影响，照常在 URL 解析期间落盘。
+# 只罩「读快照 → 写盘」：写完立即释放，之后的通知前端 / 结束 session / 重载配置
+# 可能卡在慢 WebSocket 上，不能让它拖住下一次保存。
 _core_api_save_lock = asyncio.Lock()
 
 
 @router.post("/core_api")
 async def update_core_config(request: Request):
-    """Update the core config (API keys); concurrent saves run one at a time."""
-    async with _core_api_save_lock:
-        return await _update_core_config_serialized(request)
-
-
-async def _update_core_config_serialized(request: Request):
-    """Body of update_core_config; the caller holds _core_api_save_lock."""
+    """Update the core config (API keys); the snapshot-to-write section runs one save at a time."""
+    await _core_api_save_lock.acquire()
+    save_lock_held = True
     try:
         data = await request.json()
         if not data:
@@ -739,6 +737,8 @@ async def _update_core_config_serialized(request: Request):
         core_cfg = await config_manager.aupdate_json_config(
             'core_config.json', _apply_core_config_changes
         )
+        _core_api_save_lock.release()
+        save_lock_held = False
 
         await ensure_default_yui_voice_for_free_api(config_manager, core_cfg)
 
@@ -834,6 +834,9 @@ async def _update_core_config_serialized(request: Request):
         raise
     except Exception as e:
         return {"success": False, "error": str(e)}
+    finally:
+        if save_lock_held:
+            _core_api_save_lock.release()
 
 
 @router.get("/api_providers")

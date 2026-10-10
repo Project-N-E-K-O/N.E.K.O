@@ -385,6 +385,39 @@ async def test_overlapping_core_api_saves_run_one_after_another(
 
 
 @pytest.mark.asyncio
+async def test_core_api_save_lock_is_released_once_the_file_is_written(
+    config_manager, core_config_router, monkeypatch
+):
+    """Post-save work (client notify / end_session / reload) can hang on a slow socket;
+    it must not hold off the next save."""
+    path = config_manager.config_dir / FILENAME
+    reload_parked = asyncio.Event()
+    release_reload = asyncio.Event()
+    reloads = []
+
+    async def slow_reload():
+        reloads.append(True)
+        if len(reloads) == 1:
+            reload_parked.set()
+            await release_reload.wait()
+
+    monkeypatch.setattr(core_config_router, "get_initialize_character_data", lambda: slow_reload)
+
+    first = asyncio.create_task(core_config_router.update_core_config(_FakeRequest(CORE_API_PAYLOAD)))
+    try:
+        await asyncio.wait_for(reload_parked.wait(), 5)
+        assert _read(path)["coreApiKey"] == "new-key"
+        second = await asyncio.wait_for(
+            core_config_router.update_core_config(_FakeRequest({**CORE_API_PAYLOAD, "coreApiKey": "second-key"})), 5
+        )
+        assert second["success"] is True
+        assert _read(path)["coreApiKey"] == "second-key"
+    finally:
+        release_reload.set()
+    assert (await asyncio.wait_for(first, 5))["success"] is True
+
+
+@pytest.mark.asyncio
 async def test_powerful_toggle_migration_does_not_block_or_clobber_a_core_api_save(
     config_manager, core_config_router, memory_router, monkeypatch
 ):
