@@ -299,9 +299,16 @@ class KnowledgeService:
         if tasks:
             await asyncio.wait(tasks, timeout=2.0)
         # Cancelling a caller leaves its mutation running (see _locked); its
-        # file, index and registry writes must end before we report stopped.
+        # file, index and registry writes should end before we report stopped.
+        # The wait is bounded: a write stuck on the disk must not hang the
+        # Memory Server's shutdown. Each write is atomic on its own, and the
+        # next start reconciles the index with the registry.
         if self._detached:
             await asyncio.wait(set(self._detached), timeout=DETACHED_WRITE_WAIT_SECONDS)
+            if self._detached:
+                logger.warning(
+                    "[Knowledge] %d write(s) still running at shutdown", len(self._detached)
+                )
         for pool in (self._query_pool, self._parse_pool):
             if pool is not None:
                 pool.shutdown(wait=False, cancel_futures=True)
