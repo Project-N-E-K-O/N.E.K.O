@@ -399,6 +399,7 @@ from main_routers.cookies_login_router import router as cookies_login_router  # 
 from main_routers.game_router import router as game_router  # noqa
 from main_routers.watch_together_router import router as watch_together_router
 from main_routers.game_router.drawing_guess import router as drawing_guess_router  # noqa
+from main_routers.visit_router import router as visit_router  # noqa
 from main_routers.card_drop_router import (  # noqa
     _facts_cors_headers as _card_drop_cors_headers,
     _local_mutation_origin_allowed as _card_drop_mutation_origin_allowed,
@@ -826,6 +827,8 @@ app.include_router(drawing_guess_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
 app.include_router(numeric_theater_router)
+# 猫娘串门：/api/visit（含 /api/visit/transport/ws）；发起入口受 NEKO_VISIT_ENABLED 总闸，数据管理不受
+app.include_router(visit_router)
 app.include_router(card_drop_router)  # Must precede the pages fallback router.
 app.include_router(community_oauth_router)
 app.include_router(community_oauth_callback_router)  # Exact /oauth/callback before pages.

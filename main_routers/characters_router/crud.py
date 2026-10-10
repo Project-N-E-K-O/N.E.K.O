@@ -88,6 +88,11 @@ from utils.asyncio_retirement import await_retirement
 from utils.chat_avatar_store import ChatAvatarError, remove_record as remove_chat_avatar_record
 from utils.config_manager.storage_roots import chat_avatar_directory
 from utils.voice_config import read_legacy_voice_id
+from utils.external_route_registry import (
+    begin_character_mutation,
+    end_character_mutation,
+    is_character_lifecycle_locked,
+)
 from utils.recent_file import capture_recent_generation, write_recent_payload
 from utils.language_utils import normalize_language_code
 from utils.new_character_greeting_state import (
@@ -134,6 +139,10 @@ def _get_new_catgirl_default_voice_id() -> str:
         or next((voice_id for voice_id in free_voices.values() if voice_id), '')
         or DEFAULT_NEW_CATGIRL_FREE_VOICE_ID
     )
+
+
+EXTERNAL_ROUTE_ACTIVE = "EXTERNAL_ROUTE_ACTIVE"
+"""``error_code`` of a rename / delete refused while an external route or its background work holds the character."""
 
 
 async def _mark_new_character_greeting_pending_safe(config_manager, character_name: str, source: str) -> tuple[bool, str]:
@@ -1064,7 +1073,10 @@ async def rename_catgirl(old_name: str, request: Request):
         return JSONResponse({'success': False, 'error': err.replace('档案名', '新档案名')}, status_code=400)
 
     async with character_config_mutation_lock:
-        return await _rename_catgirl_serialized(old_name, new_name)
+        try:
+            return await _rename_catgirl_serialized(old_name, new_name)
+        finally:
+            end_character_mutation(old_name, new_name)
 
 
 async def _rename_catgirl_serialized(old_name: str, new_name: str):
@@ -1095,6 +1107,13 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
                     'success': False,
                     'error': '语音状态下无法修改角色名称，请先停止语音对话后再修改'
                 }, status_code=400)
+    if is_character_lifecycle_locked(old_name):
+        # 外部路由（小游戏 / 串门）占着这个角色、或串门还在按这个名字写后台数据（收尾、摘要、
+        # 清除记忆）：改名会让它们写到旧名字下（OD-13）
+        return JSONResponse({'success': False, 'error_code': EXTERNAL_ROUTE_ACTIVE,
+                             'error': '角色正在串门或小游戏中，请结束后再修改名称'}, status_code=400)
+    # 与上面的检查之间没有 await：从这里到事务结束，这个角色不能再开串门 / 小游戏
+    begin_character_mutation(old_name, new_name)
     if is_current_catgirl and old_name in session_manager:
         rename_notification_ws = session_manager[old_name].websocket
         if rename_notification_ws:
@@ -1965,7 +1984,10 @@ async def delete_catgirl(name: str):
 
 async def _delete_catgirl_by_name(name: str):
     async with character_config_mutation_lock:
-        return await _delete_catgirl_by_name_serialized(name)
+        try:
+            return await _delete_catgirl_by_name_serialized(name)
+        finally:
+            end_character_mutation(name)
 
 
 async def _cleanup_deleted_chat_avatar(directory, uid):
@@ -1989,6 +2011,11 @@ async def _delete_catgirl_by_name_serialized(name: str):
     current_catgirl = characters.get('当前猫娘', '')
     if name == current_catgirl:
         return JSONResponse({'success': False, 'error': '不能删除当前正在使用的猫娘！请先切换到其他猫娘后再删除。'}, status_code=400)
+    if is_character_lifecycle_locked(name):
+        # 切换角色后旧角色的串门 / 小游戏收尾仍在跑、或还在写它的后台数据：删掉之后会被重建（OD-13）
+        return JSONResponse({'success': False, 'error_code': EXTERNAL_ROUTE_ACTIVE,
+                             'error': '角色正在串门或小游戏中，请结束后再删除'}, status_code=400)
+    begin_character_mutation(name)
 
     deleted_character_uid = get_character_uid(characters["猫娘"][name])
     deleted_avatar_directory = chat_avatar_directory(_config_manager)

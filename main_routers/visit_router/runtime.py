@@ -45,6 +45,7 @@ connects ``websocket_router`` / ``turn.py``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import random
 import secrets
@@ -117,6 +118,7 @@ from main_routers.visit_router.transport_ws import (
 from main_routers.visit_router.transcript_upload import UploadJournal
 from utils.logger_config import get_module_logger
 from utils.visit_route_state import (
+    VISIT_ROUTE_KIND,
     activate_visit_route,
     finalize_visit_route_state,
     get_visit_route_state,
@@ -273,6 +275,11 @@ def get_runtime(lanlan_name: str) -> Optional["VisitRuntime"]:
     return _runtimes.get(str(lanlan_name or ""))
 
 
+def live_runtimes() -> list["VisitRuntime"]:
+    """Every registered runtime (one per visiting character), in registration order."""
+    return list(_runtimes.values())
+
+
 def get_runtime_by_visit(visit_id: str) -> Optional["VisitRuntime"]:
     return _by_visit.get(visit_id)
 
@@ -393,6 +400,24 @@ async def _remember_name(character_uid: str) -> None:
     _uid_by_name[name] = character_uid
 
 
+async def _remember_name_strict(character_uid: str) -> None:
+    """Like :func:`_remember_name`, but a config read failure raises (the clearing guard fails closed).
+
+    A guard registered only under the uid would not block a rename of the
+    character's current name, so it must not be entered without one; a
+    deleted character (no current name) has nothing left to protect.
+    """
+    from main_logic.visit import local_chars
+
+    name = await local_chars.resolve_char_name(character_uid)
+    if not name:
+        return
+    for old, uid in list(_uid_by_name.items()):
+        if uid == character_uid and old != name:
+            del _uid_by_name[old]
+    _uid_by_name[name] = character_uid
+
+
 def spawn_visit_background(character_uid: str, factory: Callable[[], Awaitable[Any]]) -> asyncio.Task:
     """Run a visit background write registered under ``character_uid`` until it finishes.
 
@@ -420,6 +445,36 @@ def spawn_visit_background(character_uid: str, factory: Callable[[], Awaitable[A
     task = asyncio.ensure_future(run())
     bucket.add(task)
     return task
+
+
+@contextlib.asynccontextmanager
+async def hold_character_lifecycle(character_uids: Iterable[str]):
+    """``lifecycle_guard`` of the clearing endpoints: rename / delete of these characters answer 400 while held.
+
+    Entered under the character-config mutation lock (the one rename and
+    delete run under), so a rename already in progress finishes first and
+    the clearing then re-reads the new name; once entered, the characters
+    count as having visit background work (``is_character_lifecycle_locked``).
+    """
+    from utils.character_memory import character_config_mutation_lock
+
+    held = asyncio.get_running_loop().create_future()
+    buckets: list[tuple[str, set]] = []
+    try:
+        async with character_config_mutation_lock:
+            for uid in sorted({str(u) for u in character_uids if u}):
+                await _remember_name_strict(uid)
+                bucket = _visit_bg_tasks.setdefault(uid, set())
+                bucket.add(held)
+                buckets.append((uid, bucket))
+        yield
+    finally:
+        if not held.done():
+            held.set_result(None)
+        for uid, bucket in buckets:
+            bucket.discard(held)
+            if not bucket and _visit_bg_tasks.get(uid) is bucket:
+                _visit_bg_tasks.pop(uid, None)
 
 
 def current_instance(lanlan_name: str) -> Optional[str]:
@@ -1202,6 +1257,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self.side == "host" and self.phase == PHASE_AWAITING and self._invite_frame is not None:
             frames.append(dict(self._invite_frame))
         return frames
+
+    def replay_for_bind(self) -> None:
+        """Queue :meth:`bind_replay_frames` on the ordered display queue (``visit_bind``).
+
+        Taken and queued synchronously when the socket binds: frames queued
+        earlier go out first, frames of later transitions after, so an older
+        snapshot never lands behind a newer phase.
+        """
+        for frame in self.bind_replay_frames():
+            self._post_display(frame)
 
     # ── 媒体 ─────────────────────────────────────────────────────────
 
@@ -2662,9 +2727,19 @@ async def _local_account() -> Optional[str]:
 
 
 async def route_stream_message(lanlan_name: str, message: dict) -> bool:
+    from main_routers.visit_router import display_socket
+    from utils.visit_route_state import DISPLAY_SOCKET_CONNECTION
+
     rt = _runtimes.get(str(lanlan_name or ""))
     if rt is None or not is_visit_route_active(lanlan_name):
         return False
+    origin = DISPLAY_SOCKET_CONNECTION.get()
+    if origin is not None and not display_socket.is_bound(origin):
+        # 来自没 visit_bind 的 display socket（分派途中路由换成了串门）：吞掉、把未授权提示发回发起的
+        # 那条连接（不是当前的 mgr.websocket），不代亲人发言
+        request_id = message.get("request_id") if isinstance(message, dict) else None
+        await display_socket.refuse(origin, request_id)
+        return True
     return await rt.on_stream_message(message)
 
 
@@ -2904,7 +2979,7 @@ def register_visit_route_kind() -> None:
     from utils.external_route_registry import ExternalRouteKind, register_external_route_kind
 
     register_external_route_kind(ExternalRouteKind(
-        kind="neko_visit",
+        kind=VISIT_ROUTE_KIND,
         is_active=is_visit_route_active,
         route_stream_message=route_stream_message,
         on_start_session=on_start_session,
@@ -2921,6 +2996,6 @@ __all__ = [
     "VisitRuntime", "VisitRefused", "RuntimeDeps", "start_visit", "end_visit", "stop_all",
     "visit_sweep_loop", "is_visit_live", "is_visit_route_active", "is_visit_route_locked",
     "has_visit_background_tasks", "spawn_visit_background", "register_visit_route_kind",
-    "get_runtime", "get_runtime_by_visit", "recent_runtime", "on_page_signal",
-    "end_visits_for_account_change", "account_change", "cancel_background_writes",
+    "get_runtime", "get_runtime_by_visit", "recent_runtime", "live_runtimes", "on_page_signal",
+    "hold_character_lifecycle", "end_visits_for_account_change", "account_change", "cancel_background_writes",
 ]

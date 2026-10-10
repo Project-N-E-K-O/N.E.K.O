@@ -28,8 +28,24 @@ mini game cannot grab the same character in between.
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 from typing import Dict, Optional
 from weakref import WeakValueDictionary
+
+VISIT_ROUTE_KIND = "neko_visit"
+"""External route kind (and takeover owner) of the visit runtime."""
+
+VISIT_SOCKET_BOUND_ATTR = "neko_visit_authorized"
+"""Attribute set on a display-socket connection object once it passed ``visit_bind`` (design §4.5)."""
+
+DISPLAY_SOCKET_CONNECTION: ContextVar[Optional[object]] = ContextVar("neko_display_socket_connection", default=None)
+"""Set by ``websocket_router`` around a ``stream_data`` dispatch: the display-socket connection it came from."""
+
+VISIT_SOCKET_DELIVERED_ATTR = "neko_visit_delivered_debrief"
+"""Attribute holding the debrief block request ids this display-socket connection acknowledged."""
+
+VISIT_SOCKET_SENT_ATTR = "neko_visit_sent_debrief"
+"""Attribute holding the debrief block request ids written on this display-socket connection."""
 
 _visit_route_states: Dict[str, dict] = {}
 

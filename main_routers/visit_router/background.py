@@ -77,8 +77,8 @@ async def run_startup_recovery() -> Any:
         submit_report=transcript_upload.submit_queued_report,
         retry_later=transcript_upload.schedule_visit_retry,
         void_pending=default_void_pending(config_dir),
-        # 清除重放期间挡住改名 / 删除的守卫（PR-09b 第一段提供）；没有它时清除照常重放、只是不挡
-        lifecycle_guard=getattr(runtime, "hold_character_lifecycle", None),
+        # 清除重放期间挡住改名 / 删除的守卫（与清除端点同一个）
+        lifecycle_guard=runtime.hold_character_lifecycle,
     )
     logger.info("visit recovery done: crashed=%d chips=%d swept=%d", len(report.crashed), len(report.chips),
                 report.swept)

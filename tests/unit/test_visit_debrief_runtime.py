@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import json
+
 import asyncio
 import builtins
 
@@ -159,13 +161,37 @@ async def test_record_block_is_bounded_and_keeps_the_newest_lines():
 async def test_render_chips_recovery_callback(monkeypatch):
     from main_routers.visit_router import host_port
 
+    from main_routers.visit_router import accounts
+
+    async def owner(_visit_id):
+        return "uid-own"
+
+    async def own_uid():
+        return "uid-own"
+
+    # 场次归属的真实读盘见 test_visit_socket_bind 的补录用例
+    monkeypatch.setattr(debrief, "_visit_owner", owner)
+    monkeypatch.setattr(accounts, "own_visit_uid", own_uid)
     fake = FakeHost("Host")
     monkeypatch.setattr(host_port.ManagerHost, "for_character", classmethod(lambda cls, name: fake))
     assert await debrief.render_chips("v" * 22, own_char="Host", status="interrupted") is True
-    assert fake.status_codes() == ["VISIT_INTERRUPTED_LAST_TIME"]
+    # 「意外中断」与芯片走同一个锁定连接的出口（send_frame），不经会重读 mgr.websocket 的 send_status
+    status = [json.loads(f["message"])["code"] for f in fake.frames if f.get("type") == "status"]
+    assert status == ["VISIT_INTERRUPTED_LAST_TIME"] and fake.status_codes() == []
     assert fake.blocks[0][1] == "visit-debrief:" + "v" * 22
     monkeypatch.setattr(host_port.ManagerHost, "for_character", classmethod(lambda cls, name: None))
     assert await debrief.render_chips("v" * 22, own_char="Gone", status=None) is False
+
+
+async def test_render_chips_waits_for_a_bound_display(monkeypatch):
+    from main_routers.visit_router import host_port
+
+    # 启动补录通常早于页面连上并 visit_bind：芯片与「意外中断」都留给 bind 重放，不先发半套
+    fake = FakeHost("Host")
+    fake.bound = False
+    monkeypatch.setattr(host_port.ManagerHost, "for_character", classmethod(lambda cls, name: fake))
+    assert await debrief.render_chips("v" * 22, own_char="Host", status="interrupted") is False
+    assert fake.status_codes() == [] and fake.blocks == []
 
 
 def test_visit_kind_is_registered_with_every_hook():

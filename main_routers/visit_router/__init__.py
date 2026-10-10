@@ -26,9 +26,9 @@ paths; :data:`router` (``prefix='/api/visit'``) includes them. Two groups:
   still export, clear or report after the switch was turned off.
 
 Importing the package registers the ``neko_visit`` external route kind
-(:func:`runtime.register_visit_route_kind`); it only matters once something
-imports it. Nothing here is mounted on the app until PR-09b includes
-:data:`router` in ``web_app.py``.
+(:func:`runtime.register_visit_route_kind`) and wires the runtime hooks of
+the memory endpoints (:func:`_wire_memory_routes`). ``web_app.py`` includes
+:data:`router`; the display-socket side lives in :mod:`.display_socket`.
 """
 
 from fastapi import APIRouter, Depends
@@ -48,5 +48,22 @@ router.include_router(memory_routes.router)
 router.include_router(cloud_routes.router)
 
 runtime.register_visit_route_kind()
+
+
+def _wire_memory_routes() -> None:
+    # 记忆管理端点的运行时钩子：本机登录账号的 visit_uid（#3312 的映射）、角色是否正在串门
+    # （占位到退出流程结束都算）、清除期间挡住改名 / 删除、拉黑时结束与此人的在飞串门
+    from main_routers.visit_router.accounts import own_visit_uid
+    from main_routers.visit_router.display_socket import end_visits_with_peer
+
+    memory_routes.configure_memory_routes(
+        own_visit_uid=own_visit_uid,
+        is_visit_active=runtime.is_visit_route_locked,
+        lifecycle_guard=runtime.hold_character_lifecycle,
+        on_blocked=end_visits_with_peer,
+    )
+
+
+_wire_memory_routes()
 
 __all__ = ["router"]
