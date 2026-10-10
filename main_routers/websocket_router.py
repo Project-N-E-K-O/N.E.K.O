@@ -1030,6 +1030,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 continue
             action = message.get("action")
 
+            if action == "reply_tail_capabilities":
+                websocket.state.reply_tail_version = 1 if message.get("version") == 1 else 0
+                continue
+
             if action == "voice_identity_control":
                 task = _fire_task(_dispatch_voice_identity_control(session_manager[lanlan_name],
                     websocket, message, connection_id=str(this_session_id),

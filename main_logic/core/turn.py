@@ -822,6 +822,8 @@ class TurnMixin:
         owner = _taken_over_reply_turn(kind)
         if owner is not None:
             owner.taken_over = True
+            if owner.reply_tail is not None and not owner.reply_tail.completed:
+                owner.reply_tail.registry.cancel_reply(owner.reply_tail, "reply_interrupted")
         if owner is not None and owner.turn_ended:
             if owner.request_id and self._active_text_request_id == owner.request_id:
                 self._active_text_request_id = None
@@ -1521,6 +1523,8 @@ class TurnMixin:
             if request_id is _REQUEST_ID_UNSET
             else request_id
         )
+        if reply_turn is not None and reply_turn.reply_tail is not None:
+            reply_turn.reply_tail.discard_attempt()
         request_has_owner = (
             request_id is not _REQUEST_ID_UNSET
             and active_request_id is not None
@@ -3112,6 +3116,7 @@ class TurnMixin:
         request_id: str | None = None,
         source: str = "plugin",
         source_name: str | None = None,
+        reply_tail: dict | None = None,
     ) -> bool:
         """Render structured blocks as a SYSTEM message.
 
@@ -3136,7 +3141,7 @@ class TurnMixin:
         ):
             return False
         try:
-            await self.websocket.send_json({
+            payload = {
                 "type": "chat_blocks",
                 "blocks": structured_blocks,
                 "request_id": request_id,
@@ -3145,7 +3150,10 @@ class TurnMixin:
                     "source_name": source_name or "",
                     "passthrough": True,
                 },
-            })
+            }
+            if reply_tail is not None:
+                payload["reply_tail"] = reply_tail
+            await self.websocket.send_json(payload)
         except Exception as e:
             logger.warning(
                 "[%s] render_chat_blocks WS send failed: %s",

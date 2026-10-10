@@ -88,6 +88,17 @@ async def llm_tool_callback(
         # JSON array or string; coerce or reject explicitly so the
         # plugin never receives a non-dict.
         arguments = {}
+    host_reply = body.get("host_reply")
+    if isinstance(host_reply, dict) and host_reply.get("source") == "plugin:" + plugin_id:
+        arguments = dict(arguments)
+        # This reserved context comes from the host, never from model arguments.
+        arguments["_ctx"] = {
+            "host_reply": dict(host_reply), "lanlan_name": host_reply.get("role"),
+        }
+    elif isinstance(arguments.get("_ctx"), dict) and "host_reply" in arguments["_ctx"]:
+        arguments = dict(arguments)
+        arguments["_ctx"] = dict(arguments["_ctx"])
+        arguments["_ctx"].pop("host_reply", None)
     call_id = body.get("call_id") or ""
 
     # First sanity check: do we even know about this tool? Without this,

@@ -556,6 +556,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         handler: Any,
         timeout: float = 30.0,
         role: str | None = None,
+        reply_tail: bool = False,
     ) -> bool:
         """Register an LLM tool at runtime.
 
@@ -592,6 +593,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             parameters=dict(parameters) if isinstance(parameters, dict) else {"type": "object", "properties": {}},
             timeout_seconds=float(timeout),
             role=role,
+            reply_tail=reply_tail,
         )
         self._register_llm_tool_internal(meta, handler)
         return True
@@ -619,6 +621,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 "parameters": dict(meta.parameters),
                 "timeout_seconds": meta.timeout_seconds,
                 "role": meta.role,
+                **({"reply_tail": True} if meta.reply_tail else {}),
             }
             for meta in self._llm_tools.values()
         ]

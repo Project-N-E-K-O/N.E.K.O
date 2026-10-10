@@ -1213,6 +1213,9 @@ class _StreamingMixin:
                         if not self._resume_response_generation(response_generation):
                             status_reported = True
                             break
+                        tail = getattr(reply_owner, "reply_tail", None)
+                        if tail is not None:
+                            tail.discard_attempt()
                         assistant_message = ""           # 仅最后一段未持久化的 text，用于 final AIMessage append
                         assistant_message_total = ""     # 全轮累积，用于 _check_repetition / 长度 guard
                         is_first_chunk = True
@@ -2093,6 +2096,9 @@ class _StreamingMixin:
                             user_message, assistant_message, response_generation,
                             turn_history=turn_history,
                         )
+                        tail = getattr(reply_owner, "reply_tail", None)
+                        if tail is not None and _live_at_commit and assistant_message_total:
+                            tail.completed = True
                         # 重复检测看完整一轮文本（含 pre-tool），与人类用户感知
                         # 的"这一轮 AI 说了什么"一致。
                         if assistant_message_total and _live_at_commit:

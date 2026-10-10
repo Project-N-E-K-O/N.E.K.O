@@ -631,6 +631,9 @@ class _ToolingMixin:
                     )
                 else:
                     try:
+                        # No await between the generation check and snapshot.
+                        # A slow handler must keep this owner after a new turn.
+                        tool_call.reply_owner = getattr(self, "_active_reply_owner", None)
                         with _suspend_dialog_slop():
                             result = await handler(tool_call)
                     except Exception as e:
