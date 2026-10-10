@@ -342,9 +342,24 @@ async def get_core_config_api():
         }
 
 
+# /core_api 保存之间互斥（请求级，与 core_config.json 的文件锁是两回事）：
+# 每次保存基于快照算出派生字段（resolvedProviderUrls、Key Book 槽位迁移等），
+# 再把差异合并进最新文件。两次 /core_api 交错时，按字段合并会拼出「A 的 provider
+# + B 基于旧 provider 算的 resolvedProviderUrls」这种谁都没提交过的组合。串行后，
+# 后一次保存的快照一定已经包含前一次的结果。记忆开关等其它写入方只碰互不相干的键，
+# 不受这把锁影响，照常在 URL 解析期间落盘。
+_core_api_save_lock = asyncio.Lock()
+
+
 @router.post("/core_api")
 async def update_core_config(request: Request):
-    """Update the core config (API keys)."""
+    """Update the core config (API keys); concurrent saves run one at a time."""
+    async with _core_api_save_lock:
+        return await _update_core_config_serialized(request)
+
+
+async def _update_core_config_serialized(request: Request):
+    """Body of update_core_config; the caller holds _core_api_save_lock."""
     try:
         data = await request.json()
         if not data:

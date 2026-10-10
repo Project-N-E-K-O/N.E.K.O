@@ -262,6 +262,7 @@ def core_config_router(monkeypatch):
     monkeypatch.setattr(core_config, "get_initialize_character_data", lambda: _noop)
     monkeypatch.setattr(core_config, "ensure_default_yui_voice_for_free_api", _noop)
     monkeypatch.setattr(core_config, "_auto_resolve_provider_urls_for_save", _noop)
+    monkeypatch.setattr(core_config, "_core_api_save_lock", asyncio.Lock())
 
     import httpx
 
@@ -335,6 +336,52 @@ async def test_core_api_save_keeps_a_memory_toggle_saved_during_url_resolution(
     assert response["resolvedProviderUrls"] == saved["resolvedProviderUrls"]
     _assert_core_api_applied(saved)
     assert saved["powerful_memory_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_overlapping_core_api_saves_run_one_after_another(
+    config_manager, core_config_router, monkeypatch
+):
+    """Derived fields (resolvedProviderUrls, key-book moves) come from the snapshot, so two
+    /core_api saves must not be field-merged: the second one has to start from the first's result."""
+    path = config_manager.config_dir / FILENAME
+    first_parked = asyncio.Event()
+    release_first = asyncio.Event()
+    seen_snapshots = []
+
+    async def resolve(core_cfg, checked=None):
+        seen_snapshots.append(dict(core_cfg))
+        if len(seen_snapshots) == 1:
+            first_parked.set()
+            await release_first.wait()
+        core_cfg["resolvedProviderUrls"] = {"core:qwen": f"https://resolved-{len(seen_snapshots)}.example/v1"}
+        return {"total": 1}
+
+    monkeypatch.setattr(core_config_router, "_auto_resolve_provider_urls_for_save", resolve)
+
+    first = asyncio.create_task(core_config_router.update_core_config(_FakeRequest(CORE_API_PAYLOAD)))
+    second = None
+    try:
+        await asyncio.wait_for(first_parked.wait(), 5)
+        second = asyncio.create_task(
+            core_config_router.update_core_config(_FakeRequest({**CORE_API_PAYLOAD, "coreApiKey": "second-key", "openclawTimeout": 30}))
+        )
+        await asyncio.sleep(0.2)
+        assert not second.done(), "a second /core_api save must wait for the one in flight"
+        assert len(seen_snapshots) == 1, "the second save must not take its snapshot early"
+    finally:
+        release_first.set()
+    assert (await asyncio.wait_for(first, 5))["success"] is True
+    assert (await asyncio.wait_for(second, 5))["success"] is True
+
+    assert seen_snapshots[1]["resolvedProviderUrls"] == {"core:qwen": "https://resolved-1.example/v1"}, (
+        "second save did not start from the first's result"
+    )
+    saved = _read(path)
+    assert saved["coreApiKey"] == "second-key"
+    assert saved["openclawTimeout"] == 30
+    assert saved["resolvedProviderUrls"] == {"core:qwen": "https://resolved-2.example/v1"}
+    assert saved["unrelated"] == {"nested": "keep"}
 
 
 @pytest.mark.asyncio
