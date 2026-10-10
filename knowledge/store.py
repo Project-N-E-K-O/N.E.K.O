@@ -758,8 +758,10 @@ class KnowledgeStore:
             return None
         # The model's dimension is what most vectors have, never just the
         # first row's: one damaged blob must not disqualify all the others.
-        lengths = Counter(len(row[3]) for row in rows)
-        size = max(lengths, key=lambda length: (lengths[length], length))
+        # Empty blobs or ones that are not whole float32 values cannot be a
+        # vector at all; they are damaged and do not vote on the dimension.
+        lengths = Counter(len(row[3]) for row in rows if len(row[3]) and len(row[3]) % 4 == 0)
+        size = max(lengths, key=lambda length: (lengths[length], length)) if lengths else 0
         dim = size // 4
         pack_ids: list[str] = []
         pack_index: dict[str, int] = {}
@@ -770,7 +772,7 @@ class KnowledgeStore:
         damaged: list[tuple[int, bytes]] = []
         for chunk_id, entry_id, pack_id, blob, chunk_index in rows:
             if (
-                size % 4
+                not size
                 or len(blob) != size
                 or not np.isfinite(np.frombuffer(blob, dtype="<f4")).all()
             ):

@@ -2696,3 +2696,24 @@ def test_a_damaged_vector_rewritten_meanwhile_is_not_cleared(tmp_path):
     finally:
         conn.close()
     assert store.clear_vectors(damaged) == 0
+
+
+def test_empty_vector_blobs_do_not_outvote_real_ones(tmp_path):
+    from knowledge.store import KnowledgeStore
+
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    store.replace_pack(parse_pack(_pack(entries=_entries("e", 3))), pack_sha256="0" * 64)
+    conn = sqlite3.connect(tmp_path / "knowledge.db")
+    try:
+        ids = [row[0] for row in conn.execute("SELECT id FROM chunks ORDER BY id")]
+        good = np.ones(16, dtype="<f4").tobytes()
+        conn.execute("UPDATE chunks SET model_id='m', vector=? WHERE id=?", (b"", ids[0]))
+        conn.execute("UPDATE chunks SET model_id='m', vector=? WHERE id=?", (b"", ids[1]))
+        conn.execute("UPDATE chunks SET model_id='m', vector=? WHERE id=?", (good, ids[2]))
+        conn.commit()
+    finally:
+        conn.close()
+    snapshot = store.load_vectors("m")
+    assert snapshot.matrix.shape == (1, 16)  # the real vector is kept
+    assert sorted(chunk_id for chunk_id, _blob in snapshot.damaged) == ids[:2]
