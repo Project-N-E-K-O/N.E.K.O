@@ -291,6 +291,12 @@ class PluginContext:
         return cast("BusHubProtocol", hub)
 
     @property
+    def reply_tail(self) -> Any:
+        from plugin.sdk.shared.core.reply_tail import ReplyTailClient
+
+        return ReplyTailClient(self)
+
+    @property
     def images(self) -> Any:
         images = self._images
         if images is None:

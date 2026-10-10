@@ -23,6 +23,7 @@ from .types import (
     Metadata,
     PluginContextProtocol,
     PluginModelsProtocol,
+    ReplyTailProtocol,
     PushMessageResult,
 )
 
@@ -114,6 +115,7 @@ class SdkContext:
         self._host_ctx = cast(_HostContextProtocol, host_ctx)
         self._bus_ctx: SdkBusContext | None | object = _UNSET
         self._models_ctx: PluginModelsProtocol | None = None
+        self._reply_tail_ctx: ReplyTailProtocol | None = None
 
     @staticmethod
     def _normalize_export_metadata(
@@ -245,6 +247,15 @@ class SdkContext:
 
             self._models_ctx = PluginModels(self._host_ctx)
         return self._models_ctx
+
+    @property
+    def reply_tail(self) -> ReplyTailProtocol:
+        """Optional original-reply images; requires a v1 host-issued context."""
+        if self._reply_tail_ctx is None:
+            from .reply_tail import ReplyTailClient
+
+            self._reply_tail_ctx = ReplyTailClient(self._host_ctx)
+        return self._reply_tail_ctx
 
     async def get_own_config(self, timeout: float = 5.0) -> object:
         return await self._host_ctx.get_own_config(timeout=timeout)

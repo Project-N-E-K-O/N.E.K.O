@@ -631,6 +631,7 @@
                     }
                 }
             }
+            if (window.nekoReplyTail) window.nekoReplyTail.changed();
         }
     }
 
@@ -708,6 +709,7 @@
             } catch (_) {}
         }
         window._realisticGeminiQueue = [];
+        if (window.nekoReplyTail) window.nekoReplyTail.changed();
     }
 
     // ======================== appendMessage（覆盖核心） ========================
@@ -1075,7 +1077,10 @@
         return true;
     }
 
-    function appendReactChatBlocks(payload) {
+    function appendReactChatBlocks(payload, tailPlacement) {
+        if (payload && payload.reply_tail && !tailPlacement) {
+            return !!(window.nekoReplyTail && window.nekoReplyTail.enqueue(payload));
+        }
         var host = getHost();
         var blocks = structuredBlocksFrom(payload && payload.blocks);
         var cardHandled = false;
@@ -1113,6 +1118,11 @@
             blocks: blocks,
             status: 'sent'
         };
+        if (tailPlacement) {
+            message.id = tailPlacement.id;
+            message.sortKey = tailPlacement.sortKey;
+            message.createdAt = tailPlacement.createdAt;
+        }
         if (host && typeof host.appendMessage === 'function') {
             _tryFlushPendingHostMessages();
             if (!appendHostMessageSafely(host, message, 'plugin_chat_blocks')) {

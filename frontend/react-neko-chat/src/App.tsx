@@ -12,6 +12,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { useReplyTailPresentation } from './useReplyTailPresentation';
 import AvatarToolItemManager, {
   type AvatarToolEditorResultMessage,
   type AvatarToolManagerAnchorRect,
@@ -883,6 +884,10 @@ function getCompactHistoryScrollUnderCompactToolWheel(
  * same shared runtime.
  */
 export default function ChatWindowRoot(props: ChatWindowProps) {
+  useReplyTailPresentation(
+    props.messages || [], false, undefined, false, '', '', true,
+    props.chatSurfaceMode === 'full',
+  );
   return (
     <>
       {props.chatSurfaceMode === 'full'
@@ -1916,6 +1921,18 @@ function CompactChatApp({
   useEffect(() => {
     draftRef.current = visibleDraft;
   }, [visibleDraft]);
+
+  useReplyTailPresentation(
+    messages,
+    chatSurfaceMode === 'compact',
+    compactMessagePreview?.turnId,
+    compactCaptionState?.isEnded === true
+      || (compactAssistantStreamingGap?.turnId === compactMessagePreview?.turnId
+        && compactAssistantStreamingGap?.turnEnded === true),
+    compactPreviewText,
+    compactPreviewDisplayText,
+    compactExportHistoryMounted && compactExportHistoryOpen,
+  );
 
   useEffect(() => {
     compactPreviewTextVisibleRef.current = compactPreviewTextVisible;
@@ -6322,6 +6339,7 @@ function CompactChatApp({
                           <span
                             ref={compactPreviewTextRef}
                             className="compact-chat-capsule-text"
+                            data-reply-tail-caption-turn-id={compactMessagePreview?.turnId}
                             data-compact-preview-streaming={compactPreviewIsStreaming ? 'true' : 'false'}
                             data-compact-preview-scrollable={compactPreviewAllowsScroll ? 'true' : 'false'}
                             onWheel={handleCompactPreviewWheel}

@@ -2771,6 +2771,15 @@
             });
     }
 
+    function announceReplyTailCapability() {
+        var socket = S.socket;
+        if (!window.nekoReplyTail || window.__nekoReplyTailPresentationVersion !== 1
+                || !socket || socket.readyState !== WebSocket.OPEN || socket._replyTailVersion === 1) return;
+        socket.send(JSON.stringify({ action: 'reply_tail_capabilities', version: 1 }));
+        socket._replyTailVersion = 1;
+    }
+    window.addEventListener('neko-reply-tail-presentation', announceReplyTailCapability);
+
     function connectWebSocket() {
         var currentLanlanName = getWebSocketLanlanName();
         // 进入 connectWebSocket 即意味着"当前已经在主动重连"，排队中的 auto-reconnect 不再需要。
@@ -2834,6 +2843,8 @@
         // ---- onopen ----
         S.socket.onopen = function () {
             if (S.socket !== _thisSocket) return;
+            if (window.nekoReplyTail) window.nekoReplyTail.reset();
+            announceReplyTailCapability();
             console.log(window.t('console.websocketConnected'));
             // The state module publishes read errors; reconnect must remain usable.
             window.appChatAvatarState?.refresh('reconnect')?.catch?.(() => {});

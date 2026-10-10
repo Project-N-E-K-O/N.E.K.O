@@ -89,6 +89,7 @@ from main_routers.cookies_login_router import verify_local_access
 from utils.logger_config import get_module_logger
 
 from .shared_state import get_session_manager
+from main_logic.reply_tail import reply_tail_registry
 
 
 def _validate_local_callback_url(url: str) -> str:
@@ -180,6 +181,7 @@ class ToolRegisterRequest(BaseModel):
     # 模型轮也会被卡住；超过 5 分钟的同步工具应该改成 plugin 自己拆任务
     # 而不是把 main_server 长期 hold 住。
     timeout_seconds: float = Field(default=30.0, gt=0.0, le=300.0)
+    reply_tail: bool = False
 
     @field_validator("callback_url")
     @classmethod
@@ -387,6 +389,8 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
         "call_id": call.call_id,
         "raw_arguments": call.raw_arguments,
     }
+    if call.host_reply is not None:
+        payload["host_reply"] = call.host_reply
     try:
         client = _get_http_client()
         resp = await client.post(callback_url, json=payload, timeout=timeout)
@@ -425,6 +429,36 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
         # 就做了这个判别，这里少了一份。
         body = {"output": body}
     return await asyncio.to_thread(tool_result_from_envelope, call, body)
+
+
+class ReplyTailRequest(BaseModel):
+    context: Dict[str, Any]
+    plugin_id: str = Field(min_length=1, max_length=128)
+    registration_id: str = Field(min_length=1, max_length=128)
+    parts: List[Dict[str, Any]] = Field(default_factory=list, max_length=2)
+    ai_behavior: str = "blind"
+
+
+@router.post("/reply-tail/register")
+async def register_reply_tail(body: ReplyTailRequest) -> dict:
+    return await reply_tail_registry.register(
+        body.context, body.registration_id, body.parts,
+        plugin_id=body.plugin_id, ai_behavior=body.ai_behavior,
+    )
+
+
+@router.post("/reply-tail/status")
+async def reply_tail_status(body: ReplyTailRequest) -> dict:
+    return reply_tail_registry.status(
+        body.context, body.registration_id, plugin_id=body.plugin_id,
+    )
+
+
+@router.post("/reply-tail/cancel")
+async def cancel_reply_tail(body: ReplyTailRequest) -> dict:
+    return reply_tail_registry.cancel(
+        body.context, body.registration_id, plugin_id=body.plugin_id,
+    )
 
 
 def _ensure_dispatcher_bound(role_keys) -> None:
@@ -588,6 +622,7 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
             "callback_url": req.callback_url,
             "timeout_seconds": req.timeout_seconds,
             "role": req.role,
+            **({"reply_tail": True} if req.reply_tail else {}),
         },
     )
     # Reserve ownership before the first await, including managers rebuilt

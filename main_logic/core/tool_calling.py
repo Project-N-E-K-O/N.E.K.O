@@ -133,6 +133,14 @@ class ToolCallingMixin:
         call. Forwards to the registry (process-global, outliving any
         single session), then routes any images the tool returned.
         """
+        if call.reply_owner is not None:
+            from main_logic.reply_tail import reply_tail_registry
+
+            tool = self.tool_registry.get(call.name)
+            if tool is not None and tool.handler is None and tool.metadata.get("reply_tail") is True:
+                call.host_reply = reply_tail_registry.tool_context(
+                    self, call.reply_owner, call.call_id, str(tool.metadata.get("source", "")),
+                )
         result = await self.tool_registry.execute(call)
         if result.images:
             await self._route_tool_images(

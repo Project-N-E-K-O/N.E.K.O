@@ -314,6 +314,7 @@ class _ReplyTurn:
     session: Any = None
     turn_ended: bool = False
     taken_over: bool = False
+    reply_tail: Any = None
 
 
 def _taken_over_reply_turn(kind) -> _ReplyTurn | None:
