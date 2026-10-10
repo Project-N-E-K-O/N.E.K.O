@@ -83,16 +83,18 @@ class ToolCallingMixin:
         await self._sync_tools_to_active_session(raise_on_failure=True)
 
     def unregister_tool(self, name: str) -> bool:
+        holder = self._public_knowledge_holder()
         existed = self.tool_registry.unregister(name)
         if existed:
-            self._refill_vacated_builtins()
+            self._refill_vacated_builtins(holder)
             self._fire_task(self._sync_tools_to_active_session())
         return existed
 
     async def unregister_tool_and_sync(self, name: str) -> bool:
+        holder = self._public_knowledge_holder()
         existed = self.tool_registry.unregister(name)
         if existed:
-            self._refill_vacated_builtins()
+            self._refill_vacated_builtins(holder)
             await self._sync_tools_to_active_session(raise_on_failure=True)
         return existed
 
@@ -100,16 +102,18 @@ class ToolCallingMixin:
         return self.tool_registry.names()
 
     def clear_tools(self, *, source: str | None = None) -> int:
+        holder = self._public_knowledge_holder()
         n = self.tool_registry.clear(source=source)
         if n > 0:
-            self._refill_vacated_builtins()
+            self._refill_vacated_builtins(holder)
             self._fire_task(self._sync_tools_to_active_session())
         return n
 
     async def clear_tools_and_sync(self, *, source: str | None = None) -> int:
+        holder = self._public_knowledge_holder()
         n = self.tool_registry.clear(source=source)
         if n > 0:
-            self._refill_vacated_builtins()
+            self._refill_vacated_builtins(holder)
             await self._sync_tools_to_active_session(raise_on_failure=True)
         return n
 
@@ -273,14 +277,22 @@ class ToolCallingMixin:
                 type(e).__name__,
             )
 
-    def _refill_vacated_builtins(self) -> None:
-        """A removed tool may have been holding a builtin's name; take it back.
+    def _public_knowledge_holder(self) -> ToolDefinition | None:
+        """The tool holding the ``query_public_knowledge`` name, before a removal."""
+        return self.tool_registry.get(public_knowledge.TOOL_NAME)
 
-        Only needed for optional builtins that yield to same-name tools of
-        other sources (``query_public_knowledge``); the availability flag
-        itself does not change, so no availability callback would do this.
+    def _refill_vacated_builtins(self, previous_holder: ToolDefinition | None) -> None:
+        """Take the builtin's name back from another source's tool just removed.
+
+        Only for optional builtins that yield to same-name tools of other
+        sources (``query_public_knowledge``): when such a tool goes away the
+        availability flag does not change, so no availability callback would
+        restore the builtin. Removing the builtin itself (e.g. clearing the
+        "builtin" source) is respected: nothing is put back.
         """
         if os.environ.get("NEKO_DISABLE_BUILTIN_TOOLS", "").strip().lower() in ("1", "true", "yes"):
+            return
+        if previous_holder is None or public_knowledge.is_builtin_definition(previous_holder):
             return
         if self.tool_registry.get(public_knowledge.TOOL_NAME) is None and public_knowledge.tool_available():
             self._register_public_knowledge_tool()

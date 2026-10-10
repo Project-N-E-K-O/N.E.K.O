@@ -2634,7 +2634,7 @@ async def test_stop_waits_for_the_startup_reconcile_thread(tmp_path, monkeypatch
     assert finished.is_set()  # stop() returned only after the rebuild thread ended
 
 
-async def test_damaged_vectors_do_not_disqualify_the_healthy_ones(tmp_path, fast_indexer):
+async def test_damaged_vectors_do_not_disqualify_the_healthy_ones(tmp_path, fast_indexer, monkeypatch):
     service = await _started(tmp_path, FakeEmbedder())
     try:
         await _import(service, _pack(entries=_entries("v", 6)))
@@ -2644,6 +2644,12 @@ async def test_damaged_vectors_do_not_disqualify_the_healthy_ones(tmp_path, fast
                 break
             await asyncio.sleep(0.02)
         total = stats["demo-memes"]["total"]
+        # Freeze background work: a refresh would otherwise notice the damage
+        # first and the indexer would recompute it before we look.
+        monkeypatch.setattr(service, "_schedule_vector_refresh", lambda: None)
+        if service._vector_task is not None:
+            await asyncio.wait({service._vector_task})
+        await service.set_enabled(False)
         conn = sqlite3.connect(tmp_path / "knowledge.db")
         try:
             ids = [row[0] for row in conn.execute("SELECT id FROM chunks ORDER BY id")]

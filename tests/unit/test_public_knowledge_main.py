@@ -346,6 +346,18 @@ async def test_a_fresh_flag_still_gets_a_refresh_timer(monkeypatch):
     assert public_knowledge._timer_due > time.monotonic()
 
 
+def test_clearing_the_builtin_source_removes_the_builtin_for_good():
+    manager = _manager()
+    manager._register_builtin_tools()
+    public_knowledge.note_availability({"tool_available": True})
+    assert manager.tool_registry.get(public_knowledge.TOOL_NAME) is not None
+    assert manager.clear_tools(source="builtin") >= 1
+    assert manager.tool_registry.get(public_knowledge.TOOL_NAME) is None
+    manager._register_builtin_tools()  # put back for the next case
+    assert manager.unregister_tool(public_knowledge.TOOL_NAME) is True
+    assert manager.tool_registry.get(public_knowledge.TOOL_NAME) is None
+
+
 async def test_availability_expires_after_prolonged_refresh_failures(memory_server, monkeypatch):
     import asyncio
 
