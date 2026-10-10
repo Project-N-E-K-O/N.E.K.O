@@ -43,8 +43,6 @@ async def client(tmp_path, monkeypatch):
 
 
 async def _wait_active(http) -> None:
-    import asyncio
-
     for _ in range(200):
         jobs = (await http.get("/internal/knowledge/packs/jobs")).json()["jobs"]
         if jobs and jobs[0]["state"] == "active":

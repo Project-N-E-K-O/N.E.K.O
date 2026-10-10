@@ -1952,6 +1952,10 @@ def test_names_in_questions_respect_symbols():
     assert names_in_query("C+++", entry("C++")) is False
     assert names_in_query("$$X", entry("$X")) is False
     assert names_in_query("about $X today", entry("$X")) is True
+    # Multiword names must appear as a phrase.
+    assert names_in_query("trip to new york", entry("New York")) is True
+    assert names_in_query("York and New Jersey", entry("New York")) is False
+    assert names_in_query("new c++ york", entry("New York")) is False
     assert names_in_query("介绍一下猫", entry("猫")) is True
 
 
@@ -2410,3 +2414,58 @@ async def test_cancelled_queued_jobs_leave_the_runner_backlog(tmp_path):
             assert len(service._job_queue) == 0  # only the building job, already taken
     finally:
         await service.stop()
+
+
+async def test_snapshot_disabled_entries_do_not_crowd_the_lexical_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "LEXICAL_CANDIDATES", 2)
+    entries = [{"title": f"Hidden {i}", "content": "zanzibar zanzibar zanzibar"} for i in range(3)]
+    entries.append({"title": "Shown", "content": "zanzibar"})
+    service = await _started(tmp_path)
+    try:
+        await _import(service, _pack(entries=entries))
+        for i in range(3):
+            await service.set_entry_disabled("demo-memes", f"Hidden {i}", True)
+            # Re-enabled in the index; the registry snapshot still disables it.
+            await asyncio.to_thread(service._store.set_disabled, "demo-memes", f"Hidden {i}", False)
+        result = await service.query(query="zanzibar")
+        assert result["result"] == "matched"
+        assert [hit["title"] for hit in result["hits"]] == ["Shown"]
+    finally:
+        await service.stop()
+
+
+async def test_an_index_missing_rows_is_rebuilt_at_startup(tmp_path):
+    service = await _started(tmp_path)
+    await _import(service, _pack())
+    await service.stop()
+    conn = sqlite3.connect(tmp_path / "knowledge.db")
+    try:
+        conn.execute("DELETE FROM chunks")  # the pack version row stays
+        conn.commit()
+    finally:
+        conn.close()
+    restarted = await _started(tmp_path)
+    try:
+        stats = await asyncio.to_thread(restarted._store.chunk_stats, None)
+        assert stats["demo-memes"]["total"] == load_registry(tmp_path).packs["demo-memes"].chunks
+    finally:
+        await restarted.stop()
+
+
+async def test_a_healthy_index_is_not_rebuilt_at_startup(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    await _import(service, _pack())
+    await service.stop()
+    rebuilt = []
+    real_replace = service_module.KnowledgeStore.replace_pack
+
+    def recording(self, *args, **kwargs):
+        rebuilt.append(args[0].pack_id)
+        return real_replace(self, *args, **kwargs)
+
+    monkeypatch.setattr(service_module.KnowledgeStore, "replace_pack", recording)
+    restarted = await _started(tmp_path)
+    try:
+        assert rebuilt == []
+    finally:
+        await restarted.stop()

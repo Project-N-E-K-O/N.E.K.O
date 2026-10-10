@@ -263,6 +263,15 @@ def unglued_tokens(value: object, *, unigrams: bool = True) -> list[str]:
     return tokens
 
 
+def ordered_runs(value: object, *, unglued: bool = False) -> list[str]:
+    """Word runs of ``value`` in order, normalized like ``search_view``.
+
+    ``unglued`` leaves out runs touching a symbol (see ``unglued_tokens``).
+    """
+    text = search_view(value)
+    return _unglued_runs(text) if unglued else _TOKEN_RE.findall(text)
+
+
 def unglued_word_runs(value: str) -> set[str]:
     """Like ``word_runs``, without runs touching a symbol (the "c" of "c++")."""
     return set(_unglued_runs(value))

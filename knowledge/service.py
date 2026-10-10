@@ -324,6 +324,8 @@ class KnowledgeService:
         indexed = self._store.pack_versions()
         for pack_id in indexed.keys() - registry.packs.keys():
             self._store.delete_pack(pack_id)
+        entry_counts = self._store.entry_counts()
+        chunk_counts = self._store.chunk_stats(None)
         broken: list[str] = []
         for pack_id, record in registry.packs.items():
             # The raw file is the source of truth even when the index is
@@ -333,7 +335,13 @@ class KnowledgeService:
                 raw = _read_bounded(self.root / PACKS_DIR / record.file_name)
                 if pack_sha256(raw) != record.pack_sha256:
                     raise KnowledgePackError("pack_file_mismatch")
-                if indexed.get(pack_id) == record.pack_sha256:
+                if (
+                    indexed.get(pack_id) == record.pack_sha256
+                    # The version row alone does not prove the rows are all
+                    # there: a damaged database can keep it and lose others.
+                    and entry_counts.get(pack_id, (0, 0))[0] == record.entries
+                    and chunk_counts.get(pack_id, {}).get("total", 0) == record.chunks
+                ):
                     # Disabled flags are written to the index and then the
                     # registry; the registry wins if the process died in between.
                     self._store.sync_disabled(pack_id, record.disabled_titles)
@@ -822,10 +830,9 @@ class KnowledgeService:
         return True
 
     def _unqueue(self, job_id: str) -> None:
-        try:
+        # The runner may already have taken it; then there is nothing to drop.
+        with contextlib.suppress(ValueError):
             self._job_queue.remove(job_id)
-        except ValueError:
-            pass
 
     def discard_job(self, job_id: str) -> bool:
         job = self._jobs.get(job_id)
@@ -1368,8 +1375,19 @@ class KnowledgeService:
             embed_task.add_done_callback(_consume)
             self._query_embeddings.add(embed_task)
             embed_task.add_done_callback(self._query_embeddings.discard)
+        # Entries the query's registry snapshot disables are dropped only after
+        # the rows are read; fetch that many more so they cannot crowd out
+        # usable matches from the window.
+        snapshot_disabled = sum(
+            len(record.disabled_titles)
+            for pack_id in allowed
+            if (record := registry.packs.get(pack_id)) is not None
+        )
         exact_ids, lexical_ids = await self._query_thread(
-            self._store.lexical_candidates, query, pack_ids=allowed, limit=LEXICAL_CANDIDATES
+            self._store.lexical_candidates,
+            query,
+            pack_ids=allowed,
+            limit=LEXICAL_CANDIDATES + snapshot_disabled,
         )
         query_vector: np.ndarray | None = None
         if embed_task is not None:

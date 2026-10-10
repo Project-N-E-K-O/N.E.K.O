@@ -41,8 +41,8 @@ from .text import (
     search_view,
     strict_surface,
     is_name_symbol,
+    ordered_runs,
     unglued_cjk_text,
-    unglued_tokens,
     unglued_word_runs,
 )
 
@@ -112,7 +112,7 @@ def names_in_query(query: str, entry: StoredEntry) -> bool:
     appear as written, and a query word glued to a symbol ("c++") does not
     name a plain entry ("C").
     """
-    wanted: set[str] | None = None
+    query_runs: list[str] | None = None
     query_surface = ""
     for name in (entry.title, *entry.terms.get("alias", ())):
         surface = strict_surface(name)
@@ -123,12 +123,42 @@ def names_in_query(query: str, entry: StoredEntry) -> bool:
             if _contains_word(query_surface, surface):
                 return True
             continue
-        if wanted is None:
-            wanted = _plain_query_tokens(query)
-        tokens = set(search_tokens(name))
-        if tokens and tokens <= wanted:
+        if query_runs is None:
+            query_runs = _plain_query_runs(query)
+        if _phrase_in(ordered_runs(name), query_runs):
             return True
     return False
+
+
+def _phrase_in(name_runs: list[str], query_runs: list[str]) -> bool:
+    """Whether the name's word runs occur in order and adjacent in the query.
+
+    "New York" is in "trip to new york" but not in "York and New Jersey".
+    A CJK run may sit inside a longer one ("cat" in a CJK question), at the
+    phrase's edges only.
+    """
+    count = len(name_runs)
+    if not count:
+        return False
+    for start in range(len(query_runs) - count + 1):
+        if all(
+            _run_matches(name_runs[k], query_runs[start + k], first=k == 0, last=k == count - 1)
+            for k in range(count)
+        ):
+            return True
+    return False
+
+
+def _run_matches(name_run: str, query_run: str, *, first: bool, last: bool) -> bool:
+    if not is_cjk_token(name_run):
+        return name_run == query_run
+    if first and last:
+        return name_run in query_run
+    if first:
+        return query_run.endswith(name_run)
+    if last:
+        return query_run.startswith(name_run)
+    return name_run == query_run
 
 
 def _contains_word(text: str, word: str) -> bool:
@@ -150,19 +180,20 @@ def _contains_word(text: str, word: str) -> bool:
     return False
 
 
-def _plain_query_tokens(query: str) -> set[str]:
-    """Query tokens, leaving out words glued to a symbol.
+def _plain_query_runs(query: str) -> list[str]:
+    """Query word runs in order, leaving out words glued to a symbol.
 
     A word starting or ending with one (".net", "c++") is left out whole;
-    inside a word, runs touching a symbol are ("c" in "c++tutorial").
+    inside a word, runs touching a symbol are ("c" in "c++tutorial"). A
+    left-out word breaks the sequence, so a phrase cannot span it.
     """
-    words = strict_surface(query).split(" ")
-    return {
-        token
-        for word in words
-        if loose_surface(word) or not any(ch.isalnum() for ch in word)
-        for token in unglued_tokens(word)
-    }
+    runs: list[str] = []
+    for word in strict_surface(query).split(" "):
+        if loose_surface(word) or not any(ch.isalnum() for ch in word):
+            runs.extend(ordered_runs(word, unglued=True))
+        else:
+            runs.append("\x00")  # a gap no name run can match
+    return runs
 
 
 def semantic_candidates(
