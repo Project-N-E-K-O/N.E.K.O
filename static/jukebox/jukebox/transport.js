@@ -1938,15 +1938,6 @@ Object.assign(window.Jukebox, {
     const requestId = options.requestId;
     if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
 
-    // 独立窗口模式：模型在 Pet 窗口里，转发过去执行。
-    if (window.__NEKO_JUKEBOX_STANDALONE__ && window.nekoJukeboxBridge
-        && typeof window.nekoJukeboxBridge.playFBX === 'function') {
-      window.nekoJukeboxBridge.playFBX(fbxPath);
-      Jukebox.State.isVMDPlaying = true;
-      console.log('[Jukebox] FBX 动画已播放 (IPC):', fbxPath);
-      return true;
-    }
-
     if (!window.fbxManager) {
       console.warn('[Jukebox] FBX Manager 未初始化，跳过动画');
       return false;
@@ -1963,20 +1954,16 @@ Object.assign(window.Jukebox, {
       if (!Jukebox.State.savedFbxIdleAnimationUrl && fbxManager.currentAnimationUrl) {
         Jukebox.State.savedFbxIdleAnimationUrl = fbxManager.currentAnimationUrl;
       }
-      Jukebox.stopFBX(true); // skipIdleRestore = true：这一下欠下的待机由下面结清
+      Jukebox.stopFBX(true);
       await fbxManager.loadAnimation(fbxPath);
       if (!Jukebox.isPlaybackRequestCurrent(requestId)) return false;
-      fbxManager.playAnimation();
+      fbxManager.playAnimation('dance');
       Jukebox.State.isVMDPlaying = true;
-      // 起播方清账：新动画确实接上了，待机欠账不用再还。
       Jukebox.State.idleRestorePending = false;
       console.log('[Jukebox] FBX 动画已播放:', fbxPath);
       return true;
     } catch (error) {
       console.error('[Jukebox] FBX 播放失败:', error);
-      // 只有本次请求仍然是最新世代时才能结账。若它已被新请求取代，那份欠账
-      // 属于接管者：这里贸然 restore 既会抢走新请求的姿势，又会把它要用的
-      // idleRestorePending 清掉，让新请求失败后无人恢复。
       if (Jukebox.isPlaybackRequestCurrent(requestId)
           && Jukebox.State.idleRestorePending) {
         try {
@@ -2001,17 +1988,11 @@ Object.assign(window.Jukebox, {
     }
     Jukebox.State.isVMDPlaying = false;
     if (skipIdleRestore) {
-      // 记账口径与 stopVMD 同构：停了却没恢复待机，因为「马上要接一段新动画」。
-      // 接上了由起播方清掉，接不上（加载失败 / 被新请求取代）由补发方结清。
       Jukebox.State.idleRestorePending = true;
       return;
     }
     Jukebox.restoreIdleAnimation();
   },
-
-  // 恢复保存的 FBX 待机动画。待机动画缺失或模型管理器不在时静默跳过。
-  // requestId 传入时按本仓库统一的世代判据作废过期恢复：加载期间若有新请求接管，
-  // 它已经决定后续姿势，旧恢复不能再把待机动作抢回来。
   restoreFbxIdleAnimation: function(requestId) {
     var manager = window.fbxManager;
     var savedUrl = Jukebox.State.savedFbxIdleAnimationUrl;
@@ -2779,7 +2760,8 @@ Object.assign(window.Jukebox, {
     if (mt === 'live3d') {
       var sub = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
       if (sub === 'vrm') return 'vrm';
-      return 'mmd'; // live3d 默认走 MMD
+      if (sub === 'fbx') return 'fbx';
+      return 'mmd';
     }
     return mt;
   },
