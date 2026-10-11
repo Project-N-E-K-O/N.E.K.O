@@ -2629,7 +2629,8 @@
             "discardUnreadableConfirm": "읽을 수 없는 삭제 기록을 격리 폴더로 옮깁니다(파일은 삭제하지 않습니다). 기록에 남아 있던 삭제는 끝나지 않았을 수 있으니, 필요하면 버린 뒤 다시 삭제해 주세요.",
             "confirmDiscard": "버리기",
             "discardDone": "손상된 삭제 기록 {{count}}개를 버렸습니다. 이제 다시 삭제할 수 있습니다.",
-            "errorDiscardFailed": "옮기지 못한 손상된 기록이 있습니다({{count}}개는 옮김). 잠시 후 다시 시도해 주세요."
+            "errorDiscardFailed": "옮기지 못한 손상된 기록이 있습니다({{count}}개는 옮김). 잠시 후 다시 시도해 주세요.",
+            "reportQueuedLogin": "신고가 기록되었습니다. 커뮤니티 계정에 다시 로그인하면 자동으로 제출됩니다."
         }
     },
     "storage": {

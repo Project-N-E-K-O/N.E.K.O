@@ -33,6 +33,10 @@
     var POST_END_ARM_MS = 180000;
     // 播到头、既没再来音频也没等到结束标记的记录，静置这么久就丢掉（被打断的行）
     var IDLE_FORGET_MS = 60000;
+    // 还没播完却这么久没有新块（AudioContext 被挂起、时钟停住）：丢掉记录，不再无限回报进度
+    var STALLED_FORGET_MS = 120000;
+    // 串门开始之前的阶段（建房 / 等邀请 / 入房 / 等接待）没有串门语音，不跟踪普通对话
+    var PRE_START_ACTIONS = { pending: true, invite_ready: true, joining: true, awaiting_accept: true };
     var CLEAR_REASONS = {
         clear_audio_queue: true,
         clear_audio_queue_without_decoder_reset: true
@@ -161,6 +165,10 @@
             var played = playedMs(rec, t);
             var drained = rec.hadAudio ? t >= rec.scheduledEnd : rec.closed;
             if (!drained) {
+                if (wall - rec.lastActivity > STALLED_FORGET_MS) {
+                    speeches.delete(sid);
+                    return;
+                }
                 if (wall - rec.lastSentAt >= PROGRESS_INTERVAL_MS) send(rec, played, false);
                 return;
             }
@@ -259,7 +267,7 @@
         if (frame.action === 'ended') {
             visitActive = false;
             armedUntil = wallNow() + POST_END_ARM_MS;
-        } else {
+        } else if (PRE_START_ACTIONS[frame.action] !== true) {
             visitActive = true;
         }
     });

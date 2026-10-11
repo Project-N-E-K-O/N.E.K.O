@@ -78,8 +78,9 @@
         return response;
     }
 
-    // 每次打开设置弹窗都重新探：总闸可能在页面开着期间被关掉（后端换了配置重启）。
-    // 只合并同时在途的探测；拿不到确切的「开」一律按关处理
+    // 每次打开设置弹窗都重新探（下面监听 neko-avatar-popup-opening）：总闸可能在页面开着期间
+    // 被关掉（后端换了配置重启），加载时那次探测也可能失败。只合并同时在途的探测；拿不到确切的
+    // 「开」一律按关处理
     function probe() {
         if (probePromise) return probePromise;
         probePromise = (async function () {
@@ -281,6 +282,13 @@
         setCrop: writeCrop,
         appendPanelExtras: appendPanelExtras,
         onVisitEnabledChanged: onVisitEnabledChanged
+    });
+
+    // 设置弹窗建好之后每次打开只走 showPopup，不会再调 createSettingsPopupContent：
+    // 所有模型类型的 showPopup 都派发这个生命周期事件，在这里重新探
+    window.addEventListener('neko-avatar-popup-opening', function (event) {
+        var detail = event && event.detail;
+        if (detail && detail.buttonId === 'settings') void revealEntries();
     });
 
     // 设置弹窗可能比本脚本先建好：加载完补一次

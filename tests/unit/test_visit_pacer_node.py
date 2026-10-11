@@ -80,6 +80,7 @@ function createHarness(opts) {
   vm.runInContext(SRC, sandbox, { filename: 'visit-pacer.js' });
 
   function emit(type, detail) { win.dispatchEvent(new CustomEventLike(type, { detail })); }
+  let frozen = false;
   function advance(ms) {
     const target = wall + ms;
     for (;;) {
@@ -87,13 +88,14 @@ function createHarness(opts) {
       const next = timers[0];
       if (!next || next.at > target) break;
       timers.shift();
-      ctx.currentTime += (next.at - wall) / 1000;
+      if (!frozen) ctx.currentTime += (next.at - wall) / 1000;
       wall = next.at;
       next.fn();
     }
-    ctx.currentTime += (target - wall) / 1000;
+    if (!frozen) ctx.currentTime += (target - wall) / 1000;
     wall = target;
   }
+  function freeze() { frozen = true; }
   function chunk(sid, start, end, extra) {
     const detail = Object.assign({
       reason: 'chunk_scheduled', speechId: sid, scheduledEndAudioTime: end,
@@ -106,7 +108,7 @@ function createHarness(opts) {
     emit('neko-visit-frame', { type: 'visit_state_change', action: 'started', visit_id: 'V'.repeat(26), side: 'guest' });
   }
   function bySid(sid) { return sent.filter((m) => m.speech_id === sid); }
-  return { win, ctx, sent, pending, emit, advance, chunk, bind, bySid, socket, timers };
+  return { win, ctx, sent, pending, emit, advance, chunk, bind, bySid, socket, timers, freeze };
 }
 
 const report = {};
@@ -284,6 +286,37 @@ const report = {};
   report.rebound_needed = h.bySid('later').length;
 }
 
+// AudioContext 被挂起（时钟停住）：不能无限回报 ended:false，静置上限后丢掉、定时器停下
+{
+  const h = createHarness();
+  h.bind();
+  h.ctx.currentTime = 10;
+  h.chunk('sid', 10, 12);
+  h.advance(500);
+  h.freeze();
+  h.advance(180000);
+  const tail = h.bySid('sid').filter((m) => m.at >= 10.5);
+  report.frozen_progress_total = tail.length;
+  report.frozen_timers_left = h.timers.length;
+}
+
+// 串门开始之前（建房 / 等邀请等）收到的状态帧不让 pacer 开始跟踪普通对话
+{
+  const h = createHarness();
+  h.emit('neko-visit-bound', { socket: h.socket });
+  for (const action of ['pending', 'invite_ready', 'joining', 'awaiting_accept']) {
+    h.emit('neko-visit-frame', { type: 'visit_state_change', action, visit_id: 'V'.repeat(26) });
+  }
+  h.ctx.currentTime = 10;
+  h.chunk('ordinary', 10, 11);
+  h.advance(2000);
+  report.pre_start_sent = h.sent.length;
+  h.emit('neko-visit-frame', { type: 'visit_state_change', action: 'started', visit_id: 'V'.repeat(26) });
+  h.chunk('line', h.ctx.currentTime, h.ctx.currentTime + 1);
+  h.advance(2000);
+  report.after_start_sent = h.bySid('line').length > 0;
+}
+
 // socket 换了还没重新 bind：发送一直失败，记录静置后丢掉、定时器停下（CodeRabbit）
 {
   const h = createHarness();
@@ -422,6 +455,17 @@ def test_nothing_is_sent_before_bind_or_outside_a_visit(report):
 def test_post_visit_segments_report_and_socket_swap_needs_rebind(report):
     assert report["after_end_final"] == 1
     assert report["rebound_needed"] == 0
+
+
+def test_frozen_audio_clock_stops_reporting_after_the_stall_cap(report):
+    # 120 s 上限、4 Hz：最多约 480 条，之后零回报、定时器停下（不加上限则 180 s 内约 720 条且永不停）
+    assert 0 < report["frozen_progress_total"] <= 490
+    assert report["frozen_timers_left"] == 0
+
+
+def test_pre_start_state_frames_do_not_arm_the_pacer(report):
+    assert report["pre_start_sent"] == 0
+    assert report["after_start_sent"] is True
 
 
 def test_records_unsendable_after_a_socket_swap_are_dropped_and_ticking_stops(report):

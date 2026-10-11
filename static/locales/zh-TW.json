@@ -2629,7 +2629,8 @@
             "discardUnreadableConfirm": "這會把讀不出的清除紀錄移到隔離目錄（不刪除檔案）。損壞紀錄裡那次清除可能沒做完；需要的話，丟棄後請重新清除。",
             "confirmDiscard": "確認丟棄",
             "discardDone": "已丟棄 {{count}} 份損壞的清除紀錄，可以重新清除了。",
-            "errorDiscardFailed": "有損壞紀錄沒能移走（已移走 {{count}} 份），請稍後再試。"
+            "errorDiscardFailed": "有損壞紀錄沒能移走（已移走 {{count}} 份），請稍後再試。",
+            "reportQueuedLogin": "檢舉已記錄；重新登入社群帳號後會自動提交。"
         }
     },
     "storage": {

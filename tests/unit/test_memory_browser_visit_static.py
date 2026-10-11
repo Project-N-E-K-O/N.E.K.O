@@ -178,6 +178,36 @@ def test_report_202_queued_is_shown_as_recorded_not_as_error():
         assert visit_locale(lang)["reportQueued"].strip()
 
 
+def test_failed_report_keeps_the_draft_and_only_settled_outcomes_drop_it():
+    # 提交失败（report_persist_failed / 网络错等）后重建表单要回填用户填过的内容；
+    # 成功、排队（含已排队但登录失效）、已在排队、取消时才丢掉草稿
+    form = function_body("renderVisitReportForm")
+    assert "const draft = visitMemoryState.reportDrafts.get(visitId);" in form
+    for line in ("reason.value = draft.reason;", "note.value = draft.note;",
+                 "include.checked = draft.include_transcript;"):
+        assert line in form, line
+    submit_handler = form[form.index("form.addEventListener('submit'"):]
+    assert submit_handler.index("saveDraft();") < submit_handler.index("submitVisitReport(visitId")
+    for listener in ("reason.addEventListener('change', saveDraft);", "note.addEventListener('input', saveDraft);",
+                     "include.addEventListener('change', saveDraft);"):
+        assert listener in form, listener
+    cancel = form[form.index("cancel.addEventListener('click'"):form.index("const submit = ")]
+    assert "visitMemoryState.reportDrafts.delete(visitId);" in cancel
+    submit = function_body("submitVisitReport")
+    branches = re.split(r"\n        \} else ", submit[submit.index("const code = visitResultCode(result);"):])
+    drops = ["reportDrafts.delete(visitId)" in b for b in branches]
+    # 202 排队 / 200 已提交 / 已排队但登录失效 / already_queued 丢草稿；persist_failed 与其余错误保留
+    assert drops == [True, True, True, True, False, False], drops
+
+
+def test_queued_report_with_an_expired_login_is_shown_as_queued():
+    submit = function_body("submitVisitReport")
+    branch = submit[submit.index("code === 'VISIT_LOGIN_REQUIRED' && result.payload.queued === true"):]
+    branch = branch[:branch.index("} else if (code === 'already_queued')")]
+    assert "visitMemoryState.reportStates.set(visitId, 'queued');" in branch
+    assert "visitText('reportQueuedLogin'" in branch
+
+
 def test_report_request_body_matches_the_local_report_endpoint():
     report = function_body("submitVisitReport")
     assert "visitRequest(VISIT_REPORT_URL, {" in report

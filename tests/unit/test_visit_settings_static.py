@@ -143,9 +143,11 @@ async function load(stateBody, opts) {
   const entries = [{ style: { display: 'none' } }, { style: { display: 'none' } }];
   const tiers = [{ textContent: '' }];
   const storage = { data: {}, getItem(k) { return this.data[k] ?? null; }, setItem(k, v) { this.data[k] = String(v); } };
+  const listeners = new Map();
   const win = {
     lanlan_config: { lanlan_name: '小八' },
-    addEventListener() {}, dispatchEvent() { return true; },
+    addEventListener(type, fn) { if (!listeners.has(type)) listeners.set(type, []); listeners.get(type).push(fn); },
+    dispatchEvent(ev) { (listeners.get(ev.type) || []).forEach((fn) => fn(ev)); return true; },
     openVisitPersonaPreview(name, opts) { opened.push([name, opts]); },
     nekoLocalMutationSecurity: {
       token: opts.staleToken ? 'old' : 'tok',
@@ -175,7 +177,10 @@ async function load(stateBody, opts) {
   vm.createContext(sandbox);
   vm.runInContext(SRC, sandbox, { filename: 'visit-settings.js' });
   await win.nekoVisitSettings.revealEntries();
-  return { win, opened, fetched, entries, tiers, storage, refreshed };
+  function openPopup(buttonId) {
+    win.dispatchEvent({ type: 'neko-avatar-popup-opening', detail: { buttonId, popupId: 'x', prefix: 'live2d' } });
+  }
+  return { win, opened, fetched, entries, tiers, storage, refreshed, openPopup };
 }
 
 (async () => {
@@ -203,7 +208,11 @@ async function load(stateBody, opts) {
   // 总闸在页面开着期间被关掉：下次打开设置弹窗时重新探、入口收起（CodeRabbit）
   const flip = await load([{ enabled: true, default_tier: 'sd600' }, { enabled: false, default_tier: 'sd600' }]);
   report.flip_first = flip.entries.map((e) => e.style.display);
-  await flip.win.nekoVisitSettings.revealEntries();
+  flip.openPopup('mic');                                  // 别的弹窗打开不探
+  await new Promise((r) => setTimeout(r, 0));
+  report.flip_other_fetches = flip.fetched.length;
+  flip.openPopup('settings');                             // 真实页面每次打开设置弹窗走的就是这条
+  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
   report.flip_second = flip.entries.map((e) => e.style.display);
   report.flip_fetches = flip.fetched.length;
   process.stdout.write(JSON.stringify(report));
@@ -234,4 +243,4 @@ def test_release_switch_probe_and_first_enable_persona_prompt():
     assert out["stale_display"] == ["", ""]
     assert out["stale_refreshed"] == 1 and out["stale_fetches"] == 2
     assert out["flip_first"] == ["", ""] and out["flip_second"] == ["none", "none"]
-    assert out["flip_fetches"] == 2
+    assert out["flip_other_fetches"] == 1 and out["flip_fetches"] == 2

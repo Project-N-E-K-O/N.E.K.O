@@ -2629,7 +2629,8 @@
             "discardUnreadableConfirm": "Esto mueve los registros de borrado ilegibles a una carpeta de cuarentena (los archivos no se eliminan). El borrado que registraban puede no haber terminado; si hace falta, vuelve a borrar después de descartarlos.",
             "confirmDiscard": "Descartar",
             "discardDone": "Se descartaron {{count}} registro(s) de borrado dañado(s). Ya puedes volver a borrar.",
-            "errorDiscardFailed": "Algunos registros dañados no se pudieron mover ({{count}} movidos). Inténtalo de nuevo más tarde."
+            "errorDiscardFailed": "Algunos registros dañados no se pudieron mover ({{count}} movidos). Inténtalo de nuevo más tarde.",
+            "reportQueuedLogin": "Denuncia registrada. Se enviará automáticamente cuando vuelvas a iniciar sesión en tu cuenta de la comunidad."
         }
     },
     "storage": {

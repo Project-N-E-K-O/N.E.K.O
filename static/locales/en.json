@@ -2629,7 +2629,8 @@
             "discardUnreadableConfirm": "This moves the unreadable clearing records into a quarantine folder (the files are not deleted). The clearing they recorded may not have finished; if needed, clear again after discarding.",
             "confirmDiscard": "Discard",
             "discardDone": "Discarded {{count}} damaged clearing record(s). You can clear again now.",
-            "errorDiscardFailed": "Some damaged records could not be moved ({{count}} moved). Please try again later."
+            "errorDiscardFailed": "Some damaged records could not be moved ({{count}} moved). Please try again later.",
+            "reportQueuedLogin": "Report recorded. It will be submitted automatically after you sign in to your community account again."
         }
     },
     "storage": {

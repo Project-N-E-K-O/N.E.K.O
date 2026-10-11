@@ -2629,7 +2629,8 @@
             "discardUnreadableConfirm": "Isto move os registros de limpeza ilegíveis para uma pasta de quarentena (os arquivos não são excluídos). A limpeza registrada neles pode não ter terminado; se necessário, apague novamente depois de descartar.",
             "confirmDiscard": "Descartar",
             "discardDone": "{{count}} registro(s) de limpeza danificado(s) descartado(s). Agora você pode apagar novamente.",
-            "errorDiscardFailed": "Alguns registros danificados não puderam ser movidos ({{count}} movidos). Tente novamente mais tarde."
+            "errorDiscardFailed": "Alguns registros danificados não puderam ser movidos ({{count}} movidos). Tente novamente mais tarde.",
+            "reportQueuedLogin": "Denúncia registrada. Ela será enviada automaticamente quando você entrar de novo na sua conta da comunidade."
         }
     },
     "storage": {

@@ -2629,7 +2629,8 @@
             "discardUnreadableConfirm": "这会把读不出的清除记录挪进隔离目录（不删除文件）。损坏记录里那次清除可能没做完；需要的话，丢弃后请重新清除。",
             "confirmDiscard": "确认丢弃",
             "discardDone": "已丢弃 {{count}} 份损坏的清除记录，可以重新清除了。",
-            "errorDiscardFailed": "有损坏记录没能挪走（已挪走 {{count}} 份），请稍后再试。"
+            "errorDiscardFailed": "有损坏记录没能挪走（已挪走 {{count}} 份），请稍后再试。",
+            "reportQueuedLogin": "举报已记录；重新登录社区账号后会自动提交。"
         }
     },
     "storage": {

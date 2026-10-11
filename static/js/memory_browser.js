@@ -134,6 +134,8 @@
         reportOpenFor: '',
         reportStates: new Map(),
         reportMessages: new Map(),
+        // 举报表单草稿（按场次）：提交失败后重建表单时回填，成功 / 排队 / 取消时丢掉
+        reportDrafts: new Map(),
         details: null,
         detailsRequestId: 0
     };
@@ -854,11 +856,28 @@
         includeLabel.appendChild(include);
         includeLabel.appendChild(createVisitElement('span', '',
             visitText('reportIncludeTranscript', '请服务器参考这一场已保存的双方转录')));
+        const draft = visitMemoryState.reportDrafts.get(visitId);
+        if (draft) {
+            if (VISIT_REPORT_REASONS.indexOf(draft.reason) !== -1) reason.value = draft.reason;
+            note.value = draft.note;
+            include.checked = draft.include_transcript;
+        }
+        const saveDraft = function () {
+            visitMemoryState.reportDrafts.set(visitId, {
+                reason: reason.value,
+                note: note.value,
+                include_transcript: include.checked
+            });
+        };
+        reason.addEventListener('change', saveDraft);
+        note.addEventListener('input', saveDraft);
+        include.addEventListener('change', saveDraft);
         const actions = createVisitElement('div', 'memory-visit-confirm-actions');
         const cancel = createVisitElement('button', 'memory-visit-button', visitText('cancel', '取消'));
         cancel.type = 'button';
         cancel.addEventListener('click', function () {
             visitMemoryState.reportOpenFor = '';
+            visitMemoryState.reportDrafts.delete(visitId);
             renderVisitHistory();
         });
         const submit = createVisitElement('button', 'memory-visit-button memory-visit-danger', visitText('reportSubmit', '提交举报'));
@@ -872,6 +891,7 @@
         form.addEventListener('submit', function (event) {
             event.preventDefault();
             submit.disabled = true;
+            saveDraft();
             submitVisitReport(visitId, {
                 reason: reason.value,
                 note: note.value,
@@ -905,10 +925,21 @@
                 tone: 'success'
             });
             visitMemoryState.reportOpenFor = '';
+            visitMemoryState.reportDrafts.delete(visitId);
         } else if (result && result.status === 200 && result.payload.ok === true) {
             visitMemoryState.reportStates.set(visitId, 'sent');
             visitMemoryState.reportMessages.set(visitId, { text: visitText('reportSent', '举报已提交。'), tone: 'success' });
             visitMemoryState.reportOpenFor = '';
+            visitMemoryState.reportDrafts.delete(visitId);
+        } else if (code === 'VISIT_LOGIN_REQUIRED' && result.payload.queued === true) {
+            // 举报已进本机队列，只是登录失效传不上去：按已排队显示，原账号登录后由后台接着提交
+            visitMemoryState.reportStates.set(visitId, 'queued');
+            visitMemoryState.reportMessages.set(visitId, {
+                text: visitText('reportQueuedLogin', '举报已记录；重新登录社区账号后会自动提交。'),
+                tone: 'success'
+            });
+            visitMemoryState.reportOpenFor = '';
+            visitMemoryState.reportDrafts.delete(visitId);
         } else if (code === 'already_queued') {
             visitMemoryState.reportStates.set(visitId, 'queued');
             visitMemoryState.reportMessages.set(visitId, {
@@ -916,6 +947,7 @@
                 tone: 'success'
             });
             visitMemoryState.reportOpenFor = '';
+            visitMemoryState.reportDrafts.delete(visitId);
         } else if (code === 'report_persist_failed') {
             visitMemoryState.reportMessages.set(visitId, {
                 text: visitText('reportPersistFailed', '举报没能保存到本机，请重试。'),
