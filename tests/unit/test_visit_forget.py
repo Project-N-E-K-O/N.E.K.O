@@ -980,3 +980,38 @@ async def test_replay_goes_on_past_an_unreadable_revocation_log(tmp_path):
     assert clean is False and broken.exists()
     assert not (tmp_path / "visit_revocations" / f"{rev_id}.json").exists()
     assert server.calls("scoped_forget")
+
+
+async def test_quarantine_rereads_under_the_file_lock_and_spares_a_record_fixed_meanwhile(tmp_path):
+    # 与写入同一把文件锁：列目录时读不出、拿到锁时已被写好的记录不能被挪走
+    import asyncio
+    import threading
+
+    from main_logic.visit.forget import ClearingSentinels, quarantine_unreadable_records
+    from main_logic.visit.subjects import path_lock
+
+    store = ClearingSentinels(tmp_path)
+    doc = await store.create(own_uid=OWN_A, scope="chars", own_char_uids=[CHAR_UID_A])
+    path = store.path_for(doc["op_id"])
+    good = path.read_text(encoding="utf-8")
+    path.write_text("{torn", encoding="utf-8")
+    held, release = threading.Event(), threading.Event()
+
+    def writer():
+        with path_lock(path):
+            held.set()
+            release.wait(5)
+            path.write_text(good, encoding="utf-8")
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    held.wait(5)
+    task = asyncio.ensure_future(quarantine_unreadable_records(tmp_path))
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    release.set()
+    moved, failed = await task
+    thread.join(5)
+    assert (moved, failed) == ([], 0)
+    assert path.read_text(encoding="utf-8") == good
+    assert await store.list_open() == [doc]

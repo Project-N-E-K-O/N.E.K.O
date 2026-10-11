@@ -16,7 +16,7 @@
 
 Design: ``docs/design/visit-infrastructure.md`` section 4.6
 ``GET /api/visit/memory/peers`` and ``POST /api/visit/memory/forget |
-forget_all | contacts/block``. Decorators use paths relative to the visit
+forget_all | forget/discard_unreadable | contacts/block``. Decorators use paths relative to the visit
 router (``prefix='/api/visit'`` is added where the router is included).
 
 Every endpoint, the read one included, passes the local-origin gate: the
@@ -52,7 +52,7 @@ from main_logic.visit.forget_runner import (
     forget_all,
     forget_person,
 )
-from main_logic.visit.forget import RevocationLogUnreadable
+from main_logic.visit.forget import RevocationLogUnreadable, quarantine_unreadable_records
 from main_logic.visit.limits import Blocklist, BlocklistUnavailable
 from main_logic.visit.sanitize import strip_control_chars
 from main_logic.visit.spool import SpoolStateUnreadable, VisitSpool
@@ -396,6 +396,38 @@ async def forget_all_memory(request: Request):
     if not outcome.done:
         return _error(503, "forget_pending", retry=True, forgotten=outcome.forgotten)
     return JSONResponse({"ok": True, "forgotten": outcome.forgotten})
+
+
+@router.post("/memory/forget/discard_unreadable")
+async def discard_unreadable_forget_records(request: Request):
+    """Move every unreadable forget record (revocation log / clearing sentinel) into quarantine.
+
+    The way out of the fail-closed admission gate: an unreadable revocation
+    log cannot be attributed to any character or account, so it makes every
+    ``POST /rooms`` / ``join`` on this machine answer 409
+    ``VISIT_FORGET_IN_PROGRESS{reason:'forget_record_unreadable'}``. Needs
+    ``{confirm: true}``. Readable records are never touched; each file is
+    re-read under its own file lock (the one every record write holds) right
+    before it is moved, so a forget being written concurrently is safe.
+    Files are moved, not deleted. No account is needed: the records are
+    machine-wide and cannot be attributed to one.
+    """
+    payload = await _read_json_object(request)
+    denied = local_visit_gate(request, payload)
+    if denied is not None:
+        return denied
+    if payload.get("confirm") is not True:
+        return _error(400, "confirm_required")
+    try:
+        moved, failed = await quarantine_unreadable_records(_hooks.config_dir())
+    except OSError as exc:
+        logger.error("visit discard unreadable forget records: cannot list: %s", type(exc).__name__)
+        return _error(503, "discard_failed", retry=True, discarded=0)
+    for record in moved:
+        memory_bridge.diag("forget_record_discarded", kind=record.kind, file=record.name, error=record.error)
+    if failed:
+        return _error(503, "discard_failed", retry=True, discarded=len(moved))
+    return JSONResponse({"ok": True, "discarded": len(moved)})
 
 
 @router.post("/contacts/block")

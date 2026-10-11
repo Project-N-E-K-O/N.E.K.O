@@ -326,6 +326,7 @@ async def test_forget_in_progress_refuses_rooms_and_join_before_the_slot(env):
         own_uid=OWN, scope="chars", own_char_uids=[HOST_CHAR_UID])
     resp = await _rooms(env)
     assert resp.status_code == 409 and resp.json()["code"] == "VISIT_FORGET_IN_PROGRESS"
+    assert "reason" not in resp.json()
     assert _no_slot()
     await ClearingSentinels(env.guest.config_dir).find_or_create(
         own_uid=OWN, scope="person", own_char_uids=[GUEST_CHAR_UID], peer_uid=HOST_UID)
@@ -348,12 +349,63 @@ async def test_unknown_account_counts_every_accounts_forget(env):
     assert (await _rooms(env)).json()["code"] == "VISIT_FORGET_IN_PROGRESS"
 
 
+def _break_log(config_dir, name="0" * 32):
+    logs = config_dir / "visit_revocations"
+    logs.mkdir(parents=True, exist_ok=True)
+    path = logs / f"{name}.json"
+    path.write_text("{broken", encoding="utf-8")
+    return path
+
+
 async def test_unreadable_revocation_log_fails_closed(env):
+    _break_log(env.host.config_dir)
+    resp = await _rooms(env)
+    assert resp.status_code == 409
+    # 同一个码（旧前端照旧认得），另带 reason 说明是读不出的记录在挡，不泄露文件名 / uid
+    assert resp.json() == {"ok": False, "code": "VISIT_FORGET_IN_PROGRESS", "reason": "forget_record_unreadable"}
+    assert _no_slot()
+    _break_log(env.guest.config_dir)
+    join = await _join(env)
+    assert join.status_code == 409
+    assert join.json() == {"ok": False, "code": "VISIT_FORGET_IN_PROGRESS", "reason": "forget_record_unreadable"}
+    assert _no_slot("Guest") and env.guest.creds_calls == []
+
+
+async def test_unreadable_sentinel_without_scope_is_labelled_too(env):
     logs = env.host.config_dir / "visit_revocations"
     logs.mkdir(parents=True)
-    (logs / ("0" * 32 + ".json")).write_text("{broken", encoding="utf-8")
-    assert (await _rooms(env)).json()["code"] == "VISIT_FORGET_IN_PROGRESS"
+    (logs / f"clearing-{'0' * 32}.json").write_text("{torn", encoding="utf-8")
+    assert (await _rooms(env)).json()["reason"] == "forget_record_unreadable"
+
+
+async def test_real_open_log_is_the_plain_refusal_even_beside_a_damaged_one(env):
+    from main_logic.visit.forget_runner import open_person_log
+    from tests.unit.visit_memory_test_helpers import seed_roster
+
+    await seed_roster(env.host.config_dir, own_uid=OWN, own_char="Host")
+    await open_person_log(env.host.config_dir, own_uid=OWN, own_char="Host", own_char_uid=HOST_CHAR_UID,
+                          peer_uid="1" * 24)
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json() == {"ok": False, "code": "VISIT_FORGET_IN_PROGRESS"}
+    # 真在清除时优先报真因：丢弃损坏记录帮不上忙，不引导用户去丢
+    _break_log(env.host.config_dir)
+    assert "reason" not in (await _rooms(env)).json()
     assert _no_slot()
+
+
+async def test_discarding_unreadable_records_lets_admission_through(env):
+    broken = _break_log(env.host.config_dir)
+    assert (await _rooms(env)).json()["reason"] == "forget_record_unreadable"
+    memory_routes.configure_memory_routes(config_dir=lambda: env.host.config_dir)
+    try:
+        async with env.client() as c:
+            resp = await c.post("/api/visit/memory/forget/discard_unreadable", headers=GOOD,
+                                json={"confirm": True})
+    finally:
+        memory_routes.configure_memory_routes(config_dir=memory_routes._default_config_dir)
+    assert resp.json() == {"ok": True, "discarded": 1}
+    assert not broken.exists()
+    assert (await _rooms(env)).status_code == 202
 
 
 async def test_rooms_waits_for_a_clearing_holding_the_admission_lock(env):

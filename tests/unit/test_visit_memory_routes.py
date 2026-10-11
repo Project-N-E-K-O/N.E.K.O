@@ -108,7 +108,8 @@ def test_routes_are_mounted_under_api_visit_without_trailing_slash(env):
     client, *_ = env
     paths = {route.path for route in iter_routes(client.app.routes)}
     assert {"/api/visit/memory/peers", "/api/visit/memory/forget",
-            "/api/visit/memory/forget_all", "/api/visit/contacts/block"} <= paths
+            "/api/visit/memory/forget_all", "/api/visit/memory/forget/discard_unreadable",
+            "/api/visit/contacts/block"} <= paths
     assert not any(p.startswith("/api/visit/api/visit") or p.endswith("/") for p in paths)
 
 
@@ -116,6 +117,7 @@ def test_routes_are_mounted_under_api_visit_without_trailing_slash(env):
     ("get", "/api/visit/memory/peers?catgirl=A", None),
     ("post", "/api/visit/memory/forget", {"catgirl": "A", "peer_uid": PEER_X}),
     ("post", "/api/visit/memory/forget_all", {"catgirl": "A"}),
+    ("post", "/api/visit/memory/forget/discard_unreadable", {"confirm": True}),
     ("post", "/api/visit/contacts/block", {"peer_uid": PEER_X, "blocked": True}),
 ])
 def test_local_origin_gate(env, method, path, body):
@@ -675,3 +677,92 @@ def test_peers_survive_lone_surrogates_in_display_names(env):
     assert resp.status_code == 200
     (row,) = resp.json()["peers"]
     assert row["display_name"] == "Xiaoming" and row["chars"][0]["display_name"] == "Mimi"
+
+
+# ── 丢弃读不出的清除记录 ───────────────────────────────────────────────
+
+DISCARD = "/api/visit/memory/forget/discard_unreadable"
+
+
+def _damage(tmp_path):
+    directory = tmp_path / "visit_revocations"
+    directory.mkdir(exist_ok=True)
+    log = directory / f"{'0' * 32}.json"
+    log.write_text("{torn", encoding="utf-8")
+    sentinel = directory / f"clearing-{'0' * 32}.json"
+    sentinel.write_text(json.dumps({"v": 99}), encoding="utf-8")       # 降级后读不懂的新格式
+    return log, sentinel
+
+
+def test_discard_needs_explicit_confirmation(env):
+    client, _server, tmp_path, _state = env
+    log, sentinel = _damage(tmp_path)
+    for body in ({}, {"confirm": False}, {"confirm": "true"}, {"confirm": 1}):
+        resp = client.post(DISCARD, json=body, headers=GOOD)
+        assert resp.status_code == 400 and resp.json()["code"] == "confirm_required"
+    assert log.exists() and sentinel.exists()
+
+
+def test_discard_is_denied_without_token_through_proxy_from_docker_and_lan(env, monkeypatch):
+    client, _server, tmp_path, _state = env
+    log, sentinel = _damage(tmp_path)
+    body = {"confirm": True}
+    assert client.post(DISCARD, json=body, headers={"Origin": ORIGIN}).status_code == 403
+    assert client.post(DISCARD, json=body, headers={**GOOD, "X-Forwarded-For": "127.0.0.1"}).status_code == 403
+    for addr in (("172.17.0.2", 5000), ("192.168.1.20", 5000)):
+        resp = TestClient(client.app, client=addr).post(DISCARD, json=body, headers=GOOD)
+        assert resp.status_code == 403 and resp.json()["code"] == "VISIT_E_UNAUTHORIZED"
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    assert client.post(DISCARD, json=body, headers=GOOD).status_code == 403
+    assert log.exists() and sentinel.exists()
+    assert not (tmp_path / "visit_revocations" / "quarantine").exists()
+
+
+def test_discard_quarantines_only_unreadable_records(env, caplog):
+    from main_logic.visit.forget import ClearingSentinels, RevocationLog
+    from main_logic.visit.forget_runner import open_person_log
+
+    client, _server, tmp_path, _state = env
+    _seed(tmp_path)
+    rev_id = _run(open_person_log(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
+                                  peer_uid=PEER_X))
+    good_sentinel = _run(ClearingSentinels(tmp_path).create(own_uid=OWN_A, scope="chars",
+                                                            own_char_uids=[CHAR_UID_A]))
+    directory = tmp_path / "visit_revocations"
+    readable = {p.name: p.read_bytes() for p in directory.glob("*.json")}
+    log, sentinel = _damage(tmp_path)
+    with caplog.at_level("WARNING"):
+        resp = client.post(DISCARD, json={"confirm": True}, headers=GOOD)
+    assert resp.status_code == 200 and resp.json() == {"ok": True, "discarded": 2}
+    # 读得出的日志与哨兵原样不动
+    assert {p.name: p.read_bytes() for p in directory.glob("*.json")} == readable
+    assert f"{rev_id}.json" in readable and f"{good_sentinel['op_id']}.json" in readable
+    # 坏的挪进隔离目录（不删），每份一条诊断
+    moved = sorted(p.name for p in (directory / "quarantine").iterdir())
+    assert len(moved) == 2 and moved[0].startswith(log.name) and moved[1].startswith(sentinel.name)
+    assert sum("forget_record_discarded" in r.getMessage() for r in caplog.records) == 2
+    assert _run(RevocationLog.list_all_open(tmp_path))[0]["id"] == rev_id
+    # 再丢一次：没有读不出的了
+    assert client.post(DISCARD, json={"confirm": True}, headers=GOOD).json() == {"ok": True, "discarded": 0}
+
+
+def test_startup_replay_ignores_quarantined_records(env):
+    from main_logic.visit.forget import RevocationLog
+    from main_logic.visit.forget_runner import replay_forgets
+    from tests.unit.visit_memory_test_helpers import resolver
+
+    client, server, tmp_path, _state = env
+    _damage(tmp_path)
+    assert _run(replay_forgets(tmp_path, resolve_char_name=resolver(), client=server.client())) is False
+    assert client.post(DISCARD, json={"confirm": True}, headers=GOOD).json()["discarded"] == 2
+    quarantined = sorted((tmp_path / "visit_revocations" / "quarantine").iterdir())
+    assert _run(RevocationLog.list_all_open(tmp_path)) == []
+    assert _run(replay_forgets(tmp_path, resolve_char_name=resolver(), client=server.client())) is True
+    assert sorted((tmp_path / "visit_revocations" / "quarantine").iterdir()) == quarantined
+    assert server.requests == []
+
+
+def test_discard_with_nothing_on_disk_is_a_no_op(env):
+    client, _server, tmp_path, _state = env
+    assert client.post(DISCARD, json={"confirm": True}, headers=GOOD).json() == {"ok": True, "discarded": 0}
+    assert not (tmp_path / "visit_revocations").exists()
