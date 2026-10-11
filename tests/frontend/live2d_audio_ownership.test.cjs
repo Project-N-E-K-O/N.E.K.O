@@ -358,7 +358,8 @@ for (const paced of [false, true]) {
             'var turnId = S.assistantTurnId || S.assistantSpeechActiveTurnId || null;');
         assert.notEqual(mutant, source, 'mutation must reach the character-switch producer');
         await assert.rejects(checkCharacterSwitchCancellation({ paced, characterTransform: () => mutant }),
-            { code: 'ERR_ASSERTION', message: 'cancel before waiting for configuration\n\ntrue !== false\n' });
+            { name: 'AssertionError', code: 'ERR_ASSERTION', actual: true, expected: false,
+                operator: 'strictEqual', message: /^cancel before waiting for configuration\b/ });
     });
 }
 

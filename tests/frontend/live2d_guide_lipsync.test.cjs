@@ -36,6 +36,13 @@ function fixture(options = {}) {
         requestAnimationFrame(fn) { frames.set(++nextFrame, fn); return nextFrame; },
         cancelAnimationFrame(id) { frames.delete(id); },
     };
+    const setModelType = value => {
+        modelType = value;
+        window.lanlan_config = value === 'mmd' || value === 'vrm'
+            ? { model_type: 'live3d', live3d_sub_type: value }
+            : { model_type: value };
+    };
+    setModelType(modelType);
     const context = vm.createContext({ window, performance, Uint8Array, console,
         _getActiveModelType: () => modelType });
     if (options.realBridge) {
@@ -45,6 +52,10 @@ function fixture(options = {}) {
             morphWrites.push([id, value]); opening = value;
         } } };
         const init = fs.readFileSync(path.join(__dirname, '../../static/live2d/live2d-init.js'), 'utf8');
+        const typeStart = init.indexOf('function _getActiveModelType()');
+        const typeEnd = init.indexOf('// 1. 表情控制', typeStart);
+        assert.ok(typeStart >= 0 && typeEnd > typeStart);
+        vm.runInContext(init.slice(typeStart, typeEnd), context);
         const start = init.indexOf('let _live2dLipSyncOwner');
         const end = init.indexOf('async function cleanupVRMResources', start);
         assert.ok(start >= 0 && end > start);
@@ -63,7 +74,7 @@ function fixture(options = {}) {
         disconnect() {},
     };
     return { queue, analyser, bridge, window, frames, morphWrites, context,
-        setModelType(value) { modelType = value; },
+        setModelType,
         state: () => ({ owner, opening }),
         sample(session) {
             const fn = frames.get(session.animationFrameId);
