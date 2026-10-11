@@ -6,32 +6,6 @@
 // 仅供旧 setMouth(value) 调用方兼容；显式语音 owner 在句中静默时仍控制开合。
 const LIPSYNC_OVERRIDE_THRESHOLD = 0.001;
 
-// Bundled YUI-origin z1/z2 use static mouth overlays that cover the animated
-// mouth. These IDs are model-specific, not general Live2D mouth parameters.
-function getLive2DSpeechOcclusionIndices(modelPath, coreModel) {
-    if (typeof modelPath !== 'string') return [];
-    try {
-        const bundledPath = '/static/yui-origin/yui-origin.model3.json';
-        if (window.location?.href) {
-            const pageUrl = new URL(window.location.href);
-            const modelUrl = new URL(modelPath, pageUrl);
-            if (modelUrl.origin !== pageUrl.origin || modelUrl.pathname !== bundledPath) return [];
-        } else if (modelPath.split(/[?#]/)[0] !== bundledPath) {
-            return [];
-        }
-        const count = coreModel.getParameterCount();
-        const physicalIndex = id => {
-            const index = coreModel.getParameterIndex(id);
-            // Cubism may return a virtual index for a missing parameter.
-            return Number.isInteger(index) && index >= 0 && index < count ? index : -1;
-        };
-        if (physicalIndex('ParamMouthOpenY') < 0) return [];
-        return ['Param71', 'Param72'].map(physicalIndex).filter(index => index >= 0);
-    } catch (_) {
-        return [];
-    }
-}
-
 // Bundled pixi-live2d-display MotionPriority enum. Keep this local instead of
 // reading window.PIXI.live2d.MotionPriority, which is not a stable runtime path.
 const LIVE2D_MOTION_PRIORITY = Object.freeze({
@@ -2722,9 +2696,6 @@ Live2DManager.prototype.installMouthOverride = function() {
         throw new Error('coreModel 不可用');
     }
 
-    // Scoped to this installation/model; replacing the model retires its indices.
-    const speechOcclusionIndices = getLive2DSpeechOcclusionIndices(this._lastLoadedModelPath, coreModel);
-
     // 如果之前装过，先还原
     // 恢复安装时的实例，不能把旧模型的绑定方法装到新模型上。
     // core 失败恢复会先清理 installed 标志，motion 包装仍需在重装前还原。
@@ -3156,29 +3127,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                     console.warn('coreModel 已无效，跳过 update 调用');
                     return;
                 }
-                // Expressions keep evaluating and retaining their current values.
-                // Only the Core's drawable calculation sees the overlays disabled;
-                // restoring parameters without another update preserves expression
-                // fades, cancellation and expiry, including quiet speech frames.
-                let speechOcclusionValues = null;
-                try {
-                    if (this.hasActiveLipSync() && speechOcclusionIndices.length) {
-                        speechOcclusionValues = speechOcclusionIndices.map(index => currentCoreModel.getParameterValueByIndex(index));
-                        for (const index of speechOcclusionIndices) {
-                            currentCoreModel.setParameterValueByIndex(index, 0);
-                        }
-                    }
-                    origCoreModelUpdate();
-                } finally {
-                    // A synchronous teardown/replacement must not write to a
-                    // destroyed Core, even when it happens inside update().
-                    if (speechOcclusionValues && this._mouthOverrideToken === overrideToken
-                        && this.currentModel?.internalModel === internalModel && internalModel.coreModel === currentCoreModel) {
-                        for (let i = 0; i < speechOcclusionIndices.length; i++) {
-                            currentCoreModel.setParameterValueByIndex(speechOcclusionIndices[i], speechOcclusionValues[i]);
-                        }
-                    }
-                }
+                origCoreModelUpdate();
                 if (typeof this._applyTemporaryPoseOverride === 'function') {
                     this._applyTemporaryPoseOverride(currentCoreModel);
                 }
