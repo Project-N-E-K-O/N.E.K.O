@@ -136,6 +136,7 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       group: 'Getting Started',
       intro: 'Introduction', prereq: 'Prerequisites', dev: 'Development Setup',
       quick: 'Quick Start', struct: 'Project Structure', linux: 'Linux Desktop Runtime',
+      win7: 'Windows 7 Support',
       buyerGroup: 'Evaluate N.E.K.O.',
       cost: 'Cost & Providers', offline: 'Local & Offline',
       privacy: 'Data & Privacy', install: 'Install Options',
@@ -144,6 +145,7 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       group: '快速上手',
       intro: '简介', prereq: '前置条件', dev: '开发环境搭建',
       quick: '快速开始', struct: '项目结构', linux: 'Linux 桌面运行时',
+      win7: 'Windows 7 支持',
       buyerGroup: '使用前评估',
       cost: '费用与 Provider', offline: '本地与离线',
       privacy: '数据与隐私', install: '安装渠道',
@@ -152,6 +154,7 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       group: 'はじめに',
       intro: 'はじめに', prereq: '前提条件', dev: '開発環境の構築',
       quick: 'クイックスタート', struct: 'プロジェクト構造', linux: 'Linux デスクトップランタイム',
+      win7: 'Windows 7 サポート',
       buyerGroup: '利用前ガイド',
       cost: '料金と Provider', offline: 'ローカルとオフライン',
       privacy: 'データとプライバシー', install: '導入方法',
@@ -159,6 +162,11 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
   const linuxDesktopItems = [{ text: t.linux, link: `${p}/guide/linux-desktop-runtime` }]
+  // The Windows 7 guide only exists in zh-CN so far; keep it out of the
+  // en/ja sidebars so the dead-link check never sees a missing page.
+  const windows7Items = lang === 'zh-CN'
+    ? [{ text: t.win7, link: `${p}/guide/windows-7` }]
+    : []
   return [
     {
       text: t.group,
@@ -168,6 +176,7 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.dev, link: `${p}/guide/dev-setup` },
         { text: t.quick, link: `${p}/guide/quick-start` },
         ...linuxDesktopItems,
+        ...windows7Items,
         { text: t.struct, link: `${p}/guide/project-structure` },
       ],
     },
