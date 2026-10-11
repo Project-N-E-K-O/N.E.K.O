@@ -3249,6 +3249,7 @@
             "localCharacterNotFound": "找不到本地角色。",
             "cloudCharacterNotFound": "找不到雲端角色。",
             "localCharacterExists": "本地已存在同名角色。",
+            "visitDataBusy": "同名的已刪除角色仍在清理串門資料，請稍後再試。",
             "cloudCharacterExists": "雲端已存在同名角色。",
             "writeFenceActive": "雲存檔維護寫入保護仍在生效，請稍後再試。",
             "nameAuditFailed": "角色名稱未通過雲存檔校驗規則。",

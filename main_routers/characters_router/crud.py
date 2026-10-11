@@ -144,6 +144,9 @@ def _get_new_catgirl_default_voice_id() -> str:
 EXTERNAL_ROUTE_ACTIVE = "EXTERNAL_ROUTE_ACTIVE"
 """``error_code`` of a rename / delete refused while an external route or its background work holds the character."""
 
+VISIT_DATA_BUSY = "VISIT_DATA_BUSY"
+"""``error_code`` (409) while the visit data of an earlier rename / delete is not settled, or is unreadable."""
+
 
 async def _mark_new_character_greeting_pending_safe(config_manager, character_name: str, source: str) -> tuple[bool, str]:
     try:
@@ -1091,8 +1094,6 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
     # 如果当前猫娘是被重命名的猫娘，先缓存 WebSocket，
     # 只有在持久化和重载全部成功后才发送通知，避免前端先切换到未提交状态。
     is_current_catgirl = characters.get('当前猫娘') == old_name
-    rename_notification_ws = None
-    rename_notification_message = None
 
     # 检查当前角色是否有活跃的语音session
     if is_current_catgirl and old_name in session_manager:
@@ -1114,6 +1115,56 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
                              'error': '角色正在串门或小游戏中，请结束后再修改名称'}, status_code=400)
     # 与上面的检查之间没有 await：从这里到事务结束，这个角色不能再开串门 / 小游戏
     begin_character_mutation(old_name, new_name)
+    from main_routers.visit_router import character_hooks as visit_hooks
+
+    refusal = await _visit_name_refusal(_config_manager, new_name, "新档案名")
+    if refusal is not None:
+        return refusal
+    # 串门数据跟着改名走：先记意图（pending_rename），事务结束后按配置里的实际名字迁移或撤回
+    try:
+        visit_marker = await visit_hooks.begin_rename(
+            _config_manager, characters, old_name, new_name, get_character_uid(characters['猫娘'][old_name]),
+        )
+    except Exception as exc:
+        logger.warning("改名前写串门迁移标记失败，已阻止改名: %s -> %s: %r", old_name, new_name, exc)
+        return JSONResponse({'success': False, 'error_code': VISIT_DATA_BUSY,
+                             'error': '串门数据正在整理或无法读取，请稍后再修改名称'}, status_code=409)
+    visit_settled = True
+    settle_cancelled = False
+    try:
+        result = await _rename_catgirl_transaction(
+            _config_manager, session_manager, characters, old_name, new_name, is_current_catgirl,
+        )
+    finally:
+        if visit_marker is not None:
+            visit_settled, settle_cancelled = await _await_coroutine_to_completion(
+                visit_hooks.settle_rename(_config_manager, visit_marker),
+            )
+    if not visit_settled and isinstance(result, dict) and result.get("success"):
+        # 改名已生效，串门数据没迁完：标记保留，下次启动对账补完
+        result["partial_success"] = True
+        result["visit_data_migration_pending"] = True
+    if settle_cancelled:
+        # 收尾期间来了取消：标记已处理完，照常把取消传出去（与其它收尾调用一致）
+        raise asyncio.CancelledError
+    return result
+
+
+async def _visit_name_refusal(config_manager, name: str, label: str):
+    """409 while a deleted character of ``name`` still has visit data being retired (design OD-13)."""
+    from main_routers.visit_router import character_hooks as visit_hooks
+
+    if not await visit_hooks.name_blocked(config_manager, name):
+        return None
+    return JSONResponse({'success': False, 'error_code': VISIT_DATA_BUSY,
+                         'error': f'同名的已删除角色还在清理串门数据，请稍后再使用这个{label}'}, status_code=409)
+
+
+async def _rename_catgirl_transaction(
+    _config_manager, session_manager, characters, old_name: str, new_name: str, is_current_catgirl: bool,
+):
+    rename_notification_ws = None
+    rename_notification_message = None
     if is_current_catgirl and old_name in session_manager:
         rename_notification_ws = session_manager[old_name].websocket
         if rename_notification_ws:
@@ -1733,6 +1784,9 @@ async def add_catgirl(request: Request):
     async with character_config_mutation_lock:
         characters = await _config_manager.aload_characters()
         key = _available_character_name(characters, requested_name)
+        refusal = await _visit_name_refusal(_config_manager, key, "档案名")
+        if refusal is not None:
+            return refusal
 
         created_data = dict(data)
         created_data['档案名'] = key
@@ -2016,7 +2070,37 @@ async def _delete_catgirl_by_name_serialized(name: str):
         return JSONResponse({'success': False, 'error_code': EXTERNAL_ROUTE_ACTIVE,
                              'error': '角色正在串门或小游戏中，请结束后再删除'}, status_code=400)
     begin_character_mutation(name)
+    from main_routers.visit_router import character_hooks as visit_hooks
 
+    # 串门残留退役：先记删除标记（pending_retire），删除提交后才退役；回滚则只撤标记
+    try:
+        visit_item = await visit_hooks.begin_retire(
+            _config_manager, name, get_character_uid(characters["猫娘"][name]),
+        )
+    except Exception as exc:
+        logger.warning("删除前写串门退役标记失败，已阻止删除: %s: %r", name, exc)
+        return JSONResponse({'success': False, 'error_code': VISIT_DATA_BUSY,
+                             'error': '串门数据无法读取，请稍后再删除'}, status_code=409)
+    visit_settled = True
+    settle_cancelled = False
+    try:
+        result = await _delete_catgirl_transaction(_config_manager, characters, name)
+    finally:
+        if visit_item is not None:
+            visit_settled, settle_cancelled = await _await_coroutine_to_completion(
+                visit_hooks.settle_retire(_config_manager, visit_item),
+            )
+    if not visit_settled and isinstance(result, dict) and result.get("success"):
+        # 角色已删除，串门残留没退役完：不回滚角色，标记保留，下次启动补完
+        result["partial_success"] = True
+        result["visit_data_retire_pending"] = True
+    if settle_cancelled:
+        # 收尾期间来了取消：标记已处理完，照常把取消传出去（与其它收尾调用一致）
+        raise asyncio.CancelledError
+    return result
+
+
+async def _delete_catgirl_transaction(_config_manager, characters, name: str):
     deleted_character_uid = get_character_uid(characters["猫娘"][name])
     deleted_avatar_directory = chat_avatar_directory(_config_manager)
     safe_path_name = _validate_existing_character_path_name(name) is None

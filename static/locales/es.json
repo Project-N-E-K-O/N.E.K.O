@@ -3249,6 +3249,7 @@
             "localCharacterNotFound": "No se pudo encontrar el personaje local.",
             "cloudCharacterNotFound": "No se pudo encontrar el personaje de la nube.",
             "localCharacterExists": "Ya existe un personaje local con el mismo nombre.",
+            "visitDataBusy": "Aún se están limpiando los datos de visitas de un personaje eliminado con el mismo nombre. Inténtalo de nuevo más tarde.",
             "cloudCharacterExists": "Ya existe un personaje de nube con el mismo nombre.",
             "writeFenceActive": "El modo de mantenimiento de guardado en la nube está activo. Inténtelo de nuevo más tarde.",
             "nameAuditFailed": "El nombre del personaje no pasó las reglas de validación de guardado en la nube.",

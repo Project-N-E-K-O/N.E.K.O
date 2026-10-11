@@ -34,6 +34,7 @@ from .crud import (
     _mark_new_character_greeting_pending_safe,
     _refresh_catgirl_context_after_profile_change,
     _sync_catgirl_field_order,
+    _visit_name_refusal,
 )
 from .pngtuber_assets import (
     _PNGTUBER_CARD_MODEL_DIR,
@@ -256,6 +257,10 @@ async def _save_character_card_serialized(data: dict):
             return JSONResponse({"success": False, "error": f"角色名称无效: {name_error}"}, status_code=400)
         chara_name = str(chara_name).strip()
         is_new_character = chara_name not in characters['猫娘']
+        if is_new_character:
+            refusal = await _visit_name_refusal(_config_manager, chara_name, "角色名称")
+            if refusal is not None:
+                return refusal
         previous_catgirl_data = copy.deepcopy(characters['猫娘'].get(chara_name, {}))
         filtered_chara_data = _filter_mutable_catgirl_fields(chara_data)
 
@@ -880,6 +885,9 @@ async def import_character_card(
                     counter += 1
                 character_name = f"{base_name}({counter})"
                 character_data['档案名'] = character_name
+            refusal = await _visit_name_refusal(_config_manager, character_name, "角色名称")
+            if refusal is not None:
+                return refusal
 
             # 处理模型文件（仅当不是 .nekocfg 文件时）
             imported_model_info = None  # 记录导入的模型信息，用于自动使用
