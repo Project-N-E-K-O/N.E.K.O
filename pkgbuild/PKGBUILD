@@ -9,9 +9,8 @@ url="https://github.com/Project-N-E-K-O/N.E.K.O"
 license=('Apache-2.0')
 depends=('gtk3' 'nss' 'libxtst' 'libsecret' 'xdg-utils')
 makedepends=()
-# 注意：上游文件名写的是 x86，这里照抄
+# 注意：上游文件名写的是 x86，这里照抄；release tag 是 v0.9.0，升级时 tag 和 pkgver 要一起改
 source=("$pkgname-$pkgver.AppImage::https://github.com/Project-N-E-K-O/N.E.K.O/releases/download/v0.9.0/N.E.K.O_v${pkgver}_x86_linux.AppImage")
-# 请将 SKIP 替换为你刚刚在 PowerShell 里算出来的真实哈希
 sha256sums=('8d8c9c3b79ac2b35db56ed0bbdf58b901b2ec980cb2d318b6511133c763fa618')
 
 package() {
@@ -76,15 +75,20 @@ StartupNotify=true
 EOF
   fi
 
-  # 6. 动态寻找并安装图标
-  local _icon_file=$(find "$pkgdir/usr/lib/neko" -type f \( -name "*.png" -o -name "*.svg" \) | grep -i "icon" | head -n 1)
-  if [ -z "$_icon_file" ]; then
-      # 没找到带有 icon 字样的，就找第一个 png/svg
-      _icon_file=$(find "$pkgdir/usr/lib/neko" -type f \( -name "*.png" -o -name "*.svg" \) | head -n 1)
-  fi
-
+  # 6. 安装图标：直接用 AppImage 自带的应用图标，不要按文件名搜 "icon"
+  #    （resources 下有上百张界面素材的路径也带 icon，find 的顺序不固定，会装错图）
+  local _icon_file=""
+  for _candidate in \
+      squashfs-root/usr/share/icons/hicolor/512x512/apps/n.e.k.o.png \
+      squashfs-root/.DirIcon; do
+    if [ -e "$_candidate" ]; then
+      _icon_file="$_candidate"
+      break
+    fi
+  done
   if [ -n "$_icon_file" ]; then
-    EXT="${_icon_file##*.}"
-    install -Dm644 "$_icon_file" "$pkgdir/usr/share/pixmaps/neko-bin.${EXT}"
+    install -Dm644 "$_icon_file" "$pkgdir/usr/share/pixmaps/neko-bin.png"
+  else
+    echo "警告：AppImage 里没找到应用图标，桌面项将显示默认图标" >&2
   fi
 }
