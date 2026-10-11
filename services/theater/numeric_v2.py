@@ -1516,11 +1516,17 @@ class NumericV2Compiler:
         for ending_id in sorted(ending_ids.difference(reached_endings)):
             c.add("unreachable_ending", f"endings.{ending_id}", "结局从开场不可达。")
 
-        # 带完成合同的普通幕必须提供作者写定的可见邀请。它只在模型漏写出口时兜底，
-        # 因此通向结局的路线不要求该字段，也不能靠 Runtime 临时拼接角色台词。
+        # 完成后仍可发声的普通幕提供作者写定的备用邀请；禁言结果不能靠追加台词兜底。
         for source_id, node in nodes.items():
             if "completion_contract" not in node:
                 continue
+            beat = node.get("story_beat") or {}
+            policy = (beat.get("acting_contract") or {}).get("dialogue_policy")
+            for goal in beat.get("goals") or []:
+                if not isinstance(goal, Mapping):
+                    continue
+                effects = (goal.get("delivery") or {}).get("state_effects") or {}
+                policy = effects.get("dialogue_policy", policy)
             for route_index, raw_route in enumerate(node.get("route_gates") or []):
                 if not isinstance(raw_route, Mapping):
                     continue
@@ -1531,10 +1537,11 @@ class NumericV2Compiler:
                     continue
                 contract = raw_route.get("transition_contract")
                 contract = contract if isinstance(contract, Mapping) else {}
-                c.require_text(
-                    contract.get("fallback_offer"),
-                    f"nodes.{source_id}.route_gates[{route_index}].transition_contract.fallback_offer",
-                )
+                if policy != "forbidden":
+                    c.require_text(
+                        contract.get("fallback_offer"),
+                        f"nodes.{source_id}.route_gates[{route_index}].transition_contract.fallback_offer",
+                    )
                 c.require_text(
                     contract.get("accept_input"),
                     f"nodes.{source_id}.route_gates[{route_index}].transition_contract.accept_input",

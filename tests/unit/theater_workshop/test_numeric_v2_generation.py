@@ -111,6 +111,8 @@ def test_concrete_process_rule_covers_generation_and_revision_entries(prompt):
     # 用户明确状态时点为开场结束，七个作者入口不能重新写成开场前或整幕完成后。
     assert "开场演完、第一条玩家输入之前" in prompt
     assert "不能把 turn 目标的预期结果提前写入状态" in prompt
+    assert "ordered_goals 按 timing 区分开场已交付与普通回合待演的内容" in prompt
+    assert "明确归于开场已完成的结果，须与 opening_scene 实际展示或明确的前情、上游事实相容" in prompt
     # 七个入口都须区分约定与执行，防止完善/评改重新追加未来行动作为收束前提。
     assert "本幕要交付达成约定还是实际执行" in prompt
     assert "不把未来执行列为本幕缺项" in prompt
@@ -1133,6 +1135,7 @@ def test_numeric_v2_generator_allows_player_marker_as_catgirl_action_target():
 def test_numeric_v2_generator_projects_long_context_delivery_controls():
     generator = NumericV2Generator()
     candidate = _idea_outline()
+    candidate["character_state_arc"]["stages"][0]["acting_contract"]["dialogue_policy"] = "optional"
     goal = candidate["mainline_chapters"][0]["ordered_goals"][0]
     goal.update({
         "owner": "player",
@@ -1299,6 +1302,65 @@ def test_numeric_v2_generated_mainline_compiles_without_route_metric_conditions(
     ]
     assert "fallback_offer" not in story["nodes"][-2]["route_gates"][0]["transition_contract"]
     assert "accept_input" not in story["nodes"][-2]["route_gates"][0]["transition_contract"]
+
+
+@pytest.mark.parametrize("initial,changes,allowed", [
+    ("optional", ["forbidden"], True),
+    ("forbidden", ["unchanged"], True),
+    ("optional", ["forbidden", "unchanged"], True),
+    ("optional", ["forbidden", "required"], False),
+    ("optional", ["forbidden", "optional"], False),
+    ("optional", ["unchanged"], False),
+    ("required", ["unchanged"], False),
+])
+def test_mainline_empty_fallback_requires_final_typed_forbidden_policy(initial, changes, allowed):
+    candidate = _idea_outline()
+    chapter = candidate["mainline_chapters"][0]
+    candidate["character_state_arc"]["stages"][0]["acting_contract"]["dialogue_policy"] = initial
+    chapter["ordered_goals"] = [
+        {**chapter["ordered_goals"][0], "dialogue_policy_after": policy}
+        for policy in changes
+    ]
+    chapter["exit_plan"]["fallback_offer"] = ""
+
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6)
+
+    assert ("transition_fallback_offer_required" not in {issue["code"] for issue in issues}) is allowed
+    if allowed:
+        assert not issues
+
+
+@pytest.mark.parametrize("field,value,code", [
+    ("accept_input", "", "transition_accept_input_required"),
+    ("fallback_offer", None, "transition_fallback_offer_invalid"),
+])
+def test_mainline_forbidden_exit_keeps_acceptance_and_present_value_validation(field, value, code):
+    candidate = _idea_outline()
+    chapter = candidate["mainline_chapters"][0]
+    candidate["character_state_arc"]["stages"][0]["acting_contract"]["dialogue_policy"] = "optional"
+    chapter["ordered_goals"][0]["dialogue_policy_after"] = "forbidden"
+    chapter["exit_plan"]["fallback_offer"] = ""
+    chapter["exit_plan"][field] = value
+
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6)
+
+    assert code in {issue["code"] for issue in issues}
+
+
+def test_mainline_projects_silent_exit_without_fallback_and_keeps_accept_input():
+    candidate = _idea_outline()
+    candidate["character_state_arc"]["stages"][0]["acting_contract"]["dialogue_policy"] = "optional"
+    candidate["mainline_chapters"][0]["ordered_goals"][0]["dialogue_policy_after"] = "forbidden"
+    candidate["mainline_chapters"][0]["exit_plan"]["fallback_offer"] = ""
+    generator = NumericV2Generator()
+    generator.call_llm = lambda *_args, **_kwargs: json.dumps(candidate, ensure_ascii=False)
+
+    story = generator.generate(title="禁言出口", setup=_generation_setup())["story"]
+    contract = story["nodes"][0]["route_gates"][0]["transition_contract"]
+
+    assert "fallback_offer" not in contract
+    assert contract["accept_input"] == candidate["mainline_chapters"][0]["exit_plan"]["accept_input"]
+    NumericV2Compiler(InProcessPackageGateway()).compile(story)
 
 
 def test_numeric_v2_generator_keeps_original_idea_and_returns_only_derived_setup_fields():
@@ -1827,7 +1889,19 @@ def test_numeric_v2_generator_allows_multiple_key_prop_changes_in_one_chapter():
     }
 
 
-def test_numeric_v2_node_enhancement_sends_node_type_context_and_metrics_once():
+@pytest.mark.parametrize("title,summary,opening,focus,state", [
+    ("山棚门前", "两人在棚外商量是否入内检查。",
+     "灯盏已亮，女主与男主仍在棚外等候。",
+     "开场已经入棚检查完毕，接下来商量去向。",
+     "女主仍站在棚外，等候男主决定是否入内。"),
+    ("放学整理", "两人整理器材后再商量是否告别。",
+     "灯盏已亮，女主仍在整理器材，男主站在门边。",
+     "开场已经整理完毕，接下来商量去向。",
+     "女主仍在整理器材，等候男主决定是否协助。"),
+], ids=["wuxia", "campus"])
+def test_numeric_v2_node_enhancement_sends_node_type_context_and_metrics_once(
+    title, summary, opening, focus, state,
+):
     generator = NumericV2Generator()
     story = NumericV2Generator()._project_story(
         title="清河晚风",
@@ -1839,12 +1913,25 @@ def test_numeric_v2_node_enhancement_sends_node_type_context_and_metrics_once():
     branch = {
         "id": "scene_branch",
         "type": "scene",
-        "chapter": "雨夜坦白",
+        "chapter": title,
         "story_beat": {
-            "summary": "玩家在雨夜主动说明当年离开的原因。",
+            "summary": summary,
             # 完善已有节点必须看见它已有的开场与状态，而不是仅凭摘要重新猜处境。
-            "opening_scene": "旧信仍摊在两人之间，女主等候解释。",
-            "character_state": {"catgirl_state": "女主仍保留意见，尚未听到本轮解释。"},
+            # 原稿含时点矛盾也原样送达；此测试不代替模型判断或修复自然语言。
+            "opening_scene": opening,
+            "narrative_focus": focus,
+            "character_state": {"catgirl_state": state},
+            "goals": [{
+                "id": "scene_branch_opening", "owner": "environment",
+                "description": "环境的灯盏已经亮起。",
+                "delivery": {"type": "environment_fact", "output_field": "scene_update",
+                             "source_ids": ["opening.scene_branch"], "timing": "opening"},
+            }, {
+                "id": "scene_branch_turn", "owner": "player",
+                "description": "玩家决定是否参与眼前的活动。",
+                "delivery": {"type": "player_action", "output_field": "player_input",
+                             "source_ids": ["runtime.player_input"], "timing": "turn"},
+            }],
             "must_happen": [""],
             "must_not_happen": [],
             "catgirl_situation": "",
@@ -1917,10 +2004,12 @@ def test_numeric_v2_node_enhancement_sends_node_type_context_and_metrics_once():
     model_input = json.loads(calls[0]["messages"][1]["content"])
     assert model_input["node_type"] == "scene"
     assert model_input["existing_story_beat"] == branch["story_beat"]
+    assert [goal["delivery"]["timing"] for goal in
+            model_input["existing_story_beat"]["goals"]] == ["opening", "turn"]
     assert model_input["node_type_label"] == "幕节点"
     assert model_input["author_input"] == {
-        "title": "雨夜坦白",
-        "summary": "玩家在雨夜主动说明当年离开的原因。",
+        "title": title,
+        "summary": summary,
     }
     assert model_input["upstream_nodes"][0]["id"] == "mainline_01"
     assert model_input["incoming_routes"][0]["conditions"]["all"][0]["value"] == 70
